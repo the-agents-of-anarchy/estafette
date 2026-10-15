@@ -56,3 +56,6 @@ dbg_macro = "deny"
 
 allow_attributes = "deny"
 allow_attributes_without_reason = "deny"
+
+[workspace.lints.rust]
+unknown_lints = "deny"
