@@ -1,0 +1,30 @@
+RUN control 0 {"deliv_base_of40": 40.0, "deliv_withO_of40": 40.0, "forged_from_O_direct": 0.0, "forged_mac_bad": 0.0, "forged_mac_ok": 0.0, "forged_relayed_by_member": 0.0, "forged_rx_M1": 0.0, "forged_rx_M2": 0.0, "forged_rx_M3": 0.0, "forged_rx_total": 0.0, "forged_sent": 0.0, "hook_rejects": 0.0, "lat_base_median_ms": 2.31, "lat_withO_median_ms": 1.719, "members_formed": 1.0, "members_neighbor_down_after_O": 0.0, "members_neighbor_down_before_O": 0.0, "members_neighbor_up_O": 0.0, "members_neighbor_up_other_after_O": 0.0, "members_rx_from_W": 0.0, "o_neighbor_up_n": 0.0, "o_neighbors_M2_or_M3": 0.0, "o_ping_rx_of20": 0.0, "o_presence_distinct": 0.0, "o_subscribe_ok": 1.0, "w_rx_total": 0.0}
+RUN control 1 {"deliv_base_of40": 40.0, "deliv_withO_of40": 40.0, "forged_from_O_direct": 0.0, "forged_mac_bad": 0.0, "forged_mac_ok": 0.0, "forged_relayed_by_member": 0.0, "forged_rx_M1": 0.0, "forged_rx_M2": 0.0, "forged_rx_M3": 0.0, "forged_rx_total": 0.0, "forged_sent": 0.0, "hook_rejects": 0.0, "lat_base_median_ms": 1.248, "lat_withO_median_ms": 0.634, "members_formed": 1.0, "members_neighbor_down_after_O": 0.0, "members_neighbor_down_before_O": 0.0, "members_neighbor_up_O": 0.0, "members_neighbor_up_other_after_O": 0.0, "members_rx_from_W": 0.0, "o_neighbor_up_n": 0.0, "o_neighbors_M2_or_M3": 0.0, "o_ping_rx_of20": 0.0, "o_presence_distinct": 0.0, "o_subscribe_ok": 1.0, "w_rx_total": 0.0}
+RUN control 2 {"deliv_base_of40": 40.0, "deliv_withO_of40": 40.0, "forged_from_O_direct": 0.0, "forged_mac_bad": 0.0, "forged_mac_ok": 0.0, "forged_relayed_by_member": 0.0, "forged_rx_M1": 0.0, "forged_rx_M2": 0.0, "forged_rx_M3": 0.0, "forged_rx_total": 0.0, "forged_sent": 0.0, "hook_rejects": 0.0, "lat_base_median_ms": 1.858, "lat_withO_median_ms": 1.147, "members_formed": 1.0, "members_neighbor_down_after_O": 0.0, "members_neighbor_down_before_O": 0.0, "members_neighbor_up_O": 0.0, "members_neighbor_up_other_after_O": 0.0, "members_rx_from_W": 0.0, "o_neighbor_up_n": 0.0, "o_neighbors_M2_or_M3": 0.0, "o_ping_rx_of20": 0.0, "o_presence_distinct": 0.0, "o_subscribe_ok": 1.0, "w_rx_total": 0.0}
+| scenario | measure | min | median | max | n |
+| control | deliv_base_of40 | 40.000 | 40.000 | 40.000 | 3 |
+| control | deliv_withO_of40 | 40.000 | 40.000 | 40.000 | 3 |
+| control | forged_from_O_direct | 0.000 | 0.000 | 0.000 | 3 |
+| control | forged_mac_bad | 0.000 | 0.000 | 0.000 | 3 |
+| control | forged_mac_ok | 0.000 | 0.000 | 0.000 | 3 |
+| control | forged_relayed_by_member | 0.000 | 0.000 | 0.000 | 3 |
+| control | forged_rx_M1 | 0.000 | 0.000 | 0.000 | 3 |
+| control | forged_rx_M2 | 0.000 | 0.000 | 0.000 | 3 |
+| control | forged_rx_M3 | 0.000 | 0.000 | 0.000 | 3 |
+| control | forged_rx_total | 0.000 | 0.000 | 0.000 | 3 |
+| control | forged_sent | 0.000 | 0.000 | 0.000 | 3 |
+| control | hook_rejects | 0.000 | 0.000 | 0.000 | 3 |
+| control | lat_base_median_ms | 1.248 | 1.858 | 2.310 | 3 |
+| control | lat_withO_median_ms | 0.634 | 1.147 | 1.719 | 3 |
+| control | members_formed | 1.000 | 1.000 | 1.000 | 3 |
+| control | members_neighbor_down_after_O | 0.000 | 0.000 | 0.000 | 3 |
+| control | members_neighbor_down_before_O | 0.000 | 0.000 | 0.000 | 3 |
+| control | members_neighbor_up_O | 0.000 | 0.000 | 0.000 | 3 |
+| control | members_neighbor_up_other_after_O | 0.000 | 0.000 | 0.000 | 3 |
+| control | members_rx_from_W | 0.000 | 0.000 | 0.000 | 3 |
+| control | o_neighbor_up_n | 0.000 | 0.000 | 0.000 | 3 |
+| control | o_neighbors_M2_or_M3 | 0.000 | 0.000 | 0.000 | 3 |
+| control | o_ping_rx_of20 | 0.000 | 0.000 | 0.000 | 3 |
+| control | o_presence_distinct | 0.000 | 0.000 | 0.000 | 3 |
+| control | o_subscribe_ok | 1.000 | 1.000 | 1.000 | 3 |
+| control | w_rx_total | 0.000 | 0.000 | 0.000 | 3 |
