@@ -412,6 +412,34 @@ async fn check9() {
     let _ = server.shutdown().await;
 }
 
+
+async fn check9ef() {
+    let server = spawn_relay(0).await.unwrap();
+    let url = http_url(&server);
+    for (tag, ip) in [("9e relay URL + id, IP transports on", true), ("9f relay URL + id, clear_ip_transports", false)] {
+        let (tx, _r) = mpsc::unbounded_channel();
+        let b = ep(None, relay_mode(&url), ip, vec![ECHO.to_vec()]).await.unwrap();
+        let _rt = Router::builder(b.clone()).accept(ECHO, Echo { seen: tx }).spawn();
+        let a = ep(None, relay_mode(&url), ip, vec![]).await.unwrap();
+        let _ = timeout(Duration::from_secs(10), b.online()).await;
+        let _ = timeout(Duration::from_secs(10), a.online()).await;
+        let addr = EndpointAddr::new(b.id()).with_relay_url(url.clone());
+        let t0 = std::time::Instant::now();
+        let r = timeout(Duration::from_secs(20), a.connect(addr, ECHO)).await;
+        match r {
+            Ok(Ok(c)) => {
+                let t = t0.elapsed();
+                let back = echo_roundtrip(&c, b"9ef").await.ok();
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                rec(9, tag, true, format!("connected in {t:?}; echo {:?}; paths at connect+3s {:?}", back.map(|b| String::from_utf8_lossy(&b).to_string()), c.paths()));
+            }
+            Ok(Err(e)) => rec(9, tag, false, format!("error after {:?}: {}", t0.elapsed(), short(e))),
+            Err(_) => rec(9, tag, false, "timeout 20s"),
+        }
+    }
+    let _ = server.shutdown().await;
+}
+
 #[tokio::main]
 async fn main() {
     let which = std::env::args().nth(1).unwrap_or_else(|| "all".into());
@@ -421,6 +449,7 @@ async fn main() {
     if all || which == "5" { check5().await; }
     if all || which == "8" { check8().await; }
     if all || which == "9" { check9().await; }
+    if all || which == "9ef" { check9ef().await; }
     if all || which == "6" { check6().await; }
 }
 
