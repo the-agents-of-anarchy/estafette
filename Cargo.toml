@@ -1,6 +1,7 @@
 [workspace]
 members = ["core"]
 resolver = "3"
+exclude = ["spikes"]
 
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }

@@ -1,0 +1,47 @@
+=== irpc 0.17.0 + irpc-iroh 0.17.0 ===
+- S1 roundtrip, one call per variant, remote-id visible to handler
+  Ok("MessageAck accepted=true reason=Some(\"remote=9eb71a8c9be471756725d408e619956aefe99e3ca2ae0b2d06521420d4c23863 body=10\")")
+  Ok("Probe(ProbeAck { v: 1, nonce: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3,")
+  Ok("Introduce(IntroduceAck { v: 1, public: [1, 1, 1, 1, 1, 1, 1,")
+  client node id: 9eb71a8c9be471756725d408e619956aefe99e3ca2ae0b2d06521420d4c23863
+- S2 real client, 2,000,000-byte body (call API)
+  result after 31.153167ms: Ok("Ok(response)")
+  next call on same client: Ok("Ok")
+- S3 raw 2,000,000-byte body, finished: 2000056 bytes, finish=true
+  client write: Ok(())
+  client finish: Ok(())
+  [alloc S3 raw 2,000,000-byte body, finished] max_single=2000053 peak_live_delta=4047675
+  client read: Ok(105 bytes)
+  connection after: alive
+  follow-up probe on same connection: sent=true reply=Ok(Ok(50))
+- S4 raw first 100,000 bytes of the 2 MB request, never finished: 100000 bytes, finish=false
+  client write: Ok(())
+  [alloc S4 raw first 100,000 bytes of the 2 MB request, never finished] max_single=2000053 peak_live_delta=2146463
+  connection after: alive
+  follow-up probe on same connection: sent=true reply=Err("timeout")
+- S5 raw 4-byte header declaring 16 MiB (irpc max), then nothing: 4 bytes, finish=false
+  [server] request rejected: connection lost
+  client write: Ok(())
+  [alloc S5 raw 4-byte header declaring 16 MiB (irpc max), then nothing] max_single=16777216 peak_live_delta=16797787
+  connection after: alive
+  follow-up probe on same connection: sent=true reply=Err("timeout")
+- S6 raw 4-byte header declaring 20,000,000 (> irpc max): 4 bytes, finish=false
+  [server] request rejected: connection lost
+  client write: Ok(())
+  [server] request rejected: Maximum message size exceeded
+  [alloc S6 raw 4-byte header declaring 20,000,000 (> irpc max)] max_single=3608 peak_live_delta=19910
+  connection after: closed: closed by peer: request exceeded max message size (code 1)
+- S7 raw malformed: 64 bytes of 0xFF, finished: 64 bytes, finish=true
+  client write: Ok(())
+  client finish: Ok(())
+  [server] request rejected: Varint is too large for u64
+  [alloc S7 raw malformed: 64 bytes of 0xFF, finished] max_single=3608 peak_live_delta=22815
+  client read: Err(read error: connection lost)
+  connection after: closed: closed by peer: 0
+- S8 raw malformed: valid frame of a Probe with 1 trailing byte? (truncated: first 10 bytes of valid probe frame), finished: 10 bytes, finish=true
+  client write: Ok(())
+  client finish: Ok(())
+  [server] request rejected: stream finished early (9 bytes read)
+  [alloc S8 raw malformed: valid frame of a Probe with 1 trailing byte? (truncated: first 10 bytes of valid probe frame), finished] max_single=3608 peak_live_delta=22344
+  client read: Err(read error: connection lost)
+  connection after: closed: closed by peer: 0

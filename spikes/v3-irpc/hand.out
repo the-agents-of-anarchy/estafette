@@ -1,0 +1,52 @@
+=== by hand (iroh bi-streams + postcard) ===
+- S1 roundtrip, one call per variant, remote-id visible to handler
+  Ok("MessageAck accepted=true reason=Some(\"remote=a53783973bf2fa77ade57517537787c7777fce1856913cc1a2449e6bf17f9cf0 body=10\")")
+  Ok("Probe(ProbeAck { v: 1, nonce: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3,")
+  Ok("Introduce(IntroduceAck { v: 1, public: [1, 1, 1, 1, 1, 1, 1,")
+  client node id: a53783973bf2fa77ade57517537787c7777fce1856913cc1a2449e6bf17f9cf0
+- S2 real client, 2,000,000-byte body (call API)
+  [server] stream rejected: read: stream too long
+  result after 24.033667ms: Err("read error: stream reset by peer: error 1: stream reset by peer: error 1")
+  next call on same client: Ok("Ok")
+- S3 raw 2,000,000-byte body, finished: 2000053 bytes, finish=true
+  client write: Ok(())
+  client finish: Ok(())
+  [server] stream rejected: read: stream too long
+  [alloc S3 raw 2,000,000-byte body, finished] max_single=40960 peak_live_delta=2202658
+  client read: Err(read error: stream reset by peer: error 1)
+  connection after: alive
+  follow-up probe on same connection: sent=true reply=Ok(Ok(50))
+- S4 raw first 100,000 bytes of the 2 MB request, never finished: 100000 bytes, finish=false
+  client write: Ok(())
+  [alloc S4 raw first 100,000 bytes of the 2 MB request, never finished] max_single=16384 peak_live_delta=187668
+  connection after: alive
+  follow-up probe on same connection: sent=true reply=Ok(Ok(50))
+- S5 raw 4-byte header declaring 16 MiB (irpc max), then nothing: 4 bytes, finish=false
+  [server] stream rejected: read: read error: connection lost
+  client write: Ok(())
+  [alloc S5 raw 4-byte header declaring 16 MiB (irpc max), then nothing] max_single=3608 peak_live_delta=24544
+  connection after: alive
+  follow-up probe on same connection: sent=true reply=Ok(Ok(50))
+- S6 raw 4-byte header declaring 20,000,000 (> irpc max): 4 bytes, finish=false
+  [server] stream rejected: read: read error: connection lost
+  client write: Ok(())
+  [alloc S6 raw 4-byte header declaring 20,000,000 (> irpc max)] max_single=3608 peak_live_delta=20439
+  connection after: alive
+  follow-up probe on same connection: sent=true reply=Ok(Ok(50))
+- S7 raw malformed: 64 bytes of 0xFF, finished: 64 bytes, finish=true
+  [server] stream rejected: read: read error: connection lost
+  client write: Ok(())
+  client finish: Ok(())
+  [server] stream rejected: decode: Found a varint that didn't terminate. Is the usize too big for this platform?
+  [alloc S7 raw malformed: 64 bytes of 0xFF, finished] max_single=3608 peak_live_delta=18358
+  client read: Err(read error: stream reset by peer: error 1)
+  connection after: alive
+  follow-up probe on same connection: sent=true reply=Ok(Ok(50))
+- S8 raw malformed: valid frame of a Probe with 1 trailing byte? (truncated: first 10 bytes of valid probe frame), finished: 10 bytes, finish=true
+  client write: Ok(())
+  client finish: Ok(())
+  [server] stream rejected: decode: Hit the end of buffer, expected more data
+  [alloc S8 raw malformed: valid frame of a Probe with 1 trailing byte? (truncated: first 10 bytes of valid probe frame), finished] max_single=3608 peak_live_delta=21965
+  client read: Err(read error: stream reset by peer: error 1)
+  connection after: alive
+  follow-up probe on same connection: sent=true reply=Ok(Ok(50))
