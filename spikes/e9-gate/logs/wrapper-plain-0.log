@@ -1,0 +1,153 @@
+1792444236601224 M1 START
+1792444236601240 M3 START
+1792444236601240 M1 SUBSCRIBE ok
+1792444236601254 M3 SUBSCRIBE ok
+1792444236601249 M2 START
+1792444236601260 M2 SUBSCRIBE ok
+1792444236607140 M2 GATE_OK dir=out ms=1.658
+1792444236607450 M1 GATE_OK dir=in ms=1.134
+1792444236607657 M1 NEIGHBOR_UP subject=M2
+1792444236607782 M3 GATE_OK dir=out ms=1.206
+1792444236607929 M1 GATE_OK dir=in ms=0.560
+1792444236607991 M2 NEIGHBOR_UP subject=M1
+1792444236608483 M1 NEIGHBOR_UP subject=M3
+1792444236608735 M3 NEIGHBOR_UP subject=M1
+1792444236613677 M2 GATE_OK dir=out ms=1.677
+1792444236613883 M3 GATE_OK dir=in ms=1.055
+1792444236614025 M3 NEIGHBOR_UP subject=M2
+1792444236614216 M2 NEIGHBOR_UP subject=M3
+1792444238158440 M3 RX kind=ping seq=0 sent_us=1792444238155277 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238158440 M2 RX kind=ping seq=0 sent_us=1792444238155277 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238211492 M2 RX kind=ping seq=1 sent_us=1792444238208704 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238211492 M3 RX kind=ping seq=1 sent_us=1792444238208704 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238263520 M3 RX kind=ping seq=2 sent_us=1792444238262054 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238263520 M2 RX kind=ping seq=2 sent_us=1792444238262054 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238317212 M3 RX kind=ping seq=3 sent_us=1792444238314685 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238317208 M2 RX kind=ping seq=3 sent_us=1792444238314685 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238368421 M3 RX kind=ping seq=4 sent_us=1792444238367149 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238368421 M2 RX kind=ping seq=4 sent_us=1792444238367149 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238420045 M3 RX kind=ping seq=5 sent_us=1792444238419212 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238420047 M2 RX kind=ping seq=5 sent_us=1792444238419212 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238473157 M2 RX kind=ping seq=6 sent_us=1792444238472037 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238473148 M3 RX kind=ping seq=6 sent_us=1792444238472037 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238525450 M3 RX kind=ping seq=7 sent_us=1792444238524249 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238525491 M2 RX kind=ping seq=7 sent_us=1792444238524249 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238577501 M2 RX kind=ping seq=8 sent_us=1792444238576446 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238577666 M3 RX kind=ping seq=8 sent_us=1792444238576446 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238630287 M3 RX kind=ping seq=9 sent_us=1792444238628261 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238630302 M2 RX kind=ping seq=9 sent_us=1792444238628261 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238682937 M3 RX kind=ping seq=10 sent_us=1792444238680316 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238682918 M2 RX kind=ping seq=10 sent_us=1792444238680316 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238736027 M3 RX kind=ping seq=11 sent_us=1792444238733671 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238736027 M2 RX kind=ping seq=11 sent_us=1792444238733671 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238787743 M3 RX kind=ping seq=12 sent_us=1792444238786555 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238787743 M2 RX kind=ping seq=12 sent_us=1792444238786555 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238840388 M3 RX kind=ping seq=13 sent_us=1792444238838355 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238840388 M2 RX kind=ping seq=13 sent_us=1792444238838355 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238892407 M3 RX kind=ping seq=14 sent_us=1792444238891034 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238892407 M2 RX kind=ping seq=14 sent_us=1792444238891034 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238944064 M2 RX kind=ping seq=15 sent_us=1792444238943114 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238944064 M3 RX kind=ping seq=15 sent_us=1792444238943114 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238998300 M2 RX kind=ping seq=16 sent_us=1792444238995512 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444238998295 M3 RX kind=ping seq=16 sent_us=1792444238995512 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444239049173 M2 RX kind=ping seq=17 sent_us=1792444239048224 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444239049173 M3 RX kind=ping seq=17 sent_us=1792444239048224 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444239101546 M3 RX kind=ping seq=18 sent_us=1792444239100720 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444239101546 M2 RX kind=ping seq=18 sent_us=1792444239100720 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444239153087 M3 RX kind=ping seq=19 sent_us=1792444239152375 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444239153087 M2 RX kind=ping seq=19 sent_us=1792444239152375 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444239204315 M1 PING_DONE
+1792444240686135 O START
+1792444240686179 O SUBSCRIBE ok
+1792444243695793 M1 GATE_FAIL dir=in peer=29bb156f69 ms=3001.982 why=timeout
+1792444245688640 M1 TX kind=presence
+1792444245691065 M2 RX kind=presence seq=0 sent_us=1792444245687455 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444245691065 M3 RX kind=presence seq=0 sent_us=1792444245687455 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444245988852 M2 TX kind=presence
+1792444245989691 M1 RX kind=presence seq=0 sent_us=1792444245988631 from=M2 scope=Swarm(Round(0)) mac=ok origin=M2
+1792444245990016 M3 RX kind=presence seq=0 sent_us=1792444245988631 from=M1 scope=Swarm(Round(1)) mac=ok origin=M2
+1792444246290609 M3 TX kind=presence
+1792444246292180 M1 RX kind=presence seq=0 sent_us=1792444246290311 from=M3 scope=Swarm(Round(0)) mac=ok origin=M3
+1792444246292627 M2 RX kind=presence seq=0 sent_us=1792444246290311 from=M1 scope=Swarm(Round(1)) mac=ok origin=M3
+1792444248598520 M3 RX kind=ping seq=100 sent_us=1792444248595583 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248598517 M2 RX kind=ping seq=100 sent_us=1792444248595583 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248650484 M2 RX kind=ping seq=101 sent_us=1792444248648022 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248650484 M3 RX kind=ping seq=101 sent_us=1792444248648022 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248701929 M2 RX kind=ping seq=102 sent_us=1792444248700616 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248701997 M3 RX kind=ping seq=102 sent_us=1792444248700616 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248753708 M3 RX kind=ping seq=103 sent_us=1792444248752908 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248753708 M2 RX kind=ping seq=103 sent_us=1792444248752908 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248806912 M2 RX kind=ping seq=104 sent_us=1792444248806102 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248806926 M3 RX kind=ping seq=104 sent_us=1792444248806102 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248860321 M3 RX kind=ping seq=105 sent_us=1792444248859127 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248860311 M2 RX kind=ping seq=105 sent_us=1792444248859127 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248914739 M2 RX kind=ping seq=106 sent_us=1792444248912035 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248914740 M3 RX kind=ping seq=106 sent_us=1792444248912035 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248967440 M2 RX kind=ping seq=107 sent_us=1792444248966130 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444248967538 M3 RX kind=ping seq=107 sent_us=1792444248966130 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249021523 M2 RX kind=ping seq=108 sent_us=1792444249018993 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249021521 M3 RX kind=ping seq=108 sent_us=1792444249018993 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249073314 M2 RX kind=ping seq=109 sent_us=1792444249072183 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249073314 M3 RX kind=ping seq=109 sent_us=1792444249072183 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249125608 M2 RX kind=ping seq=110 sent_us=1792444249124831 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249125608 M3 RX kind=ping seq=110 sent_us=1792444249124831 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249177601 M2 RX kind=ping seq=111 sent_us=1792444249176866 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249177626 M3 RX kind=ping seq=111 sent_us=1792444249176866 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249230541 M3 RX kind=ping seq=112 sent_us=1792444249229624 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249230539 M2 RX kind=ping seq=112 sent_us=1792444249229624 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249284186 M2 RX kind=ping seq=113 sent_us=1792444249281759 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249284186 M3 RX kind=ping seq=113 sent_us=1792444249281759 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249337966 M3 RX kind=ping seq=114 sent_us=1792444249335116 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249337966 M2 RX kind=ping seq=114 sent_us=1792444249335116 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249389787 M2 RX kind=ping seq=115 sent_us=1792444249388382 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249389787 M3 RX kind=ping seq=115 sent_us=1792444249388382 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249441032 M3 RX kind=ping seq=116 sent_us=1792444249440272 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249441031 M2 RX kind=ping seq=116 sent_us=1792444249440272 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249493300 M3 RX kind=ping seq=117 sent_us=1792444249492609 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249493348 M2 RX kind=ping seq=117 sent_us=1792444249492609 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249545764 M2 RX kind=ping seq=118 sent_us=1792444249544910 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249545764 M3 RX kind=ping seq=118 sent_us=1792444249544910 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249598222 M3 RX kind=ping seq=119 sent_us=1792444249597391 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249598222 M2 RX kind=ping seq=119 sent_us=1792444249597391 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444249649416 M1 PING_DONE
+1792444251099172 O TX kind=forged seq=1000
+1792444251202555 O TX kind=forged seq=1001
+1792444251305708 O TX kind=forged seq=1002
+1792444251408258 O TX kind=forged seq=1003
+1792444251512324 O TX kind=forged seq=1004
+1792444251615122 O TX kind=forged seq=1005
+1792444251718331 O TX kind=forged seq=1006
+1792444251822235 O TX kind=forged seq=1007
+1792444251925653 O TX kind=forged seq=1008
+1792444252029858 O TX kind=forged seq=1009
+1792444252131793 O FORGE_DONE
+1792444254113358 M3r START
+1792444254113380 M3r SUBSCRIBE ok
+1792444254119257 M3r GATE_OK dir=out ms=1.276
+1792444254119538 M1 GATE_OK dir=in ms=1.011
+1792444254120380 M3r NEIGHBOR_UP subject=M1
+1792444255670308 M2 RX kind=ping seq=200 sent_us=1792444255667856 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444255670311 M3r RX kind=ping seq=200 sent_us=1792444255667856 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444255723087 M2 RX kind=ping seq=201 sent_us=1792444255719931 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444255723126 M3r RX kind=ping seq=201 sent_us=1792444255719931 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444255774595 M2 RX kind=ping seq=202 sent_us=1792444255772741 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444255774595 M3r RX kind=ping seq=202 sent_us=1792444255772741 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444255827717 M2 RX kind=ping seq=203 sent_us=1792444255825461 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444255827736 M3r RX kind=ping seq=203 sent_us=1792444255825461 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444255881389 M2 RX kind=ping seq=204 sent_us=1792444255878983 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444255881392 M3r RX kind=ping seq=204 sent_us=1792444255878983 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444255934641 M3r RX kind=ping seq=205 sent_us=1792444255931989 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444255934641 M2 RX kind=ping seq=205 sent_us=1792444255931989 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444255985661 M3r RX kind=ping seq=206 sent_us=1792444255984309 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444255985661 M2 RX kind=ping seq=206 sent_us=1792444255984309 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444256039998 M2 RX kind=ping seq=207 sent_us=1792444256036934 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444256039995 M3r RX kind=ping seq=207 sent_us=1792444256036934 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444256091181 M2 RX kind=ping seq=208 sent_us=1792444256088557 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444256091217 M3r RX kind=ping seq=208 sent_us=1792444256088557 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444256145039 M3r RX kind=ping seq=209 sent_us=1792444256142051 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444256145040 M2 RX kind=ping seq=209 sent_us=1792444256142051 from=M1 scope=Swarm(Round(0)) mac=ok origin=M1
+1792444256194991 M1 PING_DONE
+1792444257199084 M4 START
+1792444257199126 M4 SUBSCRIBE ok
+1792444260208243 M4 GATE_FAIL dir=out peer=29bb156f69 ms=3002.427 why=timeout
+1792444261200036 M4 TX kind=presence
