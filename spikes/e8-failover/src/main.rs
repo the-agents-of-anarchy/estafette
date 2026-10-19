@@ -89,7 +89,7 @@ impl ProtocolHandler for Echo {
 
 #[derive(Serialize, Deserialize)]
 enum Msg {
-    Announce { from: String, addr: EndpointAddr },
+    Announce { from: String, addr: EndpointAddr, n: u64 },
     Hb { from: String, seq: u64 },
 }
 
@@ -247,7 +247,7 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
                     }
                     Ok(Event::Received(m)) => match postcard::from_bytes::<Msg>(&m.content) {
                         Ok(Msg::Hb { from, seq }) => ev(&n, "RX", format!("hb from={from} seq={seq} via={}", id_name(&m.delivered_from))),
-                        Ok(Msg::Announce { from, addr }) => {
+                        Ok(Msg::Announce { from, addr, .. }) => {
                             ev(&n, "RX", format!("ann from={from} relays=[{}] via={}", urls_str(addr.relay_urls()), id_name(&m.delivered_from)));
                             if payload {
                                 lk.set_endpoint_info(addr);
@@ -284,7 +284,7 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
                     }
                 }
                 first = false;
-                if let Ok(b) = postcard::to_stdvec(&Msg::Announce { from: n.clone(), addr: e.addr() }) {
+                if let Ok(b) = postcard::to_stdvec(&Msg::Announce { from: n.clone(), addr: e.addr(), n: now_ms() as u64 }) {
                     let _ = tx.broadcast(Bytes::from(b)).await;
                 }
                 sleep(Duration::from_millis(300)).await;

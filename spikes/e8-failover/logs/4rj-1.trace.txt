@@ -1,0 +1,44 @@
+   -3903 ms  M2 dial ok tgt=M1 ok ms=5
+   -3901 ms  M2 dial ok tgt=M3 ok ms=7
+   -3756 ms  M2 ann from=M1 relays=[55803] via=B1
+   -3755 ms  M3 ann from=M1 relays=[55803] via=B2
+   -3689 ms  M3 dial ok tgt=M2 ok ms=5
+   -3687 ms  M3 dial ok tgt=M1 ok ms=6
+   -3453 ms  M2 ann from=M1 relays=[55803] via=B1
+   -3452 ms  M3 ann from=M1 relays=[55803] via=B2
+   -3051 ms  M1 dial ok tgt=M2 ok ms=5
+   -3049 ms  M1 dial ok tgt=M3 ok ms=7
+       0 ms  CTL KILL R1+B1 and R2+B2
+       2 ms  M1 STATUS relay=55803 connected=false err=-
+       2 ms  M3 STATUS relay=55804 connected=false err=-
+       2 ms  M2 STATUS relay=55804 connected=false err=-
+       2 ms  M3 STATUS relay=55804 connected=false err=Failed_to_connect_to_relay_server
+       2 ms  M2 STATUS relay=55804 connected=false err=Failed_to_connect_to_relay_server
+       2 ms  M1 STATUS relay=55803 connected=false err=Failed_to_connect_to_relay_server
+    3121 ms  M2 dial FAIL tgt=M3 fail ms=3002 err=timeout3s
+    3121 ms  M2 dial FAIL tgt=M1 fail ms=3002 err=timeout3s
+    3334 ms  M3 dial FAIL tgt=M2 fail ms=3001 err=timeout3s
+    3334 ms  M3 dial FAIL tgt=M1 fail ms=3001 err=timeout3s
+    3973 ms  M1 dial FAIL tgt=M2 fail ms=3001 err=timeout3s
+    3973 ms  M1 dial FAIL tgt=M3 fail ms=3001 err=timeout3s
+   10004 ms  M2 ND B1
+   10004 ms  M3 ND B2
+   10004 ms  M2 ND B2
+   10005 ms  M1 ND B1
+   10010 ms  M3 ND B1
+   10010 ms  M1 ND B2
+   20002 ms  CTL RESTART R1+B1 (R2+B2 stay dead)
+   20006 ms  R1 RELAY_UP 55803
+   29030 ms  M1 STATUS relay=55803 connected=true err=-
+   40596 ms  M3 ADDR relays=[55803]
+   40596 ms  M3 STATUS relay=55803 connected=false err=-
+   40596 ms  M3 STATUS relay=55803 connected=true err=-
+   40760 ms  M2 STATUS relay=55803 connected=false err=-
+   40760 ms  M2 ADDR relays=[55803]
+   40760 ms  M2 STATUS relay=55803 connected=true err=-
+   72403 ms  M3 dial ok tgt=M1 ok ms=6
+   73054 ms  M1 dial ok tgt=M3 ok ms=5
+   84459 ms  M3 dial FAIL tgt=M1 fail ms=3000 err=timeout3s
+   85002 ms  CTL FINAL M1 addr relays=[55803] | status relay=55803 connected=true err=-
+   85002 ms  CTL FINAL M2 addr relays=[55803] | status relay=55803 connected=true err=-
+   85002 ms  CTL FINAL M3 addr relays=[55803] | status relay=55803 connected=true err=-

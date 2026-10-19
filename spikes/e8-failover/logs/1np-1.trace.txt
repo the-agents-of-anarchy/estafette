@@ -1,0 +1,28 @@
+   -3789 ms  M3 ann from=M2 relays=[51037] via=M2
+   -3239 ms  M1 BOUND home_want=1 relays=[51036]
+   -3239 ms  M1 JOIN_START order=12
+   -3239 ms  M1 ONLINE ms_after_bind=0
+   -3239 ms  M1 STATUS relay=51036 connected=true err=-
+   -3239 ms  M1 ADDR relays=[51036]
+   -3233 ms  B1 NU M1
+   -3233 ms  M1 JOINED ms=6
+   -3230 ms  B2 NU M1
+   -3228 ms  M1 NU B2
+   -3225 ms  M1 NU M3
+   -3225 ms  M3 NU M1
+   -3143 ms  M3 ann from=M1 relays=[51036] via=B1
+   -3143 ms  M2 ann from=M1 relays=[51036] via=B1
+       0 ms  CTL KILL control="" (R1+B1 unless control)
+       1 ms  M1 STATUS relay=51036 connected=false err=-
+       1 ms  M1 STATUS relay=51036 connected=false err=Failed_to_connect_to_relay_server
+   10005 ms  M1 ND B1
+   10013 ms  M1 ND M3
+   10877 ms  M3 ND M1
+   10877 ms  M3 ND B1
+   10919 ms  M2 ND B1
+   14928 ms  B2 ND M1
+   24643 ms  M1 ND B2
+   38519 ms  M1 ADDR relays=[51037]
+   38519 ms  M1 STATUS relay=51037 connected=false err=-
+   38519 ms  M1 STATUS relay=51037 connected=true err=-
+   88001 ms  CTL FINAL final M1 addr relays=[51037] | M1 status relay=51037 connected=true err=-

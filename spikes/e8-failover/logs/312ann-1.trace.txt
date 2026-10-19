@@ -1,0 +1,115 @@
+   -4832 ms  R1 RELAY_UP 54024
+   -4831 ms  R2 RELAY_UP 54025
+   -4517 ms  M3 BOUND home_want=2 relays=[54025]
+   -4516 ms  M3 JOIN_START order=12
+   -4516 ms  M3 ADDR relays=[54025]
+   -4516 ms  M3 STATUS relay=54025 connected=true err=-
+   -4516 ms  M3 ONLINE ms_after_bind=0
+   -4508 ms  M3 JOINED ms=8
+   -4508 ms  B2 NU M3
+   -4508 ms  M3 dial FAIL tgt=M2 fail ms=0 err=No_addressing_information_available
+   -4508 ms  M3 dial FAIL tgt=M1 fail ms=0 err=No_addressing_information_available
+   -4506 ms  M3 NU B1
+   -4506 ms  B1 NU M3
+   -4303 ms  M2 BOUND home_want=2 relays=[54025]
+   -4302 ms  M2 JOIN_START order=12
+   -4302 ms  M2 ONLINE ms_after_bind=0
+   -4302 ms  M2 STATUS relay=54025 connected=true err=-
+   -4302 ms  M2 ADDR relays=[54025]
+   -4296 ms  B2 NU M2
+   -4295 ms  M2 JOINED ms=7
+   -4295 ms  M2 dial FAIL tgt=M1 fail ms=0 err=No_addressing_information_available
+   -4295 ms  M2 dial FAIL tgt=M3 fail ms=0 err=No_addressing_information_available
+   -4294 ms  B1 NU M2
+   -4294 ms  M3 ann from=M2 relays=[54025] via=B2
+   -4293 ms  M2 NU B1
+   -4204 ms  M2 ann from=M3 relays=[54025] via=B2
+   -4088 ms  M1 BOUND home_want=2 relays=[54025]
+   -4088 ms  M1 JOIN_START order=12
+   -4088 ms  M1 ONLINE ms_after_bind=0
+   -4088 ms  M1 STATUS relay=54025 connected=true err=-
+   -4088 ms  M1 ADDR relays=[54025]
+   -4081 ms  B2 NU M1
+   -4081 ms  M1 JOINED ms=6
+   -4081 ms  M1 dial FAIL tgt=M2 fail ms=0 err=No_addressing_information_available
+   -4081 ms  M1 dial FAIL tgt=M3 fail ms=0 err=No_addressing_information_available
+   -4080 ms  M3 ann from=M1 relays=[54025] via=B2
+   -4080 ms  M2 ann from=M1 relays=[54025] via=B2
+   -4079 ms  B1 NU M1
+   -4079 ms  M1 NU B1
+   -3992 ms  M3 ann from=M2 relays=[54025] via=B2
+   -3992 ms  M1 ann from=M2 relays=[54025] via=B2
+   -3902 ms  M1 ann from=M3 relays=[54025] via=B2
+   -3902 ms  M2 ann from=M3 relays=[54025] via=B2
+   -3778 ms  M3 ann from=M1 relays=[54025] via=B2
+   -3778 ms  M2 ann from=M1 relays=[54025] via=B2
+   -3690 ms  M3 ann from=M2 relays=[54025] via=B2
+   -3690 ms  M1 ann from=M2 relays=[54025] via=B2
+   -3500 ms  M3 dial ok tgt=M1 ok ms=5
+   -3500 ms  M3 dial ok tgt=M2 ok ms=6
+   -3477 ms  M2 ann from=M1 relays=[54025] via=B2
+   -3477 ms  M3 ann from=M1 relays=[54025] via=B2
+   -3288 ms  M2 dial ok tgt=M1 ok ms=5
+   -3287 ms  M2 dial ok tgt=M3 ok ms=7
+   -3074 ms  M1 dial ok tgt=M2 ok ms=5
+   -3073 ms  M1 dial ok tgt=M3 ok ms=6
+    -598 ms  M1 ann from=M3 relays=[54025] via=B2
+    -598 ms  M2 ann from=M3 relays=[54025] via=B2
+    -387 ms  M1 ann from=M2 relays=[54025] via=B2
+    -387 ms  M3 ann from=M2 relays=[54025] via=B2
+    -172 ms  M3 ann from=M1 relays=[54025] via=B2
+    -172 ms  M2 ann from=M1 relays=[54025] via=B2
+       0 ms  CTL KILL R1+B1
+    2705 ms  M2 ann from=M3 relays=[54025] via=B2
+    2705 ms  M1 ann from=M3 relays=[54025] via=B2
+    2917 ms  M1 ann from=M2 relays=[54025] via=B2
+    2917 ms  M3 ann from=M2 relays=[54025] via=B2
+    3015 ms  M4 BOUND home_want=0 relays=[]
+    3016 ms  M4 JOIN_START order=12
+    3016 ms  M4 STATUS 
+    3016 ms  M4 ADDR relays=[]
+    3025 ms  M4 JOINED ms=9
+    3025 ms  B2 NU M4
+    3025 ms  M4 dial FAIL tgt=M3 fail ms=0 err=No_addressing_information_available
+    3025 ms  M4 dial FAIL tgt=M2 fail ms=0 err=No_addressing_information_available
+    3025 ms  M4 dial FAIL tgt=M1 fail ms=0 err=No_addressing_information_available
+    3026 ms  M1 ann from=M4 relays=[] via=B2
+    3026 ms  M3 ann from=M4 relays=[] via=B2
+    3026 ms  M2 ann from=M4 relays=[] via=B2
+    3133 ms  M3 ann from=M1 relays=[54025] via=B2
+    3133 ms  M4 ann from=M1 relays=[54025] via=B2
+    3133 ms  M2 ann from=M1 relays=[54025] via=B2
+    3327 ms  M3 ann from=M4 relays=[] via=B2
+    3327 ms  M2 ann from=M4 relays=[] via=B2
+    3327 ms  M1 ann from=M4 relays=[] via=B2
+    3419 ms  M4 ONLINE ms_after_bind=404
+    3419 ms  M4 STATUS relay=54025 connected=false err=-
+    3419 ms  M4 ADDR relays=[54025]
+    3419 ms  M4 STATUS relay=54025 connected=true err=-
+    3629 ms  M1 ann from=M4 relays=[54025] via=B2
+    3629 ms  M3 ann from=M4 relays=[54025] via=B2
+    3629 ms  M2 ann from=M4 relays=[54025] via=B2
+    3932 ms  M1 ann from=M4 relays=[54025] via=B2
+    3932 ms  M2 ann from=M4 relays=[54025] via=B2
+    3932 ms  M3 ann from=M4 relays=[54025] via=B2
+    4031 ms  M4 dial ok tgt=M1 ok ms=5
+    4234 ms  M1 ann from=M4 relays=[54025] via=B2
+    4234 ms  M2 ann from=M4 relays=[54025] via=B2
+    4234 ms  M3 ann from=M4 relays=[54025] via=B2
+    4536 ms  M1 ann from=M4 relays=[54025] via=B2
+    4536 ms  M2 ann from=M4 relays=[54025] via=B2
+    4536 ms  M3 ann from=M4 relays=[54025] via=B2
+    6009 ms  M4 ann from=M3 relays=[54025] via=B2
+    6009 ms  M1 ann from=M3 relays=[54025] via=B2
+    6009 ms  M2 ann from=M3 relays=[54025] via=B2
+    6036 ms  M4 dial ok tgt=M3 ok ms=5
+    6221 ms  M1 ann from=M2 relays=[54025] via=B2
+    6221 ms  M4 ann from=M2 relays=[54025] via=B2
+    6221 ms  M3 ann from=M2 relays=[54025] via=B2
+    6437 ms  M2 ann from=M1 relays=[54025] via=B2
+    6437 ms  M3 ann from=M1 relays=[54025] via=B2
+    6437 ms  M4 ann from=M1 relays=[54025] via=B2
+    7038 ms  M4 dial ok tgt=M2 ok ms=5
+    7838 ms  M2 ann from=M4 relays=[54025] via=B2
+    7838 ms  M3 ann from=M4 relays=[54025] via=B2
+    7838 ms  M1 ann from=M4 relays=[54025] via=B2

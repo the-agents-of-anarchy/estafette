@@ -1,0 +1,12 @@
+   -3499 ms  M1 dial ok tgt=M2 ok ms=5
+   -3497 ms  M1 dial ok tgt=M3 ok ms=7
+   -3285 ms  M3 dial ok tgt=M2 ok ms=5
+   -3283 ms  M3 dial ok tgt=M1 ok ms=6
+   -3073 ms  M2 dial ok tgt=M3 ok ms=5
+   -3071 ms  M2 dial ok tgt=M1 ok ms=6
+       0 ms  CTL KILL control="m1" (R1+B1 unless control)
+    3739 ms  M3 dial FAIL tgt=M1 fail ms=3002 err=timeout3s
+    3949 ms  M2 dial FAIL tgt=M1 fail ms=3001 err=timeout3s
+   10720 ms  B2 ND M1
+   10806 ms  B1 ND M1
+   88002 ms  CTL FINAL final M1 addr relays=[50201] | M1 status relay=50201 connected=true err=-

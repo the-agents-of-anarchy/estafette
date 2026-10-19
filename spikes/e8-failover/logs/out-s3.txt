@@ -1,0 +1,120 @@
+RUN 312-1 ok
+  M4 dialable by id: all three: NA
+  M4 first HB from M1: 903
+  M4 first HB from M2: 904
+  M4 first HB from M3: 904
+  M4 first announce from M1: NA
+  M4 first announce from M2: NA
+  M4 first announce from M3: NA
+  M4 first fresh dial ok to M1: NA
+  M4 first fresh dial ok to M2: NA
+  M4 first fresh dial ok to M3: NA
+  M4 first fresh dial ok to any member: NA
+  M4 joined (ms from join start): 9
+  M4 online (ms from bind): 404
+  M4 presence from all three: 904
+RUN 312-2 ok
+  M4 dialable by id: all three: NA
+  M4 first HB from M1: 570
+  M4 first HB from M2: 1006
+  M4 first HB from M3: 915
+  M4 first announce from M1: NA
+  M4 first announce from M2: NA
+  M4 first announce from M3: NA
+  M4 first fresh dial ok to M1: NA
+  M4 first fresh dial ok to M2: NA
+  M4 first fresh dial ok to M3: NA
+  M4 first fresh dial ok to any member: NA
+  M4 joined (ms from join start): 9
+  M4 online (ms from bind): 405
+  M4 presence from all three: 1006
+RUN 312-3 ok
+  M4 dialable by id: all three: NA
+  M4 first HB from M1: 920
+  M4 first HB from M2: 704
+  M4 first HB from M3: 578
+  M4 first announce from M1: NA
+  M4 first announce from M2: NA
+  M4 first announce from M3: NA
+  M4 first fresh dial ok to M1: NA
+  M4 first fresh dial ok to M2: NA
+  M4 first fresh dial ok to M3: NA
+  M4 first fresh dial ok to any member: NA
+  M4 joined (ms from join start): 9
+  M4 online (ms from bind): 408
+  M4 presence from all three: 920
+SUMMARY scn=3 variant=12 runs=3
+  M4 dialable by id: all three: none (3 runs NA)
+  M4 first HB from M1: min 570 median 903 max 920 (n_ok 3/3)
+  M4 first HB from M2: min 704 median 904 max 1006 (n_ok 3/3)
+  M4 first HB from M3: min 578 median 904 max 915 (n_ok 3/3)
+  M4 first announce from M1: none (3 runs NA)
+  M4 first announce from M2: none (3 runs NA)
+  M4 first announce from M3: none (3 runs NA)
+  M4 first fresh dial ok to M1: none (3 runs NA)
+  M4 first fresh dial ok to M2: none (3 runs NA)
+  M4 first fresh dial ok to M3: none (3 runs NA)
+  M4 first fresh dial ok to any member: none (3 runs NA)
+  M4 joined (ms from join start): min 9 median 9 max 9 (n_ok 3/3)
+  M4 online (ms from bind): min 404 median 405 max 408 (n_ok 3/3)
+  M4 presence from all three: min 904 median 920 max 1006 (n_ok 3/3)
+RUN 321-1 ok
+  M4 dialable by id: all three: NA
+  M4 first HB from M1: 69
+  M4 first HB from M2: 69
+  M4 first HB from M3: 1042
+  M4 first announce from M1: NA
+  M4 first announce from M2: NA
+  M4 first announce from M3: NA
+  M4 first fresh dial ok to M1: NA
+  M4 first fresh dial ok to M2: NA
+  M4 first fresh dial ok to M3: NA
+  M4 first fresh dial ok to any member: NA
+  M4 joined (ms from join start): 8
+  M4 online (ms from bind): 405
+  M4 presence from all three: 1042
+RUN 321-2 ok
+  M4 dialable by id: all three: NA
+  M4 first HB from M1: 786
+  M4 first HB from M2: 907
+  M4 first HB from M3: 785
+  M4 first announce from M1: NA
+  M4 first announce from M2: NA
+  M4 first announce from M3: NA
+  M4 first fresh dial ok to M1: NA
+  M4 first fresh dial ok to M2: NA
+  M4 first fresh dial ok to M3: NA
+  M4 first fresh dial ok to any member: NA
+  M4 joined (ms from join start): 9
+  M4 online (ms from bind): 406
+  M4 presence from all three: 907
+RUN 321-3 ok
+  M4 dialable by id: all three: NA
+  M4 first HB from M1: 779
+  M4 first HB from M2: 912
+  M4 first HB from M3: 779
+  M4 first announce from M1: NA
+  M4 first announce from M2: NA
+  M4 first announce from M3: NA
+  M4 first fresh dial ok to M1: NA
+  M4 first fresh dial ok to M2: NA
+  M4 first fresh dial ok to M3: NA
+  M4 first fresh dial ok to any member: NA
+  M4 joined (ms from join start): 9
+  M4 online (ms from bind): 406
+  M4 presence from all three: 912
+SUMMARY scn=3 variant=21 runs=3
+  M4 dialable by id: all three: none (3 runs NA)
+  M4 first HB from M1: min 69 median 779 max 786 (n_ok 3/3)
+  M4 first HB from M2: min 69 median 907 max 912 (n_ok 3/3)
+  M4 first HB from M3: min 779 median 785 max 1042 (n_ok 3/3)
+  M4 first announce from M1: none (3 runs NA)
+  M4 first announce from M2: none (3 runs NA)
+  M4 first announce from M3: none (3 runs NA)
+  M4 first fresh dial ok to M1: none (3 runs NA)
+  M4 first fresh dial ok to M2: none (3 runs NA)
+  M4 first fresh dial ok to M3: none (3 runs NA)
+  M4 first fresh dial ok to any member: none (3 runs NA)
+  M4 joined (ms from join start): min 8 median 9 max 9 (n_ok 3/3)
+  M4 online (ms from bind): min 405 median 406 max 406 (n_ok 3/3)
+  M4 presence from all three: min 907 median 912 max 1042 (n_ok 3/3)

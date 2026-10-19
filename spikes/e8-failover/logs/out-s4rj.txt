@@ -1,0 +1,76 @@
+RUN 4rj-1 ok
+  M1 NeighborDown count: 2
+  M1 first NeighborDown: 10005
+  M1 first failed dial: 3973
+  M1 first status disconnected: 2
+  M1 status connected (after restart): 9024
+  M2 NeighborDown count: 2
+  M2 first NeighborDown: 10004
+  M2 first failed dial: 3121
+  M2 first status disconnected: 2
+  M2 status connected (after restart): 20754
+  M3 NeighborDown count: 2
+  M3 first NeighborDown: 10004
+  M3 first failed dial: 3334
+  M3 first status disconnected: 2
+  M3 status connected (after restart): 20590
+  all 6 HB pairs flowing (after restart): NA
+  all 6 fresh dials ok (after restart): NA
+  restart at: 20006
+RUN 4rj-2 ok
+  M1 NeighborDown count: 2
+  M1 first NeighborDown: 10004
+  M1 first failed dial: 3957
+  M1 first status disconnected: 1
+  M1 status connected (after restart): 11085
+  M2 NeighborDown count: 2
+  M2 first NeighborDown: 10004
+  M2 first failed dial: 3532
+  M2 first status disconnected: 1
+  M2 status connected (after restart): 19661
+  M3 NeighborDown count: 2
+  M3 first NeighborDown: 10004
+  M3 first failed dial: 3319
+  M3 first status disconnected: 1
+  M3 status connected (after restart): 18344
+  all 6 HB pairs flowing (after restart): NA
+  all 6 fresh dials ok (after restart): NA
+  restart at: 20007
+RUN 4rj-3 ok
+  M1 NeighborDown count: 2
+  M1 first NeighborDown: 10004
+  M1 first failed dial: 3769
+  M1 first status disconnected: 1
+  M1 status connected (after restart): 7463
+  M2 NeighborDown count: 2
+  M2 first NeighborDown: 10003
+  M2 first failed dial: 3978
+  M2 first status disconnected: 1
+  M2 status connected (after restart): 24272
+  M3 NeighborDown count: 2
+  M3 first NeighborDown: 10004
+  M3 first failed dial: 3976
+  M3 first status disconnected: 1
+  M3 status connected (after restart): 24272
+  all 6 HB pairs flowing (after restart): NA
+  all 6 fresh dials ok (after restart): NA
+  restart at: 20011
+SUMMARY scn=4 variant= runs=3
+  M1 NeighborDown count: min 2 median 2 max 2 (n_ok 3/3)
+  M1 first NeighborDown: min 10004 median 10004 max 10005 (n_ok 3/3)
+  M1 first failed dial: min 3769 median 3957 max 3973 (n_ok 3/3)
+  M1 first status disconnected: min 1 median 1 max 2 (n_ok 3/3)
+  M1 status connected (after restart): min 7463 median 9024 max 11085 (n_ok 3/3)
+  M2 NeighborDown count: min 2 median 2 max 2 (n_ok 3/3)
+  M2 first NeighborDown: min 10003 median 10004 max 10004 (n_ok 3/3)
+  M2 first failed dial: min 3121 median 3532 max 3978 (n_ok 3/3)
+  M2 first status disconnected: min 1 median 1 max 2 (n_ok 3/3)
+  M2 status connected (after restart): min 19661 median 20754 max 24272 (n_ok 3/3)
+  M3 NeighborDown count: min 2 median 2 max 2 (n_ok 3/3)
+  M3 first NeighborDown: min 10004 median 10004 max 10004 (n_ok 3/3)
+  M3 first failed dial: min 3319 median 3334 max 3976 (n_ok 3/3)
+  M3 first status disconnected: min 1 median 1 max 2 (n_ok 3/3)
+  M3 status connected (after restart): min 18344 median 20590 max 24272 (n_ok 3/3)
+  all 6 HB pairs flowing (after restart): none (3 runs NA)
+  all 6 fresh dials ok (after restart): none (3 runs NA)
+  restart at: min 20006 median 20007 max 20011 (n_ok 3/3)

@@ -1,0 +1,31 @@
+   -3301 ms  M3 dial ok tgt=M2 ok ms=6
+   -3301 ms  M3 dial ok tgt=M1 ok ms=6
+   -3301 ms  M2 dial ok tgt=M3 ok ms=5
+   -3300 ms  M2 dial ok tgt=M1 ok ms=6
+   -3091 ms  M1 dial ok tgt=M2 ok ms=5
+   -3090 ms  M1 dial ok tgt=M3 ok ms=6
+       0 ms  CTL KILL control="" (R1+B1 unless control)
+       1 ms  M1 STATUS relay=51602 connected=false err=-
+       1 ms  M1 STATUS relay=51602 connected=false err=Failed_to_connect_to_relay_server
+   10003 ms  M1 ND B1
+   10712 ms  M2 ND B1
+   10712 ms  M3 ND B1
+   10982 ms  M1 dial FAIL tgt=M3 fail ms=3001 err=timeout3s
+   10982 ms  M1 dial FAIL tgt=M2 fail ms=3001 err=timeout3s
+   11776 ms  M2 dial FAIL tgt=M1 fail ms=3001 err=timeout3s
+   11777 ms  M3 dial FAIL tgt=M1 fail ms=3001 err=timeout3s
+   17932 ms  B2 ND M1
+   20004 ms  CTL RESTART R1+B1
+   20008 ms  R1 RELAY_UP 51602
+   27835 ms  M1 ND B2
+   31908 ms  M3 dial FAIL tgt=M2 fail ms=3002 err=timeout3s
+   31908 ms  M2 dial FAIL tgt=M3 fail ms=3002 err=timeout3s
+   33233 ms  M1 STATUS relay=51602 connected=true err=-
+   33256 ms  M1 dial ok tgt=M3 ok ms=1248
+   33840 ms  M3 dial ok tgt=M1 ok ms=1037
+   34036 ms  M3 HB from=M2 resumed after 5267 ms gap
+   34049 ms  M2 dial ok tgt=M3 ok ms=1139
+   34059 ms  M2 dial ok tgt=M1 ok ms=1257
+   34109 ms  M3 dial ok tgt=M2 ok ms=1199
+   34250 ms  M1 dial ok tgt=M2 ok ms=2242
+   88002 ms  CTL FINAL final M1 addr relays=[51602] | M1 status relay=51602 connected=true err=-
