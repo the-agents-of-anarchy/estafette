@@ -1,5 +1,6 @@
 [workspace]
 members = ["core"]
+exclude = ["spikes"]
 resolver = "3"
 
 [workspace.lints.clippy]
