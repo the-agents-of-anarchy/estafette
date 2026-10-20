@@ -217,6 +217,22 @@ def runs_table(logs):
         print(f"| {name} | {sec(m['rehome'])} | {sec(m['m23_gap'])} | {sec(m['m23_resume'])} | {m['m1_stalled_pairs']}/4 | {m['m1_recovered_pairs']}/{m['m1_stalled_pairs']} | {sec(m['m1_resume_first'])} | {dial} | {nus or '-'} |")
 
 
+def onsets(logs):
+    """Per stalled run: M2-M3 stall onset (ms after kill), by variant."""
+    out = {"a": [], "b": []}
+    for p in sorted(glob.glob(os.path.join(logs, "raw", "*.raw.log*"))):
+        name = os.path.basename(p).split(".raw.log")[0]
+        mo = re.match(r"^([ab])-(1)(np|npw|w)?-(\d+)$", name)
+        if not mo:
+            continue
+        m = analyze(p, 180000 if mo.group(3) in ("npw", "w") else 88000)
+        if m["m23_stalled"]:
+            out[mo.group(1)].append((m["m23_onset"], name))
+    for v, rows in out.items():
+        rows.sort()
+        print(f"variant {v}: {len(rows)} stalled runs; onset < 10 s in {sum(o < 10000 for o, _ in rows)}; " + ", ".join(f"{n}={o / 1000:.1f}" for o, n in rows))
+
+
 def gaps(logs):
     """Distribution of the per-pair longest heartbeat gap over every run: shows the gap between healthy and stalled."""
     vals = []
@@ -233,6 +249,9 @@ def gaps(logs):
 
 
 def main():
+    if sys.argv[1] == "--onsets":
+        onsets(sys.argv[2])
+        return
     if sys.argv[1] == "--gaps":
         gaps(sys.argv[2])
         return

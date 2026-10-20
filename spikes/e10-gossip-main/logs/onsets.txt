@@ -1,0 +1,2 @@
+variant a: 10 stalled runs; onset < 10 s in 8; a-1w-2=3.7, a-1np-4=3.9, a-1np-1=4.8, a-1np-3=4.9, a-1-1=5.5, a-1-3=8.9, a-1npw-1=9.1, a-1-2=9.9, a-1np-6=12.9, a-1w-1=26.0
+variant b: 12 stalled runs; onset < 10 s in 12; b-1-2=2.5, b-1w-2=2.7, b-1npw-2=2.7, b-1-1=2.9, b-1np-6=2.9, b-1-3=3.5, b-1np-2=3.9, b-1npw-1=3.9, b-1np-1=3.9, b-1np-4=3.9, b-1w-1=6.9, b-1np-5=7.9
