@@ -1,0 +1,34 @@
+   -3992 ms  M1 ann from=M3 relays=[60988] via=B2
+   -3991 ms  M2 ann from=M3 relays=[60988] via=M1
+   -3907 ms  M2 ann from=M1 relays=[60987] via=M1
+   -3907 ms  M1 ann from=M2 relays=[60988] via=M2
+   -3907 ms  M3 ann from=M1 relays=[60987] via=B2
+   -3906 ms  M3 ann from=M2 relays=[60988] via=B2
+   -3779 ms  M1 ann from=M3 relays=[60988] via=B2
+   -3779 ms  M2 ann from=M3 relays=[60988] via=M1
+   -3504 ms  M1 dial ok tgt=M3 ok ms=5
+   -3503 ms  M2 dial ok tgt=M3 ok ms=6
+   -3503 ms  M1 dial ok tgt=M2 ok ms=6
+   -3499 ms  M2 dial ok tgt=M1 ok ms=3
+   -3478 ms  M1 ann from=M3 relays=[60988] via=B2
+   -3478 ms  M2 ann from=M3 relays=[60988] via=M1
+   -3071 ms  M3 dial ok tgt=M2 ok ms=10
+   -3070 ms  M3 dial ok tgt=M1 ok ms=11
+       0 ms  CTL KILL control="b1" (R1+B1 unless control)
+   10499 ms  M1 ND B1
+   10504 ms  M3 NU M1
+   10504 ms  M1 NU M3
+   10507 ms  M2 ND B1
+   10507 ms  M3 ND B1
+   38923 ms  M3 STATUS relay=60987 connected=false err=-
+   38923 ms  M3 ADDR relays=[60987]
+   38923 ms  M3 STATUS relay=60987 connected=true err=-
+   38924 ms  M1 ann from=M3 relays=[60987] via=M3
+   38924 ms  M2 ann from=M3 relays=[60987] via=M1
+   39229 ms  M1 ann from=M3 relays=[60987] via=M3
+   39231 ms  M2 ann from=M3 relays=[60987] via=M1
+   39527 ms  M1 ann from=M3 relays=[60987] via=M3
+   39527 ms  M2 ann from=M3 relays=[60987] via=M1
+   55919 ms  M2 NU M3
+   55919 ms  M3 NU M2
+   88003 ms  CTL FINAL final M1 addr relays=[60987] | M1 status relay=60987 connected=true err=-

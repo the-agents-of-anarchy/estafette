@@ -1,0 +1,62 @@
+   -3888 ms  M3 ann from=M2 relays=[59358] via=B2
+   -3887 ms  M1 ann from=M2 relays=[59358] via=B1
+   -3758 ms  M3 ann from=M1 relays=[59357] via=B1
+   -3757 ms  M2 ann from=M1 relays=[59357] via=B2
+   -3700 ms  M3 dial ok tgt=M2 ok ms=5
+   -3699 ms  M3 dial ok tgt=M1 ok ms=6
+   -3562 ms  M2 NU M3
+   -3562 ms  M3 NU M2
+   -3487 ms  M2 dial ok tgt=M3 ok ms=5
+   -3486 ms  M2 dial ok tgt=M1 ok ms=6
+   -3457 ms  M3 ann from=M1 relays=[59357] via=B1
+   -3456 ms  M2 ann from=M1 relays=[59357] via=M3
+   -3278 ms  M1 NU M2
+   -3277 ms  M2 NU M1
+   -3049 ms  M1 dial ok tgt=M2 ok ms=11
+   -3048 ms  M1 dial ok tgt=M3 ok ms=11
+   -1990 ms  M1 NU M3
+   -1989 ms  M3 NU M1
+   -1483 ms  B1 NU B2
+   -1483 ms  B2 NU B1
+       0 ms  CTL KILL control="" (R1+B1 unless control)
+       1 ms  M1 STATUS relay=59357 connected=false err=-
+       1 ms  M1 STATUS relay=59357 connected=false err=Failed_to_connect_to_relay_server
+      91 ms  M2 ann from=M1 relays=[59357] via=B2
+     180 ms  M3 ann from=M1 relays=[59357] via=M2
+     307 ms  M2 ann from=M1 relays=[59357] via=B2
+     307 ms  M3 ann from=M1 relays=[59357] via=M2
+     606 ms  M2 ann from=M1 relays=[59357] via=B2
+     606 ms  M3 ann from=M1 relays=[59357] via=M2
+     907 ms  M2 ann from=M1 relays=[59357] via=B2
+     908 ms  M3 ann from=M1 relays=[59357] via=M2
+    1212 ms  M2 ann from=M1 relays=[59357] via=B2
+    1213 ms  M3 ann from=M1 relays=[59357] via=M2
+    1512 ms  M2 ann from=M1 relays=[59357] via=B2
+    1512 ms  M3 ann from=M1 relays=[59357] via=M2
+    1814 ms  M2 ann from=M1 relays=[59357] via=B2
+    1814 ms  M3 ann from=M1 relays=[59357] via=M2
+    3323 ms  M3 dial FAIL tgt=M1 fail ms=3001 err=timeout3s
+    3534 ms  M2 dial FAIL tgt=M1 fail ms=3002 err=timeout3s
+    3980 ms  M1 dial FAIL tgt=M3 fail ms=3001 err=timeout3s
+    3980 ms  M1 dial FAIL tgt=M2 fail ms=3000 err=timeout3s
+    6378 ms  M3 dial FAIL tgt=M2 fail ms=3001 err=timeout3s
+    6556 ms  M2 dial FAIL tgt=M3 fail ms=3001 err=timeout3s
+   10006 ms  M1 ND M3
+   10008 ms  M1 ND M2
+   10009 ms  M1 ND B1
+   10095 ms  M2 ND M1
+   10098 ms  M2 ND B1
+   10099 ms  B2 ND B1
+   10182 ms  M3 ND M1
+   10182 ms  M3 ND B1
+   12311 ms  B2 ND M1
+   13310 ms  M3 ND M2
+   13402 ms  B2 ND M2
+   15470 ms  M2 ND M3
+   18933 ms  M1 ND B2
+   20316 ms  B2 ND M3
+   23549 ms  M2 ND B2
+   30346 ms  M3 ND B2
+   43506 ms  M1 STATUS relay=59358 connected=true err=-
+   43506 ms  M1 ADDR relays=[59358]
+   88004 ms  CTL FINAL final M1 addr relays=[59358] | M1 status relay=59358 connected=true err=-

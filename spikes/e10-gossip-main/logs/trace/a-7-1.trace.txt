@@ -1,0 +1,23 @@
+   -3965 ms  M2 ann from=M1 relays=[60814] via=B1
+   -3965 ms  M3 ann from=M1 relays=[60814] via=B1
+   -3892 ms  M3 dial ok tgt=M2 ok ms=9
+   -3891 ms  M3 dial ok tgt=M1 ok ms=10
+   -3752 ms  M1 ann from=M2 relays=[60815] via=B1
+   -3752 ms  M3 ann from=M2 relays=[60815] via=B1
+   -3664 ms  M3 ann from=M1 relays=[60814] via=B1
+   -3664 ms  M2 ann from=M1 relays=[60814] via=B1
+   -3452 ms  M1 ann from=M2 relays=[60815] via=B1
+   -3452 ms  M3 ann from=M2 relays=[60815] via=B1
+   -3261 ms  M1 dial ok tgt=M3 ok ms=5
+   -3259 ms  M1 dial ok tgt=M2 ok ms=7
+   -3049 ms  M2 dial ok tgt=M3 ok ms=5
+   -3048 ms  M2 dial ok tgt=M1 ok ms=6
+       0 ms  CTL KILL control="b1" (R1+B1 unless control)
+   10111 ms  M3 ND B1
+   10200 ms  M2 ND B1
+   10289 ms  M1 ND B1
+   55086 ms  M1 NU M3
+   55086 ms  M3 NU M1
+   55734 ms  M2 NU M1
+   55734 ms  M1 NU M2
+   88012 ms  CTL FINAL final M1 addr relays=[60814] | M1 status relay=60814 connected=true err=-

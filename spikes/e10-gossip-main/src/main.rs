@@ -1,7 +1,8 @@
 //! E10 relay death vs iroh-gossip main. Harness copied from E8 (spike/e8-failover, commit 619b57f); the dependency under test
 //! is chosen by cargo feature: `a` = iroh-gossip =0.101.0 (as E8), `b` = iroh-gossip git main at the pinned rev.
 //! Changes against E8: gossip alias, split relay/bootstrap modes plus scenario 7 (kill B1 only, R1 alive), output dir
-//! `/tmp/e10`, variant in the run tag, `E10_RUN0` run-number offset, and extra measures (HB after re-home, last HB).
+//! `/tmp/e10`, variant in the run tag, `E10_RUN0` run-number offset, extra measures (HB after re-home, last HB), and
+//! `E10_WINDOW_MS` (default 88000, the E8 window; the supplementary long-window runs set 180000).
 //! Modes: `relay <n> <port>` (relay + bootstrap), `relayonly <n> <port>`, `boot <n> <port>`,
 //! `member <name> <k> <home> <p1> <p2> <order>`, `ctl <scn> [runs]`.
 //! Children print `EV <unix_ms> <who> <kind> <rest>` lines; `ctl` collects, kills, and measures.
@@ -586,7 +587,7 @@ async fn scenario_12(log: &Log, restart: bool, ctrl: &str) -> Res<(Meas, u128)> 
         _ => kill(&mut st.r1).await,
     };
     cev(log, t0, "KILL", format!("control={ctrl:?} (R1+B1 unless control)"));
-    let window = 88_000u128;
+    let window = std::env::var("E10_WINDOW_MS").ok().and_then(|v| v.parse::<u128>().ok()).unwrap_or(88_000u128);
     let mut t_restart = None;
     if restart {
         sleep(Duration::from_secs(20)).await;

@@ -1,0 +1,86 @@
+CELL variant=a scn=1 tag= runs=1 run0=1 start=2026-10-20T16:17:08Z
+LOAD before: 19:17  up 11 days, 5 hrs, 2 users, load averages: 8.45 5.88 4.91
+RUN a-1-1 ok elapsed_s=93
+  M1 HB from M2 resumed: NA
+  M1 HB from M3 resumed: NA
+  M1 NeighborDown count: 2
+  M1 addr lists only R2: 41367
+  M1 first HB from M2 after M1 re-home: NA
+  M1 first HB from M3 after M1 re-home: NA
+  M1 first NeighborDown: 10003
+  M1 last HB from M2: 5537
+  M1 last HB from M3: 9973
+  M1 max HB gap from M2: 82463
+  M1 max HB gap from M3: 78027
+  M1 status connected on R2: 41367
+  M2 HB from M1 resumed: NA
+  M2 HB from M3 resumed: NA
+  M2 NeighborDown count: 2
+  M2 first HB from M1 after M1 re-home: NA
+  M2 first HB from M3 after M1 re-home: NA
+  M2 first NeighborDown: 10013
+  M2 first failed dial to M1: 9579
+  M2 first failed dial to M3: 9579
+  M2 fresh dial to M1 ok again: NA
+  M2 fresh dial to M3 ok again: NA
+  M2 last HB from M1: 9121
+  M2 last HB from M3: 9973
+  M2 max HB gap from M1: 78879
+  M2 max HB gap from M3 (both homed R2): 78027
+  M3 HB from M1 resumed: NA
+  M3 HB from M2 resumed: NA
+  M3 NeighborDown count: 2
+  M3 first HB from M1 after M1 re-home: NA
+  M3 first HB from M2 after M1 re-home: NA
+  M3 first NeighborDown: 10011
+  M3 first failed dial to M1: 13032
+  M3 first failed dial to M2: 9003
+  M3 fresh dial to M1 ok again: 78101
+  M3 fresh dial to M2 ok again: NA
+  M3 last HB from M1: 9121
+  M3 last HB from M2: 5537
+  M3 max HB gap from M1: 78879
+  M3 max HB gap from M2 (both homed R2): 82463
+SUMMARY gossip=a scn=1 variant= runs=1 run0=1
+  M1 HB from M2 resumed: none (1 runs NA)
+  M1 HB from M3 resumed: none (1 runs NA)
+  M1 NeighborDown count: min 2 median 2 max 2 (n_ok 1/1)
+  M1 addr lists only R2: min 41367 median 41367 max 41367 (n_ok 1/1)
+  M1 first HB from M2 after M1 re-home: none (1 runs NA)
+  M1 first HB from M3 after M1 re-home: none (1 runs NA)
+  M1 first NeighborDown: min 10003 median 10003 max 10003 (n_ok 1/1)
+  M1 last HB from M2: min 5537 median 5537 max 5537 (n_ok 1/1)
+  M1 last HB from M3: min 9973 median 9973 max 9973 (n_ok 1/1)
+  M1 max HB gap from M2: min 82463 median 82463 max 82463 (n_ok 1/1)
+  M1 max HB gap from M3: min 78027 median 78027 max 78027 (n_ok 1/1)
+  M1 status connected on R2: min 41367 median 41367 max 41367 (n_ok 1/1)
+  M2 HB from M1 resumed: none (1 runs NA)
+  M2 HB from M3 resumed: none (1 runs NA)
+  M2 NeighborDown count: min 2 median 2 max 2 (n_ok 1/1)
+  M2 first HB from M1 after M1 re-home: none (1 runs NA)
+  M2 first HB from M3 after M1 re-home: none (1 runs NA)
+  M2 first NeighborDown: min 10013 median 10013 max 10013 (n_ok 1/1)
+  M2 first failed dial to M1: min 9579 median 9579 max 9579 (n_ok 1/1)
+  M2 first failed dial to M3: min 9579 median 9579 max 9579 (n_ok 1/1)
+  M2 fresh dial to M1 ok again: none (1 runs NA)
+  M2 fresh dial to M3 ok again: none (1 runs NA)
+  M2 last HB from M1: min 9121 median 9121 max 9121 (n_ok 1/1)
+  M2 last HB from M3: min 9973 median 9973 max 9973 (n_ok 1/1)
+  M2 max HB gap from M1: min 78879 median 78879 max 78879 (n_ok 1/1)
+  M2 max HB gap from M3 (both homed R2): min 78027 median 78027 max 78027 (n_ok 1/1)
+  M3 HB from M1 resumed: none (1 runs NA)
+  M3 HB from M2 resumed: none (1 runs NA)
+  M3 NeighborDown count: min 2 median 2 max 2 (n_ok 1/1)
+  M3 first HB from M1 after M1 re-home: none (1 runs NA)
+  M3 first HB from M2 after M1 re-home: none (1 runs NA)
+  M3 first NeighborDown: min 10011 median 10011 max 10011 (n_ok 1/1)
+  M3 first failed dial to M1: min 13032 median 13032 max 13032 (n_ok 1/1)
+  M3 first failed dial to M2: min 9003 median 9003 max 9003 (n_ok 1/1)
+  M3 fresh dial to M1 ok again: min 78101 median 78101 max 78101 (n_ok 1/1)
+  M3 fresh dial to M2 ok again: none (1 runs NA)
+  M3 last HB from M1: min 9121 median 9121 max 9121 (n_ok 1/1)
+  M3 last HB from M2: min 5537 median 5537 max 5537 (n_ok 1/1)
+  M3 max HB gap from M1: min 78879 median 78879 max 78879 (n_ok 1/1)
+  M3 max HB gap from M2 (both homed R2): min 82463 median 82463 max 82463 (n_ok 1/1)
+LOAD after: 19:18  up 11 days,  5:02, 2 users, load averages: 6.36 5.79 4.97
+CELL end=2026-10-20T16:18:42Z
