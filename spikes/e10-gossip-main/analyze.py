@@ -79,7 +79,10 @@ def analyze(path, window):
                 after_rehome = (min(c) - t0) if c else None
             stalled = gap is not None and gap >= STALL_MS
             flowing_end = bool(ts_list) and (end - max(ts_list)) < STALL_MS
-            pairs[(rx, tx)] = dict(gap=gap, resume=None if resume is None else resume - t0, last=last, after_rehome=after_rehome, stalled=stalled, flowing_end=flowing_end)
+            gap_start = None
+            if gap is not None:
+                gap_start = (resume - gap - t0) if resume is not None else (max(ts_list) - t0)
+            pairs[(rx, tx)] = dict(gap=gap, resume=None if resume is None else resume - t0, last=last, after_rehome=after_rehome, stalled=stalled, flowing_end=flowing_end, gap_start=gap_start)
     m["pairs"] = pairs
     # M2-M3 summary (both homed on the live relay)
     g23 = [pairs[("M2", "M3")]["gap"], pairs[("M3", "M2")]["gap"]]
@@ -88,6 +91,8 @@ def analyze(path, window):
     m["m23_recovered"] = m["m23_stalled"] and all(pairs[p]["flowing_end"] for p in (("M2", "M3"), ("M3", "M2")))
     rs = [pairs[p]["resume"] for p in (("M2", "M3"), ("M3", "M2")) if pairs[p]["stalled"] and pairs[p]["flowing_end"]]
     m["m23_resume"] = max(rs) if (m["m23_recovered"] and rs and None not in rs) else None
+    starts = [pairs[p]["gap_start"] for p in (("M2", "M3"), ("M3", "M2")) if pairs[p]["stalled"] and pairs[p]["gap_start"] is not None]
+    m["m23_onset"] = min(starts) if starts else None
     # M1 pairs
     m1p = [("M2", "M1"), ("M3", "M1"), ("M1", "M2"), ("M1", "M3")]
     m["m1_stalled_pairs"] = sum(pairs[p]["stalled"] for p in m1p)
@@ -95,7 +100,7 @@ def analyze(path, window):
     m["m1_resume_first"] = min((pairs[p]["resume"] for p in m1p if pairs[p]["stalled"] and pairs[p]["flowing_end"] and pairs[p]["resume"] is not None), default=None)
     m["m1_gap_max"] = max((pairs[p]["gap"] for p in m1p if pairs[p]["gap"] is not None), default=None)
     # fresh dials (probers only)
-    probe = [(ts, who, rest) for ts, who, kind, rest in recs if kind == "PROBE"]
+    probe = [(ts, who, rest) for ts, who, kind, rest in recs if kind == "PROBE" and ts <= end]
     m["probers"] = bool(probe)
 
     def reach(prober, tgt):
@@ -125,18 +130,22 @@ def stats(vals):
 
 GROUPS = [
     # (variant label, condition label, file-name regex, window ms)
-    ("A 0.101.0", "kill R1+B1, probers on, 88 s", r"^a-1-[123]$", 88000),
-    ("B main", "kill R1+B1, probers on, 88 s", r"^b-1-[123]$", 88000),
-    ("A 0.101.0", "kill R1+B1, no probers, 88 s", r"^a-1np-[123]$", 88000),
-    ("B main", "kill R1+B1, no probers, 88 s", r"^b-1np-[123]$", 88000),
-    ("A 0.101.0", "control: kill B1 only, R1 alive, probers on, 88 s", r"^a-7-[123]$", 88000),
-    ("B main", "control: kill B1 only, R1 alive, probers on, 88 s", r"^b-7-[123]$", 88000),
-    ("A 0.101.0", "ext: no probers, runs 1-6, 88 s", r"^a-1np-[1-6]$", 88000),
-    ("B main", "ext: no probers, runs 1-6, 88 s", r"^b-1np-[1-6]$", 88000),
-    ("A 0.101.0", "ext: no probers, all 9 runs cut to 88 s", r"^a-1npw?-\d+$", 88000),
-    ("B main", "ext: no probers, all 9 runs cut to 88 s", r"^b-1npw?-\d+$", 88000),
-    ("A 0.101.0", "supp: no probers, 180 s window", r"^a-1npw-\d+$", 180000),
-    ("B main", "supp: no probers, 180 s window", r"^b-1npw-\d+$", 180000),
+    ("A", "kill R1+B1, probers, 88 s", r"^a-1-[123]$", 88000),
+    ("B", "kill R1+B1, probers, 88 s", r"^b-1-[123]$", 88000),
+    ("A", "kill R1+B1, no probers, 88 s", r"^a-1np-[123]$", 88000),
+    ("B", "kill R1+B1, no probers, 88 s", r"^b-1np-[123]$", 88000),
+    ("A", "control: kill B1 only (R1 alive), probers, 88 s", r"^a-7-[123]$", 88000),
+    ("B", "control: kill B1 only (R1 alive), probers, 88 s", r"^b-7-[123]$", 88000),
+    ("A", "ext: no probers, runs 1-6, 88 s", r"^a-1np-[1-6]$", 88000),
+    ("B", "ext: no probers, runs 1-6, 88 s", r"^b-1np-[1-6]$", 88000),
+    ("A", "ext: no probers, 9 runs cut to 88 s", r"^a-1npw?-\d+$", 88000),
+    ("B", "ext: no probers, 9 runs cut to 88 s", r"^b-1npw?-\d+$", 88000),
+    ("A", "ext: probers, 5 runs cut to 88 s", r"^a-1w?-\d+$", 88000),
+    ("B", "ext: probers, 5 runs cut to 88 s", r"^b-1w?-\d+$", 88000),
+    ("A", "supp: no probers, 180 s", r"^a-1npw-\d+$", 180000),
+    ("B", "supp: no probers, 180 s", r"^b-1npw-\d+$", 180000),
+    ("A", "supp: probers, 180 s", r"^a-1w-\d+$", 180000),
+    ("B", "supp: probers, 180 s", r"^b-1w-\d+$", 180000),
 ]
 
 
@@ -166,18 +175,19 @@ def table(logs):
         d_m1 = [min([x for x in (r["dial_M2_M1"][1], r["dial_M3_M1"][1]) if x is not None], default=None) for r in runs]
         d_23 = [min([x for x in (r["dial_M2_M3"][1], r["dial_M3_M2"][1]) if x is not None], default=None) for r in runs]
         rows = [
-            ("M2-M3 longest HB gap, ms (max of both directions)", cell(stats([r["m23_gap"] for r in runs]), n)),
-            ("M2-M3 stalled (longest gap >= 5 s), runs", ("-", "-", "-", f"{stalled}/{n}")),
+            ("M2-M3 longest HB gap (ms; max of both directions)", cell(stats([r["m23_gap"] for r in runs]), n)),
+            ("M2-M3 stalled (gap >= 5 s), runs", ("-", "-", "-", f"{stalled}/{n}")),
+            ("M2-M3 stall onset (ms after kill; last HB before the gap)", cell(stats([r["m23_onset"] for r in runs]), n)),
             ("M2-M3 flowing again at window end, of stalled runs", ("-", "-", "-", f"{rec}/{stalled}")),
-            ("M2-M3 resume time, ms after kill", cell(stats([r["m23_resume"] for r in runs]), n)),
-            ("M1 re-home (watch_addr lists only R2), ms after kill", cell(stats([r["rehome"] for r in runs]), n)),
+            ("M2-M3 resume time (ms after kill)", cell(stats([r["m23_resume"] for r in runs]), n)),
+            ("M1 re-home (ms after kill; watch_addr lists only R2)", cell(stats([r["rehome"] for r in runs]), n)),
             ("M1 HB pairs stalled (4 per run)", ("-", "-", "-", f"{m1s}/{4 * n}")),
             ("M1 HB pairs flowing again at window end, of stalled", ("-", "-", "-", f"{m1r}/{m1s}")),
-            ("M1 HB first resume, ms after kill (earliest pair per run)", cell(stats([r["m1_resume_first"] for r in runs]), n)),
+            ("M1 HB first resume (ms after kill; earliest pair per run)", cell(stats([r["m1_resume_first"] for r in runs]), n)),
         ]
         if probers:
-            rows.append(("fresh dial by id to M1 ok again, ms after kill (earlier of M2, M3 per run)", cell(stats(d_m1), n)))
-            rows.append(("fresh dial M2 to M3 or M3 to M2 ok again, ms after kill", cell(stats(d_23), n)))
+            rows.append(("fresh dial by id to M1 ok again (ms after kill; earlier of M2, M3)", cell(stats(d_m1), n)))
+            rows.append(("fresh dial M2-M3 ok again (ms after kill; either direction)", cell(stats(d_23), n)))
         for label, (a, b, c, d) in rows:
             print(f"| {variant} | {cond} | {label} | {a} | {b} | {c} | {d} |")
 
