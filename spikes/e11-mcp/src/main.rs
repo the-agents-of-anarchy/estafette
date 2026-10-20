@@ -3,8 +3,10 @@
 #![expect(dead_code, reason = "stubs parse arguments they do not read")]
 
 use std::{
-    pin::pin,
-    sync::OnceLock,
+    io,
+    pin::{Pin, pin},
+    sync::{Once, OnceLock},
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
@@ -15,11 +17,11 @@ use rmcp::{
         PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool, object,
     },
     service::RequestContext,
-    transport::stdio,
 };
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use tokio::{
+    io::{AsyncRead, ReadBuf, Stdin},
     select,
     signal::unix::{SignalKind, signal},
     time::sleep,
@@ -240,6 +242,36 @@ impl ServerHandler for Estafette {
     }
 }
 
+/// Stub for broadcasting Departure: once, at the first trigger.
+static DEPARTED: Once = Once::new();
+
+fn depart(t0: Instant, why: &str) {
+    DEPARTED.call_once(|| eprintln!("{:?} departure ({why})", t0.elapsed()));
+}
+
+/// Stdin that departs at the first end of input, before rmcp's own drain starts.
+struct DepartOnEof {
+    inner: Stdin,
+    t0: Instant,
+}
+
+impl AsyncRead for DepartOnEof {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        let before = buf.filled().len();
+        let polled = Pin::new(&mut self.inner).poll_read(cx, buf);
+        match &polled {
+            Poll::Ready(Ok(())) if buf.filled().len() == before => depart(self.t0, "stdin closed"),
+            Poll::Ready(Err(_)) => depart(self.t0, "stdin failed"),
+            _ => {}
+        }
+        polled
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let t0 = Instant::now();
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -260,8 +292,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn run(t0: Instant) -> Result<(), Box<dyn std::error::Error>> {
     let mut term = signal(SignalKind::terminate())?;
     let running = select! {
-        served = Estafette::new().serve(stdio()) => served?,
-        _ = term.recv() => return Ok(()),
+        served = Estafette::new().serve((DepartOnEof { inner: tokio::io::stdin(), t0 }, tokio::io::stdout())) => served?,
+        _ = term.recv() => {
+            depart(t0, "SIGTERM");
+            return Ok(());
+        }
     };
     eprintln!("{:?} serving", t0.elapsed());
     let stop = running.cancellation_token();
@@ -269,6 +304,7 @@ async fn run(t0: Instant) -> Result<(), Box<dyn std::error::Error>> {
     select! {
         _ = &mut done => {}
         _ = term.recv() => {
+            depart(t0, "SIGTERM");
             stop.cancel();
             (&mut done).await?;
         }

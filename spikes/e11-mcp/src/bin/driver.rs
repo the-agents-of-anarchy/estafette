@@ -34,11 +34,24 @@ fn lines(reader: impl Read + Send + 'static) -> Receiver<String> {
     rx
 }
 
+/// Like `lines`, each line stamped on arrival.
+fn stamped_lines(reader: impl Read + Send + 'static) -> Receiver<(Instant, String)> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        for line in BufReader::new(reader).lines().map_while(Result::ok) {
+            if tx.send((Instant::now(), line)).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
 struct Server {
     child: Child,
     stdin: Option<ChildStdin>,
     out: Receiver<String>,
-    err: Receiver<String>,
+    err: Receiver<(Instant, String)>,
     proto: String,
     next_id: u64,
     /// Server messages that answered nothing we asked.
@@ -60,7 +73,7 @@ impl Server {
         Self {
             stdin: child.stdin.take(),
             out: lines(child.stdout.take().unwrap()),
-            err: lines(child.stderr.take().unwrap()),
+            err: stamped_lines(child.stderr.take().unwrap()),
             child,
             proto: proto.into(),
             next_id: 0,
@@ -134,7 +147,17 @@ impl Server {
     }
 
     fn stderr(&self) -> Vec<String> {
-        self.err.try_iter().collect()
+        self.err.try_iter().map(|(_, line)| line).collect()
+    }
+
+    /// Stderr lines with their arrival time after `since`, in milliseconds.
+    fn stderr_after(&self, since: Instant) -> Vec<(f64, String)> {
+        thread::sleep(Duration::from_millis(30));
+        let ms = |at: Instant| at.saturating_duration_since(since).as_secs_f64() * 1000.0;
+        self.err
+            .try_iter()
+            .map(|(at, line)| (ms(at), line))
+            .collect()
     }
 }
 
@@ -300,17 +323,18 @@ fn probe() {
     );
 }
 
-fn median(sorted: &[Duration]) -> Duration {
-    sorted[sorted.len() / 2]
-}
-
 /// One run of `case` (`<eof|term>-<pre|idle|slow|coop>`). Returns the time to exit, if the
 /// process exited within the cap, then the time to exit after stdin closed, if it did not.
-fn shutdown_once(
-    case: &str,
-    args: &[&str],
-    stderr_out: &mut Vec<String>,
-) -> (Option<Duration>, Option<Duration>) {
+/// One run: time to exit, time to exit after stdin closed, and the milliseconds after the trigger
+/// at which the `departure` and `stopped` lines arrived.
+struct Run {
+    exited: Option<Duration>,
+    after_close: Option<Duration>,
+    departure: Option<f64>,
+    stopped: Option<f64>,
+}
+
+fn shutdown_once(case: &str, args: &[&str], stderr_out: &mut Vec<String>) -> Run {
     let (trigger, stage) = case.split_once('-').unwrap();
     let mut s = Server::spawn("e11-mcp", args, LEGACY);
     if stage != "pre" {
@@ -347,9 +371,40 @@ fn shutdown_once(
     } else {
         None
     };
-    *stderr_out = s.stderr();
+    let stamped = s.stderr_after(t0);
+    let at = |word: &str| {
+        stamped
+            .iter()
+            .find(|(_, l)| l.contains(word))
+            .map(|(t, _)| *t)
+    };
+    let (departure, stopped) = (at("departure"), at("stopped"));
+    *stderr_out = stamped
+        .iter()
+        .map(|(t, l)| format!("+{t:.1}ms {l}"))
+        .collect();
     stderr_out.push(format!("status {:?}", s.child.try_wait().unwrap()));
-    (exited, after_close)
+    Run {
+        exited,
+        after_close,
+        departure,
+        stopped,
+    }
+}
+
+/// min / median / max of milliseconds, or `-` when empty, with the count.
+fn spread(mut v: Vec<f64>, runs: usize) -> String {
+    v.sort_by(f64::total_cmp);
+    match v.as_slice() {
+        [] => format!("- (0/{runs})"),
+        v => format!(
+            "{:.0} / {:.0} / {:.0} ({}/{runs})",
+            v[0],
+            v[v.len() / 2],
+            v[v.len() - 1],
+            v.len()
+        ),
+    }
 }
 
 fn shutdown(runs: usize) {
@@ -368,34 +423,25 @@ fn shutdown(runs: usize) {
         ("term-coop", &["bg"]),
     ];
     println!(
-        "| case | mode | min ms | median ms | max ms | exited | hung at cap | exit ms after stdin closed (median) |"
+        "| case | mode | departure ms min/med/max (n) | stopped ms (a departure after waiting() returns) | exit ms | exit ms after stdin closed (hung at cap) |"
     );
     for (case, args) in cases {
-        let mut exits = vec![];
-        let mut after = vec![];
+        let (mut dep, mut stop, mut exits, mut after) = (vec![], vec![], vec![], vec![]);
         let mut timeline = vec![];
         for _ in 0..runs {
-            let (exited, after_close) = shutdown_once(case, args, &mut timeline);
-            exits.extend(exited);
-            after.extend(after_close);
+            let r = shutdown_once(case, args, &mut timeline);
+            dep.extend(r.departure);
+            stop.extend(r.stopped);
+            exits.extend(r.exited.map(|d| d.as_secs_f64() * 1000.0));
+            after.extend(r.after_close.map(|d| d.as_secs_f64() * 1000.0));
         }
-        exits.sort();
-        after.sort();
-        let ms = |d: Duration| format!("{:.0}", d.as_secs_f64() * 1000.0);
-        let (lo, mid, hi) = match exits.as_slice() {
-            [] => ("-".into(), "-".into(), "-".into()),
-            e => (ms(e[0]), ms(median(e)), ms(e[e.len() - 1])),
-        };
-        let resid = if after.is_empty() {
-            "-".into()
-        } else {
-            ms(median(&after))
-        };
         let mode = args.first().copied().unwrap_or("naive");
         println!(
-            "| {case} | {mode} | {lo} | {mid} | {hi} | {}/{runs} | {}/{runs} | {resid} |",
-            exits.len(),
-            runs - exits.len()
+            "| {case} | {mode} | {} | {} | {} | {} |",
+            spread(dep, runs),
+            spread(stop, runs),
+            spread(exits, runs),
+            spread(after, runs)
         );
         println!("  last run stderr: {timeline:?}");
     }
