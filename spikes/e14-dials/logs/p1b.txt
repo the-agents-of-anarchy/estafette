@@ -1,0 +1,29 @@
+SETUP x_home=[RelayUrl("http://127.0.0.1:54067/")] y_home=[RelayUrl("http://127.0.0.1:54067/")] p_home=[RelayUrl("http://127.0.0.1:54066/")] variant=p1
+PRE dial x->y ok=true ms=6
+KILL t=0
+DIAL t=5 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=1009 x->y ok=true ms=5  | y->x ok=true ms=4 
+DIAL t=2010 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=3014 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=4016 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=5018 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=6021 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=7023 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=8025 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=9029 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=10031 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=11035 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=12039 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=13042 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=14044 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=15048 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=16050 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=20051 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=23054 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=26057 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=29060 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=32064 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=35068 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=38071 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=41075 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+SUMMARY variant=p1 first_fail_ms=Some(20051) recovered_ms=None
