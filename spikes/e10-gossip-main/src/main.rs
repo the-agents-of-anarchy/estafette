@@ -215,15 +215,35 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
     init_trace(&name);
     let (u1, u2) = (relay_url(p1), relay_url(p2));
     let lk = MemoryLookup::new();
-    let payload = std::env::var("E8_PAYLOAD").is_ok();
     let want = match home {
         1 => Some(&u1),
         2 => Some(&u2),
         _ => None,
     };
-    let ep = bind_member(k, &[u1.clone(), u2.clone()], &lk, want).await?;
-    let t_bind = Instant::now();
+    let mut ep = bind_member(k, &[u1.clone(), u2.clone()], &lk, want).await?;
     ev(&name, "BOUND", format!("home_want={home} relays=[{}]", urls_str(ep.addr().relay_urls())));
+    // E15 W1 (`E15_W1`, `E15_W1_T_MS` default 3000): rebind when no heartbeat arrived for T ms. `session` returns only then.
+    let w1 = std::env::var("E15_W1").is_ok().then(|| std::env::var("E15_W1_T_MS").ok().and_then(|v| v.parse::<u128>().ok()).unwrap_or(3000));
+    let dead: Arc<Mutex<HashSet<RelayUrl>>> = Arc::default();
+    let (mut last_rebind, mut n) = (None, 0u32);
+    loop {
+        let silent = session(name.clone(), k, order.clone(), u1.clone(), u2.clone(), lk.clone(), ep.clone(), dead.clone(), w1, last_rebind).await?;
+        n += 1;
+        last_rebind = Some(Instant::now());
+        ev(&name, "REBIND", format!("n={n} silent_ms={silent}"));
+        let _ = timeout(Duration::from_secs(5), ep.close()).await;
+        let urls: Vec<RelayUrl> = [&u1, &u2].into_iter().filter(|u| !dead.lock().is_ok_and(|g| g.contains(*u))).cloned().collect();
+        let t = Instant::now();
+        ep = bind_member(k, &urls, &lk, None).await?;
+        ev(&name, "REBOUND", format!("n={n} ms={} relays=[{}]", t.elapsed().as_millis(), urls_str(ep.addr().relay_urls())));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn session(name: String, k: u8, order: String, u1: RelayUrl, u2: RelayUrl, lk: MemoryLookup, ep: Endpoint, dead: Arc<Mutex<HashSet<RelayUrl>>>, w1: Option<u128>, last_rebind: Option<Instant>) -> Res<u128> {
+    let payload = std::env::var("E8_PAYLOAD").is_ok();
+    let mut js = tokio::task::JoinSet::new();
+    let t_bind = Instant::now();
     // Bootstrap addresses: id plus its own relay URL.
     let b1 = EndpointAddr::new(key(1).public()).with_relay_url(u1.clone());
     let b2 = EndpointAddr::new(key(2).public()).with_relay_url(u2.clone());
@@ -234,7 +254,7 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
     let _router = Router::builder(ep.clone()).accept(GOSSIP_ALPN, gossip.clone()).accept(ECHO, Echo).spawn();
     {
         let (n, e) = (name.clone(), ep.clone());
-        tokio::spawn(async move {
+        js.spawn(async move {
             e.online().await;
             ev(&n, "ONLINE", format!("ms_after_bind={}", t_bind.elapsed().as_millis()));
         });
@@ -248,8 +268,8 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
     let last_hb = Arc::new(AtomicU64::new(0));
     let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     {
-        let (n, e, tx, armed) = (name.clone(), ep.clone(), status_tx.clone(), armed.clone());
-        tokio::spawn(async move {
+        let (n, e, tx, armed, dd) = (name.clone(), ep.clone(), status_tx.clone(), armed.clone(), dead.clone());
+        js.spawn(async move {
             let mut s = e.home_relay_status().stream();
             let mut pending: HashSet<RelayUrl> = HashSet::new();
             while let Some(v) = s.next().await {
@@ -265,12 +285,15 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
                         if !pending.insert(url.clone()) {
                             continue;
                         }
-                        let (n2, e2) = (n.clone(), e.clone());
+                        let (n2, e2, dd2) = (n.clone(), e.clone(), dd.clone());
                         tokio::spawn(async move {
                             sleep(Duration::from_millis(l1_debounce)).await;
                             let dead = e2.home_relay_status().get().iter().any(|x| x.url() == &url && !x.is_connected());
                             if dead {
                                 ev(&n2, "L1_FIRE", urls_str(std::iter::once(&url)));
+                                if let Ok(mut g) = dd2.lock() {
+                                    g.insert(url.clone());
+                                }
                                 let t = Instant::now();
                                 let r = timeout(Duration::from_secs(5), e2.remove_relay(&url)).await;
                                 ev(&n2, "L1_DONE", format!("removed={} ms={}", matches!(r, Ok(Some(_))), t.elapsed().as_millis()));
@@ -284,7 +307,7 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
             }
         });
         let (n, e, tx) = (name.clone(), ep.clone(), status_tx);
-        tokio::spawn(async move {
+        js.spawn(async move {
             let mut s = e.watch_addr().stream();
             while let Some(v) = s.next().await {
                 ev(&n, "ADDR", format!("relays=[{}]", urls_str(v.relay_urls())));
@@ -297,7 +320,11 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
     let topic_h = timeout(Duration::from_secs(60), gossip.subscribe_and_join(topic(), boot)).await;
     let Ok(Ok(th)) = topic_h else {
         ev(&name, "JOIN_FAIL", format!("after_ms={}", t_join.elapsed().as_millis()));
-        return sleep_forever().await;
+        if w1.is_some() {
+            return Ok(0);
+        }
+        sleep_forever().await?;
+        return Ok(0);
     };
     ev(&name, "JOINED", format!("ms={}", t_join.elapsed().as_millis()));
     armed.store(true, Ordering::Relaxed);
@@ -306,7 +333,7 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
     let nbrs: Arc<Mutex<std::collections::HashSet<EndpointId>>> = Arc::default();
     {
         let (n, lk, nb, lh) = (name.clone(), lk.clone(), nbrs.clone(), last_hb.clone());
-        tokio::spawn(async move {
+        js.spawn(async move {
             while let Some(e) = rx.next().await {
                 match e {
                     Ok(Event::NeighborUp(i)) => {
@@ -343,7 +370,7 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
     // S13: announce current EndpointAddr on any home-relay status or address change.
     {
         let (n, e, tx) = (name.clone(), ep.clone(), tx.clone());
-        tokio::spawn(async move {
+        js.spawn(async move {
             let mut first = true;
             loop {
                 if !first {
@@ -374,7 +401,7 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
     if std::env::var("E8_REJOIN").is_ok() {
         let (n, tx, nb) = (name.clone(), tx.clone(), nbrs.clone());
         let boot2 = vec![b1.id, b2.id];
-        tokio::spawn(async move {
+        js.spawn(async move {
             loop {
                 sleep(Duration::from_secs(5)).await;
                 let empty = nb.lock().map_or(false, |g| g.is_empty());
@@ -390,7 +417,7 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
         let (n, tx, lh) = (name.clone(), tx.clone(), last_hb.clone());
         let mut peers = vec![b1.id, b2.id];
         peers.extend((1..=3u8).filter(|t| *t != k).map(|t| key(10 + t).public()));
-        tokio::spawn(async move {
+        js.spawn(async move {
             let (mut count, mut next_at) = (0u32, 0u128);
             loop {
                 sleep(Duration::from_millis(250)).await;
@@ -414,7 +441,7 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
     // Heartbeat, 1 s.
     {
         let (n, tx) = (name.clone(), tx.clone());
-        tokio::spawn(async move {
+        js.spawn(async move {
             let mut seq = 0u64;
             loop {
                 seq += 1;
@@ -428,7 +455,7 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
     // Probers: fresh id-only dial to each other of M1..M3 every ~1 s.
     for t in (1..=3u8).filter(|t| *t != k && std::env::var("E8_NOPROBE").is_err()) {
         let (n, e) = (name.clone(), ep.clone());
-        tokio::spawn(async move {
+        js.spawn(async move {
             let id = key(10 + t).public();
             loop {
                 let t0 = Instant::now();
@@ -452,7 +479,15 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
             }
         });
     }
-    sleep_forever().await
+    // W1: no heartbeat from any peer for T ms, at most one rebind per 20 s -> return to `member`, which rebinds.
+    let Some(t_ms) = w1 else { sleep_forever().await?; return Ok(0) };
+    loop {
+        sleep(Duration::from_millis(250)).await;
+        let silent = now_ms().saturating_sub(u128::from(last_hb.load(Ordering::Relaxed)));
+        if silent >= t_ms && last_rebind.is_none_or(|r| r.elapsed() >= Duration::from_secs(20)) {
+            return Ok(silent);
+        }
+    }
 }
 
 async fn sleep_forever() -> Res<()> {
