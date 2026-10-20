@@ -1,0 +1,124 @@
+
+## cell variant=a scn=1 tag=- (probers) window=88000
+a-1-1: rehome=41367 m23_gap=82463 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=82463 first_nd=10003 dials(M2>M1,M3>M1)=(9579, None),(13032, 78101) dials(M2>M3,M3>M2)=(9579, None),(9003, None) member-NU-after-kill[]
+a-1-2: rehome=42038 m23_gap=78076 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=81024 first_nd=10007 dials(M2>M1,M3>M1)=(3921, None),(3921, None) dials(M2>M3,M3>M2)=(13011, None),(13012, None) member-NU-after-kill[]
+a-1-3: rehome=44094 m23_gap=79066 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=84075 first_nd=10003 dials(M2>M1,M3>M1)=(3948, None),(7774, None) dials(M2>M3,M3>M2)=(13050, None),(12805, None) member-NU-after-kill[]
+  M2-M3 longest HB gap, max of both directions (ms): min 78076 median 79066 max 82463 n 3/3
+  M1 re-home: watch_addr lists only R2 (ms after kill): min 41367 median 42038 max 44094 n 3/3
+  M2-M3 stall resumed, time (ms after kill): none
+  M1 pairs resumed, first resume (ms after kill): none
+  fresh dial to M1 ok again, M2 or M3 (ms after kill): min 78101 median 78101 max 78101 n 1/3
+  M2-M3 stalled: 3/3; recovered in window: 0/3
+  M1 pairs stalled (of 12): 12; recovered in window: 0
+
+## cell variant=a scn=1 tag=np (no probers) window=88000
+a-1np-1: rehome=43952 m23_gap=83203 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=83203 first_nd=10005 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[]
+a-1np-2: rehome=42616 m23_gap=1011 m23_stalled=False m23_recovered=False m23_resume=NA m1_stalled_pairs=0 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=1010 first_nd=10003 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[55903,55908,55911,55912,56121,56128]
+a-1np-3: rehome=41731 m23_gap=83061 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=84063 first_nd=10004 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[]
+a-1np-4: rehome=41206 m23_gap=84088 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=84088 first_nd=10004 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[]
+a-1np-5: rehome=38988 m23_gap=1003 m23_stalled=False m23_recovered=False m23_resume=NA m1_stalled_pairs=0 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=1003 first_nd=10003 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[56336,56341]
+a-1np-6: rehome=45734 m23_gap=75070 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=75070 first_nd=10004 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[]
+  M2-M3 longest HB gap, max of both directions (ms): min 1003 median 79065 max 84088 n 6/6
+  M1 re-home: watch_addr lists only R2 (ms after kill): min 38988 median 42173 max 45734 n 6/6
+  M2-M3 stall resumed, time (ms after kill): none
+  M1 pairs resumed, first resume (ms after kill): none
+  fresh dial to M1 ok again, M2 or M3 (ms after kill): none
+  M2-M3 stalled: 4/6; recovered in window: 0/6
+  M1 pairs stalled (of 24): 16; recovered in window: 0
+
+## cell variant=a scn=1 tag=npw (no probers) window=180000
+a-1npw-1: rehome=43576 m23_gap=170854 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=2 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=170854 first_nd=10005 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[55907,55908]
+a-1npw-2: rehome=40845 m23_gap=1008 m23_stalled=False m23_recovered=False m23_resume=NA m1_stalled_pairs=0 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=1008 first_nd=10004 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[56120,56126,116113,116117]
+a-1npw-3: rehome=42289 m23_gap=1003 m23_stalled=False m23_recovered=False m23_resume=NA m1_stalled_pairs=0 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=1004 first_nd=10003 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[55907,55907,56116,56121]
+  M2-M3 longest HB gap, max of both directions (ms): min 1003 median 1008 max 170854 n 3/3
+  M1 re-home: watch_addr lists only R2 (ms after kill): min 40845 median 42289 max 43576 n 3/3
+  M2-M3 stall resumed, time (ms after kill): none
+  M1 pairs resumed, first resume (ms after kill): none
+  fresh dial to M1 ok again, M2 or M3 (ms after kill): none
+  M2-M3 stalled: 1/3; recovered in window: 0/3
+  M1 pairs stalled (of 12): 2; recovered in window: 0
+
+## cell variant=a scn=1 tag=w (probers) window=180000
+a-1w-1: rehome=41079 m23_gap=154040 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=171068 first_nd=10003 dials(M2>M1,M3>M1)=(12012, 85086),(12013, 85084) dials(M2>M3,M3>M2)=(29118, 79040),(29118, 79205) member-NU-after-kill[]
+a-1w-2: rehome=41326 m23_gap=176290 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=176290 first_nd=10013 dials(M2>M1,M3>M1)=(6963, 156103),(3728, 157963) dials(M2>M3,M3>M2)=(7971, 158142),(7758, 157956) member-NU-after-kill[]
+  M2-M3 longest HB gap, max of both directions (ms): min 154040 median 165165 max 176290 n 2/2
+  M1 re-home: watch_addr lists only R2 (ms after kill): min 41079 median 41202 max 41326 n 2/2
+  M2-M3 stall resumed, time (ms after kill): none
+  M1 pairs resumed, first resume (ms after kill): none
+  fresh dial to M1 ok again, M2 or M3 (ms after kill): min 85084 median 120593 max 156103 n 2/2
+  M2-M3 stalled: 2/2; recovered in window: 0/2
+  M1 pairs stalled (of 8): 8; recovered in window: 0
+
+## cell variant=a scn=7 tag=- (probers) window=88000
+a-7-1: rehome=NA m23_gap=1090 m23_stalled=False m23_recovered=False m23_resume=NA m1_stalled_pairs=0 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=1179 first_nd=10111 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[55086,55086,55734,55734]
+a-7-2: rehome=NA m23_gap=1012 m23_stalled=False m23_recovered=False m23_resume=NA m1_stalled_pairs=0 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=1010 first_nd=10083 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[55069,55069,55945,55945]
+a-7-3: rehome=NA m23_gap=1014 m23_stalled=False m23_recovered=False m23_resume=NA m1_stalled_pairs=0 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=1012 first_nd=10499 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[10504,10504,55919,55919]
+  M2-M3 longest HB gap, max of both directions (ms): min 1012 median 1014 max 1090 n 3/3
+  M1 re-home: watch_addr lists only R2 (ms after kill): none
+  M2-M3 stall resumed, time (ms after kill): none
+  M1 pairs resumed, first resume (ms after kill): none
+  fresh dial to M1 ok again, M2 or M3 (ms after kill): none
+  M2-M3 stalled: 0/3; recovered in window: 0/3
+  M1 pairs stalled (of 12): 0; recovered in window: 0
+
+## cell variant=b scn=1 tag=- (probers) window=88000
+b-1-1: rehome=44939 m23_gap=85092 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=4 m1_recovered_pairs=1 m1_resume_first=74034 m1_gap_max=85092 first_nd=10003 dials(M2>M1,M3>M1)=(7951, None),(3928, None) dials(M2>M3,M3>M2)=(6944, None),(6944, None) member-NU-after-kill[69839,73247]
+b-1-2: rehome=43506 m23_gap=85479 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=86049 first_nd=10006 dials(M2>M1,M3>M1)=(3534, None),(3323, None) dials(M2>M3,M3>M2)=(6556, None),(6378, None) member-NU-after-kill[]
+b-1-3: rehome=45063 m23_gap=84494 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=4 m1_recovered_pairs=2 m1_resume_first=82632 m1_gap_max=85066 first_nd=10004 dials(M2>M1,M3>M1)=(6968, None),(3530, None) dials(M2>M3,M3>M2)=(6968, None),(7554, None) member-NU-after-kill[80945,82553,82558,82558]
+  M2-M3 longest HB gap, max of both directions (ms): min 84494 median 85092 max 85479 n 3/3
+  M1 re-home: watch_addr lists only R2 (ms after kill): min 43506 median 44939 max 45063 n 3/3
+  M2-M3 stall resumed, time (ms after kill): none
+  M1 pairs resumed, first resume (ms after kill): min 74034 median 78333 max 82632 n 2/3
+  fresh dial to M1 ok again, M2 or M3 (ms after kill): none
+  M2-M3 stalled: 3/3; recovered in window: 0/3
+  M1 pairs stalled (of 12): 12; recovered in window: 3
+
+## cell variant=b scn=1 tag=np (no probers) window=88000
+b-1np-1: rehome=43626 m23_gap=79150 m23_stalled=True m23_recovered=True m23_resume=83507 m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=84080 first_nd=10011 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[82652,82657,82657]
+b-1np-2: rehome=43297 m23_gap=77151 m23_stalled=True m23_recovered=True m23_resume=81065 m1_stalled_pairs=4 m1_recovered_pairs=4 m1_resume_first=85511 m1_gap_max=82160 first_nd=10003 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[80930,80934,80935,85374]
+b-1np-3: rehome=43817 m23_gap=1017 m23_stalled=False m23_recovered=False m23_resume=NA m1_stalled_pairs=0 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=1092 first_nd=10005 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[]
+b-1np-4: rehome=43541 m23_gap=62112 m23_stalled=True m23_recovered=True m23_resume=66038 m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=84873 first_nd=10005 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[65217,65221,65222]
+b-1np-5: rehome=40202 m23_gap=78138 m23_stalled=True m23_recovered=True m23_resume=86295 m1_stalled_pairs=2 m1_recovered_pairs=2 m1_resume_first=86072 m1_gap_max=78140 first_nd=10003 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[85943]
+b-1np-6: rehome=44862 m23_gap=67128 m23_stalled=True m23_recovered=True m23_resume=70631 m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=86863 first_nd=10004 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[65514,69678,69682,69682]
+  M2-M3 longest HB gap, max of both directions (ms): min 1017 median 72139 max 79150 n 6/6
+  M1 re-home: watch_addr lists only R2 (ms after kill): min 40202 median 43583 max 44862 n 6/6
+  M2-M3 stall resumed, time (ms after kill): min 66038 median 81065 max 86295 n 5/6
+  M1 pairs resumed, first resume (ms after kill): min 85511 median 85791 max 86072 n 2/6
+  fresh dial to M1 ok again, M2 or M3 (ms after kill): none
+  M2-M3 stalled: 5/6; recovered in window: 5/6
+  M1 pairs stalled (of 24): 18; recovered in window: 6
+
+## cell variant=b scn=1 tag=npw (no probers) window=180000
+b-1npw-1: rehome=44388 m23_gap=72144 m23_stalled=True m23_recovered=True m23_resume=76059 m1_stalled_pairs=4 m1_recovered_pairs=4 m1_resume_first=81921 m1_gap_max=78159 first_nd=10005 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[75908,75913,75913,81781,148492,179908,179908]
+b-1npw-2: rehome=40752 m23_gap=59124 m23_stalled=True m23_recovered=True m23_resume=62276 m1_stalled_pairs=4 m1_recovered_pairs=4 m1_resume_first=145006 m1_gap_max=142295 first_nd=10004 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[61357,61362,61362,144481,155974,155975]
+b-1npw-3: rehome=38443 m23_gap=1005 m23_stalled=False m23_recovered=False m23_resume=NA m1_stalled_pairs=0 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=1004 first_nd=10004 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[]
+  M2-M3 longest HB gap, max of both directions (ms): min 1005 median 59124 max 72144 n 3/3
+  M1 re-home: watch_addr lists only R2 (ms after kill): min 38443 median 40752 max 44388 n 3/3
+  M2-M3 stall resumed, time (ms after kill): min 62276 median 69167 max 76059 n 2/3
+  M1 pairs resumed, first resume (ms after kill): min 81921 median 113463 max 145006 n 2/3
+  fresh dial to M1 ok again, M2 or M3 (ms after kill): none
+  M2-M3 stalled: 2/3; recovered in window: 2/3
+  M1 pairs stalled (of 12): 8; recovered in window: 8
+
+## cell variant=b scn=1 tag=w (probers) window=180000
+b-1w-1: rehome=46568 m23_gap=80230 m23_stalled=True m23_recovered=True m23_resume=87152 m1_stalled_pairs=4 m1_recovered_pairs=4 m1_resume_first=86063 m1_gap_max=80230 first_nd=10003 dials(M2>M1,M3>M1)=(10998, 88069),(10998, 80061) dials(M2>M3,M3>M2)=(10998, 86313),(10998, 86612) member-NU-after-kill[85930,85932,85936,85936,86272,120941,120941,125943,125944]
+b-1w-2: rehome=41708 m23_gap=177309 m23_stalled=True m23_recovered=False m23_resume=NA m1_stalled_pairs=4 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=177886 first_nd=10003 dials(M2>M1,M3>M1)=(5993, 156136),(3706, None) dials(M2>M3,M3>M2)=(5993, None),(6722, None) member-NU-after-kill[75980,151006]
+  M2-M3 longest HB gap, max of both directions (ms): min 80230 median 128769 max 177309 n 2/2
+  M1 re-home: watch_addr lists only R2 (ms after kill): min 41708 median 44138 max 46568 n 2/2
+  M2-M3 stall resumed, time (ms after kill): min 87152 median 87152 max 87152 n 1/2
+  M1 pairs resumed, first resume (ms after kill): min 86063 median 86063 max 86063 n 1/2
+  fresh dial to M1 ok again, M2 or M3 (ms after kill): min 80061 median 118098 max 156136 n 2/2
+  M2-M3 stalled: 2/2; recovered in window: 1/2
+  M1 pairs stalled (of 8): 8; recovered in window: 4
+
+## cell variant=b scn=7 tag=- (probers) window=88000
+b-7-1: rehome=NA m23_gap=1014 m23_stalled=False m23_recovered=False m23_resume=NA m1_stalled_pairs=0 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=1012 first_nd=10511 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[]
+b-7-2: rehome=45085 m23_gap=1010 m23_stalled=False m23_recovered=False m23_resume=NA m1_stalled_pairs=0 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=1011 first_nd=10718 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[]
+b-7-3: rehome=NA m23_gap=1012 m23_stalled=False m23_recovered=False m23_resume=NA m1_stalled_pairs=0 m1_recovered_pairs=0 m1_resume_first=NA m1_gap_max=1011 first_nd=10727 dials(M2>M1,M3>M1)=(None, None),(None, None) dials(M2>M3,M3>M2)=(None, None),(None, None) member-NU-after-kill[]
+  M2-M3 longest HB gap, max of both directions (ms): min 1010 median 1012 max 1014 n 3/3
+  M1 re-home: watch_addr lists only R2 (ms after kill): min 45085 median 45085 max 45085 n 1/3
+  M2-M3 stall resumed, time (ms after kill): none
+  M1 pairs resumed, first resume (ms after kill): none
+  fresh dial to M1 ok again, M2 or M3 (ms after kill): none
+  M2-M3 stalled: 0/3; recovered in window: 0/3
+  M1 pairs stalled (of 12): 0; recovered in window: 0

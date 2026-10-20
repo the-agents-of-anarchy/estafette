@@ -1,0 +1,88 @@
+   -3994 ms  M1 ann from=M2 relays=[62378] via=B1
+   -3786 ms  M2 ann from=M1 relays=[62377] via=B1
+   -3692 ms  M1 ann from=M2 relays=[62378] via=B1
+   -3672 ms  M3 BOUND home_want=2 relays=[62378]
+   -3671 ms  M3 JOIN_START order=12
+   -3671 ms  M3 ONLINE ms_after_bind=0
+   -3671 ms  M3 STATUS relay=62378 connected=true err=-
+   -3671 ms  M3 ADDR relays=[62378]
+   -3666 ms  B2 NU M3
+   -3665 ms  M3 JOINED ms=6
+   -3663 ms  M2 ann from=M3 relays=[62378] via=B2
+   -3663 ms  B1 NU M3
+   -3663 ms  M1 ann from=M3 relays=[62378] via=B1
+   -3662 ms  M3 NU B1
+   -3484 ms  M2 ann from=M1 relays=[62377] via=B1
+   -3484 ms  M3 ann from=M1 relays=[62377] via=B1
+   -3361 ms  M1 ann from=M3 relays=[62378] via=B1
+   -3361 ms  M2 ann from=M3 relays=[62378] via=B1
+   -3286 ms  M3 NU M2
+   -3285 ms  M2 NU M3
+   -3060 ms  M1 ann from=M3 relays=[62378] via=B1
+   -3060 ms  M2 ann from=M3 relays=[62378] via=B1
+   -2990 ms  M2 NU M1
+   -2989 ms  M1 NU M2
+   -1974 ms  B2 NU B1
+   -1973 ms  B1 NU B2
+   -1468 ms  M3 NU M1
+   -1467 ms  M1 NU M3
+       0 ms  CTL KILL control="" (R1+B1 unless control)
+       0 ms  M1 STATUS relay=62377 connected=false err=-
+       1 ms  M1 STATUS relay=62377 connected=false err=Failed_to_connect_to_relay_server
+      89 ms  M3 ann from=M1 relays=[62377] via=M1
+      90 ms  M2 ann from=M1 relays=[62377] via=M1
+     304 ms  M2 ann from=M1 relays=[62377] via=M1
+     304 ms  M3 ann from=M1 relays=[62377] via=M1
+     605 ms  M3 ann from=M1 relays=[62377] via=M1
+     605 ms  M2 ann from=M1 relays=[62377] via=M1
+     907 ms  M3 ann from=M1 relays=[62377] via=M1
+     907 ms  M2 ann from=M1 relays=[62377] via=M1
+    1209 ms  M3 ann from=M1 relays=[62377] via=M1
+    1209 ms  M2 ann from=M1 relays=[62377] via=M1
+    1511 ms  M2 ann from=M1 relays=[62377] via=M1
+    1511 ms  M3 ann from=M1 relays=[62377] via=M1
+    1812 ms  M3 ann from=M1 relays=[62377] via=M1
+    1812 ms  M2 ann from=M1 relays=[62377] via=M1
+    2114 ms  M2 ann from=M1 relays=[62377] via=M1
+    2114 ms  M3 ann from=M1 relays=[62377] via=M1
+    2416 ms  M3 ann from=M1 relays=[62377] via=M1
+    2416 ms  M2 ann from=M1 relays=[62377] via=M1
+    2717 ms  M2 ann from=M1 relays=[62377] via=M1
+    2717 ms  M3 ann from=M1 relays=[62377] via=M1
+    3020 ms  M3 ann from=M1 relays=[62377] via=M1
+    3020 ms  M2 ann from=M1 relays=[62377] via=M1
+    3322 ms  M2 ann from=M1 relays=[62377] via=M1
+    3322 ms  M3 ann from=M1 relays=[62377] via=M1
+    3623 ms  M2 ann from=M1 relays=[62377] via=M1
+    3623 ms  M3 ann from=M1 relays=[62377] via=M1
+    3924 ms  M2 ann from=M1 relays=[62377] via=M1
+    3924 ms  M3 ann from=M1 relays=[62377] via=M1
+    4226 ms  M2 ann from=M1 relays=[62377] via=M1
+    4226 ms  M3 ann from=M1 relays=[62377] via=M1
+    4528 ms  M2 ann from=M1 relays=[62377] via=M1
+    4528 ms  M3 ann from=M1 relays=[62377] via=M1
+    4829 ms  M2 ann from=M1 relays=[62377] via=M1
+    4829 ms  M3 ann from=M1 relays=[62377] via=M1
+    6543 ms  M3 ann from=M1 relays=[62377] via=M1
+    6544 ms  M2 ann from=M1 relays=[62377] via=M1
+    6846 ms  M3 ann from=M1 relays=[62377] via=M1
+    6846 ms  M2 ann from=M1 relays=[62377] via=M1
+   10004 ms  M1 ND B1
+   10091 ms  M3 ND B1
+   10093 ms  M2 ND B1
+   10097 ms  B2 ND B1
+   13965 ms  M2 ann from=M1 relays=[62377] via=M1
+   13965 ms  M3 ann from=M1 relays=[62377] via=M1
+   14267 ms  M3 ann from=M1 relays=[62377] via=M1
+   14267 ms  M2 ann from=M1 relays=[62377] via=M1
+   31021 ms  M2 ann from=M1 relays=[62377] via=M1
+   31021 ms  M3 ann from=M1 relays=[62377] via=M1
+   31323 ms  M3 ann from=M1 relays=[62377] via=M1
+   31323 ms  M2 ann from=M1 relays=[62377] via=M1
+   38443 ms  M1 ADDR relays=[62378]
+   38443 ms  M1 STATUS relay=62378 connected=true err=-
+   38444 ms  M3 ann from=M1 relays=[62378] via=M1
+   38444 ms  M2 ann from=M1 relays=[62378] via=M1
+   38746 ms  M3 ann from=M1 relays=[62378] via=M1
+   38746 ms  M2 ann from=M1 relays=[62378] via=M1
+  180006 ms  CTL FINAL final M1 addr relays=[62378] | M1 status relay=62378 connected=true err=-

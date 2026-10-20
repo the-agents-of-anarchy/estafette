@@ -1,0 +1,2 @@
+pairs: 204; healthy (< 5 s): 76, max healthy gap 1179 ms; stalled (>= 5 s): 128, min stalled gap 50100 ms
+gaps between 1.3 s and 50 s: []

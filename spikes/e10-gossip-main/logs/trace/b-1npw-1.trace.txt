@@ -1,0 +1,95 @@
+   -3795 ms  M3 ann from=M2 relays=[61517] via=M2
+   -3795 ms  M2 ann from=M3 relays=[61517] via=M3
+   -3494 ms  M3 ann from=M2 relays=[61517] via=M2
+   -3493 ms  M2 ann from=M3 relays=[61517] via=M3
+   -3411 ms  B1 NU B2
+   -3411 ms  B2 NU B1
+   -3257 ms  M1 BOUND home_want=1 relays=[61516]
+   -3256 ms  M1 JOIN_START order=12
+   -3256 ms  M1 ONLINE ms_after_bind=0
+   -3256 ms  M1 STATUS relay=61516 connected=true err=-
+   -3256 ms  M1 ADDR relays=[61516]
+   -3250 ms  B1 NU M1
+   -3250 ms  M1 JOINED ms=6
+   -3248 ms  M2 ann from=M1 relays=[61516] via=B2
+   -3248 ms  B2 NU M1
+   -3247 ms  M1 NU B2
+   -3247 ms  M3 ann from=M1 relays=[61516] via=M2
+   -2946 ms  M2 ann from=M1 relays=[61516] via=B2
+   -2946 ms  M3 ann from=M1 relays=[61516] via=M2
+   -2644 ms  M2 ann from=M1 relays=[61516] via=B2
+   -2643 ms  M3 ann from=M1 relays=[61516] via=M2
+   -2386 ms  M3 NU M1
+   -2386 ms  M1 NU M3
+   -1090 ms  M1 NU M2
+   -1090 ms  M2 NU M1
+       0 ms  CTL KILL control="" (R1+B1 unless control)
+       1 ms  M1 STATUS relay=61516 connected=false err=-
+       1 ms  M1 STATUS relay=61516 connected=false err=Failed_to_connect_to_relay_server
+       2 ms  M3 ann from=M1 relays=[61516] via=M1
+      94 ms  M2 ann from=M1 relays=[61516] via=B2
+     307 ms  M3 ann from=M1 relays=[61516] via=M1
+     308 ms  M2 ann from=M1 relays=[61516] via=B2
+     607 ms  M3 ann from=M1 relays=[61516] via=M1
+     607 ms  M2 ann from=M1 relays=[61516] via=B2
+     908 ms  M3 ann from=M1 relays=[61516] via=M1
+     909 ms  M2 ann from=M1 relays=[61516] via=B2
+    1211 ms  M3 ann from=M1 relays=[61516] via=M1
+    1211 ms  M2 ann from=M1 relays=[61516] via=B2
+    1514 ms  M3 ann from=M1 relays=[61516] via=M1
+    1514 ms  M2 ann from=M1 relays=[61516] via=B2
+    1816 ms  M3 ann from=M1 relays=[61516] via=M1
+    1816 ms  M2 ann from=M1 relays=[61516] via=B2
+    2119 ms  M3 ann from=M1 relays=[61516] via=M1
+    2124 ms  M2 ann from=M1 relays=[61516] via=B2
+    2422 ms  M3 ann from=M1 relays=[61516] via=M1
+    2422 ms  M2 ann from=M1 relays=[61516] via=B2
+    2722 ms  M3 ann from=M1 relays=[61516] via=M1
+    2722 ms  M2 ann from=M1 relays=[61516] via=B2
+    3023 ms  M3 ann from=M1 relays=[61516] via=M1
+    3024 ms  M2 ann from=M1 relays=[61516] via=B2
+    3326 ms  M3 ann from=M1 relays=[61516] via=M1
+    3326 ms  M2 ann from=M1 relays=[61516] via=B2
+    3628 ms  M3 ann from=M1 relays=[61516] via=M1
+    3628 ms  M2 ann from=M1 relays=[61516] via=B2
+    3929 ms  M3 ann from=M1 relays=[61516] via=M1
+    3930 ms  M2 ann from=M1 relays=[61516] via=B2
+   10005 ms  M1 ND M2
+   10007 ms  B2 ND B1
+   10011 ms  M1 ND B1
+   10013 ms  M3 ND B1
+   10096 ms  M2 ND M1
+   10108 ms  M2 ND B1
+   13968 ms  M3 ND M2
+   14919 ms  M3 ND M1
+   15010 ms  B2 ND M1
+   15011 ms  B2 ND M2
+   24788 ms  M1 ND M3
+   24941 ms  M2 ND M3
+   25010 ms  M1 ND B2
+   25941 ms  M2 ND B2
+   44388 ms  M1 ADDR relays=[61517]
+   44388 ms  M1 STATUS relay=61517 connected=true err=-
+   75908 ms  B2 NU M2
+   75908 ms  M2 NU B2
+   75913 ms  M2 NU M3
+   75913 ms  M3 NU M2
+   76058 ms  M2 HB from=M3 resumed after 61118 ms gap
+   76059 ms  M3 HB from=M2 resumed after 72144 ms gap
+   81780 ms  B2 NU M1
+   81781 ms  M1 NU B2
+   81921 ms  M3 HB from=M1 resumed after 78158 ms gap
+   81922 ms  M2 HB from=M1 resumed after 78159 ms gap
+   82066 ms  M1 HB from=M3 resumed after 67126 ms gap
+   82066 ms  M1 HB from=M2 resumed after 78151 ms gap
+   95078 ms  B2 ND M1
+  104948 ms  M1 ND B2
+  148492 ms  B2 NU M1
+  148492 ms  M1 NU B2
+  149056 ms  M3 HB from=M1 resumed after 65131 ms gap
+  149056 ms  M2 HB from=M1 resumed after 65130 ms gap
+  149193 ms  M1 HB from=M3 resumed after 55094 ms gap
+  149194 ms  M1 HB from=M2 resumed after 55094 ms gap
+  179908 ms  M3 NU M1
+  179908 ms  M1 NU M3
+  180005 ms  CTL FINAL final M1 addr relays=[61517] | M1 status relay=61517 connected=true err=-

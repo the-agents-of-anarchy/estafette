@@ -1,0 +1,101 @@
+   -3888 ms  M2 BOUND home_want=2 relays=[62016]
+   -3888 ms  M3 BOUND home_want=2 relays=[62016]
+   -3888 ms  M3 JOIN_START order=12
+   -3888 ms  M3 ONLINE ms_after_bind=0
+   -3888 ms  M3 ADDR relays=[62016]
+   -3888 ms  M2 JOIN_START order=12
+   -3888 ms  M2 ONLINE ms_after_bind=0
+   -3888 ms  M2 ADDR relays=[62016]
+   -3888 ms  M2 STATUS relay=62016 connected=true err=-
+   -3888 ms  M3 STATUS relay=62016 connected=true err=-
+   -3881 ms  B2 NU M2
+   -3881 ms  M2 JOINED ms=6
+   -3879 ms  B1 NU M2
+   -3880 ms  B2 NU M3
+   -3880 ms  M3 JOINED ms=8
+   -3879 ms  M2 NU B1
+   -3878 ms  M1 ann from=M2 relays=[62016] via=B2
+   -3878 ms  M3 ann from=M2 relays=[62016] via=B2
+   -3877 ms  M2 ann from=M3 relays=[62016] via=B2
+   -3877 ms  B1 NU M3
+   -3877 ms  M1 ann from=M3 relays=[62016] via=B2
+   -3875 ms  M3 NU B1
+   -3872 ms  M3 NU M2
+   -3871 ms  M2 NU M3
+   -3790 ms  M3 ann from=M1 relays=[62015] via=B2
+   -3790 ms  M2 ann from=M1 relays=[62015] via=B2
+   -3578 ms  M3 ann from=M2 relays=[62016] via=B2
+   -3578 ms  M1 ann from=M2 relays=[62016] via=B2
+   -3578 ms  M2 ann from=M3 relays=[62016] via=B2
+   -3577 ms  M1 ann from=M3 relays=[62016] via=B2
+   -3489 ms  M2 ann from=M1 relays=[62015] via=B2
+   -3489 ms  M3 ann from=M1 relays=[62015] via=B2
+   -3277 ms  M1 ann from=M2 relays=[62016] via=B2
+   -3277 ms  M3 ann from=M2 relays=[62016] via=B2
+   -3276 ms  M2 ann from=M3 relays=[62016] via=B2
+   -3276 ms  M1 ann from=M3 relays=[62016] via=B2
+       1 ms  M1 STATUS relay=62015 connected=false err=-
+       0 ms  CTL KILL control="" (R1+B1 unless control)
+       1 ms  M1 STATUS relay=62015 connected=false err=Failed_to_connect_to_relay_server
+       2 ms  M3 ann from=M1 relays=[62015] via=B2
+       3 ms  M2 ann from=M1 relays=[62015] via=B2
+     305 ms  M2 ann from=M1 relays=[62015] via=B2
+     305 ms  M3 ann from=M1 relays=[62015] via=B2
+     607 ms  M2 ann from=M1 relays=[62015] via=B2
+     607 ms  M3 ann from=M1 relays=[62015] via=B2
+     908 ms  M2 ann from=M1 relays=[62015] via=B2
+     908 ms  M3 ann from=M1 relays=[62015] via=B2
+    1218 ms  M3 ann from=M1 relays=[62015] via=B2
+    1217 ms  M2 ann from=M1 relays=[62015] via=B2
+    1513 ms  M2 ann from=M1 relays=[62015] via=B2
+    1514 ms  M3 ann from=M1 relays=[62015] via=B2
+    1816 ms  M2 ann from=M1 relays=[62015] via=B2
+    1816 ms  M3 ann from=M1 relays=[62015] via=B2
+    2117 ms  M2 ann from=M1 relays=[62015] via=B2
+    2117 ms  M3 ann from=M1 relays=[62015] via=B2
+    2420 ms  M3 ann from=M1 relays=[62015] via=B2
+    2420 ms  M2 ann from=M1 relays=[62015] via=B2
+    2720 ms  M3 ann from=M1 relays=[62015] via=B2
+    2720 ms  M2 ann from=M1 relays=[62015] via=B2
+    3022 ms  M2 ann from=M1 relays=[62015] via=B2
+    3022 ms  M3 ann from=M1 relays=[62015] via=B2
+    3324 ms  M3 ann from=M1 relays=[62015] via=B2
+    3324 ms  M2 ann from=M1 relays=[62015] via=B2
+    3626 ms  M3 ann from=M1 relays=[62015] via=B2
+    3626 ms  M2 ann from=M1 relays=[62015] via=B2
+    3928 ms  M2 ann from=M1 relays=[62015] via=B2
+    3928 ms  M3 ann from=M1 relays=[62015] via=B2
+    4230 ms  M2 ann from=M1 relays=[62015] via=B2
+    4230 ms  M3 ann from=M1 relays=[62015] via=B2
+    4532 ms  M3 ann from=M1 relays=[62015] via=B2
+    4532 ms  M2 ann from=M1 relays=[62015] via=B2
+    4837 ms  M2 ann from=M1 relays=[62015] via=B2
+    4837 ms  M3 ann from=M1 relays=[62015] via=B2
+    5137 ms  M3 ann from=M1 relays=[62015] via=B2
+    5137 ms  M2 ann from=M1 relays=[62015] via=B2
+    8149 ms  M2 ann from=M1 relays=[62015] via=B2
+    8149 ms  M3 ann from=M1 relays=[62015] via=B2
+    8451 ms  M2 ann from=M1 relays=[62015] via=B2
+    8451 ms  M3 ann from=M1 relays=[62015] via=B2
+   10005 ms  M1 ND B1
+   10011 ms  M3 ND B1
+   10011 ms  M2 ND B1
+   14712 ms  M3 ann from=M1 relays=[62015] via=B2
+   14712 ms  M2 ann from=M1 relays=[62015] via=B2
+   15014 ms  M2 ann from=M1 relays=[62015] via=B2
+   15014 ms  M3 ann from=M1 relays=[62015] via=B2
+   19939 ms  B2 ND M2
+   19947 ms  M3 ND M2
+   28504 ms  M3 ann from=M1 relays=[62015] via=B2
+   28807 ms  M3 ann from=M1 relays=[62015] via=B2
+   29181 ms  M2 ND M3
+   30166 ms  M2 ND B2
+   43576 ms  M1 STATUS relay=62016 connected=false err=-
+   43576 ms  M1 STATUS relay=62016 connected=true err=-
+   43576 ms  M1 ADDR relays=[62016]
+   43578 ms  M3 ann from=M1 relays=[62016] via=B2
+   43879 ms  M3 ann from=M1 relays=[62016] via=B2
+   44185 ms  M3 ann from=M1 relays=[62016] via=B2
+   55907 ms  M3 NU M1
+   55908 ms  M1 NU M3
+  180005 ms  CTL FINAL final M1 addr relays=[62016] | M1 status relay=62016 connected=true err=-

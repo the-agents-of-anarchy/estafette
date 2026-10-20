@@ -123,7 +123,115 @@ def stats(vals):
     return (v[0], statistics.median(v), v[-1], len(v))
 
 
+GROUPS = [
+    # (variant label, condition label, file-name regex, window ms)
+    ("A 0.101.0", "kill R1+B1, probers on, 88 s", r"^a-1-[123]$", 88000),
+    ("B main", "kill R1+B1, probers on, 88 s", r"^b-1-[123]$", 88000),
+    ("A 0.101.0", "kill R1+B1, no probers, 88 s", r"^a-1np-[123]$", 88000),
+    ("B main", "kill R1+B1, no probers, 88 s", r"^b-1np-[123]$", 88000),
+    ("A 0.101.0", "control: kill B1 only, R1 alive, probers on, 88 s", r"^a-7-[123]$", 88000),
+    ("B main", "control: kill B1 only, R1 alive, probers on, 88 s", r"^b-7-[123]$", 88000),
+    ("A 0.101.0", "ext: no probers, runs 1-6, 88 s", r"^a-1np-[1-6]$", 88000),
+    ("B main", "ext: no probers, runs 1-6, 88 s", r"^b-1np-[1-6]$", 88000),
+    ("A 0.101.0", "ext: no probers, all 9 runs cut to 88 s", r"^a-1npw?-\d+$", 88000),
+    ("B main", "ext: no probers, all 9 runs cut to 88 s", r"^b-1npw?-\d+$", 88000),
+    ("A 0.101.0", "supp: no probers, 180 s window", r"^a-1npw-\d+$", 180000),
+    ("B main", "supp: no probers, 180 s window", r"^b-1npw-\d+$", 180000),
+]
+
+
+def cell(s, n):
+    return ("-", "-", "-", f"0/{n}") if s is None else (fmt(s[0]), fmt(s[1]), fmt(s[2]), f"{s[3]}/{n}")
+
+
+def table(logs):
+    print("| Variant | Condition | Measure | min | median | max | n |")
+    print("|---|---|---|---|---|---|---|")
+    for variant, cond, rx, window in GROUPS:
+        runs = []
+        for p in sorted(glob.glob(os.path.join(logs, "raw", "*.raw.log*"))):
+            name = os.path.basename(p).split(".raw.log")[0]
+            if re.match(rx, name):
+                m = analyze(p, window)
+                if m:
+                    runs.append(m)
+        n = len(runs)
+        if not n:
+            continue
+        probers = any(r["probers"] for r in runs)
+        stalled = sum(r["m23_stalled"] for r in runs)
+        rec = sum(r["m23_recovered"] for r in runs)
+        m1s = sum(r["m1_stalled_pairs"] for r in runs)
+        m1r = sum(r["m1_recovered_pairs"] for r in runs)
+        d_m1 = [min([x for x in (r["dial_M2_M1"][1], r["dial_M3_M1"][1]) if x is not None], default=None) for r in runs]
+        d_23 = [min([x for x in (r["dial_M2_M3"][1], r["dial_M3_M2"][1]) if x is not None], default=None) for r in runs]
+        rows = [
+            ("M2-M3 longest HB gap, ms (max of both directions)", cell(stats([r["m23_gap"] for r in runs]), n)),
+            ("M2-M3 stalled (longest gap >= 5 s), runs", ("-", "-", "-", f"{stalled}/{n}")),
+            ("M2-M3 flowing again at window end, of stalled runs", ("-", "-", "-", f"{rec}/{stalled}")),
+            ("M2-M3 resume time, ms after kill", cell(stats([r["m23_resume"] for r in runs]), n)),
+            ("M1 re-home (watch_addr lists only R2), ms after kill", cell(stats([r["rehome"] for r in runs]), n)),
+            ("M1 HB pairs stalled (4 per run)", ("-", "-", "-", f"{m1s}/{4 * n}")),
+            ("M1 HB pairs flowing again at window end, of stalled", ("-", "-", "-", f"{m1r}/{m1s}")),
+            ("M1 HB first resume, ms after kill (earliest pair per run)", cell(stats([r["m1_resume_first"] for r in runs]), n)),
+        ]
+        if probers:
+            rows.append(("fresh dial by id to M1 ok again, ms after kill (earlier of M2, M3 per run)", cell(stats(d_m1), n)))
+            rows.append(("fresh dial M2 to M3 or M3 to M2 ok again, ms after kill", cell(stats(d_23), n)))
+        for label, (a, b, c, d) in rows:
+            print(f"| {variant} | {cond} | {label} | {a} | {b} | {c} | {d} |")
+
+
+def runs_table(logs):
+    print("| Run | Re-home (s) | M2-M3 longest gap (s) | M2-M3 flowing again at (s) | M1 pairs stalled | M1 pairs flowing again | M1 first resume (s) | fresh dial to M1 ok (s) | member NeighborUp after kill (s) |")
+    print("|---|---|---|---|---|---|---|---|---|")
+    order = []
+    for p in sorted(glob.glob(os.path.join(logs, "raw", "*.raw.log*"))):
+        name = os.path.basename(p).split(".raw.log")[0]
+        mo = re.match(r"^([ab])-(\d+)(np|npw|w)?-(\d+)$", name)
+        if mo:
+            order.append((mo.group(1), mo.group(2), {"": 0, "np": 1, "npw": 2, "w": 3}[mo.group(3) or ""], int(mo.group(4)), name, p, mo.group(3) or ""))
+    order.sort(key=lambda t: (t[1], t[2], t[0], t[3]))
+
+    def sec(v):
+        return "-" if v is None else f"{v / 1000:.1f}"
+
+    for variant, scn, _, run, name, p, tag in order:
+        window = 180000 if tag in ("npw", "w") else 88000
+        m = analyze(p, window)
+        if m is None:
+            continue
+        d1 = min([x for x in (m["dial_M2_M1"][1], m["dial_M3_M1"][1]) if x is not None], default=None)
+        nus = ",".join(f"{t / 1000:.0f}" for t in m["nu_after_kill"])
+        dial = sec(d1) if m["probers"] else "n/a"
+        print(f"| {name} | {sec(m['rehome'])} | {sec(m['m23_gap'])} | {sec(m['m23_resume'])} | {m['m1_stalled_pairs']}/4 | {m['m1_recovered_pairs']}/{m['m1_stalled_pairs']} | {sec(m['m1_resume_first'])} | {dial} | {nus or '-'} |")
+
+
+def gaps(logs):
+    """Distribution of the per-pair longest heartbeat gap over every run: shows the gap between healthy and stalled."""
+    vals = []
+    for p in sorted(glob.glob(os.path.join(logs, "raw", "*.raw.log*"))):
+        name = os.path.basename(p).split(".raw.log")[0]
+        mo = re.match(r"^([ab])-(\d+)(np|npw|w)?-(\d+)$", name)
+        if not mo:
+            continue
+        m = analyze(p, 180000 if mo.group(3) in ("npw", "w") else 88000)
+        vals.extend(v["gap"] for v in m["pairs"].values() if v["gap"] is not None)
+    vals.sort()
+    print(f"pairs: {len(vals)}; healthy (< 5 s): {sum(v < 5000 for v in vals)}, max healthy gap {max(v for v in vals if v < 5000)} ms; stalled (>= 5 s): {sum(v >= 5000 for v in vals)}, min stalled gap {min(v for v in vals if v >= 5000)} ms")
+    print("gaps between 1.3 s and 50 s:", [v for v in vals if 1300 <= v <= 50000])
+
+
 def main():
+    if sys.argv[1] == "--gaps":
+        gaps(sys.argv[2])
+        return
+    if sys.argv[1] == "--runs":
+        runs_table(sys.argv[2])
+        return
+    if sys.argv[1] == "--table":
+        table(sys.argv[2])
+        return
     logs = sys.argv[1]
     override = int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] != "-" else None
     only = re.compile(sys.argv[3]) if len(sys.argv) > 3 else None
