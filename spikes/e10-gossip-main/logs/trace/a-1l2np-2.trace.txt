@@ -1,0 +1,84 @@
+   -3894 ms  M1 BOUND home_want=1 relays=[51587]
+   -3893 ms  M1 JOIN_START order=12
+   -3893 ms  M1 ONLINE ms_after_bind=0
+   -3893 ms  M1 ADDR relays=[51587]
+   -3893 ms  M1 STATUS relay=51587 connected=true err=-
+   -3883 ms  B1 NU M1
+   -3883 ms  M1 JOINED ms=10
+   -3882 ms  B2 NU M1
+   -3882 ms  M1 NU B2
+   -3882 ms  M2 ann from=M1 relays=[51587] via=B1
+   -3881 ms  M3 ann from=M1 relays=[51587] via=B1
+   -3799 ms  M3 ann from=M2 relays=[51588] via=B1
+   -3799 ms  M2 ann from=M3 relays=[51588] via=B1
+   -3799 ms  M1 ann from=M2 relays=[51588] via=B1
+   -3799 ms  M1 ann from=M3 relays=[51588] via=B1
+   -3580 ms  M3 ann from=M1 relays=[51587] via=B1
+   -3580 ms  M2 ann from=M1 relays=[51587] via=B1
+   -3496 ms  M3 ann from=M2 relays=[51588] via=B1
+   -3496 ms  M1 ann from=M3 relays=[51588] via=B1
+   -3496 ms  M2 ann from=M3 relays=[51588] via=B1
+   -3496 ms  M1 ann from=M2 relays=[51588] via=B1
+   -3277 ms  M2 ann from=M1 relays=[51587] via=B1
+   -3277 ms  M3 ann from=M1 relays=[51587] via=B1
+       0 ms  CTL KILL control="" (R1+B1 unless control)
+       1 ms  M1 STATUS relay=51587 connected=false err=-
+       1 ms  M1 STATUS relay=51587 connected=false err=Failed_to_connect_to_relay_server
+      91 ms  M2 ann from=M1 relays=[51587] via=B2
+     183 ms  M3 ann from=M1 relays=[51587] via=M2
+     309 ms  M3 ann from=M1 relays=[51587] via=B2
+     309 ms  M2 ann from=M1 relays=[51587] via=B2
+     606 ms  M3 ann from=M1 relays=[51587] via=B2
+     606 ms  M2 ann from=M1 relays=[51587] via=B2
+     909 ms  M2 ann from=M1 relays=[51587] via=B2
+     909 ms  M3 ann from=M1 relays=[51587] via=B2
+    1212 ms  M2 ann from=M1 relays=[51587] via=B2
+    1212 ms  M3 ann from=M1 relays=[51587] via=B2
+    1515 ms  M3 ann from=M1 relays=[51587] via=B2
+    1515 ms  M2 ann from=M1 relays=[51587] via=B2
+    1817 ms  M3 ann from=M1 relays=[51587] via=B2
+    1817 ms  M2 ann from=M1 relays=[51587] via=B2
+    2120 ms  M2 ann from=M1 relays=[51587] via=B2
+    2120 ms  M3 ann from=M1 relays=[51587] via=B2
+    2423 ms  M3 ann from=M1 relays=[51587] via=B2
+    2423 ms  M2 ann from=M1 relays=[51587] via=B2
+    2727 ms  M2 ann from=M1 relays=[51587] via=B2
+    2727 ms  M3 ann from=M1 relays=[51587] via=B2
+    3030 ms  M3 ann from=M1 relays=[51587] via=B2
+    3030 ms  M2 ann from=M1 relays=[51587] via=B2
+    3332 ms  M2 ann from=M1 relays=[51587] via=B2
+    3332 ms  M3 ann from=M1 relays=[51587] via=B2
+    3637 ms  M3 ann from=M1 relays=[51587] via=B2
+    3637 ms  M2 ann from=M1 relays=[51587] via=B2
+    3938 ms  M3 ann from=M1 relays=[51587] via=B2
+    3938 ms  M2 ann from=M1 relays=[51587] via=B2
+    4241 ms  M2 ann from=M1 relays=[51587] via=B2
+    4241 ms  M3 ann from=M1 relays=[51587] via=B2
+    4546 ms  M3 ann from=M1 relays=[51587] via=B2
+    4546 ms  M2 ann from=M1 relays=[51587] via=B2
+    4849 ms  M2 ann from=M1 relays=[51587] via=B2
+    4849 ms  M3 ann from=M1 relays=[51587] via=B2
+    9168 ms  M2 ann from=M1 relays=[51587] via=B2
+    9168 ms  M3 ann from=M1 relays=[51587] via=B2
+    9471 ms  M2 ann from=M1 relays=[51587] via=B2
+    9472 ms  M3 ann from=M1 relays=[51587] via=B2
+   10003 ms  M1 ND B1
+   10094 ms  M2 ND B1
+   10185 ms  M3 ND B1
+   17216 ms  M2 ann from=M1 relays=[51587] via=B2
+   17216 ms  M3 ann from=M1 relays=[51587] via=B2
+   17517 ms  M2 ann from=M1 relays=[51587] via=B2
+   17517 ms  M3 ann from=M1 relays=[51587] via=B2
+   33254 ms  M2 ann from=M1 relays=[51587] via=B2
+   33254 ms  M3 ann from=M1 relays=[51587] via=B2
+   33559 ms  M3 ann from=M1 relays=[51587] via=B2
+   33559 ms  M2 ann from=M1 relays=[51587] via=B2
+   46076 ms  M1 STATUS relay=51588 connected=true err=-
+   46076 ms  M1 ADDR relays=[51588]
+   46077 ms  M3 ann from=M1 relays=[51588] via=B2
+   46077 ms  M2 ann from=M1 relays=[51588] via=B2
+   46379 ms  M3 ann from=M1 relays=[51588] via=B2
+   46380 ms  M2 ann from=M1 relays=[51588] via=B2
+   56114 ms  M3 NU M1
+   56119 ms  M1 NU M3
+   88003 ms  CTL FINAL final M1 addr relays=[51588] | M1 status relay=51588 connected=true err=-

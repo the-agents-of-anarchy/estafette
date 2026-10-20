@@ -756,6 +756,7 @@ dependencies = [
  "postcard",
  "serde",
  "tokio",
+ "tracing-subscriber",
 ]
 
 [[package]]

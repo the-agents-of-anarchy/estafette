@@ -21,3 +21,4 @@ bytes = "1"
 n0-future = "*"
 postcard = { version = "1", features = ["use-std"] }
 serde = { version = "1", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

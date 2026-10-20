@@ -204,7 +204,15 @@ async fn bind_member(k: u8, urls: &[RelayUrl], lk: &MemoryLookup, want: Option<&
     Err("could not home".into())
 }
 
+/// Diagnostic only (`E12_TRACE=<env-filter>`): member tracing goes to /tmp/e12-trace-<name>.log.
+fn init_trace(name: &str) {
+    let Ok(filter) = std::env::var("E12_TRACE") else { return };
+    let Ok(f) = std::fs::File::create(format!("/tmp/e12-trace-{name}.log")) else { return };
+    let _ = tracing_subscriber::fmt().with_env_filter(filter).with_writer(Mutex::new(f)).with_ansi(false).try_init();
+}
+
 async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) -> Res<()> {
+    init_trace(&name);
     let (u1, u2) = (relay_url(p1), relay_url(p2));
     let lk = MemoryLookup::new();
     let payload = std::env::var("E8_PAYLOAD").is_ok();

@@ -1,0 +1,84 @@
+   -3902 ms  M2 ann from=M1 relays=[51726] via=B1
+   -3866 ms  M3 BOUND home_want=2 relays=[51727]
+   -3866 ms  M3 JOIN_START order=12
+   -3866 ms  M3 ONLINE ms_after_bind=0
+   -3866 ms  M3 STATUS relay=51727 connected=true err=-
+   -3866 ms  M3 ADDR relays=[51727]
+   -3860 ms  M3 JOINED ms=5
+   -3860 ms  B2 NU M3
+   -3859 ms  M1 ann from=M3 relays=[51727] via=B2
+   -3858 ms  M2 ann from=M3 relays=[51727] via=B1
+   -3857 ms  M3 NU B1
+   -3857 ms  B1 NU M3
+   -3770 ms  M3 ann from=M2 relays=[51727] via=B1
+   -3770 ms  M1 ann from=M2 relays=[51727] via=B1
+   -3555 ms  M2 ann from=M3 relays=[51727] via=B1
+   -3555 ms  M1 ann from=M3 relays=[51727] via=B1
+   -3467 ms  M3 ann from=M2 relays=[51727] via=B1
+   -3467 ms  M1 ann from=M2 relays=[51727] via=B1
+   -3253 ms  M2 ann from=M3 relays=[51727] via=B1
+   -3253 ms  M1 ann from=M3 relays=[51727] via=B1
+       0 ms  CTL KILL control="" (R1+B1 unless control)
+       1 ms  M1 STATUS relay=51726 connected=false err=-
+       2 ms  M1 STATUS relay=51726 connected=false err=Failed_to_connect_to_relay_server
+      93 ms  M3 ann from=M1 relays=[51726] via=B2
+     184 ms  M2 ann from=M1 relays=[51726] via=B2
+     304 ms  M2 ann from=M1 relays=[51726] via=B2
+     304 ms  M3 ann from=M1 relays=[51726] via=B2
+     607 ms  M2 ann from=M1 relays=[51726] via=B2
+     607 ms  M3 ann from=M1 relays=[51726] via=B2
+     911 ms  M3 ann from=M1 relays=[51726] via=B2
+     911 ms  M2 ann from=M1 relays=[51726] via=B2
+    1214 ms  M2 ann from=M1 relays=[51726] via=B2
+    1214 ms  M3 ann from=M1 relays=[51726] via=B2
+    1515 ms  M3 ann from=M1 relays=[51726] via=B2
+    1515 ms  M2 ann from=M1 relays=[51726] via=B2
+    1818 ms  M2 ann from=M1 relays=[51726] via=B2
+    1818 ms  M3 ann from=M1 relays=[51726] via=B2
+    2121 ms  M2 ann from=M1 relays=[51726] via=B2
+    2121 ms  M3 ann from=M1 relays=[51726] via=B2
+    2423 ms  M2 ann from=M1 relays=[51726] via=B2
+    2423 ms  M3 ann from=M1 relays=[51726] via=B2
+    2725 ms  M3 ann from=M1 relays=[51726] via=B2
+    2725 ms  M2 ann from=M1 relays=[51726] via=B2
+    3027 ms  M2 ann from=M1 relays=[51726] via=B2
+    3027 ms  M3 ann from=M1 relays=[51726] via=B2
+    3331 ms  M2 ann from=M1 relays=[51726] via=B2
+    3331 ms  M3 ann from=M1 relays=[51726] via=B2
+    3632 ms  M2 ann from=M1 relays=[51726] via=B2
+    3632 ms  M3 ann from=M1 relays=[51726] via=B2
+    3936 ms  M2 ann from=M1 relays=[51726] via=B2
+    3936 ms  M3 ann from=M1 relays=[51726] via=B2
+    4244 ms  M3 ann from=M1 relays=[51726] via=B2
+    4244 ms  M2 ann from=M1 relays=[51726] via=B2
+    4540 ms  M3 ann from=M1 relays=[51726] via=B2
+    4540 ms  M2 ann from=M1 relays=[51726] via=B2
+    7809 ms  M3 ann from=M1 relays=[51726] via=B2
+    7809 ms  M2 ann from=M1 relays=[51726] via=B2
+    8111 ms  M3 ann from=M1 relays=[51726] via=B2
+    8111 ms  M2 ann from=M1 relays=[51726] via=B2
+   10006 ms  M1 ND B1
+   10095 ms  M3 ND B1
+   10185 ms  M2 ND B1
+   16107 ms  M2 ann from=M1 relays=[51726] via=B2
+   16107 ms  M3 ann from=M1 relays=[51726] via=B2
+   16410 ms  M2 ann from=M1 relays=[51726] via=B2
+   16410 ms  M3 ann from=M1 relays=[51726] via=B2
+   18114 ms  B2 ND M2
+   20674 ms  M2 REJOIN n=1 silent_ms=3132 join_peers=ok ms=0
+   22693 ms  M2 REJOIN n=2 silent_ms=5151 join_peers=ok ms=0
+   26735 ms  M2 REJOIN n=3 silent_ms=9193 join_peers=ok ms=0
+   27992 ms  M2 ND B2
+   30998 ms  M3 ann from=M1 relays=[51726] via=B2
+   31301 ms  M3 ann from=M1 relays=[51726] via=B2
+   34816 ms  M2 REJOIN n=4 silent_ms=17274 join_peers=ok ms=0
+   39855 ms  M1 STATUS relay=51727 connected=true err=-
+   39855 ms  M1 ADDR relays=[51727]
+   39857 ms  M3 ann from=M1 relays=[51727] via=B2
+   40159 ms  M3 ann from=M1 relays=[51727] via=B2
+   50987 ms  M2 REJOIN n=5 silent_ms=33445 join_peers=ok ms=0
+   55494 ms  M3 NU M1
+   55494 ms  M1 NU M3
+   67164 ms  M2 REJOIN n=6 silent_ms=49622 join_peers=ok ms=0
+   83326 ms  M2 REJOIN n=7 silent_ms=65784 join_peers=ok ms=0
+   88004 ms  CTL FINAL final M1 addr relays=[51727] | M1 status relay=51727 connected=true err=-
