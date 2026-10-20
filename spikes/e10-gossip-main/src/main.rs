@@ -7,11 +7,14 @@
 //! `member <name> <k> <home> <p1> <p2> <order>`, `ctl <scn> [runs]`.
 //! Children print `EV <unix_ms> <who> <kind> <rest>` lines; `ctl` collects, kills, and measures.
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fmt::Display,
     net::Ipv4Addr,
     process::Stdio,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -228,11 +231,19 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
             ev(&n, "ONLINE", format!("ms_after_bind={}", t_bind.elapsed().as_millis()));
         });
     }
+    // E12 levers. L1: remove a dead home relay from the relay map (`E12_L1`). L2: rejoin when no heartbeat arrived for T ms (`E12_L2`, `E12_T_MS`, default 3000).
+    let l1 = std::env::var("E12_L1").is_ok();
+    let l2 = std::env::var("E12_L2").is_ok();
+    let t_ms: u128 = std::env::var("E12_T_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(3000);
+    let l1_debounce: u64 = std::env::var("E12_L1_DEBOUNCE_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(500);
+    let armed = Arc::new(AtomicBool::new(false));
+    let last_hb = Arc::new(AtomicU64::new(0));
     let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     {
-        let (n, e, tx) = (name.clone(), ep.clone(), status_tx.clone());
+        let (n, e, tx, armed) = (name.clone(), ep.clone(), status_tx.clone(), armed.clone());
         tokio::spawn(async move {
             let mut s = e.home_relay_status().stream();
+            let mut pending: HashSet<RelayUrl> = HashSet::new();
             while let Some(v) = s.next().await {
                 let d: Vec<String> = v
                     .iter()
@@ -240,6 +251,28 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
                     .collect();
                 ev(&n, "STATUS", d.join(";"));
                 let _ = tx.send(());
+                if l1 && armed.load(Ordering::Relaxed) {
+                    for r in v.iter().filter(|r| !r.is_connected()) {
+                        let url = r.url().clone();
+                        if !pending.insert(url.clone()) {
+                            continue;
+                        }
+                        let (n2, e2) = (n.clone(), e.clone());
+                        tokio::spawn(async move {
+                            sleep(Duration::from_millis(l1_debounce)).await;
+                            let dead = e2.home_relay_status().get().iter().any(|x| x.url() == &url && !x.is_connected());
+                            if dead {
+                                ev(&n2, "L1_FIRE", urls_str(std::iter::once(&url)));
+                                let t = Instant::now();
+                                let r = timeout(Duration::from_secs(5), e2.remove_relay(&url)).await;
+                                ev(&n2, "L1_DONE", format!("removed={} ms={}", matches!(r, Ok(Some(_))), t.elapsed().as_millis()));
+                            } else {
+                                ev(&n2, "L1_SKIP", urls_str(std::iter::once(&url)));
+                            }
+                        });
+                    }
+                    pending.retain(|u| v.iter().any(|r| r.url() == u && !r.is_connected()));
+                }
             }
         });
         let (n, e, tx) = (name.clone(), ep.clone(), status_tx);
@@ -259,10 +292,12 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
         return sleep_forever().await;
     };
     ev(&name, "JOINED", format!("ms={}", t_join.elapsed().as_millis()));
+    armed.store(true, Ordering::Relaxed);
+    last_hb.store(now_ms() as u64, Ordering::Relaxed);
     let (tx, mut rx) = th.split();
     let nbrs: Arc<Mutex<std::collections::HashSet<EndpointId>>> = Arc::default();
     {
-        let (n, lk, nb) = (name.clone(), lk.clone(), nbrs.clone());
+        let (n, lk, nb, lh) = (name.clone(), lk.clone(), nbrs.clone(), last_hb.clone());
         tokio::spawn(async move {
             while let Some(e) = rx.next().await {
                 match e {
@@ -279,7 +314,10 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
                         ev(&n, "ND", id_name(&i));
                     }
                     Ok(Event::Received(m)) => match postcard::from_bytes::<Msg>(&m.content) {
-                        Ok(Msg::Hb { from, seq }) => ev(&n, "RX", format!("hb from={from} seq={seq} via={}", id_name(&m.delivered_from))),
+                        Ok(Msg::Hb { from, seq }) => {
+                            lh.store(now_ms() as u64, Ordering::Relaxed);
+                            ev(&n, "RX", format!("hb from={from} seq={seq} via={}", id_name(&m.delivered_from)));
+                        }
                         Ok(Msg::Announce { from, addr, .. }) => {
                             ev(&n, "RX", format!("ann from={from} relays=[{}] via={}", urls_str(addr.relay_urls()), id_name(&m.delivered_from)));
                             if payload {
@@ -336,6 +374,32 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
                     let r = timeout(Duration::from_secs(5), tx.join_peers(boot2.clone())).await;
                     ev(&n, "REJOIN", format!("join_peers {}", if matches!(r, Ok(Ok(()))) { "ok" } else { "err/timeout" }));
                 }
+            }
+        });
+    }
+    // L2: no heartbeat from any peer for T ms -> join_peers(bootstrap + other members). First rejoin at T, then every 2, 4, 8, 16 s (cap 16) while still silent; any heartbeat resets.
+    if l2 {
+        let (n, tx, lh) = (name.clone(), tx.clone(), last_hb.clone());
+        let mut peers = vec![b1.id, b2.id];
+        peers.extend((1..=3u8).filter(|t| *t != k).map(|t| key(10 + t).public()));
+        tokio::spawn(async move {
+            let (mut count, mut next_at) = (0u32, 0u128);
+            loop {
+                sleep(Duration::from_millis(250)).await;
+                let now = now_ms();
+                let silent = now.saturating_sub(u128::from(lh.load(Ordering::Relaxed)));
+                if silent < t_ms {
+                    (count, next_at) = (0, 0);
+                    continue;
+                }
+                if now < next_at {
+                    continue;
+                }
+                count += 1;
+                next_at = now + u128::from((2000u64 << (count - 1).min(3)).min(16_000));
+                let t = Instant::now();
+                let r = timeout(Duration::from_secs(5), tx.join_peers(peers.clone())).await;
+                ev(&n, "REJOIN", format!("n={count} silent_ms={silent} join_peers={} ms={}", if matches!(r, Ok(Ok(()))) { "ok" } else { "err/timeout" }, t.elapsed().as_millis()));
             }
         });
     }
@@ -569,6 +633,22 @@ fn nd_stats(l: &[Rec], t0: u128, m: &mut Meas) {
     }
 }
 
+/// E12: when L1 fired and when the re-home followed; how many rejoins L2 issued and when (after the kill, and before it).
+fn l12_stats(l: &[Rec], t0: u128, rehome: Option<u128>, m: &mut Meas) {
+    for me in ["M1", "M2", "M3"] {
+        let fire = first_ts(l, t0, |r| r.who == me && r.kind == "L1_FIRE");
+        put(m, format!("{me} L1 fired"), rel(fire, t0));
+        put(m, format!("{me} L1 fire count"), Some(l.iter().filter(|r| r.who == me && r.kind == "L1_FIRE").count() as f64));
+        if me == "M1" {
+            put(m, "M1 re-home minus L1 fire", fire.zip(rehome).map(|(f, h)| h as f64 - f as f64));
+        }
+        let rj = |after: u128, before: u128| l.iter().filter(|r| r.who == me && r.kind == "REJOIN" && r.ts >= after && r.ts < before).count() as f64;
+        put(m, format!("{me} REJOIN count after kill"), Some(rj(t0, u128::MAX)));
+        put(m, format!("{me} REJOIN count before kill"), Some(rj(0, t0)));
+        put(m, format!("{me} first REJOIN"), rel(first_ts(l, t0, |r| r.who == me && r.kind == "REJOIN"), t0));
+    }
+}
+
 fn last_state(l: &[Rec], who: &str, kind: &str) -> String {
     l.iter().rev().find(|r| r.who == who && r.kind == kind).map_or("?".into(), |r| r.rest.clone())
 }
@@ -632,6 +712,7 @@ async fn scenario_12(log: &Log, restart: bool, ctrl: &str) -> Res<(Meas, u128)> 
         put(&mut m, format!("{a} last HB from {b}"), rel(l.iter().filter(|r| r.who == a && r.kind == "RX" && r.rest.starts_with(&pat) && r.ts <= end).map(|r| r.ts).max(), t0));
     }
     nd_stats(&l, t0, &mut m);
+    l12_stats(&l, t0, rehome, &mut m);
     if let Some(tr) = t_restart {
         put(&mut m, "restart at", rel(Some(tr), t0));
         put(&mut m, "M1 addr lists R1 again (after restart)", rel(first_ts(&l, tr, |r| r.who == "M1" && r.kind == "ADDR" && r.rest.contains(&u1)), tr));
@@ -764,7 +845,7 @@ fn trace(l: &[Rec], t0: u128, from: u128) -> String {
                 if *c > 1 { continue; }
                 Some(format!("{} STATUS {}", r.who, r.rest))
             }
-            "ADDR" | "NU" | "ND" | "JOIN_START" | "JOINED" | "JOIN_FAIL" | "ONLINE" | "BOUND" | "KILL" | "RESTART" | "RELAY_UP" | "FINAL" => Some(format!("{} {} {}", r.who, r.kind, r.rest)),
+            "ADDR" | "L1_FIRE" | "L1_DONE" | "L1_SKIP" | "REJOIN" | "NU" | "ND" | "JOIN_START" | "JOINED" | "JOIN_FAIL" | "ONLINE" | "BOUND" | "KILL" | "RESTART" | "RELAY_UP" | "FINAL" => Some(format!("{} {} {}", r.who, r.kind, r.rest)),
             _ => continue,
         };
         if let Some(s) = line {

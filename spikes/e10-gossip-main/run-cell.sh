@@ -5,6 +5,7 @@
 #   tag "np"  = no probers (E8_NOPROBE=1), 88 s window
 #   tag "npw" = no probers, 180 s window (supplementary)
 #   tag "w"   = probers on, 180 s window (supplementary)
+#   E12 tags: l12 = L1+L2, probers on; l12np = L1+L2, probers off; l1np = L1 only, probers off; l2np = L2 only, probers off (88 s)
 #   any other tag (use "-") = probers on, 88 s window, as E8
 set -u
 variant=$1
@@ -21,6 +22,10 @@ case "$tag" in
     export E8_NOPROBE=1
     export E8_TAG=np
     ;;
+  l12) export E12_L1=1 E12_L2=1 E8_TAG=l12 ;;
+  l12np) export E12_L1=1 E12_L2=1 E8_NOPROBE=1 E8_TAG=l12np ;;
+  l1np) export E12_L1=1 E8_NOPROBE=1 E8_TAG=l1np ;;
+  l2np) export E12_L2=1 E8_NOPROBE=1 E8_TAG=l2np ;;
   npw)
     export E8_NOPROBE=1
     export E8_TAG=npw
