@@ -1,0 +1,44 @@
+11:30:51.500818 IP A_PUBLIC.52323 > 178.105.88.14.80: Flags [S], seq 3117050238, win 65535, options [mss 1460,nop,wscale 6,nop,nop,TS val 4163900069 ecr 0,sackOK,eol], length 0
+11:30:51.501298 IP A_PUBLIC.52324 > 178.105.88.14.80: Flags [S], seq 1478155692, win 65535, options [mss 1460,nop,wscale 6,nop,nop,TS val 2240502363 ecr 0,sackOK,eol], length 0
+11:30:51.538976 IP A_PUBLIC.52323 > 178.105.88.14.80: Flags [.], ack 3921191032, win 2058, options [nop,nop,TS val 4163900108 ecr 826689793], length 0
+11:30:51.538977 IP A_PUBLIC.52323 > 178.105.88.14.80: Flags [P.], seq 0:118, ack 1, win 2058, options [nop,nop,TS val 4163900108 ecr 826689793], length 118: HTTP: GET /generate_204
+.0..1FI.GET /generate_204 HTTP/1.1
+x-iroh-challenge: ts_178-105-88-14.sslip.io
+accept: */*
+host: 178-105-88-14.sslip.io
+11:30:51.538977 IP A_PUBLIC.52324 > 178.105.88.14.80: Flags [.], ack 7123376, win 2058, options [nop,nop,TS val 2240502402 ecr 826689793], length 0
+11:30:51.540091 IP A_PUBLIC.52324 > 178.105.88.14.80: Flags [P.], seq 0:65, ack 1, win 2058, options [nop,nop,TS val 2240502402 ecr 826689793], length 65: HTTP: GET /ping HTTP/1.1
+..Z.1FI.GET /ping HTTP/1.1
+accept: */*
+host: 178-105-88-14.sslip.io
+11:30:51.576814 IP A_PUBLIC.52323 > 178.105.88.14.80: Flags [.], ack 334, win 2053, options [nop,nop,TS val 4163900146 ecr 826689831], length 0
+11:30:51.577876 IP A_PUBLIC.52324 > 178.105.88.14.80: Flags [.], ack 324, win 2053, options [nop,nop,TS val 2240502440 ecr 826689832], length 0
+11:30:51.577922 IP A_PUBLIC.52323 > 178.105.88.14.80: Flags [F.], seq 118, ack 334, win 2053, options [nop,nop,TS val 4163900146 ecr 826689831], length 0
+11:30:51.578945 IP A_PUBLIC.52324 > 178.105.88.14.80: Flags [F.], seq 65, ack 324, win 2053, options [nop,nop,TS val 2240502441 ecr 826689832], length 0
+11:30:51.579194 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [S], seq 938763689, win 65535, options [mss 1460,nop,wscale 6,nop,nop,TS val 4135295318 ecr 0,sackOK,eol], length 0
+11:30:51.616205 IP A_PUBLIC.52323 > 178.105.88.14.80: Flags [.], ack 335, win 2053, options [nop,nop,TS val 4163900185 ecr 826689870], length 0
+11:30:51.617149 IP A_PUBLIC.52324 > 178.105.88.14.80: Flags [.], ack 325, win 2053, options [nop,nop,TS val 2240502479 ecr 826689871], length 0
+11:30:51.618186 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [.], ack 4135955302, win 2058, options [nop,nop,TS val 4135295356 ecr 826689871], length 0
+11:30:51.618239 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [P.], seq 0:220, ack 1, win 2058, options [nop,nop,TS val 4135295357 ecr 826689871], length 220: HTTP: GET /relay HTTP/1
+.{.}1FIOGET /relay HTTP/1.1
+Host: 178-105-88-14.sslip.io
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: Wo44aDCY8pSrOVODdjSTHQ==
+Sec-WebSocket-Version: 13
+sec-websocket-protocol: iroh-relay-v2, iroh-relay-v1
+11:30:51.657815 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [.], ack 441, win 2052, options [nop,nop,TS val 4135295397 ecr 826689910], length 0
+11:30:51.658784 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [P.], seq 220:324, ack 441, win 2052, options [nop,nop,TS val 4135295397 ecr 826689910], length 104: HTTP
+11:30:51.697068 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [.], ack 444, win 2051, options [nop,nop,TS val 4135295437 ecr 826689951], length 0
+11:30:51.698161 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [P.], seq 324:1566, ack 444, win 2051, options [nop,nop,TS val 4135295438 ecr 826689951], length 1242: HTTP
+11:30:51.699199 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [P.], seq 1566:1581, ack 444, win 2051, options [nop,nop,TS val 4135295438 ecr 826689951], length 15: HTTP
+11:30:51.738827 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [.], ack 1682, win 2032, options [nop,nop,TS val 4135295478 ecr 826689991], length 0
+11:30:51.738827 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [.], ack 1693, win 2032, options [nop,nop,TS val 4135295478 ecr 826689991], length 0
+11:30:51.741567 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [P.], seq 1581:4191, ack 1693, win 2048, options [nop,nop,TS val 4135295480 ecr 826689991], length 2610: HTTP
+11:30:51.745511 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [P.], seq 4191:5409, ack 1693, win 2048, options [nop,nop,TS val 4135295485 ecr 826689991], length 1218: HTTP
+11:30:51.749945 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [P.], seq 5409:5505, ack 1693, win 2048, options [nop,nop,TS val 4135295490 ecr 826689991], length 96: HTTP
+11:30:51.764347 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [.], ack 1869, win 2045, options [nop,nop,TS val 4135295504 ecr 826690018], length 0
+11:30:51.780263 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [.], ack 3480, win 2022, options [nop,nop,TS val 4135295519 ecr 826690034], length 0
+11:30:51.781195 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [P.], seq 5505:5577, ack 3480, win 2048, options [nop,nop,TS val 4135295520 ecr 826690034], length 72: HTTP
+11:30:51.783311 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [.], ack 4608, win 2030, options [nop,nop,TS val 4135295523 ecr 826690037], length 0
+11:30:51.784448 IP A_PUBLIC.52328 > 178.105.88.14.80: Flags [P.], seq 5577:7008, ack 4608, win 2048, options [nop,nop,TS val 4135295523 ecr 826690037], length 1431: HTTP

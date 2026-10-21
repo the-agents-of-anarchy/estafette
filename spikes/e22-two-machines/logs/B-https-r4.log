@@ -1,0 +1,3 @@
+EV 1792582516334 g22 JOINED ms=225
+EV 1792582636474 g22 SENT n=120
+EV 1792582638334 g22 RXSUM rx=120 distinct_seq=120 max_gap_ms=1016 gaps_over_2s=0 first_rx_at_run_ms=40

@@ -1,0 +1,5 @@
+EV 1792582108091 g21 SIDE t=42ms paths=relay*
+EV 1792582108154 g21 JOINED ms=105
+EV 1792582108293 g21 SIDE t=244ms paths=relay+ip(ip:178.105.88.14:37146)*
+EV 1792582228364 g21 SENT n=120
+EV 1792582230157 g21 RXSUM rx=120 distinct_seq=120 max_gap_ms=1083 gaps_over_2s=0 first_rx_at_run_ms=0

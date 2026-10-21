@@ -1,0 +1,21 @@
+EV 1792581632750 dial TRY i=0 ok online_ms=603 connect_ms=41 echo_ms=84 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=40.0
+EV 1792581633990 dial TRY i=1 ok online_ms=418 connect_ms=40 echo_ms=90 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=38 qrtt_ms=39.5
+EV 1792581635235 dial TRY i=2 ok online_ms=415 connect_ms=43 echo_ms=90 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=40.2
+EV 1792581636471 dial TRY i=3 ok online_ms=409 connect_ms=41 echo_ms=89 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=40.3
+EV 1792581637733 dial TRY i=4 ok online_ms=427 connect_ms=41 echo_ms=89 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=40 qrtt_ms=41.7
+EV 1792581638976 dial TRY i=5 ok online_ms=420 connect_ms=41 echo_ms=85 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=40.0
+EV 1792581640214 dial TRY i=6 ok online_ms=412 connect_ms=41 echo_ms=88 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=40.4
+EV 1792581641461 dial TRY i=7 ok online_ms=415 connect_ms=43 echo_ms=90 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=40.4
+EV 1792581642693 dial TRY i=8 ok online_ms=414 connect_ms=40 echo_ms=85 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=40.0
+EV 1792581643950 dial TRY i=9 ok online_ms=414 connect_ms=41 echo_ms=88 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=40.1
+EV 1792581645183 dial TRY i=10 ok online_ms=411 connect_ms=40 echo_ms=85 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=39.1
+EV 1792581646422 dial TRY i=11 ok online_ms=411 connect_ms=41 echo_ms=88 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=40.4
+EV 1792581647670 dial TRY i=12 ok online_ms=418 connect_ms=40 echo_ms=89 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=39.8
+EV 1792581648918 dial TRY i=13 ok online_ms=413 connect_ms=42 echo_ms=88 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=40 qrtt_ms=40.1
+EV 1792581650158 dial TRY i=14 ok online_ms=415 connect_ms=40 echo_ms=86 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=40.2
+EV 1792581651393 dial TRY i=15 ok online_ms=412 connect_ms=41 echo_ms=89 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=38 qrtt_ms=39.9
+EV 1792581652681 dial TRY i=16 ok online_ms=410 connect_ms=41 echo_ms=85 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=46.8
+EV 1792581653923 dial TRY i=17 ok online_ms=414 connect_ms=40 echo_ms=89 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=40.0
+EV 1792581655170 dial TRY i=18 ok online_ms=415 connect_ms=40 echo_ms=98 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=41.1
+EV 1792581656401 dial TRY i=19 ok online_ms=408 connect_ms=40 echo_ms=88 at_connect=relay* upgrade_ms=none final=relay* steady_echo_ms=39 qrtt_ms=39.8
+EV 1792581656440 dial SUM mode=relay-only relay=http://178-105-88-14.sslip.io/ tries=20 ok=20 final_direct=0 upgraded=0 online_med=414 connect_med=41 echo_med=88 upgrade_med=0 steady_echo_med=39

@@ -1,0 +1,30 @@
+11:37:30.784599 IP A_PUBLIC.53349 > 178.105.88.14.443: Flags [S], seq 1246830178, win 65535, options [mss 1460,nop,wscale 6,nop,nop,TS val 1154861868 ecr 0,sackOK,eol], length 0
+11:37:30.822783 IP A_PUBLIC.53349 > 178.105.88.14.443: Flags [.], ack 2375058656, win 2058, options [nop,nop,TS val 1154861907 ecr 827089076], length 0
+11:37:30.824094 IP A_PUBLIC.53349 > 178.105.88.14.443: Flags [P.], seq 0:249, ack 1, win 2058, options [nop,nop,TS val 1154861907 ecr 827089076], length 249
+11:37:30.864458 IP A_PUBLIC.53349 > 178.105.88.14.443: Flags [.], ack 3728, win 2000, options [nop,nop,TS val 1154861946 ecr 827089116], length 0
+11:37:30.864459 IP A_PUBLIC.53349 > 178.105.88.14.443: Flags [.], ack 3728, win 2048, options [nop,nop,TS val 1154861946 ecr 827089116], length 0
+11:37:30.867195 IP A_PUBLIC.53349 > 178.105.88.14.443: Flags [P.], seq 249:329, ack 3728, win 2048, options [nop,nop,TS val 1154861951 ecr 827089116], length 80
+11:37:30.867195 IP A_PUBLIC.53349 > 178.105.88.14.443: Flags [P.], seq 329:416, ack 3728, win 2048, options [nop,nop,TS val 1154861951 ecr 827089116], length 87
+11:37:30.879326 IP A_PUBLIC.53351 > 178.105.88.14.443: Flags [S], seq 2581546616, win 65535, options [mss 1460,nop,wscale 6,nop,nop,TS val 618075615 ecr 0,sackOK,eol], length 0
+11:37:30.905431 IP A_PUBLIC.53349 > 178.105.88.14.443: Flags [.], ack 3912, win 2045, options [nop,nop,TS val 1154861989 ecr 827089159], length 0
+11:37:30.917208 IP A_PUBLIC.53351 > 178.105.88.14.443: Flags [.], ack 3955658315, win 2058, options [nop,nop,TS val 618075653 ecr 827089171], length 0
+11:37:30.918205 IP A_PUBLIC.53351 > 178.105.88.14.443: Flags [P.], seq 0:340, ack 1, win 2058, options [nop,nop,TS val 618075653 ecr 827089171], length 340
+11:37:30.943423 IP A_PUBLIC.53349 > 178.105.88.14.443: Flags [.], ack 4257, win 2042, options [nop,nop,TS val 1154862027 ecr 827089197], length 0
+11:37:30.944740 IP A_PUBLIC.53349 > 178.105.88.14.443: Flags [P.], seq 416:440, ack 4257, win 2048, options [nop,nop,TS val 1154862027 ecr 827089197], length 24
+11:37:30.944740 IP A_PUBLIC.53351 > 178.105.88.14.443: Flags [F.], seq 340, ack 1, win 2058, options [nop,nop,TS val 618075679 ecr 827089171], length 0
+11:37:30.944782 IP A_PUBLIC.53349 > 178.105.88.14.443: Flags [F.], seq 440, ack 4257, win 2048, options [nop,nop,TS val 1154862027 ecr 827089197], length 0
+11:37:30.945090 IP A_PUBLIC.53352 > 178.105.88.14.443: Flags [S], seq 1295347684, win 65535, options [mss 1460,nop,wscale 6,nop,nop,TS val 3395477609 ecr 0,sackOK,eol], length 0
+11:37:30.958485 IP A_PUBLIC.53351 > 178.105.88.14.443: Flags [R], seq 2581546957, win 0, length 0
+11:37:30.984905 IP A_PUBLIC.53352 > 178.105.88.14.443: Flags [.], ack 3809346595, win 2058, options [nop,nop,TS val 3395477649 ecr 827089237], length 0
+11:37:30.984905 IP A_PUBLIC.53349 > 178.105.88.14.443: Flags [R], seq 1246830620, win 0, length 0
+11:37:30.984973 IP A_PUBLIC.53349 > 178.105.88.14.443: Flags [R], seq 1246830620, win 0, length 0
+11:37:30.985802 IP A_PUBLIC.53352 > 178.105.88.14.443: Flags [P.], seq 0:249, ack 1, win 2058, options [nop,nop,TS val 3395477649 ecr 827089237], length 249
+11:37:30.986146 IP A_PUBLIC.53351 > 178.105.88.14.443: Flags [R], seq 2581546958, win 0, length 0
+11:37:31.024499 IP A_PUBLIC.53352 > 178.105.88.14.443: Flags [.], ack 3728, win 2000, options [nop,nop,TS val 3395477689 ecr 827089278], length 0
+11:37:31.024500 IP A_PUBLIC.53352 > 178.105.88.14.443: Flags [.], ack 3728, win 2048, options [nop,nop,TS val 3395477689 ecr 827089278], length 0
+11:37:31.031905 IP A_PUBLIC.53352 > 178.105.88.14.443: Flags [P.], seq 249:329, ack 3728, win 2048, options [nop,nop,TS val 3395477697 ecr 827089278], length 80
+11:37:31.032960 IP A_PUBLIC.53352 > 178.105.88.14.443: Flags [P.], seq 329:753, ack 3728, win 2048, options [nop,nop,TS val 3395477697 ecr 827089278], length 424
+11:37:31.072486 IP A_PUBLIC.53352 > 178.105.88.14.443: Flags [.], ack 3912, win 2045, options [nop,nop,TS val 3395477735 ecr 827089324], length 0
+11:37:31.072487 IP A_PUBLIC.53352 > 178.105.88.14.443: Flags [.], ack 4402, win 2040, options [nop,nop,TS val 3395477737 ecr 827089325], length 0
+11:37:31.072880 IP A_PUBLIC.53352 > 178.105.88.14.443: Flags [P.], seq 753:2017, ack 4402, win 2048, options [nop,nop,TS val 3395477737 ecr 827089325], length 1264
+11:37:31.073811 IP A_PUBLIC.53352 > 178.105.88.14.443: Flags [P.], seq 2017:2054, ack 4402, win 2048, options [nop,nop,TS val 3395477738 ecr 827089325], length 37

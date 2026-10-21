@@ -65,8 +65,14 @@ impl ProtocolHandler for Echo {
 }
 
 async fn mk(relay: &RelayUrl, seed: Option<u8>, relay_only: bool, lk: &MemoryLookup) -> Res<Endpoint> {
+    // `RelayMap::from(url)` carries QUIC address discovery on UDP 7842; E22_NOQAD drops it.
+    let map = if std::env::var("E22_NOQAD").is_ok() {
+        RelayMap::from(iroh::RelayConfig::new(relay.clone(), None))
+    } else {
+        RelayMap::from(relay.clone())
+    };
     let mut b = Endpoint::builder(Minimal)
-        .relay_mode(RelayMode::Custom(RelayMap::from(relay.clone())))
+        .relay_mode(RelayMode::Custom(map))
         .address_lookup(lk.clone())
         .alpns(vec![ECHO.to_vec()]);
     if let Some(s) = seed {
@@ -75,13 +81,19 @@ async fn mk(relay: &RelayUrl, seed: Option<u8>, relay_only: bool, lk: &MemoryLoo
     if relay_only {
         b = b.clear_ip_transports();
     }
+    if std::env::var("E22_NOPORTMAP").is_ok() {
+        b = b.portmapper_config(iroh::endpoint::PortmapperConfig::Disabled);
+    }
     Ok(b.bind().await?)
 }
 
 fn path_kind(c: &Connection) -> String {
     c.paths()
         .iter()
-        .map(|p| format!("{}{}", if p.is_ip() { "ip" } else if p.is_relay() { "relay" } else { "other" }, if p.is_selected() { "*" } else { "" }))
+        .map(|p| {
+            let kind = if p.is_ip() { format!("ip({})", p.remote_addr()) } else if p.is_relay() { "relay".into() } else { "other".into() };
+            format!("{kind}{}", if p.is_selected() { "*" } else { "" })
+        })
         .collect::<Vec<_>>()
         .join("+")
 }
