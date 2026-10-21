@@ -1,0 +1,54 @@
+CELL variant=a scn=8 tag=z0w runs=1 run0=2101 window_ms=180000 start=2026-10-21T07:59:39Z
+LOAD before: 10:59  up 11 days, 20:43, 2 users, load averages: 1.50 1.35 1.37
+RUN a-8z0w-2101 ok elapsed_s=195
+  M1 HB from M2 resumed: 81238
+  M1 HB from M3 resumed: 81237
+  M1 REBIND count: 10
+  M1 addr lists only R2: 8971
+  M1 first NU B2 after first REBOUND: NA
+  M1 first REBIND: 5559
+  M1 max HB gap from M2: 78713
+  M1 max HB gap from M3: 78711
+  M2 HB from M1 resumed: 81673
+  M2 HB from M3 resumed: 81237
+  M2 REBIND count: 10
+  M2 addr lists only R2: 9531
+  M2 first NU B2 after first REBOUND: NA
+  M2 first REBIND: 6121
+  M2 max HB gap from M1: 78723
+  M2 max HB gap from M3: 78712
+  M3 HB from M1 resumed: 81673
+  M3 HB from M2 resumed: 81238
+  M3 REBIND count: 10
+  M3 addr lists only R2: 9540
+  M3 first NU B2 after first REBOUND: NA
+  M3 first REBIND: 6129
+  M3 max HB gap from M1: 78723
+  M3 max HB gap from M2: 78713
+SUMMARY gossip=a scn=8 variant= runs=1 run0=2101
+  M1 HB from M2 resumed: min 81238 median 81238 max 81238 (n_ok 1/1)
+  M1 HB from M3 resumed: min 81237 median 81237 max 81237 (n_ok 1/1)
+  M1 REBIND count: min 10 median 10 max 10 (n_ok 1/1)
+  M1 addr lists only R2: min 8971 median 8971 max 8971 (n_ok 1/1)
+  M1 first NU B2 after first REBOUND: none (1 runs NA)
+  M1 first REBIND: min 5559 median 5559 max 5559 (n_ok 1/1)
+  M1 max HB gap from M2: min 78713 median 78713 max 78713 (n_ok 1/1)
+  M1 max HB gap from M3: min 78711 median 78711 max 78711 (n_ok 1/1)
+  M2 HB from M1 resumed: min 81673 median 81673 max 81673 (n_ok 1/1)
+  M2 HB from M3 resumed: min 81237 median 81237 max 81237 (n_ok 1/1)
+  M2 REBIND count: min 10 median 10 max 10 (n_ok 1/1)
+  M2 addr lists only R2: min 9531 median 9531 max 9531 (n_ok 1/1)
+  M2 first NU B2 after first REBOUND: none (1 runs NA)
+  M2 first REBIND: min 6121 median 6121 max 6121 (n_ok 1/1)
+  M2 max HB gap from M1: min 78723 median 78723 max 78723 (n_ok 1/1)
+  M2 max HB gap from M3: min 78712 median 78712 max 78712 (n_ok 1/1)
+  M3 HB from M1 resumed: min 81673 median 81673 max 81673 (n_ok 1/1)
+  M3 HB from M2 resumed: min 81238 median 81238 max 81238 (n_ok 1/1)
+  M3 REBIND count: min 10 median 10 max 10 (n_ok 1/1)
+  M3 addr lists only R2: min 9540 median 9540 max 9540 (n_ok 1/1)
+  M3 first NU B2 after first REBOUND: none (1 runs NA)
+  M3 first REBIND: min 6129 median 6129 max 6129 (n_ok 1/1)
+  M3 max HB gap from M1: min 78723 median 78723 max 78723 (n_ok 1/1)
+  M3 max HB gap from M2: min 78713 median 78713 max 78713 (n_ok 1/1)
+LOAD after: 11:02  up 11 days, 20:46, 2 users, load averages: 1.88 1.52 1.43
+CELL end=2026-10-21T08:02:55Z

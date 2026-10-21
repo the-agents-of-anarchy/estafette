@@ -1,0 +1,30 @@
+CELL variant=a scn=8 tag=z3w runs=1 run0=2190 window_ms=180000 start=2026-10-21T07:55:39Z
+LOAD before: 10:55  up 11 days, 20:39, 2 users, load averages: 1.09 1.57 1.46
+RUN a-8z3w-2190 ok elapsed_s=14
+  C first record sent: 22
+  C ready (B2 READY): 22
+  M1 ADDR change to R2 since C start: NA
+  M1 RC in relay map and BC known: 24
+  M1 REBIND count since C start: 0
+  M2 ADDR change to R2 since C start: NA
+  M2 RC in relay map and BC known: 24
+  M2 REBIND count since C start: 0
+  M3 ADDR change to R2 since C start: NA
+  M3 RC in relay map and BC known: 24
+  M3 REBIND count since C start: 0
+  all three members learned C: 24
+SUMMARY gossip=a scn=8 variant= runs=1 run0=2190
+  C first record sent: min 22 median 22 max 22 (n_ok 1/1)
+  C ready (B2 READY): min 22 median 22 max 22 (n_ok 1/1)
+  M1 ADDR change to R2 since C start: none (1 runs NA)
+  M1 RC in relay map and BC known: min 24 median 24 max 24 (n_ok 1/1)
+  M1 REBIND count since C start: min 0 median 0 max 0 (n_ok 1/1)
+  M2 ADDR change to R2 since C start: none (1 runs NA)
+  M2 RC in relay map and BC known: min 24 median 24 max 24 (n_ok 1/1)
+  M2 REBIND count since C start: min 0 median 0 max 0 (n_ok 1/1)
+  M3 ADDR change to R2 since C start: none (1 runs NA)
+  M3 RC in relay map and BC known: min 24 median 24 max 24 (n_ok 1/1)
+  M3 REBIND count since C start: min 0 median 0 max 0 (n_ok 1/1)
+  all three members learned C: min 24 median 24 max 24 (n_ok 1/1)
+LOAD after: 10:55  up 11 days, 20:39, 2 users, load averages: 1.23 1.57 1.46
+CELL end=2026-10-21T07:55:53Z

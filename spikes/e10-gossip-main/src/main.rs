@@ -20,7 +20,7 @@ use std::{
 
 use bytes::Bytes;
 use iroh::{
-    Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr, Watcher,
+    Endpoint, EndpointAddr, EndpointId, RelayConfig as MapRelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey, Signature, TransportAddr, Watcher,
     address_lookup::memory::MemoryLookup,
     endpoint::{Connection, QuicTransportConfig, presets::Minimal},
     protocol::{AcceptError, ProtocolHandler, Router},
@@ -111,6 +111,95 @@ impl ProtocolHandler for Echo {
 enum Msg {
     Announce { from: String, addr: EndpointAddr, n: u64 },
     Hb { from: String, seq: u64 },
+    /// E21: signed infrastructure record (`InfraRec` bytes, host signature, operator certificate).
+    Infra { rec: Vec<u8>, sig: Vec<u8>, cert: Vec<u8> },
+}
+
+// ---------------- E21: self-announcing infrastructure hosts ----------------
+
+/// E21: the operator key (seed 99). Members know its public half; a host holds the operator's signature over its id (`cert`). Gossip names no origin (`delivered_from` is the forwarder), so the host id inside the record is the sender id.
+fn operator() -> SecretKey {
+    key(99)
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+struct InfraRec {
+    host: [u8; 32],
+    relay: String,
+    boot: EndpointAddr,
+    ts: u64,
+}
+
+fn rec_msg(rec: &[u8]) -> Vec<u8> {
+    [b"e21-rec".as_slice(), rec].concat()
+}
+
+fn cert_msg(host: &[u8; 32]) -> Vec<u8> {
+    [b"e21-cert".as_slice(), host.as_slice()].concat()
+}
+
+fn make_cert(host: &EndpointId) -> Vec<u8> {
+    operator().sign(&cert_msg(host.as_bytes())).to_bytes().to_vec()
+}
+
+fn sign_infra(signer: &SecretKey, rec: &InfraRec, cert: Vec<u8>) -> Option<Msg> {
+    let bytes = postcard::to_stdvec(rec).ok()?;
+    let sig = signer.sign(&rec_msg(&bytes)).to_bytes().to_vec();
+    Some(Msg::Infra { rec: bytes, sig, cert })
+}
+
+fn make_infra(host: &SecretKey, relay: &RelayUrl, cert: Vec<u8>, ts: u64) -> Option<Msg> {
+    let id = host.public();
+    let rec = InfraRec { host: *id.as_bytes(), relay: relay.to_string(), boot: EndpointAddr::new(id).with_relay_url(relay.clone()), ts };
+    sign_infra(host, &rec, cert)
+}
+
+fn sig_of(b: &[u8]) -> Option<Signature> {
+    Some(Signature::from_bytes(<&[u8; 64]>::try_from(b).ok()?))
+}
+
+/// A record counts when the operator certified its host id and the host signed the record.
+fn verify_infra(rec: &[u8], sig: &[u8], cert: &[u8], op: &EndpointId) -> Result<(InfraRec, EndpointId, RelayUrl), &'static str> {
+    let r: InfraRec = postcard::from_bytes(rec).map_err(|_| "bad record")?;
+    let host = EndpointId::from_bytes(&r.host).map_err(|_| "bad host id")?;
+    op.verify(&cert_msg(&r.host), &sig_of(cert).ok_or("bad cert length")?).map_err(|_| "not a host: operator certificate invalid")?;
+    host.verify(&rec_msg(rec), &sig_of(sig).ok_or("bad sig length")?).map_err(|_| "signature does not match host id")?;
+    let relay: RelayUrl = r.relay.parse().map_err(|_| "bad relay url")?;
+    if r.boot.id != host {
+        return Err("bootstrap address is not the host's");
+    }
+    Ok((r, host, relay))
+}
+
+/// E21: hosts a member knows: bootstrap id plus its relay URL, in the order tried at (re)join.
+type Known = Arc<Mutex<Vec<(EndpointId, RelayUrl)>>>;
+
+/// Static hosts from the `order` argument: `1` = host A (key 1, relay p1), `2` = host C (key 2, relay p2). `12` and `21` are the E8 orders.
+fn hosts_of(order: &str, p1: u16, p2: u16) -> Vec<(EndpointId, RelayUrl)> {
+    order
+        .chars()
+        .filter_map(|c| match c {
+            '1' => Some((key(1).public(), relay_url(p1))),
+            '2' => Some((key(2).public(), relay_url(p2))),
+            _ => None,
+        })
+        .collect()
+}
+
+fn known_file(name: &str) -> Option<String> {
+    std::env::var("E21_DIR").ok().map(|d| format!("{d}/known-{name}.txt"))
+}
+
+/// The saved file: one host per line, `<endpoint id, 64 hex> <relay url>`.
+fn save_known(name: &str, k: &[(EndpointId, RelayUrl)]) {
+    if let Some(p) = known_file(name) {
+        let _ = std::fs::write(p, k.iter().map(|(i, u)| format!("{i} {u}\n")).collect::<String>());
+    }
+}
+
+fn load_known(name: &str) -> Vec<(EndpointId, RelayUrl)> {
+    let Some(txt) = known_file(name).and_then(|p| std::fs::read_to_string(p).ok()) else { return vec![] };
+    txt.lines().filter_map(|l| l.split_once(' ')).filter_map(|(i, u)| Some((i.parse().ok()?, u.parse().ok()?))).collect()
 }
 
 fn quic() -> QuicTransportConfig {
@@ -146,9 +235,9 @@ async fn start_relay(n: u8, port: u16) -> Res<Server> {
     Ok(srv)
 }
 
-async fn relay_proc(n: u8, port: u16) -> Res<()> {
+async fn relay_proc(n: u8, port: u16, via: Option<u16>) -> Res<()> {
     let _srv = start_relay(n, port).await?;
-    boot_node(n, port).await
+    boot_node(n, port, via).await
 }
 
 /// Relay without a bootstrap node (control 7: B1 runs in its own process).
@@ -158,19 +247,37 @@ async fn relay_only(n: u8, port: u16) -> Res<()> {
 }
 
 /// Bootstrap node Bn: stable key, relay map = relay Rn only, gossip on the shared topic.
-async fn boot_node(n: u8, port: u16) -> Res<()> {
+/// E21 (`via` = port of host A's relay): the node joins the topic through host A (id key 1, relay URL from `via`), with only its own relay in its map. With `E21_HOST` set it broadcasts its signed infrastructure record when it has joined and every `E21_REC_PERIOD_MS` (5000).
+async fn boot_node(n: u8, port: u16, via: Option<u16>) -> Res<()> {
     init_trace(&format!("B{n}"));
-    let ep = Endpoint::builder(Minimal)
-        .relay_mode(RelayMode::Custom(RelayMap::from(relay_url(port))))
-        .clear_ip_transports()
-        .secret_key(key(n))
-        .transport_config(quic())
-        .bind()
-        .await?;
+    let lk = MemoryLookup::new();
+    let mut b = Endpoint::builder(Minimal).relay_mode(RelayMode::Custom(RelayMap::from(relay_url(port)))).clear_ip_transports().secret_key(key(n)).transport_config(quic());
+    if let Some(pa) = via {
+        lk.add_endpoint_info(EndpointAddr::new(key(1).public()).with_relay_url(relay_url(pa)));
+        b = b.address_lookup(lk.clone());
+    }
+    let ep = b.bind().await?;
     let gossip = Gossip::builder().spawn(ep.clone());
     let _router = Router::builder(ep.clone()).accept(GOSSIP_ALPN, gossip.clone()).spawn();
-    let (_tx, mut rx) = gossip.subscribe(topic(), vec![]).await?.split();
+    let topic_h = if via.is_some() { gossip.subscribe_and_join(topic(), vec![key(1).public()]).await? } else { gossip.subscribe(topic(), vec![]).await? };
+    let (tx, mut rx) = topic_h.split();
     let bw = format!("B{n}");
+    if std::env::var("E21_HOST").is_ok() {
+        let (sk, relay, cert) = (key(n), relay_url(port), make_cert(&ep.id()));
+        let period = std::env::var("E21_REC_PERIOD_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(5000);
+        let bw2 = bw.clone();
+        tokio::spawn(async move {
+            loop {
+                if let Some(Msg::Infra { rec, sig, cert }) = make_infra(&sk, &relay, cert.clone(), now_ms() as u64) {
+                    if let Ok(b) = postcard::to_stdvec(&Msg::Infra { rec, sig, cert }) {
+                        let r = tx.broadcast(Bytes::from(b)).await;
+                        ev(&bw2, "INFRA_SENT", if r.is_ok() { "ok" } else { "err" });
+                    }
+                }
+                sleep(Duration::from_millis(period)).await;
+            }
+        });
+    }
     ev(&bw, "READY", ep.id().fmt_short());
     while let Some(e) = rx.next().await {
         match e {
@@ -184,10 +291,11 @@ async fn boot_node(n: u8, port: u16) -> Res<()> {
 
 // ---------------- member process ----------------
 
-async fn bind_member(k: u8, urls: &[RelayUrl], lk: &MemoryLookup, want: Option<&RelayUrl>) -> Res<Endpoint> {
+async fn bind_member(k: u8, urls: &[RelayUrl], lk: &MemoryLookup, want: Option<&RelayUrl>) -> Res<(Endpoint, RelayMap)> {
     for _ in 0..40 {
+        let map = RelayMap::from_iter(urls.to_vec());
         let ep = Endpoint::builder(Minimal)
-            .relay_mode(RelayMode::Custom(RelayMap::from_iter(urls.to_vec())))
+            .relay_mode(RelayMode::Custom(map.clone()))
             .clear_ip_transports()
             .secret_key(key(10 + k))
             .transport_config(quic())
@@ -195,10 +303,10 @@ async fn bind_member(k: u8, urls: &[RelayUrl], lk: &MemoryLookup, want: Option<&
             .alpns(vec![ECHO.to_vec()])
             .bind()
             .await?;
-        let Some(want) = want else { return Ok(ep) };
+        let Some(want) = want else { return Ok((ep, map)) };
         let _ = timeout(Duration::from_secs(10), ep.online()).await;
         if ep.addr().relay_urls().cloned().collect::<Vec<_>>() == [want.clone()] {
-            return Ok(ep);
+            return Ok((ep, map));
         }
         ep.close().await;
     }
@@ -237,14 +345,36 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
         2 => Some(&u2),
         _ => None,
     };
-    let mut ep = bind_member(k, &[u1.clone(), u2.clone()], &lk, want).await?;
+    // E21: the hosts this member knows come from `order` (and, with `L`, from the saved file); records learned later join them. The relay map of every (re)bind is built from them.
+    let known: Known = Arc::new(Mutex::new(hosts_of(&order, p1, p2)));
+    if order.contains('L') {
+        let loaded = load_known(&name);
+        ev(&name, "LOADED", format!("hosts={}", loaded.len()));
+        if let Ok(mut g) = known.lock() {
+            for h in loaded {
+                if !g.contains(&h) {
+                    g.push(h);
+                }
+            }
+        }
+    }
+    let relays_of = |known: &Known, dead: &HashSet<RelayUrl>| -> Vec<RelayUrl> {
+        let mut v: Vec<RelayUrl> = vec![];
+        for (_, u) in known.lock().map(|g| g.clone()).unwrap_or_default() {
+            if !v.contains(&u) && !dead.contains(&u) {
+                v.push(u);
+            }
+        }
+        v
+    };
+    let (mut ep, mut relay_map) = bind_member(k, &relays_of(&known, &HashSet::new()), &lk, want).await?;
     ev(&name, "BOUND", format!("home_want={home} relays=[{}]", urls_str(ep.addr().relay_urls())));
     // E15 W1 (`E15_W1`, `E15_W1_T_MS` default 3000): rebind when no heartbeat arrived for T ms. `session` returns only then.
     let w1 = std::env::var("E15_W1").is_ok().then(|| std::env::var("E15_W1_T_MS").ok().and_then(|v| v.parse::<u128>().ok()).unwrap_or(3000));
     let dead: Arc<Mutex<HashSet<RelayUrl>>> = Arc::default();
     let (mut last_rebind, mut n) = (None, 0u32);
     loop {
-        let silent = session(name.clone(), k, order.clone(), u1.clone(), u2.clone(), lk.clone(), ep.clone(), dead.clone(), w1, last_rebind).await?;
+        let silent = session(name.clone(), k, known.clone(), relay_map.clone(), lk.clone(), ep.clone(), dead.clone(), w1, last_rebind).await?;
         n += 1;
         last_rebind = Some(Instant::now());
         ev(&name, "REBIND", format!("n={n} silent_ms={silent}"));
@@ -256,7 +386,7 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
         // E17 C2 (`E17_PROBE`): probe each configured relay with a TCP connect (1 s); a relay that refuses or times out is dropped from the address book entries of the other members before the new endpoint binds.
         if std::env::var("E17_PROBE").is_ok() {
             let mut down: HashSet<RelayUrl> = HashSet::new();
-            for u in [&u1, &u2] {
+            for u in &relays_of(&known, &HashSet::new()) {
                 if !relay_up(u).await {
                     down.insert(u.clone());
                 }
@@ -264,24 +394,25 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
             ev(&name, "PROBE_RELAYS", format!("down=[{}]", urls_str(down.iter())));
             scrub(&lk, &down, k);
         }
-        let urls: Vec<RelayUrl> = [&u1, &u2].into_iter().filter(|u| !dead.lock().is_ok_and(|g| g.contains(*u))).cloned().collect();
+        let urls = relays_of(&known, &dead.lock().map(|g| g.clone()).unwrap_or_default());
         let t = Instant::now();
-        ep = bind_member(k, &urls, &lk, None).await?;
+        (ep, relay_map) = bind_member(k, &urls, &lk, None).await?;
         ev(&name, "REBOUND", format!("n={n} ms={} relays=[{}]", t.elapsed().as_millis(), urls_str(ep.addr().relay_urls())));
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn session(name: String, k: u8, order: String, u1: RelayUrl, u2: RelayUrl, lk: MemoryLookup, ep: Endpoint, dead: Arc<Mutex<HashSet<RelayUrl>>>, w1: Option<u128>, last_rebind: Option<Instant>) -> Res<u128> {
+async fn session(name: String, k: u8, known: Known, relay_map: RelayMap, lk: MemoryLookup, ep: Endpoint, dead: Arc<Mutex<HashSet<RelayUrl>>>, w1: Option<u128>, last_rebind: Option<Instant>) -> Res<u128> {
     let payload = std::env::var("E8_PAYLOAD").is_ok();
     let mut js = tokio::task::JoinSet::new();
     let t_bind = Instant::now();
-    // Bootstrap addresses: id plus its own relay URL.
-    let b1 = EndpointAddr::new(key(1).public()).with_relay_url(u1.clone());
-    let b2 = EndpointAddr::new(key(2).public()).with_relay_url(u2.clone());
-    lk.add_endpoint_info(b1.clone());
-    lk.add_endpoint_info(b2.clone());
-    let boot: Vec<EndpointId> = if order == "21" { vec![b2.id, b1.id] } else { vec![b1.id, b2.id] };
+    // Bootstrap addresses: id plus its own relay URL, for every host known now (E21: static order, saved file, learned records).
+    let hosts = known.lock().map(|g| g.clone()).unwrap_or_default();
+    for (id, u) in &hosts {
+        lk.add_endpoint_info(EndpointAddr::new(*id).with_relay_url(u.clone()));
+    }
+    let boot: Vec<EndpointId> = hosts.iter().map(|h| h.0).collect();
+    let order = boot.iter().map(|i| id_name(i)).collect::<Vec<_>>().join("+");
     let gossip = Gossip::builder().spawn(ep.clone());
     let _router = Router::builder(ep.clone()).accept(GOSSIP_ALPN, gossip.clone()).accept(ECHO, Echo).spawn();
     {
@@ -351,7 +482,7 @@ async fn session(name: String, k: u8, order: String, u1: RelayUrl, u2: RelayUrl,
     let t_join = Instant::now();
     // E18 counter (`E18_JOIN_T_MS`, default 60000): a join that sees no NeighborUp within T ms fails, and W1 then rebinds, which closes the connection to the bootstrap node.
     let join_t = std::env::var("E18_JOIN_T_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(60_000);
-    let topic_h = timeout(Duration::from_millis(join_t), gossip.subscribe_and_join(topic(), boot)).await;
+    let topic_h = timeout(Duration::from_millis(join_t), gossip.subscribe_and_join(topic(), boot.clone())).await;
     let Ok(Ok(th)) = topic_h else {
         ev(&name, "JOIN_FAIL", format!("after_ms={}", t_join.elapsed().as_millis()));
         if w1.is_some() {
@@ -366,7 +497,7 @@ async fn session(name: String, k: u8, order: String, u1: RelayUrl, u2: RelayUrl,
     let (tx, mut rx) = th.split();
     let nbrs: Arc<Mutex<std::collections::HashSet<EndpointId>>> = Arc::default();
     {
-        let (n, lk, nb, lh) = (name.clone(), lk.clone(), nbrs.clone(), last_hb.clone());
+        let (n, lk, nb, lh, kn, ep2, rm) = (name.clone(), lk.clone(), nbrs.clone(), last_hb.clone(), known.clone(), ep.clone(), relay_map.clone());
         js.spawn(async move {
             while let Some(e) = rx.next().await {
                 match e {
@@ -393,6 +524,26 @@ async fn session(name: String, k: u8, order: String, u1: RelayUrl, u2: RelayUrl,
                                 lk.set_endpoint_info(addr);
                             }
                         }
+                        Ok(Msg::Infra { rec, sig, cert }) => match verify_infra(&rec, &sig, &cert, &operator().public()) {
+                            Err(why) => ev(&n, "INFRA_REJECT", why.replace(' ', "_")),
+                            Ok((r, host, relay)) => {
+                                let (is_new, n_hosts, snap) = kn.lock().map_or((false, 0, vec![]), |mut g| {
+                                    if g.iter().any(|(i, u)| *i == host && *u == relay) {
+                                        return (false, g.len(), vec![]);
+                                    }
+                                    g.retain(|(i, _)| *i != host);
+                                    g.push((host, relay.clone()));
+                                    (true, g.len(), g.clone())
+                                });
+                                if is_new {
+                                    lk.add_endpoint_info(r.boot.clone());
+                                    let t = Instant::now();
+                                    let prev = ep2.insert_relay(relay.clone(), Arc::new(MapRelayConfig::from(relay.clone()))).await;
+                                    ev(&n, "HOSTS_LEARNED", format!("host={} relay={} insert_ms={} replaced={} in_map={} n_hosts={n_hosts}", id_name(&host), urls_str(std::iter::once(&relay)), t.elapsed().as_millis(), prev.is_some(), rm.contains(&relay)));
+                                    save_known(&n, &snap);
+                                }
+                            }
+                        },
                         Err(e) => ev(&n, "RX", format!("bad {}", short(e))),
                     },
                     Ok(other) => ev(&n, "EVT", short(format!("{other:?}"))),
@@ -447,7 +598,7 @@ async fn session(name: String, k: u8, order: String, u1: RelayUrl, u2: RelayUrl,
     // Optional (E8_REJOIN): when the neighbor set is empty, call join_peers(bootstrap) every 5 s.
     if std::env::var("E8_REJOIN").is_ok() {
         let (n, tx, nb) = (name.clone(), tx.clone(), nbrs.clone());
-        let boot2 = vec![b1.id, b2.id];
+        let boot2 = boot.clone();
         js.spawn(async move {
             loop {
                 sleep(Duration::from_secs(5)).await;
@@ -462,7 +613,7 @@ async fn session(name: String, k: u8, order: String, u1: RelayUrl, u2: RelayUrl,
     // L2: no heartbeat from any peer for T ms -> join_peers(bootstrap + other members). First rejoin at T, then every 2, 4, 8, 16 s (cap 16) while still silent; any heartbeat resets.
     if l2 {
         let (n, tx, lh) = (name.clone(), tx.clone(), last_hb.clone());
-        let mut peers = vec![b1.id, b2.id];
+        let mut peers = boot.clone();
         peers.extend((1..=3u8).filter(|t| *t != k).map(|t| key(10 + t).public()));
         js.spawn(async move {
             let (mut count, mut next_at) = (0u32, 0u128);
@@ -624,6 +775,11 @@ struct Stack {
 
 fn relay_args(n: u8, port: u16) -> Vec<String> {
     vec!["relay".into(), n.to_string(), port.to_string()]
+}
+
+/// E21: a host process that joins the topic through host A's relay port `via`.
+fn host_args(n: u8, port: u16, via: u16) -> Vec<String> {
+    vec!["relay".into(), n.to_string(), port.to_string(), via.to_string()]
 }
 
 fn member_args(k: u8, home: u8, p1: u16, p2: u16, order: &str) -> Vec<String> {
@@ -910,6 +1066,175 @@ async fn scenario_4(log: &Log) -> Res<(Meas, u128)> {
     Ok((m, t0))
 }
 
+/// E21: wait until the three members have JOINED and every pair has a heartbeat and a probe (as `setup`).
+async fn await_mesh(log: &Log) -> Res<()> {
+    if !wait_for(log, Duration::from_secs(150), |l| (1..=3).all(|k| has(l, &format!("M{k}"), "JOINED", "", 0))).await {
+        return Err("members not joined".into());
+    }
+    let ok = wait_for(log, Duration::from_secs(40), |l| {
+        (1..=3).all(|k| {
+            let me = format!("M{k}");
+            (1..=3).filter(|t| *t != k).all(|t| has(l, &me, "PROBE", &format!("tgt=M{t} ok"), 0) && l.iter().any(|r| r.who == me && r.kind == "RX" && r.rest.starts_with(&format!("hb from=M{t} "))))
+        })
+    })
+    .await;
+    if !ok {
+        return Err("mesh not healthy".into());
+    }
+    sleep(Duration::from_secs(3)).await;
+    Ok(())
+}
+
+/// E21 start-up shared by scenarios 8 and 9: host A (R1+B1) up, members M1..M3 homed on R1; with `stat` host C (R2+B2) is up before the members and is in their static config (order `12`), otherwise it is started later and the members know only A (order `1`).
+async fn start_21(log: &Log, stat: bool) -> Res<Stack> {
+    let (p1, p2) = (free_port(), free_port());
+    let r1 = spawn_child(log, &relay_args(1, p1))?;
+    if !wait_for(log, Duration::from_secs(20), |l| has(l, "R1", "RELAY_UP", "", 0) && has(l, "B1", "READY", "", 0)).await {
+        return Err("host A not ready".into());
+    }
+    let mut r2 = None;
+    if stat {
+        r2 = Some(spawn_child(log, &host_args(2, p2, p1))?);
+        if !wait_for(log, Duration::from_secs(20), |l| has(l, "B2", "READY", "", 0)).await {
+            return Err("host C not ready".into());
+        }
+    }
+    let mut members = vec![];
+    let homes = std::env::var("E21_HOMES").unwrap_or_else(|_| "111".into());
+    for k in 1..=3u8 {
+        let home = homes.chars().nth(usize::from(k) - 1).and_then(|c| c.to_digit(10)).map_or(1, |d| d as u8);
+        members.push(spawn_child(log, &member_args(k, home, p1, p2, if stat { "12" } else { "1" }))?);
+    }
+    await_mesh(log).await?;
+    Ok(Stack { r1: Some(r1), b1: None, r2, members, p1, p2 })
+}
+
+/// E21 H1: start host C (arm only) and wait until all members learned it. Returns the start time.
+async fn add_host_c(log: &Log, st: &mut Stack, m: &mut Meas) -> Res<u128> {
+    let t_c = now_ms();
+    cev(log, t_c, "C_START", "host C (R2+B2) starts and joins through B1");
+    st.r2 = Some(spawn_child(log, &host_args(2, st.p2, st.p1))?);
+    let u2 = urls_str(std::iter::once(&relay_url(st.p2)));
+    let ok = wait_for(log, Duration::from_secs(60), |l| (1..=3).all(|k| has(l, &format!("M{k}"), "HOSTS_LEARNED", &format!("host=B2 relay={u2}"), t_c))).await;
+    let l = snap(log);
+    put(m, "C ready (B2 READY)", rel(first_ts(&l, t_c, |r| r.who == "B2" && r.kind == "READY"), t_c));
+    put(m, "C first record sent", rel(first_ts(&l, t_c, |r| r.who == "B2" && r.kind == "INFRA_SENT"), t_c));
+    let mut worst = Some(0.0f64);
+    for k in 1..=3 {
+        let me = format!("M{k}");
+        let t = rel(first_ts(&l, t_c, |r| r.who == me && r.kind == "HOSTS_LEARNED" && r.rest.starts_with(&format!("host=B2 relay={u2}"))), t_c);
+        put(m, format!("{me} RC in relay map and BC known"), t);
+        worst = match (worst, t) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            _ => None,
+        };
+        let rest = l.iter().find(|r| r.who == me && r.kind == "HOSTS_LEARNED" && r.ts >= t_c).map(|r| r.rest.clone()).unwrap_or_default();
+        cev(log, now_ms(), "H1", format!("{me} {rest}"));
+        put(m, format!("{me} REBIND count since C start"), Some(l.iter().filter(|r| r.who == me && r.kind == "REBIND" && r.ts >= t_c).count() as f64));
+        put(m, format!("{me} ADDR change to R2 since C start"), rel(first_ts(&l, t_c, |r| r.who == me && r.kind == "ADDR" && r.rest == format!("relays=[{u2}]")), t_c));
+    }
+    put(m, "all three members learned C", worst);
+    if !ok {
+        cev(log, now_ms(), "H1", "NOT all members learned C within 60 s");
+    }
+    Ok(t_c)
+}
+
+/// E21 scenarios 8 (H1, H2, H3) and the control (`E21_STATIC`): kill host A after C is known, measure heartbeats; arm only: a new member knowing only C joins after the window.
+async fn scenario_21(log: &Log) -> Res<(Meas, u128)> {
+    let stat = std::env::var("E21_STATIC").is_ok();
+    let mut st = start_21(log, stat).await?;
+    let p2 = st.p2;
+    let mut m = Meas::new();
+    if !stat {
+        add_host_c(log, &mut st, &mut m).await?;
+    }
+    sleep(Duration::from_secs(10)).await;
+    if std::env::var("E21_STOP_H1").is_ok() {
+        return Ok((m, now_ms()));
+    }
+    let t0 = kill(&mut st.r1).await;
+    cev(log, t0, "KILL", format!("host A (R1+B1), static_c={stat}"));
+    let window = std::env::var("E10_WINDOW_MS").ok().and_then(|v| v.parse::<u128>().ok()).unwrap_or(88_000u128);
+    sleep(Duration::from_millis(u64::try_from((t0 + window).saturating_sub(now_ms()))?)).await;
+    let l = snap(log);
+    let end = t0 + window;
+    let u2 = urls_str(std::iter::once(&relay_url(p2)));
+    for k in 1..=3 {
+        let me = format!("M{k}");
+        put(&mut m, format!("{me} addr lists only R2"), rel(first_ts(&l, t0, |r| r.who == me && r.kind == "ADDR" && r.rest == format!("relays=[{u2}]")), t0));
+        put(&mut m, format!("{me} first REBIND"), rel(first_ts(&l, t0, |r| r.who == me && r.kind == "REBIND"), t0));
+        put(&mut m, format!("{me} REBIND count"), Some(l.iter().filter(|r| r.who == me && r.kind == "REBIND" && r.ts >= t0).count() as f64));
+        put(&mut m, format!("{me} first NU B2 after first REBOUND"), first_ts(&l, t0, |r| r.who == me && r.kind == "REBOUND").and_then(|rb| rel(first_ts(&l, rb, |r| r.who == me && r.kind == "NU" && r.rest == "B2"), t0)));
+    }
+    for (a, b) in [("M1", "M2"), ("M1", "M3"), ("M2", "M1"), ("M2", "M3"), ("M3", "M1"), ("M3", "M2")] {
+        let (g, r) = hb_gap(&l, a, b, t0, end);
+        put(&mut m, format!("{a} max HB gap from {b}"), Some(g));
+        put(&mut m, format!("{a} HB from {b} resumed"), r);
+    }
+    if !stat {
+        st.members.push(spawn_child(log, &member_args(4, 0, st.p1, st.p2, "2"))?);
+        wait_for(log, Duration::from_secs(40), |l| {
+            has(l, "M4", "JOIN_FAIL", "", 0) || (1..=3).all(|k| l.iter().any(|r| r.who == "M4" && r.kind == "RX" && r.rest.starts_with(&format!("hb from=M{k} "))))
+        })
+        .await;
+        sleep(Duration::from_secs(1)).await;
+        let l = snap(log);
+        let js = first_ts(&l, 0, |r| r.who == "M4" && r.kind == "JOIN_START").unwrap_or(t0);
+        put(&mut m, "H3 M4 joined (ms from join start)", first_ts(&l, 0, |r| r.who == "M4" && r.kind == "JOINED").map(|t| (t - js) as f64));
+        let mut worst = Some(0.0f64);
+        let mut any: Option<f64> = None;
+        for k in 1..=3 {
+            let t = first_ts(&l, 0, |r| r.who == "M4" && r.kind == "RX" && r.rest.starts_with(&format!("hb from=M{k} "))).map(|t| (t - js) as f64);
+            put(&mut m, format!("H3 M4 first HB from M{k}"), t);
+            worst = match (worst, t) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                _ => None,
+            };
+            any = match (any, t) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (None, b) => b,
+                (a, None) => a,
+            };
+        }
+        put(&mut m, "H3 M4 first HB from any member", any);
+        put(&mut m, "H3 M4 HB from all three", worst);
+        put(&mut m, "H3 M4 REBIND count", Some(l.iter().filter(|r| r.who == "M4" && r.kind == "REBIND").count() as f64));
+        put(&mut m, "H3 M4 JOIN_FAIL count", Some(l.iter().filter(|r| r.who == "M4" && r.kind == "JOIN_FAIL").count() as f64));
+    }
+    Ok((m, t0))
+}
+
+/// E21 scenario 9 (saved hosts): as the arm up to C known, then kill host A, restart M3 with the saved file (`order 1L`), start a new member M4 that knows only A (`1`, no file); measure both.
+async fn scenario_21p(log: &Log) -> Res<(Meas, u128)> {
+    let mut st = start_21(log, false).await?;
+    let mut m = Meas::new();
+    add_host_c(log, &mut st, &mut m).await?;
+    sleep(Duration::from_secs(5)).await;
+    let t0 = kill(&mut st.r1).await;
+    cev(log, t0, "KILL", "host A (R1+B1)");
+    sleep(Duration::from_secs(3)).await;
+    let _ = st.members[2].start_kill();
+    let _ = st.members[2].wait().await;
+    let t1 = now_ms();
+    cev(log, t1, "M3_RESTART", "M3 killed and restarted (order 1L, saved file; with E21_NOFILE order 1)");
+    st.members[2] = spawn_child(log, &member_args(3, 0, st.p1, st.p2, if std::env::var("E21_NOFILE").is_ok() { "1" } else { "1L" }))?;
+    st.members.push(spawn_child(log, &member_args(4, 0, st.p1, st.p2, "1"))?);
+    sleep(Duration::from_secs(45)).await;
+    let l = snap(log);
+    let after = |who: &str, kind: &str| first_ts(&l, t1, |r| r.who == who && r.kind == kind);
+    put(&mut m, "M3 restart: LOADED hosts", l.iter().rev().find(|r| r.who == "M3" && r.kind == "LOADED").and_then(|r| r.rest.strip_prefix("hosts=")).and_then(|v| v.parse().ok()));
+    put(&mut m, "M3 restart: JOINED after restart (s)", rel(after("M3", "JOINED"), t1).map(|v| v / 1000.0));
+    for k in [1, 2] {
+        put(&mut m, format!("M3 restart: first HB from M{k} (s after restart)"), rel(first_ts(&l, t1, |r| r.who == "M3" && r.kind == "RX" && r.rest.starts_with(&format!("hb from=M{k} "))), t1).map(|v| v / 1000.0));
+    }
+    put(&mut m, "M3 restart: JOIN_FAIL count", Some(l.iter().filter(|r| r.who == "M3" && r.kind == "JOIN_FAIL" && r.ts >= t1).count() as f64));
+    put(&mut m, "M4 (no file): JOINED (s after restart)", rel(after("M4", "JOINED"), t1).map(|v| v / 1000.0));
+    put(&mut m, "M4 (no file): JOIN_FAIL count", Some(l.iter().filter(|r| r.who == "M4" && r.kind == "JOIN_FAIL").count() as f64));
+    put(&mut m, "M4 (no file): HB received count", Some(l.iter().filter(|r| r.who == "M4" && r.kind == "RX" && r.rest.starts_with("hb ")).count() as f64));
+    Ok((m, t0))
+}
+
 /// Trace: state changes only, ms relative to `t0`.
 fn trace(l: &[Rec], t0: u128, from: u128) -> String {
     let mut out = String::new();
@@ -940,7 +1265,7 @@ fn trace(l: &[Rec], t0: u128, from: u128) -> String {
                 if *c > 1 { continue; }
                 Some(format!("{} STATUS {}", r.who, r.rest))
             }
-            "ADDR" | "L1_FIRE" | "L1_DONE" | "L1_SKIP" | "REJOIN" | "NU" | "ND" | "JOIN_START" | "JOINED" | "JOIN_FAIL" | "ONLINE" | "BOUND" | "KILL" | "RESTART" | "RELAY_UP" | "FINAL" => Some(format!("{} {} {}", r.who, r.kind, r.rest)),
+            "HOSTS_LEARNED" | "INFRA_REJECT" | "LOADED" | "ADDR" | "L1_FIRE" | "L1_DONE" | "L1_SKIP" | "REJOIN" | "NU" | "ND" | "JOIN_START" | "JOINED" | "JOIN_FAIL" | "ONLINE" | "BOUND" | "KILL" | "RESTART" | "RELAY_UP" | "FINAL" => Some(format!("{} {} {}", r.who, r.kind, r.rest)),
             _ => continue,
         };
         if let Some(s) = line {
@@ -964,6 +1289,8 @@ async fn ctl(scn: &str, runs: u32) {
                 "1" => scenario_12(&log, false, "").await,
                 "2" => scenario_12(&log, true, "").await,
                 "0" => scenario_12(&log, false, "none").await,
+                "8" => scenario_21(&log).await,
+                "9" => scenario_21p(&log).await,
                 "6" => scenario_12(&log, false, "m1").await,
                 "7" => scenario_12(&log, false, "b1").await,
                 "3" => scenario_3(&log, var).await,
@@ -1006,9 +1333,9 @@ async fn main() {
     let a: Vec<String> = std::env::args().collect();
     let g = |i: usize| a.get(i).cloned().unwrap_or_default();
     let r = match g(1).as_str() {
-        "relay" => relay_proc(g(2).parse().unwrap_or(1), g(3).parse().unwrap_or(0)).await,
+        "relay" => relay_proc(g(2).parse().unwrap_or(1), g(3).parse().unwrap_or(0), g(4).parse().ok()).await,
         "relayonly" => relay_only(g(2).parse().unwrap_or(1), g(3).parse().unwrap_or(0)).await,
-        "boot" => boot_node(g(2).parse().unwrap_or(1), g(3).parse().unwrap_or(0)).await,
+        "boot" => boot_node(g(2).parse().unwrap_or(1), g(3).parse().unwrap_or(0), None).await,
         "member" => member(g(2), g(3).parse().unwrap_or(1), g(4).parse().unwrap_or(0), g(5).parse().unwrap_or(0), g(6).parse().unwrap_or(0), g(7)).await,
         "ctl" => {
             ctl(&g(2), g(3).parse().unwrap_or(3)).await;
@@ -1018,5 +1345,72 @@ async fn main() {
     };
     if let Err(e) = r {
         println!("EV {} {} FATAL {}", now_ms(), g(1), short(e));
+    }
+}
+
+#[cfg(test)]
+mod e21_tests {
+    use super::*;
+
+    fn parts(m: Msg) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        match m {
+            Msg::Infra { rec, sig, cert } => (rec, sig, cert),
+            _ => panic!("not an infra message"),
+        }
+    }
+
+    fn rec_of(host: &SecretKey) -> InfraRec {
+        let id = host.public();
+        let relay = relay_url(4000);
+        InfraRec { host: *id.as_bytes(), relay: relay.to_string(), boot: EndpointAddr::new(id).with_relay_url(relay), ts: 1 }
+    }
+
+    #[test]
+    fn valid_record_is_accepted() {
+        let host = key(2);
+        let (rec, sig, cert) = parts(make_infra(&host, &relay_url(4000), make_cert(&host.public()), 1).expect("msg"));
+        let (r, id, relay) = verify_infra(&rec, &sig, &cert, &operator().public()).expect("accepted");
+        assert_eq!((id, relay, r.ts), (host.public(), relay_url(4000), 1));
+    }
+
+    #[test]
+    fn record_signed_by_a_key_that_is_not_the_senders_id_is_rejected() {
+        // Claims host B2 (real certificate), signed by member M1's key.
+        let (host, other) = (key(2), key(11));
+        let (rec, sig, cert) = parts(sign_infra(&other, &rec_of(&host), make_cert(&host.public())).expect("msg"));
+        assert_eq!(verify_infra(&rec, &sig, &cert, &operator().public()).err(), Some("signature does not match host id"));
+    }
+
+    #[test]
+    fn record_from_a_non_host_member_is_rejected() {
+        let member = key(11);
+        // (a) valid self-signature, no certificate; (b) certificate issued by the member itself; (c) B2's certificate reused for the member's id.
+        let (rec, sig, _) = parts(sign_infra(&member, &rec_of(&member), vec![]).expect("msg"));
+        assert_eq!(verify_infra(&rec, &sig, &[], &operator().public()).err(), Some("bad cert length"));
+        let self_cert = member.sign(&cert_msg(member.public().as_bytes())).to_bytes().to_vec();
+        let (rec, sig, cert) = parts(sign_infra(&member, &rec_of(&member), self_cert).expect("msg"));
+        assert_eq!(verify_infra(&rec, &sig, &cert, &operator().public()).err(), Some("not a host: operator certificate invalid"));
+        let (rec, sig, cert) = parts(sign_infra(&member, &rec_of(&member), make_cert(&key(2).public())).expect("msg"));
+        assert_eq!(verify_infra(&rec, &sig, &cert, &operator().public()).err(), Some("not a host: operator certificate invalid"));
+    }
+
+    #[test]
+    fn tampered_record_is_rejected() {
+        let host = key(2);
+        let (mut rec, sig, cert) = parts(make_infra(&host, &relay_url(4000), make_cert(&host.public()), 1).expect("msg"));
+        let last = rec.len() - 1;
+        rec[last] ^= 1;
+        assert!(verify_infra(&rec, &sig, &cert, &operator().public()).is_err());
+    }
+
+    #[test]
+    fn known_hosts_file_round_trips() {
+        let dir = std::env::temp_dir().join(format!("e21-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        // SAFETY: the only test touching E21_DIR.
+        unsafe { std::env::set_var("E21_DIR", &dir) };
+        let hosts = vec![(key(1).public(), relay_url(4001)), (key(2).public(), relay_url(4002))];
+        save_known("T", &hosts);
+        assert_eq!(load_known("T"), hosts);
     }
 }

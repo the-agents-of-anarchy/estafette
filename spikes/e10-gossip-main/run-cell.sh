@@ -13,6 +13,7 @@
 #   E18 tags (180 s window; binary from E15_BIN = spikes/e18-attach-gossip via e18-run.sh): x1cw (above) is the E18 baseline; x2cw = x1cw + E18_JOIN_T_MS=5000 (member-side counter); x3cw = x1cw + E18_FIX=1 (vendored gossip drops a pending Neighbor on Join).
 #   E19 tags (180 s window; binary from E15_BIN = spikes/e18-attach-gossip via e18-run.sh; E17_FRESH_LOOKUP must be unset): y0w = W1 alone (B0); y1w = W1 + E17_PROBE=1 + E18_JOIN_T_MS=5000 + E18_FIX=1 (B1, combined; scn 0 = its no-kill control); y2w = W1 + E18_JOIN_T_MS=5000 + E18_FIX=1 (B2, combined without C2).
 #   E20 tag (binary as E19): y3w = y1w (B1) + E20_MJOIN_MS=1500 (member re-joins the other members when it has no member neighbor 1.5 s after a rebind's JOINED). All other tags unset E20_MJOIN_MS.
+#   E21 tags (binary as E19; scn 8 = H1 add host C at runtime, H2 kill host A, H3 new member knowing only C; scn 9 = saved hosts): z1w = y3w + E21_HOST=1 (hosts broadcast signed records; members know only A until C announces); z0w = z1w + E21_STATIC=1 (control: C up from the start and in the members' static config); z2w = z1w + E21_DIR=/tmp/e21known (members save learned hosts; scn 9); z3w = z1w + E21_STOP_H1=1 (stop after H1; diagnostic tracing run); z4w = z2w + E21_NOFILE=1 (scn 9, M3 restarts without the file); z5w, z6w = z0w with member homes 222 and 122 (E21_HOMES).
 #   any other tag (use "-") = probers on, 88 s window, as E8
 set -u
 variant=$1
@@ -24,7 +25,7 @@ dir=$(cd "$(dirname "$0")" && pwd)
 export E8_PAYLOAD=1
 export E10_RUN0="$run0"
 export E8_TAG=
-unset E20_MJOIN_MS
+unset E20_MJOIN_MS E21_STATIC E21_HOST E21_DIR E21_STOP_H1 E21_NOFILE E21_HOMES
 case "$tag" in
   np)
     export E8_NOPROBE=1
@@ -57,6 +58,13 @@ case "$tag" in
   y1w) unset E17_FRESH_LOOKUP; export E15_W1=1 E17_PROBE=1 E18_JOIN_T_MS=5000 E18_FIX=1 E8_TAG=y1w E10_WINDOW_MS=180000 ;;
   y2w) unset E17_FRESH_LOOKUP E17_PROBE; export E15_W1=1 E18_JOIN_T_MS=5000 E18_FIX=1 E8_TAG=y2w E10_WINDOW_MS=180000 ;;
   y3w) unset E17_FRESH_LOOKUP; export E15_W1=1 E17_PROBE=1 E18_JOIN_T_MS=5000 E18_FIX=1 E20_MJOIN_MS=1500 E8_TAG=y3w E10_WINDOW_MS=180000 ;;
+  z0w) unset E17_FRESH_LOOKUP; export E15_W1=1 E17_PROBE=1 E18_JOIN_T_MS=5000 E18_FIX=1 E20_MJOIN_MS=1500 E21_HOST=1 E21_STATIC=1 E8_TAG=z0w E10_WINDOW_MS=180000 ;;
+  z1w) unset E17_FRESH_LOOKUP; export E15_W1=1 E17_PROBE=1 E18_JOIN_T_MS=5000 E18_FIX=1 E20_MJOIN_MS=1500 E21_HOST=1 E8_TAG=z1w E10_WINDOW_MS=180000 ;;
+  z2w) unset E17_FRESH_LOOKUP; export E15_W1=1 E17_PROBE=1 E18_JOIN_T_MS=5000 E18_FIX=1 E20_MJOIN_MS=1500 E21_HOST=1 E21_DIR=/tmp/e21known E8_TAG=z2w E10_WINDOW_MS=180000 ;;
+  z4w) unset E17_FRESH_LOOKUP; export E15_W1=1 E17_PROBE=1 E18_JOIN_T_MS=5000 E18_FIX=1 E20_MJOIN_MS=1500 E21_HOST=1 E21_DIR=/tmp/e21known E21_NOFILE=1 E8_TAG=z4w E10_WINDOW_MS=180000 ;;
+  z5w) unset E17_FRESH_LOOKUP; export E15_W1=1 E17_PROBE=1 E18_JOIN_T_MS=5000 E18_FIX=1 E20_MJOIN_MS=1500 E21_HOST=1 E21_STATIC=1 E21_HOMES=222 E8_TAG=z5w E10_WINDOW_MS=180000 ;;
+  z6w) unset E17_FRESH_LOOKUP; export E15_W1=1 E17_PROBE=1 E18_JOIN_T_MS=5000 E18_FIX=1 E20_MJOIN_MS=1500 E21_HOST=1 E21_STATIC=1 E21_HOMES=122 E8_TAG=z6w E10_WINDOW_MS=180000 ;;
+  z3w) unset E17_FRESH_LOOKUP; export E15_W1=1 E17_PROBE=1 E18_JOIN_T_MS=5000 E18_FIX=1 E20_MJOIN_MS=1500 E21_HOST=1 E21_STOP_H1=1 E8_TAG=z3w E10_WINDOW_MS=180000 ;;
   npw)
     export E8_NOPROBE=1
     export E8_TAG=npw

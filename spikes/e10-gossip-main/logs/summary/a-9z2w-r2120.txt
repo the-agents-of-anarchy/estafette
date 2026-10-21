@@ -1,0 +1,46 @@
+CELL variant=a scn=9 tag=z2w runs=1 run0=2120 window_ms=180000 start=2026-10-21T08:26:02Z
+LOAD before: 11:26  up 11 days, 21:09, 2 users, load averages: 0.66 0.79 1.00
+RUN a-9z2w-2120 ok elapsed_s=57
+  C first record sent: 23
+  C ready (B2 READY): 23
+  M1 ADDR change to R2 since C start: NA
+  M1 RC in relay map and BC known: 26
+  M1 REBIND count since C start: 0
+  M2 ADDR change to R2 since C start: NA
+  M2 RC in relay map and BC known: 25
+  M2 REBIND count since C start: 0
+  M3 ADDR change to R2 since C start: NA
+  M3 RC in relay map and BC known: 26
+  M3 REBIND count since C start: 0
+  M3 restart: JOINED after restart (s): 0
+  M3 restart: JOIN_FAIL count: 0
+  M3 restart: LOADED hosts: 2
+  M3 restart: first HB from M1 (s after restart): 3
+  M3 restart: first HB from M2 (s after restart): 3
+  M4 (no file): HB received count: 0
+  M4 (no file): JOINED (s after restart): NA
+  M4 (no file): JOIN_FAIL count: 5
+  all three members learned C: 26
+SUMMARY gossip=a scn=9 variant= runs=1 run0=2120
+  C first record sent: min 23 median 23 max 23 (n_ok 1/1)
+  C ready (B2 READY): min 23 median 23 max 23 (n_ok 1/1)
+  M1 ADDR change to R2 since C start: none (1 runs NA)
+  M1 RC in relay map and BC known: min 26 median 26 max 26 (n_ok 1/1)
+  M1 REBIND count since C start: min 0 median 0 max 0 (n_ok 1/1)
+  M2 ADDR change to R2 since C start: none (1 runs NA)
+  M2 RC in relay map and BC known: min 25 median 25 max 25 (n_ok 1/1)
+  M2 REBIND count since C start: min 0 median 0 max 0 (n_ok 1/1)
+  M3 ADDR change to R2 since C start: none (1 runs NA)
+  M3 RC in relay map and BC known: min 26 median 26 max 26 (n_ok 1/1)
+  M3 REBIND count since C start: min 0 median 0 max 0 (n_ok 1/1)
+  M3 restart: JOINED after restart (s): min 0 median 0 max 0 (n_ok 1/1)
+  M3 restart: JOIN_FAIL count: min 0 median 0 max 0 (n_ok 1/1)
+  M3 restart: LOADED hosts: min 2 median 2 max 2 (n_ok 1/1)
+  M3 restart: first HB from M1 (s after restart): min 3 median 3 max 3 (n_ok 1/1)
+  M3 restart: first HB from M2 (s after restart): min 3 median 3 max 3 (n_ok 1/1)
+  M4 (no file): HB received count: min 0 median 0 max 0 (n_ok 1/1)
+  M4 (no file): JOINED (s after restart): none (1 runs NA)
+  M4 (no file): JOIN_FAIL count: min 5 median 5 max 5 (n_ok 1/1)
+  all three members learned C: min 26 median 26 max 26 (n_ok 1/1)
+LOAD after: 11:27  up 11 days, 21:10, 2 users, load averages: 0.83 0.84 1.00
+CELL end=2026-10-21T08:27:00Z

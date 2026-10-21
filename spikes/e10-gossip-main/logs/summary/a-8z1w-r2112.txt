@@ -1,0 +1,94 @@
+CELL variant=a scn=8 tag=z1w runs=1 run0=2112 window_ms=180000 start=2026-10-21T08:09:30Z
+LOAD before: 11:09  up 11 days, 20:53, 2 users, load averages: 0.86 1.24 1.32
+RUN a-8z1w-2112 ok elapsed_s=195
+  C first record sent: 24
+  C ready (B2 READY): 23
+  H3 M4 HB from all three: 193
+  H3 M4 JOIN_FAIL count: 0
+  H3 M4 REBIND count: 0
+  H3 M4 first HB from M1: 193
+  H3 M4 first HB from M2: 192
+  H3 M4 first HB from M3: 193
+  H3 M4 first HB from any member: 192
+  H3 M4 joined (ms from join start): 9
+  M1 ADDR change to R2 since C start: NA
+  M1 HB from M2 resumed: 5934
+  M1 HB from M3 resumed: 5937
+  M1 RC in relay map and BC known: 26
+  M1 REBIND count: 1
+  M1 REBIND count since C start: 0
+  M1 addr lists only R2: 6323
+  M1 first NU B2 after first REBOUND: NA
+  M1 first REBIND: 2911
+  M1 max HB gap from M2: 6112
+  M1 max HB gap from M3: 6115
+  M2 ADDR change to R2 since C start: NA
+  M2 HB from M1 resumed: 5933
+  M2 HB from M3 resumed: 5937
+  M2 RC in relay map and BC known: 26
+  M2 REBIND count: 1
+  M2 REBIND count since C start: 0
+  M2 addr lists only R2: 6325
+  M2 first NU B2 after first REBOUND: NA
+  M2 first REBIND: 2914
+  M2 max HB gap from M1: 6111
+  M2 max HB gap from M3: 6115
+  M3 ADDR change to R2 since C start: NA
+  M3 HB from M1 resumed: 6934
+  M3 HB from M2 resumed: 6933
+  M3 RC in relay map and BC known: 26
+  M3 REBIND count: 1
+  M3 REBIND count since C start: 0
+  M3 addr lists only R2: 6325
+  M3 first NU B2 after first REBOUND: NA
+  M3 first REBIND: 2915
+  M3 max HB gap from M1: 7112
+  M3 max HB gap from M2: 7111
+  all three members learned C: 26
+SUMMARY gossip=a scn=8 variant= runs=1 run0=2112
+  C first record sent: min 24 median 24 max 24 (n_ok 1/1)
+  C ready (B2 READY): min 23 median 23 max 23 (n_ok 1/1)
+  H3 M4 HB from all three: min 193 median 193 max 193 (n_ok 1/1)
+  H3 M4 JOIN_FAIL count: min 0 median 0 max 0 (n_ok 1/1)
+  H3 M4 REBIND count: min 0 median 0 max 0 (n_ok 1/1)
+  H3 M4 first HB from M1: min 193 median 193 max 193 (n_ok 1/1)
+  H3 M4 first HB from M2: min 192 median 192 max 192 (n_ok 1/1)
+  H3 M4 first HB from M3: min 193 median 193 max 193 (n_ok 1/1)
+  H3 M4 first HB from any member: min 192 median 192 max 192 (n_ok 1/1)
+  H3 M4 joined (ms from join start): min 9 median 9 max 9 (n_ok 1/1)
+  M1 ADDR change to R2 since C start: none (1 runs NA)
+  M1 HB from M2 resumed: min 5934 median 5934 max 5934 (n_ok 1/1)
+  M1 HB from M3 resumed: min 5937 median 5937 max 5937 (n_ok 1/1)
+  M1 RC in relay map and BC known: min 26 median 26 max 26 (n_ok 1/1)
+  M1 REBIND count: min 1 median 1 max 1 (n_ok 1/1)
+  M1 REBIND count since C start: min 0 median 0 max 0 (n_ok 1/1)
+  M1 addr lists only R2: min 6323 median 6323 max 6323 (n_ok 1/1)
+  M1 first NU B2 after first REBOUND: none (1 runs NA)
+  M1 first REBIND: min 2911 median 2911 max 2911 (n_ok 1/1)
+  M1 max HB gap from M2: min 6112 median 6112 max 6112 (n_ok 1/1)
+  M1 max HB gap from M3: min 6115 median 6115 max 6115 (n_ok 1/1)
+  M2 ADDR change to R2 since C start: none (1 runs NA)
+  M2 HB from M1 resumed: min 5933 median 5933 max 5933 (n_ok 1/1)
+  M2 HB from M3 resumed: min 5937 median 5937 max 5937 (n_ok 1/1)
+  M2 RC in relay map and BC known: min 26 median 26 max 26 (n_ok 1/1)
+  M2 REBIND count: min 1 median 1 max 1 (n_ok 1/1)
+  M2 REBIND count since C start: min 0 median 0 max 0 (n_ok 1/1)
+  M2 addr lists only R2: min 6325 median 6325 max 6325 (n_ok 1/1)
+  M2 first NU B2 after first REBOUND: none (1 runs NA)
+  M2 first REBIND: min 2914 median 2914 max 2914 (n_ok 1/1)
+  M2 max HB gap from M1: min 6111 median 6111 max 6111 (n_ok 1/1)
+  M2 max HB gap from M3: min 6115 median 6115 max 6115 (n_ok 1/1)
+  M3 ADDR change to R2 since C start: none (1 runs NA)
+  M3 HB from M1 resumed: min 6934 median 6934 max 6934 (n_ok 1/1)
+  M3 HB from M2 resumed: min 6933 median 6933 max 6933 (n_ok 1/1)
+  M3 RC in relay map and BC known: min 26 median 26 max 26 (n_ok 1/1)
+  M3 REBIND count: min 1 median 1 max 1 (n_ok 1/1)
+  M3 REBIND count since C start: min 0 median 0 max 0 (n_ok 1/1)
+  M3 addr lists only R2: min 6325 median 6325 max 6325 (n_ok 1/1)
+  M3 first NU B2 after first REBOUND: none (1 runs NA)
+  M3 first REBIND: min 2915 median 2915 max 2915 (n_ok 1/1)
+  M3 max HB gap from M1: min 7112 median 7112 max 7112 (n_ok 1/1)
+  M3 max HB gap from M2: min 7111 median 7111 max 7111 (n_ok 1/1)
+  all three members learned C: min 26 median 26 max 26 (n_ok 1/1)
+LOAD after: 11:12  up 11 days, 20:56, 2 users, load averages: 0.98 1.29 1.33
+CELL end=2026-10-21T08:12:46Z
