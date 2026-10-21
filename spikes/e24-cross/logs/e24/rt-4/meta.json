@@ -1,0 +1,20 @@
+{
+ "B": {
+  "off_ms": 74,
+  "rtt_ms": 79
+ },
+ "C": {
+  "off_ms": 96,
+  "rtt_ms": 124
+ },
+ "extra": [
+  "E24_TRIG=spec",
+  "E24_HOST_DEAF=1"
+ ],
+ "kind": "runtime",
+ "t_h2_start_C_ms": 1792596678067,
+ "kill_B_ms": [
+  1792596698283,
+  1792596698288
+ ]
+}

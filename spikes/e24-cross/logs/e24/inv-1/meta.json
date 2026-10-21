@@ -1,0 +1,22 @@
+{
+ "B": {
+  "off_ms": 74,
+  "rtt_ms": 76
+ },
+ "C": {
+  "off_ms": 92,
+  "rtt_ms": 115
+ },
+ "extra": [
+  "E24_TRIG=spec",
+  "E24_HOST_DEAF=1"
+ ],
+ "t_h1_start_B": 1792596965647,
+ "t_members_start_A": 1792596970952,
+ "kind": "invite",
+ "t_start_N1": 1792597010957,
+ "t_start_N2": 1792597035968,
+ "t_start_N3": 1792597060976,
+ "t_start_N4": 1792597085984,
+ "t_start_N5": 1792597110990
+}

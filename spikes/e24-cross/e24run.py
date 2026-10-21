@@ -29,7 +29,7 @@ def now_ms():
 
 
 def rsh(host, *cmd, timeout=120):
-    r = subprocess.run(SSH + [f"root@{host}"] + list(cmd), capture_output=True, text=True, timeout=timeout)
+    r = subprocess.run(SSH + [f"root@{host}"] + list(cmd), capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
     return r.stdout.strip()
 
 
@@ -64,7 +64,7 @@ def envs(extra):
 def start_local(name, seed, hosts, members, extra, outdir):
     f = open(os.path.join(outdir, f"{name}.log"), "w")
     env = dict(os.environ, **dict(e.split("=", 1) for e in envs(extra)))
-    LOCAL[name] = subprocess.Popen([BIN, "member", name, str(seed), hosts, others_of(seed, members)], stdout=f, stderr=subprocess.STDOUT, env=env)
+    LOCAL[name] = subprocess.Popen([BIN, "member", name, str(seed), hosts, others_of(seed, members)], stdout=f, stderr=subprocess.STDOUT, env=env, stdin=subprocess.DEVNULL)
 
 
 def start_remote_member(host, name, seed, hosts, members, extra):
@@ -90,10 +90,10 @@ def fetch(host, tag, outdir):
     """Copy the remote logs of this run to outdir as <tag>-<name>."""
     tmp = os.path.join(outdir, f"_{tag}.tgz")
     rsh(host, "tar", "czf", "/tmp/e24-logs.tgz", "-C", "/root/e24/logs", ".")
-    subprocess.run(["scp", "-q", "-i", KEY, "-o", "IdentitiesOnly=yes", "-o", f"UserKnownHostsFile={KH}", f"root@{host}:/tmp/e24-logs.tgz", tmp], check=True)
+    subprocess.run(["scp", "-q", "-i", KEY, "-o", "IdentitiesOnly=yes", "-o", f"UserKnownHostsFile={KH}", f"root@{host}:/tmp/e24-logs.tgz", tmp], check=True, stdin=subprocess.DEVNULL)
     d = os.path.join(outdir, tag)
     os.makedirs(d, exist_ok=True)
-    subprocess.run(["tar", "xzf", tmp, "-C", d], check=True)
+    subprocess.run(["tar", "xzf", tmp, "-C", d], check=True, stdin=subprocess.DEVNULL)
     os.remove(tmp)
 
 

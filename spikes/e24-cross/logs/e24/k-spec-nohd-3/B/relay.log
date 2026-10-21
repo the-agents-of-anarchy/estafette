@@ -1,0 +1,8 @@
+[2m2026-10-21T14:42:31.439483Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    tls handshake eof
+[2m2026-10-21T14:42:48.429827Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    invalid HTTP method parsed
+[2m2026-10-21T14:42:49.339422Z[0m [31mERROR[0m [2miroh_relay::server[0m[2m:[0m Failed to serve connection: hyper::Error(Parse(Method))
+[2m2026-10-21T14:42:49.470013Z[0m [31mERROR[0m [2miroh_relay::server[0m[2m:[0m Failed to serve connection: hyper::Error(Parse(Method))

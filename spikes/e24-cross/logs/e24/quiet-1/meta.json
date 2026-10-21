@@ -1,0 +1,17 @@
+{
+ "B": {
+  "off_ms": 28,
+  "rtt_ms": 92
+ },
+ "C": {
+  "off_ms": 42,
+  "rtt_ms": 118
+ },
+ "extra": [
+  "E24_TRIG=spec",
+  "E24_HOST_DEAF=1"
+ ],
+ "t_h1_start_B": 1792595516904,
+ "t_members_start_A": 1792595522279,
+ "kind": "quiet"
+}

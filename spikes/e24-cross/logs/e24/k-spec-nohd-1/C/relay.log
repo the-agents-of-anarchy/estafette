@@ -1,0 +1,20 @@
+[2m2026-10-21T14:36:36.619058Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    tls handshake eof
+[2m2026-10-21T14:36:36.640729Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    connection closed before message completed
+[2m2026-10-21T14:36:36.720367Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    error shutting down connection
+    Broken pipe (os error 32)
+[2m2026-10-21T14:36:49.452471Z[0m [31mERROR[0m [2miroh_relay::server[0m[2m:[0m Failed to serve connection: hyper::Error(Parse(Method))
+[2m2026-10-21T14:36:49.491639Z[0m [31mERROR[0m [2miroh_relay::server[0m[2m:[0m Failed to serve connection: hyper::Error(Parse(Method))
+[2m2026-10-21T14:38:54.087905Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    error shutting down connection
+    Broken pipe (os error 32)
+[2m2026-10-21T14:38:54.087908Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    error shutting down connection
+    Broken pipe (os error 32)

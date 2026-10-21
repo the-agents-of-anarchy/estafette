@@ -2,7 +2,7 @@
 """E24 owner-assisted tests, run on machine A (the Mac). The owner's steps are printed by `owner-tests.sh`; this file does the work.
 usage: e24owner.py sleep|wifi <tag>
 Flow: start H1 (B) and H2 (C) with their relays and members M1, M2 (A), M3 (B), M4 (C), settle 40 s, then wait for the owner (Enter), record
-the event, wait for recovery (150 s), collect the logs. Files in $E24_OUT/<tag>/: member and host logs, ticks.txt (A's clock, once a second), ip.txt (public IPv4 of A, every 2 s), events.json.
+the event, wait for recovery (150 s), collect the logs. Files in $E24_OUT/<tag>/: member and host logs, ticks.txt (A's clock, once a second), ip.txt (public IPv4 of A, every 2 s), meta.json (key events).
 """
 import json
 import os
@@ -55,7 +55,8 @@ def main():
         ev["enter_ms"] = R.now_ms()
         time.sleep(5)
         ev["sleep_cmd_ms"] = R.now_ms()
-        subprocess.run(["pmset", "sleepnow"])
+        if not os.environ.get("E24_NOSLEEP"):  # E24_NOSLEEP=1 is for dry runs of this script
+            subprocess.run(["pmset", "sleepnow"])
         # execution resumes after wake; the tick gap in ticks.txt shows the sleep
         time.sleep(2)
         ev["woke_seen_ms"] = R.now_ms()

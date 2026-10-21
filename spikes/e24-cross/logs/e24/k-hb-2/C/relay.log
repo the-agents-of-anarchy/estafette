@@ -1,0 +1,55 @@
+[2m2026-10-21T13:55:18.834743Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    tls handshake eof
+[2m2026-10-21T13:55:18.860799Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    tls handshake eof
+[2m2026-10-21T13:55:18.941241Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    error shutting down connection
+    Broken pipe (os error 32)
+[2m2026-10-21T13:56:16.316586Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T13:56:16.529909Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T13:56:16.738309Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T13:56:16.842807Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: NoCipherSuitesInCommon
+[2m2026-10-21T13:56:17.154136Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T13:56:17.258081Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: Tls12NotOffered
+[2m2026-10-21T13:56:17.570733Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T13:56:17.778675Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T13:56:17.883031Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: NoCipherSuitesInCommon
+[2m2026-10-21T13:56:18.197586Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T13:57:13.560296Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] accept
+Caused by:
+    peer is incompatible: SignatureAlgorithmsExtensionRequired
+[2m2026-10-21T13:57:13.564475Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: NoCipherSuitesInCommon
+[2m2026-10-21T13:57:13.584664Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] accept
+Caused by:
+    peer is incompatible: SignatureAlgorithmsExtensionRequired
+[2m2026-10-21T13:57:13.584906Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] accept
+Caused by:
+    peer is incompatible: SignatureAlgorithmsExtensionRequired
+[2m2026-10-21T13:57:13.584938Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] accept
+Caused by:
+    received corrupt message of type InvalidContentType

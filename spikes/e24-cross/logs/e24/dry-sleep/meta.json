@@ -1,0 +1,22 @@
+{
+ "B": {
+  "off_ms": 326,
+  "rtt_ms": 558
+ },
+ "C": {
+  "off_ms": 425,
+  "rtt_ms": 758
+ },
+ "extra": [
+  "E24_TRIG=spec",
+  "E24_HOST_DEAF=1"
+ ],
+ "t_h1_start_B": 1792597506450,
+ "t_members_start_A": 1792597513743,
+ "kind": "owner-sleep",
+ "events": {
+  "enter_ms": 1792597553746,
+  "sleep_cmd_ms": 1792597558747,
+  "woke_seen_ms": 1792597560751
+ }
+}

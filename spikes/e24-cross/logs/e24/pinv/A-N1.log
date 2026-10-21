@@ -1,0 +1,228 @@
+EV 1792590492931 N1 BOUND relays=[]
+EV 1792590492931 N1 JOIN_START order=H2
+EV 1792590492931 N1 STATUS 
+EV 1792590492931 N1 ADDR relays=[] direct=1
+EV 1792590493216 N1 JOINED ms=285
+EV 1792590493216 N1 ANN_SENT 
+EV 1792590493216 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590493216 N1 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792590493216 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590493216 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590493314 N1 NU M2
+EV 1792590493325 N1 STATUS relay=2-29-112-122 connected=true err=-
+EV 1792590493325 N1 ONLINE ms_after_bind=394
+EV 1792590493325 N1 ADDR relays=[2-29-112-122] direct=2
+EV 1792590493518 N1 ANN_SENT 
+EV 1792590493820 N1 ANN_SENT 
+EV 1792590493869 N1 RX hb from=M3 seq=17 via=H2
+EV 1792590493961 N1 RX hb from=M2 seq=17 via=M2
+EV 1792590493978 N1 RX hb from=M4 seq=17 via=H2
+EV 1792590494008 N1 RX hb from=M1 seq=17 via=H2
+EV 1792590494122 N1 ANN_SENT 
+EV 1792590494218 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590494218 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590494218 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590494219 N1 PROBE tgt=M2 ok ms=1
+EV 1792590494425 N1 ANN_SENT 
+EV 1792590494869 N1 RX hb from=M3 seq=18 via=H2
+EV 1792590494881 N1 RX infra host=H2 ts=1792590494916 via=H2
+EV 1792590494963 N1 RX hb from=M2 seq=18 via=M2
+EV 1792590494980 N1 RX hb from=M4 seq=18 via=H2
+EV 1792590495010 N1 RX hb from=M1 seq=18 via=H2
+EV 1792590495220 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590495220 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590495220 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590495221 N1 PROBE tgt=M2 ok ms=1
+EV 1792590495870 N1 RX hb from=M3 seq=19 via=H2
+EV 1792590495964 N1 RX hb from=M2 seq=19 via=M2
+EV 1792590495981 N1 RX hb from=M4 seq=19 via=H2
+EV 1792590496011 N1 RX hb from=M1 seq=19 via=H2
+EV 1792590496223 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590496223 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590496223 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590496224 N1 PROBE tgt=M2 ok ms=1
+EV 1792590496871 N1 RX hb from=M3 seq=20 via=H2
+EV 1792590496965 N1 RX hb from=M2 seq=20 via=M2
+EV 1792590496983 N1 RX hb from=M4 seq=20 via=H2
+EV 1792590497014 N1 RX hb from=M1 seq=20 via=H2
+EV 1792590497224 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590497224 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590497225 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590497226 N1 PROBE tgt=M2 ok ms=0
+EV 1792590497549 N1 RX infra host=H1 ts=1792590497572 via=H2
+EV 1792590497549 N1 HOSTS_LEARNED host=H1 relay=178-105-88-14 insert_ms=0 replaced=false in_map=true n_hosts=2
+EV 1792590497623 N1 STATUS relay=178-105-88-14 connected=false err=-
+EV 1792590497623 N1 ADDR relays=[178-105-88-14] direct=2
+EV 1792590497623 N1 ANN_SENT 
+EV 1792590497728 N1 STATUS relay=178-105-88-14 connected=true err=-
+EV 1792590497872 N1 RX hb from=M3 seq=21 via=H2
+EV 1792590497925 N1 ANN_SENT 
+EV 1792590497966 N1 RX hb from=M2 seq=21 via=M2
+EV 1792590497983 N1 RX hb from=M4 seq=21 via=H2
+EV 1792590498013 N1 RX hb from=M1 seq=21 via=H2
+EV 1792590498225 N1 ANN_SENT 
+EV 1792590498225 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590498225 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590498227 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590498229 N1 PROBE tgt=M2 ok ms=0
+EV 1792590498874 N1 RX hb from=M3 seq=22 via=H2
+EV 1792590498967 N1 RX hb from=M2 seq=22 via=M2
+EV 1792590498984 N1 RX hb from=M4 seq=22 via=H2
+EV 1792590499014 N1 RX hb from=M1 seq=22 via=H2
+EV 1792590499227 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590499227 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590499228 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590499231 N1 PROBE tgt=M2 ok ms=1
+EV 1792590499876 N1 RX hb from=M3 seq=23 via=H2
+EV 1792590499882 N1 RX infra host=H2 ts=1792590499917 via=H2
+EV 1792590499968 N1 RX hb from=M2 seq=23 via=M2
+EV 1792590499985 N1 RX hb from=M4 seq=23 via=H2
+EV 1792590500015 N1 RX hb from=M1 seq=23 via=H2
+EV 1792590500228 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590500228 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590500229 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590500233 N1 PROBE tgt=M2 ok ms=0
+EV 1792590500877 N1 RX hb from=M3 seq=24 via=H2
+EV 1792590500970 N1 RX hb from=M2 seq=24 via=M2
+EV 1792590500986 N1 RX hb from=M4 seq=24 via=H2
+EV 1792590501016 N1 RX hb from=M1 seq=24 via=H2
+EV 1792590501229 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590501229 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590501230 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590501236 N1 PROBE tgt=M2 ok ms=0
+EV 1792590501877 N1 RX hb from=M3 seq=25 via=H2
+EV 1792590501971 N1 RX hb from=M2 seq=25 via=M2
+EV 1792590501988 N1 RX hb from=M4 seq=25 via=H2
+EV 1792590502018 N1 RX hb from=M1 seq=25 via=H2
+EV 1792590502231 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590502231 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590502231 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590502238 N1 PROBE tgt=M2 ok ms=1
+EV 1792590502550 N1 RX infra host=H1 ts=1792590502573 via=H2
+EV 1792590502878 N1 RX hb from=M3 seq=26 via=H2
+EV 1792590502973 N1 RX hb from=M2 seq=26 via=M2
+EV 1792590502989 N1 RX hb from=M4 seq=26 via=H2
+EV 1792590503021 N1 RX hb from=M1 seq=26 via=H2
+EV 1792590503234 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590503234 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590503234 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590503241 N1 PROBE tgt=M2 ok ms=0
+EV 1792590503879 N1 RX hb from=M3 seq=27 via=H2
+EV 1792590503974 N1 RX hb from=M2 seq=27 via=M2
+EV 1792590503989 N1 RX hb from=M4 seq=27 via=H2
+EV 1792590504019 N1 RX hb from=M1 seq=27 via=H2
+EV 1792590504235 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590504235 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590504235 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590504244 N1 PROBE tgt=M2 ok ms=1
+EV 1792590504880 N1 RX hb from=M3 seq=28 via=H2
+EV 1792590504885 N1 RX infra host=H2 ts=1792590504919 via=H2
+EV 1792590504976 N1 RX hb from=M2 seq=28 via=M2
+EV 1792590504990 N1 RX hb from=M4 seq=28 via=H2
+EV 1792590505022 N1 RX hb from=M1 seq=28 via=H2
+EV 1792590505236 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590505236 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590505236 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590505247 N1 PROBE tgt=M2 ok ms=0
+EV 1792590505881 N1 RX hb from=M3 seq=29 via=H2
+EV 1792590505978 N1 RX hb from=M2 seq=29 via=M2
+EV 1792590505991 N1 RX hb from=M4 seq=29 via=H2
+EV 1792590506022 N1 RX hb from=M1 seq=29 via=H2
+EV 1792590506238 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590506238 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590506238 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590506250 N1 PROBE tgt=M2 ok ms=0
+EV 1792590506883 N1 RX hb from=M3 seq=30 via=H2
+EV 1792590506978 N1 RX hb from=M2 seq=30 via=M2
+EV 1792590506992 N1 RX hb from=M4 seq=30 via=H2
+EV 1792590507024 N1 RX hb from=M1 seq=30 via=H2
+EV 1792590507241 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590507241 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590507241 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590507253 N1 PROBE tgt=M2 ok ms=0
+EV 1792590507551 N1 RX infra host=H1 ts=1792590507574 via=H2
+EV 1792590507884 N1 RX hb from=M3 seq=31 via=H2
+EV 1792590507980 N1 RX hb from=M2 seq=31 via=M2
+EV 1792590507995 N1 RX hb from=M4 seq=31 via=H2
+EV 1792590508026 N1 RX hb from=M1 seq=31 via=H2
+EV 1792590508243 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590508243 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590508243 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590508255 N1 PROBE tgt=M2 ok ms=1
+EV 1792590508884 N1 RX hb from=M3 seq=32 via=H2
+EV 1792590508981 N1 RX hb from=M2 seq=32 via=M2
+EV 1792590508994 N1 RX hb from=M4 seq=32 via=H2
+EV 1792590509027 N1 RX hb from=M1 seq=32 via=H2
+EV 1792590509245 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590509245 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590509245 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590509257 N1 PROBE tgt=M2 ok ms=1
+EV 1792590509888 N1 RX infra host=H2 ts=1792590509921 via=H2
+EV 1792590509888 N1 RX hb from=M3 seq=33 via=H2
+EV 1792590509983 N1 RX hb from=M2 seq=33 via=M2
+EV 1792590509995 N1 RX hb from=M4 seq=33 via=H2
+EV 1792590510029 N1 RX hb from=M1 seq=33 via=H2
+EV 1792590510246 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590510246 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590510246 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590510261 N1 PROBE tgt=M2 ok ms=1
+EV 1792590510887 N1 RX hb from=M3 seq=34 via=H2
+EV 1792590510985 N1 RX hb from=M2 seq=34 via=M2
+EV 1792590510996 N1 RX hb from=M4 seq=34 via=H2
+EV 1792590511031 N1 RX hb from=M1 seq=34 via=H2
+EV 1792590511247 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590511247 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590511247 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590511262 N1 PROBE tgt=M2 ok ms=0
+EV 1792590511889 N1 RX hb from=M3 seq=35 via=H2
+EV 1792590511987 N1 RX hb from=M2 seq=35 via=M2
+EV 1792590511997 N1 RX hb from=M4 seq=35 via=H2
+EV 1792590512037 N1 RX hb from=M1 seq=35 via=H2
+EV 1792590512250 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590512250 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590512250 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590512266 N1 PROBE tgt=M2 ok ms=0
+EV 1792590512553 N1 RX infra host=H1 ts=1792590512575 via=H2
+EV 1792590512890 N1 RX hb from=M3 seq=36 via=H2
+EV 1792590512989 N1 RX hb from=M2 seq=36 via=M2
+EV 1792590512998 N1 RX hb from=M4 seq=36 via=H2
+EV 1792590513035 N1 RX hb from=M1 seq=36 via=H2
+EV 1792590513252 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590513252 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590513252 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590513268 N1 PROBE tgt=M2 ok ms=0
+EV 1792590513891 N1 RX hb from=M3 seq=37 via=H2
+EV 1792590513992 N1 RX hb from=M2 seq=37 via=M2
+EV 1792590513999 N1 RX hb from=M4 seq=37 via=H2
+EV 1792590514037 N1 RX hb from=M1 seq=37 via=H2
+EV 1792590514254 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590514254 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590514254 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590514272 N1 PROBE tgt=M2 ok ms=1
+EV 1792590514888 N1 RX infra host=H2 ts=1792590514922 via=H2
+EV 1792590514891 N1 RX hb from=M3 seq=38 via=H2
+EV 1792590514994 N1 RX hb from=M2 seq=38 via=M2
+EV 1792590515000 N1 RX hb from=M4 seq=38 via=H2
+EV 1792590515039 N1 RX hb from=M1 seq=38 via=H2
+EV 1792590515255 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590515255 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590515255 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590515275 N1 PROBE tgt=M2 ok ms=1
+EV 1792590515893 N1 RX hb from=M3 seq=39 via=H2
+EV 1792590515996 N1 RX hb from=M2 seq=39 via=M2
+EV 1792590516001 N1 RX hb from=M4 seq=39 via=H2
+EV 1792590516040 N1 RX hb from=M1 seq=39 via=H2
+EV 1792590516258 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590516258 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590516258 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590516277 N1 PROBE tgt=M2 ok ms=1
+EV 1792590516894 N1 RX hb from=M3 seq=40 via=H2
+EV 1792590516997 N1 RX hb from=M2 seq=40 via=M2
+EV 1792590517003 N1 RX hb from=M4 seq=40 via=H2
+EV 1792590517042 N1 RX hb from=M1 seq=40 via=H2
+EV 1792590517259 N1 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792590517259 N1 PROBE tgt=M4 fail ms=0 err=No_addressing_information_available
+EV 1792590517259 N1 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792590517281 N1 PROBE tgt=M2 ok ms=1
+EV 1792590517553 N1 RX infra host=H1 ts=1792590517576 via=H2
+EV 1792590517895 N1 RX hb from=M3 seq=41 via=H2
