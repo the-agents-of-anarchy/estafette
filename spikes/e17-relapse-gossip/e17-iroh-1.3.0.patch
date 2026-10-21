@@ -1,0 +1,58 @@
+--- actor.e14.rs
++++ actor.rs
+@@ -67,6 +67,11 @@
+ // E14 DIAGNOSTIC PATCH: runtime switches, not part of upstream.
+ fn e14_fix(name: &str) -> bool {
+     std::env::var("E14_FIX").is_ok_and(|v| v == name)
++}
++
++// E17 DIAGNOSTIC PATCH: endpoint instance tag (the socket metrics Arc is unique per endpoint) and per-item log.
++fn e17_inst(c: &Config) -> String {
++    format!("inst={:x}", std::sync::Arc::as_ptr(&c.metrics) as usize & 0xffffff)
+ }
+ 
+ fn e14_diag(msg: &str) {
+@@ -1189,13 +1194,13 @@
+                         self.try_send_datagram(item)
+                     ).await {
+                         datagram_send_fut.as_mut().set_future(fut);
+-                        e14_diag("RelayActor BLOCKED: datagram_send_fut set, no datagram from any relay is taken until it completes");
++                        e14_diag(&format!("RelayActor BLOCKED {}: datagram_send_fut set, no datagram from any relay is taken until it completes", e17_inst(&self.config)));
+                     }
+                 }
+                 // Only poll this future if it is in use.
+                 _ = &mut datagram_send_fut, if datagram_send_fut.is_some() => {
+                     datagram_send_fut.as_mut().set_none();
+-                    e14_diag("RelayActor UNBLOCKED: datagram_send_fut completed");
++                    e14_diag(&format!("RelayActor UNBLOCKED {}: datagram_send_fut completed", e17_inst(&self.config)));
+                 }
+             }
+         }
+@@ -1233,9 +1238,17 @@
+         item: RelaySendItem,
+     ) -> Option<impl Future<Output = ()> + use<>> {
+         let url = item.url.clone();
++        let remote_short = item.remote_endpoint.fmt_short().to_string();
+         let handle = self
+             .active_relay_handle_for_endpoint(&item.url, &item.remote_endpoint)
+             .await;
++        // E17 DIAGNOSTIC PATCH (`E17_ITEMS=1`): log every datagram that finds a non-empty per-relay queue.
++        if std::env::var("E17_ITEMS").is_ok() {
++            let ql = handle.datagrams_send_queue.max_capacity() - handle.datagrams_send_queue.capacity();
++            if ql >= 1 {
++                e14_diag(&format!("E17ITEM {} url={url} remote={remote_short} queue_len={ql}", e17_inst(&self.config)));
++            }
++        }
+         match handle.datagrams_send_queue.try_send(item) {
+             Ok(()) => None,
+             Err(mpsc::error::TrySendError::Closed(_)) => {
+@@ -1245,7 +1258,8 @@
+             Err(mpsc::error::TrySendError::Full(item)) => {
+                 // E14 DIAGNOSTIC PATCH
+                 e14_diag(&format!(
+-                    "try_send_datagram Full url={url} queue_len={} max={}",
++                    "try_send_datagram Full {} url={url} remote={remote_short} queue_len={} max={}",
++                    e17_inst(&self.config),
+                     handle.datagrams_send_queue.max_capacity() - handle.datagrams_send_queue.capacity(),
+                     handle.datagrams_send_queue.max_capacity()
+                 ));

@@ -20,7 +20,7 @@ use std::{
 
 use bytes::Bytes;
 use iroh::{
-    Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, Watcher,
+    Endpoint, EndpointAddr, EndpointId, RelayMap, RelayMode, RelayUrl, SecretKey, TransportAddr, Watcher,
     address_lookup::memory::MemoryLookup,
     endpoint::{Connection, QuicTransportConfig, presets::Minimal},
     protocol::{AcceptError, ProtocolHandler, Router},
@@ -159,6 +159,7 @@ async fn relay_only(n: u8, port: u16) -> Res<()> {
 
 /// Bootstrap node Bn: stable key, relay map = relay Rn only, gossip on the shared topic.
 async fn boot_node(n: u8, port: u16) -> Res<()> {
+    init_trace(&format!("B{n}"));
     let ep = Endpoint::builder(Minimal)
         .relay_mode(RelayMode::Custom(RelayMap::from(relay_url(port))))
         .clear_ip_transports()
@@ -204,6 +205,22 @@ async fn bind_member(k: u8, urls: &[RelayUrl], lk: &MemoryLookup, want: Option<&
     Err("could not home".into())
 }
 
+/// E17 C2: a relay is up when a TCP connect to its host and port succeeds within 1 s.
+async fn relay_up(u: &RelayUrl) -> bool {
+    let (Some(host), Some(port)) = (u.host_str(), u.port_or_known_default()) else { return true };
+    timeout(Duration::from_secs(1), tokio::net::TcpStream::connect((host, port))).await.is_ok_and(|r| r.is_ok())
+}
+
+/// E17 C2: remove the relay URLs in `down` from the lookup entries of the other members (M1..M3).
+fn scrub(lk: &MemoryLookup, down: &HashSet<RelayUrl>, k: u8) {
+    for id in (1..=3u8).filter(|t| *t != k).map(|t| key(10 + t).public()) {
+        let Some(info) = lk.get_endpoint_info(id) else { continue };
+        let mut addr = info.into_endpoint_addr();
+        addr.addrs.retain(|a| !matches!(a, TransportAddr::Relay(u) if down.contains(u)));
+        lk.set_endpoint_info(addr);
+    }
+}
+
 /// Diagnostic only (`E12_TRACE=<env-filter>`): member tracing goes to /tmp/e12-trace-<name>.log.
 fn init_trace(name: &str) {
     let Ok(filter) = std::env::var("E12_TRACE") else { return };
@@ -214,7 +231,7 @@ fn init_trace(name: &str) {
 async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) -> Res<()> {
     init_trace(&name);
     let (u1, u2) = (relay_url(p1), relay_url(p2));
-    let lk = MemoryLookup::new();
+    let mut lk = MemoryLookup::new();
     let want = match home {
         1 => Some(&u1),
         2 => Some(&u2),
@@ -232,6 +249,21 @@ async fn member(name: String, k: u8, home: u8, p1: u16, p2: u16, order: String) 
         last_rebind = Some(Instant::now());
         ev(&name, "REBIND", format!("n={n} silent_ms={silent}"));
         let _ = timeout(Duration::from_secs(5), ep.close()).await;
+        // E17 C1 (`E17_FRESH_LOOKUP`): the rebound endpoint starts with an empty address book (`session` re-adds B1 and B2), so no peer address learned before the silence, with its dead relay URL, reaches the new endpoint.
+        if std::env::var("E17_FRESH_LOOKUP").is_ok() {
+            lk = MemoryLookup::new();
+        }
+        // E17 C2 (`E17_PROBE`): probe each configured relay with a TCP connect (1 s); a relay that refuses or times out is dropped from the address book entries of the other members before the new endpoint binds.
+        if std::env::var("E17_PROBE").is_ok() {
+            let mut down: HashSet<RelayUrl> = HashSet::new();
+            for u in [&u1, &u2] {
+                if !relay_up(u).await {
+                    down.insert(u.clone());
+                }
+            }
+            ev(&name, "PROBE_RELAYS", format!("down=[{}]", urls_str(down.iter())));
+            scrub(&lk, &down, k);
+        }
         let urls: Vec<RelayUrl> = [&u1, &u2].into_iter().filter(|u| !dead.lock().is_ok_and(|g| g.contains(*u))).cloned().collect();
         let t = Instant::now();
         ep = bind_member(k, &urls, &lk, None).await?;
@@ -509,10 +541,15 @@ struct Rec {
 type Log = Arc<Mutex<Vec<Rec>>>;
 
 fn spawn_child(log: &Log, args: &[String]) -> Res<Child> {
+    // E17 diagnostic: `E17_ERR_DIR=<dir>` keeps each child's stderr (the vendored iroh's E14DIAG lines) in <dir>/err-<args 1 and 2>.log.
+    let err = std::env::var("E17_ERR_DIR")
+        .ok()
+        .and_then(|d| std::fs::File::create(format!("{d}/err-{}-{}.log", args.get(1).map_or("", String::as_str), args.first().map_or("", String::as_str))).ok())
+        .map_or_else(Stdio::null, Stdio::from);
     let mut c = Command::new(std::env::current_exe()?)
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(err)
         .kill_on_drop(true)
         .spawn()?;
     let out = c.stdout.take().ok_or("no stdout")?;
