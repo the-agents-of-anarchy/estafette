@@ -1,0 +1,32 @@
+[2m2026-10-21T19:47:01.395919Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    error shutting down connection
+    Broken pipe (os error 32)
+[2m2026-10-21T19:53:30.754827Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    invalid HTTP version parsed (found HTTP2 preface)
+[2m2026-10-21T19:53:36.246264Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    error shutting down connection
+    Connection reset by peer (os error 104)
+[2m2026-10-21T19:53:37.697895Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] accept
+Caused by:
+    peer is incompatible: SignatureAlgorithmsExtensionRequired
+[2m2026-10-21T19:53:39.150107Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] accept
+Caused by:
+    peer is incompatible: SignatureAlgorithmsExtensionRequired
+[2m2026-10-21T19:53:40.537009Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] accept
+Caused by:
+    peer is incompatible: SignatureAlgorithmsExtensionRequired
+[2m2026-10-21T19:53:42.322234Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: NoKxGroupsInCommon
+[2m2026-10-21T19:53:43.945952Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: NoKxGroupsInCommon
+[2m2026-10-21T19:53:45.302620Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: NoKxGroupsInCommon
+[2m2026-10-21T19:53:46.559493Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: NoKxGroupsInCommon
