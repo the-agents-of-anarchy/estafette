@@ -1,0 +1,24 @@
+B0 runs 8 stalled 8 first rebind min/med/max 10.059 11.7015 13.063 runs with a 2nd rebind 3 rebinds per member (all members, all runs) mean 1.17 max 3 rebinds total 28
+  per run flow (s, None=stalled-not-all-flowing at 180): [('1900', 15658), ('1901', 148834), ('1902', 17047), ('1903', 17108), ('1904', None), ('1905', 16709), ('1906', 147569), ('1907', 18606)]
+B1 runs 8 stalled 7 first rebind min/med/max 10.549 11.989 12.583 runs with a 2nd rebind 0 rebinds per member (all members, all runs) mean 0.88 max 1 rebinds total 21
+  per run flow (s, None=stalled-not-all-flowing at 180): [('1910', 31203), ('1911', None), ('1912', 29277), ('1913', 32140), ('1914', 31699), ('1915', 33244), ('1916', 30165), ('1917', 30155)]
+B2 runs 8 stalled 8 first rebind min/med/max 6.754 11.403500000000001 12.039 runs with a 2nd rebind 5 rebinds per member (all members, all runs) mean 1.75 max 5 rebinds total 42
+  per run flow (s, None=stalled-not-all-flowing at 180): [('1920', 146469), ('1921', 17956), ('1922', 162563), ('1923', 14088), ('1924', 144370), ('1925', 138410), ('1926', 147398), ('1927', 14086)]
+stalled runs only, censored at 180
+   B0 n=8 min/med/max 15.7 / 17.9 / 180.0 mean 70.2
+   B1 n=7 min/med/max 29.3 / 31.2 / 33.2 mean 31.1
+   B2 n=8 min/med/max 14.1 / 141.4 / 162.6 mean 98.2
+   B0 vs B1 p = 0.2000
+   B0 vs B2 p = 0.5677
+   B1 vs B2 p = 0.0256
+all runs, never-stalled = 0
+   B0 n=8 min/med/max 15.7 / 17.9 / 180.0 mean 70.2
+   B1 n=8 min/med/max 0.0 / 30.7 / 33.2 mean 27.2
+   B2 n=8 min/med/max 14.1 / 141.4 / 162.6 mean 98.2
+   B0 vs B1 p = 0.1888
+   B0 vs B2 p = 0.5677
+   B1 vs B2 p = 0.0236
+runs with a second rebind {'B0': (3, 8), 'B1': (0, 8), 'B2': (5, 8)}
+  Fisher B0 vs B1 p = 0.2000
+  Fisher B0 vs B2 p = 0.6193
+  Fisher B1 vs B2 p = 0.0256

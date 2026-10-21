@@ -1,0 +1,118 @@
+CELL variant=a scn=1 tag=y2w runs=1 run0=1925 window_ms=180000 start=2026-10-21T06:01:00Z
+LOAD before:  9:01  up 11 days, 18:44, 2 users, load averages: 1.76 2.26 1.83
+RUN a-1y2w-1925 ok elapsed_s=185
+  M1 HB from M2 resumed: 97495
+  M1 HB from M3 resumed: 29993
+  M1 L1 fire count: 0
+  M1 L1 fired: NA
+  M1 NeighborDown count: 1
+  M1 REJOIN count after kill: 0
+  M1 REJOIN count before kill: 0
+  M1 addr lists only R2: 15542
+  M1 first HB from M2 after M1 re-home: 29242
+  M1 first HB from M3 after M1 re-home: 29993
+  M1 first NeighborDown: 10006
+  M1 first REJOIN: NA
+  M1 last HB from M2: 179774
+  M1 last HB from M3: 179625
+  M1 max HB gap from M2: 25325
+  M1 max HB gap from M3: 21090
+  M1 re-home minus L1 fire: NA
+  M1 status connected on R2: 15542
+  M2 HB from M1 resumed: 138410
+  M2 HB from M3 resumed: 136604
+  M2 L1 fire count: 0
+  M2 L1 fired: NA
+  M2 NeighborDown count: 1
+  M2 REJOIN count after kill: 0
+  M2 REJOIN count before kill: 0
+  M2 first HB from M1 after M1 re-home: 29272
+  M2 first HB from M3 after M1 re-home: 16050
+  M2 first NeighborDown: 10103
+  M2 first REJOIN: NA
+  M2 first failed dial to M1: 12013
+  M2 first failed dial to M3: 12013
+  M2 fresh dial to M1 ok again: 16033
+  M2 fresh dial to M3 ok again: 16034
+  M2 last HB from M1: 179517
+  M2 last HB from M3: 179624
+  M2 max HB gap from M1: 64111
+  M2 max HB gap from M3 (both homed R2): 64507
+  M3 HB from M1 resumed: 29272
+  M3 HB from M2 resumed: 97495
+  M3 L1 fire count: 0
+  M3 L1 fired: NA
+  M3 NeighborDown count: 1
+  M3 REJOIN count after kill: 0
+  M3 REJOIN count before kill: 0
+  M3 first HB from M1 after M1 re-home: 29272
+  M3 first HB from M2 after M1 re-home: 16119
+  M3 first NeighborDown: 10096
+  M3 first REJOIN: NA
+  M3 first failed dial to M1: 3898
+  M3 first failed dial to M2: 11943
+  M3 fresh dial to M1 ok again: 18969
+  M3 fresh dial to M2 ok again: 15964
+  M3 last HB from M1: 179518
+  M3 last HB from M2: 179774
+  M3 max HB gap from M1: 20516
+  M3 max HB gap from M2 (both homed R2): 25325
+SUMMARY gossip=a scn=1 variant= runs=1 run0=1925
+  M1 HB from M2 resumed: min 97495 median 97495 max 97495 (n_ok 1/1)
+  M1 HB from M3 resumed: min 29993 median 29993 max 29993 (n_ok 1/1)
+  M1 L1 fire count: min 0 median 0 max 0 (n_ok 1/1)
+  M1 L1 fired: none (1 runs NA)
+  M1 NeighborDown count: min 1 median 1 max 1 (n_ok 1/1)
+  M1 REJOIN count after kill: min 0 median 0 max 0 (n_ok 1/1)
+  M1 REJOIN count before kill: min 0 median 0 max 0 (n_ok 1/1)
+  M1 addr lists only R2: min 15542 median 15542 max 15542 (n_ok 1/1)
+  M1 first HB from M2 after M1 re-home: min 29242 median 29242 max 29242 (n_ok 1/1)
+  M1 first HB from M3 after M1 re-home: min 29993 median 29993 max 29993 (n_ok 1/1)
+  M1 first NeighborDown: min 10006 median 10006 max 10006 (n_ok 1/1)
+  M1 first REJOIN: none (1 runs NA)
+  M1 last HB from M2: min 179774 median 179774 max 179774 (n_ok 1/1)
+  M1 last HB from M3: min 179625 median 179625 max 179625 (n_ok 1/1)
+  M1 max HB gap from M2: min 25325 median 25325 max 25325 (n_ok 1/1)
+  M1 max HB gap from M3: min 21090 median 21090 max 21090 (n_ok 1/1)
+  M1 re-home minus L1 fire: none (1 runs NA)
+  M1 status connected on R2: min 15542 median 15542 max 15542 (n_ok 1/1)
+  M2 HB from M1 resumed: min 138410 median 138410 max 138410 (n_ok 1/1)
+  M2 HB from M3 resumed: min 136604 median 136604 max 136604 (n_ok 1/1)
+  M2 L1 fire count: min 0 median 0 max 0 (n_ok 1/1)
+  M2 L1 fired: none (1 runs NA)
+  M2 NeighborDown count: min 1 median 1 max 1 (n_ok 1/1)
+  M2 REJOIN count after kill: min 0 median 0 max 0 (n_ok 1/1)
+  M2 REJOIN count before kill: min 0 median 0 max 0 (n_ok 1/1)
+  M2 first HB from M1 after M1 re-home: min 29272 median 29272 max 29272 (n_ok 1/1)
+  M2 first HB from M3 after M1 re-home: min 16050 median 16050 max 16050 (n_ok 1/1)
+  M2 first NeighborDown: min 10103 median 10103 max 10103 (n_ok 1/1)
+  M2 first REJOIN: none (1 runs NA)
+  M2 first failed dial to M1: min 12013 median 12013 max 12013 (n_ok 1/1)
+  M2 first failed dial to M3: min 12013 median 12013 max 12013 (n_ok 1/1)
+  M2 fresh dial to M1 ok again: min 16033 median 16033 max 16033 (n_ok 1/1)
+  M2 fresh dial to M3 ok again: min 16034 median 16034 max 16034 (n_ok 1/1)
+  M2 last HB from M1: min 179517 median 179517 max 179517 (n_ok 1/1)
+  M2 last HB from M3: min 179624 median 179624 max 179624 (n_ok 1/1)
+  M2 max HB gap from M1: min 64111 median 64111 max 64111 (n_ok 1/1)
+  M2 max HB gap from M3 (both homed R2): min 64507 median 64507 max 64507 (n_ok 1/1)
+  M3 HB from M1 resumed: min 29272 median 29272 max 29272 (n_ok 1/1)
+  M3 HB from M2 resumed: min 97495 median 97495 max 97495 (n_ok 1/1)
+  M3 L1 fire count: min 0 median 0 max 0 (n_ok 1/1)
+  M3 L1 fired: none (1 runs NA)
+  M3 NeighborDown count: min 1 median 1 max 1 (n_ok 1/1)
+  M3 REJOIN count after kill: min 0 median 0 max 0 (n_ok 1/1)
+  M3 REJOIN count before kill: min 0 median 0 max 0 (n_ok 1/1)
+  M3 first HB from M1 after M1 re-home: min 29272 median 29272 max 29272 (n_ok 1/1)
+  M3 first HB from M2 after M1 re-home: min 16119 median 16119 max 16119 (n_ok 1/1)
+  M3 first NeighborDown: min 10096 median 10096 max 10096 (n_ok 1/1)
+  M3 first REJOIN: none (1 runs NA)
+  M3 first failed dial to M1: min 3898 median 3898 max 3898 (n_ok 1/1)
+  M3 first failed dial to M2: min 11943 median 11943 max 11943 (n_ok 1/1)
+  M3 fresh dial to M1 ok again: min 18969 median 18969 max 18969 (n_ok 1/1)
+  M3 fresh dial to M2 ok again: min 15964 median 15964 max 15964 (n_ok 1/1)
+  M3 last HB from M1: min 179518 median 179518 max 179518 (n_ok 1/1)
+  M3 last HB from M2: min 179774 median 179774 max 179774 (n_ok 1/1)
+  M3 max HB gap from M1: min 20516 median 20516 max 20516 (n_ok 1/1)
+  M3 max HB gap from M2 (both homed R2): min 25325 median 25325 max 25325 (n_ok 1/1)
+LOAD after:  9:04  up 11 days, 18:47, 2 users, load averages: 2.20 2.25 1.91
+CELL end=2026-10-21T06:04:06Z
