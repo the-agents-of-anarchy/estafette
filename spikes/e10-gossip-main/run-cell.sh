@@ -12,6 +12,7 @@
 #   E17 tags (180 s window): x1w = W1 (T 3000), probers on, as w1w, with the diagnostic binary; x1nw = same with probers off; x1cw = W1 + E17_FRESH_LOOKUP=1 with the diagnostic binary; c0w = W1, c1w = W1 + E17_FRESH_LOOKUP=1 (stock binary, E15_BIN unset). The diagnostic binary logs through E15_BIN = spikes/e17-relapse-gossip with E14_DIAG=1 E17_ITEMS=1 E17_ERR_DIR=<dir> E12_TRACE=....
 #   E18 tags (180 s window; binary from E15_BIN = spikes/e18-attach-gossip via e18-run.sh): x1cw (above) is the E18 baseline; x2cw = x1cw + E18_JOIN_T_MS=5000 (member-side counter); x3cw = x1cw + E18_FIX=1 (vendored gossip drops a pending Neighbor on Join).
 #   E19 tags (180 s window; binary from E15_BIN = spikes/e18-attach-gossip via e18-run.sh; E17_FRESH_LOOKUP must be unset): y0w = W1 alone (B0); y1w = W1 + E17_PROBE=1 + E18_JOIN_T_MS=5000 + E18_FIX=1 (B1, combined; scn 0 = its no-kill control); y2w = W1 + E18_JOIN_T_MS=5000 + E18_FIX=1 (B2, combined without C2).
+#   E20 tag (binary as E19): y3w = y1w (B1) + E20_MJOIN_MS=1500 (member re-joins the other members when it has no member neighbor 1.5 s after a rebind's JOINED). All other tags unset E20_MJOIN_MS.
 #   any other tag (use "-") = probers on, 88 s window, as E8
 set -u
 variant=$1
@@ -23,6 +24,7 @@ dir=$(cd "$(dirname "$0")" && pwd)
 export E8_PAYLOAD=1
 export E10_RUN0="$run0"
 export E8_TAG=
+unset E20_MJOIN_MS
 case "$tag" in
   np)
     export E8_NOPROBE=1
@@ -54,6 +56,7 @@ case "$tag" in
   y0w) unset E17_FRESH_LOOKUP E17_PROBE E18_JOIN_T_MS E18_FIX; export E15_W1=1 E8_TAG=y0w E10_WINDOW_MS=180000 ;;
   y1w) unset E17_FRESH_LOOKUP; export E15_W1=1 E17_PROBE=1 E18_JOIN_T_MS=5000 E18_FIX=1 E8_TAG=y1w E10_WINDOW_MS=180000 ;;
   y2w) unset E17_FRESH_LOOKUP E17_PROBE; export E15_W1=1 E18_JOIN_T_MS=5000 E18_FIX=1 E8_TAG=y2w E10_WINDOW_MS=180000 ;;
+  y3w) unset E17_FRESH_LOOKUP; export E15_W1=1 E17_PROBE=1 E18_JOIN_T_MS=5000 E18_FIX=1 E20_MJOIN_MS=1500 E8_TAG=y3w E10_WINDOW_MS=180000 ;;
   npw)
     export E8_NOPROBE=1
     export E8_TAG=npw

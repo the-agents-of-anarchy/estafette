@@ -1,0 +1,5 @@
+B1 runs with a rebind 7 all-flowing-from minus last REBOUND (s): [14.8, 1.0, 1.1, 1.1, 14.1, 14.0, 1.0] median 1.1 mean 6.7
+B1 first-gen endpoints 21 first hb delay s sorted: [0.5, 0.5, 0.7, 0.7, 0.9, 1.0, 1.0, 1.0, 1.1, 1.1, 1.2, 3.1, 3.5, 3.5, 4.0, 4.1, 13.3, 13.5, 14.0, 14.1, 15.8] no hb 0 >=10 s 5
+B3 runs with a rebind 8 all-flowing-from minus last REBOUND (s): [1.0, 1.0, 2.1, 2.4, 2.0, 2.2, 2.0, 1.0] median 2.0 mean 1.7
+B3 first-gen endpoints 24 first hb delay s sorted: [0.0, 0.1, 0.8, 0.8, 0.9, 0.9, 1.0, 1.0, 1.0, 1.0, 1.0, 1.1, 1.1, 1.9, 1.9, 2.1, 2.2, 2.4, 2.7, 3.1, 4.7, 4.9, 5.0, 5.1] no hb 0 >=10 s 0
+permutation p (all-flowing-from minus last REBOUND) = 0.1064

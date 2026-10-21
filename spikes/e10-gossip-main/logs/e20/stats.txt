@@ -1,0 +1,14 @@
+B1 runs 8 stalled 7 first rebind min/med/max 6.591 11.317 12.188 runs with a 2nd rebind 0 rebinds per member (all members, all runs) mean 0.88 max 1 rebinds total 21
+  per run flow (s, None=stalled-not-all-flowing at 180): [('2000', 30320), ('2001', None), ('2002', 17706), ('2003', 13720), ('2004', 17997), ('2005', 31582), ('2006', 30329), ('2007', 13564)]
+B3 runs 8 stalled 8 first rebind min/med/max 6.511 11.8205 19.974 runs with a 2nd rebind 0 rebinds per member (all members, all runs) mean 1.00 max 1 rebinds total 24
+  per run flow (s, None=stalled-not-all-flowing at 180): [('2010', 16949), ('2011', 18172), ('2012', 19535), ('2013', 14541), ('2014', 19960), ('2015', 28005), ('2016', 15062), ('2017', 17942)]
+stalled runs only, censored at 180
+   B1 n=7 min/med/max 13.6 / 18.0 / 31.6 mean 22.2
+   B3 n=8 min/med/max 14.5 / 18.1 / 28.0 mean 18.8
+   B1 vs B3 p = 0.3354
+all runs, never-stalled = 0
+   B1 n=8 min/med/max 0.0 / 17.9 / 31.6 mean 19.4
+   B3 n=8 min/med/max 14.5 / 18.1 / 28.0 mean 18.8
+   B1 vs B3 p = 0.9178
+runs with a second rebind {'B1': (0, 8), 'B3': (0, 8)}
+  Fisher B1 vs B3 p = 1.0000

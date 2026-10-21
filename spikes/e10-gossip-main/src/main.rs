@@ -431,6 +431,19 @@ async fn session(name: String, k: u8, order: String, u1: RelayUrl, u2: RelayUrl,
             }
         });
     }
+    // E20 counter (`E20_MJOIN_MS`): after a rebind, a member with no neighbor among the other members T ms after JOINED calls join_peers(other members), again every 3 s until one is a neighbor.
+    if let (Some(t_ms), true) = (std::env::var("E20_MJOIN_MS").ok().and_then(|v| v.parse::<u64>().ok()), last_rebind.is_some()) {
+        let (n, tx, nb) = (name.clone(), tx.clone(), nbrs.clone());
+        let others: Vec<EndpointId> = (1..=3u8).filter(|t| *t != k).map(|t| key(10 + t).public()).collect();
+        js.spawn(async move {
+            sleep(Duration::from_millis(t_ms)).await;
+            while !nb.lock().map_or(true, |g| others.iter().any(|o| g.contains(o))) {
+                let r = timeout(Duration::from_secs(5), tx.join_peers(others.clone())).await;
+                ev(&n, "MJOIN", format!("join_peers {}", if matches!(r, Ok(Ok(()))) { "ok" } else { "err/timeout" }));
+                sleep(Duration::from_secs(3)).await;
+            }
+        });
+    }
     // Optional (E8_REJOIN): when the neighbor set is empty, call join_peers(bootstrap) every 5 s.
     if std::env::var("E8_REJOIN").is_ok() {
         let (n, tx, nb) = (name.clone(), tx.clone(), nbrs.clone());
