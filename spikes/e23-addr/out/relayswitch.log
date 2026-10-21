@@ -1,0 +1,540 @@
+== relayswitch run 0
+1792581918004207000 M ONLINE true
+1792581918004956000 M WATCH_ADDR "relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581918004967000 M BOOT_ADDR "relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581918004971000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connected }"]
+1792581918030870000 M NEIGHBOR_UP ""
+1792581918030921000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581918032084000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581918039633000 M NEIGHBOR_UP ""
+home=[RelayUrl("http://127.0.0.1:51515/")] victim=http://127.0.0.1:51515/ other=http://127.0.0.1:51514/
+1792581930417771000 ORCH KILL_RELAY "http://127.0.0.1:51515/"
+1792581930419108000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792581930419350000 M ANNOUNCE_TX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930420076000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581930420158000 M ANNOUNCE_TX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930421458000 O1 PRESENCE_RX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930421717000 O1 PRESENCE_RX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930422005000 O2 PRESENCE_RX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930422028000 O2 PRESENCE_RX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930432182000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792581930432399000 M ANNOUNCE_TX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930432801000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581930432895000 M ANNOUNCE_TX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930433516000 O2 PRESENCE_RX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930433770000 O1 PRESENCE_RX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930433791000 O2 PRESENCE_RX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930433823000 O1 PRESENCE_RX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930470748000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792581930471037000 M ANNOUNCE_TX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930471485000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581930471640000 M ANNOUNCE_TX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930472731000 O2 PRESENCE_RX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930472845000 O1 PRESENCE_RX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930472911000 O2 PRESENCE_RX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930472964000 O1 PRESENCE_RX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930517100000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792581930517333000 M ANNOUNCE_TX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930517780000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581930517914000 M ANNOUNCE_TX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930519052000 O1 PRESENCE_RX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930519063000 O2 PRESENCE_RX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930519783000 O1 PRESENCE_RX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930519789000 O2 PRESENCE_RX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930639171000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792581930639323000 M ANNOUNCE_TX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930639579000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581930639620000 M ANNOUNCE_TX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930640410000 O1 PRESENCE_RX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930640426000 O1 PRESENCE_RX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930640470000 O2 PRESENCE_RX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930640480000 O2 PRESENCE_RX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930954889000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792581930955275000 M ANNOUNCE_TX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930956046000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581930956209000 M ANNOUNCE_TX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930957757000 O2 PRESENCE_RX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930957998000 O2 PRESENCE_RX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930957756000 O1 PRESENCE_RX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581930958054000 O1 PRESENCE_RX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581931371412000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792581931372680000 M ANNOUNCE_TX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581931372933000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581931373129000 M ANNOUNCE_TX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581931375158000 O2 PRESENCE_RX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581931375296000 O2 PRESENCE_RX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581931375358000 O1 PRESENCE_RX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581931375384000 O1 PRESENCE_RX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581932144529000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792581932144817000 M ANNOUNCE_TX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581932145176000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581932145270000 M ANNOUNCE_TX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581932146908000 O2 PRESENCE_RX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581932146932000 O1 PRESENCE_RX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581932147175000 O2 PRESENCE_RX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581932147409000 O1 PRESENCE_RX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581933756363000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792581933756607000 M ANNOUNCE_TX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581933757068000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581933757171000 M ANNOUNCE_TX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581933758125000 O2 PRESENCE_RX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581933758150000 O2 PRESENCE_RX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581933758154000 O1 PRESENCE_RX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581933758240000 O1 PRESENCE_RX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581938369787000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792581938369944000 M ANNOUNCE_TX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581938370136000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581938370182000 M ANNOUNCE_TX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581938370737000 O1 PRESENCE_RX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581938370890000 O2 PRESENCE_RX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581938370902000 O2 PRESENCE_RX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581938370894000 O1 PRESENCE_RX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+RESULT relayswitch run=0 relay_status_ms=Some(1.345) watch_addr_any_ms=None watch_addr_new_relay_ms=None announce_tx_ms=Some(1.587) O1_sees_new_relay_ms=None O2_sees_new_relay_ms=None n_relay_status=20 n_watch_addr=0 n_announce=20
+FINAL M addr=relay=["http://127.0.0.1:51515/"] ip=["192.168.0.140:62999"]
+[2m2026-10-21T11:25:42.422852Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m291509516d[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:25:42.422852Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m56fc0ae089[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+== relayswitch run 1
+1792581944024582000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792581944024840000 M ANNOUNCE_TX "seq=22 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581944025335000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581944025420000 M ANNOUNCE_TX "seq=23 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581945953339000 M ONLINE true
+1792581945953824000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connected }"]
+1792581945953827000 M BOOT_ADDR "relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581945953855000 M WATCH_ADDR "relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581945977563000 M NEIGHBOR_UP ""
+1792581945977647000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581945979001000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581945987561000 M NEIGHBOR_UP ""
+home=[RelayUrl("http://127.0.0.1:51564/")] victim=http://127.0.0.1:51564/ other=http://127.0.0.1:51563/
+1792581958365251000 ORCH KILL_RELAY "http://127.0.0.1:51564/"
+1792581958365697000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792581958365750000 M ANNOUNCE_TX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958365992000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581958366039000 M ANNOUNCE_TX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958366718000 O1 PRESENCE_RX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958366729000 O1 PRESENCE_RX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958366815000 O2 PRESENCE_RX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958366851000 O2 PRESENCE_RX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958384021000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792581958384071000 M ANNOUNCE_TX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958384317000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581958384358000 M ANNOUNCE_TX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958384509000 O1 PRESENCE_RX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958384530000 O2 PRESENCE_RX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958384783000 O1 PRESENCE_RX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958384783000 O2 PRESENCE_RX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958422593000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792581958422645000 M ANNOUNCE_TX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958422806000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581958422864000 M ANNOUNCE_TX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958423027000 O2 PRESENCE_RX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958423052000 O1 PRESENCE_RX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958423192000 O2 PRESENCE_RX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958423198000 O1 PRESENCE_RX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958465304000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792581958465379000 M ANNOUNCE_TX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958465575000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581958465614000 M ANNOUNCE_TX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958465788000 O2 PRESENCE_RX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958465856000 O1 PRESENCE_RX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958465992000 O1 PRESENCE_RX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958466058000 O2 PRESENCE_RX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958566265000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792581958566358000 M ANNOUNCE_TX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958566547000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581958566594000 M ANNOUNCE_TX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958566905000 O1 PRESENCE_RX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958566955000 O2 PRESENCE_RX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958567087000 O1 PRESENCE_RX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958567136000 O2 PRESENCE_RX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958812828000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792581958813156000 M ANNOUNCE_TX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958814221000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581958814455000 M ANNOUNCE_TX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958815207000 O1 PRESENCE_RX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958815231000 O2 PRESENCE_RX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958815748000 O1 PRESENCE_RX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581958815821000 O2 PRESENCE_RX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581959360569000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792581959360742000 M ANNOUNCE_TX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581959361169000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581959361248000 M ANNOUNCE_TX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581959361843000 O2 PRESENCE_RX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581959361844000 O1 PRESENCE_RX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581959361996000 O1 PRESENCE_RX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581959362131000 O2 PRESENCE_RX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581960351913000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792581960351995000 M ANNOUNCE_TX "seq=24 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581960352221000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581960352264000 M ANNOUNCE_TX "seq=25 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581960431358000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792581960431529000 M ANNOUNCE_TX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581960431784000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581960431832000 M ANNOUNCE_TX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581960432292000 O2 PRESENCE_RX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581960432292000 O1 PRESENCE_RX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581960432430000 O1 PRESENCE_RX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581960432546000 O2 PRESENCE_RX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581962452806000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792581962452883000 M ANNOUNCE_TX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581962453225000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581962453258000 M ANNOUNCE_TX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581962453504000 O2 PRESENCE_RX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581962453526000 O1 PRESENCE_RX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581962453587000 O1 PRESENCE_RX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581962453603000 O2 PRESENCE_RX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581965536117000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792581965536551000 M ANNOUNCE_TX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581965537227000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581965537405000 M ANNOUNCE_TX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581965539061000 O2 PRESENCE_RX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581965539062000 O1 PRESENCE_RX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581965539103000 O2 PRESENCE_RX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581965539134000 O1 PRESENCE_RX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+RESULT relayswitch run=1 relay_status_ms=Some(0.449) watch_addr_any_ms=None watch_addr_new_relay_ms=None announce_tx_ms=Some(0.502) O1_sees_new_relay_ms=None O2_sees_new_relay_ms=None n_relay_status=20 n_watch_addr=0 n_announce=20
+FINAL M addr=relay=["http://127.0.0.1:51564/"] ip=["192.168.0.140:49172"]
+[2m2026-10-21T11:26:10.369911Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m20e47757d5[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:26:10.369907Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m121bef7635[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+== relayswitch run 2
+1792581973894104000 M ONLINE true
+1792581973894534000 M WATCH_ADDR "relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581973894538000 M BOOT_ADDR "relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581973894549000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connected }"]
+1792581973914786000 M NEIGHBOR_UP ""
+1792581973914871000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581973915851000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581973924291000 M NEIGHBOR_UP ""
+1792581974890176000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792581974890340000 M ANNOUNCE_TX "seq=22 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581974890769000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581974890829000 M ANNOUNCE_TX "seq=23 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581985802775000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792581985803000000 M ANNOUNCE_TX "seq=24 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792581985803381000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581985803455000 M ANNOUNCE_TX "seq=25 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+home=[RelayUrl("http://127.0.0.1:51618/")] victim=http://127.0.0.1:51618/ other=http://127.0.0.1:51617/
+1792581986316352000 ORCH KILL_RELAY "http://127.0.0.1:51618/"
+1792581986317013000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connecting }"]
+1792581986317120000 M ANNOUNCE_TX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986317450000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581986317505000 M ANNOUNCE_TX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986318442000 O1 PRESENCE_RX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986318596000 O1 PRESENCE_RX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986318596000 O2 PRESENCE_RX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986318656000 O2 PRESENCE_RX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986330279000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connecting }"]
+1792581986330365000 M ANNOUNCE_TX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986330509000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581986330564000 M ANNOUNCE_TX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986330784000 O1 PRESENCE_RX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986330836000 O2 PRESENCE_RX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986330949000 O1 PRESENCE_RX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986330974000 O2 PRESENCE_RX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986371765000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connecting }"]
+1792581986371866000 M ANNOUNCE_TX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986372040000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581986372101000 M ANNOUNCE_TX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986372382000 O2 PRESENCE_RX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986372535000 O1 PRESENCE_RX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986372668000 O2 PRESENCE_RX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986372692000 O1 PRESENCE_RX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986444952000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connecting }"]
+1792581986445044000 M ANNOUNCE_TX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986445378000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581986445441000 M ANNOUNCE_TX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986445726000 O2 PRESENCE_RX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986445811000 O1 PRESENCE_RX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986445982000 O1 PRESENCE_RX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986446063000 O2 PRESENCE_RX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986575474000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connecting }"]
+1792581986575619000 M ANNOUNCE_TX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986575887000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581986575923000 M ANNOUNCE_TX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986576507000 O1 PRESENCE_RX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986576520000 O2 PRESENCE_RX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986576536000 O1 PRESENCE_RX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986576538000 O2 PRESENCE_RX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986822142000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connecting }"]
+1792581986822370000 M ANNOUNCE_TX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986822798000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581986822928000 M ANNOUNCE_TX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986823753000 O2 PRESENCE_RX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986823828000 O1 PRESENCE_RX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986823914000 O2 PRESENCE_RX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581986823934000 O1 PRESENCE_RX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581987321072000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connecting }"]
+1792581987321449000 M ANNOUNCE_TX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581987321747000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581987321873000 M ANNOUNCE_TX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581987322710000 O2 PRESENCE_RX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581987323110000 O2 PRESENCE_RX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581987323128000 O1 PRESENCE_RX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581987323148000 O1 PRESENCE_RX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581988406999000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connecting }"]
+1792581988407131000 M ANNOUNCE_TX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581988407376000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581988407475000 M ANNOUNCE_TX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581988408224000 O1 PRESENCE_RX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581988408502000 O1 PRESENCE_RX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581988408588000 O2 PRESENCE_RX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581988408606000 O2 PRESENCE_RX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581988602365000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792581988602545000 M ANNOUNCE_TX "seq=26 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581988603004000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581988603082000 M ANNOUNCE_TX "seq=27 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792581990262588000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connecting }"]
+1792581990262929000 M ANNOUNCE_TX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581990263387000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581990263534000 M ANNOUNCE_TX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581990265329000 O1 PRESENCE_RX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581990265535000 O2 PRESENCE_RX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581990265563000 O2 PRESENCE_RX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581990265751000 O1 PRESENCE_RX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581994610177000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connecting }"]
+1792581994610356000 M ANNOUNCE_TX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581994610581000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792581994610624000 M ANNOUNCE_TX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581994611150000 O2 PRESENCE_RX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581994611162000 O2 PRESENCE_RX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581994611163000 O1 PRESENCE_RX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792581994611190000 O1 PRESENCE_RX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+RESULT relayswitch run=2 relay_status_ms=Some(0.667) watch_addr_any_ms=None watch_addr_new_relay_ms=None announce_tx_ms=Some(0.774) O1_sees_new_relay_ms=None O2_sees_new_relay_ms=None n_relay_status=20 n_watch_addr=0 n_announce=20
+FINAL M addr=relay=["http://127.0.0.1:51618/"] ip=["192.168.0.140:64642"]
+[2m2026-10-21T11:26:38.319146Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0ma2c5a8d606[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:26:38.319146Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m295c991c2c[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+== relayswitch run 3
+1792582000887986000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connecting }"]
+1792582000888406000 M ANNOUNCE_TX "seq=22 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792582000888755000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582000888856000 M ANNOUNCE_TX "seq=23 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792582001841575000 M ONLINE true
+1792582001841783000 M BOOT_ADDR "relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582001841783000 M WATCH_ADDR "relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582001841785000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Connected }"]
+1792582001854943000 M NEIGHBOR_UP ""
+1792582001854987000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582001855867000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582001861397000 M NEIGHBOR_UP ""
+1792582013513010000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792582013513193000 M ANNOUNCE_TX "seq=28 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792582013513615000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582013513700000 M ANNOUNCE_TX "seq=29 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+home=[RelayUrl("http://127.0.0.1:51680/")] victim=http://127.0.0.1:51680/ other=http://127.0.0.1:51681/
+1792582014234283000 ORCH KILL_RELAY "http://127.0.0.1:51680/"
+1792582014235027000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Connecting }"]
+1792582014235161000 M ANNOUNCE_TX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014235434000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582014235522000 M ANNOUNCE_TX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014236666000 O2 PRESENCE_RX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014236671000 O1 PRESENCE_RX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014236701000 O2 PRESENCE_RX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014236733000 O1 PRESENCE_RX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014257691000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Connecting }"]
+1792582014257745000 M ANNOUNCE_TX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014257972000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582014258030000 M ANNOUNCE_TX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014258291000 O2 PRESENCE_RX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014258381000 O1 PRESENCE_RX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014258522000 O2 PRESENCE_RX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014258580000 O1 PRESENCE_RX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014286390000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Connecting }"]
+1792582014286446000 M ANNOUNCE_TX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014286686000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582014286729000 M ANNOUNCE_TX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014287008000 O1 PRESENCE_RX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014287035000 O2 PRESENCE_RX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014287239000 O1 PRESENCE_RX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014287256000 O2 PRESENCE_RX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014351088000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Connecting }"]
+1792582014351184000 M ANNOUNCE_TX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014351505000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582014351596000 M ANNOUNCE_TX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014351939000 O1 PRESENCE_RX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014352036000 O2 PRESENCE_RX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014352293000 O2 PRESENCE_RX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014352377000 O1 PRESENCE_RX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014491685000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Connecting }"]
+1792582014491891000 M ANNOUNCE_TX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014492282000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582014492352000 M ANNOUNCE_TX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014493818000 O2 PRESENCE_RX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014493824000 O1 PRESENCE_RX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014493862000 O2 PRESENCE_RX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014493892000 O1 PRESENCE_RX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014771137000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Connecting }"]
+1792582014771457000 M ANNOUNCE_TX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014771904000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582014771992000 M ANNOUNCE_TX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014773850000 O2 PRESENCE_RX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014773860000 O1 PRESENCE_RX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014774259000 O1 PRESENCE_RX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582014774325000 O2 PRESENCE_RX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582015302466000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Connecting }"]
+1792582015302589000 M ANNOUNCE_TX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582015302851000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582015302900000 M ANNOUNCE_TX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582015303682000 O2 PRESENCE_RX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582015303692000 O2 PRESENCE_RX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582015303968000 O1 PRESENCE_RX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582015303980000 O1 PRESENCE_RX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582016088629000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792582016088728000 M ANNOUNCE_TX "seq=26 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792582016088942000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582016088982000 M ANNOUNCE_TX "seq=27 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792582016415327000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Connecting }"]
+1792582016415418000 M ANNOUNCE_TX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582016415652000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582016415699000 M ANNOUNCE_TX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582016416230000 O2 PRESENCE_RX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582016416240000 O2 PRESENCE_RX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582016416246000 O1 PRESENCE_RX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582016416258000 O1 PRESENCE_RX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582017895530000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connecting }"]
+1792582017895716000 M ANNOUNCE_TX "seq=24 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792582017896190000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582017896267000 M ANNOUNCE_TX "seq=25 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792582018255172000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Connecting }"]
+1792582018255259000 M ANNOUNCE_TX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582018255506000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582018255584000 M ANNOUNCE_TX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582018256052000 O1 PRESENCE_RX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582018256213000 O2 PRESENCE_RX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582018256228000 O2 PRESENCE_RX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582018256299000 O1 PRESENCE_RX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582021516232000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Connecting }"]
+1792582021516636000 M ANNOUNCE_TX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582021517175000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582021517340000 M ANNOUNCE_TX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582021519032000 O1 PRESENCE_RX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582021519253000 O1 PRESENCE_RX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582021519479000 O2 PRESENCE_RX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582021519506000 O2 PRESENCE_RX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+RESULT relayswitch run=3 relay_status_ms=Some(0.75) watch_addr_any_ms=None watch_addr_new_relay_ms=None announce_tx_ms=Some(0.884) O1_sees_new_relay_ms=None O2_sees_new_relay_ms=None n_relay_status=20 n_watch_addr=0 n_announce=20
+FINAL M addr=relay=["http://127.0.0.1:51680/"] ip=["192.168.0.140:50594"]
+[2m2026-10-21T11:27:06.238056Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m687022902e[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:27:06.238056Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0mdaf1e74651[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+== relayswitch run 4
+1792582027089059000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Connecting }"]
+1792582027089383000 M ANNOUNCE_TX "seq=22 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582027089511000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582027089587000 M ANNOUNCE_TX "seq=23 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582029716986000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792582029717371000 M ANNOUNCE_TX "seq=30 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792582029717873000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582029718001000 M ANNOUNCE_TX "seq=31 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792582029762144000 M ONLINE true
+1792582029762522000 M WATCH_ADDR "relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582029762541000 M BOOT_ADDR "relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582029762549000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Connected }"]
+1792582029782891000 M NEIGHBOR_UP ""
+1792582029782933000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582029783931000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582029792568000 M NEIGHBOR_UP ""
+1792582035543559000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Connecting }"]
+1792582035543790000 M ANNOUNCE_TX "seq=26 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792582035544194000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51618/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582035544279000 M ANNOUNCE_TX "seq=27 trig=relay_status relay=[\"http://127.0.0.1:51618/\"] ip=[\"192.168.0.140:64642\"]"
+1792582040139533000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Connecting }"]
+1792582040139678000 M ANNOUNCE_TX "seq=28 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792582040139872000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51564/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582040139908000 M ANNOUNCE_TX "seq=29 trig=relay_status relay=[\"http://127.0.0.1:51564/\"] ip=[\"192.168.0.140:49172\"]"
+1792582041028324000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Connecting }"]
+1792582041028549000 M ANNOUNCE_TX "seq=24 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+1792582041029048000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51680/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582041029158000 M ANNOUNCE_TX "seq=25 trig=relay_status relay=[\"http://127.0.0.1:51680/\"] ip=[\"192.168.0.140:50594\"]"
+home=[RelayUrl("http://127.0.0.1:51774/")] victim=http://127.0.0.1:51774/ other=http://127.0.0.1:51775/
+1792582042171926000 ORCH KILL_RELAY "http://127.0.0.1:51774/"
+1792582042172594000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Connecting }"]
+1792582042172705000 M ANNOUNCE_TX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042173223000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582042173299000 M ANNOUNCE_TX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042174230000 O2 PRESENCE_RX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042174383000 O1 PRESENCE_RX "seq=2 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042174425000 O1 PRESENCE_RX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042174445000 O2 PRESENCE_RX "seq=3 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042185017000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Connecting }"]
+1792582042185089000 M ANNOUNCE_TX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042185320000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582042185384000 M ANNOUNCE_TX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042185752000 O2 PRESENCE_RX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042186003000 O2 PRESENCE_RX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042186005000 O1 PRESENCE_RX "seq=4 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042186054000 O1 PRESENCE_RX "seq=5 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042208622000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Connecting }"]
+1792582042208695000 M ANNOUNCE_TX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042208934000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582042208997000 M ANNOUNCE_TX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042209295000 O1 PRESENCE_RX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042209371000 O2 PRESENCE_RX "seq=6 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042209670000 O2 PRESENCE_RX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042209734000 O1 PRESENCE_RX "seq=7 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042279785000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Connecting }"]
+1792582042279925000 M ANNOUNCE_TX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042280249000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582042280315000 M ANNOUNCE_TX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042280744000 O2 PRESENCE_RX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042280868000 O2 PRESENCE_RX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042281109000 O1 PRESENCE_RX "seq=8 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042281137000 O1 PRESENCE_RX "seq=9 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042396368000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Connecting }"]
+1792582042396466000 M ANNOUNCE_TX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042396926000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582042396994000 M ANNOUNCE_TX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042397376000 O1 PRESENCE_RX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042397463000 O2 PRESENCE_RX "seq=10 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042397623000 O2 PRESENCE_RX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042397628000 O1 PRESENCE_RX "seq=11 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042636623000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Connecting }"]
+1792582042636855000 M ANNOUNCE_TX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042637281000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582042637382000 M ANNOUNCE_TX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042638250000 O2 PRESENCE_RX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042638472000 O1 PRESENCE_RX "seq=12 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042638492000 O1 PRESENCE_RX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582042638507000 O2 PRESENCE_RX "seq=13 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582043179890000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Connecting }"]
+1792582043180617000 M ANNOUNCE_TX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582043181412000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582043181560000 M ANNOUNCE_TX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582043182780000 O2 PRESENCE_RX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582043182911000 O2 PRESENCE_RX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582043183032000 O1 PRESENCE_RX "seq=14 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582043183144000 O1 PRESENCE_RX "seq=15 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582043839269000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Connecting }"]
+1792582043839361000 M ANNOUNCE_TX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582043839581000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582043839624000 M ANNOUNCE_TX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582043840194000 O1 PRESENCE_RX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582043840201000 O2 PRESENCE_RX "seq=16 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582043840203000 O1 PRESENCE_RX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582043840214000 O2 PRESENCE_RX "seq=17 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582045667224000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Connecting }"]
+1792582045667628000 M ANNOUNCE_TX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582045668186000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582045668353000 M ANNOUNCE_TX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582045669991000 O1 PRESENCE_RX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582045669991000 O2 PRESENCE_RX "seq=18 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582045670217000 O2 PRESENCE_RX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582045670248000 O1 PRESENCE_RX "seq=19 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582048771991000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Connecting }"]
+1792582048772189000 M ANNOUNCE_TX "seq=32 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792582048772458000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51515/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582048772534000 M ANNOUNCE_TX "seq=33 trig=relay_status relay=[\"http://127.0.0.1:51515/\"] ip=[\"192.168.0.140:62999\"]"
+1792582049905996000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Connecting }"]
+1792582049906184000 M ANNOUNCE_TX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582049906596000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51774/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582049906681000 M ANNOUNCE_TX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582049907641000 O1 PRESENCE_RX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582049907662000 O1 PRESENCE_RX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582049907867000 O2 PRESENCE_RX "seq=20 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+1792582049907931000 O2 PRESENCE_RX "seq=21 trig=relay_status relay=[\"http://127.0.0.1:51774/\"] ip=[\"192.168.0.140:55262\"]"
+RESULT relayswitch run=4 relay_status_ms=Some(0.673) watch_addr_any_ms=None watch_addr_new_relay_ms=None announce_tx_ms=Some(0.784) O1_sees_new_relay_ms=None O2_sees_new_relay_ms=None n_relay_status=20 n_watch_addr=0 n_announce=20
+FINAL M addr=relay=["http://127.0.0.1:51774/"] ip=["192.168.0.140:55262"]
+[2m2026-10-21T11:27:34.176262Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m59a87cb5d9[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:27:34.176262Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m356738820e[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:27:34.679008Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:27:34.679326Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:27:34.679657Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:27:34.679702Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:27:34.679794Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.

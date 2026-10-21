@@ -1,0 +1,120 @@
+== restart run 0
+1792582356871619000 M ONLINE true
+1792582356873267000 M WATCH_ADDR "relay=[\"http://127.0.0.1:52633/\"] ip=[\"192.168.0.140:50976\"]"
+1792582356873293000 M BOOT_ADDR "relay=[\"http://127.0.0.1:52633/\"] ip=[\"192.168.0.140:50976\"]"
+1792582356873267000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52633/\"), state: Connected }"]
+1792582356889512000 M NEIGHBOR_UP ""
+1792582356889547000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:52633/\"] ip=[\"192.168.0.140:50976\"]"
+1792582356889914000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52633/\"] ip=[\"192.168.0.140:50976\"]"
+1792582356896457000 M NEIGHBOR_UP ""
+1792582369271549000 ORCH CLOSE_M ""
+1792582372294555000 M ONLINE true
+old=relay=["http://127.0.0.1:52633/"] ip=["192.168.0.140:50976"]
+new=relay=["http://127.0.0.1:52634/"] ip=["192.168.0.140:57811"]
+1792582372295260000 M WATCH_ADDR "relay=[\"http://127.0.0.1:52634/\"] ip=[\"192.168.0.140:57811\"]"
+1792582372295305000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52634/\"), state: Connected }"]
+1792582372307735000 M NEIGHBOR_UP ""
+1792582372307804000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:52634/\"] ip=[\"192.168.0.140:57811\"]"
+1792582372308268000 M NEIGHBOR_UP ""
+1792582372309447000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52634/\"] ip=[\"192.168.0.140:57811\"]"
+1792582372309982000 O2 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52634/\"] ip=[\"192.168.0.140:57811\"]"
+RESULT restart run=0 close_ms=1.9 rebind_ms=3021.8 O1_first_presence_after_rebind_ms=Some(14.228) O2=Some(14.763)
+[2m2026-10-21T11:33:00.298594Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m19562fca71[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:33:00.298623Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m93cdfd8624[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+== restart run 1
+1792582383826310000 M ONLINE true
+1792582383827199000 M BOOT_ADDR "relay=[\"http://127.0.0.1:52740/\"] ip=[\"192.168.0.140:59297\"]"
+1792582383827237000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52740/\"), state: Connected }"]
+1792582383827253000 M WATCH_ADDR "relay=[\"http://127.0.0.1:52740/\"] ip=[\"192.168.0.140:59297\"]"
+1792582383852998000 M NEIGHBOR_UP ""
+1792582383853054000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:52740/\"] ip=[\"192.168.0.140:59297\"]"
+1792582383853714000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52740/\"] ip=[\"192.168.0.140:59297\"]"
+1792582383863149000 M NEIGHBOR_UP ""
+1792582396241836000 ORCH CLOSE_M ""
+1792582399268962000 M ONLINE true
+old=relay=["http://127.0.0.1:52740/"] ip=["192.168.0.140:59297"]
+new=relay=["http://127.0.0.1:52740/"] ip=["192.168.0.140:65455"]
+1792582399269387000 M WATCH_ADDR "relay=[\"http://127.0.0.1:52740/\"] ip=[\"192.168.0.140:65455\"]"
+1792582399269392000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52740/\"), state: Connected }"]
+1792582399277080000 M NEIGHBOR_UP ""
+1792582399277127000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:52740/\"] ip=[\"192.168.0.140:65455\"]"
+1792582399277280000 M NEIGHBOR_UP ""
+1792582399277520000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52740/\"] ip=[\"192.168.0.140:65455\"]"
+1792582399277774000 O2 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52740/\"] ip=[\"192.168.0.140:65455\"]"
+RESULT restart run=1 close_ms=3.6 rebind_ms=3023.9 O1_first_presence_after_rebind_ms=Some(8.166) O2=Some(8.42)
+[2m2026-10-21T11:33:27.272176Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m82f72ae081[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:33:27.272201Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m0ff1ebb12f[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+== restart run 2
+1792582410803065000 M ONLINE true
+1792582410803573000 M WATCH_ADDR "relay=[\"http://127.0.0.1:52850/\"] ip=[\"192.168.0.140:65502\"]"
+1792582410803583000 M BOOT_ADDR "relay=[\"http://127.0.0.1:52850/\"] ip=[\"192.168.0.140:65502\"]"
+1792582410803645000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52850/\"), state: Connected }"]
+1792582410828572000 M NEIGHBOR_UP ""
+1792582410828625000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:52850/\"] ip=[\"192.168.0.140:65502\"]"
+1792582410829142000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52850/\"] ip=[\"192.168.0.140:65502\"]"
+1792582410838050000 M NEIGHBOR_UP ""
+1792582423215191000 ORCH CLOSE_M ""
+1792582426241049000 M ONLINE true
+old=relay=["http://127.0.0.1:52850/"] ip=["192.168.0.140:65502"]
+new=relay=["http://127.0.0.1:52851/"] ip=["192.168.0.140:60159"]
+1792582426241828000 M WATCH_ADDR "relay=[\"http://127.0.0.1:52851/\"] ip=[\"192.168.0.140:60159\"]"
+1792582426241879000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52851/\"), state: Connected }"]
+1792582426255203000 M NEIGHBOR_UP ""
+1792582426255338000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:52851/\"] ip=[\"192.168.0.140:60159\"]"
+1792582426255369000 M NEIGHBOR_UP ""
+1792582426255898000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52851/\"] ip=[\"192.168.0.140:60159\"]"
+1792582426256312000 O2 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52851/\"] ip=[\"192.168.0.140:60159\"]"
+RESULT restart run=2 close_ms=1.9 rebind_ms=3024.7 O1_first_presence_after_rebind_ms=Some(14.127) O2=Some(14.541)
+[2m2026-10-21T11:33:54.244751Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0mc57e54dd1c[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:33:54.244751Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0mf358e484ee[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+== restart run 3
+1792582437773259000 M ONLINE true
+1792582437773639000 M WATCH_ADDR "relay=[\"http://127.0.0.1:52937/\"] ip=[\"192.168.0.140:54705\"]"
+1792582437773653000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52937/\"), state: Connected }"]
+1792582437773643000 M BOOT_ADDR "relay=[\"http://127.0.0.1:52937/\"] ip=[\"192.168.0.140:54705\"]"
+1792582437791092000 M NEIGHBOR_UP ""
+1792582437791137000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:52937/\"] ip=[\"192.168.0.140:54705\"]"
+1792582437791973000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52937/\"] ip=[\"192.168.0.140:54705\"]"
+1792582437799344000 M NEIGHBOR_UP ""
+1792582450181565000 ORCH CLOSE_M ""
+1792582453213159000 M ONLINE true
+1792582453213874000 M WATCH_ADDR "relay=[\"http://127.0.0.1:52937/\"] ip=[\"192.168.0.140:52170\"]"
+old=relay=["http://127.0.0.1:52937/"] ip=["192.168.0.140:54705"]
+new=relay=["http://127.0.0.1:52937/"] ip=["192.168.0.140:52170"]
+1792582453213927000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52937/\"), state: Connected }"]
+1792582453227160000 M NEIGHBOR_UP ""
+1792582453227280000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:52937/\"] ip=[\"192.168.0.140:52170\"]"
+1792582453227309000 M NEIGHBOR_UP ""
+1792582453228237000 O2 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52937/\"] ip=[\"192.168.0.140:52170\"]"
+1792582453228493000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52937/\"] ip=[\"192.168.0.140:52170\"]"
+RESULT restart run=3 close_ms=3.4 rebind_ms=3028.8 O1_first_presence_after_rebind_ms=Some(14.642) O2=Some(14.386)
+[2m2026-10-21T11:34:21.216408Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m6cc22e4905[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:34:21.216450Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0ma5efd8442f[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+== restart run 4
+1792582464746506000 M ONLINE true
+1792582464747123000 M WATCH_ADDR "relay=[\"http://127.0.0.1:53006/\"] ip=[\"192.168.0.140:53355\"]"
+1792582464747102000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:53006/\"), state: Connected }"]
+1792582464747182000 M BOOT_ADDR "relay=[\"http://127.0.0.1:53006/\"] ip=[\"192.168.0.140:53355\"]"
+1792582464772842000 M NEIGHBOR_UP ""
+1792582464772903000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:53006/\"] ip=[\"192.168.0.140:53355\"]"
+1792582464773545000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:53006/\"] ip=[\"192.168.0.140:53355\"]"
+1792582464782960000 M NEIGHBOR_UP ""
+1792582477156333000 ORCH CLOSE_M ""
+1792582480191189000 M ONLINE true
+1792582480191767000 M WATCH_ADDR "relay=[\"http://127.0.0.1:53006/\"] ip=[\"192.168.0.140:62424\"]"
+old=relay=["http://127.0.0.1:53006/"] ip=["192.168.0.140:53355"]
+new=relay=["http://127.0.0.1:53006/"] ip=["192.168.0.140:62424"]
+1792582480191780000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:53006/\"), state: Connected }"]
+1792582480205559000 M NEIGHBOR_UP ""
+1792582480205643000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:53006/\"] ip=[\"192.168.0.140:62424\"]"
+1792582480205671000 M NEIGHBOR_UP ""
+1792582480206161000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:53006/\"] ip=[\"192.168.0.140:62424\"]"
+1792582480206267000 O2 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:53006/\"] ip=[\"192.168.0.140:62424\"]"
+RESULT restart run=4 close_ms=5.5 rebind_ms=3029.9 O1_first_presence_after_rebind_ms=Some(14.42) O2=Some(14.526)
+[2m2026-10-21T11:34:48.194854Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0mdff5456ee7[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:34:48.194973Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m792fc8b0c2[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:34:48.698530Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:34:48.698756Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:34:48.699068Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:34:48.699399Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:34:48.699606Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.

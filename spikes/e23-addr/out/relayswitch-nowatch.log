@@ -1,0 +1,208 @@
+== relayswitch-nowatch run 0
+1792582057721276000 M ONLINE true
+1792582057722251000 M WATCH_ADDR "relay=[\"http://127.0.0.1:51862/\"] ip=[\"192.168.0.140:51432\"]"
+1792582057722270000 M BOOT_ADDR "relay=[\"http://127.0.0.1:51862/\"] ip=[\"192.168.0.140:51432\"]"
+1792582057722271000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connected }"]
+1792582057747362000 M NEIGHBOR_UP ""
+1792582057747429000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:51862/\"] ip=[\"192.168.0.140:51432\"]"
+1792582057748737000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:51862/\"] ip=[\"192.168.0.140:51432\"]"
+1792582057757867000 M NEIGHBOR_UP ""
+home=[RelayUrl("http://127.0.0.1:51862/")] victim=http://127.0.0.1:51862/ other=http://127.0.0.1:51863/
+1792582070130480000 ORCH KILL_RELAY "http://127.0.0.1:51862/"
+1792582070131180000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582070131761000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582070148926000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582070149290000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582070173456000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582070173750000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582070252260000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582070252684000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582070349059000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582070349749000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582070527056000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582070527633000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582070985612000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582070986135000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582072240824000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582072241605000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582074182902000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582074183914000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582077716341000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582077717214000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+RESULT relayswitch-nowatch run=0 relay_status_ms=Some(0.706) watch_addr_any_ms=None watch_addr_new_relay_ms=None announce_tx_ms=None O1_sees_new_relay_ms=None O2_sees_new_relay_ms=None n_relay_status=20 n_watch_addr=0 n_announce=0
+FINAL M addr=relay=["http://127.0.0.1:51862/"] ip=["192.168.0.140:51432"]
+[2m2026-10-21T11:28:02.134708Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m090eaf1390[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:28:02.134708Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m88be9a74d3[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+== relayswitch-nowatch run 1
+1792582085659269000 M ONLINE true
+1792582085659545000 M WATCH_ADDR "relay=[\"http://127.0.0.1:51905/\"] ip=[\"192.168.0.140:53907\"]"
+1792582085659570000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connected }"]
+1792582085659547000 M BOOT_ADDR "relay=[\"http://127.0.0.1:51905/\"] ip=[\"192.168.0.140:53907\"]"
+1792582085677770000 M NEIGHBOR_UP ""
+1792582085677811000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:51905/\"] ip=[\"192.168.0.140:53907\"]"
+1792582085678251000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:51905/\"] ip=[\"192.168.0.140:53907\"]"
+1792582085686132000 M NEIGHBOR_UP ""
+1792582086280659000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582086281473000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+home=[RelayUrl("http://127.0.0.1:51905/")] victim=http://127.0.0.1:51905/ other=http://127.0.0.1:51906/
+1792582098065497000 ORCH KILL_RELAY "http://127.0.0.1:51905/"
+1792582098066276000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582098066841000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582098085655000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582098085996000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582098124375000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582098124774000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582098182736000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582098183078000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582098277408000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582098277780000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582098463497000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582098464125000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582098813833000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582098814683000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582099929712000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582099930017000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582101649247000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582101649696000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582103187926000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582103188579000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582105015369000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582105015860000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+RESULT relayswitch-nowatch run=1 relay_status_ms=Some(0.784) watch_addr_any_ms=None watch_addr_new_relay_ms=None announce_tx_ms=None O1_sees_new_relay_ms=None O2_sees_new_relay_ms=None n_relay_status=20 n_watch_addr=0 n_announce=0
+FINAL M addr=relay=["http://127.0.0.1:51905/"] ip=["192.168.0.140:53907"]
+[2m2026-10-21T11:28:30.069536Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m280857d21b[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:28:30.069536Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0mfa03974af5[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+1792582110390520000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582110391540000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+== relayswitch-nowatch run 2
+1792582113595420000 M ONLINE true
+1792582113595673000 M WATCH_ADDR "relay=[\"http://127.0.0.1:51972/\"] ip=[\"192.168.0.140:62112\"]"
+1792582113595683000 M BOOT_ADDR "relay=[\"http://127.0.0.1:51972/\"] ip=[\"192.168.0.140:62112\"]"
+1792582113595716000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connected }"]
+1792582113612023000 M NEIGHBOR_UP ""
+1792582113612073000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:51972/\"] ip=[\"192.168.0.140:62112\"]"
+1792582113613105000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:51972/\"] ip=[\"192.168.0.140:62112\"]"
+1792582113620431000 M NEIGHBOR_UP ""
+home=[RelayUrl("http://127.0.0.1:51972/")] victim=http://127.0.0.1:51972/ other=http://127.0.0.1:51971/
+1792582125999373000 ORCH KILL_RELAY "http://127.0.0.1:51972/"
+1792582126000048000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connecting }"]
+1792582126000558000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582126015662000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connecting }"]
+1792582126015950000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582126052249000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connecting }"]
+1792582126052840000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582126103569000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connecting }"]
+1792582126104339000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582126240013000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connecting }"]
+1792582126240724000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582126462244000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connecting }"]
+1792582126462493000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582126858534000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connecting }"]
+1792582126859324000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582127836397000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connecting }"]
+1792582127837088000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582128154122000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582128155123000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582128455590000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582128456391000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582129589297000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connecting }"]
+1792582129590117000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582134547234000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connecting }"]
+1792582134547818000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+RESULT relayswitch-nowatch run=2 relay_status_ms=Some(0.68) watch_addr_any_ms=None watch_addr_new_relay_ms=None announce_tx_ms=None O1_sees_new_relay_ms=None O2_sees_new_relay_ms=None n_relay_status=20 n_watch_addr=0 n_announce=0
+FINAL M addr=relay=["http://127.0.0.1:51972/"] ip=["192.168.0.140:62112"]
+[2m2026-10-21T11:28:58.003046Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m777bf4afc2[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:28:58.003046Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0meb18ff9f27[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+== relayswitch-nowatch run 3
+1792582141527213000 M ONLINE true
+1792582141527585000 M WATCH_ADDR "relay=[\"http://127.0.0.1:52037/\"] ip=[\"192.168.0.140:54246\"]"
+1792582141527599000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Connected }"]
+1792582141527592000 M BOOT_ADDR "relay=[\"http://127.0.0.1:52037/\"] ip=[\"192.168.0.140:54246\"]"
+1792582141546490000 M NEIGHBOR_UP ""
+1792582141546530000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:52037/\"] ip=[\"192.168.0.140:54246\"]"
+1792582141547603000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52037/\"] ip=[\"192.168.0.140:54246\"]"
+1792582141555251000 M NEIGHBOR_UP ""
+1792582144246845000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connecting }"]
+1792582144247746000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+home=[RelayUrl("http://127.0.0.1:52037/")] victim=http://127.0.0.1:52037/ other=http://127.0.0.1:52036/
+1792582153926488000 ORCH KILL_RELAY "http://127.0.0.1:52037/"
+1792582153926942000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Connecting }"]
+1792582153927246000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582153943339000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Connecting }"]
+1792582153943600000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582153966208000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Connecting }"]
+1792582153966433000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582154026218000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Connecting }"]
+1792582154026493000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582154156945000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Connecting }"]
+1792582154157621000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582154454077000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Connecting }"]
+1792582154454587000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582154503214000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582154503655000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582154890846000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Connecting }"]
+1792582154891700000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582155770591000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Connecting }"]
+1792582155771096000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582157339428000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582157340344000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582157683735000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Connecting }"]
+1792582157684299000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582160495159000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Connecting }"]
+1792582160495934000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582161167401000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connecting }"]
+1792582161168401000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+RESULT relayswitch-nowatch run=3 relay_status_ms=Some(0.457) watch_addr_any_ms=None watch_addr_new_relay_ms=None announce_tx_ms=None O1_sees_new_relay_ms=None O2_sees_new_relay_ms=None n_relay_status=20 n_watch_addr=0 n_announce=0
+FINAL M addr=relay=["http://127.0.0.1:52037/"] ip=["192.168.0.140:54246"]
+[2m2026-10-21T11:29:25.930659Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m0068771279[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:29:25.930659Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m3aff9293e5[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+== relayswitch-nowatch run 4
+1792582166987455000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Connecting }"]
+1792582166987957000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582169455864000 M ONLINE true
+1792582169456275000 M WATCH_ADDR "relay=[\"http://127.0.0.1:52114/\"] ip=[\"192.168.0.140:64596\"]"
+1792582169456280000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Connected }"]
+1792582169456290000 M BOOT_ADDR "relay=[\"http://127.0.0.1:52114/\"] ip=[\"192.168.0.140:64596\"]"
+1792582169480142000 M NEIGHBOR_UP ""
+1792582169480183000 M ANNOUNCE_TX "seq=1 trig=join relay=[\"http://127.0.0.1:52114/\"] ip=[\"192.168.0.140:64596\"]"
+1792582169481124000 O1 PRESENCE_RX "seq=1 trig=join relay=[\"http://127.0.0.1:52114/\"] ip=[\"192.168.0.140:64596\"]"
+1792582169488969000 M NEIGHBOR_UP ""
+1792582177822790000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Connecting }"]
+1792582177823726000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51862/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582179461427000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Connecting }"]
+1792582179462226000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51972/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+home=[RelayUrl("http://127.0.0.1:52114/")] victim=http://127.0.0.1:52114/ other=http://127.0.0.1:52113/
+1792582181879200000 ORCH KILL_RELAY "http://127.0.0.1:52114/"
+1792582181879507000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Connecting }"]
+1792582181879785000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582181898900000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Connecting }"]
+1792582181899117000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582181934826000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Connecting }"]
+1792582181935005000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582181979119000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Connecting }"]
+1792582181979437000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582182122809000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Connecting }"]
+1792582182123376000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582182316011000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Connecting }"]
+1792582182316700000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582182886361000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Connecting }"]
+1792582182887199000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582182981679000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Connecting }"]
+1792582182982283000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52037/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582183824556000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Connecting }"]
+1792582183825182000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582185570937000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Connecting }"]
+1792582185571534000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582189241726000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Connecting }"]
+1792582189242081000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:52114/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+1792582189312204000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Connecting }"]
+1792582189312554000 M RELAY_STATUS ["RelayStatus { url: RelayUrl(\"http://127.0.0.1:51905/\"), state: Disconnected { last_failure: Some(RelayConnectionFailure { error: Failed to connect to relay server\nCaused by:\n    unable to connect\n    Connection refused (os error 61), auth_denied_reason: None }) } }"]
+RESULT relayswitch-nowatch run=4 relay_status_ms=Some(0.31) watch_addr_any_ms=None watch_addr_new_relay_ms=None announce_tx_ms=None O1_sees_new_relay_ms=None O2_sees_new_relay_ms=None n_relay_status=20 n_watch_addr=0 n_announce=0
+FINAL M addr=relay=["http://127.0.0.1:52114/"] ip=["192.168.0.140:64596"]
+[2m2026-10-21T11:29:53.881575Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0m8480182db2[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:29:53.881575Z[0m [31mERROR[0m [1mgossip[0m[1m{[0m[3mme[0m[2m=[0mda9326761f[1m}[0m[2m:[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:29:54.383755Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:29:54.384039Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:29:54.384388Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:29:54.383851Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
+[2m2026-10-21T11:29:54.383851Z[0m [31mERROR[0m [2miroh::socket[0m[2m:[0m Endpoint dropped without calling `Endpoint::close`. Aborting ungracefully.
