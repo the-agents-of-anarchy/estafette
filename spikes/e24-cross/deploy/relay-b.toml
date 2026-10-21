@@ -1,0 +1,12 @@
+http_bind_addr = "0.0.0.0:80"
+enable_relay = true
+enable_metrics = false
+enable_quic_addr_discovery = true
+
+[tls]
+https_bind_addr = "0.0.0.0:443"
+hostname = "178-105-88-14.sslip.io"
+cert_mode = "LetsEncrypt"
+cert_dir = "/root/e24/certs"
+contact = "estafette-lab@178-105-88-14.sslip.io"
+prod_tls = true

@@ -17,7 +17,8 @@
 #   4. Press Enter in the terminal.
 #   5. Wait 2.5 minutes on the hotspot; the line "Done" ends the test. Then switch back to the home Wi-Fi.
 #
-# Needs: ssh access to B and C as in e24run.py (E24_B, E24_C, E24_KEY, E24_KNOWN_HOSTS), the hosts B and C set up by the E24 run (relays, e24-cross, ctl.sh), and ./target/release/e24-cross built on this Mac.
+# Needs: ssh access to B and C as in e24run.py (E24_B, E24_C, E24_KEY, E24_KNOWN_HOSTS); both hosts set up as in deploy/ (relay.toml for the host's own sslip.io name, e24-cross, iroh-relay, ctl.sh in /root/e24);
+# and ./target/release/e24-cross built on this Mac. Server C of E24 (estafette-e24) was deleted after the run: create it again by the run-hetzner-lab skill and set E24_C to its address before the start.
 # Output: logs/e24/<test>-<date>/ ; read it with: python3 -I analyze_e24owner.py logs/e24/<that directory>
 cd "$(dirname "$0")" || exit 1
 case "$1" in
