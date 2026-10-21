@@ -349,7 +349,9 @@ async fn session(name: String, k: u8, order: String, u1: RelayUrl, u2: RelayUrl,
     }
     ev(&name, "JOIN_START", format!("order={order}"));
     let t_join = Instant::now();
-    let topic_h = timeout(Duration::from_secs(60), gossip.subscribe_and_join(topic(), boot)).await;
+    // E18 counter (`E18_JOIN_T_MS`, default 60000): a join that sees no NeighborUp within T ms fails, and W1 then rebinds, which closes the connection to the bootstrap node.
+    let join_t = std::env::var("E18_JOIN_T_MS").ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(60_000);
+    let topic_h = timeout(Duration::from_millis(join_t), gossip.subscribe_and_join(topic(), boot)).await;
     let Ok(Ok(th)) = topic_h else {
         ev(&name, "JOIN_FAIL", format!("after_ms={}", t_join.elapsed().as_millis()));
         if w1.is_some() {

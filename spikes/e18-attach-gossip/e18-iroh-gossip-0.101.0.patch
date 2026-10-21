@@ -1,0 +1,93 @@
+--- /tmp/ig-orig/src/proto/hyparview.rs	2026-10-21 06:24:43
++++ vendor/iroh-gossip-0.101.0/src/proto/hyparview.rs	2026-10-21 06:58:09
+@@ -13,6 +13,11 @@
+ use rand::{rngs::ThreadRng, Rng};
+ use serde::{Deserialize, Serialize};
+ use tracing::debug;
++
++fn e18_sh<P: std::fmt::Debug>(p: &P) -> String {
++    let s = format!("{p:?}");
++    s.trim_start_matches("PublicKey(").chars().take(10).collect()
++}
+ 
+ use super::{util::IndexSet, PeerData, PeerIdentity, PeerInfo, IO};
+ 
+@@ -296,9 +301,24 @@
+             ));
+             self.shuffle_scheduled = true;
+         }
++    }
++
++    fn e18_st(&self) -> String {
++        let a: Vec<String> = self.active_view.iter().map(e18_sh).collect();
++        let p: Vec<String> = self.pending_neighbor_requests.iter().map(e18_sh).collect();
++        format!("active={a:?} pending={p:?}")
+     }
+ 
+     fn handle_message(&mut self, from: PI, message: Message<PI>, io: &mut impl IO<PI>) {
++        let kind = match &message {
++            Message::Join(_) => "Join",
++            Message::ForwardJoin(_) => "ForwardJoin",
++            Message::Shuffle(_) => "Shuffle",
++            Message::ShuffleReply(_) => "ShuffleReply",
++            Message::Neighbor(_) => "Neighbor",
++            Message::Disconnect(_) => "Disconnect",
++        };
++        debug!(from = %e18_sh(&from), "E18 handle {kind} {}", self.e18_st());
+         let is_disconnect = matches!(message, Message::Disconnect(Disconnect { .. }));
+         if !is_disconnect && !self.active_view.contains(&from) {
+             self.stats.total_connections += 1;
+@@ -328,6 +348,7 @@
+ 
+     /// We received a disconnect message.
+     fn on_disconnect(&mut self, peer: PI, details: Disconnect, io: &mut impl IO<PI>) {
++        debug!(peer = %e18_sh(&peer), "E18 on_disconnect {}", self.e18_st());
+         self.pending_neighbor_requests.remove(&peer);
+         if self.active_view.contains(&peer) {
+             self.remove_active(
+@@ -344,6 +365,7 @@
+ 
+     /// A connection was closed by the peer.
+     fn handle_connection_closed(&mut self, peer: PI, io: &mut impl IO<PI>) {
++        debug!(peer = %e18_sh(&peer), "E18 connection_closed {}", self.e18_st());
+         self.pending_neighbor_requests.remove(&peer);
+         if self.active_view.contains(&peer) {
+             self.remove_active(&peer, RemovalReason::ConnectionClosed, io);
+@@ -378,6 +400,10 @@
+     }
+ 
+     fn on_join(&mut self, peer: PI, data: Option<PeerData>, io: &mut impl IO<PI>) {
++        // E18_FIX (runtime switch, diagnostic): as iroh-gossip main (fcd81ae8, #161), a Join drops the neighbor request still pending to the joiner.
++        if std::env::var("E18_FIX").is_ok() {
++            self.pending_neighbor_requests.remove(&peer);
++        }
+         // "A node that receives a join request will start by adding the new
+         // node to its active view, even if it has to drop a random node from it. (6)"
+         self.add_active(peer, data.clone(), Priority::High, true, io);
+@@ -528,6 +554,7 @@
+     }
+ 
+     fn handle_shuffle_timer(&mut self, io: &mut impl IO<PI>) {
++        debug!("E18 shuffle_timer {}", self.e18_st());
+         if let Some(node) = self.active_view.pick_random(&mut self.rng) {
+             let active = self.active_view.shuffled_without_and_capped(
+                 &[node],
+@@ -630,6 +657,7 @@
+     }
+ 
+     fn handle_pending_neighbor_timer(&mut self, peer: PI, io: &mut impl IO<PI>) {
++        debug!(peer = %e18_sh(&peer), "E18 pending_timer {}", self.e18_st());
+         if self.pending_neighbor_requests.remove(&peer) {
+             self.passive_view.remove(&peer);
+             self.refill_active_from_passive(&[], io);
+@@ -743,7 +771,9 @@
+     }
+ 
+     fn send_neighbor(&mut self, peer: PI, priority: Priority, io: &mut impl IO<PI>) {
+-        if self.pending_neighbor_requests.insert(peer) {
++        let fresh = self.pending_neighbor_requests.insert(peer);
++        debug!(peer = %e18_sh(&peer), fresh, "E18 send_neighbor {}", self.e18_st());
++        if fresh {
+             let message = Message::Neighbor(Neighbor {
+                 priority,
+                 data: self.me_data.clone(),
