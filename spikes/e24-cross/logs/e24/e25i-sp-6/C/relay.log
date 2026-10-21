@@ -1,0 +1,23 @@
+[2m2026-10-21T17:17:02.354653Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    error shutting down connection
+    Broken pipe (os error 32)
+[2m2026-10-21T17:17:05.486080Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    error shutting down connection
+    Broken pipe (os error 32)
+[2m2026-10-21T17:18:03.208988Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] accept
+Caused by:
+    peer is incompatible: SignatureAlgorithmsExtensionRequired
+[2m2026-10-21T17:18:03.209086Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] accept
+Caused by:
+    peer is incompatible: SignatureAlgorithmsExtensionRequired
+[2m2026-10-21T17:18:03.209833Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] accept
+Caused by:
+    received corrupt message of type InvalidContentType
+[2m2026-10-21T17:18:03.210280Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] accept
+Caused by:
+    peer is incompatible: SignatureAlgorithmsExtensionRequired
+[2m2026-10-21T17:18:03.220425Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: NoCipherSuitesInCommon

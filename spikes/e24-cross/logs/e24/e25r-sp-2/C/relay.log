@@ -1,0 +1,43 @@
+[2m2026-10-21T16:06:16.078293Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    tls handshake eof
+[2m2026-10-21T16:06:16.081747Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    tls handshake eof
+[2m2026-10-21T16:06:16.084184Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    tls handshake eof
+[2m2026-10-21T16:06:16.164948Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    error shutting down connection
+    Broken pipe (os error 32)
+[2m2026-10-21T16:08:12.961336Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T16:08:13.215360Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T16:08:13.469933Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T16:08:13.598710Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: NoCipherSuitesInCommon
+[2m2026-10-21T16:08:13.980152Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T16:08:14.107742Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: Tls12NotOffered
+[2m2026-10-21T16:08:14.488047Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T16:08:14.743476Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T16:08:14.870371Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: NoCipherSuitesInCommon
+[2m2026-10-21T16:08:15.251461Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)

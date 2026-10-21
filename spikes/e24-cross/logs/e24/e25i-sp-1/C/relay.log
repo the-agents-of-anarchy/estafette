@@ -1,0 +1,3 @@
+[2m2026-10-21T16:48:32.680712Z[0m [31mERROR[0m [2miroh_relay::server[0m[2m:[0m Failed to serve connection: hyper::Error(Parse(Method))
+[2m2026-10-21T16:48:34.629270Z[0m [31mERROR[0m [2miroh_relay::server[0m[2m:[0m Failed to serve connection: hyper::Error(Parse(VersionH2))
+[2m2026-10-21T16:49:29.323972Z[0m [31mERROR[0m [2miroh_relay::server[0m[2m:[0m Failed to serve connection: hyper::Error(Parse(Method))

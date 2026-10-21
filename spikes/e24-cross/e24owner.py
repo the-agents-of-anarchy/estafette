@@ -40,7 +40,7 @@ def ip_poller(path, stop):
 def main():
     kind, tag = sys.argv[1], sys.argv[2]
     out = os.path.join(R.OUT, tag)
-    extra = ["E24_TRIG=spec", "E24_HOST_DEAF=1"]
+    extra = ["E24_TRIG=spec"]  # hosts without the deaf rule (spec after E24)
     meta = R.common_start(out, extra)
     meta["kind"] = f"owner-{kind}"
     stop = threading.Event()

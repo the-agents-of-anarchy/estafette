@@ -1,0 +1,22 @@
+{
+ "B": {
+  "off_ms": 124,
+  "rtt_ms": 80
+ },
+ "C": {
+  "off_ms": 144,
+  "rtt_ms": 117
+ },
+ "extra": [
+  "E24_TRIG=spec",
+  "E24_RELAYONLY=1"
+ ],
+ "t_h1_start_B": 1792599832362,
+ "t_members_start_A": 1792599837614,
+ "kind": "kill",
+ "t_kill_start_A": 1792599877619,
+ "kill_B_ms": [
+  1792599877783,
+  1792599877787
+ ]
+}

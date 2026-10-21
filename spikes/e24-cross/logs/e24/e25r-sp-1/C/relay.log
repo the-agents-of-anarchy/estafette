@@ -1,0 +1,13 @@
+[2m2026-10-21T16:00:21.585547Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    tls handshake eof
+[2m2026-10-21T16:00:21.610421Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    connection closed before message completed
+[2m2026-10-21T16:00:21.697203Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    error shutting down connection
+    Broken pipe (os error 32)
+[2m2026-10-21T16:01:02.166183Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mConnection did not reach established state within timeout
+[2m2026-10-21T16:01:02.221554Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mConnection did not reach established state within timeout
+[2m2026-10-21T16:01:05.236657Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mConnection did not reach established state within timeout

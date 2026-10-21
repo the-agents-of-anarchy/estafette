@@ -1,0 +1,55 @@
+[2m2026-10-21T15:57:21.310752Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    error shutting down connection
+    Broken pipe (os error 32)
+[2m2026-10-21T15:57:21.310766Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    error shutting down connection
+    Broken pipe (os error 32)
+[2m2026-10-21T15:57:24.321732Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    tls handshake eof
+[2m2026-10-21T15:57:29.040859Z[0m [31mERROR[0m [2miroh_relay::server[0m[2m:[0m Failed to serve connection: hyper::Error(Parse(Method))
+[2m2026-10-21T15:57:29.116988Z[0m [31mERROR[0m [2miroh_relay::server[0m[2m:[0m Failed to serve connection: hyper::Error(Parse(Method))
+[2m2026-10-21T15:57:29.491311Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    invalid HTTP method parsed
+[2m2026-10-21T15:57:40.956321Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] serve connection
+Caused by:
+    invalid HTTP method parsed
+[2m2026-10-21T15:57:41.039651Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T15:57:41.101303Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T15:57:41.168661Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T15:57:41.194368Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: NoCipherSuitesInCommon
+[2m2026-10-21T15:57:41.277638Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T15:57:41.305233Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: Tls12NotOffered
+[2m2026-10-21T15:57:41.392029Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T15:57:41.453414Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T15:57:41.481699Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    peer is incompatible: NoCipherSuitesInCommon
+[2m2026-10-21T15:57:41.565623Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    Connection reset by peer (os error 104)
+[2m2026-10-21T15:58:58.446987Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mConnection did not reach established state within timeout
+[2m2026-10-21T15:59:09.505964Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mConnection did not reach established state within timeout
+[2m2026-10-21T15:59:09.509130Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mConnection did not reach established state within timeout
+[2m2026-10-21T15:59:36.680590Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mConnection did not reach established state within timeout
+[2m2026-10-21T15:59:36.769717Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mConnection did not reach established state within timeout
+[2m2026-10-21T15:59:36.929435Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mConnection did not reach established state within timeout

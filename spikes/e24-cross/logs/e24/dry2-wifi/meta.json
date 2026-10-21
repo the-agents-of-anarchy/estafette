@@ -1,0 +1,19 @@
+{
+ "B": {
+  "off_ms": 316,
+  "rtt_ms": 573
+ },
+ "C": {
+  "off_ms": 432,
+  "rtt_ms": 800
+ },
+ "extra": [
+  "E24_TRIG=spec"
+ ],
+ "t_h1_start_B": 1792603951575,
+ "t_members_start_A": 1792603959365,
+ "kind": "owner-wifi",
+ "events": {
+  "enter_ms": 1792603999381
+ }
+}

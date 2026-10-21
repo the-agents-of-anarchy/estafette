@@ -1,0 +1,12 @@
+[2m2026-10-21T16:09:13.014373Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    tls handshake eof
+[2m2026-10-21T16:09:13.036355Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    tls handshake eof
+[2m2026-10-21T16:09:13.040165Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    tls handshake eof
+[2m2026-10-21T16:09:59.120983Z[0m [31mERROR[0m [2miroh_relay::server::http_server[0m[2m:[0m failed to handle connection [3merror[0m[2m=[0mTLS[acme] handshake
+Caused by:
+    tls handshake eof

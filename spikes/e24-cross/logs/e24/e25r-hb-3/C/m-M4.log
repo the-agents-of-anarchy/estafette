@@ -1,0 +1,911 @@
+EV 1792598952782 M4 BOUND relays=[]
+EV 1792598952783 M4 JOIN_START order=H1+H2
+EV 1792598952784 M4 STATUS 
+EV 1792598952784 M4 ADDR relays=[] direct=0
+EV 1792598952799 M4 JOINED ms=16
+EV 1792598952800 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792598952800 M4 ANN_SENT 
+EV 1792598952800 M4 PROBE tgt=M3 fail ms=0 err=No_addressing_information_available
+EV 1792598952800 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792598952825 M4 RX hb from=M1 seq=1 via=H2
+EV 1792598952825 M4 RX ann from=M1 relays=[] direct=0 via=H2
+EV 1792598952827 M4 RX ann from=M2 relays=[] direct=0 via=H2
+EV 1792598952828 M4 RX hb from=M2 seq=1 via=H2
+EV 1792598952938 M4 NU H1
+EV 1792598953065 M4 RX ann from=M3 relays=[] direct=0 via=H1
+EV 1792598953101 M4 ANN_SENT 
+EV 1792598953127 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H1
+EV 1792598953127 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H1
+EV 1792598953138 M4 ADDR relays=[2-29-112-122] direct=0
+EV 1792598953138 M4 STATUS relay=2-29-112-122 connected=true err=-
+EV 1792598953138 M4 ONLINE ms_after_bind=356
+EV 1792598953278 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H1
+EV 1792598953402 M4 ANN_SENT 
+EV 1792598953431 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H1
+EV 1792598953431 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H1
+EV 1792598953580 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H1
+EV 1792598953678 M4 RX hb from=M3 seq=2 via=H1
+EV 1792598953703 M4 ANN_SENT 
+EV 1792598953731 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H1
+EV 1792598953731 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H1
+EV 1792598953825 M4 RX hb from=M1 seq=2 via=H1
+EV 1792598953827 M4 RX hb from=M2 seq=2 via=H1
+EV 1792598953854 M4 PROBE tgt=M3 ok ms=52
+EV 1792598953879 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H1
+EV 1792598953926 M4 PROBE tgt=M1 ok ms=125
+EV 1792598953933 M4 PROBE tgt=M2 ok ms=130
+EV 1792598954004 M4 ANN_SENT 
+EV 1792598954033 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H1
+EV 1792598954033 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H1
+EV 1792598954182 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H1
+EV 1792598954335 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H1
+EV 1792598954679 M4 RX hb from=M3 seq=3 via=H1
+EV 1792598954747 M4 RX infra host=H2 ts=1792598954722 via=H1
+EV 1792598954827 M4 RX hb from=M1 seq=3 via=H1
+EV 1792598954828 M4 RX hb from=M2 seq=3 via=H1
+EV 1792598954908 M4 PROBE tgt=M3 ok ms=52
+EV 1792598955036 M4 PROBE tgt=M1 ok ms=108
+EV 1792598955042 M4 PROBE tgt=M2 ok ms=108
+EV 1792598955680 M4 RX hb from=M3 seq=4 via=H1
+EV 1792598955829 M4 RX hb from=M1 seq=4 via=H1
+EV 1792598955832 M4 RX hb from=M2 seq=4 via=H1
+EV 1792598955962 M4 PROBE tgt=M3 ok ms=52
+EV 1792598956142 M4 PROBE tgt=M1 ok ms=105
+EV 1792598956150 M4 PROBE tgt=M2 ok ms=106
+EV 1792598956681 M4 RX hb from=M3 seq=5 via=H1
+EV 1792598956830 M4 RX hb from=M1 seq=5 via=H1
+EV 1792598956832 M4 RX hb from=M2 seq=5 via=H1
+EV 1792598957015 M4 PROBE tgt=M3 ok ms=51
+EV 1792598957252 M4 PROBE tgt=M1 ok ms=107
+EV 1792598957258 M4 PROBE tgt=M2 ok ms=107
+EV 1792598957371 M4 RX infra host=H1 ts=1792598957356 via=H1
+EV 1792598957682 M4 RX hb from=M3 seq=6 via=H1
+EV 1792598957830 M4 RX hb from=M1 seq=6 via=H1
+EV 1792598957833 M4 RX hb from=M2 seq=6 via=H1
+EV 1792598958069 M4 PROBE tgt=M3 ok ms=52
+EV 1792598958357 M4 PROBE tgt=M1 ok ms=104
+EV 1792598958366 M4 PROBE tgt=M2 ok ms=106
+EV 1792598958683 M4 RX hb from=M3 seq=7 via=H1
+EV 1792598958832 M4 RX hb from=M1 seq=7 via=H1
+EV 1792598958836 M4 RX hb from=M2 seq=7 via=H1
+EV 1792598959124 M4 PROBE tgt=M3 ok ms=53
+EV 1792598959464 M4 PROBE tgt=M1 ok ms=105
+EV 1792598959473 M4 PROBE tgt=M2 ok ms=106
+EV 1792598959685 M4 RX hb from=M3 seq=8 via=H1
+EV 1792598959747 M4 RX infra host=H2 ts=1792598959722 via=H1
+EV 1792598959833 M4 RX hb from=M1 seq=8 via=H1
+EV 1792598959836 M4 RX hb from=M2 seq=8 via=H1
+EV 1792598960178 M4 PROBE tgt=M3 ok ms=52
+EV 1792598960572 M4 PROBE tgt=M1 ok ms=107
+EV 1792598960581 M4 PROBE tgt=M2 ok ms=106
+EV 1792598960686 M4 RX hb from=M3 seq=9 via=H1
+EV 1792598960835 M4 RX hb from=M1 seq=9 via=H1
+EV 1792598960838 M4 RX hb from=M2 seq=9 via=H1
+EV 1792598961231 M4 PROBE tgt=M3 ok ms=52
+EV 1792598961682 M4 PROBE tgt=M1 ok ms=109
+EV 1792598961686 M4 PROBE tgt=M2 ok ms=103
+EV 1792598961687 M4 RX hb from=M3 seq=10 via=H1
+EV 1792598961836 M4 RX hb from=M1 seq=10 via=H1
+EV 1792598961838 M4 RX hb from=M2 seq=10 via=H1
+EV 1792598962285 M4 PROBE tgt=M3 ok ms=52
+EV 1792598962372 M4 RX infra host=H1 ts=1792598962357 via=H1
+EV 1792598962688 M4 RX hb from=M3 seq=11 via=H1
+EV 1792598962838 M4 RX hb from=M1 seq=11 via=H1
+EV 1792598962840 M4 RX hb from=M2 seq=11 via=H1
+EV 1792598962851 M4 PROBE tgt=M2 ok ms=163
+EV 1792598962862 M4 PROBE tgt=M1 ok ms=178
+EV 1792598963339 M4 PROBE tgt=M3 ok ms=52
+EV 1792598963690 M4 RX hb from=M3 seq=12 via=H1
+EV 1792598963839 M4 RX hb from=M1 seq=12 via=H1
+EV 1792598963843 M4 RX hb from=M2 seq=12 via=H1
+EV 1792598963957 M4 PROBE tgt=M2 ok ms=104
+EV 1792598963965 M4 PROBE tgt=M1 ok ms=101
+EV 1792598964394 M4 PROBE tgt=M3 ok ms=53
+EV 1792598964691 M4 RX hb from=M3 seq=13 via=H1
+EV 1792598964750 M4 RX infra host=H2 ts=1792598964724 via=H1
+EV 1792598964843 M4 RX hb from=M1 seq=13 via=H1
+EV 1792598964844 M4 RX hb from=M2 seq=13 via=H1
+EV 1792598965065 M4 PROBE tgt=M2 ok ms=106
+EV 1792598965070 M4 PROBE tgt=M1 ok ms=103
+EV 1792598965449 M4 PROBE tgt=M3 ok ms=54
+EV 1792598965692 M4 RX hb from=M3 seq=14 via=H1
+EV 1792598965842 M4 RX hb from=M1 seq=14 via=H1
+EV 1792598965846 M4 RX hb from=M2 seq=14 via=H1
+EV 1792598966172 M4 PROBE tgt=M2 ok ms=105
+EV 1792598966174 M4 PROBE tgt=M1 ok ms=102
+EV 1792598966504 M4 PROBE tgt=M3 ok ms=53
+EV 1792598966693 M4 RX hb from=M3 seq=15 via=H1
+EV 1792598966844 M4 RX hb from=M1 seq=15 via=H1
+EV 1792598966848 M4 RX hb from=M2 seq=15 via=H1
+EV 1792598967284 M4 PROBE tgt=M1 ok ms=109
+EV 1792598967284 M4 PROBE tgt=M2 ok ms=110
+EV 1792598967374 M4 RX infra host=H1 ts=1792598967359 via=H1
+EV 1792598967558 M4 PROBE tgt=M3 ok ms=52
+EV 1792598967694 M4 RX hb from=M3 seq=16 via=H1
+EV 1792598967844 M4 RX hb from=M1 seq=16 via=H1
+EV 1792598967850 M4 RX hb from=M2 seq=16 via=H1
+EV 1792598968391 M4 PROBE tgt=M1 ok ms=105
+EV 1792598968392 M4 PROBE tgt=M2 ok ms=105
+EV 1792598968613 M4 PROBE tgt=M3 ok ms=52
+EV 1792598968696 M4 RX hb from=M3 seq=17 via=H1
+EV 1792598968846 M4 RX hb from=M1 seq=17 via=H1
+EV 1792598968852 M4 RX hb from=M2 seq=17 via=H1
+EV 1792598969501 M4 PROBE tgt=M2 ok ms=108
+EV 1792598969503 M4 PROBE tgt=M1 ok ms=110
+EV 1792598969667 M4 PROBE tgt=M3 ok ms=52
+EV 1792598969696 M4 RX hb from=M3 seq=18 via=H1
+EV 1792598969750 M4 RX infra host=H2 ts=1792598969725 via=H1
+EV 1792598969846 M4 RX hb from=M1 seq=18 via=H1
+EV 1792598969854 M4 RX hb from=M2 seq=18 via=H1
+EV 1792598970612 M4 PROBE tgt=M1 ok ms=107
+EV 1792598970612 M4 PROBE tgt=M2 ok ms=109
+EV 1792598970697 M4 RX hb from=M3 seq=19 via=H1
+EV 1792598970723 M4 PROBE tgt=M3 ok ms=53
+EV 1792598970848 M4 RX hb from=M1 seq=19 via=H1
+EV 1792598970856 M4 RX hb from=M2 seq=19 via=H1
+EV 1792598971698 M4 RX hb from=M3 seq=20 via=H1
+EV 1792598971744 M4 PROBE tgt=M1 ok ms=129
+EV 1792598971745 M4 PROBE tgt=M2 ok ms=130
+EV 1792598971777 M4 PROBE tgt=M3 ok ms=53
+EV 1792598971849 M4 RX hb from=M1 seq=20 via=H1
+EV 1792598971857 M4 RX hb from=M2 seq=20 via=H1
+EV 1792598972375 M4 RX infra host=H1 ts=1792598972360 via=H1
+EV 1792598972700 M4 RX hb from=M3 seq=21 via=H1
+EV 1792598972831 M4 PROBE tgt=M3 ok ms=52
+EV 1792598972850 M4 RX hb from=M1 seq=21 via=H1
+EV 1792598972853 M4 PROBE tgt=M1 ok ms=108
+EV 1792598972853 M4 PROBE tgt=M2 ok ms=106
+EV 1792598972858 M4 RX hb from=M2 seq=21 via=H1
+EV 1792598973701 M4 RX hb from=M3 seq=22 via=H1
+EV 1792598973855 M4 RX hb from=M1 seq=22 via=H1
+EV 1792598973860 M4 RX hb from=M2 seq=22 via=H1
+EV 1792598973885 M4 PROBE tgt=M3 ok ms=52
+EV 1792598973961 M4 PROBE tgt=M2 ok ms=106
+EV 1792598973962 M4 PROBE tgt=M1 ok ms=107
+EV 1792598974702 M4 RX hb from=M3 seq=23 via=H1
+EV 1792598974752 M4 RX infra host=H2 ts=1792598974727 via=H1
+EV 1792598974857 M4 RX hb from=M1 seq=23 via=H1
+EV 1792598974864 M4 RX hb from=M2 seq=23 via=H1
+EV 1792598974938 M4 PROBE tgt=M3 ok ms=51
+EV 1792598975067 M4 PROBE tgt=M1 ok ms=103
+EV 1792598975068 M4 PROBE tgt=M2 ok ms=105
+EV 1792598975702 M4 RX hb from=M3 seq=24 via=H1
+EV 1792598975856 M4 RX hb from=M1 seq=24 via=H1
+EV 1792598975869 M4 RX hb from=M2 seq=24 via=H1
+EV 1792598975992 M4 PROBE tgt=M3 ok ms=53
+EV 1792598976170 M4 PROBE tgt=M2 ok ms=100
+EV 1792598976171 M4 PROBE tgt=M1 ok ms=103
+EV 1792598976703 M4 RX hb from=M3 seq=25 via=H1
+EV 1792598976858 M4 RX hb from=M1 seq=25 via=H1
+EV 1792598976867 M4 RX hb from=M2 seq=25 via=H1
+EV 1792598977046 M4 PROBE tgt=M3 ok ms=52
+EV 1792598977277 M4 PROBE tgt=M2 ok ms=105
+EV 1792598977278 M4 PROBE tgt=M1 ok ms=106
+EV 1792598977376 M4 RX infra host=H1 ts=1792598977361 via=H1
+EV 1792598977705 M4 RX hb from=M3 seq=26 via=H1
+EV 1792598977859 M4 RX hb from=M1 seq=26 via=H1
+EV 1792598977868 M4 RX hb from=M2 seq=26 via=H1
+EV 1792598978099 M4 PROBE tgt=M3 ok ms=51
+EV 1792598978391 M4 PROBE tgt=M1 ok ms=112
+EV 1792598978391 M4 PROBE tgt=M2 ok ms=112
+EV 1792598978706 M4 RX hb from=M3 seq=27 via=H1
+EV 1792598978860 M4 RX hb from=M1 seq=27 via=H1
+EV 1792598978871 M4 RX hb from=M2 seq=27 via=H1
+EV 1792598979152 M4 PROBE tgt=M3 ok ms=51
+EV 1792598979502 M4 PROBE tgt=M2 ok ms=109
+EV 1792598979502 M4 PROBE tgt=M1 ok ms=109
+EV 1792598979707 M4 RX hb from=M3 seq=28 via=H1
+EV 1792598979753 M4 RX infra host=H2 ts=1792598979728 via=H1
+EV 1792598979862 M4 RX hb from=M1 seq=28 via=H1
+EV 1792598979877 M4 RX hb from=M2 seq=28 via=H1
+EV 1792598980205 M4 PROBE tgt=M3 ok ms=51
+EV 1792598980612 M4 PROBE tgt=M1 ok ms=107
+EV 1792598980612 M4 PROBE tgt=M2 ok ms=107
+EV 1792598980708 M4 RX hb from=M3 seq=29 via=H1
+EV 1792598980862 M4 RX hb from=M1 seq=29 via=H1
+EV 1792598980874 M4 RX hb from=M2 seq=29 via=H1
+EV 1792598981260 M4 PROBE tgt=M3 ok ms=53
+EV 1792598981709 M4 RX hb from=M3 seq=30 via=H1
+EV 1792598981721 M4 PROBE tgt=M1 ok ms=107
+EV 1792598981721 M4 PROBE tgt=M2 ok ms=108
+EV 1792598981863 M4 RX hb from=M1 seq=30 via=H1
+EV 1792598981874 M4 RX hb from=M2 seq=30 via=H1
+EV 1792598982314 M4 PROBE tgt=M3 ok ms=53
+EV 1792598982378 M4 RX infra host=H1 ts=1792598982362 via=H1
+EV 1792598982710 M4 RX hb from=M3 seq=31 via=H1
+EV 1792598982830 M4 PROBE tgt=M1 ok ms=107
+EV 1792598982831 M4 PROBE tgt=M2 ok ms=108
+EV 1792598982864 M4 RX hb from=M1 seq=31 via=H1
+EV 1792598982875 M4 RX hb from=M2 seq=31 via=H1
+EV 1792598983369 M4 PROBE tgt=M3 ok ms=53
+EV 1792598983711 M4 RX hb from=M3 seq=32 via=H1
+EV 1792598983866 M4 RX hb from=M1 seq=32 via=H1
+EV 1792598983877 M4 RX hb from=M2 seq=32 via=H1
+EV 1792598983939 M4 PROBE tgt=M2 ok ms=107
+EV 1792598983939 M4 PROBE tgt=M1 ok ms=107
+EV 1792598984422 M4 PROBE tgt=M3 ok ms=51
+EV 1792598984712 M4 RX hb from=M3 seq=33 via=H1
+EV 1792598984754 M4 RX infra host=H2 ts=1792598984728 via=H1
+EV 1792598984867 M4 RX hb from=M1 seq=33 via=H1
+EV 1792598984878 M4 RX hb from=M2 seq=33 via=H1
+EV 1792598985044 M4 PROBE tgt=M1 ok ms=103
+EV 1792598985044 M4 PROBE tgt=M2 ok ms=103
+EV 1792598985476 M4 PROBE tgt=M3 ok ms=52
+EV 1792598985714 M4 RX hb from=M3 seq=34 via=H1
+EV 1792598985870 M4 RX hb from=M1 seq=34 via=H1
+EV 1792598985878 M4 RX hb from=M2 seq=34 via=H1
+EV 1792598986149 M4 PROBE tgt=M2 ok ms=103
+EV 1792598986153 M4 PROBE tgt=M1 ok ms=108
+EV 1792598986531 M4 PROBE tgt=M3 ok ms=53
+EV 1792598986714 M4 RX hb from=M3 seq=35 via=H1
+EV 1792598986873 M4 RX hb from=M1 seq=35 via=H1
+EV 1792598986879 M4 RX hb from=M2 seq=35 via=H1
+EV 1792598987257 M4 PROBE tgt=M2 ok ms=107
+EV 1792598987257 M4 PROBE tgt=M1 ok ms=103
+EV 1792598987378 M4 RX infra host=H1 ts=1792598987363 via=H1
+EV 1792598987586 M4 PROBE tgt=M3 ok ms=53
+EV 1792598987716 M4 RX hb from=M3 seq=36 via=H1
+EV 1792598987873 M4 RX hb from=M1 seq=36 via=H1
+EV 1792598987882 M4 RX hb from=M2 seq=36 via=H1
+EV 1792598988362 M4 PROBE tgt=M1 ok ms=103
+EV 1792598988362 M4 PROBE tgt=M2 ok ms=104
+EV 1792598988640 M4 PROBE tgt=M3 ok ms=53
+EV 1792598988717 M4 RX hb from=M3 seq=37 via=H1
+EV 1792598988875 M4 RX hb from=M1 seq=37 via=H1
+EV 1792598988884 M4 RX hb from=M2 seq=37 via=H1
+EV 1792598989466 M4 PROBE tgt=M1 ok ms=103
+EV 1792598989470 M4 PROBE tgt=M2 ok ms=105
+EV 1792598989694 M4 PROBE tgt=M3 ok ms=52
+EV 1792598989719 M4 RX hb from=M3 seq=38 via=H1
+EV 1792598989755 M4 RX infra host=H2 ts=1792598989730 via=H1
+EV 1792598989876 M4 RX hb from=M1 seq=38 via=H1
+EV 1792598989886 M4 RX hb from=M2 seq=38 via=H1
+EV 1792598990571 M4 PROBE tgt=M1 ok ms=102
+EV 1792598990577 M4 PROBE tgt=M2 ok ms=106
+EV 1792598990719 M4 RX hb from=M3 seq=39 via=H1
+EV 1792598990748 M4 PROBE tgt=M3 ok ms=52
+EV 1792598990877 M4 RX hb from=M1 seq=39 via=H1
+EV 1792598990888 M4 RX hb from=M2 seq=39 via=H1
+EV 1792598991677 M4 PROBE tgt=M1 ok ms=104
+EV 1792598991685 M4 PROBE tgt=M2 ok ms=106
+EV 1792598991721 M4 RX hb from=M3 seq=40 via=H1
+EV 1792598991802 M4 PROBE tgt=M3 ok ms=52
+EV 1792598991880 M4 RX hb from=M1 seq=40 via=H1
+EV 1792598991890 M4 RX hb from=M2 seq=40 via=H1
+EV 1792598992379 M4 RX infra host=H1 ts=1792598992364 via=H1
+EV 1792598992721 M4 RX hb from=M3 seq=41 via=H1
+EV 1792598992781 M4 PROBE tgt=M1 ok ms=102
+EV 1792598992792 M4 PROBE tgt=M2 ok ms=105
+EV 1792598992855 M4 PROBE tgt=M3 ok ms=51
+EV 1792598993071 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598993110 M4 RX hb from=M1 seq=41 via=H2
+EV 1792598993110 M4 RX hb from=M2 seq=41 via=H2
+EV 1792598993129 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598993129 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598993175 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598993209 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598993210 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598993476 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598993512 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598993512 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598993723 M4 RX hb from=M3 seq=42 via=H2
+EV 1792598993776 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598993813 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598993814 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598993885 M4 RX hb from=M1 seq=42 via=H2
+EV 1792598993887 M4 PROBE tgt=M1 ok ms=105
+EV 1792598993894 M4 RX hb from=M2 seq=42 via=H2
+EV 1792598993897 M4 PROBE tgt=M2 ok ms=103
+EV 1792598993908 M4 PROBE tgt=M3 ok ms=51
+EV 1792598994078 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598994114 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598994114 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598994378 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598994416 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598994417 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598994680 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598994717 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598994719 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598994723 M4 RX hb from=M3 seq=43 via=H2
+EV 1792598994732 M4 RX infra host=H2 ts=1792598994731 via=H2
+EV 1792598994889 M4 RX hb from=M1 seq=43 via=H2
+EV 1792598994894 M4 RX hb from=M2 seq=43 via=H2
+EV 1792598994961 M4 PROBE tgt=M3 ok ms=51
+EV 1792598994979 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598994994 M4 PROBE tgt=M1 ok ms=105
+EV 1792598995004 M4 PROBE tgt=M2 ok ms=105
+EV 1792598995020 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598995021 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598995281 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598995321 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598995322 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598995582 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598995622 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598995625 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598995725 M4 RX hb from=M3 seq=44 via=H2
+EV 1792598995884 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598995888 M4 RX hb from=M1 seq=44 via=H2
+EV 1792598995897 M4 RX hb from=M2 seq=44 via=H2
+EV 1792598995923 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598995925 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598996017 M4 PROBE tgt=M3 ok ms=54
+EV 1792598996101 M4 PROBE tgt=M1 ok ms=105
+EV 1792598996111 M4 PROBE tgt=M2 ok ms=106
+EV 1792598996185 M4 RX ann from=M3 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598996226 M4 RX ann from=M1 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598996227 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598996531 M4 RX ann from=M2 relays=[178-105-88-14] direct=0 via=H2
+EV 1792598999012 M4 REBIND n=1 silent_ms=3115
+EV 1792599002038 M4 PROBE_RELAYS down=[178-105-88-14]
+EV 1792599002041 M4 REBOUND n=1 ms=3 relays=[]
+EV 1792599002042 M4 JOIN_START order=H1+H2
+EV 1792599002042 M4 ADDR relays=[] direct=0
+EV 1792599002042 M4 STATUS 
+EV 1792599002490 M4 STATUS relay=2-29-112-122 connected=true err=-
+EV 1792599002490 M4 ADDR relays=[2-29-112-122] direct=0
+EV 1792599002490 M4 ONLINE ms_after_bind=448
+EV 1792599003891 M4 JOINED ms=1849
+EV 1792599003891 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599003891 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599003891 M4 ANN_SENT 
+EV 1792599003964 M4 PROBE tgt=M3 ok ms=72
+EV 1792599004193 M4 ANN_SENT 
+EV 1792599004361 M4 RX hb from=M3 seq=3 via=M3
+EV 1792599004494 M4 ANN_SENT 
+EV 1792599004795 M4 ANN_SENT 
+EV 1792599004892 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599004892 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599005018 M4 PROBE tgt=M3 ok ms=52
+EV 1792599005096 M4 ANN_SENT 
+EV 1792599005362 M4 RX hb from=M3 seq=4 via=M3
+EV 1792599005392 M4 MJOIN join_peers ok
+EV 1792599005893 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599005894 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599006073 M4 PROBE tgt=M3 ok ms=53
+EV 1792599006364 M4 RX hb from=M3 seq=5 via=M3
+EV 1792599006895 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599006895 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599007127 M4 PROBE tgt=M3 ok ms=51
+EV 1792599007365 M4 RX hb from=M3 seq=6 via=M3
+EV 1792599007896 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599007896 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599008180 M4 PROBE tgt=M3 ok ms=52
+EV 1792599008366 M4 RX hb from=M3 seq=7 via=M3
+EV 1792599008393 M4 MJOIN join_peers ok
+EV 1792599008897 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599008897 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599009233 M4 PROBE tgt=M3 ok ms=52
+EV 1792599009367 M4 RX hb from=M3 seq=8 via=M3
+EV 1792599009898 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599009898 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599010289 M4 PROBE tgt=M3 ok ms=53
+EV 1792599010368 M4 RX hb from=M3 seq=9 via=M3
+EV 1792599010899 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599010899 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599011344 M4 PROBE tgt=M3 ok ms=53
+EV 1792599011368 M4 RX hb from=M3 seq=10 via=M3
+EV 1792599011395 M4 MJOIN join_peers ok
+EV 1792599011900 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599011900 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599012370 M4 RX hb from=M3 seq=11 via=M3
+EV 1792599012397 M4 PROBE tgt=M3 ok ms=51
+EV 1792599012901 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599012901 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599013371 M4 RX hb from=M3 seq=12 via=M3
+EV 1792599013453 M4 PROBE tgt=M3 ok ms=53
+EV 1792599013902 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599013903 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599014373 M4 RX hb from=M3 seq=13 via=M3
+EV 1792599014396 M4 MJOIN join_peers ok
+EV 1792599014506 M4 PROBE tgt=M3 ok ms=52
+EV 1792599014903 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599014904 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599015374 M4 RX hb from=M3 seq=14 via=M3
+EV 1792599015562 M4 PROBE tgt=M3 ok ms=52
+EV 1792599015904 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599015905 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599016376 M4 RX hb from=M3 seq=15 via=M3
+EV 1792599016617 M4 PROBE tgt=M3 ok ms=53
+EV 1792599016905 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599016906 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599017378 M4 RX hb from=M3 seq=16 via=M3
+EV 1792599017397 M4 MJOIN join_peers ok
+EV 1792599017672 M4 PROBE tgt=M3 ok ms=53
+EV 1792599017906 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599017907 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599018379 M4 RX hb from=M3 seq=17 via=M3
+EV 1792599018727 M4 PROBE tgt=M3 ok ms=54
+EV 1792599018907 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599018908 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599019382 M4 RX hb from=M3 seq=18 via=M3
+EV 1792599019781 M4 PROBE tgt=M3 ok ms=52
+EV 1792599019908 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599019909 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599020383 M4 RX hb from=M3 seq=19 via=M3
+EV 1792599020398 M4 MJOIN join_peers ok
+EV 1792599020835 M4 PROBE tgt=M3 ok ms=52
+EV 1792599020911 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599020911 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599021384 M4 RX hb from=M3 seq=20 via=M3
+EV 1792599021889 M4 PROBE tgt=M3 ok ms=53
+EV 1792599021912 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599021912 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599022385 M4 RX hb from=M3 seq=21 via=M3
+EV 1792599022913 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599022914 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599022943 M4 PROBE tgt=M3 ok ms=53
+EV 1792599023386 M4 RX hb from=M3 seq=22 via=M3
+EV 1792599023399 M4 MJOIN join_peers ok
+EV 1792599023914 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599023915 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599023997 M4 PROBE tgt=M3 ok ms=52
+EV 1792599024388 M4 RX hb from=M3 seq=23 via=M3
+EV 1792599024916 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599024916 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599025051 M4 PROBE tgt=M3 ok ms=53
+EV 1792599025389 M4 RX hb from=M3 seq=24 via=M3
+EV 1792599025917 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599025917 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599026106 M4 PROBE tgt=M3 ok ms=53
+EV 1792599026390 M4 RX hb from=M3 seq=25 via=M3
+EV 1792599026400 M4 MJOIN join_peers ok
+EV 1792599026919 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599026919 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599027161 M4 PROBE tgt=M3 ok ms=53
+EV 1792599027392 M4 RX hb from=M3 seq=26 via=M3
+EV 1792599027921 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599027921 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599028216 M4 PROBE tgt=M3 ok ms=52
+EV 1792599028393 M4 RX hb from=M3 seq=27 via=M3
+EV 1792599028923 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599028923 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599029271 M4 PROBE tgt=M3 ok ms=53
+EV 1792599029394 M4 RX hb from=M3 seq=28 via=M3
+EV 1792599029402 M4 MJOIN join_peers ok
+EV 1792599029924 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599029924 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599030324 M4 PROBE tgt=M3 ok ms=51
+EV 1792599030395 M4 RX hb from=M3 seq=29 via=M3
+EV 1792599030925 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599030925 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599031378 M4 PROBE tgt=M3 ok ms=52
+EV 1792599031396 M4 RX hb from=M3 seq=30 via=M3
+EV 1792599031926 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599031926 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599032398 M4 RX hb from=M3 seq=31 via=M3
+EV 1792599032403 M4 MJOIN join_peers ok
+EV 1792599032433 M4 PROBE tgt=M3 ok ms=52
+EV 1792599032927 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599032927 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599033398 M4 RX hb from=M3 seq=32 via=M3
+EV 1792599033487 M4 PROBE tgt=M3 ok ms=52
+EV 1792599033928 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599033928 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599034399 M4 RX hb from=M3 seq=33 via=M3
+EV 1792599034541 M4 PROBE tgt=M3 ok ms=52
+EV 1792599034929 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599034930 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599035400 M4 RX hb from=M3 seq=34 via=M3
+EV 1792599035405 M4 MJOIN join_peers ok
+EV 1792599035595 M4 PROBE tgt=M3 ok ms=52
+EV 1792599035931 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599035931 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599036401 M4 RX hb from=M3 seq=35 via=M3
+EV 1792599036649 M4 PROBE tgt=M3 ok ms=53
+EV 1792599036932 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599036932 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599037402 M4 RX hb from=M3 seq=36 via=M3
+EV 1792599037704 M4 PROBE tgt=M3 ok ms=53
+EV 1792599037934 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599037934 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599038404 M4 RX hb from=M3 seq=37 via=M3
+EV 1792599038406 M4 MJOIN join_peers ok
+EV 1792599038758 M4 PROBE tgt=M3 ok ms=53
+EV 1792599038935 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599038935 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599039405 M4 RX hb from=M3 seq=38 via=M3
+EV 1792599039813 M4 PROBE tgt=M3 ok ms=53
+EV 1792599039936 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599039937 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599040406 M4 RX hb from=M3 seq=39 via=M3
+EV 1792599040866 M4 PROBE tgt=M3 ok ms=52
+EV 1792599040938 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599040938 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599041407 M4 MJOIN join_peers ok
+EV 1792599041407 M4 RX hb from=M3 seq=40 via=M3
+EV 1792599041920 M4 PROBE tgt=M3 ok ms=52
+EV 1792599041939 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599041939 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599042408 M4 RX hb from=M3 seq=41 via=M3
+EV 1792599042940 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599042941 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599042975 M4 PROBE tgt=M3 ok ms=53
+EV 1792599043410 M4 RX hb from=M3 seq=42 via=M3
+EV 1792599043942 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599043942 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599044029 M4 PROBE tgt=M3 ok ms=52
+EV 1792599044408 M4 MJOIN join_peers ok
+EV 1792599044411 M4 RX hb from=M3 seq=43 via=M3
+EV 1792599044943 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599044943 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599045083 M4 PROBE tgt=M3 ok ms=53
+EV 1792599045413 M4 RX hb from=M3 seq=44 via=M3
+EV 1792599045944 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599045944 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599046138 M4 PROBE tgt=M3 ok ms=53
+EV 1792599046414 M4 RX hb from=M3 seq=45 via=M3
+EV 1792599046945 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599046945 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599047192 M4 PROBE tgt=M3 ok ms=52
+EV 1792599047410 M4 MJOIN join_peers ok
+EV 1792599047415 M4 RX hb from=M3 seq=46 via=M3
+EV 1792599047946 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599047946 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599048247 M4 PROBE tgt=M3 ok ms=53
+EV 1792599048417 M4 RX hb from=M3 seq=47 via=M3
+EV 1792599048948 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599048948 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599049301 M4 PROBE tgt=M3 ok ms=52
+EV 1792599049418 M4 RX hb from=M3 seq=48 via=M3
+EV 1792599049949 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599049949 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599050356 M4 PROBE tgt=M3 ok ms=53
+EV 1792599050412 M4 MJOIN join_peers ok
+EV 1792599050419 M4 RX hb from=M3 seq=49 via=M3
+EV 1792599050951 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599050951 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599051410 M4 PROBE tgt=M3 ok ms=53
+EV 1792599051421 M4 RX hb from=M3 seq=50 via=M3
+EV 1792599051952 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599051952 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599052422 M4 RX hb from=M3 seq=51 via=M3
+EV 1792599052463 M4 PROBE tgt=M3 ok ms=52
+EV 1792599052953 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599052954 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599053414 M4 MJOIN join_peers ok
+EV 1792599053424 M4 RX hb from=M3 seq=52 via=M3
+EV 1792599053518 M4 PROBE tgt=M3 ok ms=53
+EV 1792599053955 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599053955 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599054425 M4 RX hb from=M3 seq=53 via=M3
+EV 1792599054573 M4 PROBE tgt=M3 ok ms=53
+EV 1792599054956 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599054956 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599055426 M4 RX hb from=M3 seq=54 via=M3
+EV 1792599055628 M4 PROBE tgt=M3 ok ms=53
+EV 1792599055959 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599055959 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599056415 M4 MJOIN join_peers ok
+EV 1792599056428 M4 RX hb from=M3 seq=55 via=M3
+EV 1792599056686 M4 PROBE tgt=M3 ok ms=56
+EV 1792599056960 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599056960 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599057428 M4 RX hb from=M3 seq=56 via=M3
+EV 1792599057740 M4 PROBE tgt=M3 ok ms=52
+EV 1792599057961 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599057961 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599058429 M4 RX hb from=M3 seq=57 via=M3
+EV 1792599058795 M4 PROBE tgt=M3 ok ms=52
+EV 1792599058962 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599058962 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599059417 M4 MJOIN join_peers ok
+EV 1792599059430 M4 RX hb from=M3 seq=58 via=M3
+EV 1792599059850 M4 PROBE tgt=M3 ok ms=53
+EV 1792599059963 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599059964 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599060431 M4 RX hb from=M3 seq=59 via=M3
+EV 1792599060905 M4 PROBE tgt=M3 ok ms=53
+EV 1792599060964 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599060966 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599061432 M4 RX hb from=M3 seq=60 via=M3
+EV 1792599061959 M4 PROBE tgt=M3 ok ms=52
+EV 1792599061965 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599061967 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599062418 M4 MJOIN join_peers ok
+EV 1792599062434 M4 RX hb from=M3 seq=61 via=M3
+EV 1792599062966 M4 PROBE tgt=M1 fail ms=0 err=No_addressing_information_available
+EV 1792599062968 M4 PROBE tgt=M2 fail ms=0 err=No_addressing_information_available
+EV 1792599063013 M4 PROBE tgt=M3 ok ms=52
+EV 1792599063436 M4 RX hb from=M3 seq=62 via=M3
+EV 1792599064068 M4 PROBE tgt=M3 ok ms=52
+EV 1792599064074 M4 PROBE tgt=M1 ok ms=106
+EV 1792599064077 M4 PROBE tgt=M2 ok ms=108
+EV 1792599064437 M4 RX hb from=M3 seq=63 via=M3
+EV 1792599064739 M4 NU M2
+EV 1792599064740 M4 NU M1
+EV 1792599064799 M4 RX infra host=H2 ts=1792599064749 via=M2
+EV 1792599065121 M4 PROBE tgt=M3 ok ms=52
+EV 1792599065179 M4 RX hb from=M2 seq=3 via=M2
+EV 1792599065184 M4 PROBE tgt=M1 ok ms=108
+EV 1792599065185 M4 PROBE tgt=M2 ok ms=106
+EV 1792599065231 M4 RX hb from=M1 seq=3 via=M2
+EV 1792599065437 M4 RX hb from=M3 seq=64 via=M3
+EV 1792599066177 M4 PROBE tgt=M3 ok ms=53
+EV 1792599066183 M4 RX hb from=M2 seq=4 via=M2
+EV 1792599066234 M4 RX hb from=M1 seq=4 via=M2
+EV 1792599066293 M4 PROBE tgt=M1 ok ms=107
+EV 1792599066293 M4 PROBE tgt=M2 ok ms=106
+EV 1792599066438 M4 RX hb from=M3 seq=65 via=M3
+EV 1792599067184 M4 RX hb from=M2 seq=5 via=M2
+EV 1792599067232 M4 PROBE tgt=M3 ok ms=53
+EV 1792599067235 M4 RX hb from=M1 seq=5 via=M2
+EV 1792599067403 M4 PROBE tgt=M1 ok ms=108
+EV 1792599067405 M4 PROBE tgt=M2 ok ms=110
+EV 1792599067439 M4 RX hb from=M3 seq=66 via=M3
+EV 1792599068183 M4 RX hb from=M2 seq=6 via=M2
+EV 1792599068235 M4 RX hb from=M1 seq=6 via=M2
+EV 1792599068286 M4 PROBE tgt=M3 ok ms=52
+EV 1792599068441 M4 RX hb from=M3 seq=67 via=M3
+EV 1792599068507 M4 PROBE tgt=M1 ok ms=103
+EV 1792599068510 M4 PROBE tgt=M2 ok ms=104
+EV 1792599069184 M4 RX hb from=M2 seq=7 via=M2
+EV 1792599069236 M4 RX hb from=M1 seq=7 via=M2
+EV 1792599069342 M4 PROBE tgt=M3 ok ms=54
+EV 1792599069442 M4 RX hb from=M3 seq=68 via=M3
+EV 1792599069619 M4 PROBE tgt=M1 ok ms=109
+EV 1792599069621 M4 PROBE tgt=M2 ok ms=108
+EV 1792599069802 M4 RX infra host=H2 ts=1792599069750 via=M2
+EV 1792599070186 M4 RX hb from=M2 seq=8 via=M2
+EV 1792599070237 M4 RX hb from=M1 seq=8 via=M2
+EV 1792599070396 M4 PROBE tgt=M3 ok ms=52
+EV 1792599070443 M4 RX hb from=M3 seq=69 via=M3
+EV 1792599070728 M4 PROBE tgt=M1 ok ms=106
+EV 1792599070733 M4 PROBE tgt=M2 ok ms=110
+EV 1792599071185 M4 RX hb from=M2 seq=9 via=M2
+EV 1792599071238 M4 RX hb from=M1 seq=9 via=M2
+EV 1792599071443 M4 RX hb from=M3 seq=70 via=M3
+EV 1792599071451 M4 PROBE tgt=M3 ok ms=53
+EV 1792599071838 M4 PROBE tgt=M1 ok ms=108
+EV 1792599071843 M4 PROBE tgt=M2 ok ms=108
+EV 1792599072187 M4 RX hb from=M2 seq=10 via=M2
+EV 1792599072241 M4 RX hb from=M1 seq=10 via=M2
+EV 1792599072444 M4 RX hb from=M3 seq=71 via=M3
+EV 1792599072505 M4 PROBE tgt=M3 ok ms=52
+EV 1792599072946 M4 PROBE tgt=M1 ok ms=107
+EV 1792599072951 M4 PROBE tgt=M2 ok ms=106
+EV 1792599073189 M4 RX hb from=M2 seq=11 via=M2
+EV 1792599073242 M4 RX hb from=M1 seq=11 via=M2
+EV 1792599073445 M4 RX hb from=M3 seq=72 via=M3
+EV 1792599073559 M4 PROBE tgt=M3 ok ms=52
+EV 1792599074058 M4 PROBE tgt=M1 ok ms=108
+EV 1792599074060 M4 PROBE tgt=M2 ok ms=107
+EV 1792599074189 M4 RX hb from=M2 seq=12 via=M2
+EV 1792599074245 M4 RX hb from=M1 seq=12 via=M2
+EV 1792599074446 M4 RX hb from=M3 seq=73 via=M3
+EV 1792599074614 M4 PROBE tgt=M3 ok ms=53
+EV 1792599074803 M4 RX infra host=H2 ts=1792599074751 via=M2
+EV 1792599075165 M4 PROBE tgt=M1 ok ms=106
+EV 1792599075169 M4 PROBE tgt=M2 ok ms=107
+EV 1792599075191 M4 RX hb from=M2 seq=13 via=M2
+EV 1792599075244 M4 RX hb from=M1 seq=13 via=M2
+EV 1792599075448 M4 RX hb from=M3 seq=74 via=M3
+EV 1792599075669 M4 PROBE tgt=M3 ok ms=53
+EV 1792599076193 M4 RX hb from=M2 seq=14 via=M2
+EV 1792599076247 M4 RX hb from=M1 seq=14 via=M2
+EV 1792599076272 M4 PROBE tgt=M1 ok ms=106
+EV 1792599076281 M4 PROBE tgt=M2 ok ms=110
+EV 1792599076449 M4 RX hb from=M3 seq=75 via=M3
+EV 1792599076724 M4 PROBE tgt=M3 ok ms=53
+EV 1792599077195 M4 RX hb from=M2 seq=15 via=M2
+EV 1792599077247 M4 RX hb from=M1 seq=15 via=M2
+EV 1792599077382 M4 PROBE tgt=M1 ok ms=107
+EV 1792599077392 M4 PROBE tgt=M2 ok ms=109
+EV 1792599077449 M4 RX hb from=M3 seq=76 via=M3
+EV 1792599077778 M4 PROBE tgt=M3 ok ms=52
+EV 1792599078196 M4 RX hb from=M2 seq=16 via=M2
+EV 1792599078249 M4 RX hb from=M1 seq=16 via=M2
+EV 1792599078451 M4 RX hb from=M3 seq=77 via=M3
+EV 1792599078491 M4 PROBE tgt=M1 ok ms=108
+EV 1792599078500 M4 PROBE tgt=M2 ok ms=106
+EV 1792599078833 M4 PROBE tgt=M3 ok ms=53
+EV 1792599079198 M4 RX hb from=M2 seq=17 via=M2
+EV 1792599079250 M4 RX hb from=M1 seq=17 via=M2
+EV 1792599079452 M4 RX hb from=M3 seq=78 via=M3
+EV 1792599079601 M4 PROBE tgt=M1 ok ms=108
+EV 1792599079611 M4 PROBE tgt=M2 ok ms=109
+EV 1792599079802 M4 RX infra host=H2 ts=1792599079752 via=M2
+EV 1792599079886 M4 PROBE tgt=M3 ok ms=51
+EV 1792599080199 M4 RX hb from=M2 seq=18 via=M2
+EV 1792599080252 M4 RX hb from=M1 seq=18 via=M2
+EV 1792599080458 M4 RX hb from=M3 seq=79 via=M3
+EV 1792599080712 M4 PROBE tgt=M1 ok ms=109
+EV 1792599080716 M4 PROBE tgt=M2 ok ms=103
+EV 1792599080941 M4 PROBE tgt=M3 ok ms=53
+EV 1792599081201 M4 RX hb from=M2 seq=19 via=M2
+EV 1792599081253 M4 RX hb from=M1 seq=19 via=M2
+EV 1792599081455 M4 RX hb from=M3 seq=80 via=M3
+EV 1792599081823 M4 PROBE tgt=M1 ok ms=109
+EV 1792599081825 M4 PROBE tgt=M2 ok ms=107
+EV 1792599081994 M4 PROBE tgt=M3 ok ms=51
+EV 1792599082202 M4 RX hb from=M2 seq=20 via=M2
+EV 1792599082255 M4 RX hb from=M1 seq=20 via=M2
+EV 1792599082455 M4 RX hb from=M3 seq=81 via=M3
+EV 1792599082932 M4 PROBE tgt=M1 ok ms=107
+EV 1792599082934 M4 PROBE tgt=M2 ok ms=107
+EV 1792599083049 M4 PROBE tgt=M3 ok ms=52
+EV 1792599083204 M4 RX hb from=M2 seq=21 via=M2
+EV 1792599083255 M4 RX hb from=M1 seq=21 via=M2
+EV 1792599083457 M4 RX hb from=M3 seq=82 via=M3
+EV 1792599084044 M4 PROBE tgt=M2 ok ms=108
+EV 1792599084045 M4 PROBE tgt=M1 ok ms=111
+EV 1792599084102 M4 PROBE tgt=M3 ok ms=51
+EV 1792599084205 M4 RX hb from=M2 seq=22 via=M2
+EV 1792599084257 M4 RX hb from=M1 seq=22 via=M2
+EV 1792599084457 M4 RX hb from=M3 seq=83 via=M3
+EV 1792599084805 M4 RX infra host=H2 ts=1792599084753 via=M2
+EV 1792599085152 M4 PROBE tgt=M2 ok ms=106
+EV 1792599085154 M4 PROBE tgt=M1 ok ms=107
+EV 1792599085155 M4 PROBE tgt=M3 ok ms=52
+EV 1792599085207 M4 RX hb from=M2 seq=23 via=M2
+EV 1792599085260 M4 RX hb from=M1 seq=23 via=M2
+EV 1792599085459 M4 RX hb from=M3 seq=84 via=M3
+EV 1792599086209 M4 RX hb from=M2 seq=24 via=M2
+EV 1792599086211 M4 PROBE tgt=M3 ok ms=53
+EV 1792599086261 M4 RX hb from=M1 seq=24 via=M2
+EV 1792599086264 M4 PROBE tgt=M2 ok ms=110
+EV 1792599086264 M4 PROBE tgt=M1 ok ms=108
+EV 1792599086459 M4 RX hb from=M3 seq=85 via=M3
+EV 1792599087211 M4 RX hb from=M2 seq=25 via=M2
+EV 1792599087263 M4 RX hb from=M1 seq=25 via=M2
+EV 1792599087265 M4 PROBE tgt=M3 ok ms=52
+EV 1792599087370 M4 PROBE tgt=M2 ok ms=105
+EV 1792599087371 M4 PROBE tgt=M1 ok ms=106
+EV 1792599087461 M4 RX hb from=M3 seq=86 via=M3
+EV 1792599088215 M4 RX hb from=M2 seq=26 via=M2
+EV 1792599088265 M4 RX hb from=M1 seq=26 via=M2
+EV 1792599088318 M4 PROBE tgt=M3 ok ms=52
+EV 1792599088462 M4 RX hb from=M3 seq=87 via=M3
+EV 1792599088483 M4 PROBE tgt=M2 ok ms=112
+EV 1792599088484 M4 PROBE tgt=M1 ok ms=111
+EV 1792599089217 M4 RX hb from=M2 seq=27 via=M2
+EV 1792599089268 M4 RX hb from=M1 seq=27 via=M2
+EV 1792599089372 M4 PROBE tgt=M3 ok ms=53
+EV 1792599089464 M4 RX hb from=M3 seq=88 via=M3
+EV 1792599089595 M4 PROBE tgt=M1 ok ms=109
+EV 1792599089596 M4 PROBE tgt=M2 ok ms=111
+EV 1792599089805 M4 RX infra host=H2 ts=1792599089753 via=M2
+EV 1792599090218 M4 RX hb from=M2 seq=28 via=M2
+EV 1792599090268 M4 RX hb from=M1 seq=28 via=M2
+EV 1792599090427 M4 PROBE tgt=M3 ok ms=53
+EV 1792599090466 M4 RX hb from=M3 seq=89 via=M3
+EV 1792599090705 M4 PROBE tgt=M2 ok ms=108
+EV 1792599090706 M4 PROBE tgt=M1 ok ms=109
+EV 1792599091219 M4 RX hb from=M2 seq=29 via=M2
+EV 1792599091270 M4 RX hb from=M1 seq=29 via=M2
+EV 1792599091467 M4 RX hb from=M3 seq=90 via=M3
+EV 1792599091482 M4 PROBE tgt=M3 ok ms=53
+EV 1792599091820 M4 PROBE tgt=M2 ok ms=112
+EV 1792599091820 M4 PROBE tgt=M1 ok ms=112
+EV 1792599092221 M4 RX hb from=M2 seq=30 via=M2
+EV 1792599092270 M4 RX hb from=M1 seq=30 via=M2
+EV 1792599092469 M4 RX hb from=M3 seq=91 via=M3
+EV 1792599092537 M4 PROBE tgt=M3 ok ms=53
+EV 1792599092929 M4 PROBE tgt=M2 ok ms=107
+EV 1792599092930 M4 PROBE tgt=M1 ok ms=107
+EV 1792599093222 M4 RX hb from=M2 seq=31 via=M2
+EV 1792599093271 M4 RX hb from=M1 seq=31 via=M2
+EV 1792599093470 M4 RX hb from=M3 seq=92 via=M3
+EV 1792599093590 M4 PROBE tgt=M3 ok ms=51
+EV 1792599094042 M4 PROBE tgt=M2 ok ms=111
+EV 1792599094043 M4 PROBE tgt=M1 ok ms=112
+EV 1792599094225 M4 RX hb from=M2 seq=32 via=M2
+EV 1792599094271 M4 RX hb from=M1 seq=32 via=M2
+EV 1792599094471 M4 RX hb from=M3 seq=93 via=M3
+EV 1792599094645 M4 PROBE tgt=M3 ok ms=53
+EV 1792599094807 M4 RX infra host=H2 ts=1792599094755 via=M2
+EV 1792599095156 M4 PROBE tgt=M2 ok ms=112
+EV 1792599095159 M4 PROBE tgt=M1 ok ms=114
+EV 1792599095226 M4 RX hb from=M2 seq=33 via=M2
+EV 1792599095275 M4 RX hb from=M1 seq=33 via=M2
+EV 1792599095472 M4 RX hb from=M3 seq=94 via=M3
+EV 1792599095701 M4 PROBE tgt=M3 ok ms=53
+EV 1792599096228 M4 RX hb from=M2 seq=34 via=M2
+EV 1792599096266 M4 PROBE tgt=M2 ok ms=108
+EV 1792599096268 M4 PROBE tgt=M1 ok ms=107
+EV 1792599096276 M4 RX hb from=M1 seq=34 via=M2
+EV 1792599096474 M4 RX hb from=M3 seq=95 via=M3
+EV 1792599096755 M4 PROBE tgt=M3 ok ms=52
+EV 1792599097229 M4 RX hb from=M2 seq=35 via=M2
+EV 1792599097279 M4 RX hb from=M1 seq=35 via=M2
+EV 1792599097373 M4 PROBE tgt=M2 ok ms=105
+EV 1792599097376 M4 PROBE tgt=M1 ok ms=107
+EV 1792599097474 M4 RX hb from=M3 seq=96 via=M3
+EV 1792599097808 M4 PROBE tgt=M3 ok ms=52
+EV 1792599098230 M4 RX hb from=M2 seq=36 via=M2
+EV 1792599098282 M4 RX hb from=M1 seq=36 via=M2
+EV 1792599098475 M4 RX hb from=M3 seq=97 via=M3
+EV 1792599098484 M4 PROBE tgt=M2 ok ms=109
+EV 1792599098486 M4 PROBE tgt=M1 ok ms=108
+EV 1792599098862 M4 PROBE tgt=M3 ok ms=53
+EV 1792599099232 M4 RX hb from=M2 seq=37 via=M2
+EV 1792599099283 M4 RX hb from=M1 seq=37 via=M2
+EV 1792599099476 M4 RX hb from=M3 seq=98 via=M3
+EV 1792599099591 M4 PROBE tgt=M2 ok ms=106
+EV 1792599099593 M4 PROBE tgt=M1 ok ms=105
+EV 1792599099808 M4 RX infra host=H2 ts=1792599099756 via=M2
+EV 1792599099916 M4 PROBE tgt=M3 ok ms=52
+EV 1792599100235 M4 RX hb from=M2 seq=38 via=M2
+EV 1792599100285 M4 RX hb from=M1 seq=38 via=M2
+EV 1792599100477 M4 RX hb from=M3 seq=99 via=M3
+EV 1792599100703 M4 PROBE tgt=M2 ok ms=110
+EV 1792599100705 M4 PROBE tgt=M1 ok ms=110
+EV 1792599100970 M4 PROBE tgt=M3 ok ms=52
+EV 1792599101238 M4 RX hb from=M2 seq=39 via=M2
+EV 1792599101290 M4 RX hb from=M1 seq=39 via=M2
+EV 1792599101479 M4 RX hb from=M3 seq=100 via=M3
+EV 1792599101818 M4 PROBE tgt=M1 ok ms=111
+EV 1792599101818 M4 PROBE tgt=M2 ok ms=112
+EV 1792599102025 M4 PROBE tgt=M3 ok ms=53
+EV 1792599102237 M4 RX hb from=M2 seq=40 via=M2
+EV 1792599102286 M4 RX hb from=M1 seq=40 via=M2
+EV 1792599102479 M4 RX hb from=M3 seq=101 via=M3
+EV 1792599102931 M4 PROBE tgt=M2 ok ms=110
+EV 1792599102931 M4 PROBE tgt=M1 ok ms=111
+EV 1792599103079 M4 PROBE tgt=M3 ok ms=52
+EV 1792599103240 M4 RX hb from=M2 seq=41 via=M2
+EV 1792599103288 M4 RX hb from=M1 seq=41 via=M2
+EV 1792599103481 M4 RX hb from=M3 seq=102 via=M3
+EV 1792599104043 M4 PROBE tgt=M2 ok ms=111
+EV 1792599104043 M4 PROBE tgt=M1 ok ms=111
+EV 1792599104133 M4 PROBE tgt=M3 ok ms=52
+EV 1792599104240 M4 RX hb from=M2 seq=42 via=M2
+EV 1792599104288 M4 RX hb from=M1 seq=42 via=M2
+EV 1792599104481 M4 RX hb from=M3 seq=103 via=M3
+EV 1792599104810 M4 RX infra host=H2 ts=1792599104758 via=M2
+EV 1792599105157 M4 PROBE tgt=M2 ok ms=111
+EV 1792599105157 M4 PROBE tgt=M1 ok ms=111
+EV 1792599105187 M4 PROBE tgt=M3 ok ms=52
+EV 1792599105243 M4 RX hb from=M2 seq=43 via=M2
+EV 1792599105289 M4 RX hb from=M1 seq=43 via=M2
+EV 1792599105482 M4 RX hb from=M3 seq=104 via=M3
+EV 1792599106240 M4 PROBE tgt=M3 ok ms=52
+EV 1792599106244 M4 RX hb from=M2 seq=44 via=M2
+EV 1792599106269 M4 PROBE tgt=M2 ok ms=110
+EV 1792599106269 M4 PROBE tgt=M1 ok ms=110
+EV 1792599106289 M4 RX hb from=M1 seq=44 via=M2
+EV 1792599106483 M4 RX hb from=M3 seq=105 via=M3
+EV 1792599107247 M4 RX hb from=M2 seq=45 via=M2
+EV 1792599107294 M4 RX hb from=M1 seq=45 via=M2
+EV 1792599107295 M4 PROBE tgt=M3 ok ms=52
+EV 1792599107382 M4 PROBE tgt=M1 ok ms=111
+EV 1792599107382 M4 PROBE tgt=M2 ok ms=111
+EV 1792599107484 M4 RX hb from=M3 seq=106 via=M3
+EV 1792599108249 M4 RX hb from=M2 seq=46 via=M2
+EV 1792599108295 M4 RX hb from=M1 seq=46 via=M2
+EV 1792599108350 M4 PROBE tgt=M3 ok ms=53
+EV 1792599108486 M4 RX hb from=M3 seq=107 via=M3
+EV 1792599108491 M4 PROBE tgt=M2 ok ms=106
+EV 1792599108491 M4 PROBE tgt=M1 ok ms=108
+EV 1792599109251 M4 RX hb from=M2 seq=47 via=M2
+EV 1792599109294 M4 RX hb from=M1 seq=47 via=M2
+EV 1792599109403 M4 PROBE tgt=M3 ok ms=52
+EV 1792599109487 M4 RX hb from=M3 seq=108 via=M3
+EV 1792599109599 M4 PROBE tgt=M2 ok ms=107
+EV 1792599109604 M4 PROBE tgt=M1 ok ms=111
+EV 1792599109810 M4 RX infra host=H2 ts=1792599109759 via=M2
+EV 1792599110251 M4 RX hb from=M2 seq=48 via=M2
+EV 1792599110294 M4 RX hb from=M1 seq=48 via=M2
+EV 1792599110456 M4 PROBE tgt=M3 ok ms=52
+EV 1792599110487 M4 RX hb from=M3 seq=109 via=M3
+EV 1792599110708 M4 PROBE tgt=M2 ok ms=108
+EV 1792599110716 M4 PROBE tgt=M1 ok ms=110
+EV 1792599111255 M4 RX hb from=M2 seq=49 via=M2
+EV 1792599111297 M4 RX hb from=M1 seq=49 via=M2
+EV 1792599111488 M4 RX hb from=M3 seq=110 via=M3
+EV 1792599111512 M4 PROBE tgt=M3 ok ms=54
+EV 1792599111817 M4 PROBE tgt=M2 ok ms=108
+EV 1792599111824 M4 PROBE tgt=M1 ok ms=106
+EV 1792599112255 M4 RX hb from=M2 seq=50 via=M2
+EV 1792599112298 M4 RX hb from=M1 seq=50 via=M2
+EV 1792599112490 M4 RX hb from=M3 seq=111 via=M3
+EV 1792599112565 M4 PROBE tgt=M3 ok ms=52
+EV 1792599112922 M4 PROBE tgt=M2 ok ms=103
+EV 1792599112933 M4 PROBE tgt=M1 ok ms=107
+EV 1792599113256 M4 RX hb from=M2 seq=51 via=M2
+EV 1792599113298 M4 RX hb from=M1 seq=51 via=M2
+EV 1792599113491 M4 RX hb from=M3 seq=112 via=M3
+EV 1792599113619 M4 PROBE tgt=M3 ok ms=52
+EV 1792599114031 M4 PROBE tgt=M2 ok ms=108
+EV 1792599114043 M4 PROBE tgt=M1 ok ms=108
+EV 1792599114258 M4 RX hb from=M2 seq=52 via=M2
+EV 1792599114301 M4 RX hb from=M1 seq=52 via=M2
