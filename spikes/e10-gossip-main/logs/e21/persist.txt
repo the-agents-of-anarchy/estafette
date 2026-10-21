@@ -1,0 +1,4 @@
+M3 from M1 first hb after restart ms: 2892 count in 45 s: 39 last ms: 44964
+M3 from M2 first hb after restart ms: 2891 count in 45 s: 39 last ms: 44964
+M3 from M1 first hb after restart ms: None count in 45 s: 0 last ms: None
+M3 from M2 first hb after restart ms: None count in 45 s: 0 last ms: None

@@ -1,0 +1,14 @@
+M1 RelayMapChange line: 324
+   relay=http://127.0.0.1:62819/}: iroh::net_report::reportgen: probe finished report=Ok(Https(HttpsProbeReport { relay: RelayUrl("http://127.0.0.1:62819/"), latency: 635.292µs }))
+   relay=http://127.0.0.1:62820/}: iroh::net_report::reportgen: probe finished report=Ok(Https(HttpsProbeReport { relay: RelayUrl("http://127.0.0.1:62820/"), latency: 808.5µs }))
+   preferred: Some(RelayUrl("http://127.0.0.1:62819/")), relay_latency:
+M2 RelayMapChange line: 295
+   relay=http://127.0.0.1:62820/}: iroh::net_report::reportgen: probe finished report=Ok(Https(HttpsProbeReport { relay: RelayUrl("http://127.0.0.1:62820/"), latency: 337.042µs }))
+   relay=http://127.0.0.1:62819/}: iroh::net_report::reportgen: probe finished report=Ok(Https(HttpsProbeReport { relay: RelayUrl("http://127.0.0.1:62819/"), latency: 474.125µs }))
+   preferred: Some(RelayUrl("http://127.0.0.1:62820/")), relay_latency:
+   home is now relay http://127.0.0.1:62820/, was Some(RelayUrl("http://127.0.0.1:62819/"))
+M3 RelayMapChange line: 249
+   relay=http://127.0.0.1:62820/}: iroh::net_report::reportgen: probe finished report=Ok(Https(HttpsProbeReport { relay: RelayUrl("http://127.0.0.1:62820/"), latency: 374.792µs }))
+   relay=http://127.0.0.1:62819/}: iroh::net_report::reportgen: probe finished report=Ok(Https(HttpsProbeReport { relay: RelayUrl("http://127.0.0.1:62819/"), latency: 513.25µs }))
+   preferred: Some(RelayUrl("http://127.0.0.1:62820/")), relay_latency:
+   home is now relay http://127.0.0.1:62820/, was Some(RelayUrl("http://127.0.0.1:62819/"))
