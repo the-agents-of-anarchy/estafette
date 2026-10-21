@@ -1,0 +1,24 @@
+a-1f0w-1 dial-to-HB s per stalled+healed pair: -
+a-1f0w-2 dial-to-HB s per stalled+healed pair: -
+a-1f0w-3 dial-to-HB s per stalled+healed pair: -
+a-1f1w-1 dial-to-HB s per stalled+healed pair: -
+a-1f1w-2 dial-to-HB s per stalled+healed pair: -
+a-1f1w-3 dial-to-HB s per stalled+healed pair: -
+a-1f1w-4 dial-to-HB s per stalled+healed pair: -
+a-1f1w-5 dial-to-HB s per stalled+healed pair: -
+a-1f2w-1 dial-to-HB s per stalled+healed pair: -
+a-1f2w-2 dial-to-HB s per stalled+healed pair: -
+a-1f2w-3 dial-to-HB s per stalled+healed pair: -
+a-1f2w-4 dial-to-HB s per stalled+healed pair: -
+a-1f2w-5 dial-to-HB s per stalled+healed pair: -
+a-1f2cw-1 dial-to-HB s per stalled+healed pair: -
+a-1f2cw-2 dial-to-HB s per stalled+healed pair: -
+a-1f2cw-3 dial-to-HB s per stalled+healed pair: -
+a-1f3w-1 dial-to-HB s per stalled+healed pair: -0.0, 0.1, 0.9, 0.0, 0.1, -0.0
+a-1f3w-2 dial-to-HB s per stalled+healed pair: 2.0, 127.3, 2.0, 128.3, 1.0, -0.0
+a-1f3w-3 dial-to-HB s per stalled+healed pair: 147.6, -0.0, 73.2, 0.9, 0.5, 149.1
+a-1f3w-4 dial-to-HB s per stalled+healed pair: 1.0, 1.8, 2.0, 2.2, 2.0, 1.3
+a-1f3w-5 dial-to-HB s per stalled+healed pair: 1.0, 0.6, 1.0, 0.5, 1.0, -0.0
+a-0f4w-1 dial-to-HB s per stalled+healed pair: -
+a-0f4w-2 dial-to-HB s per stalled+healed pair: -
+a-0f4w-3 dial-to-HB s per stalled+healed pair: -

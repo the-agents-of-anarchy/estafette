@@ -1,0 +1,13 @@
+--- src/net.rs	orig
++++ src/net.rs	E16
+@@ -438,6 +438,10 @@
+                         let peer_state = self.peers.get(&peer_id);
+                         let is_active = matches!(peer_state, Some(PeerState::Active { .. }));
+                         if !is_active {
++                            // E16 (diagnostic, `E16_FIX=1`): drop the Pending entry and its queued messages, so the next send to this peer starts a new dial.
++                            if std::env::var_os("E16_FIX").is_some_and(|v| v == "1") && self.peers.remove(&peer_id).is_some() {
++                                debug!(peer = %peer_id.fmt_short(), "E16 fix: dropped pending entry after failed dial");
++                            }
+                             self.handle_in_event(InEvent::PeerDisconnected(peer_id), Instant::now())
+                                 .await;
+                         }

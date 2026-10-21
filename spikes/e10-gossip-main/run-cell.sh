@@ -8,6 +8,7 @@
 #   E12 tags: l12 = L1+L2, probers on; l12np = L1+L2, probers off; l1np = L1 only, probers off; l2np = L2 only, probers off (88 s)
 #   E15 tags (probers on, 180 s window): l12w = L1+L2; w1w = W1 (T 3000); w1w10 = W1 T 10000; w1l1w = W1+L1.
 #     p-prefixed tags (pw, pl12w, pc) are the same as w, l12w, w for the diagnostic binary given in E15_BIN; E14_FIX=drain is set for pw and pl12w, unset for pc (stock behavior control).
+#   E16 tags (probers on, 180 s window; binary from E15_BIN = spikes/e16-gossip-fix): f0w = E16_FIX unset (control); f1w = E16_FIX=1; f2w = E16_FIX=1 + L2; f3w = E16_FIX=1 + W1 (T 3000); f4w = E16_FIX=1 (use with scn 0).
 #   any other tag (use "-") = probers on, 88 s window, as E8
 set -u
 variant=$1
@@ -33,6 +34,12 @@ case "$tag" in
   w1w) export E15_W1=1 E8_TAG=w1w E10_WINDOW_MS=180000 ;;
   w1w10) export E15_W1=1 E15_W1_T_MS=10000 E8_TAG=w1w10 E10_WINDOW_MS=180000 ;;
   w1l1w) export E15_W1=1 E12_L1=1 E8_TAG=w1l1w E10_WINDOW_MS=180000 ;;
+  f0w) unset E16_FIX; export E8_TAG=f0w E10_WINDOW_MS=180000 ;;
+  f1w) export E16_FIX=1 E8_TAG=f1w E10_WINDOW_MS=180000 ;;
+  f2w) export E16_FIX=1 E12_L2=1 E8_TAG=f2w E10_WINDOW_MS=180000 ;;
+  f2cw) unset E16_FIX; export E12_L2=1 E8_TAG=f2cw E10_WINDOW_MS=180000 ;;
+  f3w) export E16_FIX=1 E15_W1=1 E8_TAG=f3w E10_WINDOW_MS=180000 ;;
+  f4w) export E16_FIX=1 E8_TAG=f4w E10_WINDOW_MS=180000 ;;
   npw)
     export E8_NOPROBE=1
     export E8_TAG=npw
