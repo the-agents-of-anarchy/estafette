@@ -1,152 +1,93 @@
 you:
-  - name: first-principles
-    purpose: reasoning methodology
-    source: manifesto first-principles
-  - name: cargo-cult-science
-    purpose: evidence and verification standard
-    source: manifesto cargo-cult-science
-  - name: intervention
-    purpose: diagnosis protocol for systems that cannot be trusted
-    source: manifesto intervention
   - name: stop-yapping
     purpose: communication protocol
     source: manifesto stop-yapping
-  - name: raise-the-bar
-    purpose: standard for stating demands to agents
-    source: manifesto raise-the-bar
-  - name: correct-by-construction
-    purpose: Rust correctness discipline
-    source: manifesto correct-by-construction
-  - name: simple-made-easy
-    purpose: simplicity thinking framework
-    source: manifesto simple-made-easy
-  - name: kiss
-    purpose: decomplecting commands
-    source: manifesto kiss
-  - name: yagni
-    purpose: scope discipline against imagined futures
-    source: manifesto yagni
-  - name: dry
-    purpose: knowledge-duplication standard
-    source: manifesto dry
-  - name: only-what-it-needs
-    purpose: boundary and interface discipline
-    source: manifesto only-what-it-needs
-  - name: lines-spent
-    purpose: cost-of-lines ownership
-    source: manifesto lines-spent
-  - name: self-documenting-code
-    purpose: code legibility standard
-    source: manifesto self-documenting-code
+  - name: first-principles
+    purpose: reasoning methodology
+    source: manifesto first-principles
   - name: agentic-delegation
     purpose: orchestration operating model
     source: skill orchestration:agentic-delegation
   - name: dev-cycle
     purpose: development loop of specify, plan, implement, review, integrate
     source: skill dev-cycle:dev-cycle
-  - name: tdd
-    purpose: test-first construction
-    source: skill dev-discipline:tdd
-  - name: systematic-debugging
-    purpose: root-cause debugging
-    source: skill dev-discipline:systematic-debugging
-  - name: receiving-code-review
-    purpose: handling of review findings
-    source: skill dev-discipline:receiving-code-review
-  - name: git-etiquette
-    purpose: version-control conduct
-    source: skill agent-conduct:git-etiquette
   - name: check-back
     purpose: wakes over pending work
     source: skill agent-conduct:check-back
   - name: decide-while-away
     purpose: decisions while the owner is away
     source: skill agent-conduct:decide-while-away
-  - name: memento-init
-    purpose: entry to the record system
-    source: skill memento:init
-  - name: memento-pat-down
-    purpose: re-derivation of project state from records
-    source: skill memento:pat-down
-  - name: memento-schema-resolution
-    purpose: record schema in force
-    source: skill memento:schema-resolution
-  - name: memento-authority-check
-    purpose: authorship and channel ranking of content
-    source: skill memento:authority-check
-  - name: memento-event-capture
-    purpose: journal traces
-    source: skill memento:event-capture
-  - name: memento-record-writing
-    purpose: record writes
-    source: skill memento:record-writing
-  - name: memento-record-promotion
-    purpose: record tier promotion
-    source: skill memento:record-promotion
-  - name: memento-staging-relay
-    purpose: deferred work and bounded waits
-    source: skill memento:staging-relay
-  - name: memento-span-closure
-    purpose: closing a stretch of work
-    source: skill memento:span-closure
-  - name: memento-corpus-reconciliation
-    purpose: record and index audits
-    source: skill memento:corpus-reconciliation
+  - name: office-hours
+    purpose: rounds in which the owner answers queued questions
+    source: skill agent-conduct:office-hours
+  - name: work-silently
+    purpose: silence in the conversation while working
+    source: skill agent-conduct:work-silently
+  - name: git-etiquette
+    purpose: version-control conduct
+    source: skill agent-conduct:git-etiquette
+  - name: correct-by-construction
+    purpose: Rust correctness discipline
+    source: manifesto correct-by-construction
+  - name: only-what-it-needs
+    purpose: boundary and interface discipline
+    source: manifesto only-what-it-needs
+  - name: kiss
+    purpose: decomplecting commands
+    source: manifesto kiss
+  - name: yagni
+    purpose: scope discipline against imagined futures
+    source: manifesto yagni
+  - name: lines-spent
+    purpose: cost-of-lines ownership
+    source: manifesto lines-spent
+  - name: self-documenting-code
+    purpose: code legibility standard
+    source: manifesto self-documenting-code
+  - name: tdd
+    purpose: test-first construction
+    source: skill dev-discipline:tdd
+  - name: systematic-debugging
+    purpose: root-cause debugging
+    source: skill dev-discipline:systematic-debugging
+  - name: ontology
+    purpose: peer society terms
+    source: skill peers:ontology
 
 subagents:
-  maximalist-reviewer:
-    - name: first-principles
-      purpose: reasoning methodology (review)
-      source: manifesto first-principles
-    - name: cargo-cult-science
-      purpose: evidence and verification standard (review)
-      source: manifesto cargo-cult-science
+  implementer:
     - name: correct-by-construction
-      purpose: Rust correctness discipline (review)
+      purpose: Rust correctness discipline (write by)
       source: manifesto correct-by-construction
-    - name: simple-made-easy
-      purpose: simplicity thinking framework (review)
-      source: manifesto simple-made-easy
+    - name: self-documenting-code
+      purpose: code legibility standard (write by)
+      source: manifesto self-documenting-code
     - name: kiss
-      purpose: decomplecting commands (review)
+      purpose: decomplecting commands (write by)
       source: manifesto kiss
-    - name: yagni
-      purpose: scope discipline against imagined futures (review)
-      source: manifesto yagni
     - name: dry
-      purpose: knowledge-duplication standard (review)
+      purpose: knowledge-duplication standard (write by)
       source: manifesto dry
+    - name: yagni
+      purpose: scope discipline against imagined futures (write by)
+      source: manifesto yagni
     - name: only-what-it-needs
-      purpose: boundary and interface discipline (review)
+      purpose: boundary and interface discipline (write by)
       source: manifesto only-what-it-needs
     - name: lines-spent
-      purpose: cost-of-lines ownership (review)
+      purpose: cost-of-lines ownership (write by)
       source: manifesto lines-spent
-    - name: self-documenting-code
-      purpose: code legibility standard (review)
-      source: manifesto self-documenting-code
-    - name: raise-the-bar
-      purpose: standard for stating demands to agents (review)
-      source: manifesto raise-the-bar
+
   code-quality-reviewer:
-    - name: first-principles
-      purpose: reasoning methodology (review)
-      source: manifesto first-principles
-    - name: cargo-cult-science
-      purpose: evidence and verification standard (review)
-      source: manifesto cargo-cult-science
     - name: correct-by-construction
       purpose: Rust correctness discipline (review)
       source: manifesto correct-by-construction
-    - name: simple-made-easy
-      purpose: simplicity thinking framework (review)
-      source: manifesto simple-made-easy
+    - name: self-documenting-code
+      purpose: code legibility standard (review)
+      source: manifesto self-documenting-code
     - name: kiss
       purpose: decomplecting commands (review)
       source: manifesto kiss
-    - name: yagni
-      purpose: scope discipline against imagined futures (review)
-      source: manifesto yagni
     - name: dry
       purpose: knowledge-duplication standard (review)
       source: manifesto dry
@@ -156,28 +97,135 @@ subagents:
     - name: lines-spent
       purpose: cost-of-lines ownership (review)
       source: manifesto lines-spent
-    - name: self-documenting-code
-      purpose: code legibility standard (review)
-      source: manifesto self-documenting-code
-    - name: raise-the-bar
-      purpose: standard for stating demands to agents (review)
-      source: manifesto raise-the-bar
+    - name: cargo-cult-science
+      purpose: evidence and verification standard (review)
+      source: manifesto cargo-cult-science
+    - name: stop-yapping
+      purpose: communication protocol (review)
+      source: manifesto stop-yapping
     - name: tdd
       purpose: test-first construction (review)
       source: skill dev-discipline:tdd
+
   spec-reviewer:
     - name: first-principles
       purpose: reasoning methodology (review)
       source: manifesto first-principles
+    - name: yagni
+      purpose: scope discipline against imagined futures (review)
+      source: manifesto yagni
     - name: cargo-cult-science
       purpose: evidence and verification standard (review)
       source: manifesto cargo-cult-science
-    - name: intervention
-      purpose: diagnosis protocol for systems that cannot be trusted (review)
-      source: manifesto intervention
-    - name: correct-by-construction
-      purpose: Rust correctness discipline (review)
-      source: manifesto correct-by-construction
     - name: stop-yapping
       purpose: communication protocol (review)
+      source: manifesto stop-yapping
+
+  spec-capturer:
+    - name: first-principles
+      purpose: reasoning methodology
+      source: manifesto first-principles
+    - name: yagni
+      purpose: scope discipline against imagined futures
+      source: manifesto yagni
+    - name: stop-yapping
+      purpose: communication protocol
+      source: manifesto stop-yapping
+
+  prescriber:
+    - name: first-principles
+      purpose: reasoning methodology
+      source: manifesto first-principles
+    - name: yagni
+      purpose: scope discipline against imagined futures
+      source: manifesto yagni
+    - name: correct-by-construction
+      purpose: Rust correctness discipline (prescribed signatures)
+      source: manifesto correct-by-construction
+    - name: self-documenting-code
+      purpose: code legibility standard (prescribed names)
+      source: manifesto self-documenting-code
+    - name: kiss
+      purpose: decomplecting commands
+      source: manifesto kiss
+    - name: dry
+      purpose: knowledge-duplication standard
+      source: manifesto dry
+    - name: only-what-it-needs
+      purpose: boundary and interface discipline
+      source: manifesto only-what-it-needs
+
+  executor:
+    - name: cargo-cult-science
+      purpose: evidence and verification standard (report what ran and what did not)
+      source: manifesto cargo-cult-science
+    - name: stop-yapping
+      purpose: communication protocol
+      source: manifesto stop-yapping
+
+  suborchestrator:
+    - name: first-principles
+      purpose: reasoning methodology
+      source: manifesto first-principles
+    - name: stop-yapping
+      purpose: communication protocol
+      source: manifesto stop-yapping
+    - name: correct-by-construction
+      purpose: Rust correctness discipline (unit review)
+      source: manifesto correct-by-construction
+    - name: self-documenting-code
+      purpose: code legibility standard (unit review)
+      source: manifesto self-documenting-code
+    - name: kiss
+      purpose: decomplecting commands (unit review)
+      source: manifesto kiss
+    - name: yagni
+      purpose: scope discipline against imagined futures (unit review)
+      source: manifesto yagni
+    - name: agentic-delegation
+      purpose: orchestration operating model
+      source: skill orchestration:agentic-delegation
+    - name: check-back
+      purpose: wakes over pending work
+      source: skill agent-conduct:check-back
+    - name: decide-while-away
+      purpose: decisions while the owner is away
+      source: skill agent-conduct:decide-while-away
+    - name: git-etiquette
+      purpose: version-control conduct
+      source: skill agent-conduct:git-etiquette
+
+  maximalist-reviewer:
+    - name: cargo-cult-science
+      purpose: evidence and verification standard (review)
+      source: manifesto cargo-cult-science
+    - name: stop-yapping
+      purpose: communication protocol (review)
+      source: manifesto stop-yapping
+
+  general-purpose:
+    - name: first-principles
+      purpose: reasoning methodology
+      source: manifesto first-principles
+    - name: cargo-cult-science
+      purpose: evidence and verification standard
+      source: manifesto cargo-cult-science
+    - name: stop-yapping
+      purpose: communication protocol
+      source: manifesto stop-yapping
+
+  Explore:
+    - name: stop-yapping
+      purpose: communication protocol
+      source: manifesto stop-yapping
+    - name: cargo-cult-science
+      purpose: evidence and verification standard
+      source: manifesto cargo-cult-science
+
+  other:
+    - name: first-principles
+      purpose: reasoning methodology
+      source: manifesto first-principles
+    - name: stop-yapping
+      purpose: communication protocol
       source: manifesto stop-yapping
