@@ -319,7 +319,17 @@ provenance_form:
   example: '"— owner ruling, 2026-10-23, grounded on CLAUDE.md@<sha>"; "— measured, 2026-10-23".'
   pointer_durability: Every path a mark names is committed, or commit SHA. recon/ carries no provenance.
 
-products: []
+products:
+  - path: .manifestos.yaml
+    purpose: the manifesto stack of the lead and of each subagent
+  - path: .manifestos.interplay.md
+    purpose: the lead's resolution of the stack's tensions, loaded into its instructions
+  - path: .manifestos.commitments.md
+    purpose: the lead's commitments per element, loaded into its instructions
+  - path: .manifestos.interplay.min.md
+    purpose: the interplay condensed to its rules, for the frugal load
+  - path: .manifestos.commitments.min.md
+    purpose: the commitments condensed to one line per element, for the frugal load
 
 retired: []
 
