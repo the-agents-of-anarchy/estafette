@@ -11,3 +11,5 @@ test:
     cargo test
 
 check: fmt-check clippy test
+
+mod remote
