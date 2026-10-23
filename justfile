@@ -1,19 +1,17 @@
-fmt:
-    cargo fmt --all
+# Root: a thin index. Every task lives in one module under just/; `just --list --list-submodules` shows all.
 
-fmt-check:
-    cargo fmt --all -- --check
+set shell := ["bash", "-euo", "pipefail", "-c"]
 
-clippy:
-    cargo clippy --all-targets -- -D warnings
+mod gate 'just/gate.just'
+mod records 'just/records.just'
+mod remote 'just/remote.just'
 
-test:
-    cargo test
+# `just records` runs records::check, the [default] recipe of that module.
+# `just check` is the one gate that CI, pre-commit and every commit call.
 
-check: fmt-check clippy test
+alias check := gate::check
 
-mod remote
-
-# Check every record against .claude/memento.yaml; pinned by the commit sha of the v0.10.0 tag.
-records:
-    uvx --from git+https://github.com/ryzhakar/memento@702292b203b84a32d5d001ee78e085a504545c57 memento check
+[doc('List every recipe of every module')]
+[private]
+default:
+    @just --list --list-submodules
