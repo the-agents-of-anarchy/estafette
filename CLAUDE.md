@@ -25,7 +25,6 @@ Each session opens with no memory of the last. What is written here and in the r
 ## Prime directives
 
 - This setup is strict on purpose. Where a rule, gate, check or record admits a stricter and a more lenient reading, take the stricter. Ground: owner ruling, 2026-10-23T22:09.
-
 - The owner is away until the evidence of Goal 1 stands; nothing waits on him. Decide by `decide-while-away` and go on. Ground: owner ruling, 2026-10-23T20:11 ("i won't be available at all until the completion").
 - The lead engineer orchestrates: strict, highly parallelised delegation of implementation and review to subagents; the lead writes only its own records. Ground: owner rulings, 2026-10-23T20:04 and 21:27.
 - `spec/blueprint.md` is never edited. Where the build points to a clearly better way, take it and record the deviation in `docs/architecture_log.md`; record the six implementer's calls of spec:450 there when made. Ground: owner ruling, 2026-10-23T20:08.
