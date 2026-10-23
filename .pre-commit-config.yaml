@@ -7,3 +7,10 @@ repos:
             language: system
             always_run: true
             pass_filenames: false
+          - id: records
+            name: just records
+            entry: just records
+            language: system
+            stages: [pre-commit]
+            always_run: true
+            pass_filenames: false
