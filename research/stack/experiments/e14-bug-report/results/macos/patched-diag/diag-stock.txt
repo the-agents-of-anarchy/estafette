@@ -1,0 +1,13 @@
+HOLDIAG 1792531687962 sleep_backoff url=http://127.0.0.1:58298/ delay=15.051149ms queue_len=51
+HOLDIAG 1792531687967 try_send_datagram Full url=http://127.0.0.1:58298/ queue_len=64 max=64
+HOLDIAG 1792531687967 RelayActor BLOCKED: datagram_send_fut set, no datagram from any relay is taken until it completes
+HOLDIAG 1792531687989 sleep_backoff url=http://127.0.0.1:58298/ delay=31.021087ms queue_len=64
+HOLDIAG 1792531688022 sleep_backoff url=http://127.0.0.1:58298/ delay=46.857961ms queue_len=64
+HOLDIAG 1792531688072 sleep_backoff url=http://127.0.0.1:58298/ delay=123.038942ms queue_len=64
+HOLDIAG 1792531688196 sleep_backoff url=http://127.0.0.1:58298/ delay=289.992173ms queue_len=64
+HOLDIAG 1792531688489 sleep_backoff url=http://127.0.0.1:58298/ delay=480.333547ms queue_len=64
+HOLDIAG 1792531688971 sleep_backoff url=http://127.0.0.1:58298/ delay=1.171641629s queue_len=64
+HOLDIAG 1792531690144 sleep_backoff url=http://127.0.0.1:58298/ delay=2.529565143s queue_len=64
+HOLDIAG 1792531692676 sleep_backoff url=http://127.0.0.1:58298/ delay=3.654313883s queue_len=64
+HOLDIAG 1792531696333 sleep_backoff url=http://127.0.0.1:58298/ delay=6.397236186s queue_len=64
+HOLDIAG 1792531702732 sleep_backoff url=http://127.0.0.1:58298/ delay=18.605473217s queue_len=64

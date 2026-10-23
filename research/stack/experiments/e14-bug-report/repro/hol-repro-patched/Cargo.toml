@@ -1,0 +1,22 @@
+[package]
+name = "hol-repro-patched"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# DIAGNOSTIC: the repro of ../hol-repro against a vendored iroh 1.3.0 carrying hol-iroh-1.3.0.patch
+# (queue/blocked-state logging via HOL_DIAG=1, candidate fixes via HOL_FIX=drain|drop). Run ./vendor.sh first.
+[[bin]]
+name = "hol-repro-patched"
+path = "../hol-repro/src/main.rs"
+
+[workspace]
+
+[dependencies]
+iroh = "=1.3.0"
+iroh-relay = { version = "=1.3.0", features = ["server"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[patch.crates-io]
+iroh = { path = "vendor/iroh-1.3.0" }

@@ -1,0 +1,10 @@
+RESULT PASS burst=0 kill=true never_up=false failed_dials=0 first_ok_after_burst_ms=Some(0) wait_secs=15
+RESULT PASS burst=0 kill=true never_up=false failed_dials=0 first_ok_after_burst_ms=Some(0) wait_secs=15
+RESULT PASS burst=0 kill=true never_up=false failed_dials=0 first_ok_after_burst_ms=Some(0) wait_secs=15
+RESULT PASS burst=0 kill=true never_up=false failed_dials=0 first_ok_after_burst_ms=Some(0) wait_secs=15
+RESULT PASS burst=0 kill=true never_up=false failed_dials=0 first_ok_after_burst_ms=Some(0) wait_secs=15
+RESULT PASS burst=0 kill=true never_up=false failed_dials=0 first_ok_after_burst_ms=Some(0) wait_secs=15
+RESULT PASS burst=0 kill=true never_up=false failed_dials=0 first_ok_after_burst_ms=Some(0) wait_secs=15
+RESULT PASS burst=0 kill=true never_up=false failed_dials=0 first_ok_after_burst_ms=Some(0) wait_secs=15
+RESULT PASS burst=0 kill=true never_up=false failed_dials=0 first_ok_after_burst_ms=Some(0) wait_secs=15
+RESULT PASS burst=0 kill=true never_up=false failed_dials=0 first_ok_after_burst_ms=Some(0) wait_secs=15

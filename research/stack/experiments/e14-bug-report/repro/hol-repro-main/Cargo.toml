@@ -1,0 +1,18 @@
+[package]
+name = "hol-repro-main"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Same source file as ../hol-repro, built against iroh main (1.4.0) at a pinned revision.
+[[bin]]
+name = "hol-repro-main"
+path = "../hol-repro/src/main.rs"
+
+[workspace]
+
+[dependencies]
+iroh = { git = "https://github.com/n0-computer/iroh", rev = "55908a5809b61c72ec8deeff024038f4a9d68ab7" }
+iroh-relay = { git = "https://github.com/n0-computer/iroh", rev = "55908a5809b61c72ec8deeff024038f4a9d68ab7", features = ["server"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

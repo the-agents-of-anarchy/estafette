@@ -1,0 +1,43 @@
+T +0ms setup done: x_home=[RelayUrl("http://127.0.0.1:60927/")] y_home=[RelayUrl("http://127.0.0.1:60927/")] r1_up=true
+T +6ms pre-kill x->y ok in 6ms
+T +6ms R1 shut down
+T +1009ms burst of 200 connect attempts toward the ghost (addr id + R1 url)
+T +4012ms x->y FAIL (0ms after burst): timeout after 3s
+T +8016ms x->y FAIL (4003ms after burst): timeout after 3s
+T +12020ms x->y FAIL (8007ms after burst): timeout after 3s
+T +16026ms x->y FAIL (12013ms after burst): timeout after 3s
+T +20032ms x->y FAIL (16019ms after burst): timeout after 3s
+T +24037ms x->y FAIL (20025ms after burst): timeout after 3s
+T +28043ms x->y FAIL (24030ms after burst): timeout after 3s
+T +32050ms x->y FAIL (28036ms after burst): timeout after 3s
+T +36053ms x->y FAIL (32041ms after burst): timeout after 3s
+T +40058ms x->y FAIL (36046ms after burst): timeout after 3s
+T +44063ms x->y FAIL (40050ms after burst): timeout after 3s
+T +48069ms x->y FAIL (44056ms after burst): timeout after 3s
+T +52075ms x->y FAIL (48062ms after burst): timeout after 3s
+T +56081ms x->y FAIL (52068ms after burst): timeout after 3s
+T +60085ms x->y FAIL (56072ms after burst): timeout after 3s
+T +64090ms x->y FAIL (60078ms after burst): timeout after 3s
+T +68094ms x->y FAIL (64082ms after burst): timeout after 3s
+T +72101ms x->y FAIL (68087ms after burst): timeout after 3s
+T +76105ms x->y FAIL (72092ms after burst): timeout after 3s
+T +80110ms x->y FAIL (76097ms after burst): timeout after 3s
+T +84117ms x->y FAIL (80103ms after burst): timeout after 3s
+T +88120ms x->y FAIL (84109ms after burst): timeout after 3s
+T +92126ms x->y FAIL (88113ms after burst): timeout after 3s
+T +96133ms x->y FAIL (92119ms after burst): timeout after 3s
+T +100138ms x->y FAIL (96124ms after burst): timeout after 3s
+T +104142ms x->y FAIL (100129ms after burst): timeout after 3s
+T +108146ms x->y FAIL (104134ms after burst): timeout after 3s
+T +112150ms x->y FAIL (108137ms after burst): timeout after 3s
+T +116154ms x->y FAIL (112143ms after burst): timeout after 3s
+T +120161ms x->y FAIL (116147ms after burst): timeout after 3s
+T +124167ms x->y FAIL (120154ms after burst): timeout after 3s
+T +128173ms x->y FAIL (124160ms after burst): timeout after 3s
+T +132180ms x->y FAIL (128166ms after burst): timeout after 3s
+T +136183ms x->y FAIL (132170ms after burst): timeout after 3s
+T +140189ms x->y FAIL (136176ms after burst): timeout after 3s
+T +144196ms x->y FAIL (140182ms after burst): timeout after 3s
+T +148203ms x->y FAIL (144188ms after burst): timeout after 3s
+T +152209ms x->y FAIL (148195ms after burst): timeout after 3s
+RESULT FAIL burst=200 kill=true never_up=false failed_dials=38 first_ok_after_burst_ms=None wait_secs=150

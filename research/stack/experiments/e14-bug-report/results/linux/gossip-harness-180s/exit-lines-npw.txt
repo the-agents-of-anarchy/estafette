@@ -1,0 +1,3 @@
+member-M1.log:2026-10-20T21:16:43.218926Z DEBUG endpoint{id=66be7e332c}:relay-actor:active-relay{url=http://127.0.0.1:37629/}:dialing: iroh::socket::transports::relay::actor: Inactive, exiting. RELAY_INACTIVE_CLEANUP_TIME=60s
+member-M2.log:2026-10-20T21:16:45.054619Z DEBUG endpoint{id=0b513ad9b4}:relay-actor:active-relay{url=http://127.0.0.1:37629/}:dialing: iroh::socket::transports::relay::actor: Inactive, exiting. RELAY_INACTIVE_CLEANUP_TIME=60s
+member-M3.log:2026-10-20T21:16:58.213028Z DEBUG endpoint{id=91a28a0b74}:relay-actor:active-relay{url=http://127.0.0.1:37629/}:dialing: iroh::socket::transports::relay::actor: Inactive, exiting. RELAY_INACTIVE_CLEANUP_TIME=60s

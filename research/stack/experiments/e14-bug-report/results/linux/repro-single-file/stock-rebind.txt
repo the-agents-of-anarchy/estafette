@@ -1,0 +1,3 @@
+RESULT PASS burst=200 kill=true never_up=false failed_dials=0 first_ok_after_burst_ms=Some(0) wait_secs=15
+RESULT FAIL burst=200 kill=true never_up=false failed_dials=1 first_ok_after_burst_ms=Some(5446) wait_secs=15
+RESULT FAIL burst=200 kill=true never_up=false failed_dials=1 first_ok_after_burst_ms=Some(5454) wait_secs=15

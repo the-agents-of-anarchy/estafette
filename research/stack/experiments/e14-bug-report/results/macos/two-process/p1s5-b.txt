@@ -1,0 +1,54 @@
+SETUP x_home=[RelayUrl("http://127.0.0.1:54122/")] y_home=[RelayUrl("http://127.0.0.1:54122/")] p_home=[RelayUrl("http://127.0.0.1:54121/")] variant=p1s5
+PRE dial x->y ok=true ms=5
+KILL t=0
+DIAL t=5 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=1007 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=2012 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=3015 x->y ok=true ms=5  | y->x ok=true ms=4 
+DIAL t=4018 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=5020 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=6022 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=7025 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=8028 x->y ok=true ms=5  | y->x ok=true ms=4 
+DIAL t=9030 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=10033 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=11037 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=12040 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=13043 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=14046 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=15049 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=16053 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=17057 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=18060 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=19064 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=20069 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=21072 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=22076 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=23080 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=24083 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=25087 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=26091 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=27093 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=28097 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=29101 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=30105 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=31108 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=32110 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=33114 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=34118 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=35122 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=36125 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=37129 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=38133 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=39136 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=40140 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=41144 x->y ok=true ms=5  | y->x ok=true ms=4 
+DIAL t=42148 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=43152 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=44155 x->y ok=true ms=5  | y->x ok=true ms=4 
+DIAL t=45158 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=46160 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=47164 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=48166 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=49168 x->y ok=true ms=4  | y->x ok=true ms=4 
+SUMMARY variant=p1s5 first_fail_ms=None recovered_ms=None

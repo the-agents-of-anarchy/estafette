@@ -1,0 +1,33 @@
+SETUP x_home=[RelayUrl("http://127.0.0.1:54202/")] y_home=[RelayUrl("http://127.0.0.1:54202/")] p_home=[RelayUrl("http://127.0.0.1:54201/")] variant=p1rm
+PRE dial x->y ok=true ms=5
+KILL t=0
+DIAL t=5 x->y ok=true ms=4  | y->x ok=true ms=4 
+RM x t=501
+DIAL t=1010 x->y ok=true ms=5  | y->x ok=true ms=4 
+DIAL t=2010 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=3013 x->y ok=true ms=5  | y->x ok=true ms=4 
+DIAL t=4016 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=5018 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=6021 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=7023 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=8024 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=9026 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=10028 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=11030 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=12031 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=13034 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=14036 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=15039 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=16042 x->y ok=true ms=5  | y->x ok=true ms=4 
+DIAL t=20041 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=23045 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=26047 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=29050 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=32053 x->y ok=false ms=3000 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=35055 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=38058 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=41063 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=44067 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=47069 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=50073 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+SUMMARY variant=p1rm first_fail_ms=Some(20041) recovered_ms=None

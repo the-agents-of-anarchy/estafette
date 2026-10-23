@@ -1,0 +1,42 @@
+| Variant | Condition | Measure | min | median | max | n |
+|---|---|---|---|---|---|---|
+| A | ext: no probers, 9 runs cut to 88 s | M2-M3 longest HB gap (ms; max of both directions) | 1089 | 81528 | 84088 | 4/4 |
+| A | ext: no probers, 9 runs cut to 88 s | M2-M3 stalled (gap >= 5 s), runs | - | - | - | 3/4 |
+| A | ext: no probers, 9 runs cut to 88 s | M2-M3 stall onset (ms after kill; last HB before the gap) | 3912 | 6013 | 6930 | 3/4 |
+| A | ext: no probers, 9 runs cut to 88 s | M2-M3 flowing again at window end, of stalled runs | - | - | - | 0/3 |
+| A | ext: no probers, 9 runs cut to 88 s | M2-M3 resume time (ms after kill) | - | - | - | 0/4 |
+| A | ext: no probers, 9 runs cut to 88 s | M1 re-home (ms after kill; watch_addr lists only R2) | 40167 | 43570 | 46430 | 4/4 |
+| A | ext: no probers, 9 runs cut to 88 s | M1 HB pairs stalled (4 per run) | - | - | - | 12/16 |
+| A | ext: no probers, 9 runs cut to 88 s | M1 HB pairs flowing again at window end, of stalled | - | - | - | 0/12 |
+| A | ext: no probers, 9 runs cut to 88 s | M1 HB first resume (ms after kill; earliest pair per run) | - | - | - | 0/4 |
+| A | ext: probers, 5 runs cut to 88 s | M2-M3 longest HB gap (ms; max of both directions) | 77342 | 78114 | 81269 | 4/4 |
+| A | ext: probers, 5 runs cut to 88 s | M2-M3 stalled (gap >= 5 s), runs | - | - | - | 4/4 |
+| A | ext: probers, 5 runs cut to 88 s | M2-M3 stall onset (ms after kill; last HB before the gap) | 6731 | 9885 | 10658 | 4/4 |
+| A | ext: probers, 5 runs cut to 88 s | M2-M3 flowing again at window end, of stalled runs | - | - | - | 0/4 |
+| A | ext: probers, 5 runs cut to 88 s | M2-M3 resume time (ms after kill) | - | - | - | 0/4 |
+| A | ext: probers, 5 runs cut to 88 s | M1 re-home (ms after kill; watch_addr lists only R2) | 38487 | 41979 | 44672 | 4/4 |
+| A | ext: probers, 5 runs cut to 88 s | M1 HB pairs stalled (4 per run) | - | - | - | 16/16 |
+| A | ext: probers, 5 runs cut to 88 s | M1 HB pairs flowing again at window end, of stalled | - | - | - | 0/16 |
+| A | ext: probers, 5 runs cut to 88 s | M1 HB first resume (ms after kill; earliest pair per run) | - | - | - | 0/4 |
+| A | ext: probers, 5 runs cut to 88 s | fresh dial by id to M1 ok again (ms after kill; earlier of M2, M3) | 74255 | 74255 | 74255 | 1/4 |
+| A | ext: probers, 5 runs cut to 88 s | fresh dial M2-M3 ok again (ms after kill; either direction) | 76613 | 80314 | 87313 | 4/4 |
+| A | supp: no probers, 180 s | M2-M3 longest HB gap (ms; max of both directions) | 1089 | 173528 | 176088 | 4/4 |
+| A | supp: no probers, 180 s | M2-M3 stalled (gap >= 5 s), runs | - | - | - | 3/4 |
+| A | supp: no probers, 180 s | M2-M3 stall onset (ms after kill; last HB before the gap) | 3912 | 6013 | 6930 | 3/4 |
+| A | supp: no probers, 180 s | M2-M3 flowing again at window end, of stalled runs | - | - | - | 0/3 |
+| A | supp: no probers, 180 s | M2-M3 resume time (ms after kill) | - | - | - | 0/4 |
+| A | supp: no probers, 180 s | M1 re-home (ms after kill; watch_addr lists only R2) | 40167 | 43570 | 46430 | 4/4 |
+| A | supp: no probers, 180 s | M1 HB pairs stalled (4 per run) | - | - | - | 12/16 |
+| A | supp: no probers, 180 s | M1 HB pairs flowing again at window end, of stalled | - | - | - | 0/12 |
+| A | supp: no probers, 180 s | M1 HB first resume (ms after kill; earliest pair per run) | - | - | - | 0/4 |
+| A | supp: probers, 180 s | M2-M3 longest HB gap (ms; max of both directions) | 169342 | 170114 | 173269 | 4/4 |
+| A | supp: probers, 180 s | M2-M3 stalled (gap >= 5 s), runs | - | - | - | 4/4 |
+| A | supp: probers, 180 s | M2-M3 stall onset (ms after kill; last HB before the gap) | 6731 | 9885 | 10658 | 4/4 |
+| A | supp: probers, 180 s | M2-M3 flowing again at window end, of stalled runs | - | - | - | 0/4 |
+| A | supp: probers, 180 s | M2-M3 resume time (ms after kill) | - | - | - | 0/4 |
+| A | supp: probers, 180 s | M1 re-home (ms after kill; watch_addr lists only R2) | 38487 | 41979 | 44672 | 4/4 |
+| A | supp: probers, 180 s | M1 HB pairs stalled (4 per run) | - | - | - | 16/16 |
+| A | supp: probers, 180 s | M1 HB pairs flowing again at window end, of stalled | - | - | - | 0/16 |
+| A | supp: probers, 180 s | M1 HB first resume (ms after kill; earliest pair per run) | - | - | - | 0/4 |
+| A | supp: probers, 180 s | fresh dial by id to M1 ok again (ms after kill; earlier of M2, M3) | 74255 | 150547 | 163996 | 4/4 |
+| A | supp: probers, 180 s | fresh dial M2-M3 ok again (ms after kill; either direction) | 76613 | 80314 | 87313 | 4/4 |

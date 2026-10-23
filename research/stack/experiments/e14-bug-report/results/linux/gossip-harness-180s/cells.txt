@@ -1,0 +1,9 @@
+=== cell a 1 w start 20:54:00 load 0.16 0.18 0.09 2/152 27878
+exit=0 CELLWALL 554.45 s
+=== cell a 1 npw start 21:03:14 load 0.23 0.15 0.10 1/149 28373
+exit=0 CELLWALL 554.55 s
+=== diag a 1 w run0=101 start 21:12:29 load 0.02 0.06 0.08 1/150 28563
+exit=0 CELLWALL 184.98 s
+=== diag a 1 npw run0=101 start 21:15:34 load 0.48 0.24 0.14 3/148 29011
+exit=0 CELLWALL 184.56 s
+ALLDONE

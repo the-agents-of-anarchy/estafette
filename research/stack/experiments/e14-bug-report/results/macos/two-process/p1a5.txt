@@ -1,0 +1,47 @@
+SETUP x_home=[RelayUrl("http://127.0.0.1:53780/")] y_home=[RelayUrl("http://127.0.0.1:53780/")] p_home=[RelayUrl("http://127.0.0.1:53779/")] variant=p1a5
+PRE dial x->y ok=true ms=5
+KILL t=0
+DIAL t=5 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=1010 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=2011 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=3014 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=4019 x->y ok=true ms=8  | y->x ok=true ms=7 
+ADDR_REMOVED t=5004
+DIAL t=5017 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=6020 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=7021 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=8024 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=9028 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=10033 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=11036 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=12041 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=13043 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=14047 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=15051 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=16054 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=20054 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=23058 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=26061 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=29064 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=32069 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=35071 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=38072 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=41076 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=44081 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=47083 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=50085 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=53089 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=56092 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=59095 x->y ok=false ms=3000 timeout3s | y->x ok=false ms=3000 timeout3s
+DIAL t=62097 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=65101 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=68105 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=71107 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=74109 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=77114 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=80118 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=83120 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=86122 x->y ok=false ms=3000 timeout3s | y->x ok=false ms=3000 timeout3s
+DIAL t=89125 x->y ok=false ms=3000 timeout3s | y->x ok=false ms=3000 timeout3s
+DIAL t=92126 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3000 timeout3s
+SUMMARY variant=p1a5 first_fail_ms=Some(20054) recovered_ms=None

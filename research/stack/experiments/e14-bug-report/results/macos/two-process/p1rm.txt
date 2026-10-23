@@ -1,0 +1,37 @@
+SETUP x_home=[RelayUrl("http://127.0.0.1:53607/")] y_home=[RelayUrl("http://127.0.0.1:53607/")] p_home=[RelayUrl("http://127.0.0.1:53606/")] variant=p1rm
+PRE dial x->y ok=true ms=5
+KILL t=0
+DIAL t=5 x->y ok=true ms=4  | y->x ok=true ms=5 
+RM x t=503
+DIAL t=1008 x->y ok=true ms=5  | y->x ok=true ms=4 
+DIAL t=2010 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=3013 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=4014 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=5016 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=6018 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=7020 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=8021 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=9023 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=10025 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=11028 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=12031 x->y ok=true ms=5  | y->x ok=true ms=4 
+DIAL t=13033 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=14035 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=15040 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=16043 x->y ok=true ms=4  | y->x ok=true ms=4 
+DIAL t=20044 x->y ok=false ms=3003 timeout3s | y->x ok=false ms=3003 timeout3s
+DIAL t=23047 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=26049 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=29052 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=32056 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=35059 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=38061 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=41064 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=44067 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=47070 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=50072 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=53073 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=56076 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=59079 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=62082 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+SUMMARY variant=p1rm first_fail_ms=Some(20044) recovered_ms=None

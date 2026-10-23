@@ -1,0 +1,8 @@
+member-M1.log:2026-10-20T21:13:53.844580Z DEBUG endpoint{id=66be7e332c}:relay-actor:active-relay{url=http://127.0.0.1:35675/}:dialing: iroh::socket::transports::relay::actor: Inactive, exiting. RELAY_INACTIVE_CLEANUP_TIME=60s
+member-M1.log:2026-10-20T21:13:53.845097Z  WARN endpoint{id=66be7e332c}:relay-actor: iroh::socket::transports::relay::actor: Dropped datagram(s): ActiveRelayActor closed. url=RelayUrl("http://127.0.0.1:35675/")
+member-M1.log:2026-10-20T21:15:00.151378Z DEBUG endpoint{id=66be7e332c}:relay-actor:active-relay{url=http://127.0.0.1:35675/}:dialing: iroh::socket::transports::relay::actor: Inactive, exiting. RELAY_INACTIVE_CLEANUP_TIME=60s
+member-M1.log:2026-10-20T21:15:00.151731Z  WARN endpoint{id=66be7e332c}:relay-actor: iroh::socket::transports::relay::actor: Dropped datagram(s): ActiveRelayActor closed. url=RelayUrl("http://127.0.0.1:35675/")
+member-M2.log:2026-10-20T21:13:35.335963Z DEBUG endpoint{id=0b513ad9b4}:relay-actor:active-relay{url=http://127.0.0.1:35675/}:dialing: iroh::socket::transports::relay::actor: Inactive, exiting. RELAY_INACTIVE_CLEANUP_TIME=60s
+member-M2.log:2026-10-20T21:13:35.336440Z  WARN endpoint{id=0b513ad9b4}:relay-actor: iroh::socket::transports::relay::actor: Dropped datagram(s): ActiveRelayActor closed. url=RelayUrl("http://127.0.0.1:35675/")
+member-M3.log:2026-10-20T21:13:50.693983Z DEBUG endpoint{id=91a28a0b74}:relay-actor:active-relay{url=http://127.0.0.1:35675/}:dialing: iroh::socket::transports::relay::actor: Inactive, exiting. RELAY_INACTIVE_CLEANUP_TIME=60s
+member-M3.log:2026-10-20T21:13:50.694436Z  WARN endpoint{id=91a28a0b74}:relay-actor: iroh::socket::transports::relay::actor: Dropped datagram(s): ActiveRelayActor closed. url=RelayUrl("http://127.0.0.1:35675/")

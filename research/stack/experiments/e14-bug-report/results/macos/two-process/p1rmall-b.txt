@@ -1,0 +1,34 @@
+SETUP x_home=[RelayUrl("http://127.0.0.1:54283/")] y_home=[RelayUrl("http://127.0.0.1:54283/")] p_home=[RelayUrl("http://127.0.0.1:54282/")] variant=p1rmall
+PRE dial x->y ok=true ms=5
+KILL t=0
+DIAL t=6 x->y ok=true ms=5  | y->x ok=true ms=5 
+RM x t=502
+RM y t=502
+DIAL t=1010 x->y ok=true ms=8  | y->x ok=true ms=8 
+DIAL t=2011 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=3013 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=4017 x->y ok=true ms=8  | y->x ok=true ms=7 
+DIAL t=5017 x->y ok=true ms=6  | y->x ok=true ms=6 
+DIAL t=6018 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=7020 x->y ok=true ms=4  | y->x ok=true ms=5 
+DIAL t=8020 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=9022 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=10023 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=11026 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=12027 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=13030 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=14031 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=15033 x->y ok=true ms=5  | y->x ok=true ms=5 
+DIAL t=16034 x->y ok=true ms=5  | y->x ok=true ms=4 
+DIAL t=20033 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=23036 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=26039 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=29042 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=32046 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=35050 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=38054 x->y ok=false ms=3002 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=41058 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=44060 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+DIAL t=47064 x->y ok=false ms=3000 timeout3s | y->x ok=false ms=3002 timeout3s
+DIAL t=50067 x->y ok=false ms=3001 timeout3s | y->x ok=false ms=3001 timeout3s
+SUMMARY variant=p1rmall first_fail_ms=Some(20033) recovered_ms=None
