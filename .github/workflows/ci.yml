@@ -9,36 +9,6 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-              with:
-                  fetch-depth: 0
             - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3 # v4.0.0
             - run: rustup toolchain install
-            - name: Select the commits of this push or pull request
-              id: range
-              env:
-                  EVENT: ${{ github.event_name }}
-                  BEFORE: ${{ github.event.before }}
-                  PR_BASE: ${{ github.event.pull_request.base.sha }}
-                  PR_HEAD: ${{ github.event.pull_request.head.sha }}
-                  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-                  SHA: ${{ github.sha }}
-              run: |
-                  if [ "$EVENT" = pull_request ]; then
-                      range="$PR_BASE..$PR_HEAD"
-                  elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] \
-                      && git cat-file -e "$BEFORE^{commit}" 2>/dev/null \
-                      && git merge-base --is-ancestor "$BEFORE" "$SHA"; then
-                      range="$BEFORE..$SHA"
-                  elif [ "$BEFORE" = 0000000000000000000000000000000000000000 ] \
-                      && base="$(git merge-base "origin/$DEFAULT_BRANCH" "$SHA")" && [ "$base" != "$SHA" ]; then
-                      echo "New branch: checking every commit since its merge-base with $DEFAULT_BRANCH"
-                      range="$base..$SHA"
-                  else
-                      echo "No usable previous tip (force push, missing before, or no new commits): checking the tip alone"
-                      range="$SHA^..$SHA"
-                  fi
-                  echo "range=$range" >> "$GITHUB_OUTPUT"
-            - name: Gate and records on every commit of the range
-              env:
-                  RANGE: ${{ steps.range.outputs.range }}
-              run: just ci::each-commit "$RANGE"
+            - run: just check

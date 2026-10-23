@@ -2,7 +2,6 @@
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
-mod ci 'just/ci.just'
 mod gate 'just/gate.just'
 mod records 'just/records.just'
 mod remote 'just/remote.just'
