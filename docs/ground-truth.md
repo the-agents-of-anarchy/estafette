@@ -18,7 +18,7 @@ The problem as given to the lead engineer: what estafette is, where its document
 | experiments e1-e25, whole, with their one-page index | `research/stack/experiments/`, `research/stack/experiments-index.md` |
 | where moved material came from and which references dangle | `docs/reference/provenance.md` |
 | the Rust standard: toolchain, lint table, panic and trait rules | `docs/reference/rust-bootstrap.md` |
-| the lab for multi-machine tests | `docs/reference/lab.md`, `.claude/skills/run-hetzner-lab/SKILL.md`, `remote.just` |
+| the lab for multi-machine tests | `docs/reference/lab.md`, `.claude/skills/run-hetzner-lab/SKILL.md`, `just/remote.just`; tasks are `just` modules under `just/` (`just --list --list-submodules`) |
 | manifesto stack of the lead and of each subagent | `.manifestos.yaml`; the owner compiles its interplay and commitments himself (owner ruling, 2026-10-23T21:19) |
 | records: schema, map, conventions, architecture log, facts, measurements, journal | `.claude/memento.yaml`, `.claude/memento-map.md`, `docs/conventions.md`, `docs/architecture_log.md`, `docs/capabilities.md`, `docs/measurements.yaml`, `docs/orchestration_log/` |
 
