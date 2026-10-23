@@ -15,11 +15,21 @@ Each session opens with no memory of the last. What is written here and in the r
 
 ## Goals
 
-None stated by the owner.
+### Goal 1 · build estafette · finite · open
+
+- object: The repository holds what Part 3 of `spec/blueprint.md` specifies for the binary (`core/`) and the Claude Code bridge (`bridges/claude/`), built as written, with nothing Part 2 rejects or defers; the pi bridge is deferred.
+- evidence: `docs/capabilities.md` states, dated and with the commit sha, that each of the 28 tests of spec 3.15 passes and how it ran, and that the bridge injects one notice per inbox frame and its doctor passes; at that sha `just check` and `just records` exit 0.
+- ground: "lot's of real or simulated machines of mine. public release is from day one, but we reserve the right to evolve rapindly [sic] and break anything we want before v1.0.0." — owner ruling, 2026-10-23T20:06.
+- constraints: The prime directives below. The lead picks its own git workflow within `agent-conduct:git-etiquette` (owner ruling, 2026-10-23T20:11). Order: core before the bridge, derived from spec:484 (the bridge reaches the binary only through the inbox socket), not ruled. Review point: none before the evidence above; the owner is absent until completion (owner ruling, 2026-10-23T20:11). Priority among goals: one goal, none needed.
 
 ## Prime directives
 
-None stated by the owner.
+- The owner is away until the evidence of Goal 1 stands; nothing waits on him. Decide by `decide-while-away` and go on. Ground: owner ruling, 2026-10-23T20:11 ("i won't be available at all until the completion").
+- The lead engineer orchestrates: strict, highly parallelised delegation of implementation and review to subagents; the lead writes only its own records. Ground: owner rulings, 2026-10-23T20:04 and 21:27.
+- `spec/blueprint.md` is never edited. Where the build points to a clearly better way, take it and record the deviation in `docs/architecture_log.md`; record the six implementer's calls of spec:450 there when made. Ground: owner ruling, 2026-10-23T20:08.
+- Every commit passes `just check`. Ground: owner ruling, 2026-10-23T20:12.
+- Lab servers are free to use, never to forget: reuse a machine before creating one, list before creating, tear down at the end of each stretch, backstop loaded first. Owner: "free use, but with responsible resource management: reuse machines, but do not forget about them, leaving them to drain my account." Ground: owner ruling, 2026-10-23T20:10.
+- Nobody watches upstream; the pins and the patch of spec 2.12 stay as written until completion. Ground: owner ruling, 2026-10-23T20:53.
 
 ## Pointers
 
