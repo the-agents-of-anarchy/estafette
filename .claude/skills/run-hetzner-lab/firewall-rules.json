@@ -1,0 +1,6 @@
+[
+  {"direction": "in", "protocol": "tcp", "port": "22", "source_ips": ["0.0.0.0/0", "::/0"], "description": "ssh"},
+  {"direction": "in", "protocol": "tcp", "port": "80", "source_ips": ["0.0.0.0/0", "::/0"], "description": "relay http"},
+  {"direction": "in", "protocol": "tcp", "port": "443", "source_ips": ["0.0.0.0/0", "::/0"], "description": "relay https"},
+  {"direction": "in", "protocol": "udp", "port": "1-65535", "source_ips": ["0.0.0.0/0", "::/0"], "description": "iroh direct and relay address discovery (7842)"}
+]

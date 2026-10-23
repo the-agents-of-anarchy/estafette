@@ -1,0 +1,55 @@
+#cloud-config
+# estafette lab server setup (owner's standing order 2026-10-20: uv, just, cargo-binstall,
+# and the full Rust toolchain on every lab server).
+# One non-root user "lab" for the sibling Claude Code session; it gets no sudo.
+# Root keeps key-only SSH for administration.
+# fill-setup.py puts the public half of ~/.ssh/estafette_lab in place of the key placeholder
+# below, the channel of the repository's rust-toolchain.toml in place of the toolchain placeholder,
+# and the content of this skill's file in place of each FILE: line.
+users:
+  - default
+  - name: lab
+    shell: /bin/bash
+    lock_passwd: true
+    ssh_authorized_keys:
+      - SSH_PUBLIC_KEY_PLACEHOLDER
+package_update: true
+package_upgrade: false
+packages:
+  - build-essential
+  - pkg-config
+  - git
+  - tmux
+  - jq
+  - mosh
+  - curl
+  - python3
+write_files:
+  - path: /etc/ssh/sshd_config.d/99-lab.conf
+    content: |
+      PasswordAuthentication no
+  - path: /home/lab/plugins.sh
+    owner: lab:lab
+    permissions: '0755'
+    defer: true
+    content: |
+      FILE:plugins.sh
+  - path: /home/lab/work/CLAUDE.md
+    owner: lab:lab
+    defer: true
+    content: |
+      FILE:lab-charter.md
+runcmd:
+  - systemctl restart ssh
+  - curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+  - curl --proto '=https' --tlsv1.2 -sSf https://just.systems/install.sh | bash -s -- --to /usr/local/bin
+  - su - lab -c 'curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile default --component rust-src --component rust-analyzer'
+  - su - lab -c 'rustup toolchain install RUST_TOOLCHAIN_PLACEHOLDER --profile default --component rust-src --component rust-analyzer'
+  - su - lab -c 'rustup default RUST_TOOLCHAIN_PLACEHOLDER'
+  - su - lab -c 'curl -L --proto =https --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash'
+  - su - lab -c 'curl -fsSL https://claude.ai/install.sh | bash'
+  - chown -R lab:lab /home/lab/work
+  - su - lab -c 'mkdir -p ~/work/results'
+  - su - lab -c 'bash ~/plugins.sh'
+  - su - lab -c 'cd ~/work && git init -q && git config user.name lab-sibling && git config user.email lab-sibling@estafette-lab.invalid'
+  - touch /var/lib/lab-setup-done
