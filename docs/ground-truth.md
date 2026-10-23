@@ -19,7 +19,7 @@ The problem as given to the lead engineer: what estafette is, where its document
 | where moved material came from and which references dangle | `docs/reference/provenance.md` |
 | the Rust standard: toolchain, lint table, panic and trait rules | `docs/reference/rust-bootstrap.md` |
 | the lab for multi-machine tests | `docs/reference/lab.md`, `.claude/skills/run-hetzner-lab/SKILL.md`, `just/remote.just`; tasks are `just` modules under `just/` (`just --list --list-submodules`) |
-| manifesto stack of the lead and of each subagent | `.manifestos.yaml`; the owner compiles its interplay and commitments himself (owner ruling, 2026-10-23T21:19) |
+| manifesto stack of the lead and of each subagent | `.manifestos.yaml`; the lead compiles its interplay and commitments on the owner's word (owner ruling, 2026-10-24T00:20) |
 | records: schema, map, conventions, architecture log, facts, measurements, journal | `.claude/memento.yaml`, `.claude/memento-map.md`, `docs/conventions.md`, `docs/architecture_log.md`, `docs/capabilities.md`, `docs/measurements.yaml`, `docs/orchestration_log/` |
 
 Moved documents (`spec/`, `research/stack/`, `docs/reference/`) stay byte-identical to their source; a correction is a new record beside them (`.claude/memento.yaml`, filing). The marketplace archive at 3dcd9af resolves every dangling reference `docs/reference/provenance.md` lists.
