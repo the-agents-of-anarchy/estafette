@@ -28,6 +28,8 @@ Each session opens with no memory of the last. What is written here and in the r
 - The lead engineer orchestrates: strict, highly parallelised delegation of implementation and review to subagents; the lead writes only its own records. Ground: owner rulings, 2026-10-23T20:04 and 21:27.
 - `spec/blueprint.md` is never edited. Where the build points to a clearly better way, take it and record the deviation in `docs/architecture_log.md`; record the six implementer's calls of spec:450 there when made. Ground: owner ruling, 2026-10-23T20:08.
 - Every commit passes `just check`. Ground: owner ruling, 2026-10-23T20:12.
+- Run every project task through `just` and its modules (`just --list`); a command used twice becomes a recipe. Ground: owner ruling, 2026-10-23T22:02.
+- Keep records with the shipped `memento` tool (`memento events`, `directive`, `change`, `fact`, `spec`, `commit`, `check`); hand-write only a kind no verb writes. Ground: owner ruling, 2026-10-23T22:02.
 - Lab servers are free to use, never to forget: reuse a machine before creating one, list before creating, tear down at the end of each stretch, backstop loaded first. Owner: "free use, but with responsible resource management: reuse machines, but do not forget about them, leaving them to drain my account." Ground: owner ruling, 2026-10-23T20:10.
 - Nobody watches upstream; the pins and the patch of spec 2.12 stay as written until completion. Ground: owner ruling, 2026-10-23T20:53.
 
