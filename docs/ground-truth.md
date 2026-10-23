@@ -26,7 +26,7 @@ Moved documents (`spec/`, `research/stack/`, `docs/reference/`) stay byte-identi
 
 ## Evaluation protocol
 
-- Gate: `just check` runs `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` on toolchain 1.99.1 (`rust-toolchain.toml`); `.github/workflows/ci.yml` runs it on every push and pull request, `.pre-commit-config.yaml` before every commit. Records: `just records` runs `memento check` pinned to 0.10.0.
+- Gate: `just check` runs `cargo fmt --all -- --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` on toolchain 1.99.1 (`rust-toolchain.toml`); `.github/workflows/ci.yml` runs it and `just records` on every commit of every push and pull request (`just ci::each-commit <range>`), `.pre-commit-config.yaml` runs both before every commit. Records: `just records` runs `memento check` pinned to 0.10.0.
 - Acceptance: the 28 tests of spec 3.15 (spec:1029-1056) and the 19 prohibitions of 3.16 (spec:1060-1078). Tests 3, 15, and 22-28 need a second machine.
 - Lab: Hetzner servers, no count cap (owner ruling, 2026-10-23T20:10), each reused when possible and created only after `just remote::list` and with the backstop loaded on the owner's Mac (`just remote::backstop-status`; loaded 2026-10-23T21:27); credentials live outside the repository. Read the skill before any `hcloud` command.
 

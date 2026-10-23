@@ -18,7 +18,7 @@ ground  owner ruling 2026-10-23
 
 ### commits
 when    committing or configuring pre-commit
-do      bump the version in the same commit as the change it describes; commit a delivery milestone unprompted; commit a spec or reference change before any agent transcribes from it; let every pre-commit hook run; configure pre-commit with `trailing-whitespace`, `end-of-file-fixer`, `check-yaml` and `check-added-large-files` beside `just check`
+do      bump the version in the same commit as the change it describes; commit a delivery milestone unprompted; commit a spec or reference change before any agent transcribes from it; let every pre-commit hook run; configure pre-commit with `trailing-whitespace`, `end-of-file-fixer`, `check-yaml`, `check-added-large-files` and `records` (`just records`) beside `just check`
 never   a version bump in a commit of its own; wait to be asked to commit; dispatch against uncommitted edits; `--no-verify` or any other skipped hook
 why     A version points at its content; uncommitted edits are invisible in every worktree; owner-mandated hooks bind.
 ground  owner ruling 2026-10-23
