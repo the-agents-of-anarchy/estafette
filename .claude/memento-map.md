@@ -14,3 +14,8 @@
 | docs/orchestration_log/history/{date}/failures*.md | failure | latent | diagnosed failures |
 | docs/orchestration_log/archive/ | archived | latent | out of force, kept |
 | docs/orchestration_log/recon/{date}/ | scratch | latent | drafts, claims, worker returns |
+| spec/ | spec | need | unbuilt-work specifications; the blueprint |
+| docs/measurements.yaml | measurement | need | performance readings with code sha and machine |
+| research/stack/experiments/ | experiment | latent | experiment bundles that chose the stack |
+| research/stack/ | research | latent | stack research ledger and reference, moved whole |
+| docs/reference/ | reference | latent | standards consumed; provenance and lab pointers |

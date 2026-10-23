@@ -82,10 +82,11 @@ kinds:
       word_cap words per entry outside INVALIDATES, which is never compressed.
       Oldest first. INVALIDATES is read before quoting any number.
     admission: >
-      A change to the system's core (what a record kind is; which homes and
-      shapes the checks accept; what each verb writes or refuses; how the schema
-      is read) that moved what is computed or runnable, from a shape the system
-      actually held. Written only after merge into main. Tooling, CLI surface,
+      A change to the system's core (the wire protocol and its framing; the
+      network and member model; how a message is signed, routed and answered;
+      what the core crate exposes to a bridge; how a result is measured) that
+      moved what is computed or runnable, from a shape the system actually
+      held. Written only after merge into main. Tooling, CLI surface,
       documentation, process, review outcomes and filing never qualify.
 
   schema:
@@ -124,9 +125,76 @@ kinds:
       What the system is and does. Refuses edit narration, decision history,
       process, status snapshots, and measurements (measurement).
 
+  spec:
+    home: spec/
+    tier: dossier
+    load: need
+    verification: grounded
+    format: >
+      One Markdown file per scope of unbuilt work, named for the scope. Each
+      decision stated once, naming the owner ruling or record it rests on.
+      The blueprint arrives from the owner whole and is never edited.
+    admission: >
+      Current specifications only: design of unbuilt work, owner rulings
+      folded in. Once built, a spec moves whole to archive. Refuses plans,
+      prompts, reviews and anything already built.
 
+  measurement:
+    home: docs/measurements.yaml
+    tier: dossier
+    load: need
+    verification: measured
+    format: >
+      YAML stream, one block-form document per entry, written and read only
+      through `memento measurement`, which enforces entry shape. Memory in
+      bytes, time in nanoseconds, each with its resolution; no floats.
+    admission: >
+      Every performance reading (latency, throughput, memory, disk, wall time)
+      from a run that actually executed, with code sha and machine. Refuses
+      arithmetic estimates and readings without code sha and machine. Other
+      records hold no measurement; they cite an entry by id, rarely.
 
+  experiment:
+    home: research/stack/experiments/
+    tier: dossier
+    load: latent
+    verification: measured
+    format: >
+      One bundle folder per experiment, named e<nn>-<slug>, holding its
+      method, its results as reported, its scripts and its tables, as moved
+      from the marketplace archive at 3dcd9af. The list of every experiment
+      is research/stack/experiments-index.md.
+    admission: >
+      Experiments run to choose the stack, with methods and results, moved
+      whole and never edited. New experiments join as new bundles. Refuses
+      performance readings of the built system (measurement).
 
+  research:
+    home: research/stack/
+    tier: dossier
+    load: latent
+    verification: measured
+    format: >
+      The stack research as moved whole from the marketplace archive at
+      3dcd9af: README, ledger, mechanic, parameters, plan, ground, index and
+      the experiments index. Where a bundle under experiments/ is covered by
+      both homes, the longer home (experiment) governs.
+    admission: >
+      The ledger of what the stack research found and chose, as written by
+      its authors. Moved whole and never edited; superseded by a new record,
+      not by correction. Refuses decisions about the built system (change)
+      and facts about it (fact).
+
+  reference:
+    home: docs/reference/
+    tier: dossier
+    load: latent
+    verification: owner-stated
+    admission: >
+      Standards and upstream specifications the project consumes, as owner
+      supplied them, and the pointer documents that say where moved material
+      came from (provenance) and what a facility is for (lab). Refuses the
+      project's reading of them (fact or frame). Superseded on owner's word.
 
   events:
     home: docs/orchestration_log/history/{date}/events*.md
@@ -194,6 +262,8 @@ events:
   receipt: events
   attenuation: events
   span-event: events
+  gate: events
+  review: events
   failure: failure
   change: change
 
@@ -218,6 +288,7 @@ filing:
   - Living records (charter, frame, directive, fact, map, schema) hold only what is true now. Correct in place; never append corrections; never describe themselves; what a file is lives in map.
   - A fact goes to fact, a behaviour it triggers to directive. One piece of knowledge may yield one entry in each; neither restates the other.
   - history/ holds dated journal records only. Transient orchestration artifacts go to recon/; session records point at recon paths, never copy them.
+  - Moved documents (spec, research, experiment, reference) stay byte-identical to their source; a correction is a new record beside them, never an edit.
   - Authored prose has no hard line wrapping; tables, fenced blocks and field-aligned entries keep their breaks.
 
 verification_depths:
@@ -254,11 +325,11 @@ retired: []
 
 project:
   ratified_on: '2026-10-22'
-  main_branch: integration/scaffold
+  main_branch: main
   record_space: docs/
   code_roots:
   - core
   history_start_file: .claude/memento.yaml
   measured_cli: ''
-  commit_type: docs
+  commit_type: docs(records)
   commit_subject_words: 9
