@@ -5,6 +5,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 mod gate 'just/gate.just'
 mod records 'just/records.just'
 mod remote 'just/remote.just'
+mod spec 'just/spec.just'
+mod dev 'just/dev.just'
 
 # `just records` runs records::check, the [default] recipe of that module.
 # `just check` is the one gate that CI, pre-commit and every commit call.
