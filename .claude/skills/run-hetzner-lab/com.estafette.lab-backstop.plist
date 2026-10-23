@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Template: replace every __HOME__ with the owner's home directory when installing (see SKILL.md). launchd expands no ~ or $HOME. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.estafette.lab-backstop</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>-I</string>
+    <string>__HOME__/.local/share/estafette/lab-backstop.py</string>
+    <string>check</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>HOME</key>
+    <string>__HOME__</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>3600</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>__HOME__/.local/state/estafette/backstop.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.local/state/estafette/backstop.err</string>
+</dict>
+</plist>
