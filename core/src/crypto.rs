@@ -2,7 +2,7 @@ use std::fmt;
 
 use iroh::{PublicKey, SecretKey, Signature};
 
-const KEY_LEN: usize = 32;
+pub const KEY_LEN: usize = 32;
 pub const MAC_LEN: usize = 32;
 const HOST_CERTIFICATE_PREFIX: &[u8] = b"estafette-host-cert-v1";
 const TOPIC_CONTEXT: &str = "messaging topic v1";
@@ -108,68 +108,116 @@ fn verify_under_prefix(
     }
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct NetworkKeys {
-    topic_id: [u8; KEY_LEN],
-    mac_key: [u8; KEY_LEN],
-    gate_key: [u8; KEY_LEN],
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct NetworkSecret([u8; KEY_LEN]);
+
+impl NetworkSecret {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; KEY_LEN]) -> Self {
+        Self(bytes)
+    }
 }
 
-impl fmt::Debug for NetworkKeys {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("NetworkKeys")
-            .finish_non_exhaustive()
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct MacKey([u8; KEY_LEN]);
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct GateKey([u8; KEY_LEN]);
+
+impl GateKey {
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; KEY_LEN] {
+        &self.0
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TopicId([u8; KEY_LEN]);
+
+impl TopicId {
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; KEY_LEN] {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Mac([u8; MAC_LEN]);
+
+impl Mac {
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; MAC_LEN]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; MAC_LEN] {
+        &self.0
+    }
+}
+
+macro_rules! debug_without_key_bytes {
+    ($($key_type:ident),*) => {$(
+        impl fmt::Debug for $key_type {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.debug_struct(stringify!($key_type)).finish_non_exhaustive()
+            }
+        }
+    )*};
+}
+
+debug_without_key_bytes!(NetworkSecret, MacKey, GateKey, NetworkKeys);
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct NetworkKeys {
+    topic_id: TopicId,
+    mac_key: MacKey,
+    gate_key: GateKey,
 }
 
 impl NetworkKeys {
     /// Derives the topic id, mac key and gate key from the network secret (spec 3.4).
     #[must_use]
-    pub fn derive(secret: &[u8; KEY_LEN]) -> Self {
+    pub fn derive(secret: &NetworkSecret) -> Self {
         Self {
-            topic_id: blake3::derive_key(TOPIC_CONTEXT, secret),
-            mac_key: blake3::derive_key(MAC_CONTEXT, secret),
-            gate_key: blake3::derive_key(GATE_CONTEXT, secret),
+            topic_id: TopicId(blake3::derive_key(TOPIC_CONTEXT, &secret.0)),
+            mac_key: MacKey(blake3::derive_key(MAC_CONTEXT, &secret.0)),
+            gate_key: GateKey(blake3::derive_key(GATE_CONTEXT, &secret.0)),
         }
     }
 
     /// Computes the keyed mac of a structure encoded with its mac field zeroed.
     #[must_use]
-    pub fn mac(&self, zeroed_encoding: &[u8]) -> [u8; MAC_LEN] {
-        *self.keyed_hash(zeroed_encoding).as_bytes()
+    pub fn mac(&self, zeroed_encoding: &[u8]) -> Mac {
+        Mac(*self.keyed_hash(zeroed_encoding).as_bytes())
     }
 
     /// Accepts the mac only when it equals the recomputed mac, compared in constant time.
     ///
     /// # Errors
     /// `CryptoError::MacMismatch` when the mac differs in any bit.
-    pub fn verify_mac(
-        &self,
-        zeroed_encoding: &[u8],
-        mac: &[u8; MAC_LEN],
-    ) -> Result<(), CryptoError> {
-        if self.keyed_hash(zeroed_encoding) == *mac {
+    pub fn verify_mac(&self, zeroed_encoding: &[u8], mac: &Mac) -> Result<(), CryptoError> {
+        if self.keyed_hash(zeroed_encoding) == mac.0 {
             Ok(())
         } else {
             Err(CryptoError::MacMismatch)
         }
     }
 
-    fn keyed_hash(&self, zeroed_encoding: &[u8]) -> blake3::Hash {
-        blake3::keyed_hash(&self.mac_key, zeroed_encoding)
-    }
-
     /// The gossip topic id of the network.
     #[must_use]
-    pub const fn topic_id(&self) -> &[u8; KEY_LEN] {
+    pub const fn topic_id(&self) -> &TopicId {
         &self.topic_id
     }
 
     /// The key that proves knowledge of the network secret at the gate.
     #[must_use]
-    pub const fn gate_key(&self) -> &[u8; KEY_LEN] {
+    pub const fn gate_key(&self) -> &GateKey {
         &self.gate_key
+    }
+
+    fn keyed_hash(&self, zeroed_encoding: &[u8]) -> blake3::Hash {
+        blake3::keyed_hash(&self.mac_key.0, zeroed_encoding)
     }
 }
 
@@ -177,29 +225,33 @@ impl NetworkKeys {
 mod tests {
     use super::*;
 
-    const SECRET: [u8; KEY_LEN] = [7; KEY_LEN];
+    const SECRET_BYTES: [u8; KEY_LEN] = [7; KEY_LEN];
+    const SECRET: NetworkSecret = NetworkSecret::from_bytes(SECRET_BYTES);
 
     #[test]
     fn spec_3_4_derive_is_deterministic_and_context_separated() {
         let keys = NetworkKeys::derive(&SECRET);
 
         assert_eq!(keys, NetworkKeys::derive(&SECRET));
-        assert_ne!(keys, NetworkKeys::derive(&[8; KEY_LEN]));
-        assert_eq!(
-            keys.topic_id(),
-            &blake3::derive_key("messaging topic v1", &SECRET)
+        assert_ne!(
+            keys,
+            NetworkKeys::derive(&NetworkSecret::from_bytes([8; KEY_LEN]))
         );
         assert_eq!(
-            keys.gate_key(),
-            &blake3::derive_key("messaging gate v1", &SECRET)
+            keys.topic_id().as_bytes(),
+            &blake3::derive_key("messaging topic v1", &SECRET_BYTES)
         );
         assert_eq!(
-            keys.mac_key,
-            blake3::derive_key("messaging mac v1", &SECRET)
+            keys.gate_key().as_bytes(),
+            &blake3::derive_key("messaging gate v1", &SECRET_BYTES)
         );
-        assert_ne!(keys.topic_id(), keys.gate_key());
-        assert_ne!(keys.topic_id(), &keys.mac_key);
-        assert_ne!(keys.gate_key(), &keys.mac_key);
+        assert_eq!(
+            keys.mac_key.0,
+            blake3::derive_key("messaging mac v1", &SECRET_BYTES)
+        );
+        assert_ne!(keys.topic_id().as_bytes(), keys.gate_key().as_bytes());
+        assert_ne!(keys.topic_id().as_bytes(), &keys.mac_key.0);
+        assert_ne!(keys.gate_key().as_bytes(), &keys.mac_key.0);
     }
 
     const ENCODING: &[u8] = b"structure with its mac field set to zero";
@@ -209,13 +261,16 @@ mod tests {
         let keys = NetworkKeys::derive(&SECRET);
         let mac = keys.mac(ENCODING);
 
-        assert_eq!(mac, *blake3::keyed_hash(&keys.mac_key, ENCODING).as_bytes());
+        assert_eq!(
+            mac.as_bytes(),
+            blake3::keyed_hash(&keys.mac_key.0, ENCODING).as_bytes()
+        );
         assert_eq!(keys.verify_mac(ENCODING, &mac), Ok(()));
         for bit_index in 0..MAC_LEN * 8 {
-            let mut flipped = mac;
-            flipped[bit_index / 8] ^= 1 << (bit_index % 8);
+            let mut flipped_bytes = *mac.as_bytes();
+            flipped_bytes[bit_index / 8] ^= 1 << (bit_index % 8);
             assert_eq!(
-                keys.verify_mac(ENCODING, &flipped),
+                keys.verify_mac(ENCODING, &Mac::from_bytes(flipped_bytes)),
                 Err(CryptoError::MacMismatch)
             );
         }
@@ -226,7 +281,8 @@ mod tests {
             Err(CryptoError::MacMismatch)
         );
         assert_eq!(
-            NetworkKeys::derive(&[8; KEY_LEN]).verify_mac(ENCODING, &mac),
+            NetworkKeys::derive(&NetworkSecret::from_bytes([8; KEY_LEN]))
+                .verify_mac(ENCODING, &mac),
             Err(CryptoError::MacMismatch)
         );
     }
@@ -314,5 +370,7 @@ mod tests {
         let keys = NetworkKeys::derive(&SECRET);
 
         assert_eq!(format!("{keys:?}"), "NetworkKeys { .. }");
+        assert_eq!(format!("{SECRET:?}"), "NetworkSecret { .. }");
+        assert_eq!(format!("{:?}", keys.gate_key()), "GateKey { .. }");
     }
 }
