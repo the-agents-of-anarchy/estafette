@@ -20,12 +20,17 @@ pub enum HandleError {
 impl fmt::Display for HandleError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotAHandle => formatter.write_str("handle must match ^[a-z][a-z0-9-]{0,31}$"),
-            Self::NotAnAnnouncedHandle => formatter.write_str(
-                "announced handle must be a handle, or a handle followed by - and an integer of at least 2 with no leading zeros, at most 53 characters",
+            Self::NotAHandle => write!(
+                formatter,
+                "handle must match ^[a-z][a-z0-9-]*$, at most {MAX_HANDLE_LENGTH} characters"
             ),
-            Self::NotALocalHandle => formatter.write_str(
-                "local handle must be an announced handle, or an announced handle followed by - and an integer of at least 2 with no leading zeros, at most 74 characters",
+            Self::NotAnAnnouncedHandle => write!(
+                formatter,
+                "announced handle must be a handle, or a handle followed by - and an integer of at least {FIRST_ASSIGNED_SUFFIX} with no leading zeros, at most {MAX_ANNOUNCED_LENGTH} characters"
+            ),
+            Self::NotALocalHandle => write!(
+                formatter,
+                "local handle must be an announced handle, or an announced handle followed by - and an integer of at least {FIRST_ASSIGNED_SUFFIX} with no leading zeros, at most {MAX_LOCAL_LENGTH} characters"
             ),
         }
     }
@@ -187,10 +192,33 @@ mod tests {
     }
 
     #[test]
-    fn refusal_names_the_accepted_set() {
-        assert_eq!(
-            HandleError::NotAHandle.to_string(),
-            "handle must match ^[a-z][a-z0-9-]{0,31}$"
+    fn each_refusal_names_its_accepted_set_and_length_limit_spec_3_1() {
+        for (error, limit) in [
+            (HandleError::NotAHandle, MAX_HANDLE_LENGTH),
+            (HandleError::NotAnAnnouncedHandle, MAX_ANNOUNCED_LENGTH),
+            (HandleError::NotALocalHandle, MAX_LOCAL_LENGTH),
+        ] {
+            assert!(
+                error
+                    .to_string()
+                    .ends_with(&format!("at most {limit} characters")),
+                "{error}"
+            );
+        }
+        assert!(
+            HandleError::NotAHandle
+                .to_string()
+                .contains("^[a-z][a-z0-9-]*$")
+        );
+        assert!(
+            HandleError::NotAnAnnouncedHandle
+                .to_string()
+                .starts_with("announced handle must be a handle")
+        );
+        assert!(
+            HandleError::NotALocalHandle
+                .to_string()
+                .starts_with("local handle must be an announced handle")
         );
     }
 
