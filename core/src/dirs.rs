@@ -266,6 +266,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     const FAKE_USER_ID: u32 = 4242;
+    const SPEC_PRIVATE_DIRECTORY_MODE: u32 = 0o700;
     const EXISTING_DIRECTORY_MODE: u32 = 0o755;
     const MODE_BITS: u32 = 0o777;
 
@@ -551,18 +552,18 @@ mod tests {
                 .unwrap();
         assert_eq!(
             mode_of(&root.join("config/estafette")),
-            PRIVATE_DIRECTORY_MODE
+            SPEC_PRIVATE_DIRECTORY_MODE
         );
         assert_eq!(
             mode_of(&root.join("data/estafette")),
-            PRIVATE_DIRECTORY_MODE
+            SPEC_PRIVATE_DIRECTORY_MODE
         );
         let runtime_directory = directories
             .inbox_socket_file(1)
             .parent()
             .unwrap()
             .to_path_buf();
-        assert_eq!(mode_of(&runtime_directory), PRIVATE_DIRECTORY_MODE);
+        assert_eq!(mode_of(&runtime_directory), SPEC_PRIVATE_DIRECTORY_MODE);
         let user_id = OperatingSystemFilesystem
             .owner_user_id(&root.join("config/estafette"))
             .unwrap();
