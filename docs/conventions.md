@@ -260,7 +260,7 @@ ground  owner ruling 2026-10-23
 
 ### subagent-binding
 when    dispatching any agent, or receiving its first message
-do      open every brief with the binding order — read `.manifestos.yaml` for the agent's stack (`subagents.<type>`, else `other`), read each element's source and the `manifesto:manifesto-oath` skill whole, bind, then SendMessage the lead one commitment line per element with each source's line count checked against `wc -l`, before reading any other file; the lead reads that message against the stack and stops and relaunches an agent whose binding misses an element, reports a partial read, or carries no commitment
+do      open every brief with the binding order and a Stack block naming every element the agent binds to, each with its absolute source path, and the oath skill's path — the lead names them from .manifestos.yaml and may add elements per brief; the agent looks nothing up: it reads the oath skill and each element's source whole, binds, then SendMessages the lead one commitment line per element with each source's line count checked against wc -l, before reading any other file; the lead reads that message against the Stack block and stops and relaunches an agent whose binding misses an element, reports a partial read, or carries no commitment
 never   an agent reading a brief input, a source file, or a spec before its binding message is sent; a dispatch that relies on a hook to inject the stack; work accepted from an agent whose binding was refused or never arrived
 why     The hook injecting manifesto stacks may be inactive; the lead is bound by its instructions for life, a subagent is bound only by what it reads at init.
 ground  owner ruling 2026-10-24T10:38

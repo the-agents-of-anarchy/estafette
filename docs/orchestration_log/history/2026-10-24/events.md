@@ -56,3 +56,13 @@
 2026-10-24T10:32 | self:claude-fable-5-1 | receipt | impl-U02 re-report after quality fixes: HEAD 804bf05; both Important and both Minor fixed; peer content
 2026-10-24T10:32 | self:claude-fable-5-1 | delegation | spec-U02 re-review 2: range c49769c..804bf05 -> reviews/spec-worktree-agent-a87f85f858d392605-073256.md
 2026-10-24T10:33 | owner:Arthur Ryzhak | decision | subagent binding: the hook injecting manifesto stacks may be inactive; the lead manages each subagent's oath per .manifestos.yaml; no work before binding in full (every element and the manifesto-oath skill read whole); the binding is sent to the lead by SendMessage before any file is read; the lead demands a meaningful binding and refuses work without one; applies to future dispatches, current ones stand
+2026-10-24T10:33 | self:claude-fable-5-1 | review | spec-U02 re-review 2 FAIL: req 1 partial, pin-failure message names the recipe not the binstall command -> reviews/spec-worktree-agent-a87f85f858d392605-073256.md; cycle 3 -> continue impl-U02
+2026-10-24T10:34 | self:claude-fable-5-1 | receipt | impl-U01 report DONE_WITH_CONCERNS: head 1f2c64f base c49769c, 5 commits; pins resolved, vendored patch one hunk, vendored suite passes, tree 281/322, audit warning paste unmaintained; concerns: commit count, on_join unproven, ld_classic warning; peer content -> reports/implementer-U01.md
+2026-10-24T10:34 | self:claude-fable-5-1 | decision | solved: multiple commits per unit accepted where each reverts alone (git-etiquette) — the one-commit line of U01/U02 briefs withdrawn; alternative: squash every unit to one commit
+2026-10-24T10:34 | self:claude-fable-5-1 | delegation | impl-U01 continuation 1: core/src/lib.rs module skeleton so wave 2 shares no file
+2026-10-24T10:35 | self:claude-fable-5-1 | receipt | impl-U02 DONE at 10bc975; peer content
+2026-10-24T10:35 | self:claude-fable-5-1 | delegation | spec-U02 re-review 3: range c49769c..10bc975 -> reviews/spec-worktree-agent-a87f85f858d392605-073501.md
+2026-10-24T10:35 | self:claude-fable-5-1 | delegation | classify-U01 (sonnet): classify U01 concerns 2-5 -> reports/classifier-U01.md
+2026-10-24T10:35 | self:claude-fable-5-1 | review | spec-U02 re-review 3 PASS -> reviews/spec-worktree-agent-a87f85f858d392605-073501.md; quality re-review next
+2026-10-24T10:35 | self:claude-fable-5-1 | delegation | quality-U02 re-review: range c49769c..10bc975, spec verdict 073501 -> reviews/quality-worktree-agent-a87f85f858d392605-073537.md
+2026-10-24T10:36 | owner:Arthur Ryzhak | decision | subagent binding, clarified: the lead names the stack elements in each brief; agents do not look them up themselves; the lead may add elements (manifestos, skills) on demand as it sees fit
