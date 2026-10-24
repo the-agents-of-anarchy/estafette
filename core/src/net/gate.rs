@@ -25,19 +25,22 @@ pub struct NetworkSecretGate {
     gate_key: GateKey,
     own_id: EndpointId,
     fill_nonce: Box<dyn Fn(&mut Nonce) + Send + Sync>,
+    report_closing: Box<dyn Fn(GateFailure) + Send + Sync>,
 }
 
 impl NetworkSecretGate {
-    /// Builds the gate for this endpoint's id under the network's gate key, drawing each nonce from the source.
+    /// Builds the gate for this endpoint's id under the network's gate key, drawing each nonce from the source and handing each closing reason to the sink.
     pub fn new(
         gate_key: GateKey,
         own_id: EndpointId,
         fill_nonce: impl Fn(&mut Nonce) + Send + Sync + 'static,
+        report_closing: impl Fn(GateFailure) + Send + Sync + 'static,
     ) -> Self {
         Self {
             gate_key,
             own_id,
             fill_nonce: Box::new(fill_nonce),
+            report_closing: Box::new(report_closing),
         }
     }
 
@@ -101,14 +104,17 @@ impl EndpointHooks for NetworkSecretGate {
         }
         match self.peer_proves_network_secret(connection).await {
             Ok(()) => AfterHandshakeOutcome::accept(),
-            Err(_closing_reason) => gate_refusal(),
+            Err(closing_reason) => {
+                (self.report_closing)(closing_reason);
+                gate_refusal()
+            }
         }
     }
 }
 
 /// Why the gate closed a gossip connection.
 #[derive(Debug)]
-enum GateFailure {
+pub enum GateFailure {
     Transport(ConnectionError),
     StreamWrite(WriteError),
     StreamFinish(ClosedStream),
@@ -120,7 +126,10 @@ enum GateFailure {
 impl fmt::Display for GateFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Transport(error) => write!(formatter, "the gate stream could not open: {error}"),
+            Self::Transport(error) => write!(
+                formatter,
+                "the connection failed while opening or accepting the gate stream: {error}"
+            ),
             Self::StreamWrite(error) => {
                 write!(formatter, "the gate stream failed to write: {error}")
             }
@@ -191,75 +200,5 @@ fn gate_refusal() -> AfterHandshakeOutcome {
     AfterHandshakeOutcome::Reject {
         error_code: VarInt::from_u32(GATE_REFUSAL_ERROR_CODE),
         reason: GATE_REFUSAL_REASON.to_vec(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
-    use iroh::endpoint::presets;
-    use iroh::{Endpoint, SecretKey};
-
-    const DIALER_SEED: u8 = 11;
-    const ACCEPTOR_SEED: u8 = 12;
-    const MEMBER_SECRET: [u8; KEY_LEN] = [21; KEY_LEN];
-    const OUTSIDER_SECRET: [u8; KEY_LEN] = [12; KEY_LEN];
-
-    async fn bind_ungated_endpoint(seed: u8) -> Endpoint {
-        Endpoint::builder(presets::Minimal)
-            .secret_key(SecretKey::from_bytes(&[seed; KEY_LEN]))
-            .alpns(vec![GOSSIP_ALPN.to_vec()])
-            .bind()
-            .await
-            .unwrap()
-    }
-
-    async fn gossip_connection_between(
-        dialer: &Endpoint,
-        acceptor: &Endpoint,
-    ) -> (Connection, Connection) {
-        let (outgoing, incoming) =
-            tokio::join!(dialer.connect(acceptor.addr(), GOSSIP_ALPN), async {
-                acceptor.accept().await.unwrap().await
-            });
-        (outgoing.unwrap(), incoming.unwrap())
-    }
-
-    fn gate_of(endpoint: &Endpoint, secret: [u8; KEY_LEN], seed: u8) -> NetworkSecretGate {
-        NetworkSecretGate::new(
-            *NetworkKeys::derive(&NetworkSecret::from_bytes(secret)).gate_key(),
-            endpoint.id(),
-            move |nonce: &mut Nonce| *nonce = [seed; NONCE_BYTES],
-        )
-    }
-
-    #[tokio::test]
-    async fn spec_3_6_gate_names_a_wrong_answer_as_the_reason_it_closes() {
-        let dialer = bind_ungated_endpoint(DIALER_SEED).await;
-        let acceptor = bind_ungated_endpoint(ACCEPTOR_SEED).await;
-        let (outgoing, incoming) = gossip_connection_between(&dialer, &acceptor).await;
-        let member_gate = gate_of(&dialer, MEMBER_SECRET, DIALER_SEED);
-        let outsider_gate = gate_of(&acceptor, OUTSIDER_SECRET, ACCEPTOR_SEED);
-
-        let (member_outcome, outsider_answer) = tokio::join!(
-            member_gate.peer_proves_network_secret(&outgoing),
-            outsider_gate.answer_peer_nonce(&incoming)
-        );
-
-        assert!(matches!(member_outcome, Err(GateFailure::WrongProof)));
-        assert!(matches!(outsider_answer, Ok(())));
-    }
-
-    #[tokio::test]
-    async fn spec_3_14_gate_names_the_timeout_as_the_reason_it_closes_on_a_silent_peer() {
-        let dialer = bind_ungated_endpoint(DIALER_SEED).await;
-        let acceptor = bind_ungated_endpoint(ACCEPTOR_SEED).await;
-        let (outgoing, _silent_incoming) = gossip_connection_between(&dialer, &acceptor).await;
-        let member_gate = gate_of(&dialer, MEMBER_SECRET, DIALER_SEED);
-
-        let outcome = member_gate.peer_proves_network_secret(&outgoing).await;
-
-        assert!(matches!(outcome, Err(GateFailure::Timeout)));
     }
 }

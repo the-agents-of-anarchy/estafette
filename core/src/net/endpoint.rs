@@ -8,6 +8,8 @@ use iroh_gossip::ALPN as GOSSIP_ALPN;
 use super::gate::{NONCE_BYTES, NetworkSecretGate};
 use crate::crypto::GateKey;
 
+pub use super::gate::GateFailure;
+
 pub const DIRECT_ALPN: &[u8] = b"estafette/direct/1";
 const QUIC_IDLE_TIMEOUT_MILLIS: u32 = 10_000;
 
@@ -19,7 +21,7 @@ pub struct NodeEndpoint {
 }
 
 impl NodeEndpoint {
-    /// Binds an endpoint under the key with the relays, the fed lookup as its only address source, and the network secret gate on every gossip connection.
+    /// Binds an endpoint under the key with the relays, the fed lookup as its only address source, and the network secret gate on every gossip connection, which hands each closing reason to the sink.
     ///
     /// # Errors
     /// The iroh bind error when no socket can be bound.
@@ -28,10 +30,16 @@ impl NodeEndpoint {
         gate_key: GateKey,
         relays: impl IntoIterator<Item = RelayUrl>,
         fill_nonce: impl Fn(&mut [u8; NONCE_BYTES]) + Send + Sync + 'static,
+        report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
     ) -> Result<Self, BindError> {
         let relay_map: RelayMap = relays.into_iter().collect();
         let address_lookup = MemoryLookup::new();
-        let gate = NetworkSecretGate::new(gate_key, secret_key.public(), fill_nonce);
+        let gate = NetworkSecretGate::new(
+            gate_key,
+            secret_key.public(),
+            fill_nonce,
+            report_gate_closing,
+        );
         let endpoint = Endpoint::builder(presets::Minimal)
             .secret_key(secret_key)
             .alpns(vec![DIRECT_ALPN.to_vec(), GOSSIP_ALPN.to_vec()])
@@ -88,6 +96,7 @@ mod tests {
         ConnectError, ConnectWithOptsError, ConnectingError, Connection, ConnectionError,
     };
     use iroh::{EndpointId, TransportAddr};
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
     use tokio::time::timeout;
 
@@ -127,14 +136,37 @@ mod tests {
         secret: [u8; KEY_LEN],
         relays: Vec<RelayUrl>,
     ) -> NodeEndpoint {
+        bind_node_reporting_to(seed, secret, relays, |_ignored_reason: GateFailure| {}).await
+    }
+
+    async fn bind_node_reporting_to(
+        seed: u8,
+        secret: [u8; KEY_LEN],
+        relays: Vec<RelayUrl>,
+        report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
+    ) -> NodeEndpoint {
         NodeEndpoint::bind(
             SecretKey::from_bytes(&[seed; KEY_LEN]),
             gate_key_of(secret),
             relays,
             move |nonce: &mut [u8; KEY_LEN]| *nonce = [seed; KEY_LEN],
+            report_gate_closing,
         )
         .await
         .unwrap()
+    }
+
+    async fn bind_node_recording_gate_closings(
+        seed: u8,
+        secret: [u8; KEY_LEN],
+    ) -> (NodeEndpoint, Arc<Mutex<Vec<GateFailure>>>) {
+        let closing_reasons = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&closing_reasons);
+        let node = bind_node_reporting_to(seed, secret, Vec::new(), move |reason| {
+            sink.lock().unwrap().push(reason);
+        })
+        .await;
+        (node, closing_reasons)
     }
 
     fn relay_url(text: &str) -> RelayUrl {
@@ -472,5 +504,61 @@ mod tests {
 
         let entry = member.endpoint().remove_relay(&first_relay).await.unwrap();
         assert_eq!(entry.quic, None);
+    }
+
+    fn recorded_reasons_match(
+        recorded: &Mutex<Vec<GateFailure>>,
+        expected: fn(&GateFailure) -> bool,
+    ) -> bool {
+        let reasons = recorded.lock().unwrap();
+        reasons.len() == 1 && reasons.iter().all(expected)
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_gate_reports_a_wrong_answer_as_the_reason_it_closed() {
+        let (member, recorded) =
+            bind_node_recording_gate_closings(MEMBER_SEED, MEMBER_SECRET).await;
+        let outsider = bind_plain_endpoint(OUTSIDER_SEED).await;
+        let (member_id, outsider_id) = (member.endpoint().id(), outsider.id());
+
+        let answer_under_another_secret = async {
+            let connection = outsider
+                .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                .await
+                .unwrap();
+            let (mut answer_send, mut nonce_recv) = connection.accept_bi().await.unwrap();
+            let mut member_nonce = [0; KEY_LEN];
+            nonce_recv.read_exact(&mut member_nonce).await.unwrap();
+            let answer = spec_gate_proof(OUTSIDER_SECRET, &member_nonce, member_id, outsider_id);
+            answer_send.write_all(&answer).await.unwrap();
+            answer_send.finish().unwrap();
+            connection
+        };
+        let (_closed_connection, accepted) =
+            tokio::join!(answer_under_another_secret, accept_next(member.endpoint()));
+
+        assert!(accept_is_locally_rejected(&accepted));
+        assert!(recorded_reasons_match(&recorded, |reason| matches!(
+            reason,
+            GateFailure::WrongProof
+        )));
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_gate_reports_the_timeout_as_the_reason_it_closed_on_a_silent_peer() {
+        let (member, recorded) =
+            bind_node_recording_gate_closings(MEMBER_SEED, MEMBER_SECRET).await;
+        let silent = bind_plain_endpoint(SILENT_PEER_SEED).await;
+
+        let (dialed, _held_by_silent) = tokio::join!(
+            member.endpoint().connect(silent.addr(), GOSSIP_ALPN),
+            accept_next(&silent)
+        );
+
+        assert!(dial_is_locally_rejected(&dialed));
+        assert!(recorded_reasons_match(&recorded, |reason| matches!(
+            reason,
+            GateFailure::Timeout
+        )));
     }
 }
