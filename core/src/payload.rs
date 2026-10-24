@@ -332,7 +332,7 @@ mod tests {
         SecretKey::from_bytes(&[seed; KEY_LEN])
     }
 
-    fn public_bytes(seed: u8) -> [u8; 32] {
+    fn public_bytes(seed: u8) -> wire::PublicKey {
         *secret_key(seed).public().as_bytes()
     }
 
@@ -455,7 +455,8 @@ mod tests {
         );
     }
 
-    const MAC_BYTES_FROM_END_OF_DEPARTURE: usize = 64 + 32;
+    const SIGNATURE_BYTES_AT_END: usize = Signature::LENGTH;
+    const MAC_BYTES_FROM_END_OF_DEPARTURE: usize = SIGNATURE_BYTES_AT_END + MAC_LEN;
     const SEQ_BYTE_FROM_END_OF_DEPARTURE: usize = MAC_BYTES_FROM_END_OF_DEPARTURE + 1;
 
     #[test]
@@ -478,7 +479,7 @@ mod tests {
         );
         let mut forged_with_broken_mac =
             forged_by(FOREIGN_SEED, unsealed_departure(REPORTED_CARD_SEED));
-        let last_mac_byte = forged_with_broken_mac.len() - 64 - 1;
+        let last_mac_byte = forged_with_broken_mac.len() - SIGNATURE_BYTES_AT_END - 1;
         forged_with_broken_mac[last_mac_byte] ^= 1;
         assert_eq!(
             open_payload(&keys(), &owner_public(), &forged_with_broken_mac),
