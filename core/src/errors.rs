@@ -1,10 +1,13 @@
 use serde::Serialize;
 use serde::ser::{SerializeStruct, Serializer};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::fmt;
 
 const STATUS_UNCLAIMED: &str = "unclaimed";
 const STATUS_CLAIMED: &str = "claimed";
+const AMBIGUOUS_HANDLE_MESSAGE: &str = "More than one member matches that handle. Retry shortly.";
+const CANDIDATES_LABEL: &str = "Candidates:";
 const ENVELOPE_FIELD_COUNT: usize = 3;
 
 /// Who the caller is as the server knows it: nobody yet, or a claimed card.
@@ -22,7 +25,7 @@ pub enum Envelope {
 }
 
 /// The closed list of failures a tool may report.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorCode {
     NotClaimed,
     CardNotFound,
@@ -30,7 +33,7 @@ pub enum ErrorCode {
     CardInvalid,
     SidecarInvalid,
     UnknownHandle,
-    AmbiguousHandle,
+    AmbiguousHandle { candidates: Vec<String> },
     Unreachable,
     Timeout,
     Refused,
@@ -60,7 +63,7 @@ impl From<ExitStatus> for u8 {
 
 impl fmt::Display for ErrorCode {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.message())
+        formatter.write_str(&self.message())
     }
 }
 
@@ -76,11 +79,11 @@ struct YouView<'a> {
 #[derive(Serialize)]
 struct ErrorView {
     code: &'static str,
-    message: &'static str,
+    message: Cow<'static, str>,
 }
 
 impl ErrorCode {
-    const fn code(self) -> &'static str {
+    const fn code(&self) -> &'static str {
         match self {
             Self::NotClaimed => "not_claimed",
             Self::CardNotFound => "card_not_found",
@@ -88,7 +91,7 @@ impl ErrorCode {
             Self::CardInvalid => "card_invalid",
             Self::SidecarInvalid => "sidecar_invalid",
             Self::UnknownHandle => "unknown_handle",
-            Self::AmbiguousHandle => "ambiguous_handle",
+            Self::AmbiguousHandle { .. } => "ambiguous_handle",
             Self::Unreachable => "unreachable",
             Self::Timeout => "timeout",
             Self::Refused => "refused",
@@ -97,22 +100,25 @@ impl ErrorCode {
         }
     }
 
-    const fn message(self) -> &'static str {
+    fn message(&self) -> Cow<'static, str> {
         match self {
-            Self::NotClaimed => "Claim a card with init first.",
-            Self::CardNotFound => "No card with that name in the registry.",
-            Self::CardHeld => "That card has a live holder.",
-            Self::CardInvalid => "The card file did not pass validation.",
-            Self::SidecarInvalid => {
-                "The sidecar is absent, unreadable, has wrong permissions, or does not match the card."
-            }
-            Self::UnknownHandle => "No present member has that handle.",
-            Self::AmbiguousHandle => "More than one member matches that handle. Retry shortly.",
-            Self::Unreachable => "Could not connect to that member.",
-            Self::Timeout => "The member did not acknowledge in time.",
-            Self::Refused => "The member refused the message.",
-            Self::TooLarge => "The body exceeds the size limit.",
-            Self::BadRequest => "The input did not match the tool schema.",
+            Self::NotClaimed => Cow::Borrowed("Claim a card with init first."),
+            Self::CardNotFound => Cow::Borrowed("No card with that name in the registry."),
+            Self::CardHeld => Cow::Borrowed("That card has a live holder."),
+            Self::CardInvalid => Cow::Borrowed("The card file did not pass validation."),
+            Self::SidecarInvalid => Cow::Borrowed(
+                "The sidecar is absent, unreadable, has wrong permissions, or does not match the card.",
+            ),
+            Self::UnknownHandle => Cow::Borrowed("No present member has that handle."),
+            Self::AmbiguousHandle { candidates } => Cow::Owned(format!(
+                "{AMBIGUOUS_HANDLE_MESSAGE} {CANDIDATES_LABEL} {}.",
+                candidates.join(", ")
+            )),
+            Self::Unreachable => Cow::Borrowed("Could not connect to that member."),
+            Self::Timeout => Cow::Borrowed("The member did not acknowledge in time."),
+            Self::Refused => Cow::Borrowed("The member refused the message."),
+            Self::TooLarge => Cow::Borrowed("The body exceeds the size limit."),
+            Self::BadRequest => Cow::Borrowed("The input did not match the tool schema."),
         }
     }
 }
@@ -282,9 +288,11 @@ mod tests {
                 "No present member has that handle.",
             ),
             (
-                ErrorCode::AmbiguousHandle,
+                ErrorCode::AmbiguousHandle {
+                    candidates: vec!["ana-2".to_owned(), "bob-7".to_owned()],
+                },
                 "ambiguous_handle",
-                "More than one member matches that handle. Retry shortly.",
+                "More than one member matches that handle. Retry shortly. Candidates: ana-2, bob-7.",
             ),
             (
                 ErrorCode::Unreachable,
