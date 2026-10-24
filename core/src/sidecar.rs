@@ -368,20 +368,32 @@ mod tests {
     }
 
     #[test]
-    fn sidecar_with_group_readable_permissions_is_invalid_test_16() {
+    fn sidecar_with_any_mode_but_0600_is_invalid_test_16() {
         let directory = fresh_directory("loose_mode");
         let seed = seed_of(4);
-        let sidecar = directory.join("d.key");
-        write_sidecar(&sidecar, &format!("{}\n", HEXLOWER.encode(&seed)), 0o644);
+        for (index, refused_mode) in [0o644, 0o640, 0o660, 0o666, 0o400, 0o700]
+            .into_iter()
+            .enumerate()
+        {
+            let sidecar = directory.join(format!("d{index}.key"));
+            write_sidecar(
+                &sidecar,
+                &format!("{}\n", HEXLOWER.encode(&seed)),
+                refused_mode,
+            );
 
-        let outcome = claim(&sidecar, &public_key_of(&seed), &NoPause);
+            let outcome = claim(&sidecar, &public_key_of(&seed), &NoPause);
 
-        assert!(matches!(
-            outcome,
-            Err(SidecarError::Invalid(
-                InvalidSidecar::PermissionsNotOwnerReadWrite { mode: 0o644 }
-            ))
-        ));
+            assert!(
+                matches!(
+                    outcome,
+                    Err(SidecarError::Invalid(
+                        InvalidSidecar::PermissionsNotOwnerReadWrite { mode }
+                    )) if mode == refused_mode
+                ),
+                "mode {refused_mode:o} was not refused"
+            );
+        }
     }
 
     #[test]
