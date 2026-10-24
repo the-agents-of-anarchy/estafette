@@ -1,0 +1,7 @@
+[package]
+name = "estafette-bridge-claude"
+version.workspace = true
+edition = "2024"
+
+[lints]
+workspace = true
