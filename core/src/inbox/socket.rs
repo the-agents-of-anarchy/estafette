@@ -22,18 +22,25 @@ const DISCARDED_INPUT_CHUNK_BYTES: usize = 64;
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
 const FRAME_TERMINATOR: u8 = b'\n';
 const PROCESS_STATUS_PROGRAM: &str = "ps";
+const PROCESS_FOUND_EXIT_CODE: i32 = 0;
+const PROCESS_ABSENT_EXIT_CODE: i32 = 1;
 const PROCESS_STATUS_PROCESS_ID_FLAG: &str = "-p";
 
 /// Answers whether a process with a given id exists, supplied by the composition root.
 pub trait ProcessTable {
     /// Whether a process with this id is running.
-    fn is_running(&self, process_id: u32) -> bool;
+    ///
+    /// # Errors
+    ///
+    /// Fails when the table could not be queried, which says nothing about the process.
+    fn is_running(&self, process_id: u32) -> io::Result<bool>;
 }
 
 /// The inbox socket could not be made ready.
 #[derive(Debug)]
 pub enum InboxSocketError {
     ClearStaleSockets { path: PathBuf, source: io::Error },
+    QueryProcessTable { process_id: u32, source: io::Error },
     Bind { path: PathBuf, source: io::Error },
     RestrictPermissions { path: PathBuf, source: io::Error },
 }
@@ -46,6 +53,12 @@ impl fmt::Display for InboxSocketError {
                     formatter,
                     "cannot clear stale sockets in {}: {source}",
                     path.display()
+                )
+            }
+            Self::QueryProcessTable { process_id, source } => {
+                write!(
+                    formatter,
+                    "cannot tell whether process {process_id} is running, so no stale socket was removed: {source}"
                 )
             }
             Self::Bind { path, source } => {
@@ -68,13 +81,19 @@ impl std::error::Error for InboxSocketError {}
 pub struct OperatingSystemProcessTable;
 
 impl ProcessTable for OperatingSystemProcessTable {
-    fn is_running(&self, process_id: u32) -> bool {
-        Command::new(PROCESS_STATUS_PROGRAM)
+    fn is_running(&self, process_id: u32) -> io::Result<bool> {
+        let status = Command::new(PROCESS_STATUS_PROGRAM)
             .args([PROCESS_STATUS_PROCESS_ID_FLAG, &process_id.to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+            .status()?;
+        match status.code() {
+            Some(PROCESS_FOUND_EXIT_CODE) => Ok(true),
+            Some(PROCESS_ABSENT_EXIT_CODE) => Ok(false),
+            _ => Err(io::Error::other(format!(
+                "{PROCESS_STATUS_PROGRAM} ended with {status}"
+            ))),
+        }
     }
 }
 
@@ -246,14 +265,22 @@ fn remove_stale_sockets(
         path: runtime.to_path_buf(),
         source,
     };
+    let mut stale_sockets = Vec::new();
     for entry in fs::read_dir(runtime).map_err(clear_failure)? {
         let path = entry.map_err(clear_failure)?.path();
         let Some(process_id) = socket_owner_process_id(directories, &path) else {
             continue;
         };
-        if process_id == own_process_id || !processes.is_running(process_id) {
-            fs::remove_file(&path).map_err(clear_failure)?;
+        let is_stale = process_id == own_process_id
+            || !processes
+                .is_running(process_id)
+                .map_err(|source| InboxSocketError::QueryProcessTable { process_id, source })?;
+        if is_stale {
+            stale_sockets.push(path);
         }
+    }
+    for path in stale_sockets {
+        fs::remove_file(&path).map_err(clear_failure)?;
     }
     Ok(())
 }
@@ -364,8 +391,16 @@ mod tests {
     struct RunningProcesses(Vec<u32>);
 
     impl ProcessTable for RunningProcesses {
-        fn is_running(&self, process_id: u32) -> bool {
-            self.0.contains(&process_id)
+        fn is_running(&self, process_id: u32) -> io::Result<bool> {
+            Ok(self.0.contains(&process_id))
+        }
+    }
+
+    struct UnreadableProcessTable;
+
+    impl ProcessTable for UnreadableProcessTable {
+        fn is_running(&self, _process_id: u32) -> io::Result<bool> {
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
         }
     }
 
@@ -653,5 +688,27 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(failures.borrow().count, first.count.saturating_add(1));
+    }
+
+    #[tokio::test]
+    async fn spec_3_3_start_refuses_and_removes_no_socket_when_the_process_table_cannot_be_read() {
+        const CANDIDATE: u32 = 7_001;
+        let directories = scratch_directories("unreadable-table");
+        let candidate = directories.inbox_socket_file(CANDIDATE);
+        let own = directories.inbox_socket_file(OWN_PROCESS_ID);
+        fs::write(&candidate, b"").unwrap();
+        fs::write(&own, b"").unwrap();
+        let refusal = InboxSocket::start(&directories, OWN_PROCESS_ID, &UnreadableProcessTable)
+            .err()
+            .unwrap();
+        assert!(matches!(
+            refusal,
+            InboxSocketError::QueryProcessTable {
+                process_id: CANDIDATE,
+                ..
+            }
+        ));
+        assert!(candidate.exists());
+        assert!(own.exists());
     }
 }
