@@ -108,11 +108,19 @@ fn verify_under_prefix(
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct NetworkKeys {
     topic_id: [u8; KEY_LEN],
     mac_key: [u8; KEY_LEN],
     gate_key: [u8; KEY_LEN],
+}
+
+impl fmt::Debug for NetworkKeys {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NetworkKeys")
+            .finish_non_exhaustive()
+    }
 }
 
 impl NetworkKeys {
@@ -299,5 +307,12 @@ mod tests {
                 Err(CryptoError::SignatureMismatch)
             );
         }
+    }
+
+    #[test]
+    fn spec_3_4_network_keys_debug_output_prints_no_key_bytes() {
+        let keys = NetworkKeys::derive(&SECRET);
+
+        assert_eq!(format!("{keys:?}"), "NetworkKeys { .. }");
     }
 }
