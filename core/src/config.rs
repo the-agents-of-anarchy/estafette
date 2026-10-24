@@ -93,20 +93,18 @@ impl Host {
 
 impl NetworkConfig {
     /// Reads and validates the configuration file at `path`.
-    #[expect(
-        clippy::missing_errors_doc,
-        reason = "docstrings are one sentence; ConfigError names every refusal"
-    )]
+    ///
+    /// # Errors
+    /// Returns a `ConfigError` when the file cannot be read or is not a valid network configuration.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         let text = fs::read_to_string(path).map_err(io_error(path))?;
         parse(path, &text)
     }
 
     /// Merges this configuration with the file's current content, drops expired learned hosts, writes the result whole, and returns it.
-    #[expect(
-        clippy::missing_errors_doc,
-        reason = "docstrings are one sentence; ConfigError names every refusal"
-    )]
+    ///
+    /// # Errors
+    /// Returns a `ConfigError` when the file cannot be read, is malformed, or cannot be written.
     pub fn rewrite(&self, path: &Path, now_unix_seconds: u64) -> Result<Self, ConfigError> {
         let merged = self
             .merged_with(read_current(path)?)
