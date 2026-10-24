@@ -61,18 +61,11 @@ impl std::error::Error for ProcessTableError {}
 pub struct PsProcessTable;
 
 impl ProcessTable for PsProcessTable {
-    fn list(&self) -> ProcessListing {
-        match list_with_ps() {
-            Ok(entries) => ProcessListing::Listed(entries),
-            Err(error) => ProcessListing::Failed(error),
-        }
+    fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
+        let command_lines = run_ps(PS_COMMAND_LINE_COLUMNS)?;
+        let executables = executable_paths()?;
+        entries_from_command_lines(&command_lines, &executables)
     }
-}
-
-fn list_with_ps() -> Result<Vec<ProcessEntry>, ProcessTableError> {
-    let command_lines = run_ps(PS_COMMAND_LINE_COLUMNS)?;
-    let executables = executable_paths()?;
-    entries_from_command_lines(&command_lines, &executables)
 }
 
 fn run_ps(columns: &str) -> Result<String, ProcessTableError> {
@@ -177,13 +170,11 @@ fn is_binary_path(path: &str) -> bool {
     Path::new(path).file_name() == Some(OsStr::new(BINARY_EXECUTABLE_NAME))
 }
 
-pub enum ProcessListing {
-    Listed(Vec<ProcessEntry>),
-    Failed(ProcessTableError),
-}
-
 pub trait ProcessTable {
-    fn list(&self) -> ProcessListing;
+    /// Lists every process the operating system reports.
+    /// # Errors
+    /// Returns a `ProcessTableError` when the listing cannot be taken or read.
+    fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError>;
 }
 
 pub struct RuntimeDirectoryInputs {
@@ -209,8 +200,8 @@ pub fn follow_binary_sockets(
     let runtime_dir = runtime_directory(runtime_inputs);
     loop {
         let entries = match processes.list() {
-            ProcessListing::Listed(entries) => entries,
-            ProcessListing::Failed(error) => return Stopped::ProcessListingFailed(error),
+            Ok(entries) => entries,
+            Err(error) => return Stopped::ProcessListingFailed(error),
         };
         if !is_running(harness_pid, &entries) {
             return Stopped::HarnessExited;
@@ -291,15 +282,44 @@ mod tests {
     }
 
     impl ProcessTable for SnapshotSequence {
-        fn list(&self) -> ProcessListing {
+        fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
             let mut remaining = self.0.borrow_mut();
             let snapshot = if remaining.len() > 1 {
                 remaining.remove(0)
             } else {
                 remaining.first().cloned().unwrap_or_default()
             };
-            ProcessListing::Listed(snapshot)
+            Ok(snapshot)
         }
+    }
+
+    const UNREADABLE_LISTING_LINE: &str = "  88";
+
+    struct UnreadableListing;
+
+    impl ProcessTable for UnreadableListing {
+        fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
+            Err(ProcessTableError::MalformedListingLine(
+                UNREADABLE_LISTING_LINE.to_owned(),
+            ))
+        }
+    }
+
+    #[test]
+    fn spec_3_12_step_2_listing_failure_stops_following_with_the_listing_error() {
+        let mut reported = false;
+        let stopped = follow_binary_sockets(
+            100,
+            &runtime_inputs(),
+            &UnreadableListing,
+            &mut |_| {},
+            &mut |_| reported = true,
+        );
+        let Stopped::ProcessListingFailed(error) = stopped else {
+            panic!("stopped for another reason: {stopped:?}");
+        };
+        assert_eq!(error.to_string(), "ps printed a line it cannot read:   88");
+        assert!(!reported, "reported sockets from a failed listing");
     }
 
     fn entry(pid: u32, parent_pid: u32, executable: &str, arguments: &[&str]) -> ProcessEntry {
