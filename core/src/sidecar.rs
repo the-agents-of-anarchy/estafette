@@ -114,6 +114,18 @@ pub fn claim(
     })
 }
 
+/// Reports whether another holder keeps the sidecar lock, by trying it and releasing at once.
+///
+/// # Errors
+/// `Invalid(Missing)` when the sidecar is absent.
+pub fn is_held(sidecar_path: &Path) -> Result<bool, SidecarError> {
+    match open_sidecar(sidecar_path)?.try_lock() {
+        Ok(()) => Ok(false),
+        Err(TryLockError::WouldBlock) => Ok(true),
+        Err(TryLockError::Error(error)) => Err(SidecarError::Io(error)),
+    }
+}
+
 fn open_sidecar(sidecar_path: &Path) -> Result<File, SidecarError> {
     File::open(sidecar_path).map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => SidecarError::Invalid(InvalidSidecar::Missing),
@@ -366,6 +378,37 @@ mod tests {
             Err(SidecarError::Invalid(
                 InvalidSidecar::SeedNotThirtyTwoHexBytes
             ))
+        ));
+    }
+
+    #[test]
+    fn probe_sees_a_held_card_and_leaves_a_free_card_free_spec_837() {
+        let directory = fresh_directory("probe");
+        let seed = seed_of(10);
+        let public_key = public_key_of(&seed);
+        let sidecar = directory.join("i.key");
+        write_sidecar(&sidecar, &format!("{}\n", HEXLOWER.encode(&seed)), 0o600);
+        let holder = claim(&sidecar, &public_key, &NoPause).unwrap();
+
+        let held_while_claimed = is_held(&sidecar).unwrap();
+        drop(holder);
+        let held_after_release = is_held(&sidecar).unwrap();
+        let reclaim = claim(&sidecar, &public_key, &NoPause);
+
+        assert!(held_while_claimed);
+        assert!(!held_after_release);
+        reclaim.unwrap();
+    }
+
+    #[test]
+    fn probe_of_a_missing_sidecar_is_invalid_spec_837() {
+        let directory = fresh_directory("probe_missing");
+
+        let outcome = is_held(&directory.join("j.key"));
+
+        assert!(matches!(
+            outcome,
+            Err(SidecarError::Invalid(InvalidSidecar::Missing))
         ));
     }
 }
