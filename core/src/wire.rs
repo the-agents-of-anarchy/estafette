@@ -493,6 +493,32 @@ mod tests {
     const MESSAGE_BODY_CAP_BYTES: usize = 1_048_576;
     const ROUND_TRIP_CASES: u64 = 200;
     const LONG_BODY_EXTRA_LENGTH_PREFIX_BYTES: usize = 2;
+    const UNSUPPORTED_VERSION: u8 = 2;
+    const REQUEST_PROBE_INDEX: u8 = 1;
+    const PAYLOAD_PRESENCE_INDEX: u8 = 0;
+    const PAYLOAD_DEPARTURE_INDEX: u8 = 1;
+    const VARIANT_TAG_BYTES: usize = 1;
+    const VERSION_BYTES: usize = 1;
+    const ZERO_VARINT_BYTES: usize = 1;
+    const DEPARTURE_WITH_ZERO_SEQ_ENCODED_BYTES: usize = VARIANT_TAG_BYTES
+        + VERSION_BYTES
+        + PUBLIC_KEY_BYTES
+        + ZERO_VARINT_BYTES
+        + MAC_BYTES
+        + SIGNATURE_BYTES;
+    const SEED_SPREAD_MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
+    const XORSHIFT_FIRST_LEFT_SHIFT: u32 = 13;
+    const XORSHIFT_RIGHT_SHIFT: u32 = 7;
+    const XORSHIFT_SECOND_LEFT_SHIFT: u32 = 17;
+    const FLAG_VALUES: usize = 2;
+    const ROUND_TRIP_BODY_CAP_CHARACTERS: usize = 200;
+    const ROUND_TRIP_PUBLIC_CAP_BYTES: usize = 300;
+    const ROUND_TRIP_HOSTS_CAP: usize = 4;
+    const ROUND_TRIP_NETWORK_NAME_CAP_CHARACTERS: usize = 40;
+    const LINK_LOCAL_FIRST_SEGMENT: u16 = 0xfe80;
+    const LINK_LOCAL_LAST_SEGMENT: u16 = 0xfebf;
+    const ABOVE_LINK_LOCAL_SEGMENT: u16 = 0xfec0;
+    const BELOW_LINK_LOCAL_SEGMENT: u16 = 0xfe7f;
 
     fn relay_of_bytes(length: usize) -> String {
         format!("{:x<length$}", "https://")
@@ -510,7 +536,7 @@ mod tests {
     fn largest_presence() -> Payload {
         Payload::Presence(Presence {
             v: Version::CURRENT,
-            card: [0xAB; 32],
+            card: [0xAB; PUBLIC_KEY_BYTES],
             handle: "h".repeat(HANDLE_CAP_CHARACTERS),
             public: vec![0xCD; PUBLIC_MAPPING_CAP_BYTES],
             attached: true,
@@ -519,7 +545,7 @@ mod tests {
                 (0..).take(MAX_DIRECT_ADDRS_PER_ADDR).map(global_v6),
             ),
             seq: u64::MAX,
-            mac: [0xEF; 32],
+            mac: [0xEF; MAC_BYTES],
             sig: SignatureBytes([0x12; SIGNATURE_BYTES]),
         })
     }
@@ -542,8 +568,8 @@ mod tests {
     fn probe_request() -> Request {
         Request::Probe(Probe {
             v: Version::CURRENT,
-            nonce: [7; 16],
-            mac: [9; 32],
+            nonce: [7; NONCE_BYTES],
+            mac: [9; MAC_BYTES],
         })
     }
 
@@ -554,16 +580,16 @@ mod tests {
             public: Vec::new(),
             attached: false,
             addr,
-            mac: [3; 32],
+            mac: [3; MAC_BYTES],
         })
     }
 
     fn departure() -> Departure {
         Departure {
             v: Version::CURRENT,
-            card: [0xAA; 32],
+            card: [0xAA; PUBLIC_KEY_BYTES],
             seq: 0,
-            mac: [0xBB; 32],
+            mac: [0xBB; MAC_BYTES],
             sig: SignatureBytes([0xCC; SIGNATURE_BYTES]),
         }
     }
@@ -595,12 +621,13 @@ mod tests {
 
     #[test]
     fn spec_3_6_sender_leaves_link_local_out_and_keeps_the_first_eight_others() {
-        let link_local = [0xfe80, 0xfebf].map(link_local_v6);
-        let outside_the_prefix = [0xfec0, 0xfe7f].map(link_local_v6);
+        let link_local = [LINK_LOCAL_FIRST_SEGMENT, LINK_LOCAL_LAST_SEGMENT].map(link_local_v6);
+        let outside_the_prefix =
+            [ABOVE_LINK_LOCAL_SEGMENT, BELOW_LINK_LOCAL_SEGMENT].map(link_local_v6);
         let reported: Vec<SocketAddr> = link_local
             .into_iter()
             .chain(outside_the_prefix)
-            .chain((0..).take(8).map(global_v6))
+            .chain((0..).take(MAX_DIRECT_ADDRS_PER_ADDR).map(global_v6))
             .collect();
 
         let addr = Addr::from_endpoint_report([], reported.clone());
@@ -663,7 +690,7 @@ mod tests {
     fn spec_3_13_host_addr_relay_of_129_bytes_does_not_decode() {
         let oversized = HostAddr {
             v: Version::CURRENT,
-            id: [1; 32],
+            id: [1; PUBLIC_KEY_BYTES],
             relay: RelayUrl(relay_of_bytes(MAX_RELAY_URL_BYTES + 1)),
         };
 
@@ -679,17 +706,19 @@ mod tests {
     fn spec_2_wire_encoding_a_top_level_structure_opens_with_version_1_after_its_variant_index() {
         let encoded = encode(&probe_request()).unwrap();
 
-        assert_eq!(encoded[..2], [1, PROTOCOL_VERSION]);
+        assert_eq!(encoded[..2], [REQUEST_PROBE_INDEX, PROTOCOL_VERSION]);
     }
 
     #[test]
     fn spec_2_wire_encoding_a_version_other_than_1_does_not_decode() {
         let mut encoded = encode(&probe_request()).unwrap();
-        encoded[1] = 2;
+        encoded[1] = UNSUPPORTED_VERSION;
 
         assert_eq!(
             decode::<Request>(&encoded),
-            Err(CodecError::UnsupportedVersion { found: 2 })
+            Err(CodecError::UnsupportedVersion {
+                found: UNSUPPORTED_VERSION
+            })
         );
     }
 
@@ -699,13 +728,19 @@ mod tests {
         let departure_index = encode(&Payload::Departure(departure())).unwrap()[0];
         let probe_index = encode(&probe_request()).unwrap()[0];
 
-        assert_eq!([presence_index, departure_index, probe_index], [0, 1, 1]);
+        assert_eq!(
+            [presence_index, departure_index, probe_index],
+            [
+                PAYLOAD_PRESENCE_INDEX,
+                PAYLOAD_DEPARTURE_INDEX,
+                REQUEST_PROBE_INDEX
+            ]
+        );
     }
 
     #[test]
     fn spec_2_wire_encoding_fixed_arrays_carry_no_length_prefix() {
-        let variant_version_card_seq_mac_sig = 1 + 1 + 32 + 1 + 32 + SIGNATURE_BYTES;
-
+        let variant_version_card_seq_mac_sig = DEPARTURE_WITH_ZERO_SEQ_ENCODED_BYTES;
         assert_eq!(
             encode(&Payload::Departure(departure())).unwrap().len(),
             variant_version_card_seq_mac_sig
@@ -716,13 +751,13 @@ mod tests {
     fn spec_3_14_a_structure_encoding_past_the_wire_limit_does_not_encode() {
         let oversized = Request::Message(Message {
             v: Version::CURRENT,
-            id: [0; 16],
-            to: [0; 32],
+            id: [0; MESSAGE_ID_BYTES],
+            to: [0; PUBLIC_KEY_BYTES],
             handle: String::new(),
             attached: false,
             sent_at: 0,
             body: "b".repeat(WIRE_LIMIT_BYTES),
-            mac: [0; 32],
+            mac: [0; MAC_BYTES],
         });
 
         assert!(matches!(
@@ -792,13 +827,13 @@ mod tests {
     fn spec_3_14_a_message_with_the_largest_body_round_trips_within_the_wire_limit() {
         let message = Request::Message(Message {
             v: Version::CURRENT,
-            id: [1; 16],
-            to: [2; 32],
+            id: [1; MESSAGE_ID_BYTES],
+            to: [2; PUBLIC_KEY_BYTES],
             handle: "h".repeat(HANDLE_CAP_CHARACTERS),
             attached: true,
             sent_at: u64::MAX,
             body: "b".repeat(MESSAGE_BODY_CAP_BYTES),
-            mac: [4; 32],
+            mac: [4; MAC_BYTES],
         });
 
         assert_eq!(decode::<Request>(&encode(&message).unwrap()), Ok(message));
@@ -828,13 +863,13 @@ mod tests {
 
     impl Seeded {
         fn for_case(case: u64) -> Self {
-            Self(case.wrapping_add(1).wrapping_mul(0x9E37_79B9_7F4A_7C15))
+            Self(case.wrapping_add(1).wrapping_mul(SEED_SPREAD_MULTIPLIER))
         }
 
         fn next_word(&mut self) -> u64 {
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 7;
-            self.0 ^= self.0 << 17;
+            self.0 ^= self.0 << XORSHIFT_FIRST_LEFT_SHIFT;
+            self.0 ^= self.0 >> XORSHIFT_RIGHT_SHIFT;
+            self.0 ^= self.0 << XORSHIFT_SECOND_LEFT_SHIFT;
             self.0
         }
 
@@ -846,7 +881,7 @@ mod tests {
         }
 
         fn flag(&mut self) -> bool {
-            self.below(2) == 1
+            self.below(FLAG_VALUES) == 1
         }
 
         fn array<const N: usize>(&mut self) -> [u8; N] {
@@ -904,7 +939,7 @@ mod tests {
                 handle: self.text(HANDLE_CAP_CHARACTERS),
                 attached: self.flag(),
                 sent_at: self.next_word(),
-                body: self.text(200),
+                body: self.text(ROUND_TRIP_BODY_CAP_CHARACTERS),
                 mac: self.array(),
             }
         }
@@ -921,7 +956,7 @@ mod tests {
             Introduce {
                 v: Version::CURRENT,
                 handle: self.maybe_text(),
-                public: self.blob(300),
+                public: self.blob(ROUND_TRIP_PUBLIC_CAP_BYTES),
                 attached: self.flag(),
                 addr: self.addr(),
                 mac: self.array(),
@@ -951,7 +986,7 @@ mod tests {
             IntroduceAck {
                 v: Version::CURRENT,
                 handle: self.maybe_text(),
-                public: self.blob(300),
+                public: self.blob(ROUND_TRIP_PUBLIC_CAP_BYTES),
                 attached: self.flag(),
                 addr: self.addr(),
                 mac: self.array(),
@@ -963,7 +998,7 @@ mod tests {
                 v: Version::CURRENT,
                 card: self.array(),
                 handle: self.text(HANDLE_CAP_CHARACTERS),
-                public: self.blob(300),
+                public: self.blob(ROUND_TRIP_PUBLIC_CAP_BYTES),
                 attached: self.flag(),
                 addr: self.addr(),
                 seq: self.next_word(),
@@ -1015,10 +1050,10 @@ mod tests {
         }
 
         fn invitation(&mut self) -> Invitation {
-            let host_count = self.below(4).saturating_add(1);
+            let host_count = self.below(ROUND_TRIP_HOSTS_CAP).saturating_add(1);
             Invitation {
                 v: Version::CURRENT,
-                network: self.text(40),
+                network: self.text(ROUND_TRIP_NETWORK_NAME_CAP_CHARACTERS),
                 secret: self.array(),
                 owner: self.array(),
                 hosts: (0..host_count).map(|_| self.host_addr()).collect(),
