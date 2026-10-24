@@ -101,6 +101,7 @@ impl fmt::Display for DirectoriesError {
 impl std::error::Error for DirectoriesError {}
 
 /// The three base directories and the cards directory of one run, and every path derived from them.
+#[derive(Debug)]
 pub struct Directories {
     config: PathBuf,
     data: PathBuf,
@@ -444,8 +445,7 @@ mod tests {
             &filesystem,
             None,
         )
-        .err()
-        .unwrap();
+        .unwrap_err();
         assert_eq!(
             failure.to_string(),
             "XDG_CONFIG_HOME and HOME are both unset or empty: set one of them"
@@ -597,8 +597,7 @@ mod tests {
         fs::write(root.join("config"), b"").unwrap();
         let failure =
             Directories::establish(scratch_environment(&root), &OperatingSystemFilesystem, None)
-                .err()
-                .unwrap();
+                .unwrap_err();
         assert!(failure.to_string().starts_with(&format!(
             "cannot create {}",
             root.join("config/estafette").display()
