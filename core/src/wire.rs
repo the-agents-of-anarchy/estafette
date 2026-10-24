@@ -355,22 +355,22 @@ impl Wire for Payload {}
 impl Wire for HostAddr {}
 impl Wire for Invitation {}
 
-#[expect(
-    clippy::missing_errors_doc,
-    reason = "docstrings are one line; CodecError names every failure"
-)]
 /// Encodes a wire structure as postcard bytes, refusing one past the wire limit.
+///
+/// # Errors
+///
+/// Returns [`CodecError`].
 pub fn encode<T: Wire>(structure: &T) -> Result<Vec<u8>, CodecError> {
     let bytes = postcard::to_allocvec(structure).map_err(CodecError::Unencodable)?;
     ensure_within_wire_limit(bytes.len())?;
     Ok(bytes)
 }
 
-#[expect(
-    clippy::missing_errors_doc,
-    reason = "docstrings are one line; CodecError names every failure"
-)]
 /// Decodes a wire structure from exactly the given bytes, refusing bytes past the wire limit.
+///
+/// # Errors
+///
+/// Returns [`CodecError`].
 pub fn decode<T: Wire>(bytes: &[u8]) -> Result<T, CodecError> {
     ensure_within_wire_limit(bytes.len())?;
     let (structure, remainder) = postcard::take_from_bytes(bytes).map_err(CodecError::Malformed)?;
