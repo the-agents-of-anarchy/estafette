@@ -4,6 +4,7 @@ use iroh::{PublicKey, SecretKey, Signature};
 
 const KEY_LEN: usize = 32;
 pub const MAC_LEN: usize = 32;
+const HOST_CERTIFICATE_PREFIX: &[u8] = b"estafette-host-cert-v1";
 const TOPIC_CONTEXT: &str = "messaging topic v1";
 const MAC_CONTEXT: &str = "messaging mac v1";
 const GATE_CONTEXT: &str = "messaging gate v1";
@@ -53,7 +54,7 @@ pub fn sign_payload(
     signer: &SecretKey,
     zeroed_encoding: &[u8],
 ) -> Signature {
-    signer.sign(&prefixed_message(kind.domain_prefix(), zeroed_encoding))
+    sign_under_prefix(signer, kind.domain_prefix(), zeroed_encoding)
 }
 
 /// Accepts the signature only when the signer made it for this kind over this encoding.
@@ -66,16 +67,45 @@ pub fn verify_payload_signature(
     zeroed_encoding: &[u8],
     signature: &Signature,
 ) -> Result<(), CryptoError> {
-    let message = prefixed_message(kind.domain_prefix(), zeroed_encoding);
-    if signer.verify(&message, signature).is_ok() {
+    verify_under_prefix(signer, kind.domain_prefix(), zeroed_encoding, signature)
+}
+
+/// Signs the host's node id with the owner key as the host certificate (spec 3.4).
+#[must_use]
+pub fn sign_host_certificate(owner: &SecretKey, host: &PublicKey) -> Signature {
+    sign_under_prefix(owner, HOST_CERTIFICATE_PREFIX, host.as_bytes())
+}
+
+/// Accepts the certificate only when the owner key signed this host's node id.
+///
+/// # Errors
+/// `CryptoError::SignatureMismatch` when the certificate does not verify.
+pub fn verify_host_certificate(
+    owner: &PublicKey,
+    host: &PublicKey,
+    certificate: &Signature,
+) -> Result<(), CryptoError> {
+    verify_under_prefix(owner, HOST_CERTIFICATE_PREFIX, host.as_bytes(), certificate)
+}
+
+fn sign_under_prefix(signer: &SecretKey, domain_prefix: &[u8], body: &[u8]) -> Signature {
+    signer.sign(&[domain_prefix, body].concat())
+}
+
+fn verify_under_prefix(
+    signer: &PublicKey,
+    domain_prefix: &[u8],
+    body: &[u8],
+    signature: &Signature,
+) -> Result<(), CryptoError> {
+    if signer
+        .verify(&[domain_prefix, body].concat(), signature)
+        .is_ok()
+    {
         Ok(())
     } else {
         Err(CryptoError::SignatureMismatch)
     }
-}
-
-fn prefixed_message(domain_prefix: &[u8], body: &[u8]) -> Vec<u8> {
-    [domain_prefix, body].concat()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -237,5 +267,37 @@ mod tests {
             ),
             Err(CryptoError::SignatureMismatch)
         );
+    }
+
+    #[test]
+    fn spec_3_4_host_certificate_verifies_only_under_the_owner_key() {
+        let owner = SecretKey::from_bytes(&SIGNER_SEED);
+        let impostor = SecretKey::from_bytes(&[4; KEY_LEN]);
+        let host = SecretKey::from_bytes(&[5; KEY_LEN]).public();
+        let other_host = SecretKey::from_bytes(&[6; KEY_LEN]).public();
+        let certificate = sign_host_certificate(&owner, &host);
+
+        let mut prefixed = b"estafette-host-cert-v1".to_vec();
+        prefixed.extend_from_slice(host.as_bytes());
+        assert_eq!(certificate, owner.sign(&prefixed));
+        assert_eq!(
+            verify_host_certificate(&owner.public(), &host, &certificate),
+            Ok(())
+        );
+        assert_eq!(
+            verify_host_certificate(&impostor.public(), &host, &certificate),
+            Err(CryptoError::SignatureMismatch)
+        );
+        assert_eq!(
+            verify_host_certificate(&owner.public(), &other_host, &certificate),
+            Err(CryptoError::SignatureMismatch)
+        );
+        for kind in ALL_KINDS {
+            let payload_signature = sign_payload(kind, &owner, host.as_bytes());
+            assert_eq!(
+                verify_host_certificate(&owner.public(), &host, &payload_signature),
+                Err(CryptoError::SignatureMismatch)
+            );
+        }
     }
 }
