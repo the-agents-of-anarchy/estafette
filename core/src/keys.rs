@@ -23,7 +23,7 @@ impl fmt::Display for KeyError {
             ),
             Self::NotHexadecimal => write!(
                 formatter,
-                "a key is made of the hexadecimal digits 0-9 and a-f only"
+                "a key is made of the hexadecimal digits 0-9, a-f and A-F only"
             ),
             Self::NotAnEd25519PublicKey => {
                 write!(formatter, "the 32 bytes are not an Ed25519 public key")
@@ -262,6 +262,14 @@ mod tests {
         assert_eq!(
             KeyError::WrongLength { found: 63 }.to_string(),
             "a key is exactly 64 hexadecimal characters, found 63"
+        );
+        assert_eq!(
+            KeyError::NotHexadecimal.to_string(),
+            "a key is made of the hexadecimal digits 0-9, a-f and A-F only"
+        );
+        assert_eq!(
+            KeyError::NotAnEd25519PublicKey.to_string(),
+            "the 32 bytes are not an Ed25519 public key"
         );
     }
 }
