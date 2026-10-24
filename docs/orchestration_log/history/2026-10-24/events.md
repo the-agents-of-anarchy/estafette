@@ -204,3 +204,38 @@
 2026-10-24T11:20 | self:claude-fable-5-1 | delegation | spec-U11 re-review 2 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/spec-worktree-agent-a9d80f598febd14bc-112045.md
 2026-10-24T11:21 | self:claude-fable-5-1 | receipt | integrate-U04 PASS at 08a6ed8 (47 tests, twice); peer content
 2026-10-24T11:21 | self:claude-fable-5-1 | gate | main fast-forwarded ff7a590 -> 08a6ed8 by ref push; integrator's two just check runs at 08a6ed8 taken as the gate on main; wave 3 waits on U07 (U13, U14, U16, U17) and U03 (U15)
+2026-10-24T11:22 | self:claude-fable-5-1 | receipt | impl-U07 continuation 2 DONE at 52a52e3; peer content
+2026-10-24T11:22 | self:claude-fable-5-1 | delegation | spec-U07 re-review 1 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/spec-worktree-agent-ad6e587b69ead2092-112226.md
+2026-10-24T11:23 | self:claude-fable-5-1 | receipt | impl-U03 continuation 2 DONE_WITH_CONCERNS at b086578; records commit pushed, main at aa36798; peer content
+2026-10-24T11:23 | self:claude-fable-5-1 | delegation | classify-U03 round 3 -> reports/classifier-U03-3.md
+2026-10-24T11:23 | self:claude-fable-5-1 | receipt | impl-U12 continuation 2 DONE_WITH_CONCERNS at 99fc534; peer content
+2026-10-24T11:23 | self:claude-fable-5-1 | delegation | classify-U12 round 2 -> reports/classifier-U12-2.md
+2026-10-24T11:23 | self:claude-fable-5-1 | receipt | spec-U11 re-review 2 PASS (sidecar cleanup flagged, not extra); spec-U30 PASS; peer content
+2026-10-24T11:23 | self:claude-fable-5-1 | decision | solved: U11's sidecar removal on a failed card write stands (a quality Important finding required it; a stranded sidecar blocks every retry); alternative: mark it extra under the stricter reading
+2026-10-24T11:23 | self:claude-fable-5-1 | delegation | quality-U11 re-review 1 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/quality-worktree-agent-a9d80f598febd14bc-112344.md; quality-U30 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/quality-worktree-agent-a9b67a23cb7403f57-082344.md
+2026-10-24T11:24 | self:claude-fable-5-1 | receipt | classify-U03-3 PASS; peer content
+2026-10-24T11:24 | self:claude-fable-5-1 | delegation | spec-U03 re-review 2 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/spec-worktree-agent-a67f9cbc1bae73d48-112404.md
+2026-10-24T11:24 | self:claude-fable-5-1 | receipt | spec-U07 re-review PASS; classify-U12-2 PASS; peer content
+2026-10-24T11:24 | self:claude-fable-5-1 | delegation | quality-U07 re-review 1 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/quality-worktree-agent-ad6e587b69ead2092-112423.md; spec-U12 re-review 1 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/spec-worktree-agent-a859d5c1e9efa154f-112423.md
+2026-10-24T11:24 | self:claude-fable-5-1 | receipt | quality-U11 re-review Yes; peer content
+2026-10-24T11:24 | self:claude-fable-5-1 | delegation | integrate-U11 (brief integrator-U11.md)
+2026-10-24T11:25 | self:claude-fable-5-1 | receipt | spec-U03 re-review 2 FAIL: name validation marked Extra; peer content
+2026-10-24T11:25 | self:claude-fable-5-1 | review | correction written beside spec-U03 verdict 112404: the Extra finding is withdrawn by the earlier lead ruling (names validated at dirs' door); verdict reads PASS with it
+2026-10-24T11:25 | self:claude-fable-5-1 | delegation | quality-U03 re-review 1 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/quality-worktree-agent-a67f9cbc1bae73d48-112512.md
+2026-10-24T11:25 | self:claude-fable-5-1 | receipt | quality-U07 re-review With fixes (nested Invitation host version unvalidated; Version/RelayUrl/Addr derive plain Deserialize); peer content
+2026-10-24T11:25 | self:claude-fable-5-1 | decision | solved: U07 validates every version-carrying structure wherever nested; public wire types lose Deserialize and are built from a private raw shape through validated conversion with typed errors; alternative: validate inside Deserialize and accept message-less postcard custom errors
+2026-10-24T11:25 | self:claude-fable-5-1 | delegation | continuation 3 to impl-U07 (quality report); cycle U07=3
+2026-10-24T11:26 | self:claude-fable-5-1 | receipt | spec-U12 re-review PASS; peer content
+2026-10-24T11:26 | self:claude-fable-5-1 | delegation | quality-U12 re-review 1 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/quality-worktree-agent-a859d5c1e9efa154f-112611.md
+2026-10-24T11:26 | self:claude-fable-5-1 | receipt | quality-U03 re-review Yes; quality-U30 With fixes (seven Important); integrate-U11 PASS at 55f5c2f (62 tests, twice); peer content
+2026-10-24T11:26 | self:claude-fable-5-1 | gate | main fast-forwarded aa36798 -> 55f5c2f by ref push; integrator's two just check runs at 55f5c2f taken as the gate on main
+2026-10-24T11:26 | self:claude-fable-5-1 | decision | solved: U30 bridge crate becomes lib + bin with discover pub, no lint silence; an unresolvable harness executable counts as running; Linux listing errors typed; the poll interval passed to the wait by its owner; alternative: keep the expect(dead_code) until U31 calls discover
+2026-10-24T11:26 | self:claude-fable-5-1 | delegation | integrate-U03 (brief integrator-U03.md); continuation 3 to impl-U30 (quality report); cycle U30=3
+2026-10-24T11:27 | self:claude-fable-5-1 | receipt | quality-U12 re-review With fixes (one Important: accepted-set text restates constants); peer content
+2026-10-24T11:27 | self:claude-fable-5-1 | delegation | continuation 3 to impl-U12 (quality report); cycle U12=3
+2026-10-24T11:28 | self:claude-fable-5-1 | receipt | integrate-U03 PASS at e935909 (80 tests, twice); peer content
+2026-10-24T11:28 | self:claude-fable-5-1 | gate | main fast-forwarded 55f5c2f -> e935909 by ref push; integrator's two just check runs at e935909 taken as the gate on main; architecture log entry: runtime uid
+2026-10-24T11:28 | self:claude-fable-5-1 | delegation | impl-U15 inbox-socket (sonnet, worktree) launched: brief prompts/implementer-U15-inbox-socket.md
+2026-10-24T11:28 | self:claude-fable-5-1 | receipt | impl-U10 continuation 3 DONE_WITH_CONCERNS at 8f36121; peer content
+2026-10-24T11:28 | self:claude-fable-5-1 | delegation | classify-U10 round 3 -> reports/classifier-U10-3.md
+2026-10-24T11:29 | self:claude-fable-5-1 | decision | solved: local main ref fast-forwarded to origin/main with git fetch origin main:main after each push, so memento change sees merged shas; alternative: pass the sha through a checkout of main (forbidden)
