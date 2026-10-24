@@ -139,7 +139,10 @@ pub fn create_card(
     refuse_existing_card(card_path)?;
     let public_key = *SecretKey::from_bytes(&seed).public().as_bytes();
     write_sidecar_durably(sidecar_path, &seed)?;
-    write_card(card_path, handle, &public_key)
+    write_card(card_path, handle, &public_key).or_else(|error| {
+        std::fs::remove_file(sidecar_path)?;
+        Err(error)
+    })
 }
 
 fn refuse_existing_card(card_path: &Path) -> Result<(), SidecarError> {
@@ -548,5 +551,17 @@ mod tests {
         assert!(matches!(outcome, Err(SidecarError::AlreadyExists)));
         assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), old_contents);
         assert!(!card.exists());
+    }
+
+    #[test]
+    fn failed_card_write_leaves_no_sidecar_behind_spec_3_5() {
+        let directory = fresh_directory("create_card_write_fails");
+        let card = directory.join("absent-directory").join("o.yaml");
+        let sidecar = directory.join("o.key");
+
+        let outcome = create_card(&card, &sidecar, "scout", seed_of(16));
+
+        assert!(matches!(outcome, Err(SidecarError::Io(_))));
+        assert!(!sidecar.exists());
     }
 }
