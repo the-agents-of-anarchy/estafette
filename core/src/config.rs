@@ -320,9 +320,10 @@ mod tests {
     use std::fs;
 
     const NOW: u64 = 10_000_000;
+    const GROUP_READABLE_FILE_MODE: u32 = 0o644;
+    const PERMISSION_BITS_MASK: u32 = 0o777;
     const CONCURRENT_WRITERS: usize = 8;
     const CONCURRENT_ROUNDS: usize = 50;
-    const EXPIRY: u64 = 30 * 24 * 60 * 60;
 
     fn scratch_directory(test_name: &str) -> PathBuf {
         let directory = std::env::temp_dir().join(format!(
@@ -392,8 +393,18 @@ mod tests {
         let directory = scratch_directory("expiry");
         let path = directory.join("net.toml");
         let held = network(vec![
-            learned(&hex_key('1'), "https://s/", Some(1), NOW - EXPIRY - 1),
-            learned(&hex_key('2'), "https://b/", Some(2), NOW - EXPIRY),
+            learned(
+                &hex_key('1'),
+                "https://s/",
+                Some(1),
+                NOW - LEARNED_HOST_EXPIRY_SECONDS - 1,
+            ),
+            learned(
+                &hex_key('2'),
+                "https://b/",
+                Some(2),
+                NOW - LEARNED_HOST_EXPIRY_SECONDS,
+            ),
             Host {
                 id: hex_key('3'),
                 relay: "https://k/".to_owned(),
@@ -427,7 +438,7 @@ mod tests {
             &hex_key('a'),
             "https://a/",
             Some(1),
-            NOW - EXPIRY - 5,
+            NOW - LEARNED_HOST_EXPIRY_SECONDS - 5,
         )]);
 
         let merged = learned_long_ago.rewrite(&path, NOW).unwrap();
@@ -442,12 +453,12 @@ mod tests {
         let path = directory.join("net.toml");
         let held = network(vec![learned(&hex_key('a'), "https://a/", Some(1), NOW)]);
         held.rewrite(&path, NOW).unwrap();
-        fs::set_permissions(&path, Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&path, Permissions::from_mode(GROUP_READABLE_FILE_MODE)).unwrap();
 
         held.rewrite(&path, NOW).unwrap();
 
         let mode = fs::metadata(&path).unwrap().permissions().mode();
-        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(mode & PERMISSION_BITS_MASK, OWNER_ONLY_FILE_MODE);
     }
 
     /// Spec 3.3: a rewrite renames a temporary file over the old one and leaves nothing beside it.
