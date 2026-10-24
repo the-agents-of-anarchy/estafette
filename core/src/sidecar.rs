@@ -12,7 +12,6 @@ const OWNER_READ_WRITE_ONLY: u32 = 0o600;
 const CARD_FILE_MODE: u32 = 0o644;
 const PERMISSION_BITS_MASK: u32 = 0o777;
 const SEED_BYTES: usize = 32;
-const SEED_FILE_MAX_BYTES: u64 = 65;
 const LOCK_RETRY_WINDOW: Duration = Duration::from_millis(200);
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -211,7 +210,7 @@ fn require_owner_read_write_only(file: &File) -> Result<(), SidecarError> {
 
 fn read_secret_key(file: &mut File) -> Result<SecretKey, SidecarError> {
     let mut contents = Vec::new();
-    file.take(SEED_FILE_MAX_BYTES).read_to_end(&mut contents)?;
+    file.read_to_end(&mut contents)?;
     let hex = contents.strip_suffix(b"\n").unwrap_or(&contents);
     let seed: [u8; SEED_BYTES] = HEXLOWER_PERMISSIVE
         .decode(hex)
@@ -436,6 +435,23 @@ mod tests {
         write_sidecar(&sidecar, &sixty_three_hex, 0o600);
 
         let outcome = claim(&sidecar, &public_key_of(&seed_of(9)), &NoPause);
+
+        assert!(matches!(
+            outcome,
+            Err(SidecarError::Invalid(
+                InvalidSidecar::SeedNotThirtyTwoHexBytes
+            ))
+        ));
+    }
+
+    #[test]
+    fn claim_refuses_bytes_after_the_final_newline_spec_3_5() {
+        let directory = fresh_directory("trailing_bytes");
+        let seed = seed_of(15);
+        let sidecar = directory.join("n.key");
+        write_sidecar(&sidecar, &format!("{}\nX", HEXLOWER.encode(&seed)), 0o600);
+
+        let outcome = claim(&sidecar, &public_key_of(&seed), &NoPause);
 
         assert!(matches!(
             outcome,
