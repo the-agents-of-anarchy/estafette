@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::Duration;
 
-pub const POLL_INTERVAL: Duration = Duration::from_millis(2000);
+const POLL_INTERVAL: Duration = Duration::from_millis(2000);
 const BINARY_EXECUTABLE_NAME: &str = "estafette";
 const MCP_MODE_ARGUMENT: &str = "mcp";
 const RUNTIME_DIRECTORY_PREFIX: &str = "estafette-";
@@ -180,7 +180,7 @@ pub fn follow_binary_sockets(
     harness_pid: u32,
     runtime_inputs: &RuntimeDirectoryInputs,
     processes: &impl ProcessTable,
-    wait_for_next_poll: &mut impl FnMut(),
+    wait_for_next_poll: &mut impl FnMut(Duration),
     report_sockets: &mut impl FnMut(&[PathBuf]),
 ) -> Stopped {
     let runtime_dir = runtime_directory(runtime_inputs);
@@ -197,7 +197,7 @@ pub fn follow_binary_sockets(
             .map(|pid| socket_path(&runtime_dir, pid))
             .collect();
         report_sockets(&sockets);
-        wait_for_next_poll();
+        wait_for_next_poll(POLL_INTERVAL);
     }
 }
 
@@ -306,7 +306,7 @@ mod tests {
     ) -> Vec<Vec<PathBuf>> {
         let table = SnapshotSequence(RefCell::new(snapshots));
         let mut reports = Vec::new();
-        follow_binary_sockets(harness_pid, inputs, &table, &mut || {}, &mut |sockets| {
+        follow_binary_sockets(harness_pid, inputs, &table, &mut |_| {}, &mut |sockets| {
             reports.push(sockets.to_vec());
         })
         .expect_harness_exited();
@@ -335,11 +335,6 @@ mod tests {
                 PathBuf::from("/run/user/1000/estafette-1000/106.sock"),
             ]]
         );
-    }
-
-    #[test]
-    fn spec_3_12_step_5_poll_interval_is_2000_milliseconds() {
-        assert_eq!(POLL_INTERVAL.as_millis(), 2000);
     }
 
     fn single_binary_under_harness() -> Vec<ProcessEntry> {
@@ -387,12 +382,12 @@ mod tests {
         ];
         let table = SnapshotSequence(RefCell::new(snapshots));
         let mut reports = Vec::new();
-        let mut waits = 0_u32;
+        let mut waited = Vec::new();
         follow_binary_sockets(
             100,
             &runtime_inputs(),
             &table,
-            &mut || waits += 1,
+            &mut |duration| waited.push(duration),
             &mut |sockets| reports.push(sockets.to_vec()),
         )
         .expect_harness_exited();
@@ -404,7 +399,7 @@ mod tests {
                 vec![],
             ]
         );
-        assert_eq!(waits, 3);
+        assert_eq!(waited, [Duration::from_millis(2000); 3]);
     }
 
     #[test]
@@ -424,7 +419,7 @@ mod tests {
             100,
             &runtime_inputs(),
             &table,
-            &mut || {
+            &mut |_| {
                 waits += 1;
                 assert!(
                     waits <= POLLS_WHILE_HARNESS_RUNS,
@@ -637,7 +632,7 @@ mod tests {
             harness_pid,
             &runtime_inputs(),
             &PsProcessTable,
-            &mut || {
+            &mut |_| {
                 polls = polls.saturating_add(1);
                 sleep(TREE_STARTUP_POLL_PAUSE);
                 if matched.get() || polls >= TREE_STARTUP_POLL_LIMIT {
