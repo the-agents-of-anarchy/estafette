@@ -1,14 +1,15 @@
 use std::fmt;
-use std::fs::{File, TryLockError};
-use std::io::{self, Read};
-use std::os::unix::fs::PermissionsExt;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io::{self, Read, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::time::Duration;
 
-use data_encoding::HEXLOWER_PERMISSIVE;
+use data_encoding::{HEXLOWER, HEXLOWER_PERMISSIVE};
 use iroh::SecretKey;
 
 const OWNER_READ_WRITE_ONLY: u32 = 0o600;
+const CARD_FILE_MODE: u32 = 0o644;
 const PERMISSION_BITS_MASK: u32 = 0o777;
 const SEED_BYTES: usize = 32;
 const SEED_FILE_MAX_BYTES: u64 = 65;
@@ -126,6 +127,70 @@ pub fn is_held(sidecar_path: &Path) -> Result<bool, SidecarError> {
     }
 }
 
+/// Mints a key pair, writes the 0600 sidecar durably, then writes a card of handle and public key.
+///
+/// # Errors
+/// `AlreadyExists` when either file exists; nothing is written then.
+pub fn create_card(
+    card_path: &Path,
+    sidecar_path: &Path,
+    handle: &str,
+    seed: [u8; SEED_BYTES],
+) -> Result<(), SidecarError> {
+    refuse_existing_card(card_path)?;
+    let public_key = *SecretKey::from_bytes(&seed).public().as_bytes();
+    write_sidecar_durably(sidecar_path, &seed)?;
+    write_card(card_path, handle, &public_key)
+}
+
+fn refuse_existing_card(card_path: &Path) -> Result<(), SidecarError> {
+    if card_path.try_exists()? {
+        Err(SidecarError::AlreadyExists)
+    } else {
+        Ok(())
+    }
+}
+
+fn write_sidecar_durably(sidecar_path: &Path, seed: &[u8; SEED_BYTES]) -> Result<(), SidecarError> {
+    let mut file = create_new_file(sidecar_path, OWNER_READ_WRITE_ONLY)?;
+    file.write_all(format!("{}\n", HEXLOWER.encode(seed)).as_bytes())?;
+    file.sync_all()?;
+    let directory = sidecar_path.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the sidecar path has no directory",
+        )
+    })?;
+    File::open(directory)?.sync_all()?;
+    Ok(())
+}
+
+fn write_card(
+    card_path: &Path,
+    handle: &str,
+    public_key: &[u8; SEED_BYTES],
+) -> Result<(), SidecarError> {
+    let mut file = create_new_file(card_path, CARD_FILE_MODE)?;
+    let contents = format!(
+        "handle: {handle}\npublic_key: {}\n",
+        HEXLOWER.encode(public_key)
+    );
+    file.write_all(contents.as_bytes())?;
+    Ok(())
+}
+
+fn create_new_file(path: &Path, mode: u32) -> Result<File, SidecarError> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(path)
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::AlreadyExists => SidecarError::AlreadyExists,
+            _ => SidecarError::Io(error),
+        })
+}
+
 fn open_sidecar(sidecar_path: &Path) -> Result<File, SidecarError> {
     File::open(sidecar_path).map_err(|error| match error.kind() {
         io::ErrorKind::NotFound => SidecarError::Invalid(InvalidSidecar::Missing),
@@ -189,7 +254,6 @@ fn acquire_exclusive_lock(file: &File, pause: &impl Pause) -> Result<(), Sidecar
 #[cfg(test)]
 mod tests {
     use super::*;
-    use data_encoding::HEXLOWER;
 
     struct NoPause;
 
@@ -410,5 +474,63 @@ mod tests {
             outcome,
             Err(SidecarError::Invalid(InvalidSidecar::Missing))
         ));
+    }
+
+    #[test]
+    fn created_card_holds_handle_and_public_key_only_beside_a_claimable_0600_sidecar_spec_3_5() {
+        let directory = fresh_directory("create");
+        let seed = seed_of(11);
+        let card = directory.join("k.yaml");
+        let sidecar = directory.join("k.key");
+
+        create_card(&card, &sidecar, "scout", seed).unwrap();
+
+        let public_key = public_key_of(&seed);
+        assert_eq!(
+            std::fs::read_to_string(&card).unwrap(),
+            format!(
+                "handle: scout\npublic_key: {}\n",
+                HEXLOWER.encode(&public_key)
+            )
+        );
+        assert_eq!(
+            std::fs::read_to_string(&sidecar).unwrap(),
+            format!("{}\n", HEXLOWER.encode(&seed))
+        );
+        assert_eq!(
+            std::fs::metadata(&sidecar).unwrap().permissions().mode() & PERMISSION_BITS_MASK,
+            OWNER_READ_WRITE_ONLY
+        );
+        let held = claim(&sidecar, &public_key, &NoPause).unwrap();
+        assert_eq!(held.secret_key().to_bytes(), seed);
+    }
+
+    #[test]
+    fn create_refuses_an_existing_card_and_writes_no_sidecar_spec_3_5() {
+        let directory = fresh_directory("create_card_exists");
+        let card = directory.join("l.yaml");
+        let sidecar = directory.join("l.key");
+        std::fs::write(&card, "handle: old\n").unwrap();
+
+        let outcome = create_card(&card, &sidecar, "scout", seed_of(12));
+
+        assert!(matches!(outcome, Err(SidecarError::AlreadyExists)));
+        assert_eq!(std::fs::read_to_string(&card).unwrap(), "handle: old\n");
+        assert!(!sidecar.exists());
+    }
+
+    #[test]
+    fn create_refuses_an_existing_sidecar_and_leaves_it_and_writes_no_card_spec_3_5() {
+        let directory = fresh_directory("create_sidecar_exists");
+        let card = directory.join("m.yaml");
+        let sidecar = directory.join("m.key");
+        let old_contents = format!("{}\n", HEXLOWER.encode(&seed_of(13)));
+        write_sidecar(&sidecar, &old_contents, 0o600);
+
+        let outcome = create_card(&card, &sidecar, "scout", seed_of(14));
+
+        assert!(matches!(outcome, Err(SidecarError::AlreadyExists)));
+        assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), old_contents);
+        assert!(!card.exists());
     }
 }
