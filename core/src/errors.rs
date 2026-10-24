@@ -8,6 +8,11 @@ const STATUS_UNCLAIMED: &str = "unclaimed";
 const STATUS_CLAIMED: &str = "claimed";
 const AMBIGUOUS_HANDLE_MESSAGE: &str = "More than one member matches that handle. Retry shortly.";
 const CANDIDATES_LABEL: &str = "Candidates:";
+const ENVELOPE_NAME: &str = "Envelope";
+const OK_KEY: &str = "ok";
+const YOU_KEY: &str = "you";
+const RESULT_KEY: &str = "result";
+const ERROR_KEY: &str = "error";
 const ENVELOPE_FIELD_COUNT: usize = 3;
 
 /// Who the caller is as the server knows it: nobody yet, or a claimed card.
@@ -153,17 +158,17 @@ impl Serialize for ErrorCode {
 
 impl Serialize for Envelope {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut envelope = serializer.serialize_struct("Envelope", ENVELOPE_FIELD_COUNT)?;
+        let mut envelope = serializer.serialize_struct(ENVELOPE_NAME, ENVELOPE_FIELD_COUNT)?;
         match self {
             Self::Success { you, result } => {
-                envelope.serialize_field("ok", &true)?;
-                envelope.serialize_field("you", you)?;
-                envelope.serialize_field("result", result)?;
+                envelope.serialize_field(OK_KEY, &true)?;
+                envelope.serialize_field(YOU_KEY, you)?;
+                envelope.serialize_field(RESULT_KEY, result)?;
             }
             Self::Failure { you, error } => {
-                envelope.serialize_field("ok", &false)?;
-                envelope.serialize_field("you", you)?;
-                envelope.serialize_field("error", error)?;
+                envelope.serialize_field(OK_KEY, &false)?;
+                envelope.serialize_field(YOU_KEY, you)?;
+                envelope.serialize_field(ERROR_KEY, error)?;
             }
         }
         envelope.end()
