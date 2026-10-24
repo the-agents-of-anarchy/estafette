@@ -5,6 +5,9 @@ resolver = "3"
 [workspace.package]
 version = "0.1.0"
 
+[patch.crates-io]
+iroh-gossip = { path = "vendor/iroh-gossip" }
+
 [profile.release]
 strip = true
 lto = "thin"
