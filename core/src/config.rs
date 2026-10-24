@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fs::{self, OpenOptions, Permissions};
+use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -161,19 +161,43 @@ fn read_current(path: &Path) -> Result<Option<NetworkConfig>, ConfigError> {
 }
 
 fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
-    let content_hash = blake3::hash(contents.as_bytes()).to_hex();
-    let temporary_path =
-        path.with_added_extension(format!("{content_hash}.{TEMPORARY_FILE_SUFFIX}"));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(OWNER_ONLY_FILE_MODE)
-        .open(&temporary_path)?;
+    let (file, temporary_path) = create_unique_temporary_file(path)?;
+    fill_and_rename(file, &temporary_path, path, contents)
+        .inspect_err(|_| remove_temporary_file(&temporary_path))
+}
+
+fn create_unique_temporary_file(path: &Path) -> io::Result<(File, PathBuf)> {
+    for attempt in 0..=u32::MAX {
+        let temporary_path =
+            path.with_added_extension(format!("{attempt}.{TEMPORARY_FILE_SUFFIX}"));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(OWNER_ONLY_FILE_MODE)
+            .open(&temporary_path)
+        {
+            Ok(file) => return Ok((file, temporary_path)),
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(source) => return Err(source),
+        }
+    }
+    Err(io::ErrorKind::AlreadyExists.into())
+}
+
+fn fill_and_rename(
+    mut file: File,
+    temporary_path: &Path,
+    path: &Path,
+    contents: &str,
+) -> io::Result<()> {
     file.set_permissions(Permissions::from_mode(OWNER_ONLY_FILE_MODE))?;
     file.write_all(contents.as_bytes())?;
     file.sync_all()?;
-    fs::rename(&temporary_path, path)
+    fs::rename(temporary_path, path)
+}
+
+fn remove_temporary_file(temporary_path: &Path) {
+    fs::remove_file(temporary_path).unwrap_or_default();
 }
 
 #[cfg(test)]
@@ -182,6 +206,8 @@ mod tests {
     use std::fs;
 
     const NOW: u64 = 10_000_000;
+    const CONCURRENT_WRITERS: usize = 8;
+    const CONCURRENT_ROUNDS: usize = 50;
     const EXPIRY: u64 = 30 * 24 * 60 * 60;
 
     fn scratch_directory(test_name: &str) -> PathBuf {
@@ -361,6 +387,44 @@ mod tests {
 
         assert!(matches!(outcome, Err(ConfigError::Malformed { .. })));
         assert_eq!(fs::read_to_string(&path).unwrap(), "secret = ");
+    }
+
+    /// Spec 3.3: two processes rewriting the same content at once both succeed.
+    #[test]
+    fn rewrite_by_concurrent_writers_of_the_same_content_all_succeed() {
+        let directory = scratch_directory("concurrent");
+        let path = directory.join("net.toml");
+        let held = network(vec![learned("alpha", "https://a/", Some(1), NOW)]);
+
+        for _round in 0..CONCURRENT_ROUNDS {
+            std::thread::scope(|scope| {
+                let mut writers = Vec::new();
+                for _writer in 0..CONCURRENT_WRITERS {
+                    writers.push(scope.spawn(|| held.rewrite(&path, NOW)));
+                }
+                for writer in writers {
+                    assert_eq!(writer.join().unwrap().unwrap(), held);
+                }
+            });
+        }
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+    }
+
+    /// Spec 3.3: a write that fails after the temporary file exists leaves no temporary file behind.
+    #[test]
+    fn failed_write_removes_its_temporary_file() {
+        let directory = scratch_directory("debris");
+        let blocked_final_path = directory.join("net.toml");
+        fs::create_dir(&blocked_final_path).unwrap();
+
+        let outcome = write_atomically(&blocked_final_path, "secret = \"x\"\n");
+
+        assert!(outcome.is_err());
+        let names: Vec<_> = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["net.toml"]);
     }
 
     /// Spec 3.3: a rewrite creates the file when none exists.
