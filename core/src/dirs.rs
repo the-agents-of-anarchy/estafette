@@ -124,8 +124,8 @@ impl Directories {
                 .join(PRODUCT_DIRECTORY);
         let data = home_based_directory(&environment, DATA_HOME_VARIABLE, DATA_HOME_UNDER_HOME)?
             .join(PRODUCT_DIRECTORY);
-        create_private_directory(filesystem, &config)?;
-        create_private_directory(filesystem, &data)?;
+        create_base_directory(filesystem, &config)?;
+        create_base_directory(filesystem, &data)?;
         let user_id = filesystem.owner_user_id(&config).map_err(|source| {
             DirectoriesError::OwnerUnreadable {
                 path: config.clone(),
@@ -133,7 +133,7 @@ impl Directories {
             }
         })?;
         let runtime = runtime_parent(&environment).join(format!("{PRODUCT_DIRECTORY}-{user_id}"));
-        create_private_directory(filesystem, &runtime)?;
+        create_base_directory(filesystem, &runtime)?;
         let cards = cards_directory_flag
             .or_else(|| non_empty_variable(&environment, CARDS_DIRECTORY_VARIABLE))
             .unwrap_or_else(|| data.join(CARDS_SUBDIRECTORY));
@@ -246,7 +246,7 @@ fn runtime_parent(environment: &impl Fn(&str) -> Option<OsString>) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(SYSTEM_TEMPORARY_DIRECTORY))
 }
 
-fn create_private_directory(
+fn create_base_directory(
     filesystem: &impl DirectoryFilesystem,
     path: &Path,
 ) -> Result<(), DirectoriesError> {
