@@ -153,11 +153,11 @@ impl PeerTable {
         vec![Effect::SendIntroduce(node)]
     }
 
-    /// Takes a gossip report that `node` is no longer a neighbor, asking to probe it when it is in the table.
+    /// Takes a gossip report that `node` is no longer a neighbor, asking to probe it when it is in the table and not Gone.
     #[must_use]
     pub fn neighbor_down(&mut self, node: PublicKey, now_ms: u64) -> Vec<Effect> {
         self.forget_expired(now_ms);
-        if !self.peers.contains_key(&node) {
+        if self.present_entry(node).is_none() {
             return Vec::new();
         }
         vec![Effect::SendProbe(node)]
@@ -1229,28 +1229,11 @@ mod tests {
             &presence(PEER_CARD, PEER_HANDLE, FIRST_SEQ),
             NOW_MS,
         );
-        accept_presence(
-            &mut table,
-            &presence(FIRST_MEMBER_CARD, REQUESTED_HANDLE, FIRST_SEQ),
-            NOW_MS,
-        );
-        table.receive_departure(&departure(FIRST_MEMBER_CARD, DEPARTURE_SEQ), NOW_MS);
         assert_eq!(
-            table.neighbor_down(PEER_CARD, GONE_LAST_KEPT_MS),
+            table.neighbor_down(PEER_CARD, LATER_MS),
             vec![Effect::SendProbe(PEER_CARD)]
         );
-        assert_eq!(
-            table.neighbor_down(FIRST_MEMBER_CARD, GONE_LAST_KEPT_MS),
-            vec![Effect::SendProbe(FIRST_MEMBER_CARD)]
-        );
-        assert_eq!(
-            table.neighbor_down(THIRD_NODE_CARD, GONE_LAST_KEPT_MS),
-            vec![]
-        );
-        assert_eq!(
-            table.neighbor_down(FIRST_MEMBER_CARD, GONE_REMOVED_MS),
-            vec![]
-        );
+        assert_eq!(table.neighbor_down(THIRD_NODE_CARD, LATER_MS), vec![]);
     }
 
     #[test]
@@ -1346,6 +1329,13 @@ mod tests {
     fn a_successful_contact_leaves_a_gone_entry_gone_until_its_removal_spec_3_8() {
         let mut table = table_with_peer_gone_since_now();
         table.direct_contact_succeeded(PEER_CARD, LATER_MS);
+        assert_still_gone_then_removed(&mut table);
+    }
+
+    #[test]
+    fn a_neighbor_down_calls_for_no_probe_of_a_gone_entry_until_its_removal_spec_3_8() {
+        let mut table = table_with_peer_gone_since_now();
+        assert_eq!(table.neighbor_down(PEER_CARD, LATER_MS), vec![]);
         assert_still_gone_then_removed(&mut table);
     }
 
