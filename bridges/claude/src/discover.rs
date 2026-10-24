@@ -51,11 +51,18 @@ impl std::error::Error for ProcessTableError {}
 pub struct PsProcessTable;
 
 impl ProcessTable for PsProcessTable {
-    fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
-        let command_lines = run_ps(PS_COMMAND_LINE_COLUMNS)?;
-        let executables = executable_paths()?;
-        entries_from_command_lines(&command_lines, &executables)
+    fn list(&self) -> ProcessListing {
+        match list_with_ps() {
+            Ok(entries) => ProcessListing::Listed(entries),
+            Err(error) => ProcessListing::Failed(error),
+        }
     }
+}
+
+fn list_with_ps() -> Result<Vec<ProcessEntry>, ProcessTableError> {
+    let command_lines = run_ps(PS_COMMAND_LINE_COLUMNS)?;
+    let executables = executable_paths()?;
+    entries_from_command_lines(&command_lines, &executables)
 }
 
 fn run_ps(columns: &str) -> Result<String, ProcessTableError> {
@@ -147,15 +154,25 @@ fn is_binary_path(path: &str) -> bool {
     Path::new(path).file_name() == Some(OsStr::new(BINARY_EXECUTABLE_NAME))
 }
 
+pub enum ProcessListing {
+    Listed(Vec<ProcessEntry>),
+    Failed(ProcessTableError),
+}
+
 pub trait ProcessTable {
-    /// Lists every process of the machine with its parent, executable and arguments.
-    fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError>;
+    fn list(&self) -> ProcessListing;
 }
 
 pub struct RuntimeDirectoryInputs {
     pub xdg_runtime_dir: Option<PathBuf>,
     pub temporary_dir: Option<PathBuf>,
     pub user_id: u32,
+}
+
+#[derive(Debug)]
+pub enum Stopped {
+    HarnessExited,
+    ProcessListingFailed(ProcessTableError),
 }
 
 /// Reports the inbox socket paths of the binary's MCP-mode processes under the harness at every poll, until the harness exits.
@@ -165,12 +182,15 @@ pub fn follow_binary_sockets(
     processes: &impl ProcessTable,
     wait_for_next_poll: &mut impl FnMut(),
     report_sockets: &mut impl FnMut(&[PathBuf]),
-) -> Result<(), ProcessTableError> {
+) -> Stopped {
     let runtime_dir = runtime_directory(runtime_inputs);
     loop {
-        let entries = processes.list()?;
+        let entries = match processes.list() {
+            ProcessListing::Listed(entries) => entries,
+            ProcessListing::Failed(error) => return Stopped::ProcessListingFailed(error),
+        };
         if !is_running(harness_pid, &entries) {
-            return Ok(());
+            return Stopped::HarnessExited;
         }
         let sockets: Vec<PathBuf> = binary_pids_under(harness_pid, &entries)
             .into_iter()
@@ -238,15 +258,24 @@ mod tests {
 
     struct SnapshotSequence(RefCell<Vec<Vec<ProcessEntry>>>);
 
+    impl Stopped {
+        fn expect_harness_exited(self) {
+            assert!(
+                matches!(self, Self::HarnessExited),
+                "stopped for another reason: {self:?}"
+            );
+        }
+    }
+
     impl ProcessTable for SnapshotSequence {
-        fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
+        fn list(&self) -> ProcessListing {
             let mut remaining = self.0.borrow_mut();
             let snapshot = if remaining.len() > 1 {
                 remaining.remove(0)
             } else {
                 remaining.first().cloned().unwrap_or_default()
             };
-            Ok(snapshot)
+            ProcessListing::Listed(snapshot)
         }
     }
 
@@ -280,7 +309,7 @@ mod tests {
         follow_binary_sockets(harness_pid, inputs, &table, &mut || {}, &mut |sockets| {
             reports.push(sockets.to_vec());
         })
-        .expect("the table never fails");
+        .expect_harness_exited();
         reports
     }
 
@@ -366,7 +395,7 @@ mod tests {
             &mut || waits += 1,
             &mut |sockets| reports.push(sockets.to_vec()),
         )
-        .expect("the table never fails");
+        .expect_harness_exited();
         assert_eq!(
             reports,
             vec![
@@ -404,7 +433,7 @@ mod tests {
             },
             &mut |_| polls += 1,
         )
-        .expect("the table never fails");
+        .expect_harness_exited();
         assert_eq!(
             (polls, waits),
             (POLLS_WHILE_HARNESS_RUNS, POLLS_WHILE_HARNESS_RUNS)
@@ -617,7 +646,7 @@ mod tests {
             },
             &mut |sockets| matched.set(matched.get() || sockets == expected),
         )
-        .expect("ps works");
+        .expect_harness_exited();
         assert!(matched.get(), "no poll reported exactly {expected:?}");
     }
 }
