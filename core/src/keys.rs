@@ -144,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn public_key_derives_from_a_seed_of_either_case_with_or_without_newline() {
+    fn spec_3_1_card_secret_key_either_case_optional_newline_derives_public_key() {
         for text in [
             SEED_HEX.to_owned(),
             format!("{SEED_HEX}\n"),
@@ -157,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn public_key_round_trips_through_text_for_many_keys() {
+    fn spec_3_1_card_public_key_is_64_lowercase_hex_and_round_trips() {
         for index in 0..64 {
             let key = generate_secret_key(fill_seeded_by(index)).public();
             let text = render_public_key(&key);
@@ -169,13 +169,13 @@ mod tests {
     }
 
     #[test]
-    fn public_key_text_is_the_nodes_own_display_form() {
+    fn spec_3_1_card_public_key_text_is_the_node_id_text() {
         let key = generate_secret_key(fill_seeded_by(7)).public();
         assert_eq!(render_public_key(&key), key.to_string());
     }
 
     #[test]
-    fn secret_key_renders_lowercase_with_one_newline_and_round_trips() {
+    fn spec_3_1_card_secret_key_is_64_lowercase_hex_and_one_newline() {
         for index in 0..64 {
             let key = generate_secret_key(fill_seeded_by(index));
             let line = render_secret_key(&key);
@@ -187,7 +187,7 @@ mod tests {
     }
 
     #[test]
-    fn secret_key_refuses_a_second_newline() {
+    fn spec_3_1_card_secret_key_refuses_a_second_newline() {
         assert_eq!(
             parse_secret_key(&format!("{SEED_HEX}\n\n")).unwrap_err(),
             KeyError::WrongLength {
@@ -197,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn every_key_form_refuses_63_and_65_characters() {
+    fn spec_3_1_every_key_form_refuses_63_and_65_characters() {
         for found in [HEX_CHARS_PER_KEY - 1, HEX_CHARS_PER_KEY + 1] {
             let text: String = PUBLIC_HEX.repeat(2).chars().take(found).collect();
             let text = text.as_str();
@@ -209,7 +209,7 @@ mod tests {
     }
 
     #[test]
-    fn every_key_form_refuses_a_character_that_is_not_hexadecimal() {
+    fn spec_3_1_every_key_form_refuses_a_non_hexadecimal_character() {
         let text = SEED_HEX.replacen('9', "g", 1);
         assert_eq!(
             parse_public_key(&text).unwrap_err(),
@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn public_key_refuses_32_bytes_that_are_not_a_curve_point() {
+    fn spec_3_1_card_public_key_refuses_bytes_that_are_no_curve_point() {
         let not_a_point = format!("02{}", "00".repeat(KEY_BYTES - 1));
         assert_eq!(
             parse_public_key(&not_a_point).unwrap_err(),
@@ -235,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_keys_carry_exactly_the_bytes_the_source_wrote() {
+    fn spec_3_1_generated_card_secret_key_is_the_bytes_the_source_wrote() {
         for index in 0..64 {
             let expected = bytes_seeded_by(index);
             assert_eq!(
@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn network_secret_renders_lowercase_without_newline_and_round_trips() {
+    fn spec_3_1_network_secret_is_64_lowercase_hex_and_round_trips() {
         for index in 0..64 {
             let expected_text = HEXLOWER.encode(&bytes_seeded_by(index));
             let secret = parse_network_secret(&expected_text).unwrap();
@@ -275,7 +275,7 @@ mod tests {
     }
 
     #[test]
-    fn refusals_name_the_accepted_form() {
+    fn spec_3_1_refusals_name_the_accepted_form() {
         assert_eq!(
             KeyError::WrongLength { found: 63 }.to_string(),
             "a key is exactly 64 hexadecimal characters, found 63"
