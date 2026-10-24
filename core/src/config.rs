@@ -13,16 +13,61 @@ const LEARNED_HOST_EXPIRY_SECONDS: u64 = LEARNED_HOST_EXPIRY_DAYS * SECONDS_PER_
 const OWNER_ONLY_FILE_MODE: u32 = 0o600;
 const TEMPORARY_FILE_SUFFIX: &str = "tmp";
 
-/// One host of a network: its node id, relay, newest accepted record `ts`, and when it was last heard if learned.
+/// Where a host came from: the owner configured it and nothing removes it, or this member learned it and it expires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostOrigin {
+    Configured,
+    Learned { heard: u64 },
+}
+
+/// One host of a network: its node id, relay, newest accepted record `ts`, and its origin.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(from = "WireHost", into = "WireHost")]
 pub struct Host {
     pub id: String,
     pub relay: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ts: Option<u64>,
+    pub origin: HostOrigin,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireHost {
+    id: String,
+    relay: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub heard: Option<u64>,
+    ts: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    heard: Option<u64>,
+}
+
+impl From<WireHost> for Host {
+    fn from(wire: WireHost) -> Self {
+        Self {
+            id: wire.id,
+            relay: wire.relay,
+            ts: wire.ts,
+            origin: wire
+                .heard
+                .map_or(HostOrigin::Configured, |heard| HostOrigin::Learned {
+                    heard,
+                }),
+        }
+    }
+}
+
+impl From<Host> for WireHost {
+    fn from(host: Host) -> Self {
+        Self {
+            id: host.id,
+            relay: host.relay,
+            ts: host.ts,
+            heard: match host.origin {
+                HostOrigin::Configured => None,
+                HostOrigin::Learned { heard } => Some(heard),
+            },
+        }
+    }
 }
 
 /// The durable state of one network: its secret, its owner key, and its hosts.
@@ -72,22 +117,30 @@ impl std::error::Error for ConfigError {}
 impl Host {
     /// Combines two records of one host: the newer's relay, the larger `ts`, the later `heard`, configured if either is.
     fn merged_with(&self, newer: &Self) -> Self {
-        let heard = match (self.heard, newer.heard) {
-            (Some(earlier), Some(later)) => Some(earlier.max(later)),
-            (None, _) | (_, None) => None,
+        let origin = match (self.origin, newer.origin) {
+            (HostOrigin::Learned { heard: earlier }, HostOrigin::Learned { heard: later }) => {
+                HostOrigin::Learned {
+                    heard: earlier.max(later),
+                }
+            }
+            (HostOrigin::Configured | HostOrigin::Learned { .. }, HostOrigin::Configured)
+            | (HostOrigin::Configured, HostOrigin::Learned { .. }) => HostOrigin::Configured,
         };
         Self {
             id: newer.id.clone(),
             relay: newer.relay.clone(),
             ts: self.ts.max(newer.ts),
-            heard,
+            origin,
         }
     }
 
-    fn is_learned_and_expired(&self, now_unix_seconds: u64) -> bool {
-        self.heard.is_some_and(|heard| {
-            now_unix_seconds.saturating_sub(heard) > LEARNED_HOST_EXPIRY_SECONDS
-        })
+    const fn is_learned_and_expired(&self, now_unix_seconds: u64) -> bool {
+        match self.origin {
+            HostOrigin::Configured => false,
+            HostOrigin::Learned { heard } => {
+                now_unix_seconds.saturating_sub(heard) > LEARNED_HOST_EXPIRY_SECONDS
+            }
+        }
     }
 }
 
@@ -227,7 +280,7 @@ mod tests {
             id: id.to_owned(),
             relay: relay.to_owned(),
             ts,
-            heard: Some(heard),
+            origin: HostOrigin::Learned { heard },
         }
     }
 
@@ -280,7 +333,7 @@ mod tests {
                 id: "configured".to_owned(),
                 relay: "https://k/".to_owned(),
                 ts: Some(3),
-                heard: None,
+                origin: HostOrigin::Configured,
             },
         ]);
 
@@ -300,7 +353,7 @@ mod tests {
             id: "alpha".to_owned(),
             relay: "https://a/".to_owned(),
             ts: Some(1),
-            heard: None,
+            origin: HostOrigin::Configured,
         };
         network(vec![owner_configured.clone()])
             .rewrite(&path, NOW)
