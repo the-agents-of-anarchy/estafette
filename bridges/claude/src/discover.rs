@@ -23,7 +23,7 @@ const EXECUTABLE_LINK_NAME: &str = "exe";
 pub struct ProcessEntry {
     pub pid: u32,
     pub parent_pid: u32,
-    pub executable: String,
+    pub executable: Option<String>,
     pub arguments: Vec<String>,
 }
 
@@ -127,20 +127,19 @@ fn entries_from_command_lines(
         let (parent_pid_text, command_line) = split_first_token(after_pid);
         let pid = pid_text.parse().ok().ok_or_else(malformed)?;
         let parent_pid = parent_pid_text.parse().ok().ok_or_else(malformed)?;
-        if let Some(executable) = executables.get(&pid) {
-            entries.push(ProcessEntry {
-                pid,
-                parent_pid,
-                executable: executable.clone(),
-                arguments: arguments_after_executable(command_line, executable),
-            });
-        }
+        let executable = executables.get(&pid).cloned();
+        entries.push(ProcessEntry {
+            pid,
+            parent_pid,
+            arguments: arguments_after_executable(command_line, executable.as_deref()),
+            executable,
+        });
     }
     Ok(entries)
 }
 
-fn arguments_after_executable(command_line: &str, executable: &str) -> Vec<String> {
-    let after_program_name = match command_line.strip_prefix(executable) {
+fn arguments_after_executable(command_line: &str, executable: Option<&str>) -> Vec<String> {
+    let after_program_name = match executable.and_then(|path| command_line.strip_prefix(path)) {
         Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => rest,
         _ => split_first_token(command_line).1,
     };
@@ -244,7 +243,7 @@ fn descendant_pids(harness_pid: u32, entries: &[ProcessEntry]) -> BTreeSet<u32> 
 }
 
 fn runs_binary_in_mcp_mode(entry: &ProcessEntry) -> bool {
-    is_binary_path(&entry.executable)
+    entry.executable.as_deref().is_some_and(is_binary_path)
         && entry.arguments.first().map(String::as_str) == Some(MCP_MODE_ARGUMENT)
 }
 
@@ -283,7 +282,7 @@ mod tests {
         ProcessEntry {
             pid,
             parent_pid,
-            executable: executable.to_owned(),
+            executable: Some(executable.to_owned()),
             arguments: arguments
                 .iter()
                 .map(|argument| (*argument).to_owned())
@@ -466,7 +465,10 @@ mod tests {
         )
         .expect("parsed");
         let entry = only_entry(&entries);
-        assert_eq!(entry.executable, "/Users/First Last/bin/estafette");
+        assert_eq!(
+            entry.executable.as_deref(),
+            Some("/Users/First Last/bin/estafette")
+        );
         assert_eq!(entry.arguments, ["mcp", "--x"]);
         assert!(runs_binary_in_mcp_mode(entry));
     }
@@ -479,7 +481,7 @@ mod tests {
         )
         .expect("parsed");
         let entry = only_entry(&entries);
-        assert_eq!(entry.executable, "/usr/bin/python3");
+        assert_eq!(entry.executable.as_deref(), Some("/usr/bin/python3"));
         assert!(!runs_binary_in_mcp_mode(entry));
     }
 
@@ -496,10 +498,28 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_12_step_2_process_without_an_os_executable_path_is_left_out() {
+    fn spec_3_12_step_2_process_without_an_os_executable_path_is_kept_without_one() {
         let entries = entries_from_command_lines("  80     1 estafette mcp\n", &BTreeMap::new())
             .expect("parsed");
-        assert!(entries.is_empty());
+        let entry = only_entry(&entries);
+        assert_eq!(entry.executable, None);
+        assert_eq!(entry.arguments, ["mcp"]);
+        assert!(!runs_binary_in_mcp_mode(entry));
+    }
+
+    #[test]
+    fn spec_3_12_step_6_harness_whose_executable_cannot_be_resolved_is_still_running() {
+        let harness_without_executable = ProcessEntry {
+            executable: None,
+            ..entry(100, 1, "", &[])
+        };
+        let snapshots = vec![
+            vec![harness_without_executable.clone()],
+            vec![harness_without_executable],
+            vec![],
+        ];
+        let reports = collect_reports(100, &runtime_inputs(), snapshots);
+        assert_eq!(reports.len(), 2);
     }
 
     #[test]
