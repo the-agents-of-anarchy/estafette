@@ -341,10 +341,10 @@ mod tests {
     #[test]
     fn config_base_follows_xdg_config_home_spec_3_3() {
         let (directories, created) = established(&[
-            ("XDG_CONFIG_HOME", "/xc"),
-            ("XDG_DATA_HOME", "/xd"),
-            ("XDG_RUNTIME_DIR", "/xr"),
-            ("HOME", "/h"),
+            (CONFIG_HOME_VARIABLE, "/xc"),
+            (DATA_HOME_VARIABLE, "/xd"),
+            (RUNTIME_DIRECTORY_VARIABLE, "/xr"),
+            (HOME_VARIABLE, "/h"),
         ]);
         assert_eq!(
             directories.network_config_file("n"),
@@ -355,7 +355,7 @@ mod tests {
 
     #[test]
     fn config_base_falls_back_to_home_dot_config_spec_3_3() {
-        let (directories, created) = established(&[("HOME", "/h")]);
+        let (directories, created) = established(&[(HOME_VARIABLE, "/h")]);
         assert_eq!(
             directories.network_config_file("n"),
             Path::new("/h/.config/estafette/networks/n.toml")
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn data_base_follows_xdg_data_home_spec_3_3() {
         let (directories, created) =
-            established(&[("XDG_DATA_HOME", "/xd"), ("XDG_CONFIG_HOME", "/xc")]);
+            established(&[(DATA_HOME_VARIABLE, "/xd"), (CONFIG_HOME_VARIABLE, "/xc")]);
         assert_eq!(
             directories.infrastructure_key_file("n"),
             Path::new("/xd/estafette/infra/n.key")
@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn data_base_falls_back_to_home_local_share_spec_3_3() {
-        let (directories, created) = established(&[("HOME", "/h")]);
+        let (directories, created) = established(&[(HOME_VARIABLE, "/h")]);
         assert_eq!(
             directories.infrastructure_key_file("n"),
             Path::new("/h/.local/share/estafette/infra/n.key")
@@ -386,8 +386,11 @@ mod tests {
 
     #[test]
     fn runtime_base_follows_xdg_runtime_dir_with_user_id_in_name_spec_3_3() {
-        let (directories, created) =
-            established(&[("XDG_RUNTIME_DIR", "/xr"), ("TMPDIR", "/t"), ("HOME", "/h")]);
+        let (directories, created) = established(&[
+            (RUNTIME_DIRECTORY_VARIABLE, "/xr"),
+            (TEMPORARY_DIRECTORY_VARIABLE, "/t"),
+            (HOME_VARIABLE, "/h"),
+        ]);
         assert_eq!(
             directories.inbox_socket_file(7001),
             Path::new("/xr/estafette-4242/7001.sock")
@@ -397,7 +400,8 @@ mod tests {
 
     #[test]
     fn runtime_base_falls_back_to_tmpdir_spec_3_3() {
-        let (directories, _) = established(&[("TMPDIR", "/t"), ("HOME", "/h")]);
+        let (directories, _) =
+            established(&[(TEMPORARY_DIRECTORY_VARIABLE, "/t"), (HOME_VARIABLE, "/h")]);
         assert_eq!(
             directories.inbox_socket_file(7001),
             Path::new("/t/estafette-4242/7001.sock")
@@ -406,7 +410,7 @@ mod tests {
 
     #[test]
     fn runtime_base_falls_back_to_tmp_spec_3_3() {
-        let (directories, created) = established(&[("HOME", "/h")]);
+        let (directories, created) = established(&[(HOME_VARIABLE, "/h")]);
         assert_eq!(
             directories.inbox_socket_file(7001),
             Path::new("/tmp/estafette-4242/7001.sock")
@@ -417,11 +421,11 @@ mod tests {
     #[test]
     fn empty_variables_count_as_unset_spec_3_3() {
         let (directories, _) = established(&[
-            ("XDG_CONFIG_HOME", ""),
-            ("XDG_DATA_HOME", ""),
-            ("XDG_RUNTIME_DIR", ""),
-            ("TMPDIR", ""),
-            ("HOME", "/h"),
+            (CONFIG_HOME_VARIABLE, ""),
+            (DATA_HOME_VARIABLE, ""),
+            (RUNTIME_DIRECTORY_VARIABLE, ""),
+            (TEMPORARY_DIRECTORY_VARIABLE, ""),
+            (HOME_VARIABLE, "/h"),
         ]);
         assert_eq!(
             directories.network_config_file("n"),
@@ -441,7 +445,7 @@ mod tests {
     fn missing_home_with_no_xdg_variable_is_refused_naming_the_variable_spec_3_3() {
         let filesystem = RecordingFilesystem::new();
         let failure = Directories::establish(
-            environment_of(&[("XDG_DATA_HOME", "/xd")]),
+            environment_of(&[(DATA_HOME_VARIABLE, "/xd")]),
             &filesystem,
             None,
         )
@@ -456,9 +460,9 @@ mod tests {
     #[test]
     fn every_file_path_of_spec_3_3_derives_from_the_bases() {
         let (directories, _) = established(&[
-            ("XDG_CONFIG_HOME", "/c"),
-            ("XDG_DATA_HOME", "/d"),
-            ("XDG_RUNTIME_DIR", "/r"),
+            (CONFIG_HOME_VARIABLE, "/c"),
+            (DATA_HOME_VARIABLE, "/d"),
+            (RUNTIME_DIRECTORY_VARIABLE, "/r"),
         ]);
         assert_eq!(
             directories.network_config_file("net"),
@@ -507,9 +511,9 @@ mod tests {
         let filesystem = RecordingFilesystem::new();
         let directories = Directories::establish(
             environment_of(&[
-                ("XDG_DATA_HOME", "/d"),
-                ("ESTAFETTE_CARDS_DIR", "/from-environment"),
-                ("HOME", "/h"),
+                (DATA_HOME_VARIABLE, "/d"),
+                (CARDS_DIRECTORY_VARIABLE, "/from-environment"),
+                (HOME_VARIABLE, "/h"),
             ]),
             &filesystem,
             Some(PathBuf::from("/from-flag")),
@@ -534,9 +538,9 @@ mod tests {
     #[test]
     fn cards_directory_environment_overrides_default_spec_3_3() {
         let (directories, _) = established(&[
-            ("XDG_DATA_HOME", "/d"),
-            ("ESTAFETTE_CARDS_DIR", "/from-environment"),
-            ("HOME", "/h"),
+            (DATA_HOME_VARIABLE, "/d"),
+            (CARDS_DIRECTORY_VARIABLE, "/from-environment"),
+            (HOME_VARIABLE, "/h"),
         ]);
         assert_eq!(
             directories.card_sidecar_file("net", "alice"),
