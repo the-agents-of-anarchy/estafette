@@ -1,5 +1,6 @@
+use iroh::address_lookup::MemoryLookup;
 use iroh::endpoint::{BindError, QuicTransportConfig, VarInt, presets};
-use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
+use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey};
 use iroh_gossip::ALPN as GOSSIP_ALPN;
 
 use super::gate::{NONCE_BYTES, NetworkSecretGate};
@@ -8,13 +9,14 @@ use crate::crypto::GateKey;
 pub const DIRECT_ALPN: &[u8] = b"estafette/direct/1";
 const QUIC_IDLE_TIMEOUT_MILLIS: u32 = 10_000;
 
-/// The node's iroh endpoint, gated on the network secret for every gossip connection.
+/// The node's iroh endpoint, gated on the network secret for every gossip connection, with the address lookup the node feeds.
 pub struct NodeEndpoint {
     endpoint: Endpoint,
+    address_lookup: MemoryLookup,
 }
 
 impl NodeEndpoint {
-    /// Binds an endpoint under the key with the relays, no discovery service, and the network secret gate on every gossip connection.
+    /// Binds an endpoint under the key with the relays, the fed lookup as its only address source, and the network secret gate on every gossip connection.
     ///
     /// # Errors
     /// The iroh bind error when no socket can be bound.
@@ -25,22 +27,32 @@ impl NodeEndpoint {
         fill_nonce: impl Fn(&mut [u8; NONCE_BYTES]) + Send + Sync + 'static,
     ) -> Result<Self, BindError> {
         let relay_map: RelayMap = relays.into_iter().collect();
+        let address_lookup = MemoryLookup::new();
         let gate = NetworkSecretGate::new(gate_key, secret_key.public(), fill_nonce);
         let endpoint = Endpoint::builder(presets::Minimal)
             .secret_key(secret_key)
             .alpns(vec![DIRECT_ALPN.to_vec(), GOSSIP_ALPN.to_vec()])
             .relay_mode(RelayMode::Custom(relay_map))
             .transport_config(quic_transport_config())
+            .address_lookup(address_lookup.clone())
             .hooks(gate)
             .bind()
             .await?;
-        Ok(Self { endpoint })
+        Ok(Self {
+            endpoint,
+            address_lookup,
+        })
     }
 
     /// The iroh endpoint the gossip layer and the direct protocol run on.
     #[must_use]
     pub const fn endpoint(&self) -> &Endpoint {
         &self.endpoint
+    }
+
+    /// Replaces, never merges, the lookup entry of the address's card, so a dial by card id goes there alone.
+    pub fn replace_address(&self, address: EndpointAddr) {
+        self.address_lookup.set_endpoint_info(address);
     }
 }
 
@@ -54,9 +66,12 @@ fn quic_transport_config() -> QuicTransportConfig {
 mod tests {
     use super::*;
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
-    use iroh::EndpointId;
-    use iroh::endpoint::{ConnectError, ConnectingError, Connection, ConnectionError};
+    use iroh::endpoint::{
+        ConnectError, ConnectWithOptsError, ConnectingError, Connection, ConnectionError,
+    };
+    use iroh::{EndpointId, TransportAddr};
     use std::time::{Duration, Instant};
+    use tokio::time::timeout;
 
     const SPEC_DIRECT_ALPN: &[u8] = b"estafette/direct/1";
     const SPEC_GATE_KEY_CONTEXT: &str = "messaging gate v1";
@@ -78,6 +93,8 @@ mod tests {
     const FIRST_HOST_RELAY: &str = "https://relay-one.estafette.invalid/";
     const SECOND_HOST_RELAY: &str = "https://relay-two.estafette.invalid/";
     const UNKNOWN_HOST_RELAY: &str = "https://relay-unknown.estafette.invalid/";
+    const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
+    const LOCAL_DIAL_WAIT: Duration = Duration::from_millis(2000);
 
     fn gate_key_of(secret: [u8; KEY_LEN]) -> GateKey {
         *NetworkKeys::derive(&NetworkSecret::from_bytes(secret)).gate_key()
@@ -327,5 +344,71 @@ mod tests {
         assert!(
             SPEC_QUIC_IDLE_TIMEOUT_EARLIEST <= waited && waited < SPEC_QUIC_IDLE_TIMEOUT_LATEST
         );
+    }
+
+    async fn dial_by_card_id(
+        dialer: &NodeEndpoint,
+        acceptor: &NodeEndpoint,
+    ) -> Option<(Connection, Connection)> {
+        let (dial_outcome, accept_outcome) = tokio::join!(
+            timeout(
+                LOCAL_DIAL_WAIT,
+                dialer
+                    .endpoint()
+                    .connect(acceptor.endpoint().id(), DIRECT_ALPN)
+            ),
+            timeout(LOCAL_DIAL_WAIT, accept_next(acceptor.endpoint()))
+        );
+        Some((dial_outcome.ok()?.ok()?, accept_outcome.ok()?.ok()?))
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_dial_by_card_id_reaches_the_address_the_node_fed() {
+        let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
+        let peer = bind_node(SECOND_MEMBER_SEED, MEMBER_SECRET).await;
+
+        member.replace_address(peer.endpoint().addr());
+
+        let (dialed, accepted) = dial_by_card_id(&member, &peer).await.unwrap();
+        assert_eq!(dialed.remote_id(), peer.endpoint().id());
+        assert_eq!(accepted.remote_id(), member.endpoint().id());
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_no_discovery_service_finds_a_card_the_node_never_fed() {
+        let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
+        let unfed = bind_node(SECOND_MEMBER_SEED, MEMBER_SECRET).await;
+
+        let dialed = member
+            .endpoint()
+            .connect(unfed.endpoint().id(), DIRECT_ALPN)
+            .await;
+
+        assert!(matches!(
+            dialed,
+            Err(ConnectError::Connect {
+                source: ConnectWithOptsError::NoAddress { .. },
+                ..
+            })
+        ));
+        assert_eq!(member.endpoint().address_lookup().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_replacing_a_card_address_drops_the_old_one() {
+        let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
+        let peer = bind_node(SECOND_MEMBER_SEED, MEMBER_SECRET).await;
+        let black_hole = std::net::UdpSocket::bind(LOOPBACK_ANY_PORT).unwrap();
+        let unanswered_address = EndpointAddr::from_parts(
+            peer.endpoint().id(),
+            [TransportAddr::Ip(black_hole.local_addr().unwrap())],
+        );
+
+        member.replace_address(peer.endpoint().addr());
+        member.replace_address(unanswered_address);
+        assert!(dial_by_card_id(&member, &peer).await.is_none());
+
+        member.replace_address(peer.endpoint().addr());
+        assert!(dial_by_card_id(&member, &peer).await.is_some());
     }
 }
