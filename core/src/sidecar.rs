@@ -12,6 +12,7 @@ const OWNER_READ_WRITE_ONLY: u32 = 0o600;
 const CARD_FILE_MODE: u32 = 0o644;
 const PERMISSION_BITS_MASK: u32 = 0o777;
 const SEED_BYTES: usize = 32;
+const PUBLIC_KEY_BYTES: usize = 32;
 const LOCK_RETRY_WINDOW: Duration = Duration::from_millis(200);
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -100,7 +101,7 @@ impl HeldSidecar {
 /// `Invalid` for a missing, loosely permitted, malformed, or mismatched sidecar; `CardHeld` when another holder keeps the lock past the window.
 pub fn claim(
     sidecar_path: &Path,
-    card_public_key: &[u8; SEED_BYTES],
+    card_public_key: &[u8; PUBLIC_KEY_BYTES],
     pause: &impl Pause,
 ) -> Result<HeldSidecar, SidecarError> {
     let mut file = open_sidecar(sidecar_path)?;
@@ -126,7 +127,7 @@ pub fn is_held(sidecar_path: &Path) -> Result<bool, SidecarError> {
     }
 }
 
-/// Mints a key pair, writes the 0600 sidecar durably, then writes a card of handle and public key.
+/// Derives the key pair from the given seed, writes the 0600 sidecar durably, then writes a card of handle and public key.
 ///
 /// # Errors
 /// `AlreadyExists` when either file exists; nothing is written then.
@@ -170,7 +171,7 @@ fn write_sidecar_durably(sidecar_path: &Path, seed: &[u8; SEED_BYTES]) -> Result
 fn write_card(
     card_path: &Path,
     handle: &str,
-    public_key: &[u8; SEED_BYTES],
+    public_key: &[u8; PUBLIC_KEY_BYTES],
 ) -> Result<(), SidecarError> {
     let mut file = create_new_file(card_path, CARD_FILE_MODE)?;
     let contents = format!(
@@ -227,7 +228,7 @@ fn read_secret_key(file: &mut File) -> Result<SecretKey, SidecarError> {
 
 fn require_public_key_matches(
     secret_key: &SecretKey,
-    card_public_key: &[u8; SEED_BYTES],
+    card_public_key: &[u8; PUBLIC_KEY_BYTES],
 ) -> Result<(), SidecarError> {
     if secret_key.public().as_bytes() == card_public_key {
         Ok(())
@@ -364,7 +365,7 @@ mod tests {
         let second = claim(&sidecar, &public_key, &recording_pause);
 
         assert!(matches!(second, Err(SidecarError::CardHeld)));
-        assert_eq!(recording_pause.paused.get(), Duration::from_millis(200));
+        assert_eq!(recording_pause.paused.get(), LOCK_RETRY_WINDOW);
     }
 
     #[test]
