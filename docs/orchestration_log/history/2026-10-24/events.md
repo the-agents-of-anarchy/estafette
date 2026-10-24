@@ -348,3 +348,24 @@
 2026-10-24T15:50 | self:claude-fable-5-1 | receipt | integrate-U15 Result PASS at af620dd; main fast-forwarded; architecture_log entry on the stale-socket check written
 2026-10-24T15:50 | self:claude-fable-5-1 | receipt | impl-U16 continuation 1 DONE at c0330e4; Gone rulings applied, four tests; peer content
 2026-10-24T15:50 | self:claude-fable-5-1 | delegation | spec-U16 launched (sonnet, spec-reviewer)
+2026-10-24T15:51 | self:claude-fable-5-1 | discovery | a main push issued right after an integration push fails once with 'failed to push some refs' and succeeds on retry (three times today); records pushes go main first from now
+2026-10-24T15:52 | self:claude-fable-5-1 | review | quality-U17 124938 Ready With fixes: Important gate failures collapse to Option<()>; four Minor noted; impl-U17 continued (cycle 1)
+2026-10-24T15:53 | self:claude-fable-5-1 | review | spec-U16 verdict 125042 PASS, no findings; quality-U16 launched
+2026-10-24T15:55 | self:claude-fable-5-1 | review | quality-U16 125314 Ready With fixes: Important expiry sweep hand-written in ten methods, neighbor_up omits it; two Minor; impl-U16 continued (cycle 1)
+2026-10-24T16:00 | self:claude-fable-5-1 | receipt | impl-U31 DONE_WITH_CONCERNS at b15b586: inbox client, 8 tests, serde deps added; peer content
+2026-10-24T16:00 | self:claude-fable-5-1 | delegation | classify-U31 round 1 -> reports/classifier-U31.md
+2026-10-24T16:00 | self:claude-fable-5-1 | receipt | impl-U17 continuation 1 DONE_WITH_CONCERNS at 7ef5853: GateFailure typed; concerns reuse round-1 classification; peer content
+2026-10-24T16:00 | self:claude-fable-5-1 | delegation | spec-U17 continued for re-review 2; classify-U31 launched
+2026-10-24T16:02 | self:claude-fable-5-1 | review | spec-U17 re-review 2 PASS 130035 at 7ef5853; quality-U17 continued
+2026-10-24T16:02 | self:claude-fable-5-1 | receipt | impl-U16 continuation 2 DONE_WITH_CONCERNS at 5ef3b65: expiry in one home, pure peers read; peer content
+2026-10-24T16:03 | self:claude-fable-5-1 | decision | solved: impl-U16's concern that the requested neighbor_up probe cannot discriminate is an observation about the brief (the sweep is pinned by the retention test), no classifier; alternative: launch a classifier round
+2026-10-24T16:03 | self:claude-fable-5-1 | review | classifier-U31: nine rows all observations; spec-U31 launched
+2026-10-24T16:04 | self:claude-fable-5-1 | review | spec-U16 re-review 2 PASS 130259 at 5ef3b65; quality-U16 continued
+2026-10-24T16:05 | self:claude-fable-5-1 | review | quality-U17 re-review 130215 Ready With fixes: Important GateFailure discarded at after_handshake; impl-U17 continued (cycle 2)
+2026-10-24T16:05 | self:claude-fable-5-1 | decision | solved: the gate's close reason is surfaced through a sink handed in at NodeEndpoint::bind (callback or bounded sender), U20 wires it to the stderr run record; alternative: trim GateFailure to three fieldless variants and keep it internal
+2026-10-24T16:05 | self:claude-fable-5-1 | review | spec-U31 verdict 130345 PASS, no findings; quality-U31 launched
+2026-10-24T16:06 | self:claude-fable-5-1 | review | quality-U16 re-review 130440 Ready Yes; three Minor carried; U16 passed both reviews
+2026-10-24T16:06 | self:claude-fable-5-1 | delegation | integrate-U16 (sonnet): rebase 5ef3b65 from bdcac63 onto integration resolving lib.rs mod lines, ff -> reports/integrator-U16.md
+2026-10-24T16:07 | self:claude-fable-5-1 | review | quality-U31 130552 Ready No: Critical real-socket test flaky (2/40), Important two error variants untested; impl-U31 continued (cycle 1)
+2026-10-24T16:07 | self:claude-fable-5-1 | decision | solved: the bridge inbox client waits RECONNECT_PAUSE 500 ms after a clean close before reconnecting (spec silent; prevents a spin against a server that closes at once); alternative: reconnect at once
+2026-10-24T16:08 | self:claude-fable-5-1 | receipt | integrate-U16 Result PASS at 6eafb76 (lib.rs mod lines resolved alphabetically); main fast-forwarded to 6eafb76
