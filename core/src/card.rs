@@ -39,6 +39,7 @@ pub enum CardInvalid {
     MergeKey,
     DuplicatePublicKey(String),
     PublicOverCap { bytes: usize },
+    AliasExpansionTooLarge,
 }
 
 impl fmt::Display for CardInvalid {
@@ -84,6 +85,10 @@ impl fmt::Display for CardInvalid {
             Self::PublicOverCap { bytes } => write!(
                 formatter,
                 "card `public` serializes to {bytes} bytes; the cap is {PUBLIC_MAX_BYTES}"
+            ),
+            Self::AliasExpansionTooLarge => write!(
+                formatter,
+                "card aliases expand to more than {PUBLIC_MAX_BYTES} nodes"
             ),
         }
     }
@@ -205,8 +210,14 @@ impl OpenNode {
 struct DocumentCollector {
     open: Vec<OpenNode>,
     documents: Vec<Node>,
-    anchored: HashMap<usize, Node>,
-    alias_met_its_own_open_anchor: bool,
+    anchored: HashMap<usize, AnchoredNode>,
+    expanded_nodes: usize,
+    refusal: Option<CardInvalid>,
+}
+
+struct AnchoredNode {
+    node: Node,
+    node_count: usize,
 }
 
 impl DocumentCollector {
@@ -227,16 +238,51 @@ impl DocumentCollector {
 
     fn place_remembering_anchor(&mut self, anchor: usize, node: Node) {
         if anchor != NO_ANCHOR {
-            self.anchored.insert(anchor, node.clone());
+            let node_count = count_nodes(&node);
+            self.anchored.insert(
+                anchor,
+                AnchoredNode {
+                    node: node.clone(),
+                    node_count,
+                },
+            );
         }
         self.place(node);
     }
 
-    fn place_anchored_value(&mut self, anchor: usize) {
-        match self.anchored.get(&anchor).cloned() {
-            Some(node) => self.place(node),
-            None => self.alias_met_its_own_open_anchor = true,
+    fn place_alias_target(&mut self, anchor: usize) {
+        let Some(target) = self.anchored.get(&anchor) else {
+            self.refuse(CardInvalid::Unparsable(
+                "an alias points at the node that contains it".to_owned(),
+            ));
+            return;
+        };
+        let expanded_nodes = self.expanded_nodes.saturating_add(target.node_count);
+        if expanded_nodes > PUBLIC_MAX_BYTES {
+            self.refuse(CardInvalid::AliasExpansionTooLarge);
+            return;
         }
+        let node = target.node.clone();
+        self.expanded_nodes = expanded_nodes;
+        self.place(node);
+    }
+
+    fn refuse(&mut self, refusal: CardInvalid) {
+        self.refusal.get_or_insert(refusal);
+    }
+}
+
+fn count_nodes(node: &Node) -> usize {
+    match node {
+        Node::Scalar { .. } => 1,
+        Node::Sequence { items, .. } => {
+            items.iter().map(count_nodes).fold(1, usize::saturating_add)
+        }
+        Node::Mapping { entries, .. } => entries
+            .iter()
+            .flat_map(|(key, value)| [key, value])
+            .map(count_nodes)
+            .fold(1, usize::saturating_add),
     }
 }
 
@@ -246,7 +292,7 @@ impl MarkedEventReceiver for DocumentCollector {
             Event::Scalar(text, style, anchor, tag) => {
                 self.place_remembering_anchor(anchor, Node::Scalar { text, style, tag });
             }
-            Event::Alias(anchor) => self.place_anchored_value(anchor),
+            Event::Alias(anchor) => self.place_alias_target(anchor),
             Event::SequenceStart(anchor, tag) => {
                 self.open.push(OpenNode::Sequence {
                     anchor,
@@ -282,10 +328,8 @@ fn read_single_document(text: &str) -> Result<Node, CardInvalid> {
     Parser::new_from_str(text)
         .load(&mut collector, true)
         .map_err(|error| CardInvalid::Unparsable(error.to_string()))?;
-    if collector.alias_met_its_own_open_anchor {
-        return Err(CardInvalid::Unparsable(
-            "an alias points at the node that contains it".to_owned(),
-        ));
+    if let Some(refusal) = collector.refusal {
+        return Err(refusal);
     }
     let mut documents = collector.documents.into_iter();
     match (documents.next(), documents.next()) {
@@ -739,6 +783,37 @@ mod tests {
             parse_card("handle: ada\npublic_key: abc\npublic: &a\n  self: *a\n"),
             Err(CardInvalid::Unparsable(_))
         ));
+    }
+
+    #[test]
+    fn parse_bounds_alias_expansion_by_the_public_cap_in_nodes_spec_3_5() {
+        let aliases = |count: usize| {
+            parse_card(&format!(
+                "handle: ada\npublic_key: abc\nanchor: &a x\nextra: [{}]\n",
+                vec!["*a"; count].join(",")
+            ))
+        };
+        assert_eq!(aliases(PUBLIC_MAX_BYTES).map(|_| ()), Ok(()));
+        assert_eq!(
+            aliases(PUBLIC_MAX_BYTES + 1),
+            Err(CardInvalid::AliasExpansionTooLarge)
+        );
+
+        let nested_levels = (0..7)
+            .zip(1..8)
+            .map(|(previous, level)| {
+                let fan_out = vec![format!("*l{previous}"); 10].join(",");
+                format!("l{level}: &l{level} [{fan_out}]\n")
+            })
+            .collect::<Vec<_>>()
+            .concat();
+        let nested = format!(
+            "handle: ada\npublic_key: abc\nl0: &l0 [x, x, x, x, x, x, x, x, x, x]\n{nested_levels}"
+        );
+        assert_eq!(
+            parse_card(&nested),
+            Err(CardInvalid::AliasExpansionTooLarge)
+        );
     }
 
     #[test]
