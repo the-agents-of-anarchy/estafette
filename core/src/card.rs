@@ -173,6 +173,7 @@ impl fmt::Display for DescriptionOverCap {
 
 impl std::error::Error for DescriptionOverCap {}
 
+/// One YAML node of a card, with its tag and with every alias already replaced by its anchored value.
 #[derive(Clone)]
 enum Node {
     Scalar {
@@ -190,6 +191,7 @@ enum Node {
     },
 }
 
+/// A sequence or mapping whose closing event has not arrived yet, with its anchor id.
 enum OpenNode {
     Sequence {
         anchor: usize,
@@ -205,6 +207,7 @@ enum OpenNode {
 }
 
 impl OpenNode {
+    /// The finished node and the anchor id it was opened with.
     fn close(self) -> (usize, Node) {
         match self {
             Self::Sequence { anchor, tag, items } => (anchor, Node::Sequence { tag, items }),
@@ -218,6 +221,7 @@ impl OpenNode {
     }
 }
 
+/// Builds the document nodes from parser events, resolving aliases within the expansion bound.
 #[derive(Default)]
 struct DocumentCollector {
     open: Vec<OpenNode>,
@@ -227,12 +231,14 @@ struct DocumentCollector {
     refusal: Option<CardInvalid>,
 }
 
+/// A finished anchored node and the number of nodes it holds.
 struct AnchoredNode {
     node: Node,
     node_count: usize,
 }
 
 impl DocumentCollector {
+    /// Puts a finished node where the parser is: a sequence item, a mapping key or value, or a document.
     fn place(&mut self, node: Node) {
         match self.open.last_mut() {
             None => self.documents.push(node),
@@ -248,6 +254,7 @@ impl DocumentCollector {
         }
     }
 
+    /// Places a finished node and remembers it when it carries an anchor.
     fn place_remembering_anchor(&mut self, anchor: usize, node: Node) {
         if anchor != NO_ANCHOR {
             let node_count = count_nodes(&node);
@@ -262,6 +269,7 @@ impl DocumentCollector {
         self.place(node);
     }
 
+    /// Places a copy of the anchored node, or records the refusal when it cannot be copied.
     fn place_alias_target(&mut self, anchor: usize) {
         let Some(target) = self.anchored.get(&anchor) else {
             self.refuse(CardInvalid::Unparsable(
@@ -279,11 +287,13 @@ impl DocumentCollector {
         self.place(node);
     }
 
+    /// Keeps the first refusal and drops any later one.
     fn refuse(&mut self, refusal: CardInvalid) {
         self.refusal.get_or_insert(refusal);
     }
 }
 
+/// The number of nodes in the tree, the node itself included.
 fn count_nodes(node: &Node) -> usize {
     match node {
         Node::Scalar { .. } => 1,
@@ -335,6 +345,7 @@ impl MarkedEventReceiver for DocumentCollector {
     }
 }
 
+/// The single document of the text, or the refusal for unparsable text, an alias refusal, or a wrong document count.
 fn read_single_document(text: &str) -> Result<Node, CardInvalid> {
     let mut collector = DocumentCollector::default();
     Parser::new_from_str(text)
@@ -350,6 +361,7 @@ fn read_single_document(text: &str) -> Result<Node, CardInvalid> {
     }
 }
 
+/// The key and value pairs of a mapping node, refusing any other node.
 fn mapping_entries(node: &Node) -> Result<&[(Node, Node)], CardInvalid> {
     match node {
         Node::Mapping { entries, .. } => Ok(entries),
@@ -357,6 +369,7 @@ fn mapping_entries(node: &Node) -> Result<&[(Node, Node)], CardInvalid> {
     }
 }
 
+/// The text of a scalar node, or None for a sequence or mapping.
 fn scalar_text_of(node: &Node) -> Option<&str> {
     match node {
         Node::Scalar { text, .. } => Some(text),
@@ -364,6 +377,7 @@ fn scalar_text_of(node: &Node) -> Option<&str> {
     }
 }
 
+/// The value under the one key of that name, None when absent, refusing a key named twice.
 fn value_of_unique_key<'card>(
     entries: &'card [(Node, Node)],
     name: &'static str,
@@ -379,6 +393,7 @@ fn value_of_unique_key<'card>(
     }
 }
 
+/// The text of the scalar under the key, None when the key is absent, refusing a non-scalar value.
 fn optional_scalar_text(
     entries: &[(Node, Node)],
     name: &'static str,
@@ -392,6 +407,7 @@ fn optional_scalar_text(
         .transpose()
 }
 
+/// The text of the scalar under the key, refusing an absent key or a non-scalar value.
 fn required_scalar_text(
     entries: &[(Node, Node)],
     name: &'static str,
@@ -399,6 +415,7 @@ fn required_scalar_text(
     optional_scalar_text(entries, name)?.ok_or(CardInvalid::MissingKey(name))
 }
 
+/// The `public` mapping as JSON, empty when absent, refusing a non-mapping or one over the cap.
 fn public_mapping(entries: &[(Node, Node)]) -> Result<Map<String, Value>, CardInvalid> {
     let mapping = match value_of_unique_key(entries, PUBLIC_FIELD)? {
         None => Map::new(),
@@ -416,10 +433,12 @@ fn public_mapping(entries: &[(Node, Node)]) -> Result<Map<String, Value>, CardIn
     refuse_over_cap(mapping).map_err(|bytes| CardInvalid::PublicOverCap { bytes })
 }
 
+/// The compact JSON bytes of the mapping, without whitespace.
 fn compact_json(mapping: &Map<String, Value>) -> Vec<u8> {
     Value::Object(mapping.clone()).to_string().into_bytes()
 }
 
+/// The mapping itself, or the byte size of its compact JSON when that passes the cap.
 fn refuse_over_cap(mapping: Map<String, Value>) -> Result<Map<String, Value>, usize> {
     let bytes = compact_json(&mapping).len();
     if bytes > PUBLIC_MAX_BYTES {
@@ -428,6 +447,7 @@ fn refuse_over_cap(mapping: Map<String, Value>) -> Result<Map<String, Value>, us
     Ok(mapping)
 }
 
+/// The tag of a node, None when untagged.
 const fn tag_of(node: &Node) -> Option<&Tag> {
     match node {
         Node::Scalar { tag, .. } | Node::Sequence { tag, .. } | Node::Mapping { tag, .. } => {
@@ -436,6 +456,7 @@ const fn tag_of(node: &Node) -> Option<&Tag> {
     }
 }
 
+/// Refuses a tagged node, naming binary data apart from every other tag.
 fn refuse_tagged(node: &Node) -> Result<(), CardInvalid> {
     match tag_of(node) {
         None => Ok(()),
@@ -444,10 +465,12 @@ fn refuse_tagged(node: &Node) -> Result<(), CardInvalid> {
     }
 }
 
+/// Whether the tag is the YAML core binary tag.
 fn is_binary_tag(tag: &Tag) -> bool {
     tag.handle == YAML_CORE_TAG_HANDLE && tag.suffix == YAML_BINARY_TAG_SUFFIX
 }
 
+/// The JSON value of a node, refusing every content spec 3.5 does not allow in `public`.
 fn convert_value(node: &Node) -> Result<Value, CardInvalid> {
     refuse_tagged(node)?;
     match node {
@@ -461,10 +484,12 @@ fn convert_value(node: &Node) -> Result<Value, CardInvalid> {
     }
 }
 
+/// Whether a plain scalar is a YAML 1.1 timestamp, which spec 3.5 refuses as a date.
 fn is_yaml_timestamp(text: &str) -> bool {
     skip_timestamp(text).is_some()
 }
 
+/// Some when the whole text is a YAML 1.1 timestamp: a date, optionally with a time and a zone.
 fn skip_timestamp(text: &str) -> Option<()> {
     let after_date = skip_date(text)?;
     if after_date.is_empty() {
@@ -483,6 +508,7 @@ fn skip_timestamp(text: &str) -> Option<()> {
     (zone.is_empty() || zone == UTC_DESIGNATOR || skip_zone_offset(zone)?.is_empty()).then_some(())
 }
 
+/// The text after a year-month-day date, or None when the text does not open with one.
 fn skip_date(text: &str) -> Option<&str> {
     let after_year = skip_digits(text, YEAR_DIGITS, YEAR_DIGITS)?;
     let after_month = skip_digits(
@@ -497,6 +523,7 @@ fn skip_date(text: &str) -> Option<&str> {
     )
 }
 
+/// The text after an hour-minute-second clock, or None when the text does not open with one.
 fn skip_clock(text: &str) -> Option<&str> {
     let after_hour = skip_digits(text, 1, DATE_PART_MAX_DIGITS)?;
     let after_minute = skip_digits(
@@ -511,6 +538,7 @@ fn skip_clock(text: &str) -> Option<&str> {
     )
 }
 
+/// The text after a zone offset of sign, hours and optional minutes, or None when the text does not open with one.
 fn skip_zone_offset(text: &str) -> Option<&str> {
     let after_hours = skip_digits(text.strip_prefix(ZONE_SIGNS)?, 1, DATE_PART_MAX_DIGITS)?;
     after_hours
@@ -520,11 +548,13 @@ fn skip_zone_offset(text: &str) -> Option<&str> {
         })
 }
 
+/// The text after its leading spaces and tabs, or None when it has none.
 fn strip_leading_blanks(text: &str) -> Option<&str> {
     let stripped = text.trim_start_matches(BLANKS);
     (stripped.len() < text.len()).then_some(stripped)
 }
 
+/// The text after a run of digits, or None when the run is shorter than the least or longer than the most.
 fn skip_digits(text: &str, least: usize, most: usize) -> Option<&str> {
     let count = text.bytes().take_while(u8::is_ascii_digit).count();
     if count < least || count > most {
@@ -533,6 +563,7 @@ fn skip_digits(text: &str, least: usize, most: usize) -> Option<&str> {
     text.split_at_checked(count).map(|(_, rest)| rest)
 }
 
+/// The JSON value of a scalar: quoted text stays a string, plain text resolves as YAML resolves it.
 fn convert_scalar(text: &str, style: TScalarStyle) -> Result<Value, CardInvalid> {
     if style != TScalarStyle::Plain {
         return Ok(Value::String(text.to_owned()));
@@ -562,6 +593,7 @@ fn convert_scalar(text: &str, style: TScalarStyle) -> Result<Value, CardInvalid>
     }
 }
 
+/// Whether the node is an untagged plain `<<` scalar, the YAML merge key.
 fn is_merge_key(key: &Node) -> bool {
     match key {
         Node::Scalar {
@@ -573,11 +605,13 @@ fn is_merge_key(key: &Node) -> bool {
     }
 }
 
+/// Whether the text is an optional sign followed by digits alone.
 fn is_integer_text(text: &str) -> bool {
     let digits = text.strip_prefix(NUMBER_SIGNS).unwrap_or(text);
     !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
 }
 
+/// The JSON object of a mapping, refusing a merge key, a non-string key and a duplicate key.
 fn convert_mapping(entries: &[(Node, Node)]) -> Result<Value, CardInvalid> {
     let mut mapping = Map::new();
     for (key, value) in entries {
