@@ -8,6 +8,9 @@ use crate::crypto::{
 };
 use crate::wire::{self, CodecError, Infrastructure, Payload, SignatureBytes, decode, encode};
 
+const GOSSIP_FRAME_BYTES: usize = 4096;
+const GOSSIP_LAYER_OVERHEAD_BYTES: usize = 38;
+const LARGEST_GOSSIP_PAYLOAD_BYTES: usize = GOSSIP_FRAME_BYTES - GOSSIP_LAYER_OVERHEAD_BYTES;
 const ZERO_MAC: wire::Mac = [0; MAC_LEN];
 const ZERO_SIGNATURE: SignatureBytes = SignatureBytes([0; Signature::LENGTH]);
 
@@ -19,6 +22,7 @@ pub enum PayloadError {
     HostNotCertified,
     RelayUrlUnparsable,
     AddrRelaysNotTheHostRelay,
+    OverGossipFrame { bytes: usize },
 }
 
 impl fmt::Display for PayloadError {
@@ -37,6 +41,10 @@ impl fmt::Display for PayloadError {
             Self::AddrRelaysNotTheHostRelay => {
                 formatter.write_str("the infrastructure address must list exactly the host relay")
             }
+            Self::OverGossipFrame { bytes } => write!(
+                formatter,
+                "a payload of {bytes} bytes is past the {LARGEST_GOSSIP_PAYLOAD_BYTES} bytes the gossip frame of {GOSSIP_FRAME_BYTES} bytes leaves after {GOSSIP_LAYER_OVERHEAD_BYTES} bytes of gossip layer overhead"
+            ),
         }
     }
 }
@@ -123,7 +131,7 @@ fn verify_signature(payload: &Payload) -> Result<(), PayloadError> {
 /// Signs, macs and encodes a gossip payload, ready to broadcast.
 ///
 /// # Errors
-/// Refuses a signer key that is not the payload's own signer.
+/// Refuses a signer key that is not the payload's own signer, and an encoding past the gossip frame limit.
 pub fn seal_payload(
     keys: &NetworkKeys,
     signer: &SecretKey,
@@ -145,7 +153,13 @@ fn sign_then_mac(
     let signature = sign_payload(kind, signer, &signature_zeroed_encoding(&payload)?);
     let with_signature_set = with_signature(payload, SignatureBytes(signature.to_bytes()));
     let mac = keys.mac(&mac_zeroed_encoding(&with_signature_set)?);
-    Ok(encode(&with_mac(with_signature_set, *mac.as_bytes()))?)
+    let encoded = encode(&with_mac(with_signature_set, *mac.as_bytes()))?;
+    if encoded.len() > LARGEST_GOSSIP_PAYLOAD_BYTES {
+        return Err(PayloadError::OverGossipFrame {
+            bytes: encoded.len(),
+        });
+    }
+    Ok(encoded)
 }
 
 fn verify_infrastructure_rules(
@@ -521,6 +535,51 @@ mod tests {
         assert_eq!(
             open_payload(&keys(), &owner_public(), &sealed).map(without_authentication),
             Ok(same_relay_spelled_differently)
+        );
+    }
+
+    const GOSSIP_FRAME_BYTES: usize = 4096;
+    const GOSSIP_LAYER_OVERHEAD_BYTES: usize = 38;
+    const LARGEST_GOSSIP_PAYLOAD_BYTES: usize = GOSSIP_FRAME_BYTES - GOSSIP_LAYER_OVERHEAD_BYTES;
+    const TWO_BYTE_LENGTH_PREFIX_EXTRA_BYTES: usize = 1;
+
+    fn public_bytes_to_reach(encoded_bytes: usize, without_public: usize) -> usize {
+        encoded_bytes
+            .checked_sub(without_public)
+            .and_then(|remaining| remaining.checked_sub(TWO_BYTE_LENGTH_PREFIX_EXTRA_BYTES))
+            .unwrap()
+    }
+
+    fn presence_encoding_to_bytes(encoded_bytes: usize) -> Payload {
+        let Payload::Presence(presence) = unsealed_presence() else {
+            panic!("a presence was built");
+        };
+        let empty_public = Presence {
+            public: Vec::new(),
+            ..presence
+        };
+        let without_public = encode(&Payload::Presence(empty_public.clone()))
+            .unwrap()
+            .len();
+        Payload::Presence(Presence {
+            public: vec![b' '; public_bytes_to_reach(encoded_bytes, without_public)],
+            ..empty_public
+        })
+    }
+
+    #[test]
+    fn spec_3_7_payload_past_the_gossip_frame_less_its_overhead_is_refused_before_send() {
+        let at_the_limit = presence_encoding_to_bytes(LARGEST_GOSSIP_PAYLOAD_BYTES);
+        let one_past = presence_encoding_to_bytes(LARGEST_GOSSIP_PAYLOAD_BYTES + 1);
+
+        let sealed = seal_payload(&keys(), &secret_key(REPORTED_CARD_SEED), at_the_limit).unwrap();
+
+        assert_eq!(sealed.len(), LARGEST_GOSSIP_PAYLOAD_BYTES);
+        assert_eq!(
+            seal_payload(&keys(), &secret_key(REPORTED_CARD_SEED), one_past),
+            Err(PayloadError::OverGossipFrame {
+                bytes: LARGEST_GOSSIP_PAYLOAD_BYTES + 1
+            })
         );
     }
 }
