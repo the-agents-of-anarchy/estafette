@@ -1,0 +1,3 @@
+# Every ignore needs its reason beside it (conventions: dependency-safety).
+[advisories]
+ignore = []
