@@ -670,12 +670,12 @@ mod tests {
 
     fn assert_ps_table_finds_mcp_binaries_installed_in(directory_label: &str) {
         let mut tree = FakeProcessTree::start(directory_label);
-        let mut expected: Vec<PathBuf> = tree
-            .mcp_pids
+        let mut expected_pids = tree.mcp_pids.clone();
+        expected_pids.sort_unstable();
+        let expected: Vec<PathBuf> = expected_pids
             .iter()
             .map(|pid| PathBuf::from(format!("/run/user/1000/estafette-1000/{pid}.sock")))
             .collect();
-        expected.sort();
         let mut polls = 0_u32;
         let matched = Cell::new(false);
         let harness_pid = tree.harness.id();
