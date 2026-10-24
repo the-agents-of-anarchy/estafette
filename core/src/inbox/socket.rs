@@ -87,8 +87,7 @@ struct SinceRequest {
 struct Shared {
     buffer: Mutex<InboxBuffer>,
     newest_seq: watch::Sender<u64>,
-    attached: watch::Sender<bool>,
-    client_count: Mutex<usize>,
+    clients: watch::Sender<usize>,
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -101,22 +100,52 @@ struct Attachment {
 
 impl Attachment {
     fn begin(shared: Arc<Shared>) -> Self {
-        let mut client_count = locked(&shared.client_count);
-        *client_count = client_count.saturating_add(1);
-        if *client_count == 1 {
-            shared.attached.send_replace(true);
-        }
-        drop(client_count);
+        shared
+            .clients
+            .send_modify(|clients| *clients = clients.saturating_add(1));
         Self { shared }
     }
 }
 
 impl Drop for Attachment {
     fn drop(&mut self) {
-        let mut client_count = locked(&self.shared.client_count);
-        *client_count = client_count.saturating_sub(1);
-        if *client_count == 0 {
-            self.shared.attached.send_replace(false);
+        self.shared
+            .clients
+            .send_modify(|clients| *clients = clients.saturating_sub(1));
+    }
+}
+
+/// Whether at least one client is connected, and the moments that changes.
+pub struct Attached {
+    clients: watch::Receiver<usize>,
+    observed: bool,
+}
+
+impl Attached {
+    fn watching(clients: watch::Receiver<usize>) -> Self {
+        let observed = *clients.borrow() > 0;
+        Self { clients, observed }
+    }
+
+    /// Whether at least one client is connected now.
+    #[must_use]
+    pub fn is_attached(&self) -> bool {
+        *self.clients.borrow() > 0
+    }
+
+    /// Waits for the first connect or the last disconnect and returns the new state.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the socket has been dropped.
+    pub async fn changed(&mut self) -> Result<bool, watch::error::RecvError> {
+        loop {
+            self.clients.changed().await?;
+            let now = self.is_attached();
+            if now != self.observed {
+                self.observed = now;
+                return Ok(now);
+            }
         }
     }
 }
@@ -145,8 +174,7 @@ impl InboxSocket {
         let shared = Arc::new(Shared {
             buffer: Mutex::new(InboxBuffer::new()),
             newest_seq: watch::Sender::new(0),
-            attached: watch::Sender::new(false),
-            client_count: Mutex::new(0),
+            clients: watch::Sender::new(0),
         });
         let accept_task = tokio::spawn(accept_clients(listener, Arc::clone(&shared)));
         Ok(Self {
@@ -164,8 +192,8 @@ impl InboxSocket {
 
     /// Whether at least one client is connected, updated on the first connect and the last disconnect.
     #[must_use]
-    pub fn attached(&self) -> watch::Receiver<bool> {
-        self.shared.attached.subscribe()
+    pub fn attached(&self) -> Attached {
+        Attached::watching(self.shared.clients.subscribe())
     }
 }
 
@@ -423,26 +451,27 @@ mod tests {
         let directories = scratch_directories("attached");
         let socket = started(&directories);
         let mut attached = socket.attached();
-        assert!(!*attached.borrow_and_update());
+        assert!(!attached.is_attached());
         let path = directories.inbox_socket_file(OWN_PROCESS_ID);
         let first = connect_with_since(&path, 0).await;
-        tokio::time::timeout(READ_DEADLINE, attached.changed())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(*attached.borrow_and_update());
-        let second = connect_with_since(&path, 0).await;
+        assert!(
+            tokio::time::timeout(READ_DEADLINE, attached.changed())
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        let mut second = connect_with_since(&path, 0).await;
         drop(first);
         socket.publish(message_number(1));
-        let mut second = second;
         assert_eq!(next_seq(&mut second).await, 1);
-        assert!(*attached.borrow());
+        assert!(attached.is_attached());
         drop(second);
-        tokio::time::timeout(READ_DEADLINE, attached.changed())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(!*attached.borrow_and_update());
+        assert!(
+            !tokio::time::timeout(READ_DEADLINE, attached.changed())
+                .await
+                .unwrap()
+                .unwrap()
+        );
     }
 
     #[tokio::test]
