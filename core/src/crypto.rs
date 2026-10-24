@@ -1,5 +1,7 @@
 use std::fmt;
 
+use iroh::{PublicKey, SecretKey, Signature};
+
 const KEY_LEN: usize = 32;
 pub const MAC_LEN: usize = 32;
 const TOPIC_CONTEXT: &str = "messaging topic v1";
@@ -9,17 +11,72 @@ const GATE_CONTEXT: &str = "messaging gate v1";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CryptoError {
     MacMismatch,
+    SignatureMismatch,
 }
 
 impl fmt::Display for CryptoError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MacMismatch => formatter.write_str("mac does not match the structure"),
+            Self::SignatureMismatch => {
+                formatter.write_str("signature does not verify for this purpose and signer")
+            }
         }
     }
 }
 
 impl std::error::Error for CryptoError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignedPayloadKind {
+    Presence,
+    Departure,
+    Unreachable,
+    Infrastructure,
+}
+
+impl SignedPayloadKind {
+    const fn domain_prefix(self) -> &'static [u8] {
+        match self {
+            Self::Presence => b"estafette-presence-v1",
+            Self::Departure => b"estafette-departure-v1",
+            Self::Unreachable => b"estafette-unreachable-v1",
+            Self::Infrastructure => b"estafette-infra-v1",
+        }
+    }
+}
+
+/// Signs a payload encoded with its sig and mac zeroed, under the domain prefix of its kind.
+#[must_use]
+pub fn sign_payload(
+    kind: SignedPayloadKind,
+    signer: &SecretKey,
+    zeroed_encoding: &[u8],
+) -> Signature {
+    signer.sign(&prefixed_message(kind.domain_prefix(), zeroed_encoding))
+}
+
+/// Accepts the signature only when the signer made it for this kind over this encoding.
+///
+/// # Errors
+/// `CryptoError::SignatureMismatch` when the signature does not verify.
+pub fn verify_payload_signature(
+    kind: SignedPayloadKind,
+    signer: &PublicKey,
+    zeroed_encoding: &[u8],
+    signature: &Signature,
+) -> Result<(), CryptoError> {
+    let message = prefixed_message(kind.domain_prefix(), zeroed_encoding);
+    if signer.verify(&message, signature).is_ok() {
+        Ok(())
+    } else {
+        Err(CryptoError::SignatureMismatch)
+    }
+}
+
+fn prefixed_message(domain_prefix: &[u8], body: &[u8]) -> Vec<u8> {
+    [domain_prefix, body].concat()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkKeys {
@@ -133,6 +190,52 @@ mod tests {
         assert_eq!(
             NetworkKeys::derive(&[8; KEY_LEN]).verify_mac(ENCODING, &mac),
             Err(CryptoError::MacMismatch)
+        );
+    }
+
+    const SIGNER_SEED: [u8; KEY_LEN] = [3; KEY_LEN];
+    const ALL_KINDS: [SignedPayloadKind; 4] = [
+        SignedPayloadKind::Presence,
+        SignedPayloadKind::Departure,
+        SignedPayloadKind::Unreachable,
+        SignedPayloadKind::Infrastructure,
+    ];
+
+    #[test]
+    fn spec_3_4_payload_signature_under_one_prefix_fails_under_another() {
+        let signer = SecretKey::from_bytes(&SIGNER_SEED);
+        let other_signer = SecretKey::from_bytes(&[4; KEY_LEN]);
+        let presence_signature = sign_payload(SignedPayloadKind::Presence, &signer, ENCODING);
+
+        let mut prefixed = b"estafette-presence-v1".to_vec();
+        prefixed.extend_from_slice(ENCODING);
+        assert_eq!(presence_signature, signer.sign(&prefixed));
+        for kind in ALL_KINDS {
+            let outcome =
+                verify_payload_signature(kind, &signer.public(), ENCODING, &presence_signature);
+            if kind == SignedPayloadKind::Presence {
+                assert_eq!(outcome, Ok(()));
+            } else {
+                assert_eq!(outcome, Err(CryptoError::SignatureMismatch));
+            }
+        }
+        assert_eq!(
+            verify_payload_signature(
+                SignedPayloadKind::Presence,
+                &other_signer.public(),
+                ENCODING,
+                &presence_signature
+            ),
+            Err(CryptoError::SignatureMismatch)
+        );
+        assert_eq!(
+            verify_payload_signature(
+                SignedPayloadKind::Presence,
+                &signer.public(),
+                b"another encoding",
+                &presence_signature
+            ),
+            Err(CryptoError::SignatureMismatch)
         );
     }
 }
