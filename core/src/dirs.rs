@@ -82,7 +82,7 @@ impl fmt::Display for DirectoriesError {
         match self {
             Self::BaseUnresolvable { variable } => write!(
                 formatter,
-                "{variable} is unset or empty and {HOME_VARIABLE} is unset: set one of them"
+                "{variable} and {HOME_VARIABLE} are both unset or empty: set one of them"
             ),
             Self::CreationFailed { path, source } => {
                 write!(formatter, "cannot create {}: {source}", path.display())
@@ -448,7 +448,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             failure.to_string(),
-            "XDG_CONFIG_HOME is unset or empty and HOME is unset: set one of them"
+            "XDG_CONFIG_HOME and HOME are both unset or empty: set one of them"
         );
         assert!(filesystem.created.borrow().is_empty());
     }
