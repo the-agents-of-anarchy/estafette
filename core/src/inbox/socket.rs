@@ -396,11 +396,21 @@ mod tests {
         }
     }
 
-    struct UnreadableProcessTable;
+    struct TableUnreadableAtItsLastQuery {
+        queries_answered_before_failure: usize,
+        queries_made: std::cell::Cell<usize>,
+        failed_process_id: std::cell::Cell<Option<u32>>,
+    }
 
-    impl ProcessTable for UnreadableProcessTable {
-        fn is_running(&self, _process_id: u32) -> io::Result<bool> {
-            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+    impl ProcessTable for TableUnreadableAtItsLastQuery {
+        fn is_running(&self, process_id: u32) -> io::Result<bool> {
+            let made = self.queries_made.get().saturating_add(1);
+            self.queries_made.set(made);
+            if made > self.queries_answered_before_failure {
+                self.failed_process_id.set(Some(process_id));
+                return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+            }
+            Ok(false)
         }
     }
 
@@ -692,23 +702,29 @@ mod tests {
 
     #[tokio::test]
     async fn spec_3_3_start_refuses_and_removes_no_socket_when_the_process_table_cannot_be_read() {
-        const CANDIDATE: u32 = 7_001;
+        const DEAD_SOCKET_COUNT: u32 = 6;
+        const FIRST_CANDIDATE: u32 = 7_001;
         let directories = scratch_directories("unreadable-table");
-        let candidate = directories.inbox_socket_file(CANDIDATE);
+        let candidates: Vec<PathBuf> = (FIRST_CANDIDATE..=FIRST_CANDIDATE + DEAD_SOCKET_COUNT)
+            .map(|process_id| directories.inbox_socket_file(process_id))
+            .collect();
         let own = directories.inbox_socket_file(OWN_PROCESS_ID);
-        fs::write(&candidate, b"").unwrap();
-        fs::write(&own, b"").unwrap();
-        let refusal = InboxSocket::start(&directories, OWN_PROCESS_ID, &UnreadableProcessTable)
+        for path in candidates.iter().chain([&own]) {
+            fs::write(path, b"").unwrap();
+        }
+        let table = TableUnreadableAtItsLastQuery {
+            queries_answered_before_failure: usize::try_from(DEAD_SOCKET_COUNT).unwrap(),
+            queries_made: std::cell::Cell::new(0),
+            failed_process_id: std::cell::Cell::new(None),
+        };
+        let refusal = InboxSocket::start(&directories, OWN_PROCESS_ID, &table)
             .err()
             .unwrap();
-        assert!(matches!(
-            refusal,
-            InboxSocketError::QueryProcessTable {
-                process_id: CANDIDATE,
-                ..
-            }
-        ));
-        assert!(candidate.exists());
+        let InboxSocketError::QueryProcessTable { process_id, .. } = refusal else {
+            panic!("expected QueryProcessTable, got {refusal:?}");
+        };
+        assert_eq!(Some(process_id), table.failed_process_id.get());
+        assert!(candidates.iter().all(|path| path.exists()));
         assert!(own.exists());
     }
 }
