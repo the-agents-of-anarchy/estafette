@@ -323,3 +323,15 @@
 2026-10-24T15:37 | self:claude-fable-5-1 | review | spec-U15 re-review 3 PASS 153526 at 87ab527; quality-U15 continued
 2026-10-24T15:37 | self:claude-fable-5-1 | review | classifier-U30-6: three concerns all observations (merge commit dropped by the integrator's rebase); spec-U30 continued for re-review 5
 2026-10-24T15:38 | self:claude-fable-5-1 | receipt | integrate-U13 Result PASS at 125a8ee; main fast-forwarded to 125a8ee
+2026-10-24T15:39 | self:claude-fable-5-1 | review | spec-U30 re-review 5 PASS 153732 at 4a24dfb; quality-U30 continued
+2026-10-24T15:39 | self:claude-fable-5-1 | review | quality-U15 re-review 153701 Ready With fixes: Important — refusal test does not pin scan-then-remove ordering; five Minor; impl-U15 continued (cycle 3)
+2026-10-24T15:40 | self:claude-fable-5-1 | review | quality-U30 re-review 2 153903 Ready Yes; seven Minor carried; U30 passed both reviews after structural change A
+2026-10-24T15:40 | self:claude-fable-5-1 | delegation | integrate-U30 (sonnet): rebase 4a24dfb onto integration dropping the merge commit, ff -> reports/integrator-U30.md
+2026-10-24T15:42 | self:claude-fable-5-1 | receipt | impl-U16 (opus) DONE_WITH_CONCERNS at 2af1f27: PeerTable, 31 tests, not rebased; peer content
+2026-10-24T15:42 | self:claude-fable-5-1 | decision | solved: a Gone peer stays Gone; Unreachable rows of spec:772-775 apply to Online and Unreachable entries alone and the 3600 s removal stands (a departure is the peer's own word; no unbounded retention); alternative: literal reading, Gone becomes Unreachable and is never removed
+2026-10-24T15:42 | self:claude-fable-5-1 | delegation | classify-U16 round 1 -> reports/classifier-U16.md
+2026-10-24T15:42 | self:claude-fable-5-1 | receipt | integrate-U30 Result PASS at b318cdd (13 bridge commits, no merge commit); main fast-forwarded to b318cdd
+2026-10-24T15:42 | self:claude-fable-5-1 | receipt | impl-U15 continuation 3 DONE_WITH_CONCERNS at edd7693, test-only; peer content
+2026-10-24T15:42 | self:claude-fable-5-1 | decision | solved: concerns byte-identical to those classifier-U15-3 classed as observations reuse that classification, no fourth classifier; alternative: launch a classifier per DONE_WITH_CONCERNS regardless
+2026-10-24T15:43 | self:claude-fable-5-1 | delegation | impl-U31 bridge-inbox-client (sonnet, implementer, worktree) -> reports via final message; brief prompts/implementer-U31-bridge-inbox-client.md
+2026-10-24T15:43 | self:claude-fable-5-1 | delegation | spec-U15 continued for re-review 4 (test-only delta, edd7693)
