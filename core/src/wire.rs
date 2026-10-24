@@ -545,6 +545,7 @@ mod tests {
     const LONG_BODY_EXTRA_LENGTH_PREFIX_BYTES: usize = 2;
     const UNSUPPORTED_VERSION: u8 = 2;
     const SHORT_RELAY_BYTES: usize = 8;
+    const DISTINCT_SHORT_RELAY_LENGTHS: [usize; 4] = [10, 20, 30, 40];
     const REQUEST_PROBE_INDEX: u8 = 1;
     const PAYLOAD_PRESENCE_INDEX: u8 = 0;
     const PAYLOAD_DEPARTURE_INDEX: u8 = 1;
@@ -650,10 +651,10 @@ mod tests {
         let reported = [
             relay_of_bytes(MAX_RELAY_URL_BYTES),
             relay_of_bytes(MAX_RELAY_URL_BYTES + 1),
-            relay_of_bytes(10),
-            relay_of_bytes(20),
-            relay_of_bytes(30),
-            relay_of_bytes(40),
+            relay_of_bytes(DISTINCT_SHORT_RELAY_LENGTHS[0]),
+            relay_of_bytes(DISTINCT_SHORT_RELAY_LENGTHS[1]),
+            relay_of_bytes(DISTINCT_SHORT_RELAY_LENGTHS[2]),
+            relay_of_bytes(DISTINCT_SHORT_RELAY_LENGTHS[3]),
         ];
 
         let addr = Addr::from_endpoint_report(reported.clone(), []);
@@ -828,10 +829,9 @@ mod tests {
 
     #[test]
     fn spec_2_wire_encoding_fixed_arrays_carry_no_length_prefix() {
-        let variant_version_card_seq_mac_sig = DEPARTURE_WITH_ZERO_SEQ_ENCODED_BYTES;
         assert_eq!(
             encode(&Payload::Departure(departure())).unwrap().len(),
-            variant_version_card_seq_mac_sig
+            DEPARTURE_WITH_ZERO_SEQ_ENCODED_BYTES
         );
     }
 
