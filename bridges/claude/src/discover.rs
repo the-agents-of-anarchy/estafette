@@ -556,6 +556,112 @@ mod tests {
         );
     }
 
+    const PROPERTY_CASES: u64 = 300;
+    const WORD_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz0123456789-_.";
+    const GENERATOR_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
+    const GENERATOR_INCREMENT: u64 = 1_442_695_040_888_963_407;
+    const GENERATOR_OUTPUT_SHIFT: u32 = 33;
+    const LONGEST_GENERATED_WORD: u64 = 8;
+    const MOST_GENERATED_PATH_SEGMENTS: u64 = 3;
+    const MOST_GENERATED_ARGUMENTS: u64 = 4;
+    const MOST_GENERATED_PADDING: u64 = 4;
+
+    struct SeededGenerator(u64);
+
+    impl SeededGenerator {
+        fn below(&mut self, bound: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(GENERATOR_MULTIPLIER)
+                .wrapping_add(GENERATOR_INCREMENT);
+            (self.0 >> GENERATOR_OUTPUT_SHIFT)
+                .checked_rem(bound)
+                .unwrap_or_default()
+        }
+
+        fn word(&mut self) -> String {
+            let alphabet_size = u64::try_from(WORD_ALPHABET.len()).unwrap_or(1);
+            let length = self.below(LONGEST_GENERATED_WORD).saturating_add(1);
+            (0..length)
+                .map(|_| {
+                    let index = usize::try_from(self.below(alphabet_size)).unwrap_or_default();
+                    WORD_ALPHABET.chars().nth(index).unwrap_or('a')
+                })
+                .collect()
+        }
+
+        fn path_segment(&mut self) -> String {
+            let first_word = self.word();
+            if self.below(2) == 0 {
+                first_word
+            } else {
+                format!("{first_word} {}", self.word())
+            }
+        }
+
+        fn absolute_path_that_may_contain_spaces(&mut self) -> String {
+            let segment_count = self.below(MOST_GENERATED_PATH_SEGMENTS).saturating_add(1);
+            let segments: Vec<String> = (0..segment_count).map(|_| self.path_segment()).collect();
+            format!("/{}", segments.join("/"))
+        }
+
+        fn arguments(&mut self) -> Vec<String> {
+            let argument_count = self.below(MOST_GENERATED_ARGUMENTS);
+            (0..argument_count).map(|_| self.word()).collect()
+        }
+
+        fn pid(&mut self) -> u32 {
+            u32::try_from(self.below(u64::from(u32::MAX))).unwrap_or_default()
+        }
+    }
+
+    #[test]
+    fn spec_3_12_step_2_generated_ps_lines_yield_their_pids_executable_and_arguments() {
+        for seed in 0..PROPERTY_CASES {
+            let mut generator = SeededGenerator(seed);
+            let (pid, parent_pid) = (generator.pid(), generator.pid());
+            let executable = generator.absolute_path_that_may_contain_spaces();
+            let arguments = generator.arguments();
+            let padding = " ".repeat(
+                usize::try_from(generator.below(MOST_GENERATED_PADDING)).unwrap_or_default(),
+            );
+            let mut rendered_arguments = String::new();
+            for argument in &arguments {
+                rendered_arguments.push(' ');
+                rendered_arguments.push_str(argument);
+            }
+            let line = format!("{padding}{pid} {parent_pid} {executable}{rendered_arguments}\n");
+            let entries = entries_from_command_lines(&line, &executable_table(pid, &executable))
+                .expect("a rendered line parses");
+            let entry = only_entry(&entries);
+            assert_eq!(
+                (entry.pid, entry.parent_pid, entry.executable.as_deref()),
+                (pid, parent_pid, Some(executable.as_str())),
+                "seed {seed}: {line}"
+            );
+            assert_eq!(entry.arguments, arguments, "seed {seed}: {line}");
+        }
+    }
+
+    #[test]
+    fn spec_3_12_step_2_generated_ps_lines_with_a_non_numeric_parent_pid_are_refused() {
+        for seed in 0..PROPERTY_CASES {
+            let mut generator = SeededGenerator(seed);
+            let line = format!(
+                "{} x{} {}",
+                generator.pid(),
+                generator.word(),
+                generator.absolute_path_that_may_contain_spaces()
+            );
+            let refusal = entries_from_command_lines(&line, &BTreeMap::new()).expect_err("refused");
+            assert_eq!(
+                refusal.to_string(),
+                format!("ps printed a line it cannot read: {line}"),
+                "seed {seed}"
+            );
+        }
+    }
+
     const WHICH_PROGRAM: &str = "which";
     const PERL_PROGRAM: &str = "perl";
     const SHELL_PROGRAM: &str = "sh";
