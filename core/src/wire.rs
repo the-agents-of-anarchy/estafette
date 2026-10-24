@@ -71,7 +71,7 @@ impl fmt::Display for CodecError {
 
 impl std::error::Error for CodecError {}
 
-/// The version field every top-level structure opens with; only the value 1 exists.
+/// The version field every top-level structure opens with; only the supported protocol version is accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version(u8);
 
@@ -79,7 +79,7 @@ impl Version {
     pub const CURRENT: Self = Self(PROTOCOL_VERSION);
 }
 
-/// A 64-byte signature, encoded as its bytes with no length prefix.
+/// A signature, encoded as its bytes with no length prefix.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignatureBytes(pub [u8; SIGNATURE_BYTES]);
 
@@ -119,7 +119,7 @@ impl<'de> Deserialize<'de> for SignatureBytes {
     }
 }
 
-/// A relay URL of at most 128 bytes.
+/// A relay URL within the relay URL length cap.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayUrl(String);
 
@@ -175,13 +175,13 @@ impl Addr {
         }
     }
 
-    /// The relay URLs, at most 4.
+    /// The relay URLs, within the relay URL count cap.
     #[must_use]
     pub fn relays(&self) -> &[RelayUrl] {
         &self.relays
     }
 
-    /// The direct socket addresses, at most 8.
+    /// The direct socket addresses, within the direct address count cap.
     #[must_use]
     pub fn direct(&self) -> &[SocketAddr] {
         &self.direct
