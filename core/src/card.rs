@@ -126,7 +126,11 @@ impl Card {
         compact_json(&self.public)
     }
 
-    #[doc = "Puts the description under `public.description`, refusing when `public` then passes the cap.\n\n# Errors\n\nReturns the byte size `public` would reach when it passes the cap."]
+    /// Puts the description under `public.description`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the byte size `public` would reach when it passes the cap.
     pub fn with_description(mut self, description: &str) -> Result<Self, DescriptionOverCap> {
         self.public.insert(
             DESCRIPTION_FIELD.to_owned(),
