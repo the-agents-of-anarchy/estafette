@@ -21,6 +21,7 @@ const DATE_PART_MAX_DIGITS: usize = 2;
 const CLOCK_PART_DIGITS: usize = 2;
 const BLANKS: [char; 2] = [' ', '\t'];
 const NO_ANCHOR: usize = 0;
+const NUMBER_SIGNS: [char; 2] = ['+', '-'];
 
 /// The refusal of a card that cannot be claimed, mapped to `card_invalid` by the caller.
 #[derive(Debug, PartialEq, Eq)]
@@ -40,6 +41,7 @@ pub enum CardInvalid {
     DuplicatePublicKey(String),
     PublicOverCap { bytes: usize },
     AliasExpansionTooLarge,
+    IntegerTooWide,
 }
 
 impl fmt::Display for CardInvalid {
@@ -89,6 +91,10 @@ impl fmt::Display for CardInvalid {
             Self::AliasExpansionTooLarge => write!(
                 formatter,
                 "card aliases expand to more than {PUBLIC_MAX_BYTES} nodes"
+            ),
+            Self::IntegerTooWide => write!(
+                formatter,
+                "card `public` integers must fit 64 bits, from -9223372036854775808 to 18446744073709551615"
             ),
         }
     }
@@ -524,6 +530,11 @@ fn convert_scalar(text: &str, style: TScalarStyle) -> Result<Value, CardInvalid>
         Yaml::Null => Ok(Value::Null),
         Yaml::Boolean(flag) => Ok(Value::Bool(flag)),
         Yaml::Integer(number) => Ok(Value::Number(Number::from(number))),
+        Yaml::Real(number) if is_integer_text(&number) => number
+            .parse::<u64>()
+            .ok()
+            .map(|wide| Value::Number(Number::from(wide)))
+            .ok_or(CardInvalid::IntegerTooWide),
         Yaml::Real(number) => number
             .parse::<f64>()
             .ok()
@@ -546,6 +557,11 @@ fn is_merge_key(key: &Node) -> bool {
         } => *style == TScalarStyle::Plain && text == YAML_MERGE_KEY,
         Node::Scalar { tag: Some(_), .. } | Node::Sequence { .. } | Node::Mapping { .. } => false,
     }
+}
+
+fn is_integer_text(text: &str) -> bool {
+    let digits = text.strip_prefix(NUMBER_SIGNS).unwrap_or(text);
+    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn convert_mapping(entries: &[(Node, Node)]) -> Result<Value, CardInvalid> {
@@ -814,6 +830,29 @@ mod tests {
             parse_card(&nested),
             Err(CardInvalid::AliasExpansionTooLarge)
         );
+    }
+
+    #[test]
+    fn parse_keeps_integers_within_u64_exact_and_refuses_wider_ones_spec_3_5() {
+        let card = card_with_public(
+            "  max: 18446744073709551615\n  min: -9223372036854775808\n  plus: +18446744073709551615\n  float: 1.5e3\n",
+        )
+        .unwrap();
+        assert_eq!(
+            card.public_json(),
+            br#"{"float":1500.0,"max":18446744073709551615,"min":-9223372036854775808,"plus":18446744073709551615}"#
+        );
+        for wide in [
+            "18446744073709551616",
+            "-9223372036854775809",
+            "12345678901234567890123",
+        ] {
+            assert_eq!(
+                card_with_public(&format!("  n: {wide}\n")),
+                Err(CardInvalid::IntegerTooWide),
+                "{wide}"
+            );
+        }
     }
 
     #[test]
