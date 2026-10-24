@@ -7,5 +7,6 @@ pub mod handle;
 pub mod inbox;
 pub mod invite;
 pub mod keys;
+pub mod payload;
 pub mod sidecar;
 pub mod wire;
