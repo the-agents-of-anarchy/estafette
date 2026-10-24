@@ -3,7 +3,7 @@
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 
-use serde::de::{self, DeserializeOwned, SeqAccess, Visitor};
+use serde::de::{self, SeqAccess, Visitor};
 use serde::ser::SerializeTuple;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -71,12 +71,62 @@ impl fmt::Display for CodecError {
 
 impl std::error::Error for CodecError {}
 
+mod checked {
+    use serde::de::DeserializeOwned;
+
+    use super::CodecError;
+
+    pub trait Checked: Sized {
+        type Raw: DeserializeOwned;
+
+        fn check(raw: Self::Raw) -> Result<Self, CodecError>;
+    }
+}
+
+use checked::Checked;
+
+macro_rules! checked_as_decoded {
+    ($($plain:ty),+) => {
+        $(
+            impl Checked for $plain {
+                type Raw = Self;
+
+                fn check(raw: Self) -> Result<Self, CodecError> {
+                    Ok(raw)
+                }
+            }
+        )+
+    };
+}
+
+checked_as_decoded!(bool, u64, String, Option<String>, Vec<u8>, Mac, Nonce);
+
+impl<T: Checked> Checked for Vec<T> {
+    type Raw = Vec<T::Raw>;
+
+    fn check(raw: Self::Raw) -> Result<Self, CodecError> {
+        raw.into_iter().map(T::check).collect()
+    }
+}
+
 /// The version field every top-level structure opens with; only the supported protocol version is accepted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct Version(u8);
 
 impl Version {
     pub const CURRENT: Self = Self(PROTOCOL_VERSION);
+}
+
+impl Checked for Version {
+    type Raw = u8;
+
+    fn check(raw: u8) -> Result<Self, CodecError> {
+        if raw == PROTOCOL_VERSION {
+            Ok(Self::CURRENT)
+        } else {
+            Err(CodecError::UnsupportedVersion { found: raw })
+        }
+    }
 }
 
 /// A signature, encoded as its bytes with no length prefix.
@@ -119,8 +169,10 @@ impl<'de> Deserialize<'de> for SignatureBytes {
     }
 }
 
+checked_as_decoded!(SignatureBytes);
+
 /// A relay URL within the relay URL length cap.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RelayUrl(String);
 
 impl RelayUrl {
@@ -135,17 +187,60 @@ impl TryFrom<String> for RelayUrl {
     type Error = CodecError;
 
     fn try_from(url: String) -> Result<Self, CodecError> {
-        let relay_url = Self(url);
-        relay_url.validate()?;
-        Ok(relay_url)
+        if url.len() > MAX_RELAY_URL_BYTES {
+            return Err(CodecError::RelayUrlTooLong { bytes: url.len() });
+        }
+        Ok(Self(url))
+    }
+}
+
+impl Checked for RelayUrl {
+    type Raw = String;
+
+    fn check(raw: String) -> Result<Self, CodecError> {
+        Self::try_from(raw)
     }
 }
 
 /// The relay URLs and direct socket addresses of an endpoint, within the caps of spec 3.6.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Addr {
     relays: Vec<RelayUrl>,
     direct: Vec<SocketAddr>,
+}
+
+mod addr_shape {
+    use std::net::SocketAddr;
+
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    pub struct RawAddr {
+        pub relays: Vec<String>,
+        pub direct: Vec<SocketAddr>,
+    }
+}
+
+use addr_shape::RawAddr;
+
+impl Checked for Addr {
+    type Raw = RawAddr;
+
+    fn check(raw: RawAddr) -> Result<Self, CodecError> {
+        if raw.relays.len() > MAX_RELAY_URLS_PER_ADDR
+            || raw.direct.len() > MAX_DIRECT_ADDRS_PER_ADDR
+        {
+            return Err(CodecError::AddrOverCap);
+        }
+        Ok(Self {
+            relays: raw
+                .relays
+                .into_iter()
+                .map(RelayUrl::try_from)
+                .collect::<Result<_, _>>()?,
+            direct: raw.direct,
+        })
+    }
 }
 
 const fn is_link_local_v6(address: &SocketAddr) -> bool {
@@ -188,262 +283,219 @@ impl Addr {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Request {
-    Message(Message),
-    Probe(Probe),
-    Introduce(Introduce),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Message {
-    pub v: Version,
-    pub id: MessageId,
-    pub to: PublicKey,
-    pub handle: String,
-    pub attached: bool,
-    pub sent_at: u64,
-    pub body: String,
-    pub mac: Mac,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Probe {
-    pub v: Version,
-    pub nonce: Nonce,
-    pub mac: Mac,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Introduce {
-    pub v: Version,
-    pub handle: Option<String>,
-    pub public: Vec<u8>,
-    pub attached: bool,
-    pub addr: Addr,
-    pub mac: Mac,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Response {
-    MessageAck(MessageAck),
-    ProbeAck(ProbeAck),
-    IntroduceAck(IntroduceAck),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MessageAck {
-    pub v: Version,
-    pub id: MessageId,
-    pub accepted: bool,
-    pub attached: bool,
-    pub reason: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ProbeAck {
-    pub v: Version,
-    pub nonce: Nonce,
-    pub attached: bool,
-    pub mac: Mac,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct IntroduceAck {
-    pub v: Version,
-    pub handle: Option<String>,
-    pub public: Vec<u8>,
-    pub attached: bool,
-    pub addr: Addr,
-    pub mac: Mac,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Payload {
-    Presence(Presence),
-    Departure(Departure),
-    Unreachable(Unreachable),
-    Infrastructure(Infrastructure),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Presence {
-    pub v: Version,
-    pub card: PublicKey,
-    pub handle: String,
-    pub public: Vec<u8>,
-    pub attached: bool,
-    pub addr: Addr,
-    pub seq: u64,
-    pub mac: Mac,
-    pub sig: SignatureBytes,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Departure {
-    pub v: Version,
-    pub card: PublicKey,
-    pub seq: u64,
-    pub mac: Mac,
-    pub sig: SignatureBytes,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Unreachable {
-    pub v: Version,
-    pub card: PublicKey,
-    pub reporter: PublicKey,
-    pub ts: u64,
-    pub mac: Mac,
-    pub sig: SignatureBytes,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Infrastructure {
-    pub v: Version,
-    pub host: PublicKey,
-    pub relay: RelayUrl,
-    pub addr: Addr,
-    pub ts: u64,
-    pub cert: SignatureBytes,
-    pub mac: Mac,
-    pub sig: SignatureBytes,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostAddr {
-    pub v: Version,
-    pub id: PublicKey,
-    pub relay: RelayUrl,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Invitation {
-    pub v: Version,
-    pub network: String,
-    pub secret: Secret,
-    pub owner: PublicKey,
-    pub hosts: Vec<HostAddr>,
-}
-
-trait Validate {
-    fn validate(&self) -> Result<(), CodecError>;
-}
-
-impl Validate for Version {
-    fn validate(&self) -> Result<(), CodecError> {
-        if *self == Self::CURRENT {
-            Ok(())
-        } else {
-            Err(CodecError::UnsupportedVersion { found: self.0 })
+macro_rules! wire_enum {
+    (pub enum $name:ident = $raw:ident in $shape:ident {  $($variant:ident($inner:ident) as $tag:ident),+ $(,)? }) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+        pub enum $name {
+            $($variant($inner)),+
         }
-    }
-}
 
-impl Validate for RelayUrl {
-    fn validate(&self) -> Result<(), CodecError> {
-        if self.0.len() > MAX_RELAY_URL_BYTES {
-            Err(CodecError::RelayUrlTooLong {
-                bytes: self.0.len(),
-            })
-        } else {
-            Ok(())
-        }
-    }
-}
+        mod $shape {
+            use serde::Deserialize;
 
-impl Validate for Addr {
-    fn validate(&self) -> Result<(), CodecError> {
-        if self.relays.len() > MAX_RELAY_URLS_PER_ADDR
-            || self.direct.len() > MAX_DIRECT_ADDRS_PER_ADDR
-        {
-            return Err(CodecError::AddrOverCap);
-        }
-        self.relays.iter().try_for_each(Validate::validate)
-    }
-}
+            use super::{Checked, $($inner),+};
 
-impl Validate for Request {
-    fn validate(&self) -> Result<(), CodecError> {
-        match self {
-            Self::Message(message) => message.v.validate(),
-            Self::Probe(probe) => probe.v.validate(),
-            Self::Introduce(introduce) => {
-                introduce.v.validate()?;
-                introduce.addr.validate()
+            #[derive(Deserialize)]
+            pub enum $raw {
+                $($tag(<$inner as Checked>::Raw)),+
             }
         }
-    }
-}
 
-impl Validate for Response {
-    fn validate(&self) -> Result<(), CodecError> {
-        match self {
-            Self::MessageAck(ack) => ack.v.validate(),
-            Self::ProbeAck(ack) => ack.v.validate(),
-            Self::IntroduceAck(ack) => {
-                ack.v.validate()?;
-                ack.addr.validate()
+        use $shape::$raw;
+
+        impl Checked for $name {
+            type Raw = $raw;
+
+            fn check(raw: $raw) -> Result<Self, CodecError> {
+                match raw {
+                    $($raw::$tag(inner) => Ok(Self::$variant(<$inner as Checked>::check(inner)?)),)+
+                }
             }
         }
-    }
+    };
 }
 
-impl Validate for Payload {
-    fn validate(&self) -> Result<(), CodecError> {
-        match self {
-            Self::Presence(presence) => {
-                presence.v.validate()?;
-                presence.addr.validate()
-            }
-            Self::Departure(departure) => departure.v.validate(),
-            Self::Unreachable(unreachable) => unreachable.v.validate(),
-            Self::Infrastructure(infrastructure) => {
-                infrastructure.v.validate()?;
-                infrastructure.relay.validate()?;
-                infrastructure.addr.validate()
+macro_rules! wire_struct {
+    (pub struct $name:ident { $(pub $field:ident: $type:ty),+ $(,)? }) => {
+        #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+        pub struct $name {
+            $(pub $field: $type),+
+        }
+
+        impl Checked for $name {
+            type Raw = ($(<$type as Checked>::Raw,)+);
+
+            fn check(raw: Self::Raw) -> Result<Self, CodecError> {
+                let ($($field,)+) = raw;
+                Ok(Self {
+                    $($field: <$type as Checked>::check($field)?),+
+                })
             }
         }
+    };
+}
+
+wire_enum! {
+    pub enum Request = RawRequest in request_shape {
+        Message(Message) as First,
+        Probe(Probe) as Second,
+        Introduce(Introduce) as Third,
     }
 }
 
-impl Validate for HostAddr {
-    fn validate(&self) -> Result<(), CodecError> {
-        self.v.validate()?;
-        self.relay.validate()
+wire_struct! {
+    pub struct Message {
+        pub v: Version,
+        pub id: MessageId,
+        pub to: PublicKey,
+        pub handle: String,
+        pub attached: bool,
+        pub sent_at: u64,
+        pub body: String,
+        pub mac: Mac,
     }
 }
 
-impl Validate for Invitation {
-    fn validate(&self) -> Result<(), CodecError> {
-        self.v.validate()?;
-        self.hosts.iter().try_for_each(|host| host.relay.validate())
+wire_struct! {
+    pub struct Probe {
+        pub v: Version,
+        pub nonce: Nonce,
+        pub mac: Mac,
+    }
+}
+
+wire_struct! {
+    pub struct Introduce {
+        pub v: Version,
+        pub handle: Option<String>,
+        pub public: Vec<u8>,
+        pub attached: bool,
+        pub addr: Addr,
+        pub mac: Mac,
+    }
+}
+
+wire_enum! {
+    pub enum Response = RawResponse in response_shape {
+        MessageAck(MessageAck) as First,
+        ProbeAck(ProbeAck) as Second,
+        IntroduceAck(IntroduceAck) as Third,
+    }
+}
+
+wire_struct! {
+    pub struct MessageAck {
+        pub v: Version,
+        pub id: MessageId,
+        pub accepted: bool,
+        pub attached: bool,
+        pub reason: Option<String>,
+    }
+}
+
+wire_struct! {
+    pub struct ProbeAck {
+        pub v: Version,
+        pub nonce: Nonce,
+        pub attached: bool,
+        pub mac: Mac,
+    }
+}
+
+wire_struct! {
+    pub struct IntroduceAck {
+        pub v: Version,
+        pub handle: Option<String>,
+        pub public: Vec<u8>,
+        pub attached: bool,
+        pub addr: Addr,
+        pub mac: Mac,
+    }
+}
+
+wire_enum! {
+    pub enum Payload = RawPayload in payload_shape {
+        Presence(Presence) as First,
+        Departure(Departure) as Second,
+        Unreachable(Unreachable) as Third,
+        Infrastructure(Infrastructure) as Fourth,
+    }
+}
+
+wire_struct! {
+    pub struct Presence {
+        pub v: Version,
+        pub card: PublicKey,
+        pub handle: String,
+        pub public: Vec<u8>,
+        pub attached: bool,
+        pub addr: Addr,
+        pub seq: u64,
+        pub mac: Mac,
+        pub sig: SignatureBytes,
+    }
+}
+
+wire_struct! {
+    pub struct Departure {
+        pub v: Version,
+        pub card: PublicKey,
+        pub seq: u64,
+        pub mac: Mac,
+        pub sig: SignatureBytes,
+    }
+}
+
+wire_struct! {
+    pub struct Unreachable {
+        pub v: Version,
+        pub card: PublicKey,
+        pub reporter: PublicKey,
+        pub ts: u64,
+        pub mac: Mac,
+        pub sig: SignatureBytes,
+    }
+}
+
+wire_struct! {
+    pub struct Infrastructure {
+        pub v: Version,
+        pub host: PublicKey,
+        pub relay: RelayUrl,
+        pub addr: Addr,
+        pub ts: u64,
+        pub cert: SignatureBytes,
+        pub mac: Mac,
+        pub sig: SignatureBytes,
+    }
+}
+
+wire_struct! {
+    pub struct HostAddr {
+        pub v: Version,
+        pub id: PublicKey,
+        pub relay: RelayUrl,
+    }
+}
+
+wire_struct! {
+    pub struct Invitation {
+        pub v: Version,
+        pub network: String,
+        pub secret: Secret,
+        pub owner: PublicKey,
+        pub hosts: Vec<HostAddr>,
     }
 }
 
 /// A top-level wire structure: one that crosses the network as a whole.
-pub trait Wire: Serialize + DeserializeOwned {
-    /// Refuses a decoded structure whose version, relay URL or address breaks the wire rules.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CodecError`].
-    fn refuse_if_invalid(&self) -> Result<(), CodecError>;
-}
+pub trait Wire: Serialize + Checked {}
 
-macro_rules! wire_structures {
-    ($($structure:ty),+) => {
-        $(
-            impl Wire for $structure {
-                fn refuse_if_invalid(&self) -> Result<(), CodecError> {
-                    Validate::validate(self)
-                }
-            }
-        )+
-    };
-}
-
-wire_structures!(Request, Response, Payload, HostAddr, Invitation);
+impl Wire for Request {}
+impl Wire for Response {}
+impl Wire for Payload {}
+impl Wire for HostAddr {}
+impl Wire for Invitation {}
 
 /// Encodes a wire structure as postcard bytes, refusing one past the wire limit.
 ///
@@ -463,12 +515,11 @@ pub fn encode<T: Wire>(structure: &T) -> Result<Vec<u8>, CodecError> {
 /// Returns [`CodecError`].
 pub fn decode<T: Wire>(bytes: &[u8]) -> Result<T, CodecError> {
     ensure_within_wire_limit(bytes.len())?;
-    let (structure, remainder) = postcard::take_from_bytes(bytes).map_err(CodecError::Malformed)?;
+    let (raw, remainder) = postcard::take_from_bytes(bytes).map_err(CodecError::Malformed)?;
     if !remainder.is_empty() {
         return Err(CodecError::TrailingBytes);
     }
-    T::refuse_if_invalid(&structure)?;
-    Ok(structure)
+    T::check(raw)
 }
 
 const fn ensure_within_wire_limit(bytes: usize) -> Result<(), CodecError> {
@@ -477,7 +528,6 @@ const fn ensure_within_wire_limit(bytes: usize) -> Result<(), CodecError> {
     }
     Ok(())
 }
-
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv6Addr};
@@ -494,6 +544,7 @@ mod tests {
     const ROUND_TRIP_CASES: u64 = 200;
     const LONG_BODY_EXTRA_LENGTH_PREFIX_BYTES: usize = 2;
     const UNSUPPORTED_VERSION: u8 = 2;
+    const SHORT_RELAY_BYTES: usize = 8;
     const REQUEST_PROBE_INDEX: u8 = 1;
     const PAYLOAD_PRESENCE_INDEX: u8 = 0;
     const PAYLOAD_DEPARTURE_INDEX: u8 = 1;
@@ -644,7 +695,7 @@ mod tests {
     fn spec_3_6_receiver_drops_a_structure_whose_addr_has_five_relay_urls() {
         let over_cap = Addr {
             relays: (0..=MAX_RELAY_URLS_PER_ADDR)
-                .map(|_| RelayUrl(relay_of_bytes(8)))
+                .map(|_| RelayUrl(relay_of_bytes(SHORT_RELAY_BYTES)))
                 .collect(),
             direct: Vec::new(),
         };
@@ -700,6 +751,43 @@ mod tests {
                 bytes: MAX_RELAY_URL_BYTES + 1
             })
         );
+    }
+
+    #[test]
+    fn spec_2_wire_encoding_a_host_nested_in_an_invitation_with_version_2_does_not_decode() {
+        let invitation = Invitation {
+            v: Version::CURRENT,
+            network: String::new(),
+            secret: [1; SECRET_BYTES],
+            owner: [2; PUBLIC_KEY_BYTES],
+            hosts: vec![HostAddr {
+                v: Version(UNSUPPORTED_VERSION),
+                id: [3; PUBLIC_KEY_BYTES],
+                relay: RelayUrl(relay_of_bytes(SHORT_RELAY_BYTES)),
+            }],
+        };
+
+        assert_eq!(
+            decode::<Invitation>(&encode(&invitation).unwrap()),
+            Err(CodecError::UnsupportedVersion {
+                found: UNSUPPORTED_VERSION
+            })
+        );
+    }
+
+    trait NotDeserialize<Marker> {
+        fn confirm() {}
+    }
+
+    impl<T: ?Sized> NotDeserialize<()> for T {}
+
+    impl<T: serde::de::DeserializeOwned> NotDeserialize<u8> for T {}
+
+    #[test]
+    fn spec_3_6_no_deserialize_path_yields_a_version_relay_url_or_addr_outside_the_caps() {
+        <Version as NotDeserialize<_>>::confirm();
+        <RelayUrl as NotDeserialize<_>>::confirm();
+        <Addr as NotDeserialize<_>>::confirm();
     }
 
     #[test]
