@@ -13,6 +13,17 @@ const MAX_RELAY_URLS_PER_ADDR: usize = 4;
 const MAX_DIRECT_ADDRS_PER_ADDR: usize = 8;
 const MAX_RELAY_URL_BYTES: usize = 128;
 const SIGNATURE_BYTES: usize = 64;
+const MAC_BYTES: usize = 32;
+const NONCE_BYTES: usize = 16;
+const MESSAGE_ID_BYTES: usize = 16;
+const PUBLIC_KEY_BYTES: usize = 32;
+const SECRET_BYTES: usize = 32;
+
+pub type Mac = [u8; MAC_BYTES];
+pub type Nonce = [u8; NONCE_BYTES];
+pub type MessageId = [u8; MESSAGE_ID_BYTES];
+pub type PublicKey = [u8; PUBLIC_KEY_BYTES];
+pub type Secret = [u8; SECRET_BYTES];
 
 /// A wire structure that failed to encode or decode, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -187,20 +198,20 @@ pub enum Request {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Message {
     pub v: Version,
-    pub id: [u8; 16],
-    pub to: [u8; 32],
+    pub id: MessageId,
+    pub to: PublicKey,
     pub handle: String,
     pub attached: bool,
     pub sent_at: u64,
     pub body: String,
-    pub mac: [u8; 32],
+    pub mac: Mac,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Probe {
     pub v: Version,
-    pub nonce: [u8; 16],
-    pub mac: [u8; 32],
+    pub nonce: Nonce,
+    pub mac: Mac,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,7 +221,7 @@ pub struct Introduce {
     pub public: Vec<u8>,
     pub attached: bool,
     pub addr: Addr,
-    pub mac: [u8; 32],
+    pub mac: Mac,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,7 +234,7 @@ pub enum Response {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageAck {
     pub v: Version,
-    pub id: [u8; 16],
+    pub id: MessageId,
     pub accepted: bool,
     pub attached: bool,
     pub reason: Option<String>,
@@ -232,9 +243,9 @@ pub struct MessageAck {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProbeAck {
     pub v: Version,
-    pub nonce: [u8; 16],
+    pub nonce: Nonce,
     pub attached: bool,
-    pub mac: [u8; 32],
+    pub mac: Mac,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -244,7 +255,7 @@ pub struct IntroduceAck {
     pub public: Vec<u8>,
     pub attached: bool,
     pub addr: Addr,
-    pub mac: [u8; 32],
+    pub mac: Mac,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -258,51 +269,51 @@ pub enum Payload {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Presence {
     pub v: Version,
-    pub card: [u8; 32],
+    pub card: PublicKey,
     pub handle: String,
     pub public: Vec<u8>,
     pub attached: bool,
     pub addr: Addr,
     pub seq: u64,
-    pub mac: [u8; 32],
+    pub mac: Mac,
     pub sig: SignatureBytes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Departure {
     pub v: Version,
-    pub card: [u8; 32],
+    pub card: PublicKey,
     pub seq: u64,
-    pub mac: [u8; 32],
+    pub mac: Mac,
     pub sig: SignatureBytes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Unreachable {
     pub v: Version,
-    pub card: [u8; 32],
-    pub reporter: [u8; 32],
+    pub card: PublicKey,
+    pub reporter: PublicKey,
     pub ts: u64,
-    pub mac: [u8; 32],
+    pub mac: Mac,
     pub sig: SignatureBytes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Infrastructure {
     pub v: Version,
-    pub host: [u8; 32],
+    pub host: PublicKey,
     pub relay: RelayUrl,
     pub addr: Addr,
     pub ts: u64,
     pub cert: SignatureBytes,
-    pub mac: [u8; 32],
+    pub mac: Mac,
     pub sig: SignatureBytes,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostAddr {
     pub v: Version,
-    pub id: [u8; 32],
+    pub id: PublicKey,
     pub relay: RelayUrl,
 }
 
@@ -310,8 +321,8 @@ pub struct HostAddr {
 pub struct Invitation {
     pub v: Version,
     pub network: String,
-    pub secret: [u8; 32],
-    pub owner: [u8; 32],
+    pub secret: Secret,
+    pub owner: PublicKey,
     pub hosts: Vec<HostAddr>,
 }
 
