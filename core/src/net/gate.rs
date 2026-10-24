@@ -2,7 +2,10 @@ use std::fmt;
 use std::time::Duration;
 
 use iroh::EndpointId;
-use iroh::endpoint::{AfterHandshakeOutcome, Connection, EndpointHooks, VarInt};
+use iroh::endpoint::{
+    AfterHandshakeOutcome, ClosedStream, Connection, ConnectionError, EndpointHooks,
+    ReadExactError, VarInt, WriteError,
+};
 use iroh_gossip::ALPN as GOSSIP_ALPN;
 use tokio::time::timeout;
 
@@ -38,33 +41,40 @@ impl NetworkSecretGate {
         }
     }
 
-    /// Says whether the peer answered this side's nonce correctly and this side answered the peer's, both within the gate timeout.
-    async fn peer_proves_network_secret(&self, connection: &Connection) -> bool {
+    /// Passes when the peer answered this side's nonce correctly and this side answered the peer's, both within the gate timeout.
+    async fn peer_proves_network_secret(&self, connection: &Connection) -> Result<(), GateFailure> {
         let both_challenges = async {
             tokio::try_join!(
-                async { self.peer_answers_nonce(connection).await.ok_or(Unproven) },
-                async { self.answer_peer_nonce(connection).await.ok_or(Unproven) },
+                self.peer_answers_nonce(connection),
+                self.answer_peer_nonce(connection),
             )
         };
-        matches!(timeout(GATE_TIMEOUT, both_challenges).await, Ok(Ok(_)))
+        timeout(GATE_TIMEOUT, both_challenges)
+            .await
+            .unwrap_or(Err(GateFailure::Timeout))
+            .map(|((), ())| ())
     }
 
     /// Sends a fresh nonce on a stream this side opens and accepts only the peer's correct proof.
-    async fn peer_answers_nonce(&self, connection: &Connection) -> Option<()> {
+    async fn peer_answers_nonce(&self, connection: &Connection) -> Result<(), GateFailure> {
         let nonce = self.fresh_nonce();
         let answer = send_nonce_for_answer(connection, &nonce).await?;
         let expected = gate_proof(&self.gate_key, &nonce, self.own_id, connection.remote_id());
-        (blake3::Hash::from_bytes(answer) == expected).then_some(())
+        if blake3::Hash::from_bytes(answer) == expected {
+            Ok(())
+        } else {
+            Err(GateFailure::WrongProof)
+        }
     }
 
     /// Reads the nonce the peer sends on the stream it opens and answers it with this side's proof.
-    async fn answer_peer_nonce(&self, connection: &Connection) -> Option<()> {
-        let (mut send, mut recv) = connection.accept_bi().await.ok()?;
+    async fn answer_peer_nonce(&self, connection: &Connection) -> Result<(), GateFailure> {
+        let (mut send, mut recv) = connection.accept_bi().await?;
         let mut nonce = [0; NONCE_BYTES];
-        recv.read_exact(&mut nonce).await.ok()?;
+        recv.read_exact(&mut nonce).await?;
         let proof = gate_proof(&self.gate_key, &nonce, connection.remote_id(), self.own_id);
-        send.write_all(proof.as_bytes()).await.ok()?;
-        send.finish().ok()
+        send.write_all(proof.as_bytes()).await?;
+        Ok(send.finish()?)
     }
 
     /// Draws a nonce from the source the gate was built with.
@@ -89,25 +99,78 @@ impl EndpointHooks for NetworkSecretGate {
         if connection.alpn() != GOSSIP_ALPN {
             return AfterHandshakeOutcome::accept();
         }
-        if self.peer_proves_network_secret(connection).await {
-            AfterHandshakeOutcome::accept()
-        } else {
-            gate_refusal()
+        match self.peer_proves_network_secret(connection).await {
+            Ok(()) => AfterHandshakeOutcome::accept(),
+            Err(_closing_reason) => gate_refusal(),
         }
     }
 }
 
-/// A half of the gate that ended without the proof it needed.
-struct Unproven;
+/// Why the gate closed a gossip connection.
+#[derive(Debug)]
+enum GateFailure {
+    Transport(ConnectionError),
+    StreamWrite(WriteError),
+    StreamFinish(ClosedStream),
+    StreamRead(ReadExactError),
+    WrongProof,
+    Timeout,
+}
 
-/// Opens a stream, sends the nonce, and reads the peer's answer, if one arrives.
-async fn send_nonce_for_answer(connection: &Connection, nonce: &Nonce) -> Option<Proof> {
-    let (mut send, mut recv) = connection.open_bi().await.ok()?;
-    send.write_all(nonce).await.ok()?;
-    send.finish().ok()?;
+impl fmt::Display for GateFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Transport(error) => write!(formatter, "the gate stream could not open: {error}"),
+            Self::StreamWrite(error) => {
+                write!(formatter, "the gate stream failed to write: {error}")
+            }
+            Self::StreamFinish(error) => {
+                write!(formatter, "the gate stream failed to finish: {error}")
+            }
+            Self::StreamRead(error) => write!(formatter, "the gate stream failed to read: {error}"),
+            Self::WrongProof => formatter.write_str("the peer's proof is not the gate proof"),
+            Self::Timeout => formatter.write_str("the gate timeout passed before both proofs"),
+        }
+    }
+}
+
+impl std::error::Error for GateFailure {}
+
+impl From<ConnectionError> for GateFailure {
+    fn from(error: ConnectionError) -> Self {
+        Self::Transport(error)
+    }
+}
+
+impl From<WriteError> for GateFailure {
+    fn from(error: WriteError) -> Self {
+        Self::StreamWrite(error)
+    }
+}
+
+impl From<ClosedStream> for GateFailure {
+    fn from(error: ClosedStream) -> Self {
+        Self::StreamFinish(error)
+    }
+}
+
+impl From<ReadExactError> for GateFailure {
+    fn from(error: ReadExactError) -> Self {
+        Self::StreamRead(error)
+    }
+}
+
+/// Opens a stream, sends the nonce, and reads the peer's answer.
+async fn send_nonce_for_answer(
+    connection: &Connection,
+    nonce: &Nonce,
+) -> Result<Proof, GateFailure> {
+    let (mut send, mut recv) = connection.open_bi().await?;
+    send.write_all(nonce).await?;
+    send.finish()?;
     let mut answer = [0; PROOF_BYTES];
-    recv.read_exact(&mut answer).await.ok()?;
-    Some(answer)
+    recv.read_exact(&mut answer).await?;
+    Ok(answer)
 }
 
 /// The keyed hash under the gate key of the nonce, the verifier's id and the prover's id (spec 3.6).
@@ -128,5 +191,75 @@ fn gate_refusal() -> AfterHandshakeOutcome {
     AfterHandshakeOutcome::Reject {
         error_code: VarInt::from_u32(GATE_REFUSAL_ERROR_CODE),
         reason: GATE_REFUSAL_REASON.to_vec(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
+    use iroh::endpoint::presets;
+    use iroh::{Endpoint, SecretKey};
+
+    const DIALER_SEED: u8 = 11;
+    const ACCEPTOR_SEED: u8 = 12;
+    const MEMBER_SECRET: [u8; KEY_LEN] = [21; KEY_LEN];
+    const OUTSIDER_SECRET: [u8; KEY_LEN] = [12; KEY_LEN];
+
+    async fn bind_ungated_endpoint(seed: u8) -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .secret_key(SecretKey::from_bytes(&[seed; KEY_LEN]))
+            .alpns(vec![GOSSIP_ALPN.to_vec()])
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    async fn gossip_connection_between(
+        dialer: &Endpoint,
+        acceptor: &Endpoint,
+    ) -> (Connection, Connection) {
+        let (outgoing, incoming) =
+            tokio::join!(dialer.connect(acceptor.addr(), GOSSIP_ALPN), async {
+                acceptor.accept().await.unwrap().await
+            });
+        (outgoing.unwrap(), incoming.unwrap())
+    }
+
+    fn gate_of(endpoint: &Endpoint, secret: [u8; KEY_LEN], seed: u8) -> NetworkSecretGate {
+        NetworkSecretGate::new(
+            *NetworkKeys::derive(&NetworkSecret::from_bytes(secret)).gate_key(),
+            endpoint.id(),
+            move |nonce: &mut Nonce| *nonce = [seed; NONCE_BYTES],
+        )
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_gate_names_a_wrong_answer_as_the_reason_it_closes() {
+        let dialer = bind_ungated_endpoint(DIALER_SEED).await;
+        let acceptor = bind_ungated_endpoint(ACCEPTOR_SEED).await;
+        let (outgoing, incoming) = gossip_connection_between(&dialer, &acceptor).await;
+        let member_gate = gate_of(&dialer, MEMBER_SECRET, DIALER_SEED);
+        let outsider_gate = gate_of(&acceptor, OUTSIDER_SECRET, ACCEPTOR_SEED);
+
+        let (member_outcome, outsider_answer) = tokio::join!(
+            member_gate.peer_proves_network_secret(&outgoing),
+            outsider_gate.answer_peer_nonce(&incoming)
+        );
+
+        assert!(matches!(member_outcome, Err(GateFailure::WrongProof)));
+        assert!(matches!(outsider_answer, Ok(())));
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_gate_names_the_timeout_as_the_reason_it_closes_on_a_silent_peer() {
+        let dialer = bind_ungated_endpoint(DIALER_SEED).await;
+        let acceptor = bind_ungated_endpoint(ACCEPTOR_SEED).await;
+        let (outgoing, _silent_incoming) = gossip_connection_between(&dialer, &acceptor).await;
+        let member_gate = gate_of(&dialer, MEMBER_SECRET, DIALER_SEED);
+
+        let outcome = member_gate.peer_proves_network_secret(&outgoing).await;
+
+        assert!(matches!(outcome, Err(GateFailure::Timeout)));
     }
 }
