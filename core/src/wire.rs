@@ -21,6 +21,7 @@ pub enum CodecError {
     TrailingBytes,
     Unencodable(postcard::Error),
     Malformed(postcard::Error),
+    UnsupportedVersion { found: u8 },
     RelayUrlTooLong { bytes: usize },
     AddrOverCap,
 }
@@ -41,6 +42,10 @@ impl fmt::Display for CodecError {
             Self::Malformed(source) => {
                 write!(formatter, "the bytes are not a wire structure: {source}")
             }
+            Self::UnsupportedVersion { found } => write!(
+                formatter,
+                "wire version {found} is not the supported version {PROTOCOL_VERSION}"
+            ),
             Self::RelayUrlTooLong { bytes } => write!(
                 formatter,
                 "a relay URL of {bytes} bytes is past the cap of {MAX_RELAY_URL_BYTES} bytes"
@@ -56,22 +61,11 @@ impl fmt::Display for CodecError {
 impl std::error::Error for CodecError {}
 
 /// The version field every top-level structure opens with; only the value 1 exists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Version;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Version(u8);
 
-impl Serialize for Version {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_u8(PROTOCOL_VERSION)
-    }
-}
-
-impl<'de> Deserialize<'de> for Version {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        match u8::deserialize(deserializer)? {
-            PROTOCOL_VERSION => Ok(Self),
-            _ => Err(de::Error::custom("unsupported wire version")),
-        }
-    }
+impl Version {
+    pub const CURRENT: Self = Self(PROTOCOL_VERSION);
 }
 
 /// A 64-byte signature, encoded as its bytes with no length prefix.
@@ -116,7 +110,6 @@ impl<'de> Deserialize<'de> for SignatureBytes {
 
 /// A relay URL of at most 128 bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String")]
 pub struct RelayUrl(String);
 
 impl RelayUrl {
@@ -131,41 +124,17 @@ impl TryFrom<String> for RelayUrl {
     type Error = CodecError;
 
     fn try_from(url: String) -> Result<Self, CodecError> {
-        if url.len() > MAX_RELAY_URL_BYTES {
-            return Err(CodecError::RelayUrlTooLong { bytes: url.len() });
-        }
-        Ok(Self(url))
+        let relay_url = Self(url);
+        relay_url.validate()?;
+        Ok(relay_url)
     }
 }
 
 /// The relay URLs and direct socket addresses of an endpoint, within the caps of spec 3.6.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "UncheckedAddr")]
 pub struct Addr {
     relays: Vec<RelayUrl>,
     direct: Vec<SocketAddr>,
-}
-
-#[derive(Deserialize)]
-struct UncheckedAddr {
-    relays: Vec<RelayUrl>,
-    direct: Vec<SocketAddr>,
-}
-
-impl TryFrom<UncheckedAddr> for Addr {
-    type Error = CodecError;
-
-    fn try_from(unchecked: UncheckedAddr) -> Result<Self, CodecError> {
-        if unchecked.relays.len() > MAX_RELAY_URLS_PER_ADDR
-            || unchecked.direct.len() > MAX_DIRECT_ADDRS_PER_ADDR
-        {
-            return Err(CodecError::AddrOverCap);
-        }
-        Ok(Self {
-            relays: unchecked.relays,
-            direct: unchecked.direct,
-        })
-    }
 }
 
 const fn is_link_local_v6(address: &SocketAddr) -> bool {
@@ -346,14 +315,124 @@ pub struct Invitation {
     pub hosts: Vec<HostAddr>,
 }
 
-/// A top-level wire structure: one that crosses the network as a whole.
-pub trait Wire: Serialize + DeserializeOwned {}
+trait Validate {
+    fn validate(&self) -> Result<(), CodecError>;
+}
 
-impl Wire for Request {}
-impl Wire for Response {}
-impl Wire for Payload {}
-impl Wire for HostAddr {}
-impl Wire for Invitation {}
+impl Validate for Version {
+    fn validate(&self) -> Result<(), CodecError> {
+        if *self == Self::CURRENT {
+            Ok(())
+        } else {
+            Err(CodecError::UnsupportedVersion { found: self.0 })
+        }
+    }
+}
+
+impl Validate for RelayUrl {
+    fn validate(&self) -> Result<(), CodecError> {
+        if self.0.len() > MAX_RELAY_URL_BYTES {
+            Err(CodecError::RelayUrlTooLong {
+                bytes: self.0.len(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Validate for Addr {
+    fn validate(&self) -> Result<(), CodecError> {
+        if self.relays.len() > MAX_RELAY_URLS_PER_ADDR
+            || self.direct.len() > MAX_DIRECT_ADDRS_PER_ADDR
+        {
+            return Err(CodecError::AddrOverCap);
+        }
+        self.relays.iter().try_for_each(Validate::validate)
+    }
+}
+
+impl Validate for Request {
+    fn validate(&self) -> Result<(), CodecError> {
+        match self {
+            Self::Message(message) => message.v.validate(),
+            Self::Probe(probe) => probe.v.validate(),
+            Self::Introduce(introduce) => {
+                introduce.v.validate()?;
+                introduce.addr.validate()
+            }
+        }
+    }
+}
+
+impl Validate for Response {
+    fn validate(&self) -> Result<(), CodecError> {
+        match self {
+            Self::MessageAck(ack) => ack.v.validate(),
+            Self::ProbeAck(ack) => ack.v.validate(),
+            Self::IntroduceAck(ack) => {
+                ack.v.validate()?;
+                ack.addr.validate()
+            }
+        }
+    }
+}
+
+impl Validate for Payload {
+    fn validate(&self) -> Result<(), CodecError> {
+        match self {
+            Self::Presence(presence) => {
+                presence.v.validate()?;
+                presence.addr.validate()
+            }
+            Self::Departure(departure) => departure.v.validate(),
+            Self::Unreachable(unreachable) => unreachable.v.validate(),
+            Self::Infrastructure(infrastructure) => {
+                infrastructure.v.validate()?;
+                infrastructure.relay.validate()?;
+                infrastructure.addr.validate()
+            }
+        }
+    }
+}
+
+impl Validate for HostAddr {
+    fn validate(&self) -> Result<(), CodecError> {
+        self.v.validate()?;
+        self.relay.validate()
+    }
+}
+
+impl Validate for Invitation {
+    fn validate(&self) -> Result<(), CodecError> {
+        self.v.validate()?;
+        self.hosts.iter().try_for_each(|host| host.relay.validate())
+    }
+}
+
+/// A top-level wire structure: one that crosses the network as a whole.
+pub trait Wire: Serialize + DeserializeOwned {
+    /// Refuses a decoded structure whose version, relay URL or address breaks the wire rules.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CodecError`].
+    fn refuse_if_invalid(&self) -> Result<(), CodecError>;
+}
+
+macro_rules! wire_structures {
+    ($($structure:ty),+) => {
+        $(
+            impl Wire for $structure {
+                fn refuse_if_invalid(&self) -> Result<(), CodecError> {
+                    Validate::validate(self)
+                }
+            }
+        )+
+    };
+}
+
+wire_structures!(Request, Response, Payload, HostAddr, Invitation);
 
 /// Encodes a wire structure as postcard bytes, refusing one past the wire limit.
 ///
@@ -374,11 +453,11 @@ pub fn encode<T: Wire>(structure: &T) -> Result<Vec<u8>, CodecError> {
 pub fn decode<T: Wire>(bytes: &[u8]) -> Result<T, CodecError> {
     ensure_within_wire_limit(bytes.len())?;
     let (structure, remainder) = postcard::take_from_bytes(bytes).map_err(CodecError::Malformed)?;
-    if remainder.is_empty() {
-        Ok(structure)
-    } else {
-        Err(CodecError::TrailingBytes)
+    if !remainder.is_empty() {
+        return Err(CodecError::TrailingBytes);
     }
+    T::refuse_if_invalid(&structure)?;
+    Ok(structure)
 }
 
 const fn ensure_within_wire_limit(bytes: usize) -> Result<(), CodecError> {
@@ -402,8 +481,6 @@ mod tests {
     const HIGH_PORT: u16 = 65535;
     const MESSAGE_BODY_CAP_BYTES: usize = 1_048_576;
     const ROUND_TRIP_CASES: u64 = 200;
-    const REJECTED_BY_VALIDATION: CodecError =
-        CodecError::Malformed(postcard::Error::SerdeDeCustom);
 
     fn relay_of_bytes(length: usize) -> String {
         format!("{:x<length$}", "https://")
@@ -420,7 +497,7 @@ mod tests {
 
     fn largest_presence() -> Payload {
         Payload::Presence(Presence {
-            v: Version,
+            v: Version::CURRENT,
             card: [0xAB; 32],
             handle: "h".repeat(HANDLE_CAP_CHARACTERS),
             public: vec![0xCD; PUBLIC_MAPPING_CAP_BYTES],
@@ -452,7 +529,7 @@ mod tests {
 
     fn probe_request() -> Request {
         Request::Probe(Probe {
-            v: Version,
+            v: Version::CURRENT,
             nonce: [7; 16],
             mac: [9; 32],
         })
@@ -460,7 +537,7 @@ mod tests {
 
     fn introduce_with_addr(addr: Addr) -> Request {
         Request::Introduce(Introduce {
-            v: Version,
+            v: Version::CURRENT,
             handle: None,
             public: Vec::new(),
             attached: false,
@@ -471,7 +548,7 @@ mod tests {
 
     fn departure() -> Departure {
         Departure {
-            v: Version,
+            v: Version::CURRENT,
             card: [0xAA; 32],
             seq: 0,
             mac: [0xBB; 32],
@@ -535,7 +612,7 @@ mod tests {
 
         let outcome = decode::<Request>(&encode(&introduce_with_addr(over_cap)).unwrap());
 
-        assert_eq!(outcome, Err(REJECTED_BY_VALIDATION));
+        assert_eq!(outcome, Err(CodecError::AddrOverCap));
     }
 
     #[test]
@@ -550,7 +627,7 @@ mod tests {
 
         let outcome = decode::<Request>(&encode(&introduce_with_addr(over_cap)).unwrap());
 
-        assert_eq!(outcome, Err(REJECTED_BY_VALIDATION));
+        assert_eq!(outcome, Err(CodecError::AddrOverCap));
     }
 
     #[test]
@@ -562,20 +639,27 @@ mod tests {
 
         let outcome = decode::<Request>(&encode(&introduce_with_addr(over_cap)).unwrap());
 
-        assert_eq!(outcome, Err(REJECTED_BY_VALIDATION));
+        assert_eq!(
+            outcome,
+            Err(CodecError::RelayUrlTooLong {
+                bytes: MAX_RELAY_URL_BYTES + 1
+            })
+        );
     }
 
     #[test]
     fn spec_3_13_host_addr_relay_of_129_bytes_does_not_decode() {
         let oversized = HostAddr {
-            v: Version,
+            v: Version::CURRENT,
             id: [1; 32],
             relay: RelayUrl(relay_of_bytes(MAX_RELAY_URL_BYTES + 1)),
         };
 
         assert_eq!(
             decode::<HostAddr>(&encode(&oversized).unwrap()),
-            Err(REJECTED_BY_VALIDATION)
+            Err(CodecError::RelayUrlTooLong {
+                bytes: MAX_RELAY_URL_BYTES + 1
+            })
         );
     }
 
@@ -591,7 +675,10 @@ mod tests {
         let mut encoded = encode(&probe_request()).unwrap();
         encoded[1] = 2;
 
-        assert_eq!(decode::<Request>(&encoded), Err(REJECTED_BY_VALIDATION));
+        assert_eq!(
+            decode::<Request>(&encoded),
+            Err(CodecError::UnsupportedVersion { found: 2 })
+        );
     }
 
     #[test]
@@ -616,7 +703,7 @@ mod tests {
     #[test]
     fn spec_3_14_a_structure_encoding_past_the_wire_limit_does_not_encode() {
         let oversized = Request::Message(Message {
-            v: Version,
+            v: Version::CURRENT,
             id: [0; 16],
             to: [0; 32],
             handle: String::new(),
@@ -647,7 +734,7 @@ mod tests {
     #[test]
     fn spec_3_14_a_message_with_the_largest_body_round_trips_within_the_wire_limit() {
         let message = Request::Message(Message {
-            v: Version,
+            v: Version::CURRENT,
             id: [1; 16],
             to: [2; 32],
             handle: "h".repeat(HANDLE_CAP_CHARACTERS),
@@ -754,7 +841,7 @@ mod tests {
 
         fn message(&mut self) -> Message {
             Message {
-                v: Version,
+                v: Version::CURRENT,
                 id: self.array(),
                 to: self.array(),
                 handle: self.text(HANDLE_CAP_CHARACTERS),
@@ -767,7 +854,7 @@ mod tests {
 
         fn probe(&mut self) -> Probe {
             Probe {
-                v: Version,
+                v: Version::CURRENT,
                 nonce: self.array(),
                 mac: self.array(),
             }
@@ -775,7 +862,7 @@ mod tests {
 
         fn introduce(&mut self) -> Introduce {
             Introduce {
-                v: Version,
+                v: Version::CURRENT,
                 handle: self.maybe_text(),
                 public: self.blob(300),
                 attached: self.flag(),
@@ -786,7 +873,7 @@ mod tests {
 
         fn message_ack(&mut self) -> MessageAck {
             MessageAck {
-                v: Version,
+                v: Version::CURRENT,
                 id: self.array(),
                 accepted: self.flag(),
                 attached: self.flag(),
@@ -796,7 +883,7 @@ mod tests {
 
         fn probe_ack(&mut self) -> ProbeAck {
             ProbeAck {
-                v: Version,
+                v: Version::CURRENT,
                 nonce: self.array(),
                 attached: self.flag(),
                 mac: self.array(),
@@ -805,7 +892,7 @@ mod tests {
 
         fn introduce_ack(&mut self) -> IntroduceAck {
             IntroduceAck {
-                v: Version,
+                v: Version::CURRENT,
                 handle: self.maybe_text(),
                 public: self.blob(300),
                 attached: self.flag(),
@@ -816,7 +903,7 @@ mod tests {
 
         fn presence(&mut self) -> Presence {
             Presence {
-                v: Version,
+                v: Version::CURRENT,
                 card: self.array(),
                 handle: self.text(HANDLE_CAP_CHARACTERS),
                 public: self.blob(300),
@@ -830,7 +917,7 @@ mod tests {
 
         fn departure(&mut self) -> Departure {
             Departure {
-                v: Version,
+                v: Version::CURRENT,
                 card: self.array(),
                 seq: self.next_word(),
                 mac: self.array(),
@@ -840,7 +927,7 @@ mod tests {
 
         fn unreachable(&mut self) -> Unreachable {
             Unreachable {
-                v: Version,
+                v: Version::CURRENT,
                 card: self.array(),
                 reporter: self.array(),
                 ts: self.next_word(),
@@ -851,7 +938,7 @@ mod tests {
 
         fn infrastructure(&mut self) -> Infrastructure {
             Infrastructure {
-                v: Version,
+                v: Version::CURRENT,
                 host: self.array(),
                 relay: self.relay(),
                 addr: self.addr(),
@@ -864,7 +951,7 @@ mod tests {
 
         fn host_addr(&mut self) -> HostAddr {
             HostAddr {
-                v: Version,
+                v: Version::CURRENT,
                 id: self.array(),
                 relay: self.relay(),
             }
@@ -873,7 +960,7 @@ mod tests {
         fn invitation(&mut self) -> Invitation {
             let host_count = self.below(4).saturating_add(1);
             Invitation {
-                v: Version,
+                v: Version::CURRENT,
                 network: self.text(40),
                 secret: self.array(),
                 owner: self.array(),
