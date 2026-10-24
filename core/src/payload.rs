@@ -6,7 +6,10 @@ use crate::crypto::{
     CryptoError, MAC_LEN, Mac, NetworkKeys, SignedPayloadKind, sign_payload,
     verify_host_certificate, verify_payload_signature,
 };
-use crate::wire::{self, CodecError, Infrastructure, Payload, SignatureBytes, decode, encode};
+use crate::wire::{
+    self, CodecError, Infrastructure, Payload, Request, Response, SignatureBytes, Wire, decode,
+    encode,
+};
 
 const GOSSIP_FRAME_BYTES: usize = 4096;
 const GOSSIP_LAYER_OVERHEAD_BYTES: usize = 38;
@@ -85,17 +88,63 @@ const fn signer_of(payload: &Payload) -> (SignedPayloadKind, wire::PublicKey) {
     }
 }
 
-const fn mac_of(payload: &Payload) -> wire::Mac {
-    on_each_payload_variant!(payload, inner => inner.mac)
-}
-
 const fn signature_of(payload: &Payload) -> SignatureBytes {
     on_each_payload_variant!(payload, inner => inner.sig)
 }
 
-const fn with_mac(mut payload: Payload, mac: wire::Mac) -> Payload {
-    on_each_payload_variant!(&mut payload, inner => inner.mac = mac);
-    payload
+trait MacCarrying: Wire + Clone {
+    fn mac(&self) -> Option<wire::Mac>;
+
+    fn with_mac(self, mac: wire::Mac) -> Self;
+}
+
+impl MacCarrying for Payload {
+    fn mac(&self) -> Option<wire::Mac> {
+        Some(on_each_payload_variant!(self, inner => inner.mac))
+    }
+
+    fn with_mac(mut self, mac: wire::Mac) -> Self {
+        on_each_payload_variant!(&mut self, inner => inner.mac = mac);
+        self
+    }
+}
+
+impl MacCarrying for Request {
+    fn mac(&self) -> Option<wire::Mac> {
+        match self {
+            Self::Message(message) => Some(message.mac),
+            Self::Probe(probe) => Some(probe.mac),
+            Self::Introduce(introduce) => Some(introduce.mac),
+        }
+    }
+
+    fn with_mac(mut self, mac: wire::Mac) -> Self {
+        match &mut self {
+            Self::Message(message) => message.mac = mac,
+            Self::Probe(probe) => probe.mac = mac,
+            Self::Introduce(introduce) => introduce.mac = mac,
+        }
+        self
+    }
+}
+
+impl MacCarrying for Response {
+    fn mac(&self) -> Option<wire::Mac> {
+        match self {
+            Self::MessageAck(_) => None,
+            Self::ProbeAck(probe_ack) => Some(probe_ack.mac),
+            Self::IntroduceAck(introduce_ack) => Some(introduce_ack.mac),
+        }
+    }
+
+    fn with_mac(mut self, mac: wire::Mac) -> Self {
+        match &mut self {
+            Self::MessageAck(_) => {}
+            Self::ProbeAck(probe_ack) => probe_ack.mac = mac,
+            Self::IntroduceAck(introduce_ack) => introduce_ack.mac = mac,
+        }
+        self
+    }
 }
 
 const fn with_signature(mut payload: Payload, signature: SignatureBytes) -> Payload {
@@ -103,13 +152,38 @@ const fn with_signature(mut payload: Payload, signature: SignatureBytes) -> Payl
     payload
 }
 
-fn mac_zeroed_encoding(payload: &Payload) -> Result<Vec<u8>, CodecError> {
-    encode(&with_mac(payload.clone(), ZERO_MAC))
+fn mac_zeroed_encoding<T: MacCarrying>(structure: &T) -> Result<Vec<u8>, CodecError> {
+    encode(&structure.clone().with_mac(ZERO_MAC))
+}
+
+fn with_computed_mac<T: MacCarrying>(keys: &NetworkKeys, structure: T) -> Result<T, CodecError> {
+    let mac = keys.mac(&mac_zeroed_encoding(&structure)?);
+    Ok(structure.with_mac(*mac.as_bytes()))
+}
+
+fn verify_mac<T: MacCarrying>(keys: &NetworkKeys, structure: &T) -> Result<(), PayloadError> {
+    match structure.mac() {
+        Some(mac) => Ok(keys.verify_mac(&mac_zeroed_encoding(structure)?, &Mac::from_bytes(mac))?),
+        None => Ok(()),
+    }
+}
+
+fn seal_with_mac<T: MacCarrying>(
+    keys: &NetworkKeys,
+    structure: T,
+) -> Result<Vec<u8>, PayloadError> {
+    Ok(encode(&with_computed_mac(keys, structure)?)?)
+}
+
+fn open_with_mac<T: MacCarrying>(keys: &NetworkKeys, bytes: &[u8]) -> Result<T, PayloadError> {
+    let structure: T = decode(bytes)?;
+    verify_mac(keys, &structure)?;
+    Ok(structure)
 }
 
 fn signature_zeroed_encoding(payload: &Payload) -> Result<Vec<u8>, CodecError> {
     encode(&with_signature(
-        with_mac(payload.clone(), ZERO_MAC),
+        payload.clone().with_mac(ZERO_MAC),
         ZERO_SIGNATURE,
     ))
 }
@@ -131,7 +205,7 @@ fn verify_signature(payload: &Payload) -> Result<(), PayloadError> {
 /// Signs, macs and encodes a gossip payload, ready to broadcast.
 ///
 /// # Errors
-/// Refuses a signer key that is not the payload's own signer, and an encoding past the gossip frame limit.
+/// `PayloadError` for a signer key that is not the payload's own signer and for an encoding past the gossip frame limit.
 pub fn seal_payload(
     keys: &NetworkKeys,
     signer: &SecretKey,
@@ -152,8 +226,7 @@ fn sign_then_mac(
 ) -> Result<Vec<u8>, PayloadError> {
     let signature = sign_payload(kind, signer, &signature_zeroed_encoding(&payload)?);
     let with_signature_set = with_signature(payload, SignatureBytes(signature.to_bytes()));
-    let mac = keys.mac(&mac_zeroed_encoding(&with_signature_set)?);
-    let encoded = encode(&with_mac(with_signature_set, *mac.as_bytes()))?;
+    let encoded = seal_with_mac(keys, with_signature_set)?;
     if encoded.len() > LARGEST_GOSSIP_PAYLOAD_BYTES {
         return Err(PayloadError::OverGossipFrame {
             bytes: encoded.len(),
@@ -191,17 +264,13 @@ fn verify_infrastructure_rules(
 /// Decodes a gossip payload and accepts it only when its mac, signature and, for infrastructure, certificate and relay rules hold.
 ///
 /// # Errors
-/// Refuses bytes that do not decode, a wrong mac, a wrong signature, then a failed infrastructure rule, in that order.
+/// `PayloadError` for bytes that do not decode, a wrong mac, a wrong signature, or a failed infrastructure rule, checked in that order.
 pub fn open_payload(
     keys: &NetworkKeys,
     owner: &PublicKey,
     bytes: &[u8],
 ) -> Result<Payload, PayloadError> {
-    let payload: Payload = decode(bytes)?;
-    keys.verify_mac(
-        &mac_zeroed_encoding(&payload)?,
-        &Mac::from_bytes(mac_of(&payload)),
-    )?;
+    let payload: Payload = open_with_mac(keys, bytes)?;
     verify_signature(&payload)?;
     match &payload {
         Payload::Infrastructure(infrastructure) => {
@@ -212,11 +281,46 @@ pub fn open_payload(
     Ok(payload)
 }
 
+/// Macs and encodes a direct request, ready to write to the stream.
+///
+/// # Errors
+/// `PayloadError::Codec` when the request does not encode within the wire limit.
+pub fn seal_request(keys: &NetworkKeys, request: Request) -> Result<Vec<u8>, PayloadError> {
+    seal_with_mac(keys, request)
+}
+
+/// Decodes a direct request and accepts it only when its mac verifies.
+///
+/// # Errors
+/// `PayloadError` for bytes that do not decode and for a wrong mac.
+pub fn open_request(keys: &NetworkKeys, bytes: &[u8]) -> Result<Request, PayloadError> {
+    open_with_mac(keys, bytes)
+}
+
+/// Macs and encodes a direct response, ready to write to the stream.
+///
+/// # Errors
+/// `PayloadError::Codec` when the response does not encode within the wire limit.
+pub fn seal_response(keys: &NetworkKeys, response: Response) -> Result<Vec<u8>, PayloadError> {
+    seal_with_mac(keys, response)
+}
+
+/// Decodes a direct response and accepts it only when its mac verifies.
+///
+/// # Errors
+/// `PayloadError` for bytes that do not decode and for a wrong mac.
+pub fn open_response(keys: &NetworkKeys, bytes: &[u8]) -> Result<Response, PayloadError> {
+    open_with_mac(keys, bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::crypto::{KEY_LEN, NetworkSecret, sign_host_certificate};
-    use crate::wire::{Addr, Departure, Infrastructure, Presence, RelayUrl, Unreachable, Version};
+    use crate::wire::{
+        Addr, Departure, Infrastructure, Introduce, IntroduceAck, Message, MessageAck, Presence,
+        Probe, ProbeAck, RelayUrl, Unreachable, Version,
+    };
 
     const NETWORK_SECRET: NetworkSecret = NetworkSecret::from_bytes([7; KEY_LEN]);
 
@@ -264,7 +368,7 @@ mod tests {
     }
 
     fn without_authentication(payload: Payload) -> Payload {
-        with_mac(with_signature(payload, ZERO_SIGNATURE), ZERO_MAC)
+        with_signature(payload, ZERO_SIGNATURE).with_mac(ZERO_MAC)
     }
 
     const REPORTED_CARD_SEED: u8 = 1;
@@ -389,11 +493,8 @@ mod tests {
             panic!("a departure was sealed");
         };
         departure.seq += 1;
-        let edited = with_mac(Payload::Departure(departure), ZERO_MAC);
-        let remacked = with_mac(
-            edited.clone(),
-            *keys().mac(&encode(&edited).unwrap()).as_bytes(),
-        );
+        let edited = Payload::Departure(departure);
+        let remacked = with_computed_mac(&keys(), edited).unwrap();
 
         assert_eq!(
             open_payload(&keys(), &owner_public(), &encode(&remacked).unwrap()),
@@ -581,5 +682,143 @@ mod tests {
                 bytes: LARGEST_GOSSIP_PAYLOAD_BYTES + 1
             })
         );
+    }
+
+    const MESSAGE_ID: [u8; 16] = [0x5A; 16];
+    const NONCE: [u8; 16] = [0xC3; 16];
+
+    fn unsealed_requests() -> [Request; 3] {
+        [
+            Request::Message(Message {
+                v: Version::CURRENT,
+                id: MESSAGE_ID,
+                to: public_bytes(REPORTER_SEED),
+                handle: "alice".to_owned(),
+                attached: true,
+                sent_at: 1_700_000_000,
+                body: "hello".to_owned(),
+                mac: ZERO_MAC,
+            }),
+            Request::Probe(Probe {
+                v: Version::CURRENT,
+                nonce: NONCE,
+                mac: ZERO_MAC,
+            }),
+            Request::Introduce(Introduce {
+                v: Version::CURRENT,
+                handle: Some("alice".to_owned()),
+                public: b"{}".to_vec(),
+                attached: false,
+                addr: Addr::from_endpoint_report(
+                    ["https://relay.example/".to_owned()],
+                    std::iter::empty(),
+                ),
+                mac: ZERO_MAC,
+            }),
+        ]
+    }
+
+    fn unsealed_macked_responses() -> [Response; 2] {
+        [
+            Response::ProbeAck(ProbeAck {
+                v: Version::CURRENT,
+                nonce: NONCE,
+                attached: true,
+                mac: ZERO_MAC,
+            }),
+            Response::IntroduceAck(IntroduceAck {
+                v: Version::CURRENT,
+                handle: None,
+                public: Vec::new(),
+                attached: true,
+                addr: Addr::from_endpoint_report(
+                    ["https://relay.example/".to_owned()],
+                    std::iter::empty(),
+                ),
+                mac: ZERO_MAC,
+            }),
+        ]
+    }
+
+    fn message_ack() -> Response {
+        Response::MessageAck(MessageAck {
+            v: Version::CURRENT,
+            id: MESSAGE_ID,
+            accepted: false,
+            attached: true,
+            reason: Some("card_invalid".to_owned()),
+        })
+    }
+
+    fn other_network() -> NetworkKeys {
+        NetworkKeys::derive(&NetworkSecret::from_bytes([8; KEY_LEN]))
+    }
+
+    #[test]
+    fn spec_3_4_sealed_request_carries_the_keyed_mac_of_its_zero_mac_encoding() {
+        for request in unsealed_requests() {
+            let expected_mac = keys().mac(&encode(&request).unwrap());
+
+            let sealed = seal_request(&keys(), request.clone()).unwrap();
+
+            assert_eq!(
+                open_request(&keys(), &sealed),
+                Ok(request.with_mac(*expected_mac.as_bytes()))
+            );
+        }
+    }
+
+    #[test]
+    fn test_9_request_with_a_wrong_mac_is_dropped() {
+        for request in unsealed_requests() {
+            let sealed = seal_request(&keys(), request.clone()).unwrap();
+            let sealed_under_other_network = seal_request(&other_network(), request).unwrap();
+
+            assert_eq!(
+                open_request(&keys(), &sealed_under_other_network),
+                Err(PayloadError::Crypto(CryptoError::MacMismatch))
+            );
+            for position in 0..sealed.len() {
+                let mut tampered = sealed.clone();
+                tampered[position] ^= 1;
+                assert!(open_request(&keys(), &tampered).is_err(), "byte {position}");
+            }
+        }
+    }
+
+    #[test]
+    fn spec_3_4_response_with_a_mac_field_is_sealed_and_dropped_on_a_wrong_mac() {
+        for response in unsealed_macked_responses() {
+            let expected_mac = keys().mac(&encode(&response).unwrap());
+
+            let sealed = seal_response(&keys(), response.clone()).unwrap();
+            let sealed_under_other_network =
+                seal_response(&other_network(), response.clone()).unwrap();
+
+            assert_eq!(
+                open_response(&keys(), &sealed),
+                Ok(response.with_mac(*expected_mac.as_bytes()))
+            );
+            assert_eq!(
+                open_response(&keys(), &sealed_under_other_network),
+                Err(PayloadError::Crypto(CryptoError::MacMismatch))
+            );
+            for position in 0..sealed.len() {
+                let mut tampered = sealed.clone();
+                tampered[position] ^= 1;
+                assert!(
+                    open_response(&keys(), &tampered).is_err(),
+                    "byte {position}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spec_3_6_message_ack_has_no_mac_field_so_it_travels_as_encoded() {
+        let sealed = seal_response(&other_network(), message_ack()).unwrap();
+
+        assert_eq!(sealed, encode(&message_ack()).unwrap());
+        assert_eq!(open_response(&keys(), &sealed), Ok(message_ack()));
     }
 }
