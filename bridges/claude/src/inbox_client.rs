@@ -329,6 +329,19 @@ mod tests {
         assert_eq!(followed.delivered, vec![frame(1)]);
     }
 
+    fn serve_reply(
+        listener: &std::os::unix::net::UnixListener,
+        reply: &str,
+    ) -> (String, std::os::unix::net::UnixStream) {
+        let (mut connection, _) = listener.accept().expect("accept");
+        let mut since_line = String::new();
+        BufReader::new(&connection)
+            .read_line(&mut since_line)
+            .expect("since line");
+        connection.write_all(reply.as_bytes()).expect("reply");
+        (since_line, connection)
+    }
+
     #[test]
     fn spec_3_11_a_real_unix_socket_replays_then_resumes_after_the_server_closes() {
         use std::os::unix::net::UnixListener;
@@ -336,20 +349,13 @@ mod tests {
             std::env::temp_dir().join(format!("estf-u31-{}.sock", std::process::id()));
         let listener = UnixListener::bind(&socket_path).expect("bind");
         let server = std::thread::spawn(move || {
-            let mut since_lines = Vec::new();
-            for reply in [
-                format!("{}{}", frame_line(5), frame_line(6)),
-                frame_line(11),
-            ] {
-                let (mut connection, _) = listener.accept().expect("accept");
-                let mut since_line = String::new();
-                BufReader::new(&connection)
-                    .read_line(&mut since_line)
-                    .expect("since line");
-                since_lines.push(since_line);
-                connection.write_all(reply.as_bytes()).expect("reply");
-            }
-            since_lines
+            let (first_since_line, first_connection) =
+                serve_reply(&listener, &format!("{}{}", frame_line(5), frame_line(6)));
+            drop(first_connection);
+            let (second_since_line, second_connection) = serve_reply(&listener, &frame_line(11));
+            drop(listener);
+            drop(second_connection);
+            vec![first_since_line, second_since_line]
         });
         let mut connector = UnixSocketConnector::new(socket_path.clone());
         let mut delivered = Vec::new();
