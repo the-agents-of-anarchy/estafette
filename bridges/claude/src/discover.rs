@@ -81,14 +81,54 @@ fn parse_ps_line(line: &str) -> Result<ProcessEntry, ProcessTableError> {
         .next()
         .and_then(|token| token.parse().ok())
         .ok_or_else(malformed)?;
-    let executable = tokens.next().unwrap_or_default().to_owned();
-    let arguments = tokens.map(str::to_owned).collect();
+    let command_line: Vec<&str> = tokens.collect();
+    let executable_token_count = executable_token_count(&command_line);
+    let executable = command_line
+        .iter()
+        .take(executable_token_count)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let arguments = command_line
+        .iter()
+        .skip(executable_token_count)
+        .map(|token| (*token).to_owned())
+        .collect();
     Ok(ProcessEntry {
         pid,
         parent_pid,
         executable,
         arguments,
     })
+}
+
+fn executable_token_count(command_line: &[&str]) -> usize {
+    let first_token_is_absolute_path = command_line
+        .first()
+        .is_some_and(|token| token.starts_with('/'));
+    if !first_token_is_absolute_path {
+        return 1;
+    }
+    (1..=command_line.len())
+        .find(|&token_count| {
+            let continuation_tokens_are_not_new_paths = command_line
+                .iter()
+                .take(token_count)
+                .skip(1)
+                .all(|token| !token.starts_with('/'));
+            let candidate = command_line
+                .iter()
+                .take(token_count)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(" ");
+            continuation_tokens_are_not_new_paths && is_binary_path(&candidate)
+        })
+        .unwrap_or(1)
+}
+
+fn is_binary_path(path: &str) -> bool {
+    Path::new(path).file_name() == Some(OsStr::new(BINARY_EXECUTABLE_NAME))
 }
 
 pub trait ProcessTable {
@@ -168,8 +208,7 @@ fn descendant_pids(harness_pid: u32, entries: &[ProcessEntry]) -> BTreeSet<u32> 
 }
 
 fn runs_binary_in_mcp_mode(entry: &ProcessEntry) -> bool {
-    let executable_name = Path::new(&entry.executable).file_name();
-    executable_name == Some(OsStr::new(BINARY_EXECUTABLE_NAME))
+    is_binary_path(&entry.executable)
         && entry.arguments.first().map(String::as_str) == Some(MCP_MODE_ARGUMENT)
 }
 
@@ -369,6 +408,34 @@ mod tests {
     const TREE_STARTUP_POLL_LIMIT: u32 = 200;
     const TREE_STARTUP_POLL_PAUSE: Duration = Duration::from_millis(25);
     #[test]
+    fn spec_3_12_step_2_ps_listing_recovers_a_binary_path_with_a_space_whole() {
+        let entries = parse_ps_listing("  77     1 /Users/First Last/bin/estafette mcp --x\n")
+            .expect("parsed");
+        let executables_and_arguments: Vec<(&str, &[String])> = entries
+            .iter()
+            .map(|entry| (entry.executable.as_str(), entry.arguments.as_slice()))
+            .collect();
+        assert_eq!(
+            executables_and_arguments,
+            [(
+                "/Users/First Last/bin/estafette",
+                ["mcp".to_owned(), "--x".to_owned()].as_slice()
+            )]
+        );
+    }
+
+    #[test]
+    fn spec_3_12_step_2_ps_listing_keeps_an_interpreter_apart_from_the_script_it_runs() {
+        let entries =
+            parse_ps_listing("  78     1 /bin/sh /opt/bin/estafette mcp\n").expect("parsed");
+        let executables: Vec<&str> = entries
+            .iter()
+            .map(|entry| entry.executable.as_str())
+            .collect();
+        assert_eq!(executables, ["/bin/sh"]);
+    }
+
+    #[test]
     fn spec_3_12_step_2_ps_listing_without_a_parent_pid_is_refused_with_the_line() {
         let refusal = parse_ps_listing("  77 1 /bin/sh -c run\n  88\n").expect_err("refused");
         assert_eq!(
@@ -393,9 +460,9 @@ mod tests {
     }
 
     impl FakeProcessTree {
-        fn start() -> Self {
+        fn start(directory_label: &str) -> Self {
             let directory =
-                std::env::temp_dir().join(format!("estafette-discover-{}", std::process::id()));
+                std::env::temp_dir().join(format!("{directory_label}-{}", std::process::id()));
             std::fs::create_dir_all(&directory).expect("create fake binary directory");
             let fake_binary = directory.join(BINARY_EXECUTABLE_NAME);
             let perl_path = Command::new("which")
@@ -459,7 +526,16 @@ mod tests {
     #[test]
     fn spec_3_12_steps_2_5_6_ps_table_finds_mcp_binaries_in_a_real_process_tree_and_stops_with_harness()
      {
-        let mut tree = FakeProcessTree::start();
+        assert_ps_table_finds_mcp_binaries_installed_in("estafette-discover");
+    }
+
+    #[test]
+    fn spec_3_12_step_2_ps_table_finds_a_binary_installed_under_a_path_with_a_space() {
+        assert_ps_table_finds_mcp_binaries_installed_in("discover with space");
+    }
+
+    fn assert_ps_table_finds_mcp_binaries_installed_in(directory_label: &str) {
+        let mut tree = FakeProcessTree::start(directory_label);
         let mut expected: Vec<PathBuf> = tree
             .mcp_pids
             .iter()
@@ -474,7 +550,7 @@ mod tests {
             &runtime_inputs(),
             &PsProcessTable,
             &mut || {
-                polls += 1;
+                polls = polls.saturating_add(1);
                 sleep(TREE_STARTUP_POLL_PAUSE);
                 if matched.get() || polls >= TREE_STARTUP_POLL_LIMIT {
                     tree.stop_harness();
