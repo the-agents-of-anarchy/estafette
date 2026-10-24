@@ -355,11 +355,6 @@ mod tests {
     use super::*;
     use crate::dirs::OperatingSystemFilesystem;
     use std::ffi::OsString;
-    use std::fs;
-    use std::path::Path;
-    use std::time::Duration;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::UnixStream;
 
     const OWN_PROCESS_ID: u32 = 4_242;
     const READ_DEADLINE: Duration = Duration::from_secs(5);
@@ -415,15 +410,17 @@ mod tests {
         BufReader::new(stream)
     }
 
-    async fn next_seq(client: &mut BufReader<UnixStream>) -> u64 {
+    async fn next_frame(client: &mut BufReader<UnixStream>) -> serde_json::Value {
         let mut line = String::new();
         tokio::time::timeout(READ_DEADLINE, client.read_line(&mut line))
             .await
             .unwrap()
             .unwrap();
-        serde_json::from_str::<serde_json::Value>(&line).unwrap()["seq"]
-            .as_u64()
-            .unwrap()
+        serde_json::from_str(&line).unwrap()
+    }
+
+    async fn next_seq(client: &mut BufReader<UnixStream>) -> u64 {
+        next_frame(client).await["seq"].as_u64().unwrap()
     }
 
     #[tokio::test]
@@ -467,13 +464,8 @@ mod tests {
         socket.publish(message_number(7));
         let mut client =
             connect_with_since(&directories.inbox_socket_file(OWN_PROCESS_ID), 0).await;
-        let mut line = String::new();
-        tokio::time::timeout(READ_DEADLINE, client.read_line(&mut line))
-            .await
-            .unwrap()
-            .unwrap();
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&line).unwrap(),
+            next_frame(&mut client).await,
             serde_json::json!({
                 "seq": 1, "id": "id-7", "from": "from-7", "body": "body-7",
                 "sent_at": 1_007, "received_at": 2_007,
