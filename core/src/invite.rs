@@ -2,6 +2,7 @@ use std::fmt;
 
 use data_encoding::{DecodeError, HEXLOWER};
 
+use crate::errors::ExitStatus;
 use crate::wire::{self, CodecError, HostAddr, Invitation, Wire};
 
 const INVITATION_PREFIX: &str = "estafette-invite-1:";
@@ -33,6 +34,17 @@ impl fmt::Display for InviteError {
 }
 
 impl std::error::Error for InviteError {}
+
+impl From<&InviteError> for ExitStatus {
+    fn from(error: &InviteError) -> Self {
+        match error {
+            InviteError::WrongPrefix { .. }
+            | InviteError::NotHexadecimal(_)
+            | InviteError::NoHost
+            | InviteError::Codec(_) => Self::UsageError,
+        }
+    }
+}
 
 /// Renders an invitation as `estafette-invite-1:` and the lowercase hexadecimal of its postcard encoding.
 ///
@@ -193,6 +205,29 @@ mod tests {
 
         assert_eq!(render_invitation(&hostless), Err(InviteError::NoHost));
         assert_eq!(parse_invitation(&hostless_text), Err(InviteError::NoHost));
+    }
+
+    #[test]
+    fn spec_3_13_every_refusal_of_a_parse_ends_the_program_as_a_usage_error() {
+        let hostless = Invitation {
+            hosts: Vec::new(),
+            ..two_host_invitation()
+        };
+        let hostless_text = format!(
+            "{INVITATION_PREFIX}{}",
+            HEXLOWER.encode(&wire::encode(&hostless).unwrap())
+        );
+        let refusals = [
+            parse_host_line(&render_invitation(&two_host_invitation()).unwrap()).unwrap_err(),
+            parse_host_line(&host_line_of_hex("0")).unwrap_err(),
+            parse_invitation(&hostless_text).unwrap_err(),
+            parse_host_line(&host_line_of_hex(&format!("{}00", pinned_host_hex()))).unwrap_err(),
+        ];
+
+        let statuses = refusals.each_ref().map(ExitStatus::from);
+
+        assert_eq!(statuses, [ExitStatus::UsageError; 4]);
+        assert_eq!(u8::from(statuses[0]), 2);
     }
 
     const RELAY_CAP_BYTES: usize = 128;
