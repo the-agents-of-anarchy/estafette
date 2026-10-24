@@ -113,17 +113,19 @@ pub fn generate_secret_key(
 }
 
 fn decode_key_bytes(text: &str) -> Result<[u8; KEY_BYTES], KeyError> {
-    if text.len() != HEX_CHARS_PER_KEY {
-        return Err(KeyError::WrongLength { found: text.len() });
+    let found = text.chars().count();
+    if found != HEX_CHARS_PER_KEY {
+        return Err(KeyError::WrongLength { found });
     }
-    let decoded = HEXLOWER_PERMISSIVE
-        .decode(text.as_bytes())
-        .ok()
-        .ok_or(KeyError::NotHexadecimal)?;
-    decoded
-        .try_into()
-        .ok()
-        .ok_or(KeyError::WrongLength { found: text.len() })
+    let mut bytes = [0; KEY_BYTES];
+    if !text.is_ascii()
+        || HEXLOWER_PERMISSIVE
+            .decode_mut(text.as_bytes(), &mut bytes)
+            .is_err()
+    {
+        return Err(KeyError::NotHexadecimal);
+    }
+    Ok(bytes)
 }
 
 #[cfg(test)]
@@ -255,6 +257,21 @@ mod tests {
                 secret
             );
         }
+    }
+
+    #[test]
+    fn spec_3_1_key_refusal_counts_characters_not_bytes() {
+        let sixty_four_multibyte_characters = "é".repeat(HEX_CHARS_PER_KEY);
+        assert_eq!(
+            parse_network_secret(&sixty_four_multibyte_characters).unwrap_err(),
+            KeyError::NotHexadecimal
+        );
+        assert_eq!(
+            parse_network_secret(&"é".repeat(HEX_CHARS_PER_KEY + 1)).unwrap_err(),
+            KeyError::WrongLength {
+                found: HEX_CHARS_PER_KEY + 1
+            }
+        );
     }
 
     #[test]
