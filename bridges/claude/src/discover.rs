@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -11,7 +11,13 @@ const MCP_MODE_ARGUMENT: &str = "mcp";
 const RUNTIME_DIRECTORY_PREFIX: &str = "estafette-";
 const DEFAULT_TEMPORARY_DIRECTORY: &str = "/tmp";
 const SOCKET_FILE_SUFFIX: &str = ".sock";
-const PS_LISTING_ARGUMENTS: [&str; 3] = ["-A", "-o", "pid=,ppid=,args="];
+const PS_COMMAND_LINE_COLUMNS: &str = "pid=,ppid=,args=";
+#[cfg(target_os = "macos")]
+const PS_EXECUTABLE_PATH_COLUMNS: &str = "pid=,comm=";
+#[cfg(target_os = "linux")]
+const PROC_DIRECTORY: &str = "/proc";
+#[cfg(target_os = "linux")]
+const EXECUTABLE_LINK_NAME: &str = "exe";
 
 #[derive(Clone, Debug)]
 pub struct ProcessEntry {
@@ -34,10 +40,7 @@ impl fmt::Display for ProcessTableError {
             Self::ListingFailed(source) => write!(formatter, "cannot run ps: {source}"),
             Self::ListingExitedUnsuccessfully(status) => write!(formatter, "ps failed: {status}"),
             Self::MalformedListingLine(line) => {
-                write!(
-                    formatter,
-                    "ps printed a line without pid and parent pid: {line}"
-                )
+                write!(formatter, "ps printed a line it cannot read: {line}")
             }
         }
     }
@@ -49,82 +52,95 @@ pub struct PsProcessTable;
 
 impl ProcessTable for PsProcessTable {
     fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
-        let listing = Command::new("ps")
-            .args(PS_LISTING_ARGUMENTS)
-            .output()
-            .map_err(ProcessTableError::ListingFailed)?;
-        if !listing.status.success() {
-            return Err(ProcessTableError::ListingExitedUnsuccessfully(
-                listing.status,
-            ));
-        }
-        parse_ps_listing(&String::from_utf8_lossy(&listing.stdout))
+        let command_lines = run_ps(PS_COMMAND_LINE_COLUMNS)?;
+        let executables = executable_paths()?;
+        entries_from_command_lines(&command_lines, &executables)
     }
 }
 
-fn parse_ps_listing(listing: &str) -> Result<Vec<ProcessEntry>, ProcessTableError> {
-    listing
+fn run_ps(columns: &str) -> Result<String, ProcessTableError> {
+    let listing = Command::new("ps")
+        .args(["-A", "-o", columns])
+        .output()
+        .map_err(ProcessTableError::ListingFailed)?;
+    if !listing.status.success() {
+        return Err(ProcessTableError::ListingExitedUnsuccessfully(
+            listing.status,
+        ));
+    }
+    Ok(String::from_utf8_lossy(&listing.stdout).into_owned())
+}
+
+#[cfg(target_os = "macos")]
+fn executable_paths() -> Result<BTreeMap<u32, String>, ProcessTableError> {
+    run_ps(PS_EXECUTABLE_PATH_COLUMNS)?
         .lines()
         .filter(|line| !line.trim().is_empty())
-        .map(parse_ps_line)
+        .map(|line| {
+            let (pid_text, path) = split_first_token(line);
+            pid_text
+                .parse()
+                .ok()
+                .map(|pid| (pid, path.trim().to_owned()))
+                .ok_or_else(|| ProcessTableError::MalformedListingLine(line.to_owned()))
+        })
         .collect()
 }
 
-fn parse_ps_line(line: &str) -> Result<ProcessEntry, ProcessTableError> {
-    let malformed = || ProcessTableError::MalformedListingLine(line.to_owned());
-    let mut tokens = line.split_whitespace();
-    let pid = tokens
-        .next()
-        .and_then(|token| token.parse().ok())
-        .ok_or_else(malformed)?;
-    let parent_pid = tokens
-        .next()
-        .and_then(|token| token.parse().ok())
-        .ok_or_else(malformed)?;
-    let command_line: Vec<&str> = tokens.collect();
-    let executable_token_count = executable_token_count(&command_line);
-    let executable = command_line
-        .iter()
-        .take(executable_token_count)
-        .copied()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let arguments = command_line
-        .iter()
-        .skip(executable_token_count)
-        .map(|token| (*token).to_owned())
-        .collect();
-    Ok(ProcessEntry {
-        pid,
-        parent_pid,
-        executable,
-        arguments,
-    })
+#[cfg(target_os = "linux")]
+fn executable_paths() -> Result<BTreeMap<u32, String>, ProcessTableError> {
+    let process_directories =
+        std::fs::read_dir(PROC_DIRECTORY).map_err(ProcessTableError::ListingFailed)?;
+    Ok(process_directories
+        .filter_map(Result::ok)
+        .filter_map(|process_directory| {
+            let pid = process_directory.file_name().to_str()?.parse().ok()?;
+            let executable =
+                std::fs::read_link(process_directory.path().join(EXECUTABLE_LINK_NAME)).ok()?;
+            Some((pid, executable.to_string_lossy().into_owned()))
+        })
+        .collect())
 }
 
-fn executable_token_count(command_line: &[&str]) -> usize {
-    let first_token_is_absolute_path = command_line
-        .first()
-        .is_some_and(|token| token.starts_with('/'));
-    if !first_token_is_absolute_path {
-        return 1;
+fn split_first_token(text: &str) -> (&str, &str) {
+    let trimmed = text.trim_start();
+    trimmed
+        .split_once(char::is_whitespace)
+        .unwrap_or((trimmed, ""))
+}
+
+fn entries_from_command_lines(
+    listing: &str,
+    executables: &BTreeMap<u32, String>,
+) -> Result<Vec<ProcessEntry>, ProcessTableError> {
+    let mut entries = Vec::new();
+    for line in listing.lines().filter(|line| !line.trim().is_empty()) {
+        let malformed = || ProcessTableError::MalformedListingLine(line.to_owned());
+        let (pid_text, after_pid) = split_first_token(line);
+        let (parent_pid_text, command_line) = split_first_token(after_pid);
+        let pid = pid_text.parse().ok().ok_or_else(malformed)?;
+        let parent_pid = parent_pid_text.parse().ok().ok_or_else(malformed)?;
+        if let Some(executable) = executables.get(&pid) {
+            entries.push(ProcessEntry {
+                pid,
+                parent_pid,
+                executable: executable.clone(),
+                arguments: arguments_after_executable(command_line, executable),
+            });
+        }
     }
-    (1..=command_line.len())
-        .find(|&token_count| {
-            let continuation_tokens_are_not_new_paths = command_line
-                .iter()
-                .take(token_count)
-                .skip(1)
-                .all(|token| !token.starts_with('/'));
-            let candidate = command_line
-                .iter()
-                .take(token_count)
-                .copied()
-                .collect::<Vec<_>>()
-                .join(" ");
-            continuation_tokens_are_not_new_paths && is_binary_path(&candidate)
-        })
-        .unwrap_or(1)
+    Ok(entries)
+}
+
+fn arguments_after_executable(command_line: &str, executable: &str) -> Vec<String> {
+    let after_program_name = match command_line.strip_prefix(executable) {
+        Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => rest,
+        _ => split_first_token(command_line).1,
+    };
+    after_program_name
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
 }
 
 fn is_binary_path(path: &str) -> bool {
@@ -407,40 +423,68 @@ mod tests {
 
     const TREE_STARTUP_POLL_LIMIT: u32 = 200;
     const TREE_STARTUP_POLL_PAUSE: Duration = Duration::from_millis(25);
-    #[test]
-    fn spec_3_12_step_2_ps_listing_recovers_a_binary_path_with_a_space_whole() {
-        let entries = parse_ps_listing("  77     1 /Users/First Last/bin/estafette mcp --x\n")
-            .expect("parsed");
-        let executables_and_arguments: Vec<(&str, &[String])> = entries
-            .iter()
-            .map(|entry| (entry.executable.as_str(), entry.arguments.as_slice()))
-            .collect();
-        assert_eq!(
-            executables_and_arguments,
-            [(
-                "/Users/First Last/bin/estafette",
-                ["mcp".to_owned(), "--x".to_owned()].as_slice()
-            )]
-        );
+    fn executable_table(pid: u32, executable: &str) -> BTreeMap<u32, String> {
+        BTreeMap::from([(pid, executable.to_owned())])
+    }
+
+    fn only_entry(entries: &[ProcessEntry]) -> &ProcessEntry {
+        let [entry] = entries else {
+            panic!("exactly one entry expected, got {entries:?}");
+        };
+        entry
     }
 
     #[test]
-    fn spec_3_12_step_2_ps_listing_keeps_an_interpreter_apart_from_the_script_it_runs() {
-        let entries =
-            parse_ps_listing("  78     1 /bin/sh /opt/bin/estafette mcp\n").expect("parsed");
-        let executables: Vec<&str> = entries
-            .iter()
-            .map(|entry| entry.executable.as_str())
-            .collect();
-        assert_eq!(executables, ["/bin/sh"]);
+    fn spec_3_12_step_2_executable_with_a_space_is_taken_whole_from_the_os() {
+        let entries = entries_from_command_lines(
+            "  77     1 /Users/First Last/bin/estafette mcp --x\n",
+            &executable_table(77, "/Users/First Last/bin/estafette"),
+        )
+        .expect("parsed");
+        let entry = only_entry(&entries);
+        assert_eq!(entry.executable, "/Users/First Last/bin/estafette");
+        assert_eq!(entry.arguments, ["mcp", "--x"]);
+        assert!(runs_binary_in_mcp_mode(entry));
+    }
+
+    #[test]
+    fn spec_3_12_step_2_interpreter_running_a_script_named_like_the_binary_is_not_the_binary() {
+        let entries = entries_from_command_lines(
+            "  78     1 /usr/bin/python3 scripts/estafette mcp\n",
+            &executable_table(78, "/usr/bin/python3"),
+        )
+        .expect("parsed");
+        let entry = only_entry(&entries);
+        assert_eq!(entry.executable, "/usr/bin/python3");
+        assert!(!runs_binary_in_mcp_mode(entry));
+    }
+
+    #[test]
+    fn spec_3_12_step_2_binary_started_by_bare_name_has_its_arguments_after_the_name() {
+        let entries = entries_from_command_lines(
+            "  79     1 estafette mcp\n",
+            &executable_table(79, "/opt/bin/estafette"),
+        )
+        .expect("parsed");
+        let entry = only_entry(&entries);
+        assert_eq!(entry.arguments, ["mcp"]);
+        assert!(runs_binary_in_mcp_mode(entry));
+    }
+
+    #[test]
+    fn spec_3_12_step_2_process_without_an_os_executable_path_is_left_out() {
+        let entries = entries_from_command_lines("  80     1 estafette mcp\n", &BTreeMap::new())
+            .expect("parsed");
+        assert!(entries.is_empty());
     }
 
     #[test]
     fn spec_3_12_step_2_ps_listing_without_a_parent_pid_is_refused_with_the_line() {
-        let refusal = parse_ps_listing("  77 1 /bin/sh -c run\n  88\n").expect_err("refused");
+        let refusal = entries_from_command_lines("  77 1 /bin/sh -c run\n  88\n", &BTreeMap::new())
+            .expect_err("refused");
         assert_eq!(
             refusal.to_string(),
-            "ps printed a line without pid and parent pid:   88"
+            "ps printed a line it cannot read:   88"
         );
     }
 
@@ -448,6 +492,7 @@ mod tests {
     const FAKE_TREE_SCRIPT: &str = r#"
         "$1" mcp >/dev/null & echo $!
         "$1" send >/dev/null & echo $!
+        "$2" scripts/estafette mcp >/dev/null & echo $!
         sh -c '"$1" mcp >/dev/null & echo $!; wait' _ "$1" &
         wait
     "#;
@@ -476,9 +521,17 @@ mod tests {
                 std::fs::write(directory.join(mode_argument), FAKE_BINARY_PERL_PROGRAM)
                     .expect("write the perl program named after a mode argument");
             }
+            let scripts_directory = directory.join("scripts");
+            std::fs::create_dir_all(&scripts_directory).expect("create scripts directory");
+            std::fs::write(
+                scripts_directory.join(BINARY_EXECUTABLE_NAME),
+                FAKE_BINARY_PERL_PROGRAM,
+            )
+            .expect("write a perl script named like the binary");
             let mut harness = Command::new("sh")
                 .args(["-c", FAKE_TREE_SCRIPT, "_"])
                 .arg(&fake_binary)
+                .arg(perl_path.trim())
                 .current_dir(&directory)
                 .stdout(Stdio::piped())
                 .spawn()
@@ -496,11 +549,17 @@ mod tests {
             };
             let direct_mcp = next_pid();
             let direct_send = next_pid();
+            let interpreter_running_script = next_pid();
             let nested_mcp = next_pid();
             Self {
                 harness,
                 mcp_pids: vec![direct_mcp, nested_mcp],
-                every_binary_pid: vec![direct_mcp, direct_send, nested_mcp],
+                every_binary_pid: vec![
+                    direct_mcp,
+                    direct_send,
+                    interpreter_running_script,
+                    nested_mcp,
+                ],
                 directory,
             }
         }
