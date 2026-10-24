@@ -3,12 +3,15 @@ use std::fmt;
 use std::str::FromStr;
 
 const MAX_HANDLE_LENGTH: usize = 32;
-const MAX_SUFFIX_DIGITS: usize = 20;
+const SUFFIX_DIGITS_AFTER_FULL_LENGTH_BASE: usize = 20;
 const FIRST_ASSIGNED_SUFFIX: u64 = 2;
 const SUFFIX_SEPARATOR: char = '-';
+const LEADING_ZERO: char = '0';
 const SUFFIX_SEPARATOR_LENGTH: usize = 1;
-const MAX_ANNOUNCED_LENGTH: usize = MAX_HANDLE_LENGTH + SUFFIX_SEPARATOR_LENGTH + MAX_SUFFIX_DIGITS;
-const MAX_LOCAL_LENGTH: usize = MAX_ANNOUNCED_LENGTH + SUFFIX_SEPARATOR_LENGTH + MAX_SUFFIX_DIGITS;
+const MAX_ANNOUNCED_LENGTH: usize =
+    MAX_HANDLE_LENGTH + SUFFIX_SEPARATOR_LENGTH + SUFFIX_DIGITS_AFTER_FULL_LENGTH_BASE;
+const MAX_LOCAL_LENGTH: usize =
+    MAX_ANNOUNCED_LENGTH + SUFFIX_SEPARATOR_LENGTH + SUFFIX_DIGITS_AFTER_FULL_LENGTH_BASE;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HandleError {
@@ -141,14 +144,15 @@ fn matches_local_grammar(text: &str) -> bool {
 
 fn ends_in_suffix_after(text: &str, matches_base: fn(&str) -> bool) -> bool {
     text.rsplit_once(SUFFIX_SEPARATOR)
-        .is_some_and(|(base, suffix)| matches_base(base) && is_suffix_of_at_least_2(suffix))
+        .is_some_and(|(base, suffix)| matches_base(base) && is_suffix_from_first_assigned(suffix))
 }
 
-fn is_suffix_of_at_least_2(text: &str) -> bool {
+fn is_suffix_from_first_assigned(text: &str) -> bool {
+    let largest_refused_suffix = FIRST_ASSIGNED_SUFFIX.saturating_sub(1).to_string();
     text.chars().all(|digit| digit.is_ascii_digit())
-        && !text.starts_with('0')
+        && !text.starts_with(LEADING_ZERO)
         && !text.is_empty()
-        && text != "1"
+        && text != largest_refused_suffix
 }
 
 #[cfg(test)]
@@ -243,7 +247,7 @@ mod tests {
     }
 
     fn twenty_digit_suffix() -> String {
-        format!("2{}", "0".repeat(MAX_SUFFIX_DIGITS - 1))
+        format!("2{}", "0".repeat(SUFFIX_DIGITS_AFTER_FULL_LENGTH_BASE - 1))
     }
 
     #[test]
@@ -420,7 +424,8 @@ mod tests {
     }
 
     fn generated_valid_suffix(case: u64) -> String {
-        let digit_count = below(case, [3, 0], MAX_SUFFIX_DIGITS).saturating_add(1);
+        let digit_count =
+            below(case, [3, 0], SUFFIX_DIGITS_AFTER_FULL_LENGTH_BASE).saturating_add(1);
         let first = SUFFIX_FIRST_DIGITS[below(case, [4, 0], SUFFIX_FIRST_DIGITS.len())];
         let rest =
             (1..digit_count).map(|position| DIGITS[below(case, [5, position], DIGITS.len())]);
