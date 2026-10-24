@@ -97,6 +97,7 @@ impl EndpointHooks for NetworkSecretGate {
     }
 }
 
+/// A half of the gate that ended without the proof it needed.
 struct Unproven;
 
 /// Opens a stream, sends the nonce, and reads the peer's answer, if one arrives.

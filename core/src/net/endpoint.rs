@@ -73,6 +73,7 @@ impl NodeEndpoint {
     }
 }
 
+/// The QUIC transport config with the idle timeout of spec 3.14.
 fn quic_transport_config() -> QuicTransportConfig {
     QuicTransportConfig::builder()
         .max_idle_timeout(Some(VarInt::from_u32(QUIC_IDLE_TIMEOUT_MILLIS).into()))
