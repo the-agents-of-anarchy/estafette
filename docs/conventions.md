@@ -258,6 +258,13 @@ never   address an agent by a six-hex ref or a name read earlier
 why     Names change on rename; a bare ref is refused.
 ground  owner ruling 2026-10-23
 
+### subagent-binding
+when    dispatching any agent, or receiving its first message
+do      open every brief with the binding order — read `.manifestos.yaml` for the agent's stack (`subagents.<type>`, else `other`), read each element's source and the `manifesto:manifesto-oath` skill whole, bind, then SendMessage the lead one commitment line per element with each source's line count checked against `wc -l`, before reading any other file; the lead reads that message against the stack and stops and relaunches an agent whose binding misses an element, reports a partial read, or carries no commitment
+never   an agent reading a brief input, a source file, or a spec before its binding message is sent; a dispatch that relies on a hook to inject the stack; work accepted from an agent whose binding was refused or never arrived
+why     The hook injecting manifesto stacks may be inactive; the lead is bound by its instructions for life, a subagent is bound only by what it reads at init.
+ground  owner ruling 2026-10-24T10:38
+
 ## owner
 
 ### owner-away
