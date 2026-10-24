@@ -509,15 +509,16 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn spec_3_11_a_request_that_is_not_since_json_closes_the_connection_with_nothing_written()
-    {
-        let directories = scratch_directories("bad-request");
-        let _socket = started(&directories);
+    async fn bytes_received_after_sending(
+        request: &[u8],
+        directories: &Directories,
+        socket: &InboxSocket,
+    ) -> Vec<u8> {
+        socket.publish(message_number(1));
         let mut stream = UnixStream::connect(directories.inbox_socket_file(OWN_PROCESS_ID))
             .await
             .unwrap();
-        stream.write_all(b"{\"since\": \"three\"}\n").await.unwrap();
+        stream.write_all(request).await.unwrap();
         let mut received = Vec::new();
         tokio::time::timeout(
             READ_DEADLINE,
@@ -526,7 +527,74 @@ mod tests {
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(received.len(), 0);
+        received
+    }
+
+    #[tokio::test]
+    async fn spec_3_11_a_request_that_is_not_since_json_closes_the_connection_with_nothing_written()
+    {
+        let directories = scratch_directories("bad-request");
+        let socket = started(&directories);
+        let received =
+            bytes_received_after_sending(b"{\"since\": \"three\"}\n", &directories, &socket).await;
+        assert_eq!(received, Vec::<u8>::new());
+    }
+
+    #[tokio::test]
+    async fn spec_3_11_a_request_with_an_unknown_key_closes_the_connection_with_nothing_written() {
+        let directories = scratch_directories("unknown-key");
+        let socket = started(&directories);
+        let received =
+            bytes_received_after_sending(b"{\"since\": 0, \"extra\": 1}\n", &directories, &socket)
+                .await;
+        assert_eq!(received, Vec::<u8>::new());
+    }
+
+    #[tokio::test]
+    async fn spec_3_11_a_request_line_over_the_limit_closes_the_connection_with_nothing_written() {
+        let directories = scratch_directories("oversize-line");
+        let socket = started(&directories);
+        let padding = " ".repeat(usize::try_from(MAX_REQUEST_LINE_BYTES).unwrap());
+        let request = format!("{{\"since\": 0{padding}}}\n");
+        let received =
+            bytes_received_after_sending(request.as_bytes(), &directories, &socket).await;
+        assert_eq!(received, Vec::<u8>::new());
+    }
+
+    #[tokio::test]
+    async fn spec_3_11_since_at_the_newest_seq_replays_nothing_and_the_next_frame_is_live() {
+        let directories = scratch_directories("since-newest");
+        let socket = started(&directories);
+        for n in 1..=5 {
+            socket.publish(message_number(n));
+        }
+        let mut client =
+            connect_with_since(&directories.inbox_socket_file(OWN_PROCESS_ID), 5).await;
+        socket.publish(message_number(6));
+        assert_eq!(next_seq(&mut client).await, 6);
+    }
+
+    #[tokio::test]
+    async fn spec_3_11_a_client_that_disconnects_before_any_request_detaches() {
+        let directories = scratch_directories("early-eof");
+        let socket = started(&directories);
+        let mut attached = socket.attached();
+        let stream = UnixStream::connect(directories.inbox_socket_file(OWN_PROCESS_ID))
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(READ_DEADLINE, attached.changed())
+                .await
+                .unwrap()
+                .unwrap()
+        );
+        drop(stream);
+        assert!(
+            !tokio::time::timeout(READ_DEADLINE, attached.changed())
+                .await
+                .unwrap()
+                .unwrap()
+        );
     }
 
     #[tokio::test]
