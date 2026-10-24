@@ -324,6 +324,39 @@ mod tests {
     }
 
     #[test]
+    fn spec_3_12_step_6_returns_after_exactly_the_polls_made_while_harness_ran() {
+        const POLLS_WHILE_HARNESS_RUNS: u32 = 4;
+        let snapshots = vec![
+            single_binary_under_harness(),
+            single_binary_under_harness(),
+            single_binary_under_harness(),
+            single_binary_under_harness(),
+            vec![],
+        ];
+        let table = SnapshotSequence(RefCell::new(snapshots));
+        let mut polls = 0_u32;
+        let mut waits = 0_u32;
+        follow_binary_sockets(
+            100,
+            &runtime_inputs(),
+            &table,
+            &mut || {
+                waits += 1;
+                assert!(
+                    waits <= POLLS_WHILE_HARNESS_RUNS,
+                    "kept polling after the harness exited"
+                );
+            },
+            &mut |_| polls += 1,
+        )
+        .expect("the table never fails");
+        assert_eq!(
+            (polls, waits),
+            (POLLS_WHILE_HARNESS_RUNS, POLLS_WHILE_HARNESS_RUNS)
+        );
+    }
+
+    #[test]
     fn spec_3_12_step_6_reports_nothing_when_harness_is_not_running() {
         let reports = collect_reports(
             100,
