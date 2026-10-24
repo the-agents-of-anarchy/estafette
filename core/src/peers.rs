@@ -129,13 +129,13 @@ impl PeerTable {
         }
     }
 
-    /// Takes an Unreachable report whose signature verified, setting the peer it names Unreachable unless the report is stale or a direct contact came after it.
+    /// Takes an Unreachable report whose signature verified, setting the peer it names Unreachable unless it is Gone, the report is stale, or a direct contact came after it.
     pub fn receive_unreachable(&mut self, report: &Unreachable, now_ms: u64) {
         self.forget_expired(now_ms);
         if !is_within_announcement_max_age(report.ts, now_ms) {
             return;
         }
-        if let Some(peer) = self.peers.get_mut(&report.card) {
+        if let Some(peer) = self.present_entry(report.card) {
             peer.take_unreachable_report(report.ts);
         }
     }
@@ -163,21 +163,21 @@ impl PeerTable {
         vec![Effect::SendProbe(node)]
     }
 
-    /// Takes a probe or send to `card` that failed at connect or at ack, setting it Unreachable and asking to announce that.
+    /// Takes a probe or send to `card` that failed at connect or at ack, setting it Unreachable and asking to announce that, unless it is Gone.
     #[must_use]
     pub fn direct_contact_failed(&mut self, card: PublicKey, now_ms: u64) -> Vec<Effect> {
         self.forget_expired(now_ms);
-        let Some(peer) = self.peers.get_mut(&card) else {
+        let Some(peer) = self.present_entry(card) else {
             return Vec::new();
         };
         peer.status = Status::Unreachable;
         vec![Effect::BroadcastUnreachable(card)]
     }
 
-    /// Takes a direct contact with `card` that succeeded, setting it Online.
+    /// Takes a direct contact with `card` that succeeded, setting it Online unless it is Gone.
     pub fn direct_contact_succeeded(&mut self, card: PublicKey, now_ms: u64) {
         self.forget_expired(now_ms);
-        if let Some(peer) = self.peers.get_mut(&card) {
+        if let Some(peer) = self.present_entry(card) {
             peer.take_direct_contact(now_ms);
         }
     }
@@ -266,6 +266,11 @@ impl PeerTable {
             peer.take_introduction(public, attached, addr, now_ms);
         }
         effects
+    }
+
+    /// The entry of `card` unless it is Gone, since a Gone entry leaves Gone only through an accepted Presence, Introduce, `IntroduceAck` or Message.
+    fn present_entry(&mut self, card: PublicKey) -> Option<&mut Peer> {
+        self.peers.get_mut(&card).filter(|peer| !peer.is_gone())
     }
 
     /// Whether a Presence or Departure for `card` carrying `seq` is accepted at `now_ms`.
@@ -358,6 +363,11 @@ impl Peer {
             seq: None,
             last_direct_contact_ms: None,
         }
+    }
+
+    /// Whether the entry departed and awaits its removal.
+    const fn is_gone(&self) -> bool {
+        matches!(self.status, Status::Gone { .. })
     }
 
     /// Records a Presence: what it carries, seen now, Online.
@@ -1310,17 +1320,33 @@ mod tests {
         assert_eq!(snapshot(&mut table, GONE_REMOVED_MS), vec![]);
     }
 
+    fn assert_still_gone_then_removed(table: &mut PeerTable) {
+        assert_eq!(
+            only_peer(table, GONE_LAST_KEPT_MS).status,
+            Status::Gone { since_ms: NOW_MS }
+        );
+        assert_eq!(snapshot(table, GONE_REMOVED_MS), vec![]);
+    }
+
     #[test]
-    fn a_gone_entry_a_failed_contact_sets_unreachable_outlives_the_gone_entry_retention_spec_3_8() {
+    fn a_failed_contact_leaves_a_gone_entry_gone_without_a_broadcast_until_its_removal_spec_3_8() {
         let mut table = table_with_peer_gone_since_now();
-        assert_eq!(
-            table.direct_contact_failed(PEER_CARD, NOW_MS),
-            vec![Effect::BroadcastUnreachable(PEER_CARD)]
-        );
-        assert_eq!(
-            only_peer(&mut table, GONE_REMOVED_MS).status,
-            Status::Unreachable
-        );
+        assert_eq!(table.direct_contact_failed(PEER_CARD, LATER_MS), vec![]);
+        assert_still_gone_then_removed(&mut table);
+    }
+
+    #[test]
+    fn an_unreachable_report_leaves_a_gone_entry_gone_until_its_removal_spec_3_8() {
+        let mut table = table_with_peer_gone_since_now();
+        table.receive_unreachable(&unreachable_report(PEER_CARD, LATER_MS), LATER_MS);
+        assert_still_gone_then_removed(&mut table);
+    }
+
+    #[test]
+    fn a_successful_contact_leaves_a_gone_entry_gone_until_its_removal_spec_3_8() {
+        let mut table = table_with_peer_gone_since_now();
+        table.direct_contact_succeeded(PEER_CARD, LATER_MS);
+        assert_still_gone_then_removed(&mut table);
     }
 
     const PROPERTY_CASES: u64 = 2000;
