@@ -296,8 +296,18 @@ fn read_current(path: &Path) -> Result<Option<NetworkConfig>, ConfigError> {
 
 fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
     let (file, temporary_path) = create_unique_temporary_file(path)?;
-    fill_and_rename(file, &temporary_path, path, contents)
-        .inspect_err(|_| remove_temporary_file(&temporary_path))
+    fill_and_rename(file, &temporary_path, path, contents).map_err(|failure| {
+        match remove_temporary_file(&temporary_path) {
+            Ok(()) => failure,
+            Err(cleanup) => io::Error::new(
+                failure.kind(),
+                format!(
+                    "{failure}; {} was left behind: {cleanup}",
+                    temporary_path.display()
+                ),
+            ),
+        }
+    })
 }
 
 fn create_unique_temporary_file(path: &Path) -> io::Result<(File, PathBuf)> {
@@ -330,8 +340,11 @@ fn fill_and_rename(
     fs::rename(temporary_path, path)
 }
 
-fn remove_temporary_file(temporary_path: &Path) {
-    fs::remove_file(temporary_path).unwrap_or_default();
+fn remove_temporary_file(temporary_path: &Path) -> io::Result<()> {
+    match fs::remove_file(temporary_path) {
+        Err(source) if source.kind() != io::ErrorKind::NotFound => Err(source),
+        Ok(()) | Err(_) => Ok(()),
+    }
 }
 
 #[cfg(test)]
