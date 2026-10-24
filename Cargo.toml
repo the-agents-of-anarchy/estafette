@@ -2,6 +2,11 @@
 members = ["core"]
 resolver = "3"
 
+[profile.release]
+strip = true
+lto = "thin"
+panic = "abort"
+
 [workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
