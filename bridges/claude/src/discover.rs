@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fmt;
+#[cfg(target_os = "linux")]
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
 use std::time::Duration;
@@ -96,17 +98,31 @@ fn executable_paths() -> Result<BTreeMap<u32, String>, ProcessTableError> {
 
 #[cfg(target_os = "linux")]
 fn executable_paths() -> Result<BTreeMap<u32, String>, ProcessTableError> {
-    let process_directories =
-        std::fs::read_dir(PROC_DIRECTORY).map_err(ProcessTableError::ListingFailed)?;
-    Ok(process_directories
-        .filter_map(Result::ok)
-        .filter_map(|process_directory| {
-            let pid = process_directory.file_name().to_str()?.parse().ok()?;
-            let executable =
-                std::fs::read_link(process_directory.path().join(EXECUTABLE_LINK_NAME)).ok()?;
-            Some((pid, executable.to_string_lossy().into_owned()))
-        })
-        .collect())
+    let mut paths = BTreeMap::new();
+    for process_directory in
+        std::fs::read_dir(PROC_DIRECTORY).map_err(ProcessTableError::ListingFailed)?
+    {
+        let process_directory = process_directory.map_err(ProcessTableError::ListingFailed)?;
+        let Some(pid) = process_directory
+            .file_name()
+            .to_str()
+            .and_then(|name| name.parse().ok())
+        else {
+            continue;
+        };
+        match std::fs::read_link(process_directory.path().join(EXECUTABLE_LINK_NAME)) {
+            Ok(path) => {
+                paths.insert(pid, path.to_string_lossy().into_owned());
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::NotFound | ErrorKind::PermissionDenied
+                ) => {}
+            Err(error) => return Err(ProcessTableError::ListingFailed(error)),
+        }
+    }
+    Ok(paths)
 }
 
 fn split_first_token(text: &str) -> (&str, &str) {
