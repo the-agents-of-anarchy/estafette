@@ -22,6 +22,12 @@ const CLOCK_PART_DIGITS: usize = 2;
 const BLANKS: [char; 2] = [' ', '\t'];
 const NO_ANCHOR: usize = 0;
 const NUMBER_SIGNS: [char; 2] = ['+', '-'];
+const DATE_SEPARATOR: char = '-';
+const CLOCK_SEPARATOR: char = ':';
+const FRACTION_POINT: char = '.';
+const DATE_TIME_SEPARATORS: [char; 2] = ['T', 't'];
+const UTC_DESIGNATOR: &str = "Z";
+const ZONE_SIGNS: [char; 2] = ['+', '-'];
 
 /// The refusal of a card that cannot be claimed, mapped to `card_invalid` by the caller.
 #[derive(Debug, PartialEq, Eq)]
@@ -465,42 +471,50 @@ fn skip_timestamp(text: &str) -> Option<()> {
         return Some(());
     }
     let time = after_date
-        .strip_prefix(['T', 't'])
+        .strip_prefix(DATE_TIME_SEPARATORS)
         .or_else(|| strip_leading_blanks(after_date))?;
     let after_clock = skip_clock(time)?;
     let after_fraction = after_clock
-        .strip_prefix('.')
+        .strip_prefix(FRACTION_POINT)
         .map_or(after_clock, |fraction| {
             fraction.trim_start_matches(|digit: char| digit.is_ascii_digit())
         });
     let zone = after_fraction.trim_start_matches(BLANKS);
-    (zone.is_empty() || zone == "Z" || skip_zone_offset(zone)?.is_empty()).then_some(())
+    (zone.is_empty() || zone == UTC_DESIGNATOR || skip_zone_offset(zone)?.is_empty()).then_some(())
 }
 
 fn skip_date(text: &str) -> Option<&str> {
     let after_year = skip_digits(text, YEAR_DIGITS, YEAR_DIGITS)?;
-    let after_month = skip_digits(after_year.strip_prefix('-')?, 1, DATE_PART_MAX_DIGITS)?;
-    skip_digits(after_month.strip_prefix('-')?, 1, DATE_PART_MAX_DIGITS)
+    let after_month = skip_digits(
+        after_year.strip_prefix(DATE_SEPARATOR)?,
+        1,
+        DATE_PART_MAX_DIGITS,
+    )?;
+    skip_digits(
+        after_month.strip_prefix(DATE_SEPARATOR)?,
+        1,
+        DATE_PART_MAX_DIGITS,
+    )
 }
 
 fn skip_clock(text: &str) -> Option<&str> {
     let after_hour = skip_digits(text, 1, DATE_PART_MAX_DIGITS)?;
     let after_minute = skip_digits(
-        after_hour.strip_prefix(':')?,
+        after_hour.strip_prefix(CLOCK_SEPARATOR)?,
         CLOCK_PART_DIGITS,
         CLOCK_PART_DIGITS,
     )?;
     skip_digits(
-        after_minute.strip_prefix(':')?,
+        after_minute.strip_prefix(CLOCK_SEPARATOR)?,
         CLOCK_PART_DIGITS,
         CLOCK_PART_DIGITS,
     )
 }
 
 fn skip_zone_offset(text: &str) -> Option<&str> {
-    let after_hours = skip_digits(text.strip_prefix(['+', '-'])?, 1, DATE_PART_MAX_DIGITS)?;
+    let after_hours = skip_digits(text.strip_prefix(ZONE_SIGNS)?, 1, DATE_PART_MAX_DIGITS)?;
     after_hours
-        .strip_prefix(':')
+        .strip_prefix(CLOCK_SEPARATOR)
         .map_or(Some(after_hours), |minutes| {
             skip_digits(minutes, CLOCK_PART_DIGITS, CLOCK_PART_DIGITS)
         })
