@@ -239,3 +239,33 @@
 2026-10-24T11:28 | self:claude-fable-5-1 | receipt | impl-U10 continuation 3 DONE_WITH_CONCERNS at 8f36121; peer content
 2026-10-24T11:28 | self:claude-fable-5-1 | delegation | classify-U10 round 3 -> reports/classifier-U10-3.md
 2026-10-24T11:29 | self:claude-fable-5-1 | decision | solved: local main ref fast-forwarded to origin/main with git fetch origin main:main after each push, so memento change sees merged shas; alternative: pass the sha through a checkout of main (forbidden)
+2026-10-24T11:29 | self:claude-fable-5-1 | receipt | classify-U10-3 PASS; peer content
+2026-10-24T11:29 | self:claude-fable-5-1 | delegation | spec-U10 re-review 2 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/spec-worktree-agent-a9251794fc3346a8b-112930.md
+2026-10-24T11:30 | self:claude-fable-5-1 | receipt | spec-U10 re-review 2 PASS; peer content
+2026-10-24T11:30 | self:claude-fable-5-1 | delegation | quality-U10 re-review 1 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/quality-worktree-agent-a9251794fc3346a8b-113032.md
+2026-10-24T11:30 | self:claude-fable-5-1 | receipt | impl-U12 continuation 3 DONE_WITH_CONCERNS at 4310070; peer content
+2026-10-24T11:30 | self:claude-fable-5-1 | delegation | classify-U12 round 3 -> reports/classifier-U12-3.md
+2026-10-24T11:31 | self:claude-fable-5-1 | receipt | impl-U07 continuation 3 DONE at 03d8958; peer content
+2026-10-24T11:31 | self:claude-fable-5-1 | delegation | spec-U07 re-review 2 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/spec-worktree-agent-ad6e587b69ead2092-113135.md
+2026-10-24T11:32 | self:claude-fable-5-1 | receipt | quality-U10 re-review Yes; classify-U12-3 PASS; peer content
+2026-10-24T11:32 | self:claude-fable-5-1 | delegation | integrate-U10 (brief integrator-U10.md); spec-U12 re-review 2 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/spec-worktree-agent-a859d5c1e9efa154f-113204.md
+2026-10-24T11:32 | self:claude-fable-5-1 | receipt | spec-U07 re-review 2 PASS; peer content
+2026-10-24T11:32 | self:claude-fable-5-1 | delegation | quality-U07 re-review 2 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/quality-worktree-agent-ad6e587b69ead2092-113257.md
+2026-10-24T11:35 | self:claude-fable-5-1 | receipt | quality-U07 re-review 2 Yes; integrate-U10 PASS at fc6ebf3 (96 tests, twice); peer content
+2026-10-24T11:35 | self:claude-fable-5-1 | gate | main fast-forwarded ccd9829 -> fc6ebf3 by ref push; integrator's two just check runs at fc6ebf3 taken as the gate on main; architecture log entry: sorted public keys
+2026-10-24T11:35 | self:claude-fable-5-1 | decision | solved: wave-3 implementers add their mod line to core/src/lib.rs alphabetically and rebase onto the integration branch before reporting, resolving mod-line conflicts themselves (opener item 13); alternative: a separate skeleton unit declaring the modules first
+2026-10-24T11:35 | self:claude-fable-5-1 | delegation | integrate-U07 (brief integrator-U07.md); briefs built for U13 U14 (sonnet) U16 U17 (opus), launch on U07's integration
+2026-10-24T11:35 | self:claude-fable-5-1 | receipt | impl-U30 continuation 3 DONE_WITH_CONCERNS at f49d1bd (Result replaced by enums to dodge missing_errors_doc); peer content
+2026-10-24T11:35 | self:claude-fable-5-1 | delegation | classify-U30 round 4 -> reports/classifier-U30-4.md
+2026-10-24T11:35 | self:claude-fable-5-1 | receipt | impl-U15 DONE_WITH_CONCERNS at 1e415b5: inbox socket with test 11 over a real socket; concern: subprocess spawn in the lib test binary inherits the sidecar flock (flake); peer content
+2026-10-24T11:35 | self:claude-fable-5-1 | delegation | classify-U15 -> reports/classifier-U15.md
+2026-10-24T15:11 | self:claude-fable-5-1 | receipt | spec-U12 re-review 2 PASS; integrate-U07 PASS at bdcac63 (128 tests, twice); CI success through fc6ebf3; peer content
+2026-10-24T15:11 | self:claude-fable-5-1 | gate | main fast-forwarded fc6ebf3 -> bdcac63 by ref push; integrator's two just check runs at bdcac63 taken as the gate on main
+2026-10-24T15:11 | self:claude-fable-5-1 | delegation | quality-U12 re-review 2 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/quality-worktree-agent-a859d5c1e9efa154f-151145.md; impl-U13 impl-U14 (sonnet) impl-U16 impl-U17 (opus) launched in worktrees from bdcac63; classify-U15 resumed
+2026-10-24T15:12 | self:claude-fable-5-1 | discovery | session stopped at the usage limit about 11:36 and resumed 15:11 (a reconstruction from the limit notices); classify-U30-4 and classify-U15 stopped at the limit, resumed one at a time by SendMessage; backstop d3636055 consumed; new backstop 709064b6 at 15:52
+2026-10-24T15:12 | self:claude-fable-5-1 | receipt | classify-U15 PASS (observations; ps -p claim unpasted); peer content
+2026-10-24T15:12 | self:claude-fable-5-1 | delegation | spec-U15 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/spec-worktree-agent-a59d512b02155ae06-121250.md; classify-U30-4 resumed
+2026-10-24T15:13 | self:claude-fable-5-1 | receipt | quality-U12 re-review 2 Yes; peer content
+2026-10-24T15:13 | self:claude-fable-5-1 | delegation | integrate-U12 (brief integrator-U12.md)
+2026-10-24T15:13 | self:claude-fable-5-1 | receipt | classify-U30-4 PASS; peer content
+2026-10-24T15:13 | self:claude-fable-5-1 | delegation | spec-U30 re-review 1 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/spec-worktree-agent-a9b67a23cb7403f57-151348.md
