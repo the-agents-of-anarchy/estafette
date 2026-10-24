@@ -14,10 +14,8 @@ const LEARNED_HOST_EXPIRY_SECONDS: u64 = LEARNED_HOST_EXPIRY_DAYS * SECONDS_PER_
 const OWNER_ONLY_FILE_MODE: u32 = 0o600;
 const TEMPORARY_FILE_SUFFIX: &str = "tmp";
 const HEX_KEY_LENGTH: usize = 64;
-const HEX_KEY_ACCEPTED: &str = "64 lowercase hexadecimal characters";
 const RELAY_URL_MAX_BYTES: usize = 128;
 const RELAY_URL_SCHEME: &str = "https";
-const RELAY_URL_ACCEPTED: &str = "an https URL of at most 128 bytes";
 
 /// Where a host came from: the owner configured it and nothing removes it, or this member learned it and it expires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +83,28 @@ pub struct NetworkConfig {
     pub hosts: Vec<Host>,
 }
 
+/// The set of values a configuration field accepts, rendered from the limits that enforce it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcceptedValue {
+    HexKey,
+    RelayUrl,
+}
+
+impl fmt::Display for AcceptedValue {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::HexKey => write!(
+                formatter,
+                "{HEX_KEY_LENGTH} lowercase hexadecimal characters"
+            ),
+            Self::RelayUrl => write!(
+                formatter,
+                "an {RELAY_URL_SCHEME} URL of at most {RELAY_URL_MAX_BYTES} bytes"
+            ),
+        }
+    }
+}
+
 /// A refusal to load or rewrite a network configuration file.
 #[derive(Debug)]
 pub enum ConfigError {
@@ -100,7 +120,7 @@ pub enum ConfigError {
     InvalidField {
         path: PathBuf,
         field: &'static str,
-        accepted: &'static str,
+        accepted: AcceptedValue,
     },
 }
 
@@ -245,7 +265,7 @@ fn require_hex_key(path: &Path, field: &'static str, value: &str) -> Result<(), 
         Err(ConfigError::InvalidField {
             path: path.to_owned(),
             field,
-            accepted: HEX_KEY_ACCEPTED,
+            accepted: AcceptedValue::HexKey,
         })
     }
 }
@@ -261,7 +281,7 @@ fn require_relay_url(path: &Path, value: &str) -> Result<(), ConfigError> {
         Err(ConfigError::InvalidField {
             path: path.to_owned(),
             field: "host relay",
-            accepted: RELAY_URL_ACCEPTED,
+            accepted: AcceptedValue::RelayUrl,
         })
     }
 }
@@ -569,7 +589,7 @@ mod tests {
                 hex_key('c'),
                 valid_relay.to_owned(),
                 "secret",
-                HEX_KEY_ACCEPTED,
+                AcceptedValue::HexKey,
             ),
             (
                 "abc".to_owned(),
@@ -577,7 +597,7 @@ mod tests {
                 hex_key('c'),
                 valid_relay.to_owned(),
                 "secret",
-                HEX_KEY_ACCEPTED,
+                AcceptedValue::HexKey,
             ),
             (
                 hex_key('a'),
@@ -585,7 +605,7 @@ mod tests {
                 hex_key('c'),
                 valid_relay.to_owned(),
                 "owner",
-                HEX_KEY_ACCEPTED,
+                AcceptedValue::HexKey,
             ),
             (
                 hex_key('a'),
@@ -593,7 +613,7 @@ mod tests {
                 "g".repeat(HEX_KEY_LENGTH),
                 valid_relay.to_owned(),
                 "host id",
-                HEX_KEY_ACCEPTED,
+                AcceptedValue::HexKey,
             ),
             (
                 hex_key('a'),
@@ -601,7 +621,7 @@ mod tests {
                 hex_key('c'),
                 "http://relay.example/".to_owned(),
                 "host relay",
-                RELAY_URL_ACCEPTED,
+                AcceptedValue::RelayUrl,
             ),
             (
                 hex_key('a'),
@@ -609,7 +629,7 @@ mod tests {
                 hex_key('c'),
                 "not a url".to_owned(),
                 "host relay",
-                RELAY_URL_ACCEPTED,
+                AcceptedValue::RelayUrl,
             ),
             (
                 hex_key('a'),
@@ -617,7 +637,7 @@ mod tests {
                 hex_key('c'),
                 long_relay,
                 "host relay",
-                RELAY_URL_ACCEPTED,
+                AcceptedValue::RelayUrl,
             ),
         ];
 
@@ -644,6 +664,23 @@ mod tests {
                 "case {index}: {refusal}"
             );
         }
+    }
+
+    /// Spec 3.1 and 3.3: the refusal message renders the accepted set from the limits that enforce it.
+    #[test]
+    fn refusal_message_names_the_enforced_limits() {
+        let directory = scratch_directory("message");
+        let path = directory.join("net.toml");
+        let mut held = network(vec![learned(&hex_key('a'), "http://insecure/", None, NOW)]);
+        held.secret = "short".to_owned();
+        let secret_refusal = held.rewrite(&path, NOW).unwrap_err().to_string();
+        held.secret = hex_key('5');
+        let relay_refusal = held.rewrite(&path, NOW).unwrap_err().to_string();
+
+        assert!(secret_refusal.contains(&format!("{HEX_KEY_LENGTH} lowercase hexadecimal")));
+        assert!(secret_refusal.contains("secret must be"));
+        assert!(relay_refusal.contains(&format!("{RELAY_URL_MAX_BYTES} bytes")));
+        assert!(relay_refusal.contains(RELAY_URL_SCHEME));
     }
 
     /// Spec 3.3: a rewrite refuses a held configuration of the wrong shape before writing anything.
