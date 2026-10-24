@@ -1,1 +1,780 @@
+use std::fmt;
+use std::str::FromStr;
 
+use serde_json::{Map, Number, Value};
+use yaml_rust2::Yaml;
+use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser, Tag};
+use yaml_rust2::scanner::{Marker, TScalarStyle};
+
+const PUBLIC_MAX_BYTES: usize = 3072;
+const HANDLE_FIELD: &str = "handle";
+const PUBLIC_KEY_FIELD: &str = "public_key";
+const NETWORK_FIELD: &str = "network";
+const PUBLIC_FIELD: &str = "public";
+const DESCRIPTION_FIELD: &str = "description";
+const YAML_CORE_TAG_HANDLE: &str = "tag:yaml.org,2002:";
+const YAML_BINARY_TAG_SUFFIX: &str = "binary";
+const YAML_MERGE_KEY: &str = "<<";
+const YEAR_DIGITS: usize = 4;
+const DATE_PART_MAX_DIGITS: usize = 2;
+const CLOCK_PART_DIGITS: usize = 2;
+const BLANKS: [char; 2] = [' ', '\t'];
+
+/// The refusal of a card that cannot be claimed, mapped to `card_invalid` by the caller.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CardInvalid {
+    Unparsable(String),
+    NotOneMappingDocument,
+    MissingKey(&'static str),
+    DuplicateCardKey(&'static str),
+    KeyNotScalar(&'static str),
+    PublicNotMapping,
+    NumberNotFinite,
+    Tag,
+    Binary,
+    Date,
+    NonStringKey,
+    MergeKey,
+    DuplicatePublicKey(String),
+    PublicOverCap { bytes: usize },
+    Alias,
+}
+
+impl fmt::Display for CardInvalid {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unparsable(reason) => write!(formatter, "card is not valid YAML: {reason}"),
+            Self::NotOneMappingDocument => {
+                write!(
+                    formatter,
+                    "card must be exactly one YAML document holding a mapping"
+                )
+            }
+            Self::MissingKey(key) => write!(formatter, "card has no `{key}`"),
+            Self::DuplicateCardKey(key) => write!(formatter, "card names `{key}` more than once"),
+            Self::KeyNotScalar(key) => write!(formatter, "card `{key}` must be a single value"),
+            Self::PublicNotMapping => write!(formatter, "card `public` must be a mapping"),
+            Self::NumberNotFinite => {
+                write!(
+                    formatter,
+                    "card `public` numbers must be finite, not .inf or .nan"
+                )
+            }
+            Self::Tag => write!(formatter, "card `public` must not carry a YAML tag"),
+            Self::Binary => write!(formatter, "card `public` must not hold binary data"),
+            Self::Date => write!(
+                formatter,
+                "card `public` must not hold a bare date or timestamp; quote it to keep it as text"
+            ),
+            Self::NonStringKey => write!(
+                formatter,
+                "card `public` mapping keys must be strings; quote a key such as 1, true or null"
+            ),
+            Self::MergeKey => write!(
+                formatter,
+                "card `public` must not use the merge key `<<`; quote it to keep it as a text key"
+            ),
+            Self::DuplicatePublicKey(key) => {
+                write!(
+                    formatter,
+                    "card `public` names the key `{key}` more than once"
+                )
+            }
+            Self::PublicOverCap { bytes } => write!(
+                formatter,
+                "card `public` serializes to {bytes} bytes; the cap is {PUBLIC_MAX_BYTES}"
+            ),
+            Self::Alias => write!(
+                formatter,
+                "card `public` must not use YAML anchors or aliases"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CardInvalid {}
+
+/// A parsed card: the four keys the binary reads, with `public` held as a JSON mapping under the cap.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Card {
+    pub handle: String,
+    pub public_key: String,
+    pub network: Option<String>,
+    public: Map<String, Value>,
+}
+
+impl FromStr for Card {
+    type Err = CardInvalid;
+
+    /// Parses card YAML into a card, refusing every `public` content spec 3.5 rejects.
+    fn from_str(text: &str) -> Result<Self, CardInvalid> {
+        let root = read_single_document(text)?;
+        let entries = mapping_entries(&root)?;
+        Ok(Self {
+            handle: required_scalar_text(entries, HANDLE_FIELD)?,
+            public_key: required_scalar_text(entries, PUBLIC_KEY_FIELD)?,
+            network: optional_scalar_text(entries, NETWORK_FIELD)?,
+            public: public_mapping(entries)?,
+        })
+    }
+}
+
+impl Card {
+    /// The `public` mapping as compact JSON bytes, exactly what travels in presence.
+    #[must_use]
+    pub fn public_json(&self) -> Vec<u8> {
+        compact_json(&self.public)
+    }
+
+    #[doc = "Puts the description under `public.description`, refusing when `public` then passes the cap.\n\n# Errors\n\nReturns the byte size `public` would reach when it passes the cap."]
+    pub fn with_description(mut self, description: &str) -> Result<Self, DescriptionOverCap> {
+        self.public.insert(
+            DESCRIPTION_FIELD.to_owned(),
+            Value::String(description.to_owned()),
+        );
+        self.public = refuse_over_cap(self.public).map_err(|bytes| DescriptionOverCap { bytes })?;
+        Ok(self)
+    }
+}
+
+/// The refusal of a description that pushes `public` past the cap, mapped to `bad_request` by the caller.
+#[derive(Debug, PartialEq, Eq)]
+pub struct DescriptionOverCap {
+    pub bytes: usize,
+}
+
+impl fmt::Display for DescriptionOverCap {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "description makes `public` {} bytes; the cap is {PUBLIC_MAX_BYTES}",
+            self.bytes
+        )
+    }
+}
+
+impl std::error::Error for DescriptionOverCap {}
+
+enum Node {
+    Scalar {
+        text: String,
+        style: TScalarStyle,
+        tag: Option<Tag>,
+    },
+    Sequence {
+        tag: Option<Tag>,
+        items: Vec<Self>,
+    },
+    Mapping {
+        tag: Option<Tag>,
+        entries: Vec<(Self, Self)>,
+    },
+    Alias,
+}
+
+enum OpenNode {
+    Sequence {
+        tag: Option<Tag>,
+        items: Vec<Node>,
+    },
+    Mapping {
+        tag: Option<Tag>,
+        entries: Vec<(Node, Node)>,
+        pending_key: Option<Node>,
+    },
+}
+
+impl OpenNode {
+    fn close(self) -> Node {
+        match self {
+            Self::Sequence { tag, items } => Node::Sequence { tag, items },
+            Self::Mapping {
+                tag,
+                entries,
+                pending_key: _,
+            } => Node::Mapping { tag, entries },
+        }
+    }
+}
+
+#[derive(Default)]
+struct DocumentCollector {
+    open: Vec<OpenNode>,
+    documents: Vec<Node>,
+}
+
+impl DocumentCollector {
+    fn place(&mut self, node: Node) {
+        match self.open.last_mut() {
+            None => self.documents.push(node),
+            Some(OpenNode::Sequence { items, .. }) => items.push(node),
+            Some(OpenNode::Mapping {
+                entries,
+                pending_key,
+                ..
+            }) => match pending_key.take() {
+                None => *pending_key = Some(node),
+                Some(key) => entries.push((key, node)),
+            },
+        }
+    }
+}
+
+impl MarkedEventReceiver for DocumentCollector {
+    fn on_event(&mut self, event: Event, _mark: Marker) {
+        match event {
+            Event::Scalar(text, style, _anchor, tag) => {
+                self.place(Node::Scalar { text, style, tag });
+            }
+            Event::Alias(_) => self.place(Node::Alias),
+            Event::SequenceStart(_, tag) => {
+                self.open.push(OpenNode::Sequence {
+                    tag,
+                    items: Vec::new(),
+                });
+            }
+            Event::MappingStart(_, tag) => {
+                self.open.push(OpenNode::Mapping {
+                    tag,
+                    entries: Vec::new(),
+                    pending_key: None,
+                });
+            }
+            Event::SequenceEnd | Event::MappingEnd => {
+                if let Some(open) = self.open.pop() {
+                    self.place(open.close());
+                }
+            }
+            Event::Nothing
+            | Event::StreamStart
+            | Event::StreamEnd
+            | Event::DocumentStart
+            | Event::DocumentEnd => {}
+        }
+    }
+}
+
+fn read_single_document(text: &str) -> Result<Node, CardInvalid> {
+    let mut collector = DocumentCollector::default();
+    Parser::new_from_str(text)
+        .load(&mut collector, true)
+        .map_err(|error| CardInvalid::Unparsable(error.to_string()))?;
+    let mut documents = collector.documents.into_iter();
+    match (documents.next(), documents.next()) {
+        (Some(document), None) => Ok(document),
+        (None, _) | (Some(_), Some(_)) => Err(CardInvalid::NotOneMappingDocument),
+    }
+}
+
+fn mapping_entries(node: &Node) -> Result<&[(Node, Node)], CardInvalid> {
+    match node {
+        Node::Mapping { entries, .. } => Ok(entries),
+        Node::Scalar { .. } | Node::Sequence { .. } | Node::Alias => {
+            Err(CardInvalid::NotOneMappingDocument)
+        }
+    }
+}
+
+fn scalar_text_of(node: &Node) -> Option<&str> {
+    match node {
+        Node::Scalar { text, .. } => Some(text),
+        Node::Sequence { .. } | Node::Mapping { .. } | Node::Alias => None,
+    }
+}
+
+fn value_of_unique_key<'card>(
+    entries: &'card [(Node, Node)],
+    name: &'static str,
+) -> Result<Option<&'card Node>, CardInvalid> {
+    let mut matching = entries
+        .iter()
+        .filter(|(key, _)| scalar_text_of(key) == Some(name))
+        .map(|(_, value)| value);
+    let first = matching.next();
+    match matching.next() {
+        None => Ok(first),
+        Some(_) => Err(CardInvalid::DuplicateCardKey(name)),
+    }
+}
+
+fn optional_scalar_text(
+    entries: &[(Node, Node)],
+    name: &'static str,
+) -> Result<Option<String>, CardInvalid> {
+    value_of_unique_key(entries, name)?
+        .map(|value| {
+            scalar_text_of(value)
+                .map(str::to_owned)
+                .ok_or(CardInvalid::KeyNotScalar(name))
+        })
+        .transpose()
+}
+
+fn required_scalar_text(
+    entries: &[(Node, Node)],
+    name: &'static str,
+) -> Result<String, CardInvalid> {
+    optional_scalar_text(entries, name)?.ok_or(CardInvalid::MissingKey(name))
+}
+
+fn public_mapping(entries: &[(Node, Node)]) -> Result<Map<String, Value>, CardInvalid> {
+    let mapping = match value_of_unique_key(entries, PUBLIC_FIELD)? {
+        None => Map::new(),
+        Some(node) => match convert_value(node)? {
+            Value::Object(mapping) => mapping,
+            Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::String(_)
+            | Value::Array(_) => {
+                return Err(CardInvalid::PublicNotMapping);
+            }
+        },
+    };
+    refuse_over_cap(mapping).map_err(|bytes| CardInvalid::PublicOverCap { bytes })
+}
+
+fn compact_json(mapping: &Map<String, Value>) -> Vec<u8> {
+    Value::Object(mapping.clone()).to_string().into_bytes()
+}
+
+fn refuse_over_cap(mapping: Map<String, Value>) -> Result<Map<String, Value>, usize> {
+    let bytes = compact_json(&mapping).len();
+    if bytes > PUBLIC_MAX_BYTES {
+        return Err(bytes);
+    }
+    Ok(mapping)
+}
+
+const fn tag_of(node: &Node) -> Option<&Tag> {
+    match node {
+        Node::Scalar { tag, .. } | Node::Sequence { tag, .. } | Node::Mapping { tag, .. } => {
+            tag.as_ref()
+        }
+        Node::Alias => None,
+    }
+}
+
+fn refuse_tagged(node: &Node) -> Result<(), CardInvalid> {
+    match tag_of(node) {
+        None => Ok(()),
+        Some(tag) if is_binary_tag(tag) => Err(CardInvalid::Binary),
+        Some(_) => Err(CardInvalid::Tag),
+    }
+}
+
+fn is_binary_tag(tag: &Tag) -> bool {
+    tag.handle == YAML_CORE_TAG_HANDLE && tag.suffix == YAML_BINARY_TAG_SUFFIX
+}
+
+fn convert_value(node: &Node) -> Result<Value, CardInvalid> {
+    refuse_tagged(node)?;
+    match node {
+        Node::Scalar { text, style, .. } => convert_scalar(text, *style),
+        Node::Sequence { items, .. } => items
+            .iter()
+            .map(convert_value)
+            .collect::<Result<Vec<_>, _>>()
+            .map(Value::Array),
+        Node::Mapping { entries, .. } => convert_mapping(entries),
+        Node::Alias => Err(CardInvalid::Alias),
+    }
+}
+
+fn is_yaml_timestamp(text: &str) -> bool {
+    skip_timestamp(text).is_some()
+}
+
+fn skip_timestamp(text: &str) -> Option<()> {
+    let after_date = skip_date(text)?;
+    if after_date.is_empty() {
+        return Some(());
+    }
+    let time = after_date
+        .strip_prefix(['T', 't'])
+        .or_else(|| strip_leading_blanks(after_date))?;
+    let after_clock = skip_clock(time)?;
+    let after_fraction = after_clock
+        .strip_prefix('.')
+        .map_or(after_clock, |fraction| {
+            fraction.trim_start_matches(|digit: char| digit.is_ascii_digit())
+        });
+    let zone = after_fraction.trim_start_matches(BLANKS);
+    (zone.is_empty() || zone == "Z" || skip_zone_offset(zone)?.is_empty()).then_some(())
+}
+
+fn skip_date(text: &str) -> Option<&str> {
+    let after_year = skip_digits(text, YEAR_DIGITS, YEAR_DIGITS)?;
+    let after_month = skip_digits(after_year.strip_prefix('-')?, 1, DATE_PART_MAX_DIGITS)?;
+    skip_digits(after_month.strip_prefix('-')?, 1, DATE_PART_MAX_DIGITS)
+}
+
+fn skip_clock(text: &str) -> Option<&str> {
+    let after_hour = skip_digits(text, 1, DATE_PART_MAX_DIGITS)?;
+    let after_minute = skip_digits(
+        after_hour.strip_prefix(':')?,
+        CLOCK_PART_DIGITS,
+        CLOCK_PART_DIGITS,
+    )?;
+    skip_digits(
+        after_minute.strip_prefix(':')?,
+        CLOCK_PART_DIGITS,
+        CLOCK_PART_DIGITS,
+    )
+}
+
+fn skip_zone_offset(text: &str) -> Option<&str> {
+    let after_hours = skip_digits(text.strip_prefix(['+', '-'])?, 1, DATE_PART_MAX_DIGITS)?;
+    after_hours
+        .strip_prefix(':')
+        .map_or(Some(after_hours), |minutes| {
+            skip_digits(minutes, CLOCK_PART_DIGITS, CLOCK_PART_DIGITS)
+        })
+}
+
+fn strip_leading_blanks(text: &str) -> Option<&str> {
+    let stripped = text.trim_start_matches(BLANKS);
+    (stripped.len() < text.len()).then_some(stripped)
+}
+
+fn skip_digits(text: &str, least: usize, most: usize) -> Option<&str> {
+    let count = text.bytes().take_while(u8::is_ascii_digit).count();
+    if count < least || count > most {
+        return None;
+    }
+    text.split_at_checked(count).map(|(_, rest)| rest)
+}
+
+fn convert_scalar(text: &str, style: TScalarStyle) -> Result<Value, CardInvalid> {
+    if style != TScalarStyle::Plain {
+        return Ok(Value::String(text.to_owned()));
+    }
+    if is_yaml_timestamp(text) {
+        return Err(CardInvalid::Date);
+    }
+    match Yaml::from_str(text) {
+        Yaml::Null => Ok(Value::Null),
+        Yaml::Boolean(flag) => Ok(Value::Bool(flag)),
+        Yaml::Integer(number) => Ok(Value::Number(Number::from(number))),
+        Yaml::Real(number) => number
+            .parse::<f64>()
+            .ok()
+            .and_then(Number::from_f64)
+            .map(Value::Number)
+            .ok_or(CardInvalid::NumberNotFinite),
+        Yaml::String(string) => Ok(Value::String(string)),
+        Yaml::Array(_) | Yaml::Hash(_) | Yaml::Alias(_) | Yaml::BadValue => {
+            Ok(Value::String(text.to_owned()))
+        }
+    }
+}
+
+fn is_merge_key(key: &Node) -> bool {
+    match key {
+        Node::Scalar {
+            text,
+            style,
+            tag: None,
+        } => *style == TScalarStyle::Plain && text == YAML_MERGE_KEY,
+        Node::Scalar { tag: Some(_), .. }
+        | Node::Sequence { .. }
+        | Node::Mapping { .. }
+        | Node::Alias => false,
+    }
+}
+
+fn convert_mapping(entries: &[(Node, Node)]) -> Result<Value, CardInvalid> {
+    let mut mapping = Map::new();
+    for (key, value) in entries {
+        if is_merge_key(key) {
+            return Err(CardInvalid::MergeKey);
+        }
+        let key_text = match convert_value(key)? {
+            Value::String(text) => text,
+            Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::Array(_)
+            | Value::Object(_) => {
+                return Err(CardInvalid::NonStringKey);
+            }
+        };
+        if mapping.contains_key(&key_text) {
+            return Err(CardInvalid::DuplicatePublicKey(key_text));
+        }
+        mapping.insert(key_text, convert_value(value)?);
+    }
+    Ok(Value::Object(mapping))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_card(text: &str) -> Result<Card, CardInvalid> {
+        text.parse()
+    }
+
+    #[test]
+    fn parse_reads_the_four_keys_and_renders_public_as_compact_json_spec_3_5() {
+        let text = "handle: ada\npublic_key: abc\nnetwork: lab\nignored: [1, 2]\npublic:\n  role: builder\n  tags: [a, 2]\n";
+        let card = parse_card(text).unwrap();
+        assert_eq!(card.handle, "ada");
+        assert_eq!(card.public_key, "abc");
+        assert_eq!(card.network.as_deref(), Some("lab"));
+        assert_eq!(card.public_json(), br#"{"role":"builder","tags":["a",2]}"#);
+    }
+
+    fn card_with_public(public: &str) -> Result<Card, CardInvalid> {
+        parse_card(&format!("handle: ada\npublic_key: abc\npublic:\n{public}"))
+    }
+
+    #[test]
+    fn parse_refuses_a_date_in_public_but_keeps_a_quoted_date_text_spec_3_5() {
+        for date in [
+            "2026-10-24",
+            "2001-12-14t21:59:43.10-05:00",
+            "2001-12-14T21:59:43.10Z",
+            "2001-12-14 21:59:43.10 -5",
+            "2001-1-1",
+        ] {
+            assert_eq!(
+                card_with_public(&format!("  a: {date}\n")),
+                Err(CardInvalid::Date),
+                "{date}"
+            );
+            assert_eq!(
+                card_with_public(&format!("  {date}: a\n")),
+                Err(CardInvalid::Date),
+                "{date}"
+            );
+        }
+        let card =
+            card_with_public("  a: \"2026-10-24\"\n  b: 2026-10-24x\n  c: 12-10-24\n").unwrap();
+        assert_eq!(
+            card.public_json(),
+            br#"{"a":"2026-10-24","b":"2026-10-24x","c":"12-10-24"}"#
+        );
+    }
+
+    #[test]
+    fn parse_caps_serialized_public_at_3072_bytes_spec_3_5() {
+        let at_cap = |filler: &str, count: usize| {
+            card_with_public(&format!("  k: '{}'\n", filler.repeat(count)))
+        };
+        let json_overhead = br#"{"k":""}"#.len();
+        let filler_bytes_at_cap = PUBLIC_MAX_BYTES - json_overhead;
+
+        let card = at_cap("x", filler_bytes_at_cap).unwrap();
+        assert_eq!(card.public_json().len(), 3072);
+        assert_eq!(
+            at_cap("x", filler_bytes_at_cap + 1),
+            Err(CardInvalid::PublicOverCap { bytes: 3073 })
+        );
+
+        let two_byte_chars = filler_bytes_at_cap / 2;
+        assert_eq!(
+            at_cap("é", two_byte_chars).unwrap().public_json().len(),
+            3072
+        );
+        assert_eq!(
+            at_cap("é", two_byte_chars + 1),
+            Err(CardInvalid::PublicOverCap { bytes: 3074 })
+        );
+
+        let escaped_quotes = filler_bytes_at_cap / 2;
+        assert_eq!(
+            at_cap("\"", escaped_quotes).unwrap().public_json().len(),
+            3072
+        );
+        assert_eq!(
+            at_cap("\"", escaped_quotes + 1),
+            Err(CardInvalid::PublicOverCap { bytes: 3074 })
+        );
+    }
+
+    #[test]
+    fn parse_refuses_a_duplicate_key_in_public_spec_3_5() {
+        assert_eq!(
+            card_with_public("  a: 1\n  a: 2\n"),
+            Err(CardInvalid::DuplicatePublicKey("a".to_owned()))
+        );
+        assert_eq!(
+            card_with_public("  outer:\n    b: 1\n    \"b\": 2\n"),
+            Err(CardInvalid::DuplicatePublicKey("b".to_owned()))
+        );
+    }
+
+    #[test]
+    fn parse_refuses_a_merge_key_in_public_but_keeps_a_quoted_one_spec_3_5() {
+        assert_eq!(
+            card_with_public("  base: {a: 1}\n  <<: {b: 2}\n"),
+            Err(CardInvalid::MergeKey)
+        );
+        assert_eq!(
+            card_with_public("  outer:\n    <<: {b: 2}\n"),
+            Err(CardInvalid::MergeKey)
+        );
+        let card = card_with_public("  \"<<\": 1\n").unwrap();
+        assert_eq!(card.public_json(), br#"{"<<":1}"#);
+    }
+
+    #[test]
+    fn parse_refuses_a_non_string_key_in_public_spec_3_5() {
+        for key in ["1", "true", "null", "~", "1.5", "[a]", "{b: c}", "0x10"] {
+            assert_eq!(
+                card_with_public(&format!("  ? {key}\n  : v\n")),
+                Err(CardInvalid::NonStringKey),
+                "{key}"
+            );
+        }
+        let card = card_with_public("  \"1\": a\n  'true': b\n").unwrap();
+        assert_eq!(card.public_json(), br#"{"1":"a","true":"b"}"#);
+    }
+
+    #[test]
+    fn with_description_inserts_under_public_description_and_replaces_an_existing_one_spec_3_10_init()
+     {
+        let bare = parse_card("handle: ada\npublic_key: abc\n").unwrap();
+        let described = bare.with_description("builds things").unwrap();
+        assert_eq!(
+            described.public_json(),
+            br#"{"description":"builds things"}"#
+        );
+
+        let existing = card_with_public("  description: old\n  role: builder\n").unwrap();
+        let replaced = existing.with_description("new").unwrap();
+        assert_eq!(
+            replaced.public_json(),
+            br#"{"description":"new","role":"builder"}"#
+        );
+        assert_eq!(
+            (replaced.handle.as_str(), replaced.public_key.as_str()),
+            ("ada", "abc")
+        );
+    }
+
+    #[test]
+    fn with_description_caps_public_after_insertion_at_3072_bytes_spec_3_10_init() {
+        let json_overhead = br#"{"description":""}"#.len();
+        let filler_bytes_at_cap = PUBLIC_MAX_BYTES - json_overhead;
+        let bare = || parse_card("handle: ada\npublic_key: abc\n").unwrap();
+
+        let at_cap = bare()
+            .with_description(&"x".repeat(filler_bytes_at_cap))
+            .unwrap();
+        assert_eq!(at_cap.public_json().len(), 3072);
+        assert_eq!(
+            bare().with_description(&"x".repeat(filler_bytes_at_cap + 1)),
+            Err(DescriptionOverCap { bytes: 3073 })
+        );
+
+        let near_cap = card_with_public(&format!("  k: '{}'\n", "y".repeat(3000))).unwrap();
+        assert_eq!(
+            near_cap.with_description(&"x".repeat(100)),
+            Err(DescriptionOverCap {
+                bytes: 3000 + br#"{"k":"","description":""}"#.len() + 100
+            })
+        );
+    }
+
+    #[test]
+    fn parse_refuses_an_alias_in_public_spec_3_5() {
+        assert_eq!(
+            card_with_public("  base: &shared [1]\n  copy: *shared\n"),
+            Err(CardInvalid::Alias)
+        );
+    }
+
+    #[test]
+    fn parse_refuses_a_number_json_cannot_hold_in_public_spec_3_5() {
+        for number in [".inf", "-.inf", ".nan"] {
+            assert_eq!(
+                card_with_public(&format!("  n: {number}\n")),
+                Err(CardInvalid::NumberNotFinite),
+                "{number}"
+            );
+        }
+        let card = card_with_public("  i: -7\n  f: 1.5\n  h: 0x10\n").unwrap();
+        assert_eq!(card.public_json(), br#"{"f":1.5,"h":16,"i":-7}"#);
+    }
+
+    #[test]
+    fn parse_refuses_a_card_that_is_not_one_mapping_with_its_required_keys_spec_3_5() {
+        assert!(matches!(
+            parse_card("handle: [unclosed"),
+            Err(CardInvalid::Unparsable(_))
+        ));
+        for text in [
+            "",
+            "- a\n- b\n",
+            "just text\n",
+            "handle: ada\npublic_key: abc\n---\nhandle: bob\n",
+        ] {
+            assert_eq!(
+                parse_card(text),
+                Err(CardInvalid::NotOneMappingDocument),
+                "{text:?}"
+            );
+        }
+        assert_eq!(
+            parse_card("public_key: abc\n"),
+            Err(CardInvalid::MissingKey("handle"))
+        );
+        assert_eq!(
+            parse_card("handle: ada\n"),
+            Err(CardInvalid::MissingKey("public_key"))
+        );
+        assert_eq!(
+            parse_card("handle: ada\nhandle: bob\npublic_key: abc\n"),
+            Err(CardInvalid::DuplicateCardKey("handle"))
+        );
+        assert_eq!(
+            parse_card("handle: [ada]\npublic_key: abc\n"),
+            Err(CardInvalid::KeyNotScalar("handle"))
+        );
+        assert_eq!(
+            parse_card("handle: ada\npublic_key: abc\npublic: [1]\n"),
+            Err(CardInvalid::PublicNotMapping)
+        );
+        assert_eq!(
+            parse_card("handle: ada\npublic_key: abc\npublic:\n"),
+            Err(CardInvalid::PublicNotMapping)
+        );
+    }
+
+    #[test]
+    fn parse_ignores_every_key_beyond_the_four_even_when_odd_spec_3_5() {
+        let text = "handle: ada\npublic_key: abc\nextra: !custom 2026-10-24\n<<: x\n? [a]\n: b\nextra: 1\n";
+        let card = parse_card(text).unwrap();
+        assert_eq!(card.public_json(), b"{}");
+        assert_eq!(card.network, None);
+    }
+
+    #[test]
+    fn parse_refuses_binary_data_in_public_spec_3_5() {
+        assert_eq!(
+            card_with_public("  a: !!binary aGVsbG8=\n"),
+            Err(CardInvalid::Binary)
+        );
+        assert_eq!(
+            card_with_public("  a: !!binary \"aGVsbG8=\"\n"),
+            Err(CardInvalid::Binary)
+        );
+    }
+
+    #[test]
+    fn parse_refuses_a_tag_anywhere_in_public_spec_3_5() {
+        assert_eq!(card_with_public("  a: !custom x\n"), Err(CardInvalid::Tag));
+        assert_eq!(card_with_public("  a: !!str x\n"), Err(CardInvalid::Tag));
+        assert_eq!(
+            card_with_public("  a: !custom [x]\n"),
+            Err(CardInvalid::Tag)
+        );
+        assert_eq!(
+            card_with_public("  a:\n    b: !custom {c: d}\n"),
+            Err(CardInvalid::Tag)
+        );
+        assert_eq!(card_with_public("  !custom a: x\n"), Err(CardInvalid::Tag));
+    }
+}
