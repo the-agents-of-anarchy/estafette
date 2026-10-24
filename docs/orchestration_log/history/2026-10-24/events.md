@@ -369,3 +369,9 @@
 2026-10-24T16:07 | self:claude-fable-5-1 | review | quality-U31 130552 Ready No: Critical real-socket test flaky (2/40), Important two error variants untested; impl-U31 continued (cycle 1)
 2026-10-24T16:07 | self:claude-fable-5-1 | decision | solved: the bridge inbox client waits RECONNECT_PAUSE 500 ms after a clean close before reconnecting (spec silent; prevents a spin against a server that closes at once); alternative: reconnect at once
 2026-10-24T16:08 | self:claude-fable-5-1 | receipt | integrate-U16 Result PASS at 6eafb76 (lib.rs mod lines resolved alphabetically); main fast-forwarded to 6eafb76
+2026-10-24T16:11 | self:claude-fable-5-1 | receipt | impl-U17 continuation 2 DONE_WITH_CONCERNS at 59a34fc: gate-closed sink at bind; concerns reuse round-1 classification; peer content
+2026-10-24T16:13 | self:claude-fable-5-1 | review | spec-U17 re-review 3 PASS 131138 at 59a34fc; quality-U17 continued
+2026-10-24T16:15 | self:claude-fable-5-1 | review | quality-U17 re-review 2 131320 Ready Yes; five Minor; U17 passed both reviews at cycle 2
+2026-10-24T16:15 | self:claude-fable-5-1 | delegation | integrate-U17 (sonnet): ff 59a34fc onto integration -> reports/integrator-U17.md
+2026-10-24T16:17 | self:claude-fable-5-1 | receipt | integrate-U17 Result PASS at 59a34fc; main fast-forwarded; architecture_log entry on the nonce source and gate sink written
+2026-10-24T16:17 | self:claude-fable-5-1 | delegation | impl-U18 direct and impl-U19 gossip (sonnet, implementer, worktrees) launched from briefs implementer-U18-direct.md, implementer-U19-gossip.md

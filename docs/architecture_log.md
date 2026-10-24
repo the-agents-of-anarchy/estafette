@@ -22,3 +22,12 @@ INVALIDATES:   A live unrelated process reusing a dead node's pid keeps that nod
                A host without `ps` on PATH cannot start the inbox socket; the error names the pid queried and that nothing was removed
                `ps -p` exit codes are verified on macOS only; Linux is settled by the process-table integration test on the lab (core/tests/inbox_socket_process_table.rs)
 EVIDENCE:      core/src/inbox/socket.rs at af620dd; spec reviews 152944 FAIL then 153526 and 154500 PASS; quality review 154552 Ready Yes
+
+## 2026-10-24 → 2026-10-24 — Gate and probe nonces come from a generator the composition root hands in
+KIND:          runnable
+FROM → TO:     No gate existed → `NodeEndpoint::bind` takes `fill_nonce: Fn(&mut [u8; 32])`, the one nonce source for the gossip gate's 32-byte challenge, and a `report_gate_closing` sink that receives each refusal's typed `GateFailure` before the connection closes with code 403 and reason `gate`
+WHY:           spec:450 leaves the nonce source to the implementer and the tdd stance passes every side effect in from the composition root, so the node (U20) chooses the CSPRNG and the stderr record for refusals; the gate keys on `iroh_gossip::ALPN` alone (spec 3.6 'every gossip connection') and the endpoint accepts `estafette/direct/1` and the gossip ALPN from any node id
+INVALIDATES:   A caller that hands in a weak generator weakens the gate; the node must pass a cryptographically secure one (spec:450)
+               A node that registers gossip under another ALPN, or lets iroh's Router::spawn replace the ALPN list, bypasses the gate — U20 must keep DIRECT_ALPN and iroh_gossip::ALPN registered
+               The sink runs inside the handshake and must not block
+EVIDENCE:      core/src/net/{endpoint,gate}.rs at 59a34fc; spec reviews 124728, 130035, 131138 PASS; quality review 131320 Ready Yes
