@@ -38,7 +38,7 @@ audit: audit-pin-held
 [doc("Fail unless the installed cargo-audit is the pinned version")]
 [private]
 audit-pin-held:
-    [[ "$(cargo audit --version)" == *" {{ audit_pin }}" ]] || { echo "cargo-audit must be {{ audit_pin }}: just gate::install-audit" >&2; exit 1; }
+    [[ "$(cargo audit --version)" == *" {{ audit_pin }}" ]] || { echo "cargo-audit must be {{ audit_pin }}: cargo binstall cargo-audit@{{ audit_pin }} (or just gate::install-audit)" >&2; exit 1; }
 
 [doc("Install the pinned cargo-audit; the one place CI and developers take the version from")]
 [group('fix')]
