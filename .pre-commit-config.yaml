@@ -1,11 +1,11 @@
+exclude: ^research/
+
 repos:
     - repo: https://github.com/pre-commit/pre-commit-hooks
       rev: v6.0.0
       hooks:
           - id: trailing-whitespace
-            exclude: ^research/
           - id: end-of-file-fixer
-            exclude: ^research/
           - id: check-yaml
           - id: check-added-large-files
     - repo: local
