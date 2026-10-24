@@ -1,6 +1,8 @@
+use std::sync::Arc;
+
 use iroh::address_lookup::MemoryLookup;
 use iroh::endpoint::{BindError, QuicTransportConfig, VarInt, presets};
-use iroh::{Endpoint, EndpointAddr, RelayMap, RelayMode, RelayUrl, SecretKey};
+use iroh::{Endpoint, EndpointAddr, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey};
 use iroh_gossip::ALPN as GOSSIP_ALPN;
 
 use super::gate::{NONCE_BYTES, NetworkSecretGate};
@@ -9,10 +11,11 @@ use crate::crypto::GateKey;
 pub const DIRECT_ALPN: &[u8] = b"estafette/direct/1";
 const QUIC_IDLE_TIMEOUT_MILLIS: u32 = 10_000;
 
-/// The node's iroh endpoint, gated on the network secret for every gossip connection, with the address lookup the node feeds.
+/// The node's iroh endpoint, gated on the network secret for every gossip connection, with the address lookup the node feeds and the relay map it edits.
 pub struct NodeEndpoint {
     endpoint: Endpoint,
     address_lookup: MemoryLookup,
+    relay_map: RelayMap,
 }
 
 impl NodeEndpoint {
@@ -32,7 +35,7 @@ impl NodeEndpoint {
         let endpoint = Endpoint::builder(presets::Minimal)
             .secret_key(secret_key)
             .alpns(vec![DIRECT_ALPN.to_vec(), GOSSIP_ALPN.to_vec()])
-            .relay_mode(RelayMode::Custom(relay_map))
+            .relay_mode(RelayMode::Custom(relay_map.clone()))
             .transport_config(quic_transport_config())
             .address_lookup(address_lookup.clone())
             .hooks(gate)
@@ -41,6 +44,7 @@ impl NodeEndpoint {
         Ok(Self {
             endpoint,
             address_lookup,
+            relay_map,
         })
     }
 
@@ -53,6 +57,19 @@ impl NodeEndpoint {
     /// Replaces, never merges, the lookup entry of the address's card, so a dial by card id goes there alone.
     pub fn replace_address(&self, address: EndpointAddr) {
         self.address_lookup.set_endpoint_info(address);
+    }
+
+    /// Adds the relay to the relay map unless the map already holds it, so a held relay keeps its entry.
+    pub async fn add_relay(&self, relay: RelayUrl) {
+        if !self.relay_map.contains(&relay) {
+            let entry = Arc::new(RelayConfig::from(relay.clone()));
+            self.endpoint.insert_relay(relay, entry).await;
+        }
+    }
+
+    /// Removes the relay from the relay map.
+    pub async fn remove_relay(&self, relay: &RelayUrl) {
+        self.endpoint.remove_relay(relay).await;
     }
 }
 
@@ -410,5 +427,45 @@ mod tests {
 
         member.replace_address(peer.endpoint().addr());
         assert!(dial_by_card_id(&member, &peer).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_relay_loss_removes_a_relay_and_a_newer_record_adds_it_back() {
+        let first_relay = relay_url(FIRST_HOST_RELAY);
+        let second_relay = relay_url(SECOND_HOST_RELAY);
+        let member =
+            bind_node_with_relays(MEMBER_SEED, MEMBER_SECRET, vec![first_relay.clone()]).await;
+
+        member.remove_relay(&first_relay).await;
+        assert!(member.endpoint().remove_relay(&first_relay).await.is_none());
+
+        member.add_relay(first_relay.clone()).await;
+        assert!(member.endpoint().remove_relay(&first_relay).await.is_some());
+
+        member.add_relay(second_relay.clone()).await;
+        assert!(
+            member
+                .endpoint()
+                .remove_relay(&second_relay)
+                .await
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_adding_a_relay_the_map_holds_leaves_its_entry_untouched() {
+        let first_relay = relay_url(FIRST_HOST_RELAY);
+        let member =
+            bind_node_with_relays(MEMBER_SEED, MEMBER_SECRET, vec![first_relay.clone()]).await;
+        let entry_without_address_discovery = Arc::new(RelayConfig::new(first_relay.clone(), None));
+        member
+            .endpoint()
+            .insert_relay(first_relay.clone(), entry_without_address_discovery)
+            .await;
+
+        member.add_relay(first_relay.clone()).await;
+
+        let entry = member.endpoint().remove_relay(&first_relay).await.unwrap();
+        assert_eq!(entry.quic, None);
     }
 }
