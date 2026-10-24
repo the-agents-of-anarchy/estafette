@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use iroh::RelayUrl;
 use serde::{Deserialize, Serialize};
 
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
@@ -12,6 +13,11 @@ const LEARNED_HOST_EXPIRY_DAYS: u64 = 30;
 const LEARNED_HOST_EXPIRY_SECONDS: u64 = LEARNED_HOST_EXPIRY_DAYS * SECONDS_PER_DAY;
 const OWNER_ONLY_FILE_MODE: u32 = 0o600;
 const TEMPORARY_FILE_SUFFIX: &str = "tmp";
+const HEX_KEY_LENGTH: usize = 64;
+const HEX_KEY_ACCEPTED: &str = "64 lowercase hexadecimal characters";
+const RELAY_URL_MAX_BYTES: usize = 128;
+const RELAY_URL_SCHEME: &str = "https";
+const RELAY_URL_ACCEPTED: &str = "an https URL of at most 128 bytes";
 
 /// Where a host came from: the owner configured it and nothing removes it, or this member learned it and it expires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,11 +97,21 @@ pub enum ConfigError {
         source: toml::de::Error,
     },
     Unserializable(toml::ser::Error),
+    InvalidField {
+        path: PathBuf,
+        field: &'static str,
+        accepted: &'static str,
+    },
 }
 
 impl fmt::Display for ConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidField {
+                path,
+                field,
+                accepted,
+            } => write!(formatter, "{}: {field} must be {accepted}", path.display()),
             Self::Io { path, source } => write!(formatter, "{}: {source}", path.display()),
             Self::Malformed { path, source } => write!(
                 formatter,
@@ -157,14 +173,25 @@ impl NetworkConfig {
     /// Merges this configuration with the file's current content, drops expired learned hosts, writes the result whole, and returns it.
     ///
     /// # Errors
-    /// Returns a `ConfigError` when the file cannot be read, is malformed, or cannot be written.
+    /// Returns a `ConfigError` when this configuration or the file is malformed, or the file cannot be read or written.
     pub fn rewrite(&self, path: &Path, now_unix_seconds: u64) -> Result<Self, ConfigError> {
+        self.validate(path)?;
         let merged = self
             .merged_with(read_current(path)?)
             .without_expired_hosts(now_unix_seconds);
         let text = toml::to_string(&merged).map_err(ConfigError::Unserializable)?;
         write_atomically(path, &text).map_err(io_error(path))?;
         Ok(merged)
+    }
+
+    fn validate(&self, path: &Path) -> Result<(), ConfigError> {
+        require_hex_key(path, "secret", &self.secret)?;
+        require_hex_key(path, "owner", &self.owner)?;
+        for host in &self.hosts {
+            require_hex_key(path, "host id", &host.id)?;
+            require_relay_url(path, &host.relay)?;
+        }
+        Ok(())
     }
 
     fn merged_with(&self, on_disk: Option<Self>) -> Self {
@@ -199,10 +226,44 @@ fn io_error(path: &Path) -> impl FnOnce(io::Error) -> ConfigError {
 }
 
 fn parse(path: &Path, text: &str) -> Result<NetworkConfig, ConfigError> {
-    toml::from_str(text).map_err(|source| ConfigError::Malformed {
+    let config: NetworkConfig = toml::from_str(text).map_err(|source| ConfigError::Malformed {
         path: path.to_owned(),
         source,
-    })
+    })?;
+    config.validate(path)?;
+    Ok(config)
+}
+
+fn require_hex_key(path: &Path, field: &'static str, value: &str) -> Result<(), ConfigError> {
+    let is_lowercase_hex_key = value.len() == HEX_KEY_LENGTH
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
+    if is_lowercase_hex_key {
+        Ok(())
+    } else {
+        Err(ConfigError::InvalidField {
+            path: path.to_owned(),
+            field,
+            accepted: HEX_KEY_ACCEPTED,
+        })
+    }
+}
+
+fn require_relay_url(path: &Path, value: &str) -> Result<(), ConfigError> {
+    let is_https_relay_url = value.len() <= RELAY_URL_MAX_BYTES
+        && value
+            .parse::<RelayUrl>()
+            .is_ok_and(|relay| relay.scheme() == RELAY_URL_SCHEME);
+    if is_https_relay_url {
+        Ok(())
+    } else {
+        Err(ConfigError::InvalidField {
+            path: path.to_owned(),
+            field: "host relay",
+            accepted: RELAY_URL_ACCEPTED,
+        })
+    }
 }
 
 fn read_current(path: &Path) -> Result<Option<NetworkConfig>, ConfigError> {
@@ -275,6 +336,10 @@ mod tests {
         directory
     }
 
+    fn hex_key(digit: char) -> String {
+        digit.to_string().repeat(HEX_KEY_LENGTH)
+    }
+
     fn learned(id: &str, relay: &str, ts: Option<u64>, heard: u64) -> Host {
         Host {
             id: id.to_owned(),
@@ -286,8 +351,8 @@ mod tests {
 
     fn network(hosts: Vec<Host>) -> NetworkConfig {
         NetworkConfig {
-            secret: "secret-s".to_owned(),
-            owner: "owner-o".to_owned(),
+            secret: hex_key('5'),
+            owner: hex_key('6'),
             hosts,
         }
     }
@@ -298,24 +363,24 @@ mod tests {
         let directory = scratch_directory("merge");
         let path = directory.join("net.toml");
         let on_disk = network(vec![
-            learned("alpha", "https://a/", Some(5), NOW - 10),
-            learned("beta", "https://b/", Some(8), NOW - 40),
-            learned("concurrent", "https://c/", Some(7), NOW - 20),
+            learned(&hex_key('a'), "https://a/", Some(5), NOW - 10),
+            learned(&hex_key('b'), "https://b/", Some(8), NOW - 40),
+            learned(&hex_key('c'), "https://c/", Some(7), NOW - 20),
         ]);
         on_disk.rewrite(&path, NOW).unwrap();
         let held = network(vec![
-            learned("alpha", "https://a/", Some(9), NOW - 50),
-            learned("beta", "https://b/", Some(4), NOW - 5),
-            learned("mine", "https://m/", Some(3), NOW - 30),
+            learned(&hex_key('a'), "https://a/", Some(9), NOW - 50),
+            learned(&hex_key('b'), "https://b/", Some(4), NOW - 5),
+            learned(&hex_key('d'), "https://m/", Some(3), NOW - 30),
         ]);
 
         let merged = held.rewrite(&path, NOW).unwrap();
 
         let expected = network(vec![
-            learned("alpha", "https://a/", Some(9), NOW - 10),
-            learned("beta", "https://b/", Some(8), NOW - 5),
-            learned("concurrent", "https://c/", Some(7), NOW - 20),
-            learned("mine", "https://m/", Some(3), NOW - 30),
+            learned(&hex_key('a'), "https://a/", Some(9), NOW - 10),
+            learned(&hex_key('b'), "https://b/", Some(8), NOW - 5),
+            learned(&hex_key('c'), "https://c/", Some(7), NOW - 20),
+            learned(&hex_key('d'), "https://m/", Some(3), NOW - 30),
         ]);
         assert_eq!(merged, expected);
         assert_eq!(NetworkConfig::load(&path).unwrap(), expected);
@@ -327,10 +392,10 @@ mod tests {
         let directory = scratch_directory("expiry");
         let path = directory.join("net.toml");
         let held = network(vec![
-            learned("stale", "https://s/", Some(1), NOW - EXPIRY - 1),
-            learned("borderline", "https://b/", Some(2), NOW - EXPIRY),
+            learned(&hex_key('1'), "https://s/", Some(1), NOW - EXPIRY - 1),
+            learned(&hex_key('2'), "https://b/", Some(2), NOW - EXPIRY),
             Host {
-                id: "configured".to_owned(),
+                id: hex_key('3'),
                 relay: "https://k/".to_owned(),
                 ts: Some(3),
                 origin: HostOrigin::Configured,
@@ -340,7 +405,7 @@ mod tests {
         let written = held.rewrite(&path, NOW).unwrap();
 
         let ids: Vec<&str> = written.hosts.iter().map(|host| host.id.as_str()).collect();
-        assert_eq!(ids, ["borderline", "configured"]);
+        assert_eq!(ids, [hex_key('2'), hex_key('3')]);
         assert_eq!(NetworkConfig::load(&path).unwrap(), written);
     }
 
@@ -350,7 +415,7 @@ mod tests {
         let directory = scratch_directory("configured-wins");
         let path = directory.join("net.toml");
         let owner_configured = Host {
-            id: "alpha".to_owned(),
+            id: hex_key('a'),
             relay: "https://a/".to_owned(),
             ts: Some(1),
             origin: HostOrigin::Configured,
@@ -359,7 +424,7 @@ mod tests {
             .rewrite(&path, NOW)
             .unwrap();
         let learned_long_ago = network(vec![learned(
-            "alpha",
+            &hex_key('a'),
             "https://a/",
             Some(1),
             NOW - EXPIRY - 5,
@@ -375,7 +440,7 @@ mod tests {
     fn rewrite_leaves_the_file_owner_only() {
         let directory = scratch_directory("mode");
         let path = directory.join("net.toml");
-        let held = network(vec![learned("alpha", "https://a/", Some(1), NOW)]);
+        let held = network(vec![learned(&hex_key('a'), "https://a/", Some(1), NOW)]);
         held.rewrite(&path, NOW).unwrap();
         fs::set_permissions(&path, Permissions::from_mode(0o644)).unwrap();
 
@@ -391,7 +456,7 @@ mod tests {
         let directory = scratch_directory("atomic");
         let path = directory.join("net.toml");
 
-        network(vec![learned("alpha", "https://a/", Some(1), NOW)])
+        network(vec![learned(&hex_key('a'), "https://a/", Some(1), NOW)])
             .rewrite(&path, NOW)
             .unwrap();
 
@@ -447,7 +512,7 @@ mod tests {
     fn rewrite_by_concurrent_writers_of_the_same_content_all_succeed() {
         let directory = scratch_directory("concurrent");
         let path = directory.join("net.toml");
-        let held = network(vec![learned("alpha", "https://a/", Some(1), NOW)]);
+        let held = network(vec![learned(&hex_key('a'), "https://a/", Some(1), NOW)]);
 
         for _round in 0..CONCURRENT_ROUNDS {
             std::thread::scope(|scope| {
@@ -480,13 +545,117 @@ mod tests {
         assert_eq!(names, ["net.toml"]);
     }
 
+    /// Spec 3.1 and 3.3: load refuses a secret, owner, node id or relay of the wrong shape, naming the accepted set.
+    #[test]
+    fn load_refuses_a_field_of_the_wrong_shape() {
+        let directory = scratch_directory("shapes");
+        let valid_relay = "https://relay.example/";
+        let long_relay = format!("https://{}/", "r".repeat(RELAY_URL_MAX_BYTES));
+        let refused_cases = [
+            (
+                hex_key('a').to_uppercase(),
+                hex_key('b'),
+                hex_key('c'),
+                valid_relay.to_owned(),
+                "secret",
+                HEX_KEY_ACCEPTED,
+            ),
+            (
+                "abc".to_owned(),
+                hex_key('b'),
+                hex_key('c'),
+                valid_relay.to_owned(),
+                "secret",
+                HEX_KEY_ACCEPTED,
+            ),
+            (
+                hex_key('a'),
+                String::new(),
+                hex_key('c'),
+                valid_relay.to_owned(),
+                "owner",
+                HEX_KEY_ACCEPTED,
+            ),
+            (
+                hex_key('a'),
+                hex_key('b'),
+                "g".repeat(HEX_KEY_LENGTH),
+                valid_relay.to_owned(),
+                "host id",
+                HEX_KEY_ACCEPTED,
+            ),
+            (
+                hex_key('a'),
+                hex_key('b'),
+                hex_key('c'),
+                "http://relay.example/".to_owned(),
+                "host relay",
+                RELAY_URL_ACCEPTED,
+            ),
+            (
+                hex_key('a'),
+                hex_key('b'),
+                hex_key('c'),
+                "not a url".to_owned(),
+                "host relay",
+                RELAY_URL_ACCEPTED,
+            ),
+            (
+                hex_key('a'),
+                hex_key('b'),
+                hex_key('c'),
+                long_relay,
+                "host relay",
+                RELAY_URL_ACCEPTED,
+            ),
+        ];
+
+        for (index, (secret, owner, id, relay, field, accepted)) in
+            refused_cases.into_iter().enumerate()
+        {
+            let path = directory.join(format!("case-{index}.toml"));
+            fs::write(
+                &path,
+                format!(
+                    "secret = \"{secret}\"\nowner = \"{owner}\"\nhosts = [{{ id = \"{id}\", relay = \"{relay}\" }}]\n"
+                ),
+            )
+            .unwrap();
+
+            let refusal = NetworkConfig::load(&path).unwrap_err();
+
+            assert!(
+                matches!(
+                    refusal,
+                    ConfigError::InvalidField { field: refused, accepted: set, .. }
+                        if refused == field && set == accepted
+                ),
+                "case {index}: {refusal}"
+            );
+        }
+    }
+
+    /// Spec 3.3: a rewrite refuses a held configuration of the wrong shape before writing anything.
+    #[test]
+    fn rewrite_refuses_a_held_configuration_of_the_wrong_shape() {
+        let directory = scratch_directory("held-shape");
+        let path = directory.join("net.toml");
+        let mut held = network(vec![]);
+        held.secret = "short".to_owned();
+
+        let outcome = held.rewrite(&path, NOW);
+
+        assert!(matches!(outcome, Err(ConfigError::InvalidField { .. })));
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+    }
+
     /// Spec 3.3: a rewrite creates the file when none exists.
     #[test]
     fn rewrite_creates_a_missing_file() {
         let directory = scratch_directory("missing");
         let path = directory.join("net.toml");
 
-        let written = network(vec![learned("alpha", "https://a/", None, NOW)])
+        let written = network(vec![learned(&hex_key('a'), "https://a/", None, NOW)])
             .rewrite(&path, NOW)
             .unwrap();
 
