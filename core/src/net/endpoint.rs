@@ -329,6 +329,10 @@ mod tests {
         assert_eq!(accepted.remote_id(), stranger.id());
         assert_eq!(accepted.alpn(), SPEC_DIRECT_ALPN);
         assert_eq!(dialed.close_reason(), None);
+        assert_eq!(
+            dialed.remote_id(),
+            SecretKey::from_bytes(&[MEMBER_SEED; KEY_LEN]).public()
+        );
     }
 
     #[tokio::test]
