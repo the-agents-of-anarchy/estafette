@@ -221,6 +221,73 @@ mod tests {
             .saturating_add(TEST_RECEIVED_AT_OFFSET)
     }
 
+    enum BrokenOperation {
+        Write,
+        ReadAfterReplies,
+    }
+
+    struct BrokenStream {
+        replies: Cursor<Vec<u8>>,
+        broken_operation: BrokenOperation,
+    }
+
+    impl Read for BrokenStream {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            match (self.replies.read(buffer)?, &self.broken_operation) {
+                (0, BrokenOperation::ReadAfterReplies) => {
+                    Err(io::Error::from(io::ErrorKind::ConnectionReset))
+                }
+                (read_bytes, _) => Ok(read_bytes),
+            }
+        }
+    }
+
+    impl Write for BrokenStream {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            match self.broken_operation {
+                BrokenOperation::Write => Err(io::Error::from(io::ErrorKind::BrokenPipe)),
+                BrokenOperation::ReadAfterReplies => Ok(bytes.len()),
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct OneShotConnector(Option<BrokenStream>);
+
+    impl InboxConnector for OneShotConnector {
+        type Stream = BrokenStream;
+
+        fn connect(&mut self) -> io::Result<BrokenStream> {
+            self.0
+                .take()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::ConnectionRefused))
+        }
+    }
+
+    fn follow_broken(replies: String, broken_operation: BrokenOperation) -> Followed {
+        let mut connector = OneShotConnector(Some(BrokenStream {
+            replies: Cursor::new(replies.into_bytes()),
+            broken_operation,
+        }));
+        let mut delivered = Vec::new();
+        let mut pauses = Vec::new();
+        let ended_with = follow_inbox(
+            &mut connector,
+            &mut |pause| pauses.push(pause),
+            &mut |received| delivered.push(received.clone()),
+        )
+        .expect_err("a followed inbox never returns Ok");
+        Followed {
+            requests: Vec::new(),
+            delivered,
+            pauses,
+            ended_with,
+        }
+    }
+
     fn frame_line(seq: u64) -> String {
         format!(
             "{{\"seq\":{seq},\"id\":\"id-{seq}\",\"from\":\"from-{seq}\",\"body\":\"body {seq}\",\"sent_at\":{},\"received_at\":{}}}\n",
@@ -340,6 +407,31 @@ mod tests {
             .expect("since line");
         connection.write_all(reply.as_bytes()).expect("reply");
         (since_line, connection)
+    }
+
+    #[test]
+    fn spec_3_12_step_3_a_since_line_that_cannot_be_written_ends_the_following() {
+        let followed = follow_broken(frame_line(1), BrokenOperation::Write);
+        assert!(matches!(
+            followed.ended_with,
+            InboxClientError::ResumeRequestFailed(_)
+        ));
+        assert_eq!(followed.delivered, Vec::<InboxFrame>::new());
+        assert_eq!(followed.pauses, Vec::<Duration>::new());
+    }
+
+    #[test]
+    fn spec_3_11_a_socket_that_fails_mid_stream_ends_the_following_after_the_frames_before_it() {
+        let followed = follow_broken(
+            format!("{}{}", frame_line(4), frame_line(6)),
+            BrokenOperation::ReadAfterReplies,
+        );
+        assert!(matches!(
+            followed.ended_with,
+            InboxClientError::ReadFailed(_)
+        ));
+        assert_eq!(followed.delivered, vec![frame(4), frame(6)]);
+        assert_eq!(followed.pauses, Vec::<Duration>::new());
     }
 
     #[test]
