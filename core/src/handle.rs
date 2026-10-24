@@ -401,34 +401,62 @@ mod tests {
     const TAKEN_ODDS_AGAINST: usize = 3;
     const ASSIGNMENT_CANDIDATE_SUFFIX_LIMIT: usize = 14;
 
+    const MIX_MULTIPLIER_FIRST: u64 = 0x9E37_79B9_7F4A_7C15;
+    const MIX_MULTIPLIER_SECOND: u64 = 0xBF58_476D_1CE4_E5B9;
+    const MIX_ROTATION_BITS: u32 = 29;
+    const MIX_DISCARDED_LOW_BITS: u32 = 16;
+    const HANDLE_LENGTH_STREAM: usize = 0;
+    const HANDLE_FIRST_CHARACTER_STREAM: usize = 1;
+    const HANDLE_REST_STREAM: usize = 2;
+    const SUFFIX_LENGTH_STREAM: usize = 3;
+    const SUFFIX_FIRST_DIGIT_STREAM: usize = 4;
+    const SUFFIX_REST_STREAM: usize = 5;
+    const FORBIDDEN_CHARACTER_STREAM: usize = 6;
+    const FORBIDDEN_POSITION_STREAM: usize = 7;
+    const FULL_LENGTH_BASE_FIRST_CHARACTER_STREAM: usize = 8;
+    const TAKEN_STREAM: usize = 9;
+
     fn below(case: u64, stream: [usize; 2], bound: usize) -> usize {
         let mixed = stream.iter().fold(case, |mixed, part| {
             mixed
                 .wrapping_add(u64::try_from(*part).unwrap())
-                .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-                .rotate_left(29)
-                .wrapping_mul(0xBF58_476D_1CE4_E5B9)
+                .wrapping_mul(MIX_MULTIPLIER_FIRST)
+                .rotate_left(MIX_ROTATION_BITS)
+                .wrapping_mul(MIX_MULTIPLIER_SECOND)
         });
-        usize::try_from(mixed >> 16)
+        usize::try_from(mixed >> MIX_DISCARDED_LOW_BITS)
             .unwrap()
             .checked_rem(bound)
             .unwrap()
     }
 
     fn generated_handle(case: u64) -> String {
-        let length = below(case, [0, 0], MAX_HANDLE_LENGTH).saturating_add(1);
-        let first = FIRST_CHARACTER_ALPHABET[below(case, [1, 0], FIRST_CHARACTER_ALPHABET.len())];
-        let rest = (1..length)
-            .map(|position| HANDLE_ALPHABET[below(case, [2, position], HANDLE_ALPHABET.len())]);
+        let length = below(case, [HANDLE_LENGTH_STREAM, 0], MAX_HANDLE_LENGTH).saturating_add(1);
+        let first = FIRST_CHARACTER_ALPHABET[below(
+            case,
+            [HANDLE_FIRST_CHARACTER_STREAM, 0],
+            FIRST_CHARACTER_ALPHABET.len(),
+        )];
+        let rest = (1..length).map(|position| {
+            HANDLE_ALPHABET[below(case, [HANDLE_REST_STREAM, position], HANDLE_ALPHABET.len())]
+        });
         std::iter::once(first).chain(rest).map(char::from).collect()
     }
 
     fn generated_valid_suffix(case: u64) -> String {
-        let digit_count =
-            below(case, [3, 0], SUFFIX_DIGITS_AFTER_FULL_LENGTH_BASE).saturating_add(1);
-        let first = SUFFIX_FIRST_DIGITS[below(case, [4, 0], SUFFIX_FIRST_DIGITS.len())];
-        let rest =
-            (1..digit_count).map(|position| DIGITS[below(case, [5, position], DIGITS.len())]);
+        let digit_count = below(
+            case,
+            [SUFFIX_LENGTH_STREAM, 0],
+            SUFFIX_DIGITS_AFTER_FULL_LENGTH_BASE,
+        )
+        .saturating_add(1);
+        let first = SUFFIX_FIRST_DIGITS[below(
+            case,
+            [SUFFIX_FIRST_DIGIT_STREAM, 0],
+            SUFFIX_FIRST_DIGITS.len(),
+        )];
+        let rest = (1..digit_count)
+            .map(|position| DIGITS[below(case, [SUFFIX_REST_STREAM, position], DIGITS.len())]);
         std::iter::once(first).chain(rest).map(char::from).collect()
     }
 
@@ -446,8 +474,16 @@ mod tests {
     fn a_forbidden_character_anywhere_refuses_all_three_forms_spec_3_1() {
         for case in 0..PROPERTY_CASES {
             let text = generated_handle(case);
-            let forbidden = FORBIDDEN_CHARACTERS[below(case, [6, 0], FORBIDDEN_CHARACTERS.len())];
-            let at = below(case, [7, 0], text.len().saturating_add(1));
+            let forbidden = FORBIDDEN_CHARACTERS[below(
+                case,
+                [FORBIDDEN_CHARACTER_STREAM, 0],
+                FORBIDDEN_CHARACTERS.len(),
+            )];
+            let at = below(
+                case,
+                [FORBIDDEN_POSITION_STREAM, 0],
+                text.len().saturating_add(1),
+            );
             let mut spoiled = text.clone();
             spoiled.insert(at, forbidden);
             assert_eq!(spoiled.parse::<Handle>(), Err(HandleError::NotAHandle));
@@ -468,7 +504,11 @@ mod tests {
             let base = format!(
                 "{}{}",
                 char::from(
-                    FIRST_CHARACTER_ALPHABET[below(case, [8, 0], FIRST_CHARACTER_ALPHABET.len())]
+                    FIRST_CHARACTER_ALPHABET[below(
+                        case,
+                        [FULL_LENGTH_BASE_FIRST_CHARACTER_STREAM, 0],
+                        FIRST_CHARACTER_ALPHABET.len()
+                    )]
                 ),
                 "x".repeat(MAX_HANDLE_LENGTH - 1)
             );
@@ -506,7 +546,9 @@ mod tests {
             let taken: HashSet<LocalHandle> = candidates
                 .iter()
                 .enumerate()
-                .filter(|(position, _)| below(case, [9, *position], TAKEN_ODDS_AGAINST) != 0)
+                .filter(|(position, _)| {
+                    below(case, [TAKEN_STREAM, *position], TAKEN_ODDS_AGAINST) != 0
+                })
                 .map(|(_, candidate)| candidate.clone())
                 .collect();
             let assigned = LocalHandle::assign(&announced_handle, &taken);
