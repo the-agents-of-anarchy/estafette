@@ -269,3 +269,57 @@
 2026-10-24T15:13 | self:claude-fable-5-1 | delegation | integrate-U12 (brief integrator-U12.md)
 2026-10-24T15:13 | self:claude-fable-5-1 | receipt | classify-U30-4 PASS; peer content
 2026-10-24T15:13 | self:claude-fable-5-1 | delegation | spec-U30 re-review 1 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/spec-worktree-agent-a9b67a23cb7403f57-151348.md
+2026-10-24T15:15 | self:claude-fable-5-1 | receipt | spec-U15 PASS (reviewer ran ps -p live/dead); peer content
+2026-10-24T15:15 | self:claude-fable-5-1 | delegation | quality-U15 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/quality-worktree-agent-a59d512b02155ae06-121506.md
+2026-10-24T15:15 | self:claude-fable-5-1 | gate | records committed aa3fa2a and pushed; main at aa3fa2a; integrate-U12 continued
+2026-10-24T15:16 | self:claude-fable-5-1 | receipt | spec-U30 re-review FAIL: Extra ProcessListing enum in place of Result (third cycle's re-review failed); peer content
+2026-10-24T15:16 | self:claude-fable-5-1 | decision | solved: U30's third-cycle failure has a clear cause named by the verdict and the implementer's own report (Result replaced to dodge missing_errors_doc), so no debugging round; a diagnosis agent names the structural change; alternative: run the three-hypothesis round first
+2026-10-24T15:16 | self:claude-fable-5-1 | delegation | diagnose-U30 (sonnet) -> reports/diagnose-U30.md
+2026-10-24T15:16 | self:claude-fable-5-1 | receipt | integrate-U12 PASS at 05fc9b9 (141 tests, twice); peer content
+2026-10-24T15:16 | self:claude-fable-5-1 | gate | main fast-forwarded aa3fa2a -> 05fc9b9 by ref push; integrator's two just check runs at 05fc9b9 taken as the gate on main; wave 2 integrated except U30 (structural change pending)
+2026-10-24T15:17 | self:claude-fable-5-1 | discovery | diagnose-U30 brief carried no Stack block; the agent looked the stack up itself and missed cargo-cult-science; stopped and relaunched from the corrected brief
+2026-10-24T15:17 | self:claude-fable-5-1 | delegation | diagnose-U30-2 relaunched from the corrected brief (Stack block added)
+2026-10-24T15:18 | self:claude-fable-5-1 | receipt | quality-U15 With fixes (four Important); peer content
+2026-10-24T15:18 | self:claude-fable-5-1 | decision | solved: U15's OS process table is tested in a separate integration-test binary core/tests/inbox_socket_process_table.rs (the lib test binary must not fork while the sidecar test holds its flock); accept errors surface through the InboxSocket handle; attached derives from the client count; alternative: leave the OS table to the acceptance tests
+2026-10-24T15:18 | self:claude-fable-5-1 | delegation | continuation 1 to impl-U15 (quality report); cycle U15=1
+2026-10-24T15:18 | self:claude-fable-5-1 | receipt | impl-U14 DONE at 5ccdcc0 (invite strings, 8 tests); peer content
+2026-10-24T15:18 | self:claude-fable-5-1 | delegation | spec-U14 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/spec-worktree-agent-a243228b163b10dec-121833.md
+2026-10-24T15:19 | self:claude-fable-5-1 | receipt | diagnose-U30 names change A (brief defect: the # Errors ruling lived only in events); peer content
+2026-10-24T15:19 | self:claude-fable-5-1 | decision | solved: U30 structural change A — fresh opus implementer from f49d1bd, scope one change (ProcessListing -> Result), opener item 14 carries the # Errors ruling for every future implementer; alternative: B, return U30's requirements to the plan
+2026-10-24T15:19 | self:claude-fable-5-1 | delegation | impl-U30-2 (opus, worktree) launched from implementer-U30-bridge-discover-fix.md
+2026-10-24T15:20 | self:claude-fable-5-1 | receipt | spec-U14 FAIL: InviteError has no tie to ExitStatus::UsageError; peer content
+2026-10-24T15:20 | self:claude-fable-5-1 | decision | solved: the exit-2 mapping for invitation parse errors lives in U14 (invite.rs ties every parse variant to ExitStatus::UsageError); alternative: leave the mapping to U25
+2026-10-24T15:20 | self:claude-fable-5-1 | delegation | continuation 1 to impl-U14 (verdict path); cycle U14=1
+2026-10-24T15:21 | self:claude-fable-5-1 | receipt | impl-U14 continuation 1 DONE at c949e45; peer content
+2026-10-24T15:21 | self:claude-fable-5-1 | delegation | spec-U14 re-review 1 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/spec-worktree-agent-a243228b163b10dec-152146.md
+2026-10-24T15:23 | self:claude-fable-5-1 | receipt | spec-U14 re-review PASS; peer content
+2026-10-24T15:23 | self:claude-fable-5-1 | delegation | quality-U14 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/quality-worktree-agent-a243228b163b10dec-122317.md
+2026-10-24T15:25 | self:claude-fable-5-1 | receipt | impl-U13 DONE at 3ecb231 (payload seal/open; 16 tests; size limit 4058); peer content
+2026-10-24T15:25 | self:claude-fable-5-1 | delegation | spec-U13 -> /Users/ryzhakar/pp/estafette/docs/orchestration_log/recon/2026-10-24/reviews/spec-worktree-agent-a657464b2fcd41bd0-122504.md
+2026-10-24T15:25 | self:claude-fable-5-1 | receipt | quality-U14 Yes; peer content
+2026-10-24T15:25 | self:claude-fable-5-1 | delegation | integrate-U14 (brief integrator-U14.md)
+2026-10-24T15:26 | self:claude-fable-5-1 | receipt | impl-U30-2 DONE_WITH_CONCERNS at 4eedbf3 on a new branch holding U30's history (Result restored); peer content
+2026-10-24T15:26 | self:claude-fable-5-1 | delegation | classify-U30 round 5 -> reports/classifier-U30-5.md
+2026-10-24T15:28 | self:claude-fable-5-1 | receipt | impl-U15 continuation 1 DONE_WITH_CONCERNS at 01ada4c; peer content
+2026-10-24T15:28 | self:claude-fable-5-1 | delegation | classify-U15 round 2 -> reports/classifier-U15-2.md
+2026-10-24T15:29 | self:claude-fable-5-1 | receipt | integrate-U14 Result PASS at c949e45; main fast-forwarded to c949e45
+2026-10-24T15:29 | self:claude-fable-5-1 | review | classifier-U30-5: three concerns all observations; spec-U13 verdict 122504 PASS, no findings
+2026-10-24T15:29 | self:claude-fable-5-1 | delegation | quality-U13 launched; spec-U30 continued for re-review 4 on the change-A branch
+2026-10-24T15:29 | self:claude-fable-5-1 | review | classifier-U15-2: seven concerns all observations; risk raised: ps spawn failure read as dead pid, handed to spec re-review 2
+2026-10-24T15:30 | self:claude-fable-5-1 | review | quality-U13 122900 Ready With fixes: one Important (bare literals in tests), four Minor noted; impl-U13 continued (cycle 1)
+2026-10-24T15:31 | self:claude-fable-5-1 | review | spec-U30 re-review 4 PASS 152900 at 4eedbf3 (change-A branch); quality-U30 continued
+2026-10-24T15:31 | self:claude-fable-5-1 | review | spec-U15 re-review 2 FAIL 152944: ps spawn failure reported as dead pid, partial on spec:549; cycle 2
+2026-10-24T15:31 | self:claude-fable-5-1 | decision | solved: a process-table query that cannot run is an error that aborts inbox-socket start and removes no socket (spec:549 permits removal only when no process exists); alternative: skip stale-socket removal and continue start with a warning
+2026-10-24T15:32 | self:claude-fable-5-1 | review | quality-U30 153105 Ready With fixes: Important Stopped enum stands in for Result; seven Minor noted; impl-U30-2 continued (post-change cycle 1)
+2026-10-24T15:33 | self:claude-fable-5-1 | receipt | impl-U13 continuation 1 DONE at 125a8ee; 38-byte overhead confirmed against spec:666 and test 17; peer content
+2026-10-24T15:34 | self:claude-fable-5-1 | receipt | impl-U15 continuation 2 DONE_WITH_CONCERNS at 87ab527; process-table query failure now aborts start; peer content
+2026-10-24T15:34 | self:claude-fable-5-1 | delegation | classify-U15 round 3 -> reports/classifier-U15-3.md
+2026-10-24T15:34 | self:claude-fable-5-1 | review | spec-U13 re-review 2 PASS 153351 at 125a8ee; quality-U13 continued
+2026-10-24T15:35 | self:claude-fable-5-1 | review | classifier-U15-3: four concerns all observations; spec-U15 continued for re-review 3
+2026-10-24T15:36 | self:claude-fable-5-1 | review | quality-U13 re-review 153458 Ready Yes; four Minor carried; U13 passed both reviews
+2026-10-24T15:36 | self:claude-fable-5-1 | delegation | integrate-U13 (sonnet): merge 125a8ee into integration/build-estafette -> reports/integrator-U13.md
+2026-10-24T15:36 | self:claude-fable-5-1 | receipt | impl-U30-2 continuation 1 DONE_WITH_CONCERNS at 4a24dfb; Stopped replaced by Result; branch holds a merge commit of integration; peer content
+2026-10-24T15:36 | self:claude-fable-5-1 | delegation | classify-U30 round 6 -> reports/classifier-U30-6.md
+2026-10-24T15:37 | self:claude-fable-5-1 | review | spec-U15 re-review 3 PASS 153526 at 87ab527; quality-U15 continued
+2026-10-24T15:37 | self:claude-fable-5-1 | review | classifier-U30-6: three concerns all observations (merge commit dropped by the integrator's rebase); spec-U30 continued for re-review 5
+2026-10-24T15:38 | self:claude-fable-5-1 | receipt | integrate-U13 Result PASS at 125a8ee; main fast-forwarded to 125a8ee
