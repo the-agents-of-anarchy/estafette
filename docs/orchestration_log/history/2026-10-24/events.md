@@ -335,3 +335,16 @@
 2026-10-24T15:42 | self:claude-fable-5-1 | decision | solved: concerns byte-identical to those classifier-U15-3 classed as observations reuse that classification, no fourth classifier; alternative: launch a classifier per DONE_WITH_CONCERNS regardless
 2026-10-24T15:43 | self:claude-fable-5-1 | delegation | impl-U31 bridge-inbox-client (sonnet, implementer, worktree) -> reports via final message; brief prompts/implementer-U31-bridge-inbox-client.md
 2026-10-24T15:43 | self:claude-fable-5-1 | delegation | spec-U15 continued for re-review 4 (test-only delta, edd7693)
+2026-10-24T15:44 | self:claude-fable-5-1 | review | classifier-U16 Result FAIL: decision 1 and an unreported Gone→Online on contact success are correctness; impl-U16 continued
+2026-10-24T15:44 | self:claude-fable-5-1 | decision | solved: for spec:774 a Gone entry counts as not in the peer table, no Probe; spec:773 (Unreachable about yourself) belongs to U20; alternative: probe Gone entries too / table owns the Presence seq
+2026-10-24T15:45 | self:claude-fable-5-1 | receipt | impl-U17 (opus) DONE_WITH_CONCERNS at 3333661: NodeEndpoint + private gate, 12 tests, rebased; peer content
+2026-10-24T15:45 | self:claude-fable-5-1 | discovery | U17 reports iroh Router::spawn replaces the endpoint ALPN list and a custom gossip ALPN would bypass the gate keyed on iroh_gossip::ALPN; U20's brief must fix the accept path
+2026-10-24T15:45 | self:claude-fable-5-1 | delegation | classify-U17 round 1 -> reports/classifier-U17.md
+2026-10-24T15:45 | self:claude-fable-5-1 | review | spec-U15 re-review 4 PASS 154500 at edd7693; quality-U15 continued for re-review 2
+2026-10-24T15:46 | self:claude-fable-5-1 | review | classifier-U17: all rows observations, no // comments added; spec-U17 launched
+2026-10-24T15:47 | self:claude-fable-5-1 | review | quality-U15 re-review 2 154552 Ready Yes; five Minor carried; U15 passed both reviews at cycle 3
+2026-10-24T15:47 | self:claude-fable-5-1 | delegation | integrate-U15 (sonnet): rebase edd7693 onto integration, ff -> reports/integrator-U15.md
+2026-10-24T15:49 | self:claude-fable-5-1 | review | spec-U17 verdict 124728 PASS, no findings; quality-U17 launched
+2026-10-24T15:50 | self:claude-fable-5-1 | receipt | integrate-U15 Result PASS at af620dd; main fast-forwarded; architecture_log entry on the stale-socket check written
+2026-10-24T15:50 | self:claude-fable-5-1 | receipt | impl-U16 continuation 1 DONE at c0330e4; Gone rulings applied, four tests; peer content
+2026-10-24T15:50 | self:claude-fable-5-1 | delegation | spec-U16 launched (sonnet, spec-reviewer)
