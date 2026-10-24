@@ -183,28 +183,21 @@ pub struct RuntimeDirectoryInputs {
     pub user_id: u32,
 }
 
-#[derive(Debug)]
-pub enum Stopped {
-    HarnessExited,
-    ProcessListingFailed(ProcessTableError),
-}
-
 /// Reports the inbox socket paths of the binary's MCP-mode processes under the harness at every poll, until the harness exits.
+/// # Errors
+/// Returns the `ProcessTableError` of the listing failure that ended the following.
 pub fn follow_binary_sockets(
     harness_pid: u32,
     runtime_inputs: &RuntimeDirectoryInputs,
     processes: &impl ProcessTable,
     wait_for_next_poll: &mut impl FnMut(Duration),
     report_sockets: &mut impl FnMut(&[PathBuf]),
-) -> Stopped {
+) -> Result<(), ProcessTableError> {
     let runtime_dir = runtime_directory(runtime_inputs);
     loop {
-        let entries = match processes.list() {
-            Ok(entries) => entries,
-            Err(error) => return Stopped::ProcessListingFailed(error),
-        };
+        let entries = processes.list()?;
         if !is_running(harness_pid, &entries) {
-            return Stopped::HarnessExited;
+            return Ok(());
         }
         let sockets: Vec<PathBuf> = binary_pids_under(harness_pid, &entries)
             .into_iter()
@@ -272,15 +265,6 @@ mod tests {
 
     struct SnapshotSequence(RefCell<Vec<Vec<ProcessEntry>>>);
 
-    impl Stopped {
-        fn expect_harness_exited(self) {
-            assert!(
-                matches!(self, Self::HarnessExited),
-                "stopped for another reason: {self:?}"
-            );
-        }
-    }
-
     impl ProcessTable for SnapshotSequence {
         fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
             let mut remaining = self.0.borrow_mut();
@@ -308,17 +292,17 @@ mod tests {
     #[test]
     fn spec_3_12_step_2_listing_failure_stops_following_with_the_listing_error() {
         let mut reported = false;
-        let stopped = follow_binary_sockets(
+        let following = follow_binary_sockets(
             100,
             &runtime_inputs(),
             &UnreadableListing,
             &mut |_| {},
             &mut |_| reported = true,
         );
-        let Stopped::ProcessListingFailed(error) = stopped else {
-            panic!("stopped for another reason: {stopped:?}");
-        };
-        assert_eq!(error.to_string(), "ps printed a line it cannot read:   88");
+        assert_eq!(
+            following.expect_err("listing fails").to_string(),
+            "ps printed a line it cannot read:   88"
+        );
         assert!(!reported, "reported sockets from a failed listing");
     }
 
@@ -352,7 +336,7 @@ mod tests {
         follow_binary_sockets(harness_pid, inputs, &table, &mut |_| {}, &mut |sockets| {
             reports.push(sockets.to_vec());
         })
-        .expect_harness_exited();
+        .expect("the table never fails");
         reports
     }
 
@@ -433,7 +417,7 @@ mod tests {
             &mut |duration| waited.push(duration),
             &mut |sockets| reports.push(sockets.to_vec()),
         )
-        .expect_harness_exited();
+        .expect("the table never fails");
         assert_eq!(
             reports,
             vec![
@@ -471,7 +455,7 @@ mod tests {
             },
             &mut |_| polls += 1,
         )
-        .expect_harness_exited();
+        .expect("the table never fails");
         assert_eq!(
             (polls, waits),
             (POLLS_WHILE_HARNESS_RUNS, POLLS_WHILE_HARNESS_RUNS)
@@ -818,7 +802,7 @@ mod tests {
             },
             &mut |sockets| matched.set(matched.get() || sockets == expected),
         )
-        .expect_harness_exited();
+        .expect("the table never fails");
         assert!(matched.get(), "no poll reported exactly {expected:?}");
     }
 }
