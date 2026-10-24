@@ -348,23 +348,24 @@ mod tests {
         let socket_path =
             std::env::temp_dir().join(format!("estf-u31-{}.sock", std::process::id()));
         let listener = UnixListener::bind(&socket_path).expect("bind");
+        let socket_path_to_unlink = socket_path.clone();
         let server = std::thread::spawn(move || {
             let (first_since_line, first_connection) =
                 serve_reply(&listener, &format!("{}{}", frame_line(5), frame_line(6)));
             drop(first_connection);
             let (second_since_line, second_connection) = serve_reply(&listener, &frame_line(11));
+            std::fs::remove_file(&socket_path_to_unlink).expect("unlink socket");
             drop(listener);
             drop(second_connection);
             vec![first_since_line, second_since_line]
         });
-        let mut connector = UnixSocketConnector::new(socket_path.clone());
+        let mut connector = UnixSocketConnector::new(socket_path);
         let mut delivered = Vec::new();
         let ended_with = follow_inbox(&mut connector, &mut |_| {}, &mut |received| {
             delivered.push(received.clone());
         })
         .expect_err("a followed inbox never returns Ok");
         let since_lines = server.join().expect("server thread");
-        std::fs::remove_file(&socket_path).expect("remove socket");
         assert_eq!(since_lines, vec!["{\"since\":0}\n", "{\"since\":6}\n"]);
         assert_eq!(delivered, vec![frame(5), frame(6), frame(11)]);
         assert!(matches!(ended_with, InboxClientError::ConnectFailed(_)));
