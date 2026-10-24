@@ -107,20 +107,9 @@ pub fn render_network_secret(secret: &NetworkSecret) -> String {
 pub fn generate_secret_key(
     fill_from_secure_source: impl FnOnce(&mut [u8; KEY_BYTES]),
 ) -> SecretKey {
-    SecretKey::from_bytes(&draw_key_bytes(fill_from_secure_source))
-}
-
-/// Makes a network secret from 32 bytes the secure source writes.
-pub fn generate_network_secret(
-    fill_from_secure_source: impl FnOnce(&mut [u8; KEY_BYTES]),
-) -> NetworkSecret {
-    NetworkSecret(draw_key_bytes(fill_from_secure_source))
-}
-
-fn draw_key_bytes(fill_from_secure_source: impl FnOnce(&mut [u8; KEY_BYTES])) -> [u8; KEY_BYTES] {
     let mut bytes = [0; KEY_BYTES];
     fill_from_secure_source(&mut bytes);
-    bytes
+    SecretKey::from_bytes(&bytes)
 }
 
 fn decode_key_bytes(text: &str) -> Result<[u8; KEY_BYTES], KeyError> {
@@ -251,22 +240,20 @@ mod tests {
                 generate_secret_key(fill_seeded_by(index)).to_bytes(),
                 expected
             );
-            assert_eq!(
-                generate_network_secret(fill_seeded_by(index)).as_bytes(),
-                &expected
-            );
         }
     }
 
     #[test]
     fn network_secret_renders_lowercase_without_newline_and_round_trips() {
         for index in 0..64 {
-            let secret = generate_network_secret(fill_seeded_by(index));
-            let text = render_network_secret(&secret);
-            assert_eq!(text.len(), HEX_CHARS_PER_KEY);
-            assert_eq!(text, text.to_lowercase());
-            assert_eq!(parse_network_secret(&text).unwrap(), secret);
-            assert_eq!(parse_network_secret(&text.to_uppercase()).unwrap(), secret);
+            let expected_text = HEXLOWER.encode(&bytes_seeded_by(index));
+            let secret = parse_network_secret(&expected_text).unwrap();
+            assert_eq!(render_network_secret(&secret), expected_text);
+            assert_eq!(secret.as_bytes(), &bytes_seeded_by(index));
+            assert_eq!(
+                parse_network_secret(&expected_text.to_uppercase()).unwrap(),
+                secret
+            );
         }
     }
 
