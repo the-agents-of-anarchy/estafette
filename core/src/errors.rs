@@ -199,6 +199,22 @@ mod tests {
     }
 
     #[test]
+    fn success_envelope_before_init_keeps_the_unclaimed_you_of_spec_3_10() {
+        let envelope = Envelope::Success {
+            you: You::Unclaimed,
+            result: json!({ "cards": [] }),
+        };
+        assert_eq!(
+            render(&envelope),
+            json!({
+                "ok": true,
+                "you": { "card": null, "handle": null, "status": "unclaimed" },
+                "result": { "cards": [] }
+            })
+        );
+    }
+
+    #[test]
     fn failure_envelope_matches_spec_3_10_example() {
         let envelope = Envelope::Failure {
             you: You::Unclaimed,
