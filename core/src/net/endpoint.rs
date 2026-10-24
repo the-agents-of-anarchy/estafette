@@ -1,0 +1,331 @@
+use iroh::endpoint::{BindError, QuicTransportConfig, VarInt, presets};
+use iroh::{Endpoint, RelayMap, RelayMode, RelayUrl, SecretKey};
+use iroh_gossip::ALPN as GOSSIP_ALPN;
+
+use super::gate::{NONCE_BYTES, NetworkSecretGate};
+use crate::crypto::GateKey;
+
+pub const DIRECT_ALPN: &[u8] = b"estafette/direct/1";
+const QUIC_IDLE_TIMEOUT_MILLIS: u32 = 10_000;
+
+/// The node's iroh endpoint, gated on the network secret for every gossip connection.
+pub struct NodeEndpoint {
+    endpoint: Endpoint,
+}
+
+impl NodeEndpoint {
+    /// Binds an endpoint under the key with the relays, no discovery service, and the network secret gate on every gossip connection.
+    ///
+    /// # Errors
+    /// The iroh bind error when no socket can be bound.
+    pub async fn bind(
+        secret_key: SecretKey,
+        gate_key: GateKey,
+        relays: impl IntoIterator<Item = RelayUrl>,
+        fill_nonce: impl Fn(&mut [u8; NONCE_BYTES]) + Send + Sync + 'static,
+    ) -> Result<Self, BindError> {
+        let relay_map: RelayMap = relays.into_iter().collect();
+        let gate = NetworkSecretGate::new(gate_key, secret_key.public(), fill_nonce);
+        let endpoint = Endpoint::builder(presets::Minimal)
+            .secret_key(secret_key)
+            .alpns(vec![DIRECT_ALPN.to_vec(), GOSSIP_ALPN.to_vec()])
+            .relay_mode(RelayMode::Custom(relay_map))
+            .transport_config(quic_transport_config())
+            .hooks(gate)
+            .bind()
+            .await?;
+        Ok(Self { endpoint })
+    }
+
+    /// The iroh endpoint the gossip layer and the direct protocol run on.
+    #[must_use]
+    pub const fn endpoint(&self) -> &Endpoint {
+        &self.endpoint
+    }
+}
+
+fn quic_transport_config() -> QuicTransportConfig {
+    QuicTransportConfig::builder()
+        .max_idle_timeout(Some(VarInt::from_u32(QUIC_IDLE_TIMEOUT_MILLIS).into()))
+        .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
+    use iroh::EndpointId;
+    use iroh::endpoint::{ConnectError, ConnectingError, Connection, ConnectionError};
+    use std::time::{Duration, Instant};
+
+    const SPEC_DIRECT_ALPN: &[u8] = b"estafette/direct/1";
+    const SPEC_GATE_KEY_CONTEXT: &str = "messaging gate v1";
+    const SPEC_GATE_TIMEOUT: Duration = Duration::from_millis(3000);
+    const SPEC_GATE_TIMEOUT_WITH_SLACK: Duration = Duration::from_millis(4000);
+    const SPEC_QUIC_IDLE_TIMEOUT_EARLIEST: Duration = Duration::from_secs(9);
+    const SPEC_QUIC_IDLE_TIMEOUT_LATEST: Duration = Duration::from_secs(11);
+    const MEMBER_SEED: u8 = 1;
+    const SECOND_MEMBER_SEED: u8 = 2;
+    const OUTSIDER_SEED: u8 = 3;
+    const SPEC_PEER_SEED: u8 = 4;
+    const SILENT_PEER_SEED: u8 = 5;
+    const STRANGER_SEED: u8 = 6;
+    const VANISHING_PEER_SEED: u8 = 7;
+    const SPEC_PEER_NONCE: [u8; KEY_LEN] = [44; KEY_LEN];
+    const MEMBER_SECRET: [u8; KEY_LEN] = [21; KEY_LEN];
+    const OUTSIDER_SECRET: [u8; KEY_LEN] = [12; KEY_LEN];
+    const FIRST_STREAM_BYTES: &[u8] = b"the first stream after the gate";
+    const FIRST_HOST_RELAY: &str = "https://relay-one.estafette.invalid/";
+    const SECOND_HOST_RELAY: &str = "https://relay-two.estafette.invalid/";
+    const UNKNOWN_HOST_RELAY: &str = "https://relay-unknown.estafette.invalid/";
+
+    fn gate_key_of(secret: [u8; KEY_LEN]) -> GateKey {
+        *NetworkKeys::derive(&NetworkSecret::from_bytes(secret)).gate_key()
+    }
+
+    async fn bind_node(seed: u8, secret: [u8; KEY_LEN]) -> NodeEndpoint {
+        bind_node_with_relays(seed, secret, Vec::new()).await
+    }
+
+    async fn bind_node_with_relays(
+        seed: u8,
+        secret: [u8; KEY_LEN],
+        relays: Vec<RelayUrl>,
+    ) -> NodeEndpoint {
+        NodeEndpoint::bind(
+            SecretKey::from_bytes(&[seed; KEY_LEN]),
+            gate_key_of(secret),
+            relays,
+            move |nonce: &mut [u8; KEY_LEN]| *nonce = [seed; KEY_LEN],
+        )
+        .await
+        .unwrap()
+    }
+
+    fn relay_url(text: &str) -> RelayUrl {
+        text.parse().unwrap()
+    }
+
+    async fn dial(
+        dialer: &Endpoint,
+        acceptor: &Endpoint,
+        alpn: &[u8],
+    ) -> (
+        Result<Connection, ConnectError>,
+        Result<Connection, ConnectingError>,
+    ) {
+        tokio::join!(dialer.connect(acceptor.addr(), alpn), accept_next(acceptor))
+    }
+
+    async fn accept_next(acceptor: &Endpoint) -> Result<Connection, ConnectingError> {
+        acceptor.accept().await.unwrap().await
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_relay_map_holds_the_relays_of_the_known_hosts() {
+        let host_relays = vec![relay_url(FIRST_HOST_RELAY), relay_url(SECOND_HOST_RELAY)];
+        let member = bind_node_with_relays(MEMBER_SEED, MEMBER_SECRET, host_relays.clone()).await;
+
+        for relay in &host_relays {
+            assert!(member.endpoint().remove_relay(relay).await.is_some());
+        }
+        assert!(
+            member
+                .endpoint()
+                .remove_relay(&relay_url(UNKNOWN_HOST_RELAY))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_gate_admits_both_dial_directions_between_holders_of_the_secret() {
+        let first = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
+        let second = bind_node(SECOND_MEMBER_SEED, MEMBER_SECRET).await;
+
+        for (dialer, acceptor) in [(&first, &second), (&second, &first)] {
+            let (dialed, accepted) =
+                dial(dialer.endpoint(), acceptor.endpoint(), GOSSIP_ALPN).await;
+            let (dialed, accepted) = (dialed.unwrap(), accepted.unwrap());
+            assert_eq!(dialed.remote_id(), acceptor.endpoint().id());
+            assert_eq!(accepted.remote_id(), dialer.endpoint().id());
+
+            let (mut send, _unused_recv) = dialed.open_bi().await.unwrap();
+            send.write_all(FIRST_STREAM_BYTES).await.unwrap();
+            send.finish().unwrap();
+            let (_unused_send, mut recv) = accepted.accept_bi().await.unwrap();
+            assert_eq!(
+                recv.read_to_end(FIRST_STREAM_BYTES.len()).await.unwrap(),
+                FIRST_STREAM_BYTES
+            );
+        }
+    }
+
+    fn dial_is_locally_rejected(outcome: &Result<Connection, ConnectError>) -> bool {
+        matches!(
+            outcome,
+            Err(ConnectError::Connecting {
+                source: ConnectingError::LocallyRejected { .. },
+                ..
+            })
+        )
+    }
+
+    fn accept_is_locally_rejected(outcome: &Result<Connection, ConnectingError>) -> bool {
+        matches!(outcome, Err(ConnectingError::LocallyRejected { .. }))
+    }
+
+    fn is_the_gate_timeout(waited: Duration) -> bool {
+        SPEC_GATE_TIMEOUT <= waited && waited < SPEC_GATE_TIMEOUT_WITH_SLACK
+    }
+
+    #[tokio::test]
+    async fn spec_3_15_test_21_another_secret_is_closed_in_both_dial_directions() {
+        let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
+        let outsider = bind_node(OUTSIDER_SEED, OUTSIDER_SECRET).await;
+
+        for (dialer, acceptor) in [(&member, &outsider), (&outsider, &member)] {
+            let started = Instant::now();
+            let (dialed, accepted) =
+                dial(dialer.endpoint(), acceptor.endpoint(), GOSSIP_ALPN).await;
+            assert!(started.elapsed() < SPEC_GATE_TIMEOUT);
+            assert!(dial_is_locally_rejected(&dialed));
+            assert!(accept_is_locally_rejected(&accepted));
+        }
+    }
+
+    async fn bind_plain_endpoint(seed: u8) -> Endpoint {
+        Endpoint::builder(presets::Minimal)
+            .secret_key(SecretKey::from_bytes(&[seed; KEY_LEN]))
+            .alpns(vec![GOSSIP_ALPN.to_vec(), DIRECT_ALPN.to_vec()])
+            .bind()
+            .await
+            .unwrap()
+    }
+
+    fn spec_gate_proof(
+        secret: [u8; KEY_LEN],
+        nonce: &[u8; KEY_LEN],
+        verifier: EndpointId,
+        prover: EndpointId,
+    ) -> [u8; KEY_LEN] {
+        let gate_key = blake3::derive_key(SPEC_GATE_KEY_CONTEXT, &secret);
+        let message = [nonce.as_slice(), verifier.as_bytes(), prover.as_bytes()].concat();
+        *blake3::keyed_hash(&gate_key, &message).as_bytes()
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_peer_speaking_the_spec_challenge_is_admitted_and_gets_the_spec_proof() {
+        let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
+        let peer = bind_plain_endpoint(SPEC_PEER_SEED).await;
+        let (member_id, peer_id) = (member.endpoint().id(), peer.id());
+
+        let speak_the_spec_gate = async {
+            let connection = peer
+                .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                .await
+                .unwrap();
+            let (mut challenge_send, mut proof_recv) = connection.open_bi().await.unwrap();
+            challenge_send.write_all(&SPEC_PEER_NONCE).await.unwrap();
+            challenge_send.finish().unwrap();
+            let mut proof_received = [0; KEY_LEN];
+            proof_recv.read_exact(&mut proof_received).await.unwrap();
+
+            let (mut answer_send, mut nonce_recv) = connection.accept_bi().await.unwrap();
+            let mut member_nonce = [0; KEY_LEN];
+            nonce_recv.read_exact(&mut member_nonce).await.unwrap();
+            let answer = spec_gate_proof(MEMBER_SECRET, &member_nonce, member_id, peer_id);
+            answer_send.write_all(&answer).await.unwrap();
+            answer_send.finish().unwrap();
+            (connection, proof_received, member_nonce)
+        };
+        let ((_open_connection, proof_received, member_nonce), accepted) =
+            tokio::join!(speak_the_spec_gate, accept_next(member.endpoint()));
+
+        assert_eq!(
+            proof_received,
+            spec_gate_proof(MEMBER_SECRET, &SPEC_PEER_NONCE, peer_id, member_id)
+        );
+        assert_eq!(member_nonce, [MEMBER_SEED; KEY_LEN]);
+        assert_eq!(accepted.unwrap().remote_id(), peer_id);
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_gate_timeout_closes_a_peer_that_never_answers_in_both_dial_directions() {
+        let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
+        let silent = bind_plain_endpoint(SILENT_PEER_SEED).await;
+
+        let started = Instant::now();
+        let (dialed, _held_by_silent) = tokio::join!(
+            member.endpoint().connect(silent.addr(), GOSSIP_ALPN),
+            accept_next(&silent)
+        );
+        assert!(is_the_gate_timeout(started.elapsed()));
+        assert!(dial_is_locally_rejected(&dialed));
+
+        let started = Instant::now();
+        let (closed_by_member, accepted) = tokio::join!(
+            async {
+                let connection = silent
+                    .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                    .await
+                    .unwrap();
+                connection.closed().await
+            },
+            accept_next(member.endpoint())
+        );
+        assert!(is_the_gate_timeout(started.elapsed()));
+        assert!(accept_is_locally_rejected(&accepted));
+        assert!(matches!(
+            closed_by_member,
+            ConnectionError::ApplicationClosed(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_direct_alpn_accepts_any_node_id_without_the_gate() {
+        let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
+        let stranger = bind_plain_endpoint(STRANGER_SEED).await;
+
+        let started = Instant::now();
+        let (dialed, accepted) = dial(&stranger, member.endpoint(), DIRECT_ALPN).await;
+        assert!(started.elapsed() < SPEC_GATE_TIMEOUT);
+        let (dialed, accepted) = (dialed.unwrap(), accepted.unwrap());
+        assert_eq!(accepted.remote_id(), stranger.id());
+        assert_eq!(accepted.alpn(), SPEC_DIRECT_ALPN);
+        assert_eq!(dialed.close_reason(), None);
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_quic_idle_timeout_closes_a_connection_whose_peer_vanished() {
+        let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
+        let member_addr = member.endpoint().addr();
+        let vanishing_peer = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let peer_and_connection = runtime.block_on(async move {
+                let peer = bind_plain_endpoint(VANISHING_PEER_SEED).await;
+                let connection = peer.connect(member_addr, DIRECT_ALPN).await.unwrap();
+                (peer, connection)
+            });
+            runtime.shutdown_background();
+            peer_and_connection
+        });
+
+        let accepted = accept_next(member.endpoint()).await.unwrap();
+        let _silenced_peer = tokio::task::spawn_blocking(move || vanishing_peer.join())
+            .await
+            .unwrap()
+            .unwrap();
+        let started = Instant::now();
+        let closed = accepted.closed().await;
+        let waited = started.elapsed();
+
+        assert!(matches!(closed, ConnectionError::TimedOut));
+        assert!(
+            SPEC_QUIC_IDLE_TIMEOUT_EARLIEST <= waited && waited < SPEC_QUIC_IDLE_TIMEOUT_LATEST
+        );
+    }
+}
