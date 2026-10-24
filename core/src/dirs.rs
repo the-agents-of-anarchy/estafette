@@ -581,18 +581,74 @@ mod tests {
     #[test]
     fn existing_directory_keeps_its_mode_spec_3_3() {
         let root = scratch_root("existing");
-        let existing = root.join("config/estafette");
-        fs::create_dir_all(root.join("config")).unwrap();
-        fs::DirBuilder::new().create(&existing).unwrap();
-        fs::set_permissions(
-            &existing,
-            fs::Permissions::from_mode(EXISTING_DIRECTORY_MODE),
-        )
-        .unwrap();
+        let config = root.join("config/estafette");
+        let user_id = {
+            fs::create_dir_all(&config).unwrap();
+            OperatingSystemFilesystem.owner_user_id(&config).unwrap()
+        };
+        let existing = [
+            config,
+            root.join("data/estafette"),
+            root.join(format!("runtime/estafette-{user_id}")),
+        ];
+        for directory in &existing {
+            fs::create_dir_all(directory).unwrap();
+            fs::set_permissions(
+                directory,
+                fs::Permissions::from_mode(EXISTING_DIRECTORY_MODE),
+            )
+            .unwrap();
+        }
         Directories::establish(scratch_environment(&root), &OperatingSystemFilesystem, None)
             .unwrap();
-        assert_eq!(mode_of(&existing), EXISTING_DIRECTORY_MODE);
+        for directory in &existing {
+            assert_eq!(mode_of(directory), EXISTING_DIRECTORY_MODE);
+        }
         drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn a_file_in_place_of_the_base_directory_itself_is_refused_naming_the_path_spec_3_3() {
+        let root = scratch_root("blocked-leaf");
+        fs::create_dir_all(root.join("config")).unwrap();
+        fs::write(root.join("config/estafette"), b"").unwrap();
+        let failure =
+            Directories::establish(scratch_environment(&root), &OperatingSystemFilesystem, None)
+                .unwrap_err();
+        assert!(matches!(failure, DirectoriesError::CreationFailed { .. }));
+        assert!(failure.to_string().starts_with(&format!(
+            "cannot create {}",
+            root.join("config/estafette").display()
+        )));
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn an_unreadable_owner_is_refused_naming_the_directory_spec_3_3() {
+        struct OwnerlessFilesystem;
+
+        impl DirectoryFilesystem for OwnerlessFilesystem {
+            fn create_private_directory(&self, _path: &Path) -> io::Result<()> {
+                Ok(())
+            }
+
+            fn owner_user_id(&self, _path: &Path) -> io::Result<u32> {
+                Err(io::Error::from(io::ErrorKind::PermissionDenied))
+            }
+        }
+
+        let failure = Directories::establish(
+            environment_of(&[(HOME_VARIABLE, "/h")]),
+            &OwnerlessFilesystem,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(failure, DirectoriesError::OwnerUnreadable { .. }));
+        assert!(
+            failure
+                .to_string()
+                .starts_with("cannot read the owner of /h/.config/estafette: ")
+        );
     }
 
     #[test]
