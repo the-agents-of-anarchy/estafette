@@ -951,6 +951,14 @@ mod tests {
             Err(CardInvalid::KeyNotScalar("handle"))
         );
         assert_eq!(
+            parse_card("handle: ada\npublic_key: abc\nnetwork: [lab]\n"),
+            Err(CardInvalid::KeyNotScalar("network"))
+        );
+        assert_eq!(
+            parse_card("handle: ada\npublic_key: abc\nnetwork: lab\nnetwork: lab\n"),
+            Err(CardInvalid::DuplicateCardKey("network"))
+        );
+        assert_eq!(
             parse_card("handle: ada\npublic_key: abc\npublic: [1]\n"),
             Err(CardInvalid::PublicNotMapping)
         );
