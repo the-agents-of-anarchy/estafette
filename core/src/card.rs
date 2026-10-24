@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
@@ -19,6 +20,7 @@ const YEAR_DIGITS: usize = 4;
 const DATE_PART_MAX_DIGITS: usize = 2;
 const CLOCK_PART_DIGITS: usize = 2;
 const BLANKS: [char; 2] = [' ', '\t'];
+const NO_ANCHOR: usize = 0;
 
 /// The refusal of a card that cannot be claimed, mapped to `card_invalid` by the caller.
 #[derive(Debug, PartialEq, Eq)]
@@ -37,7 +39,6 @@ pub enum CardInvalid {
     MergeKey,
     DuplicatePublicKey(String),
     PublicOverCap { bytes: usize },
-    Alias,
 }
 
 impl fmt::Display for CardInvalid {
@@ -83,10 +84,6 @@ impl fmt::Display for CardInvalid {
             Self::PublicOverCap { bytes } => write!(
                 formatter,
                 "card `public` serializes to {bytes} bytes; the cap is {PUBLIC_MAX_BYTES}"
-            ),
-            Self::Alias => write!(
-                formatter,
-                "card `public` must not use YAML anchors or aliases"
             ),
         }
     }
@@ -159,6 +156,7 @@ impl fmt::Display for DescriptionOverCap {
 
 impl std::error::Error for DescriptionOverCap {}
 
+#[derive(Clone)]
 enum Node {
     Scalar {
         text: String,
@@ -173,15 +171,16 @@ enum Node {
         tag: Option<Tag>,
         entries: Vec<(Self, Self)>,
     },
-    Alias,
 }
 
 enum OpenNode {
     Sequence {
+        anchor: usize,
         tag: Option<Tag>,
         items: Vec<Node>,
     },
     Mapping {
+        anchor: usize,
         tag: Option<Tag>,
         entries: Vec<(Node, Node)>,
         pending_key: Option<Node>,
@@ -189,14 +188,15 @@ enum OpenNode {
 }
 
 impl OpenNode {
-    fn close(self) -> Node {
+    fn close(self) -> (usize, Node) {
         match self {
-            Self::Sequence { tag, items } => Node::Sequence { tag, items },
+            Self::Sequence { anchor, tag, items } => (anchor, Node::Sequence { tag, items }),
             Self::Mapping {
+                anchor,
                 tag,
                 entries,
                 pending_key: _,
-            } => Node::Mapping { tag, entries },
+            } => (anchor, Node::Mapping { tag, entries }),
         }
     }
 }
@@ -205,6 +205,8 @@ impl OpenNode {
 struct DocumentCollector {
     open: Vec<OpenNode>,
     documents: Vec<Node>,
+    anchored: HashMap<usize, Node>,
+    alias_met_its_own_open_anchor: bool,
 }
 
 impl DocumentCollector {
@@ -222,23 +224,39 @@ impl DocumentCollector {
             },
         }
     }
+
+    fn place_remembering_anchor(&mut self, anchor: usize, node: Node) {
+        if anchor != NO_ANCHOR {
+            self.anchored.insert(anchor, node.clone());
+        }
+        self.place(node);
+    }
+
+    fn place_anchored_value(&mut self, anchor: usize) {
+        match self.anchored.get(&anchor).cloned() {
+            Some(node) => self.place(node),
+            None => self.alias_met_its_own_open_anchor = true,
+        }
+    }
 }
 
 impl MarkedEventReceiver for DocumentCollector {
     fn on_event(&mut self, event: Event, _mark: Marker) {
         match event {
-            Event::Scalar(text, style, _anchor, tag) => {
-                self.place(Node::Scalar { text, style, tag });
+            Event::Scalar(text, style, anchor, tag) => {
+                self.place_remembering_anchor(anchor, Node::Scalar { text, style, tag });
             }
-            Event::Alias(_) => self.place(Node::Alias),
-            Event::SequenceStart(_, tag) => {
+            Event::Alias(anchor) => self.place_anchored_value(anchor),
+            Event::SequenceStart(anchor, tag) => {
                 self.open.push(OpenNode::Sequence {
+                    anchor,
                     tag,
                     items: Vec::new(),
                 });
             }
-            Event::MappingStart(_, tag) => {
+            Event::MappingStart(anchor, tag) => {
                 self.open.push(OpenNode::Mapping {
+                    anchor,
                     tag,
                     entries: Vec::new(),
                     pending_key: None,
@@ -246,7 +264,8 @@ impl MarkedEventReceiver for DocumentCollector {
             }
             Event::SequenceEnd | Event::MappingEnd => {
                 if let Some(open) = self.open.pop() {
-                    self.place(open.close());
+                    let (anchor, node) = open.close();
+                    self.place_remembering_anchor(anchor, node);
                 }
             }
             Event::Nothing
@@ -263,6 +282,11 @@ fn read_single_document(text: &str) -> Result<Node, CardInvalid> {
     Parser::new_from_str(text)
         .load(&mut collector, true)
         .map_err(|error| CardInvalid::Unparsable(error.to_string()))?;
+    if collector.alias_met_its_own_open_anchor {
+        return Err(CardInvalid::Unparsable(
+            "an alias points at the node that contains it".to_owned(),
+        ));
+    }
     let mut documents = collector.documents.into_iter();
     match (documents.next(), documents.next()) {
         (Some(document), None) => Ok(document),
@@ -273,16 +297,14 @@ fn read_single_document(text: &str) -> Result<Node, CardInvalid> {
 fn mapping_entries(node: &Node) -> Result<&[(Node, Node)], CardInvalid> {
     match node {
         Node::Mapping { entries, .. } => Ok(entries),
-        Node::Scalar { .. } | Node::Sequence { .. } | Node::Alias => {
-            Err(CardInvalid::NotOneMappingDocument)
-        }
+        Node::Scalar { .. } | Node::Sequence { .. } => Err(CardInvalid::NotOneMappingDocument),
     }
 }
 
 fn scalar_text_of(node: &Node) -> Option<&str> {
     match node {
         Node::Scalar { text, .. } => Some(text),
-        Node::Sequence { .. } | Node::Mapping { .. } | Node::Alias => None,
+        Node::Sequence { .. } | Node::Mapping { .. } => None,
     }
 }
 
@@ -355,7 +377,6 @@ const fn tag_of(node: &Node) -> Option<&Tag> {
         Node::Scalar { tag, .. } | Node::Sequence { tag, .. } | Node::Mapping { tag, .. } => {
             tag.as_ref()
         }
-        Node::Alias => None,
     }
 }
 
@@ -381,7 +402,6 @@ fn convert_value(node: &Node) -> Result<Value, CardInvalid> {
             .collect::<Result<Vec<_>, _>>()
             .map(Value::Array),
         Node::Mapping { entries, .. } => convert_mapping(entries),
-        Node::Alias => Err(CardInvalid::Alias),
     }
 }
 
@@ -480,10 +500,7 @@ fn is_merge_key(key: &Node) -> bool {
             style,
             tag: None,
         } => *style == TScalarStyle::Plain && text == YAML_MERGE_KEY,
-        Node::Scalar { tag: Some(_), .. }
-        | Node::Sequence { .. }
-        | Node::Mapping { .. }
-        | Node::Alias => false,
+        Node::Scalar { tag: Some(_), .. } | Node::Sequence { .. } | Node::Mapping { .. } => false,
     }
 }
 
@@ -683,11 +700,45 @@ mod tests {
     }
 
     #[test]
-    fn parse_refuses_an_alias_in_public_spec_3_5() {
+    fn parse_resolves_an_alias_to_its_value_before_the_public_checks_spec_3_5() {
+        let card = parse_card(
+            "handle: ada\npublic_key: abc\nshared: &outside 5\npublic:\n  base: &list [1, x]\n  copy: *list\n  map: &map {k: v}\n  again: *map\n  out: *outside\n",
+        )
+        .unwrap();
         assert_eq!(
-            card_with_public("  base: &shared [1]\n  copy: *shared\n"),
-            Err(CardInvalid::Alias)
+            card.public_json(),
+            br#"{"again":{"k":"v"},"base":[1,"x"],"copy":[1,"x"],"map":{"k":"v"},"out":5}"#
         );
+
+        let refused = |anchored: &str, alias_line: &str| {
+            parse_card(&format!(
+                "handle: ada\npublic_key: abc\npublic:\n  base: &a {anchored}\n{alias_line}"
+            ))
+        };
+        assert_eq!(
+            refused("2026-10-24", "  copy: *a\n"),
+            Err(CardInvalid::Date)
+        );
+        assert_eq!(refused("!custom x", "  copy: *a\n"), Err(CardInvalid::Tag));
+        assert_eq!(
+            refused("!!binary aGk=", "  copy: *a\n"),
+            Err(CardInvalid::Binary)
+        );
+        assert_eq!(
+            refused("1", "  ? *a\n  : v\n"),
+            Err(CardInvalid::NonStringKey)
+        );
+        assert_eq!(refused("<<", "  ? *a\n  : v\n"), Err(CardInvalid::MergeKey));
+        assert_eq!(
+            parse_card(
+                "handle: ada\npublic_key: abc\npublic:\n  key: 1\n  x: &a key\n  ? *a\n  : v\n"
+            ),
+            Err(CardInvalid::DuplicatePublicKey("key".to_owned()))
+        );
+        assert!(matches!(
+            parse_card("handle: ada\npublic_key: abc\npublic: &a\n  self: *a\n"),
+            Err(CardInvalid::Unparsable(_))
+        ));
     }
 
     #[test]
