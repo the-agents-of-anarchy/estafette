@@ -492,6 +492,7 @@ mod tests {
     const HIGH_PORT: u16 = 65535;
     const MESSAGE_BODY_CAP_BYTES: usize = 1_048_576;
     const ROUND_TRIP_CASES: u64 = 200;
+    const LONG_BODY_EXTRA_LENGTH_PREFIX_BYTES: usize = 2;
 
     fn relay_of_bytes(length: usize) -> String {
         format!("{:x<length$}", "https://")
@@ -728,6 +729,51 @@ mod tests {
             encode(&oversized),
             Err(CodecError::PastWireLimit { .. })
         ));
+    }
+
+    fn message_with_body_of(body_bytes: usize) -> Request {
+        Request::Message(Message {
+            v: Version::CURRENT,
+            id: [0; MESSAGE_ID_BYTES],
+            to: [0; PUBLIC_KEY_BYTES],
+            handle: String::new(),
+            attached: false,
+            sent_at: 0,
+            body: "b".repeat(body_bytes),
+            mac: [0; MAC_BYTES],
+        })
+    }
+
+    fn message_encoding_to_exactly_the_wire_limit(extra_body_bytes: usize) -> Request {
+        let empty_body_encoding_bytes = encode(&message_with_body_of(0)).unwrap().len();
+        message_with_body_of(
+            WIRE_LIMIT_BYTES
+                .saturating_sub(empty_body_encoding_bytes)
+                .saturating_sub(LONG_BODY_EXTRA_LENGTH_PREFIX_BYTES)
+                .saturating_add(extra_body_bytes),
+        )
+    }
+
+    #[test]
+    fn spec_3_14_a_structure_of_exactly_the_wire_limit_encodes_and_decodes() {
+        let at_the_limit = message_encoding_to_exactly_the_wire_limit(0);
+
+        let encoded = encode(&at_the_limit).unwrap();
+
+        assert_eq!(encoded.len(), WIRE_LIMIT_BYTES);
+        assert_eq!(decode::<Request>(&encoded), Ok(at_the_limit));
+    }
+
+    #[test]
+    fn spec_3_14_a_structure_one_byte_past_the_wire_limit_does_not_encode() {
+        let past_the_limit = message_encoding_to_exactly_the_wire_limit(1);
+
+        assert_eq!(
+            encode(&past_the_limit),
+            Err(CodecError::PastWireLimit {
+                bytes: WIRE_LIMIT_BYTES.saturating_add(1)
+            })
+        );
     }
 
     #[test]
