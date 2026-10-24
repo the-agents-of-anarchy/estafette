@@ -13,6 +13,9 @@ const MCP_MODE_ARGUMENT: &str = "mcp";
 const RUNTIME_DIRECTORY_PREFIX: &str = "estafette-";
 const DEFAULT_TEMPORARY_DIRECTORY: &str = "/tmp";
 const SOCKET_FILE_SUFFIX: &str = ".sock";
+const PS_PROGRAM: &str = "ps";
+const PS_ALL_PROCESSES_FLAG: &str = "-A";
+const PS_OUTPUT_FORMAT_FLAG: &str = "-o";
 const PS_COMMAND_LINE_COLUMNS: &str = "pid=,ppid=,args=";
 #[cfg(target_os = "macos")]
 const PS_EXECUTABLE_PATH_COLUMNS: &str = "pid=,comm=";
@@ -39,10 +42,15 @@ pub enum ProcessTableError {
 impl fmt::Display for ProcessTableError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ListingFailed(source) => write!(formatter, "cannot run ps: {source}"),
-            Self::ListingExitedUnsuccessfully(status) => write!(formatter, "ps failed: {status}"),
+            Self::ListingFailed(source) => write!(formatter, "cannot run {PS_PROGRAM}: {source}"),
+            Self::ListingExitedUnsuccessfully(status) => {
+                write!(formatter, "{PS_PROGRAM} failed: {status}")
+            }
             Self::MalformedListingLine(line) => {
-                write!(formatter, "ps printed a line it cannot read: {line}")
+                write!(
+                    formatter,
+                    "{PS_PROGRAM} printed a line it cannot read: {line}"
+                )
             }
         }
     }
@@ -68,8 +76,8 @@ fn list_with_ps() -> Result<Vec<ProcessEntry>, ProcessTableError> {
 }
 
 fn run_ps(columns: &str) -> Result<String, ProcessTableError> {
-    let listing = Command::new("ps")
-        .args(["-A", "-o", columns])
+    let listing = Command::new(PS_PROGRAM)
+        .args([PS_ALL_PROCESSES_FLAG, PS_OUTPUT_FORMAT_FLAG, columns])
         .output()
         .map_err(ProcessTableError::ListingFailed)?;
     if !listing.status.success() {
@@ -548,6 +556,13 @@ mod tests {
         );
     }
 
+    const WHICH_PROGRAM: &str = "which";
+    const PERL_PROGRAM: &str = "perl";
+    const SHELL_PROGRAM: &str = "sh";
+    const SHELL_COMMAND_FLAG: &str = "-c";
+    const KILL_PROGRAM: &str = "kill";
+    const OTHER_MODE_ARGUMENT: &str = "send";
+    const SCRIPTS_DIRECTORY_NAME: &str = "scripts";
     const FAKE_BINARY_PERL_PROGRAM: &str = "sleep 600;\n";
     const FAKE_TREE_SCRIPT: &str = r#"
         "$1" mcp >/dev/null & echo $!
@@ -570,26 +585,26 @@ mod tests {
                 std::env::temp_dir().join(format!("{directory_label}-{}", std::process::id()));
             std::fs::create_dir_all(&directory).expect("create fake binary directory");
             let fake_binary = directory.join(BINARY_EXECUTABLE_NAME);
-            let perl_path = Command::new("which")
-                .arg("perl")
+            let perl_path = Command::new(WHICH_PROGRAM)
+                .arg(PERL_PROGRAM)
                 .output()
                 .expect("run which")
                 .stdout;
             let perl_path = String::from_utf8(perl_path).expect("utf8 path");
             std::os::unix::fs::symlink(perl_path.trim(), &fake_binary).expect("link perl");
-            for mode_argument in [MCP_MODE_ARGUMENT, "send"] {
+            for mode_argument in [MCP_MODE_ARGUMENT, OTHER_MODE_ARGUMENT] {
                 std::fs::write(directory.join(mode_argument), FAKE_BINARY_PERL_PROGRAM)
                     .expect("write the perl program named after a mode argument");
             }
-            let scripts_directory = directory.join("scripts");
+            let scripts_directory = directory.join(SCRIPTS_DIRECTORY_NAME);
             std::fs::create_dir_all(&scripts_directory).expect("create scripts directory");
             std::fs::write(
                 scripts_directory.join(BINARY_EXECUTABLE_NAME),
                 FAKE_BINARY_PERL_PROGRAM,
             )
             .expect("write a perl script named like the binary");
-            let mut harness = Command::new("sh")
-                .args(["-c", FAKE_TREE_SCRIPT, "_"])
+            let mut harness = Command::new(SHELL_PROGRAM)
+                .args([SHELL_COMMAND_FLAG, FAKE_TREE_SCRIPT, "_"])
                 .arg(&fake_binary)
                 .arg(perl_path.trim())
                 .current_dir(&directory)
@@ -633,7 +648,7 @@ mod tests {
     impl Drop for FakeProcessTree {
         fn drop(&mut self) {
             for pid in &self.every_binary_pid {
-                Command::new("kill")
+                Command::new(KILL_PROGRAM)
                     .arg(pid.to_string())
                     .status()
                     .expect("kill a fake binary");
