@@ -84,9 +84,27 @@ struct SinceRequest {
     since: u64,
 }
 
+/// How many times accepting a client failed, and the kind of the latest failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AcceptFailures {
+    pub count: u64,
+    pub last_kind: Option<io::ErrorKind>,
+}
+
+trait ClientAcceptor: Send + 'static {
+    fn accept_client(&self) -> impl Future<Output = io::Result<UnixStream>> + Send;
+}
+
+impl ClientAcceptor for UnixListener {
+    async fn accept_client(&self) -> io::Result<UnixStream> {
+        self.accept().await.map(|(stream, _)| stream)
+    }
+}
+
 struct Shared {
     buffer: Mutex<InboxBuffer>,
     newest_seq: watch::Sender<u64>,
+    accept_failures: watch::Sender<AcceptFailures>,
     clients: watch::Sender<usize>,
 }
 
@@ -171,23 +189,34 @@ impl InboxSocket {
         let socket_path = directories.inbox_socket_file(process_id);
         remove_stale_sockets(directories, &socket_path, process_id, processes)?;
         let listener = bind_owner_only(&socket_path)?;
+        Ok(Self::serving(socket_path, listener))
+    }
+
+    fn serving(socket_path: PathBuf, acceptor: impl ClientAcceptor) -> Self {
         let shared = Arc::new(Shared {
             buffer: Mutex::new(InboxBuffer::new()),
             newest_seq: watch::Sender::new(0),
+            accept_failures: watch::Sender::default(),
             clients: watch::Sender::new(0),
         });
-        let accept_task = tokio::spawn(accept_clients(listener, Arc::clone(&shared)));
-        Ok(Self {
+        let accept_task = tokio::spawn(accept_clients(acceptor, Arc::clone(&shared)));
+        Self {
             socket_path,
             shared,
             accept_task,
-        })
+        }
     }
 
     /// Numbers the message, buffers it, and streams it to every attached client.
     pub fn publish(&self, message: ReceivedMessage) {
         let frame = locked(&self.shared.buffer).push(message);
         self.shared.newest_seq.send_replace(frame.seq);
+    }
+
+    /// The count and latest kind of failures to accept a client, which the node must surface.
+    #[must_use]
+    pub fn accept_failures(&self) -> watch::Receiver<AcceptFailures> {
+        self.shared.accept_failures.subscribe()
     }
 
     /// Whether at least one client is connected, updated on the first connect and the last disconnect.
@@ -251,16 +280,22 @@ fn bind_owner_only(socket_path: &Path) -> Result<UnixListener, InboxSocketError>
     Ok(listener)
 }
 
-async fn accept_clients(listener: UnixListener, shared: Arc<Shared>) {
+async fn accept_clients(acceptor: impl ClientAcceptor, shared: Arc<Shared>) {
     let mut clients = JoinSet::new();
     loop {
         tokio::select! {
-            accepted = listener.accept() => match accepted {
-                Ok((stream, _)) => {
+            accepted = acceptor.accept_client() => match accepted {
+                Ok(stream) => {
                     let attachment = Attachment::begin(Arc::clone(&shared));
                     clients.spawn(serve_client(stream, Arc::clone(&shared), attachment));
                 }
-                Err(_) => tokio::time::sleep(ACCEPT_RETRY_DELAY).await,
+                Err(failure) => {
+                    shared.accept_failures.send_modify(|failures| {
+                        failures.count = failures.count.saturating_add(1);
+                        failures.last_kind = Some(failure.kind());
+                    });
+                    tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
+                }
             },
             Some(_) = clients.join_next() => {}
         }
@@ -530,5 +565,33 @@ mod tests {
         assert!(live.exists());
         assert!(unrelated.iter().all(|path| path.exists()));
         UnixStream::connect(&own).await.unwrap();
+    }
+
+    struct FailingAcceptor(io::ErrorKind);
+
+    impl ClientAcceptor for FailingAcceptor {
+        fn accept_client(&self) -> impl Future<Output = io::Result<UnixStream>> + Send {
+            std::future::ready(Err(io::Error::from(self.0)))
+        }
+    }
+
+    #[tokio::test]
+    async fn spec_3_11_an_accept_failure_reaches_the_handle_counted_with_its_kind() {
+        let directories = scratch_directories("accept-failure");
+        let socket_path = directories.inbox_socket_file(OWN_PROCESS_ID);
+        let socket = InboxSocket::serving(socket_path, FailingAcceptor(io::ErrorKind::OutOfMemory));
+        let mut failures = socket.accept_failures();
+        assert_eq!(*failures.borrow(), AcceptFailures::default());
+        tokio::time::timeout(READ_DEADLINE, failures.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        let first = *failures.borrow_and_update();
+        assert_eq!(first.last_kind, Some(io::ErrorKind::OutOfMemory));
+        tokio::time::timeout(READ_DEADLINE, failures.changed())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(failures.borrow().count, first.count.saturating_add(1));
     }
 }
