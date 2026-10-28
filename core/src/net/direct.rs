@@ -424,6 +424,20 @@ impl DirectClient {
         *self.slot_of(to).lock().await = None;
     }
 
+    /// Empties every peer's slot, so the next request to any peer dials afresh.
+    pub async fn drop_all_held_connections(&self) {
+        let slots: Vec<PeerSlot> = self
+            .slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .cloned()
+            .collect();
+        for slot in slots {
+            *slot.lock().await = None;
+        }
+    }
+
     /// Empties the peer's slot when it still holds the failed connection, leaving a newer connection in place.
     async fn forget_connection(&self, to: EndpointId, failed: &Connection) {
         let slot = self.slot_of(to);

@@ -291,12 +291,9 @@ impl Node {
         self.state.hand_to_loop(LoopEvent::Depart);
     }
 
-    /// Drops the held direct connection to every peer in the table.
+    /// Drops every direct connection the client holds, whether or not its card is in the table.
     pub(super) async fn drop_held_connections(&self) {
-        let cards: Vec<_> = self.peers().into_iter().map(|peer| peer.card).collect();
-        for id in cards.iter().filter_map(endpoint_id) {
-            self.client.drop_held_connection(id).await;
-        }
+        self.client.drop_all_held_connections().await;
     }
 }
 

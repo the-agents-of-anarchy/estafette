@@ -635,13 +635,15 @@ mod tests {
         drop(scratch);
     }
 
-    #[tokio::test]
-    async fn spec_3_8_stopping_drops_every_held_direct_connection() {
-        let scratch = Scratch::new("held-connections").await;
+    async fn stopping_closes_the_connection_held_to_a_witness(
+        tag: &str,
+        witness_handle: Option<&'static str>,
+    ) {
+        let scratch = Scratch::new(tag).await;
         let (member, witness) = start_witnessed(
             &scratch,
             MemberPlan::new(SECOND_SEED, SECOND_HANDLE, FIRST_MEMBER_PUBLIC),
-            Some(WITNESS_HANDLE),
+            witness_handle,
         )
         .await;
         let (_, lock) = scratch.locked_card(SECOND_SEED);
@@ -674,6 +676,17 @@ mod tests {
         .await
         .unwrap();
         drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_stopping_drops_the_held_connection_to_a_card_in_the_table() {
+        stopping_closes_the_connection_held_to_a_witness("held-in-table", Some(WITNESS_HANDLE))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_stopping_drops_the_held_connection_to_a_card_outside_the_table() {
+        stopping_closes_the_connection_held_to_a_witness("held-outside-table", None).await;
     }
 
     #[tokio::test]
