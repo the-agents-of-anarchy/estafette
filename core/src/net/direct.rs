@@ -314,7 +314,7 @@ impl DirectClient {
 
     /// The endpoint the client dials from now.
     #[must_use]
-    pub fn endpoint(&self) -> Endpoint {
+    pub(crate) fn endpoint(&self) -> Endpoint {
         self.endpoint
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -322,7 +322,7 @@ impl DirectClient {
     }
 
     /// Dials from the endpoint a rebind bound from here on, and drops every connection held on the one before it (spec 3.8, Rebind).
-    pub async fn follow(&self, endpoint: Endpoint) {
+    pub(crate) async fn follow(&self, endpoint: Endpoint) {
         *self.endpoint.lock().unwrap_or_else(PoisonError::into_inner) = endpoint;
         self.drop_all_held_connections().await;
     }

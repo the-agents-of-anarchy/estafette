@@ -69,7 +69,7 @@ impl NodeEndpoint {
     ///
     /// # Errors
     /// The iroh bind error when no socket can be bound; the closed endpoint then stays in place.
-    pub async fn rebind(&mut self) -> Result<(), BindError> {
+    pub(crate) async fn rebind(&mut self) -> Result<(), BindError> {
         self.endpoint.close().await;
         self.endpoint = bind_endpoint(&self.binding, &self.relay_map, &self.address_lookup).await?;
         Ok(())
@@ -88,7 +88,7 @@ impl NodeEndpoint {
 
     /// The address the lookup holds for the node, if any.
     #[must_use]
-    pub fn address_of(&self, id: EndpointId) -> Option<EndpointAddr> {
+    pub(crate) fn address_of(&self, id: EndpointId) -> Option<EndpointAddr> {
         self.address_lookup
             .get_endpoint_info(id)
             .map(EndpointAddr::from)
