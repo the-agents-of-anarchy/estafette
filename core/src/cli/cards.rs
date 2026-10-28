@@ -10,7 +10,7 @@ use clap::{Args, Subcommand};
 use iroh::SecretKey;
 
 use crate::card::{Card, CardInvalid};
-use crate::dirs::{Directories, DirectoriesError, DirectoryFilesystem};
+use crate::dirs::{Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem};
 use crate::errors::ExitStatus;
 use crate::handle::{Handle, HandleError};
 use crate::keys::render_public_key;
@@ -98,11 +98,40 @@ impl fmt::Display for CardCommandError {
 
 impl std::error::Error for CardCommandError {}
 
+/// The reads the card registry listing performs, supplied by the composition root.
+pub trait CardRegistryReader {
+    /// Returns the paths of the entries of a directory.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the directory cannot be read; `NotFound` when it does not exist.
+    fn read_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>>;
+
+    /// Returns the text of a file.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file cannot be read as UTF-8 text.
+    fn read_text(&self, path: &Path) -> io::Result<String>;
+}
+
+impl CardRegistryReader for OperatingSystemFilesystem {
+    fn read_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        fs::read_dir(path)?
+            .map(|entry| entry.map(|found| found.path()))
+            .collect()
+    }
+
+    fn read_text(&self, path: &Path) -> io::Result<String> {
+        fs::read_to_string(path)
+    }
+}
+
 /// Runs a card command: the result goes to stdout, the failure message alone to stderr.
 pub fn run(
     command: CardCommand,
     environment: impl Fn(&str) -> Option<OsString>,
-    filesystem: &impl DirectoryFilesystem,
+    filesystem: &(impl DirectoryFilesystem + CardRegistryReader),
     fill_seed: impl FnOnce(&mut [u8; SEED_BYTES]),
     stdout: &mut impl Write,
     stderr: &mut impl Write,
@@ -119,7 +148,7 @@ pub fn run(
 fn execute(
     command: CardCommand,
     environment: impl Fn(&str) -> Option<OsString>,
-    filesystem: &impl DirectoryFilesystem,
+    filesystem: &(impl DirectoryFilesystem + CardRegistryReader),
     fill_seed: impl FnOnce(&mut [u8; SEED_BYTES]),
     stdout: &mut impl Write,
 ) -> Result<(), CardCommandError> {
@@ -145,7 +174,7 @@ fn execute(
         CardCommand::ListCards { registry } => {
             require_handle_grammar("network name", &registry.network)?;
             let directories = establish_directories(environment, filesystem, registry.cards_dir)?;
-            list_registry_cards(&directories, &registry.network)?
+            list_registry_cards(filesystem, &directories, &registry.network)?
         }
     };
     stdout
@@ -205,6 +234,7 @@ fn create_card_with_fresh_key(
 }
 
 fn list_registry_cards(
+    filesystem: &impl CardRegistryReader,
     directories: &Directories,
     network: &str,
 ) -> Result<String, CardCommandError> {
@@ -212,8 +242,8 @@ fn list_registry_cards(
         .cards_directory(network)
         .map_err(CardCommandError::Directories)?;
     let mut lines_by_card_name = BTreeMap::new();
-    for card_file in card_files_in(&cards_directory)? {
-        if let Some((name, line)) = describe_card_file(&card_file)? {
+    for card_file in card_files_in(filesystem, &cards_directory)? {
+        if let Some((name, line)) = describe_card_file(filesystem, &card_file)? {
             lines_by_card_name.insert(name, line);
         }
     }
@@ -223,30 +253,32 @@ fn list_registry_cards(
         .collect())
 }
 
-fn card_files_in(cards_directory: &Path) -> Result<Vec<PathBuf>, CardCommandError> {
+fn card_files_in(
+    filesystem: &impl CardRegistryReader,
+    cards_directory: &Path,
+) -> Result<Vec<PathBuf>, CardCommandError> {
     let unreadable = |source| CardCommandError::Unreadable {
         path: cards_directory.to_owned(),
         source,
     };
-    let entries = match fs::read_dir(cards_directory) {
+    let entries = match filesystem.read_directory(cards_directory) {
         Ok(entries) => entries,
         Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(source) => return Err(unreadable(source)),
     };
-    let mut files = Vec::new();
-    for entry in entries {
-        let path = entry.map_err(unreadable)?.path();
-        if path
-            .extension()
-            .is_some_and(|extension| extension == CARD_FILE_EXTENSION)
-        {
-            files.push(path);
-        }
-    }
-    Ok(files)
+    Ok(entries
+        .into_iter()
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == CARD_FILE_EXTENSION)
+        })
+        .collect())
 }
 
-fn describe_card_file(card_file: &Path) -> Result<Option<(String, String)>, CardCommandError> {
+fn describe_card_file(
+    filesystem: &impl CardRegistryReader,
+    card_file: &Path,
+) -> Result<Option<(String, String)>, CardCommandError> {
     let Some(name) = card_file
         .file_stem()
         .and_then(|stem| stem.to_str())
@@ -254,10 +286,12 @@ fn describe_card_file(card_file: &Path) -> Result<Option<(String, String)>, Card
     else {
         return Ok(None);
     };
-    let text = fs::read_to_string(card_file).map_err(|source| CardCommandError::Unreadable {
-        path: card_file.to_owned(),
-        source,
-    })?;
+    let text = filesystem
+        .read_text(card_file)
+        .map_err(|source| CardCommandError::Unreadable {
+            path: card_file.to_owned(),
+            source,
+        })?;
     let card = Card::from_str(&text).map_err(|reason| CardCommandError::CardInvalid {
         path: card_file.to_owned(),
         reason,

@@ -1,9 +1,10 @@
 use std::ffi::OsString;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
-use estafette::cli::cards::{CardCommand, RegistryArgs, run};
-use estafette::dirs::OperatingSystemFilesystem;
+use estafette::cli::cards::{CardCommand, CardRegistryReader, RegistryArgs, run};
+use estafette::dirs::{DirectoryFilesystem, OperatingSystemFilesystem};
 use estafette::errors::ExitStatus;
 use iroh::SecretKey;
 
@@ -78,6 +79,64 @@ fn list_cards(cards_dir: Option<PathBuf>) -> CardCommand {
 
 fn public_key_of(seed_byte: u8) -> String {
     data_encoding::HEXLOWER.encode(SecretKey::from_bytes(&[seed_byte; 32]).public().as_bytes())
+}
+
+struct CannedRegistry {
+    card_file: PathBuf,
+    card_text: String,
+}
+
+impl DirectoryFilesystem for CannedRegistry {
+    fn create_private_directory(&self, _path: &Path) -> io::Result<()> {
+        Ok(())
+    }
+
+    fn owner_user_id(&self, _path: &Path) -> io::Result<u32> {
+        Ok(0)
+    }
+}
+
+impl CardRegistryReader for CannedRegistry {
+    fn read_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        if Some(path) == self.card_file.parent() {
+            Ok(vec![self.card_file.clone()])
+        } else {
+            Err(io::ErrorKind::NotFound.into())
+        }
+    }
+
+    fn read_text(&self, path: &Path) -> io::Result<String> {
+        if path == self.card_file {
+            Ok(self.card_text.clone())
+        } else {
+            Err(io::ErrorKind::NotFound.into())
+        }
+    }
+}
+
+#[test]
+fn list_cards_reads_only_through_the_handed_in_file_system() {
+    let cards_dir = PathBuf::from("/nowhere-on-disk/cards");
+    let registry = CannedRegistry {
+        card_file: cards_dir.join(NETWORK).join("ana.yaml"),
+        card_text: format!("handle: ana\npublic_key: {}\n", public_key_of(21)),
+    };
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let status = run(
+        list_cards(Some(cards_dir)),
+        environment_under(Path::new("/nowhere-on-disk/base"), None),
+        &registry,
+        |_seed| {},
+        &mut stdout,
+        &mut stderr,
+    );
+    assert_eq!(status, ExitStatus::Success);
+    assert_eq!(
+        String::from_utf8_lossy(&stdout),
+        format!("ana\tana\t{}\n", public_key_of(21))
+    );
+    assert_eq!(stderr, Vec::<u8>::new());
 }
 
 #[test]
