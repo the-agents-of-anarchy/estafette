@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use estafette::cli::cards::{self, CardCommand, RegistryArgs};
+use estafette::cli::doctor::{self, DoctorArgs, DoctorError};
 #[cfg(feature = "relay")]
 use estafette::cli::infra::{
     self, InfrastructureCommand, InfrastructureCommandError, InfrastructureEffects, StopRequested,
@@ -75,6 +76,8 @@ enum Command {
         #[command(flatten)]
         registry: RegistryArgs,
     },
+    /// Check the configuration file permissions, each card, each sidecar, each known relay and the visibility of a peer, print one line per check, and exit 3 when any check fails
+    Doctor(DoctorArgs),
 }
 
 #[derive(Debug)]
@@ -95,6 +98,7 @@ enum CommandLineFailure {
     },
     #[cfg(feature = "relay")]
     Infrastructure(InfrastructureCommandError),
+    Doctor(DoctorError),
 }
 
 impl fmt::Display for CommandLineFailure {
@@ -121,6 +125,7 @@ impl fmt::Display for CommandLineFailure {
             ),
             #[cfg(feature = "relay")]
             Self::Infrastructure(source) => write!(formatter, "{source}"),
+            Self::Doctor(source) => write!(formatter, "{source}"),
         }
     }
 }
@@ -167,6 +172,16 @@ fn main() -> ExitCode {
             drop(writeln!(io::stderr(), "{failure}"));
             ExitStatus::Failure
         }),
+        Command::Doctor(arguments) => {
+            let mut record = io::stderr().lock();
+            match run_doctor_command(&arguments, &mut io::stdout()) {
+                Ok(status) => status,
+                Err(failure) => {
+                    drop(writeln!(record, "{failure}"));
+                    ExitStatus::Failure
+                }
+            }
+        }
     };
     ExitCode::from(u8::from(status))
 }
@@ -334,10 +349,14 @@ fn run_network_command(
     .map_err(CommandLineFailure::Network)
 }
 
-fn run_observer_command(
-    command: &ObserverCommand,
-    result: &mut (impl Write + Send),
-) -> Result<(), CommandLineFailure> {
+struct ObserverRuntime {
+    directories: Arc<Directories>,
+    runtime: tokio::runtime::Runtime,
+    effects: ObserverEffects,
+    operator_effects: OperatorEffects,
+}
+
+fn observer_runtime() -> Result<ObserverRuntime, CommandLineFailure> {
     let directories = Arc::new(
         Directories::establish(
             |name| std::env::var_os(name),
@@ -357,6 +376,24 @@ fn run_observer_command(
         .enable_all()
         .build()
         .map_err(CommandLineFailure::Runtime)?;
+    Ok(ObserverRuntime {
+        directories,
+        runtime,
+        effects,
+        operator_effects,
+    })
+}
+
+fn run_observer_command(
+    command: &ObserverCommand,
+    result: &mut (impl Write + Send),
+) -> Result<(), CommandLineFailure> {
+    let ObserverRuntime {
+        directories,
+        runtime,
+        effects,
+        operator_effects,
+    } = observer_runtime()?;
     runtime
         .block_on(observer::run(
             command,
@@ -368,6 +405,29 @@ fn run_observer_command(
             result,
         ))
         .map_err(CommandLineFailure::Observer)
+}
+
+fn run_doctor_command(
+    arguments: &DoctorArgs,
+    result: &mut impl Write,
+) -> Result<ExitStatus, CommandLineFailure> {
+    let ObserverRuntime {
+        directories,
+        runtime,
+        effects,
+        operator_effects,
+    } = observer_runtime()?;
+    runtime
+        .block_on(doctor::run(
+            arguments,
+            &directories,
+            &OperatingSystemFilesystem,
+            &ThreadSleep,
+            effects,
+            operator_effects,
+            result,
+        ))
+        .map_err(CommandLineFailure::Doctor)
 }
 
 fn observer_effects(
