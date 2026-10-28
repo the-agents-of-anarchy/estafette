@@ -119,11 +119,14 @@ impl MemberJoins {
     /// Counts an ask and schedules the next one the member join interval later, or stops after the member join tries.
     pub(super) fn asked(&mut self, now: Instant) {
         *self = match *self {
-            Self::Asking { asks_left, .. } if asks_left > 1 => Self::Asking {
-                next: later_by(now, MEMBER_JOIN_INTERVAL),
-                asks_left: asks_left.saturating_sub(1),
-            },
-            Self::Asking { .. } | Self::Idle | Self::AwaitingRebindJoin => Self::Idle,
+            Self::Asking { asks_left, .. } => asks_left
+                .checked_sub(1)
+                .filter(|left| *left > 0)
+                .map_or(Self::Idle, |left| Self::Asking {
+                    next: later_by(now, MEMBER_JOIN_INTERVAL),
+                    asks_left: left,
+                }),
+            Self::Idle | Self::AwaitingRebindJoin => Self::Idle,
         };
     }
 }
