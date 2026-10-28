@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -103,6 +103,7 @@ enum CommandError {
     HomeOwnerUnreadable { home: PathBuf, source: io::Error },
     SettingsUnreadable { path: PathBuf, source: io::Error },
     WorkingDirectoryUnreadable(io::Error),
+    ReportUnwritable(io::Error),
     ProcessTable(ProcessTableError),
 }
 
@@ -121,6 +122,9 @@ impl fmt::Display for CommandError {
             Self::WorkingDirectoryUnreadable(source) => {
                 write!(formatter, "cannot read the working directory: {source}")
             }
+            Self::ReportUnwritable(source) => {
+                write!(formatter, "cannot write the report: {source}")
+            }
             Self::ProcessTable(source) => source.fmt(formatter),
         }
     }
@@ -128,18 +132,56 @@ impl fmt::Display for CommandError {
 
 impl std::error::Error for CommandError {}
 
+/// The file system reads the commands make, handed in from the entry.
+trait Files {
+    /// Reads a whole file as text.
+    fn read_text(&self, path: &Path) -> io::Result<String>;
+    /// Lists the paths inside a directory.
+    fn list_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>>;
+    /// Tells whether anything exists at the path.
+    fn exists(&self, path: &Path) -> bool;
+    /// Gives the numeric id of the user owning the path.
+    fn owner_user_id(&self, path: &Path) -> io::Result<u32>;
+}
+
+struct OperatingSystemFiles;
+
+impl Files for OperatingSystemFiles {
+    fn read_text(&self, path: &Path) -> io::Result<String> {
+        fs::read_to_string(path)
+    }
+
+    fn list_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+        fs::read_dir(path)?
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect()
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        path.exists()
+    }
+
+    fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
+        Ok(fs::metadata(path)?.uid())
+    }
+}
+
 /// Names the runtime directory inputs, taking the user id from the owner of the home directory.
-fn runtime_inputs(environment: &Environment) -> Result<RuntimeDirectoryInputs, CommandError> {
+fn runtime_inputs(
+    environment: &Environment,
+    files: &impl Files,
+) -> Result<RuntimeDirectoryInputs, CommandError> {
     let home = environment
         .home
         .clone()
         .ok_or(CommandError::MissingVariable(HOME_VARIABLE))?;
-    let user_id = fs::metadata(&home)
-        .map_err(|source| CommandError::HomeOwnerUnreadable {
-            home: home.clone(),
-            source,
-        })?
-        .uid();
+    let user_id =
+        files
+            .owner_user_id(&home)
+            .map_err(|source| CommandError::HomeOwnerUnreadable {
+                home: home.clone(),
+                source,
+            })?;
     Ok(RuntimeDirectoryInputs {
         xdg_runtime_dir: environment.xdg_runtime_dir.clone(),
         temporary_dir: Some(environment.temporary_dir.clone()),
@@ -235,7 +277,10 @@ type ProductionBridgeEffects =
     BridgeEffects<UnixSocketConnector, fn(PathBuf) -> UnixSocketConnector>;
 
 /// Builds the production sockets, clock and pauses the bridge runs on from the environment.
-fn bridge_effects(environment: &Environment) -> Result<ProductionBridgeEffects, CommandError> {
+fn bridge_effects(
+    environment: &Environment,
+    files: &impl Files,
+) -> Result<ProductionBridgeEffects, CommandError> {
     let socket = environment
         .messaging_socket
         .clone()
@@ -247,7 +292,7 @@ fn bridge_effects(environment: &Environment) -> Result<ProductionBridgeEffects, 
     Ok(BridgeEffects {
         own_pid: environment.own_pid,
         started: environment.started,
-        runtime_inputs: runtime_inputs(environment)?,
+        runtime_inputs: runtime_inputs(environment, files)?,
         temporary_dir: environment.temporary_dir.clone(),
         session_connector: UnixSocketConnector::new(socket),
         session_token,
@@ -301,8 +346,11 @@ where
 }
 
 /// Reads one settings file, treating a missing file as absent.
-fn read_settings_file(path: PathBuf) -> Result<Option<SettingsFile>, CommandError> {
-    match fs::read_to_string(&path) {
+fn read_settings_file(
+    files: &impl Files,
+    path: PathBuf,
+) -> Result<Option<SettingsFile>, CommandError> {
+    match files.read_text(&path) {
         Ok(text) => Ok(Some(SettingsFile { path, text })),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(CommandError::SettingsUnreadable { path, source }),
@@ -344,20 +392,20 @@ fn is_visible_settings_file(path: &Path) -> bool {
 }
 
 /// Lists the managed settings file and the visible JSON files of its drop-in directory in name order, noting an unreadable drop-in directory.
-fn managed_settings_paths(directory: &Path, unreadable: &mut Vec<PathBuf>) -> Vec<PathBuf> {
+fn managed_settings_paths(
+    files: &impl Files,
+    directory: &Path,
+    unreadable: &mut Vec<PathBuf>,
+) -> Vec<PathBuf> {
     let drop_in_directory = directory.join(MANAGED_DROP_IN_DIRECTORY);
     let mut paths = vec![directory.join(MANAGED_SETTINGS_FILE)];
-    match fs::read_dir(&drop_in_directory) {
+    match files.list_directory(&drop_in_directory) {
         Ok(listing) => {
-            for entry in listing {
-                match entry {
-                    Ok(entry) if is_visible_settings_file(&entry.path()) => {
-                        paths.push(entry.path());
-                    }
-                    Ok(_) => {}
-                    Err(_) => unreadable.push(drop_in_directory.clone()),
-                }
-            }
+            paths.extend(
+                listing
+                    .into_iter()
+                    .filter(|path| is_visible_settings_file(path)),
+            );
         }
         Err(source) if source.kind() == io::ErrorKind::NotFound => {}
         Err(_) => unreadable.push(drop_in_directory),
@@ -367,10 +415,10 @@ fn managed_settings_paths(directory: &Path, unreadable: &mut Vec<PathBuf>) -> Ve
 }
 
 /// Reads every managed settings file, separating the unreadable ones.
-fn read_managed_settings(directory: &Path) -> ManagedSettings {
+fn read_managed_settings(files: &impl Files, directory: &Path) -> ManagedSettings {
     let mut managed = ManagedSettings::default();
-    for path in managed_settings_paths(directory, &mut managed.unreadable) {
-        match fs::read_to_string(&path) {
+    for path in managed_settings_paths(files, directory, &mut managed.unreadable) {
+        match files.read_text(&path) {
             Ok(text) => managed.files.push(SettingsFile { path, text }),
             Err(source) if source.kind() == io::ErrorKind::NotFound => {}
             Err(_) => managed.unreadable.push(path),
@@ -380,39 +428,44 @@ fn read_managed_settings(directory: &Path) -> ManagedSettings {
 }
 
 /// Tells whether the session messaging socket is unset, missing or present.
-fn messaging_socket_state(environment: &Environment) -> MessagingSocket {
+fn messaging_socket_state(environment: &Environment, files: &impl Files) -> MessagingSocket {
     match &environment.messaging_socket {
         None => MessagingSocket::Unset,
-        Some(path) if path.exists() => MessagingSocket::Present(path.clone()),
+        Some(path) if files.exists(path) => MessagingSocket::Present(path.clone()),
         Some(path) => MessagingSocket::Missing(path.clone()),
     }
 }
 
-/// Gathers the doctor inputs, prints the report on stdout and tells whether every check passed.
-fn run_doctor_command(environment: &Environment) -> Result<bool, CommandError> {
+/// Gathers the doctor inputs, writes the report to the output and tells whether every check passed.
+fn run_doctor_command(
+    environment: &Environment,
+    files: &impl Files,
+    processes: &impl ProcessTable,
+    output: &mut impl Write,
+) -> Result<bool, CommandError> {
     let mut settings_files: Vec<SettingsFile> =
         settings_file_paths(environment, &environment.working_dir)
             .into_iter()
-            .map(read_settings_file)
+            .map(|path| read_settings_file(files, path))
             .collect::<Result<Vec<_>, _>>()?
             .into_iter()
             .flatten()
             .collect();
-    let managed = read_managed_settings(Path::new(MANAGED_SETTINGS_DIRECTORY));
+    let managed = read_managed_settings(files, Path::new(MANAGED_SETTINGS_DIRECTORY));
     settings_files.extend(managed.files);
     let inputs = DoctorInputs {
         own_pid: environment.own_pid,
-        messaging_socket: messaging_socket_state(environment),
+        messaging_socket: messaging_socket_state(environment, files),
         settings_files,
         unreadable_settings: managed.unreadable,
         temporary_dir: environment.temporary_dir.clone(),
-        runtime_inputs: runtime_inputs(environment)?,
+        runtime_inputs: runtime_inputs(environment, files)?,
     };
-    let report = run_doctor(&inputs, &PsProcessTable, &|path: &Path| {
-        fs::read_to_string(path).ok()
+    let report = run_doctor(&inputs, processes, &|path: &Path| {
+        files.read_text(path).ok()
     })
     .map_err(CommandError::ProcessTable)?;
-    println!("{report}");
+    writeln!(output, "{report}").map_err(CommandError::ReportUnwritable)?;
     Ok(report.all_passed())
 }
 
@@ -437,7 +490,7 @@ fn main() -> ExitCode {
     };
     match parse_command(&arguments) {
         Some(Command::Run { harness_pid }) => exit_code_of(
-            bridge_effects(&environment)
+            bridge_effects(&environment, &OperatingSystemFiles)
                 .and_then(|effects| run_bridge(harness_pid, effects, &PsProcessTable))
                 .map(|outcome| {
                     if let BridgeOutcome::AlreadyServed { bridge_pid } = outcome {
@@ -446,7 +499,12 @@ fn main() -> ExitCode {
                     true
                 }),
         ),
-        Some(Command::Doctor) => exit_code_of(run_doctor_command(&environment)),
+        Some(Command::Doctor) => exit_code_of(run_doctor_command(
+            &environment,
+            &OperatingSystemFiles,
+            &PsProcessTable,
+            &mut std::io::stdout(),
+        )),
         None => {
             eprintln!("{USAGE}");
             ExitCode::from(EXIT_USAGE)
@@ -459,6 +517,7 @@ mod tests {
     use super::*;
     use estafette_bridge_claude::discover::ProcessEntry;
     use std::cell::RefCell;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::os::unix::net::UnixStream;
     use std::sync::mpsc;
 
@@ -596,7 +655,7 @@ mod tests {
     #[test]
     fn spec_3_12_the_bridge_needs_the_session_socket_and_token_before_it_starts() {
         assert!(matches!(
-            bridge_effects(&bare_environment()),
+            bridge_effects(&bare_environment(), &OperatingSystemFiles),
             Err(CommandError::MissingVariable(MESSAGING_SOCKET_VARIABLE))
         ));
     }
@@ -680,7 +739,7 @@ mod tests {
         fs::write(drop_in.join("10-a.json"), "{\"c\":3}").expect("write");
         fs::write(drop_in.join(".hidden.json"), "{\"d\":4}").expect("write");
         fs::write(drop_in.join("notes.txt"), "e").expect("write");
-        let managed = read_managed_settings(&directory);
+        let managed = read_managed_settings(&OperatingSystemFiles, &directory);
         let read: Vec<(String, String)> = managed
             .files
             .iter()
@@ -714,10 +773,10 @@ mod tests {
             .join(MANAGED_DROP_IN_DIRECTORY)
             .join("30-bad.json");
         fs::create_dir(&unreadable).expect("a directory where a file is expected");
-        let managed = read_managed_settings(&directory);
+        let managed = read_managed_settings(&OperatingSystemFiles, &directory);
         assert_eq!(managed.unreadable, [unreadable]);
         assert_eq!(managed.files.len(), 0);
-        let absent = read_managed_settings(&directory.join("missing"));
+        let absent = read_managed_settings(&OperatingSystemFiles, &directory.join("missing"));
         assert_eq!((absent.files.len(), absent.unreadable.len()), (0, 0));
         fs::remove_dir_all(&directory).expect("cleanup");
     }
@@ -729,6 +788,140 @@ mod tests {
         assert_eq!(
             exit_code_of(Err(CommandError::MissingVariable(HOME_VARIABLE))),
             ExitCode::from(1)
+        );
+    }
+
+    #[derive(Default)]
+    struct StandInFiles {
+        texts: BTreeMap<PathBuf, Result<String, io::ErrorKind>>,
+        directories: BTreeMap<PathBuf, Result<Vec<PathBuf>, io::ErrorKind>>,
+        existing: BTreeSet<PathBuf>,
+        reads: RefCell<Vec<PathBuf>>,
+    }
+
+    impl Files for StandInFiles {
+        fn read_text(&self, path: &Path) -> io::Result<String> {
+            self.reads.borrow_mut().push(path.to_owned());
+            match self.texts.get(path) {
+                Some(Ok(text)) => Ok(text.clone()),
+                Some(Err(kind)) => Err(io::Error::from(*kind)),
+                None => Err(io::Error::from(io::ErrorKind::NotFound)),
+            }
+        }
+
+        fn list_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+            match self.directories.get(path) {
+                Some(Ok(listing)) => Ok(listing.clone()),
+                Some(Err(kind)) => Err(io::Error::from(*kind)),
+                None => Err(io::Error::from(io::ErrorKind::NotFound)),
+            }
+        }
+
+        fn exists(&self, path: &Path) -> bool {
+            self.existing.contains(path)
+        }
+
+        fn owner_user_id(&self, _path: &Path) -> io::Result<u32> {
+            Ok(1000)
+        }
+    }
+
+    const USER_SETTINGS: &str = "/home/ana/.claude/settings.json";
+    const PROJECT_SETTINGS: &str = "/work/.claude/settings.json";
+    const LOCAL_PROJECT_SETTINGS: &str = "/work/.claude/settings.local.json";
+
+    fn doctor_environment() -> Environment {
+        Environment {
+            home: Some(PathBuf::from("/home/ana")),
+            messaging_socket: Some(PathBuf::from("/tmp/session.sock")),
+            ..bare_environment()
+        }
+    }
+
+    fn doctor_output_with(files: &StandInFiles) -> (Result<bool, CommandError>, String) {
+        let mut output = Vec::new();
+        let outcome = run_doctor_command(
+            &doctor_environment(),
+            files,
+            &FixedProcessTable(Vec::new()),
+            &mut output,
+        );
+        (outcome, String::from_utf8(output).expect("utf8 report"))
+    }
+
+    #[test]
+    fn spec_3_12_doctor_reads_user_project_local_then_managed_settings_and_skips_missing_ones() {
+        let mut files = StandInFiles::default();
+        files
+            .texts
+            .insert(PathBuf::from(PROJECT_SETTINGS), Ok("{}".to_owned()));
+        files.existing.insert(PathBuf::from("/tmp/session.sock"));
+        let (outcome, report) = doctor_output_with(&files);
+        assert!(!outcome.expect("doctor ran"));
+        let managed_directory = Path::new(MANAGED_SETTINGS_DIRECTORY);
+        assert_eq!(
+            *files.reads.borrow(),
+            [
+                PathBuf::from(USER_SETTINGS),
+                PathBuf::from(PROJECT_SETTINGS),
+                PathBuf::from(LOCAL_PROJECT_SETTINGS),
+                managed_directory.join(MANAGED_SETTINGS_FILE),
+            ]
+        );
+        assert!(report.contains("ok    socket path exists\n"), "{report}");
+    }
+
+    #[test]
+    fn spec_3_12_doctor_stops_on_a_settings_file_that_exists_but_cannot_be_read() {
+        let mut files = StandInFiles::default();
+        files.texts.insert(
+            PathBuf::from(USER_SETTINGS),
+            Err(io::ErrorKind::PermissionDenied),
+        );
+        let (outcome, report) = doctor_output_with(&files);
+        assert!(matches!(
+            outcome,
+            Err(CommandError::SettingsUnreadable { ref path, .. }) if path == Path::new(USER_SETTINGS)
+        ));
+        assert_eq!(report, "");
+    }
+
+    #[test]
+    fn spec_3_12_doctor_fails_the_refuse_check_for_a_refuse_in_the_project_settings() {
+        let mut files = StandInFiles::default();
+        files.texts.insert(
+            PathBuf::from(PROJECT_SETTINGS),
+            Ok(r#"{"crossSessionInbound":"refuse"}"#.to_owned()),
+        );
+        let (outcome, report) = doctor_output_with(&files);
+        assert!(!outcome.expect("doctor ran"));
+        assert!(
+            report.contains(
+                "FAIL  no refuse applies: /work/.claude/settings.json sets crossSessionInbound to refuse"
+            ),
+            "{report}"
+        );
+        assert!(report.contains("FAIL  socket path exists: CLAUDE_CODE_MESSAGING_SOCKET names /tmp/session.sock, which does not exist"), "{report}");
+    }
+
+    #[test]
+    fn spec_3_12_doctor_hands_an_unreadable_managed_file_to_the_refuse_check_as_unverified() {
+        let mut files = StandInFiles::default();
+        let managed_file = Path::new(MANAGED_SETTINGS_DIRECTORY).join(MANAGED_SETTINGS_FILE);
+        files
+            .texts
+            .insert(managed_file.clone(), Err(io::ErrorKind::PermissionDenied));
+        let (_, report) = doctor_output_with(&files);
+        let refuse_line = report
+            .lines()
+            .find(|line| line.starts_with("UNVERIFIED no refuse applies:"))
+            .expect("refuse check is unverified");
+        assert!(
+            refuse_line.ends_with(&format!(
+                "{} (the file cannot be read)",
+                managed_file.display()
+            )),
+            "{report}"
         );
     }
 }
