@@ -147,7 +147,7 @@ fn serve_mcp(registry: RegistryArgs) -> Result<ExitStatus, CommandLineFailure> {
     let config = NetworkConfig::load(&config_path).map_err(CommandLineFailure::NetworkConfig)?;
     Network::new(config.clone(), config_path.clone())
         .map_err(CommandLineFailure::NetworkRefused)?;
-    unix_seconds_of(SystemTime::now())?;
+    unix_milliseconds_of(SystemTime::now())?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -228,13 +228,9 @@ fn server_effects(inbox: Arc<InboxSocket>) -> ServerEffects {
     }
 }
 
-/// Milliseconds since the Unix epoch by this machine's clock, 0 for a clock set before it.
+/// Milliseconds since the Unix epoch by this machine's clock, which start refuses to run before; 0 only if the clock is later set back past it.
 fn wall_clock_milliseconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
+    unix_milliseconds_of(SystemTime::now()).unwrap_or_default()
 }
 
 /// Fills the bytes from the operating system's secure random source, by way of fresh secret keys.
@@ -377,6 +373,7 @@ fn observer_effects(
     (effects, operator_effects)
 }
 
+/// Milliseconds since the Unix epoch at the instant, refusing an instant before it.
 fn unix_milliseconds_of(instant: SystemTime) -> Result<u64, CommandLineFailure> {
     instant
         .duration_since(UNIX_EPOCH)
@@ -384,6 +381,7 @@ fn unix_milliseconds_of(instant: SystemTime) -> Result<u64, CommandLineFailure> 
         .map_err(|_before_epoch| CommandLineFailure::ClockBeforeUnixEpoch)
 }
 
+/// Whole seconds since the Unix epoch at the instant, refusing an instant before it.
 fn unix_seconds_of(instant: SystemTime) -> Result<u64, CommandLineFailure> {
     unix_milliseconds_of(instant).map(|milliseconds| milliseconds / MILLISECONDS_PER_SECOND)
 }
@@ -444,6 +442,21 @@ mod tests {
 
         assert!(matches!(refusal, CommandLineFailure::ClockBeforeUnixEpoch));
         assert!(refusal.to_string().starts_with("the system clock reads"));
+    }
+
+    #[test]
+    fn spec_3_1_a_clock_after_the_unix_epoch_gives_its_milliseconds_and_one_before_it_is_refused() {
+        let after = UNIX_EPOCH + Duration::from_millis(MILLISECONDS_AFTER_EPOCH);
+        let before = UNIX_EPOCH - Duration::from_millis(1);
+
+        assert_eq!(
+            unix_milliseconds_of(after).unwrap(),
+            MILLISECONDS_AFTER_EPOCH
+        );
+        assert!(matches!(
+            unix_milliseconds_of(before).unwrap_err(),
+            CommandLineFailure::ClockBeforeUnixEpoch
+        ));
     }
 
     #[test]
