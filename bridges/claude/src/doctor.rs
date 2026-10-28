@@ -800,4 +800,68 @@ mod tests {
                 .contains("UNVERIFIED no refuse applies: not verified:")
         );
     }
+
+    struct Generator(u64);
+
+    impl Generator {
+        const MULTIPLIER: u64 = 6_364_136_223_846_793_005;
+        const INCREMENT: u64 = 1_442_695_040_888_963_407;
+
+        fn below(&mut self, bound: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(Self::MULTIPLIER)
+                .wrapping_add(Self::INCREMENT);
+            (self.0 >> 33).checked_rem(bound).unwrap_or(0)
+        }
+    }
+
+    const GENERATED_CASES: u64 = 200;
+
+    #[test]
+    fn spec_3_12_settings_flag_takes_every_word_up_to_the_next_dash_word_for_any_command_line() {
+        for seed in 0..GENERATED_CASES {
+            let mut generator = Generator(seed);
+            let words: Vec<String> = (0..generator.below(5))
+                .map(|index| format!("w{}x{index}", generator.below(1000)))
+                .collect();
+            let mut arguments = vec!["--model".to_owned(), "opus".to_owned()];
+            arguments.push(SETTINGS_FLAG.to_owned());
+            arguments.extend(words.clone());
+            arguments.push("--verbose".to_owned());
+            arguments.push("trailing".to_owned());
+            assert_eq!(
+                settings_flag_values(&arguments),
+                [words.join(" ")],
+                "seed {seed}"
+            );
+        }
+    }
+
+    #[test]
+    fn spec_3_12_ancestor_walk_ends_on_any_process_table_even_a_cyclic_one() {
+        const PROCESS_COUNT: u64 = 8;
+        for seed in 0..GENERATED_CASES {
+            let mut generator = Generator(seed);
+            let entries: Vec<ProcessEntry> = (0..PROCESS_COUNT)
+                .map(|pid| {
+                    process(
+                        u32::try_from(pid).expect("small pid"),
+                        u32::try_from(generator.below(PROCESS_COUNT.saturating_add(1)))
+                            .expect("small pid"),
+                        "/bin/x",
+                        &[],
+                    )
+                })
+                .collect();
+            let ancestors = ancestor_pids(0, &entries);
+            let parents: BTreeSet<u32> = entries.iter().map(|entry| entry.parent_pid).collect();
+            assert!(ancestors.is_subset(&parents), "seed {seed}");
+            let first_parent = entries.first().map(|entry| entry.parent_pid);
+            assert!(
+                first_parent.is_some_and(|parent| ancestors.contains(&parent)),
+                "seed {seed}"
+            );
+        }
+    }
 }

@@ -701,4 +701,14 @@ mod tests {
         assert_eq!((absent.files.len(), absent.unreadable.len()), (0, 0));
         fs::remove_dir_all(&directory).expect("cleanup");
     }
+
+    #[test]
+    fn spec_3_12_a_failed_check_ends_the_doctor_with_exit_3_and_other_outcomes_with_0_and_1() {
+        assert_eq!(exit_code_of(Ok(true)), ExitCode::SUCCESS);
+        assert_eq!(exit_code_of(Ok(false)), ExitCode::from(3));
+        assert_eq!(
+            exit_code_of(Err(CommandError::MissingVariable(HOME_VARIABLE))),
+            ExitCode::from(1)
+        );
+    }
 }
