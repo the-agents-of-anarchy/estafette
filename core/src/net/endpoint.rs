@@ -15,11 +15,23 @@ pub const DIRECT_ALPN: &[u8] = b"estafette/direct/1";
 const QUIC_IDLE_TIMEOUT_MILLIS: u32 = 10_000;
 const QUIC_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(500);
 
-/// The node's iroh endpoint, gated on the network secret for every gossip connection, with the address lookup the node feeds and the relay map it edits.
+type FillNonce = Arc<dyn Fn(&mut [u8; NONCE_BYTES]) + Send + Sync>;
+type ReportGateClosing = Arc<dyn Fn(GateFailure) + Send + Sync>;
+
+/// The node's iroh endpoint, gated on the network secret for every gossip connection, with the address lookup the node feeds and the relay map it edits, both kept across rebinds.
 pub struct NodeEndpoint {
     endpoint: Endpoint,
     address_lookup: MemoryLookup,
     relay_map: RelayMap,
+    binding: Binding,
+}
+
+/// What every endpoint of the node is bound with: the card key and the gate's key, nonce source and closing sink.
+struct Binding {
+    secret_key: SecretKey,
+    gate_key: GateKey,
+    fill_nonce: FillNonce,
+    report_gate_closing: ReportGateClosing,
 }
 
 impl NodeEndpoint {
@@ -36,26 +48,29 @@ impl NodeEndpoint {
     ) -> Result<Self, BindError> {
         let relay_map: RelayMap = relays.into_iter().collect();
         let address_lookup = MemoryLookup::new();
-        let gate = NetworkSecretGate::new(
+        let binding = Binding {
+            secret_key,
             gate_key,
-            secret_key.public(),
-            fill_nonce,
-            report_gate_closing,
-        );
-        let endpoint = Endpoint::builder(presets::Minimal)
-            .secret_key(secret_key)
-            .alpns(vec![DIRECT_ALPN.to_vec(), GOSSIP_ALPN.to_vec()])
-            .relay_mode(RelayMode::Custom(relay_map.clone()))
-            .transport_config(quic_transport_config())
-            .address_lookup(address_lookup.clone())
-            .hooks(gate)
-            .bind()
-            .await?;
+            fill_nonce: Arc::new(fill_nonce),
+            report_gate_closing: Arc::new(report_gate_closing),
+        };
+        let endpoint = bind_endpoint(&binding, &relay_map, &address_lookup).await?;
         Ok(Self {
             endpoint,
             address_lookup,
             relay_map,
+            binding,
         })
+    }
+
+    /// Closes the endpoint and binds a fresh one in its place under the same key, relay map, lookup and gate (spec 3.8, Rebind).
+    ///
+    /// # Errors
+    /// The iroh bind error when no socket can be bound; the closed endpoint then stays in place.
+    pub async fn rebind(&mut self) -> Result<(), BindError> {
+        self.endpoint.close().await;
+        self.endpoint = bind_endpoint(&self.binding, &self.relay_map, &self.address_lookup).await?;
+        Ok(())
     }
 
     /// The iroh endpoint the gossip layer and the direct protocol run on.
@@ -81,6 +96,31 @@ impl NodeEndpoint {
     pub async fn remove_relay(&self, relay: &RelayUrl) {
         self.endpoint.remove_relay(relay).await;
     }
+}
+
+/// Binds an endpoint with the binding's key and gate, the relay map, and the lookup as its only address source.
+async fn bind_endpoint(
+    binding: &Binding,
+    relay_map: &RelayMap,
+    address_lookup: &MemoryLookup,
+) -> Result<Endpoint, BindError> {
+    let fill_nonce = Arc::clone(&binding.fill_nonce);
+    let report_gate_closing = Arc::clone(&binding.report_gate_closing);
+    let gate = NetworkSecretGate::new(
+        binding.gate_key,
+        binding.secret_key.public(),
+        move |nonce: &mut [u8; NONCE_BYTES]| fill_nonce(nonce),
+        move |reason| report_gate_closing(reason),
+    );
+    Endpoint::builder(presets::Minimal)
+        .secret_key(binding.secret_key.clone())
+        .alpns(vec![DIRECT_ALPN.to_vec(), GOSSIP_ALPN.to_vec()])
+        .relay_mode(RelayMode::Custom(relay_map.clone()))
+        .transport_config(quic_transport_config())
+        .address_lookup(address_lookup.clone())
+        .hooks(gate)
+        .bind()
+        .await
 }
 
 /// The QUIC transport config with the idle timeout of spec 3.14 and a keep-alive short enough that a silent peer times out within one keep-alive interval of it.
@@ -509,6 +549,38 @@ mod tests {
 
         let entry = member.endpoint().remove_relay(&first_relay).await.unwrap();
         assert_eq!(entry.quic, None);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_rebound_endpoint_keeps_its_key_lookup_relay_map_and_gate_and_the_old_one_closes()
+     {
+        let added_relay = relay_url(SECOND_HOST_RELAY);
+        let (mut member, recorded) =
+            bind_node_recording_gate_closings(MEMBER_SEED, MEMBER_SECRET).await;
+        let peer = bind_node(SECOND_MEMBER_SEED, MEMBER_SECRET).await;
+        let outsider = bind_plain_endpoint(OUTSIDER_SEED).await;
+        member.replace_address(peer.endpoint().addr());
+        member.add_relay(added_relay.clone()).await;
+        let before = member.endpoint().clone();
+
+        member.rebind().await.unwrap();
+
+        assert!(before.is_closed());
+        assert!(!member.endpoint().is_closed());
+        assert_eq!(member.endpoint().id(), before.id());
+        assert!(member.endpoint().remove_relay(&added_relay).await.is_some());
+        let (dialed, accepted) = dial_by_card_id(&member, &peer).await.unwrap();
+        assert_eq!(dialed.remote_id(), peer.endpoint().id());
+        assert_eq!(accepted.remote_id(), member.endpoint().id());
+        let (dialed, _held_by_outsider) = tokio::join!(
+            member.endpoint().connect(outsider.addr(), GOSSIP_ALPN),
+            accept_next(&outsider)
+        );
+        assert!(dial_is_locally_rejected(&dialed));
+        assert!(recorded_reasons_match(&recorded, |reason| matches!(
+            reason,
+            GateFailure::Timeout
+        )));
     }
 
     fn recorded_reasons_match(
