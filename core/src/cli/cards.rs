@@ -12,7 +12,7 @@ use iroh::SecretKey;
 use crate::card::{Card, CardInvalid};
 use crate::dirs::{Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem};
 use crate::errors::ExitStatus;
-use crate::handle::{Handle, HandleError};
+use crate::handle::Handle;
 use crate::keys::render_public_key;
 use crate::sidecar::{SidecarError, create_card};
 
@@ -24,7 +24,7 @@ const LINE_END: &str = "\n";
 /// The network and the optional cards directory override every card command takes.
 #[derive(Debug, Args)]
 pub struct RegistryArgs {
-    pub network: String,
+    pub network: Handle,
     #[arg(long)]
     pub cards_dir: Option<PathBuf>,
 }
@@ -35,8 +35,8 @@ pub enum CardCommand {
     CreateCard {
         #[command(flatten)]
         registry: RegistryArgs,
-        card: String,
-        handle: String,
+        card: Handle,
+        handle: Handle,
     },
     ListCards {
         #[command(flatten)]
@@ -47,33 +47,17 @@ pub enum CardCommand {
 /// Why a card command failed, printed as its message alone.
 #[derive(Debug)]
 enum CardCommandError {
-    NameRefused {
-        role: &'static str,
-        source: HandleError,
-    },
     Directories(DirectoriesError),
     Sidecar(SidecarError),
-    CardsDirectoryUncreatable {
-        path: PathBuf,
-        source: io::Error,
-    },
-    Unreadable {
-        path: PathBuf,
-        source: io::Error,
-    },
-    CardInvalid {
-        path: PathBuf,
-        reason: CardInvalid,
-    },
+    CardsDirectoryUncreatable { path: PathBuf, source: io::Error },
+    Unreadable { path: PathBuf, source: io::Error },
+    CardInvalid { path: PathBuf, reason: CardInvalid },
     OutputUnwritable(io::Error),
 }
 
 impl fmt::Display for CardCommandError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NameRefused { role, source } => {
-                write!(formatter, "the {role} is refused: {source}")
-            }
             Self::Directories(error) => error.fmt(formatter),
             Self::Sidecar(error) => error.fmt(formatter),
             Self::CardsDirectoryUncreatable { path, source } => {
@@ -158,34 +142,24 @@ fn execute(
             card,
             handle,
         } => {
-            require_handle_grammar("network name", &registry.network)?;
-            require_handle_grammar("card name", &card)?;
-            require_handle_grammar("handle", &handle)?;
             let directories = establish_directories(environment, filesystem, registry.cards_dir)?;
             create_card_with_fresh_key(
                 &directories,
                 filesystem,
-                &registry.network,
-                &card,
-                &handle,
+                registry.network.as_str(),
+                card.as_str(),
+                handle.as_str(),
                 fill_seed,
             )?
         }
         CardCommand::ListCards { registry } => {
-            require_handle_grammar("network name", &registry.network)?;
             let directories = establish_directories(environment, filesystem, registry.cards_dir)?;
-            list_registry_cards(filesystem, &directories, &registry.network)?
+            list_registry_cards(filesystem, &directories, registry.network.as_str())?
         }
     };
     stdout
         .write_all(result.as_bytes())
         .map_err(CardCommandError::OutputUnwritable)
-}
-
-fn require_handle_grammar(role: &'static str, name: &str) -> Result<(), CardCommandError> {
-    Handle::from_str(name)
-        .map(drop)
-        .map_err(|source| CardCommandError::NameRefused { role, source })
 }
 
 fn establish_directories(

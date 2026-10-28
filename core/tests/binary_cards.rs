@@ -77,3 +77,25 @@ fn binary_usage_error_exits_two_of_spec_3_13() {
     let unknown_command = run_binary(&root, &["no-such-command"]).unwrap();
     assert_eq!(unknown_command.status.code(), Some(USAGE_ERROR_CODE));
 }
+
+#[test]
+fn binary_names_outside_the_handle_grammar_are_usage_errors_before_any_write_of_spec_3_3() {
+    let root = common::scratch_root(SCRATCH_PREFIX, "bad_names").unwrap();
+    let refused_arguments: [&[&str]; 5] = [
+        &["create-card", "acme", "Ana", "ana"],
+        &["create-card", "acme", "../up", "ana"],
+        &["create-card", "acme", "ana", "Ana"],
+        &["create-card", "Net", "ana", "ana"],
+        &["list-cards", "Net"],
+    ];
+    for arguments in refused_arguments {
+        let refused = run_binary(&root, arguments).unwrap();
+        assert_eq!(
+            refused.status.code(),
+            Some(USAGE_ERROR_CODE),
+            "{arguments:?}"
+        );
+        assert_eq!(refused.stdout, Vec::<u8>::new());
+    }
+    assert!(!root.join("data").exists());
+}

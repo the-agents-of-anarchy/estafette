@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use estafette::cli::cards::{CardCommand, CardRegistryReader, RegistryArgs, run};
 use estafette::dirs::{DirectoryFilesystem, OperatingSystemFilesystem};
 use estafette::errors::ExitStatus;
+use estafette::handle::HandleError;
 use iroh::SecretKey;
 
 mod common;
@@ -57,24 +58,29 @@ fn execute_with_environment(
     }
 }
 
-fn create_card(card: &str, handle: &str, cards_dir: Option<PathBuf>) -> CardCommand {
-    CardCommand::CreateCard {
-        registry: RegistryArgs {
-            network: NETWORK.to_owned(),
-            cards_dir,
-        },
-        card: card.to_owned(),
-        handle: handle.to_owned(),
-    }
+fn registry(cards_dir: Option<PathBuf>) -> Result<RegistryArgs, HandleError> {
+    Ok(RegistryArgs {
+        network: NETWORK.parse()?,
+        cards_dir,
+    })
 }
 
-fn list_cards(cards_dir: Option<PathBuf>) -> CardCommand {
-    CardCommand::ListCards {
-        registry: RegistryArgs {
-            network: NETWORK.to_owned(),
-            cards_dir,
-        },
-    }
+fn create_card(
+    card: &str,
+    handle: &str,
+    cards_dir: Option<PathBuf>,
+) -> Result<CardCommand, HandleError> {
+    Ok(CardCommand::CreateCard {
+        registry: registry(cards_dir)?,
+        card: card.parse()?,
+        handle: handle.parse()?,
+    })
+}
+
+fn list_cards(cards_dir: Option<PathBuf>) -> Result<CardCommand, HandleError> {
+    Ok(CardCommand::ListCards {
+        registry: registry(cards_dir)?,
+    })
 }
 
 fn public_key_of(seed_byte: u8) -> String {
@@ -124,7 +130,7 @@ fn list_cards_reads_only_through_the_handed_in_file_system() {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let status = run(
-        list_cards(Some(cards_dir)),
+        list_cards(Some(cards_dir)).unwrap(),
         environment_under(Path::new("/nowhere-on-disk/base"), None),
         &registry,
         |_seed| {},
@@ -142,12 +148,12 @@ fn list_cards_reads_only_through_the_handed_in_file_system() {
 #[test]
 fn create_card_then_list_cards_shows_name_handle_and_public_key_of_spec_3_13() {
     let root = common::scratch_root(SCRATCH_PREFIX, "create_then_list").unwrap();
-    let created = execute(&root, create_card("ana-card", "ana", None), 7);
+    let created = execute(&root, create_card("ana-card", "ana", None).unwrap(), 7);
     assert_eq!(created.status, ExitStatus::Success);
     assert_eq!(created.stdout, format!("{}\n", public_key_of(7)));
     assert_eq!(created.stderr, "");
 
-    let listed = execute(&root, list_cards(None), 0);
+    let listed = execute(&root, list_cards(None).unwrap(), 0);
     assert_eq!(listed.status, ExitStatus::Success);
     assert_eq!(
         listed.stdout,
@@ -159,9 +165,9 @@ fn create_card_then_list_cards_shows_name_handle_and_public_key_of_spec_3_13() {
 #[test]
 fn create_card_twice_refuses_and_keeps_the_first_card_of_spec_3_5() {
     let root = common::scratch_root(SCRATCH_PREFIX, "create_twice").unwrap();
-    execute(&root, create_card("ana-card", "ana", None), 7);
+    execute(&root, create_card("ana-card", "ana", None).unwrap(), 7);
 
-    let second = execute(&root, create_card("ana-card", "bob", None), 9);
+    let second = execute(&root, create_card("ana-card", "bob", None).unwrap(), 9);
     assert_eq!(second.status, ExitStatus::Failure);
     assert_eq!(second.stdout, "");
     assert_eq!(
@@ -169,7 +175,7 @@ fn create_card_twice_refuses_and_keeps_the_first_card_of_spec_3_5() {
         "the card or its sidecar already exists; create never overwrites\n"
     );
 
-    let listed = execute(&root, list_cards(None), 0);
+    let listed = execute(&root, list_cards(None).unwrap(), 0);
     assert_eq!(
         listed.stdout,
         format!("ana-card\tana\t{}\n", public_key_of(7))
@@ -182,7 +188,7 @@ fn create_card_honors_the_cards_dir_flag_of_spec_3_3() {
     let flagged = root.join("flagged");
     let created = execute(
         &root,
-        create_card("ana-card", "ana", Some(flagged.clone())),
+        create_card("ana-card", "ana", Some(flagged.clone())).unwrap(),
         7,
     );
     assert_eq!(created.status, ExitStatus::Success);
@@ -190,12 +196,12 @@ fn create_card_honors_the_cards_dir_flag_of_spec_3_3() {
     assert!(flagged.join(NETWORK).join("ana-card.key").is_file());
     assert!(!root.join("data/estafette/cards").exists());
 
-    let listed = execute(&root, list_cards(Some(flagged)), 0);
+    let listed = execute(&root, list_cards(Some(flagged)).unwrap(), 0);
     assert_eq!(
         listed.stdout,
         format!("ana-card\tana\t{}\n", public_key_of(7))
     );
-    assert_eq!(execute(&root, list_cards(None), 0).stdout, "");
+    assert_eq!(execute(&root, list_cards(None).unwrap(), 0).stdout, "");
 }
 
 #[test]
@@ -204,7 +210,7 @@ fn list_cards_honors_the_cards_dir_variable_of_spec_3_3() {
     let from_variable = root.join("from-variable");
     let created = execute_with_environment(
         environment_under(&root, Some(&from_variable)),
-        create_card("ana-card", "ana", None),
+        create_card("ana-card", "ana", None).unwrap(),
         7,
     );
     assert_eq!(created.status, ExitStatus::Success);
@@ -212,7 +218,7 @@ fn list_cards_honors_the_cards_dir_variable_of_spec_3_3() {
 
     let listed = execute_with_environment(
         environment_under(&root, Some(&from_variable)),
-        list_cards(None),
+        list_cards(None).unwrap(),
         0,
     );
     assert_eq!(
@@ -224,10 +230,10 @@ fn list_cards_honors_the_cards_dir_variable_of_spec_3_3() {
 #[test]
 fn create_card_allows_the_reserved_operator_name_of_spec_3_13() {
     let root = common::scratch_root(SCRATCH_PREFIX, "operator_card").unwrap();
-    let created = execute(&root, create_card("operator", "operator", None), 3);
+    let created = execute(&root, create_card("operator", "operator", None).unwrap(), 3);
     assert_eq!(created.status, ExitStatus::Success);
     assert_eq!(
-        execute(&root, list_cards(None), 0).stdout,
+        execute(&root, list_cards(None).unwrap(), 0).stdout,
         format!("operator\toperator\t{}\n", public_key_of(3))
     );
 }
@@ -241,12 +247,12 @@ fn list_cards_prints_one_line_per_card_in_card_name_order() {
     {
         let seed_byte = u8::try_from(index + 10).unwrap();
         assert_eq!(
-            execute(&root, create_card(card, handle, None), seed_byte).status,
+            execute(&root, create_card(card, handle, None).unwrap(), seed_byte).status,
             ExitStatus::Success
         );
     }
     assert_eq!(
-        execute(&root, list_cards(None), 0).stdout,
+        execute(&root, list_cards(None).unwrap(), 0).stdout,
         format!(
             "ana\tana-one\t{}\nmid\tmid\t{}\nzed\tzed\t{}\n",
             public_key_of(11),
@@ -257,54 +263,16 @@ fn list_cards_prints_one_line_per_card_in_card_name_order() {
 }
 
 #[test]
-fn create_card_refuses_names_outside_the_handle_grammar_before_writing_anything_of_spec_3_3() {
-    let root = common::scratch_root(SCRATCH_PREFIX, "bad_names").unwrap();
-    let refused_commands = [
-        (
-            create_card("Ana", "ana", None),
-            "the card name is refused: ",
-        ),
-        (
-            create_card("../up", "ana", None),
-            "the card name is refused: ",
-        ),
-        (create_card("ana", "Ana", None), "the handle is refused: "),
-        (
-            CardCommand::CreateCard {
-                registry: RegistryArgs {
-                    network: "Net".to_owned(),
-                    cards_dir: None,
-                },
-                card: "ana".to_owned(),
-                handle: "ana".to_owned(),
-            },
-            "the network name is refused: ",
-        ),
-    ];
-    for (command, expected_prefix) in refused_commands {
-        let outcome = execute(&root, command, 5);
-        assert_eq!(outcome.status, ExitStatus::Failure);
-        assert_eq!(outcome.stdout, "");
-        assert!(
-            outcome.stderr.starts_with(expected_prefix),
-            "{}",
-            outcome.stderr
-        );
-    }
-    assert!(!root.join("data").exists());
-}
-
-#[test]
 fn list_cards_names_the_invalid_card_file_and_fails() {
     let root = common::scratch_root(SCRATCH_PREFIX, "invalid_card").unwrap();
-    execute(&root, create_card("ana", "ana", None), 7);
+    execute(&root, create_card("ana", "ana", None).unwrap(), 7);
     let broken = root
         .join("data/estafette/cards")
         .join(NETWORK)
         .join("bad.yaml");
     fs::write(&broken, "handle: bad\n").unwrap();
 
-    let listed = execute(&root, list_cards(None), 0);
+    let listed = execute(&root, list_cards(None).unwrap(), 0);
     assert_eq!(listed.status, ExitStatus::Failure);
     assert_eq!(listed.stdout, "");
     assert_eq!(
