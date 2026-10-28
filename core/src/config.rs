@@ -8,14 +8,16 @@ use std::path::{Path, PathBuf};
 use iroh::RelayUrl;
 use serde::{Deserialize, Serialize};
 
+use crate::wire::{self, MAX_RELAY_URL_BYTES};
+
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 const LEARNED_HOST_EXPIRY_DAYS: u64 = 30;
 const LEARNED_HOST_EXPIRY_SECONDS: u64 = LEARNED_HOST_EXPIRY_DAYS * SECONDS_PER_DAY;
 pub const OWNER_ONLY_FILE_MODE: u32 = 0o600;
 const TEMPORARY_FILE_SUFFIX: &str = "tmp";
 const HEX_KEY_LENGTH: usize = 64;
-const RELAY_URL_MAX_BYTES: usize = 128;
 const RELAY_URL_SCHEME: &str = "https";
+const HOST_RELAY_FIELD: &str = "host relay";
 
 /// Where a host came from: the owner configured it and nothing removes it, or this member learned it and it expires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,7 +101,7 @@ impl fmt::Display for AcceptedValue {
             ),
             Self::RelayUrl => write!(
                 formatter,
-                "an {RELAY_URL_SCHEME} URL of at most {RELAY_URL_MAX_BYTES} bytes"
+                "an {RELAY_URL_SCHEME} URL of at most {MAX_RELAY_URL_BYTES} bytes"
             ),
         }
     }
@@ -151,6 +153,21 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl Host {
+    /// Reads the relay as the wire's relay URL, naming the configuration file when it is refused.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError::InvalidField` when the relay is over the wire's limit.
+    pub fn wire_relay(&self, path: &Path) -> Result<wire::RelayUrl, ConfigError> {
+        wire::RelayUrl::try_from(self.relay.clone()).map_err(|_over_limit| {
+            ConfigError::InvalidField {
+                path: path.to_owned(),
+                field: HOST_RELAY_FIELD,
+                accepted: AcceptedValue::RelayUrl,
+            }
+        })
+    }
+
     /// Combines two records of one host: the newer's relay, the larger `ts`, the later `heard`, configured if either is.
     fn merged_with(&self, newer: &Self) -> Self {
         let origin = match (self.origin, newer.origin) {
@@ -271,7 +288,7 @@ fn require_hex_key(path: &Path, field: &'static str, value: &str) -> Result<(), 
 }
 
 fn require_relay_url(path: &Path, value: &str) -> Result<(), ConfigError> {
-    let is_https_relay_url = value.len() <= RELAY_URL_MAX_BYTES
+    let is_https_relay_url = value.len() <= MAX_RELAY_URL_BYTES
         && value
             .parse::<RelayUrl>()
             .is_ok_and(|relay| relay.scheme() == RELAY_URL_SCHEME);
@@ -280,7 +297,7 @@ fn require_relay_url(path: &Path, value: &str) -> Result<(), ConfigError> {
     } else {
         Err(ConfigError::InvalidField {
             path: path.to_owned(),
-            field: "host relay",
+            field: HOST_RELAY_FIELD,
             accepted: AcceptedValue::RelayUrl,
         })
     }
@@ -594,7 +611,7 @@ mod tests {
     fn load_refuses_a_field_of_the_wrong_shape() {
         let directory = scratch_directory("shapes");
         let valid_relay = "https://relay.example/";
-        let long_relay = format!("https://{}/", "r".repeat(RELAY_URL_MAX_BYTES));
+        let long_relay = format!("https://{}/", "r".repeat(MAX_RELAY_URL_BYTES));
         let refused_cases = [
             (
                 hex_key('a').to_uppercase(),
@@ -692,7 +709,7 @@ mod tests {
 
         assert!(secret_refusal.contains(&format!("{HEX_KEY_LENGTH} lowercase hexadecimal")));
         assert!(secret_refusal.contains("secret must be"));
-        assert!(relay_refusal.contains(&format!("{RELAY_URL_MAX_BYTES} bytes")));
+        assert!(relay_refusal.contains(&format!("{MAX_RELAY_URL_BYTES} bytes")));
         assert!(relay_refusal.contains(RELAY_URL_SCHEME));
     }
 

@@ -22,7 +22,7 @@ use crate::keys::{
     parse_public_key, parse_secret_key, render_network_secret, render_public_key,
     render_secret_key,
 };
-use crate::wire::{CodecError, HostAddr, Invitation, RelayUrl, Version};
+use crate::wire::{HostAddr, Invitation, Version};
 
 const CREATE_ABOUT: &str = "Create a network on this machine";
 const JOIN_ABOUT: &str = "Join a network from an invitation";
@@ -160,7 +160,6 @@ enum Failure {
         field: &'static str,
         source: KeyError,
     },
-    StoredHostRelay(CodecError),
     Invitation(InviteError),
 }
 
@@ -211,12 +210,6 @@ impl fmt::Display for Failure {
                 write!(
                     formatter,
                     "the configuration's {field} is not usable: {source}"
-                )
-            }
-            Self::StoredHostRelay(source) => {
-                write!(
-                    formatter,
-                    "the configuration's host relay is not usable: {source}"
                 )
             }
             Self::Invitation(source) => write!(formatter, "{source}"),
@@ -400,7 +393,7 @@ fn join_network(
         .map_err(Failure::InvitationNetworkName)?;
     let config_file = directories.network_config_file(network.as_str())?;
     refuse_existing_file(filesystem, &network, &config_file)?;
-    let owner = public_key_or(&invitation.owner, Failure::InvitationOwnerNotAKey)?;
+    let owner = public_key_or(&invitation.owner, || Failure::InvitationOwnerNotAKey)?;
     let hosts = invitation
         .hosts
         .iter()
@@ -433,8 +426,8 @@ fn show_invitation(
     directories: &Directories,
     result: &mut impl Write,
 ) -> Result<(), Failure> {
-    let (_, config) = load_configured_network(network, directories)?;
-    let invitation = invitation_of(network, &config)?;
+    let (config_file, config) = load_configured_network(network, directories)?;
+    let invitation = invitation_of(network, &config, &config_file)?;
     let text = render_invitation(&invitation).map_err(Failure::Invitation)?;
     writeln!(result, "{text}").map_err(Failure::Output)
 }
@@ -465,14 +458,18 @@ fn configured_host(address: &HostAddr) -> Result<Host, Failure> {
 }
 
 fn host_public_key(address: &HostAddr) -> Result<PublicKey, Failure> {
-    public_key_or(&address.id, Failure::HostNodeIdNotAKey)
+    public_key_or(&address.id, || Failure::HostNodeIdNotAKey)
 }
 
-fn public_key_or(bytes: &[u8; 32], refusal: Failure) -> Result<PublicKey, Failure> {
-    PublicKey::from_bytes(bytes).ok().ok_or(refusal)
+fn public_key_or(bytes: &[u8; KEY_LEN], refusal: fn() -> Failure) -> Result<PublicKey, Failure> {
+    PublicKey::from_bytes(bytes).map_err(|_not_a_key| refusal())
 }
 
-fn invitation_of(network: &Handle, config: &NetworkConfig) -> Result<Invitation, Failure> {
+fn invitation_of(
+    network: &Handle,
+    config: &NetworkConfig,
+    config_file: &Path,
+) -> Result<Invitation, Failure> {
     if config.hosts.is_empty() {
         return Err(Failure::NetworkHasNoHost {
             network: network.as_str().to_owned(),
@@ -483,7 +480,7 @@ fn invitation_of(network: &Handle, config: &NetworkConfig) -> Result<Invitation,
     let hosts = config
         .hosts
         .iter()
-        .map(host_address_of)
+        .map(|host| host_address_of(host, config_file))
         .collect::<Result<_, _>>()?;
     Ok(Invitation {
         v: Version::CURRENT,
@@ -494,9 +491,9 @@ fn invitation_of(network: &Handle, config: &NetworkConfig) -> Result<Invitation,
     })
 }
 
-fn host_address_of(host: &Host) -> Result<HostAddr, Failure> {
+fn host_address_of(host: &Host, config_file: &Path) -> Result<HostAddr, Failure> {
     let id = parse_public_key(&host.id).map_err(stored_key("host id"))?;
-    let relay = RelayUrl::try_from(host.relay.clone()).map_err(Failure::StoredHostRelay)?;
+    let relay = host.wire_relay(config_file)?;
     Ok(HostAddr {
         v: Version::CURRENT,
         id: *id.as_bytes(),
