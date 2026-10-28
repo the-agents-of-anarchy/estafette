@@ -434,13 +434,13 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_12_a_dropped_frame_does_not_restart_the_30_second_quiet_period() {
+    fn spec_3_12_a_dropped_body_is_the_previous_body_so_a_repeat_every_10_seconds_stays_dropped() {
         let (mut notifier, connections) = notifier();
-        notify_at(&mut notifier, "ana", "same", 0);
-        notify_at(&mut notifier, "ana", "same", 20);
-        notify_at(&mut notifier, "ana", "same", 35);
+        for seconds in [0, 10, 20, 30, 40, 70] {
+            notify_at(&mut notifier, "ana", "same", seconds);
+        }
         assert_eq!(injected_bodies(&connections), vec!["same", "same"]);
-        assert_eq!(notifier.dropped_frames(), 1);
+        assert_eq!(notifier.dropped_frames(), 4);
     }
 
     struct BrokenConnector(Option<io::ErrorKind>);

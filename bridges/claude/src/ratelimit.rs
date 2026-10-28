@@ -10,36 +10,42 @@ pub enum Admission {
     Dropped,
 }
 
-struct Injection {
+struct ReceivedBody {
     at: Duration,
     body: String,
 }
 
 #[derive(Default)]
+struct SenderHistory {
+    injection_times: VecDeque<Duration>,
+    previous_received: Option<ReceivedBody>,
+}
+
+#[derive(Default)]
 pub struct SenderRateLimit {
-    recent_injections_by_sender: HashMap<String, VecDeque<Injection>>,
+    history_by_sender: HashMap<String, SenderHistory>,
     dropped_frames: u64,
 }
 
 impl SenderRateLimit {
     /// Decides whether a frame from this sender may be injected at this moment.
     pub fn admit(&mut self, sender: &str, body: &str, now: Duration) -> Admission {
-        let recent = self
-            .recent_injections_by_sender
-            .entry(sender.to_owned())
-            .or_default();
-        recent.retain(|injection| now.saturating_sub(injection.at) < INJECTION_WINDOW);
-        let repeats_previous_body = recent.back().is_some_and(|previous| {
+        let history = self.history_by_sender.entry(sender.to_owned()).or_default();
+        history
+            .injection_times
+            .retain(|injected_at| now.saturating_sub(*injected_at) < INJECTION_WINDOW);
+        let repeats_previous_body = history.previous_received.as_ref().is_some_and(|previous| {
             previous.body == body && now.saturating_sub(previous.at) < REPEATED_BODY_QUIET_PERIOD
         });
-        if recent.len() >= MAX_INJECTIONS_PER_WINDOW || repeats_previous_body {
-            self.dropped_frames = self.dropped_frames.saturating_add(1);
-            return Admission::Dropped;
-        }
-        recent.push_back(Injection {
+        history.previous_received = Some(ReceivedBody {
             at: now,
             body: body.to_owned(),
         });
+        if history.injection_times.len() >= MAX_INJECTIONS_PER_WINDOW || repeats_previous_body {
+            self.dropped_frames = self.dropped_frames.saturating_add(1);
+            return Admission::Dropped;
+        }
+        history.injection_times.push_back(now);
         Admission::Admitted
     }
 
