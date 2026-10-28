@@ -7,7 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use clap::{Parser, Subcommand};
 use estafette::cli::cards::{self, CardCommand};
 use estafette::cli::network::{self, NetworkCommand, NetworkCommandError};
-use estafette::cli::observer::{self, ObserverCommand, ObserverCommandError, ObserverEffects};
+use estafette::cli::observer::{
+    self, ObserverCommand, ObserverCommandError, ObserverEffects, OperatorEffects,
+};
 use estafette::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use estafette::errors::ExitStatus;
 use estafette::inbox::socket::{InboxSocket, OperatingSystemProcessTable};
@@ -17,6 +19,8 @@ use estafette::sidecar::ThreadSleep;
 use estafette::wire::Nonce;
 use iroh::SecretKey;
 use tokio::time::Instant;
+
+const MILLISECONDS_PER_SECOND: u64 = 1000;
 
 #[derive(Debug, Parser)]
 #[command(name = "estafette")]
@@ -133,7 +137,13 @@ fn run_observer_command(
         )
         .map_err(CommandLineFailure::Directories)?,
     );
-    unix_seconds_of(SystemTime::now())?;
+    let started_at_milliseconds = unix_milliseconds_of(SystemTime::now())?;
+    let started = Instant::now();
+    let clock = move || {
+        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        started_at_milliseconds.saturating_add(elapsed)
+    };
+    let (effects, operator_effects) = observer_effects(Arc::clone(&directories), clock);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -144,24 +154,21 @@ fn run_observer_command(
             &directories,
             &OperatingSystemFilesystem,
             &ThreadSleep,
-            observer_effects(Arc::clone(&directories)),
+            effects,
+            operator_effects,
             result,
         ))
         .map_err(CommandLineFailure::Observer)
 }
 
-fn observer_effects(directories: Arc<Directories>) -> ObserverEffects {
-    ObserverEffects {
-        clock: Arc::new(unix_milliseconds_now),
+fn observer_effects(
+    directories: Arc<Directories>,
+    clock: impl Fn() -> u64 + Send + Sync + 'static,
+) -> (ObserverEffects, OperatorEffects) {
+    let effects = ObserverEffects {
+        clock: Arc::new(clock),
         monotonic: Arc::new(Instant::now),
         fill_seed: Arc::new(|seed| *seed = SecretKey::generate().to_bytes()),
-        fill_probe_nonce: Arc::new(|nonce: &mut Nonce| {
-            for (slot, byte) in nonce.iter_mut().zip(SecretKey::generate().to_bytes()) {
-                *slot = byte;
-            }
-        }),
-        report: Arc::new(|record| drop(writeln!(io::stderr(), "{record}"))),
-        probe_relay: Arc::new(|relay| Box::pin(relay_answers(relay))),
         bind_endpoint: Box::new(|key, gate_key, relays| {
             Box::pin(NodeEndpoint::bind(
                 key,
@@ -171,6 +178,18 @@ fn observer_effects(directories: Arc<Directories>) -> ObserverEffects {
                 |failure| drop(writeln!(io::stderr(), "{failure}")),
             ))
         }),
+        interrupted: Box::pin(async {
+            drop(tokio::signal::ctrl_c().await);
+        }),
+    };
+    let operator_effects = OperatorEffects {
+        fill_probe_nonce: Arc::new(|nonce: &mut Nonce| {
+            for (slot, byte) in nonce.iter_mut().zip(SecretKey::generate().to_bytes()) {
+                *slot = byte;
+            }
+        }),
+        report: Arc::new(|record| drop(writeln!(io::stderr(), "{record}"))),
+        probe_relay: Arc::new(|relay| Box::pin(relay_answers(relay))),
         start_inbox: Box::new(move || {
             InboxSocket::start(
                 &directories,
@@ -179,24 +198,19 @@ fn observer_effects(directories: Arc<Directories>) -> ObserverEffects {
             )
             .map(Arc::new)
         }),
-        interrupted: Box::pin(async {
-            drop(tokio::signal::ctrl_c().await);
-        }),
-    }
+    };
+    (effects, operator_effects)
 }
 
-fn unix_milliseconds_now() -> u64 {
-    let elapsed = SystemTime::now()
+fn unix_milliseconds_of(instant: SystemTime) -> Result<u64, CommandLineFailure> {
+    instant
         .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .map_err(|_before_epoch| CommandLineFailure::ClockBeforeUnixEpoch)
 }
 
 fn unix_seconds_of(instant: SystemTime) -> Result<u64, CommandLineFailure> {
-    instant
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .map_err(|_before_epoch| CommandLineFailure::ClockBeforeUnixEpoch)
+    unix_milliseconds_of(instant).map(|milliseconds| milliseconds / MILLISECONDS_PER_SECOND)
 }
 
 #[cfg(test)]
@@ -206,12 +220,23 @@ mod tests {
     use super::*;
 
     const SECONDS_AFTER_EPOCH: u64 = 1_700_000_000;
+    const MILLISECONDS_AFTER_EPOCH: u64 = 1_700_000_000_123;
 
     #[test]
     fn spec_3_13_a_clock_after_the_unix_epoch_gives_its_seconds() {
         let instant = UNIX_EPOCH + Duration::from_secs(SECONDS_AFTER_EPOCH);
 
         assert_eq!(unix_seconds_of(instant).unwrap(), SECONDS_AFTER_EPOCH);
+    }
+
+    #[test]
+    fn spec_3_13_a_clock_after_the_unix_epoch_gives_its_milliseconds() {
+        let instant = UNIX_EPOCH + Duration::from_millis(MILLISECONDS_AFTER_EPOCH);
+
+        assert_eq!(
+            unix_milliseconds_of(instant).unwrap(),
+            MILLISECONDS_AFTER_EPOCH
+        );
     }
 
     #[test]

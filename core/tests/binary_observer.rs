@@ -135,3 +135,28 @@ fn binary_test_send_creates_the_operator_card_and_reports_an_unknown_handle_of_s
     );
     drop(fs::remove_dir_all(&root));
 }
+
+#[test]
+fn binary_help_describes_each_observer_command_and_leaves_the_program_description_alone() {
+    let root = common::scratch_root(SCRATCH_PREFIX, "help").unwrap();
+
+    let help = run_binary(&root, &["--help"]).unwrap();
+    let tail_help = run_binary(&root, &["tail", "--help"]).unwrap();
+
+    let help_text = String::from_utf8_lossy(&help.stdout).into_owned();
+    let described = |name: &str, words: &str| {
+        help_text
+            .lines()
+            .any(|line| line.trim_start().starts_with(name) && line.contains(words))
+    };
+    assert!(described("show-peers", "Join the network without a card"));
+    assert!(described("tail", "print each gossip payload"));
+    assert!(described(
+        "test-send",
+        "Send one message as the reserved operator card"
+    ));
+    assert!(!help_text.contains("The operator commands"));
+    assert!(
+        String::from_utf8_lossy(&tail_help.stdout).contains("The network whose gossip to print")
+    );
+}

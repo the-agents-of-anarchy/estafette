@@ -10,7 +10,9 @@ use clap::Subcommand;
 use data_encoding::HEXLOWER;
 use iroh::SecretKey;
 use iroh::endpoint::BindError;
+use iroh::protocol::Router;
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinError;
 use tokio::time::Instant;
 
 use crate::card::{Card, CardInvalid};
@@ -39,6 +41,9 @@ const OBSERVER_PUBLIC: &[u8] = b"{}";
 const OPERATOR_CARD: &str = "operator";
 const DELIVERED_KIND: &str = "delivered";
 const NO_PUBLIC_FIELDS: &str = "-";
+const ONLINE_STATUS: &str = "online";
+const UNREACHABLE_STATUS: &str = "unreachable";
+const GONE_STATUS: &str = "gone";
 const PRESENCE_KIND: &str = "presence";
 const DEPARTURE_KIND: &str = "departure";
 const UNREACHABLE_KIND: &str = "unreachable";
@@ -58,33 +63,44 @@ type BindEndpoint =
 type StartInbox = Box<dyn FnOnce() -> Result<Arc<InboxSocket>, InboxSocketError> + Send>;
 type Interrupted = Pin<Box<dyn Future<Output = ()> + Send>>;
 
-/// The operator commands that join a network as a node: peers, tail and test send.
 #[derive(Debug, Clone, Subcommand)]
 pub enum ObserverCommand {
+    /// Join the network without a card, wait out the observer wait, and print each peer as handle, status, attached and public, refusing a network without a configuration file
     ShowPeers {
+        /// The network whose members to list
         network: Handle,
     },
+    /// Join the network without a card and print each gossip payload as it arrives until interrupted, refusing a network without a configuration file
     Tail {
+        /// The network whose gossip to print
         network: Handle,
     },
+    /// Send one message as the reserved operator card, creating the card when absent, and print the delivery, refusing a network without a configuration file or a card another process holds
     TestSend {
+        /// The network to send on
         network: Handle,
+        /// The handle of the member to send to
         handle: LocalHandle,
+        /// The text of the message
         body: String,
     },
 }
 
-/// The side effects the observer commands run on, initialized by the composition root.
+/// The side effects every observer command runs on, initialized by the composition root.
 pub struct ObserverEffects {
     pub clock: Clock,
     pub monotonic: MonotonicClock,
     pub fill_seed: SeedSource,
+    pub bind_endpoint: BindEndpoint,
+    pub interrupted: Interrupted,
+}
+
+/// The side effects only a node that announces itself needs, which `test-send` alone runs on.
+pub struct OperatorEffects {
     pub fill_probe_nonce: ProbeNonceSource,
     pub report: RunRecord,
     pub probe_relay: RelayProbe,
-    pub bind_endpoint: BindEndpoint,
     pub start_inbox: StartInbox,
-    pub interrupted: Interrupted,
 }
 
 /// Why an observer command failed, printed as its message alone.
@@ -101,7 +117,10 @@ enum Failure {
     CardInvalid { path: PathBuf, reason: CardInvalid },
     CardKey { path: PathBuf, source: KeyError },
     CardHandle { path: PathBuf, source: HandleError },
+    Session(ErrorCode),
     NotDelivered(ErrorCode),
+    TopicClosed,
+    RouterShutdown(JoinError),
     Output(io::Error),
 }
 
@@ -133,6 +152,14 @@ impl fmt::Display for Failure {
                 "{} holds a handle that is not usable: {source}",
                 path.display()
             ),
+            Self::Session(code) => write!(formatter, "the session did not take the node: {code}"),
+            Self::TopicClosed => formatter.write_str("the gossip topic closed"),
+            Self::RouterShutdown(source) => {
+                write!(
+                    formatter,
+                    "the listeners did not shut down cleanly: {source}"
+                )
+            }
             Self::NotDelivered(code) => write!(formatter, "the message was not delivered: {code}"),
             Self::Output(source) => write!(formatter, "cannot write the result: {source}"),
         }
@@ -151,7 +178,7 @@ impl fmt::Display for ObserverCommandError {
 
 impl std::error::Error for ObserverCommandError {}
 
-/// Runs one observer command, writing the result to `stdout`.
+/// Runs one observer command that joins a network as a node, writing the result to `stdout`.
 ///
 /// # Errors
 ///
@@ -162,11 +189,20 @@ pub async fn run(
     filesystem: &(impl NetworkFilesystem + Sync),
     pause: &(impl Pause + Sync),
     effects: ObserverEffects,
+    operator_effects: OperatorEffects,
     stdout: &mut (impl Write + Send),
 ) -> Result<(), ObserverCommandError> {
-    run_command(command, directories, filesystem, pause, effects, stdout)
-        .await
-        .map_err(ObserverCommandError)
+    run_command(
+        command,
+        directories,
+        filesystem,
+        pause,
+        effects,
+        operator_effects,
+        stdout,
+    )
+    .await
+    .map_err(ObserverCommandError)
 }
 
 /// Runs the command, naming each failure by its own variant.
@@ -176,12 +212,16 @@ async fn run_command(
     filesystem: &(impl NetworkFilesystem + Sync),
     pause: &(impl Pause + Sync),
     effects: ObserverEffects,
+    operator_effects: OperatorEffects,
     stdout: &mut (impl Write + Send),
 ) -> Result<(), Failure> {
     match command {
         ObserverCommand::ShowPeers { network } => {
             let setup = load_network_setup(directories, network)?;
-            let peers = observe(&setup, Mode::ShowPeers, effects, stdout).await?;
+            let peers = start_observation(&setup, effects)
+                .await?
+                .collect_peers()
+                .await?;
             for peer in &peers {
                 write_line(stdout, &peer_line(peer))?;
             }
@@ -189,8 +229,7 @@ async fn run_command(
         }
         ObserverCommand::Tail { network } => {
             let setup = load_network_setup(directories, network)?;
-            observe(&setup, Mode::Tail, effects, stdout).await?;
-            Ok(())
+            start_observation(&setup, effects).await?.tail(stdout).await
         }
         ObserverCommand::TestSend {
             network,
@@ -200,7 +239,9 @@ async fn run_command(
             let setup = load_network_setup(directories, network)?;
             let operator =
                 claim_operator_card(directories, filesystem, pause, network, &effects.fill_seed)?;
-            let delivery = send_as_operator(setup, operator, handle, body, effects).await?;
+            let delivery =
+                send_as_operator(setup, operator, handle, body, (effects, operator_effects))
+                    .await?;
             write_line(stdout, &delivery_line(&delivery))
         }
     }
@@ -219,19 +260,20 @@ async fn send_as_operator(
     operator: OperatorCard,
     to: &LocalHandle,
     body: &str,
-    effects: ObserverEffects,
+    (effects, operator_effects): (ObserverEffects, OperatorEffects),
 ) -> Result<Delivery, Failure> {
     let ObserverEffects {
         clock,
         monotonic,
-        fill_seed: _card_already_claimed,
+        bind_endpoint,
+        ..
+    } = effects;
+    let OperatorEffects {
         fill_probe_nonce,
         report,
         probe_relay,
-        bind_endpoint,
         start_inbox,
-        interrupted: _not_waited_for,
-    } = effects;
+    } = operator_effects;
     let card_key = operator.held.secret_key().clone();
     let endpoint = bind_endpoint(
         card_key.clone(),
@@ -264,7 +306,7 @@ async fn send_as_operator(
     let session = Session::new();
     let node = session
         .claim(node, operator.held)
-        .map_err(Failure::NotDelivered)?;
+        .map_err(Failure::Session)?;
     let delivery = node.send(to.as_str(), body).await;
     release_card(&session).await;
     delivery.map_err(Failure::NotDelivered)
@@ -367,13 +409,6 @@ fn write_line(stdout: &mut impl Write, line: &str) -> Result<(), Failure> {
         .map_err(Failure::Output)
 }
 
-/// Whether the observer prints the peers after the observer wait or every payload until interrupted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    ShowPeers,
-    Tail,
-}
-
 /// What a network command needs from its configuration file: the keys, the owner and the hosts.
 struct NetworkSetup {
     network: Network,
@@ -405,13 +440,11 @@ fn load_network_setup(
     })
 }
 
-/// Runs an observer node without a card on a fresh key and returns the peers it learned.
-async fn observe(
+/// Joins the network as an observer without a card on a fresh key, ready to be driven by `collect_peers` or `tail`.
+async fn start_observation(
     setup: &NetworkSetup,
-    mode: Mode,
     effects: ObserverEffects,
-    stdout: &mut impl Write,
-) -> Result<Vec<Peer>, Failure> {
+) -> Result<Observation, Failure> {
     let mut seed = [0; SEED_BYTES];
     (effects.fill_seed)(&mut seed);
     let secret_key = SecretKey::from_bytes(&seed);
@@ -441,25 +474,28 @@ async fn observe(
         setup.hosts.iter().map(|host| host.id).collect(),
         (effects.monotonic)(),
     )
-    .await
-    .map_err(Failure::Topic)?;
-    let observation = Observation {
-        client: Arc::new(DirectClient::new(
-            endpoint.endpoint().clone(),
-            keys.clone(),
-            ClientTimeouts::SPEC,
-        )),
-        host,
-        endpoint,
-        topic,
-        from_loop,
-        mode,
-        monotonic: effects.monotonic,
-        wait_over: None,
-    };
-    let peers = observation.collect(effects.interrupted, stdout).await;
-    drop(router.shutdown().await);
-    peers
+    .await;
+    match topic {
+        Ok(topic) => Ok(Observation {
+            client: Arc::new(DirectClient::new(
+                endpoint.endpoint().clone(),
+                keys.clone(),
+                ClientTimeouts::SPEC,
+            )),
+            host,
+            endpoint,
+            router,
+            topic,
+            from_loop,
+            monotonic: effects.monotonic,
+            interrupted: effects.interrupted,
+            wait_over: None,
+        }),
+        Err(failure) => {
+            drop(router.shutdown().await);
+            Err(Failure::Topic(failure))
+        }
+    }
 }
 
 /// What reaches the observer loop from the direct server and from the requests it spawned.
@@ -548,51 +584,91 @@ struct Observation {
     endpoint: NodeEndpoint,
     client: Arc<DirectClient>,
     topic: NetworkTopic,
+    router: Router,
     from_loop: mpsc::UnboundedReceiver<ObserverEvent>,
-    mode: Mode,
     monotonic: MonotonicClock,
+    interrupted: Interrupted,
     wait_over: Option<Instant>,
+}
+
+/// What an observer loop wakes for.
+enum Step {
+    Topic(Option<Result<GossipEvent, GossipError>>),
+    Loop(ObserverEvent),
+    WaitOver,
+    Interrupted,
 }
 
 impl Observation {
     /// Handles events until the observer wait is over, the topic closes or the run is interrupted, then returns the peers.
-    async fn collect(
-        mut self,
-        mut interrupted: Interrupted,
-        stdout: &mut impl Write,
-    ) -> Result<Vec<Peer>, Failure> {
+    async fn collect_peers(mut self) -> Result<Vec<Peer>, Failure> {
+        let outcome = self.collect_until_done().await;
+        let shutdown = self.router.shutdown().await;
+        let peers = outcome?;
+        shutdown.map_err(Failure::RouterShutdown)?;
+        Ok(peers)
+    }
+
+    async fn collect_until_done(&mut self) -> Result<Vec<Peer>, Failure> {
         loop {
-            tokio::select! {
-                event = self.topic.next_event() => match event {
-                    None => break,
-                    Some(Err(failure)) => return Err(Failure::Topic(failure)),
-                    Some(Ok(event)) => self.take_gossip_event(event, stdout)?,
-                },
-                Some(event) = self.from_loop.recv() => self.take_loop_event(event),
-                () = sleep_until_deadline(self.wait_over) => break,
-                () = &mut interrupted => break,
+            match self.next_step().await {
+                Step::Topic(None) | Step::WaitOver | Step::Interrupted => break,
+                Step::Topic(Some(Err(failure))) => return Err(Failure::Topic(failure)),
+                Step::Topic(Some(Ok(GossipEvent::Joined | GossipEvent::JoinTimedOut))) => {
+                    let joined_at = (self.monotonic)();
+                    self.wait_over
+                        .get_or_insert_with(|| observer_wait_over_at(joined_at));
+                }
+                Step::Topic(Some(Ok(event))) => self.take_gossip_event(event),
+                Step::Loop(event) => self.take_loop_event(event),
             }
         }
         let now_ms = self.host.now_ms();
         Ok(self.host.table().peers(now_ms).cloned().collect())
     }
 
-    /// Applies the rows of spec 3.8 a topic event triggers, printing a payload first when tailing.
-    fn take_gossip_event(
-        &mut self,
-        event: GossipEvent,
-        stdout: &mut impl Write,
-    ) -> Result<(), Failure> {
+    /// Prints each payload as it arrives until the run is interrupted, ending in failure when the topic closes by itself.
+    async fn tail(mut self, stdout: &mut impl Write) -> Result<(), Failure> {
+        let outcome = self.tail_until_done(stdout).await;
+        let shutdown = self.router.shutdown().await;
+        outcome?;
+        shutdown.map_err(Failure::RouterShutdown)
+    }
+
+    async fn tail_until_done(&mut self, stdout: &mut impl Write) -> Result<(), Failure> {
+        loop {
+            match self.next_step().await {
+                Step::Interrupted => return Ok(()),
+                Step::WaitOver
+                | Step::Topic(Some(Ok(GossipEvent::Joined | GossipEvent::JoinTimedOut))) => {}
+                Step::Topic(None) => return Err(Failure::TopicClosed),
+                Step::Topic(Some(Err(failure))) => return Err(Failure::Topic(failure)),
+                Step::Topic(Some(Ok(event))) => {
+                    if let GossipEvent::Payload(payload) = &event {
+                        write_line(stdout, &payload_line(payload))?;
+                    }
+                    self.take_gossip_event(event);
+                }
+                Step::Loop(event) => self.take_loop_event(event),
+            }
+        }
+    }
+
+    /// Waits for the next topic event, loop event, observer wait deadline or interrupt.
+    async fn next_step(&mut self) -> Step {
+        tokio::select! {
+            event = self.topic.next_event() => Step::Topic(event),
+            Some(event) = self.from_loop.recv() => Step::Loop(event),
+            () = sleep_until_deadline(self.wait_over) => Step::WaitOver,
+            () = &mut self.interrupted => Step::Interrupted,
+        }
+    }
+
+    /// Applies the rows of spec 3.8 a topic event after the join triggers.
+    fn take_gossip_event(&self, event: GossipEvent) {
         let now_ms = self.host.now_ms();
         match event {
-            GossipEvent::Joined | GossipEvent::JoinTimedOut => match self.mode {
-                Mode::ShowPeers => {
-                    let joined_at = (self.monotonic)();
-                    self.wait_over
-                        .get_or_insert_with(|| observer_wait_over_at(joined_at));
-                }
-                Mode::Tail => {}
-            },
+            GossipEvent::Joined | GossipEvent::JoinTimedOut => {}
             GossipEvent::NeighborUp(node) => {
                 let effects = self.host.table().neighbor_up(*node.as_bytes(), now_ms);
                 self.perform(effects);
@@ -601,14 +677,8 @@ impl Observation {
                 let effects = self.host.table().neighbor_down(*node.as_bytes(), now_ms);
                 self.perform(effects);
             }
-            GossipEvent::Payload(payload) => {
-                if self.mode == Mode::Tail {
-                    write_line(stdout, &payload_line(&payload))?;
-                }
-                self.take_payload(*payload, now_ms);
-            }
+            GossipEvent::Payload(payload) => self.take_payload(*payload, now_ms),
         }
-        Ok(())
     }
 
     /// Applies a verified payload to the peer table.
@@ -727,7 +797,23 @@ fn payload_line(payload: &Payload) -> String {
 
 /// Joins the fields into one tab-separated line.
 fn line_of(fields: &[&str]) -> String {
-    fields.join(&FIELD_SEPARATOR.to_string()) + LINE_END
+    let escaped: Vec<String> = fields.iter().map(|field| escape_controls(field)).collect();
+    escaped.join(&FIELD_SEPARATOR.to_string()) + LINE_END
+}
+
+/// The field with every control character, tab and newline included, spelled out so it cannot end a column or a line.
+fn escape_controls(field: &str) -> String {
+    field
+        .chars()
+        .flat_map(|character| {
+            let spelled: Vec<char> = if character.is_control() {
+                character.escape_default().collect()
+            } else {
+                vec![character]
+            };
+            spelled
+        })
+        .collect()
 }
 
 /// A card public key as lowercase hexadecimal.
@@ -743,9 +829,9 @@ fn public_text(public: &[u8]) -> String {
 /// The word a peer status prints as.
 const fn status_text(status: Status) -> &'static str {
     match status {
-        Status::Online => "online",
-        Status::Unreachable => "unreachable",
-        Status::Gone { .. } => "gone",
+        Status::Online => ONLINE_STATUS,
+        Status::Unreachable => UNREACHABLE_STATUS,
+        Status::Gone { .. } => GONE_STATUS,
     }
 }
 
@@ -942,15 +1028,12 @@ mod tests {
             &self,
             member_addresses: Vec<EndpointAddr>,
             interrupted: Interrupted,
-        ) -> ObserverEffects {
+        ) -> (ObserverEffects, OperatorEffects) {
             let directories = Arc::clone(&self.directories);
-            ObserverEffects {
+            let effects = ObserverEffects {
                 clock: Arc::new(wall_clock_ms),
                 monotonic: Arc::new(Instant::now),
                 fill_seed: Arc::new(|seed| *seed = [OBSERVER_SEED; SEED_BYTES]),
-                fill_probe_nonce: Arc::new(|nonce: &mut Nonce| *nonce = PROBE_NONCE),
-                report: Arc::new(|_record: NodeRecord| {}),
-                probe_relay: Arc::new(|_relay| Box::pin(async { true })),
                 bind_endpoint: Box::new(move |key, gate_key, relays| {
                     Box::pin(async move {
                         let endpoint = NodeEndpoint::bind(
@@ -967,13 +1050,39 @@ mod tests {
                         Ok(endpoint)
                     })
                 }),
+                interrupted,
+            };
+            let operator_effects = OperatorEffects {
+                fill_probe_nonce: Arc::new(|nonce: &mut Nonce| *nonce = PROBE_NONCE),
+                report: Arc::new(|_record: NodeRecord| {}),
+                probe_relay: Arc::new(|_relay| Box::pin(async { true })),
                 start_inbox: Box::new(move || {
                     InboxSocket::start(&directories, u32::from(OBSERVER_SEED), &EveryProcessRuns)
                         .map(Arc::new)
                 }),
-                interrupted,
-            }
+            };
+            (effects, operator_effects)
         }
+    }
+
+    async fn run(
+        command: &ObserverCommand,
+        directories: &Directories,
+        filesystem: &(impl NetworkFilesystem + Sync),
+        pause: &(impl Pause + Sync),
+        (effects, operator_effects): (ObserverEffects, OperatorEffects),
+        stdout: &mut (impl Write + Send),
+    ) -> Result<(), ObserverCommandError> {
+        super::run(
+            command,
+            directories,
+            filesystem,
+            pause,
+            effects,
+            operator_effects,
+            stdout,
+        )
+        .await
     }
 
     impl Drop for Lab {
@@ -1520,5 +1629,164 @@ mod tests {
         );
         assert_eq!(String::from_utf8(output).unwrap(), "");
         drop(lab);
+    }
+
+    const LINE_CLOCK_MS: u64 = 1_000_000;
+    const PROPERTY_CASES: usize = 64;
+    const HOSTILE_STRIDE: usize = 3;
+    const HOSTILE_LENGTHS: usize = 12;
+    const HOSTILE_BYTES: [u8; 7] = [b'a', b'\t', b'\n', b'\r', 0x1b, 0xff, b'{'];
+    const SENDER_PUBLIC_FIELD_COUNT: usize = 5;
+    const PEER_FIELD_COUNT: usize = 4;
+
+    fn card_of(seed: u8) -> wire::PublicKey {
+        [seed; 32]
+    }
+
+    fn unsigned() -> wire::SignatureBytes {
+        wire::SignatureBytes([0; 64])
+    }
+
+    fn message_from(handle: &str, attached: bool) -> Message {
+        Message {
+            v: Version::CURRENT,
+            id: [0; 16],
+            to: card_of(0),
+            handle: handle.to_owned(),
+            attached,
+            sent_at: LINE_CLOCK_MS,
+            body: String::new(),
+            mac: ZERO_MAC,
+        }
+    }
+
+    fn presence_of(seed: u8, handle: &str, public: Vec<u8>) -> wire::Presence {
+        wire::Presence {
+            v: Version::CURRENT,
+            card: card_of(seed),
+            handle: handle.to_owned(),
+            public,
+            attached: true,
+            addr: Addr::from_endpoint_report(Vec::new(), Vec::new()),
+            seq: LINE_CLOCK_MS,
+            mac: ZERO_MAC,
+            sig: unsigned(),
+        }
+    }
+
+    fn hostile_text(index: usize) -> Vec<u8> {
+        HOSTILE_BYTES
+            .iter()
+            .cycle()
+            .skip(index)
+            .step_by(HOSTILE_STRIDE)
+            .take(index % HOSTILE_LENGTHS)
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn spec_3_13_a_peer_line_names_its_status_and_prints_a_dash_for_an_unknown_public() {
+        let mut table = PeerTable::new(card_of(0));
+        let sent = [(1, "amy", true), (2, "bob", false), (3, "cat", true)];
+        for (seed, handle, attached) in sent {
+            drop(table.receive_message(
+                card_of(seed),
+                &message_from(handle, attached),
+                LINE_CLOCK_MS,
+            ));
+        }
+        drop(table.direct_contact_failed(card_of(2), LINE_CLOCK_MS));
+        table.receive_departure(
+            &wire::Departure {
+                v: Version::CURRENT,
+                card: card_of(3),
+                seq: LINE_CLOCK_MS,
+                mac: ZERO_MAC,
+                sig: unsigned(),
+            },
+            LINE_CLOCK_MS,
+        );
+
+        let lines: Vec<String> = table.peers(LINE_CLOCK_MS).map(peer_line).collect();
+
+        assert_eq!(
+            lines,
+            [
+                "amy\tonline\ttrue\t-\n",
+                "bob\tunreachable\tfalse\t-\n",
+                "cat\tgone\ttrue\t-\n"
+            ]
+        );
+    }
+
+    #[test]
+    fn spec_3_13_a_departure_an_unreachable_report_and_an_infrastructure_record_print_their_cards()
+    {
+        let departure = Payload::Departure(wire::Departure {
+            v: Version::CURRENT,
+            card: card_of(1),
+            seq: LINE_CLOCK_MS,
+            mac: ZERO_MAC,
+            sig: unsigned(),
+        });
+        let unreachable = Payload::Unreachable(wire::Unreachable {
+            v: Version::CURRENT,
+            card: card_of(2),
+            reporter: card_of(3),
+            ts: LINE_CLOCK_MS,
+            mac: ZERO_MAC,
+            sig: unsigned(),
+        });
+        let infrastructure = Payload::Infrastructure(wire::Infrastructure {
+            v: Version::CURRENT,
+            host: card_of(4),
+            relay: wire::RelayUrl::try_from("https://relay.example".to_owned()).unwrap(),
+            addr: Addr::from_endpoint_report(Vec::new(), Vec::new()),
+            ts: LINE_CLOCK_MS,
+            cert: unsigned(),
+            mac: ZERO_MAC,
+            sig: unsigned(),
+        });
+
+        assert_eq!(
+            payload_line(&departure),
+            format!("departure\t{}\n", "01".repeat(32))
+        );
+        assert_eq!(
+            payload_line(&unreachable),
+            format!("unreachable\t{}\t{}\n", "02".repeat(32), "03".repeat(32))
+        );
+        assert_eq!(
+            payload_line(&infrastructure),
+            format!(
+                "infrastructure\t{}\thttps://relay.example\n",
+                "04".repeat(32)
+            )
+        );
+    }
+
+    #[test]
+    fn spec_3_13_no_field_of_a_presence_or_peer_line_breaks_its_columns_or_its_line() {
+        for index in 0..PROPERTY_CASES {
+            let hostile = hostile_text(index);
+            let handle = String::from_utf8_lossy(&hostile).into_owned();
+            let presence = presence_of(1, &handle, hostile.clone());
+            let presence_line = payload_line(&Payload::Presence(presence.clone()));
+            let mut table = PeerTable::new(card_of(0));
+            drop(table.receive_presence(&presence_of(1, "amy", hostile), LINE_CLOCK_MS));
+            let peer_lines: Vec<String> = table.peers(LINE_CLOCK_MS).map(peer_line).collect();
+
+            assert_eq!(
+                presence_line.matches('\t').count(),
+                SENDER_PUBLIC_FIELD_COUNT - 1
+            );
+            assert_eq!(presence_line.matches('\n').count(), 1);
+            assert!(presence_line.ends_with('\n'));
+            assert_eq!(peer_lines.len(), 1);
+            assert_eq!(peer_lines[0].matches('\t').count(), PEER_FIELD_COUNT - 1);
+            assert_eq!(peer_lines[0].matches('\n').count(), 1);
+            assert!(peer_lines[0].ends_with('\n'));
+        }
     }
 }
