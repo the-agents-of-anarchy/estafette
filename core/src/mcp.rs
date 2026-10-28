@@ -1633,6 +1633,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spec_3_10_broadcast_returns_one_result_per_handle_in_the_order_given() {
+        let _slot = node_slot().await;
+        let machine = Machine::new("broadcast");
+        let (mut amy, mut bob) = claimed_pair(&machine).await;
+
+        let broadcast = amy
+            .envelope(
+                "broadcast",
+                json!({ "to": ["nobody", "bob"], "body": MESSAGE_BODY }),
+            )
+            .await;
+        let read = bob.envelope("inbox", json!({})).await;
+
+        let id = broadcast["result"]["results"][1]["id"].as_str().unwrap();
+        assert_eq!(
+            broadcast["result"],
+            json!({ "results": [
+                {
+                    "to": "nobody",
+                    "delivered": false,
+                    "error": { "code": "unknown_handle", "message": "No present member has that handle." }
+                },
+                { "to": "bob", "id": id, "delivered": true, "attached": false }
+            ] })
+        );
+        assert_eq!(read["result"]["messages"][0]["id"], json!(id));
+    }
+
+    #[tokio::test]
     async fn spec_3_15_test_12_the_tool_list_is_identical_before_and_after_init() {
         let _slot = node_slot().await;
         let machine = Machine::new("test-12");
