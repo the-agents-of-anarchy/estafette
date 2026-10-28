@@ -1159,6 +1159,16 @@ mod tests {
 
     impl Peer {
         async fn joined_through(seed: u8, host: &iroh::Endpoint) -> Self {
+            let mut peer = Self::subscribed_through(seed, host).await;
+            tokio::time::timeout(PEER_JOIN_WAIT, async {
+                while peer.topic.next_event().await.unwrap().unwrap() != GossipEvent::Joined {}
+            })
+            .await
+            .unwrap();
+            peer
+        }
+
+        async fn subscribed_through(seed: u8, host: &iroh::Endpoint) -> Self {
             let endpoint = NodeEndpoint::bind(
                 secret_key(seed),
                 *network_keys().gate_key(),
@@ -1173,18 +1183,13 @@ mod tests {
             let router = Router::builder(endpoint.endpoint().clone())
                 .accept(GOSSIP_ALPN, gossip.clone())
                 .spawn();
-            let mut topic = NetworkTopic::join(
+            let topic = NetworkTopic::join(
                 &gossip,
                 network_keys(),
                 secret_key(OWNER_SEED).public(),
                 vec![host.id()],
                 Instant::now(),
             )
-            .await
-            .unwrap();
-            tokio::time::timeout(PEER_JOIN_WAIT, async {
-                while topic.next_event().await.unwrap().unwrap() != GossipEvent::Joined {}
-            })
             .await
             .unwrap();
             Self {
@@ -1420,7 +1425,7 @@ mod tests {
         let ((_printed, outcome), heard) =
             tokio::join!(run_planned(&scratch, plan, &seen), async {
                 let host = bound_endpoint(&seen, 0).await;
-                let mut peer = Peer::joined_through(PEER_SEED, &host).await;
+                let mut peer = Peer::subscribed_through(PEER_SEED, &host).await;
                 let heard = peer.next_host_record(RECORD_AT_JOIN_WAIT).await;
                 drop(stop);
                 heard
