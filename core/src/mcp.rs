@@ -356,8 +356,20 @@ impl Server {
         Some((name, card))
     }
 
-    /// Whether the card's sidecar lock is taken, learned by trying it and releasing it at once.
+    /// Whether the card's sidecar lock is taken: held without a try for the card this session claimed, otherwise tried and released at once.
     fn is_held(&self, card: &Handle) -> bool {
+        self.is_claimed_here(card) || self.is_locked_elsewhere(card)
+    }
+
+    /// Whether this session claimed the card.
+    fn is_claimed_here(&self, card: &Handle) -> bool {
+        self.claimed_card()
+            .as_ref()
+            .is_some_and(|claimed| &claimed.card == card)
+    }
+
+    /// Whether trying the card's sidecar lock finds it taken, releasing it at once.
+    fn is_locked_elsewhere(&self, card: &Handle) -> bool {
         self.served
             .directories
             .card_sidecar_file(self.served.network.as_str(), card.as_str())
@@ -1398,6 +1410,24 @@ mod tests {
                 "you": { "card": "amy-card", "handle": "amy", "status": "claimed" },
                 "result": { "handle": "amy", "inbox_path": inbox_path }
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn spec_3_10_list_cards_reports_the_card_this_process_holds_as_held_without_trying_it() {
+        let _slot = node_slot().await;
+        let machine = Machine::new("own-held");
+        machine.create_card("amy-card", "amy", AMY_SEED);
+        let mut client = start_server(&machine, ServerPlan::alone(FIRST_PROCESS_ID));
+        client.initialize().await;
+        client.envelope("init", json!({ "card": "amy-card" })).await;
+        fs::remove_file(machine.sidecar_path("amy-card")).unwrap();
+
+        let listed = client.envelope("list_cards", json!({})).await;
+
+        assert_eq!(
+            listed["result"],
+            json!({ "cards": [{ "name": "amy-card", "handle": "amy", "held": true }] })
         );
     }
 
