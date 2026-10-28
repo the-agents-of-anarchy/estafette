@@ -103,7 +103,7 @@ pub struct NodeEffects {
     pub clock: Clock,
     /// The monotonic clock every wait and interval of the node is measured on, the runtime's own in production.
     pub monotonic: MonotonicClock,
-    /// A cryptographically secure source for the nonce of each probe.
+    /// A cryptographically secure source of 16 random bytes: the nonce of each probe and the id of each message.
     pub fill_probe_nonce: ProbeNonceSource,
     /// The run record, written to standard error by the command-line layer; it must not block.
     pub report: RunRecord,
@@ -177,7 +177,9 @@ impl std::error::Error for NodeError {}
 
 /// A running member: joined to the topic, serving the direct protocol, and keeping its peer table by spec 3.8.
 pub struct Node {
-    state: Arc<NodeState>,
+    pub(super) state: Arc<NodeState>,
+    pub(super) client: Arc<DirectClient>,
+    pub(super) fill_message_id: ProbeNonceSource,
     own_handle: LocalHandle,
     _router: Router,
     presence_loop: JoinHandle<()>,
@@ -219,6 +221,8 @@ impl Node {
             network.keys.clone(),
             ClientTimeouts::SPEC,
         ));
+        let sending_client = Arc::clone(&client);
+        let fill_message_id = Arc::clone(&effects.fill_probe_nonce);
         let router = Router::builder(endpoint.endpoint().clone())
             .accept(
                 DIRECT_ALPN,
@@ -264,6 +268,8 @@ impl Node {
             own_handle,
             _router: router,
             presence_loop,
+            client: sending_client,
+            fill_message_id,
         })
     }
 
@@ -331,7 +337,7 @@ async fn lookup_holds_address(endpoint: &iroh::Endpoint, id: EndpointId) -> bool
 }
 
 /// What the direct server and the presence loop share: the public half of the identity, the peer table, this node's address and the inbox.
-struct NodeState {
+pub(super) struct NodeState {
     own_card: wire::PublicKey,
     public: Vec<u8>,
     own_handle: OnceLock<LocalHandle>,
@@ -366,13 +372,24 @@ impl NodeState {
     }
 
     /// Milliseconds since the Unix epoch by the clock the composition root handed in.
-    fn now_ms(&self) -> u64 {
+    pub(super) fn now_ms(&self) -> u64 {
         (self.clock)()
     }
 
     /// The peer table, locked for one operation.
     fn table(&self) -> MutexGuard<'_, PeerTable> {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Sets the peer Unreachable after a send to it failed, and hands the announcement of that to the presence loop.
+    pub(super) fn contact_failed(&self, card: wire::PublicKey) {
+        let effects = self.table().direct_contact_failed(card, self.now_ms());
+        self.hand_to_loop(LoopEvent::Effects(effects));
+    }
+
+    /// Sets the peer Online after a send to it was acknowledged.
+    pub(super) fn contact_succeeded(&self, card: wire::PublicKey) {
+        self.table().direct_contact_succeeded(card, self.now_ms());
     }
 
     /// The full current address of this node's endpoint, within the caps of spec 3.6.
@@ -441,7 +458,7 @@ impl DirectHost for Arc<NodeState> {
             return;
         };
         self.inbox.publish(ReceivedMessage {
-            id: uuid::Uuid::from_bytes(message.id).to_string(),
+            id: message_id_text(message.id),
             from: from.as_str().to_owned(),
             body: message.body,
             sent_at: message.sent_at,
@@ -1058,13 +1075,18 @@ const fn seconds_of(milliseconds: u64) -> u64 {
     milliseconds / MILLIS_PER_SECOND
 }
 
+/// The text a message id takes in the inbox and in a send result.
+pub(super) fn message_id_text(id: wire::MessageId) -> String {
+    uuid::Uuid::from_bytes(id).to_string()
+}
+
 /// The card as an iroh node id, or none when its bytes are not a valid key.
-fn endpoint_id(card: &wire::PublicKey) -> Option<EndpointId> {
+pub(super) fn endpoint_id(card: &wire::PublicKey) -> Option<EndpointId> {
     EndpointId::from_bytes(card).ok()
 }
 
 /// The wire form of an endpoint address, within the caps of spec 3.6.
-fn wire_addr(addr: &EndpointAddr) -> Addr {
+pub(super) fn wire_addr(addr: &EndpointAddr) -> Addr {
     Addr::from_endpoint_report(
         addr.relay_urls().map(ToString::to_string),
         addr.ip_addrs().copied(),
@@ -1083,7 +1105,7 @@ fn endpoint_addr(id: EndpointId, addr: &Addr) -> EndpointAddr {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::ffi::OsString;
     use std::fs;
     use std::path::PathBuf;
@@ -1104,19 +1126,19 @@ mod tests {
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];
     const OWNER_SEED: u8 = 60;
-    const FIRST_SEED: u8 = 61;
-    const SECOND_SEED: u8 = 62;
-    const FIRST_HANDLE: &str = "amy";
-    const SECOND_HANDLE: &str = "bob";
-    const FIRST_PUBLIC: &[u8] = br#"{"role":"first"}"#;
-    const SECOND_PUBLIC: &[u8] = br#"{"role":"second"}"#;
+    pub(in crate::node) const FIRST_SEED: u8 = 61;
+    pub(in crate::node) const SECOND_SEED: u8 = 62;
+    pub(in crate::node) const FIRST_HANDLE: &str = "amy";
+    pub(in crate::node) const SECOND_HANDLE: &str = "bob";
+    pub(in crate::node) const FIRST_PUBLIC: &[u8] = br#"{"role":"first"}"#;
+    pub(in crate::node) const SECOND_PUBLIC: &[u8] = br#"{"role":"second"}"#;
     const UNREACHABLE_RELAY: &str = "https://relay.estafette.invalid/";
     const SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT: Duration = Duration::from_millis(8000);
     const NETWORK_FILE_NAME: &str = "network.toml";
     const NOT_A_KEY: &str = "not a key";
     const MONOTONIC_LAG: Duration = Duration::from_millis(2000);
     const INIT_ON_A_LAGGING_CLOCK_LATEST: Duration = Duration::from_millis(2000);
-    const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
+    pub(in crate::node) const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
     const LISTING_POLL: Duration = Duration::from_millis(20);
     const PROBE_NONCE: crate::wire::Nonce = [7; 16];
     const NODE_TESTS_AT_ONCE: usize = 2;
@@ -1128,13 +1150,13 @@ mod tests {
     const MESSAGE_ID_TEXT: &str = "018f3a7c-0000-7000-8000-00000000002a";
     const MESSAGE_SENT_AT: u64 = 1_700_000_123_456;
     const MESSAGE_BODY: &str = "a message before any presence";
-    const INTRODUCE_ROUND_TRIP: Duration = Duration::from_millis(1500);
-    const THIRD_SEED: u8 = 63;
-    const THIRD_HANDLE: &str = "cal";
-    const THIRD_PUBLIC: &[u8] = br#"{"role":"third"}"#;
+    pub(in crate::node) const INTRODUCE_ROUND_TRIP: Duration = Duration::from_millis(1500);
+    pub(in crate::node) const THIRD_SEED: u8 = 63;
+    pub(in crate::node) const THIRD_HANDLE: &str = "cal";
+    pub(in crate::node) const THIRD_PUBLIC: &[u8] = br#"{"role":"third"}"#;
     const SECOND_EFFECTIVE_FIRST_HANDLE: &str = "amy-2";
-    const WITNESS_SEED: u8 = 70;
-    const WITNESS_PUBLIC: &[u8] = br#"{"role":"witness"}"#;
+    pub(in crate::node) const WITNESS_SEED: u8 = 70;
+    pub(in crate::node) const WITNESS_PUBLIC: &[u8] = br#"{"role":"witness"}"#;
     const WITNESS_JOIN_WAIT: Duration = Duration::from_secs(8);
     const MARKER_SEED: u8 = 80;
     const SECOND_MARKER_SEED: u8 = 81;
@@ -1163,7 +1185,7 @@ mod tests {
     const STALE_RUMOR_TS: u64 = CLOCK_AFTER_MAX_AGE_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1;
     const FRESH_RUMOR_TS: u64 = CLOCK_AFTER_MAX_AGE_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS;
     const NOTHING_MORE_WAIT: Duration = Duration::from_millis(1000);
-    const WITNESS_HANDLE: &str = "xen";
+    pub(in crate::node) const WITNESS_HANDLE: &str = "xen";
     const SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT: Duration = Duration::from_millis(5000);
     const PROBE_ANSWERED_WAIT: Duration = Duration::from_secs(5);
     const AFTER_PROBE_ACK: Duration = Duration::from_millis(300);
@@ -1172,15 +1194,15 @@ mod tests {
         NetworkSecret::from_bytes(NETWORK_SECRET)
     }
 
-    fn keys() -> NetworkKeys {
+    pub(in crate::node) fn keys() -> NetworkKeys {
         NetworkKeys::derive(&network_secret())
     }
 
-    fn secret_key(seed: u8) -> SecretKey {
+    pub(in crate::node) fn secret_key(seed: u8) -> SecretKey {
         SecretKey::from_bytes(&[seed; KEY_LEN])
     }
 
-    fn card(seed: u8) -> crate::wire::PublicKey {
+    pub(in crate::node) fn card(seed: u8) -> crate::wire::PublicKey {
         *secret_key(seed).public().as_bytes()
     }
 
@@ -1205,14 +1227,14 @@ mod tests {
     static NODE_TEST_SLOTS: tokio::sync::Semaphore =
         tokio::sync::Semaphore::const_new(NODE_TESTS_AT_ONCE);
 
-    struct Scratch {
+    pub(in crate::node) struct Scratch {
         root: PathBuf,
         directories: Directories,
         _slot: tokio::sync::SemaphorePermit<'static>,
     }
 
     impl Scratch {
-        async fn new(tag: &str) -> Self {
+        pub(in crate::node) async fn new(tag: &str) -> Self {
             let slot = NODE_TEST_SLOTS.acquire().await.unwrap();
             let root = std::env::temp_dir().join(format!("u20-{tag}-{}", std::process::id()));
             drop(fs::remove_dir_all(&root));
@@ -1250,7 +1272,7 @@ mod tests {
         }
     }
 
-    async fn bind(seed: u8) -> NodeEndpoint {
+    pub(in crate::node) async fn bind(seed: u8) -> NodeEndpoint {
         NodeEndpoint::bind(
             secret_key(seed),
             *keys().gate_key(),
@@ -1279,7 +1301,7 @@ mod tests {
         }
     }
 
-    struct MemberPlan {
+    pub(in crate::node) struct MemberPlan {
         seed: u8,
         handle: &'static str,
         public: &'static [u8],
@@ -1290,7 +1312,7 @@ mod tests {
     }
 
     impl MemberPlan {
-        fn new(seed: u8, handle: &'static str, public: &'static [u8]) -> Self {
+        pub(in crate::node) fn new(seed: u8, handle: &'static str, public: &'static [u8]) -> Self {
             Self {
                 seed,
                 handle,
@@ -1302,14 +1324,14 @@ mod tests {
             }
         }
 
-        fn with_hosts(self, hosts: &[u8]) -> Self {
+        pub(in crate::node) fn with_hosts(self, hosts: &[u8]) -> Self {
             Self {
                 hosts: hosts.to_vec(),
                 ..self
             }
         }
 
-        fn reaching(self, reachable: &[u8]) -> Self {
+        pub(in crate::node) fn reaching(self, reachable: &[u8]) -> Self {
             Self {
                 reachable: reachable.to_vec(),
                 ..self
@@ -1317,18 +1339,21 @@ mod tests {
         }
     }
 
-    struct Member {
-        node: Node,
-        endpoint: iroh::Endpoint,
-        inbox_path: PathBuf,
+    pub(in crate::node) struct Member {
+        pub(in crate::node) node: Node,
+        pub(in crate::node) endpoint: iroh::Endpoint,
+        pub(in crate::node) inbox_path: PathBuf,
         config_path: PathBuf,
     }
 
-    async fn start_members(scratch: &Scratch, plans: Vec<MemberPlan>) -> Vec<Member> {
+    pub(in crate::node) async fn start_members(
+        scratch: &Scratch,
+        plans: Vec<MemberPlan>,
+    ) -> Vec<Member> {
         start_members_reaching(scratch, plans, &[]).await
     }
 
-    async fn start_members_reaching(
+    pub(in crate::node) async fn start_members_reaching(
         scratch: &Scratch,
         plans: Vec<MemberPlan>,
         running: &[(u8, iroh::EndpointAddr)],
@@ -1414,7 +1439,7 @@ mod tests {
         }
     }
 
-    async fn start_pair(scratch: &Scratch) -> (Member, Member) {
+    pub(in crate::node) async fn start_pair(scratch: &Scratch) -> (Member, Member) {
         let mut members = start_members(
             scratch,
             vec![
@@ -1429,7 +1454,11 @@ mod tests {
         (first, second)
     }
 
-    async fn listed_within(member: &Member, seed: u8, within: Duration) -> Option<Peer> {
+    pub(in crate::node) async fn listed_within(
+        member: &Member,
+        seed: u8,
+        within: Duration,
+    ) -> Option<Peer> {
         tokio::time::timeout(within, async {
             loop {
                 if let Some(peer) = member
@@ -1472,7 +1501,10 @@ mod tests {
         drop(scratch);
     }
 
-    async fn inbox_frames(member: &Member, count: usize) -> Vec<serde_json::Value> {
+    pub(in crate::node) async fn inbox_frames(
+        member: &Member,
+        count: usize,
+    ) -> Vec<serde_json::Value> {
         let socket_path = &member.inbox_path;
         let mut stream = tokio::net::UnixStream::connect(socket_path).await.unwrap();
         tokio::io::AsyncWriteExt::write_all(&mut stream, b"{\"since\": 0}\n")
@@ -1494,7 +1526,7 @@ mod tests {
         frames
     }
 
-    fn message_to(seed: u8, handle: &str) -> Message {
+    pub(in crate::node) fn message_to(seed: u8, handle: &str) -> Message {
         Message {
             v: Version::CURRENT,
             id: MESSAGE_ID,
@@ -1715,7 +1747,7 @@ mod tests {
             .unwrap();
     }
 
-    async fn start_third_through_second(
+    pub(in crate::node) async fn start_third_through_second(
         scratch: &Scratch,
         second: &Member,
         third_handle: &'static str,
