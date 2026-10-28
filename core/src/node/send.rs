@@ -178,6 +178,7 @@ mod tests {
         start_members_reaching, start_pair, start_third_through_second,
     };
     use crate::node::presence::wire_addr;
+    use crate::payload::PayloadError;
     use crate::peers::Status;
     use crate::wire::{Addr, Introduce, IntroduceAck};
 
@@ -188,8 +189,8 @@ mod tests {
     const NO_ONE: &str = "nobody";
     const FIRST_CONNECTION_WAIT: Duration = Duration::from_secs(3);
     const CONNECTION_POLL: Duration = Duration::from_millis(20);
-    const MATCH_SEEDS: [u8; 3] = [11, 12, 13];
-    const KEY_BYTES: usize = 32;
+    const FIRST_MATCH_SEED: u8 = 11;
+    const MOST_MATCHES: usize = 8;
 
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum PeerPhase {
@@ -503,46 +504,101 @@ mod tests {
         drop(scratch);
     }
 
+    fn cards_seeded_by_index(count: usize) -> Vec<wire::PublicKey> {
+        (FIRST_MATCH_SEED..=u8::MAX).take(count).map(card).collect()
+    }
+
+    fn rendered(card: &wire::PublicKey) -> String {
+        render_public_key(&endpoint_id(card).unwrap())
+    }
+
     #[test]
-    fn spec_3_10_the_matches_decide_unknown_one_or_ambiguous_handle() {
-        for count in 0..=MATCH_SEEDS.len() {
-            let seeds = &MATCH_SEEDS[..count];
-            let matches: Vec<wire::PublicKey> = seeds.iter().map(|&seed| card(seed)).collect();
+    fn spec_3_10_no_match_is_unknown_handle() {
+        assert_eq!(only_card(&[]), Err(ErrorCode::UnknownHandle));
+    }
 
-            let decided = only_card(&matches);
-
-            match count {
-                0 => assert_eq!(decided, Err(ErrorCode::UnknownHandle)),
-                1 => assert_eq!(decided, Ok(card(MATCH_SEEDS[0]))),
-                _ => assert_eq!(
-                    decided,
-                    Err(ErrorCode::AmbiguousHandle {
-                        candidates: seeds
-                            .iter()
-                            .map(|&seed| render_public_key(
-                                &iroh::SecretKey::from_bytes(&[seed; KEY_BYTES]).public()
-                            ))
-                            .collect()
-                    })
-                ),
-            }
+    #[test]
+    fn spec_3_10_one_match_is_its_card_whichever_card_it_is() {
+        for card in cards_seeded_by_index(MOST_MATCHES) {
+            assert_eq!(only_card(&[card]), Ok(card));
         }
     }
 
     #[test]
-    fn spec_3_10_a_failed_ack_maps_to_the_code_of_its_failure() {
-        assert_eq!(
-            failure_error(&DirectError::Unreachable),
-            ErrorCode::Unreachable
-        );
-        assert_eq!(failure_error(&DirectError::Timeout), ErrorCode::Timeout);
-        assert_eq!(failure_error(&DirectError::Refused), ErrorCode::Refused);
+    fn spec_3_10_several_matches_are_ambiguous_handle_naming_each_card_in_order() {
+        for count in 2..=MOST_MATCHES {
+            let matches = cards_seeded_by_index(count);
+
+            let decided = only_card(&matches);
+
+            assert_eq!(
+                decided,
+                Err(ErrorCode::AmbiguousHandle {
+                    candidates: matches.iter().map(rendered).collect()
+                })
+            );
+        }
+    }
+
+    fn every_direct_error() -> Vec<DirectError> {
+        let payload_error = || PayloadError::SignerIsNotThePayloadSigner;
+        vec![
+            DirectError::Unreachable,
+            DirectError::Timeout,
+            DirectError::Refused,
+            DirectError::UnsealableRequest(payload_error()),
+            DirectError::InvalidAck(payload_error()),
+            DirectError::OversizedAck,
+            DirectError::UnexpectedAck,
+            DirectError::ProbeNonceMismatch,
+        ]
     }
 
     #[test]
-    fn spec_3_10_a_refusal_reason_maps_to_its_code() {
-        assert_eq!(refusal_error(Some("too_large")), ErrorCode::TooLarge);
-        assert_eq!(refusal_error(Some("refused")), ErrorCode::Refused);
+    fn spec_3_10_a_failed_ack_is_unreachable_or_timeout_only_for_those_failures() {
+        for failure in every_direct_error() {
+            let expected = match failure {
+                DirectError::Unreachable => ErrorCode::Unreachable,
+                DirectError::Timeout => ErrorCode::Timeout,
+                DirectError::Refused
+                | DirectError::UnsealableRequest(_)
+                | DirectError::InvalidAck(_)
+                | DirectError::OversizedAck
+                | DirectError::UnexpectedAck
+                | DirectError::ProbeNonceMismatch => ErrorCode::Refused,
+            };
+
+            assert_eq!(failure_error(&failure), expected);
+        }
+    }
+
+    #[test]
+    fn spec_3_10_a_refusal_reason_is_too_large_only_when_it_is_the_too_large_code() {
+        let reasons = [
+            ErrorCode::NotClaimed,
+            ErrorCode::CardNotFound,
+            ErrorCode::CardHeld,
+            ErrorCode::CardInvalid,
+            ErrorCode::SidecarInvalid,
+            ErrorCode::UnknownHandle,
+            ErrorCode::AmbiguousHandle {
+                candidates: Vec::new(),
+            },
+            ErrorCode::Unreachable,
+            ErrorCode::Timeout,
+            ErrorCode::Refused,
+            ErrorCode::TooLarge,
+            ErrorCode::BadRequest,
+        ];
+        for reason in &reasons {
+            let expected = if *reason == ErrorCode::TooLarge {
+                ErrorCode::TooLarge
+            } else {
+                ErrorCode::Refused
+            };
+
+            assert_eq!(refusal_error(Some(reason.code())), expected);
+        }
         assert_eq!(refusal_error(None), ErrorCode::Refused);
     }
 }
