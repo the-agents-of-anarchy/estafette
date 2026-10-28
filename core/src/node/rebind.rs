@@ -20,11 +20,17 @@ use crate::node::presence::{
 };
 use crate::peers::Status;
 
+/// Silence after which a member that knows another node is deaf and rebinds (spec:781, spec:1016, D46).
 const DEAF_TIMEOUT: Duration = Duration::from_secs(15);
+/// The least time between any two rebinds (spec:781, spec:786, spec:1017).
 const REBIND_INTERVAL: Duration = Duration::from_secs(20);
+/// How long a rebind waits for a known host's relay to answer its TCP probe (spec:786, spec:1019).
 const RELAY_PROBE_TIMEOUT: Duration = Duration::from_millis(1000);
+/// How long after a rebind's join the member waits for a member neighbor before asking to join the members (spec:782, spec:1020).
 const MEMBER_JOIN_WAIT: Duration = Duration::from_millis(1500);
+/// The time between two asks to join the members (spec:782, spec:1021).
 const MEMBER_JOIN_INTERVAL: Duration = Duration::from_millis(3000);
+/// The most asks to join the members after one rebind (spec:782, spec:1012).
 const MEMBER_JOIN_TRIES: u32 = 10;
 
 /// Whether a relay answers the probe of spec 3.8, as the composition root hands it to the node.
