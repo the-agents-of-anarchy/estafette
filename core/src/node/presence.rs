@@ -1,6 +1,6 @@
 //! The presence half of the node of spec 3.8: init, the peer table fed by gossip and direct contact, and every announcement.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
-use iroh::endpoint::RelayStatus;
+use iroh::endpoint::{BindError, RelayStatus};
 use iroh::protocol::Router;
 use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey, Signature, TransportAddr, Watcher};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
@@ -18,6 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
+use super::rebind::{MemberJoins, RebindSchedule, RelayProbe};
 use crate::config::{AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig};
 use crate::crypto::{NetworkKeys, NetworkSecret};
 use crate::handle::{AnnouncedHandle, LocalHandle};
@@ -110,15 +111,19 @@ pub struct NodeEffects {
     pub report: RunRecord,
     /// The inbox socket that started with the process.
     pub inbox: Arc<InboxSocket>,
+    /// Whether a TCP connect to a relay's host and port succeeds, `relay_answers` in production; the node gives it the relay probe timeout.
+    pub probe_relay: RelayProbe,
 }
 
-/// A failure the node met while running, for the run record.
+/// A failure or a rebind the node met while running, for the run record.
 #[derive(Debug)]
 pub enum NodeRecord {
     BroadcastFailed(GossipError),
     KnownHostsNotSaved(ConfigError),
     TopicFailed(GossipError),
     TopicClosed,
+    Rebinding,
+    RebindFailed(BindError),
 }
 
 impl fmt::Display for NodeRecord {
@@ -134,6 +139,13 @@ impl fmt::Display for NodeRecord {
             Self::TopicClosed => {
                 formatter.write_str("the gossip topic closed, so this node announces nothing more")
             }
+            Self::Rebinding => formatter.write_str(
+                "rebinding the endpoint: no gossip payload was heard for the deaf timeout, or the join gained no neighbor",
+            ),
+            Self::RebindFailed(source) => write!(
+                formatter,
+                "the endpoint was not bound again, so this node announces nothing more: {source}"
+            ),
         }
     }
 }
@@ -176,13 +188,12 @@ impl fmt::Display for NodeError {
 
 impl std::error::Error for NodeError {}
 
-/// A running member: joined to the topic, serving the direct protocol, and keeping its peer table by spec 3.8.
+/// A running member: joined to the topic, serving the direct protocol, keeping its peer table by spec 3.8, and rebinding when it falls deaf.
 pub struct Node {
     pub(super) state: Arc<NodeState>,
     pub(super) client: Arc<DirectClient>,
     pub(super) fill_message_id: ProbeNonceSource,
     own_handle: LocalHandle,
-    _router: Router,
     presence_loop: JoinHandle<()>,
 }
 
@@ -198,52 +209,44 @@ impl Node {
         effects: NodeEffects,
     ) -> Result<Self, NodeError> {
         let hosts = known_host_addresses(&network.config)?;
-        seed_lookup_with_known_hosts(&endpoint, &hosts).await;
-        let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
-        let bootstrap = hosts.iter().map(|host| host.id).collect();
-        let topic = NetworkTopic::join(
-            &gossip,
-            network.keys.clone(),
-            network.owner,
-            bootstrap,
-            (effects.monotonic)(),
-        )
-        .await
-        .map_err(NodeError::Topic)?;
-        let (to_loop, from_hosts) = mpsc::unbounded_channel();
-        let state = Arc::new(NodeState::new(
-            &identity,
-            endpoint.endpoint().clone(),
-            &effects,
-            to_loop,
-        ));
+        seed_lookup_with_known_hosts(&endpoint, &hosts);
         let client = Arc::new(DirectClient::new(
             endpoint.endpoint().clone(),
             network.keys.clone(),
             ClientTimeouts::SPEC,
         ));
+        let (to_loop, from_hosts) = mpsc::unbounded_channel();
+        let state = Arc::new(NodeState::new(
+            &identity,
+            Arc::clone(&client),
+            &effects,
+            to_loop,
+        ));
+        let (router, gossip) = serve(&endpoint, &network.keys, &state);
+        let subscribed = (effects.monotonic)();
+        let topic = NetworkTopic::join(
+            &gossip,
+            network.keys.clone(),
+            network.owner,
+            hosts.iter().map(|host| host.id).collect(),
+            subscribed,
+        )
+        .await
+        .map_err(NodeError::Topic)?;
         let sending_client = Arc::clone(&client);
         let fill_message_id = Arc::clone(&effects.fill_probe_nonce);
-        let router = Router::builder(endpoint.endpoint().clone())
-            .accept(
-                DIRECT_ALPN,
-                DirectServer::new(network.keys, Arc::clone(&state)),
-            )
-            .accept(GOSSIP_ALPN, gossip)
-            .spawn();
         let (assigned, own_handle) = oneshot::channel();
         let presence_loop = PresenceLoop {
             attached: effects.inbox.attached(),
-            own_addresses: Box::pin(endpoint.endpoint().watch_addr().stream_updates_only()),
-            relay_statuses: Box::pin(
-                endpoint
-                    .endpoint()
-                    .home_relay_status()
-                    .stream_updates_only(),
-            ),
+            own_addresses: own_address_changes(endpoint.endpoint()),
+            relay_statuses: home_relay_changes(endpoint.endpoint()),
             state: Arc::clone(&state),
             card_key: identity.card_key,
             endpoint,
+            router,
+            gossip,
+            keys: network.keys,
+            owner: network.owner,
             client,
             topic,
             from_hosts,
@@ -253,7 +256,11 @@ impl Node {
             reannounce_due: None,
             relay_loss: RelayLossWatch::default(),
             known_hosts: KnownHosts::new(network.config, network.config_path),
+            schedule: RebindSchedule::new(subscribed),
+            member_joins: MemberJoins::Idle,
+            neighbors: BTreeSet::new(),
             fill_probe_nonce: effects.fill_probe_nonce,
+            probe_relay: effects.probe_relay,
             monotonic: effects.monotonic,
             report: effects.report,
         };
@@ -264,7 +271,6 @@ impl Node {
         Ok(Self {
             state,
             own_handle,
-            _router: router,
             presence_loop,
             client: sending_client,
             fill_message_id,
@@ -303,32 +309,31 @@ impl Drop for Node {
 }
 
 /// A known host's node id and relay, as the configuration names them.
-struct KnownHostAddress {
-    id: EndpointId,
-    relay: RelayUrl,
+pub(super) struct KnownHostAddress {
+    pub(super) id: EndpointId,
+    pub(super) relay: RelayUrl,
 }
 
 /// The node id and relay of every host of the configuration, refusing a host whose id or relay does not parse.
 fn known_host_addresses(config: &NetworkConfig) -> Result<Vec<KnownHostAddress>, NodeError> {
-    config
-        .hosts
-        .iter()
-        .map(|host| {
-            let invalid = || NodeError::KnownHostInvalid {
-                id: host.id.clone(),
-            };
-            Ok(KnownHostAddress {
-                id: parse_public_key(&host.id).map_err(|_unparsed| invalid())?,
-                relay: host.relay.parse().map_err(|_unparsed| invalid())?,
-            })
-        })
-        .collect()
+    config.hosts.iter().map(known_host_address).collect()
+}
+
+/// The host's node id and relay, refusing a host whose id or relay does not parse.
+fn known_host_address(host: &Host) -> Result<KnownHostAddress, NodeError> {
+    let invalid = || NodeError::KnownHostInvalid {
+        id: host.id.clone(),
+    };
+    Ok(KnownHostAddress {
+        id: parse_public_key(&host.id).map_err(|_unparsed| invalid())?,
+        relay: host.relay.parse().map_err(|_unparsed| invalid())?,
+    })
 }
 
 /// Gives each known host whose lookup entry holds no address its relay as its only address (spec 3.8).
-async fn seed_lookup_with_known_hosts(endpoint: &NodeEndpoint, hosts: &[KnownHostAddress]) {
+pub(super) fn seed_lookup_with_known_hosts(endpoint: &NodeEndpoint, hosts: &[KnownHostAddress]) {
     for host in hosts {
-        if !lookup_holds_address(endpoint.endpoint(), host.id).await {
+        if endpoint.address_of(host.id).is_none() {
             endpoint.replace_address(EndpointAddr::from_parts(
                 host.id,
                 [TransportAddr::Relay(host.relay.clone())],
@@ -337,12 +342,31 @@ async fn seed_lookup_with_known_hosts(endpoint: &NodeEndpoint, hosts: &[KnownHos
     }
 }
 
-/// Whether the endpoint's address lookup holds an entry for the node.
-async fn lookup_holds_address(endpoint: &iroh::Endpoint, id: EndpointId) -> bool {
-    let Ok(lookup) = endpoint.address_lookup() else {
-        return false;
-    };
-    matches!(lookup.resolve(id).next().await, Some(Ok(Ok(_))))
+/// Serves the direct protocol and a fresh gossip instance on the endpoint, returning the router that shuts both down with the endpoint, and the gossip.
+pub(super) fn serve(
+    endpoint: &NodeEndpoint,
+    keys: &NetworkKeys,
+    state: &Arc<NodeState>,
+) -> (Router, Gossip) {
+    let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
+    let router = Router::builder(endpoint.endpoint().clone())
+        .accept(
+            DIRECT_ALPN,
+            DirectServer::new(keys.clone(), Arc::clone(state)),
+        )
+        .accept(GOSSIP_ALPN, gossip.clone())
+        .spawn();
+    (router, gossip)
+}
+
+/// Each change of the endpoint's own address.
+pub(super) fn own_address_changes(endpoint: &iroh::Endpoint) -> Changes<EndpointAddr> {
+    Box::pin(endpoint.watch_addr().stream_updates_only())
+}
+
+/// Each change of the endpoint's home relays and their connection status.
+pub(super) fn home_relay_changes(endpoint: &iroh::Endpoint) -> Changes<Vec<RelayStatus>> {
+    Box::pin(endpoint.home_relay_status().stream_updates_only())
 }
 
 /// What the direct server and the presence loop share: the public half of the identity, the peer table, this node's address and the inbox.
@@ -360,10 +384,10 @@ pub(super) struct NodeState {
 }
 
 impl NodeState {
-    /// The shared state of a node that holds the identity's card, reading its address from the endpoint.
+    /// The shared state of a node that holds the identity's card, reading its address from the endpoint the client dials from.
     fn new(
         identity: &Identity,
-        endpoint: iroh::Endpoint,
+        client: Arc<DirectClient>,
         effects: &NodeEffects,
         to_loop: mpsc::UnboundedSender<LoopEvent>,
     ) -> Self {
@@ -373,7 +397,7 @@ impl NodeState {
             public: identity.public.clone(),
             own_handle: OnceLock::new(),
             table: Mutex::new(PeerTable::new(own_card)),
-            own_address: Box::new(move || wire_addr(&endpoint.addr())),
+            own_address: Box::new(move || wire_addr(&client.endpoint().addr())),
             inbox: Arc::clone(&effects.inbox),
             attached: effects.inbox.attached(),
             clock: Arc::clone(&effects.clock),
@@ -387,11 +411,6 @@ impl NodeState {
         (self.clock)()
     }
 
-    /// The peer table, locked for one operation.
-    fn table(&self) -> MutexGuard<'_, PeerTable> {
-        self.table.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// Sets the peer Unreachable after a send to it failed, and hands the announcement of that to the presence loop.
     pub(super) fn contact_failed(&self, card: wire::PublicKey) {
         let effects = self.table().direct_contact_failed(card, self.now_ms());
@@ -401,6 +420,11 @@ impl NodeState {
     /// Sets the peer Online after a send to it was acknowledged.
     pub(super) fn contact_succeeded(&self, card: wire::PublicKey) {
         self.table().direct_contact_succeeded(card, self.now_ms());
+    }
+
+    /// The peer table, locked for one operation.
+    pub(super) fn table(&self) -> MutexGuard<'_, PeerTable> {
+        self.table.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The full current address of this node's endpoint, within the caps of spec 3.6.
@@ -571,28 +595,38 @@ enum Wake {
     ObserverWaitOver,
     ReannounceDue,
     RelayLossDue,
+    RebindDue,
+    MemberJoinDue,
 }
 
-/// The one task that owns the topic and performs every effect of the events/actions table of spec 3.8.
-struct PresenceLoop {
-    state: Arc<NodeState>,
+/// The one task that owns the topic and performs every effect of the events/actions table of spec 3.8, the rebind included.
+pub(super) struct PresenceLoop {
+    pub(super) state: Arc<NodeState>,
     card_key: SecretKey,
-    endpoint: NodeEndpoint,
-    client: Arc<DirectClient>,
-    topic: NetworkTopic,
+    pub(super) endpoint: NodeEndpoint,
+    pub(super) router: Router,
+    pub(super) gossip: Gossip,
+    pub(super) keys: NetworkKeys,
+    pub(super) owner: iroh::PublicKey,
+    pub(super) client: Arc<DirectClient>,
+    pub(super) topic: NetworkTopic,
     from_hosts: mpsc::UnboundedReceiver<LoopEvent>,
     attached: Attached,
-    own_addresses: Changes<EndpointAddr>,
-    relay_statuses: Changes<Vec<RelayStatus>>,
+    pub(super) own_addresses: Changes<EndpointAddr>,
+    pub(super) relay_statuses: Changes<Vec<RelayStatus>>,
     requested_handle: AnnouncedHandle,
     init: Init,
     announcer: Announcer,
     reannounce_due: Option<Instant>,
-    relay_loss: RelayLossWatch,
-    known_hosts: KnownHosts,
+    pub(super) relay_loss: RelayLossWatch,
+    pub(super) known_hosts: KnownHosts,
+    pub(super) schedule: RebindSchedule,
+    pub(super) member_joins: MemberJoins,
+    pub(super) neighbors: BTreeSet<EndpointId>,
     fill_probe_nonce: ProbeNonceSource,
-    monotonic: MonotonicClock,
-    report: RunRecord,
+    pub(super) probe_relay: RelayProbe,
+    pub(super) monotonic: MonotonicClock,
+    pub(super) report: RunRecord,
 }
 
 impl PresenceLoop {
@@ -617,6 +651,8 @@ impl PresenceLoop {
             Init::AwaitingJoin { .. } | Init::Done => None,
         };
         let relay_loss_due = self.relay_loss.next_deadline();
+        let rebind_due = self.may_rebind().then(|| self.schedule.due());
+        let member_join_due = self.member_joins.next_ask();
         tokio::select! {
             event = self.topic.next_event() => Wake::Topic(event),
             Some(event) = self.from_hosts.recv() => Wake::Loop(event),
@@ -629,10 +665,12 @@ impl PresenceLoop {
             () = sleep_until_deadline(observer_wait_over) => Wake::ObserverWaitOver,
             () = sleep_until_deadline(self.reannounce_due) => Wake::ReannounceDue,
             () = sleep_until_deadline(relay_loss_due) => Wake::RelayLossDue,
+            () = sleep_until_deadline(rebind_due) => Wake::RebindDue,
+            () = sleep_until_deadline(member_join_due) => Wake::MemberJoinDue,
         }
     }
 
-    /// Acts on one wake, stopping once the topic has closed.
+    /// Acts on one wake, stopping once the topic has closed or a rebind left no endpoint or topic.
     async fn take(&mut self, wake: Wake) -> ControlFlow<()> {
         match wake {
             Wake::Topic(None) => {
@@ -656,6 +694,8 @@ impl PresenceLoop {
                 self.reconsider_own_address().await;
             }
             Wake::RelayLossDue => self.remove_lost_relays().await,
+            Wake::RebindDue => return self.rebind().await,
+            Wake::MemberJoinDue => self.ask_members_to_join().await,
         }
         ControlFlow::Continue(())
     }
@@ -667,19 +707,26 @@ impl PresenceLoop {
             GossipEvent::Joined => self.take_joined().await,
             GossipEvent::JoinTimedOut => self.take_join_timeout(),
             GossipEvent::NeighborUp(node) => {
+                self.neighbors.insert(node);
                 let effects = self.state.table().neighbor_up(*node.as_bytes(), now_ms);
                 self.perform(effects).await;
             }
             GossipEvent::NeighborDown(node) => {
+                self.neighbors.remove(&node);
                 let effects = self.state.table().neighbor_down(*node.as_bytes(), now_ms);
                 self.perform(effects).await;
             }
-            GossipEvent::Payload(payload) => self.take_payload(*payload, now_ms).await,
+            GossipEvent::Payload(payload) => {
+                self.schedule.heard((self.monotonic)());
+                self.take_payload(*payload, now_ms).await;
+            }
         }
     }
 
-    /// Starts the observer wait at the first join, and announces at every later join.
+    /// Starts the observer wait at the first join, announces at every later join, and starts the member join wait after a rebind's.
     async fn take_joined(&mut self) {
+        self.schedule.joined();
+        self.member_joins.joined((self.monotonic)());
         match std::mem::replace(&mut self.init, Init::Done) {
             Init::AwaitingJoin { assigned } => {
                 self.init = Init::ObserverWait {
@@ -692,8 +739,11 @@ impl PresenceLoop {
         }
     }
 
-    /// Assigns the handle against the table as it stands when the first join gains no neighbor.
+    /// Assigns the handle against the table as it stands when the first join gains no neighbor, and has a join that gains none end in a rebind when this member may rebind then.
     fn take_join_timeout(&mut self) {
+        if self.may_rebind() {
+            self.schedule.join_timed_out((self.monotonic)());
+        }
         match std::mem::replace(&mut self.init, Init::Done) {
             Init::AwaitingJoin { assigned } => self.assign_own_handle(assigned),
             waiting @ Init::ObserverWait { .. } => self.init = waiting,
@@ -1014,7 +1064,7 @@ fn home_relays(statuses: &[RelayStatus]) -> Vec<HomeRelay> {
 
 /// When each lost home relay is due for removal, the relay-loss wait after its loss.
 #[derive(Default)]
-struct RelayLossWatch {
+pub(super) struct RelayLossWatch {
     due: BTreeMap<RelayUrl, Instant>,
 }
 
@@ -1062,7 +1112,7 @@ enum RecordVerdict {
 }
 
 /// The known hosts of spec 3.8, with the newest record `ts` held for each and the file that keeps them.
-struct KnownHosts {
+pub(super) struct KnownHosts {
     config: NetworkConfig,
     path: PathBuf,
     newer_than_file: bool,
@@ -1076,6 +1126,20 @@ impl KnownHosts {
             path,
             newer_than_file: false,
         }
+    }
+
+    /// Whether no host is known.
+    pub(super) const fn is_empty(&self) -> bool {
+        self.config.hosts.is_empty()
+    }
+
+    /// The node id and relay of every known host whose id and relay parse.
+    pub(super) fn addresses(&self) -> Vec<KnownHostAddress> {
+        self.config
+            .hosts
+            .iter()
+            .filter_map(|host| known_host_address(host).ok())
+            .collect()
     }
 
     /// Holds the relay and `ts` of a record newer than the newest held for its host and within the future bound, adding a host never known before.
@@ -1180,7 +1244,7 @@ pub(super) mod tests {
     use crate::peers::Status;
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];
-    const OWNER_SEED: u8 = 60;
+    pub(in crate::node) const OWNER_SEED: u8 = 60;
     pub(in crate::node) const FIRST_SEED: u8 = 61;
     pub(in crate::node) const SECOND_SEED: u8 = 62;
     pub(in crate::node) const FIRST_HANDLE: &str = "amy";
@@ -1358,10 +1422,10 @@ pub(super) mod tests {
         .unwrap()
     }
 
-    fn configured_host(seed: u8) -> Host {
+    fn configured_host(seed: u8, relay: &str) -> Host {
         Host {
             id: render_public_key(&secret_key(seed).public()),
-            relay: UNREACHABLE_RELAY.to_owned(),
+            relay: relay.to_owned(),
             ts: None,
             origin: HostOrigin::Configured,
         }
@@ -1380,9 +1444,12 @@ pub(super) mod tests {
         handle: &'static str,
         public: &'static [u8],
         hosts: Vec<u8>,
+        host_relays: BTreeMap<u8, &'static str>,
         reachable: Vec<u8>,
         clock: Clock,
         monotonic: MonotonicClock,
+        report: RunRecord,
+        probe_relay: RelayProbe,
     }
 
     impl MemberPlan {
@@ -1392,10 +1459,32 @@ pub(super) mod tests {
                 handle,
                 public,
                 hosts: Vec::new(),
+                host_relays: BTreeMap::new(),
                 reachable: Vec::new(),
                 clock: Arc::new(wall_clock_ms),
                 monotonic: Arc::new(Instant::now),
+                report: Arc::new(|_record: NodeRecord| {}),
+                probe_relay: Arc::new(|_relay| Box::pin(async { true })),
             }
+        }
+
+        pub(in crate::node) fn with_host_relays(self, hosts: &[(u8, &'static str)]) -> Self {
+            Self {
+                hosts: hosts.iter().map(|(seed, _)| *seed).collect(),
+                host_relays: hosts.iter().copied().collect(),
+                ..self
+            }
+        }
+
+        pub(in crate::node) fn with_relay_probe(self, probe_relay: RelayProbe) -> Self {
+            Self {
+                probe_relay,
+                ..self
+            }
+        }
+
+        pub(in crate::node) fn with_report(self, report: RunRecord) -> Self {
+            Self { report, ..self }
         }
 
         pub(in crate::node) fn with_hosts(self, hosts: &[u8]) -> Self {
@@ -1489,7 +1578,15 @@ pub(super) mod tests {
                 config_with_hosts(
                     plan.hosts
                         .iter()
-                        .map(|&seed| configured_host(seed))
+                        .map(|&seed| {
+                            configured_host(
+                                seed,
+                                plan.host_relays
+                                    .get(&seed)
+                                    .copied()
+                                    .unwrap_or(UNREACHABLE_RELAY),
+                            )
+                        })
                         .collect(),
                 ),
                 config_path.clone(),
@@ -1499,8 +1596,9 @@ pub(super) mod tests {
                 clock: plan.clock,
                 monotonic: plan.monotonic,
                 fill_probe_nonce: Arc::new(|nonce: &mut crate::wire::Nonce| *nonce = PROBE_NONCE),
-                report: Arc::new(|_record: NodeRecord| {}),
+                report: plan.report,
                 inbox,
+                probe_relay: plan.probe_relay,
             },
         )
         .await
@@ -2000,11 +2098,10 @@ pub(super) mod tests {
         drop(scratch);
     }
 
-    pub(in crate::node) async fn start_witnessed(
+    pub(in crate::node) async fn spawn_member(
         scratch: &Scratch,
         plan: MemberPlan,
-        witness_handle: Option<&'static str>,
-    ) -> (Member, Witness) {
+    ) -> (iroh::Endpoint, JoinHandle<Member>) {
         let node_endpoint = bind(plan.seed).await;
         let endpoint = node_endpoint.endpoint().clone();
         let inbox = scratch.inbox(plan.seed);
@@ -2016,11 +2113,20 @@ pub(super) mod tests {
             (inbox, inbox_path),
             config_path,
         ));
+        (endpoint, starting)
+    }
+
+    pub(in crate::node) async fn start_witnessed(
+        scratch: &Scratch,
+        plan: MemberPlan,
+        witness_handle: Option<&'static str>,
+    ) -> (Member, Witness) {
+        let (endpoint, starting) = spawn_member(scratch, plan).await;
         let witness = Witness::joined_through(WITNESS_SEED, witness_handle, &endpoint).await;
         (starting.await.unwrap(), witness)
     }
 
-    fn frozen_clock(milliseconds: u64) -> Clock {
+    pub(in crate::node) fn frozen_clock(milliseconds: u64) -> Clock {
         Arc::new(move || milliseconds)
     }
 
@@ -2034,7 +2140,7 @@ pub(super) mod tests {
     }
 
     impl MemberPlan {
-        fn with_clock(self, clock: Clock) -> Self {
+        pub(in crate::node) fn with_clock(self, clock: Clock) -> Self {
             Self { clock, ..self }
         }
 
@@ -2618,17 +2724,17 @@ pub(super) mod tests {
     const DIRECT_POOL: [&str; 2] = ["192.0.2.1:4433", "198.51.100.2:4433"];
     const LARGEST_STEP_MS: u64 = 700;
 
-    struct Draws(u64);
+    pub(in crate::node) struct Draws(u64);
 
     impl Draws {
-        fn seeded(case: u64) -> Self {
+        pub(in crate::node) fn seeded(case: u64) -> Self {
             Self(
                 case.wrapping_mul(LCG_MULTIPLIER)
                     .wrapping_add(LCG_INCREMENT),
             )
         }
 
-        fn below(&mut self, bound: u64) -> u64 {
+        pub(in crate::node) fn below(&mut self, bound: u64) -> u64 {
             self.0 = self
                 .0
                 .wrapping_mul(LCG_MULTIPLIER)

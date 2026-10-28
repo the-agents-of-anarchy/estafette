@@ -3,7 +3,9 @@ use std::time::Duration;
 
 use iroh::address_lookup::MemoryLookup;
 use iroh::endpoint::{BindError, QuicTransportConfig, VarInt, presets};
-use iroh::{Endpoint, EndpointAddr, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey};
+use iroh::{
+    Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey,
+};
 use iroh_gossip::ALPN as GOSSIP_ALPN;
 
 use super::gate::{NONCE_BYTES, NetworkSecretGate};
@@ -82,6 +84,14 @@ impl NodeEndpoint {
     /// Replaces, never merges, the lookup entry of the address's card, so a dial by card id goes there alone.
     pub fn replace_address(&self, address: EndpointAddr) {
         self.address_lookup.set_endpoint_info(address);
+    }
+
+    /// The address the lookup holds for the node, if any.
+    #[must_use]
+    pub fn address_of(&self, id: EndpointId) -> Option<EndpointAddr> {
+        self.address_lookup
+            .get_endpoint_info(id)
+            .map(EndpointAddr::from)
     }
 
     /// Adds the relay to the relay map unless the map already holds it, so a held relay keeps its entry.
