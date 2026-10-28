@@ -2,7 +2,7 @@ use std::fmt;
 use std::io::{self, Write};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use estafette::cli::cards::{self, CardCommand, RegistryArgs};
@@ -30,6 +30,8 @@ use tokio::time::Instant;
 
 const MILLISECONDS_PER_SECOND: u64 = 1000;
 const RANDOM_BYTES_PER_SECRET_KEY: usize = 32;
+/// The longest an awaited shutdown waits for the runtime's blocking work, which after SIGINT or SIGHUP includes a read of standard input that may never return.
+const AWAITED_SHUTDOWN_LIMIT: Duration = Duration::from_millis(1000);
 
 #[derive(Debug, Parser)]
 #[command(name = "estafette")]
@@ -246,10 +248,12 @@ fn report_gate_closing(failure: &GateFailure) {
     ));
 }
 
-/// Shuts the runtime down as the session asked: awaited, or in the background so a pending read of standard input does not hold the exit.
+/// Shuts the runtime down as the session asked: awaited within its limit, or in the background, so a pending read of standard input never holds the exit.
 fn shut_down(runtime: Runtime, exit: Exit) {
     match exit {
-        Exit::Stopped(RuntimeShutdown::Awaited) => drop(runtime),
+        Exit::Stopped(RuntimeShutdown::Awaited) => {
+            runtime.shutdown_timeout(AWAITED_SHUTDOWN_LIMIT);
+        }
         Exit::Stopped(RuntimeShutdown::InBackground) | Exit::AtOnce => {
             runtime.shutdown_background();
         }
