@@ -385,12 +385,34 @@ fn unix_seconds_of(instant: SystemTime) -> Result<u64, CommandLineFailure> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::*;
 
     const SECONDS_AFTER_EPOCH: u64 = 1_700_000_000;
     const MILLISECONDS_AFTER_EPOCH: u64 = 1_700_000_000_123;
+    const BLOCKING_READ_THAT_NEVER_RETURNS_IN_TIME: Duration = Duration::from_secs(10);
+    const AWAITED_SHUTDOWN_ENDS_WITHIN: Duration = Duration::from_millis(2000);
+
+    #[test]
+    fn spec_3_9_an_awaited_shutdown_ends_while_a_blocking_read_of_standard_input_is_still_pending()
+    {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (started, blocking_read_started) = std::sync::mpsc::channel();
+        drop(runtime.spawn_blocking(move || {
+            started.send(()).unwrap();
+            std::thread::sleep(BLOCKING_READ_THAT_NEVER_RETURNS_IN_TIME);
+        }));
+        blocking_read_started.recv().unwrap();
+        let shutting_down = Instant::now();
+
+        shut_down(runtime, Exit::Stopped(RuntimeShutdown::Awaited));
+
+        assert!(shutting_down.elapsed() < AWAITED_SHUTDOWN_ENDS_WITHIN);
+    }
 
     #[test]
     fn spec_3_13_a_clock_after_the_unix_epoch_gives_its_seconds() {
