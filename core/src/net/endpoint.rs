@@ -107,6 +107,7 @@ mod tests {
     const SPEC_GATE_KEY_CONTEXT: &str = "messaging gate v1";
     const SPEC_GATE_TIMEOUT: Duration = Duration::from_millis(3000);
     const SPEC_GATE_TIMEOUT_WITH_SLACK: Duration = Duration::from_millis(4000);
+    const PEER_LIVES_PAST_ITS_FIRST_KEEP_ALIVE: Duration = Duration::from_secs(6);
     const SPEC_QUIC_IDLE_TIMEOUT_EARLIEST: Duration = Duration::from_secs(9);
     const SPEC_QUIC_IDLE_TIMEOUT_LATEST: Duration = Duration::from_secs(11);
     const MEMBER_SEED: u8 = 1;
@@ -382,6 +383,7 @@ mod tests {
             let peer_and_connection = runtime.block_on(async move {
                 let peer = bind_plain_endpoint(VANISHING_PEER_SEED).await;
                 let connection = peer.connect(member_addr, DIRECT_ALPN).await.unwrap();
+                tokio::time::sleep(PEER_LIVES_PAST_ITS_FIRST_KEEP_ALIVE).await;
                 (peer, connection)
             });
             runtime.shutdown_background();
