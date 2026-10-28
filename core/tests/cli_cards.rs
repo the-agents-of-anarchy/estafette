@@ -1,6 +1,5 @@
 use std::ffi::OsString;
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
 use estafette::cli::cards::{CardCommand, RegistryArgs, run};
@@ -8,22 +7,15 @@ use estafette::dirs::OperatingSystemFilesystem;
 use estafette::errors::ExitStatus;
 use iroh::SecretKey;
 
+mod common;
+
+const SCRATCH_PREFIX: &str = "estafette-cli-cards";
 const NETWORK: &str = "acme";
 
 struct Outcome {
     status: ExitStatus,
     stdout: String,
     stderr: String,
-}
-
-fn scratch_root(test_name: &str) -> io::Result<PathBuf> {
-    let root = std::env::temp_dir().join(format!(
-        "estafette-cli-cards-{test_name}-{}",
-        std::process::id()
-    ));
-    drop(fs::remove_dir_all(&root));
-    fs::create_dir_all(&root)?;
-    Ok(root)
 }
 
 fn environment_under(root: &Path, cards_dir: Option<&Path>) -> impl Fn(&str) -> Option<OsString> {
@@ -90,7 +82,7 @@ fn public_key_of(seed_byte: u8) -> String {
 
 #[test]
 fn create_card_then_list_cards_shows_name_handle_and_public_key_of_spec_3_13() {
-    let root = scratch_root("create_then_list").unwrap();
+    let root = common::scratch_root(SCRATCH_PREFIX, "create_then_list").unwrap();
     let created = execute(&root, create_card("ana-card", "ana", None), 7);
     assert_eq!(created.status, ExitStatus::Success);
     assert_eq!(created.stdout, format!("{}\n", public_key_of(7)));
@@ -107,7 +99,7 @@ fn create_card_then_list_cards_shows_name_handle_and_public_key_of_spec_3_13() {
 
 #[test]
 fn create_card_twice_refuses_and_keeps_the_first_card_of_spec_3_5() {
-    let root = scratch_root("create_twice").unwrap();
+    let root = common::scratch_root(SCRATCH_PREFIX, "create_twice").unwrap();
     execute(&root, create_card("ana-card", "ana", None), 7);
 
     let second = execute(&root, create_card("ana-card", "bob", None), 9);
@@ -127,7 +119,7 @@ fn create_card_twice_refuses_and_keeps_the_first_card_of_spec_3_5() {
 
 #[test]
 fn create_card_honors_the_cards_dir_flag_of_spec_3_3() {
-    let root = scratch_root("flag_override").unwrap();
+    let root = common::scratch_root(SCRATCH_PREFIX, "flag_override").unwrap();
     let flagged = root.join("flagged");
     let created = execute(
         &root,
@@ -149,7 +141,7 @@ fn create_card_honors_the_cards_dir_flag_of_spec_3_3() {
 
 #[test]
 fn list_cards_honors_the_cards_dir_variable_of_spec_3_3() {
-    let root = scratch_root("variable_override").unwrap();
+    let root = common::scratch_root(SCRATCH_PREFIX, "variable_override").unwrap();
     let from_variable = root.join("from-variable");
     let created = execute_with_environment(
         environment_under(&root, Some(&from_variable)),
@@ -172,7 +164,7 @@ fn list_cards_honors_the_cards_dir_variable_of_spec_3_3() {
 
 #[test]
 fn create_card_allows_the_reserved_operator_name_of_spec_3_13() {
-    let root = scratch_root("operator_card").unwrap();
+    let root = common::scratch_root(SCRATCH_PREFIX, "operator_card").unwrap();
     let created = execute(&root, create_card("operator", "operator", None), 3);
     assert_eq!(created.status, ExitStatus::Success);
     assert_eq!(
@@ -183,7 +175,7 @@ fn create_card_allows_the_reserved_operator_name_of_spec_3_13() {
 
 #[test]
 fn list_cards_prints_one_line_per_card_in_card_name_order() {
-    let root = scratch_root("list_order").unwrap();
+    let root = common::scratch_root(SCRATCH_PREFIX, "list_order").unwrap();
     for (index, (card, handle)) in [("zed", "zed"), ("ana", "ana-one"), ("mid", "mid")]
         .into_iter()
         .enumerate()
@@ -207,7 +199,7 @@ fn list_cards_prints_one_line_per_card_in_card_name_order() {
 
 #[test]
 fn create_card_refuses_names_outside_the_handle_grammar_before_writing_anything_of_spec_3_3() {
-    let root = scratch_root("bad_names").unwrap();
+    let root = common::scratch_root(SCRATCH_PREFIX, "bad_names").unwrap();
     let refused_commands = [
         (
             create_card("Ana", "ana", None),
@@ -245,7 +237,7 @@ fn create_card_refuses_names_outside_the_handle_grammar_before_writing_anything_
 
 #[test]
 fn list_cards_names_the_invalid_card_file_and_fails() {
-    let root = scratch_root("invalid_card").unwrap();
+    let root = common::scratch_root(SCRATCH_PREFIX, "invalid_card").unwrap();
     execute(&root, create_card("ana", "ana", None), 7);
     let broken = root
         .join("data/estafette/cards")

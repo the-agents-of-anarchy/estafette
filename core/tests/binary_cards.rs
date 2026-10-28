@@ -1,21 +1,12 @@
-use std::fs;
 use std::io;
-use std::path::PathBuf;
 use std::process::{Command, Output};
 
+mod common;
+
+const SCRATCH_PREFIX: &str = "estafette-binary-cards";
 const BINARY: &str = env!("CARGO_BIN_EXE_estafette");
 const USAGE_ERROR_CODE: i32 = 2;
 const PUBLIC_KEY_HEX_LINE_LENGTH: usize = 65;
-
-fn scratch_root(test_name: &str) -> io::Result<PathBuf> {
-    let root = std::env::temp_dir().join(format!(
-        "estafette-binary-cards-{test_name}-{}",
-        std::process::id()
-    ));
-    drop(fs::remove_dir_all(&root));
-    fs::create_dir_all(&root)?;
-    Ok(root)
-}
 
 fn run_binary(root: &std::path::Path, arguments: &[&str]) -> io::Result<Output> {
     Command::new(BINARY)
@@ -29,7 +20,7 @@ fn run_binary(root: &std::path::Path, arguments: &[&str]) -> io::Result<Output> 
 
 #[test]
 fn binary_create_card_then_list_cards_round_trips_of_spec_3_13() {
-    let root = scratch_root("round_trip").unwrap();
+    let root = common::scratch_root(SCRATCH_PREFIX, "round_trip").unwrap();
     let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
     assert_eq!(created.status.code(), Some(0));
     let printed_key = String::from_utf8(created.stdout).unwrap();
@@ -46,7 +37,7 @@ fn binary_create_card_then_list_cards_round_trips_of_spec_3_13() {
 
 #[test]
 fn binary_create_card_twice_exits_one_with_the_message_alone_of_spec_3_13() {
-    let root = scratch_root("twice").unwrap();
+    let root = common::scratch_root(SCRATCH_PREFIX, "twice").unwrap();
     run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
     let second = run_binary(&root, &["create-card", "acme", "ana-card", "bob"]).unwrap();
     assert_eq!(second.status.code(), Some(1));
@@ -59,7 +50,7 @@ fn binary_create_card_twice_exits_one_with_the_message_alone_of_spec_3_13() {
 
 #[test]
 fn binary_cards_dir_flag_places_the_card_there_of_spec_3_3() {
-    let root = scratch_root("flag").unwrap();
+    let root = common::scratch_root(SCRATCH_PREFIX, "flag").unwrap();
     let flagged = root.join("flagged");
     let created = run_binary(
         &root,
@@ -79,7 +70,7 @@ fn binary_cards_dir_flag_places_the_card_there_of_spec_3_3() {
 
 #[test]
 fn binary_usage_error_exits_two_of_spec_3_13() {
-    let root = scratch_root("usage").unwrap();
+    let root = common::scratch_root(SCRATCH_PREFIX, "usage").unwrap();
     let missing_arguments = run_binary(&root, &["create-card", "acme"]).unwrap();
     assert_eq!(missing_arguments.status.code(), Some(USAGE_ERROR_CODE));
     assert_eq!(missing_arguments.stdout, Vec::<u8>::new());
