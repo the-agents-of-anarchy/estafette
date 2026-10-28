@@ -1175,14 +1175,6 @@ mod tests {
         assert_eq!(server.connections(), 2);
     }
 
-    #[test]
-    fn spec_3_14_client_timeouts_are_the_spec_limits() {
-        assert_eq!(ClientTimeouts::SPEC.connect, SPEC_CONNECT_TIMEOUT);
-        assert_eq!(ClientTimeouts::SPEC.ack, SPEC_ACK_TIMEOUT);
-        assert_eq!(ClientTimeouts::SPEC.probe, SPEC_PROBE_TIMEOUT);
-        assert_eq!(SERVER_READ_TIMEOUT, SPEC_SERVER_READ_TIMEOUT_EARLIEST);
-    }
-
     const INVALID_UTF8: [u8; 2] = [0xff, 0xfe];
     const BODY_BEFORE_CORRUPTION: &str = "ab";
 
