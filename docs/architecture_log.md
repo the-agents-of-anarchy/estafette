@@ -41,3 +41,13 @@ INVALIDATES:   A sender of invalid UTF-8 sees `refused`, not `too_large`; a test
                A second concurrent caller to a dead peer can wait the connect timeout twice (about 10 s) before its own `unreachable` (spec review 041206, read as met)
                A write the peer stopped cannot be observed under the pinned transport's 1,250,000-byte receive window (max request 1,114,112 bytes); lowering that window below the largest request would need a `Stopped` arm
 EVIDENCE:      core/src/net/direct.rs, core/src/errors.rs at 9b27694; spec reviews 033956 PASS and 041206 PASS; quality review 050614 Ready Yes
+
+## 2026-10-28 → 2026-10-28 — The Claude Code bridge injects each inbox frame as a type-user socket line that the harness records as a peer message
+KIND:          runnable
+FROM → TO:     No bridge notice existed → the bridge opens the session's messaging socket per frame, writes the auth line, then one line `{"type":"user","message":{"role":"user","content":"Message from peer <name> (verified member of your network), sent <sent_at>.\n<body>\nReply with the send tool."}}`, and closes; a SessionStart hook on `startup|resume` starts the bridge with the harness pid, a second start for the same harness pid is refused, and `doctor` reports five checks plus the dropped-frame count, with `UNVERIFIED` for a refuse source it cannot read
+WHY:           spec:357 (D36) asks for the harness's notice form where one exists that is not user input; the Claude Code docs specify no such socket line and the installed binary documents only the type-user line; a real `claude -p` session (2.1.312) recorded that line with origin kind peer, from unknown, synthetic, and the model treated it as a peer message, so the bridge sends it unwrapped (an own cross-session envelope could nest with the harness's wrapper); spec:928 names the doctor's five checks
+INVALIDATES:   The receiving model sees the sender only in the header text: Claude Code shows from unknown for these notices; a socket-line field carrying a sender name is undetermined
+               A `refuse` in MDM profiles or server-managed settings is not read; the doctor reports managed files and `--settings` values only, and UNVERIFIED where a source cannot be read
+               A second SessionStart for one harness pid is refused by the process table; a resume in a new process starts a fresh bridge as intended
+               Verified on macOS (Darwin 24.3.0, claude 2.1.312) only; the ancestor walk and `ps` on Linux are unverified
+EVIDENCE:      bridges/claude/src/{main,doctor,inject}.rs at 2cea7dc; spec reviews 043658 FAIL, 044430, 050227, 051124, 052217 PASS; quality 052350 Ready Yes; live e2e at 2cea7dc one notice, doctor exit 0
