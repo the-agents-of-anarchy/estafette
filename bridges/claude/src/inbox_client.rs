@@ -269,19 +269,26 @@ mod tests {
         }
     }
 
+    fn follow_until_it_ends(
+        connector: &mut impl InboxConnector,
+    ) -> (Vec<InboxFrame>, Vec<Duration>, InboxClientError) {
+        let mut delivered = Vec::new();
+        let mut pauses = Vec::new();
+        let ended_with = follow_inbox(
+            connector,
+            &mut |pause| pauses.push(pause),
+            &mut |received| delivered.push(received.clone()),
+        )
+        .expect_err("a followed inbox never returns Ok");
+        (delivered, pauses, ended_with)
+    }
+
     fn follow_broken(replies: String, broken_operation: BrokenOperation) -> Followed {
         let mut connector = OneShotConnector(Some(BrokenStream {
             replies: Cursor::new(replies.into_bytes()),
             broken_operation,
         }));
-        let mut delivered = Vec::new();
-        let mut pauses = Vec::new();
-        let ended_with = follow_inbox(
-            &mut connector,
-            &mut |pause| pauses.push(pause),
-            &mut |received| delivered.push(received.clone()),
-        )
-        .expect_err("a followed inbox never returns Ok");
+        let (delivered, pauses, ended_with) = follow_until_it_ends(&mut connector);
         Followed {
             requests: Vec::new(),
             delivered,
@@ -315,14 +322,7 @@ mod tests {
             connections: connections.iter().cloned().collect(),
             requests: Rc::clone(&requests),
         };
-        let mut delivered = Vec::new();
-        let mut pauses = Vec::new();
-        let ended_with = follow_inbox(
-            &mut connector,
-            &mut |pause| pauses.push(pause),
-            &mut |received| delivered.push(received.clone()),
-        )
-        .expect_err("a followed inbox never returns Ok");
+        let (delivered, pauses, ended_with) = follow_until_it_ends(&mut connector);
         let requests = requests.borrow().clone();
         Followed {
             requests,
