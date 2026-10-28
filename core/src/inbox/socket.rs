@@ -243,6 +243,17 @@ impl InboxSocket {
     pub fn attached(&self) -> Attached {
         Attached::watching(self.shared.clients.subscribe())
     }
+
+    /// The buffered frames with seq greater than `since`, oldest first, and the seq of the newest frame published, 0 before the first, removing nothing.
+    #[must_use]
+    pub fn frames_since(&self, since: u64) -> (Vec<InboxFrame>, u64) {
+        let buffer = locked(&self.shared.buffer);
+        let frames = buffer.frames_since(since);
+        let newest_published = *self.shared.newest_seq.borrow();
+        drop(buffer);
+        let newest_seq = frames.last().map_or(newest_published, |frame| frame.seq);
+        (frames, newest_seq)
+    }
 }
 
 impl Drop for InboxSocket {

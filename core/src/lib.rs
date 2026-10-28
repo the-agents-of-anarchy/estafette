@@ -8,6 +8,7 @@ pub mod handle;
 pub mod inbox;
 pub mod invite;
 pub mod keys;
+pub mod mcp;
 pub mod net;
 pub mod node;
 pub mod payload;
