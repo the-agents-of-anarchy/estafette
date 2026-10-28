@@ -40,9 +40,13 @@ use crate::node::{
 use crate::peers::{Peer, Status};
 use crate::sidecar::{self, HeldSidecar, Pause, SidecarError};
 
+/// The server name of spec 3.10, given to the harness in the server info.
 const SERVER_NAME: &str = "estafette";
+/// How many forwarded bytes of standard input the pipe to the MCP library holds before the forwarder waits; the forwarder buffers the rest itself.
 const SERVER_INPUT_BUFFER_BYTES: usize = 64 * 1024;
+/// The six tools of spec 3.10 (D28).
 const TOOL_COUNT: usize = 6;
+/// The longest local name of a member, and so the longest `to` (spec 3.1, effective handle).
 const LOCAL_HANDLE_MAX_CHARACTERS: usize = 74;
 const SCHEMA_TYPE_KEY: &str = "type";
 const SCHEMA_OBJECT_TYPE: &str = "object";
@@ -1014,6 +1018,9 @@ mod tests {
     const FIRST_PROCESS_ID: u32 = 41;
     const SECOND_PROCESS_ID: u32 = 42;
     const NOT_A_KEY: &str = "not a key";
+    const SPEC_TOOL_COUNT: usize = 6;
+    const SPEC_LOCAL_HANDLE_MAX_CHARACTERS: usize = 74;
+    const METHOD_NOT_FOUND_CODE: i64 = -32601;
     const UNREACHABLE_RELAY: &str = "https://relay.estafette.invalid/";
     const BOB_DESCRIPTION: &str = "reviews the parser";
     const MESSAGE_BODY: &str = "the parser review is ready";
@@ -1261,7 +1268,7 @@ mod tests {
         let inbox =
             Arc::new(InboxSocket::start(&directories, plan.process_id, &EveryProcessRuns).unwrap());
         let inbox_path = directories.inbox_socket_file(plan.process_id);
-        let message_id_byte = u8::try_from(plan.process_id % 256).unwrap();
+        let message_id_byte = u8::try_from(plan.process_id).unwrap();
         let served = ServedNetwork {
             config_path: machine
                 .root
@@ -1276,7 +1283,7 @@ mod tests {
                 clock: Arc::new(wall_clock_ms),
                 monotonic: Arc::new(tokio::time::Instant::now),
                 fill_probe_nonce: Arc::new(move |nonce: &mut crate::wire::Nonce| {
-                    *nonce = [message_id_byte; 16];
+                    nonce.fill(message_id_byte);
                 }),
                 report: Arc::new(|_record: NodeRecord| {}),
                 inbox,
@@ -1535,7 +1542,7 @@ mod tests {
         let machine = Machine::new("to-length");
         let mut client = start_server(&machine, ServerPlan::alone(FIRST_PROCESS_ID));
         client.initialize().await;
-        let longest = format!("a{}", "b".repeat(73));
+        let longest = "a".repeat(SPEC_LOCAL_HANDLE_MAX_CHARACTERS);
         let too_long = format!("{longest}2");
 
         let sent_too_long = client
@@ -1551,7 +1558,7 @@ mod tests {
             .envelope("send", json!({ "to": longest, "body": "hi" }))
             .await;
 
-        assert_eq!(longest.len(), 74);
+        assert_eq!(longest.len(), SPEC_LOCAL_HANDLE_MAX_CHARACTERS);
         assert_eq!(sent_too_long["error"]["code"], "bad_request");
         assert_eq!(broadcast_too_long["error"]["code"], "bad_request");
         assert_eq!(sent_longest["error"]["code"], "not_claimed");
@@ -1571,7 +1578,7 @@ mod tests {
             .await;
 
         assert_eq!(response.get("result"), None);
-        assert_eq!(response["error"]["code"], json!(-32601));
+        assert_eq!(response["error"]["code"], json!(METHOD_NOT_FOUND_CODE));
     }
 
     #[tokio::test]
@@ -1959,12 +1966,12 @@ mod tests {
         let after = client.request("tools/list", json!({})).await["result"].clone();
 
         assert_eq!(claimed["ok"], json!(true));
-        assert_eq!(before["tools"].as_array().unwrap().len(), 6);
+        assert_eq!(before["tools"].as_array().unwrap().len(), SPEC_TOOL_COUNT);
         assert_eq!(after, before);
     }
 
-    fn every_tool_call() -> [(&'static str, Value); 7] {
-        [
+    fn every_tool_call() -> Vec<(&'static str, Value)> {
+        vec![
             ("list_cards", json!({})),
             ("peers", json!({})),
             ("send", json!({ "to": "bob", "body": "hi" })),
@@ -2061,7 +2068,7 @@ mod tests {
         let listed = client.request("tools/list", json!({})).await;
 
         let no_input = json!({ "type": "object", "properties": {}, "additionalProperties": false });
-        let recipient = json!({ "type": "string", "maxLength": 74 });
+        let recipient = json!({ "type": "string", "maxLength": SPEC_LOCAL_HANDLE_MAX_CHARACTERS });
         assert_eq!(
             listed["result"]["tools"],
             json!([

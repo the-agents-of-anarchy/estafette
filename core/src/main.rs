@@ -30,6 +30,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 const MILLISECONDS_PER_SECOND: u64 = 1000;
+/// The bytes one fresh secret key gives the secure random fill.
 const RANDOM_BYTES_PER_SECRET_KEY: usize = 32;
 /// The longest an awaited shutdown waits for the runtime's blocking work, which after SIGINT or SIGHUP includes a read of standard input that may never return.
 const AWAITED_SHUTDOWN_LIMIT: Duration = Duration::from_millis(1000);
