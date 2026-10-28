@@ -529,3 +529,6 @@
 2026-10-28T12:12 | self:claude-fable-5-1 | gate | CI run 40669885726 green on integration at 6d4a132 (U38); main fast-forwarded 2cea7dc -> 6d4a132; CI on main watched by commit
 2026-10-28T12:12 | self:claude-fable-5-1 | decision | solved: records commit (arch-log U38 entry + events) deferred until integrate-U20 ends — a lead commit in the root checkout races the integrator's ff-merge on the same HEAD; alternative: commit now
 2026-10-28T12:13 | self:claude-fable-5-1 | receipt | integrate-U20 Result PASS: U20 integrated at c3e490d (seven commits; gate twice green 288/1/55/16); CI 40670311859 watched; peer content
+2026-10-28T12:15 | self:claude-fable-5-1 | delegation | impl-U21 node-send launched (dev-cycle:implementer, sonnet, worktree) after U20 integrated at c3e490d
+2026-10-28T12:15 | self:claude-fable-5-1 | gate | CI on main green at 6d4a132 (run=40670257065)
+2026-10-28T12:17 | self:claude-fable-5-1 | gate | CI run 40670311859 green on integration at c3e490d (U20); main fast-forwarded 6d4a132 -> c3e490d; CI on main watched by commit
