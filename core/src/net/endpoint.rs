@@ -28,7 +28,7 @@ pub struct NodeEndpoint {
     binding: Binding,
 }
 
-/// What every endpoint of the node is bound with: the card key and the gate's key, nonce source and closing sink.
+/// What every endpoint of the node is bound with: the card key and the gate's key, nonce source and closing sink, the two shared as `Arc`s that each gate calls through a closure since an `Arc` is no `Fn`.
 struct Binding {
     secret_key: SecretKey,
     gate_key: GateKey,
