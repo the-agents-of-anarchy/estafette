@@ -28,32 +28,50 @@ pub enum Check {
     BinaryProcessFound,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Verdict {
     Passed,
     Failed(String),
     Unverified(String),
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub struct CheckResult {
-    pub check: Check,
-    pub verdict: Verdict,
-}
+const CHECKS_IN_REPORT_ORDER: [Check; 5] = [
+    Check::HookInstalled,
+    Check::BridgeRunning,
+    Check::SocketPathExists,
+    Check::NoRefuseApplies,
+    Check::BinaryProcessFound,
+];
 
 #[derive(Debug)]
 pub struct DoctorReport {
-    pub results: Vec<CheckResult>,
+    hook_installed: Verdict,
+    bridge_running: Verdict,
+    socket_path_exists: Verdict,
+    no_refuse_applies: Verdict,
+    binary_process_found: Verdict,
     pub dropped_frames: Option<u64>,
 }
 
 impl DoctorReport {
+    /// Gives the verdict of one check.
+    #[must_use]
+    pub const fn verdict(&self, check: Check) -> &Verdict {
+        match check {
+            Check::HookInstalled => &self.hook_installed,
+            Check::BridgeRunning => &self.bridge_running,
+            Check::SocketPathExists => &self.socket_path_exists,
+            Check::NoRefuseApplies => &self.no_refuse_applies,
+            Check::BinaryProcessFound => &self.binary_process_found,
+        }
+    }
+
     /// Tells whether every check passed.
     #[must_use]
     pub fn all_passed(&self) -> bool {
-        self.results
+        CHECKS_IN_REPORT_ORDER
             .iter()
-            .all(|result| result.verdict == Verdict::Passed)
+            .all(|check| *self.verdict(*check) == Verdict::Passed)
     }
 }
 
@@ -71,14 +89,12 @@ impl fmt::Display for Check {
 
 impl fmt::Display for DoctorReport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for result in &self.results {
-            match &result.verdict {
-                Verdict::Passed => writeln!(formatter, "ok    {}", result.check)?,
-                Verdict::Failed(reason) => {
-                    writeln!(formatter, "FAIL  {}: {reason}", result.check)?;
-                }
+        for check in CHECKS_IN_REPORT_ORDER {
+            match self.verdict(check) {
+                Verdict::Passed => writeln!(formatter, "ok    {check}")?,
+                Verdict::Failed(reason) => writeln!(formatter, "FAIL  {check}: {reason}")?,
                 Verdict::Unverified(reason) => {
-                    writeln!(formatter, "UNVERIFIED {}: {reason}", result.check)?;
+                    writeln!(formatter, "UNVERIFIED {check}: {reason}")?;
                 }
             }
         }
@@ -129,36 +145,23 @@ pub fn run_doctor(
     let harness_pid = harness_of_bridge_for_session(inputs.own_pid, &entries);
     let command_line = settings_of_harness_command_line(harness_pid, &entries, read_text_file);
     Ok(DoctorReport {
-        results: vec![
-            CheckResult {
-                check: Check::HookInstalled,
-                verdict: judge_hook_installed(&inputs.settings_files),
-            },
-            CheckResult {
-                check: Check::BridgeRunning,
-                verdict: judge_bridge_running(harness_pid),
-            },
-            CheckResult {
-                check: Check::SocketPathExists,
-                verdict: judge_socket_path_exists(&inputs.messaging_socket),
-            },
-            CheckResult {
-                check: Check::NoRefuseApplies,
-                verdict: judge_no_refuse_applies(
-                    inputs.settings_files.iter().chain(&command_line.files),
-                    command_line.unverified.iter().cloned().chain(
-                        inputs
-                            .unreadable_settings
-                            .iter()
-                            .map(|path| format!("{} {UNREADABLE_FILE_NOTE}", path.display())),
-                    ),
-                ),
-            },
-            CheckResult {
-                check: Check::BinaryProcessFound,
-                verdict: judge_binary_process_found(harness_pid, &entries, &inputs.runtime_inputs),
-            },
-        ],
+        hook_installed: judge_hook_installed(&inputs.settings_files),
+        bridge_running: judge_bridge_running(harness_pid),
+        socket_path_exists: judge_socket_path_exists(&inputs.messaging_socket),
+        no_refuse_applies: judge_no_refuse_applies(
+            inputs.settings_files.iter().chain(&command_line.files),
+            command_line.unverified.iter().cloned().chain(
+                inputs
+                    .unreadable_settings
+                    .iter()
+                    .map(|path| format!("{} {UNREADABLE_FILE_NOTE}", path.display())),
+            ),
+        ),
+        binary_process_found: judge_binary_process_found(
+            harness_pid,
+            &entries,
+            &inputs.runtime_inputs,
+        ),
         dropped_frames: harness_pid
             .and_then(|pid| read_text_file(&dropped_frames_path(&inputs.temporary_dir, pid)))
             .and_then(|text| text.trim().parse().ok()),
@@ -447,12 +450,7 @@ mod tests {
     }
 
     fn verdict_of(report: &DoctorReport, check: Check) -> &Verdict {
-        &report
-            .results
-            .iter()
-            .find(|result| result.check == check)
-            .expect("every check is reported")
-            .verdict
+        report.verdict(check)
     }
 
     #[test]
@@ -480,12 +478,7 @@ mod tests {
 
     fn hook_verdict_for(text: &str) -> Verdict {
         let report = doctor_report(&inputs_with_settings(text), &FixedProcessTable(Vec::new()));
-        report
-            .results
-            .into_iter()
-            .find(|result| result.check == Check::HookInstalled)
-            .expect("hook check reported")
-            .verdict
+        report.verdict(Check::HookInstalled).clone()
     }
 
     #[test]
@@ -522,11 +515,8 @@ mod tests {
         let mut entries = session_with_doctor_beneath_harness_100();
         entries.extend(extra);
         doctor_report(&inputs_without_any_wiring(), &FixedProcessTable(entries))
-            .results
-            .into_iter()
-            .find(|result| result.check == Check::BridgeRunning)
-            .expect("bridge check reported")
-            .verdict
+            .verdict(Check::BridgeRunning)
+            .clone()
     }
 
     #[test]
@@ -695,11 +685,8 @@ mod tests {
         processes.0.push(harness_with_arguments(arguments));
         run_doctor(&inputs, &processes, read_text_file)
             .expect("the table never fails")
-            .results
-            .into_iter()
-            .find(|result| result.check == Check::NoRefuseApplies)
-            .expect("refuse check reported")
-            .verdict
+            .verdict(Check::NoRefuseApplies)
+            .clone()
     }
 
     fn read_nothing(_: &Path) -> Option<String> {
