@@ -1083,6 +1083,7 @@ mod tests {
     const MISMATCHED_MESSAGE_BODY: &str = "a message under a handle that does not match";
     const IMPOSTOR_HANDLE: &str = "imp";
     const HOST_SEED: u8 = 90;
+    const REPLAY_DIRECT_ADDRESS: &str = "203.0.113.9:4433";
     const SECOND_HOST_SEED: u8 = 91;
     const THIRD_HOST_SEED: u8 = 92;
     const HOST_RELAY: &str = "https://relay-host.estafette.invalid/";
@@ -1849,6 +1850,19 @@ mod tests {
         }
     }
 
+    fn replayed_infrastructure_of(host_seed: u8, relay: &str, ts: u64) -> Payload {
+        let Payload::Infrastructure(record) = infrastructure_of(host_seed, relay, ts) else {
+            panic!("infrastructure_of builds an infrastructure record");
+        };
+        Payload::Infrastructure(Infrastructure {
+            addr: Addr::from_endpoint_report(
+                [relay.to_owned()],
+                [REPLAY_DIRECT_ADDRESS.parse().unwrap()],
+            ),
+            ..record
+        })
+    }
+
     fn infrastructure_of(host_seed: u8, relay: &str, ts: u64) -> Payload {
         Payload::Infrastructure(Infrastructure {
             v: Version::CURRENT,
@@ -1975,7 +1989,13 @@ mod tests {
         witness
             .broadcast_as(
                 HOST_SEED,
-                infrastructure_of(HOST_SEED, HOST_RELAY, record_ts),
+                replayed_infrastructure_of(HOST_SEED, HOST_RELAY, record_ts),
+            )
+            .await;
+        witness
+            .broadcast_as(
+                HOST_SEED,
+                replayed_infrastructure_of(HOST_SEED, HOST_RELAY, record_ts - 1),
             )
             .await;
         witness
@@ -2612,6 +2632,46 @@ mod tests {
                 .all(|peer| peer.card != card(FIRST_SEED))
         );
         assert_eq!(member.node.own_handle().as_str(), FIRST_HANDLE);
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_an_unreachable_report_about_this_node_below_its_last_presence_seq_is_dropped()
+    {
+        let scratch = Scratch::new("rumor-seq").await;
+        let (_member, mut witness) = start_witnessed(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                .with_clock(frozen_clock(FROZEN_CLOCK_MS)),
+            None,
+        )
+        .await;
+        witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await
+            .unwrap();
+
+        witness
+            .broadcast_as(
+                WITNESS_SEED,
+                unreachable_about(FIRST_SEED, WITNESS_SEED, FROZEN_CLOCK_MS - 1),
+            )
+            .await;
+        witness
+            .broadcast_as(
+                WITNESS_SEED,
+                unreachable_about(FIRST_SEED, WITNESS_SEED, FROZEN_CLOCK_MS),
+            )
+            .await;
+        let answer = witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await;
+        let nothing_more = witness
+            .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
+            .await;
+
+        assert_eq!(presence_fields(answer), (FROZEN_CLOCK_MS + 1, false));
+        assert!(nothing_more.is_none());
         drop(scratch);
     }
 }
