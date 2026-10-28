@@ -15,6 +15,10 @@ use iroh::endpoint::BindError;
 use iroh::protocol::Router;
 use iroh::{RelayUrl, SecretKey, Signature};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
+#[cfg(feature = "relay")]
+use iroh_relay::server::{
+    AcmeConfig, CertConfig, QuicConfig, RelayConfig, Server, ServerConfig, TlsConfig,
+};
 use tokio::time::{Instant, Interval, MissedTickBehavior, interval};
 
 use super::network::NetworkFilesystem;
@@ -49,6 +53,8 @@ const LINE_END: char = '\n';
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 const TEMPORARY_FILE_EXTENSION: &str = "tmp";
 const UNSIGNED: SignatureBytes = SignatureBytes([0; Signature::LENGTH]);
+#[cfg(feature = "relay")]
+const LETS_ENCRYPT_PRODUCTION_DIRECTORY: bool = true;
 const RUN_ABOUT: &str = "Run this host's relay and bootstrap node for a network";
 
 fn run_long_about() -> String {
@@ -811,6 +817,36 @@ fn record_interval() -> Interval {
     let mut records_due = interval(INFRASTRUCTURE_RECORD_INTERVAL);
     records_due.set_missed_tick_behavior(MissedTickBehavior::Delay);
     records_due
+}
+
+/// Starts iroh-relay at the site, serving HTTPS alone with a Let's Encrypt certificate for the domain, and QUIC address discovery (spec 3.14, D51).
+///
+/// # Errors
+///
+/// Returns the relay library's error as [`RelayNotStarted`] when TLS cannot be configured or a listener cannot be bound.
+#[cfg(feature = "relay")]
+pub async fn start_embedded_relay(site: RelaySite) -> Result<RunningRelay, RelayNotStarted> {
+    let server_config_builder = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_no_client_auth();
+    let acme_config = AcmeConfig::letsencrypt(LETS_ENCRYPT_PRODUCTION_DIRECTORY)
+        .domains(vec![site.domain])
+        .cache_path(site.certificate_cache);
+    let mut relay = RelayConfig::new(site.acme_challenge);
+    relay.tls = Some(TlsConfig::new(
+        site.https,
+        CertConfig::LetsEncrypt {
+            acme_config,
+            server_config_builder,
+        },
+    ));
+    let mut config = ServerConfig::default();
+    config.relay = Some(relay);
+    config.quic = Some(QuicConfig::new(site.quic_address_discovery));
+    let server = Server::spawn(config).await?;
+    Ok(Box::new(server))
 }
 
 /// The failure of an operation on the file at the path.

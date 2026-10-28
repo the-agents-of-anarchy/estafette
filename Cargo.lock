@@ -823,6 +823,7 @@ dependencies = [
  "n0-future",
  "postcard",
  "rmcp",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",

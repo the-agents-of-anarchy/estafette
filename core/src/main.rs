@@ -1,3 +1,5 @@
+#[cfg(feature = "relay")]
+use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Write};
 use std::path::Path;
@@ -7,6 +9,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use estafette::cli::cards::{self, CardCommand, RegistryArgs};
+#[cfg(feature = "relay")]
+use estafette::cli::infra::{
+    self, InfrastructureCommand, InfrastructureCommandError, InfrastructureEffects,
+};
 use estafette::cli::network::{self, NetworkCommand, NetworkCommandError};
 use estafette::cli::observer::{
     self, ObserverCommand, ObserverCommandError, ObserverEffects, OperatorEffects,
@@ -46,6 +52,9 @@ struct EstafetteArguments {
 enum Command {
     #[command(flatten)]
     Cards(CardCommand),
+    #[cfg(feature = "relay")]
+    #[command(flatten)]
+    Infrastructure(InfrastructureCommand),
     /// Create or join a network, add a host to it, print its invitation, or certify a host
     Network {
         #[command(subcommand)]
@@ -71,6 +80,8 @@ enum CommandLineFailure {
     InboxSocket(InboxSocketError),
     Signals(io::Error),
     Observer(ObserverCommandError),
+    #[cfg(feature = "relay")]
+    Infrastructure(InfrastructureCommandError),
 }
 
 impl fmt::Display for CommandLineFailure {
@@ -90,6 +101,8 @@ impl fmt::Display for CommandLineFailure {
                 write!(formatter, "cannot listen for shutdown signals: {source}")
             }
             Self::Observer(source) => write!(formatter, "{source}"),
+            #[cfg(feature = "relay")]
+            Self::Infrastructure(source) => write!(formatter, "{source}"),
         }
     }
 }
@@ -101,6 +114,13 @@ fn main() -> ExitCode {
             |name: &str| std::env::var_os(name),
             &OperatingSystemFilesystem,
             |seed| *seed = SecretKey::generate().to_bytes(),
+            &mut io::stdout(),
+            &mut io::stderr(),
+        ),
+        #[cfg(feature = "relay")]
+        Command::Infrastructure(command) => run_infrastructure_command(
+            command,
+            |name: &str| std::env::var_os(name),
             &mut io::stdout(),
             &mut io::stderr(),
         ),
@@ -386,6 +406,83 @@ fn unix_seconds_of(instant: SystemTime) -> Result<u64, CommandLineFailure> {
     unix_milliseconds_of(instant).map(|milliseconds| milliseconds / MILLISECONDS_PER_SECOND)
 }
 
+/// Runs the infrastructure command on a runtime of its own, writing a failure to `record`, and says how the process ends.
+#[cfg(feature = "relay")]
+fn run_infrastructure_command(
+    command: InfrastructureCommand,
+    environment: impl Fn(&str) -> Option<OsString>,
+    result: &mut (impl Write + Send),
+    record: &mut impl Write,
+) -> ExitStatus {
+    match serve_infrastructure(command, environment, result) {
+        Ok(()) => ExitStatus::Success,
+        Err(failure) => {
+            drop(writeln!(record, "{failure}"));
+            ExitStatus::Failure
+        }
+    }
+}
+
+/// Resolves the directories, refuses a clock before the Unix epoch, and serves the host until a stop signal.
+#[cfg(feature = "relay")]
+fn serve_infrastructure(
+    command: InfrastructureCommand,
+    environment: impl Fn(&str) -> Option<OsString>,
+    result: &mut (impl Write + Send),
+) -> Result<(), CommandLineFailure> {
+    let directories = Directories::establish(environment, &OperatingSystemFilesystem, None)
+        .map_err(CommandLineFailure::Directories)?;
+    unix_seconds_of(SystemTime::now())?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(CommandLineFailure::Runtime)?;
+    runtime
+        .block_on(infra::run(
+            command,
+            &directories,
+            &OperatingSystemFilesystem,
+            infrastructure_effects(),
+            result,
+        ))
+        .map_err(CommandLineFailure::Infrastructure)
+}
+
+/// The side effects of the infrastructure command: the secure random source, the wall clock, the gated endpoint, the embedded relay, the stop signals and the run record on stderr.
+#[cfg(feature = "relay")]
+fn infrastructure_effects() -> InfrastructureEffects {
+    InfrastructureEffects {
+        fill_from_secure_source: Box::new(|seed| *seed = SecretKey::generate().to_bytes()),
+        clock: Arc::new(wall_clock_milliseconds),
+        bind_endpoint: Box::new(|key, gate_key, relay| {
+            Box::pin(NodeEndpoint::bind(
+                key,
+                gate_key,
+                [relay],
+                fill_with_secure_random_bytes,
+                |closing: GateFailure| drop(writeln!(io::stderr(), "{closing}")),
+            ))
+        }),
+        start_relay: Box::new(|site| Box::pin(infra::start_embedded_relay(site))),
+        stopped: Box::pin(stop_requested()),
+        report: Arc::new(|record| drop(writeln!(io::stderr(), "{record}"))),
+    }
+}
+
+/// Resolves at the first interrupt or terminate signal.
+#[cfg(feature = "relay")]
+async fn stop_requested() {
+    match signal(SignalKind::terminate()) {
+        Ok(mut terminate) => {
+            tokio::select! {
+                _interrupted = tokio::signal::ctrl_c() => {}
+                _terminated = terminate.recv() => {}
+            }
+        }
+        Err(_unregistered) => drop(tokio::signal::ctrl_c().await),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
@@ -473,5 +570,64 @@ mod tests {
         for (exit, status) in expected {
             assert_eq!(exit_status_of(exit), status, "{exit:?}");
         }
+    }
+
+    #[cfg(feature = "relay")]
+    #[test]
+    fn spec_3_14_run_infrastructure_without_a_certificate_prints_the_host_line_and_exits_1() {
+        let root = std::env::temp_dir().join(format!("u29-main-{}", std::process::id()));
+        drop(std::fs::remove_dir_all(&root));
+        let base = root.clone();
+        let environment = move |name: &str| match name {
+            "XDG_CONFIG_HOME" => Some(base.join("c").into_os_string()),
+            "XDG_DATA_HOME" => Some(base.join("d").into_os_string()),
+            "XDG_RUNTIME_DIR" => Some(base.join("r").into_os_string()),
+            _ => None,
+        };
+        let created = EstafetteArguments::try_parse_from(["estafette", "network", "create", "lab"])
+            .unwrap()
+            .command;
+        let Command::Network { command } = created else {
+            panic!("network create parses as a network command");
+        };
+        let directories =
+            Directories::establish(&environment, &OperatingSystemFilesystem, None).unwrap();
+        network::run(
+            &command,
+            &directories,
+            &OperatingSystemFilesystem,
+            |bytes| *bytes = [3; 32],
+            SECONDS_AFTER_EPOCH,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+        let Command::Infrastructure(infrastructure) = EstafetteArguments::try_parse_from([
+            "estafette",
+            "run-infrastructure",
+            "lab",
+            "127.0.0.1",
+            "relay.example",
+        ])
+        .unwrap()
+        .command
+        else {
+            panic!("run-infrastructure parses as the infrastructure command");
+        };
+        let (mut printed, mut recorded) = (Vec::new(), Vec::new());
+
+        let status =
+            run_infrastructure_command(infrastructure, &environment, &mut printed, &mut recorded);
+
+        assert_eq!(u8::from(status), 1);
+        let printed = String::from_utf8(printed).unwrap();
+        assert_eq!(printed.lines().count(), 1);
+        assert!(printed.starts_with("estafette-host-1:"));
+        assert!(
+            String::from_utf8(recorded)
+                .unwrap()
+                .contains("holds no certificate")
+        );
+        drop(std::fs::remove_dir_all(&root));
     }
 }
