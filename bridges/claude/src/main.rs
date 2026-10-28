@@ -52,6 +52,7 @@ enum Command {
     Doctor,
 }
 
+/// Reads the subcommand and its arguments from the command line, refusing any other form.
 fn parse_command(arguments: &[String]) -> Option<Command> {
     match arguments {
         [subcommand, harness_pid] if subcommand == RUN_SUBCOMMAND => Some(Command::Run {
@@ -74,10 +75,12 @@ struct Environment {
     started: Instant,
 }
 
+/// Reads an environment variable, treating an empty value as unset.
 fn non_empty_variable(name: &str) -> Option<OsString> {
     std::env::var_os(name).filter(|value| !value.is_empty())
 }
 
+/// Captures the process environment, the own pid, the working directory and the start time once at the entry.
 fn read_environment() -> Result<Environment, CommandError> {
     Ok(Environment {
         messaging_socket: non_empty_variable(MESSAGING_SOCKET_VARIABLE).map(PathBuf::from),
@@ -125,6 +128,7 @@ impl fmt::Display for CommandError {
 
 impl std::error::Error for CommandError {}
 
+/// Names the runtime directory inputs, taking the user id from the owner of the home directory.
 fn runtime_inputs(environment: &Environment) -> Result<RuntimeDirectoryInputs, CommandError> {
     let home = environment
         .home
@@ -143,10 +147,12 @@ fn runtime_inputs(environment: &Environment) -> Result<RuntimeDirectoryInputs, C
     })
 }
 
+/// Takes a mutex whether or not a panicking holder poisoned it, which the abort-on-panic release profile makes unreachable.
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Writes the dropped-frame count by staging a file and renaming it over the final name.
 fn write_dropped_frames(path: &Path, count: u64) -> io::Result<()> {
     let staging = path.with_extension(STAGING_EXTENSION);
     fs::write(&staging, count.to_string())?;
@@ -162,6 +168,7 @@ struct BridgeSession<S: InboxConnector> {
 }
 
 impl<S: InboxConnector> BridgeSession<S> {
+    /// Injects one frame as a notice and records the dropped-frame count when it changed.
     fn deliver(&self, frame: &InboxFrame) {
         let mut notifier = lock(&self.notifier);
         let dropped_before = notifier.dropped_frames();
@@ -179,12 +186,14 @@ impl<S: InboxConnector> BridgeSession<S> {
     }
 }
 
+/// Prints a failed dropped-frame write to stderr.
 fn report_write_failure(outcome: io::Result<()>) {
     if let Err(error) = outcome {
         eprintln!("cannot write the dropped-frame count: {error}");
     }
 }
 
+/// Starts a thread that follows one binary inbox socket until its connection fails.
 fn follow_binary_socket<S, B>(
     session: &Arc<BridgeSession<S>>,
     socket_path: PathBuf,
@@ -225,6 +234,7 @@ struct BridgeEffects<S, C> {
 type ProductionBridgeEffects =
     BridgeEffects<UnixSocketConnector, fn(PathBuf) -> UnixSocketConnector>;
 
+/// Builds the production sockets, clock and pauses the bridge runs on from the environment.
 fn bridge_effects(environment: &Environment) -> Result<ProductionBridgeEffects, CommandError> {
     let socket = environment
         .messaging_socket
@@ -246,6 +256,7 @@ fn bridge_effects(environment: &Environment) -> Result<ProductionBridgeEffects, 
     })
 }
 
+/// Serves the harness process by following every binary socket under it until the harness exits, unless another bridge already serves it.
 fn run_bridge<S, B>(
     harness_pid: u32,
     effects: BridgeEffects<S, impl Fn(PathBuf) -> B>,
@@ -289,6 +300,7 @@ where
     Ok(BridgeOutcome::HarnessExited)
 }
 
+/// Reads one settings file, treating a missing file as absent.
 fn read_settings_file(path: PathBuf) -> Result<Option<SettingsFile>, CommandError> {
     match fs::read_to_string(&path) {
         Ok(text) => Ok(Some(SettingsFile { path, text })),
@@ -297,6 +309,7 @@ fn read_settings_file(path: PathBuf) -> Result<Option<SettingsFile>, CommandErro
     }
 }
 
+/// Lists the user, project and local settings files in the order Claude Code reads them.
 fn settings_file_paths(environment: &Environment, project_dir: &Path) -> Vec<PathBuf> {
     let user_config_dir = environment.claude_config_dir.clone().or_else(|| {
         environment
@@ -321,6 +334,7 @@ struct ManagedSettings {
     unreadable: Vec<PathBuf>,
 }
 
+/// Tells whether a path names a non-hidden JSON file.
 fn is_visible_settings_file(path: &Path) -> bool {
     path.extension().and_then(|extension| extension.to_str()) == Some(SETTINGS_EXTENSION)
         && !path
@@ -329,6 +343,7 @@ fn is_visible_settings_file(path: &Path) -> bool {
             .is_none_or(|name| name.starts_with(HIDDEN_FILE_PREFIX))
 }
 
+/// Lists the managed settings file and the visible JSON files of its drop-in directory in name order, noting an unreadable drop-in directory.
 fn managed_settings_paths(directory: &Path, unreadable: &mut Vec<PathBuf>) -> Vec<PathBuf> {
     let drop_in_directory = directory.join(MANAGED_DROP_IN_DIRECTORY);
     let mut paths = vec![directory.join(MANAGED_SETTINGS_FILE)];
@@ -351,6 +366,7 @@ fn managed_settings_paths(directory: &Path, unreadable: &mut Vec<PathBuf>) -> Ve
     paths
 }
 
+/// Reads every managed settings file, separating the unreadable ones.
 fn read_managed_settings(directory: &Path) -> ManagedSettings {
     let mut managed = ManagedSettings::default();
     for path in managed_settings_paths(directory, &mut managed.unreadable) {
@@ -363,6 +379,7 @@ fn read_managed_settings(directory: &Path) -> ManagedSettings {
     managed
 }
 
+/// Tells whether the session messaging socket is unset, missing or present.
 fn messaging_socket_state(environment: &Environment) -> MessagingSocket {
     match &environment.messaging_socket {
         None => MessagingSocket::Unset,
@@ -371,6 +388,7 @@ fn messaging_socket_state(environment: &Environment) -> MessagingSocket {
     }
 }
 
+/// Gathers the doctor inputs, prints the report on stdout and tells whether every check passed.
 fn run_doctor_command(environment: &Environment) -> Result<bool, CommandError> {
     let mut settings_files: Vec<SettingsFile> =
         settings_file_paths(environment, &environment.working_dir)
@@ -398,6 +416,7 @@ fn run_doctor_command(environment: &Environment) -> Result<bool, CommandError> {
     Ok(report.all_passed())
 }
 
+/// Maps a command outcome to its exit status, printing an error on stderr.
 fn exit_code_of(outcome: Result<bool, CommandError>) -> ExitCode {
     match outcome {
         Ok(true) => ExitCode::SUCCESS,
@@ -409,6 +428,7 @@ fn exit_code_of(outcome: Result<bool, CommandError>) -> ExitCode {
     }
 }
 
+/// Runs the subcommand named on the command line and exits with its status.
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let environment = match read_environment() {

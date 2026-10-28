@@ -168,6 +168,7 @@ pub fn run_doctor(
     })
 }
 
+/// Judges whether the session messaging socket exists.
 fn judge_socket_path_exists(socket: &MessagingSocket) -> Verdict {
     match socket {
         MessagingSocket::Present(_) => Verdict::Passed,
@@ -181,6 +182,7 @@ fn judge_socket_path_exists(socket: &MessagingSocket) -> Verdict {
     }
 }
 
+/// Judges that no settings source sets refuse, reporting any source it could not verify.
 fn judge_no_refuse_applies<'a>(
     settings_files: impl Iterator<Item = &'a SettingsFile>,
     unreadable_sources: impl Iterator<Item = String>,
@@ -213,6 +215,7 @@ struct CommandLineSettings {
     unverified: Vec<String>,
 }
 
+/// Collects the settings the harness process was started with and the sources it cannot verify.
 fn settings_of_harness_command_line(
     harness_pid: Option<u32>,
     entries: &[ProcessEntry],
@@ -254,6 +257,7 @@ fn settings_of_harness_command_line(
     settings
 }
 
+/// Takes the value of each settings flag, joining its words up to the next dash word.
 fn settings_flag_values(arguments: &[String]) -> Vec<String> {
     let inline_prefix = format!("{SETTINGS_FLAG}=");
     arguments
@@ -279,6 +283,7 @@ fn settings_flag_values(arguments: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// Judges whether the binary runs in MCP mode under the harness process.
 fn judge_binary_process_found(
     harness_pid: Option<u32>,
     entries: &[ProcessEntry],
@@ -298,6 +303,7 @@ fn judge_binary_process_found(
     }
 }
 
+/// Judges whether a bridge runs for an ancestor of the doctor.
 fn judge_bridge_running(harness_pid: Option<u32>) -> Verdict {
     match harness_pid {
         Some(_) => Verdict::Passed,
@@ -307,6 +313,7 @@ fn judge_bridge_running(harness_pid: Option<u32>) -> Verdict {
     }
 }
 
+/// Collects the pids of every ancestor of a process, ending on a cyclic table.
 fn ancestor_pids(pid: u32, entries: &[ProcessEntry]) -> BTreeSet<u32> {
     let mut ancestors = BTreeSet::new();
     let mut current = pid;
@@ -319,6 +326,7 @@ fn ancestor_pids(pid: u32, entries: &[ProcessEntry]) -> BTreeSet<u32> {
     ancestors
 }
 
+/// Finds the harness pid a running bridge serves that is an ancestor of this process.
 fn harness_of_bridge_for_session(own_pid: u32, entries: &[ProcessEntry]) -> Option<u32> {
     let ancestors = ancestor_pids(own_pid, entries);
     entries
@@ -336,6 +344,7 @@ pub fn running_bridge_for(harness_pid: u32, own_pid: u32, entries: &[ProcessEntr
         .map(|entry| entry.pid)
 }
 
+/// Reads the harness pid a bridge process serves from its arguments.
 fn served_harness_pid(entry: &ProcessEntry) -> Option<u32> {
     if is_bridge_process(entry) {
         entry.arguments.get(1)?.parse().ok()
@@ -344,6 +353,7 @@ fn served_harness_pid(entry: &ProcessEntry) -> Option<u32> {
     }
 }
 
+/// Tells whether a process runs the bridge executable with the run subcommand.
 fn is_bridge_process(entry: &ProcessEntry) -> bool {
     entry
         .executable
@@ -377,10 +387,12 @@ struct HookEntry {
     command: Option<String>,
 }
 
+/// Parses a settings file, giving nothing when it is not valid settings JSON.
 fn parse_settings(file: &SettingsFile) -> Option<SettingsDocument> {
     serde_json::from_str(&file.text).ok()
 }
 
+/// Judges whether a `SessionStart` hook starts the bridge.
 fn judge_hook_installed(settings_files: &[SettingsFile]) -> Verdict {
     let starts_bridge = |document: SettingsDocument| {
         document
