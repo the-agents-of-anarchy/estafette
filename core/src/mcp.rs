@@ -124,6 +124,7 @@ async fn answer_until_closed(
 /// The handler of the six tools for the one session of this process.
 struct Server {
     session: Arc<Session>,
+    init_gate: tokio::sync::Mutex<()>,
     claimed: Mutex<Option<ClaimedCard>>,
     served: ServedNetwork,
     effects: ServerEffects,
@@ -140,6 +141,7 @@ impl Server {
     const fn new(session: Arc<Session>, served: ServedNetwork, effects: ServerEffects) -> Self {
         Self {
             session,
+            init_gate: tokio::sync::Mutex::const_new(()),
             claimed: Mutex::new(None),
             served,
             effects,
@@ -190,6 +192,7 @@ impl Server {
 
     /// Claims the input's card for this session by the init sequence of spec 3.10 and returns its effective handle and inbox path.
     async fn init(&self, input: InitInput) -> Result<ToolResult, ErrorCode> {
+        let _one_init_at_a_time = self.init_gate.lock().await;
         self.refuse_a_second_claim()?;
         let name = card_name(&input.card)?;
         let card = self.registry_card(&name)?;
@@ -199,8 +202,7 @@ impl Server {
         let public = public_with_description(card, input.description.as_deref())?;
         let lock = self.lock_sidecar(&name, public_key).await?;
         let node = self.start_node(&lock, requested_handle, public).await?;
-        let node = self.session.claim(node, lock)?;
-        Ok(self.record_claim(name, node.own_handle().clone()))
+        self.claim(name, node, lock)
     }
 
     /// `bad_request` once this session has claimed a card, and the session's refusal while it is stopping.
@@ -297,15 +299,17 @@ impl Server {
         .map_err(|_not_started| NODE_NOT_STARTED)
     }
 
-    /// Remembers the claimed card and its effective handle for every later `you`, and returns the init result.
-    fn record_claim(&self, card: Handle, handle: LocalHandle) -> ToolResult {
-        let claimed = ClaimedCard { card, handle };
+    /// Hands the node and the lock to the session and records the card with the node's handle in the same step, so no `you` sees one without the other.
+    fn claim(&self, card: Handle, node: Node, lock: HeldSidecar) -> Result<ToolResult, ErrorCode> {
+        let mut claimed = self.claimed_card();
+        let handle = self.session.claim(node, lock)?.own_handle().clone();
         let result = ToolResult::Claimed {
-            handle: claimed.handle.as_str().to_owned(),
+            handle: handle.as_str().to_owned(),
             inbox_path: self.served.inbox_path.clone(),
         };
-        *self.claimed_card() = Some(claimed);
-        result
+        *claimed = Some(ClaimedCard { card, handle });
+        drop(claimed);
+        Ok(result)
     }
 
     /// The card this session claimed, none before init.
@@ -834,6 +838,7 @@ mod tests {
     use std::fs;
     use std::io;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     use serde_json::{Value, json};
@@ -965,6 +970,15 @@ mod tests {
             owner: render_public_key(&SecretKey::from_bytes(&[OWNER_SEED; KEY_BYTES]).public()),
             hosts,
         }
+    }
+
+    fn bind_counted(binds: &Arc<AtomicUsize>) -> BindEndpoint {
+        let binds = Arc::clone(binds);
+        let bind = bind_alone();
+        Arc::new(move |card_key, gate_key, relays| {
+            binds.fetch_add(1, Ordering::SeqCst);
+            bind(card_key, gate_key, relays)
+        })
     }
 
     fn bind_alone() -> BindEndpoint {
@@ -1164,6 +1178,36 @@ mod tests {
                     return message;
                 }
             }
+        }
+
+        async fn envelopes_of_calls_at_once(&mut self, calls: &[(&str, Value)]) -> Vec<Value> {
+            let first_id = self.next_id;
+            for (tool, arguments) in calls {
+                let id = self.next_id;
+                self.next_id = self.next_id.checked_add(1).unwrap();
+                self.write_message(&json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "tools/call",
+                    "params": { "name": tool, "arguments": arguments }
+                }))
+                .await;
+            }
+            let mut answered = std::collections::BTreeMap::new();
+            while answered.len() < calls.len() {
+                let mut line = String::new();
+                tokio::time::timeout(RESPONSE_WAIT, self.from_server.read_line(&mut line))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let message: Value = serde_json::from_str(&line).unwrap();
+                answered.insert(
+                    message["id"].as_u64().unwrap(),
+                    message["result"]["structuredContent"].clone(),
+                );
+            }
+            assert_eq!(answered.keys().next(), Some(&first_id));
+            answered.into_values().collect()
         }
 
         async fn initialize(&mut self) -> Value {
@@ -1540,6 +1584,54 @@ mod tests {
             listed["result"],
             json!({ "cards": [{ "name": "amy-card", "handle": "amy", "held": true }] })
         );
+    }
+
+    #[tokio::test]
+    async fn spec_3_9_of_two_inits_in_flight_at_once_one_claims_and_the_other_is_bad_request_without_a_node()
+     {
+        let _slot = node_slot().await;
+        let machine = Machine::new("two-inits");
+        machine.create_card("amy-card", "amy", AMY_SEED);
+        machine.create_card("bob-card", "bob", BOB_SEED);
+        let binds = Arc::new(AtomicUsize::new(0));
+        let mut client = start_server(
+            &machine,
+            ServerPlan {
+                bind_endpoint: bind_counted(&binds),
+                ..ServerPlan::alone(FIRST_PROCESS_ID)
+            },
+        );
+        client.initialize().await;
+
+        let answers = client
+            .envelopes_of_calls_at_once(&[
+                ("init", json!({ "card": "amy-card" })),
+                ("init", json!({ "card": "bob-card" })),
+            ])
+            .await;
+
+        let mut outcomes: Vec<&str> = answers
+            .iter()
+            .map(|answer| {
+                answer["result"]["handle"]
+                    .as_str()
+                    .or_else(|| answer["error"]["code"].as_str())
+                    .unwrap()
+            })
+            .collect();
+        outcomes.sort_unstable();
+        assert!(
+            outcomes == ["amy", "bad_request"] || outcomes == ["bad_request", "bob"],
+            "{outcomes:?}"
+        );
+        assert_eq!(binds.load(Ordering::SeqCst), 1);
+        let claimed = answers
+            .iter()
+            .find(|answer| answer["ok"] == json!(true))
+            .unwrap();
+        for answer in &answers {
+            assert_eq!(answer["you"], claimed["you"]);
+        }
     }
 
     #[tokio::test]
