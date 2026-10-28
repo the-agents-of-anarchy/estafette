@@ -51,3 +51,12 @@ INVALIDATES:   The receiving model sees the sender only in the header text: Clau
                A second SessionStart for one harness pid is refused by the process table; a resume in a new process starts a fresh bridge as intended
                Verified on macOS (Darwin 24.3.0, claude 2.1.312) only; the ancestor walk and `ps` on Linux are unverified
 EVIDENCE:      bridges/claude/src/{main,doctor,inject}.rs at 2cea7dc; spec reviews 043658 FAIL, 044430, 050227, 051124, 052217 PASS; quality 052350 Ready Yes; live e2e at 2cea7dc one notice, doctor exit 0
+
+## 2026-10-28 → 2026-10-28 — The endpoint sends a QUIC keep-alive every 500 ms so a vanished peer is detected within the idle timeout plus half a second
+KIND:          runnable
+FROM → TO:     iroh's default 5 s keep-alive (`HEARTBEAT_INTERVAL`) → `QUIC_KEEP_ALIVE_INTERVAL` = 500 ms set on the endpoint's transport config (core/src/net/endpoint.rs); the 10 s idle timeout (spec:597, spec:1003) is unchanged
+WHY:           with the pinned transport (noq-proto 1.3.0) the idle timer restarts on the first ack-eliciting packet sent after a receive, so when the last packet received was the peer's own keep-alive the 5 s ping restarted the 10 s timer and a vanished peer was detected at 15 s in 4 of 50 solo runs, outside the test's [9 s, 11 s) window; a 500 ms interval bounds detection by idle + 0.5 s; the alternative, widening the test bound to 15 s, is forbidden (gate-discipline); decided by U38 after a three-hypothesis debugging round (reports debug-U18-H1/H2/H3, diagnose-U18)
+INVALIDATES:   Every idle connection now carries about two packets a second instead of one per five seconds; iroh's documentation warns against tuning the interval; NAT and relay paths were not measured — lab test 28 and the compatibility pass settle it
+               The idle test forces the race by letting the peer live 6 s past the handshake, which depends on iroh's 5 s default heartbeat on the plain peer endpoint; a change to that default changes what the test forces
+               The gossip lagged test (core/src/net/gossip.rs) now waits for delivery before reading, so it proves lag, not a race with delivery; it no longer fails under load (0 of 140 runs)
+EVIDENCE:      core/src/net/{endpoint,gossip}.rs at 6d4a132; spec reviews 091253, 095025 PASS; quality 100548 Ready Yes; idle test 0/50 vs 4/50 before, reverted fix fails 10/10
