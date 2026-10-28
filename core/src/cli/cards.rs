@@ -12,7 +12,7 @@ use iroh::SecretKey;
 use crate::card::{Card, CardInvalid};
 use crate::dirs::{Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem};
 use crate::errors::ExitStatus;
-use crate::handle::Handle;
+use crate::handle::{Handle, HandleError};
 use crate::keys::render_public_key;
 use crate::sidecar::{SidecarError, create_card};
 
@@ -51,6 +51,7 @@ enum CardCommandError {
     Sidecar(SidecarError),
     CardsDirectoryUncreatable { path: PathBuf, source: io::Error },
     Unreadable { path: PathBuf, source: io::Error },
+    CardNameRefused { path: PathBuf, source: HandleError },
     CardInvalid { path: PathBuf, reason: CardInvalid },
     OutputUnwritable(io::Error),
 }
@@ -65,6 +66,13 @@ impl fmt::Display for CardCommandError {
             }
             Self::Unreadable { path, source } => {
                 write!(formatter, "cannot read {}: {source}", path.display())
+            }
+            Self::CardNameRefused { path, source } => {
+                write!(
+                    formatter,
+                    "{} is not a valid card name: {source}",
+                    path.display()
+                )
             }
             Self::CardInvalid { path, reason } => {
                 write!(
@@ -217,9 +225,8 @@ fn list_registry_cards(
         .map_err(CardCommandError::Directories)?;
     let mut lines_by_card_name = BTreeMap::new();
     for card_file in card_files_in(filesystem, &cards_directory)? {
-        if let Some((name, line)) = describe_card_file(filesystem, &card_file)? {
-            lines_by_card_name.insert(name, line);
-        }
+        let (name, line) = describe_card_file(filesystem, &card_file)?;
+        lines_by_card_name.insert(name, line);
     }
     Ok(lines_by_card_name
         .into_values()
@@ -252,14 +259,8 @@ fn card_files_in(
 fn describe_card_file(
     filesystem: &impl CardRegistryReader,
     card_file: &Path,
-) -> Result<Option<(String, String)>, CardCommandError> {
-    let Some(name) = card_file
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .filter(|stem| Handle::from_str(stem).is_ok())
-    else {
-        return Ok(None);
-    };
+) -> Result<(String, String), CardCommandError> {
+    let name = card_name_of(card_file)?;
     let text = filesystem
         .read_text(card_file)
         .map_err(|source| CardCommandError::Unreadable {
@@ -270,6 +271,19 @@ fn describe_card_file(
         path: card_file.to_owned(),
         reason,
     })?;
-    let line = [name, &card.handle, &card.public_key].join(&LIST_FIELD_SEPARATOR.to_string());
-    Ok(Some((name.to_owned(), line)))
+    let line =
+        [name.as_str(), &card.handle, &card.public_key].join(&LIST_FIELD_SEPARATOR.to_string());
+    Ok((name.as_str().to_owned(), line))
+}
+
+fn card_name_of(card_file: &Path) -> Result<Handle, CardCommandError> {
+    card_file
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or(HandleError::NotAHandle)
+        .and_then(Handle::from_str)
+        .map_err(|source| CardCommandError::CardNameRefused {
+            path: card_file.to_owned(),
+            source,
+        })
 }

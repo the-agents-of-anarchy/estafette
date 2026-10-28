@@ -263,6 +263,29 @@ fn list_cards_prints_one_line_per_card_in_card_name_order() {
 }
 
 #[test]
+fn list_cards_fails_naming_a_card_file_whose_name_is_outside_the_handle_grammar_of_spec_3_3() {
+    let root = common::scratch_root(SCRATCH_PREFIX, "bad_card_file_name").unwrap();
+    execute(&root, create_card("ana", "ana", None).unwrap(), 7);
+    let misnamed = root
+        .join("data/estafette/cards")
+        .join(NETWORK)
+        .join("ana_card.yaml");
+    fs::write(&misnamed, "handle: ana\n").unwrap();
+
+    let listed = execute(&root, list_cards(None).unwrap(), 0);
+    assert_eq!(listed.status, ExitStatus::Failure);
+    assert_eq!(listed.stdout, "");
+    assert!(
+        listed.stderr.starts_with(&format!(
+            "{} is not a valid card name: handle must match",
+            misnamed.display()
+        )),
+        "{}",
+        listed.stderr
+    );
+}
+
+#[test]
 fn list_cards_names_the_invalid_card_file_and_fails() {
     let root = common::scratch_root(SCRATCH_PREFIX, "invalid_card").unwrap();
     execute(&root, create_card("ana", "ana", None).unwrap(), 7);
