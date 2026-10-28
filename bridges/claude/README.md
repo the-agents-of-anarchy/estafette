@@ -19,10 +19,10 @@ Every 2 seconds the bridge looks under the session's process for `estafette mcp`
 Run it inside the session (the Bash tool, or `!` at the prompt) so the session's environment is present:
 
 ```
-estafette-bridge-claude doctor [--project-dir <dir>]
+estafette-bridge-claude doctor
 ```
 
-`--project-dir` names the project whose `.claude/settings.json` and `.claude/settings.local.json` are read; it defaults to the working directory. The user settings come from `$CLAUDE_CONFIG_DIR`, or `~/.claude`.
+The working directory names the project whose `.claude/settings.json` and `.claude/settings.local.json` are read. The user settings come from `$CLAUDE_CONFIG_DIR`, or `~/.claude`.
 
 Checks, one line each on stdout:
 

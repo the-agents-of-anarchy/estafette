@@ -21,9 +21,7 @@ use estafette_bridge_claude::inbox_client::{InboxFrame, UnixSocketConnector, fol
 use estafette_bridge_claude::inject::SessionNotifier;
 
 const DOCTOR_SUBCOMMAND: &str = "doctor";
-const PROJECT_DIR_FLAG: &str = "--project-dir";
-const USAGE: &str =
-    "usage: estafette-bridge-claude run <harness-pid> | doctor [--project-dir <dir>]";
+const USAGE: &str = "usage: estafette-bridge-claude run <harness-pid> | doctor";
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 const EXIT_CHECK_FAILED: u8 = 3;
@@ -49,7 +47,7 @@ const STAGING_EXTENSION: &str = "staging";
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
     Run { harness_pid: u32 },
-    Doctor { project_dir: Option<PathBuf> },
+    Doctor,
 }
 
 fn parse_command(arguments: &[String]) -> Option<Command> {
@@ -57,16 +55,7 @@ fn parse_command(arguments: &[String]) -> Option<Command> {
         [subcommand, harness_pid] if subcommand == RUN_SUBCOMMAND => Some(Command::Run {
             harness_pid: harness_pid.parse().ok()?,
         }),
-        [subcommand] if subcommand == DOCTOR_SUBCOMMAND => {
-            Some(Command::Doctor { project_dir: None })
-        }
-        [subcommand, flag, directory]
-            if subcommand == DOCTOR_SUBCOMMAND && flag == PROJECT_DIR_FLAG =>
-        {
-            Some(Command::Doctor {
-                project_dir: Some(PathBuf::from(directory)),
-            })
-        }
+        [subcommand] if subcommand == DOCTOR_SUBCOMMAND => Some(Command::Doctor),
         _ => None,
     }
 }
@@ -336,14 +325,8 @@ fn messaging_socket_state(environment: &Environment) -> MessagingSocket {
     }
 }
 
-fn run_doctor_command(
-    project_dir: Option<PathBuf>,
-    environment: &Environment,
-) -> Result<bool, CommandError> {
-    let project_dir = match project_dir {
-        Some(directory) => directory,
-        None => std::env::current_dir().map_err(CommandError::WorkingDirectoryUnreadable)?,
-    };
+fn run_doctor_command(environment: &Environment) -> Result<bool, CommandError> {
+    let project_dir = std::env::current_dir().map_err(CommandError::WorkingDirectoryUnreadable)?;
     let mut settings_files: Vec<SettingsFile> = settings_file_paths(environment, &project_dir)
         .into_iter()
         .map(read_settings_file)
@@ -398,9 +381,7 @@ fn main() -> ExitCode {
                 true
             }),
         ),
-        Some(Command::Doctor { project_dir }) => {
-            exit_code_of(run_doctor_command(project_dir, &environment))
-        }
+        Some(Command::Doctor) => exit_code_of(run_doctor_command(&environment)),
         None => {
             eprintln!("{USAGE}");
             ExitCode::from(EXIT_USAGE)
@@ -426,16 +407,10 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_12_doctor_takes_an_optional_project_directory() {
+    fn spec_3_12_doctor_takes_no_arguments() {
         assert_eq!(
             parse_command(&arguments(&["doctor"])),
-            Some(Command::Doctor { project_dir: None })
-        );
-        assert_eq!(
-            parse_command(&arguments(&["doctor", "--project-dir", "/work"])),
-            Some(Command::Doctor {
-                project_dir: Some(PathBuf::from("/work"))
-            })
+            Some(Command::Doctor)
         );
     }
 
@@ -446,8 +421,8 @@ mod tests {
             &["run"],
             &["run", "not-a-pid"],
             &["run", "-5"],
-            &["doctor", "--project-dir"],
-            &["doctor", "--other", "/work"],
+            &["doctor", "--project-dir", "/work"],
+            &["doctor", "extra"],
             &["serve"],
         ] {
             assert_eq!(parse_command(&arguments(refused)), None, "{refused:?}");
