@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use estafette_bridge_claude::discover::{
     ProcessTable, ProcessTableError, PsProcessTable, RuntimeDirectoryInputs, follow_binary_sockets,
@@ -17,7 +17,9 @@ use estafette_bridge_claude::doctor::{
     DoctorInputs, MESSAGING_SOCKET_VARIABLE, MessagingSocket, RUN_SUBCOMMAND, SettingsFile,
     dropped_frames_path, run_doctor, running_bridge_for,
 };
-use estafette_bridge_claude::inbox_client::{InboxFrame, UnixSocketConnector, follow_inbox};
+use estafette_bridge_claude::inbox_client::{
+    InboxConnector, InboxFrame, UnixSocketConnector, follow_inbox,
+};
 use estafette_bridge_claude::inject::SessionNotifier;
 
 const DOCTOR_SUBCOMMAND: &str = "doctor";
@@ -67,14 +69,17 @@ struct Environment {
     claude_config_dir: Option<PathBuf>,
     xdg_runtime_dir: Option<PathBuf>,
     temporary_dir: PathBuf,
+    own_pid: u32,
+    working_dir: PathBuf,
+    started: Instant,
 }
 
 fn non_empty_variable(name: &str) -> Option<OsString> {
     std::env::var_os(name).filter(|value| !value.is_empty())
 }
 
-fn read_environment() -> Environment {
-    Environment {
+fn read_environment() -> Result<Environment, CommandError> {
+    Ok(Environment {
         messaging_socket: non_empty_variable(MESSAGING_SOCKET_VARIABLE).map(PathBuf::from),
         messaging_token: non_empty_variable(MESSAGING_TOKEN_VARIABLE)
             .and_then(|token| token.into_string().ok()),
@@ -83,7 +88,10 @@ fn read_environment() -> Environment {
         xdg_runtime_dir: non_empty_variable(RUNTIME_DIRECTORY_VARIABLE).map(PathBuf::from),
         temporary_dir: non_empty_variable(TEMPORARY_DIRECTORY_VARIABLE)
             .map_or_else(|| PathBuf::from(SYSTEM_TEMPORARY_DIRECTORY), PathBuf::from),
-    }
+        own_pid: std::process::id(),
+        working_dir: std::env::current_dir().map_err(CommandError::WorkingDirectoryUnreadable)?,
+        started: Instant::now(),
+    })
 }
 
 #[derive(Debug)]
@@ -145,16 +153,15 @@ fn write_dropped_frames(path: &Path, count: u64) -> io::Result<()> {
     fs::rename(staging, path)
 }
 
-type SharedNotifier = Arc<Mutex<SessionNotifier<UnixSocketConnector>>>;
-
-struct BridgeSession {
-    notifier: SharedNotifier,
-    followed_sockets: Arc<Mutex<BTreeSet<PathBuf>>>,
+struct BridgeSession<S: InboxConnector> {
+    notifier: Mutex<SessionNotifier<S>>,
+    followed_sockets: Mutex<BTreeSet<PathBuf>>,
     dropped_frames_file: PathBuf,
     started: Instant,
+    wait: fn(Duration),
 }
 
-impl BridgeSession {
+impl<S: InboxConnector> BridgeSession<S> {
     fn deliver(&self, frame: &InboxFrame) {
         let mut notifier = lock(&self.notifier);
         let dropped_before = notifier.dropped_frames();
@@ -178,11 +185,18 @@ fn report_write_failure(outcome: io::Result<()>) {
     }
 }
 
-fn follow_binary_socket(session: &Arc<BridgeSession>, socket_path: PathBuf) {
+fn follow_binary_socket<S, B>(
+    session: &Arc<BridgeSession<S>>,
+    socket_path: PathBuf,
+    mut connector: B,
+) where
+    S: InboxConnector + Send + 'static,
+    B: InboxConnector + Send + 'static,
+{
     let session = Arc::clone(session);
     thread::spawn(move || {
-        let mut connector = UnixSocketConnector::new(socket_path.clone());
-        let outcome = follow_inbox(&mut connector, &mut thread::sleep, &mut |frame| {
+        let wait = session.wait;
+        let outcome = follow_inbox(&mut connector, &mut |pause| wait(pause), &mut |frame| {
             session.deliver(frame);
         });
         let Err(error) = outcome;
@@ -197,44 +211,76 @@ enum BridgeOutcome {
     AlreadyServed { bridge_pid: u32 },
 }
 
-fn run_bridge(
-    harness_pid: u32,
+struct BridgeEffects<S, C> {
     own_pid: u32,
-    environment: &Environment,
-    processes: &impl ProcessTable,
-) -> Result<BridgeOutcome, CommandError> {
-    let entries = processes.list().map_err(CommandError::ProcessTable)?;
-    if let Some(bridge_pid) = running_bridge_for(harness_pid, own_pid, &entries) {
-        return Ok(BridgeOutcome::AlreadyServed { bridge_pid });
-    }
+    started: Instant,
+    runtime_inputs: RuntimeDirectoryInputs,
+    temporary_dir: PathBuf,
+    session_connector: S,
+    session_token: String,
+    connect_binary_socket: C,
+    wait: fn(Duration),
+}
+
+type ProductionBridgeEffects =
+    BridgeEffects<UnixSocketConnector, fn(PathBuf) -> UnixSocketConnector>;
+
+fn bridge_effects(environment: &Environment) -> Result<ProductionBridgeEffects, CommandError> {
     let socket = environment
         .messaging_socket
         .clone()
         .ok_or(CommandError::MissingVariable(MESSAGING_SOCKET_VARIABLE))?;
-    let token = environment
+    let session_token = environment
         .messaging_token
         .clone()
         .ok_or(CommandError::MissingVariable(MESSAGING_TOKEN_VARIABLE))?;
-    let runtime_inputs = runtime_inputs(environment)?;
+    Ok(BridgeEffects {
+        own_pid: environment.own_pid,
+        started: environment.started,
+        runtime_inputs: runtime_inputs(environment)?,
+        temporary_dir: environment.temporary_dir.clone(),
+        session_connector: UnixSocketConnector::new(socket),
+        session_token,
+        connect_binary_socket: UnixSocketConnector::new,
+        wait: thread::sleep,
+    })
+}
+
+fn run_bridge<S, B>(
+    harness_pid: u32,
+    effects: BridgeEffects<S, impl Fn(PathBuf) -> B>,
+    processes: &impl ProcessTable,
+) -> Result<BridgeOutcome, CommandError>
+where
+    S: InboxConnector + Send + 'static,
+    B: InboxConnector + Send + 'static,
+{
+    let entries = processes.list().map_err(CommandError::ProcessTable)?;
+    if let Some(bridge_pid) = running_bridge_for(harness_pid, effects.own_pid, &entries) {
+        return Ok(BridgeOutcome::AlreadyServed { bridge_pid });
+    }
+    let wait = effects.wait;
     let session = Arc::new(BridgeSession {
-        notifier: Arc::new(Mutex::new(SessionNotifier::new(
-            UnixSocketConnector::new(socket),
-            token,
-        ))),
-        followed_sockets: Arc::default(),
-        dropped_frames_file: dropped_frames_path(&environment.temporary_dir, harness_pid),
-        started: Instant::now(),
+        notifier: Mutex::new(SessionNotifier::new(
+            effects.session_connector,
+            effects.session_token,
+        )),
+        followed_sockets: Mutex::default(),
+        dropped_frames_file: dropped_frames_path(&effects.temporary_dir, harness_pid),
+        started: effects.started,
+        wait,
     });
     report_write_failure(write_dropped_frames(&session.dropped_frames_file, 0));
     follow_binary_sockets(
         harness_pid,
-        &runtime_inputs,
+        &effects.runtime_inputs,
         processes,
-        &mut thread::sleep,
+        &mut |pause| wait(pause),
         &mut |sockets| {
             for socket_path in sockets {
                 if lock(&session.followed_sockets).insert(socket_path.clone()) {
-                    follow_binary_socket(&session, socket_path.clone());
+                    let connector = (effects.connect_binary_socket)(socket_path.clone());
+                    follow_binary_socket(&session, socket_path.clone(), connector);
                 }
             }
         },
@@ -326,18 +372,18 @@ fn messaging_socket_state(environment: &Environment) -> MessagingSocket {
 }
 
 fn run_doctor_command(environment: &Environment) -> Result<bool, CommandError> {
-    let project_dir = std::env::current_dir().map_err(CommandError::WorkingDirectoryUnreadable)?;
-    let mut settings_files: Vec<SettingsFile> = settings_file_paths(environment, &project_dir)
-        .into_iter()
-        .map(read_settings_file)
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .flatten()
-        .collect();
+    let mut settings_files: Vec<SettingsFile> =
+        settings_file_paths(environment, &environment.working_dir)
+            .into_iter()
+            .map(read_settings_file)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
     let managed = read_managed_settings(Path::new(MANAGED_SETTINGS_DIRECTORY));
     settings_files.extend(managed.files);
     let inputs = DoctorInputs {
-        own_pid: std::process::id(),
+        own_pid: environment.own_pid,
         messaging_socket: messaging_socket_state(environment),
         settings_files,
         unreadable_settings: managed.unreadable,
@@ -365,21 +411,20 @@ fn exit_code_of(outcome: Result<bool, CommandError>) -> ExitCode {
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let environment = read_environment();
+    let environment = match read_environment() {
+        Ok(environment) => environment,
+        Err(error) => return exit_code_of(Err(error)),
+    };
     match parse_command(&arguments) {
         Some(Command::Run { harness_pid }) => exit_code_of(
-            run_bridge(
-                harness_pid,
-                std::process::id(),
-                &environment,
-                &PsProcessTable,
-            )
-            .map(|outcome| {
-                if let BridgeOutcome::AlreadyServed { bridge_pid } = outcome {
-                    eprintln!("bridge {bridge_pid} already serves process {harness_pid}");
-                }
-                true
-            }),
+            bridge_effects(&environment)
+                .and_then(|effects| run_bridge(harness_pid, effects, &PsProcessTable))
+                .map(|outcome| {
+                    if let BridgeOutcome::AlreadyServed { bridge_pid } = outcome {
+                        eprintln!("bridge {bridge_pid} already serves process {harness_pid}");
+                    }
+                    true
+                }),
         ),
         Some(Command::Doctor) => exit_code_of(run_doctor_command(&environment)),
         None => {
@@ -393,6 +438,9 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
     use estafette_bridge_claude::discover::ProcessEntry;
+    use std::cell::RefCell;
+    use std::os::unix::net::UnixStream;
+    use std::sync::mpsc;
 
     fn arguments(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
@@ -445,6 +493,9 @@ mod tests {
             claude_config_dir: None,
             xdg_runtime_dir: None,
             temporary_dir: PathBuf::from("/tmp"),
+            own_pid: 900,
+            working_dir: PathBuf::from("/work"),
+            started: Instant::now(),
         }
     }
 
@@ -457,6 +508,55 @@ mod tests {
         }
     }
 
+    struct HeldConnector(Arc<Mutex<mpsc::Receiver<()>>>);
+
+    impl InboxConnector for HeldConnector {
+        type Stream = UnixStream;
+
+        fn connect(&mut self) -> io::Result<UnixStream> {
+            let released = lock(&self.0).recv();
+            Err(io::Error::other(format!("{released:?}")))
+        }
+    }
+
+    struct Wiring {
+        effects: BridgeEffects<HeldConnector, Box<dyn Fn(PathBuf) -> HeldConnector>>,
+        followed: Arc<Mutex<Vec<PathBuf>>>,
+        release: mpsc::Sender<()>,
+        scratch: PathBuf,
+    }
+
+    fn wiring(label: &str) -> Wiring {
+        let (release, held) = mpsc::channel();
+        let held = Arc::new(Mutex::new(held));
+        let followed = Arc::new(Mutex::new(Vec::new()));
+        let scratch = scratch_directory(label);
+        let recorded = Arc::clone(&followed);
+        let connector_held = Arc::clone(&held);
+        Wiring {
+            effects: BridgeEffects {
+                own_pid: 900,
+                started: Instant::now(),
+                runtime_inputs: RuntimeDirectoryInputs {
+                    xdg_runtime_dir: Some(PathBuf::from("/run/user/1000")),
+                    temporary_dir: None,
+                    user_id: 1000,
+                },
+                temporary_dir: scratch.clone(),
+                session_connector: HeldConnector(Arc::clone(&held)),
+                session_token: "token".to_owned(),
+                connect_binary_socket: Box::new(move |socket_path| {
+                    lock(&recorded).push(socket_path);
+                    HeldConnector(Arc::clone(&connector_held))
+                }),
+                wait: |_| {},
+            },
+            followed,
+            release,
+            scratch,
+        }
+    }
+
     #[test]
     fn spec_3_12_a_second_start_for_the_same_harness_leaves_the_running_bridge_alone() {
         let running = FixedProcessTable(vec![
@@ -464,21 +564,78 @@ mod tests {
             bridge_process(700, "100"),
             bridge_process(701, "999"),
         ]);
+        let wiring = wiring("guard");
         assert_eq!(
-            run_bridge(100, 900, &bare_environment(), &running).expect("guarded start"),
+            run_bridge(100, wiring.effects, &running).expect("guarded start"),
             BridgeOutcome::AlreadyServed { bridge_pid: 700 }
         );
-        let only_itself_and_another_session =
-            FixedProcessTable(vec![bridge_process(900, "100"), bridge_process(701, "999")]);
+        assert_eq!(lock(&wiring.followed).len(), 0);
+        fs::remove_dir_all(&wiring.scratch).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_3_12_the_bridge_needs_the_session_socket_and_token_before_it_starts() {
         assert!(matches!(
-            run_bridge(
-                100,
-                900,
-                &bare_environment(),
-                &only_itself_and_another_session
-            ),
+            bridge_effects(&bare_environment()),
             Err(CommandError::MissingVariable(MESSAGING_SOCKET_VARIABLE))
         ));
+    }
+
+    struct SnapshotSequence(RefCell<Vec<Vec<ProcessEntry>>>);
+
+    impl ProcessTable for SnapshotSequence {
+        fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
+            let mut remaining = self.0.borrow_mut();
+            Ok(if remaining.len() > 1 {
+                remaining.remove(0)
+            } else {
+                remaining.first().cloned().unwrap_or_default()
+            })
+        }
+    }
+
+    fn mcp_binary(pid: u32) -> ProcessEntry {
+        ProcessEntry {
+            pid,
+            parent_pid: 100,
+            executable: Some("/usr/bin/estafette".to_owned()),
+            arguments: vec!["mcp".to_owned()],
+        }
+    }
+
+    #[test]
+    fn spec_3_12_the_bridge_follows_each_binary_socket_once_however_many_polls_see_it() {
+        let harness = ProcessEntry {
+            pid: 100,
+            parent_pid: 1,
+            executable: Some("/usr/bin/claude".to_owned()),
+            arguments: Vec::new(),
+        };
+        let with_two_binaries = vec![harness, mcp_binary(101), mcp_binary(102)];
+        let polls = SnapshotSequence(RefCell::new(vec![
+            with_two_binaries.clone(),
+            with_two_binaries.clone(),
+            with_two_binaries,
+            Vec::new(),
+        ]));
+        let wiring = wiring("followers");
+        assert_eq!(
+            run_bridge(100, wiring.effects, &polls).expect("bridge runs"),
+            BridgeOutcome::HarnessExited
+        );
+        assert_eq!(
+            *lock(&wiring.followed),
+            [
+                PathBuf::from("/run/user/1000/estafette-1000/101.sock"),
+                PathBuf::from("/run/user/1000/estafette-1000/102.sock"),
+            ]
+        );
+        assert_eq!(
+            fs::read_to_string(dropped_frames_path(&wiring.scratch, 100)).expect("count file"),
+            "0"
+        );
+        drop(wiring.release);
+        fs::remove_dir_all(&wiring.scratch).expect("cleanup");
     }
 
     fn scratch_directory(label: &str) -> PathBuf {
