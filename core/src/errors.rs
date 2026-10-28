@@ -88,7 +88,9 @@ struct ErrorView {
 }
 
 impl ErrorCode {
-    const fn code(&self) -> &'static str {
+    /// The stable code that names this failure on the wire and in the envelope.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
         match self {
             Self::NotClaimed => "not_claimed",
             Self::CardNotFound => "card_not_found",
