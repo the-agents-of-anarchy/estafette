@@ -21,7 +21,7 @@ use crate::wire::{
     WIRE_LIMIT_BYTES,
 };
 
-pub const SERVER_READ_TIMEOUT: Duration = Duration::from_millis(10_000);
+const SERVER_READ_TIMEOUT: Duration = Duration::from_millis(10_000);
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(5000);
 const ACK_TIMEOUT: Duration = Duration::from_millis(10_000);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(3000);
@@ -120,18 +120,13 @@ pub struct DirectServer<H> {
 struct ServerState<H> {
     keys: NetworkKeys,
     host: H,
-    read_timeout: Duration,
 }
 
 impl<H: DirectHost> DirectServer<H> {
-    /// Builds the server over the host, answering under the network keys and waiting at most the read timeout for each request.
-    pub fn new(keys: NetworkKeys, host: H, read_timeout: Duration) -> Self {
+    /// Builds the server over the host, answering under the network keys and waiting the server read timeout of spec 3.14 for each request.
+    pub fn new(keys: NetworkKeys, host: H) -> Self {
         Self {
-            shared: Arc::new(ServerState {
-                keys,
-                host,
-                read_timeout,
-            }),
+            shared: Arc::new(ServerState { keys, host }),
         }
     }
 }
@@ -224,7 +219,7 @@ impl<H: DirectHost> ServerState<H> {
 
     /// Reads the whole request within the wire limit and the read timeout.
     async fn read_request(&self, recv: &mut RecvStream) -> Result<Vec<u8>, StreamEnd> {
-        match timeout(self.read_timeout, recv.read_to_end(WIRE_LIMIT_BYTES)).await {
+        match timeout(SERVER_READ_TIMEOUT, recv.read_to_end(WIRE_LIMIT_BYTES)).await {
             Err(_elapsed) => Err(StreamEnd::Reset(StreamReset::ReadTimeout)),
             Ok(Err(ReadToEndError::TooLong)) => Err(StreamEnd::Reset(StreamReset::OverWireLimit)),
             Ok(Err(ReadToEndError::Read(failure))) => Err(failure.into()),
@@ -611,15 +606,11 @@ mod tests {
         }
     }
 
-    async fn rig_with(read_timeout: Duration, timeouts: ClientTimeouts) -> Rig {
-        let host = RecordingHost::with_card(card_of(SERVER_SEED));
-        let server = DirectServer::new(keys(), host.clone(), read_timeout);
-        let link = link_to(server, timeouts).await;
-        Rig { host, link }
-    }
-
     async fn rig() -> Rig {
-        rig_with(SERVER_READ_TIMEOUT, ClientTimeouts::SPEC).await
+        let host = RecordingHost::with_card(card_of(SERVER_SEED));
+        let server = DirectServer::new(keys(), host.clone());
+        let link = link_to(server, ClientTimeouts::SPEC).await;
+        Rig { host, link }
     }
 
     fn message_to(card: wire::PublicKey, body: &str) -> Message {
