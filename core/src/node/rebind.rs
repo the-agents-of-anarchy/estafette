@@ -300,7 +300,6 @@ mod tests {
         spawn_member, start_members, start_members_reaching, status_within, unreachable_about,
         wall_clock_ms,
     };
-    use crate::node::presence::wire_addr;
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
@@ -362,21 +361,48 @@ mod tests {
         }
     }
 
-    struct SilentHost {
+    struct QuietNode {
         endpoint: NodeEndpoint,
+        introduction: Addr,
         presences: Arc<Mutex<Vec<(Instant, u64)>>>,
         neighbors_up: Arc<Mutex<Vec<(Instant, EndpointId)>>>,
         _router: Router,
         _listening: JoinHandle<()>,
     }
 
-    impl SilentHost {
+    impl QuietNode {
         async fn start(seed: u8) -> Self {
+            Self::serving(seed, None).await
+        }
+
+        async fn answering(seed: u8, relays: &[&str]) -> Self {
+            Self::serving(seed, Some(relays)).await
+        }
+
+        async fn serving(seed: u8, introduced_with_relays: Option<&[&str]>) -> Self {
             let endpoint = bind(seed).await;
+            let introduction = Addr::from_endpoint_report(
+                introduced_with_relays
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|relay| (*relay).to_owned()),
+                endpoint.endpoint().addr().ip_addrs().copied(),
+            );
             let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
-            let router = Router::builder(endpoint.endpoint().clone())
-                .accept(GOSSIP_ALPN, gossip.clone())
-                .spawn();
+            let mut router =
+                Router::builder(endpoint.endpoint().clone()).accept(GOSSIP_ALPN, gossip.clone());
+            if introduced_with_relays.is_some() {
+                router = router.accept(
+                    DIRECT_ALPN,
+                    DirectServer::new(
+                        keys(),
+                        AnsweringPeer {
+                            addr: introduction.clone(),
+                        },
+                    ),
+                );
+            }
+            let router = router.spawn();
             let mut topic = NetworkTopic::join(
                 &gossip,
                 keys(),
@@ -412,6 +438,7 @@ mod tests {
             });
             Self {
                 endpoint,
+                introduction,
                 presences,
                 neighbors_up,
                 _router: router,
@@ -430,7 +457,7 @@ mod tests {
                 keys(),
                 ClientTimeouts::SPEC,
             )
-            .introduce(member.id(), peer_introduction(wire_addr(&self.addr())))
+            .introduce(member.id(), peer_introduction(self.introduction.clone()))
             .await
             .unwrap();
         }
@@ -533,36 +560,6 @@ mod tests {
         }
     }
 
-    struct IntroducedPeer {
-        _endpoint: NodeEndpoint,
-        _router: Router,
-    }
-
-    impl IntroducedPeer {
-        async fn introduce_to(member: &iroh::Endpoint, relays: &[&str]) -> Self {
-            let endpoint = bind(PEER_SEED).await;
-            endpoint.replace_address(member.addr());
-            let addr = Addr::from_endpoint_report(
-                relays.iter().map(|relay| (*relay).to_owned()),
-                endpoint.endpoint().addr().ip_addrs().copied(),
-            );
-            let router = Router::builder(endpoint.endpoint().clone())
-                .accept(
-                    DIRECT_ALPN,
-                    DirectServer::new(keys(), AnsweringPeer { addr: addr.clone() }),
-                )
-                .spawn();
-            DirectClient::new(endpoint.endpoint().clone(), keys(), ClientTimeouts::SPEC)
-                .introduce(member.id(), peer_introduction(addr))
-                .await
-                .unwrap();
-            Self {
-                _endpoint: endpoint,
-                _router: router,
-            }
-        }
-    }
-
     async fn lookup_entry(endpoint: &iroh::Endpoint, seed: u8) -> Option<EndpointAddr> {
         let lookup = endpoint.address_lookup().ok()?;
         match lookup.resolve(secret_key(seed).public()).next().await {
@@ -611,7 +608,7 @@ mod tests {
     async fn d46_a_member_silent_for_the_deaf_timeout_rebinds_once_and_not_again_within_the_rebind_interval()
      {
         let scratch = Scratch::new("deaf").await;
-        let host = SilentHost::start(HOST_SEED).await;
+        let host = QuietNode::start(HOST_SEED).await;
         let rebinds = RebindLog::default();
         let started = Instant::now();
 
@@ -644,7 +641,7 @@ mod tests {
     async fn spec_3_8_after_a_rebind_the_member_rejoins_through_its_known_host_and_announces_the_next_seq()
      {
         let scratch = Scratch::new("rejoin").await;
-        let host = SilentHost::start(HOST_SEED).await;
+        let host = QuietNode::start(HOST_SEED).await;
         let rebinds = RebindLog::default();
 
         let _member = start_members_reaching(
@@ -693,31 +690,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn d46_an_online_peer_is_another_node_so_a_join_without_a_neighbor_ends_in_a_rebind() {
+    async fn d46_an_online_peer_is_another_node_so_a_join_without_a_neighbor_ends_in_a_rebind_that_joins_through_it()
+     {
         let scratch = Scratch::new("online").await;
         let rebinds = RebindLog::default();
         let started = Instant::now();
+        let peer = QuietNode::answering(PEER_SEED, &[]).await;
 
         let (member_endpoint, starting) = spawn_member(
             &scratch,
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(rebinds.sink()),
         )
         .await;
-        let _peer = IntroducedPeer::introduce_to(&member_endpoint, &[]).await;
+        peer.introduce_to(&member_endpoint).await;
         let _member = starting.await.unwrap();
         let rebound = rebinds
             .nth_within(0, SPEC_JOIN_TIMEOUT + REBIND_SLACK)
             .await
             .unwrap();
+        let joined_through_the_peer = peer
+            .first_neighbor_up_of(FIRST_SEED, IROH_DOCUMENTED_CLOSE_LATENCY + REBIND_SLACK)
+            .await
+            .unwrap();
 
         assert!(rebound.duration_since(started) >= SPEC_JOIN_TIMEOUT);
+        assert!(joined_through_the_peer > rebound);
         drop(scratch);
     }
 
     #[tokio::test]
-    async fn spec_3_8_a_rebind_strips_the_relays_found_down_from_other_members_entries_only() {
+    async fn spec_3_8_a_rebind_strips_the_relays_found_down_from_other_members_entries_only_and_keeps_the_table()
+     {
         let scratch = Scratch::new("strip").await;
         let rebinds = RebindLog::default();
+        let peer =
+            QuietNode::answering(PEER_SEED, &[LIVE_RELAY, DEAD_RELAY, PEER_ONLY_RELAY]).await;
         let (member_endpoint, starting) = spawn_member(
             &scratch,
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
@@ -726,11 +733,7 @@ mod tests {
                 .with_report(rebinds.sink()),
         )
         .await;
-        let _peer = IntroducedPeer::introduce_to(
-            &member_endpoint,
-            &[LIVE_RELAY, DEAD_RELAY, PEER_ONLY_RELAY],
-        )
-        .await;
+        peer.introduce_to(&member_endpoint).await;
         let held_before = lookup_entry(&member_endpoint, PEER_SEED).await.unwrap();
         let member = starting.await.unwrap();
 
@@ -760,6 +763,13 @@ mod tests {
             held_before.ip_addrs().collect::<Vec<_>>()
         );
         assert_eq!(relays_of(&dead_host), vec![DEAD_RELAY]);
+        assert!(
+            member
+                .node
+                .peers()
+                .iter()
+                .any(|listed| listed.card == card(PEER_SEED))
+        );
         drop(scratch);
     }
 
@@ -767,8 +777,8 @@ mod tests {
     async fn spec_3_8_after_a_rebinds_join_without_a_member_neighbor_the_member_asks_to_join_an_unreachable_member()
      {
         let scratch = Scratch::new("member-joins").await;
-        let host = SilentHost::start(HOST_SEED).await;
-        let unreachable_member = SilentHost::start(PEER_SEED).await;
+        let host = QuietNode::start(HOST_SEED).await;
+        let unreachable_member = QuietNode::start(PEER_SEED).await;
         let rebinds = RebindLog::default();
 
         let member = start_members_reaching(
@@ -817,7 +827,8 @@ mod tests {
         .await
         .pop()
         .unwrap();
-        let _peer = IntroducedPeer::introduce_to(&member.endpoint, &[]).await;
+        let peer = QuietNode::answering(PEER_SEED, &[]).await;
+        peer.introduce_to(&member.endpoint).await;
         let witness = Witness::joined_through(WITNESS_SEED, None, &member.endpoint).await;
         witness
             .broadcast_as(
