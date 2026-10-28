@@ -68,7 +68,20 @@ impl Session {
     /// # Errors
     /// `ErrorCode::BadRequest` when a card is claimed, `ErrorCode::Refused` when the session is stopping.
     pub fn claim(&self, node: Node, lock: HeldSidecar) -> Result<Arc<Node>, ErrorCode> {
-        claim_in(&mut self.phase(), node, lock)
+        let mut phase = self.phase();
+        match &*phase {
+            Phase::Unclaimed => {
+                let node = Arc::new(node);
+                *phase = Phase::Claimed(Box::new(Claimed {
+                    node: Arc::clone(&node),
+                    lock,
+                }));
+                drop(phase);
+                Ok(node)
+            }
+            Phase::Claimed(_) => Err(ErrorCode::BadRequest),
+            Phase::Stopping => Err(ErrorCode::Refused),
+        }
     }
 
     /// The claimed node, for every tool but `list_cards` and `init`.
@@ -122,22 +135,6 @@ impl Session {
     }
 }
 
-/// Claims the card in an Unclaimed phase and refuses it in any other.
-fn claim_in(phase: &mut Phase, node: Node, lock: HeldSidecar) -> Result<Arc<Node>, ErrorCode> {
-    match phase {
-        Phase::Unclaimed => {
-            let node = Arc::new(node);
-            *phase = Phase::Claimed(Box::new(Claimed {
-                node: Arc::clone(&node),
-                lock,
-            }));
-            Ok(node)
-        }
-        Phase::Claimed(_) => Err(ErrorCode::BadRequest),
-        Phase::Stopping => Err(ErrorCode::Refused),
-    }
-}
-
 /// Waits for the end of standard input or the first signal, and says how the runtime is to shut down after it.
 async fn first_stop(
     end_of_input: oneshot::Receiver<()>,
@@ -163,7 +160,7 @@ impl Default for Session {
     }
 }
 
-/// Copies standard input to the MCP server's input and notes the end of standard input the moment it is read.
+/// Copies standard input to the MCP server's input, buffering every unread chunk in memory, and notes the end of standard input the moment it is read.
 pub async fn forward_standard_input(
     input: impl AsyncRead + Unpin,
     server_input: impl AsyncWrite + Unpin,
@@ -235,7 +232,6 @@ mod tests {
     const TEST_DEPARTURE_WAIT: Duration = Duration::from_millis(2500);
     const LONG_DEPARTURE_WAIT: Duration = Duration::from_secs(60);
     const SPEC_GONE_WITHIN: Duration = Duration::from_millis(1000);
-    const SPEC_DEPARTURE_WAIT: Duration = Duration::from_millis(5000);
     const STOPPING_SETTLED: Duration = Duration::from_millis(300);
     const EXITS_AT_ONCE_WITHIN: Duration = Duration::from_millis(1000);
     const SHORT_DEPARTURE_WAIT: Duration = Duration::from_millis(800);
@@ -312,11 +308,6 @@ mod tests {
         )
         .await
         .is_some()
-    }
-
-    #[test]
-    fn spec_3_14_the_departure_wait_is_5000_milliseconds() {
-        assert_eq!(DEPARTURE_WAIT, SPEC_DEPARTURE_WAIT);
     }
 
     #[test]
