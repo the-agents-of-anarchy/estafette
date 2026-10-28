@@ -72,3 +72,13 @@ INVALIDATES:   A caller that binds the endpoint with a weak nonce source weakens
                Rows spec:777-778 (relay address changes) are proved as pure helpers only; lab test 28 settles them end to end
                Node tests run at most two at once (`NODE_TESTS_AT_ONCE`); the core suite takes about 50 s on the owner's Mac
 EVIDENCE:      core/src/node/{mod,presence}.rs, core/src/net/direct.rs at c3e490d; spec reviews 092241 FAIL, 093420 PASS, 100345 PASS by correction; quality 094116 With fixes, 100712 Ready Yes
+
+## 2026-10-28 → 2026-10-28 — Send and broadcast run the spec send algorithm with every handle dialed at once and ambiguity reported by card id
+KIND:          runnable
+FROM → TO:     No send existed → `Node::send(to, body) -> Result<Delivery, ErrorCode>` runs spec:844-854 (match the handle; `too_large` for a body over the limit before any connection; dial through the held connection; drop the held connection and set the peer Unreachable on any direct failure; any valid ack, accepted or refused, counts as a direct contact that succeeds) and `Node::broadcast(to, body) -> Vec<BroadcastResult>` sends to every handle concurrently with no cap, one result per handle in input order; a refusal's reason maps to its ErrorCode (`too_large` kept, anything else `refused`); the message id comes from the probe-nonce source (16 secure random bytes); an ambiguous handle lists the matching cards as 64-character hex ids
+WHY:           spec:841 and D27 ask for concurrent sends with one result per handle and leave the concurrency count to the implementer (spec:450); the handle match cannot be ambiguous today because `PeerTable::free_handle_for` gives every peer a distinct effective handle, so the arm is reached by property tests over the matcher alone; the node hides the client and the table, so the algorithm lives inside the node module (core/src/node/send.rs) with `NodeState` opened to it (lead scope ruling)
+INVALIDATES:   An unbounded fan-out: a broadcast to many handles opens as many concurrent dials; a cap would be a new decision
+               Ambiguity candidates are card ids, not handle text; a spec or owner ruling on the `ambiguous_handle` message would change the list
+               `Delivery` and `BroadcastResult` carry bare strings for handle and message id (quality Minor, noted)
+               The `timeout` code is reached only through the mapping; the 10 s ack timeout itself is U18's
+EVIDENCE:      core/src/node/send.rs, core/src/node/{mod,presence}.rs at c3f9cae; spec reviews 104141, 105617 PASS; quality 104558 With fixes, 110046 Ready Yes

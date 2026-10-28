@@ -532,3 +532,19 @@
 2026-10-28T12:15 | self:claude-fable-5-1 | delegation | impl-U21 node-send launched (dev-cycle:implementer, sonnet, worktree) after U20 integrated at c3e490d
 2026-10-28T12:15 | self:claude-fable-5-1 | gate | CI on main green at 6d4a132 (run=40670257065)
 2026-10-28T12:17 | self:claude-fable-5-1 | gate | CI run 40670311859 green on integration at c3e490d (U20); main fast-forwarded 6d4a132 -> c3e490d; CI on main watched by commit
+2026-10-28T12:21 | self:claude-fable-5-1 | gate | CI on main green at c3e490d (run=40670899872)
+2026-10-28T12:40 | self:claude-fable-5-1 | receipt | impl-U21 DONE_WITH_CONCERNS at af83d69 (send/broadcast; 300 tests; touches widened to presence.rs); five concerns -> reports/implementer-U21.md; classifier-U21 launched; binding accepted from the worktree file; peer content
+2026-10-28T12:40 | self:claude-fable-5-1 | decision | solved: U21's widening of touches to presence.rs accepted — NodeState and the Node fields are private to that module and the send algorithm belongs inside the node module; the plan's touches list was a guess; alternative: BLOCKED and a plan rewrite exposing the client and table
+2026-10-28T12:41 | self:claude-fable-5-1 | receipt | classifier-U21 Result PASS: all five concerns observations -> reports/classifier-U21.md; spec-U21 launched; peer content
+2026-10-28T12:46 | self:claude-fable-5-1 | review | spec-U21 PASS, no findings -> reviews/spec-worktree-agent-a0715b63020cfec5d-104141.md; quality-U21 launched
+2026-10-28T12:47 | self:claude-fable-5-1 | review | quality-U21 Ready: With fixes; Important 3 (too_large string held twice; example tests beneath the barrier; ambiguous_handle not reached through send); Minor 4 noted -> reviews/quality-worktree-agent-a0715b63020cfec5d-104558.md; cycle 1 -> impl-U21 continued
+2026-10-28T12:56 | self:claude-fable-5-1 | receipt | impl-U21 continuation 1 DONE_WITH_CONCERNS at c3f9cae (two Important fixed, one pushed back with peers.rs:355-365 evidence; 302 passed twice; concerns reuse the classified observations); spec-U21 re-review 1 (verdict 105617); peer content
+2026-10-28T13:00 | self:claude-fable-5-1 | review | spec-U21 re-review 1 PASS -> reviews/spec-worktree-agent-a0715b63020cfec5d-105617.md; quality-U21 continued (report 110046)
+2026-10-28T13:02 | self:claude-fable-5-1 | review | quality-U21 re-review Ready: Yes (pushback accepted); Minor 5 noted -> reviews/quality-worktree-agent-a0715b63020cfec5d-110046.md; integrate-U21 launched at c3f9cae
+2026-10-28T13:02 | self:claude-fable-5-1 | decision | solved: U22 brief prepared ahead of U21's integration (scene from U20/U21 surfaces; sonnet per the plan); launch on U21 integrated; alternative: wait and write it then
+2026-10-28T13:04 | owner:Arthur Ryzhak | commitment | owner check-in 13:05: parallelising enough? rubber-stamping? how is it going? — answered in recon answers/2026-10-28-ci-on-every-push.md
+2026-10-28T13:04 | self:claude-fable-5-1 | decision | solved: U25 cli-network and U26 cli-cards launched now in parallel (their callees landed days ago; a parallelism gap I missed), both touching core/src/cli/mod.rs — the integrator merges; alternative: serialize after U22
+2026-10-28T13:04 | self:claude-fable-5-1 | delegation | impl-U25 cli-network and impl-U26 cli-cards launched (dev-cycle:implementer, sonnet, worktrees) in parallel
+2026-10-28T13:07 | self:claude-fable-5-1 | receipt | integrate-U21 Result PASS: U21 integrated at c3f9cae (gate twice green 302/1/55/16); CI for c3f9cae watched by commit; impl-U22 launched; peer content
+2026-10-28T13:07 | self:claude-fable-5-1 | decision | solved: U23 brief prepared (opus per the plan) to launch when U22 integrates; alternative: write it then
+2026-10-28T13:11 | self:claude-fable-5-1 | gate | CI run 40677371768 green on integration at c3f9cae (U21); main fast-forwarded c3e490d -> c3f9cae; CI on main watched by commit
