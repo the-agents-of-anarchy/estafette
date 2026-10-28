@@ -843,7 +843,7 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::*;
-    use crate::config::Host;
+    use crate::config::{Host, HostOrigin};
     use crate::dirs::OperatingSystemFilesystem;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
@@ -860,6 +860,11 @@ mod tests {
     const CLIENT_PROTOCOL_VERSION: &str = "2025-06-18";
     const FIRST_PROCESS_ID: u32 = 41;
     const SECOND_PROCESS_ID: u32 = 42;
+    const UNREACHABLE_RELAY: &str = "https://relay.estafette.invalid/";
+    const BOB_DESCRIPTION: &str = "reviews the parser";
+    const MESSAGE_BODY: &str = "the parser review is ready";
+    const PEER_LISTED_WITHIN: Duration = Duration::from_millis(3000);
+    const PEER_POLL: Duration = Duration::from_millis(50);
     const AMY_SEED: u8 = 51;
     const BOB_SEED: u8 = 52;
     const ZED_SEED: u8 = 53;
@@ -988,6 +993,93 @@ mod tests {
                 bind_endpoint: bind_alone(),
             }
         }
+
+        fn meeting(process_id: u32, other_seed: u8, meeting: &Arc<Meeting>) -> Self {
+            Self {
+                process_id,
+                hosts: vec![Host {
+                    id: render_public_key(
+                        &SecretKey::from_bytes(&[other_seed; KEY_BYTES]).public(),
+                    ),
+                    relay: UNREACHABLE_RELAY.to_owned(),
+                    ts: None,
+                    origin: HostOrigin::Configured,
+                }],
+                bind_endpoint: bind_meeting(meeting),
+            }
+        }
+    }
+
+    struct Meeting {
+        addresses: std::sync::Mutex<Vec<iroh::EndpointAddr>>,
+        everyone_bound: tokio::sync::Barrier,
+    }
+
+    impl Meeting {
+        fn of(members: usize) -> Arc<Self> {
+            Arc::new(Self {
+                addresses: std::sync::Mutex::new(Vec::new()),
+                everyone_bound: tokio::sync::Barrier::new(members),
+            })
+        }
+    }
+
+    fn bind_meeting(meeting: &Arc<Meeting>) -> BindEndpoint {
+        let meeting = Arc::clone(meeting);
+        Arc::new(move |card_key, gate_key, _relays| {
+            let meeting = Arc::clone(&meeting);
+            Box::pin(async move {
+                let endpoint = NodeEndpoint::bind(
+                    card_key,
+                    gate_key,
+                    Vec::new(),
+                    |nonce: &mut [u8; KEY_BYTES]| *nonce = [GATE_NONCE_BYTE; KEY_BYTES],
+                    |_closing| {},
+                )
+                .await?;
+                meeting
+                    .addresses
+                    .lock()
+                    .unwrap()
+                    .push(endpoint.endpoint().addr());
+                meeting.everyone_bound.wait().await;
+                let others = meeting.addresses.lock().unwrap().clone();
+                for address in others {
+                    if address.id != endpoint.endpoint().id() {
+                        endpoint.replace_address(address);
+                    }
+                }
+                Ok(endpoint)
+            })
+        })
+    }
+
+    async fn claimed_pair(machine: &Machine) -> (Client, Client) {
+        machine.create_card("amy-card", "amy", AMY_SEED);
+        machine.create_card("bob-card", "bob", BOB_SEED);
+        let meeting = Meeting::of(2);
+        let mut amy = start_server(
+            machine,
+            ServerPlan::meeting(FIRST_PROCESS_ID, BOB_SEED, &meeting),
+        );
+        let mut bob = start_server(
+            machine,
+            ServerPlan::meeting(SECOND_PROCESS_ID, AMY_SEED, &meeting),
+        );
+        amy.initialize().await;
+        bob.initialize().await;
+        let (amy_claim, bob_claim) = tokio::join!(
+            amy.envelope("init", json!({ "card": "amy-card" })),
+            bob.envelope(
+                "init",
+                json!({ "card": "bob-card", "description": BOB_DESCRIPTION })
+            ),
+        );
+        assert_eq!(amy_claim["ok"], json!(true), "{amy_claim}");
+        assert_eq!(bob_claim["ok"], json!(true), "{bob_claim}");
+        amy.peer_listed_within("bob", PEER_LISTED_WITHIN).await;
+        bob.peer_listed_within("amy", PEER_LISTED_WITHIN).await;
+        (amy, bob)
     }
 
     struct Client {
@@ -1101,6 +1193,24 @@ mod tests {
 
         async fn envelope(&mut self, tool: &str, arguments: Value) -> Value {
             self.call(tool, arguments).await["structuredContent"].clone()
+        }
+
+        async fn peer_listed_within(&mut self, handle: &str, within: Duration) -> Value {
+            let deadline = Instant::now().checked_add(within).unwrap();
+            loop {
+                let listed = self.envelope("peers", json!({})).await;
+                let found = listed["result"]["peers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|peer| peer["handle"] == handle)
+                    .cloned();
+                if let Some(peer) = found {
+                    return peer;
+                }
+                assert!(Instant::now() < deadline, "{handle} not listed: {listed}");
+                tokio::time::sleep(PEER_POLL).await;
+            }
         }
     }
 
@@ -1464,6 +1574,37 @@ mod tests {
             &first_answer
         };
         assert_eq!(loser["you"], unclaimed());
+    }
+
+    #[tokio::test]
+    async fn spec_3_15_test_2_a_message_to_a_member_with_no_inbox_client_is_delivered_unattached_and_its_inbox_tool_returns_it()
+     {
+        let _slot = node_slot().await;
+        let machine = Machine::new("test-2");
+        let (mut amy, mut bob) = claimed_pair(&machine).await;
+
+        let sent = amy
+            .envelope("send", json!({ "to": "bob", "body": MESSAGE_BODY }))
+            .await;
+        let read = bob.envelope("inbox", json!({})).await;
+
+        let id = sent["result"]["id"].as_str().unwrap();
+        assert_eq!(
+            sent["result"],
+            json!({ "id": id, "delivered": true, "attached": false })
+        );
+        let message = &read["result"]["messages"][0];
+        assert_eq!(read["result"]["last_seq"], json!(1));
+        assert_eq!(read["result"]["messages"].as_array().unwrap().len(), 1);
+        assert_eq!(message["seq"], json!(1));
+        assert_eq!(message["id"], json!(id));
+        assert_eq!(message["from"], json!("amy"));
+        assert_eq!(message["body"], json!(MESSAGE_BODY));
+        assert!(message["sent_at"].as_u64().unwrap() <= message["received_at"].as_u64().unwrap());
+        assert_eq!(
+            bob.envelope("inbox", json!({ "since": 1 })).await["result"],
+            json!({ "messages": [], "last_seq": 1 })
+        );
     }
 
     #[tokio::test]
