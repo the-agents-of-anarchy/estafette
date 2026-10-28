@@ -45,6 +45,7 @@ type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
 type RunRecord = Arc<dyn Fn(NodeRecord) + Send + Sync>;
 type Changes<T> = Pin<Box<dyn Stream<Item = T> + Send + Sync>>;
+type OwnAddress = Box<dyn Fn() -> Addr + Send + Sync>;
 
 /// The card this node holds: its key, the handle it requests, and the public mapping it announces as JSON bytes.
 pub struct Identity {
@@ -162,12 +163,16 @@ impl Node {
         let (to_loop, from_hosts) = mpsc::unbounded_channel();
         let state = Arc::new(NodeState::new(
             &identity,
-            endpoint,
-            &network.keys,
+            endpoint.endpoint().clone(),
             &effects,
             to_loop,
         ));
-        let router = Router::builder(state.endpoint.endpoint().clone())
+        let client = Arc::new(DirectClient::new(
+            endpoint.endpoint().clone(),
+            network.keys.clone(),
+            ClientTimeouts::SPEC,
+        ));
+        let router = Router::builder(endpoint.endpoint().clone())
             .accept(
                 DIRECT_ALPN,
                 DirectServer::new(network.keys, Arc::clone(&state)),
@@ -177,15 +182,17 @@ impl Node {
         let (assigned, own_handle) = oneshot::channel();
         let presence_loop = PresenceLoop {
             attached: effects.inbox.attached(),
-            own_addresses: Box::pin(state.endpoint.endpoint().watch_addr().stream_updates_only()),
+            own_addresses: Box::pin(endpoint.endpoint().watch_addr().stream_updates_only()),
             relay_statuses: Box::pin(
-                state
-                    .endpoint
+                endpoint
                     .endpoint()
                     .home_relay_status()
                     .stream_updates_only(),
             ),
             state: Arc::clone(&state),
+            card_key: identity.card_key,
+            endpoint,
+            client,
             topic,
             from_hosts,
             requested_handle: identity.requested_handle,
@@ -275,15 +282,13 @@ async fn lookup_holds_address(endpoint: &iroh::Endpoint, id: EndpointId) -> bool
     matches!(lookup.resolve(id).next().await, Some(Ok(Ok(_))))
 }
 
-/// What the direct server and the presence loop share: the identity, the peer table, the endpoint and the inbox.
+/// What the direct server and the presence loop share: the public half of the identity, the peer table, this node's address and the inbox.
 struct NodeState {
-    card_key: SecretKey,
     own_card: wire::PublicKey,
     public: Vec<u8>,
     own_handle: OnceLock<LocalHandle>,
     table: Mutex<PeerTable>,
-    endpoint: NodeEndpoint,
-    client: DirectClient,
+    own_address: OwnAddress,
     inbox: Arc<InboxSocket>,
     attached: Attached,
     clock: Clock,
@@ -291,28 +296,20 @@ struct NodeState {
 }
 
 impl NodeState {
-    /// The shared state of a node that holds the identity's card on the endpoint.
+    /// The shared state of a node that holds the identity's card, reading its address from the endpoint.
     fn new(
         identity: &Identity,
-        endpoint: NodeEndpoint,
-        keys: &NetworkKeys,
+        endpoint: iroh::Endpoint,
         effects: &NodeEffects,
         to_loop: mpsc::UnboundedSender<LoopEvent>,
     ) -> Self {
         let own_card = *identity.card_key.public().as_bytes();
-        let client = DirectClient::new(
-            endpoint.endpoint().clone(),
-            keys.clone(),
-            ClientTimeouts::SPEC,
-        );
         Self {
-            card_key: identity.card_key.clone(),
             own_card,
             public: identity.public.clone(),
             own_handle: OnceLock::new(),
             table: Mutex::new(PeerTable::new(own_card)),
-            endpoint,
-            client,
+            own_address: Box::new(move || wire_addr(&endpoint.addr())),
             inbox: Arc::clone(&effects.inbox),
             attached: effects.inbox.attached(),
             clock: Arc::clone(&effects.clock),
@@ -332,7 +329,7 @@ impl NodeState {
 
     /// The full current address of this node's endpoint, within the caps of spec 3.6.
     fn own_addr(&self) -> Addr {
-        wire_addr(&self.endpoint.endpoint().addr())
+        (self.own_address)()
     }
 
     /// This node's introduction: the effective handle once assigned, the public mapping, the attached flag and the address.
@@ -347,13 +344,6 @@ impl NodeState {
             attached: self.attached.is_attached(),
             addr: self.own_addr(),
             mac: ZERO_MAC,
-        }
-    }
-
-    /// Replaces the card's lookup entry with the carried address.
-    fn replace_lookup_entry(&self, card: &wire::PublicKey, addr: &Addr) {
-        if let Some(id) = endpoint_id(card) {
-            self.endpoint.replace_address(endpoint_addr(id, addr));
         }
     }
 
@@ -449,24 +439,28 @@ enum DirectRequest {
 }
 
 /// Runs the requests in their order, handing each answer back to the loop.
-async fn run_requests(state: Arc<NodeState>, requests: Vec<DirectRequest>) {
+async fn run_requests(
+    state: Arc<NodeState>,
+    client: Arc<DirectClient>,
+    requests: Vec<DirectRequest>,
+) {
     for request in requests {
         match request {
             DirectRequest::DropHeldConnection(card) => {
                 if let Some(id) = endpoint_id(&card) {
-                    state.client.drop_held_connection(id).await;
+                    client.drop_held_connection(id).await;
                 }
             }
             DirectRequest::SendIntroduce(card) => {
                 let answer = match endpoint_id(&card) {
-                    Some(id) => state.client.introduce(id, state.introduction()).await,
+                    Some(id) => client.introduce(id, state.introduction()).await,
                     None => Err(DirectError::Unreachable),
                 };
                 state.hand_to_loop(LoopEvent::IntroduceAnswered { card, answer });
             }
             DirectRequest::SendProbe(card, nonce) => {
                 let acked = match endpoint_id(&card) {
-                    Some(id) => state.client.probe(id, nonce).await.is_ok(),
+                    Some(id) => client.probe(id, nonce).await.is_ok(),
                     None => false,
                 };
                 state.hand_to_loop(LoopEvent::ProbeAnswered { card, acked });
@@ -503,6 +497,9 @@ enum Wake {
 /// The one task that owns the topic and performs every effect of the events/actions table of spec 3.8.
 struct PresenceLoop {
     state: Arc<NodeState>,
+    card_key: SecretKey,
+    endpoint: NodeEndpoint,
+    client: Arc<DirectClient>,
     topic: NetworkTopic,
     from_hosts: mpsc::UnboundedReceiver<LoopEvent>,
     attached: Attached,
@@ -676,9 +673,9 @@ impl PresenceLoop {
         if verdict == RecordVerdict::Dropped {
             return;
         }
-        self.state.replace_lookup_entry(&record.host, &record.addr);
+        self.replace_lookup_entry(&record.host, &record.addr);
         if let Ok(relay) = record.relay.as_str().parse::<RelayUrl>() {
-            self.state.endpoint.add_relay(relay).await;
+            self.endpoint.add_relay(relay).await;
         }
         if verdict == RecordVerdict::FromNewHost
             && let Err(failure) = self.known_hosts.save(now_ms)
@@ -720,7 +717,7 @@ impl PresenceLoop {
         for effect in effects {
             match effect {
                 Effect::ReplaceLookupEntry { card, addr } => {
-                    self.state.replace_lookup_entry(&card, &addr);
+                    self.replace_lookup_entry(&card, &addr);
                 }
                 Effect::BroadcastUnreachable(card) => self.broadcast_unreachable(card).await,
                 Effect::DropHeldConnection(card) => {
@@ -735,7 +732,11 @@ impl PresenceLoop {
             }
         }
         if !requests.is_empty() {
-            tokio::spawn(run_requests(Arc::clone(&self.state), requests));
+            tokio::spawn(run_requests(
+                Arc::clone(&self.state),
+                Arc::clone(&self.client),
+                requests,
+            ));
         }
     }
 
@@ -776,7 +777,7 @@ impl PresenceLoop {
 
     /// Signs and broadcasts the payload under the card key, writing a failure to the run record.
     async fn broadcast(&self, payload: Payload) {
-        if let Err(failure) = self.topic.broadcast(&self.state.card_key, payload).await {
+        if let Err(failure) = self.topic.broadcast(&self.card_key, payload).await {
             (self.report)(NodeRecord::BroadcastFailed(failure));
         }
     }
@@ -795,12 +796,19 @@ impl PresenceLoop {
 
     /// Removes every home relay still disconnected the relay-loss wait after it was lost.
     async fn remove_lost_relays(&mut self) {
-        let statuses = self.state.endpoint.endpoint().home_relay_status().get();
+        let statuses = self.endpoint.endpoint().home_relay_status().get();
         for relay in self
             .relay_loss
             .lost_relays(&home_relays(&statuses), Instant::now())
         {
-            self.state.endpoint.remove_relay(&relay).await;
+            self.endpoint.remove_relay(&relay).await;
+        }
+    }
+
+    /// Replaces the card's lookup entry with the carried address.
+    fn replace_lookup_entry(&self, card: &wire::PublicKey, addr: &Addr) {
+        if let Some(id) = endpoint_id(card) {
+            self.endpoint.replace_address(endpoint_addr(id, addr));
         }
     }
 }
