@@ -899,7 +899,11 @@ mod tests {
     const SPEC_HTTPS_ADDRESS: &str = "192.0.2.7:443";
     const SPEC_ACME_CHALLENGE_ADDRESS: &str = "192.0.2.7:80";
     const SPEC_QUIC_ADDRESS_DISCOVERY_ADDRESS: &str = "192.0.2.7:7842";
-    const FROZEN_CLOCK_SECONDS: u64 = FROZEN_CLOCK_MS / 1000;
+    const FROZEN_CLOCK_SECONDS: u64 = FROZEN_CLOCK_MS / MILLIS_PER_SECOND;
+    const SCRATCH_PREFIX: &str = "estafette-infra";
+    const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
+    const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
+    const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
     const PEER_SEED: u8 = 125;
     const SECOND_PEER_SEED: u8 = 126;
     const BIND_WAIT: Duration = Duration::from_secs(5);
@@ -945,14 +949,15 @@ mod tests {
 
     impl Scratch {
         fn new(tag: &str) -> Self {
-            let root = std::env::temp_dir().join(format!("u29-{tag}-{}", std::process::id()));
+            let root =
+                std::env::temp_dir().join(format!("{SCRATCH_PREFIX}-{tag}-{}", std::process::id()));
             drop(fs::remove_dir_all(&root));
             fs::create_dir_all(&root).unwrap();
             let base = root.clone();
             let environment = move |name: &str| match name {
-                "XDG_CONFIG_HOME" => Some(base.join("c").into_os_string()),
-                "XDG_DATA_HOME" => Some(base.join("d").into_os_string()),
-                "XDG_RUNTIME_DIR" => Some(base.join("r").into_os_string()),
+                CONFIG_HOME_VARIABLE => Some(base.join("c").into_os_string()),
+                DATA_HOME_VARIABLE => Some(base.join("d").into_os_string()),
+                RUNTIME_DIRECTORY_VARIABLE => Some(base.join("r").into_os_string()),
                 _ => None::<OsString>,
             };
             let directories =
@@ -972,7 +977,7 @@ mod tests {
                 owner: render_public_key(&secret_key(OWNER_SEED).public()),
                 hosts,
             }
-            .rewrite(&path, FROZEN_CLOCK_MS / 1000)
+            .rewrite(&path, FROZEN_CLOCK_SECONDS)
             .unwrap();
         }
 
@@ -1828,7 +1833,7 @@ mod tests {
     #[tokio::test]
     async fn spec_3_15_test_22_logic_a_member_in_process_receives_the_hosts_record_and_learns_its_relay_and_address()
      {
-        let scratch = Scratch::new("member");
+        let scratch = Scratch::new("node");
         scratch.configure_network();
         scratch.certify(HOST_SEED);
         let seen = Seen::default();

@@ -616,13 +616,18 @@ mod tests {
     #[cfg(feature = "relay")]
     #[test]
     fn spec_3_14_run_infrastructure_without_a_certificate_prints_the_host_line_and_exits_1() {
-        let root = std::env::temp_dir().join(format!("u29-main-{}", std::process::id()));
+        const SCRATCH_PREFIX: &str = "estafette-infra-main";
+        const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
+        const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
+        const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
+        const SECRET_SEED_BYTE: u8 = 3;
+        let root = std::env::temp_dir().join(format!("{SCRATCH_PREFIX}-{}", std::process::id()));
         drop(std::fs::remove_dir_all(&root));
         let base = root.clone();
         let environment = move |name: &str| match name {
-            "XDG_CONFIG_HOME" => Some(base.join("c").into_os_string()),
-            "XDG_DATA_HOME" => Some(base.join("d").into_os_string()),
-            "XDG_RUNTIME_DIR" => Some(base.join("r").into_os_string()),
+            CONFIG_HOME_VARIABLE => Some(base.join("c").into_os_string()),
+            DATA_HOME_VARIABLE => Some(base.join("d").into_os_string()),
+            RUNTIME_DIRECTORY_VARIABLE => Some(base.join("r").into_os_string()),
             _ => None,
         };
         let created = EstafetteArguments::try_parse_from(["estafette", "network", "create", "lab"])
@@ -637,7 +642,7 @@ mod tests {
             &command,
             &directories,
             &OperatingSystemFilesystem,
-            |bytes| *bytes = [3; 32],
+            |bytes| *bytes = [SECRET_SEED_BYTE; KEY_LEN],
             SECONDS_AFTER_EPOCH,
             &mut Vec::new(),
             &mut Vec::new(),
