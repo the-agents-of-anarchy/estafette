@@ -328,6 +328,10 @@ mod tests {
     const LIVE_RELAY: &str = "https://relay-live.estafette.invalid/";
     const DEAD_RELAY: &str = "https://relay-dead.estafette.invalid/";
     const PEER_ONLY_RELAY: &str = "https://relay-peer.estafette.invalid/";
+    const KEPT_RELAY: &str = "https://relay-answers-in-time.estafette.invalid/";
+    const STRIPPED_RELAY: &str = "https://relay-answers-late.estafette.invalid/";
+    const ANSWER_WITHIN_THE_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
+    const ANSWER_AFTER_THE_PROBE_TIMEOUT: Duration = Duration::from_millis(1500);
     const SPEC_INFRASTRUCTURE_RECORD_INTERVAL: Duration = Duration::from_secs(5);
     const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
     const REBIND_SLACK: Duration = Duration::from_secs(2);
@@ -634,6 +638,24 @@ mod tests {
         })
     }
 
+    fn answering_after(delays: &'static [(&'static str, Duration)]) -> RelayProbe {
+        Arc::new(move |relay: RelayUrl| {
+            let delay = delays
+                .iter()
+                .find(|(answering, _)| relay.to_string() == *answering)
+                .map(|(_, delay)| *delay);
+            Box::pin(async move {
+                match delay {
+                    Some(delay) => {
+                        tokio::time::sleep(delay).await;
+                        true
+                    }
+                    None => false,
+                }
+            })
+        })
+    }
+
     #[tokio::test]
     async fn spec_3_15_test_24_logic_a_member_whose_host_broadcasts_every_5_s_records_no_rebind_past_the_deaf_timeout()
      {
@@ -657,6 +679,48 @@ mod tests {
                 .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
                 .await,
             None
+        );
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_a_relay_answering_within_the_1000_ms_probe_timeout_is_kept_and_one_answering_after_it_is_stripped()
+     {
+        let scratch = Scratch::new("probe-timeout").await;
+        let rebinds = RebindLog::default();
+        let peer = QuietNode::answering(PEER_SEED, &[KEPT_RELAY, STRIPPED_RELAY]).await;
+        let (member_endpoint, starting) = spawn_member(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                .with_host_relays(&[
+                    (LIVE_HOST_SEED, KEPT_RELAY),
+                    (DEAD_HOST_SEED, STRIPPED_RELAY),
+                ])
+                .with_relay_probe(answering_after(&[
+                    (KEPT_RELAY, ANSWER_WITHIN_THE_PROBE_TIMEOUT),
+                    (STRIPPED_RELAY, ANSWER_AFTER_THE_PROBE_TIMEOUT),
+                ]))
+                .with_report(rebinds.sink()),
+        )
+        .await;
+        peer.introduce_to(&member_endpoint).await;
+        let member = starting.await.unwrap();
+
+        let rebound = rebinds
+            .nth_within(0, SPEC_JOIN_TIMEOUT + REBIND_SLACK)
+            .await;
+        let stripped = entry_within(
+            &member,
+            PEER_SEED,
+            |entry| !relays_of(entry).contains(&STRIPPED_RELAY.to_owned()),
+            IROH_DOCUMENTED_CLOSE_LATENCY + ANSWER_AFTER_THE_PROBE_TIMEOUT + REBIND_SLACK,
+        )
+        .await;
+
+        assert!(rebound.is_some());
+        assert_eq!(
+            stripped.as_ref().map(relays_of),
+            Some(vec![KEPT_RELAY.to_owned()])
         );
         drop(scratch);
     }
