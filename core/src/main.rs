@@ -5,22 +5,31 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
-use estafette::cli::cards::{self, CardCommand};
+use estafette::cli::cards::{self, CardCommand, RegistryArgs};
 use estafette::cli::network::{self, NetworkCommand, NetworkCommandError};
 use estafette::cli::observer::{
     self, ObserverCommand, ObserverCommandError, ObserverEffects, OperatorEffects,
 };
+use estafette::config::{ConfigError, NetworkConfig};
 use estafette::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use estafette::errors::ExitStatus;
-use estafette::inbox::socket::{InboxSocket, OperatingSystemProcessTable};
-use estafette::net::endpoint::NodeEndpoint;
-use estafette::node::relay_answers;
+use estafette::inbox::socket::{InboxSocket, InboxSocketError, OperatingSystemProcessTable};
+use estafette::mcp::{self, ServedNetwork, ServerEffects};
+use estafette::net::endpoint::{GateFailure, NodeEndpoint};
+use estafette::node::{
+    Exit, Network, NodeEffects, NodeError, NodeRecord, RuntimeShutdown, ShutdownSignal,
+    relay_answers,
+};
 use estafette::sidecar::ThreadSleep;
 use estafette::wire::Nonce;
 use iroh::SecretKey;
+use tokio::runtime::Runtime;
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 const MILLISECONDS_PER_SECOND: u64 = 1000;
+const RANDOM_BYTES_PER_SECRET_KEY: usize = 32;
 
 #[derive(Debug, Parser)]
 #[command(name = "estafette")]
@@ -40,6 +49,11 @@ enum Command {
     },
     #[command(flatten)]
     Observer(ObserverCommand),
+    /// Serve the six MCP tools of one network on standard input and output, reading its configuration and cards; refuses a network whose configuration is missing or invalid
+    Mcp {
+        #[command(flatten)]
+        registry: RegistryArgs,
+    },
 }
 
 #[derive(Debug)]
@@ -47,7 +61,11 @@ enum CommandLineFailure {
     Directories(DirectoriesError),
     ClockBeforeUnixEpoch,
     Network(NetworkCommandError),
+    NetworkConfig(ConfigError),
+    NetworkRefused(NodeError),
     Runtime(io::Error),
+    InboxSocket(InboxSocketError),
+    Signals(io::Error),
     Observer(ObserverCommandError),
 }
 
@@ -60,7 +78,13 @@ impl fmt::Display for CommandLineFailure {
                 "the system clock reads a time before 1970-01-01: set the clock and run the command again"
             ),
             Self::Network(source) => write!(formatter, "{source}"),
+            Self::NetworkConfig(source) => write!(formatter, "{source}"),
+            Self::NetworkRefused(source) => write!(formatter, "{source}"),
             Self::Runtime(source) => write!(formatter, "cannot start the async runtime: {source}"),
+            Self::InboxSocket(source) => write!(formatter, "{source}"),
+            Self::Signals(source) => {
+                write!(formatter, "cannot listen for shutdown signals: {source}")
+            }
             Self::Observer(source) => write!(formatter, "{source}"),
         }
     }
@@ -97,8 +121,149 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Command::Mcp { registry } => serve_mcp(registry).unwrap_or_else(|failure| {
+            drop(writeln!(io::stderr(), "{failure}"));
+            ExitStatus::Failure
+        }),
     };
     ExitCode::from(u8::from(status))
+}
+
+/// Serves the MCP tools of the network until the session ends, building every side effect the server runs on.
+fn serve_mcp(registry: RegistryArgs) -> Result<ExitStatus, CommandLineFailure> {
+    let directories = Directories::establish(
+        |name| std::env::var_os(name),
+        &OperatingSystemFilesystem,
+        registry.cards_dir,
+    )
+    .map_err(CommandLineFailure::Directories)?;
+    let config_path = directories
+        .network_config_file(registry.network.as_str())
+        .map_err(CommandLineFailure::Directories)?;
+    let config = NetworkConfig::load(&config_path).map_err(CommandLineFailure::NetworkConfig)?;
+    Network::new(config.clone(), config_path.clone())
+        .map_err(CommandLineFailure::NetworkRefused)?;
+    unix_seconds_of(SystemTime::now())?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(CommandLineFailure::Runtime)?;
+    let process_id = std::process::id();
+    let exit = runtime.block_on(async move {
+        let inbox = InboxSocket::start(&directories, process_id, &OperatingSystemProcessTable)
+            .map_err(CommandLineFailure::InboxSocket)?;
+        let signals = forward_shutdown_signals().map_err(CommandLineFailure::Signals)?;
+        let served = ServedNetwork {
+            inbox_path: directories.inbox_socket_file(process_id),
+            directories,
+            network: registry.network,
+            config,
+            config_path,
+        };
+        Ok(mcp::serve(
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+            signals,
+            served,
+            server_effects(Arc::new(inbox)),
+        )
+        .await)
+    })?;
+    shut_down(runtime, exit);
+    Ok(exit_status_of(exit))
+}
+
+/// Forwards SIGTERM, SIGINT and SIGHUP, as they arrive, to the session.
+fn forward_shutdown_signals() -> io::Result<mpsc::UnboundedReceiver<ShutdownSignal>> {
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut hangup = signal(SignalKind::hangup())?;
+    let (signals, received) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        loop {
+            let arrived = tokio::select! {
+                Some(()) = terminate.recv() => ShutdownSignal::Terminate,
+                Some(()) = interrupt.recv() => ShutdownSignal::Interrupt,
+                Some(()) = hangup.recv() => ShutdownSignal::Hangup,
+                else => return,
+            };
+            if signals.send(arrived).is_err() {
+                return;
+            }
+        }
+    });
+    Ok(received)
+}
+
+/// The side effects of the MCP server and its node: the clocks, a secure random source, the endpoint binding, the stderr run record, and the filesystem.
+fn server_effects(inbox: Arc<InboxSocket>) -> ServerEffects {
+    ServerEffects {
+        node: NodeEffects {
+            clock: Arc::new(wall_clock_milliseconds),
+            monotonic: Arc::new(tokio::time::Instant::now),
+            fill_probe_nonce: Arc::new(|nonce: &mut Nonce| fill_with_secure_random_bytes(nonce)),
+            report: Arc::new(|record: NodeRecord| drop(writeln!(io::stderr(), "{record}"))),
+            inbox,
+            probe_relay: Arc::new(|relay| Box::pin(relay_answers(relay))),
+        },
+        bind_endpoint: Arc::new(|card_key, gate_key, relays| {
+            Box::pin(NodeEndpoint::bind(
+                card_key,
+                gate_key,
+                relays,
+                fill_with_secure_random_bytes,
+                |failure| report_gate_closing(&failure),
+            ))
+        }),
+        registry: Arc::new(OperatingSystemFilesystem),
+        pause_between_lock_tries: Arc::new(std::thread::sleep),
+    }
+}
+
+/// Milliseconds since the Unix epoch by this machine's clock, 0 for a clock set before it.
+fn wall_clock_milliseconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
+
+/// Fills the bytes from the operating system's secure random source, by way of fresh secret keys.
+fn fill_with_secure_random_bytes<const LENGTH: usize>(bytes: &mut [u8; LENGTH]) {
+    for chunk in bytes.chunks_mut(RANDOM_BYTES_PER_SECRET_KEY) {
+        for (byte, random) in chunk.iter_mut().zip(SecretKey::generate().to_bytes()) {
+            *byte = random;
+        }
+    }
+}
+
+/// Writes the reason a gossip connection was closed at the network secret gate to the run record.
+fn report_gate_closing(failure: &GateFailure) {
+    drop(writeln!(
+        io::stderr(),
+        "a gossip connection was closed at the network secret gate: {failure}"
+    ));
+}
+
+/// Shuts the runtime down as the session asked: awaited, or in the background so a pending read of standard input does not hold the exit.
+fn shut_down(runtime: Runtime, exit: Exit) {
+    match exit {
+        Exit::Stopped(RuntimeShutdown::Awaited) => drop(runtime),
+        Exit::Stopped(RuntimeShutdown::InBackground) | Exit::AtOnce => {
+            runtime.shutdown_background();
+        }
+    }
+}
+
+/// The process exit of a session: success once it stopped, failure when a second signal ended it at once.
+const fn exit_status_of(exit: Exit) -> ExitStatus {
+    match exit {
+        Exit::Stopped(RuntimeShutdown::Awaited | RuntimeShutdown::InBackground) => {
+            ExitStatus::Success
+        }
+        Exit::AtOnce => ExitStatus::Failure,
+    }
 }
 
 fn run_network_command(
@@ -247,5 +412,21 @@ mod tests {
 
         assert!(matches!(refusal, CommandLineFailure::ClockBeforeUnixEpoch));
         assert!(refusal.to_string().starts_with("the system clock reads"));
+    }
+
+    #[test]
+    fn spec_3_9_a_session_that_stopped_exits_zero_and_one_ended_at_once_by_a_second_signal_exits_one()
+     {
+        let expected = [
+            (Exit::Stopped(RuntimeShutdown::Awaited), ExitStatus::Success),
+            (
+                Exit::Stopped(RuntimeShutdown::InBackground),
+                ExitStatus::Success,
+            ),
+            (Exit::AtOnce, ExitStatus::Failure),
+        ];
+        for (exit, status) in expected {
+            assert_eq!(exit_status_of(exit), status, "{exit:?}");
+        }
     }
 }
