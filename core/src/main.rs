@@ -11,7 +11,7 @@ use clap::{Parser, Subcommand};
 use estafette::cli::cards::{self, CardCommand, RegistryArgs};
 #[cfg(feature = "relay")]
 use estafette::cli::infra::{
-    self, InfrastructureCommand, InfrastructureCommandError, InfrastructureEffects,
+    self, InfrastructureCommand, InfrastructureCommandError, InfrastructureEffects, StopRequested,
 };
 use estafette::cli::network::{self, NetworkCommand, NetworkCommandError};
 use estafette::cli::observer::{
@@ -31,6 +31,8 @@ use estafette::sidecar::{self, ThreadSleep};
 use estafette::wire::Nonce;
 use iroh::SecretKey;
 use tokio::runtime::Runtime;
+#[cfg(feature = "relay")]
+use tokio::signal::unix::Signal;
 use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -42,6 +44,10 @@ const RANDOM_BYTES_PER_SECRET_KEY: usize = 32;
 const AWAITED_SHUTDOWN_LIMIT: Duration = Duration::from_millis(1000);
 
 const PROGRAM_PURPOSE: &str = "Messaging between agents across machines and harnesses";
+#[cfg(feature = "relay")]
+const INTERRUPT_SIGNAL: &str = "SIGINT";
+#[cfg(feature = "relay")]
+const TERMINATE_SIGNAL: &str = "SIGTERM";
 
 #[derive(Debug, Parser)]
 #[command(name = "estafette", about = PROGRAM_PURPOSE, long_about = PROGRAM_PURPOSE)]
@@ -83,6 +89,11 @@ enum CommandLineFailure {
     Signals(io::Error),
     Observer(ObserverCommandError),
     #[cfg(feature = "relay")]
+    SignalNotHeard {
+        signal: &'static str,
+        source: io::Error,
+    },
+    #[cfg(feature = "relay")]
     Infrastructure(InfrastructureCommandError),
 }
 
@@ -103,6 +114,11 @@ impl fmt::Display for CommandLineFailure {
                 write!(formatter, "cannot listen for shutdown signals: {source}")
             }
             Self::Observer(source) => write!(formatter, "{source}"),
+            #[cfg(feature = "relay")]
+            Self::SignalNotHeard { signal, source } => write!(
+                formatter,
+                "cannot listen for {signal}, so the host could not be stopped cleanly and does not start: {source}"
+            ),
             #[cfg(feature = "relay")]
             Self::Infrastructure(source) => write!(formatter, "{source}"),
         }
@@ -439,12 +455,16 @@ fn serve_infrastructure(
         .enable_all()
         .build()
         .map_err(CommandLineFailure::Runtime)?;
+    let stopped = {
+        let _inside_runtime = runtime.enter();
+        stop_requested()?
+    };
     runtime
         .block_on(infra::run(
             command,
             &directories,
             &OperatingSystemFilesystem,
-            infrastructure_effects(),
+            infrastructure_effects(stopped),
             result,
         ))
         .map_err(CommandLineFailure::Infrastructure)
@@ -452,7 +472,7 @@ fn serve_infrastructure(
 
 /// The side effects of the infrastructure command: the secure random source, the wall clock, the gated endpoint, the embedded relay, the stop signals and the run record on stderr.
 #[cfg(feature = "relay")]
-fn infrastructure_effects() -> InfrastructureEffects {
+fn infrastructure_effects(stopped: StopRequested) -> InfrastructureEffects {
     InfrastructureEffects {
         fill_from_secure_source: Box::new(|seed| *seed = SecretKey::generate().to_bytes()),
         clock: Arc::new(wall_clock_milliseconds),
@@ -466,23 +486,31 @@ fn infrastructure_effects() -> InfrastructureEffects {
             ))
         }),
         start_relay: Box::new(|site| Box::pin(infra::start_embedded_relay(site))),
-        stopped: Box::pin(stop_requested()),
+        stopped,
         report: Arc::new(|record| drop(writeln!(io::stderr(), "{record}"))),
     }
 }
 
-/// Resolves at the first interrupt or terminate signal.
+/// Listens for the interrupt and terminate signals now, refusing to start when either cannot be heard, and resolves at the first of them.
 #[cfg(feature = "relay")]
-async fn stop_requested() {
-    match signal(SignalKind::terminate()) {
-        Ok(mut terminate) => {
-            tokio::select! {
-                _interrupted = tokio::signal::ctrl_c() => {}
-                _terminated = terminate.recv() => {}
-            }
+fn stop_requested() -> Result<StopRequested, CommandLineFailure> {
+    let mut interrupt = listen_for(SignalKind::interrupt(), INTERRUPT_SIGNAL)?;
+    let mut terminate = listen_for(SignalKind::terminate(), TERMINATE_SIGNAL)?;
+    Ok(Box::pin(async move {
+        tokio::select! {
+            _interrupted = interrupt.recv() => {}
+            _terminated = terminate.recv() => {}
         }
-        Err(_unregistered) => drop(tokio::signal::ctrl_c().await),
-    }
+    }))
+}
+
+/// The stream of one signal, refusing a signal this process cannot listen for.
+#[cfg(feature = "relay")]
+fn listen_for(kind: SignalKind, name: &'static str) -> Result<Signal, CommandLineFailure> {
+    signal(kind).map_err(|source| CommandLineFailure::SignalNotHeard {
+        signal: name,
+        source,
+    })
 }
 
 #[cfg(test)]
