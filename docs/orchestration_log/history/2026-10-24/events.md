@@ -576,3 +576,11 @@
 2026-10-28T14:19 | self:claude-fable-5-1 | gate | U26 integrated at 04b4746 on integration/build-estafette (integrator PASS, just check twice, pushed); CI run 40686738900 watched before main ff
 2026-10-28T14:20 | self:claude-fable-5-1 | review | U25 spec re-review 3 PASS (spec-…ad5df975faffc74dd-121730, no findings); quality-U25 re-review 3 over 112f446..0ec1ef3 -> quality-…ad5df975faffc74dd-121730q
 2026-10-28T14:22 | self:claude-fable-5-1 | gate | main fast-forwarded c3f9cae..04b4746 (U26) after integration CI 40686738900 green; CI on main watched by commit
+2026-10-28T14:26 | self:claude-fable-5-1 | review | U25 quality re-review 3 Ready Yes (quality-…ad5df975faffc74dd-121730q, no findings); integrator-U25 brief written, launch waits on the records commit in the root
+2026-10-28T14:26 | self:claude-fable-5-1 | review | U22 continuation 1 DONE at 1c353a7; spec-U22 re-review 1 over 112f446..1c353a7 -> spec-…a9c79c80e50696fa0-122619; records committed 77666d7; integrator-U25 launched
+2026-10-28T14:27 | self:claude-fable-5-1 | gate | CI on main green at 04b4746 (run 40687293495)
+2026-10-28T14:32 | self:claude-fable-5-1 | gate | U25 integrated at 63dbe9e on integration/build-estafette (rebased over U26, Command holds both; integrator PASS, just check twice, pushed); CI run 40688512274 watched before main ff
+2026-10-28T14:32 | self:claude-fable-5-1 | review | U22 spec re-review 1 PASS (spec-…a9c79c80e50696fa0-122619, no findings); quality-U22 launched (sonnet) -> quality-…a9c79c80e50696fa0-123228
+2026-10-28T14:36 | self:claude-fable-5-1 | gate | main fast-forwarded 04b4746..63dbe9e (U25, records 77666d7) after integration CI 40688512274 green; CI on main watched by commit
+2026-10-28T14:36 | self:claude-fable-5-1 | review | U22 quality With fixes (quality-…a9c79c80e50696fa0-123228): 1 Important (tautological departure-wait test), 5 Minor; impl-U22 continued (cycle 2)
+2026-10-28T14:40 | self:claude-fable-5-1 | gate | CI on main green at 63dbe9e (run 40689161434)
