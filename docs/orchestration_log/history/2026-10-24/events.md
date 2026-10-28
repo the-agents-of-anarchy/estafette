@@ -584,3 +584,9 @@
 2026-10-28T14:36 | self:claude-fable-5-1 | gate | main fast-forwarded 04b4746..63dbe9e (U25, records 77666d7) after integration CI 40688512274 green; CI on main watched by commit
 2026-10-28T14:36 | self:claude-fable-5-1 | review | U22 quality With fixes (quality-…a9c79c80e50696fa0-123228): 1 Important (tautological departure-wait test), 5 Minor; impl-U22 continued (cycle 2)
 2026-10-28T14:40 | self:claude-fable-5-1 | gate | CI on main green at 63dbe9e (run 40689161434)
+2026-10-28T14:46 | self:claude-fable-5-1 | review | U22 continuation 2 DONE at 45a27d0; spec-U22 re-review 2 over 112f446..45a27d0 -> spec-…a9c79c80e50696fa0-124655; quality re-review 1 queued -> 124655q
+2026-10-28T14:52 | self:claude-fable-5-1 | review | U22 spec re-review 2 PASS (spec-…a9c79c80e50696fa0-124655, no findings); quality-U22 re-review 1 over 112f446..45a27d0 -> quality-…a9c79c80e50696fa0-124655q
+2026-10-28T14:54 | self:claude-fable-5-1 | review | U22 quality re-review 1 Ready Yes (quality-…a9c79c80e50696fa0-124655q, no findings; four items left stand with reasons); integrator-U22 launched (sonnet) -> reports/integrator-U22.md
+2026-10-28T15:01 | self:claude-fable-5-1 | gate | U22 integrated at 46a1f93 on integration/build-estafette (integrator PASS, just check twice, pushed); CI run 40692535410 watched before main ff
+2026-10-28T15:01 | self:claude-fable-5-1 | delegation | impl-U23 node-rebind launched (opus, worktree) from prompts/implementer-U23-node-rebind.md on integration head 46a1f93
+2026-10-28T15:05 | self:claude-fable-5-1 | gate | main fast-forwarded 63dbe9e..46a1f93 (U22, records a1ae062) after integration CI 40692535410 green; CI on main watched by commit
