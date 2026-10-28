@@ -292,9 +292,9 @@ fn judge_message(
 
 type PeerSlot = Arc<AsyncMutex<Option<Connection>>>;
 
-/// The client half of the direct protocol, holding one connection per peer in that peer's slot, which a dial fills under the slot's lock.
+/// The client half of the direct protocol, holding one connection per peer in that peer's slot, which a dial fills under the slot's lock, over the node's current endpoint.
 pub struct DirectClient {
-    endpoint: Endpoint,
+    endpoint: Mutex<Endpoint>,
     keys: NetworkKeys,
     timeouts: ClientTimeouts,
     slots: Mutex<HashMap<EndpointId, PeerSlot>>,
@@ -305,11 +305,26 @@ impl DirectClient {
     #[must_use]
     pub fn new(endpoint: Endpoint, keys: NetworkKeys, timeouts: ClientTimeouts) -> Self {
         Self {
-            endpoint,
+            endpoint: Mutex::new(endpoint),
             keys,
             timeouts,
             slots: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// The endpoint the client dials from now.
+    #[must_use]
+    pub fn endpoint(&self) -> Endpoint {
+        self.endpoint
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Dials from the endpoint a rebind bound from here on, and drops every connection held on the one before it (spec 3.8, Rebind).
+    pub async fn follow(&self, endpoint: Endpoint) {
+        *self.endpoint.lock().unwrap_or_else(PoisonError::into_inner) = endpoint;
+        self.drop_all_held_connections().await;
     }
 
     /// Sends the message to the peer and returns its acknowledgement, accepted or not.
@@ -411,7 +426,7 @@ impl DirectClient {
         }
         let dialed = timeout(
             self.timeouts.connect,
-            self.endpoint.connect(to, DIRECT_ALPN),
+            self.endpoint().connect(to, DIRECT_ALPN),
         )
         .await
         .map_err(|_elapsed| DirectError::Unreachable)?
@@ -1233,6 +1248,22 @@ mod tests {
         link.client.drop_held_connection(peer).await;
         link.client.probe(peer, PROBE_NONCE).await.unwrap();
 
+        assert_eq!(server.connections(), 2);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_after_a_rebind_the_client_dials_afresh_from_the_new_endpoint() {
+        let server = ScriptedServer::replying(Some(sealed_probe_ack(PROBE_NONCE)));
+        let mut link = link_to(server.clone(), ClientTimeouts::SPEC).await;
+        let peer = link.server_node.endpoint().id();
+        link.client.probe(peer, PROBE_NONCE).await.unwrap();
+
+        link.client_node.rebind().await.unwrap();
+        link.client
+            .follow(link.client_node.endpoint().clone())
+            .await;
+
+        link.client.probe(peer, PROBE_NONCE).await.unwrap();
         assert_eq!(server.connections(), 2);
     }
 
