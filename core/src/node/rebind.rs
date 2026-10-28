@@ -324,6 +324,7 @@ mod tests {
     const SPEC_TEST_24_RUN: Duration = Duration::from_secs(180);
     const LONGEST_PAYLOAD_GAP_MS: u64 = 5000;
     const LONGEST_DRAWN_MS: u64 = 60_000;
+    const LONGEST_ASK_LATENESS_MS: u64 = 700;
     const PROPERTY_CASES: u64 = 500;
     const STEPS_PER_CASE: u64 = 40;
     const SCHEDULE_EVENT_KINDS: u64 = 3;
@@ -1082,19 +1083,24 @@ mod tests {
 
     #[test]
     fn spec_3_8_member_joins_start_1_5_s_after_a_rebinds_join_repeat_every_3_s_and_stop_after_10() {
-        let joined = Instant::now();
-        let mut joins = MemberJoins::AwaitingRebindJoin;
-        joins.joined(joined);
-        let mut asks = Vec::new();
-        while let Some(due) = joins.next_ask() {
-            asks.push(due);
-            joins.asked(due);
-        }
+        for case in 0..PROPERTY_CASES {
+            let mut draws = Draws::seeded(case);
+            let joined = Instant::now() + Duration::from_millis(draws.below(LONGEST_DRAWN_MS));
+            let mut joins = MemberJoins::AwaitingRebindJoin;
+            joins.joined(joined);
+            let mut expected_due = joined + SPEC_MEMBER_JOIN_WAIT;
+            let mut asks: u32 = 0;
+            while let Some(due) = joins.next_ask() {
+                assert_eq!(due, expected_due, "case {case}");
+                asks += 1;
+                assert!(asks <= SPEC_MEMBER_JOIN_TRIES, "case {case}");
+                let asked_at = due + Duration::from_millis(draws.below(LONGEST_ASK_LATENESS_MS));
+                joins.asked(asked_at);
+                expected_due = asked_at + SPEC_MEMBER_JOIN_INTERVAL;
+            }
 
-        let expected: Vec<Instant> = (0..SPEC_MEMBER_JOIN_TRIES)
-            .map(|ask| joined + SPEC_MEMBER_JOIN_WAIT + SPEC_MEMBER_JOIN_INTERVAL * ask)
-            .collect();
-        assert_eq!(asks, expected);
+            assert_eq!(asks, SPEC_MEMBER_JOIN_TRIES, "case {case}");
+        }
     }
 
     #[test]
