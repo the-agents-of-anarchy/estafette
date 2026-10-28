@@ -7,7 +7,7 @@ use estafette::dirs::OperatingSystemFilesystem;
 use iroh::SecretKey;
 
 #[derive(Debug, Parser)]
-#[command(name = "estafette", version)]
+#[command(name = "estafette")]
 struct EstafetteArguments {
     #[command(subcommand)]
     command: Command,
