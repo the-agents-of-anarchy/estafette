@@ -253,7 +253,6 @@ impl Node {
             reannounce_due: None,
             relay_loss: RelayLossWatch::default(),
             known_hosts: KnownHosts::new(network.config, network.config_path),
-            departed: false,
             fill_probe_nonce: effects.fill_probe_nonce,
             monotonic: effects.monotonic,
             report: effects.report,
@@ -591,7 +590,6 @@ struct PresenceLoop {
     reannounce_due: Option<Instant>,
     relay_loss: RelayLossWatch,
     known_hosts: KnownHosts,
-    departed: bool,
     fill_probe_nonce: ProbeNonceSource,
     monotonic: MonotonicClock,
     report: RunRecord,
@@ -823,7 +821,6 @@ impl PresenceLoop {
 
     /// Broadcasts the Departure, announces nothing after it, and saves the known hosts when a record is newer than the file.
     async fn depart(&mut self, now_ms: u64) {
-        self.departed = true;
         let seq = self.announcer.next_seq(now_ms);
         self.broadcast(Payload::Departure(Departure {
             v: Version::CURRENT,
@@ -843,7 +840,7 @@ impl PresenceLoop {
         let Some(own_handle) = self.state.own_handle.get() else {
             return;
         };
-        if self.departed {
+        if self.state.is_stopping() {
             return;
         }
         let addr = self.state.own_addr();
