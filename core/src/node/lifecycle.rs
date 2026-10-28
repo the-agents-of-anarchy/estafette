@@ -38,14 +38,6 @@ pub enum Exit {
     Stopped(RuntimeShutdown),
 }
 
-/// Where the session stands in spec 3.9.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SessionState {
-    Unclaimed,
-    Claimed,
-    Stopping,
-}
-
 struct Claimed {
     node: Arc<Node>,
     lock: HeldSidecar,
@@ -68,16 +60,6 @@ impl Session {
     pub const fn new() -> Self {
         Self {
             phase: Mutex::new(Phase::Unclaimed),
-        }
-    }
-
-    /// Where the session stands now.
-    #[must_use]
-    pub fn state(&self) -> SessionState {
-        match &*self.phase() {
-            Phase::Unclaimed => SessionState::Unclaimed,
-            Phase::Claimed(_) => SessionState::Claimed,
-            Phase::Stopping => SessionState::Stopping,
         }
     }
 
@@ -341,7 +323,6 @@ mod tests {
     fn spec_3_9_before_init_the_session_is_unclaimed_and_every_tool_gets_not_claimed() {
         let session = Session::new();
 
-        assert_eq!(session.state(), SessionState::Unclaimed);
         assert_eq!(session.node().err(), Some(ErrorCode::NotClaimed));
     }
 
@@ -357,7 +338,6 @@ mod tests {
         let second_claim = session.claim(second.node, second_lock);
 
         assert_eq!(second_claim.err(), Some(ErrorCode::BadRequest));
-        assert_eq!(session.state(), SessionState::Claimed);
         assert!(Arc::ptr_eq(&session.node().unwrap(), &claimed));
         drop(scratch);
     }
@@ -485,7 +465,7 @@ mod tests {
                 .unwrap();
 
             assert_eq!(exit, Exit::Stopped(runtime));
-            assert_eq!(session.state(), SessionState::Stopping);
+            assert_eq!(session.node().err(), Some(ErrorCode::Refused));
         }
     }
 
