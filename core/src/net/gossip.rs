@@ -168,7 +168,7 @@ mod tests {
     use iroh::Signature;
     use iroh_gossip::ALPN as GOSSIP_ALPN;
     use tokio::task::JoinHandle;
-    use tokio::time::timeout;
+    use tokio::time::{sleep, timeout};
 
     const NETWORK_SECRET: NetworkSecret = NetworkSecret::from_bytes([9; KEY_LEN]);
     const OWNER_SEED: u8 = 40;
@@ -182,6 +182,8 @@ mod tests {
     const HOST_RELAY: &str = "https://relay.example/";
     const EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY: u64 = 4000;
     const LAG_WAIT: Duration = Duration::from_secs(30);
+    const DELIVERY_WAIT: Duration = Duration::from_secs(60);
+    const DELIVERY_POLL: Duration = Duration::from_millis(10);
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     const JOIN_TIMEOUT_SLACK: Duration = Duration::from_millis(1000);
     const NOTHING_MORE_WAIT: Duration = Duration::from_millis(500);
@@ -341,7 +343,7 @@ mod tests {
     struct JoinedPair {
         first_topic: NetworkTopic,
         second_topic: NetworkTopic,
-        _first: Member,
+        first: Member,
         _second: Member,
     }
 
@@ -356,8 +358,14 @@ mod tests {
         JoinedPair {
             first_topic,
             second_topic,
-            _first: first,
+            first,
             _second: second,
+        }
+    }
+
+    async fn every_broadcast_reaches(member: &Member, broadcasts: u64) {
+        while member.gossip.metrics().msgs_data_recv.get() < broadcasts {
+            sleep(DELIVERY_POLL).await;
         }
     }
 
@@ -551,6 +559,7 @@ mod tests {
         let JoinedPair {
             mut first_topic,
             second_topic,
+            first,
             ..
         } = joined_pair().await;
         for seq in 0..EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY {
@@ -562,6 +571,13 @@ mod tests {
                 .await
                 .unwrap();
         }
+
+        timeout(
+            DELIVERY_WAIT,
+            every_broadcast_reaches(&first, EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY),
+        )
+        .await
+        .expect("every broadcast reaches the node that falls behind");
 
         let first_error = timeout(LAG_WAIT, async {
             loop {
