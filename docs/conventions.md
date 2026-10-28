@@ -144,10 +144,10 @@ ground  owner ruling 2026-10-23
 
 ### developer-tooling
 when    changing or reviewing developer tooling (`just` recipes, scripts)
-do      verify a developer script (a `just` recipe, a skill's script) by running it; review developer tooling with implementer, then spec review
-never   tests for developer scripts; a quality link on developer tooling
-why     People read a script's output; nothing in the product imports it.
-ground  owner ruling 2026-10-23
+do      verify a developer script (a `just` recipe, a skill's script, a CI workflow) by running it; integrate developer tooling on the implementer's gate alone
+never   tests for developer scripts; a spec review or a quality review on developer tooling
+why     People read a script's output; nothing in the product imports it; review cycles on tooling are tokens spent on nothing the product carries.
+ground  owner rulings 2026-10-23 and 2026-10-28 ("don't waste review cycles on dx tooling")
 
 ### verdicts
 when    briefing a reviewer, writing, correcting or accepting a verdict
