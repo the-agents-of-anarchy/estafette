@@ -36,8 +36,8 @@ pub trait DirectHost: Send + Sync + 'static {
     /// Whether the process is Stopping, so that Messages are refused and Probes and Introduces go unanswered.
     fn is_stopping(&self) -> bool;
 
-    /// The card public key of this process.
-    fn own_card(&self) -> wire::PublicKey;
+    /// The card public key of this process, or none for a node that holds no card and so refuses every Message.
+    fn own_card(&self) -> Option<wire::PublicKey>;
 
     /// Whether an inbox client is attached to this process.
     fn is_attached(&self) -> bool;
@@ -261,7 +261,7 @@ impl<H: DirectHost> ServerState<H> {
     /// Queues the message when it is acceptable and acknowledges it, accepted or with the reason it was not.
     fn answer_message(&self, sender: wire::PublicKey, message: Message) -> MessageAck {
         let id = message.id;
-        let rejection = judge_message(&self.host.own_card(), self.host.is_stopping(), &message);
+        let rejection = judge_message(self.host.own_card(), self.host.is_stopping(), &message);
         if rejection.is_none() {
             self.host.receive_message(sender, message);
         }
@@ -277,11 +277,11 @@ impl<H: DirectHost> ServerState<H> {
 
 /// The error code a received Message is rejected with by the checks of spec 3.6 steps 3 and 4, or none when it is acceptable.
 fn judge_message(
-    own_card: &wire::PublicKey,
+    own_card: Option<wire::PublicKey>,
     is_stopping: bool,
     message: &Message,
 ) -> Option<ErrorCode> {
-    if message.to != *own_card || is_stopping {
+    if own_card != Some(message.to) || is_stopping {
         Some(ErrorCode::Refused)
     } else if message.body.len() > MESSAGE_BODY_LIMIT_BYTES {
         Some(ErrorCode::TooLarge)
@@ -533,7 +533,7 @@ mod tests {
 
     #[derive(Clone)]
     struct RecordingHost {
-        own_card: wire::PublicKey,
+        own_card: Option<wire::PublicKey>,
         attached: Arc<AtomicBool>,
         stopping: Arc<AtomicBool>,
         received: Arc<Mutex<Vec<(wire::PublicKey, Message)>>>,
@@ -542,6 +542,14 @@ mod tests {
 
     impl RecordingHost {
         fn with_card(own_card: wire::PublicKey) -> Self {
+            Self::holding(Some(own_card))
+        }
+
+        fn without_card() -> Self {
+            Self::holding(None)
+        }
+
+        fn holding(own_card: Option<wire::PublicKey>) -> Self {
             Self {
                 own_card,
                 attached: Arc::new(AtomicBool::new(false)),
@@ -561,7 +569,7 @@ mod tests {
             self.stopping.load(Ordering::SeqCst)
         }
 
-        fn own_card(&self) -> wire::PublicKey {
+        fn own_card(&self) -> Option<wire::PublicKey> {
             self.own_card
         }
 
@@ -989,6 +997,41 @@ mod tests {
         assert_eq!(introduced.len(), 1);
         assert_eq!(introduced[0].0, card_of(CLIENT_SEED));
         assert_eq!(introduced[0].1.handle.as_deref(), Some(SENDER_HANDLE));
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_a_node_without_a_card_refuses_every_message_and_answers_probe_and_introduce()
+    {
+        let host = RecordingHost::without_card();
+        let link = link_to(
+            DirectServer::new(keys(), host.clone()),
+            ClientTimeouts::SPEC,
+        )
+        .await;
+        let server = link.server_node.endpoint().id();
+
+        let to_server_id = link
+            .client
+            .send_message(server, message_to(card_of(SERVER_SEED), BODY))
+            .await
+            .unwrap();
+        let to_client_card = link
+            .client
+            .send_message(server, message_to(card_of(CLIENT_SEED), BODY))
+            .await
+            .unwrap();
+        let probed = link.client.probe(server, PROBE_NONCE).await.unwrap();
+        let introduced = link
+            .client
+            .introduce(server, introduction_from_client())
+            .await;
+
+        assert_eq!(to_server_id, refusal_ack(&ErrorCode::Refused));
+        assert_eq!(to_client_card, refusal_ack(&ErrorCode::Refused));
+        assert_eq!(host.received().len(), 0);
+        assert_eq!(probed.nonce, PROBE_NONCE);
+        assert_eq!(introduced.unwrap().handle.as_deref(), Some(OWN_HANDLE));
+        assert_eq!(host.introduced.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

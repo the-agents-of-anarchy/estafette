@@ -559,8 +559,8 @@ mod tests {
             false
         }
 
-        fn own_card(&self) -> crate::wire::PublicKey {
-            card(PEER_SEED)
+        fn own_card(&self) -> Option<crate::wire::PublicKey> {
+            Some(card(PEER_SEED))
         }
 
         fn is_attached(&self) -> bool {

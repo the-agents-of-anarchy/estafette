@@ -207,8 +207,8 @@ mod tests {
             self.phase == PeerPhase::Stopping
         }
 
-        fn own_card(&self) -> wire::PublicKey {
-            self.own_card
+        fn own_card(&self) -> Option<wire::PublicKey> {
+            Some(self.own_card)
         }
 
         fn is_attached(&self) -> bool {

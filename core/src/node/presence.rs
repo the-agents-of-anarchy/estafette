@@ -482,8 +482,8 @@ impl DirectHost for Arc<NodeState> {
         self.stopping.load(Ordering::SeqCst)
     }
 
-    fn own_card(&self) -> wire::PublicKey {
-        self.own_card
+    fn own_card(&self) -> Option<wire::PublicKey> {
+        Some(self.own_card)
     }
 
     fn is_attached(&self) -> bool {
@@ -1791,8 +1791,8 @@ pub(super) mod tests {
             false
         }
 
-        fn own_card(&self) -> crate::wire::PublicKey {
-            self.own_card
+        fn own_card(&self) -> Option<crate::wire::PublicKey> {
+            Some(self.own_card)
         }
 
         fn is_attached(&self) -> bool {
