@@ -155,11 +155,11 @@ impl PresenceLoop {
         self.subscribe_through_known_nodes().await
     }
 
-    /// Asks the gossip layer to join the Online and Unreachable members, unless one of them is a gossip neighbor already.
+    /// Asks the gossip layer to join the Online and Unreachable members, stopping the asks when there are none or one of them is a gossip neighbor already.
     pub(super) async fn ask_members_to_join(&mut self) {
         let mut members = self.peers_with_status(Status::Online);
         members.extend(self.peers_with_status(Status::Unreachable));
-        if members.iter().any(|member| self.neighbors.contains(member)) {
+        if members.is_empty() || members.iter().any(|member| self.neighbors.contains(member)) {
             self.member_joins = MemberJoins::Idle;
             return;
         }
