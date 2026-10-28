@@ -97,6 +97,16 @@ impl Network {
     pub const fn keys(&self) -> &NetworkKeys {
         &self.keys
     }
+
+    /// The owner key that certifies every host.
+    pub(crate) const fn owner(&self) -> iroh::PublicKey {
+        self.owner
+    }
+
+    /// The known hosts of the configuration, kept in its file.
+    pub(crate) fn into_known_hosts(self) -> KnownHosts {
+        KnownHosts::new(self.config, self.config_path)
+    }
 }
 
 /// The side effects the node runs on, initialized by the composition root.
@@ -1110,14 +1120,14 @@ impl RelayLossWatch {
 
 /// What a valid Infrastructure record does to the known hosts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RecordVerdict {
+pub enum RecordVerdict {
     Dropped,
     FromKnownHost,
     FromNewHost,
 }
 
 /// The known hosts of spec 3.8, with the newest record `ts` held for each and the file that keeps them.
-pub(super) struct KnownHosts {
+pub struct KnownHosts {
     config: NetworkConfig,
     path: PathBuf,
     newer_than_file: bool,
@@ -1148,7 +1158,7 @@ impl KnownHosts {
     }
 
     /// Holds the relay and `ts` of a record newer than the newest held for its host and within the future bound, adding a host never known before.
-    fn take_record(&mut self, record: &Infrastructure, now_ms: u64) -> RecordVerdict {
+    pub(crate) fn take_record(&mut self, record: &Infrastructure, now_ms: u64) -> RecordVerdict {
         let latest_accepted_ts =
             seconds_of(now_ms).saturating_add(INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS);
         if record.ts > latest_accepted_ts {
@@ -1178,14 +1188,14 @@ impl KnownHosts {
     }
 
     /// Rewrites the network configuration with the known hosts (spec 3.3).
-    fn save(&mut self, now_ms: u64) -> Result<(), ConfigError> {
+    pub(crate) fn save(&mut self, now_ms: u64) -> Result<(), ConfigError> {
         self.config.rewrite(&self.path, seconds_of(now_ms))?;
         self.newer_than_file = false;
         Ok(())
     }
 
     /// Rewrites the network configuration only when a held record is newer than the file's (spec 3.3).
-    fn save_if_newer_than_file(&mut self, now_ms: u64) -> Result<(), ConfigError> {
+    pub(crate) fn save_if_newer_than_file(&mut self, now_ms: u64) -> Result<(), ConfigError> {
         if self.newer_than_file {
             self.save(now_ms)
         } else {
