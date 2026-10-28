@@ -18,7 +18,7 @@ use rmcp::service::{MaybeSendFuture, QuitReason, RequestContext, ServerInitializ
 use rmcp::{ErrorData, RoleServer, ServerHandler, serve_server};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinError;
@@ -49,6 +49,17 @@ const SCHEMA_OBJECT_TYPE: &str = "object";
 const SCHEMA_PROPERTIES_KEY: &str = "properties";
 const SCHEMA_REQUIRED_KEY: &str = "required";
 const SCHEMA_ADDITIONAL_PROPERTIES_KEY: &str = "additionalProperties";
+const SCHEMA_ITEMS_KEY: &str = "items";
+const SCHEMA_MINIMUM_KEY: &str = "minimum";
+const SCHEMA_MAX_LENGTH_KEY: &str = "maxLength";
+const SCHEMA_STRING_TYPE: &str = "string";
+const SCHEMA_ARRAY_TYPE: &str = "array";
+const SCHEMA_INTEGER_TYPE: &str = "integer";
+const CARD_ARGUMENT: &str = "card";
+const DESCRIPTION_ARGUMENT: &str = "description";
+const TO_ARGUMENT: &str = "to";
+const BODY_ARGUMENT: &str = "body";
+const SINCE_ARGUMENT: &str = "since";
 
 /// Binds the node's endpoint under the card key, the gate key and the relays of the known hosts, as the composition root binds it.
 pub type BindEndpoint = Arc<
@@ -856,19 +867,46 @@ impl ToolName {
 
     /// The JSON schema of the tool's arguments, refusing every key it does not name.
     fn input_schema(self) -> JsonObject {
-        let recipient = json!({ "type": "string", "maxLength": LOCAL_HANDLE_MAX_CHARACTERS });
-        let text = json!({ "type": "string" });
+        let text = || typed(SCHEMA_STRING_TYPE, Vec::new());
+        let recipient = || {
+            typed(
+                SCHEMA_STRING_TYPE,
+                vec![(
+                    SCHEMA_MAX_LENGTH_KEY,
+                    Value::from(LOCAL_HANDLE_MAX_CHARACTERS),
+                )],
+            )
+        };
         match self {
-            Self::ListCards | Self::Peers => object_schema(json!({}), &[]),
-            Self::Init => object_schema(json!({ "card": text, "description": text }), &["card"]),
-            Self::Send => object_schema(json!({ "to": recipient, "body": text }), &["to", "body"]),
-            Self::Broadcast => object_schema(
-                json!({ "to": { "type": "array", "items": recipient }, "body": text }),
-                &["to", "body"],
+            Self::ListCards | Self::Peers => object_schema(Vec::new(), &[]),
+            Self::Init => object_schema(
+                vec![(CARD_ARGUMENT, text()), (DESCRIPTION_ARGUMENT, text())],
+                &[CARD_ARGUMENT],
             ),
-            Self::Inbox => {
-                object_schema(json!({ "since": { "type": "integer", "minimum": 0 } }), &[])
-            }
+            Self::Send => object_schema(
+                vec![(TO_ARGUMENT, recipient()), (BODY_ARGUMENT, text())],
+                &[TO_ARGUMENT, BODY_ARGUMENT],
+            ),
+            Self::Broadcast => object_schema(
+                vec![
+                    (
+                        TO_ARGUMENT,
+                        typed(SCHEMA_ARRAY_TYPE, vec![(SCHEMA_ITEMS_KEY, recipient())]),
+                    ),
+                    (BODY_ARGUMENT, text()),
+                ],
+                &[TO_ARGUMENT, BODY_ARGUMENT],
+            ),
+            Self::Inbox => object_schema(
+                vec![(
+                    SINCE_ARGUMENT,
+                    typed(
+                        SCHEMA_INTEGER_TYPE,
+                        vec![(SCHEMA_MINIMUM_KEY, Value::from(0))],
+                    ),
+                )],
+                &[],
+            ),
         }
     }
 
@@ -878,11 +916,26 @@ impl ToolName {
     }
 }
 
+/// The schema of a value of one JSON type, with these further keywords.
+fn typed(kind: &str, keywords: Vec<(&str, Value)>) -> Value {
+    let mut schema = JsonObject::from_iter([(SCHEMA_TYPE_KEY.to_owned(), Value::from(kind))]);
+    schema.extend(
+        keywords
+            .into_iter()
+            .map(|(keyword, value)| (keyword.to_owned(), value)),
+    );
+    Value::Object(schema)
+}
+
 /// The schema of an object with these properties, these required, and no other key.
-fn object_schema(properties: Value, required: &[&str]) -> JsonObject {
+fn object_schema(properties: Vec<(&str, Value)>, required: &[&str]) -> JsonObject {
+    let properties: JsonObject = properties
+        .into_iter()
+        .map(|(name, schema)| (name.to_owned(), schema))
+        .collect();
     let mut schema = JsonObject::from_iter([
         (SCHEMA_TYPE_KEY.to_owned(), Value::from(SCHEMA_OBJECT_TYPE)),
-        (SCHEMA_PROPERTIES_KEY.to_owned(), properties),
+        (SCHEMA_PROPERTIES_KEY.to_owned(), Value::Object(properties)),
     ]);
     if !required.is_empty() {
         schema.insert(
