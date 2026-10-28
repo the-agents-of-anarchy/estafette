@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 const LEARNED_HOST_EXPIRY_DAYS: u64 = 30;
 const LEARNED_HOST_EXPIRY_SECONDS: u64 = LEARNED_HOST_EXPIRY_DAYS * SECONDS_PER_DAY;
-const OWNER_ONLY_FILE_MODE: u32 = 0o600;
+pub const OWNER_ONLY_FILE_MODE: u32 = 0o600;
 const TEMPORARY_FILE_SUFFIX: &str = "tmp";
 const HEX_KEY_LENGTH: usize = 64;
 const RELAY_URL_MAX_BYTES: usize = 128;

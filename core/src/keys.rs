@@ -45,6 +45,12 @@ impl fmt::Debug for NetworkSecret {
 }
 
 impl NetworkSecret {
+    /// Wraps 32 bytes as a network secret.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; KEY_BYTES]) -> Self {
+        Self(bytes)
+    }
+
     /// The secret's 32 bytes.
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; KEY_BYTES] {
@@ -110,6 +116,15 @@ pub fn generate_secret_key(
     let mut bytes = [0; KEY_BYTES];
     fill_from_secure_source(&mut bytes);
     SecretKey::from_bytes(&bytes)
+}
+
+/// Makes a network secret from 32 bytes the secure source writes.
+pub fn generate_network_secret(
+    fill_from_secure_source: impl FnOnce(&mut [u8; KEY_BYTES]),
+) -> NetworkSecret {
+    let mut bytes = [0; KEY_BYTES];
+    fill_from_secure_source(&mut bytes);
+    NetworkSecret::from_bytes(bytes)
 }
 
 fn decode_key_bytes(text: &str) -> Result<[u8; KEY_BYTES], KeyError> {

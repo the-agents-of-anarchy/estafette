@@ -1,16 +1,20 @@
 #[cfg(test)]
 mod network_commands {
     use std::fs;
+    use std::io::{self, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::process::{Command, Output};
 
     use data_encoding::HEXLOWER;
+    use estafette::cli::network::{NetworkCommand, run};
     use estafette::config::{HostOrigin, NetworkConfig};
     use estafette::crypto::verify_host_certificate;
-    use estafette::invite::{parse_invitation, render_host_line};
+    use estafette::dirs::{Directories, OperatingSystemFilesystem};
+    use estafette::handle::Handle;
+    use estafette::invite::{parse_invitation, render_host_line, render_invitation};
     use estafette::keys::{parse_public_key, parse_secret_key, render_public_key};
-    use estafette::wire::{HostAddr, RelayUrl, Version};
+    use estafette::wire::{HostAddr, Invitation, RelayUrl, Version};
     use iroh::{PublicKey, SecretKey, Signature};
 
     const BINARY: &str = env!("CARGO_BIN_EXE_estafette");
@@ -19,6 +23,11 @@ mod network_commands {
     const NETWORK: &str = "home-lab";
     const SECRET_KEY_FILE_LENGTH: usize = 65;
     const CERTIFICATE_TEXT_LENGTH: usize = 129;
+    const NOT_A_PUBLIC_KEY: [u8; 32] = {
+        let mut bytes = [0; 32];
+        bytes[0] = 2;
+        bytes
+    };
 
     struct Machine {
         root: PathBuf,
@@ -366,6 +375,211 @@ mod network_commands {
         assert_eq!(
             fs::read_to_string(machine.owner_key_file(NETWORK)).unwrap(),
             owner_key_before
+        );
+    }
+
+    fn assert_refused_with_one_line(output: &Output, message_start: &str) {
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(output.stdout.len(), 0);
+        let message = String::from_utf8(output.stderr.clone()).unwrap();
+        assert!(message.starts_with(message_start), "{message}");
+        assert_eq!(message.lines().count(), 1, "{message}");
+    }
+
+    fn host_with_node_id_that_is_not_a_key() -> HostAddr {
+        HostAddr {
+            id: NOT_A_PUBLIC_KEY,
+            ..host_address(7, "https://relay-one.example/")
+        }
+    }
+
+    fn invitation_text(owner: [u8; 32], hosts: Vec<HostAddr>) -> String {
+        render_invitation(&Invitation {
+            v: Version::CURRENT,
+            network: NETWORK.to_owned(),
+            secret: [5; 32],
+            owner,
+            hosts,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn spec_3_13_add_host_refuses_a_node_id_that_is_not_a_key_and_keeps_the_config() {
+        let machine = Machine::fresh("add-host-bad-id");
+        machine.run(&["network", "create", NETWORK]);
+        let config_before = fs::read_to_string(machine.config_file(NETWORK)).unwrap();
+        let line = host_line(&host_with_node_id_that_is_not_a_key());
+
+        let output = machine.run(&["network", "add-host", NETWORK, &line]);
+
+        assert_refused_with_one_line(&output, "the host's node id is not an Ed25519 public key");
+        assert_eq!(
+            fs::read_to_string(machine.config_file(NETWORK)).unwrap(),
+            config_before
+        );
+    }
+
+    #[test]
+    fn spec_3_13_join_refuses_an_owner_that_is_not_a_key_and_writes_no_config() {
+        let machine = Machine::fresh("join-bad-owner");
+        let host = host_address(7, "https://relay-one.example/");
+        let text = invitation_text(NOT_A_PUBLIC_KEY, vec![host]);
+
+        let output = machine.run(&["network", "join", &text]);
+
+        assert_refused_with_one_line(
+            &output,
+            "the invitation's owner is not an Ed25519 public key",
+        );
+        assert!(!machine.config_file(NETWORK).exists());
+    }
+
+    #[test]
+    fn spec_3_13_join_refuses_a_host_node_id_that_is_not_a_key_and_writes_no_config() {
+        let machine = Machine::fresh("join-bad-host");
+        let owner = *SecretKey::from_bytes(&[3; 32]).public().as_bytes();
+        let text = invitation_text(owner, vec![host_with_node_id_that_is_not_a_key()]);
+
+        let output = machine.run(&["network", "join", &text]);
+
+        assert_refused_with_one_line(&output, "the host's node id is not an Ed25519 public key");
+        assert!(!machine.config_file(NETWORK).exists());
+    }
+
+    #[test]
+    fn spec_3_4_certify_host_refuses_a_node_id_that_is_not_a_key() {
+        let machine = Machine::fresh("certify-bad-id");
+        machine.run(&["network", "create", NETWORK]);
+        let line = host_line(&host_with_node_id_that_is_not_a_key());
+
+        let output = machine.run(&["network", "certify", NETWORK, &line]);
+
+        assert_refused_with_one_line(&output, "the host's node id is not an Ed25519 public key");
+    }
+
+    struct BrokenPipe;
+
+    impl Write for BrokenPipe {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn spec_3_13_certify_host_refuses_an_owner_key_file_that_is_not_a_key() {
+        let machine = Machine::fresh("certify-bad-owner-key");
+        machine.run(&["network", "create", NETWORK]);
+        fs::write(machine.owner_key_file(NETWORK), "nothex\n").unwrap();
+        let host = host_address(7, "https://relay-one.example/");
+
+        let output = machine.run(&["network", "certify", NETWORK, &host_line(&host)]);
+
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let message = String::from_utf8(output.stderr).unwrap();
+        assert!(message.contains("the owner key is not usable"), "{message}");
+        assert!(message.contains("home-lab.owner.key"), "{message}");
+        assert_eq!(message.lines().count(), 1);
+    }
+
+    #[test]
+    fn spec_3_13_show_invitation_refuses_a_stored_host_id_that_is_not_a_key() {
+        let machine = Machine::fresh("invitation-bad-stored-host");
+        machine.run(&["network", "create", NETWORK]);
+        let host = host_address(7, "https://relay-one.example/");
+        machine.run(&["network", "add-host", NETWORK, &host_line(&host)]);
+        let config_text = fs::read_to_string(machine.config_file(NETWORK)).unwrap();
+        let stored_id = HEXLOWER.encode(&host.id);
+        let damaged = config_text.replace(&stored_id, &HEXLOWER.encode(&NOT_A_PUBLIC_KEY));
+        fs::write(machine.config_file(NETWORK), damaged).unwrap();
+
+        let output = machine.run(&["network", "show-invitation", NETWORK]);
+
+        assert_refused_with_one_line(
+            &output,
+            "the configuration's host id is not usable: the 32 bytes are not an Ed25519 public key",
+        );
+    }
+
+    #[test]
+    fn spec_3_13_show_invitation_refuses_a_stored_owner_that_is_not_a_key() {
+        let machine = Machine::fresh("invitation-bad-stored-owner");
+        machine.run(&["network", "create", NETWORK]);
+        let host = host_address(7, "https://relay-one.example/");
+        machine.run(&["network", "add-host", NETWORK, &host_line(&host)]);
+        let config = NetworkConfig::load(&machine.config_file(NETWORK)).unwrap();
+        let config_text = fs::read_to_string(machine.config_file(NETWORK)).unwrap();
+        let damaged = config_text.replace(&config.owner, &HEXLOWER.encode(&NOT_A_PUBLIC_KEY));
+        fs::write(machine.config_file(NETWORK), damaged).unwrap();
+
+        let output = machine.run(&["network", "show-invitation", NETWORK]);
+
+        assert_refused_with_one_line(
+            &output,
+            "the configuration's owner is not usable: the 32 bytes are not an Ed25519 public key",
+        );
+    }
+
+    #[test]
+    fn spec_3_1_join_refuses_an_invitation_whose_network_name_breaks_the_handle_grammar() {
+        let machine = Machine::fresh("join-bad-network-name");
+        let owner = *SecretKey::from_bytes(&[3; 32]).public().as_bytes();
+        let host = host_address(7, "https://relay-one.example/");
+        let text = render_invitation(&Invitation {
+            v: Version::CURRENT,
+            network: "Bad_Name".to_owned(),
+            secret: [5; 32],
+            owner,
+            hosts: vec![host],
+        })
+        .unwrap();
+
+        let output = machine.run(&["network", "join", &text]);
+
+        assert_refused_with_one_line(&output, "the invitation's network name is not usable");
+        assert!(!machine.networks_directory().exists());
+    }
+
+    #[test]
+    fn spec_3_13_a_result_that_cannot_be_written_is_a_refusal_naming_the_result() {
+        let machine = Machine::fresh("result-unwritable");
+        machine.run(&["network", "create", NETWORK]);
+        let host = host_address(7, "https://relay-one.example/");
+        machine.run(&["network", "add-host", NETWORK, &host_line(&host)]);
+        let root = machine.root;
+        let directories = Directories::establish(
+            |name| match name {
+                "XDG_CONFIG_HOME" => Some(root.join("config").into_os_string()),
+                "XDG_DATA_HOME" => Some(root.join("data").into_os_string()),
+                "XDG_RUNTIME_DIR" => Some(root.join("runtime").into_os_string()),
+                _ => None,
+            },
+            &OperatingSystemFilesystem,
+            None,
+        )
+        .unwrap();
+        let command = NetworkCommand::ShowInvitation {
+            network: NETWORK.parse::<Handle>().unwrap(),
+        };
+
+        let refusal = run(
+            &command,
+            &directories,
+            &OperatingSystemFilesystem,
+            |_bytes| (),
+            0,
+            &mut BrokenPipe,
+            &mut io::sink(),
+        )
+        .unwrap_err();
+
+        assert!(
+            refusal.to_string().starts_with("cannot write the result"),
+            "{refusal}"
         );
     }
 }

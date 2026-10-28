@@ -5,8 +5,8 @@ use data_encoding::{DecodeError, HEXLOWER};
 use crate::errors::ExitStatus;
 use crate::wire::{self, CodecError, HostAddr, Invitation, Wire};
 
-const INVITATION_PREFIX: &str = "estafette-invite-1:";
-const HOST_LINE_PREFIX: &str = "estafette-host-1:";
+pub const INVITATION_PREFIX: &str = "estafette-invite-1:";
+pub const HOST_LINE_PREFIX: &str = "estafette-host-1:";
 
 /// Why an invitation or a host address line was refused, naming the only form accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
