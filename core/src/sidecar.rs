@@ -5,12 +5,12 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::time::Duration;
 
+use crate::config::PERMISSION_BITS_MASK;
 use data_encoding::{HEXLOWER, HEXLOWER_PERMISSIVE};
 use iroh::{PublicKey, SecretKey};
 
 const OWNER_READ_WRITE_ONLY: u32 = 0o600;
 const CARD_FILE_MODE: u32 = 0o644;
-const PERMISSION_BITS_MASK: u32 = 0o777;
 pub const SEED_BYTES: usize = 32;
 const PUBLIC_KEY_BYTES: usize = 32;
 const LOCK_RETRY_WINDOW: Duration = Duration::from_millis(200);

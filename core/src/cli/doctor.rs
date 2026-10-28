@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs;
 use std::io::{self, Write};
@@ -10,18 +11,17 @@ use clap::Args;
 use iroh::{PublicKey, RelayUrl};
 
 use crate::card::{Card, CardInvalid};
-use crate::cli::cards::CardRegistryReader;
+use crate::cli::cards::{CardRegistryReader, card_files_in, card_name_of};
 use crate::cli::network::NetworkFilesystem;
 use crate::cli::observer::{self, ObserverCommand, ObserverEffects, OperatorEffects};
-use crate::config::{NetworkConfig, OWNER_ONLY_FILE_MODE};
-use crate::dirs::{CARD_EXTENSION, Directories, DirectoriesError, OperatingSystemFilesystem};
+use crate::config::{NetworkConfig, OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
+use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use crate::errors::ExitStatus;
 use crate::handle::{AnnouncedHandle, Handle, HandleError};
 use crate::keys::{KeyError, parse_public_key};
 use crate::node::{RelayProbe, known_host_addresses};
 use crate::sidecar::{Pause, SidecarError, claim};
 
-const PERMISSION_BITS_MASK: u32 = 0o777;
 const RELAY_ANSWER_DEADLINE: Duration = Duration::from_secs(5);
 const FIELD_SEPARATOR: char = '\t';
 const LINE_END: &str = "\n";
@@ -137,7 +137,7 @@ impl<'stream, Stream: Write> Report<'stream, Stream> {
                 (FAILED_WORD, detail)
             }
         };
-        let line = [check.name(), word, &detail.escape_debug().to_string()]
+        let line = [check.name(), word, &detail.replace(char::is_control, " ")]
             .join(&FIELD_SEPARATOR.to_string())
             + LINE_END;
         self.stdout
@@ -289,22 +289,13 @@ fn read_registry(
     filesystem: &impl CardRegistryReader,
     cards_directory: &Path,
 ) -> Result<Vec<RegistryCard>, RegistryUnreadable> {
-    let entries = match filesystem.read_directory(cards_directory) {
-        Ok(entries) => entries,
-        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(source) => {
-            return Err(RegistryUnreadable {
-                directory: cards_directory.to_owned(),
-                source,
-            });
-        }
-    };
-    let mut cards: Vec<RegistryCard> = entries
+    let card_files =
+        card_files_in(filesystem, cards_directory).map_err(|source| RegistryUnreadable {
+            directory: cards_directory.to_owned(),
+            source,
+        })?;
+    let mut cards: Vec<RegistryCard> = card_files
         .into_iter()
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == CARD_EXTENSION)
-        })
         .map(|file| RegistryCard {
             validated: validate_card_file(filesystem, &file),
             file,
@@ -318,12 +309,7 @@ fn validate_card_file(
     filesystem: &impl CardRegistryReader,
     file: &Path,
 ) -> Result<ValidCard, CardProblem> {
-    let name = file
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .ok_or(HandleError::NotAHandle)
-        .and_then(Handle::from_str)
-        .map_err(CardProblem::NameRefused)?;
+    let name = card_name_of(file).map_err(CardProblem::NameRefused)?;
     let text = filesystem
         .read_text(file)
         .map_err(CardProblem::Unreadable)?;
@@ -389,17 +375,23 @@ async fn known_relays_verdict(config_path: &Path, probe_relay: &RelayProbe) -> V
         Ok(relays) => relays,
         Err(refusal) => return Verdict::Failed(refusal),
     };
+    let probes: Vec<_> = relays
+        .iter()
+        .map(|relay| {
+            let probe = tokio::time::timeout(RELAY_ANSWER_DEADLINE, probe_relay(relay.clone()));
+            (relay, tokio::spawn(probe))
+        })
+        .collect();
     let mut silent = Vec::new();
-    for relay in &relays {
-        let answers = tokio::time::timeout(RELAY_ANSWER_DEADLINE, probe_relay(relay.clone())).await;
-        if !answers.unwrap_or(false) {
+    for (relay, probe) in probes {
+        if !matches!(probe.await, Ok(Ok(true))) {
             silent.push(format!("{relay} does not answer"));
         }
     }
     Verdict::of_failures(format!("relays answering: {}", relays.len()), &silent)
 }
 
-fn known_relays(config_path: &Path) -> Result<Vec<RelayUrl>, String> {
+fn known_relays(config_path: &Path) -> Result<BTreeSet<RelayUrl>, String> {
     let config = NetworkConfig::load(config_path).map_err(|source| source.to_string())?;
     let hosts = known_host_addresses(&config).map_err(|source| source.to_string())?;
     Ok(hosts.into_iter().map(|host| host.relay).collect())
@@ -472,6 +464,12 @@ mod tests {
     const MEMBER_HANDLE: &str = "amy";
     const MEMBER_PUBLIC: &[u8] = br#"{"role":"member"}"#;
     const LIVE_RELAY: &str = "https://relay.estafette.invalid/";
+    const SECOND_RELAY: &str = "https://relay-two.estafette.invalid/";
+    const SHARING_HOST_SEED: u8 = 80;
+    const SECOND_RELAY_HOST_SEED: u8 = 81;
+    const THIRD_CARD_NAME: &str = "kit";
+    const THIRD_CARD_SEED: [u8; SEED_BYTES] = [93; SEED_BYTES];
+    const INVALID_CARD_NAME: &str = "bad";
     const PROBE_NONCE: Nonce = [7; 16];
     const LOOSE_CONFIG_MODE: u32 = 0o644;
     const CARD_NAME: &str = "zed";
@@ -521,16 +519,24 @@ mod tests {
         NetworkKeys::derive(&NetworkSecret::from_bytes(NETWORK_SECRET))
     }
 
-    fn network_config_with_member_host() -> NetworkConfig {
+    fn configured_host(seed: u8, relay: &str) -> Host {
+        Host {
+            id: render_public_key(&secret_key(seed).public()),
+            relay: relay.to_owned(),
+            ts: None,
+            origin: HostOrigin::Configured,
+        }
+    }
+
+    fn network_config_with_three_hosts_on_two_relays() -> NetworkConfig {
         NetworkConfig {
             secret: data_encoding::HEXLOWER.encode(&NETWORK_SECRET),
             owner: render_public_key(&secret_key(OWNER_SEED).public()),
-            hosts: vec![Host {
-                id: render_public_key(&secret_key(MEMBER_SEED).public()),
-                relay: LIVE_RELAY.to_owned(),
-                ts: None,
-                origin: HostOrigin::Configured,
-            }],
+            hosts: vec![
+                configured_host(MEMBER_SEED, LIVE_RELAY),
+                configured_host(SHARING_HOST_SEED, LIVE_RELAY),
+                configured_host(SECOND_RELAY_HOST_SEED, SECOND_RELAY),
+            ],
         }
     }
 
@@ -573,6 +579,8 @@ mod tests {
             };
             lab.write_config();
             lab.write_card(CARD_NAME, CARD_SEED);
+            lab.write_card(OTHER_CARD_NAME, OTHER_CARD_SEED);
+            lab.write_card(THIRD_CARD_NAME, THIRD_CARD_SEED);
             lab
         }
 
@@ -583,7 +591,7 @@ mod tests {
         fn write_config(&self) {
             let path = self.config_path();
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            network_config_with_member_host()
+            network_config_with_three_hosts_on_two_relays()
                 .rewrite(&path, wall_clock_ms() / 1000)
                 .unwrap();
         }
@@ -621,7 +629,7 @@ mod tests {
                 Network::new(
                     NetworkConfig {
                         hosts: Vec::new(),
-                        ..network_config_with_member_host()
+                        ..network_config_with_three_hosts_on_two_relays()
                     },
                     self.root.join("member-network.toml"),
                 )
@@ -779,9 +787,9 @@ mod tests {
         for check in checks {
             assert_eq!(verdict_word_of_check(&lines, check), "pass", "{lines:?}");
         }
-        assert_eq!(detail_of_check(&lines, "cards"), "cards valid: 1");
-        assert_eq!(detail_of_check(&lines, "sidecars"), "sidecars matching: 1");
-        assert_eq!(detail_of_check(&lines, "relays"), "relays answering: 1");
+        assert_eq!(detail_of_check(&lines, "cards"), "cards valid: 3");
+        assert_eq!(detail_of_check(&lines, "sidecars"), "sidecars matching: 3");
+        assert_eq!(detail_of_check(&lines, "relays"), "relays answering: 2");
         assert_eq!(
             detail_of_check(&lines, "peers"),
             "peers seen by the observer: 1"
@@ -793,7 +801,7 @@ mod tests {
         let lab = Lab::healthy("invalid-card").await;
         let invalid_card = lab
             .directories
-            .card_file(NETWORK_NAME, OTHER_CARD_NAME)
+            .card_file(NETWORK_NAME, INVALID_CARD_NAME)
             .unwrap();
         fs::write(&invalid_card, "handle: [unclosed").unwrap();
 
@@ -803,17 +811,16 @@ mod tests {
         assert_eq!(status, ExitStatus::DoctorFoundFailedCheck);
         assert_eq!(verdict_word_of_check(&lines, "cards"), "fail");
         assert!(
-            detail_of_check(&lines, "cards").contains(&format!("{OTHER_CARD_NAME}.yaml")),
+            detail_of_check(&lines, "cards").contains(&format!("{INVALID_CARD_NAME}.yaml")),
             "{lines:?}"
         );
-        assert_eq!(detail_of_check(&lines, "sidecars"), "sidecars matching: 1");
+        assert_eq!(detail_of_check(&lines, "sidecars"), "sidecars matching: 3");
     }
 
     #[tokio::test]
     async fn spec_3_13_doctor_fails_the_sidecars_check_when_a_sidecar_belongs_to_another_key_and_exits_3()
      {
         let lab = Lab::healthy("mismatched-sidecar").await;
-        lab.write_card(OTHER_CARD_NAME, OTHER_CARD_SEED);
         let sidecar = lab
             .directories
             .card_sidecar_file(NETWORK_NAME, OTHER_CARD_NAME)
@@ -850,7 +857,7 @@ mod tests {
         drop(lab);
 
         assert_eq!(status, ExitStatus::Success);
-        assert_eq!(detail_of_check(&lines, "sidecars"), "sidecars matching: 1");
+        assert_eq!(detail_of_check(&lines, "sidecars"), "sidecars matching: 3");
     }
 
     #[tokio::test]
@@ -858,14 +865,22 @@ mod tests {
      {
         let lab = Lab::healthy("silent-relay").await;
         let (effects, mut operator_effects) = lab.effects();
-        operator_effects.probe_relay = Arc::new(|_relay| Box::pin(async { false }));
+        operator_effects.probe_relay = Arc::new(|relay| {
+            Box::pin(async move {
+                if relay.to_string() == SECOND_RELAY {
+                    std::future::pending::<()>().await;
+                }
+                true
+            })
+        });
 
         let (status, lines) = lab.diagnose_with(effects, operator_effects).await;
         drop(lab);
 
         assert_eq!(status, ExitStatus::DoctorFoundFailedCheck);
         assert_eq!(verdict_word_of_check(&lines, "relays"), "fail");
-        assert!(detail_of_check(&lines, "relays").contains(LIVE_RELAY));
+        assert!(detail_of_check(&lines, "relays").contains(SECOND_RELAY));
+        assert!(!detail_of_check(&lines, "relays").contains(LIVE_RELAY));
         assert_eq!(verdict_word_of_check(&lines, "peers"), "pass");
     }
 

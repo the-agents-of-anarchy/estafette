@@ -220,7 +220,13 @@ fn list_registry_cards(
         .cards_directory(network)
         .map_err(CardCommandError::Directories)?;
     let mut lines_by_card_name = BTreeMap::new();
-    for card_file in card_files_in(filesystem, &cards_directory)? {
+    let card_files = card_files_in(filesystem, &cards_directory).map_err(|source| {
+        CardCommandError::Unreadable {
+            path: cards_directory.clone(),
+            source,
+        }
+    })?;
+    for card_file in card_files {
         let (name, line) = describe_card_file(filesystem, &card_file)?;
         lines_by_card_name.insert(name, line);
     }
@@ -230,18 +236,19 @@ fn list_registry_cards(
         .collect())
 }
 
-fn card_files_in(
+/// Returns the card files of a cards directory, none when it does not exist.
+///
+/// # Errors
+///
+/// Fails when the directory exists and cannot be read.
+pub(crate) fn card_files_in(
     filesystem: &impl CardRegistryReader,
     cards_directory: &Path,
-) -> Result<Vec<PathBuf>, CardCommandError> {
-    let unreadable = |source| CardCommandError::Unreadable {
-        path: cards_directory.to_owned(),
-        source,
-    };
+) -> io::Result<Vec<PathBuf>> {
     let entries = match filesystem.read_directory(cards_directory) {
         Ok(entries) => entries,
         Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(source) => return Err(unreadable(source)),
+        Err(source) => return Err(source),
     };
     Ok(entries
         .into_iter()
@@ -256,7 +263,10 @@ fn describe_card_file(
     filesystem: &impl CardRegistryReader,
     card_file: &Path,
 ) -> Result<(String, String), CardCommandError> {
-    let name = card_name_of(card_file)?;
+    let name = card_name_of(card_file).map_err(|source| CardCommandError::CardNameRefused {
+        path: card_file.to_owned(),
+        source,
+    })?;
     let text = filesystem
         .read_text(card_file)
         .map_err(|source| CardCommandError::Unreadable {
@@ -272,14 +282,15 @@ fn describe_card_file(
     Ok((name.as_str().to_owned(), line))
 }
 
-fn card_name_of(card_file: &Path) -> Result<Handle, CardCommandError> {
+/// Reads the card name a card file is stored under.
+///
+/// # Errors
+///
+/// Fails when the file stem is not a handle.
+pub(crate) fn card_name_of(card_file: &Path) -> Result<Handle, HandleError> {
     card_file
         .file_stem()
         .and_then(|stem| stem.to_str())
         .ok_or(HandleError::NotAHandle)
         .and_then(Handle::from_str)
-        .map_err(|source| CardCommandError::CardNameRefused {
-            path: card_file.to_owned(),
-            source,
-        })
 }

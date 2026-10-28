@@ -14,6 +14,7 @@ const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
 const LEARNED_HOST_EXPIRY_DAYS: u64 = 30;
 const LEARNED_HOST_EXPIRY_SECONDS: u64 = LEARNED_HOST_EXPIRY_DAYS * SECONDS_PER_DAY;
 pub const OWNER_ONLY_FILE_MODE: u32 = 0o600;
+pub const PERMISSION_BITS_MASK: u32 = 0o777;
 const TEMPORARY_FILE_SUFFIX: &str = "tmp";
 const HEX_KEY_LENGTH: usize = 64;
 const RELAY_URL_SCHEME: &str = "https";
@@ -372,7 +373,6 @@ mod tests {
 
     const NOW: u64 = 10_000_000;
     const GROUP_READABLE_FILE_MODE: u32 = 0o644;
-    const PERMISSION_BITS_MASK: u32 = 0o777;
     const CONCURRENT_WRITERS: usize = 8;
     const CONCURRENT_ROUNDS: usize = 50;
 
