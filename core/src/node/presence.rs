@@ -417,9 +417,10 @@ impl NodeState {
         self.hand_to_loop(LoopEvent::Effects(effects));
     }
 
-    /// Sets the peer Online after a send to it was acknowledged.
+    /// Sets the peer Online after a send to it was acknowledged, and wakes the presence loop, since an Online peer lets this member rebind.
     pub(super) fn contact_succeeded(&self, card: wire::PublicKey) {
         self.table().direct_contact_succeeded(card, self.now_ms());
+        self.hand_to_loop(LoopEvent::PeerReached);
     }
 
     /// The peer table, locked for one operation.
@@ -522,6 +523,7 @@ impl DirectHost for Arc<NodeState> {
 enum LoopEvent {
     Depart,
     Effects(Vec<Effect>),
+    PeerReached,
     IntroduceAnswered {
         card: wire::PublicKey,
         answer: Result<IntroduceAck, DirectError>,
@@ -818,6 +820,7 @@ impl PresenceLoop {
         match event {
             LoopEvent::Depart => self.depart(now_ms).await,
             LoopEvent::Effects(effects) => self.perform(effects).await,
+            LoopEvent::PeerReached => {}
             LoopEvent::IntroduceAnswered {
                 card,
                 answer: Ok(ack),
@@ -2420,7 +2423,7 @@ pub(super) mod tests {
         drop(scratch);
     }
 
-    fn unreachable_about(seed: u8, reporter_seed: u8, ts: u64) -> Payload {
+    pub(in crate::node) fn unreachable_about(seed: u8, reporter_seed: u8, ts: u64) -> Payload {
         Payload::Unreachable(Unreachable {
             v: Version::CURRENT,
             card: card(seed),

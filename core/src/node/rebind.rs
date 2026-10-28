@@ -296,11 +296,13 @@ mod tests {
     use crate::node::NodeRecord;
     use crate::node::presence::tests::{
         Draws, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, Member, MemberPlan, OWNER_SEED,
-        Scratch, bind, card, frozen_clock, keys, secret_key, spawn_member, start_members,
-        start_members_reaching,
+        PAYLOAD_WAIT, Scratch, WITNESS_SEED, Witness, bind, card, frozen_clock, keys, secret_key,
+        spawn_member, start_members, start_members_reaching, status_within, unreachable_about,
+        wall_clock_ms,
     };
     use crate::node::presence::wire_addr;
     use crate::payload::ZERO_MAC;
+    use crate::peers::Status;
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
 
     const SPEC_DEAF_TIMEOUT: Duration = Duration::from_secs(15);
@@ -323,6 +325,7 @@ mod tests {
     const PEER_SEED: u8 = 95;
     const PEER_HANDLE: &str = "pat";
     const PEER_PUBLIC: &[u8] = br#"{"role":"peer"}"#;
+    const SENT_BODY: &str = "a send that reaches the peer";
     const LIVE_RELAY: &str = "https://relay-live.estafette.invalid/";
     const DEAD_RELAY: &str = "https://relay-dead.estafette.invalid/";
     const PEER_ONLY_RELAY: &str = "https://relay-peer.estafette.invalid/";
@@ -797,6 +800,49 @@ mod tests {
             .unwrap();
 
         assert!(met.duration_since(rebound) >= SPEC_MEMBER_JOIN_WAIT);
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_send_that_turns_its_unreachable_peer_online_lets_a_long_deaf_member_rebind_at_once()
+     {
+        let scratch = Scratch::new("reached").await;
+        let rebinds = RebindLog::default();
+        let member = start_members(
+            &scratch,
+            vec![
+                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(rebinds.sink()),
+            ],
+        )
+        .await
+        .pop()
+        .unwrap();
+        let _peer = IntroducedPeer::introduce_to(&member.endpoint, &[]).await;
+        let witness = Witness::joined_through(WITNESS_SEED, None, &member.endpoint).await;
+        witness
+            .broadcast_as(
+                WITNESS_SEED,
+                unreachable_about(PEER_SEED, WITNESS_SEED, wall_clock_ms()),
+            )
+            .await;
+        status_within(
+            &member,
+            PEER_SEED,
+            |status| status == Status::Unreachable,
+            PAYLOAD_WAIT,
+        )
+        .await
+        .unwrap();
+        let rebound_while_no_peer_was_online = rebinds
+            .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
+            .await;
+
+        member.node.send(PEER_HANDLE, SENT_BODY).await.unwrap();
+        let reached = Instant::now();
+        let rebound = rebinds.nth_within(0, REBIND_SLACK).await;
+
+        assert_eq!(rebound_while_no_peer_was_online, None);
+        assert!(rebound.unwrap().duration_since(reached) < REBIND_SLACK);
         drop(scratch);
     }
 
