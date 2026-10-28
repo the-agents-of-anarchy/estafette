@@ -881,6 +881,8 @@ mod tests {
     const OTHER_HOST_SEED: u8 = 124;
     const LOOSE_DIRECTORY_MODE: u32 = 0o755;
     const SPEC_PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+    const READ_ONLY_DIRECTORY_MODE: u32 = 0o500;
+    const HELD_COUNTER: &str = "5\n";
     const SPEC_HTTPS_ADDRESS: &str = "192.0.2.7:443";
     const SPEC_ACME_CHALLENGE_ADDRESS: &str = "192.0.2.7:80";
     const SPEC_QUIC_ADDRESS_DISCOVERY_ADDRESS: &str = "192.0.2.7:7842";
@@ -1384,6 +1386,59 @@ mod tests {
     fn stopped_on_signal() -> (tokio::sync::oneshot::Sender<()>, StopRequested) {
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         (stop, Box::pin(async move { stopped.await.unwrap_or(()) }))
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_a_record_whose_counter_cannot_be_written_first_is_never_broadcast() {
+        let scratch = Scratch::new("unwritable-counter");
+        scratch.configure_network();
+        scratch.certify(HOST_SEED);
+        fs::write(
+            scratch.key_file(),
+            render_secret_key(&secret_key(HOST_SEED)),
+        )
+        .unwrap();
+        let counter_file = scratch
+            .directories
+            .infrastructure_last_record_timestamp_file(NETWORK)
+            .unwrap();
+        fs::write(&counter_file, HELD_COUNTER).unwrap();
+        fs::create_dir_all(scratch.certificate_cache()).unwrap();
+        let infrastructure_directory = counter_file.parent().unwrap().to_owned();
+        fs::set_permissions(
+            &infrastructure_directory,
+            fs::Permissions::from_mode(READ_ONLY_DIRECTORY_MODE),
+        )
+        .unwrap();
+        let seen = Seen::default();
+        let (stop, stopped) = stopped_on_signal();
+        let plan = Plan {
+            stopped,
+            ..Plan::new(HOST_SEED)
+        };
+
+        let ((_printed, outcome), heard) =
+            tokio::join!(run_planned(&scratch, plan, &seen), async {
+                let host = bound_endpoint(&seen, 0).await;
+                let mut peer = Peer::joined_through(PEER_SEED, &host).await;
+                let heard = peer.next_host_record(RECORD_AT_JOIN_WAIT).await;
+                drop(stop);
+                heard
+            });
+
+        fs::set_permissions(
+            &infrastructure_directory,
+            fs::Permissions::from_mode(SPEC_PRIVATE_DIRECTORY_MODE),
+        )
+        .unwrap();
+        assert_eq!(heard, None);
+        assert!(
+            outcome
+                .unwrap_err()
+                .to_string()
+                .contains(&counter_file.display().to_string())
+        );
+        assert_eq!(fs::read_to_string(&counter_file).unwrap(), HELD_COUNTER);
     }
 
     #[tokio::test]
