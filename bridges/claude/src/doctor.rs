@@ -15,6 +15,9 @@ const DROPPED_FRAMES_SUFFIX: &str = ".dropped-frames";
 pub const RUN_SUBCOMMAND: &str = "run";
 pub const MESSAGING_SOCKET_VARIABLE: &str = "CLAUDE_CODE_MESSAGING_SOCKET";
 const CROSS_SESSION_INBOUND_KEY: &str = "crossSessionInbound";
+const SETTINGS_FLAG: &str = "--settings";
+const COMMAND_LINE_SETTINGS_NAME: &str = "--settings on the harness command line";
+const UNREADABLE_FILE_NOTE: &str = "(the file cannot be read)";
 const REFUSE_VALUE: &str = "refuse";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,6 +33,7 @@ pub enum Check {
 pub enum Verdict {
     Passed,
     Failed(String),
+    Unverified(String),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -74,6 +78,9 @@ impl fmt::Display for DoctorReport {
                 Verdict::Failed(reason) => {
                     writeln!(formatter, "FAIL  {}: {reason}", result.check)?;
                 }
+                Verdict::Unverified(reason) => {
+                    writeln!(formatter, "UNVERIFIED {}: {reason}", result.check)?;
+                }
             }
         }
         match self.dropped_frames {
@@ -98,6 +105,7 @@ pub struct DoctorInputs {
     pub own_pid: u32,
     pub messaging_socket: MessagingSocket,
     pub settings_files: Vec<SettingsFile>,
+    pub unreadable_settings: Vec<PathBuf>,
     pub temporary_dir: PathBuf,
     pub runtime_inputs: RuntimeDirectoryInputs,
 }
@@ -120,6 +128,7 @@ pub fn run_doctor(
 ) -> Result<DoctorReport, ProcessTableError> {
     let entries = processes.list()?;
     let harness_pid = harness_of_bridge_for_session(inputs.own_pid, &entries);
+    let command_line = settings_of_harness_command_line(harness_pid, &entries, read_text_file);
     Ok(DoctorReport {
         results: vec![
             CheckResult {
@@ -136,7 +145,15 @@ pub fn run_doctor(
             },
             CheckResult {
                 check: Check::NoRefuseApplies,
-                verdict: judge_no_refuse_applies(&inputs.settings_files),
+                verdict: judge_no_refuse_applies(
+                    inputs.settings_files.iter().chain(&command_line.files),
+                    command_line.unverified.iter().cloned().chain(
+                        inputs
+                            .unreadable_settings
+                            .iter()
+                            .map(|path| format!("{} {UNREADABLE_FILE_NOTE}", path.display())),
+                    ),
+                ),
             },
             CheckResult {
                 check: Check::BinaryProcessFound,
@@ -162,19 +179,102 @@ fn judge_socket_path_exists(socket: &MessagingSocket) -> Verdict {
     }
 }
 
-fn judge_no_refuse_applies(settings_files: &[SettingsFile]) -> Verdict {
-    let refusing = settings_files.iter().find(|file| {
-        parse_settings(file)
-            .and_then(|document| document.cross_session_inbound)
-            .as_deref()
-            == Some(REFUSE_VALUE)
-    });
-    refusing.map_or(Verdict::Passed, |file| {
-        Verdict::Failed(format!(
-            "{} sets {CROSS_SESSION_INBOUND_KEY} to {REFUSE_VALUE}, which drops the bridge's frames",
-            file.path.display()
-        ))
-    })
+fn judge_no_refuse_applies<'a>(
+    settings_files: impl Iterator<Item = &'a SettingsFile>,
+    unreadable_sources: impl Iterator<Item = String>,
+) -> Verdict {
+    let mut unverified: Vec<String> = unreadable_sources.collect();
+    for file in settings_files {
+        match parse_settings(file) {
+            Some(document) if document.cross_session_inbound.as_deref() == Some(REFUSE_VALUE) => {
+                return Verdict::Failed(format!(
+                    "{} sets {CROSS_SESSION_INBOUND_KEY} to {REFUSE_VALUE}, which drops the bridge's frames",
+                    file.path.display()
+                ));
+            }
+            Some(_) => {}
+            None => unverified.push(format!(
+                "{} is not valid settings JSON",
+                file.path.display()
+            )),
+        }
+    }
+    if unverified.is_empty() {
+        Verdict::Passed
+    } else {
+        Verdict::Unverified(format!("not verified: {}", unverified.join("; ")))
+    }
+}
+
+struct CommandLineSettings {
+    files: Vec<SettingsFile>,
+    unverified: Vec<String>,
+}
+
+fn settings_of_harness_command_line(
+    harness_pid: Option<u32>,
+    entries: &[ProcessEntry],
+    read_text_file: &impl Fn(&Path) -> Option<String>,
+) -> CommandLineSettings {
+    let mut settings = CommandLineSettings {
+        files: Vec::new(),
+        unverified: Vec::new(),
+    };
+    let Some(harness_pid) = harness_pid else {
+        settings
+            .unverified
+            .push("the harness command line is unknown without a running bridge".to_owned());
+        return settings;
+    };
+    let Some(harness) = entries.iter().find(|entry| entry.pid == harness_pid) else {
+        settings
+            .unverified
+            .push(format!("process {harness_pid} is not in the process table"));
+        return settings;
+    };
+    for value in settings_flag_values(&harness.arguments) {
+        if value.trim_start().starts_with('{') {
+            settings.files.push(SettingsFile {
+                path: PathBuf::from(COMMAND_LINE_SETTINGS_NAME),
+                text: value,
+            });
+        } else if let Some(text) = read_text_file(Path::new(&value)) {
+            settings.files.push(SettingsFile {
+                path: PathBuf::from(value),
+                text,
+            });
+        } else {
+            settings
+                .unverified
+                .push(format!("{value} (the {SETTINGS_FLAG} file cannot be read)"));
+        }
+    }
+    settings
+}
+
+fn settings_flag_values(arguments: &[String]) -> Vec<String> {
+    let inline_prefix = format!("{SETTINGS_FLAG}=");
+    arguments
+        .iter()
+        .enumerate()
+        .filter_map(|(position, argument)| {
+            let inline_head = argument.strip_prefix(&inline_prefix);
+            if inline_head.is_none() && argument != SETTINGS_FLAG {
+                return None;
+            }
+            let following = arguments.get(position.saturating_add(1)..)?;
+            let words: Vec<&str> = inline_head
+                .into_iter()
+                .chain(
+                    following
+                        .iter()
+                        .map(String::as_str)
+                        .take_while(|word| !word.starts_with('-')),
+                )
+                .collect();
+            Some(words.join(" "))
+        })
+        .collect()
 }
 
 struct SingleSnapshot {
@@ -364,6 +464,7 @@ mod tests {
             own_pid: 500,
             messaging_socket: MessagingSocket::Unset,
             settings_files: Vec::new(),
+            unreadable_settings: Vec::new(),
             temporary_dir: PathBuf::from(TEST_TEMPORARY_DIR),
             runtime_inputs: RuntimeDirectoryInputs {
                 xdg_runtime_dir: Some(PathBuf::from("/run/user/1000")),
@@ -605,5 +706,139 @@ mod tests {
         assert_eq!(count_after_reading(None), None);
         assert_eq!(count_after_reading(Some("many")), None);
         assert_eq!(count_after_reading(Some(" 12 ")), Some(12));
+    }
+
+    const REFUSE_JSON: &str = r#"{"crossSessionInbound":"refuse"}"#;
+
+    fn harness_with_arguments(arguments: &[&str]) -> ProcessEntry {
+        process(100, 1, "/usr/bin/claude", arguments)
+    }
+
+    fn refuse_verdict_with_harness_arguments(
+        arguments: &[&str],
+        read_text_file: &impl Fn(&Path) -> Option<String>,
+    ) -> Verdict {
+        let (inputs, mut processes) = healthy_session();
+        processes.0.retain(|entry| entry.pid != 100);
+        processes.0.push(harness_with_arguments(arguments));
+        run_doctor(&inputs, &processes, read_text_file)
+            .expect("the table never fails")
+            .results
+            .into_iter()
+            .find(|result| result.check == Check::NoRefuseApplies)
+            .expect("refuse check reported")
+            .verdict
+    }
+
+    fn read_nothing(_: &Path) -> Option<String> {
+        None
+    }
+
+    #[test]
+    fn spec_3_12_doctor_fails_the_refuse_check_for_a_refuse_passed_inline_on_the_harness_command_line()
+     {
+        let refusing = Verdict::Failed(
+            "--settings on the harness command line sets crossSessionInbound to refuse, which drops the bridge's frames"
+                .to_owned(),
+        );
+        for arguments in [
+            vec!["--settings", REFUSE_JSON],
+            vec![
+                "--model",
+                "opus",
+                "--settings",
+                "{\"crossSessionInbound\":",
+                "\"refuse\"}",
+                "--verbose",
+            ],
+            vec!["--settings={\"crossSessionInbound\":\"refuse\"}"],
+            vec![
+                "--settings",
+                r#"{"crossSessionInbound":"accept"}"#,
+                "--settings",
+                REFUSE_JSON,
+            ],
+        ] {
+            assert_eq!(
+                refuse_verdict_with_harness_arguments(&arguments, &read_nothing),
+                refusing,
+                "{arguments:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn spec_3_12_doctor_reads_a_settings_file_named_on_the_harness_command_line() {
+        let read_refusing_file =
+            |path: &Path| (path == Path::new("/work/session.json")).then(|| REFUSE_JSON.to_owned());
+        assert_eq!(
+            refuse_verdict_with_harness_arguments(
+                &["--settings", "/work/session.json"],
+                &read_refusing_file
+            ),
+            Verdict::Failed(
+                "/work/session.json sets crossSessionInbound to refuse, which drops the bridge's frames"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            refuse_verdict_with_harness_arguments(
+                &["--settings", "/work/session.json"],
+                &read_nothing
+            ),
+            Verdict::Unverified(
+                "not verified: /work/session.json (the --settings file cannot be read)".to_owned()
+            )
+        );
+        assert_eq!(
+            refuse_verdict_with_harness_arguments(
+                &["--settings", "{\"crossSession"],
+                &read_nothing
+            ),
+            Verdict::Unverified(
+                "not verified: --settings on the harness command line is not valid settings JSON"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn spec_3_12_doctor_never_passes_the_refuse_check_over_a_source_it_could_not_read() {
+        let (mut inputs, processes) = healthy_session();
+        inputs.unreadable_settings = vec![PathBuf::from("/etc/claude-code/managed-settings.json")];
+        let report = doctor_report(&inputs, &processes);
+        assert_eq!(
+            verdict_of(&report, Check::NoRefuseApplies),
+            &Verdict::Unverified(
+                "not verified: /etc/claude-code/managed-settings.json (the file cannot be read)"
+                    .to_owned()
+            )
+        );
+        assert!(!report.all_passed());
+        inputs.settings_files.push(settings_file(
+            "/etc/claude-code/managed-settings.d/10.json",
+            REFUSE_JSON,
+        ));
+        assert!(matches!(
+            verdict_of(&doctor_report(&inputs, &processes), Check::NoRefuseApplies),
+            Verdict::Failed(_)
+        ));
+    }
+
+    #[test]
+    fn spec_3_12_doctor_cannot_verify_the_command_line_of_an_unknown_session() {
+        let report = doctor_report(&inputs_without_any_wiring(), &FixedProcessTable(Vec::new()));
+        assert_eq!(
+            verdict_of(&report, Check::NoRefuseApplies),
+            &Verdict::Unverified(
+                "not verified: the harness command line is unknown without a running bridge"
+                    .to_owned()
+            )
+        );
+        assert!(
+            report
+                .to_string()
+                .contains("UNVERIFIED no refuse applies: not verified:")
+        );
     }
 }

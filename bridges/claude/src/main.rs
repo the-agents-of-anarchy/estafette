@@ -36,6 +36,14 @@ const SYSTEM_TEMPORARY_DIRECTORY: &str = "/tmp";
 const CLAUDE_DIRECTORY: &str = ".claude";
 const SETTINGS_FILE: &str = "settings.json";
 const LOCAL_SETTINGS_FILE: &str = "settings.local.json";
+#[cfg(target_os = "macos")]
+const MANAGED_SETTINGS_DIRECTORY: &str = "/Library/Application Support/ClaudeCode";
+#[cfg(not(target_os = "macos"))]
+const MANAGED_SETTINGS_DIRECTORY: &str = "/etc/claude-code";
+const MANAGED_SETTINGS_FILE: &str = "managed-settings.json";
+const MANAGED_DROP_IN_DIRECTORY: &str = "managed-settings.d";
+const SETTINGS_EXTENSION: &str = "json";
+const HIDDEN_FILE_PREFIX: char = '.';
 const STAGING_EXTENSION: &str = "staging";
 
 #[derive(Debug, Eq, PartialEq)]
@@ -272,6 +280,54 @@ fn settings_file_paths(environment: &Environment, project_dir: &Path) -> Vec<Pat
         .collect()
 }
 
+#[derive(Default)]
+struct ManagedSettings {
+    files: Vec<SettingsFile>,
+    unreadable: Vec<PathBuf>,
+}
+
+fn is_visible_settings_file(path: &Path) -> bool {
+    path.extension().and_then(|extension| extension.to_str()) == Some(SETTINGS_EXTENSION)
+        && !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_none_or(|name| name.starts_with(HIDDEN_FILE_PREFIX))
+}
+
+fn managed_settings_paths(directory: &Path, unreadable: &mut Vec<PathBuf>) -> Vec<PathBuf> {
+    let drop_in_directory = directory.join(MANAGED_DROP_IN_DIRECTORY);
+    let mut paths = vec![directory.join(MANAGED_SETTINGS_FILE)];
+    match fs::read_dir(&drop_in_directory) {
+        Ok(listing) => {
+            for entry in listing {
+                match entry {
+                    Ok(entry) if is_visible_settings_file(&entry.path()) => {
+                        paths.push(entry.path());
+                    }
+                    Ok(_) => {}
+                    Err(_) => unreadable.push(drop_in_directory.clone()),
+                }
+            }
+        }
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => unreadable.push(drop_in_directory),
+    }
+    paths.sort();
+    paths
+}
+
+fn read_managed_settings(directory: &Path) -> ManagedSettings {
+    let mut managed = ManagedSettings::default();
+    for path in managed_settings_paths(directory, &mut managed.unreadable) {
+        match fs::read_to_string(&path) {
+            Ok(text) => managed.files.push(SettingsFile { path, text }),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => managed.unreadable.push(path),
+        }
+    }
+    managed
+}
+
 fn messaging_socket_state(environment: &Environment) -> MessagingSocket {
     match &environment.messaging_socket {
         None => MessagingSocket::Unset,
@@ -288,17 +344,20 @@ fn run_doctor_command(
         Some(directory) => directory,
         None => std::env::current_dir().map_err(CommandError::WorkingDirectoryUnreadable)?,
     };
-    let settings_files = settings_file_paths(environment, &project_dir)
+    let mut settings_files: Vec<SettingsFile> = settings_file_paths(environment, &project_dir)
         .into_iter()
         .map(read_settings_file)
         .collect::<Result<Vec<_>, _>>()?
         .into_iter()
         .flatten()
         .collect();
+    let managed = read_managed_settings(Path::new(MANAGED_SETTINGS_DIRECTORY));
+    settings_files.extend(managed.files);
     let inputs = DoctorInputs {
         own_pid: std::process::id(),
         messaging_socket: messaging_socket_state(environment),
         settings_files,
+        unreadable_settings: managed.unreadable,
         temporary_dir: environment.temporary_dir.clone(),
         runtime_inputs: runtime_inputs(environment)?,
     };
@@ -445,5 +504,69 @@ mod tests {
             ),
             Err(CommandError::MissingVariable(MESSAGING_SOCKET_VARIABLE))
         ));
+    }
+
+    fn scratch_directory(label: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "estafette-bridge-claude-managed-{label}-{}",
+            std::process::id()
+        ));
+        if directory.exists() {
+            fs::remove_dir_all(&directory).expect("stale scratch");
+        }
+        fs::create_dir_all(directory.join(MANAGED_DROP_IN_DIRECTORY)).expect("scratch directory");
+        directory
+    }
+
+    #[test]
+    fn spec_3_12_managed_settings_are_the_file_and_the_visible_json_files_of_its_drop_in_directory()
+    {
+        let directory = scratch_directory("read");
+        let drop_in = directory.join(MANAGED_DROP_IN_DIRECTORY);
+        fs::write(directory.join(MANAGED_SETTINGS_FILE), "{\"a\":1}").expect("write");
+        fs::write(drop_in.join("20-b.json"), "{\"b\":2}").expect("write");
+        fs::write(drop_in.join("10-a.json"), "{\"c\":3}").expect("write");
+        fs::write(drop_in.join(".hidden.json"), "{\"d\":4}").expect("write");
+        fs::write(drop_in.join("notes.txt"), "e").expect("write");
+        let managed = read_managed_settings(&directory);
+        let read: Vec<(String, String)> = managed
+            .files
+            .iter()
+            .map(|file| {
+                (
+                    file.path
+                        .file_name()
+                        .expect("name")
+                        .to_string_lossy()
+                        .into_owned(),
+                    file.text.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            read,
+            [
+                ("10-a.json".to_owned(), "{\"c\":3}".to_owned()),
+                ("20-b.json".to_owned(), "{\"b\":2}".to_owned()),
+                ("managed-settings.json".to_owned(), "{\"a\":1}".to_owned()),
+            ]
+        );
+        assert_eq!(managed.unreadable, Vec::<PathBuf>::new());
+        fs::remove_dir_all(&directory).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_3_12_a_managed_settings_path_that_exists_but_cannot_be_read_is_reported_unreadable() {
+        let directory = scratch_directory("unreadable");
+        let unreadable = directory
+            .join(MANAGED_DROP_IN_DIRECTORY)
+            .join("30-bad.json");
+        fs::create_dir(&unreadable).expect("a directory where a file is expected");
+        let managed = read_managed_settings(&directory);
+        assert_eq!(managed.unreadable, [unreadable]);
+        assert_eq!(managed.files.len(), 0);
+        let absent = read_managed_settings(&directory.join("missing"));
+        assert_eq!((absent.files.len(), absent.unreadable.len()), (0, 0));
+        fs::remove_dir_all(&directory).expect("cleanup");
     }
 }
