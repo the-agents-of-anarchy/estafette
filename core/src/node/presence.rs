@@ -44,6 +44,7 @@ const SECRET_FIELD: &str = "secret";
 const OWNER_FIELD: &str = "owner";
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+type MonotonicClock = Arc<dyn Fn() -> Instant + Send + Sync>;
 type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
 type RunRecord = Arc<dyn Fn(NodeRecord) + Send + Sync>;
 type Changes<T> = Pin<Box<dyn Stream<Item = T> + Send + Sync>>;
@@ -100,6 +101,8 @@ impl Network {
 pub struct NodeEffects {
     /// Milliseconds since the Unix epoch by this machine's clock.
     pub clock: Clock,
+    /// The monotonic clock every wait and interval of the node is measured on, the runtime's own in production.
+    pub monotonic: MonotonicClock,
     /// A cryptographically secure source for the nonce of each probe.
     pub fill_probe_nonce: ProbeNonceSource,
     /// The run record, written to standard error by the command-line layer; it must not block.
@@ -200,7 +203,7 @@ impl Node {
             network.keys.clone(),
             network.owner,
             bootstrap,
-            Instant::now(),
+            (effects.monotonic)(),
         )
         .await
         .map_err(NodeError::Topic)?;
@@ -249,6 +252,7 @@ impl Node {
                 path: network.config_path,
             },
             fill_probe_nonce: effects.fill_probe_nonce,
+            monotonic: effects.monotonic,
             report: effects.report,
         };
         let presence_loop = tokio::spawn(presence_loop.run());
@@ -556,6 +560,7 @@ struct PresenceLoop {
     relay_loss: RelayLossWatch,
     known_hosts: KnownHosts,
     fill_probe_nonce: ProbeNonceSource,
+    monotonic: MonotonicClock,
     report: RunRecord,
 }
 
@@ -611,7 +616,7 @@ impl PresenceLoop {
             Wake::OwnAddressChanged => self.reconsider_own_address().await,
             Wake::HomeRelaysChanged(statuses) => {
                 self.relay_loss
-                    .observe(&home_relays(&statuses), Instant::now());
+                    .observe(&home_relays(&statuses), (self.monotonic)());
                 self.reconsider_own_address().await;
             }
             Wake::ObserverWaitOver => self.finish_observer_wait().await,
@@ -647,9 +652,7 @@ impl PresenceLoop {
         match std::mem::replace(&mut self.init, Init::Done) {
             Init::AwaitingJoin { assigned } => {
                 self.init = Init::ObserverWait {
-                    until: Instant::now()
-                        .checked_add(OBSERVER_WAIT)
-                        .unwrap_or_else(Instant::now),
+                    until: observer_wait_over_at((self.monotonic)()),
                     assigned,
                 };
             }
@@ -802,7 +805,7 @@ impl PresenceLoop {
             mac: ZERO_MAC,
             sig: UNSIGNED,
         });
-        self.announcer.record(seq, addr, Instant::now());
+        self.announcer.record(seq, addr, (self.monotonic)());
         self.broadcast(presence).await;
     }
 
@@ -830,7 +833,7 @@ impl PresenceLoop {
     async fn reconsider_own_address(&mut self) {
         match self
             .announcer
-            .reannounce_step(&self.state.own_addr(), Instant::now())
+            .reannounce_step(&self.state.own_addr(), (self.monotonic)())
         {
             ReannounceStep::Unchanged => {}
             ReannounceStep::AnnounceNow => self.announce_presence().await,
@@ -843,7 +846,7 @@ impl PresenceLoop {
         let statuses = self.endpoint.endpoint().home_relay_status().get();
         for relay in self
             .relay_loss
-            .lost_relays(&home_relays(&statuses), Instant::now())
+            .lost_relays(&home_relays(&statuses), (self.monotonic)())
         {
             self.endpoint.remove_relay(&relay).await;
         }
@@ -855,6 +858,11 @@ impl PresenceLoop {
             self.endpoint.replace_address(endpoint_addr(id, addr));
         }
     }
+}
+
+/// When the observer wait that starts at `joined` is over.
+fn observer_wait_over_at(joined: Instant) -> Instant {
+    joined.checked_add(OBSERVER_WAIT).unwrap_or(joined)
 }
 
 /// Sleeps until the deadline, or forever when there is none.
@@ -1106,6 +1114,8 @@ mod tests {
     const SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT: Duration = Duration::from_millis(8000);
     const NETWORK_FILE_NAME: &str = "network.toml";
     const NOT_A_KEY: &str = "not a key";
+    const MONOTONIC_LAG: Duration = Duration::from_millis(2000);
+    const INIT_ON_A_LAGGING_CLOCK_LATEST: Duration = Duration::from_millis(2000);
     const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
     const LISTING_POLL: Duration = Duration::from_millis(20);
     const PROBE_NONCE: crate::wire::Nonce = [7; 16];
@@ -1276,6 +1286,7 @@ mod tests {
         hosts: Vec<u8>,
         reachable: Vec<u8>,
         clock: Clock,
+        monotonic: MonotonicClock,
     }
 
     impl MemberPlan {
@@ -1287,6 +1298,7 @@ mod tests {
                 hosts: Vec::new(),
                 reachable: Vec::new(),
                 clock: Arc::new(wall_clock_ms),
+                monotonic: Arc::new(Instant::now),
             }
         }
 
@@ -1386,6 +1398,7 @@ mod tests {
             .unwrap(),
             NodeEffects {
                 clock: plan.clock,
+                monotonic: plan.monotonic,
                 fill_probe_nonce: Arc::new(|nonce: &mut crate::wire::Nonce| *nonce = PROBE_NONCE),
                 report: Arc::new(|_record: NodeRecord| {}),
                 inbox,
@@ -1901,6 +1914,10 @@ mod tests {
     impl MemberPlan {
         fn with_clock(self, clock: Clock) -> Self {
             Self { clock, ..self }
+        }
+
+        fn with_monotonic(self, monotonic: MonotonicClock) -> Self {
+            Self { monotonic, ..self }
         }
     }
 
@@ -2799,5 +2816,31 @@ mod tests {
             Some(NodeError::NetworkKeyInvalid { field: "owner", .. })
         ));
         assert_eq!(accepted.keys(), &keys());
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_the_observer_wait_runs_on_the_monotonic_clock_the_composition_root_hands_in()
+    {
+        let scratch = Scratch::new("monotonic").await;
+        let started = tokio::time::Instant::now();
+        let lagging: MonotonicClock =
+            Arc::new(|| Instant::now().checked_sub(MONOTONIC_LAG).unwrap());
+
+        let mut members = start_members(
+            &scratch,
+            vec![
+                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                    .with_hosts(&[SECOND_SEED])
+                    .with_monotonic(Arc::clone(&lagging)),
+                MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
+                    .with_hosts(&[FIRST_SEED])
+                    .with_monotonic(lagging),
+            ],
+        )
+        .await;
+
+        assert!(started.elapsed() < INIT_ON_A_LAGGING_CLOCK_LATEST);
+        drop(members.pop());
+        drop(scratch);
     }
 }
