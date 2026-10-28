@@ -18,11 +18,11 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
 use crate::config::{AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig};
-use crate::crypto::NetworkKeys;
+use crate::crypto::{NetworkKeys, NetworkSecret};
 use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::inbox::buffer::ReceivedMessage;
 use crate::inbox::socket::{Attached, InboxSocket};
-use crate::keys::parse_public_key;
+use crate::keys::{KeyError, parse_network_secret, parse_public_key};
 use crate::net::direct::{ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer};
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
@@ -40,6 +40,8 @@ const ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
 const INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS: u64 = 300;
 const MILLIS_PER_SECOND: u64 = 1000;
 const UNSIGNED: SignatureBytes = SignatureBytes([0; Signature::LENGTH]);
+const SECRET_FIELD: &str = "secret";
+const OWNER_FIELD: &str = "owner";
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
@@ -54,12 +56,44 @@ pub struct Identity {
     pub public: Vec<u8>,
 }
 
-/// The network this node joins: its keys, its owner key, and its known hosts with the configuration file that keeps them.
+/// The network this node joins: its configuration and the file that keeps it, with the keys and owner key derived from it.
 pub struct Network {
-    pub keys: NetworkKeys,
-    pub owner: iroh::PublicKey,
-    pub config: NetworkConfig,
-    pub config_path: PathBuf,
+    keys: NetworkKeys,
+    owner: iroh::PublicKey,
+    config: NetworkConfig,
+    config_path: PathBuf,
+}
+
+impl Network {
+    /// Takes the network configuration and its file, deriving the network keys from its secret and reading its owner key.
+    ///
+    /// # Errors
+    /// `NodeError::NetworkKeyInvalid` when the secret or the owner key does not parse.
+    pub fn new(config: NetworkConfig, config_path: PathBuf) -> Result<Self, NodeError> {
+        let secret = parse_network_secret(&config.secret).map_err(|source| {
+            NodeError::NetworkKeyInvalid {
+                field: SECRET_FIELD,
+                source,
+            }
+        })?;
+        let owner =
+            parse_public_key(&config.owner).map_err(|source| NodeError::NetworkKeyInvalid {
+                field: OWNER_FIELD,
+                source,
+            })?;
+        Ok(Self {
+            keys: NetworkKeys::derive(&NetworkSecret::from_bytes(*secret.as_bytes())),
+            owner,
+            config,
+            config_path,
+        })
+    }
+
+    /// The topic id, mac key and gate key derived from the network secret.
+    #[must_use]
+    pub const fn keys(&self) -> &NetworkKeys {
+        &self.keys
+    }
 }
 
 /// The side effects the node runs on, initialized by the composition root.
@@ -103,7 +137,13 @@ impl fmt::Display for NodeRecord {
 /// Why the node did not start.
 #[derive(Debug)]
 pub enum NodeError {
-    KnownHostInvalid { id: String },
+    NetworkKeyInvalid {
+        field: &'static str,
+        source: KeyError,
+    },
+    KnownHostInvalid {
+        id: String,
+    },
     Topic(GossipError),
     TopicClosedBeforeHandle,
 }
@@ -111,6 +151,10 @@ pub enum NodeError {
 impl fmt::Display for NodeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NetworkKeyInvalid { field, source } => write!(
+                formatter,
+                "the network configuration's {field} is refused: {source}"
+            ),
             Self::KnownHostInvalid { id } => write!(
                 formatter,
                 "known host {id} needs a node id of {} and a relay of {}",
@@ -1061,6 +1105,7 @@ mod tests {
     const UNREACHABLE_RELAY: &str = "https://relay.estafette.invalid/";
     const SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT: Duration = Duration::from_millis(8000);
     const NETWORK_FILE_NAME: &str = "network.toml";
+    const NOT_A_KEY: &str = "not a key";
     const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
     const LISTING_POLL: Duration = Duration::from_millis(20);
     const PROBE_NONCE: crate::wire::Nonce = [7; 16];
@@ -1329,17 +1374,16 @@ mod tests {
                 requested_handle: plan.handle.parse::<AnnouncedHandle>().unwrap(),
                 public: plan.public.to_vec(),
             },
-            Network {
-                keys: keys(),
-                owner: secret_key(OWNER_SEED).public(),
-                config: config_with_hosts(
+            Network::new(
+                config_with_hosts(
                     plan.hosts
                         .iter()
                         .map(|&seed| configured_host(seed))
                         .collect(),
                 ),
-                config_path: config_path.clone(),
-            },
+                config_path.clone(),
+            )
+            .unwrap(),
             NodeEffects {
                 clock: plan.clock,
                 fill_probe_nonce: Arc::new(|nonce: &mut crate::wire::Nonce| *nonce = PROBE_NONCE),
@@ -2726,5 +2770,34 @@ mod tests {
         assert_eq!(saved.relay, MOVED_HOST_RELAY);
         assert_eq!(saved.ts, Some(record_ts + 1));
         drop(scratch);
+    }
+
+    #[test]
+    fn spec_3_3_a_network_whose_secret_or_owner_is_not_a_key_is_refused_naming_the_field() {
+        let unhexed_secret = NetworkConfig {
+            secret: NOT_A_KEY.to_owned(),
+            ..config_with_hosts(Vec::new())
+        };
+        let unhexed_owner = NetworkConfig {
+            owner: NOT_A_KEY.to_owned(),
+            ..config_with_hosts(Vec::new())
+        };
+
+        let secret_refusal = Network::new(unhexed_secret, PathBuf::new()).err();
+        let owner_refusal = Network::new(unhexed_owner, PathBuf::new()).err();
+        let accepted = Network::new(config_with_hosts(Vec::new()), PathBuf::new()).unwrap();
+
+        assert!(matches!(
+            secret_refusal,
+            Some(NodeError::NetworkKeyInvalid {
+                field: "secret",
+                ..
+            })
+        ));
+        assert!(matches!(
+            owner_refusal,
+            Some(NodeError::NetworkKeyInvalid { field: "owner", .. })
+        ));
+        assert_eq!(accepted.keys(), &keys());
     }
 }
