@@ -419,6 +419,11 @@ impl DirectClient {
         Ok(held.insert(dialed).clone())
     }
 
+    /// Empties the peer's slot, so the next request to the peer dials afresh.
+    pub async fn drop_held_connection(&self, to: EndpointId) {
+        *self.slot_of(to).lock().await = None;
+    }
+
     /// Empties the peer's slot when it still holds the failed connection, leaving a newer connection in place.
     async fn forget_connection(&self, to: EndpointId, failed: &Connection) {
         let slot = self.slot_of(to);
@@ -1201,6 +1206,19 @@ mod tests {
 
         assert_eq!(first, Err(DirectError::Timeout));
         assert_eq!(second, Err(DirectError::Timeout));
+        assert_eq!(server.connections(), 2);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_dropping_the_held_connection_makes_the_next_request_dial_afresh() {
+        let server = ScriptedServer::replying(Some(sealed_probe_ack(PROBE_NONCE)));
+        let link = link_to(server.clone(), ClientTimeouts::SPEC).await;
+        let peer = link.server_node.endpoint().id();
+
+        link.client.probe(peer, PROBE_NONCE).await.unwrap();
+        link.client.drop_held_connection(peer).await;
+        link.client.probe(peer, PROBE_NONCE).await.unwrap();
+
         assert_eq!(server.connections(), 2);
     }
 
