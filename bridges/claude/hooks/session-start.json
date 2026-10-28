@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "nohup estafette-bridge-claude run \"$PPID\" >/dev/null 2>&1 </dev/null &"
+          }
+        ]
+      }
+    ]
+  }
+}
