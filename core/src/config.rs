@@ -400,6 +400,43 @@ mod tests {
         }
     }
 
+    /// Spec 3.4 and 3.6: a relay is a wire relay URL only up to the limit, and over it names the host relay field.
+    #[test]
+    fn wire_relay_accepts_the_limit_and_refuses_one_byte_over_naming_the_field() {
+        let path = Path::new("net.toml");
+        let relay_of_bytes = |bytes: usize| {
+            let scheme_and_slash = "https:///".len();
+            format!("https://{}/", "r".repeat(bytes - scheme_and_slash))
+        };
+        for bytes in (MAX_RELAY_URL_BYTES - 2)..=(MAX_RELAY_URL_BYTES + 2) {
+            let host = Host {
+                id: hex_key('a'),
+                relay: relay_of_bytes(bytes),
+                ts: None,
+                origin: HostOrigin::Configured,
+            };
+
+            let outcome = host.wire_relay(path);
+
+            if bytes <= MAX_RELAY_URL_BYTES {
+                assert_eq!(outcome.unwrap().as_str(), host.relay, "{bytes} bytes");
+            } else {
+                match outcome.unwrap_err() {
+                    ConfigError::InvalidField {
+                        path: refused_path,
+                        field,
+                        accepted,
+                    } => {
+                        assert_eq!(refused_path, path);
+                        assert_eq!(field, "host relay");
+                        assert_eq!(accepted, AcceptedValue::RelayUrl);
+                    }
+                    other => panic!("{bytes} bytes: {other}"),
+                }
+            }
+        }
+    }
+
     fn network(hosts: Vec<Host>) -> NetworkConfig {
         NetworkConfig {
             secret: hex_key('5'),

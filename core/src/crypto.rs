@@ -77,7 +77,10 @@ pub fn sign_host_certificate(owner: &SecretKey, host: &PublicKey) -> Signature {
     sign_under_prefix(owner, HOST_CERTIFICATE_PREFIX, host.as_bytes())
 }
 
-/// Writes a host certificate as 128 lowercase hexadecimal characters.
+/// The length of a rendered host certificate: two hexadecimal characters per signature byte.
+pub const HOST_CERTIFICATE_HEX_CHARS: usize = Signature::LENGTH * 2;
+
+/// Writes a host certificate as lowercase hexadecimal characters.
 #[must_use]
 pub fn render_host_certificate(certificate: &Signature) -> String {
     HEXLOWER.encode(&certificate.to_bytes())

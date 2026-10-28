@@ -10,7 +10,9 @@ use iroh::PublicKey;
 use crate::config::{
     AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, OWNER_ONLY_FILE_MODE,
 };
-use crate::crypto::{KEY_LEN, render_host_certificate, sign_host_certificate};
+use crate::crypto::{
+    HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, render_host_certificate, sign_host_certificate,
+};
 use crate::dirs::{Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem};
 use crate::handle::{Handle, HandleError};
 use crate::invite::{
@@ -29,7 +31,6 @@ const JOIN_ABOUT: &str = "Join a network from an invitation";
 const ADD_HOST_ABOUT: &str = "Add a host to a configured network";
 const SHOW_INVITATION_ABOUT: &str = "Print the invitation of a configured network";
 const CERTIFY_ABOUT: &str = "Sign a host's node id with the owner key";
-const CERTIFICATE_HEX_CHARACTERS: usize = 128;
 
 fn create_long_about() -> String {
     format!(
@@ -55,7 +56,7 @@ const SHOW_INVITATION_LONG_ABOUT: &str = "Print the invitation string of a netwo
 
 fn certify_long_about() -> String {
     format!(
-        "Sign a host's node id with the owner key of a network.\n\nReads: the owner key file of the network and the host address line argument.\nProduces: the host certificate, {CERTIFICATE_HEX_CHARACTERS} lowercase hexadecimal characters, on stdout.\nRefuses: a network with no owner key file on this machine; a line that does not start with `{HOST_LINE_PREFIX}` followed by lowercase hexadecimal; a node id that is not an Ed25519 public key."
+        "Sign a host's node id with the owner key of a network.\n\nReads: the owner key file of the network and the host address line argument.\nProduces: the host certificate, {HOST_CERTIFICATE_HEX_CHARS} lowercase hexadecimal characters, on stdout.\nRefuses: a network with no owner key file on this machine; a line that does not start with `{HOST_LINE_PREFIX}` followed by lowercase hexadecimal; a node id that is not an Ed25519 public key."
     )
 }
 
