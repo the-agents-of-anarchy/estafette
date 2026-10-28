@@ -120,3 +120,13 @@ INVALIDATES:   Tests 2 and 6 of spec 3.15 are proved by two servers inside one p
                `NodeEffects` is copied field by field in mcp.rs until `derive(Clone)` lands in presence.rs
                Verified on macOS only
 EVIDENCE:      core/src/mcp.rs, core/src/inbox/socket.rs, core/src/main.rs at debaf02; spec reviews 184622, 200021 PASS; quality 185543 With fixes, 200021q Ready Yes
+
+## 2026-10-28 → 2026-10-28 — A direct host may serve without a card, so one process runs an embedded relay and a card-less bootstrap node
+KIND:          runnable
+FROM → TO:     `DirectHost::own_card` returned a card and only a member or an observer served direct requests → `own_card -> Option<wire::PublicKey>`: the observer and the bootstrap host answer `None` and serve introduce, probe and drop without a card of their own; `run-infrastructure` starts the embedded iroh-relay (feature `relay`, rustls =0.23.46) and a bootstrap node in one process, shuts the relay down after the node, and never rebinds by construction; `KnownHosts` is `pub(crate)` so the bootstrap host reads the host file; the integration merge made the observer host drop its card field
+WHY:           spec:949-958 and D46 ask for a bootstrap host that members join through and a relay the owner can run; spec:450 leaves the process shape and the card question to the implementer; a host that holds no card cannot be mistaken for a member by the presence loop, and an `Option` makes the card-less case a type, not a sentinel (lead ruling at the U29 scope widening)
+INVALIDATES:   A bootstrap host never announces Presence and is never a peer; a joiner that expects the host in its peer table is wrong by design
+               The relay's ACME path and the relay under a real public address were never executed on the owner's Mac; lab tests 22-28 settle the relay
+               Every direct-request reader must handle `own_card == None`; a reader that unwraps it panics on the observer and the bootstrap host
+               `KnownHosts` is reachable across the crate; a second writer of the host file would race the node's save
+EVIDENCE:      core/src/cli/infra.rs, core/src/net/direct.rs, core/src/node/{presence,mod}.rs, core/src/cli/observer.rs at 1eb43e4; spec reviews 181455, 200127 PASS; quality 182048 With fixes, 200127q Ready Yes; integration CI 40772291162 green
