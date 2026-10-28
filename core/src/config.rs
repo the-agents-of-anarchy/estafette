@@ -311,7 +311,8 @@ fn read_current(path: &Path) -> Result<Option<NetworkConfig>, ConfigError> {
     }
 }
 
-fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
+/// Writes the contents to a new uniquely named file readable by its owner alone, syncs it, and renames it over the path, removing it when that fails.
+pub(crate) fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
     let (file, temporary_path) = create_unique_temporary_file(path)?;
     fill_and_rename(file, &temporary_path, path, contents).map_err(|failure| {
         match remove_temporary_file(&temporary_path) {

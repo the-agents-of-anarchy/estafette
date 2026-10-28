@@ -1,9 +1,9 @@
 use std::fmt;
-use std::fs::{self, OpenOptions, Permissions};
+use std::fs::{self, Permissions};
 use std::future::Future;
 use std::io::{self, Write};
 use std::net::{IpAddr, SocketAddr};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -22,7 +22,7 @@ use iroh_relay::server::{
 use tokio::time::{Instant, Interval, MissedTickBehavior, interval};
 
 use super::network::NetworkFilesystem;
-use crate::config::{ConfigError, NetworkConfig, OWNER_ONLY_FILE_MODE};
+use crate::config::{ConfigError, NetworkConfig, write_atomically};
 use crate::crypto::{GateKey, HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, verify_host_certificate};
 use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use crate::handle::Handle;
@@ -51,7 +51,6 @@ const RELAY_URL_SCHEME_PREFIX: &str = "https://";
 const RELAY_URL_ROOT_PATH: &str = "/";
 const LINE_END: char = '\n';
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
-const TEMPORARY_FILE_EXTENSION: &str = "tmp";
 const UNSIGNED: SignatureBytes = SignatureBytes([0; Signature::LENGTH]);
 #[cfg(feature = "relay")]
 const LETS_ENCRYPT_PRODUCTION_DIRECTORY: bool = true;
@@ -181,17 +180,7 @@ pub trait InfrastructureFilesystem: NetworkFilesystem + Sync {
 
 impl InfrastructureFilesystem for OperatingSystemFilesystem {
     fn replace_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
-        let temporary = path.with_added_extension(TEMPORARY_FILE_EXTENSION);
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(OWNER_ONLY_FILE_MODE)
-            .open(&temporary)?;
-        file.set_permissions(Permissions::from_mode(OWNER_ONLY_FILE_MODE))?;
-        file.write_all(contents.as_bytes())?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)
+        write_atomically(path, contents)
     }
 
     fn restrict_directory_to_owner(&self, path: &Path) -> io::Result<()> {
