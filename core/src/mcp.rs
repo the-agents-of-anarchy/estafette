@@ -1608,6 +1608,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spec_3_10_peers_lists_the_other_member_with_its_status_public_mapping_and_last_seen() {
+        let _slot = node_slot().await;
+        let machine = Machine::new("peers");
+        let started_ms = wall_clock_ms();
+        let (mut amy, _bob) = claimed_pair(&machine).await;
+
+        let listed = amy.envelope("peers", json!({})).await;
+
+        let peers = listed["result"]["peers"].as_array().unwrap();
+        assert_eq!(peers.len(), 1, "{listed}");
+        let last_seen = peers[0]["last_seen"].as_u64().unwrap();
+        assert!((started_ms..=wall_clock_ms()).contains(&last_seen));
+        assert_eq!(
+            peers[0],
+            json!({
+                "handle": "bob",
+                "status": "online",
+                "attached": false,
+                "public": { "description": BOB_DESCRIPTION },
+                "last_seen": last_seen
+            })
+        );
+    }
+
+    #[tokio::test]
     async fn spec_3_15_test_12_the_tool_list_is_identical_before_and_after_init() {
         let _slot = node_slot().await;
         let machine = Machine::new("test-12");
