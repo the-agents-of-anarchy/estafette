@@ -384,19 +384,21 @@ impl DirectClient {
         response
     }
 
-    /// Writes the sealed request on a new stream and reads the response within the ack timeout.
+    /// Writes the sealed request on a new stream and reads the response, all within the ack timeout.
     async fn round_trip(
         &self,
         connection: &Connection,
         sealed_request: &[u8],
         ack_timeout: Duration,
     ) -> Result<Response, DirectError> {
-        let (mut send, mut recv) = connection.open_bi().await?;
-        send.write_all(sealed_request).await?;
-        send.finish()?;
-        let response_bytes = timeout(ack_timeout, recv.read_to_end(WIRE_LIMIT_BYTES))
-            .await
-            .map_err(|_elapsed| DirectError::Timeout)??;
+        let response_bytes = timeout(ack_timeout, async {
+            let (mut send, mut recv) = connection.open_bi().await?;
+            send.write_all(sealed_request).await?;
+            send.finish()?;
+            Ok::<_, DirectError>(recv.read_to_end(WIRE_LIMIT_BYTES).await?)
+        })
+        .await
+        .map_err(|_elapsed| DirectError::Timeout)??;
         open_response(&self.keys, &response_bytes).map_err(DirectError::InvalidAck)
     }
 
@@ -1251,6 +1253,38 @@ mod tests {
         assert_eq!(later.0, Err(DirectError::Refused));
         assert!(later.1.is_ok() && later.2.is_ok());
         assert_eq!(server.connections(), 2);
+    }
+
+    const CONCURRENT_STREAM_LIMIT: usize = 100;
+    const STALLED_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+    const STALLED_PROBE_SLACK: Duration = Duration::from_millis(500);
+    const AFTER_THE_STREAM_LIMIT_IS_REACHED: Duration = Duration::from_millis(200);
+
+    #[tokio::test]
+    async fn spec_3_14_a_request_stalled_before_its_stream_opens_times_out_within_the_ack_timeout()
+    {
+        let server = ScriptedServer::replying(None);
+        let timeouts = ClientTimeouts {
+            probe: STALLED_PROBE_TIMEOUT,
+            ..ClientTimeouts::SPEC
+        };
+        let link = link_to(server, timeouts).await;
+        let peer = link.server_node.endpoint().id();
+        let client = Arc::new(link.client);
+        let mut holding_every_stream = tokio::task::JoinSet::new();
+        for _ in 0..CONCURRENT_STREAM_LIMIT {
+            let client = Arc::clone(&client);
+            holding_every_stream.spawn(async move { client.probe(peer, PROBE_NONCE).await });
+        }
+        tokio::time::sleep(AFTER_THE_STREAM_LIMIT_IS_REACHED).await;
+
+        let stalled = tokio::time::timeout(
+            STALLED_PROBE_TIMEOUT + STALLED_PROBE_SLACK,
+            client.probe(peer, PROBE_NONCE),
+        )
+        .await;
+
+        assert_eq!(stalled, Ok(Err(DirectError::Timeout)));
     }
 
     const INVALID_UTF8: [u8; 2] = [0xff, 0xfe];
