@@ -7,17 +7,16 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use clap::{Args, Subcommand};
-use iroh::SecretKey;
 
 use crate::card::{Card, CardInvalid};
-use crate::dirs::{Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem};
+use crate::dirs::{
+    CARD_EXTENSION, Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem,
+};
 use crate::errors::ExitStatus;
 use crate::handle::{Handle, HandleError};
 use crate::keys::render_public_key;
-use crate::sidecar::{SidecarError, create_card};
+use crate::sidecar::{SEED_BYTES, SidecarError, create_card};
 
-const SEED_BYTES: usize = 32;
-const CARD_FILE_EXTENSION: &str = "yaml";
 const LIST_FIELD_SEPARATOR: char = '\t';
 const LINE_END: &str = "\n";
 
@@ -198,7 +197,7 @@ fn create_card_with_fresh_key(
         })?;
     let mut seed = [0; SEED_BYTES];
     fill_seed(&mut seed);
-    create_card(
+    let public_key = create_card(
         &directories
             .card_file(network, card)
             .map_err(CardCommandError::Directories)?,
@@ -209,10 +208,7 @@ fn create_card_with_fresh_key(
         seed,
     )
     .map_err(CardCommandError::Sidecar)?;
-    Ok(format!(
-        "{}\n",
-        render_public_key(&SecretKey::from_bytes(&seed).public())
-    ))
+    Ok(render_public_key(&public_key) + LINE_END)
 }
 
 fn list_registry_cards(
@@ -251,7 +247,7 @@ fn card_files_in(
         .into_iter()
         .filter(|path| {
             path.extension()
-                .is_some_and(|extension| extension == CARD_FILE_EXTENSION)
+                .is_some_and(|extension| extension == CARD_EXTENSION)
         })
         .collect())
 }

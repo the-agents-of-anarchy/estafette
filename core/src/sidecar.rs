@@ -6,12 +6,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use data_encoding::{HEXLOWER, HEXLOWER_PERMISSIVE};
-use iroh::SecretKey;
+use iroh::{PublicKey, SecretKey};
 
 const OWNER_READ_WRITE_ONLY: u32 = 0o600;
 const CARD_FILE_MODE: u32 = 0o644;
 const PERMISSION_BITS_MASK: u32 = 0o777;
-const SEED_BYTES: usize = 32;
+pub const SEED_BYTES: usize = 32;
 const PUBLIC_KEY_BYTES: usize = 32;
 const LOCK_RETRY_WINDOW: Duration = Duration::from_millis(200);
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
@@ -136,14 +136,15 @@ pub fn create_card(
     sidecar_path: &Path,
     handle: &str,
     seed: [u8; SEED_BYTES],
-) -> Result<(), SidecarError> {
+) -> Result<PublicKey, SidecarError> {
     refuse_existing_card(card_path)?;
-    let public_key = *SecretKey::from_bytes(&seed).public().as_bytes();
+    let public_key = SecretKey::from_bytes(&seed).public();
     write_sidecar_durably(sidecar_path, &seed)?;
-    write_card(card_path, handle, &public_key).or_else(|error| {
+    write_card(card_path, handle, public_key.as_bytes()).or_else(|error| {
         std::fs::remove_file(sidecar_path)?;
         Err(error)
-    })
+    })?;
+    Ok(public_key)
 }
 
 fn refuse_existing_card(card_path: &Path) -> Result<(), SidecarError> {
@@ -515,9 +516,10 @@ mod tests {
         let card = directory.join("k.yaml");
         let sidecar = directory.join("k.key");
 
-        create_card(&card, &sidecar, "scout", seed).unwrap();
+        let returned_key = create_card(&card, &sidecar, "scout", seed).unwrap();
 
         let public_key = public_key_of(&seed);
+        assert_eq!(returned_key.as_bytes(), &public_key);
         assert_eq!(
             std::fs::read_to_string(&card).unwrap(),
             format!(
