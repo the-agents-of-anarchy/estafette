@@ -957,7 +957,7 @@ struct KnownHosts {
 }
 
 impl KnownHosts {
-    /// Holds a record newer than the newest held for its host and within the future bound, adding a host never known before.
+    /// Holds the relay and `ts` of a record newer than the newest held for its host and within the future bound, adding a host never known before.
     fn take_record(&mut self, record: &Infrastructure, now_ms: u64) -> RecordVerdict {
         let latest_accepted_ts =
             seconds_of(now_ms).saturating_add(INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS);
@@ -978,6 +978,7 @@ impl KnownHosts {
             return RecordVerdict::Dropped;
         }
         host.ts = Some(record.ts);
+        record.relay.as_str().clone_into(&mut host.relay);
         if let HostOrigin::Learned { heard } = &mut host.origin {
             *heard = now_ms;
         }
@@ -1078,6 +1079,7 @@ mod tests {
     const MARKER_PUBLIC: &[u8] = br#"{"role":"marker"}"#;
     const REPLAYED_PUBLIC: &[u8] = br#"{"role":"replayed"}"#;
     const PAYLOAD_WAIT: Duration = Duration::from_secs(3);
+    const MOVED_HOST_RELAY: &str = "https://relay-moved-host.estafette.invalid/";
     const NOT_AN_ANNOUNCED_HANDLE: &str = "Bob";
     const LATER_MESSAGE_BODY: &str = "a message under the announced handle";
     const MISMATCHED_MESSAGE_BODY: &str = "a message under a handle that does not match";
@@ -2672,6 +2674,49 @@ mod tests {
 
         assert_eq!(presence_fields(answer), (FROZEN_CLOCK_MS + 1, false));
         assert!(nothing_more.is_none());
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_newer_record_of_a_known_host_is_held_whole_so_the_next_save_keeps_its_relay()
+     {
+        let scratch = Scratch::new("relay-move").await;
+        let (member, witness) = start_witnessed(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC),
+            None,
+        )
+        .await;
+        let record_ts = wall_clock_ms() / 1000;
+        witness
+            .broadcast_as(
+                HOST_SEED,
+                infrastructure_of(HOST_SEED, HOST_RELAY, record_ts),
+            )
+            .await;
+        host_saved_within(&member, HOST_SEED, PAYLOAD_WAIT)
+            .await
+            .unwrap();
+
+        witness
+            .broadcast_as(
+                HOST_SEED,
+                infrastructure_of(HOST_SEED, MOVED_HOST_RELAY, record_ts + 1),
+            )
+            .await;
+        witness
+            .broadcast_as(
+                SECOND_HOST_SEED,
+                infrastructure_of(SECOND_HOST_SEED, SECOND_HOST_RELAY, record_ts),
+            )
+            .await;
+        host_saved_within(&member, SECOND_HOST_SEED, PAYLOAD_WAIT)
+            .await
+            .unwrap();
+
+        let saved = saved_host(&member, HOST_SEED).unwrap();
+        assert_eq!(saved.relay, MOVED_HOST_RELAY);
+        assert_eq!(saved.ts, Some(record_ts + 1));
         drop(scratch);
     }
 }
