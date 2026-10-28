@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use iroh::address_lookup::MemoryLookup;
 use iroh::endpoint::{BindError, QuicTransportConfig, VarInt, presets};
@@ -12,6 +13,7 @@ pub use super::gate::GateFailure;
 
 pub const DIRECT_ALPN: &[u8] = b"estafette/direct/1";
 const QUIC_IDLE_TIMEOUT_MILLIS: u32 = 10_000;
+const QUIC_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(500);
 
 /// The node's iroh endpoint, gated on the network secret for every gossip connection, with the address lookup the node feeds and the relay map it edits.
 pub struct NodeEndpoint {
@@ -81,9 +83,10 @@ impl NodeEndpoint {
     }
 }
 
-/// The QUIC transport config with the idle timeout of spec 3.14.
+/// The QUIC transport config with the idle timeout of spec 3.14 and a keep-alive short enough that a silent peer times out within one keep-alive interval of it.
 fn quic_transport_config() -> QuicTransportConfig {
     QuicTransportConfig::builder()
+        .keep_alive_interval(QUIC_KEEP_ALIVE_INTERVAL)
         .max_idle_timeout(Some(VarInt::from_u32(QUIC_IDLE_TIMEOUT_MILLIS).into()))
         .build()
 }
