@@ -295,10 +295,10 @@ mod tests {
     use crate::net::gossip::{GossipEvent, NetworkTopic};
     use crate::node::NodeRecord;
     use crate::node::presence::tests::{
-        Draws, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, Member, MemberPlan, OWNER_SEED,
-        PAYLOAD_WAIT, Scratch, WITNESS_SEED, Witness, bind, card, frozen_clock, keys, secret_key,
-        spawn_member, start_members, start_members_reaching, status_within, unreachable_about,
-        wall_clock_ms,
+        Draws, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, MARKER_SEED, Member, MemberPlan,
+        OWNER_SEED, PAYLOAD_WAIT, Scratch, WITNESS_SEED, Witness, bind, card, frozen_clock, keys,
+        secret_key, spawn_member, start_members, start_members_reaching, status_within,
+        unreachable_about, wall_clock_ms,
     };
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
@@ -328,6 +328,7 @@ mod tests {
     const LIVE_RELAY: &str = "https://relay-live.estafette.invalid/";
     const DEAD_RELAY: &str = "https://relay-dead.estafette.invalid/";
     const PEER_ONLY_RELAY: &str = "https://relay-peer.estafette.invalid/";
+    const SPEC_INFRASTRUCTURE_RECORD_INTERVAL: Duration = Duration::from_secs(5);
     const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
     const REBIND_SLACK: Duration = Duration::from_secs(2);
     const REBIND_POLL: Duration = Duration::from_millis(20);
@@ -372,14 +373,22 @@ mod tests {
 
     impl QuietNode {
         async fn start(seed: u8) -> Self {
-            Self::serving(seed, None).await
+            Self::serving(seed, None, None).await
         }
 
         async fn answering(seed: u8, relays: &[&str]) -> Self {
-            Self::serving(seed, Some(relays)).await
+            Self::serving(seed, Some(relays), None).await
         }
 
-        async fn serving(seed: u8, introduced_with_relays: Option<&[&str]>) -> Self {
+        async fn broadcasting(seed: u8, every: Duration) -> Self {
+            Self::serving(seed, None, Some(every)).await
+        }
+
+        async fn serving(
+            seed: u8,
+            introduced_with_relays: Option<&[&str]>,
+            broadcast_every: Option<Duration>,
+        ) -> Self {
             let endpoint = bind(seed).await;
             let introduction = Addr::from_endpoint_report(
                 introduced_with_relays
@@ -416,8 +425,22 @@ mod tests {
             let neighbors_up = Arc::new(Mutex::new(Vec::new()));
             let heard = Arc::clone(&presences);
             let met = Arc::clone(&neighbors_up);
+            let mut broadcasts = broadcast_every.map(tokio::time::interval);
             let listening = tokio::spawn(async move {
-                while let Some(event) = topic.next_event().await {
+                loop {
+                    let event = tokio::select! {
+                        event = topic.next_event() => event,
+                        () = next_broadcast(&mut broadcasts) => {
+                            drop(topic.broadcast(
+                                &secret_key(seed),
+                                unreachable_about(MARKER_SEED, seed, wall_clock_ms()),
+                            ).await);
+                            continue;
+                        }
+                    };
+                    let Some(event) = event else {
+                        break;
+                    };
                     match event {
                         Ok(GossipEvent::Payload(payload)) => {
                             if let Payload::Presence(presence) = *payload {
@@ -549,6 +572,13 @@ mod tests {
         }
     }
 
+    async fn next_broadcast(broadcasts: &mut Option<tokio::time::Interval>) {
+        match broadcasts {
+            Some(interval) => drop(interval.tick().await),
+            None => std::future::pending().await,
+        }
+    }
+
     fn peer_introduction(addr: Addr) -> Introduce {
         Introduce {
             v: Version::CURRENT,
@@ -602,6 +632,33 @@ mod tests {
                 answers
             })
         })
+    }
+
+    #[tokio::test]
+    async fn spec_3_15_test_24_logic_a_member_whose_host_broadcasts_every_5_s_records_no_rebind_past_the_deaf_timeout()
+     {
+        let scratch = Scratch::new("hearing").await;
+        let host = QuietNode::broadcasting(HOST_SEED, SPEC_INFRASTRUCTURE_RECORD_INTERVAL).await;
+        let rebinds = RebindLog::default();
+
+        let _member = start_members_reaching(
+            &scratch,
+            vec![
+                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                    .with_hosts(&[HOST_SEED])
+                    .with_report(rebinds.sink()),
+            ],
+            &[(HOST_SEED, host.addr())],
+        )
+        .await;
+
+        assert_eq!(
+            rebinds
+                .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
+                .await,
+            None
+        );
+        drop(scratch);
     }
 
     #[tokio::test]
