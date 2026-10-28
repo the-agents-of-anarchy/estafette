@@ -237,7 +237,9 @@ mod tests {
                 (0, BrokenOperation::ReadAfterReplies) => {
                     Err(io::Error::from(io::ErrorKind::ConnectionReset))
                 }
-                (read_bytes, _) => Ok(read_bytes),
+                (read_bytes, BrokenOperation::ReadAfterReplies | BrokenOperation::Write) => {
+                    Ok(read_bytes)
+                }
             }
         }
     }
