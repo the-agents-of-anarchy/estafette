@@ -14,7 +14,7 @@ use estafette::config::{ConfigError, NetworkConfig};
 use estafette::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use estafette::errors::ExitStatus;
 use estafette::inbox::socket::{InboxSocket, InboxSocketError, OperatingSystemProcessTable};
-use estafette::mcp::{self, ServedNetwork, ServerEffects};
+use estafette::mcp::{self, ServedNetwork, ServerEffects, ServerRecord};
 use estafette::net::endpoint::{GateFailure, NodeEndpoint};
 use estafette::node::{
     Exit, Network, NodeEffects, NodeError, NodeRecord, RuntimeShutdown, ShutdownSignal,
@@ -219,6 +219,7 @@ fn server_effects(inbox: Arc<InboxSocket>) -> ServerEffects {
         }),
         registry: Arc::new(OperatingSystemFilesystem),
         pause_between_lock_tries: Arc::new(std::thread::sleep),
+        report: Arc::new(|record: ServerRecord| drop(writeln!(io::stderr(), "{record}"))),
     }
 }
 

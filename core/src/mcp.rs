@@ -14,13 +14,14 @@ use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, Implementation, JsonObject,
     ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
 };
-use rmcp::service::{MaybeSendFuture, RequestContext};
+use rmcp::service::{MaybeSendFuture, QuitReason, RequestContext, ServerInitializeError};
 use rmcp::{ErrorData, RoleServer, ServerHandler, serve_server};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinError;
 
 use crate::card::Card;
 use crate::cli::cards::CardRegistryReader;
@@ -33,8 +34,8 @@ use crate::inbox::buffer::InboxFrame;
 use crate::keys::parse_public_key;
 use crate::net::endpoint::NodeEndpoint;
 use crate::node::{
-    BroadcastResult, DEPARTURE_WAIT, Delivery, Exit, Identity, Network, Node, NodeEffects, Session,
-    ShutdownSignal, forward_standard_input,
+    BroadcastResult, DEPARTURE_WAIT, Delivery, Exit, Identity, Network, Node, NodeEffects,
+    NodeError, Session, ShutdownSignal, forward_standard_input,
 };
 use crate::peers::{Peer, Status};
 use crate::sidecar::{self, HeldSidecar, Pause, SidecarError};
@@ -79,6 +80,47 @@ pub struct ServerEffects {
     pub registry: Arc<dyn CardRegistryReader + Send + Sync>,
     /// Blocks the calling thread between two tries of a card's sidecar lock.
     pub pause_between_lock_tries: Arc<dyn Fn(Duration) + Send + Sync>,
+    /// The run record, written to standard error by the command-line layer; it must not block.
+    pub report: Arc<dyn Fn(ServerRecord) + Send + Sync>,
+}
+
+/// A failure the server met, for the run record: what an init answered and why, or why the MCP transport stopped.
+#[derive(Debug)]
+pub enum ServerRecord {
+    LockTaskFailed(JoinError),
+    NetworkRefused(NodeError),
+    EndpointUnbound(BindError),
+    NodeNotStarted(NodeError),
+    HandshakeFailed(Box<ServerInitializeError>),
+    AnsweringFailed(JoinError),
+}
+
+impl fmt::Display for ServerRecord {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LockTaskFailed(source) => write!(
+                formatter,
+                "init answered {}: the sidecar lock task did not finish: {source}",
+                LOCK_TASK_FAILED.code()
+            ),
+            Self::NetworkRefused(source) | Self::NodeNotStarted(source) => write!(
+                formatter,
+                "init answered {}: {source}",
+                NODE_NOT_STARTED.code()
+            ),
+            Self::EndpointUnbound(source) => write!(
+                formatter,
+                "init answered {}: the endpoint was not bound: {source}",
+                NODE_NOT_STARTED.code()
+            ),
+            Self::HandshakeFailed(source) => {
+                write!(formatter, "the MCP handshake failed: {source}")
+            }
+            Self::AnsweringFailed(source) => {
+                write!(formatter, "the MCP server stopped answering: {source}")
+            }
+        }
+    }
 }
 
 /// Serves the six tools over the standard streams until the end of standard input or a signal, then says how the process is to end.
@@ -97,8 +139,10 @@ pub async fn serve(
         forwarded_input,
         input_ended,
     ));
+    let report = Arc::clone(&effects.report);
     let answering = tokio::spawn(answer_until_closed(
         Server::new(Arc::clone(&session), served, effects),
+        report,
         server_input,
         standard_output,
     ));
@@ -110,14 +154,20 @@ pub async fn serve(
     exit
 }
 
-/// Answers MCP requests from the input on the output until the client closes the input.
+/// Answers MCP requests from the input on the output until the client closes the input, recording a failed handshake or a failed answering task.
 async fn answer_until_closed(
     server: Server,
+    report: Arc<dyn Fn(ServerRecord) + Send + Sync>,
     input: impl AsyncRead + Unpin + Send + 'static,
     output: impl AsyncWrite + Unpin + Send + 'static,
 ) {
-    if let Ok(running) = serve_server(server, (input, output)).await {
-        drop(running.waiting().await);
+    match serve_server(server, (input, output)).await {
+        Ok(running) => {
+            if let Ok(QuitReason::JoinError(failure)) | Err(failure) = running.waiting().await {
+                report(ServerRecord::AnsweringFailed(failure));
+            }
+        }
+        Err(failure) => report(ServerRecord::HandshakeFailed(Box::new(failure))),
     }
 }
 
@@ -264,7 +314,7 @@ impl Server {
             sidecar::claim(&sidecar_path, public_key.as_bytes(), &pause)
         })
         .await
-        .map_err(|_lock_task_failed| ErrorCode::SidecarInvalid)?
+        .map_err(|failure| self.recorded(ServerRecord::LockTaskFailed(failure), LOCK_TASK_FAILED))?
         .map_err(|refusal| claim_refusal(&refusal))
     }
 
@@ -276,14 +326,18 @@ impl Server {
         public: Vec<u8>,
     ) -> Result<Node, ErrorCode> {
         let network = Network::new(self.served.config.clone(), self.served.config_path.clone())
-            .map_err(|_refused| NODE_NOT_STARTED)?;
+            .map_err(|refused| {
+                self.recorded(ServerRecord::NetworkRefused(refused), NODE_NOT_STARTED)
+            })?;
         let endpoint = (self.effects.bind_endpoint)(
             lock.secret_key().clone(),
             *network.keys().gate_key(),
             known_host_relays(&self.served.config),
         )
         .await
-        .map_err(|_unbound| NODE_NOT_STARTED)?;
+        .map_err(|unbound| {
+            self.recorded(ServerRecord::EndpointUnbound(unbound), NODE_NOT_STARTED)
+        })?;
         let identity = Identity {
             card_key: lock.secret_key().clone(),
             requested_handle,
@@ -296,7 +350,15 @@ impl Server {
             node_effects_of(&self.effects.node),
         )
         .await
-        .map_err(|_not_started| NODE_NOT_STARTED)
+        .map_err(|not_started| {
+            self.recorded(ServerRecord::NodeNotStarted(not_started), NODE_NOT_STARTED)
+        })
+    }
+
+    /// Writes the failure to the run record and returns the error code init answers with.
+    fn recorded(&self, record: ServerRecord, answered: ErrorCode) -> ErrorCode {
+        (self.effects.report)(record);
+        answered
     }
 
     /// Hands the node and the lock to the session and records the card with the node's handle in the same step, so no `you` sees one without the other.
@@ -474,6 +536,9 @@ fn node_effects_of(effects: &NodeEffects) -> NodeEffects {
 
 /// The error code of a claim whose network, endpoint or node did not start after the lock was taken.
 const NODE_NOT_STARTED: ErrorCode = ErrorCode::Unreachable;
+
+/// The error code of a claim whose sidecar lock task ended without a result.
+const LOCK_TASK_FAILED: ErrorCode = ErrorCode::SidecarInvalid;
 
 /// The tool's arguments read as its input, `bad_request` when they do not match its schema.
 fn input_of<Input: DeserializeOwned>(arguments: JsonObject) -> Result<Input, ErrorCode> {
@@ -865,6 +930,7 @@ mod tests {
     const CLIENT_PROTOCOL_VERSION: &str = "2025-06-18";
     const FIRST_PROCESS_ID: u32 = 41;
     const SECOND_PROCESS_ID: u32 = 42;
+    const NOT_A_KEY: &str = "not a key";
     const UNREACHABLE_RELAY: &str = "https://relay.estafette.invalid/";
     const BOB_DESCRIPTION: &str = "reviews the parser";
     const MESSAGE_BODY: &str = "the parser review is ready";
@@ -995,31 +1061,34 @@ mod tests {
 
     struct ServerPlan {
         process_id: u32,
-        hosts: Vec<Host>,
+        config: NetworkConfig,
         bind_endpoint: BindEndpoint,
+        report: Arc<dyn Fn(ServerRecord) + Send + Sync>,
     }
 
     impl ServerPlan {
         fn alone(process_id: u32) -> Self {
             Self {
                 process_id,
-                hosts: Vec::new(),
+                config: network_config(Vec::new()),
                 bind_endpoint: bind_alone(),
+                report: Arc::new(|_record: ServerRecord| {}),
             }
         }
 
         fn meeting(process_id: u32, other_seed: u8, meeting: &Arc<Meeting>) -> Self {
             Self {
                 process_id,
-                hosts: vec![Host {
+                config: network_config(vec![Host {
                     id: render_public_key(
                         &SecretKey::from_bytes(&[other_seed; KEY_BYTES]).public(),
                     ),
                     relay: UNREACHABLE_RELAY.to_owned(),
                     ts: None,
                     origin: HostOrigin::Configured,
-                }],
+                }]),
                 bind_endpoint: bind_meeting(meeting),
+                report: Arc::new(|_record: ServerRecord| {}),
             }
         }
     }
@@ -1116,7 +1185,7 @@ mod tests {
                 .join(format!("{}-network.toml", plan.process_id)),
             directories,
             network: NETWORK.parse().unwrap(),
-            config: network_config(plan.hosts),
+            config: plan.config,
             inbox_path,
         };
         let effects = ServerEffects {
@@ -1133,6 +1202,7 @@ mod tests {
             bind_endpoint: plan.bind_endpoint,
             registry: Arc::new(OperatingSystemFilesystem),
             pause_between_lock_tries: Arc::new(std::thread::sleep),
+            report: plan.report,
         };
         let (server_input, to_server) = tokio::io::simplex(PIPE_BYTES);
         let (from_server, server_output) = tokio::io::simplex(PIPE_BYTES);
@@ -1632,6 +1702,43 @@ mod tests {
         for answer in &answers {
             assert_eq!(answer["you"], claimed["you"]);
         }
+    }
+
+    #[tokio::test]
+    async fn spec_3_10_an_init_whose_node_does_not_start_answers_unreachable_records_why_and_releases_the_lock()
+     {
+        let machine = Machine::new("not-started");
+        machine.create_card("amy-card", "amy", AMY_SEED);
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&records);
+        let mut client = start_server(
+            &machine,
+            ServerPlan {
+                config: NetworkConfig {
+                    secret: NOT_A_KEY.to_owned(),
+                    ..network_config(Vec::new())
+                },
+                report: Arc::new(move |record: ServerRecord| {
+                    recorded.lock().unwrap().push(record.to_string());
+                }),
+                ..ServerPlan::alone(FIRST_PROCESS_ID)
+            },
+        );
+        client.initialize().await;
+
+        let refused = client.envelope("init", json!({ "card": "amy-card" })).await;
+
+        assert_eq!(refused["error"]["code"], "unreachable");
+        assert_eq!(refused["you"], unclaimed());
+        let records = records.lock().unwrap().clone();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert!(
+            records[0].starts_with(
+                "init answered unreachable: the network configuration's secret is refused: "
+            ),
+            "{records:?}"
+        );
+        drop(machine.hold_card("amy-card", AMY_SEED));
     }
 
     #[tokio::test]
