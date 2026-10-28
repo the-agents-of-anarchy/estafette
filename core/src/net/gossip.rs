@@ -27,6 +27,7 @@ pub enum GossipEvent {
 pub enum GossipError {
     Seal(PayloadError),
     Topic(ApiError),
+    Lagged,
 }
 
 impl fmt::Display for GossipError {
@@ -34,6 +35,9 @@ impl fmt::Display for GossipError {
         match self {
             Self::Seal(source) => source.fmt(formatter),
             Self::Topic(source) => source.fmt(formatter),
+            Self::Lagged => {
+                formatter.write_str("the topic dropped this node for reading its events too slowly")
+            }
         }
     }
 }
@@ -99,11 +103,11 @@ impl NetworkTopic {
             .map_err(GossipError::Topic)
     }
 
-    /// The next event of the topic, or none once the topic has closed.
-    pub async fn next_event(&mut self) -> Option<GossipEvent> {
+    /// The next event of the topic, an error naming why the topic failed, or none once the topic has closed cleanly.
+    pub async fn next_event(&mut self) -> Option<Result<GossipEvent, GossipError>> {
         loop {
             if let Some(neighbor) = self.neighbor_up_after_joined.take() {
-                return Some(GossipEvent::NeighborUp(neighbor));
+                return Some(Ok(GossipEvent::NeighborUp(neighbor)));
             }
             let incoming = match self.join_progress {
                 JoinProgress::AwaitingFirstNeighbor { deadline } => {
@@ -111,25 +115,29 @@ impl NetworkTopic {
                         incoming = self.receiver.next() => incoming,
                         () = sleep_until(deadline) => {
                             self.join_progress = JoinProgress::TimedOut;
-                            return Some(GossipEvent::JoinTimedOut);
+                            return Some(Ok(GossipEvent::JoinTimedOut));
                         }
                     }
                 }
                 JoinProgress::TimedOut | JoinProgress::Joined => self.receiver.next().await,
             };
-            if let Some(event) = self.surface(incoming?.ok()?) {
-                return Some(event);
+            let event = match incoming? {
+                Ok(event) => event,
+                Err(source) => return Some(Err(GossipError::Topic(source))),
+            };
+            if let Some(surfaced) = self.surface(event) {
+                return Some(surfaced);
             }
         }
     }
 
-    fn surface(&mut self, event: Event) -> Option<GossipEvent> {
+    fn surface(&mut self, event: Event) -> Option<Result<GossipEvent, GossipError>> {
         match event {
-            Event::NeighborUp(neighbor) => Some(self.announce_neighbor_up(neighbor)),
-            Event::NeighborDown(neighbor) => Some(GossipEvent::NeighborDown(neighbor)),
+            Event::NeighborUp(neighbor) => Some(Ok(self.announce_neighbor_up(neighbor))),
+            Event::NeighborDown(neighbor) => Some(Ok(GossipEvent::NeighborDown(neighbor))),
             Event::Received(message) => verified_payload(&self.keys, &self.owner, &message.content)
-                .map(|payload| GossipEvent::Payload(Box::new(payload))),
-            Event::Lagged => None,
+                .map(|payload| Ok(GossipEvent::Payload(Box::new(payload)))),
+            Event::Lagged => Some(Err(GossipError::Lagged)),
         }
     }
 
@@ -152,11 +160,12 @@ fn verified_payload(keys: &NetworkKeys, owner: &PublicKey, bytes: &[u8]) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crypto::{KEY_LEN, NetworkSecret, sign_host_certificate};
+    use crate::crypto::{KEY_LEN, MAC_LEN, NetworkSecret, sign_host_certificate};
     use crate::net::endpoint::NodeEndpoint;
     use crate::wire::{
         Addr, Departure, Infrastructure, Presence, RelayUrl, SignatureBytes, Version, encode,
     };
+    use iroh::Signature;
     use iroh_gossip::ALPN as GOSSIP_ALPN;
     use tokio::task::JoinHandle;
     use tokio::time::timeout;
@@ -171,6 +180,9 @@ mod tests {
     const ABSENT_BOOTSTRAP_SEED: u8 = 46;
     const OUTSIDER_SECRET: NetworkSecret = NetworkSecret::from_bytes([10; KEY_LEN]);
     const HOST_RELAY: &str = "https://relay.example/";
+    const EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY: u64 = 4000;
+    const LAG_WAIT: Duration = Duration::from_secs(30);
+    const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     const JOIN_TIMEOUT_SLACK: Duration = Duration::from_millis(1000);
     const NOTHING_MORE_WAIT: Duration = Duration::from_millis(500);
     const OVERSIZE_PUBLIC_BYTES: usize = 4000;
@@ -246,7 +258,7 @@ mod tests {
     ) -> T {
         timeout(EVENT_WAIT, async {
             loop {
-                let event = topic.next_event().await.unwrap();
+                let event = topic.next_event().await.unwrap().unwrap();
                 if let Some(picked) = pick(event) {
                     return picked;
                 }
@@ -400,7 +412,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let mac_first_byte = wrong_mac.len() - 64 - 32;
+        let mac_first_byte = wrong_mac.len() - Signature::LENGTH - MAC_LEN;
         wrong_mac[mac_first_byte] ^= 1;
 
         dropped_while_the_next_good_presence_arrives(wrong_mac).await;
@@ -469,11 +481,11 @@ mod tests {
         .await
         .unwrap();
 
-        let event = topic.next_event().await;
+        let event = topic.next_event().await.unwrap().unwrap();
 
-        assert_eq!(event, Some(GossipEvent::JoinTimedOut));
-        assert!(started.elapsed() >= Duration::from_millis(5000));
-        assert!(started.elapsed() < Duration::from_millis(5000) + JOIN_TIMEOUT_SLACK);
+        assert_eq!(event, GossipEvent::JoinTimedOut);
+        assert!(started.elapsed() >= SPEC_JOIN_TIMEOUT);
+        assert!(started.elapsed() < SPEC_JOIN_TIMEOUT + JOIN_TIMEOUT_SLACK);
     }
 
     #[tokio::test]
@@ -514,11 +526,54 @@ mod tests {
 
         let first_outsider_event = timeout(EVENT_WAIT, outsider_topic.next_event())
             .await
+            .unwrap()
+            .unwrap()
             .unwrap();
 
-        assert_eq!(first_outsider_event, Some(GossipEvent::JoinTimedOut));
+        assert_eq!(first_outsider_event, GossipEvent::JoinTimedOut);
         nothing_more_arrives(&mut outsider_topic).await;
         assert!(member_topic.receiver.neighbors().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn spec_3_7_topic_closed_by_a_gossip_shutdown_ends_with_none() {
+        let member = bind_member(FIRST_SEED).await;
+        let mut topic = join_topic(&member, Vec::new()).await;
+        member.gossip.shutdown().await.unwrap();
+
+        let ended = timeout(EVENT_WAIT, topic.next_event()).await.unwrap();
+
+        assert!(ended.is_none());
+    }
+
+    #[tokio::test]
+    async fn spec_3_7_node_that_falls_behind_the_topic_gets_a_lagged_error_not_a_silent_end() {
+        let JoinedPair {
+            mut first_topic,
+            second_topic,
+            ..
+        } = joined_pair().await;
+        for seq in 0..EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY {
+            second_topic
+                .broadcast(
+                    &secret_key(SECOND_SEED),
+                    presence_of(SECOND_SEED, "bob", seq),
+                )
+                .await
+                .unwrap();
+        }
+
+        let first_error = timeout(LAG_WAIT, async {
+            loop {
+                if let Err(error) = first_topic.next_event().await.unwrap() {
+                    return error;
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(matches!(first_error, GossipError::Lagged));
     }
 
     #[tokio::test]
