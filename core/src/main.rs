@@ -41,8 +41,10 @@ const RANDOM_BYTES_PER_SECRET_KEY: usize = 32;
 /// The longest an awaited shutdown waits for the runtime's blocking work, which after SIGINT or SIGHUP includes a read of standard input that may never return.
 const AWAITED_SHUTDOWN_LIMIT: Duration = Duration::from_millis(1000);
 
+const PROGRAM_PURPOSE: &str = "Messaging between agents across machines and harnesses";
+
 #[derive(Debug, Parser)]
-#[command(name = "estafette")]
+#[command(name = "estafette", about = PROGRAM_PURPOSE, long_about = PROGRAM_PURPOSE)]
 struct EstafetteArguments {
     #[command(subcommand)]
     command: Command,
@@ -487,12 +489,15 @@ async fn stop_requested() {
 mod tests {
     use std::time::{Duration, Instant};
 
+    use clap::CommandFactory;
+
     use super::*;
 
     const SECONDS_AFTER_EPOCH: u64 = 1_700_000_000;
     const MILLISECONDS_AFTER_EPOCH: u64 = 1_700_000_000_123;
     const BLOCKING_READ_THAT_NEVER_RETURNS_IN_TIME: Duration = Duration::from_secs(10);
     const AWAITED_SHUTDOWN_ENDS_WITHIN: Duration = Duration::from_millis(2000);
+    const SPEC_PROGRAM_PURPOSE: &str = "Messaging between agents across machines and harnesses";
 
     #[test]
     fn spec_3_9_an_awaited_shutdown_ends_while_a_blocking_read_of_standard_input_is_still_pending()
@@ -512,6 +517,14 @@ mod tests {
         shut_down(runtime, Exit::Stopped(RuntimeShutdown::Awaited));
 
         assert!(shutting_down.elapsed() < AWAITED_SHUTDOWN_ENDS_WITHIN);
+    }
+
+    #[test]
+    fn spec_3_13_the_program_help_opens_with_what_estafette_does_whatever_subcommands_it_flattens()
+    {
+        let help = EstafetteArguments::command().render_help().to_string();
+
+        assert_eq!(help.lines().next(), Some(SPEC_PROGRAM_PURPOSE));
     }
 
     #[test]
