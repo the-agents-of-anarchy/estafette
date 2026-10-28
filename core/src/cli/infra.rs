@@ -697,13 +697,13 @@ impl BootstrapNode {
         }
     }
 
-    /// Waits for the stop, the next topic event, or the next record due.
+    /// Waits for the stop, the next record due, or the next topic event, in that order of precedence so a busy topic never delays a record.
     async fn next_wake(&mut self, stopped: &mut StopRequested) -> Wake {
         tokio::select! {
             biased;
             () = stopped => Wake::Stopped,
-            event = self.topic.next_event() => Wake::Topic(event),
             () = next_tick(self.records_due.as_mut()) => Wake::RecordDue,
+            event = self.topic.next_event() => Wake::Topic(event),
         }
     }
 
