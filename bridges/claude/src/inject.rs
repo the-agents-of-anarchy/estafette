@@ -3,116 +3,42 @@ use std::io::{self, Write};
 use std::time::Duration;
 
 use serde::Serialize;
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use crate::inbox_client::{InboxConnector, InboxFrame};
 use crate::ratelimit::{Admission, SenderRateLimit};
 
 const LINE_TERMINATOR: char = '\n';
 const MILLIS_PER_SECOND: u64 = 1000;
-const SECONDS_PER_MINUTE: u64 = 60;
-const SECONDS_PER_HOUR: u64 = 3600;
-const SECONDS_PER_DAY: u64 = 86_400;
-const DAYS_PER_GREGORIAN_CYCLE: u64 = 146_097;
-const YEARS_PER_GREGORIAN_CYCLE: u64 = 400;
-const CYCLE_ANCHOR_YEAR: u64 = 1600;
-const DAYS_FROM_CYCLE_ANCHOR_TO_UNIX_EPOCH: u64 = 135_140;
-const DAYS_IN_COMMON_YEAR: u64 = 365;
-const DAYS_IN_LEAP_YEAR: u64 = 366;
-const FEBRUARY_INDEX: usize = 1;
-const DAYS_IN_LEAP_FEBRUARY: u64 = 29;
-const DAYS_IN_MONTHS_OF_COMMON_YEAR: [u64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-
-const AUTH_LINE_TYPE: &str = "auth";
-const USER_LINE_TYPE: &str = "user";
-const USER_ROLE: &str = "user";
+const LATEST_RENDERABLE_SENT_AT: &str = "9999-12-31T23:59:59Z";
 
 #[derive(Serialize)]
-struct AuthLine<'a> {
-    r#type: &'static str,
-    token: &'a str,
+#[serde(rename_all = "lowercase")]
+enum Role {
+    User,
 }
 
 #[derive(Serialize)]
 struct UserMessage {
-    role: &'static str,
+    role: Role,
     content: String,
 }
 
 #[derive(Serialize)]
-struct NoticeLine {
-    r#type: &'static str,
-    message: UserMessage,
-}
-
-struct CivilDate {
-    year: u64,
-    month: u64,
-    day: u64,
-}
-
-const fn is_leap_year(year: u64) -> bool {
-    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
-}
-
-const fn days_in_year(year: u64) -> u64 {
-    if is_leap_year(year) {
-        DAYS_IN_LEAP_YEAR
-    } else {
-        DAYS_IN_COMMON_YEAR
-    }
-}
-
-const fn days_in_month(year: u64, month_index: usize, common_year_length: u64) -> u64 {
-    if month_index == FEBRUARY_INDEX && is_leap_year(year) {
-        DAYS_IN_LEAP_FEBRUARY
-    } else {
-        common_year_length
-    }
-}
-
-fn civil_date_of_day(days_since_unix_epoch: u64) -> CivilDate {
-    let days_since_anchor =
-        days_since_unix_epoch.saturating_add(DAYS_FROM_CYCLE_ANCHOR_TO_UNIX_EPOCH);
-    let mut day_of_cycle = days_since_anchor.rem_euclid(DAYS_PER_GREGORIAN_CYCLE);
-    let mut year = CYCLE_ANCHOR_YEAR.saturating_add(
-        days_since_anchor
-            .div_euclid(DAYS_PER_GREGORIAN_CYCLE)
-            .saturating_mul(YEARS_PER_GREGORIAN_CYCLE),
-    );
-    while day_of_cycle >= days_in_year(year) {
-        day_of_cycle = day_of_cycle.saturating_sub(days_in_year(year));
-        year = year.saturating_add(1);
-    }
-    let mut month: u64 = 1;
-    let mut day_of_year = day_of_cycle;
-    for (month_index, common_year_length) in DAYS_IN_MONTHS_OF_COMMON_YEAR.iter().enumerate() {
-        let length = days_in_month(year, month_index, *common_year_length);
-        if day_of_year < length {
-            break;
-        }
-        day_of_year = day_of_year.saturating_sub(length);
-        month = month.saturating_add(1);
-    }
-    CivilDate {
-        year,
-        month,
-        day: day_of_year.saturating_add(1),
-    }
+#[serde(tag = "type", rename_all = "lowercase")]
+enum SocketLine<'a> {
+    Auth { token: &'a str },
+    User { message: UserMessage },
 }
 
 fn iso_8601_utc(unix_millis: u64) -> String {
     let unix_seconds = unix_millis.div_euclid(MILLIS_PER_SECOND);
-    let date = civil_date_of_day(unix_seconds.div_euclid(SECONDS_PER_DAY));
-    let second_of_day = unix_seconds.rem_euclid(SECONDS_PER_DAY);
-    let hour = second_of_day.div_euclid(SECONDS_PER_HOUR);
-    let minute = second_of_day
-        .rem_euclid(SECONDS_PER_HOUR)
-        .div_euclid(SECONDS_PER_MINUTE);
-    let second = second_of_day.rem_euclid(SECONDS_PER_MINUTE);
-    format!(
-        "{:04}-{:02}-{:02}T{hour:02}:{minute:02}:{second:02}Z",
-        date.year, date.month, date.day
-    )
+    i64::try_from(unix_seconds)
+        .ok()
+        .and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok())
+        .and_then(|instant| instant.format(&Rfc3339).ok())
+        .unwrap_or_else(|| LATEST_RENDERABLE_SENT_AT.to_owned())
 }
 
 fn notice_text(frame: &InboxFrame) -> String {
@@ -124,7 +50,7 @@ fn notice_text(frame: &InboxFrame) -> String {
     )
 }
 
-fn write_line(stream: &mut impl Write, line: &impl Serialize) -> io::Result<()> {
+fn write_line(stream: &mut impl Write, line: &SocketLine) -> io::Result<()> {
     let mut text = serde_json::to_string(line)?;
     text.push(LINE_TERMINATOR);
     stream.write_all(text.as_bytes())?;
@@ -186,14 +112,12 @@ impl<C: InboxConnector> SessionNotifier<C> {
             .connector
             .connect()
             .map_err(InjectError::ConnectFailed)?;
-        let auth = AuthLine {
-            r#type: AUTH_LINE_TYPE,
+        let auth = SocketLine::Auth {
             token: &self.session_token,
         };
-        let notice = NoticeLine {
-            r#type: USER_LINE_TYPE,
+        let notice = SocketLine::User {
             message: UserMessage {
-                role: USER_ROLE,
+                role: Role::User,
                 content: notice_text(frame),
             },
         };
@@ -523,10 +447,18 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_12_a_peer_chosen_sent_at_of_u64_max_still_renders() {
+    fn spec_3_12_a_peer_chosen_sent_at_beyond_year_9999_renders_as_the_latest_iso_8601_instant() {
+        let rendered: Vec<String> = [253_402_300_798_000, 253_402_300_799_000, u64::MAX]
+            .into_iter()
+            .map(notice_sent_header_for)
+            .collect();
         assert_eq!(
-            notice_sent_header_for(u64::MAX),
-            "584556019-04-03T14:25:51Z"
+            rendered,
+            vec![
+                "9999-12-31T23:59:58Z",
+                "9999-12-31T23:59:59Z",
+                "9999-12-31T23:59:59Z",
+            ]
         );
     }
 }
