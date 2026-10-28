@@ -13,23 +13,23 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 
 use super::endpoint::DIRECT_ALPN;
-use crate::crypto::{MAC_LEN, NetworkKeys};
+use crate::crypto::NetworkKeys;
 use crate::errors::ErrorCode;
-use crate::payload::{PayloadError, open_request, open_response, seal_request, seal_response};
+use crate::payload::{
+    PayloadError, ZERO_MAC, open_request, open_response, seal_request, seal_response,
+};
 use crate::wire::{
-    self, IntroduceAck, Message, MessageAck, Nonce, Probe, ProbeAck, Request, Response, Version,
-    WIRE_LIMIT_BYTES,
+    self, IntroduceAck, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, Nonce, Probe, ProbeAck,
+    Request, Response, Version, WIRE_LIMIT_BYTES,
 };
 
 const SERVER_READ_TIMEOUT: Duration = Duration::from_millis(10_000);
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(5000);
 const ACK_TIMEOUT: Duration = Duration::from_millis(10_000);
 const PROBE_TIMEOUT: Duration = Duration::from_millis(3000);
-const MESSAGE_BODY_LIMIT_BYTES: usize = 1_048_576;
 const RESET_CODE_OVER_WIRE_LIMIT: u32 = 1;
 const RESET_CODE_READ_TIMEOUT: u32 = 2;
 const RESET_CODE_UNANSWERED: u32 = 3;
-const UNSEALED_MAC: wire::Mac = [0; MAC_LEN];
 
 /// What the direct server needs from the node: its identity and state, and the effects of a received Message and Introduce.
 pub trait DirectHost: Send + Sync + 'static {
@@ -254,7 +254,7 @@ impl<H: DirectHost> ServerState<H> {
             v: Version::CURRENT,
             nonce: probe.nonce,
             attached: self.host.is_attached(),
-            mac: UNSEALED_MAC,
+            mac: ZERO_MAC,
         }
     }
 
@@ -338,7 +338,7 @@ impl DirectClient {
         let probe = Probe {
             v: Version::CURRENT,
             nonce,
-            mac: UNSEALED_MAC,
+            mac: ZERO_MAC,
         };
         match self
             .exchange(to, Request::Probe(probe), self.timeouts.probe)
@@ -564,7 +564,7 @@ mod tests {
             public: OWN_PUBLIC.to_vec(),
             attached,
             addr: addr_of_relay(),
-            mac: UNSEALED_MAC,
+            mac: ZERO_MAC,
         }
     }
 
@@ -624,7 +624,7 @@ mod tests {
             attached: true,
             sent_at: SENT_AT,
             body: body.to_owned(),
-            mac: UNSEALED_MAC,
+            mac: ZERO_MAC,
         }
     }
 
@@ -913,7 +913,7 @@ mod tests {
         assert_eq!(ack.v, Version::CURRENT);
         assert_eq!(ack.nonce, PROBE_NONCE);
         assert!(ack.attached);
-        assert_ne!(ack.mac, UNSEALED_MAC);
+        assert_ne!(ack.mac, ZERO_MAC);
     }
 
     fn introduction_from_client() -> wire::Introduce {
@@ -923,7 +923,7 @@ mod tests {
             public: b"{}".to_vec(),
             attached: true,
             addr: wire::Addr::from_endpoint_report([], [SENDER_DIRECT_ADDRESS.parse().unwrap()]),
-            mac: UNSEALED_MAC,
+            mac: ZERO_MAC,
         }
     }
 
@@ -950,7 +950,7 @@ mod tests {
                 ..own_introduction(true)
             }
         );
-        assert_ne!(ack.mac, UNSEALED_MAC);
+        assert_ne!(ack.mac, ZERO_MAC);
         let introduced = rig.host.introduced.lock().unwrap().clone();
         assert_eq!(introduced.len(), 1);
         assert_eq!(introduced[0].0, card_of(CLIENT_SEED));
@@ -1068,7 +1068,7 @@ mod tests {
                 v: Version::CURRENT,
                 nonce,
                 attached: false,
-                mac: UNSEALED_MAC,
+                mac: ZERO_MAC,
             }),
         )
         .unwrap()
@@ -1097,7 +1097,7 @@ mod tests {
                 v: Version::CURRENT,
                 nonce: PROBE_NONCE,
                 attached: false,
-                mac: UNSEALED_MAC,
+                mac: ZERO_MAC,
             }),
         )
         .unwrap();

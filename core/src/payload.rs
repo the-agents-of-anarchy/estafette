@@ -14,7 +14,7 @@ use crate::wire::{
 const GOSSIP_FRAME_BYTES: usize = 4096;
 const GOSSIP_LAYER_OVERHEAD_BYTES: usize = 38;
 const LARGEST_GOSSIP_PAYLOAD_BYTES: usize = GOSSIP_FRAME_BYTES - GOSSIP_LAYER_OVERHEAD_BYTES;
-const ZERO_MAC: wire::Mac = [0; MAC_LEN];
+pub(crate) const ZERO_MAC: wire::Mac = [0; MAC_LEN];
 const ZERO_SIGNATURE: SignatureBytes = SignatureBytes([0; Signature::LENGTH]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]

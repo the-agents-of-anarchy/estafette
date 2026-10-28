@@ -8,6 +8,7 @@ use serde::ser::SerializeTuple;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 pub const WIRE_LIMIT_BYTES: usize = 1_114_112;
+pub const MESSAGE_BODY_LIMIT_BYTES: usize = 1_048_576;
 const PROTOCOL_VERSION: u8 = 1;
 const MAX_RELAY_URLS_PER_ADDR: usize = 4;
 const MAX_DIRECT_ADDRS_PER_ADDR: usize = 8;
@@ -540,7 +541,6 @@ mod tests {
     const PUBLIC_MAPPING_CAP_BYTES: usize = 3072;
     const HANDLE_CAP_CHARACTERS: usize = 53;
     const HIGH_PORT: u16 = 65535;
-    const MESSAGE_BODY_CAP_BYTES: usize = 1_048_576;
     const ROUND_TRIP_CASES: u64 = 200;
     const LONG_BODY_EXTRA_LENGTH_PREFIX_BYTES: usize = 2;
     const UNSUPPORTED_VERSION: u8 = 2;
@@ -920,7 +920,7 @@ mod tests {
             handle: "h".repeat(HANDLE_CAP_CHARACTERS),
             attached: true,
             sent_at: u64::MAX,
-            body: "b".repeat(MESSAGE_BODY_CAP_BYTES),
+            body: "b".repeat(MESSAGE_BODY_LIMIT_BYTES),
             mac: [4; MAC_BYTES],
         });
 
