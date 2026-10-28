@@ -701,7 +701,7 @@ mod tests {
                 .expect("run which")
                 .stdout;
             let perl_path = String::from_utf8(perl_path).expect("utf8 path");
-            std::os::unix::fs::symlink(perl_path.trim(), &fake_binary).expect("link perl");
+            std::fs::copy(perl_path.trim(), &fake_binary).expect("copy perl");
             for mode_argument in [MCP_MODE_ARGUMENT, OTHER_MODE_ARGUMENT] {
                 std::fs::write(directory.join(mode_argument), FAKE_BINARY_PERL_PROGRAM)
                     .expect("write the perl program named after a mode argument");
