@@ -65,7 +65,7 @@ impl NodeEndpoint {
         })
     }
 
-    /// Closes the endpoint and binds a fresh one in its place under the same key, relay map, lookup and gate (spec 3.8, Rebind).
+    /// Closes the endpoint, a no-op when a router's shutdown has closed it already, and binds a fresh one in its place under the same key, relay map, lookup and gate (spec 3.8, Rebind).
     ///
     /// # Errors
     /// The iroh bind error when no socket can be bound; the closed endpoint then stays in place.
