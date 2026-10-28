@@ -107,8 +107,11 @@ pub type StartRelay = Box<
 pub enum InfrastructureCommand {
     #[command(about = RUN_ABOUT, long_about = run_long_about())]
     RunInfrastructure {
+        /// The network whose configuration file this host reads and joins
         network: Handle,
+        /// The IP address the embedded relay binds for HTTPS, the ACME challenge and QUIC address discovery
         bind_address: IpAddr,
+        /// The domain name of the relay, whose Let's Encrypt certificate it obtains and whose URL https://<domain>/ it announces
         #[arg(value_parser = parse_relay_domain)]
         domain: RelayDomain,
     },
@@ -924,6 +927,7 @@ mod tests {
     const SECOND_RUN_TS: u64 = FROZEN_CLOCK_SECONDS + 1;
     const OTHER_HOST_RELAY_URL: &str = "https://relay-c.estafette.invalid/";
     const SPEC_BIND_ADDRESS_TEXT: &str = "192.0.2.7";
+    const SPEC_COMMAND_NAME: &str = "run-infrastructure";
     const LONGEST_LABEL: usize = 63;
     const LONGEST_DOMAIN: usize = 119;
     const SPEC_OWNER_ONLY_MODE: u32 = 0o600;
@@ -1964,7 +1968,7 @@ mod tests {
         use clap::Parser;
         InfrastructureArguments::try_parse_from([
             "estafette",
-            "run-infrastructure",
+            SPEC_COMMAND_NAME,
             NETWORK,
             SPEC_BIND_ADDRESS_TEXT,
             domain,
@@ -2004,5 +2008,32 @@ mod tests {
                 clap::error::ErrorKind::ValueValidation
             );
         }
+    }
+
+    #[test]
+    fn spec_3_13_the_help_of_run_infrastructure_says_what_each_of_its_three_inputs_is() {
+        use clap::CommandFactory;
+        let mut arguments = InfrastructureArguments::command();
+        let command = arguments.find_subcommand_mut(SPEC_COMMAND_NAME).unwrap();
+
+        let described: Vec<(String, bool)> = command
+            .get_positionals()
+            .map(|input| {
+                let help = input
+                    .get_help()
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                (input.get_id().to_string(), !help.is_empty())
+            })
+            .collect();
+
+        assert_eq!(
+            described,
+            vec![
+                ("network".to_owned(), true),
+                ("bind_address".to_owned(), true),
+                ("domain".to_owned(), true),
+            ]
+        );
     }
 }
