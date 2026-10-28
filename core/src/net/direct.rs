@@ -9,6 +9,7 @@ use iroh::endpoint::{
 };
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointId};
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 
 use super::endpoint::DIRECT_ALPN;
@@ -294,12 +295,14 @@ fn judge_message(
     }
 }
 
-/// The client half of the direct protocol, holding one connection per peer.
+type PeerSlot = Arc<AsyncMutex<Option<Connection>>>;
+
+/// The client half of the direct protocol, holding one connection per peer in that peer's slot, which a dial fills under the slot's lock.
 pub struct DirectClient {
     endpoint: Endpoint,
     keys: NetworkKeys,
     timeouts: ClientTimeouts,
-    held: Mutex<HashMap<EndpointId, Connection>>,
+    slots: Mutex<HashMap<EndpointId, PeerSlot>>,
 }
 
 impl DirectClient {
@@ -310,7 +313,7 @@ impl DirectClient {
             endpoint,
             keys,
             timeouts,
-            held: Mutex::new(HashMap::new()),
+            slots: Mutex::new(HashMap::new()),
         }
     }
 
@@ -370,7 +373,7 @@ impl DirectClient {
         }
     }
 
-    /// Sends the request over the held or a freshly dialed connection and returns the valid response, dropping the held connection on any failure.
+    /// Sends the request over the held or a freshly dialed connection and returns the valid response, dropping that connection from its slot on any failure.
     async fn exchange(
         &self,
         to: EndpointId,
@@ -381,7 +384,7 @@ impl DirectClient {
         let connection = self.connection_to(to).await?;
         let response = self.round_trip(&connection, &sealed, ack_timeout).await;
         if response.is_err() {
-            self.forget_connection(to);
+            self.forget_connection(to, &connection).await;
         }
         response
     }
@@ -402,10 +405,12 @@ impl DirectClient {
         open_response(&self.keys, &response_bytes).map_err(DirectError::InvalidAck)
     }
 
-    /// The held connection to the peer, or a new one dialed by card id within the connect timeout and held.
+    /// The held connection to the peer, or a new one dialed by card id within the connect timeout and held, so concurrent callers share one dial.
     async fn connection_to(&self, to: EndpointId) -> Result<Connection, DirectError> {
-        if let Some(held) = self.held_connection(to) {
-            return Ok(held);
+        let slot = self.slot_of(to);
+        let mut held = slot.lock().await;
+        if let Some(connection) = held.as_ref() {
+            return Ok(connection.clone());
         }
         let dialed = timeout(
             self.timeouts.connect,
@@ -414,20 +419,24 @@ impl DirectClient {
         .await
         .map_err(|_elapsed| DirectError::Unreachable)?
         .map_err(|_failure| DirectError::Unreachable)?;
-        self.held_connections().insert(to, dialed.clone());
-        Ok(dialed)
+        Ok(held.insert(dialed).clone())
     }
 
-    fn held_connection(&self, to: EndpointId) -> Option<Connection> {
-        self.held_connections().get(&to).cloned()
+    /// Empties the peer's slot when it still holds the failed connection, leaving a newer connection in place.
+    async fn forget_connection(&self, to: EndpointId, failed: &Connection) {
+        let slot = self.slot_of(to);
+        let mut held = slot.lock().await;
+        if held
+            .as_ref()
+            .is_some_and(|connection| connection.stable_id() == failed.stable_id())
+        {
+            *held = None;
+        }
     }
 
-    fn forget_connection(&self, to: EndpointId) {
-        self.held_connections().remove(&to);
-    }
-
-    fn held_connections(&self) -> std::sync::MutexGuard<'_, HashMap<EndpointId, Connection>> {
-        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+    fn slot_of(&self, to: EndpointId) -> PeerSlot {
+        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        Arc::clone(slots.entry(to).or_default())
     }
 }
 
@@ -994,17 +1003,41 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
+    enum StreamScript {
+        Silent,
+        Reply(Vec<u8>),
+        Reset,
+    }
+
+    #[derive(Debug, Clone)]
     struct ScriptedServer {
-        reply: Option<Vec<u8>>,
+        script: Vec<StreamScript>,
         connections: Arc<AtomicUsize>,
+        streams: Arc<AtomicUsize>,
     }
 
     impl ScriptedServer {
         fn replying(reply: Option<Vec<u8>>) -> Self {
+            Self::following(vec![
+                reply.map_or(StreamScript::Silent, StreamScript::Reply),
+            ])
+        }
+
+        fn following(script: Vec<StreamScript>) -> Self {
             Self {
-                reply,
+                script,
                 connections: Arc::new(AtomicUsize::new(0)),
+                streams: Arc::new(AtomicUsize::new(0)),
             }
+        }
+
+        fn next_script(&self) -> StreamScript {
+            let index = self.streams.fetch_add(1, Ordering::SeqCst);
+            self.script
+                .get(index)
+                .or_else(|| self.script.last())
+                .unwrap()
+                .clone()
         }
 
         fn connections(&self) -> usize {
@@ -1016,15 +1049,18 @@ mod tests {
         async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
             self.connections.fetch_add(1, Ordering::SeqCst);
             while let Ok((mut send, mut recv)) = connection.accept_bi().await {
-                let reply = self.reply.clone();
+                let script = self.next_script();
                 tokio::spawn(async move {
                     recv.read_to_end(WIRE_LIMIT_BYTES).await.unwrap();
-                    match reply {
-                        Some(bytes) => {
+                    match script {
+                        StreamScript::Reply(bytes) => {
                             send.write_all(&bytes).await.unwrap();
                             send.finish().unwrap();
                         }
-                        None => std::future::pending().await,
+                        StreamScript::Reset => {
+                            send.reset(StreamReset::Unanswered.code()).unwrap();
+                        }
+                        StreamScript::Silent => std::future::pending().await,
                     }
                 });
             }
@@ -1172,6 +1208,57 @@ mod tests {
 
         assert_eq!(first, Err(DirectError::Timeout));
         assert_eq!(second, Err(DirectError::Timeout));
+        assert_eq!(server.connections(), 2);
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_concurrent_first_requests_to_one_peer_dial_once() {
+        let server = ScriptedServer::replying(Some(sealed_probe_ack(PROBE_NONCE)));
+        let link = link_to(server.clone(), ClientTimeouts::SPEC).await;
+        let peer = link.server_node.endpoint().id();
+
+        let (first, second) = tokio::join!(
+            link.client.probe(peer, PROBE_NONCE),
+            link.client.probe(peer, PROBE_NONCE)
+        );
+
+        assert!(first.is_ok() && second.is_ok());
+        assert_eq!(server.connections(), 1);
+    }
+
+    const FIRST_REQUEST_PROBE_TIMEOUT: Duration = Duration::from_millis(600);
+    const BEFORE_FIRST_REQUEST_TIMES_OUT: Duration = Duration::from_millis(100);
+    const AFTER_FIRST_REQUEST_TIMED_OUT: Duration = Duration::from_millis(900);
+
+    #[tokio::test]
+    async fn spec_3_6_a_failure_on_an_old_connection_leaves_the_newer_connection_held() {
+        let server = ScriptedServer::following(vec![
+            StreamScript::Silent,
+            StreamScript::Reset,
+            StreamScript::Reply(sealed_probe_ack(PROBE_NONCE)),
+        ]);
+        let timeouts = ClientTimeouts {
+            probe: FIRST_REQUEST_PROBE_TIMEOUT,
+            ..ClientTimeouts::SPEC
+        };
+        let link = link_to(server.clone(), timeouts).await;
+        let peer = link.server_node.endpoint().id();
+
+        let (slow_first, later) = tokio::join!(link.client.probe(peer, PROBE_NONCE), async {
+            tokio::time::sleep(BEFORE_FIRST_REQUEST_TIMES_OUT).await;
+            let reset = link
+                .client
+                .send_message(peer, message_to(card_of(SERVER_SEED), BODY))
+                .await;
+            let redialed = link.client.probe(peer, PROBE_NONCE).await;
+            tokio::time::sleep(AFTER_FIRST_REQUEST_TIMED_OUT).await;
+            let on_newer = link.client.probe(peer, PROBE_NONCE).await;
+            (reset, redialed, on_newer)
+        });
+
+        assert_eq!(slow_first, Err(DirectError::Timeout));
+        assert_eq!(later.0, Err(DirectError::Refused));
+        assert!(later.1.is_ok() && later.2.is_ok());
         assert_eq!(server.connections(), 2);
     }
 
