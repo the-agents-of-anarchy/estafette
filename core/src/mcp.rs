@@ -859,6 +859,7 @@ mod tests {
     const RESPONSE_WAIT: Duration = Duration::from_secs(20);
     const CLIENT_PROTOCOL_VERSION: &str = "2025-06-18";
     const FIRST_PROCESS_ID: u32 = 41;
+    const SECOND_PROCESS_ID: u32 = 42;
     const AMY_SEED: u8 = 51;
     const BOB_SEED: u8 = 52;
     const ZED_SEED: u8 = 53;
@@ -1429,6 +1430,40 @@ mod tests {
             listed["result"],
             json!({ "cards": [{ "name": "amy-card", "handle": "amy", "held": true }] })
         );
+    }
+
+    #[tokio::test]
+    async fn spec_3_15_test_6_two_servers_init_one_card_at_once_and_exactly_one_claims_it() {
+        let _slot = node_slot().await;
+        let machine = Machine::new("test-6");
+        machine.create_card("amy-card", "amy", AMY_SEED);
+        let mut first = start_server(&machine, ServerPlan::alone(FIRST_PROCESS_ID));
+        let mut second = start_server(&machine, ServerPlan::alone(SECOND_PROCESS_ID));
+        first.initialize().await;
+        second.initialize().await;
+
+        let (first_answer, second_answer) = tokio::join!(
+            first.envelope("init", json!({ "card": "amy-card" })),
+            second.envelope("init", json!({ "card": "amy-card" })),
+        );
+
+        let mut outcomes = [&first_answer, &second_answer]
+            .map(|answer| {
+                answer["result"]["handle"]
+                    .as_str()
+                    .or_else(|| answer["error"]["code"].as_str())
+                    .unwrap()
+                    .to_owned()
+            })
+            .to_vec();
+        outcomes.sort();
+        assert_eq!(outcomes, ["amy", "card_held"]);
+        let loser = if first_answer["ok"] == json!(true) {
+            &second_answer
+        } else {
+            &first_answer
+        };
+        assert_eq!(loser["you"], unclaimed());
     }
 
     #[tokio::test]
