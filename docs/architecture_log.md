@@ -31,3 +31,13 @@ INVALIDATES:   A caller that hands in a weak generator weakens the gate; the nod
                A node that registers gossip under another ALPN, or lets iroh's Router::spawn replace the ALPN list, bypasses the gate — U20 must keep DIRECT_ALPN and iroh_gossip::ALPN registered
                The sink runs inside the handshake and must not block
 EVIDENCE:      core/src/net/{endpoint,gate}.rs at 59a34fc; spec reviews 124728, 130035, 131138 PASS; quality review 131320 Ready Yes
+
+## 2026-10-28 → 2026-10-28 — A direct request whose body is not UTF-8 resets the stream instead of answering too_large
+KIND:          runnable
+FROM → TO:     No direct protocol existed → the wire decodes `body` as `String`, so a request carrying invalid UTF-8 fails decode before spec:673 step 4 and the server resets the stream with no response; the client reports every no-response close as `refused`; a valid body over the limit still answers `too_large`; the endpoint's Router registers both `estafette/direct/1` and `iroh_gossip::ALPN`; one connection per peer is held and reused, two concurrent first requests share one dial, and a failure empties the slot only while it still holds the failed connection (spec:854)
+WHY:           spec:673 pairs the UTF-8 check with `too_large`, but the wire's typed decode (U04) rejects invalid UTF-8 before any step runs and the spec leaves a decode failure's close to the implementer (spec:450); a reset is the one close every reader already maps to `refused` (spec:601), so no raw-body decode path was added (lead ruling 2026-10-24, spec reviews 3 and 4)
+INVALIDATES:   A sender of invalid UTF-8 sees `refused`, not `too_large`; a test expecting `too_large` for a non-UTF-8 body fails
+               `ErrorCode::code` in core/src/errors.rs is public so the direct protocol reuses the reason strings; a change to a code's string reaches the wire
+               A second concurrent caller to a dead peer can wait the connect timeout twice (about 10 s) before its own `unreachable` (spec review 041206, read as met)
+               A write the peer stopped cannot be observed under the pinned transport's 1,250,000-byte receive window (max request 1,114,112 bytes); lowering that window below the largest request would need a `Stopped` arm
+EVIDENCE:      core/src/net/direct.rs, core/src/errors.rs at 9b27694; spec reviews 033956 PASS and 041206 PASS; quality review 050614 Ready Yes
