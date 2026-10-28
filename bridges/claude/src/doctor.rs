@@ -1,4 +1,3 @@
-use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fmt;
@@ -7,7 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::discover::{
-    ProcessEntry, ProcessTable, ProcessTableError, RuntimeDirectoryInputs, follow_binary_sockets,
+    ProcessEntry, ProcessTable, ProcessTableError, RuntimeDirectoryInputs, binary_sockets_under,
 };
 
 const BRIDGE_EXECUTABLE_NAME: &str = "estafette-bridge-claude";
@@ -157,7 +156,7 @@ pub fn run_doctor(
             },
             CheckResult {
                 check: Check::BinaryProcessFound,
-                verdict: judge_binary_process_found(harness_pid, &entries, &inputs.runtime_inputs)?,
+                verdict: judge_binary_process_found(harness_pid, &entries, &inputs.runtime_inputs),
             },
         ],
         dropped_frames: harness_pid
@@ -277,50 +276,23 @@ fn settings_flag_values(arguments: &[String]) -> Vec<String> {
         .collect()
 }
 
-struct SingleSnapshot {
-    entries: Vec<ProcessEntry>,
-    already_listed: Cell<bool>,
-}
-
-impl ProcessTable for SingleSnapshot {
-    fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
-        if self.already_listed.replace(true) {
-            Ok(Vec::new())
-        } else {
-            Ok(self.entries.clone())
-        }
-    }
-}
-
 fn judge_binary_process_found(
     harness_pid: Option<u32>,
     entries: &[ProcessEntry],
     runtime_inputs: &RuntimeDirectoryInputs,
-) -> Result<Verdict, ProcessTableError> {
+) -> Verdict {
     let Some(harness_pid) = harness_pid else {
-        return Ok(Verdict::Failed(
+        return Verdict::Failed(
             "the session is unknown without a running bridge, so no binary process can be looked for".to_owned(),
-        ));
+        );
     };
-    let snapshot = SingleSnapshot {
-        entries: entries.to_vec(),
-        already_listed: Cell::new(false),
-    };
-    let mut found_sockets = Vec::new();
-    follow_binary_sockets(
-        harness_pid,
-        runtime_inputs,
-        &snapshot,
-        &mut |_| {},
-        &mut |sockets| found_sockets = sockets.to_vec(),
-    )?;
-    Ok(if found_sockets.is_empty() {
+    if binary_sockets_under(harness_pid, runtime_inputs, entries).is_empty() {
         Verdict::Failed(format!(
             "no estafette process in mcp mode runs under process {harness_pid}"
         ))
     } else {
         Verdict::Passed
-    })
+    }
 }
 
 fn judge_bridge_running(harness_pid: Option<u32>) -> Verdict {

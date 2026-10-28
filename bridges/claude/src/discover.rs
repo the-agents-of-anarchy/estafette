@@ -193,19 +193,28 @@ pub fn follow_binary_sockets(
     wait_for_next_poll: &mut impl FnMut(Duration),
     report_sockets: &mut impl FnMut(&[PathBuf]),
 ) -> Result<(), ProcessTableError> {
-    let runtime_dir = runtime_directory(runtime_inputs);
     loop {
         let entries = processes.list()?;
         if !is_running(harness_pid, &entries) {
             return Ok(());
         }
-        let sockets: Vec<PathBuf> = binary_pids_under(harness_pid, &entries)
-            .into_iter()
-            .map(|pid| socket_path(&runtime_dir, pid))
-            .collect();
-        report_sockets(&sockets);
+        report_sockets(&binary_sockets_under(harness_pid, runtime_inputs, &entries));
         wait_for_next_poll(POLL_INTERVAL);
     }
+}
+
+/// Lists the inbox socket paths of the binary's MCP-mode processes among the descendants of the harness process.
+#[must_use]
+pub fn binary_sockets_under(
+    harness_pid: u32,
+    runtime_inputs: &RuntimeDirectoryInputs,
+    entries: &[ProcessEntry],
+) -> Vec<PathBuf> {
+    let runtime_dir = runtime_directory(runtime_inputs);
+    binary_pids_under(harness_pid, entries)
+        .into_iter()
+        .map(|pid| socket_path(&runtime_dir, pid))
+        .collect()
 }
 
 fn runtime_directory(inputs: &RuntimeDirectoryInputs) -> PathBuf {
