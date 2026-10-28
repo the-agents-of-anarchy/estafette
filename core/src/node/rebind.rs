@@ -1008,16 +1008,12 @@ mod tests {
         format!("http://127.0.0.1:{port}/").parse().unwrap()
     }
 
-    fn start_of_run() -> Instant {
-        Instant::now()
-    }
-
     #[test]
     fn spec_3_15_test_24_logic_a_member_hearing_a_payload_at_least_every_5_s_never_rebinds_in_180_s()
      {
         for case in 0..PROPERTY_CASES {
             let mut draws = Draws::seeded(case);
-            let started = start_of_run();
+            let started = Instant::now();
             let mut schedule = RebindSchedule::new(started);
             schedule.joined();
             let mut now = started;
@@ -1035,7 +1031,7 @@ mod tests {
     fn d46_silence_of_the_deaf_timeout_is_due_then_and_no_rebind_comes_within_20_s_of_the_last() {
         for case in 0..PROPERTY_CASES {
             let mut draws = Draws::seeded(case);
-            let started = start_of_run();
+            let started = Instant::now();
             let mut schedule = RebindSchedule::new(started);
             let heard = started + Duration::from_millis(draws.below(LONGEST_DRAWN_MS));
             schedule.heard(heard);
@@ -1063,7 +1059,7 @@ mod tests {
      {
         for case in 0..PROPERTY_CASES {
             let mut draws = Draws::seeded(case);
-            let started = start_of_run();
+            let started = Instant::now();
             let mut schedule = RebindSchedule::new(started);
             let timed_out = started + Duration::from_millis(draws.below(LONGEST_DRAWN_MS));
             schedule.join_timed_out(timed_out);
@@ -1086,7 +1082,7 @@ mod tests {
 
     #[test]
     fn spec_3_8_member_joins_start_1_5_s_after_a_rebinds_join_repeat_every_3_s_and_stop_after_10() {
-        let joined = start_of_run();
+        let joined = Instant::now();
         let mut joins = MemberJoins::AwaitingRebindJoin;
         joins.joined(joined);
         let mut asks = Vec::new();
@@ -1104,7 +1100,7 @@ mod tests {
     #[test]
     fn spec_3_8_the_first_join_starts_no_member_joins() {
         let mut joins = MemberJoins::Idle;
-        joins.joined(start_of_run());
+        joins.joined(Instant::now());
 
         assert_eq!(joins.next_ask(), None);
     }
