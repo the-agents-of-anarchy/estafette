@@ -402,3 +402,18 @@
 2026-10-28T05:17 | self:claude-fable-5-1 | review | quality-U19 031405 Ready With fixes: three Important (untyped stream end; bare 64/32; bare 5000); four Minor; impl-U19 continued (cycle 1)
 2026-10-28T05:18 | self:claude-fable-5-1 | review | spec-U18 031615 FAIL: Extra — Probe and Introduce unanswered while Stopping (spec 3.9 names Messages alone); impl-U18 continued (cycle 1)
 2026-10-28T05:18 | self:claude-fable-5-1 | decision | solved: while Stopping the node refuses Messages alone (spec 3.9); Probe and Introduce are answered and applied — the U18 extra is removed; alternative: keep the silence as a clearly better way and log it
+2026-10-28T05:21 | self:claude-fable-5-1 | receipt | impl-U32 DONE at c27cc15: SessionNotifier + SenderRateLimit, 13 tests; message line format from the claude binary's help text; D36 question open for U33; peer content
+2026-10-28T05:21 | self:claude-fable-5-1 | delegation | spec-U32 launched (sonnet, spec-reviewer)
+2026-10-28T05:22 | self:claude-fable-5-1 | receipt | impl-U19 continuation 1 DONE_WITH_CONCERNS at c7f86d9: next_event returns Option<Result>, Lagged typed; untested Topic error arm; peer content
+2026-10-28T05:22 | self:claude-fable-5-1 | delegation | classify-U19 round 2 -> reports/classifier-U19-2.md
+2026-10-28T05:23 | self:claude-fable-5-1 | review | spec-U32 032123 FAIL: identical-body rule compared with the previous injected body, spec:921 says the previous body from that sender; impl-U32 continued (cycle 1)
+2026-10-28T05:23 | self:claude-fable-5-1 | decision | solved: spec:921 identical-body rule compares with the sender's previous body whether injected or dropped, and every received body becomes the previous one; alternative: compare with the previous injected body only
+2026-10-28T05:24 | self:claude-fable-5-1 | review | classifier-U19-2: four rows all observations; Topic error arm unreachable through NetworkTopic; spec-U19 continued for re-review 2
+2026-10-28T05:24 | self:claude-fable-5-1 | receipt | impl-U18 continuation 1 DONE at 29a992b (silence removed); report cites spec:784 against the ruling; peer content
+2026-10-28T05:24 | self:claude-fable-5-1 | decision | retracts the 05:19 ruling: spec:784 requires the direct listener to close every Probe and Introduce stream without an answer while stopping; the U18 silence stands; the spec-U18 Extra is withdrawn by a correction file beside the verdict; impl-U18 reverts 29a992b; alternative: keep the removal and log a deviation
+2026-10-28T05:24 | self:claude-fable-5-1 | discovery | U17's idle-timeout test (9-11 s window) failed once at 15.28 s under load inside a U18 pre-commit run and passed on rerun; timing tests under load go to the whole-branch pass
+2026-10-28T05:24 | self | failure | Lead ruled against the spec on a reviewer's word
+2026-10-28T05:25 | self:claude-fable-5-1 | review | spec-U19 re-review 2 PASS 032413 at c7f86d9; quality-U19 continued
+2026-10-28T05:26 | self:claude-fable-5-1 | receipt | impl-U18 continuation 2 DONE at 32d0715: 29a992b reverted, code equals the first reviewed tip; peer content
+2026-10-28T05:26 | self:claude-fable-5-1 | receipt | impl-U32 continuation 1 DONE at c2f2e3d: identical-body rule against the previous received body; peer content
+2026-10-28T05:28 | self:claude-fable-5-1 | review | spec-U18 re-review 2 PASS 032607 at 32d0715; quality-U18 launched
