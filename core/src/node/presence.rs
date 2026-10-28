@@ -5,6 +5,7 @@ use std::fmt;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
@@ -29,8 +30,8 @@ use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::payload::ZERO_MAC;
 use crate::peers::{Effect, Peer, PeerTable};
 use crate::wire::{
-    self, Addr, Infrastructure, Introduce, IntroduceAck, Message, Nonce, Payload, Presence,
-    SignatureBytes, Unreachable, Version,
+    self, Addr, Departure, Infrastructure, Introduce, IntroduceAck, Message, Nonce, Payload,
+    Presence, SignatureBytes, Unreachable, Version,
 };
 
 const OBSERVER_WAIT: Duration = Duration::from_millis(3000);
@@ -251,10 +252,8 @@ impl Node {
             announcer: Announcer::default(),
             reannounce_due: None,
             relay_loss: RelayLossWatch::default(),
-            known_hosts: KnownHosts {
-                config: network.config,
-                path: network.config_path,
-            },
+            known_hosts: KnownHosts::new(network.config, network.config_path),
+            departed: false,
             fill_probe_nonce: effects.fill_probe_nonce,
             monotonic: effects.monotonic,
             report: effects.report,
@@ -284,6 +283,20 @@ impl Node {
     pub fn peers(&self) -> Vec<Peer> {
         let now_ms = self.state.now_ms();
         self.state.table().peers(now_ms).cloned().collect()
+    }
+
+    /// Starts refusing Messages and ignoring Probes and Introduces, and hands the Departure to the presence loop.
+    pub(super) fn start_stopping(&self) {
+        self.state.stopping.store(true, Ordering::SeqCst);
+        self.state.hand_to_loop(LoopEvent::Depart);
+    }
+
+    /// Drops the held direct connection to every peer in the table.
+    pub(super) async fn drop_held_connections(&self) {
+        let cards: Vec<_> = self.peers().into_iter().map(|peer| peer.card).collect();
+        for id in cards.iter().filter_map(endpoint_id) {
+            self.client.drop_held_connection(id).await;
+        }
     }
 }
 
@@ -347,6 +360,7 @@ pub(super) struct NodeState {
     attached: Attached,
     clock: Clock,
     to_loop: mpsc::UnboundedSender<LoopEvent>,
+    stopping: AtomicBool,
 }
 
 impl NodeState {
@@ -368,6 +382,7 @@ impl NodeState {
             attached: effects.inbox.attached(),
             clock: Arc::clone(&effects.clock),
             to_loop,
+            stopping: AtomicBool::new(false),
         }
     }
 
@@ -441,7 +456,7 @@ impl NodeState {
 
 impl DirectHost for Arc<NodeState> {
     fn is_stopping(&self) -> bool {
-        false
+        self.stopping.load(Ordering::SeqCst)
     }
 
     fn own_card(&self) -> wire::PublicKey {
@@ -485,6 +500,7 @@ impl DirectHost for Arc<NodeState> {
 
 /// What reaches the presence loop from the direct server and from the requests it spawned.
 enum LoopEvent {
+    Depart,
     Effects(Vec<Effect>),
     IntroduceAnswered {
         card: wire::PublicKey,
@@ -503,7 +519,7 @@ enum DirectRequest {
     SendProbe(wire::PublicKey, Nonce),
 }
 
-/// Runs the requests in their order, handing each answer back to the loop.
+/// Runs the requests in their order, handing each answer back to the loop, and sends no Introduce or Probe once the node is stopping.
 async fn run_requests(
     state: Arc<NodeState>,
     client: Arc<DirectClient>,
@@ -516,6 +532,8 @@ async fn run_requests(
                     client.drop_held_connection(id).await;
                 }
             }
+            DirectRequest::SendIntroduce(_) | DirectRequest::SendProbe(..)
+                if state.is_stopping() => {}
             DirectRequest::SendIntroduce(card) => {
                 let answer = match endpoint_id(&card) {
                     Some(id) => client.introduce(id, state.introduction()).await,
@@ -576,6 +594,7 @@ struct PresenceLoop {
     reannounce_due: Option<Instant>,
     relay_loss: RelayLossWatch,
     known_hosts: KnownHosts,
+    departed: bool,
     fill_probe_nonce: ProbeNonceSource,
     monotonic: MonotonicClock,
     report: RunRecord,
@@ -749,9 +768,10 @@ impl PresenceLoop {
     }
 
     /// Applies the effects the direct server handed over and the answer of each request this node sent.
-    async fn take_loop_event(&self, event: LoopEvent) {
+    async fn take_loop_event(&mut self, event: LoopEvent) {
         let now_ms = self.state.now_ms();
         match event {
+            LoopEvent::Depart => self.depart(now_ms).await,
             LoopEvent::Effects(effects) => self.perform(effects).await,
             LoopEvent::IntroduceAnswered {
                 card,
@@ -804,11 +824,31 @@ impl PresenceLoop {
         }
     }
 
-    /// Broadcasts this node's Presence with the next seq, once its handle is assigned.
+    /// Broadcasts the Departure, announces nothing after it, and saves the known hosts when a record is newer than the file.
+    async fn depart(&mut self, now_ms: u64) {
+        self.departed = true;
+        let seq = self.announcer.next_seq(now_ms);
+        self.broadcast(Payload::Departure(Departure {
+            v: Version::CURRENT,
+            card: self.state.own_card,
+            seq,
+            mac: ZERO_MAC,
+            sig: UNSIGNED,
+        }))
+        .await;
+        if let Err(failure) = self.known_hosts.save_if_newer_than_file(now_ms) {
+            (self.report)(NodeRecord::KnownHostsNotSaved(failure));
+        }
+    }
+
+    /// Broadcasts this node's Presence with the next seq, once its handle is assigned and before any Departure.
     async fn announce_presence(&mut self) {
         let Some(own_handle) = self.state.own_handle.get() else {
             return;
         };
+        if self.departed {
+            return;
+        }
         let addr = self.state.own_addr();
         let seq = self.announcer.next_seq(self.state.now_ms());
         let presence = Payload::Presence(Presence {
@@ -1031,9 +1071,19 @@ enum RecordVerdict {
 struct KnownHosts {
     config: NetworkConfig,
     path: PathBuf,
+    newer_than_file: bool,
 }
 
 impl KnownHosts {
+    /// The known hosts as the file holds them.
+    const fn new(config: NetworkConfig, path: PathBuf) -> Self {
+        Self {
+            config,
+            path,
+            newer_than_file: false,
+        }
+    }
+
     /// Holds the relay and `ts` of a record newer than the newest held for its host and within the future bound, adding a host never known before.
     fn take_record(&mut self, record: &Infrastructure, now_ms: u64) -> RecordVerdict {
         let latest_accepted_ts =
@@ -1049,6 +1099,7 @@ impl KnownHosts {
                 ts: Some(record.ts),
                 origin: HostOrigin::Learned { heard: now_ms },
             });
+            self.newer_than_file = true;
             return RecordVerdict::FromNewHost;
         };
         if host.ts.is_some_and(|held| record.ts <= held) {
@@ -1059,14 +1110,24 @@ impl KnownHosts {
         if let HostOrigin::Learned { heard } = &mut host.origin {
             *heard = now_ms;
         }
+        self.newer_than_file = true;
         RecordVerdict::FromKnownHost
     }
 
     /// Rewrites the network configuration with the known hosts (spec 3.3).
-    fn save(&self, now_ms: u64) -> Result<(), ConfigError> {
-        self.config
-            .rewrite(&self.path, seconds_of(now_ms))
-            .map(drop)
+    fn save(&mut self, now_ms: u64) -> Result<(), ConfigError> {
+        self.config.rewrite(&self.path, seconds_of(now_ms))?;
+        self.newer_than_file = false;
+        Ok(())
+    }
+
+    /// Rewrites the network configuration only when a held record is newer than the file's (spec 3.3).
+    fn save_if_newer_than_file(&mut self, now_ms: u64) -> Result<(), ConfigError> {
+        if self.newer_than_file {
+            self.save(now_ms)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -1158,22 +1219,23 @@ pub(super) mod tests {
     pub(in crate::node) const WITNESS_SEED: u8 = 70;
     pub(in crate::node) const WITNESS_PUBLIC: &[u8] = br#"{"role":"witness"}"#;
     const WITNESS_JOIN_WAIT: Duration = Duration::from_secs(8);
-    const MARKER_SEED: u8 = 80;
+    pub(in crate::node) const MARKER_SEED: u8 = 80;
     const SECOND_MARKER_SEED: u8 = 81;
     const MARKER_HANDLE: &str = "mark";
     const MARKER_PUBLIC: &[u8] = br#"{"role":"marker"}"#;
     const REPLAYED_PUBLIC: &[u8] = br#"{"role":"replayed"}"#;
-    const PAYLOAD_WAIT: Duration = Duration::from_secs(3);
-    const MOVED_HOST_RELAY: &str = "https://relay-moved-host.estafette.invalid/";
+    pub(in crate::node) const PAYLOAD_WAIT: Duration = Duration::from_secs(3);
+    pub(in crate::node) const MOVED_HOST_RELAY: &str =
+        "https://relay-moved-host.estafette.invalid/";
     const NOT_AN_ANNOUNCED_HANDLE: &str = "Bob";
     const LATER_MESSAGE_BODY: &str = "a message under the announced handle";
     const MISMATCHED_MESSAGE_BODY: &str = "a message under a handle that does not match";
     const IMPOSTOR_HANDLE: &str = "imp";
-    const HOST_SEED: u8 = 90;
+    pub(in crate::node) const HOST_SEED: u8 = 90;
     const REPLAY_DIRECT_ADDRESS: &str = "203.0.113.9:4433";
     const SECOND_HOST_SEED: u8 = 91;
     const THIRD_HOST_SEED: u8 = 92;
-    const HOST_RELAY: &str = "https://relay-host.estafette.invalid/";
+    pub(in crate::node) const HOST_RELAY: &str = "https://relay-host.estafette.invalid/";
     const SECOND_HOST_RELAY: &str = "https://relay-second-host.estafette.invalid/";
     const THIRD_HOST_RELAY: &str = "https://relay-third-host.estafette.invalid/";
     const SPEC_HOST_ADDED_WITHIN: Duration = Duration::from_millis(1000);
@@ -1206,7 +1268,7 @@ pub(super) mod tests {
         *secret_key(seed).public().as_bytes()
     }
 
-    fn wall_clock_ms() -> u64 {
+    pub(in crate::node) fn wall_clock_ms() -> u64 {
         u64::try_from(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -1253,6 +1315,24 @@ pub(super) mod tests {
                 directories,
                 _slot: slot,
             }
+        }
+
+        pub(in crate::node) fn locked_card(
+            &self,
+            seed: u8,
+        ) -> (PathBuf, crate::sidecar::HeldSidecar) {
+            let sidecar_path = self.root.join(format!("{seed}-sidecar"));
+            crate::sidecar::create_card(
+                &self.root.join(format!("{seed}-card.toml")),
+                &sidecar_path,
+                "card",
+                [seed; KEY_LEN],
+            )
+            .unwrap();
+            let held =
+                crate::sidecar::claim(&sidecar_path, &card(seed), &crate::sidecar::ThreadSleep)
+                    .unwrap();
+            (sidecar_path, held)
         }
 
         fn network_file(&self, seed: u8) -> PathBuf {
@@ -1343,7 +1423,7 @@ pub(super) mod tests {
         pub(in crate::node) node: Node,
         pub(in crate::node) endpoint: iroh::Endpoint,
         pub(in crate::node) inbox_path: PathBuf,
-        config_path: PathBuf,
+        pub(in crate::node) config_path: PathBuf,
     }
 
     pub(in crate::node) async fn start_members(
@@ -1587,12 +1667,14 @@ pub(super) mod tests {
         handle: Option<&'static str>,
         addr: Addr,
         probes_answered: Arc<std::sync::atomic::AtomicUsize>,
+        introducers: Arc<std::sync::Mutex<Vec<crate::wire::PublicKey>>>,
     }
 
     #[derive(Debug)]
     struct CountingConnections {
         server: DirectServer<WitnessHost>,
         connections: Arc<std::sync::atomic::AtomicUsize>,
+        accepted: Arc<std::sync::Mutex<Vec<iroh::endpoint::Connection>>>,
     }
 
     impl iroh::protocol::ProtocolHandler for CountingConnections {
@@ -1602,6 +1684,7 @@ pub(super) mod tests {
         ) -> Result<(), iroh::protocol::AcceptError> {
             self.connections
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.accepted.lock().unwrap().push(connection.clone());
             self.server.accept(connection).await
         }
     }
@@ -1625,9 +1708,10 @@ pub(super) mod tests {
 
         fn receive_introduce(
             &self,
-            _sender: crate::wire::PublicKey,
+            sender: crate::wire::PublicKey,
             _introduce: Introduce,
         ) -> IntroduceAck {
+            self.introducers.lock().unwrap().push(sender);
             IntroduceAck {
                 v: Version::CURRENT,
                 handle: self.handle.map(str::to_owned),
@@ -1639,16 +1723,18 @@ pub(super) mod tests {
         }
     }
 
-    struct Witness {
+    pub(in crate::node) struct Witness {
         gossip: Gossip,
         topic: NetworkTopic,
         probes_answered: Arc<std::sync::atomic::AtomicUsize>,
+        pub(in crate::node) introducers: Arc<std::sync::Mutex<Vec<crate::wire::PublicKey>>>,
         direct_connections: Arc<std::sync::atomic::AtomicUsize>,
+        pub(in crate::node) accepted: Arc<std::sync::Mutex<Vec<iroh::endpoint::Connection>>>,
         _router: Router,
     }
 
     impl Witness {
-        async fn joined_through(
+        pub(in crate::node) async fn joined_through(
             seed: u8,
             handle: Option<&'static str>,
             through: &iroh::Endpoint,
@@ -1657,16 +1743,20 @@ pub(super) mod tests {
             node_endpoint.replace_address(through.addr());
             let gossip = Gossip::builder().spawn(node_endpoint.endpoint().clone());
             let probes_answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let introducers = Arc::new(std::sync::Mutex::new(Vec::new()));
             let host = WitnessHost {
                 own_card: card(seed),
                 handle,
                 addr: wire_addr(&node_endpoint.endpoint().addr()),
                 probes_answered: Arc::clone(&probes_answered),
+                introducers: Arc::clone(&introducers),
             };
             let direct_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let accepted = Arc::new(std::sync::Mutex::new(Vec::new()));
             let counting = CountingConnections {
                 server: DirectServer::new(keys(), host),
                 connections: Arc::clone(&direct_connections),
+                accepted: Arc::clone(&accepted),
             };
             let router = Router::builder(node_endpoint.endpoint().clone())
                 .accept(DIRECT_ALPN, counting)
@@ -1690,19 +1780,21 @@ pub(super) mod tests {
                 gossip,
                 topic,
                 probes_answered,
+                introducers,
                 direct_connections,
+                accepted,
                 _router: router,
             }
         }
 
-        async fn broadcast_as(&self, signer_seed: u8, payload: Payload) {
+        pub(in crate::node) async fn broadcast_as(&self, signer_seed: u8, payload: Payload) {
             self.topic
                 .broadcast(&secret_key(signer_seed), payload)
                 .await
                 .unwrap();
         }
 
-        async fn payload_where(
+        pub(in crate::node) async fn payload_where(
             &mut self,
             within: Duration,
             mut pick: impl FnMut(&Payload) -> bool + Send,
@@ -1735,7 +1827,11 @@ pub(super) mod tests {
         })
     }
 
-    async fn marker_reaches(member: &Member, witness: &Witness, marker_seed: u8) {
+    pub(in crate::node) async fn marker_reaches(
+        member: &Member,
+        witness: &Witness,
+        marker_seed: u8,
+    ) {
         witness
             .broadcast_as(
                 marker_seed,
@@ -1816,7 +1912,7 @@ pub(super) mod tests {
         drop(scratch);
     }
 
-    async fn status_within(
+    pub(in crate::node) async fn status_within(
         member: &Member,
         seed: u8,
         wanted: impl Fn(Status) -> bool + Send + Sync,
@@ -1910,7 +2006,7 @@ pub(super) mod tests {
         drop(scratch);
     }
 
-    async fn start_witnessed(
+    pub(in crate::node) async fn start_witnessed(
         scratch: &Scratch,
         plan: MemberPlan,
         witness_handle: Option<&'static str>,
@@ -1966,7 +2062,7 @@ pub(super) mod tests {
         })
     }
 
-    fn infrastructure_of(host_seed: u8, relay: &str, ts: u64) -> Payload {
+    pub(in crate::node) fn infrastructure_of(host_seed: u8, relay: &str, ts: u64) -> Payload {
         Payload::Infrastructure(Infrastructure {
             v: Version::CURRENT,
             host: card(host_seed),
@@ -1985,23 +2081,30 @@ pub(super) mod tests {
         })
     }
 
-    fn relay_url(text: &str) -> RelayUrl {
+    pub(in crate::node) fn relay_url(text: &str) -> RelayUrl {
         text.parse().unwrap()
     }
 
-    fn saved_host(member: &Member, host_seed: u8) -> Option<Host> {
+    pub(in crate::node) fn saved_host(
+        config_path: &std::path::Path,
+        host_seed: u8,
+    ) -> Option<Host> {
         let id = render_public_key(&secret_key(host_seed).public());
-        NetworkConfig::load(&member.config_path)
+        NetworkConfig::load(config_path)
             .ok()?
             .hosts
             .into_iter()
             .find(|host| host.id == id)
     }
 
-    async fn host_saved_within(member: &Member, host_seed: u8, within: Duration) -> Option<Host> {
+    pub(in crate::node) async fn host_saved_within(
+        config_path: &std::path::Path,
+        host_seed: u8,
+        within: Duration,
+    ) -> Option<Host> {
         tokio::time::timeout(within, async {
             loop {
-                if let Some(host) = saved_host(member, host_seed) {
+                if let Some(host) = saved_host(config_path, host_seed) {
                     return host;
                 }
                 tokio::time::sleep(LISTING_POLL).await;
@@ -2019,11 +2122,10 @@ pub(super) mod tests {
         }
     }
 
-    async fn relay_map_holds(member: &Member, relay: &str) -> bool {
-        let removed = member.endpoint.remove_relay(&relay_url(relay)).await;
+    pub(in crate::node) async fn relay_map_holds(endpoint: &iroh::Endpoint, relay: &str) -> bool {
+        let removed = endpoint.remove_relay(&relay_url(relay)).await;
         if let Some(entry) = &removed {
-            member
-                .endpoint
+            endpoint
                 .insert_relay(relay_url(relay), Arc::clone(entry))
                 .await;
         }
@@ -2048,13 +2150,13 @@ pub(super) mod tests {
                 infrastructure_of(HOST_SEED, HOST_RELAY, record_ts),
             )
             .await;
-        let saved = host_saved_within(&member, HOST_SEED, SPEC_HOST_ADDED_WITHIN).await;
+        let saved = host_saved_within(&member.config_path, HOST_SEED, SPEC_HOST_ADDED_WITHIN).await;
 
         let saved = saved.unwrap();
         assert_eq!(saved.relay, HOST_RELAY);
         assert_eq!(saved.ts, Some(record_ts));
         assert!(matches!(saved.origin, HostOrigin::Learned { .. }));
-        assert!(relay_map_holds(&member, HOST_RELAY).await);
+        assert!(relay_map_holds(&member.endpoint, HOST_RELAY).await);
         let looked_up = lookup_entry(&member, HOST_SEED).await.unwrap();
         assert_eq!(
             looked_up.relay_urls().cloned().collect::<Vec<_>>(),
@@ -2080,7 +2182,7 @@ pub(super) mod tests {
                 infrastructure_of(HOST_SEED, HOST_RELAY, record_ts),
             )
             .await;
-        host_saved_within(&member, HOST_SEED, PAYLOAD_WAIT)
+        host_saved_within(&member.config_path, HOST_SEED, PAYLOAD_WAIT)
             .await
             .unwrap();
         member
@@ -2107,11 +2209,14 @@ pub(super) mod tests {
                 infrastructure_of(SECOND_HOST_SEED, SECOND_HOST_RELAY, record_ts),
             )
             .await;
-        host_saved_within(&member, SECOND_HOST_SEED, PAYLOAD_WAIT)
+        host_saved_within(&member.config_path, SECOND_HOST_SEED, PAYLOAD_WAIT)
             .await
             .unwrap();
-        assert!(!relay_map_holds(&member, HOST_RELAY).await);
-        assert_eq!(saved_host(&member, HOST_SEED).unwrap().ts, Some(record_ts));
+        assert!(!relay_map_holds(&member.endpoint, HOST_RELAY).await);
+        assert_eq!(
+            saved_host(&member.config_path, HOST_SEED).unwrap().ts,
+            Some(record_ts)
+        );
 
         witness
             .broadcast_as(
@@ -2125,12 +2230,12 @@ pub(super) mod tests {
                 infrastructure_of(THIRD_HOST_SEED, THIRD_HOST_RELAY, record_ts),
             )
             .await;
-        host_saved_within(&member, THIRD_HOST_SEED, PAYLOAD_WAIT)
+        host_saved_within(&member.config_path, THIRD_HOST_SEED, PAYLOAD_WAIT)
             .await
             .unwrap();
-        assert!(relay_map_holds(&member, HOST_RELAY).await);
+        assert!(relay_map_holds(&member.endpoint, HOST_RELAY).await);
         assert_eq!(
-            saved_host(&member, HOST_SEED).unwrap().ts,
+            saved_host(&member.config_path, HOST_SEED).unwrap().ts,
             Some(record_ts + 1)
         );
         drop(scratch);
@@ -2162,13 +2267,13 @@ pub(super) mod tests {
                 infrastructure_of(SECOND_HOST_SEED, SECOND_HOST_RELAY, latest_accepted_ts),
             )
             .await;
-        host_saved_within(&member, SECOND_HOST_SEED, PAYLOAD_WAIT)
+        host_saved_within(&member.config_path, SECOND_HOST_SEED, PAYLOAD_WAIT)
             .await
             .unwrap();
 
-        assert!(saved_host(&member, HOST_SEED).is_none());
-        assert!(!relay_map_holds(&member, HOST_RELAY).await);
-        assert!(relay_map_holds(&member, SECOND_HOST_RELAY).await);
+        assert!(saved_host(&member.config_path, HOST_SEED).is_none());
+        assert!(!relay_map_holds(&member.endpoint, HOST_RELAY).await);
+        assert!(relay_map_holds(&member.endpoint, SECOND_HOST_RELAY).await);
         drop(scratch);
     }
 
@@ -2795,7 +2900,7 @@ pub(super) mod tests {
                 infrastructure_of(HOST_SEED, HOST_RELAY, record_ts),
             )
             .await;
-        host_saved_within(&member, HOST_SEED, PAYLOAD_WAIT)
+        host_saved_within(&member.config_path, HOST_SEED, PAYLOAD_WAIT)
             .await
             .unwrap();
 
@@ -2811,11 +2916,11 @@ pub(super) mod tests {
                 infrastructure_of(SECOND_HOST_SEED, SECOND_HOST_RELAY, record_ts),
             )
             .await;
-        host_saved_within(&member, SECOND_HOST_SEED, PAYLOAD_WAIT)
+        host_saved_within(&member.config_path, SECOND_HOST_SEED, PAYLOAD_WAIT)
             .await
             .unwrap();
 
-        let saved = saved_host(&member, HOST_SEED).unwrap();
+        let saved = saved_host(&member.config_path, HOST_SEED).unwrap();
         assert_eq!(saved.relay, MOVED_HOST_RELAY);
         assert_eq!(saved.ts, Some(record_ts + 1));
         drop(scratch);
