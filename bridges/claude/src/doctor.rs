@@ -248,9 +248,25 @@ fn harness_of_bridge_for_session(own_pid: u32, entries: &[ProcessEntry]) -> Opti
     let ancestors = ancestor_pids(own_pid, entries);
     entries
         .iter()
-        .filter(|entry| is_bridge_process(entry))
-        .filter_map(|entry| entry.arguments.get(1)?.parse().ok())
+        .filter_map(served_harness_pid)
         .find(|harness_pid| ancestors.contains(harness_pid))
+}
+
+/// Names the pid of a bridge process other than this one that already serves the harness process.
+#[must_use]
+pub fn running_bridge_for(harness_pid: u32, own_pid: u32, entries: &[ProcessEntry]) -> Option<u32> {
+    entries
+        .iter()
+        .find(|entry| entry.pid != own_pid && served_harness_pid(entry) == Some(harness_pid))
+        .map(|entry| entry.pid)
+}
+
+fn served_harness_pid(entry: &ProcessEntry) -> Option<u32> {
+    if is_bridge_process(entry) {
+        entry.arguments.get(1)?.parse().ok()
+    } else {
+        None
+    }
 }
 
 fn is_bridge_process(entry: &ProcessEntry) -> bool {

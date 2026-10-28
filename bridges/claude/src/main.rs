@@ -11,11 +11,11 @@ use std::thread;
 use std::time::Instant;
 
 use estafette_bridge_claude::discover::{
-    ProcessTableError, PsProcessTable, RuntimeDirectoryInputs, follow_binary_sockets,
+    ProcessTable, ProcessTableError, PsProcessTable, RuntimeDirectoryInputs, follow_binary_sockets,
 };
 use estafette_bridge_claude::doctor::{
     DoctorInputs, MESSAGING_SOCKET_VARIABLE, MessagingSocket, RUN_SUBCOMMAND, SettingsFile,
-    dropped_frames_path, run_doctor,
+    dropped_frames_path, run_doctor, running_bridge_for,
 };
 use estafette_bridge_claude::inbox_client::{InboxFrame, UnixSocketConnector, follow_inbox};
 use estafette_bridge_claude::inject::SessionNotifier;
@@ -194,7 +194,22 @@ fn follow_binary_socket(session: &Arc<BridgeSession>, socket_path: PathBuf) {
     });
 }
 
-fn run_bridge(harness_pid: u32, environment: &Environment) -> Result<(), CommandError> {
+#[derive(Debug, Eq, PartialEq)]
+enum BridgeOutcome {
+    HarnessExited,
+    AlreadyServed { bridge_pid: u32 },
+}
+
+fn run_bridge(
+    harness_pid: u32,
+    own_pid: u32,
+    environment: &Environment,
+    processes: &impl ProcessTable,
+) -> Result<BridgeOutcome, CommandError> {
+    let entries = processes.list().map_err(CommandError::ProcessTable)?;
+    if let Some(bridge_pid) = running_bridge_for(harness_pid, own_pid, &entries) {
+        return Ok(BridgeOutcome::AlreadyServed { bridge_pid });
+    }
     let socket = environment
         .messaging_socket
         .clone()
@@ -217,7 +232,7 @@ fn run_bridge(harness_pid: u32, environment: &Environment) -> Result<(), Command
     follow_binary_sockets(
         harness_pid,
         &runtime_inputs,
-        &PsProcessTable,
+        processes,
         &mut thread::sleep,
         &mut |sockets| {
             for socket_path in sockets {
@@ -227,7 +242,8 @@ fn run_bridge(harness_pid: u32, environment: &Environment) -> Result<(), Command
             }
         },
     )
-    .map_err(CommandError::ProcessTable)
+    .map_err(CommandError::ProcessTable)?;
+    Ok(BridgeOutcome::HarnessExited)
 }
 
 fn read_settings_file(path: PathBuf) -> Result<Option<SettingsFile>, CommandError> {
@@ -309,9 +325,20 @@ fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
     let environment = read_environment();
     match parse_command(&arguments) {
-        Some(Command::Run { harness_pid }) => {
-            exit_code_of(run_bridge(harness_pid, &environment).map(|()| true))
-        }
+        Some(Command::Run { harness_pid }) => exit_code_of(
+            run_bridge(
+                harness_pid,
+                std::process::id(),
+                &environment,
+                &PsProcessTable,
+            )
+            .map(|outcome| {
+                if let BridgeOutcome::AlreadyServed { bridge_pid } = outcome {
+                    eprintln!("bridge {bridge_pid} already serves process {harness_pid}");
+                }
+                true
+            }),
+        ),
         Some(Command::Doctor { project_dir }) => {
             exit_code_of(run_doctor_command(project_dir, &environment))
         }
@@ -325,6 +352,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use estafette_bridge_claude::discover::ProcessEntry;
 
     fn arguments(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
@@ -365,5 +393,57 @@ mod tests {
         ] {
             assert_eq!(parse_command(&arguments(refused)), None, "{refused:?}");
         }
+    }
+
+    struct FixedProcessTable(Vec<ProcessEntry>);
+
+    impl ProcessTable for FixedProcessTable {
+        fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn bare_environment() -> Environment {
+        Environment {
+            messaging_socket: None,
+            messaging_token: None,
+            home: None,
+            claude_config_dir: None,
+            xdg_runtime_dir: None,
+            temporary_dir: PathBuf::from("/tmp"),
+        }
+    }
+
+    fn bridge_process(pid: u32, harness_pid: &str) -> ProcessEntry {
+        ProcessEntry {
+            pid,
+            parent_pid: 1,
+            executable: Some("/opt/bin/estafette-bridge-claude".to_owned()),
+            arguments: vec!["run".to_owned(), harness_pid.to_owned()],
+        }
+    }
+
+    #[test]
+    fn spec_3_12_a_second_start_for_the_same_harness_leaves_the_running_bridge_alone() {
+        let running = FixedProcessTable(vec![
+            bridge_process(900, "100"),
+            bridge_process(700, "100"),
+            bridge_process(701, "999"),
+        ]);
+        assert_eq!(
+            run_bridge(100, 900, &bare_environment(), &running).expect("guarded start"),
+            BridgeOutcome::AlreadyServed { bridge_pid: 700 }
+        );
+        let only_itself_and_another_session =
+            FixedProcessTable(vec![bridge_process(900, "100"), bridge_process(701, "999")]);
+        assert!(matches!(
+            run_bridge(
+                100,
+                900,
+                &bare_environment(),
+                &only_itself_and_another_session
+            ),
+            Err(CommandError::MissingVariable(MESSAGING_SOCKET_VARIABLE))
+        ));
     }
 }
