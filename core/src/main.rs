@@ -518,6 +518,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use clap::CommandFactory;
+    #[cfg(feature = "relay")]
+    use estafette::crypto::KEY_LEN;
 
     use super::*;
 

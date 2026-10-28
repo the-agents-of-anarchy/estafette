@@ -460,7 +460,6 @@ async fn start_observation(
     let own_card = *secret_key.public().as_bytes();
     let (to_loop, from_loop) = mpsc::unbounded_channel();
     let host = Arc::new(ObserverHost {
-        own_card,
         endpoint: endpoint.endpoint().clone(),
         table: Mutex::new(PeerTable::new(own_card)),
         clock: effects.clock,
@@ -509,7 +508,6 @@ enum ObserverEvent {
 
 /// The direct protocol host of an observer: no card, no inbox, and an introduction without a handle.
 struct ObserverHost {
-    own_card: wire::PublicKey,
     endpoint: iroh::Endpoint,
     table: Mutex<PeerTable>,
     clock: Clock,
@@ -551,8 +549,8 @@ impl DirectHost for Arc<ObserverHost> {
         false
     }
 
-    fn own_card(&self) -> wire::PublicKey {
-        self.own_card
+    fn own_card(&self) -> Option<wire::PublicKey> {
+        None
     }
 
     fn is_attached(&self) -> bool {
@@ -1501,8 +1499,8 @@ mod tests {
             false
         }
 
-        fn own_card(&self) -> wire::PublicKey {
-            self.card
+        fn own_card(&self) -> Option<wire::PublicKey> {
+            Some(self.card)
         }
 
         fn is_attached(&self) -> bool {
