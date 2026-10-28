@@ -179,10 +179,10 @@ impl PresenceLoop {
             .collect()
     }
 
-    /// Closes the endpoint with the direct listener and the gossip instance on it, and with them every connection.
+    /// Closes the endpoint with the direct listener and the gossip instance on it, and with them every connection, recording a shutdown that failed.
     async fn close_endpoint(&self) {
-        match self.router.shutdown().await {
-            Ok(()) | Err(_) => {}
+        if let Err(failure) = self.router.shutdown().await {
+            (self.report)(NodeRecord::RouterShutdownFailed(failure));
         }
     }
 

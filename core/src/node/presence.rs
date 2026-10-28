@@ -15,7 +15,7 @@ use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey, Signature, TransportAd
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 use n0_future::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
 use tokio::time::{Instant, sleep_until};
 
 use super::rebind::{MemberJoins, RebindSchedule, RelayProbe};
@@ -123,6 +123,7 @@ pub enum NodeRecord {
     TopicFailed(GossipError),
     TopicClosed,
     Rebinding,
+    RouterShutdownFailed(JoinError),
     RebindFailed(BindError),
 }
 
@@ -141,6 +142,10 @@ impl fmt::Display for NodeRecord {
             }
             Self::Rebinding => formatter.write_str(
                 "rebinding the endpoint: no gossip payload was heard for the deaf timeout, or the join gained no neighbor",
+            ),
+            Self::RouterShutdownFailed(source) => write!(
+                formatter,
+                "the old endpoint's listeners did not shut down cleanly before the rebind: {source}"
             ),
             Self::RebindFailed(source) => write!(
                 formatter,
