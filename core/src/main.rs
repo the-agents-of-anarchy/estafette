@@ -1,5 +1,6 @@
 use std::fmt;
 use std::io::{self, Write};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,7 +21,7 @@ use estafette::node::{
     Exit, Network, NodeEffects, NodeError, NodeRecord, RuntimeShutdown, ShutdownSignal,
     relay_answers,
 };
-use estafette::sidecar::ThreadSleep;
+use estafette::sidecar::{self, ThreadSleep};
 use estafette::wire::Nonce;
 use iroh::SecretKey;
 use tokio::runtime::Runtime;
@@ -219,6 +220,9 @@ fn server_effects(inbox: Arc<InboxSocket>) -> ServerEffects {
         }),
         registry: Arc::new(OperatingSystemFilesystem),
         pause_between_lock_tries: Arc::new(std::thread::sleep),
+        is_card_held: Arc::new(|sidecar_path: &Path| {
+            sidecar::is_held(sidecar_path).is_ok_and(|held| held)
+        }),
         report: Arc::new(|record: ServerRecord| drop(writeln!(io::stderr(), "{record}"))),
     }
 }

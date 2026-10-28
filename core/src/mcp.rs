@@ -91,6 +91,8 @@ pub struct ServerEffects {
     pub registry: Arc<dyn CardRegistryReader + Send + Sync>,
     /// Blocks the calling thread between two tries of a card's sidecar lock.
     pub pause_between_lock_tries: Arc<dyn Fn(Duration) + Send + Sync>,
+    /// Whether a sidecar's lock is taken, learned by trying it and releasing it at once.
+    pub is_card_held: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
     /// The run record, written to standard error by the command-line layer; it must not block.
     pub report: Arc<dyn Fn(ServerRecord) + Send + Sync>,
 }
@@ -99,6 +101,7 @@ pub struct ServerEffects {
 #[derive(Debug)]
 pub enum ServerRecord {
     LockTaskFailed(JoinError),
+    ListingTaskFailed(JoinError),
     NetworkRefused(NodeError),
     EndpointUnbound(BindError),
     NodeNotStarted(NodeError),
@@ -113,6 +116,10 @@ impl fmt::Display for ServerRecord {
                 formatter,
                 "init answered {}: the sidecar lock task did not finish: {source}",
                 LOCK_TASK_FAILED.code()
+            ),
+            Self::ListingTaskFailed(source) => write!(
+                formatter,
+                "list_cards listed no card: the listing task did not finish: {source}"
             ),
             Self::NetworkRefused(source) | Self::NodeNotStarted(source) => write!(
                 formatter,
@@ -187,7 +194,7 @@ struct Server {
     session: Arc<Session>,
     init_gate: tokio::sync::Mutex<()>,
     claimed: Mutex<Option<ClaimedCard>>,
-    served: ServedNetwork,
+    served: Arc<ServedNetwork>,
     effects: ServerEffects,
 }
 
@@ -199,12 +206,12 @@ struct ClaimedCard {
 
 impl Server {
     /// A server whose session has claimed no card yet.
-    const fn new(session: Arc<Session>, served: ServedNetwork, effects: ServerEffects) -> Self {
+    fn new(session: Arc<Session>, served: ServedNetwork, effects: ServerEffects) -> Self {
         Self {
             session,
             init_gate: tokio::sync::Mutex::const_new(()),
             claimed: Mutex::new(None),
-            served,
+            served: Arc::new(served),
             effects,
         }
     }
@@ -214,7 +221,7 @@ impl Server {
         match ToolName::named(tool).ok_or(ErrorCode::BadRequest)? {
             ToolName::ListCards => {
                 input_of::<NoInput>(arguments)?;
-                Ok(self.list_cards())
+                Ok(self.list_cards().await)
             }
             ToolName::Init => self.init(input_of(arguments)?).await,
             ToolName::Peers => {
@@ -390,67 +397,29 @@ impl Server {
         self.claimed.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Every card of the registry in name order, each with whether its sidecar lock is taken.
-    fn list_cards(&self) -> ToolResult {
-        let mut cards: Vec<ListedCard> = self
-            .registry_cards()
-            .into_iter()
-            .map(|(name, card)| ListedCard {
-                held: self.is_held(&name),
-                name: name.as_str().to_owned(),
-                handle: card.handle,
-            })
-            .collect();
-        cards.sort_by(|first, second| first.name.cmp(&second.name));
-        ToolResult::Cards { cards }
-    }
-
-    /// The cards of this network's registry whose name and text are valid, an empty list when the registry cannot be read.
-    fn registry_cards(&self) -> Vec<(Handle, Card)> {
-        let Ok(cards_directory) = self
-            .served
-            .directories
-            .cards_directory(self.served.network.as_str())
-        else {
-            return Vec::new();
-        };
-        let Ok(entries) = self.effects.registry.read_directory(&cards_directory) else {
-            return Vec::new();
-        };
-        entries
-            .iter()
-            .filter_map(|path| self.registry_card_at(path))
-            .collect()
-    }
-
-    /// The card at the path with its name, when the path is a card file whose stem is a card name and whose text is a card.
-    fn registry_card_at(&self, path: &Path) -> Option<(Handle, Card)> {
-        if path.extension()? != CARD_EXTENSION {
-            return None;
-        }
-        let name = path.file_stem()?.to_str()?.parse().ok()?;
-        let card = self.effects.registry.read_text(path).ok()?.parse().ok()?;
-        Some((name, card))
-    }
-
-    /// Whether the card's sidecar lock is taken: held without a try for the card this session claimed, otherwise tried and released at once.
-    fn is_held(&self, card: &Handle) -> bool {
-        self.is_claimed_here(card) || self.is_locked_elsewhere(card)
-    }
-
-    /// Whether this session claimed the card.
-    fn is_claimed_here(&self, card: &Handle) -> bool {
-        self.claimed_card()
+    /// Every card of the registry in name order, each with whether its sidecar lock is taken, read off the runtime's threads.
+    async fn list_cards(&self) -> ToolResult {
+        let served = Arc::clone(&self.served);
+        let registry = Arc::clone(&self.effects.registry);
+        let is_card_held = Arc::clone(&self.effects.is_card_held);
+        let claimed = self
+            .claimed_card()
             .as_ref()
-            .is_some_and(|claimed| &claimed.card == card)
-    }
-
-    /// Whether trying the card's sidecar lock finds it taken, releasing it at once.
-    fn is_locked_elsewhere(&self, card: &Handle) -> bool {
-        self.served
-            .directories
-            .card_sidecar_file(self.served.network.as_str(), card.as_str())
-            .is_ok_and(|sidecar_path| sidecar::is_held(&sidecar_path).is_ok_and(|held| held))
+            .map(|claimed| claimed.card.clone());
+        let listing = tokio::task::spawn_blocking(move || {
+            listed_cards(
+                &served,
+                registry.as_ref(),
+                is_card_held.as_ref(),
+                claimed.as_ref(),
+            )
+        })
+        .await;
+        let cards = listing.unwrap_or_else(|failure| {
+            (self.effects.report)(ServerRecord::ListingTaskFailed(failure));
+            Vec::new()
+        });
+        ToolResult::Cards { cards }
     }
 
     /// The caller as this session knows it now.
@@ -522,6 +491,67 @@ fn tool_result(envelope: &Envelope) -> Result<CallToolResult, ErrorData> {
 /// The library's internal error for a result that cannot be rendered as JSON.
 fn unserializable(error: &serde_json::Error) -> ErrorData {
     ErrorData::internal_error(error.to_string(), None)
+}
+
+/// Every card of the registry in name order, held without a try for the card this session claimed and by the probe otherwise.
+fn listed_cards(
+    served: &ServedNetwork,
+    registry: &(dyn CardRegistryReader + Send + Sync),
+    is_card_held: &(dyn Fn(&Path) -> bool + Send + Sync),
+    claimed: Option<&Handle>,
+) -> Vec<ListedCard> {
+    let mut cards: Vec<ListedCard> = registry_cards(served, registry)
+        .into_iter()
+        .map(|(name, card)| ListedCard {
+            held: claimed == Some(&name) || is_locked(served, is_card_held, &name),
+            name: name.as_str().to_owned(),
+            handle: card.handle,
+        })
+        .collect();
+    cards.sort_by(|first, second| first.name.cmp(&second.name));
+    cards
+}
+
+/// The cards of the network's registry whose name and text are valid, an empty list when the registry cannot be read.
+fn registry_cards(
+    served: &ServedNetwork,
+    registry: &(dyn CardRegistryReader + Send + Sync),
+) -> Vec<(Handle, Card)> {
+    let Ok(cards_directory) = served.directories.cards_directory(served.network.as_str()) else {
+        return Vec::new();
+    };
+    let Ok(entries) = registry.read_directory(&cards_directory) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|path| registry_card_at(registry, path))
+        .collect()
+}
+
+/// The card at the path with its name, when the path is a card file whose stem is a card name and whose text is a card.
+fn registry_card_at(
+    registry: &(dyn CardRegistryReader + Send + Sync),
+    path: &Path,
+) -> Option<(Handle, Card)> {
+    if path.extension()? != CARD_EXTENSION {
+        return None;
+    }
+    let name = path.file_stem()?.to_str()?.parse().ok()?;
+    let card = registry.read_text(path).ok()?.parse().ok()?;
+    Some((name, card))
+}
+
+/// Whether the probe finds the card's sidecar lock taken.
+fn is_locked(
+    served: &ServedNetwork,
+    is_card_held: &(dyn Fn(&Path) -> bool + Send + Sync),
+    card: &Handle,
+) -> bool {
+    served
+        .directories
+        .card_sidecar_file(served.network.as_str(), card.as_str())
+        .is_ok_and(|sidecar_path| is_card_held(&sidecar_path))
 }
 
 /// The relays of the configuration's hosts, which the endpoint's relay map starts from (spec 3.8).
@@ -1255,6 +1285,9 @@ mod tests {
             bind_endpoint: plan.bind_endpoint,
             registry: Arc::new(OperatingSystemFilesystem),
             pause_between_lock_tries: Arc::new(std::thread::sleep),
+            is_card_held: Arc::new(|sidecar_path: &Path| {
+                sidecar::is_held(sidecar_path).is_ok_and(|held| held)
+            }),
             report: plan.report,
         };
         let (server_input, to_server) = tokio::io::simplex(PIPE_BYTES);
