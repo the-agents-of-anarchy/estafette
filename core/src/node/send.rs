@@ -9,8 +9,6 @@ use crate::payload::ZERO_MAC;
 use crate::peers::Peer;
 use crate::wire::{self, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, MessageId, Version};
 
-const REASON_TOO_LARGE: &str = "too_large";
-
 /// What a delivered message reports: its id and whether the recipient's inbox has a client attached.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {
@@ -139,7 +137,7 @@ const fn refuse_oversized(body: &str) -> Result<(), ErrorCode> {
 
 /// The error code a recipient's refusal reason names, `refused` when it names no code the recipient sends.
 fn refusal_error(reason: Option<&str>) -> ErrorCode {
-    if reason == Some(REASON_TOO_LARGE) {
+    if reason == Some(ErrorCode::TooLarge.code()) {
         ErrorCode::TooLarge
     } else {
         ErrorCode::Refused
