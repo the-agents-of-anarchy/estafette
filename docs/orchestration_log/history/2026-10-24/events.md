@@ -375,3 +375,23 @@
 2026-10-24T16:15 | self:claude-fable-5-1 | delegation | integrate-U17 (sonnet): ff 59a34fc onto integration -> reports/integrator-U17.md
 2026-10-24T16:17 | self:claude-fable-5-1 | receipt | integrate-U17 Result PASS at 59a34fc; main fast-forwarded; architecture_log entry on the nonce source and gate sink written
 2026-10-24T16:17 | self:claude-fable-5-1 | delegation | impl-U18 direct and impl-U19 gossip (sonnet, implementer, worktrees) launched from briefs implementer-U18-direct.md, implementer-U19-gossip.md
+2026-10-24T16:18 | self:claude-fable-5-1 | receipt | impl-U31 continuation 1 DONE at 4c705a1: fake-server race removed, 100+100 clean runs, two error tests; peer content
+2026-10-24T16:19 | self:claude-fable-5-1 | discovery | retracts the 15:51 push discovery: the first main push failed because zsh read $RH:refs as the :r modifier (src refspec 7242537...defs/heads/main); fix is ${RH}:refs/heads/main; no remote race existed
+2026-10-24T16:19 | self:claude-fable-5-1 | review | spec-U31 re-review 2 PASS 131822 at 4c705a1; quality-U31 continued
+2026-10-28T05:01 | self:claude-fable-5-1 | discovery | weekly usage limit stopped the session 2026-10-24T16:20 and reset 2026-10-28T05:00; impl-U18 and impl-U19 stopped before binding, quality-U31 re-review stopped mid-run; resumed one at a time by SendMessage, cheapest first
+2026-10-28T05:01 | self:claude-fable-5-1 | receipt | [hazard] from trainer-u3 and manifesto-steward 2026-10-26: manifesto plugin 4.0.0 reads only .manifestos/config.yaml; this session keeps 3.6.0 hooks until restart; 3.6.0 cache paths the briefs cite still exist
+2026-10-28T05:01 | self:claude-fable-5-1 | decision | solved: keep .manifestos.yaml in place until this session restarts (the schema's products list names it; a move amends the schema on the owner's word), then run uvx unharness@4.0.0 doctor and the mkdir/mv lines before /reload-plugins; alternative: move now and amend the products list by an events line
+2026-10-28T05:01 | self:claude-fable-5-1 | decision | solved: this span keeps writing scratch under docs/orchestration_log/recon/2026-10-24/ (the span's start date; scripts bind to it); alternative: a new recon/2026-10-28/ directory
+2026-10-28T05:02 | self:claude-fable-5-1 | review | quality-U31 re-review 131945 Ready With fixes: Important wildcard arm over a closed enum in test code; impl-U31 continued (cycle 2); impl-U18 resumed next
+2026-10-28T05:03 | self:claude-fable-5-1 | decision | solved: U18's worktree vanished at the limit stop (branch gone too); recreated at the same path with git worktree add -b worktree-agent-a0e7046ffaaa7fc7d from 7242537 and the implementer continued, per route-on-status; alternative: a fresh implementer
+2026-10-28T05:03 | self:claude-fable-5-1 | receipt | impl-U18 BLOCKED: worktree gone after the limit stop, no code written; peer content
+2026-10-28T05:03 | self:claude-fable-5-1 | decision | solved for U18: invalid UTF-8 fails the wire decode and resets the stream, too_large answers only a body over 1,048,576 bytes (spec:673); a close without a response resets and the client reports refused; errors.rs code accessor made public rather than duplicating reason strings; alternative: a raw-body decode path yielding too_large for invalid UTF-8
+2026-10-28T05:03 | self:claude-fable-5-1 | decision | solved: impl-U19 resumed while impl-U18 runs — the weekly limit reset leaves a whole budget, so the serial-resume rule's cause (a 5-hour limit hit again) is absent; alternative: resume U19 after U18 reports
+2026-10-28T05:06 | self:claude-fable-5-1 | receipt | impl-U31 continuation 2 DONE at 1b361cd, test-only; peer content
+2026-10-28T05:07 | self:claude-fable-5-1 | review | spec-U31 re-review 3 PASS 030608 at 1b361cd; quality-U31 continued
+2026-10-28T05:08 | self:claude-fable-5-1 | review | quality-U31 re-review 2 030716 Ready Yes; five Minor; U31 passed both reviews at cycle 2
+2026-10-28T05:08 | self:claude-fable-5-1 | delegation | integrate-U31 (sonnet): ff 1b361cd onto integration -> reports/integrator-U31.md
+2026-10-28T05:10 | self:claude-fable-5-1 | receipt | impl-U19 DONE_WITH_CONCERNS at bd3ef71: NetworkTopic over vendored iroh-gossip, 10 tests, n0-future dep; peer content
+2026-10-28T05:10 | self:claude-fable-5-1 | delegation | classify-U19 round 1 -> reports/classifier-U19.md
+2026-10-28T05:11 | self:claude-fable-5-1 | receipt | integrate-U31 Result PASS at 1b361cd; main fast-forwarded to 1b361cd
+2026-10-28T05:11 | self:claude-fable-5-1 | delegation | impl-U32 bridge-inject (sonnet, implementer, worktree) launched from prompts/implementer-U32-bridge-inject.md
