@@ -314,13 +314,13 @@ impl Drop for Node {
 }
 
 /// A known host's node id and relay, as the configuration names them.
-pub(super) struct KnownHostAddress {
-    pub(super) id: EndpointId,
-    pub(super) relay: RelayUrl,
+pub struct KnownHostAddress {
+    pub id: EndpointId,
+    pub relay: RelayUrl,
 }
 
 /// The node id and relay of every host of the configuration, refusing a host whose id or relay does not parse.
-fn known_host_addresses(config: &NetworkConfig) -> Result<Vec<KnownHostAddress>, NodeError> {
+pub fn known_host_addresses(config: &NetworkConfig) -> Result<Vec<KnownHostAddress>, NodeError> {
     config.hosts.iter().map(known_host_address).collect()
 }
 
@@ -336,7 +336,7 @@ fn known_host_address(host: &Host) -> Result<KnownHostAddress, NodeError> {
 }
 
 /// Gives each known host whose lookup entry holds no address its relay as its only address (spec 3.8).
-pub(super) fn seed_lookup_with_known_hosts(endpoint: &NodeEndpoint, hosts: &[KnownHostAddress]) {
+pub fn seed_lookup_with_known_hosts(endpoint: &NodeEndpoint, hosts: &[KnownHostAddress]) {
     for host in hosts {
         if endpoint.address_of(host.id).is_none() {
             endpoint.replace_address(EndpointAddr::from_parts(
@@ -348,17 +348,14 @@ pub(super) fn seed_lookup_with_known_hosts(endpoint: &NodeEndpoint, hosts: &[Kno
 }
 
 /// Serves the direct protocol and a fresh gossip instance on the endpoint, returning the router that shuts both down with the endpoint, and the gossip.
-pub(super) fn serve(
+pub fn serve<H: DirectHost + Clone>(
     endpoint: &NodeEndpoint,
     keys: &NetworkKeys,
-    state: &Arc<NodeState>,
+    host: &H,
 ) -> (Router, Gossip) {
     let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
     let router = Router::builder(endpoint.endpoint().clone())
-        .accept(
-            DIRECT_ALPN,
-            DirectServer::new(keys.clone(), Arc::clone(state)),
-        )
+        .accept(DIRECT_ALPN, DirectServer::new(keys.clone(), host.clone()))
         .accept(GOSSIP_ALPN, gossip.clone())
         .spawn();
     (router, gossip)
@@ -970,12 +967,12 @@ impl PresenceLoop {
 }
 
 /// When the observer wait that starts at `joined` is over.
-fn observer_wait_over_at(joined: Instant) -> Instant {
+pub fn observer_wait_over_at(joined: Instant) -> Instant {
     joined.checked_add(OBSERVER_WAIT).unwrap_or(joined)
 }
 
 /// Sleeps until the deadline, or forever when there is none.
-async fn sleep_until_deadline(deadline: Option<Instant>) {
+pub async fn sleep_until_deadline(deadline: Option<Instant>) {
     match deadline {
         Some(deadline) => sleep_until(deadline).await,
         None => std::future::pending().await,
@@ -1208,12 +1205,12 @@ pub(super) fn message_id_text(id: wire::MessageId) -> String {
 }
 
 /// The card as an iroh node id, or none when its bytes are not a valid key.
-pub(super) fn endpoint_id(card: &wire::PublicKey) -> Option<EndpointId> {
+pub fn endpoint_id(card: &wire::PublicKey) -> Option<EndpointId> {
     EndpointId::from_bytes(card).ok()
 }
 
 /// The wire form of an endpoint address, within the caps of spec 3.6.
-pub(super) fn wire_addr(addr: &EndpointAddr) -> Addr {
+pub fn wire_addr(addr: &EndpointAddr) -> Addr {
     Addr::from_endpoint_report(
         addr.relay_urls().map(ToString::to_string),
         addr.ip_addrs().copied(),
@@ -1221,7 +1218,7 @@ pub(super) fn wire_addr(addr: &EndpointAddr) -> Addr {
 }
 
 /// The endpoint address of the node at a carried wire address, leaving out relay URLs that do not parse.
-fn endpoint_addr(id: EndpointId, addr: &Addr) -> EndpointAddr {
+pub fn endpoint_addr(id: EndpointId, addr: &Addr) -> EndpointAddr {
     let relays = addr
         .relays()
         .iter()

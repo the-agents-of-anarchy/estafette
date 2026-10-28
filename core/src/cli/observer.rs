@@ -5,39 +5,36 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
 
 use clap::Subcommand;
 use data_encoding::HEXLOWER;
+use iroh::SecretKey;
 use iroh::endpoint::BindError;
-use iroh::protocol::Router;
-use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr};
-use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Instant, sleep_until};
+use tokio::time::Instant;
 
 use crate::card::{Card, CardInvalid};
 use crate::cli::network::NetworkFilesystem;
-use crate::config::{ConfigError, Host, NetworkConfig};
+use crate::config::{ConfigError, NetworkConfig};
 use crate::crypto::GateKey;
 use crate::dirs::{Directories, DirectoriesError};
 use crate::errors::ErrorCode;
 use crate::handle::{AnnouncedHandle, Handle, HandleError, LocalHandle};
 use crate::inbox::socket::{InboxSocket, InboxSocketError};
 use crate::keys::{KeyError, parse_public_key};
-use crate::net::direct::{ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer};
-use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
+use crate::net::direct::{ClientTimeouts, DirectClient, DirectError, DirectHost};
+use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
-    DEPARTURE_WAIT, Delivery, Identity, Network, Node, NodeEffects, NodeError, NodeRecord,
-    RelayProbe, Session,
+    DEPARTURE_WAIT, Delivery, Identity, KnownHostAddress, Network, Node, NodeEffects, NodeError,
+    NodeRecord, RelayProbe, Session, endpoint_addr, endpoint_id, known_host_addresses,
+    observer_wait_over_at, seed_lookup_with_known_hosts, serve, sleep_until_deadline, wire_addr,
 };
 use crate::payload::ZERO_MAC;
 use crate::peers::{Effect, Peer, PeerTable, Status};
 use crate::sidecar::{HeldSidecar, Pause, SEED_BYTES, SidecarError, claim, create_card};
 use crate::wire::{self, Addr, Introduce, IntroduceAck, Message, Nonce, Payload, Version};
 
-const OBSERVER_WAIT: Duration = Duration::from_millis(3000);
 const OBSERVER_PUBLIC: &[u8] = b"{}";
 const OPERATOR_CARD: &str = "operator";
 const DELIVERED_KIND: &str = "delivered";
@@ -377,17 +374,11 @@ enum Mode {
     Tail,
 }
 
-/// A host of the network configuration as an iroh node id and relay.
-struct KnownHost {
-    id: EndpointId,
-    relay: RelayUrl,
-}
-
 /// What a network command needs from its configuration file: the keys, the owner and the hosts.
 struct NetworkSetup {
     network: Network,
     owner: iroh::PublicKey,
-    hosts: Vec<KnownHost>,
+    hosts: Vec<KnownHostAddress>,
 }
 
 /// Reads and validates the configuration file of the network.
@@ -399,12 +390,7 @@ fn load_network_setup(
         .network_config_file(network.as_str())
         .map_err(Failure::Directories)?;
     let config = NetworkConfig::load(&path).map_err(Failure::Config)?;
-    let hosts = config
-        .hosts
-        .iter()
-        .map(known_host)
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(Failure::Node)?;
+    let hosts = known_host_addresses(&config).map_err(Failure::Node)?;
     let owner = parse_public_key(&config.owner).map_err(|source| {
         Failure::Node(NodeError::NetworkKeyInvalid {
             field: OWNER_FIELD,
@@ -417,29 +403,6 @@ fn load_network_setup(
         owner,
         hosts,
     })
-}
-
-/// The node id and relay of a configured host, refusing one that does not parse.
-fn known_host(host: &Host) -> Result<KnownHost, NodeError> {
-    let invalid = || NodeError::KnownHostInvalid {
-        id: host.id.clone(),
-    };
-    Ok(KnownHost {
-        id: parse_public_key(&host.id).map_err(|_unparsed| invalid())?,
-        relay: host.relay.parse().map_err(|_unparsed| invalid())?,
-    })
-}
-
-/// Gives each known host without a lookup entry its relay as its only address.
-fn seed_lookup_with_known_hosts(endpoint: &NodeEndpoint, hosts: &[KnownHost]) {
-    for host in hosts {
-        if endpoint.address_of(host.id).is_none() {
-            endpoint.replace_address(EndpointAddr::from_parts(
-                host.id,
-                [TransportAddr::Relay(host.relay.clone())],
-            ));
-        }
-    }
 }
 
 /// Runs an observer node without a card on a fresh key and returns the peers it learned.
@@ -470,14 +433,7 @@ async fn observe(
         clock: effects.clock,
         to_loop,
     });
-    let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
-    let router = Router::builder(endpoint.endpoint().clone())
-        .accept(
-            DIRECT_ALPN,
-            DirectServer::new(keys.clone(), Arc::clone(&host)),
-        )
-        .accept(GOSSIP_ALPN, gossip.clone())
-        .spawn();
+    let (router, gossip) = serve(&endpoint, keys, &host);
     let topic = NetworkTopic::join(
         &gossip,
         keys.clone(),
@@ -548,10 +504,7 @@ impl ObserverHost {
             handle: None,
             public: OBSERVER_PUBLIC.to_vec(),
             attached: false,
-            addr: Addr::from_endpoint_report(
-                own_address.relay_urls().map(ToString::to_string),
-                own_address.ip_addrs().copied(),
-            ),
+            addr: wire_addr(&own_address),
             mac: ZERO_MAC,
         }
     }
@@ -635,9 +588,8 @@ impl Observation {
             GossipEvent::Joined | GossipEvent::JoinTimedOut => match self.mode {
                 Mode::ShowPeers => {
                     let joined_at = (self.monotonic)();
-                    self.wait_over.get_or_insert_with(|| {
-                        joined_at.checked_add(OBSERVER_WAIT).unwrap_or(joined_at)
-                    });
+                    self.wait_over
+                        .get_or_insert_with(|| observer_wait_over_at(joined_at));
                 }
                 Mode::Tail => {}
             },
@@ -715,21 +667,14 @@ impl Observation {
 
     /// Replaces the card's lookup entry with the carried address.
     fn replace_lookup_entry(&self, card: &wire::PublicKey, addr: &Addr) {
-        if let Ok(id) = EndpointId::from_bytes(card) {
-            let relays = addr
-                .relays()
-                .iter()
-                .filter_map(|relay| relay.as_str().parse().ok())
-                .map(TransportAddr::Relay);
-            let direct = addr.direct().iter().copied().map(TransportAddr::Ip);
-            self.endpoint
-                .replace_address(EndpointAddr::from_parts(id, relays.chain(direct)));
+        if let Some(id) = endpoint_id(card) {
+            self.endpoint.replace_address(endpoint_addr(id, addr));
         }
     }
 
     /// Sends this observer's Introduce to the card in a task and hands the answer to the loop.
     fn introduce_in_background(&self, card: wire::PublicKey) {
-        let Ok(id) = EndpointId::from_bytes(&card) else {
+        let Some(id) = endpoint_id(&card) else {
             return;
         };
         let client = Arc::clone(&self.client);
@@ -739,13 +684,6 @@ impl Observation {
             let answer = client.introduce(id, introduction).await;
             host.hand_to_loop(ObserverEvent::IntroduceAnswered { card, answer });
         });
-    }
-}
-
-async fn sleep_until_deadline(deadline: Option<Instant>) {
-    match deadline {
-        Some(deadline) => sleep_until(deadline).await,
-        None => std::future::pending().await,
     }
 }
 
@@ -1443,6 +1381,7 @@ mod tests {
         drop(lab);
     }
 
+    #[derive(Clone)]
     struct RecordingNeighbor {
         card: wire::PublicKey,
         introduces: Arc<Mutex<Vec<Introduce>>>,
@@ -1484,7 +1423,7 @@ mod tests {
     }
 
     struct SilentNeighbor {
-        _router: Router,
+        _router: iroh::protocol::Router,
         _topic: NetworkTopic,
         address: EndpointAddr,
         introduces: Arc<Mutex<Vec<Introduce>>>,
@@ -1493,20 +1432,11 @@ mod tests {
     async fn start_silent_neighbor() -> SilentNeighbor {
         let endpoint = bind_endpoint(secret_key(NEIGHBOR_SEED)).await;
         let introduces = Arc::new(Mutex::new(Vec::new()));
-        let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
-        let router = Router::builder(endpoint.endpoint().clone())
-            .accept(
-                DIRECT_ALPN,
-                DirectServer::new(
-                    network_keys(),
-                    RecordingNeighbor {
-                        card: *secret_key(NEIGHBOR_SEED).public().as_bytes(),
-                        introduces: Arc::clone(&introduces),
-                    },
-                ),
-            )
-            .accept(GOSSIP_ALPN, gossip.clone())
-            .spawn();
+        let neighbor = RecordingNeighbor {
+            card: *secret_key(NEIGHBOR_SEED).public().as_bytes(),
+            introduces: Arc::clone(&introduces),
+        };
+        let (router, gossip) = serve(&endpoint, &network_keys(), &neighbor);
         let topic = NetworkTopic::join(
             &gossip,
             network_keys(),
