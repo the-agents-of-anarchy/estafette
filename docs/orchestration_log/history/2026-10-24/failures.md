@@ -15,3 +15,11 @@ What happened: What happened: every CI run on main from b318cdd (2026-10-24 12:4
 Mechanism: Mechanism: the ci-watch convention names a recurring check by commit, but the lead's heartbeat prompt and wakes carried no CI step, and the session was stopped by the weekly limit for 3.5 days; the local gate on the Mac passed each time, so nothing in the loop looked at Linux.
 
 Correction: Correction: the heartbeat prompt gains the CI check by commit; main fast-forwards hold until CI is green; a diagnosis agent reads the failed logs now and the owning unit's implementer fixes the cause.
+
+## U23 first launch lost its report and binding with its worktree
+
+What happened: The U23 implementer reported BLOCKED with no commit; its report and binding, both gitignored files in the worktree, vanished when the harness removed the unchanged worktree, and the branch with it.
+
+Mechanism: A worktree isolation cleans up a worktree with no tracked change, taking untracked files with it; the harness treats gitignored writes as no change.
+
+Correction: The lead transcribed the report from the notification text; every implementer brief now orders at least one commit before the report, and a BLOCKED report is copied out the turn it arrives.
