@@ -395,3 +395,10 @@
 2026-10-28T05:10 | self:claude-fable-5-1 | delegation | classify-U19 round 1 -> reports/classifier-U19.md
 2026-10-28T05:11 | self:claude-fable-5-1 | receipt | integrate-U31 Result PASS at 1b361cd; main fast-forwarded to 1b361cd
 2026-10-28T05:11 | self:claude-fable-5-1 | delegation | impl-U32 bridge-inject (sonnet, implementer, worktree) launched from prompts/implementer-U32-bridge-inject.md
+2026-10-28T05:12 | self:claude-fable-5-1 | review | classifier-U19: eleven rows all observations; spec-U19 launched
+2026-10-28T05:14 | self:claude-fable-5-1 | review | spec-U19 verdict 031219 PASS, no findings; quality-U19 launched
+2026-10-28T05:16 | self:claude-fable-5-1 | receipt | impl-U18 DONE at 277d7d3: direct server (ProtocolHandler) and client, 22 tests; three forward concerns deferred to U20; peer content
+2026-10-28T05:16 | self:claude-fable-5-1 | delegation | spec-U18 launched (sonnet, spec-reviewer)
+2026-10-28T05:17 | self:claude-fable-5-1 | review | quality-U19 031405 Ready With fixes: three Important (untyped stream end; bare 64/32; bare 5000); four Minor; impl-U19 continued (cycle 1)
+2026-10-28T05:18 | self:claude-fable-5-1 | review | spec-U18 031615 FAIL: Extra — Probe and Introduce unanswered while Stopping (spec 3.9 names Messages alone); impl-U18 continued (cycle 1)
+2026-10-28T05:18 | self:claude-fable-5-1 | decision | solved: while Stopping the node refuses Messages alone (spec 3.9); Probe and Introduce are answered and applied — the U18 extra is removed; alternative: keep the silence as a clearly better way and log it
