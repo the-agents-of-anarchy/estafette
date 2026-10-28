@@ -122,7 +122,7 @@ pub struct RelayDomain {
 
 /// A domain name refused because it is not the whole host of its relay URL or that URL is over the wire's limit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RelayDomainRefused;
+struct RelayDomainRefused;
 
 impl fmt::Display for RelayDomainRefused {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
