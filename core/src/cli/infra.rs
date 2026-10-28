@@ -85,18 +85,20 @@ pub type BindHostEndpoint = Box<
         + Send,
 >;
 
-/// What keeps the embedded relay serving until it is dropped.
-pub type RunningRelay = Box<dyn std::any::Any + Send>;
+/// What the relay library reported when the embedded relay did not start or did not shut down cleanly.
+pub type RelayFailure = Box<dyn std::error::Error + Send + Sync>;
 
-/// Why the embedded relay did not start, as the relay library states it.
-pub type RelayNotStarted = Box<dyn std::error::Error + Send + Sync>;
+/// Shuts the embedded relay down, with the relay library's failure when it did not stop cleanly.
+pub type RelayShutdown = Pin<Box<dyn Future<Output = Result<(), RelayFailure>> + Send>>;
 
-/// Starts the embedded relay at the site and returns what keeps it serving.
+/// Shuts the serving embedded relay down when called.
+pub type RunningRelay = Box<dyn FnOnce() -> RelayShutdown + Send>;
+
+/// Starts the embedded relay at the site and returns what shuts it down.
 pub type StartRelay = Box<
     dyn FnOnce(
             RelaySite,
-        )
-            -> Pin<Box<dyn Future<Output = Result<RunningRelay, RelayNotStarted>> + Send>>
+        ) -> Pin<Box<dyn Future<Output = Result<RunningRelay, RelayFailure>> + Send>>
         + Send,
 >;
 
@@ -203,7 +205,8 @@ enum Failure {
     CertificateMalformed { path: PathBuf },
     CertificateNotForThisHost { path: PathBuf },
     LastRecordUnreadable { path: PathBuf },
-    RelayNotStarted(RelayNotStarted),
+    RelayNotStarted(RelayFailure),
+    RelayNotShutDown(RelayFailure),
     EndpointNotBound(BindError),
     TopicClosed,
 }
@@ -253,6 +256,10 @@ impl fmt::Display for Failure {
             Self::RelayNotStarted(source) => {
                 write!(formatter, "the embedded relay did not start: {source}")
             }
+            Self::RelayNotShutDown(source) => write!(
+                formatter,
+                "the embedded relay did not shut down cleanly: {source}"
+            ),
             Self::EndpointNotBound(source) => write!(
                 formatter,
                 "the bootstrap node's endpoint was not bound: {source}"
@@ -345,8 +352,8 @@ async fn serve_host(
         BootstrapNode::start(files, endpoint, domain, effects.clock, effects.report).await?;
     let outcome = node.serve_until(effects.stopped, filesystem).await;
     node.stop().await;
-    drop(relay);
-    outcome
+    let relay_stopped = relay().await.map_err(Failure::RelayNotShutDown);
+    outcome.and(relay_stopped)
 }
 
 /// Reads a domain name that is the whole host of its relay URL `https://<domain>/`, which fits the wire's relay URL limit.
@@ -812,9 +819,9 @@ fn record_interval() -> Interval {
 ///
 /// # Errors
 ///
-/// Returns the relay library's error as [`RelayNotStarted`] when TLS cannot be configured or a listener cannot be bound.
+/// Returns the relay library's error as [`RelayFailure`] when TLS cannot be configured or a listener cannot be bound.
 #[cfg(feature = "relay")]
-pub async fn start_embedded_relay(site: RelaySite) -> Result<RunningRelay, RelayNotStarted> {
+pub async fn start_embedded_relay(site: RelaySite) -> Result<RunningRelay, RelayFailure> {
     let server_config_builder = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::ring::default_provider(),
     ))
@@ -835,7 +842,9 @@ pub async fn start_embedded_relay(site: RelaySite) -> Result<RunningRelay, Relay
     config.relay = Some(relay);
     config.quic = Some(QuicConfig::new(site.quic_address_discovery));
     let server = Server::spawn(config).await?;
-    Ok(Box::new(server))
+    Ok(Box::new(move || {
+        Box::pin(async move { server.shutdown().await.map_err(RelayFailure::from) })
+    }))
 }
 
 /// The failure of an operation on the file at the path.
@@ -883,6 +892,7 @@ mod tests {
     const SPEC_PRIVATE_DIRECTORY_MODE: u32 = 0o700;
     const READ_ONLY_DIRECTORY_MODE: u32 = 0o500;
     const HELD_COUNTER: &str = "5\n";
+    const RELAY_SHUTDOWN_FAILURE: &str = "the relay supervisor ended with an error";
     const SPEC_HTTPS_ADDRESS: &str = "192.0.2.7:443";
     const SPEC_ACME_CHALLENGE_ADDRESS: &str = "192.0.2.7:80";
     const SPEC_QUIC_ADDRESS_DISCOVERY_ADDRESS: &str = "192.0.2.7:7842";
@@ -1016,6 +1026,7 @@ mod tests {
     struct Seen {
         relay_sites: Arc<Mutex<Vec<(RelaySite, u32)>>>,
         bound: Arc<Mutex<Vec<Bound>>>,
+        relay_shut_down_after_endpoint_closed: Arc<Mutex<Vec<bool>>>,
     }
 
     #[derive(Clone)]
@@ -1032,6 +1043,7 @@ mod tests {
         clock: Clock,
         reachable: Vec<iroh::EndpointAddr>,
         stopped: StopRequested,
+        relay_shutdown_failure: Option<&'static str>,
     }
 
     impl Plan {
@@ -1042,6 +1054,7 @@ mod tests {
                 clock: Arc::new(|| FROZEN_CLOCK_MS),
                 reachable: Vec::new(),
                 stopped: Box::pin(std::future::ready(())),
+                relay_shutdown_failure: None,
             }
         }
 
@@ -1052,9 +1065,12 @@ mod tests {
                 clock,
                 reachable,
                 stopped,
+                relay_shutdown_failure,
             } = self;
             let relay_sites = Arc::clone(&seen.relay_sites);
             let bound = Arc::clone(&seen.bound);
+            let bound_at_shutdown = Arc::clone(&seen.bound);
+            let shut_down = Arc::clone(&seen.relay_shut_down_after_endpoint_closed);
             InfrastructureEffects {
                 fill_from_secure_source: Box::new(move |bytes| *bytes = [seed; KEY_LEN]),
                 clock,
@@ -1085,7 +1101,18 @@ mod tests {
                     Box::pin(async move {
                         let mode = mode_of(&site.certificate_cache);
                         relay_sites.lock().unwrap().push((site, mode));
-                        let serving: RunningRelay = Box::new(());
+                        let serving: RunningRelay = Box::new(move || {
+                            Box::pin(async move {
+                                let endpoint_closed = bound_at_shutdown
+                                    .lock()
+                                    .unwrap()
+                                    .iter()
+                                    .all(|bound| bound.endpoint.is_closed());
+                                shut_down.lock().unwrap().push(endpoint_closed);
+                                relay_shutdown_failure
+                                    .map_or(Ok(()), |failure| Err(RelayFailure::from(failure)))
+                            })
+                        });
                         Ok(serving)
                     })
                 }),
@@ -1386,6 +1413,28 @@ mod tests {
         assert_eq!(bound[0].host, secret_key(HOST_SEED).public());
         assert_eq!(bound[0].gate_key.as_bytes(), spec_gate_key().as_bytes());
         assert_eq!(bound[0].relay, SPEC_RELAY_URL.parse().unwrap());
+        assert_eq!(
+            *seen.relay_shut_down_after_endpoint_closed.lock().unwrap(),
+            vec![true]
+        );
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_a_relay_that_fails_to_shut_down_fails_the_run_naming_why() {
+        let scratch = Scratch::new("relay-shutdown");
+        scratch.configure_network();
+        scratch.certify(HOST_SEED);
+        let seen = Seen::default();
+        let plan = Plan {
+            relay_shutdown_failure: Some(RELAY_SHUTDOWN_FAILURE),
+            ..Plan::new(HOST_SEED)
+        };
+
+        let (_printed, outcome) = run_planned(&scratch, plan, &seen).await;
+
+        let refusal = outcome.unwrap_err().to_string();
+        assert!(refusal.contains("the embedded relay did not shut down cleanly"));
+        assert!(refusal.contains(RELAY_SHUTDOWN_FAILURE));
     }
 
     fn stopped_on_signal() -> (tokio::sync::oneshot::Sender<()>, StopRequested) {
