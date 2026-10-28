@@ -257,7 +257,7 @@ impl Server {
             .directories
             .card_sidecar_file(self.served.network.as_str(), name.as_str())
             .map_err(|_not_a_card_name| ErrorCode::CardNotFound)?;
-        let pause = PauseThrough(Arc::clone(&self.effects.pause_between_lock_tries));
+        let pause = PauseBetweenLockTries(Arc::clone(&self.effects.pause_between_lock_tries));
         tokio::task::spawn_blocking(move || {
             sidecar::claim(&sidecar_path, public_key.as_bytes(), &pause)
         })
@@ -521,9 +521,9 @@ const fn claim_refusal(refusal: &SidecarError) -> ErrorCode {
 }
 
 /// The pause between lock tries, handed in by the composition root.
-struct PauseThrough(Arc<dyn Fn(Duration) + Send + Sync>);
+struct PauseBetweenLockTries(Arc<dyn Fn(Duration) + Send + Sync>);
 
-impl Pause for PauseThrough {
+impl Pause for PauseBetweenLockTries {
     fn pause(&self, duration: Duration) {
         (self.0)(duration);
     }
