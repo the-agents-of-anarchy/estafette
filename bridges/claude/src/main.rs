@@ -142,6 +142,8 @@ trait Files {
     fn exists(&self, path: &Path) -> bool;
     /// Gives the numeric id of the user owning the path.
     fn owner_user_id(&self, path: &Path) -> io::Result<u32>;
+    /// Writes a file by staging it beside the final name and renaming it over that name.
+    fn write_text_atomically(&self, path: &Path, text: &str) -> io::Result<()>;
 }
 
 struct OperatingSystemFiles;
@@ -163,6 +165,12 @@ impl Files for OperatingSystemFiles {
 
     fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
         Ok(fs::metadata(path)?.uid())
+    }
+
+    fn write_text_atomically(&self, path: &Path, text: &str) -> io::Result<()> {
+        let staging = path.with_extension(STAGING_EXTENSION);
+        fs::write(&staging, text)?;
+        fs::rename(staging, path)
     }
 }
 
@@ -194,66 +202,69 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Writes the dropped-frame count by staging a file and renaming it over the final name.
-fn write_dropped_frames(path: &Path, count: u64) -> io::Result<()> {
-    let staging = path.with_extension(STAGING_EXTENSION);
-    fs::write(&staging, count.to_string())?;
-    fs::rename(staging, path)
-}
+type ErrorSink = Arc<dyn Fn(&str) + Send + Sync>;
+type Elapsed = Arc<dyn Fn() -> Duration + Send + Sync>;
+type Task = Box<dyn FnOnce() + Send>;
+type Spawner = Arc<dyn Fn(Task) + Send + Sync>;
 
-struct BridgeSession<S: InboxConnector> {
+struct BridgeSession<S: InboxConnector, F: Files> {
     notifier: Mutex<SessionNotifier<S>>,
     followed_sockets: Mutex<BTreeSet<PathBuf>>,
     dropped_frames_file: PathBuf,
-    started: Instant,
+    files: F,
+    elapsed: Elapsed,
+    report_error: ErrorSink,
+    spawn: Spawner,
     wait: fn(Duration),
 }
 
-impl<S: InboxConnector> BridgeSession<S> {
+impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
     /// Injects one frame as a notice and records the dropped-frame count when it changed.
     fn deliver(&self, frame: &InboxFrame) {
         let mut notifier = lock(&self.notifier);
         let dropped_before = notifier.dropped_frames();
-        if let Err(error) = notifier.notify(frame, self.started.elapsed()) {
-            eprintln!("{error}");
+        if let Err(error) = notifier.notify(frame, (self.elapsed)()) {
+            (self.report_error)(&error.to_string());
         }
         let dropped_after = notifier.dropped_frames();
         drop(notifier);
         if dropped_after != dropped_before {
-            report_write_failure(write_dropped_frames(
-                &self.dropped_frames_file,
-                dropped_after,
-            ));
+            self.record_dropped_frames(dropped_after);
+        }
+    }
+
+    /// Writes the dropped-frame count where the doctor reads it, reporting a failed write.
+    fn record_dropped_frames(&self, count: u64) {
+        if let Err(error) = self
+            .files
+            .write_text_atomically(&self.dropped_frames_file, &count.to_string())
+        {
+            (self.report_error)(&format!("cannot write the dropped-frame count: {error}"));
         }
     }
 }
 
-/// Prints a failed dropped-frame write to stderr.
-fn report_write_failure(outcome: io::Result<()>) {
-    if let Err(error) = outcome {
-        eprintln!("cannot write the dropped-frame count: {error}");
-    }
-}
-
-/// Starts a thread that follows one binary inbox socket until its connection fails.
-fn follow_binary_socket<S, B>(
-    session: &Arc<BridgeSession<S>>,
+/// Starts a task that follows one binary inbox socket until its connection fails.
+fn follow_binary_socket<S, B, F>(
+    session: &Arc<BridgeSession<S, F>>,
     socket_path: PathBuf,
     mut connector: B,
 ) where
     S: InboxConnector + Send + 'static,
     B: InboxConnector + Send + 'static,
+    F: Files + Send + Sync + 'static,
 {
     let session = Arc::clone(session);
-    thread::spawn(move || {
+    let spawn = Arc::clone(&session.spawn);
+    spawn(Box::new(move || {
         let wait = session.wait;
         let outcome = follow_inbox(&mut connector, &mut |pause| wait(pause), &mut |frame| {
             session.deliver(frame);
         });
         let Err(error) = outcome;
-        eprintln!("{}: {error}", socket_path.display());
+        (session.report_error)(&format!("{}: {error}", socket_path.display()));
         lock(&session.followed_sockets).remove(&socket_path);
-    });
+    }));
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -262,25 +273,28 @@ enum BridgeOutcome {
     AlreadyServed { bridge_pid: u32 },
 }
 
-struct BridgeEffects<S, C> {
+struct BridgeEffects<S, C, F> {
     own_pid: u32,
-    started: Instant,
     runtime_inputs: RuntimeDirectoryInputs,
     temporary_dir: PathBuf,
     session_connector: S,
     session_token: String,
     connect_binary_socket: C,
+    files: F,
+    elapsed: Elapsed,
+    report_error: ErrorSink,
+    spawn: Spawner,
     wait: fn(Duration),
 }
 
-type ProductionBridgeEffects =
-    BridgeEffects<UnixSocketConnector, fn(PathBuf) -> UnixSocketConnector>;
+type ProductionBridgeEffects<F> =
+    BridgeEffects<UnixSocketConnector, fn(PathBuf) -> UnixSocketConnector, F>;
 
-/// Builds the production sockets, clock and pauses the bridge runs on from the environment.
-fn bridge_effects(
+/// Builds the production sockets, clock, error sink, spawner and pauses the bridge runs on from the environment.
+fn bridge_effects<F: Files>(
     environment: &Environment,
-    files: &impl Files,
-) -> Result<ProductionBridgeEffects, CommandError> {
+    files: F,
+) -> Result<ProductionBridgeEffects<F>, CommandError> {
     let socket = environment
         .messaging_socket
         .clone()
@@ -289,27 +303,34 @@ fn bridge_effects(
         .messaging_token
         .clone()
         .ok_or(CommandError::MissingVariable(MESSAGING_TOKEN_VARIABLE))?;
+    let started = environment.started;
     Ok(BridgeEffects {
         own_pid: environment.own_pid,
-        started: environment.started,
-        runtime_inputs: runtime_inputs(environment, files)?,
+        runtime_inputs: runtime_inputs(environment, &files)?,
         temporary_dir: environment.temporary_dir.clone(),
         session_connector: UnixSocketConnector::new(socket),
         session_token,
         connect_binary_socket: UnixSocketConnector::new,
+        files,
+        elapsed: Arc::new(move || started.elapsed()),
+        report_error: Arc::new(|message| eprintln!("{message}")),
+        spawn: Arc::new(|task| {
+            thread::spawn(task);
+        }),
         wait: thread::sleep,
     })
 }
 
 /// Serves the harness process by following every binary socket under it until the harness exits, unless another bridge already serves it.
-fn run_bridge<S, B>(
+fn run_bridge<S, B, F>(
     harness_pid: u32,
-    effects: BridgeEffects<S, impl Fn(PathBuf) -> B>,
+    effects: BridgeEffects<S, impl Fn(PathBuf) -> B, F>,
     processes: &impl ProcessTable,
 ) -> Result<BridgeOutcome, CommandError>
 where
     S: InboxConnector + Send + 'static,
     B: InboxConnector + Send + 'static,
+    F: Files + Send + Sync + 'static,
 {
     let entries = processes.list().map_err(CommandError::ProcessTable)?;
     if let Some(bridge_pid) = running_bridge_for(harness_pid, effects.own_pid, &entries) {
@@ -323,10 +344,13 @@ where
         )),
         followed_sockets: Mutex::default(),
         dropped_frames_file: dropped_frames_path(&effects.temporary_dir, harness_pid),
-        started: effects.started,
+        files: effects.files,
+        elapsed: effects.elapsed,
+        report_error: effects.report_error,
+        spawn: effects.spawn,
         wait,
     });
-    report_write_failure(write_dropped_frames(&session.dropped_frames_file, 0));
+    session.record_dropped_frames(0);
     follow_binary_sockets(
         harness_pid,
         &effects.runtime_inputs,
@@ -469,13 +493,13 @@ fn run_doctor_command(
     Ok(report.all_passed())
 }
 
-/// Maps a command outcome to its exit status, printing an error on stderr.
-fn exit_code_of(outcome: Result<bool, CommandError>) -> ExitCode {
+/// Maps a command outcome to its exit status, writing an error's message alone to the error output.
+fn exit_code_of(outcome: Result<bool, CommandError>, errors: &mut impl Write) -> ExitCode {
     match outcome {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(EXIT_CHECK_FAILED),
         Err(error) => {
-            eprintln!("{error}");
+            drop(writeln!(errors, "{error}"));
             ExitCode::from(EXIT_FAILURE)
         }
     }
@@ -484,27 +508,32 @@ fn exit_code_of(outcome: Result<bool, CommandError>) -> ExitCode {
 /// Runs the subcommand named on the command line and exits with its status.
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    let mut errors = std::io::stderr();
     let environment = match read_environment() {
         Ok(environment) => environment,
-        Err(error) => return exit_code_of(Err(error)),
+        Err(error) => return exit_code_of(Err(error), &mut errors),
     };
     match parse_command(&arguments) {
-        Some(Command::Run { harness_pid }) => exit_code_of(
-            bridge_effects(&environment, &OperatingSystemFiles)
+        Some(Command::Run { harness_pid }) => {
+            let outcome = bridge_effects(&environment, OperatingSystemFiles)
                 .and_then(|effects| run_bridge(harness_pid, effects, &PsProcessTable))
                 .map(|outcome| {
                     if let BridgeOutcome::AlreadyServed { bridge_pid } = outcome {
                         eprintln!("bridge {bridge_pid} already serves process {harness_pid}");
                     }
                     true
-                }),
-        ),
-        Some(Command::Doctor) => exit_code_of(run_doctor_command(
-            &environment,
-            &OperatingSystemFiles,
-            &PsProcessTable,
-            &mut std::io::stdout(),
-        )),
+                });
+            exit_code_of(outcome, &mut errors)
+        }
+        Some(Command::Doctor) => {
+            let outcome = run_doctor_command(
+                &environment,
+                &OperatingSystemFiles,
+                &PsProcessTable,
+                &mut std::io::stdout(),
+            );
+            exit_code_of(outcome, &mut errors)
+        }
         None => {
             eprintln!("{USAGE}");
             ExitCode::from(EXIT_USAGE)
@@ -519,7 +548,6 @@ mod tests {
     use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet};
     use std::os::unix::net::UnixStream;
-    use std::sync::mpsc;
 
     fn arguments(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
@@ -587,53 +615,82 @@ mod tests {
         }
     }
 
-    struct HeldConnector(Arc<Mutex<mpsc::Receiver<()>>>);
+    struct DownConnector;
 
-    impl InboxConnector for HeldConnector {
+    impl InboxConnector for DownConnector {
         type Stream = UnixStream;
 
         fn connect(&mut self) -> io::Result<UnixStream> {
-            let released = lock(&self.0).recv();
-            Err(io::Error::other(format!("{released:?}")))
+            Err(io::Error::other("down"))
         }
     }
 
+    type SpawnedTasks = Arc<Mutex<Vec<Task>>>;
+    type ErrorMessages = Arc<Mutex<Vec<String>>>;
+
     struct Wiring {
-        effects: BridgeEffects<HeldConnector, Box<dyn Fn(PathBuf) -> HeldConnector>>,
-        followed: Arc<Mutex<Vec<PathBuf>>>,
-        release: mpsc::Sender<()>,
-        scratch: PathBuf,
+        effects: BridgeEffects<DownConnector, Box<dyn Fn(PathBuf) -> DownConnector>, StandInFiles>,
+        factory_paths: Arc<Mutex<Vec<PathBuf>>>,
+        spawned: SpawnedTasks,
+        errors: ErrorMessages,
+        clock_seconds: Arc<Mutex<u64>>,
+        writes: Arc<Mutex<Vec<(PathBuf, String)>>>,
     }
 
-    fn wiring(label: &str) -> Wiring {
-        let (release, held) = mpsc::channel();
-        let held = Arc::new(Mutex::new(held));
-        let followed = Arc::new(Mutex::new(Vec::new()));
-        let scratch = scratch_directory(label);
-        let recorded = Arc::clone(&followed);
-        let connector_held = Arc::clone(&held);
+    const TEST_TEMPORARY_DIR: &str = "/var/tmp";
+
+    fn wiring() -> Wiring {
+        let factory_paths = Arc::new(Mutex::new(Vec::new()));
+        let spawned: SpawnedTasks = Arc::default();
+        let errors: ErrorMessages = Arc::default();
+        let clock_seconds = Arc::new(Mutex::new(0));
+        let recorded_paths = Arc::clone(&factory_paths);
+        let recorded_tasks = Arc::clone(&spawned);
+        let recorded_errors = Arc::clone(&errors);
+        let clock = Arc::clone(&clock_seconds);
+        let files = StandInFiles::default();
+        let writes = Arc::clone(&files.writes);
         Wiring {
             effects: BridgeEffects {
                 own_pid: 900,
-                started: Instant::now(),
                 runtime_inputs: RuntimeDirectoryInputs {
                     xdg_runtime_dir: Some(PathBuf::from("/run/user/1000")),
                     temporary_dir: None,
                     user_id: 1000,
                 },
-                temporary_dir: scratch.clone(),
-                session_connector: HeldConnector(Arc::clone(&held)),
+                temporary_dir: PathBuf::from(TEST_TEMPORARY_DIR),
+                session_connector: DownConnector,
                 session_token: "token".to_owned(),
                 connect_binary_socket: Box::new(move |socket_path| {
-                    lock(&recorded).push(socket_path);
-                    HeldConnector(Arc::clone(&connector_held))
+                    lock(&recorded_paths).push(socket_path);
+                    DownConnector
+                }),
+                files,
+                elapsed: Arc::new(move || Duration::from_secs(*lock(&clock))),
+                report_error: Arc::new(move |message| {
+                    lock(&recorded_errors).push(message.to_owned());
+                }),
+                spawn: Arc::new(move |task| {
+                    lock(&recorded_tasks).push(task);
                 }),
                 wait: |_| {},
             },
-            followed,
-            release,
-            scratch,
+            factory_paths,
+            spawned,
+            errors,
+            clock_seconds,
+            writes,
         }
+    }
+
+    const DROPPED_FRAMES_FILE: &str = "/var/tmp/estafette-bridge-claude-100.dropped-frames";
+
+    fn written_counts(writes: &Mutex<Vec<(PathBuf, String)>>) -> Vec<String> {
+        lock(writes)
+            .iter()
+            .filter(|(path, _)| path == Path::new(DROPPED_FRAMES_FILE))
+            .map(|(_, text)| text.clone())
+            .collect()
     }
 
     #[test]
@@ -643,19 +700,18 @@ mod tests {
             bridge_process(700, "100"),
             bridge_process(701, "999"),
         ]);
-        let wiring = wiring("guard");
+        let wiring = wiring();
         assert_eq!(
             run_bridge(100, wiring.effects, &running).expect("guarded start"),
             BridgeOutcome::AlreadyServed { bridge_pid: 700 }
         );
-        assert_eq!(lock(&wiring.followed).len(), 0);
-        fs::remove_dir_all(&wiring.scratch).expect("cleanup");
+        assert_eq!(lock(&wiring.spawned).len(), 0);
     }
 
     #[test]
     fn spec_3_12_the_bridge_needs_the_session_socket_and_token_before_it_starts() {
         assert!(matches!(
-            bridge_effects(&bare_environment(), &OperatingSystemFiles),
+            bridge_effects(&bare_environment(), OperatingSystemFiles),
             Err(CommandError::MissingVariable(MESSAGING_SOCKET_VARIABLE))
         ));
     }
@@ -697,24 +753,92 @@ mod tests {
             with_two_binaries,
             Vec::new(),
         ]));
-        let wiring = wiring("followers");
+        let wiring = wiring();
         assert_eq!(
             run_bridge(100, wiring.effects, &polls).expect("bridge runs"),
             BridgeOutcome::HarnessExited
         );
         assert_eq!(
-            *lock(&wiring.followed),
+            *lock(&wiring.factory_paths),
             [
                 PathBuf::from("/run/user/1000/estafette-1000/101.sock"),
                 PathBuf::from("/run/user/1000/estafette-1000/102.sock"),
             ]
         );
+        assert_eq!(lock(&wiring.spawned).len(), 2);
+        assert_eq!(written_counts(&wiring.writes), ["0"]);
+    }
+
+    #[test]
+    fn spec_3_12_a_binary_socket_that_cannot_be_reached_is_reported_and_followed_again_later() {
+        let harness = ProcessEntry {
+            pid: 100,
+            parent_pid: 1,
+            executable: Some("/usr/bin/claude".to_owned()),
+            arguments: Vec::new(),
+        };
+        let running = vec![harness, mcp_binary(101)];
+        let polls = SnapshotSequence(RefCell::new(vec![running.clone(), running, Vec::new()]));
+        let wiring = wiring();
+        run_bridge(100, wiring.effects, &polls).expect("bridge runs");
+        let task = lock(&wiring.spawned).pop().expect("one follower spawned");
+        task();
         assert_eq!(
-            fs::read_to_string(dropped_frames_path(&wiring.scratch, 100)).expect("count file"),
-            "0"
+            *lock(&wiring.errors),
+            ["/run/user/1000/estafette-1000/101.sock: cannot connect to the inbox socket: down"]
         );
-        drop(wiring.release);
-        fs::remove_dir_all(&wiring.scratch).expect("cleanup");
+    }
+
+    fn frame_from(from: &str, body: &str) -> InboxFrame {
+        InboxFrame {
+            seq: 1,
+            id: "id".to_owned(),
+            from: from.to_owned(),
+            body: body.to_owned(),
+            sent_at: 0,
+            received_at: 0,
+        }
+    }
+
+    struct DeliveryRun {
+        errors: Vec<String>,
+        counts: Vec<String>,
+    }
+
+    fn deliver_eleven_frames(seconds_between_frames: u64) -> DeliveryRun {
+        let wiring = wiring();
+        let session = BridgeSession {
+            notifier: Mutex::new(SessionNotifier::new(DownConnector, "token".to_owned())),
+            followed_sockets: Mutex::default(),
+            dropped_frames_file: PathBuf::from(DROPPED_FRAMES_FILE),
+            files: StandInFiles::default(),
+            elapsed: Arc::clone(&wiring.effects.elapsed),
+            report_error: Arc::clone(&wiring.effects.report_error),
+            spawn: Arc::clone(&wiring.effects.spawn),
+            wait: |_| {},
+        };
+        for index in 0..11_u64 {
+            *lock(&wiring.clock_seconds) = index.saturating_mul(seconds_between_frames);
+            session.deliver(&frame_from("ana", &format!("body {index}")));
+        }
+        DeliveryRun {
+            errors: lock(&wiring.errors).clone(),
+            counts: written_counts(&session.files.writes),
+        }
+    }
+
+    #[test]
+    fn spec_3_12_the_clock_handed_in_decides_the_rate_limit_and_each_drop_is_recorded() {
+        let within_one_window = deliver_eleven_frames(1);
+        assert_eq!(within_one_window.errors.len(), 10);
+        assert_eq!(
+            within_one_window.errors.first().map(String::as_str),
+            Some("cannot connect to the messaging socket: down")
+        );
+        assert_eq!(within_one_window.counts, ["1"]);
+        let across_windows = deliver_eleven_frames(61);
+        assert_eq!(across_windows.errors.len(), 11);
+        assert_eq!(across_windows.counts, Vec::<String>::new());
     }
 
     fn scratch_directory(label: &str) -> PathBuf {
@@ -783,12 +907,18 @@ mod tests {
 
     #[test]
     fn spec_3_12_a_failed_check_ends_the_doctor_with_exit_3_and_other_outcomes_with_0_and_1() {
-        assert_eq!(exit_code_of(Ok(true)), ExitCode::SUCCESS);
-        assert_eq!(exit_code_of(Ok(false)), ExitCode::from(3));
+        let mut errors = Vec::new();
+        assert_eq!(exit_code_of(Ok(true), &mut errors), ExitCode::SUCCESS);
+        assert_eq!(exit_code_of(Ok(false), &mut errors), ExitCode::from(3));
+        assert_eq!(errors, b"");
         assert_eq!(
-            exit_code_of(Err(CommandError::MissingVariable(HOME_VARIABLE))),
+            exit_code_of(
+                Err(CommandError::MissingVariable(HOME_VARIABLE)),
+                &mut errors
+            ),
             ExitCode::from(1)
         );
+        assert_eq!(errors, b"HOME is not set\n");
     }
 
     #[derive(Default)]
@@ -796,12 +926,13 @@ mod tests {
         texts: BTreeMap<PathBuf, Result<String, io::ErrorKind>>,
         directories: BTreeMap<PathBuf, Result<Vec<PathBuf>, io::ErrorKind>>,
         existing: BTreeSet<PathBuf>,
-        reads: RefCell<Vec<PathBuf>>,
+        reads: Mutex<Vec<PathBuf>>,
+        writes: Arc<Mutex<Vec<(PathBuf, String)>>>,
     }
 
     impl Files for StandInFiles {
         fn read_text(&self, path: &Path) -> io::Result<String> {
-            self.reads.borrow_mut().push(path.to_owned());
+            lock(&self.reads).push(path.to_owned());
             match self.texts.get(path) {
                 Some(Ok(text)) => Ok(text.clone()),
                 Some(Err(kind)) => Err(io::Error::from(*kind)),
@@ -823,6 +954,11 @@ mod tests {
 
         fn owner_user_id(&self, _path: &Path) -> io::Result<u32> {
             Ok(1000)
+        }
+
+        fn write_text_atomically(&self, path: &Path, text: &str) -> io::Result<()> {
+            lock(&self.writes).push((path.to_owned(), text.to_owned()));
+            Ok(())
         }
     }
 
@@ -860,7 +996,7 @@ mod tests {
         assert!(!outcome.expect("doctor ran"));
         let managed_directory = Path::new(MANAGED_SETTINGS_DIRECTORY);
         assert_eq!(
-            *files.reads.borrow(),
+            *lock(&files.reads),
             [
                 PathBuf::from(USER_SETTINGS),
                 PathBuf::from(PROJECT_SETTINGS),
@@ -923,5 +1059,20 @@ mod tests {
             )),
             "{report}"
         );
+    }
+
+    #[test]
+    fn spec_3_12_the_operating_system_writes_the_count_by_staging_then_renaming() {
+        let directory = scratch_directory("atomic");
+        let target = directory.join("count");
+        OperatingSystemFiles
+            .write_text_atomically(&target, "3")
+            .expect("first write");
+        OperatingSystemFiles
+            .write_text_atomically(&target, "12")
+            .expect("second write");
+        assert_eq!(fs::read_to_string(&target).expect("count"), "12");
+        assert!(!target.with_extension(STAGING_EXTENSION).exists());
+        fs::remove_dir_all(&directory).expect("cleanup");
     }
 }
