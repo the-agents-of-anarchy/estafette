@@ -818,7 +818,8 @@ impl PresenceLoop {
                 self.perform(effects).await;
             }
             Payload::Departure(departure) => {
-                self.state.table().receive_departure(&departure, now_ms);
+                let effects = self.state.table().receive_departure(&departure, now_ms);
+                self.perform(effects).await;
             }
             Payload::Unreachable(report) if report.card == self.state.own_card => {
                 if is_rumor_to_answer(report.ts, self.announcer.last_seq(), now_ms) {

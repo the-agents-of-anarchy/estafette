@@ -161,10 +161,10 @@ impl PeerTable {
         effects
     }
 
-    /// Takes a Departure whose signature verified, setting its card Gone when it is newer than all this node holds for the card.
-    pub fn receive_departure(&mut self, departure: &Departure, now_ms: u64) {
+    /// Takes a Departure whose signature verified, setting its card Gone and asking to drop the held connection to it, when it is newer than all this node holds for the card.
+    pub fn receive_departure(&mut self, departure: &Departure, now_ms: u64) -> Vec<Effect> {
         if !self.accepts_announcement(departure.card, departure.seq, now_ms) {
-            return;
+            return Vec::new();
         }
         self.tombstones.insert(
             departure.card,
@@ -177,6 +177,7 @@ impl PeerTable {
         if let Some(peer) = self.peers.get_mut(&departure.card, now_ms) {
             peer.take_departure(departure.seq, now_ms);
         }
+        vec![Effect::DropHeldConnection(departure.card)]
     }
 
     /// Takes an Unreachable report whose signature verified, setting the peer it names Unreachable unless it is Gone, the report is stale, or a direct contact came after it.
@@ -849,6 +850,29 @@ mod tests {
             assert_eq!(table.receive_presence(&replay, LATER_MS), vec![]);
             assert_eq!(snapshot(&table, LATER_MS), departed);
         }
+    }
+
+    #[test]
+    fn an_accepted_departure_asks_to_drop_the_held_connection_and_a_stale_one_asks_nothing_test_4()
+    {
+        let mut table = PeerTable::new(OWN_CARD);
+        accept_presence(
+            &mut table,
+            &presence(PEER_CARD, PEER_HANDLE, FIRST_SEQ),
+            NOW_MS,
+        );
+        assert_eq!(
+            table.receive_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS),
+            vec![Effect::DropHeldConnection(PEER_CARD)]
+        );
+        assert_eq!(
+            table.receive_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS),
+            vec![]
+        );
+        assert_eq!(
+            table.receive_departure(&departure(SECOND_MEMBER_CARD, FIRST_SEQ), NOW_MS),
+            vec![Effect::DropHeldConnection(SECOND_MEMBER_CARD)]
+        );
     }
 
     #[test]
