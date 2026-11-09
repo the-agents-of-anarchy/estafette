@@ -273,3 +273,10 @@ do      act as project owner: install tools, manage dependencies, create files; 
 never   park work pending a ruling; propose breaking a standing rule, even as an option
 why     The owner is absent; a reversible choice costs seconds to overturn; a rule offered for waiver has stopped ruling.
 ground  owner ruling 2026-10-23
+
+### no-idle-server
+when    a lab server is up, or a run that needs one is about to start or has just ended
+do      create the server for one run and tear it down with the recipes as soon as that run's last command exits; recreate it on the next need; reuse only a server that is up for a run still in progress
+never   hold a server for a later run; leave one up while gating, reviewing, writing a report or waiting on an agent; count the 24-hour deadline or the backstop as the teardown
+why     A server waiting between runs burns the owner's money; the deadline and the backstop are the last resort, not the plan.
+ground  owner ruling 2026-11-10T00:38 ("no idle server standby is allowed. you're waiting and burning my money here.")

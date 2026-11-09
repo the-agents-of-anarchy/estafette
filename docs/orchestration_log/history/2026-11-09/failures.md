@@ -31,3 +31,11 @@ What happened: The third cycle's quality re-review (193730) returned With fixes 
 Mechanism: The stop-at-three rule counts cycles, not defects; the lead read the finding as a fresh regression rather than a fourth attempt at the unit and skipped the debugging round and the diagnosis agent the rule requires before any further cycle.
 
 Correction: Recorded here; the cycle-4 fix is spec-PASSed at a0ebe3d and sits in quality re-review 214420. If that re-review fails, a debugging round and a diagnosis agent name the structural change before any continuation; no fifth cycle on the same model and requirements.
+
+## Lead records lost to an agent's root pre-commit run
+
+What happened: Four events lines, the charter's corrected lab directive and the new no-idle-server convention, all written between 00:33 and 00:44 while lab-skill-no-standby committed in the root checkout, vanished: pre-commit stashed the unstaged tracked files for its hook run, the hook reported files modified, and the retry left the files at HEAD content.
+
+Mechanism: Writing tracked records in the root while another process runs a root pre-commit hook; the lead's own rule (hold events in _pending-events.txt while a hook or integrator holds the root) was skipped for a convention and a charter edit, and the agent's commit was not treated as a root hook run.
+
+Correction: Lost lines rewritten as reconstructions; directive and charter correction redone and committed at once; from now on no tracked record is written while any agent commits in the root checkout — the lead holds every record line in _pending-events.txt and defers charter and convention edits until the agent's commit lands.
