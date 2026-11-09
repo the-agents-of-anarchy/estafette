@@ -82,6 +82,13 @@ impl ScriptedNode {
             .unwrap();
     }
 
+    /// Broadcasts the bytes on the topic as they are.
+    pub fn broadcast(&self, payload: Vec<u8>) {
+        self.runtime()
+            .block_on(self.topic.broadcast(payload.into()))
+            .unwrap();
+    }
+
     /// The node's endpoint.
     pub const fn endpoint(&self) -> &NodeEndpoint {
         &self.endpoint

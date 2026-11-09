@@ -41,6 +41,11 @@ impl LocalNetwork {
         self.machine.start_member()
     }
 
+    /// The keys every member derives from the network secret.
+    pub const fn keys(&self) -> &NetworkKeys {
+        &self.keys
+    }
+
     /// The gossip topic of the network.
     pub fn topic(&self) -> TopicId {
         TopicId::from_bytes(*self.keys.topic_id().as_bytes())

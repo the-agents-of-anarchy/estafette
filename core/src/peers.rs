@@ -265,7 +265,7 @@ impl PeerTable {
         )
     }
 
-    /// Takes a validated Message from `card`, inserting an unseen sender Online and asking to introduce this node to it.
+    /// Takes a validated Message from `card`, inserting an unseen sender Online and asking to introduce this node to it, unless a Departure held for the card was sent at or after the Message.
     #[must_use]
     pub fn receive_message(
         &mut self,
@@ -276,6 +276,10 @@ impl PeerTable {
         let Ok(handle) = message.handle.parse::<AnnouncedHandle>() else {
             return Vec::new();
         };
+        if let Some(departure_seq) = self.departure_sent_since(card, message.sent_at, now_ms) {
+            self.insert_departed_if_unseen(card, &handle, departure_seq, now_ms);
+            return Vec::new();
+        }
         let effects = self.insert_if_unseen(card, &handle, now_ms);
         if let Some(peer) = self.peers.get_mut(&card, now_ms) {
             peer.take_message(message.attached, now_ms);
@@ -347,6 +351,30 @@ impl PeerTable {
                 .tombstones
                 .get(&card, now_ms)
                 .is_none_or(|tombstone| seq > tombstone.seq)
+    }
+
+    /// The seq of the Departure held for `card` when it was sent at or after `sent_at`, so what the card sent then came from its departed session.
+    fn departure_sent_since(&self, card: PublicKey, sent_at: u64, now_ms: u64) -> Option<u64> {
+        self.tombstones
+            .get(&card, now_ms)
+            .map(|tombstone| tombstone.seq)
+            .filter(|departure_seq| *departure_seq >= sent_at)
+    }
+
+    /// Inserts `card` Gone since now under a free effective handle when unseen, so a Message of its departed session is named without listing the card Online.
+    fn insert_departed_if_unseen(
+        &mut self,
+        card: PublicKey,
+        handle: &AnnouncedHandle,
+        departure_seq: u64,
+        now_ms: u64,
+    ) {
+        if self.peers.get(&card, now_ms).is_some() {
+            return;
+        }
+        let mut departed = Peer::first_seen(card, self.free_handle_for(handle, now_ms), now_ms);
+        departed.take_departure(departure_seq, now_ms);
+        self.peers.insert(card, departed, now_ms);
     }
 
     /// Inserts `card` Online under a free effective handle when unseen, returning the Introduce that a newcomer calls for.
@@ -535,6 +563,7 @@ mod tests {
     const RESTARTED_LAN_SOCKET: &str = "192.0.2.10:54875";
     const RESTARTED_LOOPBACK_SOCKET: &str = "127.0.0.1:54875";
     const ADDED_SOCKET: &str = "198.51.100.4:53821";
+    const SENT_AFTER_DEPARTURE: u64 = DEPARTURE_SEQ + 1;
     const MESSAGE_ID: MessageId = [3; 16];
     const BODY: &str = "hello";
 
@@ -1066,7 +1095,10 @@ mod tests {
             NOW_MS,
         );
         table.receive_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS);
-        let message = message_from(SECOND_HANDLE, false);
+        let message = Message {
+            sent_at: SENT_AFTER_DEPARTURE,
+            ..message_from(SECOND_HANDLE, false)
+        };
         assert_eq!(table.receive_message(PEER_CARD, &message, LATER_MS), vec![]);
         let peer = only_peer(&table, LATER_MS);
         assert_eq!(
@@ -1086,6 +1118,53 @@ mod tests {
                 Status::Online,
                 LATER_MS
             )
+        );
+    }
+
+    #[test]
+    fn a_message_sent_at_or_before_a_held_departure_changes_no_entry_and_one_sent_after_sets_it_online_test_4()
+     {
+        let mut table = table_with_peer_gone_since_now();
+        let departed = snapshot(&table, LATER_MS);
+        let sent_at_departure = Message {
+            sent_at: DEPARTURE_SEQ,
+            ..message_from(PEER_HANDLE, false)
+        };
+        assert_eq!(
+            table.receive_message(PEER_CARD, &sent_at_departure, LATER_MS),
+            vec![]
+        );
+        assert_eq!(snapshot(&table, LATER_MS), departed);
+        let sent_after = Message {
+            sent_at: SENT_AFTER_DEPARTURE,
+            ..message_from(PEER_HANDLE, false)
+        };
+        assert_eq!(
+            table.receive_message(PEER_CARD, &sent_after, LATER_MS),
+            vec![]
+        );
+        assert_eq!(only_peer(&table, LATER_MS).status, Status::Online);
+    }
+
+    #[test]
+    fn a_message_sent_before_the_departure_of_an_unseen_card_lists_it_gone_under_its_handle_test_4()
+    {
+        let mut table = PeerTable::new(OWN_CARD);
+        table.receive_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS);
+        let sent_before = message_from(PEER_HANDLE, true);
+        assert_eq!(
+            table.receive_message(PEER_CARD, &sent_before, LATER_MS),
+            vec![]
+        );
+        assert_eq!(
+            listed(&table, LATER_MS),
+            vec![(
+                PEER_CARD,
+                PEER_HANDLE.to_owned(),
+                Status::Gone { since_ms: LATER_MS },
+                false,
+                LATER_MS
+            )]
         );
     }
 
