@@ -8,15 +8,19 @@ use serde::Deserialize;
 use crate::discover::{
     ProcessEntry, ProcessTable, ProcessTableError, RuntimeDirectoryInputs, binary_sockets_under,
 };
+use crate::permission_class::PermissionClass;
 
 const BRIDGE_EXECUTABLE_NAME: &str = "estafette-bridge-claude";
 const DROPPED_FRAMES_SUFFIX: &str = ".dropped-frames";
+const PERMISSION_CLASS_SUFFIX: &str = ".permission-class";
 pub const RUN_SUBCOMMAND: &str = "run";
 pub const MESSAGING_SOCKET_VARIABLE: &str = "CLAUDE_CODE_MESSAGING_SOCKET";
 const CROSS_SESSION_INBOUND_KEY: &str = "crossSessionInbound";
 const SETTINGS_FLAG: &str = "--settings";
 const COMMAND_LINE_SETTINGS_NAME: &str = "--settings on the harness command line";
 const UNREADABLE_FILE_NOTE: &str = "(the file cannot be read)";
+const ACCEPT_VALUE: &str = "accept";
+const HOLD_VALUE: &str = "hold";
 const REFUSE_VALUE: &str = "refuse";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -50,6 +54,7 @@ pub struct DoctorReport {
     socket_path_exists: Verdict,
     no_refuse_applies: Verdict,
     binary_process_found: Verdict,
+    pub attested_class: Option<PermissionClass>,
     pub dropped_frames: Option<u64>,
 }
 
@@ -98,6 +103,10 @@ impl fmt::Display for DoctorReport {
                 }
             }
         }
+        match self.attested_class {
+            Some(class) => writeln!(formatter, "attested permission class: {class}")?,
+            None => writeln!(formatter, "attested permission class: unknown")?,
+        }
         match self.dropped_frames {
             Some(count) => write!(formatter, "dropped frames: {count}"),
             None => write!(formatter, "dropped frames: unknown"),
@@ -125,12 +134,20 @@ pub struct DoctorInputs {
     pub runtime_inputs: RuntimeDirectoryInputs,
 }
 
+fn bridge_state_path(temporary_dir: &Path, harness_pid: u32, suffix: &str) -> PathBuf {
+    temporary_dir.join(format!("{BRIDGE_EXECUTABLE_NAME}-{harness_pid}{suffix}"))
+}
+
 /// Names the file in which the bridge of this harness process keeps its count of dropped frames.
 #[must_use]
 pub fn dropped_frames_path(temporary_dir: &Path, harness_pid: u32) -> PathBuf {
-    temporary_dir.join(format!(
-        "{BRIDGE_EXECUTABLE_NAME}-{harness_pid}{DROPPED_FRAMES_SUFFIX}"
-    ))
+    bridge_state_path(temporary_dir, harness_pid, DROPPED_FRAMES_SUFFIX)
+}
+
+/// Names the file in which the bridge of this harness process keeps the permission class it attests.
+#[must_use]
+pub fn permission_class_path(temporary_dir: &Path, harness_pid: u32) -> PathBuf {
+    bridge_state_path(temporary_dir, harness_pid, PERMISSION_CLASS_SUFFIX)
 }
 
 /// Judges the wiring of the bridge to this session from what the environment, the settings files, the process table and the bridge's dropped-frames file show.
@@ -162,6 +179,9 @@ pub fn run_doctor(
             &entries,
             &inputs.runtime_inputs,
         ),
+        attested_class: harness_pid
+            .and_then(|pid| read_text_file(&permission_class_path(&inputs.temporary_dir, pid)))
+            .and_then(|text| PermissionClass::from_class_name(&text)),
         dropped_frames: harness_pid
             .and_then(|pid| read_text_file(&dropped_frames_path(&inputs.temporary_dir, pid)))
             .and_then(|text| text.trim().parse().ok()),
@@ -190,13 +210,14 @@ fn judge_no_refuse_applies<'a>(
     let mut unverified: Vec<String> = unreadable_sources.collect();
     for file in settings_files {
         match parse_settings(file) {
-            Some(document) if document.cross_session_inbound.as_deref() == Some(REFUSE_VALUE) => {
-                return Verdict::Failed(format!(
-                    "{} sets {CROSS_SESSION_INBOUND_KEY} to {REFUSE_VALUE}, which drops the bridge's frames",
-                    file.path.display()
-                ));
+            Some(document) => {
+                if let Some(effect) = delivery_stopping_effect(document.cross_session_inbound) {
+                    return Verdict::Failed(format!(
+                        "{} sets {CROSS_SESSION_INBOUND_KEY} to {effect}",
+                        file.path.display()
+                    ));
+                }
             }
-            Some(_) => {}
             None => unverified.push(format!(
                 "{} is not valid settings JSON",
                 file.path.display()
@@ -207,6 +228,21 @@ fn judge_no_refuse_applies<'a>(
         Verdict::Passed
     } else {
         Verdict::Unverified(format!("not verified: {}", unverified.join("; ")))
+    }
+}
+
+/// Names what a `crossSessionInbound` value does to the bridge's frames, giving nothing for an unset or accept value.
+fn delivery_stopping_effect(value: Option<serde_json::Value>) -> Option<String> {
+    let value = value?;
+    match value.as_str() {
+        Some(ACCEPT_VALUE) => None,
+        Some(REFUSE_VALUE) => Some(format!("{REFUSE_VALUE}, which drops the bridge's frames")),
+        Some(HOLD_VALUE) => Some(format!(
+            "{HOLD_VALUE}, which parks the bridge's frames until the user approves each"
+        )),
+        _ => Some(format!(
+            "{value}, which is none of {ACCEPT_VALUE}, {HOLD_VALUE} or {REFUSE_VALUE} and stops the bridge's frames"
+        )),
     }
 }
 
@@ -367,7 +403,7 @@ struct SettingsDocument {
     #[serde(default)]
     hooks: HooksSection,
     #[serde(rename = "crossSessionInbound")]
-    cross_session_inbound: Option<String>,
+    cross_session_inbound: Option<serde_json::Value>,
 }
 
 #[derive(Default, Deserialize)]
@@ -425,17 +461,22 @@ mod tests {
     const DROPPED_FRAMES_FILE_OF_HARNESS_100: &str =
         "/var/tmp/estafette-bridge-claude-100.dropped-frames";
 
-    fn read_only_the_dropped_frames_file_of_harness_100(path: &Path) -> Option<String> {
-        (path == Path::new(DROPPED_FRAMES_FILE_OF_HARNESS_100)).then(|| "7\n".to_owned())
+    const PERMISSION_CLASS_FILE_OF_HARNESS_100: &str =
+        "/var/tmp/estafette-bridge-claude-100.permission-class";
+
+    fn read_only_the_state_files_of_harness_100(path: &Path) -> Option<String> {
+        if path == Path::new(DROPPED_FRAMES_FILE_OF_HARNESS_100) {
+            Some("7\n".to_owned())
+        } else if path == Path::new(PERMISSION_CLASS_FILE_OF_HARNESS_100) {
+            Some("bypass\n".to_owned())
+        } else {
+            None
+        }
     }
 
     fn doctor_report(inputs: &DoctorInputs, processes: &FixedProcessTable) -> DoctorReport {
-        run_doctor(
-            inputs,
-            processes,
-            &read_only_the_dropped_frames_file_of_harness_100,
-        )
-        .expect("the table never fails")
+        run_doctor(inputs, processes, &read_only_the_state_files_of_harness_100)
+            .expect("the table never fails")
     }
 
     struct FixedProcessTable(Vec<ProcessEntry>);
@@ -593,6 +634,7 @@ mod tests {
         let report = report_of_healthy_session_after(|_, _| {});
         assert!(report.all_passed(), "{report}");
         assert_eq!(report.dropped_frames, Some(7));
+        assert_eq!(report.attested_class, Some(PermissionClass::Bypass));
     }
 
     #[test]
@@ -635,6 +677,48 @@ mod tests {
     }
 
     #[test]
+    fn spec_3_12_doctor_fails_the_refuse_check_for_a_hold_and_for_an_invalid_value_in_any_source() {
+        for (value, effect) in [
+            (
+                "\"hold\"",
+                "hold, which parks the bridge's frames until the user approves each",
+            ),
+            (
+                "\"allow\"",
+                "\"allow\", which is none of accept, hold or refuse and stops the bridge's frames",
+            ),
+            (
+                "7",
+                "7, which is none of accept, hold or refuse and stops the bridge's frames",
+            ),
+        ] {
+            let report = report_of_healthy_session_after(|inputs, _| {
+                inputs.settings_files.push(settings_file(
+                    "/work/.claude/settings.local.json",
+                    &format!("{{\"crossSessionInbound\":{value}}}"),
+                ));
+            });
+            assert_eq!(
+                verdict_of(&report, Check::NoRefuseApplies),
+                &Verdict::Failed(format!(
+                    "/work/.claude/settings.local.json sets crossSessionInbound to {effect}"
+                )),
+                "{value}"
+            );
+        }
+        let (inputs, mut processes) = healthy_session();
+        processes.0.retain(|entry| entry.pid != 100);
+        processes.0.push(harness_with_arguments(&[
+            "--settings",
+            "{\"crossSessionInbound\":\"hold\"}",
+        ]));
+        assert!(matches!(
+            verdict_of(&doctor_report(&inputs, &processes), Check::NoRefuseApplies),
+            Verdict::Failed(_)
+        ));
+    }
+
+    #[test]
     fn spec_3_12_doctor_fails_the_binary_check_when_no_mcp_binary_runs_under_the_session() {
         let report = report_of_healthy_session_after(|_, processes| {
             processes.0.retain(|entry| entry.pid != 800);
@@ -664,6 +748,7 @@ mod tests {
              FAIL  socket path exists: CLAUDE_CODE_MESSAGING_SOCKET is not set; run the doctor inside the session\n\
              ok    no refuse applies\n\
              ok    binary process found\n\
+             attested permission class: bypass\n\
              dropped frames: 7"
         );
     }
@@ -680,6 +765,21 @@ mod tests {
         assert_eq!(count_after_reading(None), None);
         assert_eq!(count_after_reading(Some("many")), None);
         assert_eq!(count_after_reading(Some(" 12 ")), Some(12));
+    }
+
+    #[test]
+    fn harness_2_1_319_doctor_reports_an_unknown_class_when_the_bridge_left_no_readable_class() {
+        let (inputs, processes) = healthy_session();
+        for text in [None, Some("default")] {
+            let report = run_doctor(&inputs, &processes, &|_: &Path| text.map(str::to_owned))
+                .expect("the table never fails");
+            assert_eq!(report.attested_class, None);
+            assert!(
+                report
+                    .to_string()
+                    .contains("attested permission class: unknown\n")
+            );
+        }
     }
 
     const REFUSE_JSON: &str = r#"{"crossSessionInbound":"refuse"}"#;
