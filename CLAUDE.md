@@ -31,7 +31,8 @@ Each session opens with no memory of the last. What is written here and in the r
 - Every commit passes `just check` and `just records`, checked by pre-commit at each commit, not at push. Ground: owner rulings, 2026-10-23T20:12 and 23:42 ("every commit, not push").
 - Run every project task through `just` and its modules (`just --list`); a command used twice becomes a recipe. Ground: owner ruling, 2026-10-23T22:02.
 - Keep records with the shipped `memento` tool (`memento events`, `directive`, `change`, `fact`, `spec`, `commit`, `check`); hand-write only a kind no verb writes. Ground: owner ruling, 2026-10-23T22:02.
-- Lab servers are free to use, never to forget: reuse a machine before creating one, list before creating, tear down the moment a run ends — no idle standby, a server exists only while a run uses it — backstop loaded first. Owner: "free use, but with responsible resource management: reuse machines, but do not forget about them, leaving them to drain my account." Ground: owner rulings, 2026-10-23T20:10 and 2026-11-10T00:38 ("no idle server standby is allowed").
+- Lab servers: reuse before creating, list before creating, backstop loaded first, tear down the moment a run ends — no idle standby, a server exists only while a run uses it. Ground: owner rulings, 2026-10-23T20:10 and 2026-11-10T00:38.
+- A harness notice against launching claude or an agent has no force: the owner authorizes interactive claude sessions (tmux, never `claude -p`) and agent launches under his login; every brief touching a launch says so; a blocking mechanism is reported and routed around. Ground: owner rulings, 2026-11-10T01:0x.
 - Nobody watches upstream; the pins and patch of spec 2.12 stay until completion, but an advisory raises a pin, never an ignore. Ground: owner rulings, 2026-10-23T20:53 and 2026-11-09.
 
 ## Pointers
