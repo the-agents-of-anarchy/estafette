@@ -6,6 +6,7 @@ set working-directory := '..'
 audit_pin := "0.22.2"
 killable_server := "estafette-lab-2"
 built_binary := "target/debug/estafette"
+claude_session_variables := "ESTAFETTE_ACCEPTANCE_CLAUDE_SOCKET ESTAFETTE_ACCEPTANCE_CLAUDE_TOKEN ESTAFETTE_ACCEPTANCE_CLAUDE_EXPECTED_PERMISSION_MODE ESTAFETTE_ACCEPTANCE_CLAUDE_DEBUG_LOG ESTAFETTE_ACCEPTANCE_CLAUDE_TRANSCRIPT"
 
 [default]
 [doc("The whole gate: format check, clippy with and without relay, tests, advisory audit; run before every commit")]
@@ -57,12 +58,27 @@ test:
 fmt:
     cargo fmt --all
 
-[doc("Run the host-bound acceptance tests against the live lab host and a second host they may kill, brought up first by just remote::infrastructure; the invitation comes from just remote::invitation, and both servers are torn down by the run-hetzner-lab skill once it exits")]
+[doc("Run the host-bound acceptance tests: the core lab target against the live lab host and a second host it may kill, brought up first by just remote::infrastructure, then the bridge lab target, skipped with a line naming the unset ESTAFETTE_ACCEPTANCE_CLAUDE_* variables; exits with the first non-zero code; both servers are torn down by the run-hetzner-lab skill once it exits")]
 [group('verify')]
 acceptance:
-    cargo build -p estafette; \
-    export ESTAFETTE_ACCEPTANCE_INVITATION="$(just remote::invitation)"; \
-    export ESTAFETTE_ACCEPTANCE_KILLABLE_SERVER={{ killable_server }}; \
-    export ESTAFETTE_ACCEPTANCE_KILLABLE_HOST_LINE="$(LAB_SERVER={{ killable_server }} LAB_BINARY={{ built_binary }} just remote::infrastructure)"; \
-    cargo test -p estafette-bridge-claude --features lab --test 'acceptance_*'; \
-    cargo test -p estafette --features lab --test acceptance_lab
+    #!/usr/bin/env bash
+    set -uo pipefail
+    cargo build -p estafette || exit
+    invitation="$(just remote::invitation)" || exit
+    killable_host_line="$(LAB_SERVER={{ killable_server }} LAB_BINARY={{ built_binary }} just remote::infrastructure)" || exit
+    export ESTAFETTE_ACCEPTANCE_INVITATION="$invitation"
+    export ESTAFETTE_ACCEPTANCE_KILLABLE_SERVER={{ killable_server }}
+    export ESTAFETTE_ACCEPTANCE_KILLABLE_HOST_LINE="$killable_host_line"
+    first_failure=0
+    cargo test -p estafette --features lab --test acceptance_lab || first_failure=$?
+    unset_variables=()
+    for variable in {{ claude_session_variables }}; do
+        [[ -n "${!variable:-}" ]] || unset_variables+=("$variable")
+    done
+    if (( ${#unset_variables[@]} > 0 )); then
+        printf 'bridge lab target skipped: %s unset\n' "${unset_variables[*]}" >&2
+    else
+        cargo test -p estafette-bridge-claude --features lab --test 'acceptance_*' || bridge_failure=$?
+        (( first_failure != 0 )) || first_failure=${bridge_failure:-0}
+    fi
+    exit "$first_failure"
