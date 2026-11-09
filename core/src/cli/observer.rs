@@ -32,10 +32,12 @@ use crate::node::{
     NodeRecord, RelayProbe, Session, endpoint_addr, endpoint_id, known_host_addresses,
     observer_wait_over_at, seed_lookup_with_known_hosts, serve, sleep_until_deadline, wire_addr,
 };
-use crate::payload::ZERO_MAC;
+use crate::payload::{ZERO_MAC, ZERO_SIGNATURE};
 use crate::peers::{Effect, Peer, PeerTable, Status};
 use crate::sidecar::{HeldSidecar, Pause, SEED_BYTES, SidecarError, claim, create_card};
-use crate::wire::{self, Addr, Introduce, IntroduceAck, Message, Nonce, Payload, Version};
+use crate::wire::{
+    self, Addr, Introduce, IntroduceAck, Message, Nonce, Payload, PresenceRequest, Version,
+};
 
 const OBSERVER_PUBLIC: &[u8] = b"{}";
 const OPERATOR_CARD: &str = "operator";
@@ -490,6 +492,7 @@ async fn start_observation(
             monotonic: effects.monotonic,
             interrupted: effects.interrupted,
             wait_over: None,
+            key: secret_key,
         }),
         Err(failure) => {
             drop(router.shutdown().await);
@@ -588,6 +591,7 @@ struct Observation {
     monotonic: MonotonicClock,
     interrupted: Interrupted,
     wait_over: Option<Instant>,
+    key: SecretKey,
 }
 
 /// What an observer loop wakes for.
@@ -613,11 +617,11 @@ impl Observation {
             match self.next_step().await {
                 Step::Topic(None) | Step::WaitOver | Step::Interrupted => break,
                 Step::Topic(Some(Err(failure))) => return Err(Failure::Topic(failure)),
-                Step::Topic(Some(Ok(GossipEvent::Joined | GossipEvent::JoinTimedOut))) => {
-                    let joined_at = (self.monotonic)();
-                    self.wait_over
-                        .get_or_insert_with(|| observer_wait_over_at(joined_at));
+                Step::Topic(Some(Ok(GossipEvent::Joined))) => {
+                    self.start_observer_wait();
+                    request_presence(&self.topic, &self.key, self.host.now_ms()).await?;
                 }
+                Step::Topic(Some(Ok(GossipEvent::JoinTimedOut))) => self.start_observer_wait(),
                 Step::Topic(Some(Ok(event))) => self.take_gossip_event(event),
                 Step::Loop(event) => self.take_loop_event(event),
             }
@@ -638,8 +642,10 @@ impl Observation {
         loop {
             match self.next_step().await {
                 Step::Interrupted => return Ok(()),
-                Step::WaitOver
-                | Step::Topic(Some(Ok(GossipEvent::Joined | GossipEvent::JoinTimedOut))) => {}
+                Step::WaitOver | Step::Topic(Some(Ok(GossipEvent::JoinTimedOut))) => {}
+                Step::Topic(Some(Ok(GossipEvent::Joined))) => {
+                    request_presence(&self.topic, &self.key, self.host.now_ms()).await?;
+                }
                 Step::Topic(None) => return Err(Failure::TopicClosed),
                 Step::Topic(Some(Err(failure))) => return Err(Failure::Topic(failure)),
                 Step::Topic(Some(Ok(event))) => {
@@ -651,6 +657,13 @@ impl Observation {
                 Step::Loop(event) => self.take_loop_event(event),
             }
         }
+    }
+
+    /// Starts the observer wait at the first join or join timeout and keeps one already started.
+    fn start_observer_wait(&mut self) {
+        let joined_at = (self.monotonic)();
+        self.wait_over
+            .get_or_insert_with(|| observer_wait_over_at(joined_at));
     }
 
     /// Waits for the next topic event, loop event, observer wait deadline or interrupt.
@@ -755,6 +768,22 @@ impl Observation {
             host.hand_to_loop(ObserverEvent::IntroduceAnswered { card, answer });
         });
     }
+}
+
+/// Broadcasts the one payload an observation sends, a Presence request signed by the observer's key, at the one join its topic reports.
+async fn request_presence(
+    topic: &NetworkTopic,
+    key: &SecretKey,
+    now_ms: u64,
+) -> Result<(), Failure> {
+    let request = Payload::PresenceRequest(PresenceRequest {
+        v: Version::CURRENT,
+        requester: *key.public().as_bytes(),
+        seq: now_ms,
+        mac: ZERO_MAC,
+        sig: ZERO_SIGNATURE,
+    });
+    topic.broadcast(key, request).await.map_err(Failure::Topic)
 }
 
 /// The result line of a peer: handle, status, attached and public fields.
@@ -881,6 +910,7 @@ mod tests {
     const ATTACH_WAIT: Duration = Duration::from_secs(2);
     const DETACH_WAIT: Duration = Duration::from_millis(300);
     const PAYLOAD_WAIT: Duration = Duration::from_secs(20);
+    const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
 
     struct EveryProcessRuns;
 
@@ -1536,7 +1566,7 @@ mod tests {
 
     struct SilentNeighbor {
         _router: iroh::protocol::Router,
-        _topic: NetworkTopic,
+        topic: NetworkTopic,
         address: EndpointAddr,
         introduces: Arc<Mutex<Vec<Introduce>>>,
     }
@@ -1560,7 +1590,7 @@ mod tests {
         .unwrap();
         SilentNeighbor {
             _router: router,
-            _topic: topic,
+            topic,
             address: endpoint.endpoint().addr(),
             introduces,
         }
@@ -1602,6 +1632,75 @@ mod tests {
                 String::from_utf8_lossy(NEIGHBOR_PUBLIC)
             )
         );
+        drop(lab);
+    }
+
+    async fn next_presence_request(
+        topic: &mut NetworkTopic,
+        within: Duration,
+    ) -> Option<wire::PresenceRequest> {
+        tokio::time::timeout(within, async {
+            loop {
+                if let Some(Ok(GossipEvent::Payload(payload))) = topic.next_event().await
+                    && let Payload::PresenceRequest(request) = *payload
+                {
+                    return request;
+                }
+            }
+        })
+        .await
+        .ok()
+    }
+
+    #[tokio::test]
+    async fn spec_3_15_test_15_show_peers_sends_one_presence_request_after_joining_and_answers_none()
+     {
+        let lab = Lab::new("presence-request").await;
+        let mut neighbor = start_silent_neighbor().await;
+        lab.write_network_config(&[NEIGHBOR_SEED]);
+        let show_peers = ObserverCommand::ShowPeers {
+            network: NETWORK_NAME.parse().unwrap(),
+        };
+        let effects = lab.effects(vec![neighbor.address.clone()], never_interrupted());
+        let mut output = Vec::new();
+
+        let (outcome, (sent, sent_after_asked)) = tokio::join!(
+            run(
+                &show_peers,
+                &lab.directories,
+                &OperatingSystemFilesystem,
+                &NoPause,
+                effects,
+                &mut output,
+            ),
+            async {
+                let sent = next_presence_request(&mut neighbor.topic, SPEC_OBSERVER_WAIT).await;
+                neighbor
+                    .topic
+                    .broadcast(
+                        &secret_key(NEIGHBOR_SEED),
+                        Payload::PresenceRequest(wire::PresenceRequest {
+                            v: Version::CURRENT,
+                            requester: *secret_key(NEIGHBOR_SEED).public().as_bytes(),
+                            seq: wall_clock_ms(),
+                            mac: ZERO_MAC,
+                            sig: unsigned(),
+                        }),
+                    )
+                    .await
+                    .unwrap();
+                let sent_after_asked =
+                    next_presence_request(&mut neighbor.topic, SPEC_OBSERVER_WAIT).await;
+                (sent, sent_after_asked)
+            }
+        );
+
+        outcome.unwrap();
+        assert_eq!(
+            sent.map(|request| request.requester),
+            Some(*secret_key(OBSERVER_SEED).public().as_bytes())
+        );
+        assert_eq!(sent_after_asked, None);
         drop(lab);
     }
 
