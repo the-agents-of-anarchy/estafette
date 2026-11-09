@@ -4,6 +4,8 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 set working-directory := '..'
 
 audit_pin := "0.22.2"
+killable_server := "estafette-lab-2"
+built_binary := "target/debug/estafette"
 
 [default]
 [doc("The whole gate: format check, clippy with and without relay, tests, advisory audit; run before every commit")]
@@ -55,10 +57,12 @@ test:
 fmt:
     cargo fmt --all
 
-[doc("Run the host-bound acceptance tests against the live lab host; the invitation comes from just remote::invitation")]
+[doc("Run the host-bound acceptance tests against the live lab host and a second host they may kill, brought up first by just remote::infrastructure; the invitation comes from just remote::invitation, and both servers are torn down by the run-hetzner-lab skill once it exits")]
 [group('verify')]
 acceptance:
-    export ESTAFETTE_ACCEPTANCE_INVITATION="$(just remote::invitation)"; \
     cargo build -p estafette; \
+    export ESTAFETTE_ACCEPTANCE_INVITATION="$(just remote::invitation)"; \
+    export ESTAFETTE_ACCEPTANCE_KILLABLE_SERVER={{ killable_server }}; \
+    export ESTAFETTE_ACCEPTANCE_KILLABLE_HOST_LINE="$(LAB_SERVER={{ killable_server }} LAB_BINARY={{ built_binary }} just remote::infrastructure)"; \
     cargo test -p estafette-bridge-claude --features lab --test 'acceptance_*'; \
     cargo test -p estafette --features lab --test acceptance_lab
