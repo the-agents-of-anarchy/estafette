@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -42,6 +42,7 @@ const SESSIONS_DIRECTORY: &str = "sessions";
 const PROJECTS_DIRECTORY: &str = "projects";
 const REGISTRY_ENTRY_EXTENSION: &str = "json";
 const CLASS_BEFORE_THE_LIVE_MODE_IS_READ: PermissionClass = PermissionClass::Prompting;
+const TRANSCRIPT_TAIL_WINDOW_BYTES: u64 = 65_536;
 const SETTINGS_FILE: &str = "settings.json";
 const LOCAL_SETTINGS_FILE: &str = "settings.local.json";
 #[cfg(target_os = "macos")]
@@ -144,6 +145,8 @@ impl std::error::Error for CommandError {}
 trait Files {
     /// Reads a whole file as text.
     fn read_text(&self, path: &Path) -> io::Result<String>;
+    /// Reads the last bytes of a file, at most the window, as text.
+    fn read_tail_text(&self, path: &Path, window_bytes: u64) -> io::Result<String>;
     /// Lists the paths inside a directory.
     fn list_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>>;
     /// Tells whether anything exists at the path.
@@ -159,6 +162,15 @@ struct OperatingSystemFiles;
 impl Files for OperatingSystemFiles {
     fn read_text(&self, path: &Path) -> io::Result<String> {
         fs::read_to_string(path)
+    }
+
+    fn read_tail_text(&self, path: &Path, window_bytes: u64) -> io::Result<String> {
+        let mut file = fs::File::open(path)?;
+        let length = file.metadata()?.len();
+        file.seek(SeekFrom::Start(length.saturating_sub(window_bytes)))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     fn list_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
@@ -251,6 +263,7 @@ struct BridgeSession<S: InboxConnector, F: Files> {
     followed_sockets: Mutex<BTreeSet<PathBuf>>,
     registry_file: PathBuf,
     projects_directory: PathBuf,
+    transcript_file: Mutex<Option<PathBuf>>,
     permission_class_file: PathBuf,
     attested_class: Mutex<Option<PermissionClass>>,
     dropped_frames_file: PathBuf,
@@ -262,8 +275,8 @@ struct BridgeSession<S: InboxConnector, F: Files> {
 }
 
 impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
-    /// Reads the permission class of the served session from its transcript, found through its registry entry.
-    fn live_permission_class(&self) -> Result<PermissionClass, LiveClassError> {
+    /// Finds the transcript file of the served session through its registry entry.
+    fn resolve_transcript_file(&self) -> Result<PathBuf, LiveClassError> {
         let registry_text = self
             .files
             .read_text(&self.registry_file)
@@ -274,8 +287,7 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
         let session_id = session_id_of_registry_entry(&registry_text)
             .ok_or_else(|| LiveClassError::NoSessionId(self.registry_file.clone()))?;
         let file_name = transcript_file_name(&session_id);
-        let transcript_file = self
-            .files
+        self.files
             .list_directory(&self.projects_directory)
             .map_err(|source| LiveClassError::ProjectsUnreadable {
                 path: self.projects_directory.clone(),
@@ -284,28 +296,59 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
             .into_iter()
             .map(|project| project.join(&file_name))
             .find(|candidate| self.files.exists(candidate))
-            .ok_or(LiveClassError::TranscriptMissing(file_name))?;
-        let transcript_text = self.files.read_text(&transcript_file).map_err(|source| {
-            LiveClassError::TranscriptUnreadable {
-                path: transcript_file.clone(),
-                source,
-            }
-        })?;
-        latest_permission_mode(&transcript_text)
-            .map(|mode| PermissionClass::from_permission_mode(&mode))
-            .ok_or(LiveClassError::NoModeEntry(transcript_file))
+            .ok_or(LiveClassError::TranscriptMissing(file_name))
     }
 
-    /// Reads the live permission class and attests it on the notifier, reporting why it cannot be read.
-    fn attest_live_permission_class(&self, notifier: &mut SessionNotifier<S>) {
+    /// Reads the latest permission mode from the end of the transcript, and from the whole file only when that end holds none.
+    fn class_from_transcript(
+        &self,
+        transcript_file: &Path,
+    ) -> Result<PermissionClass, LiveClassError> {
+        let unreadable = |source| LiveClassError::TranscriptUnreadable {
+            path: transcript_file.to_owned(),
+            source,
+        };
+        let tail = self
+            .files
+            .read_tail_text(transcript_file, TRANSCRIPT_TAIL_WINDOW_BYTES)
+            .map_err(unreadable)?;
+        let mode = match latest_permission_mode(&tail) {
+            Some(mode) => Some(mode),
+            None => {
+                latest_permission_mode(&self.files.read_text(transcript_file).map_err(unreadable)?)
+            }
+        };
+        mode.map(|mode| PermissionClass::from_permission_mode(&mode))
+            .ok_or_else(|| LiveClassError::NoModeEntry(transcript_file.to_owned()))
+    }
+
+    /// Reads the permission class of the served session, resolving its transcript once and again only when the known one cannot be opened.
+    fn live_permission_class(&self) -> Result<PermissionClass, LiveClassError> {
+        let known = lock(&self.transcript_file).clone();
+        if let Some(transcript_file) = known {
+            let class = self.class_from_transcript(&transcript_file);
+            if !matches!(class, Err(LiveClassError::TranscriptUnreadable { .. })) {
+                return class;
+            }
+        }
+        let transcript_file = self.resolve_transcript_file()?;
+        *lock(&self.transcript_file) = Some(transcript_file.clone());
+        self.class_from_transcript(&transcript_file)
+    }
+
+    /// Reads, records and reports the live permission class without holding the notifier, reporting why it cannot be read.
+    fn read_live_permission_class(&self) -> Option<PermissionClass> {
         match self.live_permission_class() {
             Ok(class) => {
-                notifier.attest(class);
                 self.record_permission_class(class);
+                Some(class)
             }
-            Err(error) => (self.report_error)(&format!(
-                "cannot read the session's permission mode, keeping the class attested before: {error}"
-            )),
+            Err(error) => {
+                (self.report_error)(&format!(
+                    "cannot read the session's permission mode, keeping the class attested before: {error}"
+                ));
+                None
+            }
         }
     }
 
@@ -328,8 +371,11 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
 
     /// Injects one frame as a notice and records the dropped-frame count when it changed.
     fn deliver(&self, frame: &InboxFrame) {
+        let live_class = self.read_live_permission_class();
         let mut notifier = lock(&self.notifier);
-        self.attest_live_permission_class(&mut notifier);
+        if let Some(class) = live_class {
+            notifier.attest(class);
+        }
         let dropped_before = notifier.dropped_frames();
         if let Err(error) = notifier.notify(frame, (self.elapsed)()) {
             (self.report_error)(&error.to_string());
@@ -460,6 +506,7 @@ where
             .join(SESSIONS_DIRECTORY)
             .join(format!("{harness_pid}.{REGISTRY_ENTRY_EXTENSION}")),
         projects_directory: effects.claude_config_directory.join(PROJECTS_DIRECTORY),
+        transcript_file: Mutex::default(),
         permission_class_file: permission_class_path(&effects.temporary_dir, harness_pid),
         attested_class: Mutex::default(),
         dropped_frames_file: dropped_frames_path(&effects.temporary_dir, harness_pid),
@@ -469,7 +516,9 @@ where
         spawn: effects.spawn,
         wait,
     });
-    session.attest_live_permission_class(&mut lock(&session.notifier));
+    if let Some(class) = session.read_live_permission_class() {
+        lock(&session.notifier).attest(class);
+    }
     session.record_dropped_frames(0);
     follow_binary_sockets(
         harness_pid,
@@ -976,6 +1025,7 @@ mod tests {
             followed_sockets: Mutex::default(),
             registry_file: PathBuf::from(REGISTRY_FILE),
             projects_directory: PathBuf::from(PROJECTS_DIRECTORY_PATH),
+            transcript_file: Mutex::default(),
             permission_class_file: PathBuf::from(PERMISSION_CLASS_FILE),
             attested_class: Mutex::default(),
             dropped_frames_file: PathBuf::from(DROPPED_FRAMES_FILE),
@@ -1055,12 +1105,83 @@ mod tests {
                 1,
                 "{mode}"
             );
-            let transcript_reads = lock(&session.files.reads)
+            let transcript_tail_reads = lock(&session.files.tail_reads)
                 .iter()
                 .filter(|path| path.as_path() == Path::new(TRANSCRIPT_FILE))
                 .count();
-            assert_eq!(transcript_reads, 2, "{mode}");
+            assert_eq!(transcript_tail_reads, 2, "{mode}");
         }
+    }
+
+    fn reads_of(session: &BridgeSession<DownConnector, StandInFiles>, file: &str) -> usize {
+        lock(&session.files.reads)
+            .iter()
+            .filter(|path| path.as_path() == Path::new(file))
+            .count()
+    }
+
+    #[test]
+    fn harness_2_1_319_the_transcript_path_is_resolved_once_and_only_its_tail_is_read_per_frame() {
+        let wiring = wiring();
+        let session = bridge_session(&wiring);
+        for body in ["one", "two", "three"] {
+            session.deliver(&frame_from("ana", body));
+        }
+        assert_eq!(reads_of(&session, REGISTRY_FILE), 1);
+        assert_eq!(*lock(&session.files.listings), 1);
+        assert_eq!(reads_of(&session, TRANSCRIPT_FILE), 0);
+        assert_eq!(lock(&session.files.tail_reads).len(), 3);
+    }
+
+    #[test]
+    fn harness_2_1_319_a_tail_without_a_mode_entry_falls_back_to_one_whole_read() {
+        let wiring = wiring();
+        let mut files = files_of_live_session("bypassPermissions");
+        files.tails.insert(
+            PathBuf::from(TRANSCRIPT_FILE),
+            "{\"type\":\"user\"}\n".to_owned(),
+        );
+        let session = bridge_session_over(&wiring, files, DownConnector);
+        session.deliver(&frame_from("ana", "one"));
+        assert_eq!(reads_of(&session, TRANSCRIPT_FILE), 1);
+        assert_eq!(class_files_written(&session), ["bypass"]);
+    }
+
+    #[test]
+    fn harness_2_1_319_a_cached_transcript_that_cannot_be_opened_is_resolved_again() {
+        const OTHER_TRANSCRIPT: &str = "/home/ana/.claude/projects/-other/abc-1.jsonl";
+        let wiring = wiring();
+        let mut files = files_of_live_session("bypassPermissions");
+        files.existing.insert(PathBuf::from(OTHER_TRANSCRIPT));
+        files.texts.insert(
+            PathBuf::from(OTHER_TRANSCRIPT),
+            Ok("{\"type\":\"permission-mode\",\"permissionMode\":\"auto\"}\n".to_owned()),
+        );
+        files.directories.insert(
+            PathBuf::from(PROJECTS_DIRECTORY_PATH),
+            Ok(vec![
+                PathBuf::from("/home/ana/.claude/projects/-work"),
+                PathBuf::from("/home/ana/.claude/projects/-other"),
+            ]),
+        );
+        let session = bridge_session_over(&wiring, files, DownConnector);
+        session.deliver(&frame_from("ana", "one"));
+        lock(&session.files.hidden).insert(PathBuf::from(TRANSCRIPT_FILE));
+        session.deliver(&frame_from("ana", "two"));
+        assert_eq!(class_files_written(&session), ["bypass", "prompting"]);
+        assert_eq!(*lock(&session.files.listings), 2);
+    }
+
+    #[test]
+    fn harness_2_1_319_the_operating_system_reads_only_the_window_at_the_end_of_a_file() {
+        let directory = scratch_directory("tail");
+        let file = directory.join("transcript.jsonl");
+        fs::write(&file, "first line\nsecond line\nthird line\n").expect("write");
+        let window = OperatingSystemFiles
+            .read_tail_text(&file, 12)
+            .expect("read tail");
+        assert_eq!(window, "\nthird line\n");
+        fs::remove_dir_all(&directory).expect("cleanup");
     }
 
     #[test]
@@ -1230,21 +1351,45 @@ mod tests {
         texts: BTreeMap<PathBuf, Result<String, io::ErrorKind>>,
         directories: BTreeMap<PathBuf, Result<Vec<PathBuf>, io::ErrorKind>>,
         existing: BTreeSet<PathBuf>,
+        tails: BTreeMap<PathBuf, String>,
+        hidden: Mutex<BTreeSet<PathBuf>>,
         reads: Mutex<Vec<PathBuf>>,
+        tail_reads: Mutex<Vec<PathBuf>>,
+        listings: Mutex<usize>,
         writes: Arc<Mutex<Vec<(PathBuf, String)>>>,
     }
 
-    impl Files for StandInFiles {
-        fn read_text(&self, path: &Path) -> io::Result<String> {
-            lock(&self.reads).push(path.to_owned());
+    impl StandInFiles {
+        fn text_of(&self, path: &Path) -> io::Result<String> {
+            if lock(&self.hidden).contains(path) {
+                return Err(io::Error::from(io::ErrorKind::NotFound));
+            }
             match self.texts.get(path) {
                 Some(Ok(text)) => Ok(text.clone()),
                 Some(Err(kind)) => Err(io::Error::from(*kind)),
                 None => Err(io::Error::from(io::ErrorKind::NotFound)),
             }
         }
+    }
+
+    impl Files for StandInFiles {
+        fn read_text(&self, path: &Path) -> io::Result<String> {
+            lock(&self.reads).push(path.to_owned());
+            self.text_of(path)
+        }
+
+        fn read_tail_text(&self, path: &Path, _window_bytes: u64) -> io::Result<String> {
+            lock(&self.tail_reads).push(path.to_owned());
+            self.tails
+                .get(path)
+                .map_or_else(|| self.text_of(path), |tail| Ok(tail.clone()))
+        }
 
         fn list_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>> {
+            {
+                let mut listings = lock(&self.listings);
+                *listings = listings.saturating_add(1);
+            }
             match self.directories.get(path) {
                 Some(Ok(listing)) => Ok(listing.clone()),
                 Some(Err(kind)) => Err(io::Error::from(*kind)),
@@ -1253,7 +1398,7 @@ mod tests {
         }
 
         fn exists(&self, path: &Path) -> bool {
-            self.existing.contains(path)
+            self.existing.contains(path) && !lock(&self.hidden).contains(path)
         }
 
         fn owner_user_id(&self, _path: &Path) -> io::Result<u32> {
