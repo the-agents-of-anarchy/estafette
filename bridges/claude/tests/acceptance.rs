@@ -8,7 +8,6 @@ const NETWORK: &str = "lab";
 const CARD: &str = "ana-card";
 const HANDLE: &str = "ana";
 const DOCTOR_CHECK_COUNT: usize = 5;
-const HOOK_PERMISSION_MODE: &str = "default";
 
 #[test]
 fn spec_3_12_doctor_passes_every_check_for_a_bridge_beside_a_real_binary_serving_mcp() {
@@ -27,7 +26,7 @@ fn spec_3_12_doctor_passes_every_check_for_a_bridge_beside_a_real_binary_serving
         "{}",
         member.claimed
     );
-    let _bridge = fixture.spawn_bridge(HOOK_PERMISSION_MODE).unwrap();
+    let _bridge = fixture.spawn_bridge().unwrap();
 
     let doctor = fixture.bridge().arg("doctor").output().unwrap();
     let report = String::from_utf8(doctor.stdout).unwrap();

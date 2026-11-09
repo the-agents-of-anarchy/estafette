@@ -22,6 +22,9 @@ use estafette_bridge_claude::inbox_client::{
 };
 use estafette_bridge_claude::inject::SessionNotifier;
 use estafette_bridge_claude::permission_class::PermissionClass;
+use estafette_bridge_claude::session_files::{
+    latest_permission_mode, session_id_of_registry_entry, transcript_file_name,
+};
 
 const DOCTOR_SUBCOMMAND: &str = "doctor";
 const USAGE: &str = "usage: estafette-bridge-claude run <harness-pid> | doctor";
@@ -35,6 +38,10 @@ const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
 const TEMPORARY_DIRECTORY_VARIABLE: &str = "TMPDIR";
 const SYSTEM_TEMPORARY_DIRECTORY: &str = "/tmp";
 const CLAUDE_DIRECTORY: &str = ".claude";
+const SESSIONS_DIRECTORY: &str = "sessions";
+const PROJECTS_DIRECTORY: &str = "projects";
+const REGISTRY_ENTRY_EXTENSION: &str = "json";
+const CLASS_BEFORE_THE_LIVE_MODE_IS_READ: PermissionClass = PermissionClass::Prompting;
 const SETTINGS_FILE: &str = "settings.json";
 const LOCAL_SETTINGS_FILE: &str = "settings.local.json";
 #[cfg(target_os = "macos")]
@@ -208,9 +215,44 @@ type Elapsed = Arc<dyn Fn() -> Duration + Send + Sync>;
 type Task = Box<dyn FnOnce() + Send>;
 type Spawner = Arc<dyn Fn(Task) + Send + Sync>;
 
+#[derive(Debug)]
+enum LiveClassError {
+    RegistryUnreadable { path: PathBuf, source: io::Error },
+    NoSessionId(PathBuf),
+    ProjectsUnreadable { path: PathBuf, source: io::Error },
+    TranscriptMissing(String),
+    TranscriptUnreadable { path: PathBuf, source: io::Error },
+    NoModeEntry(PathBuf),
+}
+
+impl fmt::Display for LiveClassError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RegistryUnreadable { path, source }
+            | Self::TranscriptUnreadable { path, source } => {
+                write!(formatter, "cannot read {}: {source}", path.display())
+            }
+            Self::NoSessionId(path) => write!(formatter, "{} names no session", path.display()),
+            Self::ProjectsUnreadable { path, source } => {
+                write!(formatter, "cannot list {}: {source}", path.display())
+            }
+            Self::TranscriptMissing(file_name) => {
+                write!(formatter, "no project directory holds {file_name}")
+            }
+            Self::NoModeEntry(path) => {
+                write!(formatter, "{} has no permission-mode entry", path.display())
+            }
+        }
+    }
+}
+
 struct BridgeSession<S: InboxConnector, F: Files> {
     notifier: Mutex<SessionNotifier<S>>,
     followed_sockets: Mutex<BTreeSet<PathBuf>>,
+    registry_file: PathBuf,
+    projects_directory: PathBuf,
+    permission_class_file: PathBuf,
+    attested_class: Mutex<Option<PermissionClass>>,
     dropped_frames_file: PathBuf,
     files: F,
     elapsed: Elapsed,
@@ -220,12 +262,52 @@ struct BridgeSession<S: InboxConnector, F: Files> {
 }
 
 impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
-    /// Writes the attested permission class where the doctor reads it and reports it, reporting a failed write.
-    fn record_permission_class(&self, class: PermissionClass, class_file: &Path) {
+    /// Reads the permission class of the served session from its transcript, found through its registry entry.
+    fn live_permission_class(&self) -> Result<PermissionClass, LiveClassError> {
+        let registry_text = self
+            .files
+            .read_text(&self.registry_file)
+            .map_err(|source| LiveClassError::RegistryUnreadable {
+                path: self.registry_file.clone(),
+                source,
+            })?;
+        let session_id = session_id_of_registry_entry(&registry_text)
+            .ok_or_else(|| LiveClassError::NoSessionId(self.registry_file.clone()))?;
+        let file_name = transcript_file_name(&session_id);
+        let transcript_file = self
+            .files
+            .list_directory(&self.projects_directory)
+            .map_err(|source| LiveClassError::ProjectsUnreadable {
+                path: self.projects_directory.clone(),
+                source,
+            })?
+            .into_iter()
+            .map(|project| project.join(&file_name))
+            .find(|candidate| self.files.exists(candidate))
+            .ok_or(LiveClassError::TranscriptMissing(file_name))?;
+        let transcript_text = self.files.read_text(&transcript_file).map_err(|source| {
+            LiveClassError::TranscriptUnreadable {
+                path: transcript_file.clone(),
+                source,
+            }
+        })?;
+        latest_permission_mode(&transcript_text)
+            .map(|mode| PermissionClass::from_permission_mode(&mode))
+            .ok_or(LiveClassError::NoModeEntry(transcript_file))
+    }
+
+    /// Reports and records the attested class where the doctor reads it when it differs from the one attested before.
+    fn record_permission_class(&self, class: PermissionClass) {
+        let mut attested = lock(&self.attested_class);
+        if *attested == Some(class) {
+            return;
+        }
+        *attested = Some(class);
+        drop(attested);
         (self.report_error)(&format!("attested permission class: {class}"));
         if let Err(error) = self
             .files
-            .write_text_atomically(class_file, &class.to_string())
+            .write_text_atomically(&self.permission_class_file, &class.to_string())
         {
             (self.report_error)(&format!("cannot write the permission class: {error}"));
         }
@@ -234,6 +316,15 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
     /// Injects one frame as a notice and records the dropped-frame count when it changed.
     fn deliver(&self, frame: &InboxFrame) {
         let mut notifier = lock(&self.notifier);
+        match self.live_permission_class() {
+            Ok(class) => {
+                notifier.attest(class);
+                self.record_permission_class(class);
+            }
+            Err(error) => (self.report_error)(&format!(
+                "cannot read the session's permission mode, keeping the class attested before: {error}"
+            )),
+        }
         let dropped_before = notifier.dropped_frames();
         if let Err(error) = notifier.notify(frame, (self.elapsed)()) {
             (self.report_error)(&error.to_string());
@@ -291,7 +382,7 @@ struct BridgeEffects<S, C, F> {
     temporary_dir: PathBuf,
     session_connector: S,
     session_token: String,
-    permission_class: PermissionClass,
+    claude_config_directory: PathBuf,
     connect_binary_socket: C,
     files: F,
     elapsed: Elapsed,
@@ -307,7 +398,6 @@ type ProductionBridgeEffects<F> =
 fn bridge_effects<F: Files>(
     environment: &Environment,
     files: F,
-    permission_class: PermissionClass,
 ) -> Result<ProductionBridgeEffects<F>, CommandError> {
     let socket = environment
         .messaging_socket
@@ -324,7 +414,8 @@ fn bridge_effects<F: Files>(
         temporary_dir: environment.temporary_dir.clone(),
         session_connector: UnixSocketConnector::new(socket),
         session_token,
-        permission_class,
+        claude_config_directory: claude_config_directory(environment)
+            .ok_or(CommandError::MissingVariable(HOME_VARIABLE))?,
         connect_binary_socket: UnixSocketConnector::new,
         files,
         elapsed: Arc::new(move || started.elapsed()),
@@ -356,9 +447,16 @@ where
         notifier: Mutex::new(SessionNotifier::new(
             effects.session_connector,
             effects.session_token,
-            effects.permission_class,
+            CLASS_BEFORE_THE_LIVE_MODE_IS_READ,
         )),
         followed_sockets: Mutex::default(),
+        registry_file: effects
+            .claude_config_directory
+            .join(SESSIONS_DIRECTORY)
+            .join(format!("{harness_pid}.{REGISTRY_ENTRY_EXTENSION}")),
+        projects_directory: effects.claude_config_directory.join(PROJECTS_DIRECTORY),
+        permission_class_file: permission_class_path(&effects.temporary_dir, harness_pid),
+        attested_class: Mutex::default(),
         dropped_frames_file: dropped_frames_path(&effects.temporary_dir, harness_pid),
         files: effects.files,
         elapsed: effects.elapsed,
@@ -366,10 +464,6 @@ where
         spawn: effects.spawn,
         wait,
     });
-    session.record_permission_class(
-        effects.permission_class,
-        &permission_class_path(&effects.temporary_dir, harness_pid),
-    );
     session.record_dropped_frames(0);
     follow_binary_sockets(
         harness_pid,
@@ -401,14 +495,19 @@ fn read_settings_file(
     }
 }
 
-/// Lists the user, project and local settings files in the order Claude Code reads them.
-fn settings_file_paths(environment: &Environment, project_dir: &Path) -> Vec<PathBuf> {
-    let user_config_dir = environment.claude_config_dir.clone().or_else(|| {
+/// Names the directory Claude Code keeps its settings, session registry and transcripts in.
+fn claude_config_directory(environment: &Environment) -> Option<PathBuf> {
+    environment.claude_config_dir.clone().or_else(|| {
         environment
             .home
             .as_ref()
             .map(|home| home.join(CLAUDE_DIRECTORY))
-    });
+    })
+}
+
+/// Lists the user, project and local settings files in the order Claude Code reads them.
+fn settings_file_paths(environment: &Environment, project_dir: &Path) -> Vec<PathBuf> {
+    let user_config_dir = claude_config_directory(environment);
     let project_claude_dir = project_dir.join(CLAUDE_DIRECTORY);
     user_config_dir
         .into_iter()
@@ -535,8 +634,7 @@ fn main() -> ExitCode {
     };
     match parse_command(&arguments) {
         Some(Command::Run { harness_pid }) => {
-            let permission_class = PermissionClass::from_hook_input(std::io::stdin());
-            let outcome = bridge_effects(&environment, OperatingSystemFiles, permission_class)
+            let outcome = bridge_effects(&environment, OperatingSystemFiles)
                 .and_then(|effects| run_bridge(harness_pid, effects, &PsProcessTable))
                 .map(|outcome| {
                     if let BridgeOutcome::AlreadyServed { bridge_pid } = outcome {
@@ -682,7 +780,7 @@ mod tests {
                 temporary_dir: PathBuf::from(TEST_TEMPORARY_DIR),
                 session_connector: DownConnector,
                 session_token: "token".to_owned(),
-                permission_class: PermissionClass::Bypass,
+                claude_config_directory: PathBuf::from(CLAUDE_CONFIG_DIRECTORY),
                 connect_binary_socket: Box::new(move |socket_path| {
                     lock(&recorded_paths).push(socket_path);
                     DownConnector
@@ -733,11 +831,7 @@ mod tests {
     #[test]
     fn spec_3_12_the_bridge_needs_the_session_socket_and_token_before_it_starts() {
         assert!(matches!(
-            bridge_effects(
-                &bare_environment(),
-                OperatingSystemFiles,
-                PermissionClass::Prompting
-            ),
+            bridge_effects(&bare_environment(), OperatingSystemFiles),
             Err(CommandError::MissingVariable(MESSAGING_SOCKET_VARIABLE))
         ));
     }
@@ -795,24 +889,6 @@ mod tests {
         assert_eq!(written_counts(&wiring.writes), ["0"]);
     }
 
-    const PERMISSION_CLASS_FILE: &str = "/var/tmp/estafette-bridge-claude-100.permission-class";
-
-    #[test]
-    fn harness_2_1_319_the_bridge_reports_and_records_the_class_it_attests_when_it_starts() {
-        let polls = SnapshotSequence(RefCell::new(vec![Vec::new()]));
-        let wiring = wiring();
-        run_bridge(100, wiring.effects, &polls).expect("bridge runs");
-        assert_eq!(*lock(&wiring.errors), ["attested permission class: bypass"]);
-        assert_eq!(
-            *lock(&wiring.writes)
-                .iter()
-                .filter(|(path, _)| path == Path::new(PERMISSION_CLASS_FILE))
-                .map(|(_, text)| text.clone())
-                .collect::<Vec<_>>(),
-            ["bypass"]
-        );
-    }
-
     #[test]
     fn spec_3_12_a_binary_socket_that_cannot_be_reached_is_reported_and_followed_again_later() {
         let harness = ProcessEntry {
@@ -851,21 +927,74 @@ mod tests {
         counts: Vec<String>,
     }
 
-    fn bridge_session(wiring: &Wiring) -> BridgeSession<DownConnector, StandInFiles> {
+    const CLAUDE_CONFIG_DIRECTORY: &str = "/home/ana/.claude";
+    const REGISTRY_FILE: &str = "/home/ana/.claude/sessions/100.json";
+    const PROJECTS_DIRECTORY_PATH: &str = "/home/ana/.claude/projects";
+    const TRANSCRIPT_FILE: &str = "/home/ana/.claude/projects/-work/abc-1.jsonl";
+    const PERMISSION_CLASS_FILE: &str = "/var/tmp/estafette-bridge-claude-100.permission-class";
+
+    fn files_of_live_session(mode: &str) -> StandInFiles {
+        let mut files = StandInFiles::default();
+        files.texts.insert(
+            PathBuf::from(REGISTRY_FILE),
+            Ok("{\"pid\":100,\"sessionId\":\"abc-1\"}".to_owned()),
+        );
+        files.directories.insert(
+            PathBuf::from(PROJECTS_DIRECTORY_PATH),
+            Ok(vec![
+                PathBuf::from("/home/ana/.claude/projects/-other"),
+                PathBuf::from("/home/ana/.claude/projects/-work"),
+            ]),
+        );
+        files.existing.insert(PathBuf::from(TRANSCRIPT_FILE));
+        files.texts.insert(
+            PathBuf::from(TRANSCRIPT_FILE),
+            Ok(format!(
+                "{{\"type\":\"permission-mode\",\"permissionMode\":\"{mode}\"}}\n"
+            )),
+        );
+        files
+    }
+
+    fn bridge_session_over<S: InboxConnector>(
+        wiring: &Wiring,
+        files: StandInFiles,
+        connector: S,
+    ) -> BridgeSession<S, StandInFiles> {
         BridgeSession {
             notifier: Mutex::new(SessionNotifier::new(
-                DownConnector,
+                connector,
                 "token".to_owned(),
-                PermissionClass::Bypass,
+                CLASS_BEFORE_THE_LIVE_MODE_IS_READ,
             )),
             followed_sockets: Mutex::default(),
+            registry_file: PathBuf::from(REGISTRY_FILE),
+            projects_directory: PathBuf::from(PROJECTS_DIRECTORY_PATH),
+            permission_class_file: PathBuf::from(PERMISSION_CLASS_FILE),
+            attested_class: Mutex::default(),
             dropped_frames_file: PathBuf::from(DROPPED_FRAMES_FILE),
-            files: StandInFiles::default(),
+            files,
             elapsed: Arc::clone(&wiring.effects.elapsed),
             report_error: Arc::clone(&wiring.effects.report_error),
             spawn: Arc::clone(&wiring.effects.spawn),
             wait: |_| {},
         }
+    }
+
+    fn bridge_session(wiring: &Wiring) -> BridgeSession<DownConnector, StandInFiles> {
+        bridge_session_over(
+            wiring,
+            files_of_live_session("bypassPermissions"),
+            DownConnector,
+        )
+    }
+
+    fn connect_errors(wiring: &Wiring) -> Vec<String> {
+        lock(&wiring.errors)
+            .iter()
+            .filter(|message| message.starts_with("cannot connect"))
+            .cloned()
+            .collect()
     }
 
     fn deliver_eleven_frames(seconds_between_frames: u64) -> DeliveryRun {
@@ -876,7 +1005,7 @@ mod tests {
             session.deliver(&frame_from("ana", &format!("body {index}")));
         }
         DeliveryRun {
-            errors: lock(&wiring.errors).clone(),
+            errors: connect_errors(&wiring),
             counts: written_counts(&session.files.writes),
         }
     }
@@ -895,13 +1024,83 @@ mod tests {
         assert_eq!(across_windows.counts, Vec::<String>::new());
     }
 
+    fn class_files_written(session: &BridgeSession<DownConnector, StandInFiles>) -> Vec<String> {
+        lock(&session.files.writes)
+            .iter()
+            .filter(|(path, _)| path == Path::new(PERMISSION_CLASS_FILE))
+            .map(|(_, text)| text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn harness_2_1_319_a_session_started_by_hand_is_attested_from_its_live_transcript_on_every_frame()
+     {
+        for (mode, class) in [("bypassPermissions", "bypass"), ("auto", "prompting")] {
+            let wiring = wiring();
+            let session = bridge_session_over(&wiring, files_of_live_session(mode), DownConnector);
+            session.deliver(&frame_from("ana", "one"));
+            session.deliver(&frame_from("ana", "two"));
+            assert_eq!(class_files_written(&session), [class], "{mode}");
+            assert_eq!(
+                lock(&wiring.errors)
+                    .iter()
+                    .filter(|message| message.starts_with("attested permission class"))
+                    .count(),
+                1,
+                "{mode}"
+            );
+            let transcript_reads = lock(&session.files.reads)
+                .iter()
+                .filter(|path| path.as_path() == Path::new(TRANSCRIPT_FILE))
+                .count();
+            assert_eq!(transcript_reads, 2, "{mode}");
+        }
+    }
+
+    #[test]
+    fn harness_2_1_319_the_class_read_live_is_the_class_written_to_the_session_socket() {
+        let socket_path =
+            std::env::temp_dir().join(format!("estf-u43-{}.sock", std::process::id()));
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind");
+        let server = thread::spawn(move || {
+            let (mut connection, _) = listener.accept().expect("accept");
+            let mut received = String::new();
+            io::Read::read_to_string(&mut connection, &mut received).expect("read to close");
+            received
+        });
+        let wiring = wiring();
+        let session = bridge_session_over(
+            &wiring,
+            files_of_live_session("bypassPermissions"),
+            UnixSocketConnector::new(socket_path.clone()),
+        );
+        session.deliver(&frame_from("ana", "x"));
+        let received = server.join().expect("server thread");
+        fs::remove_file(&socket_path).expect("unlink socket");
+        assert!(received.contains("from-mode=\\\"bypass\\\""), "{received}");
+    }
+
+    #[test]
+    fn harness_2_1_319_a_session_whose_mode_cannot_be_read_is_reported_and_attests_nothing() {
+        let wiring = wiring();
+        let session = bridge_session_over(&wiring, StandInFiles::default(), DownConnector);
+        session.deliver(&frame_from("ana", "one"));
+        assert_eq!(class_files_written(&session), Vec::<String>::new());
+        assert!(lock(&wiring.errors).iter().any(|message| message.starts_with(
+            "cannot read the session's permission mode, keeping the class attested before: cannot read /home/ana/.claude/sessions/100.json"
+        )));
+    }
+
     #[test]
     fn harness_2_1_319_a_frame_whose_sender_name_is_refused_is_reported_and_recorded_as_dropped() {
         let wiring = wiring();
         let session = bridge_session(&wiring);
         session.deliver(&frame_from("an\"a", "x"));
-        assert_eq!(lock(&wiring.errors).len(), 1);
-        assert!(lock(&wiring.errors)[0].starts_with("frame from \"an\\\"a\" dropped"));
+        assert!(
+            lock(&wiring.errors)
+                .iter()
+                .any(|message| message.starts_with("frame from \"an\\\"a\" dropped"))
+        );
         assert_eq!(written_counts(&session.files.writes), ["1"]);
     }
 

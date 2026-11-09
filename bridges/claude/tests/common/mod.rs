@@ -35,6 +35,7 @@ pub struct Fixture {
     pub root: PathBuf,
     pub messaging_socket: PathBuf,
     pub messaging_token: String,
+    pub claude_config_dir: Option<PathBuf>,
 }
 
 impl Fixture {
@@ -57,6 +58,7 @@ impl Fixture {
         Ok(Self {
             messaging_socket: root.join(MESSAGING_SOCKET_FILE),
             messaging_token: DEFAULT_MESSAGING_TOKEN.to_owned(),
+            claude_config_dir: None,
             root,
         })
     }
@@ -86,6 +88,9 @@ impl Fixture {
             .env("CLAUDE_CODE_MESSAGING_SOCKET", &self.messaging_socket)
             .env("CLAUDE_CODE_MESSAGING_TOKEN", &self.messaging_token)
             .current_dir(&self.root);
+        if let Some(claude_config_dir) = &self.claude_config_dir {
+            command.env("CLAUDE_CONFIG_DIR", claude_config_dir);
+        }
         command
     }
 
@@ -125,24 +130,13 @@ impl Fixture {
         })
     }
 
-    pub fn spawn_bridge(&self, permission_mode: &str) -> io::Result<Spawned> {
-        let mut process = self
-            .bridge()
+    pub fn spawn_bridge(&self) -> io::Result<Spawned> {
+        self.bridge()
             .args(["run", &std::process::id().to_string()])
-            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn()?;
-        let mut hook_input = process
-            .stdin
-            .take()
-            .ok_or_else(|| io::Error::other(MISSING_PIPE))?;
-        writeln!(
-            hook_input,
-            "{}",
-            json!({"permission_mode": permission_mode})
-        )?;
-        Ok(Spawned(process))
+            .spawn()
+            .map(Spawned)
     }
 }
 
