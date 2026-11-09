@@ -3,9 +3,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use estafette::crypto::GateKey;
+use estafette::net::endpoint::DIRECT_ALPN;
 use estafette::net::endpoint::{GateFailure, NodeEndpoint};
 use iroh::endpoint::Connection;
-use iroh::protocol::{AcceptError, ProtocolHandler, Router};
+use iroh::protocol::{AcceptError, ProtocolHandler, Router, RouterBuilder};
 use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey};
 use iroh_gossip::api::{GossipReceiver, GossipSender};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId};
@@ -34,6 +35,33 @@ impl ScriptedNode {
         topic: TopicId,
         report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
     ) -> Self {
+        Self::start_with(key, gate_key, topic, report_gate_closing, |router| router)
+    }
+
+    /// Starts the node as `start` does, also answering the direct protocol with the handler.
+    pub fn start_answering_direct(
+        key: SecretKey,
+        gate_key: GateKey,
+        topic: TopicId,
+        direct: impl ProtocolHandler,
+    ) -> Self {
+        Self::start_with(
+            key,
+            gate_key,
+            topic,
+            |_closing: GateFailure| {},
+            |router| router.accept(DIRECT_ALPN, direct),
+        )
+    }
+
+    /// Starts the node with the protocols the extension adds beside gossip.
+    fn start_with(
+        key: SecretKey,
+        gate_key: GateKey,
+        topic: TopicId,
+        report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
+        extend: impl FnOnce(RouterBuilder) -> RouterBuilder,
+    ) -> Self {
         let (runtime, stop_driver, driver) = start_driver();
         let endpoint = runtime
             .block_on(NodeEndpoint::bind(
@@ -47,15 +75,14 @@ impl ScriptedNode {
         let admitted = Admitted::default();
         let _inside_runtime = runtime.enter();
         let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
-        let router = Router::builder(endpoint.endpoint().clone())
-            .accept(
-                GOSSIP_ALPN,
-                AdmittedOnly {
-                    gossip: gossip.clone(),
-                    admitted: Arc::clone(&admitted),
-                },
-            )
-            .spawn();
+        let router = extend(Router::builder(endpoint.endpoint().clone()).accept(
+            GOSSIP_ALPN,
+            AdmittedOnly {
+                gossip: gossip.clone(),
+                admitted: Arc::clone(&admitted),
+            },
+        ))
+        .spawn();
         let (topic, receiver) = runtime
             .block_on(gossip.subscribe(topic, Vec::new()))
             .unwrap()

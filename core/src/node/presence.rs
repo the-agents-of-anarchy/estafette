@@ -470,15 +470,12 @@ impl NodeState {
         drop(self.to_loop.send(event));
     }
 
-    /// Applies a Presence to the table and, when it is taken from a new socket of its card, closes every connection accepted from the card (spec 3.8, address lookup).
+    /// Applies a Presence to the table and, when it is taken, closes every connection accepted from its card that cannot belong to the process it announces (spec 3.8, address lookup).
     fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
-        let mut table = self.table();
-        let replaces_held_socket =
-            table.replaces_held_socket(presence.card, &presence.addr, now_ms);
-        let effects = table.receive_presence(presence, now_ms);
-        drop(table);
-        if replaces_held_socket && effects.contains(&Effect::DropHeldConnection(presence.card)) {
-            self.accepted_connections.close_from(presence.card);
+        let effects = self.table().receive_presence(presence, now_ms);
+        if effects.contains(&Effect::DropHeldConnection(presence.card)) {
+            self.accepted_connections
+                .close_from(presence.card, &presence.addr);
         }
         effects
     }

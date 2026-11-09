@@ -18,11 +18,14 @@ mod scripted_node;
 mod spec_3_15_restart_and_departure_on_one_machine {
     use std::time::{Duration, Instant};
 
+    use estafette::crypto::NetworkKeys;
+    use estafette::net::direct::{DirectHost, DirectServer};
     use estafette::net::endpoint::{DIRECT_ALPN, GateFailure};
     use estafette::payload::{open_response, seal_request};
     use estafette::wire::{
         self, Addr, Introduce, Message, Request, Response, Version, WIRE_LIMIT_BYTES,
     };
+    use iroh::endpoint::Connection;
     use iroh::{EndpointId, SecretKey};
     use serde_json::{Value, json};
 
@@ -41,6 +44,9 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const MESSAGE_ID: wire::MessageId = [9; 16];
     const SENT_BEFORE_THE_DEPARTURE: &str = "sent before the departure";
     const SENT_AFTER_THE_DEPARTURE: &str = "sent after the departure";
+    const SENT_BEFORE_THE_NEW_PRESENCE: &str = "sent before the new presence";
+    const SENT_AFTER_THE_NEW_PRESENCE: &str = "sent after the new presence";
+    const PRESENCE_APPLIED_SETTLE: Duration = Duration::from_millis(500);
 
     fn online(peer: &Value) -> bool {
         peer["status"] == json!("online")
@@ -153,6 +159,113 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             .unwrap()
         });
         open_response(network.keys(), &answer).unwrap()
+    }
+
+    /// The direct side of a scripted member holding a card: it accepts every Message and answers every Introduce with its handle.
+    #[derive(Clone)]
+    struct ScriptedMemberHost {
+        card: wire::PublicKey,
+    }
+
+    impl DirectHost for ScriptedMemberHost {
+        fn is_stopping(&self) -> bool {
+            false
+        }
+
+        fn own_card(&self) -> Option<wire::PublicKey> {
+            Some(self.card)
+        }
+
+        fn is_attached(&self) -> bool {
+            false
+        }
+
+        fn receive_message(&self, _sender: wire::PublicKey, _message: Message) {}
+
+        fn receive_introduce(
+            &self,
+            _sender: wire::PublicKey,
+            _introduce: Introduce,
+        ) -> wire::IntroduceAck {
+            wire::IntroduceAck {
+                v: Version::CURRENT,
+                handle: Some("bob".to_owned()),
+                public: b"{}".to_vec(),
+                attached: false,
+                addr: Addr::from_endpoint_report(Vec::<String>::new(), []),
+                mac: UNSET_MAC,
+            }
+        }
+    }
+
+    fn scripted_member(network: &LocalNetwork, key: &SecretKey) -> ScriptedNode {
+        ScriptedNode::start_answering_direct(
+            key.clone(),
+            *network.keys().gate_key(),
+            network.topic(),
+            DirectServer::new(
+                NetworkKeys::clone(network.keys()),
+                ScriptedMemberHost {
+                    card: *key.public().as_bytes(),
+                },
+            ),
+        )
+    }
+
+    fn loopback_address_of(node: &ScriptedNode) -> iroh::EndpointAddr {
+        let address = node.endpoint().endpoint().addr();
+        let ports: Vec<u16> = address.ip_addrs().map(std::net::SocketAddr::port).collect();
+        loopback_address(address.id, &ports)
+    }
+
+    fn exchange_on(
+        network: &LocalNetwork,
+        node: &ScriptedNode,
+        connection: &Connection,
+        request: Request,
+    ) -> Option<Response> {
+        let sealed = seal_request(network.keys(), request).unwrap();
+        node.runtime().block_on(async {
+            tokio::time::timeout(DIRECT_REQUEST_WAIT, async {
+                let (mut send, mut receive) = connection.open_bi().await.ok()?;
+                send.write_all(&sealed).await.ok()?;
+                send.finish().ok()?;
+                let answer = receive.read_to_end(WIRE_LIMIT_BYTES).await.ok()?;
+                open_response(network.keys(), &answer).ok()
+            })
+            .await
+            .ok()
+            .flatten()
+        })
+    }
+
+    fn announce_until_seen(
+        network: &LocalNetwork,
+        node: &ScriptedNode,
+        key: &SecretKey,
+        member: &mut Member,
+    ) {
+        let started = Instant::now();
+        let first_sent_ms = wall_clock_ms();
+        loop {
+            node.broadcast(presence_signed_by(
+                network.keys(),
+                key,
+                "bob",
+                &loopback_address_of(node),
+            ));
+            let seen_ms = member.peer_within("bob", PRESENCE_WAIT, |_listed| true)["last_seen"]
+                .as_u64()
+                .unwrap();
+            if seen_ms > first_sent_ms {
+                return;
+            }
+            assert!(
+                started.elapsed() < PRESENCE_WAIT,
+                "the new presence never arrived"
+            );
+            std::thread::sleep(STATUS_POLL);
+        }
     }
 
     fn is_accepted_message_ack(response: &Response) -> bool {
@@ -315,5 +428,71 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
         assert!(matches!(answer, Response::IntroduceAck(_)), "{answer:?}");
         assert_eq!(statuses_after_the_introduce, [json!("gone")]);
+    }
+
+    #[test]
+    fn spec_3_15_test_18_a_restarted_member_whose_message_came_before_its_presence_keeps_that_connection_and_is_delivered_to()
+     {
+        let network = LocalNetwork::create("r1k");
+        let amy_card = network.create_card("amy-card", "amy");
+        let bob_key = SecretKey::generate();
+        let first_session = scripted_member(&network, &bob_key);
+        let mut amy = network.start_member();
+        amy.init_through(&amy_card, &first_session);
+        first_session.broadcast(presence_signed_by(
+            network.keys(),
+            &bob_key,
+            "bob",
+            &loopback_address_of(&first_session),
+        ));
+        amy.peer_within("bob", PRESENCE_WAIT, online);
+        drop(first_session);
+
+        let restarted = scripted_member(&network, &bob_key);
+        restarted.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
+        let held = restarted
+            .runtime()
+            .block_on(
+                restarted
+                    .endpoint()
+                    .endpoint()
+                    .connect(amy_card.id, DIRECT_ALPN),
+            )
+            .unwrap();
+        let before_presence = exchange_on(
+            &network,
+            &restarted,
+            &held,
+            message_from_bob(amy_card.id, wall_clock_ms(), SENT_BEFORE_THE_NEW_PRESENCE),
+        );
+        announce_until_seen(&network, &restarted, &bob_key, &mut amy);
+        std::thread::sleep(PRESENCE_APPLIED_SETTLE);
+        let after_presence = exchange_on(
+            &network,
+            &restarted,
+            &held,
+            message_from_bob(amy_card.id, wall_clock_ms(), SENT_AFTER_THE_NEW_PRESENCE),
+        );
+        let bodies = inbox_bodies(&mut amy);
+        let sent = send(&mut amy, "bob");
+
+        assert!(
+            before_presence
+                .as_ref()
+                .is_some_and(is_accepted_message_ack),
+            "{before_presence:?}"
+        );
+        assert!(
+            after_presence.as_ref().is_some_and(is_accepted_message_ack),
+            "{after_presence:?}"
+        );
+        assert_eq!(
+            bodies,
+            [
+                json!(SENT_BEFORE_THE_NEW_PRESENCE),
+                json!(SENT_AFTER_THE_NEW_PRESENCE)
+            ]
+        );
+        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
     }
 }

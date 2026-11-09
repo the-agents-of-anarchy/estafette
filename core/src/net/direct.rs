@@ -4,11 +4,11 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use iroh::endpoint::{
-    ClosedStream, Connection, ConnectionError, ReadError, ReadToEndError, RecvStream, SendStream,
-    VarInt, WriteError,
+    ClosedStream, Connection, ConnectionError, Path, ReadError, ReadToEndError, RecvStream,
+    SendStream, VarInt, WriteError,
 };
 use iroh::protocol::{AcceptError, ProtocolHandler};
-use iroh::{Endpoint, EndpointId};
+use iroh::{Endpoint, EndpointId, TransportAddr};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::timeout;
 
@@ -65,26 +65,31 @@ pub trait DirectHost: Send + Sync + 'static {
 pub struct AcceptedConnections(Arc<Mutex<HashMap<wire::PublicKey, Vec<Connection>>>>);
 
 impl AcceptedConnections {
-    /// Closes every connection accepted from the card, so the endpoint forgets the path they held to a process that is gone (spec 3.8, address lookup).
-    pub fn close_from(&self, card: wire::PublicKey) {
-        let accepted = self.held().remove(&card).unwrap_or_default();
-        close_superseded(accepted);
+    /// Closes every connection accepted from the card that cannot belong to the process announcing `addr`, so the endpoint forgets the path it held to a process that is gone (spec 3.8, address lookup).
+    pub fn close_from(&self, card: wire::PublicKey, addr: &wire::Addr) {
+        self.close_from_sparing(card, addr, None);
     }
 
-    /// Closes every connection accepted from the card but the one an Introduce arrived on, which the card's one held connection is (spec 3.8, address lookup).
-    fn close_others_from(&self, card: wire::PublicKey, arrived_on: &Connection) {
-        let others = self
+    /// Closes every connection accepted from the card that cannot belong to the process announcing `addr`, but the one an Introduce arrived on (spec 3.8, address lookup).
+    fn close_others_from(&self, card: wire::PublicKey, arrived_on: &Connection, addr: &wire::Addr) {
+        self.close_from_sparing(card, addr, Some(arrived_on.stable_id()));
+    }
+
+    /// Closes every connection accepted from the card whose selected path does not reach `addr`, but the spared one.
+    fn close_from_sparing(&self, card: wire::PublicKey, addr: &wire::Addr, spared: Option<usize>) {
+        let superseded = self
             .held()
             .get_mut(&card)
             .map(|accepted| {
                 accepted
                     .extract_if(.., |connection| {
-                        connection.stable_id() != arrived_on.stable_id()
+                        Some(connection.stable_id()) != spared
+                            && !selected_path_reaches(connection, addr)
                     })
                     .collect()
             })
             .unwrap_or_default();
-        close_superseded(others);
+        close_superseded(superseded);
     }
 
     /// Holds a connection just accepted from the card.
@@ -105,6 +110,29 @@ impl AcceptedConnections {
     /// The register, locked for one change.
     fn held(&self) -> MutexGuard<'_, HashMap<wire::PublicKey, Vec<Connection>>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Whether the connection's selected path leads to a socket or relay that `addr` announces, so it can belong to the process announcing it.
+fn selected_path_reaches(connection: &Connection, addr: &wire::Addr) -> bool {
+    connection
+        .paths()
+        .iter()
+        .find(Path::is_selected)
+        .is_some_and(|path| path_reaches(path.remote_addr(), addr))
+}
+
+/// Whether a path to `remote` leads to a direct socket or a relay that `addr` announces.
+fn path_reaches(remote: &TransportAddr, addr: &wire::Addr) -> bool {
+    match remote {
+        TransportAddr::Ip(socket) => addr.direct().contains(socket),
+        TransportAddr::Relay(relay) => {
+            let relay = relay.to_string();
+            addr.relays()
+                .iter()
+                .any(|announced| announced.as_str() == relay)
+        }
+        _ => false,
     }
 }
 
@@ -338,7 +366,8 @@ impl<H: DirectHost> ServerState<H> {
             Request::Probe(_) | Request::Introduce(_) if self.host.is_stopping() => Err(UNANSWERED),
             Request::Probe(probe) => Ok(Response::ProbeAck(self.answer_probe(&probe))),
             Request::Introduce(introduce) => {
-                self.accepted.close_others_from(sender, arrived_on);
+                self.accepted
+                    .close_others_from(sender, arrived_on, &introduce.addr);
                 Ok(Response::IntroduceAck(
                     self.host.receive_introduce(sender, introduce),
                 ))
@@ -1065,6 +1094,65 @@ mod tests {
             addr: wire::Addr::from_endpoint_report([], [SENDER_DIRECT_ADDRESS.parse().unwrap()]),
             mac: ZERO_MAC,
         }
+    }
+
+    const EARLIER_SESSION_SOCKET: &str = "192.0.2.10:53821";
+    const ADDED_SOCKET: &str = "198.51.100.4:61000";
+    const RESTARTED_SESSION_SOCKET: &str = "192.0.2.10:54875";
+    const HOME_RELAY: &str = "https://relay-home.example/";
+    const OTHER_RELAY: &str = "https://relay-other.example/";
+
+    fn announced(relays: &[&str], sockets: &[&str]) -> wire::Addr {
+        wire::Addr::from_endpoint_report(
+            relays.iter().map(|relay| (*relay).to_owned()),
+            sockets.iter().map(|socket| socket.parse().unwrap()),
+        )
+    }
+
+    fn direct_path(socket: &str) -> TransportAddr {
+        TransportAddr::Ip(socket.parse().unwrap())
+    }
+
+    fn relay_path(relay: &str) -> TransportAddr {
+        TransportAddr::Relay(relay.parse().unwrap())
+    }
+
+    #[test]
+    fn spec_3_8_a_connection_on_a_socket_the_presence_still_lists_is_kept_and_one_on_a_socket_it_dropped_is_closed()
+     {
+        let added_a_socket = announced(&[HOME_RELAY], &[EARLIER_SESSION_SOCKET, ADDED_SOCKET]);
+        let restarted = announced(&[HOME_RELAY], &[RESTARTED_SESSION_SOCKET]);
+
+        assert!(path_reaches(
+            &direct_path(EARLIER_SESSION_SOCKET),
+            &added_a_socket
+        ));
+        assert!(path_reaches(&direct_path(ADDED_SOCKET), &added_a_socket));
+        assert!(!path_reaches(
+            &direct_path(EARLIER_SESSION_SOCKET),
+            &restarted
+        ));
+        assert!(path_reaches(
+            &direct_path(RESTARTED_SESSION_SOCKET),
+            &restarted
+        ));
+    }
+
+    #[test]
+    fn spec_3_8_a_connection_on_a_relay_path_is_kept_for_the_announced_relay_and_closed_for_another_one()
+     {
+        let relay_only_at_home = announced(&[HOME_RELAY], &[]);
+        let relay_only_elsewhere = announced(&[OTHER_RELAY], &[]);
+
+        assert!(path_reaches(&relay_path(HOME_RELAY), &relay_only_at_home));
+        assert!(!path_reaches(
+            &relay_path(HOME_RELAY),
+            &relay_only_elsewhere
+        ));
+        assert!(!path_reaches(
+            &direct_path(EARLIER_SESSION_SOCKET),
+            &relay_only_at_home
+        ));
     }
 
     const SUPERSEDED_CLOSE_CODE: u32 = 410;
