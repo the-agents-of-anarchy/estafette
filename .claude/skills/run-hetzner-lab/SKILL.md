@@ -56,7 +56,7 @@ Create a lab resource on the owner's go for it; never create one on inference. T
 
 Choose a server type and location from the live API, where `hcloud server-type describe <type> -o json` lists each location with `available`; never choose from Hetzner's web pages.
 
-Use the type, location, and image approved for this server (default cx23, nbg1, ubuntu-24.04); never substitute another.
+Use the type, location, and image approved for this server (default cx23, nbg1, ubuntu-24.04; when the API shows cx23 unavailable in every location, the cheapest available type, named in the report with the API listing that justified it); never substitute another.
 </create-on-the-owners-go>
 
 <give-each-lab-resource-its-deadline>
