@@ -1450,8 +1450,7 @@ mod tests {
 
     #[cfg(feature = "relay")]
     #[tokio::test]
-    async fn spec_3_14_needing_tcp_80_bindable_the_embedded_relay_starts_with_it_taken_and_answers_acme_on_https_alone()
-     {
+    async fn spec_3_14_the_embedded_relay_starts_with_tcp_80_taken() {
         const TCP_PORT_80: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 80);
         let scratch = Scratch::new("relay-without-port-80");
         let port_80_holder = std::net::TcpListener::bind(TCP_PORT_80)
