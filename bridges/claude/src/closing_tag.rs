@@ -247,3 +247,132 @@ pub fn escape_closing_tags(body: &str) -> String {
     }
     escaped
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const GENERATED_CASES: u64 = 400;
+    const NOISE: [char; 10] = ['a', ' ', 'x', '\n', '\u{e9}', '-', '_', '>', '\\', '9'];
+    const FILLS: [char; 5] = ['\u{200b}', '\u{200d}', '\u{301}', '\u{ad}', '\u{feff}'];
+    const FILLERS: [char; 4] = [' ', '.', '\u{200b}', '\u{e9}'];
+    const HYPHENS: [char; 5] = ['-', '_', '\u{2010}', '\u{2212}', '\u{ff0d}'];
+
+    struct Generator(u64);
+
+    impl Generator {
+        const MULTIPLIER: u64 = 6_364_136_223_846_793_005;
+        const INCREMENT: u64 = 1_442_695_040_888_963_407;
+
+        fn below(&mut self, bound: usize) -> usize {
+            self.0 = self
+                .0
+                .wrapping_mul(Self::MULTIPLIER)
+                .wrapping_add(Self::INCREMENT);
+            usize::try_from(self.0 >> 33)
+                .unwrap_or(0)
+                .checked_rem(bound)
+                .unwrap_or(0)
+        }
+
+        fn pick(&mut self, pool: &[char]) -> char {
+            pool.get(self.below(pool.len())).copied().unwrap_or(' ')
+        }
+
+        fn run_of(&mut self, pool: &[char]) -> String {
+            (0..self.below(3)).map(|_| self.pick(pool)).collect()
+        }
+    }
+
+    fn tag_variant(generator: &mut Generator) -> String {
+        let mut variant = String::new();
+        for (position, letter) in ENVELOPE_TAG.chars().enumerate() {
+            if position > 0 {
+                variant.push_str(&generator.run_of(&FILLS));
+            }
+            if letter == HYPHEN_IN_TAG_NAME {
+                variant.push(generator.pick(&HYPHENS));
+            } else if generator.below(2) == 0 {
+                variant.push(letter.to_ascii_uppercase());
+            } else {
+                variant.push(letter);
+            }
+        }
+        variant
+    }
+
+    fn generated_body(seed: u64) -> String {
+        let mut generator = Generator(seed);
+        let mut body = String::new();
+        for _ in 0..generator.below(6) {
+            if generator.below(3) == 0 {
+                body.push_str(&generator.run_of(&NOISE));
+                continue;
+            }
+            body.push(generator.pick(&OPENING_BRACKET_LOOKALIKES));
+            body.push_str(&generator.run_of(&FILLERS));
+            if generator.below(5) != 0 {
+                body.push(generator.pick(&SLASH_LOOKALIKES));
+            }
+            body.push_str(&generator.run_of(&FILLERS));
+            if generator.below(6) == 0 {
+                body.push('x');
+            }
+            body.push_str(&tag_variant(&mut generator));
+            body.push_str(&generator.run_of(&NOISE));
+        }
+        body
+    }
+
+    fn matches_in(body: &str) -> usize {
+        let characters: Vec<char> = body.chars().collect();
+        characters
+            .iter()
+            .enumerate()
+            .filter(|(index, character)| {
+                OPENING_BRACKET_LOOKALIKES.contains(character)
+                    && characters
+                        .get(index.saturating_add(1)..)
+                        .is_some_and(is_closing_tag_after_opening_bracket)
+            })
+            .count()
+    }
+
+    #[test]
+    fn harness_2_1_319_rewriting_closing_tags_is_idempotent_and_leaves_no_match_for_any_body() {
+        let mut bodies_with_a_match = 0;
+        for seed in 0..GENERATED_CASES {
+            let body = generated_body(seed);
+            let once = escape_closing_tags(&body);
+            assert_eq!(escape_closing_tags(&once), once, "seed {seed}: {body:?}");
+            assert_eq!(matches_in(&once), 0, "seed {seed}: {body:?}");
+            bodies_with_a_match += usize::from(matches_in(&body) > 0);
+        }
+        assert!(bodies_with_a_match > 50, "{bodies_with_a_match}");
+    }
+
+    #[test]
+    fn harness_2_1_319_a_body_without_a_closing_tag_match_is_returned_byte_for_byte() {
+        let mut untouched_bodies = 0;
+        for seed in 0..GENERATED_CASES {
+            let body = generated_body(seed);
+            if matches_in(&body) == 0 {
+                assert_eq!(escape_closing_tags(&body), body, "seed {seed}");
+                untouched_bodies += 1;
+            }
+        }
+        assert!(untouched_bodies > 50, "{untouched_bodies}");
+    }
+
+    #[test]
+    fn harness_2_1_319_each_rewrite_adds_exactly_one_backslash() {
+        for seed in 0..GENERATED_CASES {
+            let body = generated_body(seed);
+            assert_eq!(
+                escape_closing_tags(&body).chars().count(),
+                body.chars().count().saturating_add(matches_in(&body)),
+                "seed {seed}: {body:?}"
+            );
+        }
+    }
+}
