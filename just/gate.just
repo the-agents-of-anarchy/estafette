@@ -8,7 +8,7 @@ audit_pin := "0.22.2"
 [default]
 [doc("The whole gate: format check, clippy with and without relay, tests, advisory audit; run before every commit")]
 [group('verify')]
-check: fmt-check clippy clippy-relay test audit
+check: fmt-check clippy clippy-relay test test-relay audit
 
 [doc("Fail when any file is not formatted")]
 [group('verify')]
@@ -49,6 +49,11 @@ install-audit:
 [group('verify')]
 test:
     cargo test
+
+[doc("Run the infrastructure tests that compile only with the relay feature")]
+[group('verify')]
+test-relay:
+    cargo test -p estafette --features relay --lib cli::infra
 
 [doc("Format every file in place")]
 [group('fix')]
