@@ -15,3 +15,11 @@ What happened: impl-U43 was stopped by TaskStop before its first commit so that 
 Mechanism: The harness sweeps an agent's worktree on stop when the worktree holds no change; a resumed agent keeps its transcript, not its checkout.
 
 Correction: Recreated the worktree with git worktree add on the surviving branch name at integration HEAD b56e309 and continued the agent with the path, as dev-cycle route-on-status prescribes; from now on an implementer is stopped only after its first commit, otherwise the correction is messaged without a stop.
+
+## The lead asked the owner for an in-session act as if present
+
+What happened: A request to switch test-peer's permission mode was put to the owner as a step on the critical path; the owner answered 'you're fucking assuming my presence again'.
+
+Mechanism: The prompting-receiver cases needed a receiver that prompts, and the lead treated the owner's earlier offer to switch modes as an invitation to ask now.
+
+Correction: The item moved to the unsolved queue as an owner-only act; the agent was told to finish without it; U43's live verification uses the owner-provided live sessions as they are and records the other mode as not determined.
