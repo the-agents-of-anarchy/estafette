@@ -62,15 +62,19 @@ impl Tail {
         condition: impl Fn(&str) -> bool,
     ) -> (String, Duration) {
         let deadline = since.checked_add(within).unwrap();
+        let mut printed_since = Vec::new();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let (arrived, line) = self
-                .lines
-                .recv_timeout(remaining)
-                .unwrap_or_else(|_| panic!("no wanted line within {within:?} of the instant"));
-            if arrived >= since && condition(&line) {
+            let (arrived, line) = self.lines.recv_timeout(remaining).unwrap_or_else(|_| {
+                panic!("no wanted line within {within:?} of the instant; printed since: {printed_since:#?}")
+            });
+            if arrived < since {
+                continue;
+            }
+            if condition(&line) {
                 return (line, arrived.duration_since(since));
             }
+            printed_since.push(line);
         }
     }
 }
