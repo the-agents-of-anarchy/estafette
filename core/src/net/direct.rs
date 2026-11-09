@@ -68,12 +68,23 @@ impl AcceptedConnections {
     /// Closes every connection accepted from the card, so the endpoint forgets the path they held to a process that is gone (spec 3.8, address lookup).
     pub fn close_from(&self, card: wire::PublicKey) {
         let accepted = self.held().remove(&card).unwrap_or_default();
-        for connection in accepted {
-            connection.close(
-                VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE),
-                SUPERSEDED_CONNECTION_CLOSE_REASON,
-            );
-        }
+        close_superseded(accepted);
+    }
+
+    /// Closes every connection accepted from the card but the one an Introduce arrived on, which the card's one held connection is (spec 3.8, address lookup).
+    fn close_others_from(&self, card: wire::PublicKey, arrived_on: &Connection) {
+        let others = self
+            .held()
+            .get_mut(&card)
+            .map(|accepted| {
+                accepted
+                    .extract_if(.., |connection| {
+                        connection.stable_id() != arrived_on.stable_id()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        close_superseded(others);
     }
 
     /// Holds a connection just accepted from the card.
@@ -94,6 +105,16 @@ impl AcceptedConnections {
     /// The register, locked for one change.
     fn held(&self) -> MutexGuard<'_, HashMap<wire::PublicKey, Vec<Connection>>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Closes each connection as superseded by a newer one of its card.
+fn close_superseded(connections: Vec<Connection>) {
+    for connection in connections {
+        connection.close(
+            VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE),
+            SUPERSEDED_CONNECTION_CLOSE_REASON,
+        );
     }
 }
 
@@ -194,7 +215,10 @@ impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
         self.shared.accepted.hold(sender, &connection);
         while let Ok((send, recv)) = connection.accept_bi().await {
             let shared = Arc::clone(&self.shared);
-            tokio::spawn(async move { shared.serve_stream(sender, send, recv).await });
+            let arrived_on = connection.clone();
+            tokio::spawn(async move {
+                shared.serve_stream(sender, &arrived_on, send, recv).await;
+            });
         }
         self.shared.accepted.forget(sender, &connection);
         Ok(())
@@ -246,8 +270,17 @@ impl From<ClosedStream> for StreamEnd {
 
 impl<H: DirectHost> ServerState<H> {
     /// Answers the one request on the stream, or resets the stream when no answer is due.
-    async fn serve_stream(&self, sender: wire::PublicKey, mut send: SendStream, recv: RecvStream) {
-        match self.answer_stream(sender, &mut send, recv).await {
+    async fn serve_stream(
+        &self,
+        sender: wire::PublicKey,
+        arrived_on: &Connection,
+        mut send: SendStream,
+        recv: RecvStream,
+    ) {
+        match self
+            .answer_stream(sender, arrived_on, &mut send, recv)
+            .await
+        {
             Ok(()) | Err(StreamEnd::PeerGone) => {}
             Err(StreamEnd::Reset(reset)) => match send.reset(reset.code()) {
                 Ok(()) | Err(ClosedStream { .. }) => {}
@@ -259,11 +292,12 @@ impl<H: DirectHost> ServerState<H> {
     async fn answer_stream(
         &self,
         sender: wire::PublicKey,
+        arrived_on: &Connection,
         send: &mut SendStream,
         mut recv: RecvStream,
     ) -> Result<(), StreamEnd> {
         let request_bytes = self.read_request(&mut recv).await?;
-        let response_bytes = self.respond(sender, &request_bytes)?;
+        let response_bytes = self.respond(sender, arrived_on, &request_bytes)?;
         send.write_all(&response_bytes).await?;
         Ok(send.finish()?)
     }
@@ -279,23 +313,36 @@ impl<H: DirectHost> ServerState<H> {
     }
 
     /// Opens the request, answers it, and seals the answer, or reports that none is due.
-    fn respond(&self, sender: wire::PublicKey, request_bytes: &[u8]) -> Result<Vec<u8>, StreamEnd> {
+    fn respond(
+        &self,
+        sender: wire::PublicKey,
+        arrived_on: &Connection,
+        request_bytes: &[u8],
+    ) -> Result<Vec<u8>, StreamEnd> {
         let request = open_request(&self.keys, request_bytes).map_err(|_failure| UNANSWERED)?;
-        let response = self.answer(sender, request)?;
+        let response = self.answer(sender, arrived_on, request)?;
         seal_response(&self.keys, response).map_err(|_failure| UNANSWERED)
     }
 
     /// The response to a validated request, or none while the process is stopping and the request is a Probe or an Introduce.
-    fn answer(&self, sender: wire::PublicKey, request: Request) -> Result<Response, StreamEnd> {
+    fn answer(
+        &self,
+        sender: wire::PublicKey,
+        arrived_on: &Connection,
+        request: Request,
+    ) -> Result<Response, StreamEnd> {
         match request {
             Request::Message(message) => {
                 Ok(Response::MessageAck(self.answer_message(sender, message)))
             }
             Request::Probe(_) | Request::Introduce(_) if self.host.is_stopping() => Err(UNANSWERED),
             Request::Probe(probe) => Ok(Response::ProbeAck(self.answer_probe(&probe))),
-            Request::Introduce(introduce) => Ok(Response::IntroduceAck(
-                self.host.receive_introduce(sender, introduce),
-            )),
+            Request::Introduce(introduce) => {
+                self.accepted.close_others_from(sender, arrived_on);
+                Ok(Response::IntroduceAck(
+                    self.host.receive_introduce(sender, introduce),
+                ))
+            }
         }
     }
 
@@ -1018,6 +1065,34 @@ mod tests {
             addr: wire::Addr::from_endpoint_report([], [SENDER_DIRECT_ADDRESS.parse().unwrap()]),
             mac: ZERO_MAC,
         }
+    }
+
+    const SUPERSEDED_CLOSE_CODE: u32 = 410;
+    const CLOSE_WAIT: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn spec_3_8_an_introduce_closes_every_other_connection_accepted_from_its_sender_and_keeps_its_own()
+     {
+        let rig = rig().await;
+        let server = rig.link.server_node.endpoint().id();
+        let earlier = raw_connection(&rig).await;
+        raw_exchange(&earlier, &sealed_message_to_server(&keys()))
+            .await
+            .unwrap();
+
+        rig.link
+            .client
+            .introduce(server, introduction_from_client())
+            .await
+            .unwrap();
+        let earlier_closed = timeout(CLOSE_WAIT, earlier.closed()).await.unwrap();
+        let probed_on_the_kept_connection = rig.link.client.probe(server, PROBE_NONCE).await;
+
+        let ConnectionError::ApplicationClosed(close) = earlier_closed else {
+            panic!("the earlier connection was not closed by the server: {earlier_closed:?}");
+        };
+        assert_eq!(close.error_code, VarInt::from_u32(SUPERSEDED_CLOSE_CODE));
+        assert_eq!(probed_on_the_kept_connection.unwrap().nonce, PROBE_NONCE);
     }
 
     #[tokio::test]
