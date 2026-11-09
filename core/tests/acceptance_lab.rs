@@ -492,12 +492,12 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
                 panic!("iroh homed the member on another relay than {} in each of {HOMING_ATTEMPTS} starts", doomed.relay())
             });
 
-        let killed_at = doomed.kill();
+        let kill = doomed.kill();
         let mut announced_after_the_kill = Vec::new();
         let after_the_kill = loop {
             let (line, after) = homed
                 .tail
-                .first_line_after(killed_at, ANNOUNCEMENT_WAIT, |line| {
+                .first_line_after(kill.sent, ANNOUNCEMENT_WAIT, |line| {
                     relays_announced_by(line, &homed.card).is_some()
                 });
             let lists_only_the_live_relay =
@@ -512,7 +512,10 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
 
         assert!(
             after_the_kill <= SPEC_LIVE_RELAYS_WITHIN,
-            "no presence listing only live relays within {SPEC_LIVE_RELAYS_WITHIN:?} of the kill; presences after it: {announced_after_the_kill:#?}"
+            "no presence listing only live relays within {SPEC_LIVE_RELAYS_WITHIN:?} of the kill sent at {:?}, whose command returned at {:?}, {:?} later; presences after the send: {announced_after_the_kill:#?}",
+            kill.sent,
+            kill.returned,
+            kill.returned.duration_since(kill.sent)
         );
     }
 }

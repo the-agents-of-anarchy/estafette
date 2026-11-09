@@ -1,4 +1,5 @@
-use std::process::Command;
+use std::io::{BufRead, BufReader, Write};
+use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use estafette::invite::parse_host_line;
@@ -14,6 +15,8 @@ const HOST_LINE_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_KILLABLE_HOST_LINE";
 const REMOTE_SHELL_RECIPE: &str = "remote::ssh";
 /// The variable that recipe takes the server's name from.
 const LAB_SERVER_VARIABLE: &str = "LAB_SERVER";
+/// The line the host prints once the SSH session is open and the kill waits only for its trigger.
+const ARMED_LINE: &str = "armed";
 /// The systemd unit the infrastructure recipe runs a host's relay and bootstrap node in.
 const HOST_UNIT: &str = "estafette-host";
 
@@ -21,6 +24,12 @@ const HOST_UNIT: &str = "estafette-host";
 pub struct KillableHost {
     server: String,
     address: HostAddr,
+}
+
+/// When the kill was sent over the open session, and when its command returned.
+pub struct KillStamps {
+    pub sent: Instant,
+    pub returned: Instant,
 }
 
 impl KillableHost {
@@ -51,28 +60,45 @@ impl KillableHost {
         self.address.relay.as_str()
     }
 
-    /// Kills the host's process, relay and bootstrap node together, with SIGKILL, and returns the instant the kill command returned.
-    pub fn kill(&self) -> Instant {
-        let killed = Command::new(TASK_RUNNER)
-            .args([
-                REMOTE_SHELL_RECIPE,
-                "root",
-                "systemctl",
-                "kill",
-                "--kill-whom=main",
-                "--signal=SIGKILL",
-                HOST_UNIT,
-            ])
+    /// Opens the kill's SSH session and waits for the host to stand ready, then stamps the instant, sends the kill over the open session and stamps its return, so only the warmed round trip separates the stamp from the kill.
+    pub fn kill(&self) -> KillStamps {
+        let mut session = Command::new(TASK_RUNNER)
+            .args([REMOTE_SHELL_RECIPE, "root", &armed_kill()])
             .env(LAB_SERVER_VARIABLE, &self.server)
-            .output()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
             .unwrap();
+        let mut announced = String::new();
+        BufReader::new(session.stdout.take().unwrap())
+            .read_line(&mut announced)
+            .unwrap();
+        assert_eq!(
+            announced.trim_end(),
+            ARMED_LINE,
+            "the kill session on {} never stood ready",
+            self.server
+        );
+        let mut trigger = session.stdin.take().unwrap();
+        let sent = Instant::now();
+        trigger.write_all(b"\n").unwrap();
+        drop(trigger);
+        let killed = session.wait_with_output().unwrap();
         let returned = Instant::now();
         assert!(
             killed.status.success(),
-            "the kill of {HOST_UNIT} on {} failed: {}",
+            "the kill on {} failed: {}",
             self.server,
             String::from_utf8_lossy(&killed.stderr)
         );
-        returned
+        KillStamps { sent, returned }
     }
+}
+
+/// The remote command, quoted as one word for the recipe's shell: announce the open session, wait for the trigger line, then SIGKILL the host's main process, relay and bootstrap node together.
+fn armed_kill() -> String {
+    format!(
+        "'echo {ARMED_LINE} && read -r _ && systemctl kill --kill-whom=main --signal=SIGKILL {HOST_UNIT}'"
+    )
 }
