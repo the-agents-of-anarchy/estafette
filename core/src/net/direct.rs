@@ -1098,66 +1098,95 @@ mod tests {
         }
     }
 
-    const EARLIER_SESSION_SOCKET: &str = "192.0.2.10:53821";
-    const ADDED_SOCKET: &str = "198.51.100.4:61000";
-    const RESTARTED_SESSION_SOCKET: &str = "192.0.2.10:54875";
-    const HOME_RELAY: &str = "https://relay-home.example/";
-    const OTHER_RELAY: &str = "https://relay-other.example/";
+    const PROPERTY_CASES: u64 = 2000;
+    const SPEC_DIRECT_ADDRS_PER_ADDR: u64 = 8;
+    const SPEC_RELAY_URLS_PER_ADDR: u64 = 4;
+    const ANNOUNCED_OR_NOT: u64 = 2;
+    const RELAY_NAMES: u64 = 6;
+    const SHARED_HOSTS: u64 = 3;
+    const DOCUMENTATION_NETWORK_FIRST_HOST: u32 = 0xC000_0201;
+    const SHARED_PORTS: u64 = 3;
+    const SHARED_PORTS_FIRST: u16 = 53_821;
+    const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
+    const SPLITMIX_FIRST_MULTIPLIER: u64 = 0xBF58_476D_1CE4_E5B9;
+    const SPLITMIX_SECOND_MULTIPLIER: u64 = 0x94D0_49BB_1331_11EB;
+    const SPLITMIX_FIRST_SHIFT: u32 = 30;
+    const SPLITMIX_SECOND_SHIFT: u32 = 27;
+    const SPLITMIX_THIRD_SHIFT: u32 = 31;
 
-    fn announced(relays: &[&str], sockets: &[&str]) -> wire::Addr {
-        wire::Addr::from_endpoint_report(
-            relays.iter().map(|relay| (*relay).to_owned()),
-            sockets.iter().map(|socket| socket.parse().unwrap()),
-        )
-    }
+    struct Draws(u64);
 
-    fn direct_path(socket: &str) -> TransportAddr {
-        TransportAddr::Ip(socket.parse().unwrap())
-    }
+    impl Draws {
+        fn below(&mut self, bound: u64) -> u64 {
+            self.0 = self.0.wrapping_add(SPLITMIX_GAMMA);
+            let mut mixed = self.0;
+            mixed =
+                (mixed ^ (mixed >> SPLITMIX_FIRST_SHIFT)).wrapping_mul(SPLITMIX_FIRST_MULTIPLIER);
+            mixed =
+                (mixed ^ (mixed >> SPLITMIX_SECOND_SHIFT)).wrapping_mul(SPLITMIX_SECOND_MULTIPLIER);
+            (mixed ^ (mixed >> SPLITMIX_THIRD_SHIFT))
+                .checked_rem(bound)
+                .unwrap()
+        }
 
-    fn relay_path(relay: &str) -> TransportAddr {
-        TransportAddr::Relay(relay.parse().unwrap())
+        fn socket(&mut self) -> std::net::SocketAddr {
+            std::net::SocketAddr::from((
+                std::net::Ipv4Addr::from(
+                    DOCUMENTATION_NETWORK_FIRST_HOST
+                        .saturating_add(u32::try_from(self.below(SHARED_HOSTS)).unwrap()),
+                ),
+                SHARED_PORTS_FIRST.saturating_add(u16::try_from(self.below(SHARED_PORTS)).unwrap()),
+            ))
+        }
+
+        fn relay(&mut self) -> String {
+            format!("https://relay-{}.example/", self.below(RELAY_NAMES))
+        }
+
+        fn announced<T: Clone>(&mut self, pool: &[T]) -> Vec<T> {
+            pool.iter()
+                .filter(|_| self.below(ANNOUNCED_OR_NOT) == 0)
+                .cloned()
+                .collect()
+        }
+
+        fn one_of<'a, T>(&mut self, pool: &'a [T]) -> &'a T {
+            &pool[usize::try_from(self.below(u64::try_from(pool.len()).unwrap())).unwrap()]
+        }
     }
 
     #[test]
-    fn spec_3_8_a_connection_on_a_socket_the_presence_still_lists_is_kept_and_one_on_a_socket_it_dropped_is_closed()
-     {
-        let added_a_socket = announced(&[HOME_RELAY], &[EARLIER_SESSION_SOCKET, ADDED_SOCKET]);
-        let restarted = announced(&[HOME_RELAY], &[RESTARTED_SESSION_SOCKET]);
+    fn spec_3_8_a_path_is_kept_exactly_when_its_socket_or_relay_is_one_the_presence_announces() {
+        for case in 0..PROPERTY_CASES {
+            let mut draws = Draws(case);
+            let sockets: Vec<std::net::SocketAddr> = (0..SPEC_DIRECT_ADDRS_PER_ADDR)
+                .map(|_| draws.socket())
+                .collect();
+            let relays: Vec<String> = (0..SPEC_RELAY_URLS_PER_ADDR)
+                .map(|_| draws.relay())
+                .collect();
+            let announced_sockets = draws.announced(&sockets);
+            let announced_relays = draws.announced(&relays);
+            let addr = wire::Addr::from_endpoint_report(
+                announced_relays.clone(),
+                announced_sockets.clone(),
+            );
+            let socket = *draws.one_of(&sockets);
+            let relay = draws.one_of(&relays).clone();
 
-        assert!(path_reaches(
-            &direct_path(EARLIER_SESSION_SOCKET),
-            &added_a_socket
-        ));
-        assert!(path_reaches(&direct_path(ADDED_SOCKET), &added_a_socket));
-        assert!(!path_reaches(
-            &direct_path(EARLIER_SESSION_SOCKET),
-            &restarted
-        ));
-        assert!(path_reaches(
-            &direct_path(RESTARTED_SESSION_SOCKET),
-            &restarted
-        ));
+            assert_eq!(
+                path_reaches(&TransportAddr::Ip(socket), &addr),
+                announced_sockets.contains(&socket),
+                "case {case}: {socket} against {addr:?}"
+            );
+            assert_eq!(
+                path_reaches(&TransportAddr::Relay(relay.parse().unwrap()), &addr),
+                announced_relays.contains(&relay),
+                "case {case}: {relay} against {addr:?}"
+            );
+        }
     }
 
-    #[test]
-    fn spec_3_8_a_connection_on_a_relay_path_is_kept_for_the_announced_relay_and_closed_for_another_one()
-     {
-        let relay_only_at_home = announced(&[HOME_RELAY], &[]);
-        let relay_only_elsewhere = announced(&[OTHER_RELAY], &[]);
-
-        assert!(path_reaches(&relay_path(HOME_RELAY), &relay_only_at_home));
-        assert!(!path_reaches(
-            &relay_path(HOME_RELAY),
-            &relay_only_elsewhere
-        ));
-        assert!(!path_reaches(
-            &direct_path(EARLIER_SESSION_SOCKET),
-            &relay_only_at_home
-        ));
-    }
-
-    const SUPERSEDED_CLOSE_CODE: u32 = 410;
     const CLOSE_WAIT: Duration = Duration::from_secs(5);
 
     #[tokio::test]
@@ -1181,7 +1210,10 @@ mod tests {
         let ConnectionError::ApplicationClosed(close) = earlier_closed else {
             panic!("the earlier connection was not closed by the server: {earlier_closed:?}");
         };
-        assert_eq!(close.error_code, VarInt::from_u32(SUPERSEDED_CLOSE_CODE));
+        assert_eq!(
+            close.error_code,
+            VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE)
+        );
         assert_eq!(probed_on_the_kept_connection.unwrap().nonce, PROBE_NONCE);
     }
 
