@@ -299,7 +299,7 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
             .ok_or(LiveClassError::TranscriptMissing(file_name))
     }
 
-    /// Reads the latest permission mode from the end of the transcript, and from the whole file only when that end holds none.
+    /// Reads the latest permission mode from the end of the transcript, keeping the class read before when that end holds none, and reads the whole file only while no class has been read.
     fn class_from_transcript(
         &self,
         transcript_file: &Path,
@@ -312,13 +312,15 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
             .files
             .read_tail_text(transcript_file, TRANSCRIPT_TAIL_WINDOW_BYTES)
             .map_err(unreadable)?;
-        let mode = match latest_permission_mode(&tail) {
-            Some(mode) => Some(mode),
-            None => {
-                latest_permission_mode(&self.files.read_text(transcript_file).map_err(unreadable)?)
-            }
-        };
-        mode.map(|mode| PermissionClass::from_permission_mode(&mode))
+        if let Some(mode) = latest_permission_mode(&tail) {
+            return Ok(PermissionClass::from_permission_mode(&mode));
+        }
+        let class_read_before = *lock(&self.attested_class);
+        if let Some(class_read_before) = class_read_before {
+            return Ok(class_read_before);
+        }
+        latest_permission_mode(&self.files.read_text(transcript_file).map_err(unreadable)?)
+            .map(|mode| PermissionClass::from_permission_mode(&mode))
             .ok_or_else(|| LiveClassError::NoModeEntry(transcript_file.to_owned()))
     }
 
@@ -1144,6 +1146,25 @@ mod tests {
         let session = bridge_session_over(&wiring, files, DownConnector);
         session.deliver(&frame_from("ana", "one"));
         assert_eq!(reads_of(&session, TRANSCRIPT_FILE), 1);
+        assert_eq!(class_files_written(&session), ["bypass"]);
+    }
+
+    #[test]
+    fn harness_2_1_319_a_mode_entry_older_than_the_tail_window_is_read_whole_once_not_per_frame() {
+        let wiring = wiring();
+        let mut files = files_of_live_session("bypassPermissions");
+        let filler_line = "{\"type\":\"user\"}\n";
+        let window = usize::try_from(TRANSCRIPT_TAIL_WINDOW_BYTES).expect("window fits");
+        files.tails.insert(
+            PathBuf::from(TRANSCRIPT_FILE),
+            filler_line.repeat(window / filler_line.len() + 1),
+        );
+        let session = bridge_session_over(&wiring, files, DownConnector);
+        for body in ["one", "two", "three"] {
+            session.deliver(&frame_from("ana", body));
+        }
+        assert_eq!(reads_of(&session, TRANSCRIPT_FILE), 1);
+        assert_eq!(lock(&session.files.tail_reads).len(), 3);
         assert_eq!(class_files_written(&session), ["bypass"]);
     }
 
