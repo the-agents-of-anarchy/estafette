@@ -60,4 +60,5 @@ fmt:
 acceptance:
     export ESTAFETTE_ACCEPTANCE_INVITATION="$(just remote::invitation)"; \
     cargo build -p estafette; \
-    cargo test -p estafette-bridge-claude --features lab --test 'acceptance_*'
+    cargo test -p estafette-bridge-claude --features lab --test 'acceptance_*'; \
+    cargo test -p estafette --features lab --test acceptance_lab
