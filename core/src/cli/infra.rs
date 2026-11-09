@@ -1450,11 +1450,12 @@ mod tests {
 
     #[cfg(feature = "relay")]
     #[tokio::test]
-    async fn spec_3_14_the_embedded_relay_starts_with_tcp_80_taken_and_answers_acme_on_https_alone()
-    {
+    async fn spec_3_14_needing_tcp_80_bindable_the_embedded_relay_starts_with_it_taken_and_answers_acme_on_https_alone()
+     {
         const TCP_PORT_80: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 80);
         let scratch = Scratch::new("relay-without-port-80");
-        let port_80_holder = std::net::TcpListener::bind(TCP_PORT_80);
+        let port_80_holder = std::net::TcpListener::bind(TCP_PORT_80)
+            .expect("this test needs TCP port 80 bindable: lower net.ipv4.ip_unprivileged_port_start or run as root");
         let site = RelaySite {
             https: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
             quic_address_discovery: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
