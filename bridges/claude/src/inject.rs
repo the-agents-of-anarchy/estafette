@@ -13,7 +13,9 @@ const ENVELOPE_TAG: &str = "cross-session-message";
 const HARNESS_MESSAGE_VERSION: u8 = 1;
 const HARNESS_DEFAULT_PRIORITY: &str = "next";
 const LONGEST_ENVELOPE_NAME_CHARACTERS: usize = 64;
-const ENVELOPE_NAME_FORBIDDEN_CHARACTERS: [char; 4] = ['"', '<', '>', '\n'];
+const ENVELOPE_NAME_FORBIDDEN_CHARACTERS: [char; 3] = ['"', '<', '>'];
+const TRUNCATED_NAME_MARK: char = '\u{2026}';
+const ESCAPED_OPENING_BRACKET: &str = "<\\";
 
 #[derive(Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -52,15 +54,55 @@ struct PeerLine<'a> {
     priority: &'static str,
 }
 
-/// Tells whether the harness's envelope parser accepts the name as the `from-name` attribute.
-fn is_envelope_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.chars().count() <= LONGEST_ENVELOPE_NAME_CHARACTERS
-        && !name.contains(ENVELOPE_NAME_FORBIDDEN_CHARACTERS)
+/// Writes a sender name as the harness's envelope rebuild reproduces it: cut to 64 characters with an ellipsis, or nothing for a name the rebuild would alter.
+fn envelope_name(name: &str) -> Option<String> {
+    let is_rebuilt_unchanged = !name.is_empty()
+        && name.chars().all(|character| character.is_ascii_graphic())
+        && !name.contains(ENVELOPE_NAME_FORBIDDEN_CHARACTERS);
+    if !is_rebuilt_unchanged {
+        return None;
+    }
+    if name.chars().count() <= LONGEST_ENVELOPE_NAME_CHARACTERS {
+        return Some(name.to_owned());
+    }
+    let mut truncated: String = name
+        .chars()
+        .take(LONGEST_ENVELOPE_NAME_CHARACTERS)
+        .collect();
+    truncated.push(TRUNCATED_NAME_MARK);
+    Some(truncated)
 }
 
-/// Wraps the body in the envelope the harness writes for a peer send, naming the sender and attesting the class.
+const fn is_tag_name_character(character: char) -> bool {
+    character.is_ascii_alphanumeric() || character == '_' || character == '-'
+}
+
+/// Rewrites each closing envelope tag in the body to `<\/...` as the harness's own sender and receiver rebuild do.
+fn escape_closing_tags(body: &str) -> String {
+    let closing_tag_start = format!("</{ENVELOPE_TAG}");
+    let lowered = body.to_ascii_lowercase();
+    let mut escaped = String::with_capacity(body.len());
+    let mut copied_up_to = 0;
+    for (start, _) in lowered.match_indices(&closing_tag_start) {
+        let end = start.saturating_add(closing_tag_start.len());
+        let continues_a_longer_name = body
+            .get(end..)
+            .and_then(|rest| rest.chars().next())
+            .is_some_and(is_tag_name_character);
+        if continues_a_longer_name {
+            continue;
+        }
+        escaped.push_str(body.get(copied_up_to..start).unwrap_or_default());
+        escaped.push_str(ESCAPED_OPENING_BRACKET);
+        copied_up_to = start.saturating_add(1);
+    }
+    escaped.push_str(body.get(copied_up_to..).unwrap_or_default());
+    escaped
+}
+
+/// Wraps the escaped body in the envelope the harness writes for a peer send, naming the sender and attesting the class.
 fn envelope_content(name: &str, class: PermissionClass, body: &str) -> String {
+    let body = escape_closing_tags(body);
     format!(
         "<{ENVELOPE_TAG} from-name=\"{name}\" from-mode=\"{class}\">\n{body}\n</{ENVELOPE_TAG}>"
     )
@@ -94,7 +136,7 @@ impl fmt::Display for InjectError {
             }
             Self::SenderNameRefused(name) => write!(
                 formatter,
-                "frame from {name:?} dropped: the harness takes a sender name of 1 to {LONGEST_ENVELOPE_NAME_CHARACTERS} characters with none of \" < > or a newline"
+                "frame from {name:?} dropped: the harness's envelope rebuild alters a sender name that is empty or holds anything but visible ASCII without \" < >"
             ),
         }
     }
@@ -111,7 +153,7 @@ pub struct SessionNotifier<C: InboxConnector> {
 }
 
 impl<C: InboxConnector> SessionNotifier<C> {
-    /// Names the messaging socket connector, the session token every line authenticates with and the session's permission class.
+    /// Names the messaging socket connector, the session token every line authenticates with and the class attested until the session's live class is read.
     pub fn new(connector: C, session_token: String, class: PermissionClass) -> Self {
         Self {
             connector,
@@ -122,21 +164,26 @@ impl<C: InboxConnector> SessionNotifier<C> {
         }
     }
 
+    /// Attests the permission class the session holds now on the frames written from here on.
+    pub const fn attest(&mut self, class: PermissionClass) {
+        self.class = class;
+    }
+
     /// Injects one frame as the harness's peer line unless its sender name is refused or the rate limit drops it.
     /// # Errors
     /// Returns the `InjectError` of the refused name or of the failed connection or write.
     pub fn notify(&mut self, frame: &InboxFrame, now: Duration) -> Result<(), InjectError> {
-        if !is_envelope_name(&frame.from) {
+        let Some(name) = envelope_name(&frame.from) else {
             self.refused_frames = self.refused_frames.saturating_add(1);
             return Err(InjectError::SenderNameRefused(frame.from.clone()));
-        }
+        };
         match self.rate_limit.admit(&frame.from, &frame.body, now) {
             Admission::Dropped => Ok(()),
-            Admission::Admitted => self.write_peer_line(frame),
+            Admission::Admitted => self.write_peer_line(frame, &name),
         }
     }
 
-    fn write_peer_line(&mut self, frame: &InboxFrame) -> Result<(), InjectError> {
+    fn write_peer_line(&mut self, frame: &InboxFrame, name: &str) -> Result<(), InjectError> {
         let mut stream = self
             .connector
             .connect()
@@ -151,7 +198,7 @@ impl<C: InboxConnector> SessionNotifier<C> {
             line_type: LineType::User,
             message: UserMessage {
                 role: Role::User,
-                content: envelope_content(&frame.from, self.class, &frame.body),
+                content: envelope_content(name, self.class, &frame.body),
             },
             priority: HARNESS_DEFAULT_PRIORITY,
         };
@@ -288,10 +335,8 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_the_body_travels_byte_for_byte_even_with_quotes_newlines_and_the_closing_tag()
-     {
-        let body =
-            "say \"hi\"\nline 2 \u{2014} na\u{ef}ve \u{65e5}\u{672c} </cross-session-message> tail";
+    fn harness_2_1_319_the_body_travels_byte_for_byte_with_quotes_newlines_and_non_ascii() {
+        let body = "say \"hi\"\nline 2 \u{2014} na\u{ef}ve \u{65e5}\u{672c} tail";
         let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
         notifier
             .notify(&frame_from("ana", body, 0), Duration::ZERO)
@@ -300,7 +345,7 @@ mod tests {
             *connections.borrow(),
             vec![
                 "{\"type\":\"auth\",\"token\":\"session-token-77\"}\n\
-                 {\"msgV\":1,\"msg_id\":\"id-1\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<cross-session-message from-name=\\\"ana\\\" from-mode=\\\"bypass\\\">\\nsay \\\"hi\\\"\\nline 2 \u{2014} na\u{ef}ve \u{65e5}\u{672c} </cross-session-message> tail\\n</cross-session-message>\"},\"priority\":\"next\"}\n"
+                 {\"msgV\":1,\"msg_id\":\"id-1\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<cross-session-message from-name=\\\"ana\\\" from-mode=\\\"bypass\\\">\\nsay \\\"hi\\\"\\nline 2 \u{2014} na\u{ef}ve \u{65e5}\u{672c} tail\\n</cross-session-message>\"},\"priority\":\"next\"}\n"
             ]
         );
     }
@@ -338,9 +383,8 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_sender_name_the_envelope_cannot_carry_is_refused_and_counted_as_dropped() {
-        let too_long = grammar_name_of_length(LONGEST_ENVELOPE_NAME + 1);
-        for name in [too_long.as_str(), "an\"a", "an<a", "an>a", "an\na", ""] {
+    fn harness_2_1_319_a_sender_name_the_rebuild_would_alter_is_refused_and_counted_as_dropped() {
+        for name in ["an\"a", "an<a", "an>a", "an\na", "an a", "ana\u{2014}", ""] {
             let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
             let outcome = notifier.notify(&frame_from(name, "x", 0), Duration::ZERO);
             assert!(
@@ -350,6 +394,60 @@ mod tests {
             assert!(connections.borrow().is_empty(), "{name:?}");
             assert_eq!(notifier.dropped_frames(), 1, "{name:?}");
         }
+    }
+
+    const LONGEST_LOCAL_HANDLE: usize = 74;
+
+    #[test]
+    fn harness_2_1_319_a_74_character_sender_name_is_written_cut_to_64_characters_with_an_ellipsis()
+    {
+        let name = grammar_name_of_length(LONGEST_LOCAL_HANDLE);
+        let kept: String = name.chars().take(LONGEST_ENVELOPE_NAME).collect();
+        let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
+        notifier
+            .notify(&frame_from(&name, "x", 0), Duration::ZERO)
+            .expect("notify");
+        assert_eq!(connections.borrow().len(), 1);
+        assert!(
+            connections.borrow()[0].contains(&format!(
+                "<cross-session-message from-name=\\\"{kept}\u{2026}\\\" from-mode"
+            )),
+            "{}",
+            connections.borrow()[0]
+        );
+        assert_eq!(notifier.dropped_frames(), 0);
+    }
+
+    fn peer_content(written: &str) -> String {
+        let peer_line = written.lines().nth(1).expect("peer line");
+        let line: serde_json::Value = serde_json::from_str(peer_line).expect("peer line json");
+        line["message"]["content"]
+            .as_str()
+            .expect("content")
+            .to_owned()
+    }
+
+    #[test]
+    fn harness_2_1_319_each_closing_tag_in_a_body_is_rewritten_as_the_harness_rewrites_it() {
+        let body = "a </cross-session-message> b </CROSS-Session-Message>c </cross-session-messages> d </cross-session-message-x e </cross-session-message";
+        let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
+        notifier
+            .notify(&frame_from("ana", body, 0), Duration::ZERO)
+            .expect("notify");
+        assert_eq!(
+            peer_content(&connections.borrow()[0]),
+            "<cross-session-message from-name=\"ana\" from-mode=\"bypass\">\na <\\/cross-session-message> b <\\/CROSS-Session-Message>c </cross-session-messages> d </cross-session-message-x e <\\/cross-session-message\n</cross-session-message>"
+        );
+    }
+
+    #[test]
+    fn harness_2_1_319_the_class_attested_last_is_the_class_written() {
+        let (mut notifier, connections) = notifier_of_class(PermissionClass::Prompting);
+        notifier.attest(PermissionClass::Bypass);
+        notifier
+            .notify(&frame_from("ana", "x", 0), Duration::ZERO)
+            .expect("notify");
+        assert!(connections.borrow()[0].contains("from-mode=\\\"bypass\\\""));
     }
 
     fn notify_at(
