@@ -13,7 +13,7 @@ pub struct Tail {
 }
 
 impl Tail {
-    /// Starts the command, a `tail` of the network, and waits for its first payload line, the sign it has joined the topic.
+    /// Starts the command, a `tail` of the network, and waits for its first payload line, the sign it has joined the topic, leaving that line to be read.
     pub fn start(mut command: Command) -> Self {
         let mut process = command
             .stdin(Stdio::null())
@@ -22,19 +22,25 @@ impl Tail {
             .spawn()
             .unwrap();
         let (forward, lines) = mpsc::channel();
+        let (announce_joined, joined) = mpsc::sync_channel(1);
         let output = BufReader::new(process.stdout.take().unwrap());
         std::thread::spawn(move || {
+            let mut announce_joined = Some(announce_joined);
             for line in output.lines().map_while(Result::ok) {
+                if let Some(joined) = announce_joined.take()
+                    && joined.send(()).is_err()
+                {
+                    return;
+                }
                 if forward.send((Instant::now(), line)).is_err() {
                     return;
                 }
             }
         });
-        let tail = Self { process, lines };
-        tail.lines
+        joined
             .recv_timeout(FIRST_LINE_WAIT)
             .unwrap_or_else(|_| panic!("tail printed no payload within {FIRST_LINE_WAIT:?}"));
-        tail
+        Self { process, lines }
     }
 
     /// Every line printed until the first that meets the condition, that one included, requiring it within the wait.

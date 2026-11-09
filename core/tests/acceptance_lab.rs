@@ -361,12 +361,14 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
 
 #[cfg(test)]
 mod spec_3_15_test_28_addresses_on_the_live_network {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
+    use data_encoding::HEXLOWER;
+    use estafette::wire::{HostAddr, Version};
     use serde_json::Value;
 
     use crate::killable_host::KillableHost;
-    use crate::lab_machine::LabMachine;
+    use crate::lab_machine::{ClaimedMember, LabMachine};
     use crate::live_host::live_host_to_itself;
     use crate::live_network::LiveNetwork;
     use crate::tail::Tail;
@@ -377,12 +379,20 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     const SPEC_LIVE_RELAYS_WITHIN: Duration = Duration::from_millis(2000);
     /// The card and handle of the member homed on the doomed host.
     const MEMBER_CARD: &str = "u40-relay-loss";
+    /// The scratch tag of the machine whose `tail` observes the member.
+    const OBSERVER_TAG: &str = "u40-relay-tail";
+    /// How many times a member is started before the test gives up on iroh homing it on the doomed host's relay, which iroh picks among the relays it knows.
+    const HOMING_ATTEMPTS: usize = 3;
     /// The kind word that opens a presence line of `tail`.
     const PRESENCE_KIND: &str = "presence";
     /// The column of a presence line holding its card, after the kind and `v` (spec 3.7 order).
     const CARD_COLUMN: usize = 2;
     /// The column of a presence line holding its `addr` as JSON (spec 3.7 order).
     const ADDR_COLUMN: usize = 6;
+    /// The kind word that opens an infrastructure line of `tail`.
+    const INFRASTRUCTURE_KIND: &str = "infrastructure";
+    /// The column of an infrastructure line holding its `relay`, after the kind, `v` and `host` (spec 3.7 order).
+    const HOST_RELAY_COLUMN: usize = 3;
     /// The key of the relay list in a printed `addr`.
     const RELAYS_KEY: &str = "relays";
     /// The column separator of a `tail` line.
@@ -402,38 +412,96 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
             .collect()
     }
 
+    /// Whether a `tail` line is an infrastructure record of the host whose relay is the one given.
+    fn is_a_record_of_the_host_relaying_through(line: &str, relay: &str) -> bool {
+        let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
+        columns.first() == Some(&INFRASTRUCTURE_KIND)
+            && columns.get(HOST_RELAY_COLUMN) == Some(&relay)
+    }
+
+    /// The member as a node to join the topic through, so the observer is its gossip neighbor whichever other neighbors the topic gives it.
+    fn member_reached_through_its_home_relay(card: &str, doomed: &KillableHost) -> HostAddr {
+        HostAddr {
+            v: Version::CURRENT,
+            id: HEXLOWER
+                .decode(card.as_bytes())
+                .unwrap()
+                .try_into()
+                .unwrap(),
+            relay: doomed.address().relay.clone(),
+        }
+    }
+
+    /// A member homed on the doomed host's relay, with a `tail` joined through it alone.
+    struct HomedMember {
+        card: String,
+        tail: Tail,
+        _member: ClaimedMember,
+        _observer: LabMachine,
+        _machine: LabMachine,
+    }
+
+    /// Starts a member whose only host is the doomed one and a `tail` joined through it, returning them once its first announced relays are the doomed host's alone and it has relayed the live host's record, or nothing when iroh homed it elsewhere.
+    fn start_member_homed_on(network: &LiveNetwork, doomed: &KillableHost) -> Option<HomedMember> {
+        let machine = LabMachine::fresh(MEMBER_CARD, network.name());
+        network.join_through(
+            &machine.directories(),
+            std::slice::from_ref(doomed.address()),
+        );
+        let card = machine
+            .run(&["create-card", network.name(), MEMBER_CARD, MEMBER_CARD])
+            .trim_end()
+            .to_owned();
+        let started = Instant::now();
+        let member = machine.start_member(MEMBER_CARD);
+        let observer = LabMachine::fresh(OBSERVER_TAG, network.name());
+        network.join_through(
+            &observer.directories(),
+            &[member_reached_through_its_home_relay(&card, doomed)],
+        );
+        let mut tail_command = observer.command();
+        tail_command.args(["tail", network.name()]);
+        let tail = Tail::start(tail_command);
+        let (first_homed, _) = tail.first_line_after(started, ANNOUNCEMENT_WAIT, |line| {
+            relays_announced_by(line, &card).is_some_and(|relays| !relays.is_empty())
+        });
+        if relays_announced_by(&first_homed, &card) != Some(vec![doomed.relay().to_owned()]) {
+            return None;
+        }
+        tail.first_line_after(Instant::now(), ANNOUNCEMENT_WAIT, |line| {
+            is_a_record_of_the_host_relaying_through(line, network.host_relay())
+        });
+        Some(HomedMember {
+            card,
+            tail,
+            _member: member,
+            _observer: observer,
+            _machine: machine,
+        })
+    }
+
     /// Spec 3.15 test 28: within 2000 ms of the kill of a member's home relay, the member announces an address whose relays are the live host's alone.
     #[test]
     fn spec_3_15_test_28_within_2000_ms_of_its_home_relays_death_a_member_lists_only_live_relays() {
         let _live_host = live_host_to_itself();
         let network = LiveNetwork::from_environment();
         let doomed = KillableHost::from_environment();
-        let observer = LabMachine::fresh("u40-relay-tail", network.name());
-        network.join(&observer.directories());
-        let mut tail_command = observer.command();
-        tail_command.args(["tail", network.name()]);
-        let tail = Tail::start(tail_command);
-        let machine = LabMachine::fresh(MEMBER_CARD, network.name());
-        network.join_through(
-            &machine.directories(),
-            std::slice::from_ref(doomed.address()),
-        );
-        let printed_key = machine.run(&["create-card", network.name(), MEMBER_CARD, MEMBER_CARD]);
-        let card = printed_key.trim_end();
-        let started = std::time::Instant::now();
-        let _member = machine.start_member(MEMBER_CARD);
-        tail.first_line_after(started, ANNOUNCEMENT_WAIT, |line| {
-            relays_announced_by(line, card) == Some(vec![doomed.relay().to_owned()])
-        });
+        let homed = (0..HOMING_ATTEMPTS)
+            .find_map(|_| start_member_homed_on(&network, &doomed))
+            .unwrap_or_else(|| {
+                panic!("iroh homed the member on another relay than {} in each of {HOMING_ATTEMPTS} starts", doomed.relay())
+            });
 
         let killed_at = doomed.kill();
         let mut announced_after_the_kill = Vec::new();
         let after_the_kill = loop {
-            let (line, after) = tail.first_line_after(killed_at, ANNOUNCEMENT_WAIT, |line| {
-                relays_announced_by(line, card).is_some()
-            });
+            let (line, after) = homed
+                .tail
+                .first_line_after(killed_at, ANNOUNCEMENT_WAIT, |line| {
+                    relays_announced_by(line, &homed.card).is_some()
+                });
             let lists_only_the_live_relay =
-                relays_announced_by(&line, card).is_some_and(|relays| {
+                relays_announced_by(&line, &homed.card).is_some_and(|relays| {
                     !relays.is_empty() && relays.iter().all(|relay| relay == network.host_relay())
                 });
             announced_after_the_kill.push(format!("{after:?} {line}"));
