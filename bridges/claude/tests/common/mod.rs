@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Output};
+use std::process::{Child, ChildStdin, Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -17,6 +17,18 @@ const INITIALIZE_REQUEST_ID: u64 = 1;
 const INIT_REQUEST_ID: u64 = 2;
 const MCP_ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 const SETTINGS_HOOK: &str = include_str!("../../hooks/session-start.json");
+const BINARY_NAME: &str = "estafette";
+const HOME_DIRECTORY: &str = "home";
+const CLAUDE_DIRECTORY: &str = ".claude";
+const RUNTIME_DIRECTORY: &str = "runtime";
+const TMP_DIRECTORY: &str = "tmp";
+const CONFIG_HOME: &str = "config";
+const DATA_HOME: &str = "data";
+const SETTINGS_FILE: &str = "settings.json";
+const MESSAGING_SOCKET_FILE: &str = "messaging.sock";
+const BINARY_NOT_BUILT: &str = "build it first: cargo build -p estafette (cargo test at the workspace root builds it through the integration tests of core)";
+const SUCCESS_EXIT_CODE: i32 = 0;
+const MISSING_PIPE: &str = "the spawned member has no piped standard stream";
 type Outcome<T> = Result<T, Box<dyn std::error::Error>>;
 
 pub struct Fixture {
@@ -28,28 +40,36 @@ impl Fixture {
         let root = PathBuf::from(SHORT_SCRATCH_PARENT)
             .join(format!("{SCRATCH_PREFIX}-{}", std::process::id()));
         drop(fs::remove_dir_all(&root));
-        for directory in ["home/.claude", "runtime", "tmp"] {
-            fs::create_dir_all(root.join(directory))?;
+        if !Self::binary_path().exists() {
+            return Err(io::Error::new(io::ErrorKind::NotFound, BINARY_NOT_BUILT));
         }
-        fs::write(root.join("home/.claude/settings.json"), SETTINGS_HOOK)?;
+        let claude_directory = root.join(HOME_DIRECTORY).join(CLAUDE_DIRECTORY);
+        for directory in [
+            claude_directory.clone(),
+            root.join(RUNTIME_DIRECTORY),
+            root.join(TMP_DIRECTORY),
+        ] {
+            fs::create_dir_all(directory)?;
+        }
+        fs::write(claude_directory.join(SETTINGS_FILE), SETTINGS_HOOK)?;
         Ok(Self { root })
     }
 
     pub fn messaging_socket(&self) -> PathBuf {
-        self.root.join("messaging.sock")
+        self.root.join(MESSAGING_SOCKET_FILE)
     }
 
     fn binary_path() -> PathBuf {
-        Path::new(BRIDGE).with_file_name("estafette")
+        Path::new(BRIDGE).with_file_name(BINARY_NAME)
     }
 
-    pub fn estafette(&self) -> Command {
+    fn estafette(&self) -> Command {
         let mut command = Command::new(Self::binary_path());
         command
             .env_clear()
-            .env("XDG_CONFIG_HOME", self.root.join("config"))
-            .env("XDG_DATA_HOME", self.root.join("data"))
-            .env("XDG_RUNTIME_DIR", self.root.join("runtime"));
+            .env("XDG_CONFIG_HOME", self.root.join(CONFIG_HOME))
+            .env("XDG_DATA_HOME", self.root.join(DATA_HOME))
+            .env("XDG_RUNTIME_DIR", self.root.join(RUNTIME_DIRECTORY));
         command
     }
 
@@ -58,9 +78,9 @@ impl Fixture {
         command
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", self.root.join("home"))
-            .env("TMPDIR", self.root.join("tmp"))
-            .env("XDG_RUNTIME_DIR", self.root.join("runtime"))
+            .env("HOME", self.root.join(HOME_DIRECTORY))
+            .env("TMPDIR", self.root.join(TMP_DIRECTORY))
+            .env("XDG_RUNTIME_DIR", self.root.join(RUNTIME_DIRECTORY))
             .env("CLAUDE_CODE_MESSAGING_SOCKET", self.messaging_socket())
             .env("CLAUDE_CODE_MESSAGING_TOKEN", MESSAGING_TOKEN)
             .current_dir(&self.root);
@@ -70,6 +90,47 @@ impl Fixture {
     pub fn run_estafette(&self, arguments: &[&str]) -> io::Result<Output> {
         self.estafette().args(arguments).output()
     }
+
+    pub fn run_estafette_successfully(&self, arguments: &[&str]) -> io::Result<()> {
+        let output = self.run_estafette(arguments)?;
+        if output.status.code() == Some(SUCCESS_EXIT_CODE) {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!(
+                "estafette {arguments:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )))
+        }
+    }
+
+    pub fn spawn_claimed_member(&self, network: &str, card: &str) -> Outcome<Member> {
+        let mut process = Spawned(
+            self.estafette()
+                .args(["mcp", network])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()?,
+        );
+        let mut input = process.0.stdin.take().ok_or(MISSING_PIPE)?;
+        let answers = forward_json_lines(process.0.stdout.take().ok_or(MISSING_PIPE)?);
+        let claimed = claim_card_over_mcp(&mut input, &answers, card)?;
+        Ok(Member {
+            claimed,
+            _input: input,
+            _answers: answers,
+            _process: process,
+        })
+    }
+
+    pub fn spawn_bridge(&self) -> io::Result<Spawned> {
+        self.bridge()
+            .args(["run", &std::process::id().to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(Spawned)
+    }
 }
 
 impl Drop for Fixture {
@@ -78,7 +139,14 @@ impl Drop for Fixture {
     }
 }
 
-pub struct Spawned(pub Child);
+pub struct Member {
+    pub claimed: Value,
+    _input: ChildStdin,
+    _answers: Receiver<Value>,
+    _process: Spawned,
+}
+
+pub struct Spawned(Child);
 
 impl Drop for Spawned {
     fn drop(&mut self) {
@@ -87,7 +155,7 @@ impl Drop for Spawned {
     }
 }
 
-pub fn forward_json_lines(source: impl std::io::Read + Send + 'static) -> Receiver<Value> {
+fn forward_json_lines(source: impl std::io::Read + Send + 'static) -> Receiver<Value> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         for line in BufReader::new(source).lines().map_while(Result::ok) {
@@ -115,7 +183,7 @@ fn answer_to(answers: &Receiver<Value>, request_id: u64) -> Outcome<Value> {
     }
 }
 
-pub fn claim_card_over_mcp(
+fn claim_card_over_mcp(
     input: &mut ChildStdin,
     answers: &Receiver<Value>,
     card: &str,
