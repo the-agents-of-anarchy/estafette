@@ -10,7 +10,7 @@ use crate::permission_class::PermissionClass;
 use crate::ratelimit::{Admission, SenderRateLimit};
 
 const LINE_TERMINATOR: char = '\n';
-const ENVELOPE_TAG: &str = "cross-session-message";
+pub(crate) const ENVELOPE_TAG: &str = "cross-session-message";
 const HARNESS_MESSAGE_VERSION: u8 = 1;
 const HARNESS_DEFAULT_PRIORITY: &str = "next";
 const LONGEST_ENVELOPE_NAME_CHARACTERS: usize = 64;
@@ -490,7 +490,7 @@ mod tests {
         let content = line["message"]["content"].as_str().expect("content");
         let (_, after_open_tag) = content.split_once(">\n").expect("open tag");
         after_open_tag
-            .strip_suffix("\n</cross-session-message>")
+            .strip_suffix(&format!("\n</{ENVELOPE_TAG}>"))
             .expect("close tag")
             .to_owned()
     }

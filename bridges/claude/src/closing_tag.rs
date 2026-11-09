@@ -1,4 +1,5 @@
-const ENVELOPE_TAG_NAME: &str = "cross-session-message";
+use crate::inject::ENVELOPE_TAG;
+
 const ESCAPED_OPENING_BRACKET: &str = "<\\";
 const HYPHEN_IN_TAG_NAME: char = '-';
 const BACKSLASH: char = '\\';
@@ -192,7 +193,7 @@ fn skip_while(characters: &[char], keeps_going: impl Fn(char) -> bool) -> &[char
 }
 
 fn matches_tag_name_then_boundary(mut remaining: &[char]) -> bool {
-    for (position, expected) in ENVELOPE_TAG_NAME.chars().enumerate() {
+    for (position, expected) in ENVELOPE_TAG.chars().enumerate() {
         if position > 0 {
             remaining = skip_while(remaining, |character| in_ranges(character, FILL_RANGES));
         }
