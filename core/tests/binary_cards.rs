@@ -99,3 +99,38 @@ fn binary_names_outside_the_handle_grammar_are_usage_errors_before_any_write_of_
     }
     assert!(!root.join("data").exists());
 }
+
+#[test]
+fn binary_help_of_each_card_command_states_what_it_does_reads_produces_and_refuses_of_spec_3_13() {
+    let root = common::scratch_root(SCRATCH_PREFIX, "help").unwrap();
+    for (subcommand, stated) in [
+        (
+            "create-card",
+            [
+                "Create a card",
+                "Reads: ",
+                "Produces: the card file",
+                "Refuses: a card or a handle",
+            ],
+        ),
+        (
+            "list-cards",
+            [
+                "List the cards",
+                "Reads: ",
+                "Produces: one line per card",
+                "Refuses: a card file",
+            ],
+        ),
+    ] {
+        let output = run_binary(&root, &[subcommand, "--help"]).unwrap();
+        let help = String::from_utf8(output.stdout).unwrap();
+        for sentence in stated {
+            assert!(help.contains(sentence), "{subcommand}: {help}");
+        }
+        assert!(
+            !help.contains("override every card command takes"),
+            "{help}"
+        );
+    }
+}

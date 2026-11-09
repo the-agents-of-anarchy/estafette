@@ -19,8 +19,23 @@ use crate::sidecar::{SEED_BYTES, SidecarError, create_card};
 
 const LIST_FIELD_SEPARATOR: char = '\t';
 const LINE_END: &str = "\n";
+const CREATE_CARD_ABOUT: &str = "Create a card and its key file";
+const LIST_CARDS_ABOUT: &str = "List the cards of a network";
 
-/// The network and the optional cards directory override every card command takes.
+fn create_card_long_about() -> String {
+    format!(
+        "Create a card with a fresh key for a network.\n\nReads: the cards directory of the network, which is --cards-dir or ESTAFETTE_CARDS_DIR followed by the network name, else the data directory's cards/<network>; nothing of the network configuration.\nProduces: the card file <card>.yaml and the key file <card>.key, readable by you alone, beside it in that directory, created when missing; the card's public key, as lowercase hexadecimal, on stdout.\nRefuses: a card or a handle that breaks this rule: {}; a card or key file of that name that already exists, overwriting neither.",
+        HandleError::NotAHandle
+    )
+}
+
+fn list_cards_long_about() -> String {
+    format!(
+        "List the cards of a network, one line each.\n\nReads: every .{CARD_EXTENSION} file in the cards directory of the network, which is --cards-dir or ESTAFETTE_CARDS_DIR followed by the network name, else the data directory's cards/<network>; nothing of the network configuration.\nProduces: one line per card on stdout, in card name order: the card name, the handle and the public key, separated by tabs; nothing when the directory does not exist.\nRefuses: a card file whose name is not a handle or whose content is not a valid card; a directory that cannot be read."
+    )
+}
+
+/// The network a command works on and the optional cards directory that replaces the default one.
 #[derive(Debug, Args)]
 pub struct RegistryArgs {
     pub network: Handle,
@@ -31,12 +46,14 @@ pub struct RegistryArgs {
 /// The card commands of spec 3.13.
 #[derive(Debug, Subcommand)]
 pub enum CardCommand {
+    #[command(about = CREATE_CARD_ABOUT, long_about = create_card_long_about())]
     CreateCard {
         #[command(flatten)]
         registry: RegistryArgs,
         card: Handle,
         handle: Handle,
     },
+    #[command(about = LIST_CARDS_ABOUT, long_about = list_cards_long_about())]
     ListCards {
         #[command(flatten)]
         registry: RegistryArgs,
