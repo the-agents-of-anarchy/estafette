@@ -184,7 +184,7 @@ fn write_card(
 }
 
 fn create_new_file(path: &Path, mode: u32) -> Result<File, SidecarError> {
-    OpenOptions::new()
+    let file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(mode)
@@ -192,7 +192,9 @@ fn create_new_file(path: &Path, mode: u32) -> Result<File, SidecarError> {
         .map_err(|error| match error.kind() {
             io::ErrorKind::AlreadyExists => SidecarError::AlreadyExists,
             _ => SidecarError::Io(error),
-        })
+        })?;
+    file.set_permissions(std::fs::Permissions::from_mode(mode))?;
+    Ok(file)
 }
 
 fn open_sidecar(sidecar_path: &Path) -> Result<File, SidecarError> {

@@ -174,3 +174,36 @@ fn binary_list_cards_creates_the_program_directories_as_its_help_states() {
     }
     assert_eq!(std::fs::read_dir(root.join("runtime")).unwrap().count(), 1);
 }
+
+#[test]
+fn binary_create_card_sets_exact_file_modes_under_a_restrictive_umask_of_spec_3_5() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = common::scratch_root(SCRATCH_PREFIX, "restrictive_umask").unwrap();
+    let created = Command::new("sh")
+        .args([
+            "-c",
+            "umask 077; exec \"$0\" \"$@\"",
+            BINARY,
+            "create-card",
+            "acme",
+            "ana-card",
+            "ana",
+        ])
+        .env_clear()
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_RUNTIME_DIR", root.join("runtime"))
+        .output()
+        .unwrap();
+    assert_eq!(created.status.code(), Some(0));
+    let cards = root.join("data/estafette/cards/acme");
+    let mode_of = |name: &str| {
+        std::fs::metadata(cards.join(name))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode_of("ana-card.yaml"), 0o644);
+    assert_eq!(mode_of("ana-card.key"), 0o600);
+}
