@@ -323,7 +323,6 @@ mod tests {
         );
     }
 
-    const LONGEST_ENVELOPE_NAME: usize = 64;
     const GRAMMAR_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789-";
 
     fn grammar_name_of_length(length: usize) -> String {
@@ -341,7 +340,7 @@ mod tests {
 
     #[test]
     fn harness_2_1_319_every_handle_of_the_grammar_up_to_64_characters_is_delivered() {
-        for length in 1..=LONGEST_ENVELOPE_NAME {
+        for length in 1..=LONGEST_ENVELOPE_NAME_CHARACTERS {
             let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
             let name = grammar_name_of_length(length);
             notifier
@@ -369,13 +368,17 @@ mod tests {
         }
     }
 
+    /// The longest local handle spec 3.1 allows, the effective-handle row at spec:465.
     const LONGEST_LOCAL_HANDLE: usize = 74;
 
     #[test]
     fn harness_2_1_319_a_74_character_sender_name_is_written_cut_to_64_characters_with_an_ellipsis()
     {
         let name = grammar_name_of_length(LONGEST_LOCAL_HANDLE);
-        let kept: String = name.chars().take(LONGEST_ENVELOPE_NAME).collect();
+        let kept: String = name
+            .chars()
+            .take(LONGEST_ENVELOPE_NAME_CHARACTERS)
+            .collect();
         let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
         notifier
             .notify(&frame_from(&name, "x", 0), Duration::ZERO)
