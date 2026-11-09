@@ -296,6 +296,19 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
             .ok_or(LiveClassError::NoModeEntry(transcript_file))
     }
 
+    /// Reads the live permission class and attests it on the notifier, reporting why it cannot be read.
+    fn attest_live_permission_class(&self, notifier: &mut SessionNotifier<S>) {
+        match self.live_permission_class() {
+            Ok(class) => {
+                notifier.attest(class);
+                self.record_permission_class(class);
+            }
+            Err(error) => (self.report_error)(&format!(
+                "cannot read the session's permission mode, keeping the class attested before: {error}"
+            )),
+        }
+    }
+
     /// Reports and records the attested class where the doctor reads it when it differs from the one attested before.
     fn record_permission_class(&self, class: PermissionClass) {
         let mut attested = lock(&self.attested_class);
@@ -316,15 +329,7 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
     /// Injects one frame as a notice and records the dropped-frame count when it changed.
     fn deliver(&self, frame: &InboxFrame) {
         let mut notifier = lock(&self.notifier);
-        match self.live_permission_class() {
-            Ok(class) => {
-                notifier.attest(class);
-                self.record_permission_class(class);
-            }
-            Err(error) => (self.report_error)(&format!(
-                "cannot read the session's permission mode, keeping the class attested before: {error}"
-            )),
-        }
+        self.attest_live_permission_class(&mut notifier);
         let dropped_before = notifier.dropped_frames();
         if let Err(error) = notifier.notify(frame, (self.elapsed)()) {
             (self.report_error)(&error.to_string());
@@ -464,6 +469,7 @@ where
         spawn: effects.spawn,
         wait,
     });
+    session.attest_live_permission_class(&mut lock(&session.notifier));
     session.record_dropped_frames(0);
     follow_binary_sockets(
         harness_pid,
@@ -1055,6 +1061,41 @@ mod tests {
                 .count();
             assert_eq!(transcript_reads, 2, "{mode}");
         }
+    }
+
+    #[test]
+    fn harness_2_1_319_the_bridge_reads_and_logs_the_live_class_when_it_starts() {
+        let polls = SnapshotSequence(RefCell::new(vec![Vec::new()]));
+        for (mode, class) in [("bypassPermissions", "bypass"), ("auto", "prompting")] {
+            let mut wiring = wiring();
+            wiring.effects.files = files_of_live_session(mode);
+            let writes = Arc::clone(&wiring.effects.files.writes);
+            run_bridge(100, wiring.effects, &polls).expect("bridge runs");
+            assert_eq!(
+                *lock(&wiring.errors),
+                [format!("attested permission class: {class}")],
+                "{mode}"
+            );
+            let class_files: Vec<String> = lock(&writes)
+                .iter()
+                .filter(|(path, _)| path == Path::new(PERMISSION_CLASS_FILE))
+                .map(|(_, text)| text.clone())
+                .collect();
+            assert_eq!(class_files, [class], "{mode}");
+        }
+    }
+
+    #[test]
+    fn harness_2_1_319_the_bridge_logs_that_no_live_class_exists_yet_when_it_starts() {
+        let polls = SnapshotSequence(RefCell::new(vec![Vec::new()]));
+        let wiring = wiring();
+        run_bridge(100, wiring.effects, &polls).expect("bridge runs");
+        assert_eq!(
+            *lock(&wiring.errors),
+            [
+                "cannot read the session's permission mode, keeping the class attested before: cannot read /home/ana/.claude/sessions/100.json: entity not found"
+            ]
+        );
     }
 
     #[test]
