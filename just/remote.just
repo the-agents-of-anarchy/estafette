@@ -74,13 +74,13 @@ backstop-status:
 [group('lab')]
 [positional-arguments]
 estafette *arguments:
-    mkdir -p -m 0700 {{ lab_root }}/run
+    umask 077 && mkdir -p {{ lab_root }}/run && chmod 0700 {{ lab_root }}
     env {{ lab_directories }} {{ lab_binary }} "$@"
 
 [doc("Serve the card as a lab member on this machine until SIGTERM, printing its init envelope; its run record goes to stderr")]
 [group('lab')]
 member card:
-    mkdir -p -m 0700 {{ lab_root }}/run
+    umask 077 && mkdir -p {{ lab_root }}/run && chmod 0700 {{ lab_root }}
     rm -f {{ lab_root }}/{{ card }}.control
     env {{ lab_directories }} python3 -I just/remote/member.py serve {{ lab_binary }} {{ lab_network }} {{ card }} {{ lab_root }}/{{ card }}.control
 
@@ -151,7 +151,7 @@ infrastructure: server-up
     domain="${address//./-}.sslip.io"
     remote() { ssh {{ ssh_opts }} root@"$address" "$@"; }
     test -e {{ lab_config_file }} || just remote::estafette network create {{ lab_network }} >&2
-    remote 'mkdir -p -m 0700 {{ remote_host_root }}/run $(dirname {{ remote_host_config_file }}) && umask 077 && { test -e {{ remote_host_config_file }} || cat > {{ remote_host_config_file }}; }' < {{ lab_config_file }}
+    remote 'umask 077 && mkdir -p {{ remote_host_root }}/run $(dirname {{ remote_host_config_file }}) && chmod 0700 {{ remote_host_root }} && { test -e {{ remote_host_config_file }} || cat > {{ remote_host_config_file }}; }' < {{ lab_config_file }}
     if ! remote test -e {{ remote_host_certificate_file }}; then
         remote 'env {{ remote_host_directories }} {{ remote_binary }} run-infrastructure {{ lab_network }} '"$address $domain"' > {{ remote_host_line_file }} 2> /dev/null || test -s {{ remote_host_line_file }}'
         just remote::estafette network certify {{ lab_network }} "$(remote cat {{ remote_host_line_file }})" 2> /dev/null | remote 'umask 077 && cat > {{ remote_host_certificate_file }}'
@@ -174,10 +174,12 @@ host-up:
         just remote::estafette network add-host {{ lab_network }} "$host_line" >&2
     fi
     invitation="$(just remote::estafette network show-invitation {{ lab_network }} 2> /dev/null)"
+    umask 077
     printf '%s\n' "$invitation" > {{ lab_invitation_file }}
     root_checkout="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
     printf 'network: %s\ninvitation: %s\nhost: %s\nserver: %s %s\ndomain: %s\nwritten: %s\n' {{ lab_network }} "$invitation" "$host_line" {{ server }} "$address" "${address//./-}.sslip.io" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$root_checkout/{{ host_record_under_root }}"
-    cat "$root_checkout/{{ host_record_under_root }}" >&2
+    chmod 0600 "$root_checkout/{{ host_record_under_root }}" {{ lab_invitation_file }}
+    printf 'wrote %s for %s %s\n' "$root_checkout/{{ host_record_under_root }}" {{ server }} "$address" >&2
 
 [doc("Print the live lab host's invitation and nothing else; fails naming host-up when no host is live")]
 [group('lab')]
