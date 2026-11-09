@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use iroh::endpoint::{BindError, RelayStatus};
 use iroh::protocol::Router;
-use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey, Signature, TransportAddr, Watcher};
+use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr, Watcher};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 use n0_future::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
@@ -28,13 +28,13 @@ use crate::keys::{KeyError, parse_network_secret, parse_public_key};
 use crate::net::direct::{ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer};
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
-use crate::payload::ZERO_MAC;
+use crate::payload::{ZERO_MAC, ZERO_SIGNATURE};
 use crate::peers::{
     ANNOUNCEMENT_MAX_AGE_MS, Effect, Peer, PeerTable, is_within_announcement_max_age,
 };
 use crate::wire::{
     self, Addr, Departure, Infrastructure, Introduce, IntroduceAck, Message, Nonce, Payload,
-    Presence, PresenceRequest, SignatureBytes, Unreachable, Version,
+    Presence, PresenceRequest, Unreachable, Version,
 };
 
 const OBSERVER_WAIT: Duration = Duration::from_millis(3000);
@@ -42,7 +42,6 @@ const REANNOUNCE_INTERVAL: Duration = Duration::from_millis(2000);
 const RELAY_LOSS_WAIT: Duration = Duration::from_millis(500);
 const INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS: u64 = 300;
 const MILLIS_PER_SECOND: u64 = 1000;
-const UNSIGNED: SignatureBytes = SignatureBytes([0; Signature::LENGTH]);
 const SECRET_FIELD: &str = "secret";
 const OWNER_FIELD: &str = "owner";
 
@@ -905,7 +904,7 @@ impl PresenceLoop {
             card: self.state.own_card,
             seq,
             mac: ZERO_MAC,
-            sig: UNSIGNED,
+            sig: ZERO_SIGNATURE,
         }))
         .await;
         if let Err(failure) = self.known_hosts.save_if_newer_than_file(now_ms) {
@@ -932,7 +931,7 @@ impl PresenceLoop {
             addr: addr.clone(),
             seq,
             mac: ZERO_MAC,
-            sig: UNSIGNED,
+            sig: ZERO_SIGNATURE,
         });
         self.announcer.record(seq, addr, (self.monotonic)());
         self.broadcast(presence).await;
@@ -946,7 +945,7 @@ impl PresenceLoop {
             reporter: self.state.own_card,
             ts: self.state.now_ms(),
             mac: ZERO_MAC,
-            sig: UNSIGNED,
+            sig: ZERO_SIGNATURE,
         });
         self.broadcast(report).await;
     }
@@ -1299,6 +1298,7 @@ pub(super) mod tests {
     use crate::keys::render_public_key;
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
+    use crate::wire::SignatureBytes;
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];
     pub(in crate::node) const OWNER_SEED: u8 = 60;
@@ -1979,7 +1979,7 @@ pub(super) mod tests {
             addr: Addr::from_endpoint_report([UNREACHABLE_RELAY.to_owned()], []),
             seq,
             mac: ZERO_MAC,
-            sig: UNSIGNED,
+            sig: ZERO_SIGNATURE,
         })
     }
 
@@ -2097,7 +2097,7 @@ pub(super) mod tests {
             card: card(seed),
             seq,
             mac: ZERO_MAC,
-            sig: UNSIGNED,
+            sig: ZERO_SIGNATURE,
         })
     }
 
@@ -2241,7 +2241,7 @@ pub(super) mod tests {
                 .to_bytes(),
             ),
             mac: ZERO_MAC,
-            sig: UNSIGNED,
+            sig: ZERO_SIGNATURE,
         })
     }
 
@@ -2458,7 +2458,7 @@ pub(super) mod tests {
             requester: card(requester_seed),
             seq,
             mac: ZERO_MAC,
-            sig: UNSIGNED,
+            sig: ZERO_SIGNATURE,
         })
     }
 
@@ -2671,7 +2671,7 @@ pub(super) mod tests {
             reporter: card(reporter_seed),
             ts,
             mac: ZERO_MAC,
-            sig: UNSIGNED,
+            sig: ZERO_SIGNATURE,
         })
     }
 

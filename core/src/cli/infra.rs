@@ -35,7 +35,7 @@ use crate::node::{
     KnownHostAddress, KnownHosts, Network, NodeError, NodeRecord, RecordVerdict, endpoint_addr,
     endpoint_id, known_host_addresses, seed_lookup_with_known_hosts,
 };
-use crate::payload::ZERO_MAC;
+use crate::payload::{ZERO_MAC, ZERO_SIGNATURE};
 use crate::wire::{
     self, Addr, HostAddr, Infrastructure, IntroduceAck, MAX_RELAY_URL_BYTES, Message, Payload,
     SignatureBytes, Version,
@@ -51,7 +51,6 @@ const RELAY_URL_SCHEME_PREFIX: &str = "https://";
 const RELAY_URL_ROOT_PATH: &str = "/";
 const LINE_END: char = '\n';
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
-const UNSIGNED: SignatureBytes = SignatureBytes([0; Signature::LENGTH]);
 #[cfg(feature = "relay")]
 const LETS_ENCRYPT_PRODUCTION_DIRECTORY: bool = true;
 const RUN_ABOUT: &str = "Run this host's relay and bootstrap node for a network";
@@ -783,7 +782,7 @@ impl BootstrapNode {
             ts,
             cert: SignatureBytes(self.certificate.to_bytes()),
             mac: ZERO_MAC,
-            sig: UNSIGNED,
+            sig: ZERO_SIGNATURE,
         });
         if let Err(failure) = self.topic.broadcast(&self.key, record).await {
             (self.report)(NodeRecord::BroadcastFailed(failure));
@@ -1546,7 +1545,7 @@ mod tests {
                             requester: *secret_key(PEER_SEED).public().as_bytes(),
                             seq: FROZEN_CLOCK_MS,
                             mac: ZERO_MAC,
-                            sig: UNSIGNED,
+                            sig: ZERO_SIGNATURE,
                         }),
                     )
                     .await
@@ -1934,7 +1933,7 @@ mod tests {
             ts,
             cert: spec_certificate_bytes(host_seed),
             mac: ZERO_MAC,
-            sig: UNSIGNED,
+            sig: ZERO_SIGNATURE,
         })
     }
 

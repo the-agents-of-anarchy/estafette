@@ -1684,7 +1684,7 @@ mod tests {
                             requester: *secret_key(NEIGHBOR_SEED).public().as_bytes(),
                             seq: wall_clock_ms(),
                             mac: ZERO_MAC,
-                            sig: unsigned(),
+                            sig: ZERO_SIGNATURE,
                         }),
                     )
                     .await
@@ -1745,10 +1745,6 @@ mod tests {
         [seed; 32]
     }
 
-    fn unsigned() -> wire::SignatureBytes {
-        wire::SignatureBytes([0; 64])
-    }
-
     fn message_from(handle: &str, attached: bool) -> Message {
         Message {
             v: Version::CURRENT,
@@ -1772,7 +1768,7 @@ mod tests {
             addr: Addr::from_endpoint_report(Vec::new(), Vec::new()),
             seq: LINE_CLOCK_MS,
             mac: ZERO_MAC,
-            sig: unsigned(),
+            sig: ZERO_SIGNATURE,
         }
     }
 
@@ -1805,7 +1801,7 @@ mod tests {
                 card: card_of(3),
                 seq: LINE_CLOCK_MS,
                 mac: ZERO_MAC,
-                sig: unsigned(),
+                sig: ZERO_SIGNATURE,
             },
             LINE_CLOCK_MS,
         );
@@ -1830,7 +1826,7 @@ mod tests {
             card: card_of(1),
             seq: LINE_CLOCK_MS,
             mac: ZERO_MAC,
-            sig: unsigned(),
+            sig: ZERO_SIGNATURE,
         });
         let unreachable = Payload::Unreachable(wire::Unreachable {
             v: Version::CURRENT,
@@ -1838,7 +1834,7 @@ mod tests {
             reporter: card_of(3),
             ts: LINE_CLOCK_MS,
             mac: ZERO_MAC,
-            sig: unsigned(),
+            sig: ZERO_SIGNATURE,
         });
         let infrastructure = Payload::Infrastructure(wire::Infrastructure {
             v: Version::CURRENT,
@@ -1846,9 +1842,9 @@ mod tests {
             relay: wire::RelayUrl::try_from("https://relay.example".to_owned()).unwrap(),
             addr: Addr::from_endpoint_report(Vec::new(), Vec::new()),
             ts: LINE_CLOCK_MS,
-            cert: unsigned(),
+            cert: ZERO_SIGNATURE,
             mac: ZERO_MAC,
-            sig: unsigned(),
+            sig: ZERO_SIGNATURE,
         });
 
         assert_eq!(
@@ -1875,7 +1871,7 @@ mod tests {
             requester: card_of(5),
             seq: LINE_CLOCK_MS,
             mac: ZERO_MAC,
-            sig: unsigned(),
+            sig: ZERO_SIGNATURE,
         });
 
         assert_eq!(
