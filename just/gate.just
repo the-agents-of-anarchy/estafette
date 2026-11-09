@@ -54,3 +54,9 @@ test:
 [group('fix')]
 fmt:
     cargo fmt --all
+
+[doc("Run the host-bound acceptance tests against the live lab host; the invitation comes from just remote::invitation")]
+[group('verify')]
+acceptance:
+    export ESTAFETTE_ACCEPTANCE_INVITATION="$(just remote::invitation)"; \
+    cargo test -p estafette-bridge-claude --features lab --test 'acceptance_*'
