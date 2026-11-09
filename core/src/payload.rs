@@ -73,6 +73,7 @@ macro_rules! on_each_payload_variant {
             Payload::Departure($inner) => $body,
             Payload::Unreachable($inner) => $body,
             Payload::Infrastructure($inner) => $body,
+            Payload::PresenceRequest($inner) => $body,
         }
     };
 }
@@ -84,6 +85,9 @@ const fn signer_of(payload: &Payload) -> (SignedPayloadKind, wire::PublicKey) {
         Payload::Unreachable(unreachable) => (SignedPayloadKind::Unreachable, unreachable.reporter),
         Payload::Infrastructure(infrastructure) => {
             (SignedPayloadKind::Infrastructure, infrastructure.host)
+        }
+        Payload::PresenceRequest(request) => {
+            (SignedPayloadKind::PresenceRequest, request.requester)
         }
     }
 }
@@ -276,7 +280,10 @@ pub fn open_payload(
         Payload::Infrastructure(infrastructure) => {
             verify_infrastructure_rules(owner, infrastructure)?;
         }
-        Payload::Presence(_) | Payload::Departure(_) | Payload::Unreachable(_) => {}
+        Payload::Presence(_)
+        | Payload::Departure(_)
+        | Payload::Unreachable(_)
+        | Payload::PresenceRequest(_) => {}
     }
     Ok(payload)
 }
@@ -319,7 +326,7 @@ mod tests {
     use crate::crypto::{KEY_LEN, NetworkSecret, sign_host_certificate};
     use crate::wire::{
         Addr, Departure, Infrastructure, Introduce, IntroduceAck, Message, MessageAck, Presence,
-        Probe, ProbeAck, RelayUrl, Unreachable, Version,
+        PresenceRequest, Probe, ProbeAck, RelayUrl, Unreachable, Version,
     };
 
     const NETWORK_SECRET: NetworkSecret = NetworkSecret::from_bytes([7; KEY_LEN]);
@@ -403,12 +410,23 @@ mod tests {
         })
     }
 
+    fn unsealed_presence_request() -> Payload {
+        Payload::PresenceRequest(PresenceRequest {
+            v: Version::CURRENT,
+            requester: public_bytes(REPORTER_SEED),
+            seq: 1_700_000_000_007,
+            mac: ZERO_MAC,
+            sig: ZERO_SIGNATURE,
+        })
+    }
+
     #[test]
     fn spec_3_4_each_kind_is_signed_by_its_own_signer_and_by_no_other_key() {
         let kinds_with_their_signer_seed = [
             (unsealed_presence(), REPORTED_CARD_SEED),
             (unsealed_departure(REPORTED_CARD_SEED), REPORTED_CARD_SEED),
             (unsealed_unreachable(), REPORTER_SEED),
+            (unsealed_presence_request(), REPORTER_SEED),
         ];
 
         for (payload, signer_seed) in kinds_with_their_signer_seed {
@@ -440,6 +458,8 @@ mod tests {
             forged_by(FOREIGN_SEED, unsealed_departure(REPORTED_CARD_SEED));
         let unreachable_signed_by_the_reported_card =
             forged_by(REPORTED_CARD_SEED, unsealed_unreachable());
+        let presence_request_signed_by_foreign_key =
+            forged_by(FOREIGN_SEED, unsealed_presence_request());
 
         assert_eq!(
             open_payload(&keys(), &owner_public(), &departure_signed_by_foreign_key),
@@ -450,6 +470,14 @@ mod tests {
                 &keys(),
                 &owner_public(),
                 &unreachable_signed_by_the_reported_card
+            ),
+            Err(PayloadError::Crypto(CryptoError::SignatureMismatch))
+        );
+        assert_eq!(
+            open_payload(
+                &keys(),
+                &owner_public(),
+                &presence_request_signed_by_foreign_key
             ),
             Err(PayloadError::Crypto(CryptoError::SignatureMismatch))
         );

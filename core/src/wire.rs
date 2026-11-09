@@ -420,6 +420,7 @@ wire_enum! {
         Departure(Departure) as Second,
         Unreachable(Unreachable) as Third,
         Infrastructure(Infrastructure) as Fourth,
+        PresenceRequest(PresenceRequest) as Fifth,
     }
 }
 
@@ -466,6 +467,16 @@ wire_struct! {
         pub addr: Addr,
         pub ts: u64,
         pub cert: SignatureBytes,
+        pub mac: Mac,
+        pub sig: SignatureBytes,
+    }
+}
+
+wire_struct! {
+    pub struct PresenceRequest {
+        pub v: Version,
+        pub requester: PublicKey,
+        pub seq: u64,
         pub mac: Mac,
         pub sig: SignatureBytes,
     }
@@ -1129,6 +1140,16 @@ mod tests {
             }
         }
 
+        fn presence_request(&mut self) -> PresenceRequest {
+            PresenceRequest {
+                v: Version::CURRENT,
+                requester: self.array(),
+                seq: self.next_word(),
+                mac: self.array(),
+                sig: self.signature(),
+            }
+        }
+
         fn host_addr(&mut self) -> HostAddr {
             HostAddr {
                 v: Version::CURRENT,
@@ -1206,6 +1227,11 @@ mod tests {
     #[test]
     fn spec_3_7_infrastructure_round_trips() {
         assert_every_case_round_trips(|seed| Payload::Infrastructure(seed.infrastructure()));
+    }
+
+    #[test]
+    fn spec_3_7_presence_request_round_trips() {
+        assert_every_case_round_trips(|seed| Payload::PresenceRequest(seed.presence_request()));
     }
 
     #[test]

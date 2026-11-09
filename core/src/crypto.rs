@@ -35,6 +35,7 @@ pub enum SignedPayloadKind {
     Departure,
     Unreachable,
     Infrastructure,
+    PresenceRequest,
 }
 
 impl SignedPayloadKind {
@@ -44,6 +45,7 @@ impl SignedPayloadKind {
             Self::Departure => b"estafette-departure-v1",
             Self::Unreachable => b"estafette-unreachable-v1",
             Self::Infrastructure => b"estafette-infra-v1",
+            Self::PresenceRequest => b"estafette-presence-request-v1",
         }
     }
 }
@@ -298,11 +300,12 @@ mod tests {
     }
 
     const SIGNER_SEED: [u8; KEY_LEN] = [3; KEY_LEN];
-    const ALL_KINDS: [SignedPayloadKind; 4] = [
+    const ALL_KINDS: [SignedPayloadKind; 5] = [
         SignedPayloadKind::Presence,
         SignedPayloadKind::Departure,
         SignedPayloadKind::Unreachable,
         SignedPayloadKind::Infrastructure,
+        SignedPayloadKind::PresenceRequest,
     ];
 
     #[test]

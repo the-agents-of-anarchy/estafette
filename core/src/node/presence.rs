@@ -32,7 +32,7 @@ use crate::payload::ZERO_MAC;
 use crate::peers::{Effect, Peer, PeerTable};
 use crate::wire::{
     self, Addr, Departure, Infrastructure, Introduce, IntroduceAck, Message, Nonce, Payload,
-    Presence, SignatureBytes, Unreachable, Version,
+    Presence, PresenceRequest, SignatureBytes, Unreachable, Version,
 };
 
 const OBSERVER_WAIT: Duration = Duration::from_millis(3000);
@@ -269,6 +269,8 @@ impl Node {
             init: Init::AwaitingJoin { assigned },
             announcer: Announcer::default(),
             reannounce_due: None,
+            heard_requests: HeardPresenceRequests::default(),
+            presence_owed: false,
             relay_loss: RelayLossWatch::default(),
             known_hosts: KnownHosts::new(network.config, network.config_path),
             schedule: RebindSchedule::new(subscribed),
@@ -632,6 +634,8 @@ pub(super) struct PresenceLoop {
     init: Init,
     announcer: Announcer,
     reannounce_due: Option<Instant>,
+    heard_requests: HeardPresenceRequests,
+    presence_owed: bool,
     pub(super) relay_loss: RelayLossWatch,
     pub(super) known_hosts: KnownHosts,
     pub(super) schedule: RebindSchedule,
@@ -705,7 +709,11 @@ impl PresenceLoop {
             Wake::ObserverWaitOver => self.finish_observer_wait().await,
             Wake::ReannounceDue => {
                 self.reannounce_due = None;
-                self.reconsider_own_address().await;
+                if std::mem::take(&mut self.presence_owed) {
+                    self.announce_presence().await;
+                } else {
+                    self.reconsider_own_address().await;
+                }
             }
             Wake::RelayLossDue => self.remove_lost_relays().await,
             Wake::RebindDue => return self.rebind().await,
@@ -806,6 +814,23 @@ impl PresenceLoop {
                 self.state.table().receive_unreachable(&report, now_ms);
             }
             Payload::Infrastructure(record) => self.take_infrastructure(&record, now_ms).await,
+            Payload::PresenceRequest(request) => {
+                self.answer_presence_request(&request, now_ms).await;
+            }
+        }
+    }
+
+    /// Sends Presence for a request within the announcement max age and above its requester's last seq, at once or when the re-announce interval since the last Presence ends.
+    async fn answer_presence_request(&mut self, request: &PresenceRequest, now_ms: u64) {
+        if !self.heard_requests.admit(request, now_ms) {
+            return;
+        }
+        match self.announcer.held_until((self.monotonic)()) {
+            None => self.announce_presence().await,
+            Some(interval_end) => {
+                self.presence_owed = true;
+                self.reannounce_due = Some(interval_end);
+            }
         }
     }
 
@@ -999,8 +1024,13 @@ fn sparing_the_answering_connection(effects: Vec<Effect>) -> Vec<Effect> {
 
 /// Whether an Unreachable report about this node calls for a new Presence: within the announcement max age and not below the last Presence's seq.
 fn is_rumor_to_answer(report_ts: u64, last_presence_seq: Option<u64>, now_ms: u64) -> bool {
-    report_ts >= now_ms.saturating_sub(ANNOUNCEMENT_MAX_AGE_MS)
+    is_within_announcement_max_age(report_ts, now_ms)
         && last_presence_seq.is_none_or(|seq| report_ts >= seq)
+}
+
+/// Whether `stamp` is no older than the announcement max age by the clock reading `now_ms`.
+const fn is_within_announcement_max_age(stamp: u64, now_ms: u64) -> bool {
+    stamp >= now_ms.saturating_sub(ANNOUNCEMENT_MAX_AGE_MS)
 }
 
 /// The last Presence this node sent: its seq, its address, and when it went out.
@@ -1050,12 +1080,38 @@ impl Announcer {
         if last.addr == *current {
             return ReannounceStep::Unchanged;
         }
-        let earliest = last.at.checked_add(REANNOUNCE_INTERVAL).unwrap_or(last.at);
-        if now >= earliest {
-            ReannounceStep::AnnounceNow
-        } else {
-            ReannounceStep::AnnounceAt(earliest)
+        self.held_until(now)
+            .map_or(ReannounceStep::AnnounceNow, ReannounceStep::AnnounceAt)
+    }
+
+    /// When the re-announce interval since the last Presence ends, if it has not ended by `now`.
+    fn held_until(&self, now: Instant) -> Option<Instant> {
+        let last = self.last.as_ref()?;
+        let interval_end = last.at.checked_add(REANNOUNCE_INTERVAL).unwrap_or(last.at);
+        (now < interval_end).then_some(interval_end)
+    }
+}
+
+/// The highest seq heard from each node that asked for Presence within the announcement max age.
+#[derive(Default)]
+struct HeardPresenceRequests {
+    highest_seq: BTreeMap<wire::PublicKey, u64>,
+}
+
+impl HeardPresenceRequests {
+    /// Admits and remembers a request within the announcement max age whose seq is above the last heard from its requester.
+    fn admit(&mut self, request: &PresenceRequest, now_ms: u64) -> bool {
+        self.highest_seq
+            .retain(|_requester, seq| is_within_announcement_max_age(*seq, now_ms));
+        let is_fresh = is_within_announcement_max_age(request.seq, now_ms)
+            && self
+                .highest_seq
+                .get(&request.requester)
+                .is_none_or(|heard| request.seq > *heard);
+        if is_fresh {
+            self.highest_seq.insert(request.requester, request.seq);
         }
+        is_fresh
     }
 }
 
@@ -1324,6 +1380,12 @@ pub(super) mod tests {
     const SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT: Duration = Duration::from_millis(5000);
     const PROBE_ANSWERED_WAIT: Duration = Duration::from_secs(5);
     const AFTER_PROBE_ACK: Duration = Duration::from_millis(300);
+    const FIRST_REQUESTER_SEED: u8 = 72;
+    const SECOND_REQUESTER_SEED: u8 = 73;
+    const REPLAYED_REQUEST_SEQ: u64 = FROZEN_CLOCK_MS - 1;
+    const STALE_REQUEST_SEQ: u64 = FROZEN_CLOCK_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1;
+    const SPEC_REANNOUNCE_INTERVAL_LESS_DELIVERY: Duration = Duration::from_millis(1800);
+    const SPEC_REANNOUNCE_INTERVAL_AND_NOTHING_MORE_WAIT: Duration = Duration::from_millis(3000);
 
     fn network_secret() -> NetworkSecret {
         NetworkSecret::from_bytes(NETWORK_SECRET)
@@ -2401,6 +2463,164 @@ pub(super) mod tests {
             panic!("a presence was expected");
         };
         (presence.seq, presence.attached)
+    }
+
+    fn presence_request_from(requester_seed: u8, seq: u64) -> Payload {
+        Payload::PresenceRequest(crate::wire::PresenceRequest {
+            v: Version::CURRENT,
+            requester: card(requester_seed),
+            seq,
+            mac: ZERO_MAC,
+            sig: UNSIGNED,
+        })
+    }
+
+    async fn ask_for_presence(witness: &Witness, requester_seed: u8, seq: u64) {
+        witness
+            .broadcast_as(requester_seed, presence_request_from(requester_seed, seq))
+            .await;
+    }
+
+    #[tokio::test]
+    async fn spec_3_15_test_15_a_member_answers_a_presence_request_with_one_presence() {
+        let scratch = Scratch::new("asked").await;
+        let (_member, mut witness) = start_witnessed(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                .with_clock(frozen_clock(FROZEN_CLOCK_MS)),
+            None,
+        )
+        .await;
+        witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await
+            .unwrap();
+
+        ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
+        let answer = witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await;
+        let nothing_more = witness
+            .payload_where(
+                SPEC_REANNOUNCE_INTERVAL_AND_NOTHING_MORE_WAIT,
+                presence_from(FIRST_SEED),
+            )
+            .await;
+
+        assert_eq!(presence_fields(answer), (FROZEN_CLOCK_MS + 1, false));
+        assert!(nothing_more.is_none());
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_two_presence_requests_inside_the_reannounce_interval_get_one_presence_in_it_and_one_at_its_end()
+     {
+        let scratch = Scratch::new("asked-twice").await;
+        let (_member, mut witness) = start_witnessed(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                .with_clock(frozen_clock(FROZEN_CLOCK_MS)),
+            None,
+        )
+        .await;
+        witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await
+            .unwrap();
+        tokio::time::sleep(SPEC_REANNOUNCE_INTERVAL).await;
+
+        ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
+        let first_answer = witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await;
+        ask_for_presence(&witness, SECOND_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
+        let inside_the_interval = witness
+            .payload_where(
+                SPEC_REANNOUNCE_INTERVAL_LESS_DELIVERY,
+                presence_from(FIRST_SEED),
+            )
+            .await;
+        let at_its_end = witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await;
+
+        assert_eq!(presence_fields(first_answer), (FROZEN_CLOCK_MS + 1, false));
+        assert!(inside_the_interval.is_none());
+        assert_eq!(presence_fields(at_its_end), (FROZEN_CLOCK_MS + 2, false));
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_presence_request_replayed_below_its_requesters_last_seq_or_older_than_the_max_age_is_dropped()
+     {
+        let scratch = Scratch::new("asked-stale").await;
+        let (_member, mut witness) = start_witnessed(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                .with_clock(frozen_clock(FROZEN_CLOCK_MS)),
+            None,
+        )
+        .await;
+        witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await
+            .unwrap();
+        ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
+        witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await
+            .unwrap();
+        tokio::time::sleep(SPEC_REANNOUNCE_INTERVAL).await;
+
+        ask_for_presence(&witness, FIRST_REQUESTER_SEED, REPLAYED_REQUEST_SEQ).await;
+        let after_replay = witness
+            .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
+            .await;
+        ask_for_presence(&witness, SECOND_REQUESTER_SEED, STALE_REQUEST_SEQ).await;
+        let after_stale = witness
+            .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
+            .await;
+        ask_for_presence(&witness, SECOND_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
+        let after_fresh = witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await;
+
+        assert!(after_replay.is_none());
+        assert!(after_stale.is_none());
+        assert_eq!(presence_fields(after_fresh), (FROZEN_CLOCK_MS + 2, false));
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_stopping_member_answers_a_presence_request_with_nothing() {
+        let scratch = Scratch::new("asked-stopping").await;
+        let (member, mut witness) = start_witnessed(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                .with_clock(frozen_clock(FROZEN_CLOCK_MS)),
+            None,
+        )
+        .await;
+        witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await
+            .unwrap();
+        tokio::time::sleep(SPEC_REANNOUNCE_INTERVAL).await;
+        member.node.start_stopping();
+        witness
+            .payload_where(PAYLOAD_WAIT, |payload| {
+                matches!(payload, Payload::Departure(departure) if departure.card == card(FIRST_SEED))
+            })
+            .await
+            .unwrap();
+
+        ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
+        let answer = witness
+            .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
+            .await;
+
+        assert!(answer.is_none());
+        drop(scratch);
     }
 
     #[tokio::test]

@@ -733,7 +733,8 @@ impl BootstrapNode {
                 Payload::Infrastructure(_)
                 | Payload::Presence(_)
                 | Payload::Departure(_)
-                | Payload::Unreachable(_) => {}
+                | Payload::Unreachable(_)
+                | Payload::PresenceRequest(_) => {}
             },
             Some(Ok(
                 GossipEvent::JoinTimedOut
@@ -1236,6 +1237,23 @@ mod tests {
             }
         }
 
+        async fn payloads_within(&mut self, within: Duration) -> Vec<Payload> {
+            let mut heard = Vec::new();
+            drop(
+                tokio::time::timeout(within, async {
+                    loop {
+                        if let Some(Ok(GossipEvent::Payload(payload))) =
+                            self.topic.next_event().await
+                        {
+                            heard.push(*payload);
+                        }
+                    }
+                })
+                .await,
+            );
+            heard
+        }
+
         async fn next_host_record(&mut self, within: Duration) -> Option<Infrastructure> {
             tokio::time::timeout(within, async {
                 loop {
@@ -1502,6 +1520,49 @@ mod tests {
                 .contains(&counter_file.display().to_string())
         );
         assert_eq!(fs::read_to_string(&counter_file).unwrap(), HELD_COUNTER);
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_a_host_answers_a_presence_request_with_nothing_but_its_records() {
+        let scratch = Scratch::new("presence-request");
+        scratch.configure_network();
+        scratch.certify(HOST_SEED);
+        let seen = Seen::default();
+        let (stop, stopped) = stopped_on_signal();
+        let plan = Plan {
+            stopped,
+            ..Plan::new(HOST_SEED)
+        };
+
+        let ((_printed, outcome), heard) =
+            tokio::join!(run_planned(&scratch, plan, &seen), async {
+                let host = bound_endpoint(&seen, 0).await;
+                let mut peer = Peer::joined_through(PEER_SEED, &host).await;
+                peer.topic
+                    .broadcast(
+                        &secret_key(PEER_SEED),
+                        Payload::PresenceRequest(wire::PresenceRequest {
+                            v: Version::CURRENT,
+                            requester: *secret_key(PEER_SEED).public().as_bytes(),
+                            seq: FROZEN_CLOCK_MS,
+                            mac: ZERO_MAC,
+                            sig: UNSIGNED,
+                        }),
+                    )
+                    .await
+                    .unwrap();
+                let heard = peer.payloads_within(SPEC_RECORD_INTERVAL_LATEST).await;
+                drop(stop);
+                heard
+            });
+
+        outcome.unwrap();
+        assert_ne!(heard.len(), 0);
+        assert!(
+            heard
+                .iter()
+                .all(|payload| matches!(payload, Payload::Infrastructure(_)))
+        );
     }
 
     #[tokio::test]

@@ -48,6 +48,7 @@ const PRESENCE_KIND: &str = "presence";
 const DEPARTURE_KIND: &str = "departure";
 const UNREACHABLE_KIND: &str = "unreachable";
 const INFRASTRUCTURE_KIND: &str = "infrastructure";
+const PRESENCE_REQUEST_KIND: &str = "presence-request";
 const OWNER_FIELD: &str = "owner";
 const FIELD_SEPARATOR: char = '\t';
 const LINE_END: &str = "\n";
@@ -693,6 +694,7 @@ impl Observation {
                 self.host.table().receive_unreachable(&report, now_ms);
             }
             Payload::Infrastructure(_record) => {}
+            Payload::PresenceRequest(_request) => {}
         }
     }
 
@@ -790,6 +792,9 @@ fn payload_line(payload: &Payload) -> String {
             &card_text(&record.host),
             record.relay.as_str(),
         ]),
+        Payload::PresenceRequest(request) => {
+            line_of(&[PRESENCE_REQUEST_KIND, &card_text(&request.requester)])
+        }
     }
 }
 
@@ -1761,6 +1766,22 @@ mod tests {
                 "infrastructure\t{}\thttps://relay.example\n",
                 "04".repeat(32)
             )
+        );
+    }
+
+    #[test]
+    fn spec_3_13_a_presence_request_prints_its_requester() {
+        let request = Payload::PresenceRequest(wire::PresenceRequest {
+            v: Version::CURRENT,
+            requester: card_of(5),
+            seq: LINE_CLOCK_MS,
+            mac: ZERO_MAC,
+            sig: unsigned(),
+        });
+
+        assert_eq!(
+            payload_line(&request),
+            format!("presence-request\t{}\n", "05".repeat(32))
         );
     }
 
