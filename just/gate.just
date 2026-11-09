@@ -8,7 +8,7 @@ audit_pin := "0.22.2"
 [default]
 [doc("The whole gate: format check, clippy with and without relay, tests, advisory audit; run before every commit")]
 [group('verify')]
-check: fmt-check clippy clippy-relay test test-relay audit
+check: fmt-check clippy clippy-relay test audit
 
 [doc("Fail when any file is not formatted")]
 [group('verify')]
@@ -45,15 +45,10 @@ audit-pin-held:
 install-audit:
     cargo binstall --no-confirm cargo-audit@{{ audit_pin }}
 
-[doc("Run every test of the workspace")]
+[doc("Run every test of the workspace with the relay feature on")]
 [group('verify')]
 test:
-    cargo test
-
-[doc("Run the spec 3.14 tests with the relay feature on")]
-[group('verify')]
-test-relay:
-    cargo test -p estafette --features relay --lib --bin estafette spec_3_14
+    cargo test --workspace --features estafette/relay
 
 [doc("Format every file in place")]
 [group('fix')]
