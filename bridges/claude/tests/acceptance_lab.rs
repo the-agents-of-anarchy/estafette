@@ -9,7 +9,7 @@ use std::thread;
 use std::time::Duration;
 
 use common::{Fixture, MESSAGING_TOKEN, Spawned, claim_card_over_mcp, forward_json_lines};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 mod common;
 
@@ -116,8 +116,8 @@ fn spec_3_12_the_bridge_injects_one_notice_per_inbox_frame_of_a_real_binary_join
     let first = notices.recv_timeout(NOTICE_TIMEOUT).unwrap();
     assert_eq!(first.len(), 2, "{first:?}");
     assert_eq!(
-        first.first().unwrap(),
-        &json!({"type": "auth", "token": MESSAGING_TOKEN}).to_string()
+        &first[0],
+        &format!(r#"{{"type":"auth","token":"{MESSAGING_TOKEN}"}}"#)
     );
     let notice: Value = serde_json::from_str(&first[1]).unwrap();
     assert_eq!(notice["type"], "user", "{notice}");
