@@ -10,6 +10,10 @@ server := env("LAB_SERVER", "estafette-lab")
 key := env("LAB_KEY", home_directory() / ".ssh" / "estafette_lab")
 known_hosts := home_directory() / ".ssh" / "known_hosts_estafette_lab"
 ssh_opts := "-i " + key + " -o IdentitiesOnly=yes -o UserKnownHostsFile=" + known_hosts + " -o StrictHostKeyChecking=accept-new"
+lab_root := env("LAB_ROOT", "/tmp/estafette-lab")
+lab_binary := env("LAB_BINARY", "target/release/estafette")
+lab_network := "lab"
+lab_directories := "XDG_CONFIG_HOME=" + lab_root / "config" + " XDG_DATA_HOME=" + lab_root / "data" + " XDG_RUNTIME_DIR=" + lab_root / "run"
 
 [doc("List this module's recipes (what bare `just remote` runs)")]
 [group('read')]
@@ -45,6 +49,30 @@ forget-host:
 [group('read')]
 backstop-status:
     launchctl list | grep com.estafette.lab-backstop
+
+[doc("Run the estafette binary on this machine with the lab's directories under LAB_ROOT, e.g. just remote::estafette show-peers lab")]
+[group('lab')]
+[positional-arguments]
+estafette *arguments:
+    mkdir -p -m 0700 {{ lab_root }}/run
+    env {{ lab_directories }} {{ lab_binary }} "$@"
+
+[doc("Serve the card as a lab member on this machine until SIGTERM, printing its init envelope; its run record goes to stderr")]
+[group('lab')]
+member card:
+    mkdir -p -m 0700 {{ lab_root }}/run
+    rm -f {{ lab_root }}/{{ card }}.control
+    env {{ lab_directories }} python3 -I just/remote/member.py serve {{ lab_binary }} {{ lab_network }} {{ card }} {{ lab_root }}/{{ card }}.control
+
+[doc("Call one tool of the lab member serving the card on this machine, e.g. just remote::call mac send '{\"to\":\"srv\",\"body\":\"hi\"}'")]
+[group('lab')]
+call card tool arguments="{}":
+    python3 -I just/remote/member.py call {{ lab_root }}/{{ card }}.control {{ tool }} '{{ arguments }}'
+
+[doc("Print each frame of the inbox socket at the path init returned, stamped with this machine's clock")]
+[group('lab')]
+attach inbox_path:
+    python3 -I just/remote/member.py attach {{ inbox_path }}
 
 [doc("List every lab resource in the Hetzner project, to read before any creation")]
 [group('read')]
