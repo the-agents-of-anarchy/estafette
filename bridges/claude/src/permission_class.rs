@@ -1,4 +1,5 @@
 use std::fmt;
+use std::io::Read;
 
 use serde::Deserialize;
 
@@ -18,11 +19,13 @@ struct HookInput {
 }
 
 impl PermissionClass {
-    /// Reads the served session's class from the `permission_mode` of the hook's JSON, taking prompting when it is missing or unreadable.
+    /// Reads the served session's class from the `permission_mode` of the first JSON object on the hook's input, taking prompting when it is missing or unreadable.
     #[must_use]
-    pub fn from_hook_input(hook_input: &str) -> Self {
-        serde_json::from_str::<HookInput>(hook_input)
-            .ok()
+    pub fn from_hook_input(hook_input: impl Read) -> Self {
+        serde_json::Deserializer::from_reader(hook_input)
+            .into_iter::<HookInput>()
+            .next()
+            .and_then(Result::ok)
             .and_then(|input| input.permission_mode)
             .map_or(Self::Prompting, |mode| {
                 if mode == BYPASS_HOOK_PERMISSION_MODE {
@@ -58,9 +61,12 @@ mod tests {
     use super::*;
 
     fn class_of_mode(mode: &str) -> PermissionClass {
-        PermissionClass::from_hook_input(&format!(
-            "{{\"session_id\":\"s\",\"permission_mode\":\"{mode}\",\"hook_event_name\":\"SessionStart\"}}"
-        ))
+        PermissionClass::from_hook_input(
+            format!(
+                "{{\"session_id\":\"s\",\"permission_mode\":\"{mode}\",\"hook_event_name\":\"SessionStart\"}}"
+            )
+            .as_bytes(),
+        )
     }
 
     #[test]
@@ -86,11 +92,34 @@ mod tests {
             "",
         ] {
             assert_eq!(
-                PermissionClass::from_hook_input(input),
+                PermissionClass::from_hook_input(input.as_bytes()),
                 PermissionClass::Prompting,
                 "{input}"
             );
         }
+    }
+
+    struct ObjectThenSilence<'a>(&'a [u8]);
+
+    impl Read for ObjectThenSilence<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.0.is_empty() {
+                return Err(std::io::Error::from(std::io::ErrorKind::TimedOut));
+            }
+            let length = self.0.len().min(buffer.len());
+            buffer[..length].copy_from_slice(&self.0[..length]);
+            self.0 = &self.0[length..];
+            Ok(length)
+        }
+    }
+
+    #[test]
+    fn hook_docs_the_class_is_read_without_waiting_for_the_input_to_close() {
+        let input = ObjectThenSilence(b"{\"permission_mode\":\"bypassPermissions\"}");
+        assert_eq!(
+            PermissionClass::from_hook_input(input),
+            PermissionClass::Bypass
+        );
     }
 
     #[test]
