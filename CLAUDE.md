@@ -32,7 +32,7 @@ Each session opens with no memory of the last. What is written here and in the r
 - Run every project task through `just` and its modules (`just --list`); a command used twice becomes a recipe. Ground: owner ruling, 2026-10-23T22:02.
 - Keep records with the shipped `memento` tool (`memento events`, `directive`, `change`, `fact`, `spec`, `commit`, `check`); hand-write only a kind no verb writes. Ground: owner ruling, 2026-10-23T22:02.
 - Lab servers are free to use, never to forget: reuse a machine before creating one, list before creating, tear down at the end of each stretch, backstop loaded first. Owner: "free use, but with responsible resource management: reuse machines, but do not forget about them, leaving them to drain my account." Ground: owner ruling, 2026-10-23T20:10.
-- Nobody watches upstream; the pins and the patch of spec 2.12 stay as written until completion. Ground: owner ruling, 2026-10-23T20:53.
+- Nobody watches upstream; the pins and patch of spec 2.12 stay until completion, but an advisory raises a pin, never an ignore. Ground: owner rulings, 2026-10-23T20:53 and 2026-11-09.
 
 ## Pointers
 

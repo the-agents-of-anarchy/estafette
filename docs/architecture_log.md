@@ -130,3 +130,12 @@ INVALIDATES:   A bootstrap host never announces Presence and is never a peer; a 
                Every direct-request reader must handle `own_card == None`; a reader that unwraps it panics on the observer and the bootstrap host
                `KnownHosts` is reachable across the crate; a second writer of the host file would race the node's save
 EVIDENCE:      core/src/cli/infra.rs, core/src/net/direct.rs, core/src/node/{presence,mod}.rs, core/src/cli/observer.rs at 1eb43e4; spec reviews 181455, 200127 PASS; quality 182048 With fixes, 200127q Ready Yes; integration CI 40772291162 green
+
+## 2026-11-09 → 2026-11-09 — The MCP library pin moves from rmcp 3.5.1 to 3.9.0 to clear three advisories
+KIND:          runnable
+FROM → TO:     rmcp =3.5.1 (spec:493, default features off, `server` and `transport-io`) → rmcp =3.9.0 with the same features; Cargo.lock changes rmcp alone
+WHY:           cargo audit in the gate began failing every commit on RUSTSEC-2026-0457, 0461 and 0462 against rmcp 3.5.1, published 2026-10-20 to 2026-11-05; the owner ruled on 2026-11-09 that advisory ignores are not allowed, so the pin of spec:493 and of the pins-stay ruling (2026-10-23T20:53) gives way for this crate; 3.9.0 is the first release clearing all three; the advised code sits behind features estafette does not enable (auth, streamable HTTP client and server)
+INVALIDATES:   spec:493 and docs/ground-truth.md no longer describe the rmcp pin; every other pin and the [patch.crates-io] of spec 2.12 stand
+               The MCP surface is proved on 3.9.0 by the core suite on the owner's Mac only (400 lib tests, gate exit 0 at 92c1af0); spec 3.15 tests over a real MCP client remain U34's
+               A later advisory against rmcp meets the same ruling, so the pin is raised, never ignored
+EVIDENCE:      core/Cargo.toml, Cargo.lock at 92c1af0; just check exit 0 twice (standalone and pre-commit) on macOS Darwin 24.3.0

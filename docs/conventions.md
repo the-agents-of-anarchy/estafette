@@ -70,10 +70,10 @@ ground  owner ruling 2026-10-23
 
 ### dependency-safety
 when    gating, patching or installing dependencies and tools
-do      run `cargo audit` in the gate and in CI; ignore an advisory only with a documented reason in `.cargo/audit.toml`; pin the version of every tool the gate or a recipe calls that is not a project dependency; run a patched crate's own test suite before adding or keeping its `[patch.crates-io]` entry; install cargo tools with `cargo binstall`
-never   an ignored advisory without its reason; an unpinned tool in the gate; a patch whose own suite was not run; `cargo install`
+do      run `cargo audit` in the gate and in CI; clear an advisory by raising the dependency to a release that fixes it, a pinned one included, and record the raise as a change entry; pin the version of every tool the gate or a recipe calls that is not a project dependency; run a patched crate's own test suite before adding or keeping its `[patch.crates-io]` entry; install cargo tools with `cargo binstall`
+never   an ignored advisory, whatever its reason; an unpinned tool in the gate; a patch whose own suite was not run; `cargo install`
 why     Public repository; spec D48 already chose crates by RUSTSEC advisory; an unpinned tool changes the gate under the same commit.
-ground  owner ruling 2026-10-23
+ground  owner rulings 2026-10-23 and 2026-11-09 ("ignores are not allowed")
 
 ### credentials-unread
 when    handling a credential, an environment variable or `.env`

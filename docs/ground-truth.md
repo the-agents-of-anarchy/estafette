@@ -32,6 +32,6 @@ Moved documents (`spec/`, `research/stack/`, `docs/reference/`) stay byte-identi
 
 ## Known limitations the owner accepted
 
-Not work (owner ruling, 2026-10-21T23:10; `research/stack/README.md:61-68`): a surviving host blocked 62-87 s on relay-only paths; the deaf rule silent while host records keep arriving; symmetric NAT, CGNAT, and UDP-blocked networks never met; QUIC address discovery in the embedded relay library unconfirmed. Deferred by design: spec:440. Nobody watches upstream releases; the pins and `[patch.crates-io]` of spec 2.12 stay (owner ruling, 2026-10-23T20:53).
+Not work (owner ruling, 2026-10-21T23:10; `research/stack/README.md:61-68`): a surviving host blocked 62-87 s on relay-only paths; the deaf rule silent while host records keep arriving; symmetric NAT, CGNAT, and UDP-blocked networks never met; QUIC address discovery in the embedded relay library unconfirmed. Deferred by design: spec:440. Nobody watches upstream releases; the pins and `[patch.crates-io]` of spec 2.12 stay (owner ruling, 2026-10-23T20:53), except a pin a RustSec advisory forces up, since advisory ignores are not allowed: rmcp is =3.9.0 since 2026-11-09 (owner ruling, 2026-11-09).
 
 — owner-directed, 2026-10-23T21:27 ("everything else you can land"); paths checked against branch integration/scaffold at d0f6081.
