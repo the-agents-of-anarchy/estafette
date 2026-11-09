@@ -1,7 +1,7 @@
 use serde::Deserialize;
 
 const PERMISSION_MODE_ENTRY_TYPE: &str = "permission-mode";
-const PERMISSION_MODE_ENTRY_MARKER: &str = "\"type\":\"permission-mode\"";
+const SESSION_ID_SEPARATOR: char = '-';
 const TRANSCRIPT_EXTENSION: &str = "jsonl";
 
 #[derive(Deserialize)]
@@ -26,9 +26,9 @@ pub fn session_id_of_registry_entry(registry_text: &str) -> Option<String> {
         .map(|entry| entry.session_id)
         .filter(|id| {
             !id.is_empty()
-                && id
-                    .chars()
-                    .all(|character| character.is_ascii_alphanumeric() || character == '-')
+                && id.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || character == SESSION_ID_SEPARATOR
+                })
         })
 }
 
@@ -44,7 +44,7 @@ pub fn latest_permission_mode(transcript_text: &str) -> Option<String> {
     transcript_text
         .lines()
         .rev()
-        .filter(|line| line.contains(PERMISSION_MODE_ENTRY_MARKER))
+        .filter(|line| line.contains(PERMISSION_MODE_ENTRY_TYPE))
         .filter_map(|line| serde_json::from_str::<TranscriptEntry>(line).ok())
         .find(|entry| entry.entry_type.as_deref() == Some(PERMISSION_MODE_ENTRY_TYPE))
         .and_then(|entry| entry.permission_mode)

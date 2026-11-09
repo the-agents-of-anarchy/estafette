@@ -2,6 +2,7 @@ use crate::inject::ENVELOPE_TAG;
 
 const ESCAPED_OPENING_BRACKET: &str = "<\\";
 const HYPHEN_IN_TAG_NAME: char = '-';
+const UNDERSCORE_IN_TAG_NAME: char = '_';
 const BACKSLASH: char = '\\';
 const LATIN_SMALL_LONG_S: char = '\u{17f}';
 const KELVIN_SIGN: char = '\u{212a}';
@@ -167,7 +168,7 @@ fn in_ranges(character: char, ranges: &[(u32, u32)]) -> bool {
 
 const fn is_name_character(character: char) -> bool {
     character.is_ascii_alphanumeric()
-        || character == '_'
+        || character == UNDERSCORE_IN_TAG_NAME
         || character == HYPHEN_IN_TAG_NAME
         || character == LATIN_SMALL_LONG_S
         || character == KELVIN_SIGN
