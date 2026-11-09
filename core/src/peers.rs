@@ -366,7 +366,7 @@ impl PeerTable {
 }
 
 /// Whether `stamp` is no older than the announcement max age by the clock reading `now_ms`.
-const fn is_within_announcement_max_age(stamp: u64, now_ms: u64) -> bool {
+pub(crate) const fn is_within_announcement_max_age(stamp: u64, now_ms: u64) -> bool {
     stamp >= now_ms.saturating_sub(ANNOUNCEMENT_MAX_AGE_MS)
 }
 

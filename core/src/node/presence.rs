@@ -29,7 +29,7 @@ use crate::net::direct::{ClientTimeouts, DirectClient, DirectError, DirectHost, 
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::payload::ZERO_MAC;
-use crate::peers::{Effect, Peer, PeerTable};
+use crate::peers::{Effect, Peer, PeerTable, is_within_announcement_max_age};
 use crate::wire::{
     self, Addr, Departure, Infrastructure, Introduce, IntroduceAck, Message, Nonce, Payload,
     Presence, PresenceRequest, SignatureBytes, Unreachable, Version,
@@ -38,7 +38,6 @@ use crate::wire::{
 const OBSERVER_WAIT: Duration = Duration::from_millis(3000);
 const REANNOUNCE_INTERVAL: Duration = Duration::from_millis(2000);
 const RELAY_LOSS_WAIT: Duration = Duration::from_millis(500);
-const ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
 const INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS: u64 = 300;
 const MILLIS_PER_SECOND: u64 = 1000;
 const UNSIGNED: SignatureBytes = SignatureBytes([0; Signature::LENGTH]);
@@ -1013,11 +1012,6 @@ fn sparing_the_answering_connection(effects: Vec<Effect>) -> Vec<Effect> {
 fn is_rumor_to_answer(report_ts: u64, last_presence_seq: Option<u64>, now_ms: u64) -> bool {
     is_within_announcement_max_age(report_ts, now_ms)
         && last_presence_seq.is_none_or(|seq| report_ts >= seq)
-}
-
-/// Whether `stamp` is no older than the announcement max age by the clock reading `now_ms`.
-const fn is_within_announcement_max_age(stamp: u64, now_ms: u64) -> bool {
-    stamp >= now_ms.saturating_sub(ANNOUNCEMENT_MAX_AGE_MS)
 }
 
 /// The last Presence this node sent: its seq, its address, and when it went out.
