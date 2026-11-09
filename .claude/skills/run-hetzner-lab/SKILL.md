@@ -1,7 +1,7 @@
 ---
 name: run-hetzner-lab
 description: >
-  Run the Hetzner Cloud lab for estafette from creation to deletion: one reused server, each resource under its own deadline and an hourly backstop check. Use it for the multi-machine acceptance tests (spec 3.15 tests 3, 15, 22 to 28).
+  Run the Hetzner Cloud lab for estafette from creation to deletion: one server per run, torn down when the run ends, each resource under its own deadline and an hourly backstop check. Use it for the multi-machine acceptance tests (spec 3.15 tests 3, 15, 22 to 28).
   "create a lab server", "hetzner", "hcloud", "a second machine", "a remote machine for the test", "extend the deadline", "tear down the lab", "delete the server", "lab backstop", or any request to create, check, extend, or delete a Hetzner Cloud resource.
 ---
 
@@ -14,17 +14,21 @@ Move a token between machines as a file with permissions 0600 over SSH; never mo
 </guard-the-tokens>
 
 <use-the-lab-responsibly>
+Hold the owner's ruling of 2026-11-10: no idle server standby is allowed. A lab server exists only while a run is using it; an idle server costs the owner money.
+
+Create the server for one run, a test batch or an acceptance re-run; never create one to have it ready for a later run.
+
+Tear the server down with the recipes below as soon as that run's last command exits, and confirm with `just remote::list`; never hold a server for a later run, and never leave one up while gating, reviewing, or writing a report.
+
+Recreate the server when the next run needs it; never keep it up to save the setup time.
+
 List before creating: run `just remote::list`, which shows every server, primary IP, firewall, and SSH key in the project; never create a resource that a listed one can serve.
 
-Reuse one server for every multi-machine test of a stretch of work; never create a second server while one runs.
+Reuse applies only to a server that is up for a run still in progress, and never to a second run; never create a second server while that one runs.
 
 Put the deadline label on every resource at creation; never leave a resource unlabeled.
 
-Tear the server down at the end of each stretch of work, in the order below, and confirm with the lists; never end a stretch with a resource still running.
-
-Never leave a server running unattended: before ending a turn that leaves one, set the wake that ends its use by the `check-back` skill.
-
-Extend a deadline only while lab work on that resource runs or on the owner's word; never extend one for an idle resource.
+Never leave a server running unattended: before ending a turn that leaves one, set the wake that ends its use by the `check-back` skill, and let the wake tear the server down when the run is over; never rely on the deadline or the backstop to end a server's use.
 </use-the-lab-responsibly>
 
 <keep-the-backstop-running>
@@ -60,13 +64,13 @@ Use the type, location, and image approved for this server (default cx23, nbg1, 
 </create-on-the-owners-go>
 
 <give-each-lab-resource-its-deadline>
-Set each lab resource's deadline 24 hours after its creation; never create one without a deadline.
+Set each lab resource's deadline 24 hours after its creation as the last resort that deletes a resource the run's own teardown missed; never treat it as the end of a server's use, and never create a resource without a deadline.
 
 Set the deadline at creation with `--label owner=estafette --label expires=<unix seconds>`, where `date -v+24H +%s` prints the unix seconds 24 hours ahead; never let a lab resource run unlabeled.
 
 Label a lab resource whose creation took no labels at once with `python3 -I lab-backstop.py label <kind> <id>`, kind being `server`, `primary-ip`, `firewall`, or `ssh-key`; never defer its label.
 
-Know that the backstop keeps an expired server while its type is not available in its location (the owner's scarce-type ruling of 2026-10-21); delete such a server yourself at the end of the stretch.
+Know that the backstop keeps an expired server while its type is not available in its location (the owner's scarce-type ruling of 2026-10-21); delete such a server yourself when its run ends.
 </give-each-lab-resource-its-deadline>
 
 <create-the-server-from-this-skills-setup>
@@ -100,7 +104,7 @@ Extend a deadline on the owner's word, or while lab work on that lab resource is
 </extend-a-deadline-while-work-runs>
 
 <tear-down-in-order>
-Delete the server first, then its firewall, then any primary IP address its deletion left, then the SSH key once no server needs it; never delete a firewall a server still holds.
+Start the teardown the moment the run's last command exits. Delete the server first, then its firewall, then any primary IP address its deletion left, then the SSH key once no server needs it; never delete a firewall a server still holds, and never postpone the teardown to a later turn.
 
 Copy results off the server before deleting it; the server's `~/work/results/` is lost with it.
 
