@@ -1748,14 +1748,22 @@ mod tests {
         drop(lab);
     }
 
+    /// The direct address the neighbor's presence announces.
     const NEIGHBOR_DIRECT_ADDRESS: &str = "203.0.113.7:4433";
+    /// The seq of the neighbor's presence.
     const NEIGHBOR_PRESENCE_SEQ: u64 = 1_000_001;
+    /// The seq of the neighbor's departure.
     const NEIGHBOR_DEPARTURE_SEQ: u64 = 1_000_002;
+    /// The ts of the neighbor's unreachable report.
     const NEIGHBOR_REPORT_TS: u64 = 1_000_003;
+    /// The ts of the neighbor's infrastructure record.
     const NEIGHBOR_RECORD_TS: u64 = 1_000_004;
+    /// The seq of the neighbor's presence request.
     const NEIGHBOR_REQUEST_SEQ: u64 = 1_000_005;
+    /// The card the neighbor reports unreachable.
     const REPORTED_CARD: wire::PublicKey = [8; 32];
 
+    /// The address the neighbor's presence announces: one relay and one direct address.
     fn neighbor_address() -> Addr {
         Addr::from_endpoint_report(
             [UNREACHABLE_RELAY.to_owned()],
@@ -1763,6 +1771,7 @@ mod tests {
         )
     }
 
+    /// One payload of each kind the neighbor signs, every field set to a value no other field holds.
     fn neighbor_payloads() -> [Payload; 5] {
         let card = *secret_key(NEIGHBOR_SEED).public().as_bytes();
         let certificate = crate::crypto::sign_host_certificate(
@@ -1816,6 +1825,7 @@ mod tests {
         ]
     }
 
+    /// The mac and signature the payload carries once the neighbor seals it, as lowercase hexadecimal.
     fn mac_and_signature_once_sealed(payload: &Payload) -> (String, String) {
         let sealed = crate::payload::seal_payload(
             &network_keys(),
@@ -1833,6 +1843,7 @@ mod tests {
         (HEXLOWER.encode(&mac), HEXLOWER.encode(&sig.0))
     }
 
+    /// The line `tail` must print for each of the neighbor's payloads, every field in its spec 3.7 order.
     fn whole_payload_lines() -> Vec<String> {
         let card = HEXLOWER.encode(secret_key(NEIGHBOR_SEED).public().as_bytes());
         let payloads = neighbor_payloads();
@@ -1873,6 +1884,7 @@ mod tests {
         ]
     }
 
+    /// Spec 3.13, tail: each gossip payload prints whole, `addr` and `relay` included, as it arrives.
     #[tokio::test]
     async fn spec_3_13_tail_prints_every_field_of_each_gossip_payload_as_it_arrives() {
         let lab = Lab::new("tail-whole").await;
