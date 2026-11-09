@@ -1,2 +1,10 @@
 /target
 /docs/orchestration_log/recon/
+
+# secrets and lab material (audit 2026-11-09)
+.env
+.env.*
+*.key
+*.cert
+*.certs/
+docs/orchestration_log/recon/*/lab/
