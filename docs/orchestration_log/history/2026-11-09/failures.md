@@ -7,3 +7,11 @@ What happened: the audit-secrets agent's masking pattern keyed on the value shap
 Mechanism: a mask applied after the match prints the line when the match fails; the brief told the agent what not to print but not to pipe every grep through a cut that keeps four characters whatever matched.
 
 Correction: the lab network is a throwaway created today and dies with the host at teardown (no rotation of anything durable needed); future audit briefs order every search output through 'cut -c1-<prefix+4>' or an awk mask applied to every line, never a match-dependent mask; .gitignore gains .env, *.key, *.certs/ and lab data paths (tooling change launched).
+
+## Stopping an uncommitted implementer removed its worktree
+
+What happened: impl-U43 was stopped by TaskStop before its first commit so that Addendum 1 could be written into its brief; the harness removed the unchanged worktree on the stop, and the resume through SendMessage ran with the agent's context but no checkout, so it reported BLOCKED with nothing built.
+
+Mechanism: The harness sweeps an agent's worktree on stop when the worktree holds no change; a resumed agent keeps its transcript, not its checkout.
+
+Correction: Recreated the worktree with git worktree add on the surviving branch name at integration HEAD b56e309 and continued the agent with the path, as dev-cycle route-on-status prescribes; from now on an implementer is stopped only after its first commit, otherwise the correction is messaged without a stop.
