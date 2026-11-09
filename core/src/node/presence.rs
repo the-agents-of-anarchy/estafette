@@ -2500,7 +2500,7 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_16_two_presence_requests_inside_the_reannounce_interval_are_each_answered_at_once()
+    async fn spec_3_16_two_presence_requests_from_one_requester_inside_the_reannounce_interval_are_each_answered_at_once()
      {
         let scratch = Scratch::new("asked-twice").await;
         let (_member, mut witness) = start_witnessed(
@@ -2519,7 +2519,7 @@ pub(super) mod tests {
         let first_answer = witness
             .payload_where(ANSWERED_AT_ONCE_WITHIN, presence_from(FIRST_SEED))
             .await;
-        ask_for_presence(&witness, SECOND_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
+        ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS + 1).await;
         let second_answer = witness
             .payload_where(ANSWERED_AT_ONCE_WITHIN, presence_from(FIRST_SEED))
             .await;
