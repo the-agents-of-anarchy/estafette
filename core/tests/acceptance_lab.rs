@@ -5,6 +5,9 @@ mod forger;
 #[path = "lab/forgeries.rs"]
 mod forgeries;
 #[cfg(test)]
+#[path = "lab/killable_host.rs"]
+mod killable_host;
+#[cfg(test)]
 #[path = "lab/lab_machine.rs"]
 mod lab_machine;
 #[cfg(test)]
@@ -15,8 +18,23 @@ mod live_network;
 mod tail;
 
 #[cfg(test)]
-mod spec_3_15_test_27_forged_payloads_on_the_live_network {
+mod live_host {
     use std::sync::{Mutex, MutexGuard, PoisonError};
+
+    /// Lets one test at a time join the live host, whose gossip active view holds five neighbors (the `HyParView` default of iroh-gossip), so concurrent tests never evict each other's member or forger from it.
+    static LIVE_HOST_SLOT: Mutex<()> = Mutex::new(());
+
+    /// Waits for the live host to be free of every other test of this target.
+    pub fn live_host_to_itself() -> MutexGuard<'static, ()> {
+        LIVE_HOST_SLOT
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[cfg(test)]
+mod spec_3_15_test_27_forged_payloads_on_the_live_network {
+    use std::sync::MutexGuard;
     use std::time::Duration;
 
     use data_encoding::HEXLOWER;
@@ -31,6 +49,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
         wall_clock_seconds,
     };
     use crate::lab_machine::{ClaimedMember, LabMachine};
+    use crate::live_host::live_host_to_itself;
     use crate::live_network::LiveNetwork;
     use crate::tail::Tail;
 
@@ -72,16 +91,6 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
     const VALID_FORGER_SEED: u8 = 151;
     /// Key seed of the certified host that record names.
     const VALID_HOST_SEED: u8 = 152;
-
-    /// Lets one test at a time join the live host, whose gossip active view holds five neighbors (the `HyParView` default of iroh-gossip), so concurrent tests never evict each other's member or forger from it.
-    static LIVE_HOST_SLOT: Mutex<()> = Mutex::new(());
-
-    /// Waits for the live host to be free of every other test of this target.
-    fn live_host_to_itself() -> MutexGuard<'static, ()> {
-        LIVE_HOST_SLOT
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-    }
 
     /// The key every byte of whose seed is the seed.
     fn key(seed: u8) -> SecretKey {
@@ -346,6 +355,96 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             saved.map(|saved| (saved.relay.as_str(), saved.ts)),
             Some((scene.network.host_relay(), Some(ts))),
             "{hosts:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod spec_3_15_test_28_addresses_on_the_live_network {
+    use std::time::Duration;
+
+    use serde_json::Value;
+
+    use crate::killable_host::KillableHost;
+    use crate::lab_machine::LabMachine;
+    use crate::live_host::live_host_to_itself;
+    use crate::live_network::LiveNetwork;
+    use crate::tail::Tail;
+
+    /// How long the member may take to announce an address naming the doomed host's relay, and to announce after the kill at all.
+    const ANNOUNCEMENT_WAIT: Duration = Duration::from_secs(60);
+    /// Spec 3.15 test 28: the bound within which a member's address lists only live relays after its home relay is killed.
+    const SPEC_LIVE_RELAYS_WITHIN: Duration = Duration::from_millis(2000);
+    /// The card and handle of the member homed on the doomed host.
+    const MEMBER_CARD: &str = "u40-relay-loss";
+    /// The kind word that opens a presence line of `tail`.
+    const PRESENCE_KIND: &str = "presence";
+    /// The column of a presence line holding its card, after the kind and `v` (spec 3.7 order).
+    const CARD_COLUMN: usize = 2;
+    /// The column of a presence line holding its `addr` as JSON (spec 3.7 order).
+    const ADDR_COLUMN: usize = 6;
+    /// The key of the relay list in a printed `addr`.
+    const RELAYS_KEY: &str = "relays";
+    /// The column separator of a `tail` line.
+    const COLUMN_SEPARATOR: char = '\t';
+
+    /// The relay URLs a `tail` line announces for the card, when it is a presence of that card.
+    fn relays_announced_by(line: &str, card: &str) -> Option<Vec<String>> {
+        let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
+        if columns.first() != Some(&PRESENCE_KIND) || columns.get(CARD_COLUMN) != Some(&card) {
+            return None;
+        }
+        let addr: Value = serde_json::from_str(columns.get(ADDR_COLUMN)?).ok()?;
+        addr.get(RELAYS_KEY)?
+            .as_array()?
+            .iter()
+            .map(|relay| relay.as_str().map(str::to_owned))
+            .collect()
+    }
+
+    /// Spec 3.15 test 28: within 2000 ms of the kill of a member's home relay, the member announces an address whose relays are the live host's alone.
+    #[test]
+    fn spec_3_15_test_28_within_2000_ms_of_its_home_relays_death_a_member_lists_only_live_relays() {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let doomed = KillableHost::from_environment();
+        let observer = LabMachine::fresh("u40-relay-tail", network.name());
+        network.join(&observer.directories());
+        let mut tail_command = observer.command();
+        tail_command.args(["tail", network.name()]);
+        let tail = Tail::start(tail_command);
+        let machine = LabMachine::fresh(MEMBER_CARD, network.name());
+        network.join_through(
+            &machine.directories(),
+            std::slice::from_ref(doomed.address()),
+        );
+        let printed_key = machine.run(&["create-card", network.name(), MEMBER_CARD, MEMBER_CARD]);
+        let card = printed_key.trim_end();
+        let started = std::time::Instant::now();
+        let _member = machine.start_member(MEMBER_CARD);
+        tail.first_line_after(started, ANNOUNCEMENT_WAIT, |line| {
+            relays_announced_by(line, card) == Some(vec![doomed.relay().to_owned()])
+        });
+
+        let killed_at = doomed.kill();
+        let mut announced_after_the_kill = Vec::new();
+        let after_the_kill = loop {
+            let (line, after) = tail.first_line_after(killed_at, ANNOUNCEMENT_WAIT, |line| {
+                relays_announced_by(line, card).is_some()
+            });
+            let lists_only_the_live_relay =
+                relays_announced_by(&line, card).is_some_and(|relays| {
+                    !relays.is_empty() && relays.iter().all(|relay| relay == network.host_relay())
+                });
+            announced_after_the_kill.push(format!("{after:?} {line}"));
+            if lists_only_the_live_relay {
+                break after;
+            }
+        };
+
+        assert!(
+            after_the_kill <= SPEC_LIVE_RELAYS_WITHIN,
+            "no presence listing only live relays within {SPEC_LIVE_RELAYS_WITHIN:?} of the kill; presences after it: {announced_after_the_kill:#?}"
         );
     }
 }

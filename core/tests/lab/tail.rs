@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 /// How long `tail` may take to print its first payload, a host record every 5 seconds once joined (spec 3.14).
 const FIRST_LINE_WAIT: Duration = Duration::from_secs(60);
 
-/// A running `estafette tail`, its payload lines read as they arrive.
+/// A running `estafette tail`, its payload lines read as they arrive, each with the instant it arrived.
 pub struct Tail {
     process: Child,
-    lines: Receiver<String>,
+    lines: Receiver<(Instant, String)>,
 }
 
 impl Tail {
@@ -25,7 +25,7 @@ impl Tail {
         let output = BufReader::new(process.stdout.take().unwrap());
         std::thread::spawn(move || {
             for line in output.lines().map_while(Result::ok) {
-                if forward.send(line).is_err() {
+                if forward.send((Instant::now(), line)).is_err() {
                     return;
                 }
             }
@@ -43,13 +43,33 @@ impl Tail {
         let mut printed = Vec::new();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let line = self.lines.recv_timeout(remaining).unwrap_or_else(|_| {
+            let (_arrived, line) = self.lines.recv_timeout(remaining).unwrap_or_else(|_| {
                 panic!("no wanted line within {within:?}; printed: {printed:?}")
             });
             let wanted = condition(&line);
             printed.push(line);
             if wanted {
                 return printed;
+            }
+        }
+    }
+
+    /// The first line printed at or after the instant that meets the condition, with how long after the instant it arrived, requiring it within the wait.
+    pub fn first_line_after(
+        &self,
+        since: Instant,
+        within: Duration,
+        condition: impl Fn(&str) -> bool,
+    ) -> (String, Duration) {
+        let deadline = since.checked_add(within).unwrap();
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let (arrived, line) = self
+                .lines
+                .recv_timeout(remaining)
+                .unwrap_or_else(|_| panic!("no wanted line within {within:?} of the instant"));
+            if arrived >= since && condition(&line) {
+                return (line, arrived.duration_since(since));
             }
         }
     }

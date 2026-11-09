@@ -18,7 +18,7 @@ const INVITATION_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_INVITATION";
 /// The binary under test.
 const BINARY: &str = env!("CARGO_BIN_EXE_estafette");
 /// The task runner every project task runs through.
-const TASK_RUNNER: &str = "just";
+pub const TASK_RUNNER: &str = "just";
 /// The recipe that runs the binary in the lab owner's directories.
 const OWNER_MACHINE_RECIPE: &str = "remote::estafette";
 /// The variable that recipe takes the binary's path from.
@@ -75,14 +75,17 @@ impl LiveNetwork {
 
     /// Writes the network configuration the invitation describes on the machine of these directories, as joining the network does.
     pub fn join(&self, directories: &Directories) {
+        self.join_through(directories, &self.invitation.hosts);
+    }
+
+    /// Writes the network configuration of the invitation on the machine of these directories, naming the hosts given in place of the invitation's.
+    pub fn join_through(&self, directories: &Directories, hosts: &[HostAddr]) {
         let config_file = directories.network_config_file(self.name()).unwrap();
         fs::create_dir_all(config_file.parent().unwrap()).unwrap();
         NetworkConfig {
             secret: render_network_secret(&NetworkSecret::from_bytes(self.invitation.secret)),
             owner: render_public_key(&iroh::PublicKey::from_bytes(&self.invitation.owner).unwrap()),
-            hosts: self
-                .invitation
-                .hosts
+            hosts: hosts
                 .iter()
                 .map(|host| Host {
                     id: HEXLOWER.encode(&host.id),

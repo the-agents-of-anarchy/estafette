@@ -86,10 +86,11 @@ impl LabMachine {
         .unwrap()
     }
 
-    /// Runs the binary to completion on this machine, requiring success.
-    pub fn run(&self, arguments: &[&str]) {
+    /// Runs the binary to completion on this machine, requiring success, and returns what it printed.
+    pub fn run(&self, arguments: &[&str]) -> String {
         let output = self.command().args(arguments).output().unwrap();
         assert!(output.status.success(), "{arguments:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
     }
 
     /// Starts the binary's MCP server for the network and claims the card through its init tool, requiring the claim to succeed.
