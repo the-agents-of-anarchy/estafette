@@ -270,7 +270,6 @@ impl Node {
             announcer: Announcer::default(),
             reannounce_due: None,
             heard_requests: HeardPresenceRequests::default(),
-            presence_owed: false,
             relay_loss: RelayLossWatch::default(),
             known_hosts: KnownHosts::new(network.config, network.config_path),
             schedule: RebindSchedule::new(subscribed),
@@ -635,7 +634,6 @@ pub(super) struct PresenceLoop {
     announcer: Announcer,
     reannounce_due: Option<Instant>,
     heard_requests: HeardPresenceRequests,
-    presence_owed: bool,
     pub(super) relay_loss: RelayLossWatch,
     pub(super) known_hosts: KnownHosts,
     pub(super) schedule: RebindSchedule,
@@ -709,11 +707,7 @@ impl PresenceLoop {
             Wake::ObserverWaitOver => self.finish_observer_wait().await,
             Wake::ReannounceDue => {
                 self.reannounce_due = None;
-                if std::mem::take(&mut self.presence_owed) {
-                    self.announce_presence().await;
-                } else {
-                    self.reconsider_own_address().await;
-                }
+                self.reconsider_own_address().await;
             }
             Wake::RelayLossDue => self.remove_lost_relays().await,
             Wake::RebindDue => return self.rebind().await,
@@ -820,17 +814,10 @@ impl PresenceLoop {
         }
     }
 
-    /// Sends Presence for a request within the announcement max age and above its requester's last seq, at once or when the re-announce interval since the last Presence ends.
+    /// Sends Presence at once for a request within the announcement max age and above its requester's last seq.
     async fn answer_presence_request(&mut self, request: &PresenceRequest, now_ms: u64) {
-        if !self.heard_requests.admit(request, now_ms) {
-            return;
-        }
-        match self.announcer.held_until((self.monotonic)()) {
-            None => self.announce_presence().await,
-            Some(interval_end) => {
-                self.presence_owed = true;
-                self.reannounce_due = Some(interval_end);
-            }
+        if self.heard_requests.admit(request, now_ms) {
+            self.announce_presence().await;
         }
     }
 
@@ -1384,7 +1371,7 @@ pub(super) mod tests {
     const SECOND_REQUESTER_SEED: u8 = 73;
     const REPLAYED_REQUEST_SEQ: u64 = FROZEN_CLOCK_MS - 1;
     const STALE_REQUEST_SEQ: u64 = FROZEN_CLOCK_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1;
-    const SPEC_REANNOUNCE_INTERVAL_LESS_DELIVERY: Duration = Duration::from_millis(1800);
+    const ANSWERED_AT_ONCE_WITHIN: Duration = Duration::from_millis(100);
     const SPEC_REANNOUNCE_INTERVAL_AND_NOTHING_MORE_WAIT: Duration = Duration::from_millis(3000);
 
     fn network_secret() -> NetworkSecret {
@@ -2513,7 +2500,7 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_8_two_presence_requests_inside_the_reannounce_interval_get_one_presence_in_it_and_one_at_its_end()
+    async fn spec_3_16_two_presence_requests_inside_the_reannounce_interval_are_each_answered_at_once()
      {
         let scratch = Scratch::new("asked-twice").await;
         let (_member, mut witness) = start_witnessed(
@@ -2527,26 +2514,18 @@ pub(super) mod tests {
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
             .unwrap();
-        tokio::time::sleep(SPEC_REANNOUNCE_INTERVAL).await;
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
         let first_answer = witness
-            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .payload_where(ANSWERED_AT_ONCE_WITHIN, presence_from(FIRST_SEED))
             .await;
         ask_for_presence(&witness, SECOND_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
-        let inside_the_interval = witness
-            .payload_where(
-                SPEC_REANNOUNCE_INTERVAL_LESS_DELIVERY,
-                presence_from(FIRST_SEED),
-            )
-            .await;
-        let at_its_end = witness
-            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+        let second_answer = witness
+            .payload_where(ANSWERED_AT_ONCE_WITHIN, presence_from(FIRST_SEED))
             .await;
 
         assert_eq!(presence_fields(first_answer), (FROZEN_CLOCK_MS + 1, false));
-        assert!(inside_the_interval.is_none());
-        assert_eq!(presence_fields(at_its_end), (FROZEN_CLOCK_MS + 2, false));
+        assert_eq!(presence_fields(second_answer), (FROZEN_CLOCK_MS + 2, false));
         drop(scratch);
     }
 
