@@ -23,3 +23,11 @@ What happened: A request to switch test-peer's permission mode was put to the ow
 Mechanism: The prompting-receiver cases needed a receiver that prompts, and the lead treated the owner's earlier offer to switch modes as an invitation to ask now.
 
 Correction: The item moved to the unsolved queue as an owner-only act; the agent was told to finish without it; U43's live verification uses the owner-provided live sessions as they are and records the other mode as not determined.
+
+## U43 entered a fourth review-fix cycle without a structural change
+
+What happened: The third cycle's quality re-review (193730) returned With fixes on an Important the cycle-3 fix itself introduced (a whole-file transcript read per frame), and the lead continued the implementer (continuation 5) at once instead of stopping.
+
+Mechanism: The stop-at-three rule counts cycles, not defects; the lead read the finding as a fresh regression rather than a fourth attempt at the unit and skipped the debugging round and the diagnosis agent the rule requires before any further cycle.
+
+Correction: Recorded here; the cycle-4 fix is spec-PASSed at a0ebe3d and sits in quality re-review 214420. If that re-review fails, a debugging round and a diagnosis agent name the structural change before any continuation; no fifth cycle on the same model and requirements.
