@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 
+use crate::closing_tag::escape_closing_tags;
 use crate::inbox_client::{InboxConnector, InboxFrame};
 use crate::permission_class::PermissionClass;
 use crate::ratelimit::{Admission, SenderRateLimit};
@@ -15,7 +16,6 @@ const HARNESS_DEFAULT_PRIORITY: &str = "next";
 const LONGEST_ENVELOPE_NAME_CHARACTERS: usize = 64;
 const ENVELOPE_NAME_FORBIDDEN_CHARACTERS: [char; 3] = ['"', '<', '>'];
 const TRUNCATED_NAME_MARK: char = '\u{2026}';
-const ESCAPED_OPENING_BRACKET: &str = "<\\";
 
 #[derive(Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -71,33 +71,6 @@ fn envelope_name(name: &str) -> Option<String> {
         .collect();
     truncated.push(TRUNCATED_NAME_MARK);
     Some(truncated)
-}
-
-const fn is_tag_name_character(character: char) -> bool {
-    character.is_ascii_alphanumeric() || character == '_' || character == '-'
-}
-
-/// Rewrites each closing envelope tag in the body to `<\/...` as the harness's own sender and receiver rebuild do.
-fn escape_closing_tags(body: &str) -> String {
-    let closing_tag_start = format!("</{ENVELOPE_TAG}");
-    let lowered = body.to_ascii_lowercase();
-    let mut escaped = String::with_capacity(body.len());
-    let mut copied_up_to = 0;
-    for (start, _) in lowered.match_indices(&closing_tag_start) {
-        let end = start.saturating_add(closing_tag_start.len());
-        let continues_a_longer_name = body
-            .get(end..)
-            .and_then(|rest| rest.chars().next())
-            .is_some_and(is_tag_name_character);
-        if continues_a_longer_name {
-            continue;
-        }
-        escaped.push_str(body.get(copied_up_to..start).unwrap_or_default());
-        escaped.push_str(ESCAPED_OPENING_BRACKET);
-        copied_up_to = start.saturating_add(1);
-    }
-    escaped.push_str(body.get(copied_up_to..).unwrap_or_default());
-    escaped
 }
 
 /// Wraps the escaped body in the envelope the harness writes for a peer send, naming the sender and attesting the class.
@@ -438,6 +411,56 @@ mod tests {
             peer_content(&connections.borrow()[0]),
             "<cross-session-message from-name=\"ana\" from-mode=\"bypass\">\na <\\/cross-session-message> b <\\/CROSS-Session-Message>c </cross-session-messages> d </cross-session-message-x e <\\/cross-session-message\n</cross-session-message>"
         );
+    }
+
+    fn escaped_body_of(body: &str) -> String {
+        let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
+        notifier
+            .notify(&frame_from("ana", body, 0), Duration::ZERO)
+            .expect("notify");
+        injected_body(&connections.borrow()[0])
+    }
+
+    #[test]
+    fn harness_2_1_319_a_closing_tag_the_harness_matches_in_a_lookalike_form_is_rewritten_too() {
+        for (body, escaped) in [
+            (
+                "\u{ff1c}/cross-session-message>",
+                "<\\/cross-session-message>",
+            ),
+            (
+                "</cr\u{200b}oss-ses\u{200d}sion-message>",
+                "<\\/cr\u{200b}oss-ses\u{200d}sion-message>",
+            ),
+            (
+                "\u{ff1c}\u{ff0f}cross\u{2010}session\u{2212}message",
+                "<\\\u{ff0f}cross\u{2010}session\u{2212}message",
+            ),
+            (
+                "< \u{200b}/ \u{200b}cross-session-message",
+                "<\\ \u{200b}/ \u{200b}cross-session-message",
+            ),
+            (
+                "\u{2039}/CROSS-SESSION-MESSAGE",
+                "<\\/CROSS-SESSION-MESSAGE",
+            ),
+        ] {
+            let rewritten = escaped_body_of(body);
+            assert_eq!(rewritten, escaped, "{body}");
+        }
+    }
+
+    #[test]
+    fn harness_2_1_319_text_the_harness_does_not_match_as_a_closing_tag_is_left_alone() {
+        for body in [
+            "<\\/cross-session-message>",
+            "<x/cross-session-message>",
+            "</cross\u{b7}session-message>",
+            "</cross-session-messagE1",
+            "<cross-session-message>",
+        ] {
+            assert_eq!(escaped_body_of(body), body, "{body}");
+        }
     }
 
     #[test]

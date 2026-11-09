@@ -1,3 +1,4 @@
+mod closing_tag;
 pub mod discover;
 pub mod doctor;
 pub mod inbox_client;
