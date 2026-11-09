@@ -131,8 +131,7 @@ impl Directories {
         let config =
             home_based_directory(&environment, CONFIG_HOME_VARIABLE, CONFIG_HOME_UNDER_HOME)?
                 .join(PRODUCT_DIRECTORY);
-        let data = home_based_directory(&environment, DATA_HOME_VARIABLE, DATA_HOME_UNDER_HOME)?
-            .join(PRODUCT_DIRECTORY);
+        let data = data_directory(&environment)?;
         create_base_directory(filesystem, &config)?;
         create_base_directory(filesystem, &data)?;
         let user_id = filesystem.owner_user_id(&config).map_err(|source| {
@@ -143,9 +142,7 @@ impl Directories {
         })?;
         let runtime = runtime_parent(&environment).join(format!("{PRODUCT_DIRECTORY}-{user_id}"));
         create_base_directory(filesystem, &runtime)?;
-        let cards = cards_directory_flag
-            .or_else(|| non_empty_variable(&environment, CARDS_DIRECTORY_VARIABLE))
-            .unwrap_or_else(|| data.join(CARDS_SUBDIRECTORY));
+        let cards = cards_root(&environment, cards_directory_flag)?;
         Ok(Self {
             config,
             data,
@@ -186,7 +183,7 @@ impl Directories {
     ///
     /// Fails when the network is not a single path component.
     pub fn cards_directory(&self, network: &str) -> Result<PathBuf, DirectoriesError> {
-        Ok(self.cards.join(single_path_component(network)?))
+        cards_directory_in(&self.cards, network)
     }
 
     /// The file of a card.
@@ -300,6 +297,43 @@ fn single_path_component(name: &str) -> Result<&str, DirectoriesError> {
             name: name.to_owned(),
         })
     }
+}
+
+/// The directory holding the cards of a network, resolved without creating any directory.
+///
+/// # Errors
+///
+/// Fails when no base can be resolved or the network is not a single path component.
+pub fn cards_directory_without_creating(
+    environment: impl Fn(&str) -> Option<OsString>,
+    cards_directory_flag: Option<PathBuf>,
+    network: &str,
+) -> Result<PathBuf, DirectoriesError> {
+    cards_directory_in(&cards_root(&environment, cards_directory_flag)?, network)
+}
+
+fn cards_directory_in(cards_root: &Path, network: &str) -> Result<PathBuf, DirectoriesError> {
+    Ok(cards_root.join(single_path_component(network)?))
+}
+
+fn cards_root(
+    environment: &impl Fn(&str) -> Option<OsString>,
+    cards_directory_flag: Option<PathBuf>,
+) -> Result<PathBuf, DirectoriesError> {
+    match cards_directory_flag.or_else(|| non_empty_variable(environment, CARDS_DIRECTORY_VARIABLE))
+    {
+        Some(overridden) => Ok(overridden),
+        None => Ok(data_directory(environment)?.join(CARDS_SUBDIRECTORY)),
+    }
+}
+
+fn data_directory(
+    environment: &impl Fn(&str) -> Option<OsString>,
+) -> Result<PathBuf, DirectoriesError> {
+    Ok(
+        home_based_directory(environment, DATA_HOME_VARIABLE, DATA_HOME_UNDER_HOME)?
+            .join(PRODUCT_DIRECTORY),
+    )
 }
 
 fn non_empty_variable(

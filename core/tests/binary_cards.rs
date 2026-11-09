@@ -103,26 +103,28 @@ fn binary_names_outside_the_handle_grammar_are_usage_errors_before_any_write_of_
 #[test]
 fn binary_help_of_each_card_command_states_what_it_does_reads_produces_and_refuses_of_spec_3_13() {
     let root = common::scratch_root(SCRATCH_PREFIX, "help").unwrap();
-    for (subcommand, stated) in [
+    let help_sentences: [(&str, &[&str]); 2] = [
         (
             "create-card",
-            [
+            &[
                 "Create a card",
                 "Reads: ",
-                "Produces: the card file",
-                "Refuses: a card or a handle",
+                "Produces: the configuration, data and runtime directories of this program, readable by you alone, when missing; the card file <card>.yaml with mode 0644 and the key file <card>.key, readable by you alone",
+                "Refuses: a network, a card or a handle",
             ],
         ),
         (
             "list-cards",
-            [
+            &[
                 "List the cards",
                 "Reads: ",
                 "Produces: one line per card",
-                "Refuses: a card file",
+                "creates no directory and no file",
+                "Refuses: a network that breaks this rule",
             ],
         ),
-    ] {
+    ];
+    for (subcommand, stated) in help_sentences {
         let output = run_binary(&root, &[subcommand, "--help"]).unwrap();
         let help = String::from_utf8(output.stdout).unwrap();
         for sentence in stated {
@@ -133,4 +135,35 @@ fn binary_help_of_each_card_command_states_what_it_does_reads_produces_and_refus
             "{help}"
         );
     }
+}
+
+#[test]
+fn binary_create_card_creates_the_program_directories_and_two_files_with_the_modes_its_help_states()
+{
+    use std::os::unix::fs::PermissionsExt;
+    let root = common::scratch_root(SCRATCH_PREFIX, "created").unwrap();
+    let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
+    assert_eq!(created.status.code(), Some(0));
+    let mode_of =
+        |path: std::path::PathBuf| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode_of(root.join("config/estafette")), 0o700);
+    assert_eq!(mode_of(root.join("data/estafette")), 0o700);
+    let runtime_directories: Vec<_> = std::fs::read_dir(root.join("runtime"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(runtime_directories.len(), 1);
+    assert_eq!(mode_of(runtime_directories[0].clone()), 0o700);
+    let cards = root.join("data/estafette/cards/acme");
+    assert_eq!(mode_of(cards.join("ana-card.yaml")), 0o644);
+    assert_eq!(mode_of(cards.join("ana-card.key")), 0o600);
+}
+
+#[test]
+fn binary_list_cards_creates_no_directory_and_no_file_as_its_help_states() {
+    let root = common::scratch_root(SCRATCH_PREFIX, "list_creates_nothing").unwrap();
+    let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
+    assert_eq!(listed.status.code(), Some(0));
+    assert_eq!(listed.stdout, Vec::<u8>::new());
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
 }
