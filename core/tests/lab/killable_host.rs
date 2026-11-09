@@ -1,6 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
-use std::time::Instant;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use estafette::invite::parse_host_line;
 use estafette::wire::HostAddr;
@@ -19,6 +20,8 @@ const LAB_SERVER_VARIABLE: &str = "LAB_SERVER";
 const ARMED_LINE: &str = "armed";
 /// The systemd unit the infrastructure recipe runs a host's relay and bootstrap node in.
 const HOST_UNIT: &str = "estafette-host";
+/// How long the kill's SSH session may take to open and stand ready, the server's address lookup included.
+const ARMED_WAIT: Duration = Duration::from_secs(60);
 
 /// A second lab host, relay and bootstrap node in one process, which the acceptance gate lets the test kill.
 pub struct KillableHost {
@@ -70,16 +73,23 @@ impl KillableHost {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        let mut announced = String::new();
-        BufReader::new(session.stdout.take().unwrap())
-            .read_line(&mut announced)
-            .unwrap();
-        assert_eq!(
-            announced.trim_end(),
-            ARMED_LINE,
-            "the kill session on {} never stood ready",
-            self.server
-        );
+        let output = session.stdout.take().unwrap();
+        let (forward, announced) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut line = String::new();
+            let read = BufReader::new(output).read_line(&mut line).map(|_| line);
+            drop(forward.send(read));
+        });
+        let announcement = announced.recv_timeout(ARMED_WAIT);
+        let stood_ready = matches!(&announcement, Ok(Ok(line)) if line.trim_end() == ARMED_LINE);
+        if !stood_ready {
+            drop(session.kill());
+            drop(session.wait());
+            panic!(
+                "the kill session on {} did not print {ARMED_LINE:?} within {ARMED_WAIT:?}: {announcement:?}",
+                self.server
+            );
+        }
         let mut trigger = session.stdin.take().unwrap();
         let sent = Instant::now();
         trigger.write_all(b"\n").unwrap();
