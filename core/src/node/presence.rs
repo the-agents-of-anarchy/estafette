@@ -1067,15 +1067,12 @@ impl Announcer {
         if last.addr == *current {
             return ReannounceStep::Unchanged;
         }
-        self.held_until(now)
-            .map_or(ReannounceStep::AnnounceNow, ReannounceStep::AnnounceAt)
-    }
-
-    /// When the re-announce interval since the last Presence ends, if it has not ended by `now`.
-    fn held_until(&self, now: Instant) -> Option<Instant> {
-        let last = self.last.as_ref()?;
-        let interval_end = last.at.checked_add(REANNOUNCE_INTERVAL).unwrap_or(last.at);
-        (now < interval_end).then_some(interval_end)
+        let earliest = last.at.checked_add(REANNOUNCE_INTERVAL).unwrap_or(last.at);
+        if now >= earliest {
+            ReannounceStep::AnnounceNow
+        } else {
+            ReannounceStep::AnnounceAt(earliest)
+        }
     }
 }
 
