@@ -50,10 +50,10 @@ install-audit:
 test:
     cargo test
 
-[doc("Run the infrastructure tests that compile only with the relay feature")]
+[doc("Run the spec 3.14 tests with the relay feature on")]
 [group('verify')]
 test-relay:
-    cargo test -p estafette --features relay --lib cli::infra
+    cargo test -p estafette --features relay --lib spec_3_14
 
 [doc("Format every file in place")]
 [group('fix')]
