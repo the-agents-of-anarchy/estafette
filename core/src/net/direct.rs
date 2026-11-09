@@ -64,7 +64,7 @@ pub struct AcceptedConnections(Arc<Mutex<HashMap<wire::PublicKey, Vec<Connection
 
 impl AcceptedConnections {
     /// Closes every connection accepted from the card that cannot belong to the process announcing `addr`, so the endpoint forgets the path it held to a process that is gone (spec 3.8, address lookup).
-    pub fn close_from(&self, card: wire::PublicKey, addr: &wire::Addr) {
+    pub(crate) fn close_from(&self, card: wire::PublicKey, addr: &wire::Addr) {
         self.close_from_sparing(card, addr, None);
     }
 
