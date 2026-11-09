@@ -5,7 +5,7 @@ use crate::wire::{
     Addr, Departure, Introduce, IntroduceAck, Message, Presence, PublicKey, Unreachable,
 };
 
-const ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
+pub(crate) const ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
 const GONE_ENTRY_RETENTION_MS: u64 = 3_600_000;
 
 mod kept {

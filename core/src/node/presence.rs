@@ -29,7 +29,9 @@ use crate::net::direct::{ClientTimeouts, DirectClient, DirectError, DirectHost, 
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::payload::ZERO_MAC;
-use crate::peers::{Effect, Peer, PeerTable, is_within_announcement_max_age};
+use crate::peers::{
+    ANNOUNCEMENT_MAX_AGE_MS, Effect, Peer, PeerTable, is_within_announcement_max_age,
+};
 use crate::wire::{
     self, Addr, Departure, Infrastructure, Introduce, IntroduceAck, Message, Nonce, Payload,
     Presence, PresenceRequest, SignatureBytes, Unreachable, Version,
@@ -1070,6 +1072,11 @@ impl Announcer {
     }
 }
 
+/// Whether `seq` is dated no further ahead of the clock reading `now_ms` than the announcement max age.
+const fn is_within_announcement_max_age_ahead(seq: u64, now_ms: u64) -> bool {
+    seq <= now_ms.saturating_add(ANNOUNCEMENT_MAX_AGE_MS)
+}
+
 /// The highest seq heard from each node that asked for Presence within the announcement max age.
 #[derive(Default)]
 struct HeardPresenceRequests {
@@ -1077,11 +1084,12 @@ struct HeardPresenceRequests {
 }
 
 impl HeardPresenceRequests {
-    /// Admits and remembers a request within the announcement max age whose seq is above the last heard from its requester.
+    /// Admits and remembers a request dated within the announcement max age of the clock, behind or ahead, whose seq is above the last heard from its requester.
     fn admit(&mut self, request: &PresenceRequest, now_ms: u64) -> bool {
         self.highest_seq
             .retain(|_requester, seq| is_within_announcement_max_age(*seq, now_ms));
         let is_fresh = is_within_announcement_max_age(request.seq, now_ms)
+            && is_within_announcement_max_age_ahead(request.seq, now_ms)
             && self
                 .highest_seq
                 .get(&request.requester)
@@ -1362,6 +1370,7 @@ pub(super) mod tests {
     const SECOND_REQUESTER_SEED: u8 = 73;
     const REPLAYED_REQUEST_SEQ: u64 = FROZEN_CLOCK_MS - 1;
     const STALE_REQUEST_SEQ: u64 = FROZEN_CLOCK_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1;
+    const FAR_FUTURE_REQUEST_SEQ: u64 = FROZEN_CLOCK_MS + SPEC_ANNOUNCEMENT_MAX_AGE_MS + 1;
     const ANSWERED_AT_ONCE_WITHIN: Duration = Duration::from_millis(100);
     const SPEC_REANNOUNCE_INTERVAL_AND_NOTHING_MORE_WAIT: Duration = Duration::from_millis(3000);
 
@@ -2558,6 +2567,36 @@ pub(super) mod tests {
         assert!(after_replay.is_none());
         assert!(after_stale.is_none());
         assert_eq!(presence_fields(after_fresh), (FROZEN_CLOCK_MS + 2, false));
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_presence_request_dated_past_the_max_age_ahead_is_dropped_and_blocks_no_later_request()
+     {
+        let scratch = Scratch::new("asked-future").await;
+        let (_member, mut witness) = start_witnessed(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                .with_clock(frozen_clock(FROZEN_CLOCK_MS)),
+            None,
+        )
+        .await;
+        witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await
+            .unwrap();
+
+        ask_for_presence(&witness, FIRST_REQUESTER_SEED, FAR_FUTURE_REQUEST_SEQ).await;
+        let after_far_future = witness
+            .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
+            .await;
+        ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
+        let after_fresh = witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await;
+
+        assert!(after_far_future.is_none());
+        assert_eq!(presence_fields(after_fresh), (FROZEN_CLOCK_MS + 1, false));
         drop(scratch);
     }
 
