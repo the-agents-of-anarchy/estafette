@@ -1865,6 +1865,10 @@ pub(super) mod tests {
     }
 
     impl DirectHost for WitnessHost {
+        fn accepted_connections(&self) -> crate::net::direct::AcceptedConnections {
+            crate::net::direct::AcceptedConnections::default()
+        }
+
         fn is_stopping(&self) -> bool {
             false
         }

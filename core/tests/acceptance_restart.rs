@@ -168,6 +168,10 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     }
 
     impl DirectHost for ScriptedMemberHost {
+        fn accepted_connections(&self) -> estafette::net::direct::AcceptedConnections {
+            estafette::net::direct::AcceptedConnections::default()
+        }
+
         fn is_stopping(&self) -> bool {
             false
         }

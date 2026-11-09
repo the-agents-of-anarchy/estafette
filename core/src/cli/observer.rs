@@ -549,6 +549,10 @@ impl ObserverHost {
 }
 
 impl DirectHost for Arc<ObserverHost> {
+    fn accepted_connections(&self) -> crate::net::direct::AcceptedConnections {
+        crate::net::direct::AcceptedConnections::default()
+    }
+
     fn is_stopping(&self) -> bool {
         false
     }
@@ -1530,6 +1534,10 @@ mod tests {
     }
 
     impl DirectHost for RecordingNeighbor {
+        fn accepted_connections(&self) -> crate::net::direct::AcceptedConnections {
+            crate::net::direct::AcceptedConnections::default()
+        }
+
         fn is_stopping(&self) -> bool {
             false
         }

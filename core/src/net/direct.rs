@@ -55,9 +55,7 @@ pub trait DirectHost: Send + Sync + 'static {
     ) -> IntroduceAck;
 
     /// The register the direct server keeps the connections it accepted in, shared with whoever closes those of a card.
-    fn accepted_connections(&self) -> AcceptedConnections {
-        AcceptedConnections::default()
-    }
+    fn accepted_connections(&self) -> AcceptedConnections;
 }
 
 /// The connections the direct server accepted and has not seen close, by the card that dialed each.
@@ -692,6 +690,10 @@ mod tests {
     }
 
     impl DirectHost for RecordingHost {
+        fn accepted_connections(&self) -> AcceptedConnections {
+            AcceptedConnections::default()
+        }
+
         fn is_stopping(&self) -> bool {
             self.stopping.load(Ordering::SeqCst)
         }
