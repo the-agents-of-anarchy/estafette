@@ -53,7 +53,7 @@ test:
 [doc("Run the spec 3.14 tests with the relay feature on")]
 [group('verify')]
 test-relay:
-    cargo test -p estafette --features relay --lib spec_3_14
+    cargo test -p estafette --features relay --lib --bin estafette spec_3_14
 
 [doc("Format every file in place")]
 [group('fix')]
