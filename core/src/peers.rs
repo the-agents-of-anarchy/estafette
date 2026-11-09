@@ -282,6 +282,21 @@ impl PeerTable {
         effects
     }
 
+    /// Whether `addr` shares no direct address with the address held for `card`, so the process that bound the held one is gone with every connection it opened.
+    #[must_use]
+    pub fn replaces_held_socket(&self, card: PublicKey, addr: &Addr, now_ms: u64) -> bool {
+        self.peers
+            .get(&card, now_ms)
+            .and_then(|peer| peer.addr.as_ref())
+            .is_some_and(|held| {
+                !held.direct().is_empty()
+                    && !held
+                        .direct()
+                        .iter()
+                        .any(|socket| addr.direct().contains(socket))
+            })
+    }
+
     /// Every entry still kept at `now_ms`, in card order.
     pub fn peers(&self, now_ms: u64) -> impl Iterator<Item = &Peer> {
         self.peers.values(now_ms)
@@ -514,6 +529,11 @@ mod tests {
     const OLDEST_TAKEN_REPORT_TS: u64 = REPORT_RECEIVED_MS - ANNOUNCEMENT_MAX_AGE_MS;
     const GONE_LAST_KEPT_MS: u64 = NOW_MS + GONE_ENTRY_RETENTION_MS - 1;
     const GONE_REMOVED_MS: u64 = NOW_MS + GONE_ENTRY_RETENTION_MS;
+    const FIRST_SESSION_LAN_SOCKET: &str = "192.0.2.10:53821";
+    const FIRST_SESSION_LOOPBACK_SOCKET: &str = "127.0.0.1:53821";
+    const RESTARTED_LAN_SOCKET: &str = "192.0.2.10:54875";
+    const RESTARTED_LOOPBACK_SOCKET: &str = "127.0.0.1:54875";
+    const ADDED_SOCKET: &str = "198.51.100.4:53821";
     const MESSAGE_ID: MessageId = [3; 16];
     const BODY: &str = "hello";
 
@@ -703,6 +723,34 @@ mod tests {
                 NOW_MS
             )
         );
+    }
+
+    fn addr_with_direct(sockets: &[&str]) -> Addr {
+        Addr::from_endpoint_report(
+            [FIRST_RELAY.to_owned()],
+            sockets.iter().map(|socket| socket.parse().unwrap()),
+        )
+    }
+
+    #[test]
+    fn an_address_sharing_no_direct_socket_with_the_held_one_replaces_it_and_one_sharing_any_does_not_test_18()
+     {
+        let mut table = PeerTable::new(OWN_CARD);
+        let held = Presence {
+            addr: addr_with_direct(&[FIRST_SESSION_LAN_SOCKET, FIRST_SESSION_LOOPBACK_SOCKET]),
+            ..presence(PEER_CARD, PEER_HANDLE, FIRST_SEQ)
+        };
+        accept_presence(&mut table, &held, NOW_MS);
+        let relay_only = presence(FIRST_MEMBER_CARD, REQUESTED_HANDLE, FIRST_SEQ);
+        accept_presence(&mut table, &relay_only, NOW_MS);
+        let restarted = addr_with_direct(&[RESTARTED_LAN_SOCKET, RESTARTED_LOOPBACK_SOCKET]);
+        let one_kept = addr_with_direct(&[ADDED_SOCKET, FIRST_SESSION_LOOPBACK_SOCKET]);
+
+        assert!(table.replaces_held_socket(PEER_CARD, &restarted, NOW_MS));
+        assert!(!table.replaces_held_socket(PEER_CARD, &one_kept, NOW_MS));
+        assert!(!table.replaces_held_socket(PEER_CARD, &held.addr, NOW_MS));
+        assert!(!table.replaces_held_socket(FIRST_MEMBER_CARD, &restarted, NOW_MS));
+        assert!(!table.replaces_held_socket(SECOND_MEMBER_CARD, &restarted, NOW_MS));
     }
 
     #[test]

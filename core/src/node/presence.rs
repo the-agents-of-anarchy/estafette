@@ -25,7 +25,9 @@ use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::inbox::buffer::ReceivedMessage;
 use crate::inbox::socket::{Attached, InboxSocket};
 use crate::keys::{KeyError, parse_network_secret, parse_public_key};
-use crate::net::direct::{ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer};
+use crate::net::direct::{
+    AcceptedConnections, ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer,
+};
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::payload::{ZERO_MAC, ZERO_SIGNATURE};
@@ -394,6 +396,7 @@ pub(super) struct NodeState {
     clock: Clock,
     to_loop: mpsc::UnboundedSender<LoopEvent>,
     stopping: AtomicBool,
+    accepted_connections: AcceptedConnections,
 }
 
 impl NodeState {
@@ -416,6 +419,7 @@ impl NodeState {
             clock: Arc::clone(&effects.clock),
             to_loop,
             stopping: AtomicBool::new(false),
+            accepted_connections: AcceptedConnections::default(),
         }
     }
 
@@ -464,6 +468,19 @@ impl NodeState {
     /// Hands an event to the presence loop, which is gone only once the node is.
     fn hand_to_loop(&self, event: LoopEvent) {
         drop(self.to_loop.send(event));
+    }
+
+    /// Applies a Presence to the table and, when it is taken from a new socket of its card, closes every connection accepted from the card (spec 3.8, address lookup).
+    fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
+        let mut table = self.table();
+        let replaces_held_socket =
+            table.replaces_held_socket(presence.card, &presence.addr, now_ms);
+        let effects = table.receive_presence(presence, now_ms);
+        drop(table);
+        if replaces_held_socket && effects.contains(&Effect::DropHeldConnection(presence.card)) {
+            self.accepted_connections.close_from(presence.card);
+        }
+        effects
     }
 
     /// Applies a validated Message to the table and returns the handle this node names its sender by, or none when its announced handle does not match.
@@ -529,6 +546,10 @@ impl DirectHost for Arc<NodeState> {
             addr: introduction.addr,
             mac: introduction.mac,
         }
+    }
+
+    fn accepted_connections(&self) -> AcceptedConnections {
+        self.accepted_connections.clone()
     }
 }
 
@@ -793,7 +814,7 @@ impl PresenceLoop {
     async fn take_payload(&mut self, payload: Payload, now_ms: u64) {
         match payload {
             Payload::Presence(presence) => {
-                let effects = self.state.table().receive_presence(&presence, now_ms);
+                let effects = self.state.take_presence(&presence, now_ms);
                 self.perform(effects).await;
             }
             Payload::Departure(departure) => {

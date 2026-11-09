@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use iroh::endpoint::{
@@ -30,6 +30,8 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(3000);
 const RESET_CODE_OVER_WIRE_LIMIT: u32 = 1;
 const RESET_CODE_READ_TIMEOUT: u32 = 2;
 const RESET_CODE_UNANSWERED: u32 = 3;
+const SUPERSEDED_CONNECTION_CLOSE_CODE: u32 = 410;
+const SUPERSEDED_CONNECTION_CLOSE_REASON: &[u8] = b"superseded";
 
 /// What the direct server needs from the node: its identity and state, and the effects of a received Message and Introduce.
 pub trait DirectHost: Send + Sync + 'static {
@@ -51,6 +53,48 @@ pub trait DirectHost: Send + Sync + 'static {
         sender: wire::PublicKey,
         introduce: wire::Introduce,
     ) -> IntroduceAck;
+
+    /// The register the direct server keeps the connections it accepted in, shared with whoever closes those of a card.
+    fn accepted_connections(&self) -> AcceptedConnections {
+        AcceptedConnections::default()
+    }
+}
+
+/// The connections the direct server accepted and has not seen close, by the card that dialed each.
+#[derive(Debug, Clone, Default)]
+pub struct AcceptedConnections(Arc<Mutex<HashMap<wire::PublicKey, Vec<Connection>>>>);
+
+impl AcceptedConnections {
+    /// Closes every connection accepted from the card, so the endpoint forgets the path they held to a process that is gone (spec 3.8, address lookup).
+    pub fn close_from(&self, card: wire::PublicKey) {
+        let accepted = self.held().remove(&card).unwrap_or_default();
+        for connection in accepted {
+            connection.close(
+                VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE),
+                SUPERSEDED_CONNECTION_CLOSE_REASON,
+            );
+        }
+    }
+
+    /// Holds a connection just accepted from the card.
+    fn hold(&self, card: wire::PublicKey, connection: &Connection) {
+        self.held()
+            .entry(card)
+            .or_default()
+            .push(connection.clone());
+    }
+
+    /// Forgets a connection from the card that has closed.
+    fn forget(&self, card: wire::PublicKey, closed: &Connection) {
+        if let Some(accepted) = self.held().get_mut(&card) {
+            accepted.retain(|connection| connection.stable_id() != closed.stable_id());
+        }
+    }
+
+    /// The register, locked for one change.
+    fn held(&self) -> MutexGuard<'_, HashMap<wire::PublicKey, Vec<Connection>>> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
 }
 
 /// The timeouts of the direct client, in the units of spec 3.14.
@@ -119,6 +163,7 @@ pub struct DirectServer<H> {
 
 struct ServerState<H> {
     keys: NetworkKeys,
+    accepted: AcceptedConnections,
     host: H,
 }
 
@@ -126,7 +171,11 @@ impl<H: DirectHost> DirectServer<H> {
     /// Builds the server over the host, answering under the network keys and waiting the server read timeout of spec 3.14 for each request.
     pub fn new(keys: NetworkKeys, host: H) -> Self {
         Self {
-            shared: Arc::new(ServerState { keys, host }),
+            shared: Arc::new(ServerState {
+                keys,
+                accepted: host.accepted_connections(),
+                host,
+            }),
         }
     }
 }
@@ -142,10 +191,12 @@ impl<H> fmt::Debug for DirectServer<H> {
 impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let sender = *connection.remote_id().as_bytes();
+        self.shared.accepted.hold(sender, &connection);
         while let Ok((send, recv)) = connection.accept_bi().await {
             let shared = Arc::clone(&self.shared);
             tokio::spawn(async move { shared.serve_stream(sender, send, recv).await });
         }
+        self.shared.accepted.forget(sender, &connection);
         Ok(())
     }
 }
