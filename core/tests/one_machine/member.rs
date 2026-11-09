@@ -233,9 +233,9 @@ fn ipv4_udp_ports_of(process_id: u32) -> Vec<u16> {
             listed_type.clone_into(&mut socket_type);
         } else if let Some(name) = field.strip_prefix(LSOF_NAME_FIELD)
             && socket_type == IPV4_SOCKET_TYPE
-            && let Some(port) = name.rsplit(PORT_SEPARATOR).next()
+            && let Some(Ok(port)) = name.rsplit(PORT_SEPARATOR).next().map(str::parse)
         {
-            ports.push(port.parse().unwrap());
+            ports.push(port);
         }
     }
     ports
