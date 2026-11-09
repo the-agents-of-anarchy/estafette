@@ -804,30 +804,57 @@ fn peer_line(peer: &Peer) -> String {
     ])
 }
 
-/// The result line of a gossip payload.
+/// The result line of a gossip payload: its kind, then every field of the payload in the order spec 3.7 declares them.
 fn payload_line(payload: &Payload) -> String {
     match payload {
         Payload::Presence(presence) => line_of(&[
             PRESENCE_KIND,
-            &card_text(&presence.card),
+            &json_text(&presence.v),
+            &hex_text(&presence.card),
             &presence.handle,
-            &presence.attached.to_string(),
             &public_text(&presence.public),
+            &presence.attached.to_string(),
+            &json_text(&presence.addr),
+            &presence.seq.to_string(),
+            &hex_text(&presence.mac),
+            &hex_text(&presence.sig.0),
         ]),
-        Payload::Departure(departure) => line_of(&[DEPARTURE_KIND, &card_text(&departure.card)]),
+        Payload::Departure(departure) => line_of(&[
+            DEPARTURE_KIND,
+            &json_text(&departure.v),
+            &hex_text(&departure.card),
+            &departure.seq.to_string(),
+            &hex_text(&departure.mac),
+            &hex_text(&departure.sig.0),
+        ]),
         Payload::Unreachable(report) => line_of(&[
             UNREACHABLE_KIND,
-            &card_text(&report.card),
-            &card_text(&report.reporter),
+            &json_text(&report.v),
+            &hex_text(&report.card),
+            &hex_text(&report.reporter),
+            &report.ts.to_string(),
+            &hex_text(&report.mac),
+            &hex_text(&report.sig.0),
         ]),
         Payload::Infrastructure(record) => line_of(&[
             INFRASTRUCTURE_KIND,
-            &card_text(&record.host),
+            &json_text(&record.v),
+            &hex_text(&record.host),
             record.relay.as_str(),
+            &json_text(&record.addr),
+            &record.ts.to_string(),
+            &hex_text(&record.cert.0),
+            &hex_text(&record.mac),
+            &hex_text(&record.sig.0),
         ]),
-        Payload::PresenceRequest(request) => {
-            line_of(&[PRESENCE_REQUEST_KIND, &card_text(&request.requester)])
-        }
+        Payload::PresenceRequest(request) => line_of(&[
+            PRESENCE_REQUEST_KIND,
+            &json_text(&request.v),
+            &hex_text(&request.requester),
+            &request.seq.to_string(),
+            &hex_text(&request.mac),
+            &hex_text(&request.sig.0),
+        ]),
     }
 }
 
@@ -852,9 +879,14 @@ fn escape_controls(field: &str) -> String {
         .collect()
 }
 
-/// A card public key as lowercase hexadecimal.
-fn card_text(card: &wire::PublicKey) -> String {
-    HEXLOWER.encode(card)
+/// Key, mac, certificate or signature bytes as lowercase hexadecimal.
+fn hex_text(bytes: &[u8]) -> String {
+    HEXLOWER.encode(bytes)
+}
+
+/// A wire field as compact JSON, every key and element in its declared order; no field of a decoded payload fails to serialize.
+fn json_text(field: &impl serde::Serialize) -> String {
+    serde_json::to_string(field).unwrap_or_default()
 }
 
 /// A public mapping as the text of its JSON bytes.
@@ -1321,8 +1353,8 @@ mod tests {
         let output = SharedOutput::default();
         let mut tail_output = output.clone();
         let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
-        let first_presence_line = format!(
-            "presence\t{}\t{FIRST_HANDLE}\ttrue\t{}\n",
+        let first_presence_line_start = format!(
+            "presence\t1\t{}\t{FIRST_HANDLE}\t{}\ttrue\t",
             render_public_key(&secret_key(FIRST_SEED).public()),
             String::from_utf8_lossy(FIRST_PUBLIC)
         );
@@ -1346,14 +1378,18 @@ mod tests {
                 &mut tail_output,
             ),
             async {
-                toggle_attachment_until_output_has(&members[0], &output, &first_presence_line)
-                    .await;
+                toggle_attachment_until_output_has(
+                    &members[0],
+                    &output,
+                    &first_presence_line_start,
+                )
+                .await;
                 interrupt.send(()).unwrap_or_default();
             }
         );
 
         tail_result.unwrap();
-        assert!(output.text().contains(&first_presence_line));
+        assert!(output.text().contains(&first_presence_line_start));
         drop(lab);
     }
 
@@ -1712,6 +1748,181 @@ mod tests {
         drop(lab);
     }
 
+    const NEIGHBOR_DIRECT_ADDRESS: &str = "203.0.113.7:4433";
+    const NEIGHBOR_PRESENCE_SEQ: u64 = 1_000_001;
+    const NEIGHBOR_DEPARTURE_SEQ: u64 = 1_000_002;
+    const NEIGHBOR_REPORT_TS: u64 = 1_000_003;
+    const NEIGHBOR_RECORD_TS: u64 = 1_000_004;
+    const NEIGHBOR_REQUEST_SEQ: u64 = 1_000_005;
+    const REPORTED_CARD: wire::PublicKey = [8; 32];
+
+    fn neighbor_address() -> Addr {
+        Addr::from_endpoint_report(
+            [UNREACHABLE_RELAY.to_owned()],
+            [NEIGHBOR_DIRECT_ADDRESS.parse().unwrap()],
+        )
+    }
+
+    fn neighbor_payloads() -> [Payload; 5] {
+        let card = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        let certificate = crate::crypto::sign_host_certificate(
+            &secret_key(OWNER_SEED),
+            &secret_key(NEIGHBOR_SEED).public(),
+        );
+        [
+            Payload::Presence(wire::Presence {
+                v: Version::CURRENT,
+                card,
+                handle: NEIGHBOR_HANDLE.to_owned(),
+                public: NEIGHBOR_PUBLIC.to_vec(),
+                attached: true,
+                addr: neighbor_address(),
+                seq: NEIGHBOR_PRESENCE_SEQ,
+                mac: ZERO_MAC,
+                sig: ZERO_SIGNATURE,
+            }),
+            Payload::Departure(wire::Departure {
+                v: Version::CURRENT,
+                card,
+                seq: NEIGHBOR_DEPARTURE_SEQ,
+                mac: ZERO_MAC,
+                sig: ZERO_SIGNATURE,
+            }),
+            Payload::Unreachable(wire::Unreachable {
+                v: Version::CURRENT,
+                card: REPORTED_CARD,
+                reporter: card,
+                ts: NEIGHBOR_REPORT_TS,
+                mac: ZERO_MAC,
+                sig: ZERO_SIGNATURE,
+            }),
+            Payload::Infrastructure(wire::Infrastructure {
+                v: Version::CURRENT,
+                host: card,
+                relay: wire::RelayUrl::try_from(UNREACHABLE_RELAY.to_owned()).unwrap(),
+                addr: Addr::from_endpoint_report([UNREACHABLE_RELAY.to_owned()], []),
+                ts: NEIGHBOR_RECORD_TS,
+                cert: wire::SignatureBytes(certificate.to_bytes()),
+                mac: ZERO_MAC,
+                sig: ZERO_SIGNATURE,
+            }),
+            Payload::PresenceRequest(wire::PresenceRequest {
+                v: Version::CURRENT,
+                requester: card,
+                seq: NEIGHBOR_REQUEST_SEQ,
+                mac: ZERO_MAC,
+                sig: ZERO_SIGNATURE,
+            }),
+        ]
+    }
+
+    fn mac_and_signature_once_sealed(payload: &Payload) -> (String, String) {
+        let sealed = crate::payload::seal_payload(
+            &network_keys(),
+            &secret_key(NEIGHBOR_SEED),
+            payload.clone(),
+        )
+        .unwrap();
+        let (mac, sig) = match wire::decode::<Payload>(&sealed).unwrap() {
+            Payload::Presence(presence) => (presence.mac, presence.sig),
+            Payload::Departure(departure) => (departure.mac, departure.sig),
+            Payload::Unreachable(report) => (report.mac, report.sig),
+            Payload::Infrastructure(record) => (record.mac, record.sig),
+            Payload::PresenceRequest(request) => (request.mac, request.sig),
+        };
+        (HEXLOWER.encode(&mac), HEXLOWER.encode(&sig.0))
+    }
+
+    fn whole_payload_lines() -> Vec<String> {
+        let card = HEXLOWER.encode(secret_key(NEIGHBOR_SEED).public().as_bytes());
+        let payloads = neighbor_payloads();
+        let [presence, departure, report, record, request] =
+            payloads.each_ref().map(mac_and_signature_once_sealed);
+        let certificate = HEXLOWER.encode(
+            &crate::crypto::sign_host_certificate(
+                &secret_key(OWNER_SEED),
+                &secret_key(NEIGHBOR_SEED).public(),
+            )
+            .to_bytes(),
+        );
+        vec![
+            format!(
+                "presence\t1\t{card}\t{NEIGHBOR_HANDLE}\t{}\ttrue\t{{\"relays\":[\"{UNREACHABLE_RELAY}\"],\"direct\":[\"{NEIGHBOR_DIRECT_ADDRESS}\"]}}\t{NEIGHBOR_PRESENCE_SEQ}\t{}\t{}\n",
+                String::from_utf8_lossy(NEIGHBOR_PUBLIC),
+                presence.0,
+                presence.1
+            ),
+            format!(
+                "departure\t1\t{card}\t{NEIGHBOR_DEPARTURE_SEQ}\t{}\t{}\n",
+                departure.0, departure.1
+            ),
+            format!(
+                "unreachable\t1\t{}\t{card}\t{NEIGHBOR_REPORT_TS}\t{}\t{}\n",
+                HEXLOWER.encode(&REPORTED_CARD),
+                report.0,
+                report.1
+            ),
+            format!(
+                "infrastructure\t1\t{card}\t{UNREACHABLE_RELAY}\t{{\"relays\":[\"{UNREACHABLE_RELAY}\"],\"direct\":[]}}\t{NEIGHBOR_RECORD_TS}\t{certificate}\t{}\t{}\n",
+                record.0, record.1
+            ),
+            format!(
+                "presence-request\t1\t{card}\t{NEIGHBOR_REQUEST_SEQ}\t{}\t{}\n",
+                request.0, request.1
+            ),
+        ]
+    }
+
+    #[tokio::test]
+    async fn spec_3_13_tail_prints_every_field_of_each_gossip_payload_as_it_arrives() {
+        let lab = Lab::new("tail-whole").await;
+        let mut neighbor = start_silent_neighbor().await;
+        lab.write_network_config(&[NEIGHBOR_SEED]);
+        let output = SharedOutput::default();
+        let mut tail_output = output.clone();
+        let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
+        let wanted_lines = whole_payload_lines();
+        let tail = ObserverCommand::Tail {
+            network: NETWORK_NAME.parse().unwrap(),
+        };
+
+        let (tail_result, ()) = tokio::join!(
+            run(
+                &tail,
+                &lab.directories,
+                &OperatingSystemFilesystem,
+                &NoPause,
+                lab.effects(
+                    vec![neighbor.address.clone()],
+                    Box::pin(async move { drop(interrupted.await) }),
+                ),
+                &mut tail_output,
+            ),
+            async {
+                next_presence_request(&mut neighbor.topic, PAYLOAD_WAIT).await;
+                for payload in neighbor_payloads() {
+                    neighbor
+                        .topic
+                        .broadcast(&secret_key(NEIGHBOR_SEED), payload)
+                        .await
+                        .unwrap();
+                }
+                tokio::time::timeout(PAYLOAD_WAIT, async {
+                    while !wanted_lines.iter().all(|line| output.text().contains(line)) {
+                        tokio::time::sleep(POLL_INTERVAL).await;
+                    }
+                })
+                .await
+                .unwrap_or_default();
+                interrupt.send(()).unwrap_or_default();
+            }
+        );
+
+        tail_result.unwrap();
+        assert_eq!(output.text(), wanted_lines.concat());
+        drop(lab);
+    }
+
     #[tokio::test]
     async fn spec_3_13_a_network_without_a_configuration_file_is_refused_naming_the_file() {
         let lab = Lab::new("no-network").await;
@@ -1746,7 +1957,7 @@ mod tests {
     const HOSTILE_STRIDE: usize = 3;
     const HOSTILE_LENGTHS: usize = 12;
     const HOSTILE_BYTES: [u8; 7] = [b'a', b'\t', b'\n', b'\r', 0x1b, 0xff, b'{'];
-    const SENDER_PUBLIC_FIELD_COUNT: usize = 5;
+    const PRESENCE_FIELD_COUNT: usize = 10;
     const PEER_FIELD_COUNT: usize = 4;
 
     fn card_of(seed: u8) -> wire::PublicKey {
@@ -1827,68 +2038,6 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_13_a_departure_an_unreachable_report_and_an_infrastructure_record_print_their_cards()
-    {
-        let departure = Payload::Departure(wire::Departure {
-            v: Version::CURRENT,
-            card: card_of(1),
-            seq: LINE_CLOCK_MS,
-            mac: ZERO_MAC,
-            sig: ZERO_SIGNATURE,
-        });
-        let unreachable = Payload::Unreachable(wire::Unreachable {
-            v: Version::CURRENT,
-            card: card_of(2),
-            reporter: card_of(3),
-            ts: LINE_CLOCK_MS,
-            mac: ZERO_MAC,
-            sig: ZERO_SIGNATURE,
-        });
-        let infrastructure = Payload::Infrastructure(wire::Infrastructure {
-            v: Version::CURRENT,
-            host: card_of(4),
-            relay: wire::RelayUrl::try_from("https://relay.example".to_owned()).unwrap(),
-            addr: Addr::from_endpoint_report(Vec::new(), Vec::new()),
-            ts: LINE_CLOCK_MS,
-            cert: ZERO_SIGNATURE,
-            mac: ZERO_MAC,
-            sig: ZERO_SIGNATURE,
-        });
-
-        assert_eq!(
-            payload_line(&departure),
-            format!("departure\t{}\n", "01".repeat(32))
-        );
-        assert_eq!(
-            payload_line(&unreachable),
-            format!("unreachable\t{}\t{}\n", "02".repeat(32), "03".repeat(32))
-        );
-        assert_eq!(
-            payload_line(&infrastructure),
-            format!(
-                "infrastructure\t{}\thttps://relay.example\n",
-                "04".repeat(32)
-            )
-        );
-    }
-
-    #[test]
-    fn spec_3_13_a_presence_request_prints_its_requester() {
-        let request = Payload::PresenceRequest(wire::PresenceRequest {
-            v: Version::CURRENT,
-            requester: card_of(5),
-            seq: LINE_CLOCK_MS,
-            mac: ZERO_MAC,
-            sig: ZERO_SIGNATURE,
-        });
-
-        assert_eq!(
-            payload_line(&request),
-            format!("presence-request\t{}\n", "05".repeat(32))
-        );
-    }
-
-    #[test]
     fn spec_3_13_no_field_of_a_presence_or_peer_line_breaks_its_columns_or_its_line() {
         for index in 0..PROPERTY_CASES {
             let hostile = hostile_text(index);
@@ -1901,7 +2050,7 @@ mod tests {
 
             assert_eq!(
                 presence_line.matches('\t').count(),
-                SENDER_PUBLIC_FIELD_COUNT - 1
+                PRESENCE_FIELD_COUNT - 1
             );
             assert_eq!(presence_line.matches('\n').count(), 1);
             assert!(presence_line.ends_with('\n'));
