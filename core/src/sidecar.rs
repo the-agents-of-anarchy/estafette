@@ -10,7 +10,7 @@ use data_encoding::{HEXLOWER, HEXLOWER_PERMISSIVE};
 use iroh::{PublicKey, SecretKey};
 
 const OWNER_READ_WRITE_ONLY: u32 = 0o600;
-const CARD_FILE_MODE: u32 = 0o644;
+pub(crate) const CARD_FILE_MODE: u32 = 0o644;
 pub const SEED_BYTES: usize = 32;
 const PUBLIC_KEY_BYTES: usize = 32;
 const LOCK_RETRY_WINDOW: Duration = Duration::from_millis(200);

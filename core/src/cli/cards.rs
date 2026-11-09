@@ -10,28 +10,37 @@ use clap::{Args, Subcommand};
 
 use crate::card::{Card, CardInvalid};
 use crate::dirs::{
-    CARD_EXTENSION, Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem,
+    CARD_EXTENSION, CARDS_DIRECTORY_VARIABLE, CARDS_SUBDIRECTORY, Directories, DirectoriesError,
+    DirectoryFilesystem, OperatingSystemFilesystem,
 };
 use crate::errors::ExitStatus;
 use crate::handle::{Handle, HandleError};
 use crate::keys::render_public_key;
-use crate::sidecar::{SEED_BYTES, SidecarError, create_card};
+use crate::sidecar::{CARD_FILE_MODE, SEED_BYTES, SidecarError, create_card};
 
 const LIST_FIELD_SEPARATOR: char = '\t';
 const LINE_END: &str = "\n";
 const CREATE_CARD_ABOUT: &str = "Create a card and its key file";
 const LIST_CARDS_ABOUT: &str = "List the cards of a network";
 
-fn create_card_long_about() -> String {
+fn cards_directory_description() -> String {
     format!(
-        "Create a card with a fresh key for a network.\n\nReads: the cards directory of the network, which is --cards-dir or ESTAFETTE_CARDS_DIR followed by the network name, else the data directory's cards/<network>; nothing of the network configuration.\nProduces: the configuration, data and runtime directories of this program, readable by you alone, when missing; the card file <card>.yaml with mode 0644 and the key file <card>.key, readable by you alone, in that directory, created when missing; the card's public key, as lowercase hexadecimal, on stdout.\nRefuses: a network, a card or a handle that breaks this rule: {}; a card or key file of that name that already exists, overwriting neither.",
+        "--cards-dir or {CARDS_DIRECTORY_VARIABLE} followed by the network name, else the data directory's {CARDS_SUBDIRECTORY}/<network>"
+    )
+}
+
+fn create_card_long_about() -> String {
+    let cards_directory = cards_directory_description();
+    format!(
+        "Create a card with a fresh key for a network.\n\nReads: the cards directory of the network, which is {cards_directory}; nothing of the network configuration.\nProduces: the configuration, data and runtime directories of this program, readable by you alone, when missing; the card file <card>.{CARD_EXTENSION} with mode {CARD_FILE_MODE:04o} and the key file <card>.key, readable by you alone, in that directory, created when missing; the card's public key, as lowercase hexadecimal, on stdout.\nRefuses: a network, a card or a handle that breaks this rule: {}; a card or key file of that name that already exists, overwriting neither.",
         HandleError::NotAHandle
     )
 }
 
 fn list_cards_long_about() -> String {
+    let cards_directory = cards_directory_description();
     format!(
-        "List the cards of a network, one line each.\n\nReads: every .{CARD_EXTENSION} file in the cards directory of the network, which is --cards-dir or ESTAFETTE_CARDS_DIR followed by the network name, else the data directory's cards/<network>; nothing of the network configuration.\nProduces: the configuration, data and runtime directories of this program, readable by you alone, when missing; one line per card on stdout, in card name order: the card name, the handle and the public key, separated by tabs; nothing more when the cards directory does not exist.\nRefuses: a network that breaks this rule: {}; a card file whose name is not a handle or whose content is not a valid card; a directory that cannot be read.",
+        "List the cards of a network, one line each.\n\nReads: every .{CARD_EXTENSION} file in the cards directory of the network, which is {cards_directory}; nothing of the network configuration.\nProduces: the configuration, data and runtime directories of this program, readable by you alone, when missing; one line per card on stdout, in card name order: the card name, the handle and the public key, separated by tabs; nothing more when the cards directory does not exist.\nRefuses: a network that breaks this rule: {}; a card file whose name is not a handle or whose content is not a valid card; a directory that cannot be read.",
         HandleError::NotAHandle
     )
 }
