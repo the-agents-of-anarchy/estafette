@@ -1,4 +1,6 @@
 use std::io;
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
 use std::process::{Command, Output};
 
 mod common;
@@ -7,6 +9,14 @@ const SCRATCH_PREFIX: &str = "estafette-binary-cards";
 const BINARY: &str = env!("CARGO_BIN_EXE_estafette");
 const USAGE_ERROR_CODE: i32 = 2;
 const PUBLIC_KEY_HEX_LINE_LENGTH: usize = 65;
+const PERMISSION_BITS: u32 = 0o777;
+const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+const CARD_FILE_MODE: u32 = 0o644;
+const KEY_FILE_MODE: u32 = 0o600;
+
+fn mode_of(path: &Path) -> io::Result<u32> {
+    Ok(std::fs::metadata(path)?.permissions().mode() & PERMISSION_BITS)
+}
 
 fn run_binary(root: &std::path::Path, arguments: &[&str]) -> io::Result<Output> {
     Command::new(BINARY)
@@ -139,45 +149,52 @@ fn binary_help_of_each_card_command_states_what_it_does_reads_produces_and_refus
 #[test]
 fn binary_create_card_creates_the_program_directories_and_two_files_with_the_modes_its_help_states()
 {
-    use std::os::unix::fs::PermissionsExt;
     let root = common::scratch_root(SCRATCH_PREFIX, "created").unwrap();
     let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
     assert_eq!(created.status.code(), Some(0));
-    let mode_of =
-        |path: std::path::PathBuf| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
-    assert_eq!(mode_of(root.join("config/estafette")), 0o700);
-    assert_eq!(mode_of(root.join("data/estafette")), 0o700);
+    assert_eq!(
+        mode_of(&root.join("config/estafette")).unwrap(),
+        PRIVATE_DIRECTORY_MODE
+    );
+    assert_eq!(
+        mode_of(&root.join("data/estafette")).unwrap(),
+        PRIVATE_DIRECTORY_MODE
+    );
     let runtime_directories: Vec<_> = std::fs::read_dir(root.join("runtime"))
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect();
     assert_eq!(runtime_directories.len(), 1);
-    assert_eq!(mode_of(runtime_directories[0].clone()), 0o700);
+    assert_eq!(
+        mode_of(&runtime_directories[0]).unwrap(),
+        PRIVATE_DIRECTORY_MODE
+    );
     let cards = root.join("data/estafette/cards/acme");
-    assert_eq!(mode_of(cards.join("ana-card.yaml")), 0o644);
-    assert_eq!(mode_of(cards.join("ana-card.key")), 0o600);
+    assert_eq!(
+        mode_of(&cards.join("ana-card.yaml")).unwrap(),
+        CARD_FILE_MODE
+    );
+    assert_eq!(mode_of(&cards.join("ana-card.key")).unwrap(), KEY_FILE_MODE);
 }
 
 #[test]
 fn binary_list_cards_creates_the_program_directories_as_its_help_states() {
-    use std::os::unix::fs::PermissionsExt;
     let root = common::scratch_root(SCRATCH_PREFIX, "list_creates_directories").unwrap();
     let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
     assert_eq!(listed.status.code(), Some(0));
     assert_eq!(listed.stdout, Vec::<u8>::new());
     for created in ["config/estafette", "data/estafette"] {
-        let mode = std::fs::metadata(root.join(created))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o700, "{created}");
+        assert_eq!(
+            mode_of(&root.join(created)).unwrap(),
+            PRIVATE_DIRECTORY_MODE,
+            "{created}"
+        );
     }
     assert_eq!(std::fs::read_dir(root.join("runtime")).unwrap().count(), 1);
 }
 
 #[test]
 fn binary_create_card_sets_exact_file_modes_under_a_restrictive_umask_of_spec_3_5() {
-    use std::os::unix::fs::PermissionsExt;
     let root = common::scratch_root(SCRATCH_PREFIX, "restrictive_umask").unwrap();
     let created = Command::new("sh")
         .args([
@@ -197,13 +214,9 @@ fn binary_create_card_sets_exact_file_modes_under_a_restrictive_umask_of_spec_3_
         .unwrap();
     assert_eq!(created.status.code(), Some(0));
     let cards = root.join("data/estafette/cards/acme");
-    let mode_of = |name: &str| {
-        std::fs::metadata(cards.join(name))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777
-    };
-    assert_eq!(mode_of("ana-card.yaml"), 0o644);
-    assert_eq!(mode_of("ana-card.key"), 0o600);
+    assert_eq!(
+        mode_of(&cards.join("ana-card.yaml")).unwrap(),
+        CARD_FILE_MODE
+    );
+    assert_eq!(mode_of(&cards.join("ana-card.key")).unwrap(), KEY_FILE_MODE);
 }
