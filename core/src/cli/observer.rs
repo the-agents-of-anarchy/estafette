@@ -115,16 +115,32 @@ enum Failure {
     Bind(BindError),
     Topic(GossipError),
     Inbox(InboxSocketError),
-    Io { path: PathBuf, source: io::Error },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
     Sidecar(SidecarError),
-    CardInvalid { path: PathBuf, reason: CardInvalid },
-    CardKey { path: PathBuf, source: KeyError },
-    CardHandle { path: PathBuf, source: HandleError },
+    CardInvalid {
+        path: PathBuf,
+        reason: CardInvalid,
+    },
+    CardKey {
+        path: PathBuf,
+        source: KeyError,
+    },
+    CardHandle {
+        path: PathBuf,
+        source: HandleError,
+    },
     Session(ErrorCode),
     NotDelivered(ErrorCode),
     TopicClosed,
     RouterShutdown(JoinError),
     Output(io::Error),
+    PayloadRender {
+        kind: &'static str,
+        source: serde_json::Error,
+    },
 }
 
 impl fmt::Display for Failure {
@@ -165,6 +181,9 @@ impl fmt::Display for Failure {
             }
             Self::NotDelivered(code) => write!(formatter, "the message was not delivered: {code}"),
             Self::Output(source) => write!(formatter, "cannot write the result: {source}"),
+            Self::PayloadRender { kind, source } => {
+                write!(formatter, "cannot print a {kind} payload: {source}")
+            }
         }
     }
 }
@@ -654,7 +673,7 @@ impl Observation {
                 Step::Topic(Some(Err(failure))) => return Err(Failure::Topic(failure)),
                 Step::Topic(Some(Ok(event))) => {
                     if let GossipEvent::Payload(payload) = &event {
-                        write_line(stdout, &payload_line(payload))?;
+                        write_line(stdout, &payload_line(payload)?)?;
                     }
                     self.take_gossip_event(event);
                 }
@@ -805,23 +824,23 @@ fn peer_line(peer: &Peer) -> String {
 }
 
 /// The result line of a gossip payload: its kind, then every field of the payload in the order spec 3.7 declares them.
-fn payload_line(payload: &Payload) -> String {
-    match payload {
+fn payload_line(payload: &Payload) -> Result<String, Failure> {
+    Ok(match payload {
         Payload::Presence(presence) => line_of(&[
             PRESENCE_KIND,
-            &json_text(&presence.v),
+            &json_text(PRESENCE_KIND, &presence.v)?,
             &hex_text(&presence.card),
             &presence.handle,
             &public_text(&presence.public),
             &presence.attached.to_string(),
-            &json_text(&presence.addr),
+            &json_text(PRESENCE_KIND, &presence.addr)?,
             &presence.seq.to_string(),
             &hex_text(&presence.mac),
             &hex_text(&presence.sig.0),
         ]),
         Payload::Departure(departure) => line_of(&[
             DEPARTURE_KIND,
-            &json_text(&departure.v),
+            &json_text(DEPARTURE_KIND, &departure.v)?,
             &hex_text(&departure.card),
             &departure.seq.to_string(),
             &hex_text(&departure.mac),
@@ -829,7 +848,7 @@ fn payload_line(payload: &Payload) -> String {
         ]),
         Payload::Unreachable(report) => line_of(&[
             UNREACHABLE_KIND,
-            &json_text(&report.v),
+            &json_text(UNREACHABLE_KIND, &report.v)?,
             &hex_text(&report.card),
             &hex_text(&report.reporter),
             &report.ts.to_string(),
@@ -838,10 +857,10 @@ fn payload_line(payload: &Payload) -> String {
         ]),
         Payload::Infrastructure(record) => line_of(&[
             INFRASTRUCTURE_KIND,
-            &json_text(&record.v),
+            &json_text(INFRASTRUCTURE_KIND, &record.v)?,
             &hex_text(&record.host),
             record.relay.as_str(),
-            &json_text(&record.addr),
+            &json_text(INFRASTRUCTURE_KIND, &record.addr)?,
             &record.ts.to_string(),
             &hex_text(&record.cert.0),
             &hex_text(&record.mac),
@@ -849,13 +868,13 @@ fn payload_line(payload: &Payload) -> String {
         ]),
         Payload::PresenceRequest(request) => line_of(&[
             PRESENCE_REQUEST_KIND,
-            &json_text(&request.v),
+            &json_text(PRESENCE_REQUEST_KIND, &request.v)?,
             &hex_text(&request.requester),
             &request.seq.to_string(),
             &hex_text(&request.mac),
             &hex_text(&request.sig.0),
         ]),
-    }
+    })
 }
 
 /// Joins the fields into one tab-separated line.
@@ -884,9 +903,9 @@ fn hex_text(bytes: &[u8]) -> String {
     HEXLOWER.encode(bytes)
 }
 
-/// A wire field as compact JSON, every key and element in its declared order; no field of a decoded payload fails to serialize.
-fn json_text(field: &impl serde::Serialize) -> String {
-    serde_json::to_string(field).unwrap_or_default()
+/// A wire field of a payload of that kind as compact JSON, every key and element in its declared order.
+fn json_text(kind: &'static str, field: &impl serde::Serialize) -> Result<String, Failure> {
+    serde_json::to_string(field).map_err(|source| Failure::PayloadRender { kind, source })
 }
 
 /// A public mapping as the text of its JSON bytes.
@@ -2055,7 +2074,7 @@ mod tests {
             let hostile = hostile_text(index);
             let handle = String::from_utf8_lossy(&hostile).into_owned();
             let presence = presence_of(1, &handle, hostile.clone());
-            let presence_line = payload_line(&Payload::Presence(presence.clone()));
+            let presence_line = payload_line(&Payload::Presence(presence.clone())).unwrap();
             let mut table = PeerTable::new(card_of(0));
             drop(table.receive_presence(&presence_of(1, "amy", hostile), LINE_CLOCK_MS));
             let peer_lines: Vec<String> = table.peers(LINE_CLOCK_MS).map(peer_line).collect();
