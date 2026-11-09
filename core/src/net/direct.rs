@@ -90,8 +90,9 @@ impl AcceptedConnections {
         close_superseded(superseded);
     }
 
-    /// Holds a connection just accepted from the card.
+    /// Holds a connection just accepted from the card, forgetting every card left with no connection.
     fn hold(&self, card: wire::PublicKey, connection: &Connection) {
+        self.held().retain(|_, accepted| !accepted.is_empty());
         self.held()
             .entry(card)
             .or_default()
