@@ -118,8 +118,7 @@ fn binary_help_of_each_card_command_states_what_it_does_reads_produces_and_refus
             &[
                 "List the cards",
                 "Reads: ",
-                "Produces: one line per card",
-                "creates no directory and no file",
+                "Produces: the configuration, data and runtime directories of this program, readable by you alone, when missing; one line per card",
                 "Refuses: a network that breaks this rule",
             ],
         ),
@@ -160,10 +159,18 @@ fn binary_create_card_creates_the_program_directories_and_two_files_with_the_mod
 }
 
 #[test]
-fn binary_list_cards_creates_no_directory_and_no_file_as_its_help_states() {
-    let root = common::scratch_root(SCRATCH_PREFIX, "list_creates_nothing").unwrap();
+fn binary_list_cards_creates_the_program_directories_as_its_help_states() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = common::scratch_root(SCRATCH_PREFIX, "list_creates_directories").unwrap();
     let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
     assert_eq!(listed.status.code(), Some(0));
     assert_eq!(listed.stdout, Vec::<u8>::new());
-    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    for created in ["config/estafette", "data/estafette"] {
+        let mode = std::fs::metadata(root.join(created))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o700, "{created}");
+    }
+    assert_eq!(std::fs::read_dir(root.join("runtime")).unwrap().count(), 1);
 }

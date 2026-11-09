@@ -11,7 +11,6 @@ use clap::{Args, Subcommand};
 use crate::card::{Card, CardInvalid};
 use crate::dirs::{
     CARD_EXTENSION, Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem,
-    cards_directory_without_creating,
 };
 use crate::errors::ExitStatus;
 use crate::handle::{Handle, HandleError};
@@ -32,7 +31,7 @@ fn create_card_long_about() -> String {
 
 fn list_cards_long_about() -> String {
     format!(
-        "List the cards of a network, one line each.\n\nReads: every .{CARD_EXTENSION} file in the cards directory of the network, which is --cards-dir or ESTAFETTE_CARDS_DIR followed by the network name, else the data directory's cards/<network>; nothing of the network configuration.\nProduces: one line per card on stdout, in card name order: the card name, the handle and the public key, separated by tabs; nothing when the directory does not exist; it creates no directory and no file.\nRefuses: a network that breaks this rule: {}; a card file whose name is not a handle or whose content is not a valid card; a directory that cannot be read.",
+        "List the cards of a network, one line each.\n\nReads: every .{CARD_EXTENSION} file in the cards directory of the network, which is --cards-dir or ESTAFETTE_CARDS_DIR followed by the network name, else the data directory's cards/<network>; nothing of the network configuration.\nProduces: the configuration, data and runtime directories of this program, readable by you alone, when missing; one line per card on stdout, in card name order: the card name, the handle and the public key, separated by tabs; nothing more when the cards directory does not exist.\nRefuses: a network that breaks this rule: {}; a card file whose name is not a handle or whose content is not a valid card; a directory that cannot be read.",
         HandleError::NotAHandle
     )
 }
@@ -179,13 +178,8 @@ fn execute(
             )?
         }
         CardCommand::ListCards { registry } => {
-            let cards_directory = cards_directory_without_creating(
-                environment,
-                registry.cards_dir,
-                registry.network.as_str(),
-            )
-            .map_err(CardCommandError::Directories)?;
-            list_registry_cards(filesystem, &cards_directory)?
+            let directories = establish_directories(environment, filesystem, registry.cards_dir)?;
+            list_registry_cards(filesystem, &directories, registry.network.as_str())?
         }
     };
     stdout
@@ -237,12 +231,16 @@ fn create_card_with_fresh_key(
 
 fn list_registry_cards(
     filesystem: &impl CardRegistryReader,
-    cards_directory: &Path,
+    directories: &Directories,
+    network: &str,
 ) -> Result<String, CardCommandError> {
+    let cards_directory = directories
+        .cards_directory(network)
+        .map_err(CardCommandError::Directories)?;
     let mut lines_by_card_name = BTreeMap::new();
-    let card_files = card_files_in(filesystem, cards_directory).map_err(|source| {
+    let card_files = card_files_in(filesystem, &cards_directory).map_err(|source| {
         CardCommandError::Unreadable {
-            path: cards_directory.to_owned(),
+            path: cards_directory.clone(),
             source,
         }
     })?;
