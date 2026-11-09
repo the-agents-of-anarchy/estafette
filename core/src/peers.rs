@@ -229,7 +229,7 @@ impl PeerTable {
         }
     }
 
-    /// Takes an Introduce that arrived on a connection from `card`, as an accepted Presence without the seq check.
+    /// Takes an Introduce that arrived on a connection from `card`, as an accepted Presence without the seq check, or as a lookup refresh alone while the card stands departed.
     #[must_use]
     pub fn receive_introduce(
         &mut self,
@@ -237,6 +237,9 @@ impl PeerTable {
         introduce: &Introduce,
         now_ms: u64,
     ) -> Vec<Effect> {
+        if self.stands_departed(card, now_ms) {
+            return lookup_refresh_effects(card, &introduce.addr);
+        }
         self.receive_introduction(
             card,
             introduce.handle.as_deref(),
@@ -351,6 +354,12 @@ impl PeerTable {
                 .tombstones
                 .get(&card, now_ms)
                 .is_none_or(|tombstone| seq > tombstone.seq)
+    }
+
+    /// Whether this node holds a Departure of `card` and no entry newer than it, so an Introduce, which carries no seq, cannot show the card back.
+    fn stands_departed(&self, card: PublicKey, now_ms: u64) -> bool {
+        self.tombstones.get(&card, now_ms).is_some()
+            && self.peers.get(&card, now_ms).is_none_or(Peer::is_gone)
     }
 
     /// The seq of the Departure held for `card` when it was sent at or after `sent_at`, so what the card sent then came from its departed session.
@@ -1255,10 +1264,14 @@ mod tests {
         let mut lookup_only = introduction_effects(PEER_CARD);
         lookup_only.pop();
         assert_eq!(
-            table.receive_introduce(PEER_CARD, &introduce(Some(SECOND_HANDLE)), LATER_MS),
+            table.receive_introduce(
+                PEER_CARD,
+                &introduce(Some(SECOND_HANDLE)),
+                TOMBSTONE_FORGOTTEN_MS
+            ),
             lookup_only
         );
-        let peer = only_peer(&table, LATER_MS);
+        let peer = only_peer(&table, TOMBSTONE_FORGOTTEN_MS);
         assert_eq!(
             (
                 peer.effective_handle.as_str(),
@@ -1274,9 +1287,39 @@ mod tests {
                 true,
                 Some(&second_addr()),
                 Status::Online,
-                LATER_MS
+                TOMBSTONE_FORGOTTEN_MS
             )
         );
+    }
+
+    #[test]
+    fn an_introduce_while_a_held_departure_stands_refreshes_the_lookup_and_changes_no_entry_test_4()
+    {
+        let mut table = table_with_peer_gone_since_now();
+        table.receive_departure(&departure(SECOND_MEMBER_CARD, DEPARTURE_SEQ), NOW_MS);
+        let departed = snapshot(&table, LATER_MS);
+        let lookup_only = |card| {
+            vec![
+                Effect::ReplaceLookupEntry {
+                    card,
+                    addr: second_addr(),
+                },
+                Effect::DropHeldConnection(card),
+            ]
+        };
+        assert_eq!(
+            table.receive_introduce(PEER_CARD, &introduce(Some(PEER_HANDLE)), LATER_MS),
+            lookup_only(PEER_CARD)
+        );
+        assert_eq!(
+            table.receive_introduce(
+                SECOND_MEMBER_CARD,
+                &introduce(Some(SECOND_HANDLE)),
+                LATER_MS
+            ),
+            lookup_only(SECOND_MEMBER_CARD)
+        );
+        assert_eq!(snapshot(&table, LATER_MS), departed);
     }
 
     #[test]

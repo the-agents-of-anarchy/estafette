@@ -20,7 +20,9 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
     use estafette::net::endpoint::{DIRECT_ALPN, GateFailure};
     use estafette::payload::{open_response, seal_request};
-    use estafette::wire::{self, Message, Request, Response, Version, WIRE_LIMIT_BYTES};
+    use estafette::wire::{
+        self, Addr, Introduce, Message, Request, Response, Version, WIRE_LIMIT_BYTES,
+    };
     use iroh::{EndpointId, SecretKey};
     use serde_json::{Value, json};
 
@@ -280,5 +282,38 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         assert_eq!(statuses_after_the_earlier_message, [json!("gone")]);
         assert_eq!(bodies, [json!(SENT_BEFORE_THE_DEPARTURE)]);
         assert!(is_accepted_message_ack(&sent_after), "{sent_after:?}");
+    }
+
+    #[test]
+    fn spec_3_15_test_4_an_introduce_from_a_member_amy_holds_departed_leaves_it_gone() {
+        let network = LocalNetwork::create("r3i");
+        let ScriptedBobDeparted {
+            mut amy,
+            amy_card,
+            bob,
+            ..
+        } = amy_after_scripted_bob_departed(&network);
+        let bob_address = bob.endpoint().endpoint().addr();
+
+        let answer = request_directly(
+            &network,
+            &bob,
+            amy_card.id,
+            Request::Introduce(Introduce {
+                v: Version::CURRENT,
+                handle: Some("bob".to_owned()),
+                public: b"{}".to_vec(),
+                attached: false,
+                addr: Addr::from_endpoint_report(
+                    bob_address.relay_urls().map(ToString::to_string),
+                    bob_address.ip_addrs().copied(),
+                ),
+                mac: UNSET_MAC,
+            }),
+        );
+        let statuses_after_the_introduce = statuses_throughout(&mut amy, "bob", SPEC_GONE_KEPT_FOR);
+
+        assert!(matches!(answer, Response::IntroduceAck(_)), "{answer:?}");
+        assert_eq!(statuses_after_the_introduce, [json!("gone")]);
     }
 }
