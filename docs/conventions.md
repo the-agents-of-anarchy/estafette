@@ -265,6 +265,13 @@ never   an agent reading a brief input, a source file, or a spec before its bind
 why     The hook injecting manifesto stacks may be inactive; the lead is bound by its instructions for life, a subagent is bound only by what it reads at init.
 ground  owner ruling 2026-10-24T10:38
 
+### route-a-plain-block-directly
+when    an implementer reports BLOCKED
+do      route directly on the cause when the report names it plainly and the lead knows it to be true from the records or git; launch the dev-cycle diagnosis agent when the cause is unclear, the report's story does not fit the artifacts, or anything reads fishy
+never   launch a diagnosis agent to restate an obvious, known cause; route on a cause that nothing but the report asserts
+why     A diagnosis agent for an obvious block spends tokens restating the report; the agent exists for the unclear case.
+ground  owner ruling 2026-11-10 office-hours round ("that's not a shortcut, it's common sense … you COULD launch a separate agent still if something was fishy")
+
 ## owner
 
 ### owner-away
