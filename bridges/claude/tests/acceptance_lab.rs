@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -18,6 +18,10 @@ const JOINED_NETWORKS_DIRECTORY: &str = "config/estafette/networks";
 const NETWORK_CONFIG_EXTENSION: &str = "toml";
 const SENDER_HANDLE: &str = "operator";
 const BODY: &str = "ACCEPTANCE-HELLO";
+const ISO_8601_UTC_SHAPE: &str = "DDDD-DD-DDTDD:DD:DDZ";
+const ATTACHED_WAIT_ATTEMPTS: u32 = 60;
+const SHOW_PEERS_PAUSE: Duration = Duration::from_secs(1);
+const TEST_SEND_ATTEMPTS: u32 = 10;
 const NOTICE_TIMEOUT: Duration = Duration::from_secs(30);
 const NO_SECOND_NOTICE_WINDOW: Duration = Duration::from_secs(5);
 
@@ -59,6 +63,54 @@ fn joined_network_name(root: &Path) -> io::Result<String> {
         "joining wrote no network configuration",
     ))
 }
+fn has_iso_8601_utc_shape(text: &str) -> bool {
+    text.len() == ISO_8601_UTC_SHAPE.len()
+        && text
+            .chars()
+            .zip(ISO_8601_UTC_SHAPE.chars())
+            .all(|(actual, shape)| {
+                if shape == 'D' {
+                    actual.is_ascii_digit()
+                } else {
+                    actual == shape
+                }
+            })
+}
+
+fn attached_peer_listed(fixture: &Fixture, network: &str, card: &str) -> io::Result<bool> {
+    let listing = fixture.run_estafette(&["show-peers", network])?;
+    Ok(String::from_utf8_lossy(&listing.stdout)
+        .lines()
+        .any(|line| {
+            let fields: Vec<&str> = line.split('\t').collect();
+            fields.first() == Some(&card) && fields.get(2) == Some(&"true")
+        }))
+}
+
+fn test_send_until_delivered(fixture: &Fixture, network: &str, card: &str) -> io::Result<Output> {
+    let mut delivery = fixture.run_estafette(&["test-send", network, card, BODY])?;
+    for _ in 1..TEST_SEND_ATTEMPTS {
+        if delivery.status.success() {
+            break;
+        }
+        delivery = fixture.run_estafette(&["test-send", network, card, BODY])?;
+    }
+    Ok(delivery)
+}
+
+fn wait_until_bridge_attached(fixture: &Fixture, network: &str, card: &str) -> io::Result<()> {
+    for _ in 0..ATTACHED_WAIT_ATTEMPTS {
+        if attached_peer_listed(fixture, network, card)? {
+            return Ok(());
+        }
+        thread::sleep(SHOW_PEERS_PAUSE);
+    }
+    Err(io::Error::new(
+        io::ErrorKind::TimedOut,
+        format!("the bridge never attached to the inbox socket of {card}"),
+    ))
+}
+
 #[test]
 fn spec_3_12_the_bridge_injects_one_notice_per_inbox_frame_of_a_real_binary_joined_through_the_lab_host()
  {
@@ -108,10 +160,14 @@ fn spec_3_12_the_bridge_injects_one_notice_per_inbox_frame_of_a_real_binary_join
             .unwrap(),
     );
 
-    let delivery = fixture
-        .run_estafette(&["test-send", &network, &card, BODY])
-        .unwrap();
+    wait_until_bridge_attached(&fixture, &network, &card).unwrap();
+    let delivery = test_send_until_delivered(&fixture, &network, &card).unwrap();
     assert_eq!(delivery.status.code(), Some(0), "{delivery:?}");
+    let result_line = String::from_utf8(delivery.stdout).unwrap();
+    let result_fields: Vec<&str> = result_line.trim_end().split('\t').collect();
+    assert_eq!(result_fields.len(), 3, "{result_line}");
+    assert_eq!(result_fields[0], "delivered", "{result_line}");
+    assert_eq!(result_fields[2], "true", "{result_line}");
 
     let first = notices.recv_timeout(NOTICE_TIMEOUT).unwrap();
     assert_eq!(first.len(), 2, "{first:?}");
@@ -122,15 +178,14 @@ fn spec_3_12_the_bridge_injects_one_notice_per_inbox_frame_of_a_real_binary_join
     let notice: Value = serde_json::from_str(&first[1]).unwrap();
     assert_eq!(notice["type"], "user", "{notice}");
     let text = notice["message"]["content"].as_str().unwrap();
-    assert!(
-        text.starts_with(&format!(
+    let after_prefix = text
+        .strip_prefix(&format!(
             "Message from peer {SENDER_HANDLE} (verified member of your network), sent "
-        )),
-        "{text}"
-    );
-    assert!(
-        text.ends_with(&format!(".\n{BODY}\nReply with the send tool.")),
-        "{text}"
-    );
+        ))
+        .unwrap();
+    let sent_at = after_prefix
+        .strip_suffix(&format!(".\n{BODY}\nReply with the send tool."))
+        .unwrap();
+    assert!(has_iso_8601_utc_shape(sent_at), "{text}");
     notices.recv_timeout(NO_SECOND_NOTICE_WINDOW).unwrap_err();
 }
