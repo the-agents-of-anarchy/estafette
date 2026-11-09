@@ -106,13 +106,13 @@ fn lines_with_marker(text: &str, marker: &str) -> usize {
     text.lines().filter(|line| line.contains(marker)).count()
 }
 
-fn wait_for_delivery_line(debug_log: &Path, offset: u64) -> io::Result<()> {
+fn wait_for_either_marker(debug_log: &Path, offset: u64) -> io::Result<()> {
     let started = Instant::now();
     while started.elapsed() < DELIVERY_TIMEOUT {
-        if lines_with_marker(
-            &text_appended_since(debug_log, offset)?,
-            DELIVERED_LINE_MARKER,
-        ) > 0
+        let appended = text_appended_since(debug_log, offset)?;
+        if lines_with_marker(&appended, DELIVERED_LINE_MARKER)
+            + lines_with_marker(&appended, HELD_LINE_MARKER)
+            > 0
         {
             return Ok(());
         }
@@ -120,7 +120,7 @@ fn wait_for_delivery_line(debug_log: &Path, offset: u64) -> io::Result<()> {
     }
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
-        "the receiving session logged no delivery",
+        "the receiving session logged neither a delivery nor a hold",
     ))
 }
 
@@ -229,7 +229,7 @@ fn deliver_through_bridge(body: &str) -> Outcome<Scenario> {
         return Err(format!("the test send was not delivered: {result_line}").into());
     }
 
-    wait_for_delivery_line(&session.debug_log, debug_log_offset)?;
+    wait_for_either_marker(&session.debug_log, debug_log_offset)?;
     thread::sleep(NO_SECOND_DELIVERY_WINDOW);
     let transcript = text_appended_since(&session.transcript, transcript_offset)?;
     Ok(Scenario {
@@ -273,8 +273,21 @@ fn harness_2_1_319_the_bridge_delivers_one_peer_message_per_inbox_frame_without_
 }
 
 #[test]
-fn harness_2_1_319_a_body_holding_the_closing_tag_reaches_the_receiving_session_unaltered() {
-    assert_one_peer_message_arrived_without_a_hold(
-        &deliver_through_bridge(BODY_HOLDING_THE_CLOSING_TAG).unwrap(),
+fn harness_2_1_319_a_body_holding_the_closing_tag_is_plain_text_to_the_receiving_session() {
+    let scenario = deliver_through_bridge(BODY_HOLDING_THE_CLOSING_TAG).unwrap();
+    let debug_log = &scenario.debug_log;
+    let (held, delivered) = match scenario.class {
+        PermissionClass::Bypass => (1, 0),
+        PermissionClass::Prompting => (0, 1),
+    };
+    assert_eq!(
+        lines_with_marker(debug_log, HELD_LINE_MARKER),
+        held,
+        "{debug_log}"
+    );
+    assert_eq!(
+        lines_with_marker(debug_log, DELIVERED_LINE_MARKER),
+        delivered,
+        "{debug_log}"
     );
 }
