@@ -76,7 +76,7 @@ Know that the backstop keeps an expired server while its type is not available i
 <create-the-server-from-this-skills-setup>
 Upload the SSH key when `hcloud ssh-key list` lacks `estafette-lab`, with `hcloud ssh-key create --name estafette-lab --public-key-from-file ~/.ssh/estafette_lab.pub` and its deadline labels; never upload another key. The key pair `~/.ssh/estafette_lab` must exist; when it does not, ask the owner and never generate one unasked.
 
-Create the firewall from this skill's `firewall-rules.json` with `hcloud firewall create --name <name> --rules-file firewall-rules.json` and its deadline labels; never open more than its four rules, inbound TCP 22, 80, and 443 and all UDP.
+Create the firewall from this skill's `firewall-rules.json` with `hcloud firewall create --name <name> --rules-file firewall-rules.json` and its deadline labels; never open more than its three rules, inbound TCP 22 and 443 and all UDP; the relay answers its ACME challenge on 443, so port 80 stays closed.
 
 Write the server's setup file with `python3 -I fill-setup.py <output path>`, which fills the public half of `~/.ssh/estafette_lab` and the channel of the repository's `rust-toolchain.toml` into this skill's `cloud-init.template.yaml`; never edit the template for one server.
 
