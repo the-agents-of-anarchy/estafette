@@ -8,6 +8,7 @@ const NETWORK: &str = "lab";
 const CARD: &str = "ana-card";
 const HANDLE: &str = "ana";
 const DOCTOR_CHECK_COUNT: usize = 5;
+const HOOK_PERMISSION_MODE: &str = "default";
 
 #[test]
 fn spec_3_12_doctor_passes_every_check_for_a_bridge_beside_a_real_binary_serving_mcp() {
@@ -18,7 +19,7 @@ fn spec_3_12_doctor_passes_every_check_for_a_bridge_beside_a_real_binary_serving
     fixture
         .run_estafette_successfully(&["create-card", NETWORK, CARD, HANDLE])
         .unwrap();
-    let _messaging_socket = UnixListener::bind(fixture.messaging_socket()).unwrap();
+    let _messaging_socket = UnixListener::bind(&fixture.messaging_socket).unwrap();
     let member = fixture.spawn_claimed_member(NETWORK, CARD).unwrap();
     assert_eq!(member.claimed["ok"], true, "{}", member.claimed);
     assert_eq!(
@@ -26,7 +27,7 @@ fn spec_3_12_doctor_passes_every_check_for_a_bridge_beside_a_real_binary_serving
         "{}",
         member.claimed
     );
-    let _bridge = fixture.spawn_bridge().unwrap();
+    let _bridge = fixture.spawn_bridge(HOOK_PERMISSION_MODE).unwrap();
 
     let doctor = fixture.bridge().arg("doctor").output().unwrap();
     let report = String::from_utf8(doctor.stdout).unwrap();

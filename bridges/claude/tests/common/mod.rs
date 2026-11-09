@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 pub const BRIDGE: &str = env!("CARGO_BIN_EXE_estafette-bridge-claude");
 const SHORT_SCRATCH_PARENT: &str = "/tmp";
 const SCRATCH_PREFIX: &str = "eb35";
-pub const MESSAGING_TOKEN: &str = "acceptance-token";
+const DEFAULT_MESSAGING_TOKEN: &str = "acceptance-token";
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const INITIALIZE_REQUEST_ID: u64 = 1;
 const INIT_REQUEST_ID: u64 = 2;
@@ -33,6 +33,8 @@ type Outcome<T> = Result<T, Box<dyn std::error::Error>>;
 
 pub struct Fixture {
     pub root: PathBuf,
+    pub messaging_socket: PathBuf,
+    pub messaging_token: String,
 }
 
 impl Fixture {
@@ -52,11 +54,11 @@ impl Fixture {
             fs::create_dir_all(directory)?;
         }
         fs::write(claude_directory.join(SETTINGS_FILE), SETTINGS_HOOK)?;
-        Ok(Self { root })
-    }
-
-    pub fn messaging_socket(&self) -> PathBuf {
-        self.root.join(MESSAGING_SOCKET_FILE)
+        Ok(Self {
+            messaging_socket: root.join(MESSAGING_SOCKET_FILE),
+            messaging_token: DEFAULT_MESSAGING_TOKEN.to_owned(),
+            root,
+        })
     }
 
     fn binary_path() -> PathBuf {
@@ -81,8 +83,8 @@ impl Fixture {
             .env("HOME", self.root.join(HOME_DIRECTORY))
             .env("TMPDIR", self.root.join(TMP_DIRECTORY))
             .env("XDG_RUNTIME_DIR", self.root.join(RUNTIME_DIRECTORY))
-            .env("CLAUDE_CODE_MESSAGING_SOCKET", self.messaging_socket())
-            .env("CLAUDE_CODE_MESSAGING_TOKEN", MESSAGING_TOKEN)
+            .env("CLAUDE_CODE_MESSAGING_SOCKET", &self.messaging_socket)
+            .env("CLAUDE_CODE_MESSAGING_TOKEN", &self.messaging_token)
             .current_dir(&self.root);
         command
     }
@@ -123,13 +125,24 @@ impl Fixture {
         })
     }
 
-    pub fn spawn_bridge(&self) -> io::Result<Spawned> {
-        self.bridge()
+    pub fn spawn_bridge(&self, permission_mode: &str) -> io::Result<Spawned> {
+        let mut process = self
+            .bridge()
             .args(["run", &std::process::id().to_string()])
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn()
-            .map(Spawned)
+            .spawn()?;
+        let mut hook_input = process
+            .stdin
+            .take()
+            .ok_or_else(|| io::Error::other(MISSING_PIPE))?;
+        writeln!(
+            hook_input,
+            "{}",
+            json!({"permission_mode": permission_mode})
+        )?;
+        Ok(Spawned(process))
     }
 }
 
