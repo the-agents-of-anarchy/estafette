@@ -26,6 +26,7 @@ remote_binary := remote_tree / "target/release/estafette"
 remote_host_root := "/root/estafette-lab"
 remote_host_directories := "XDG_CONFIG_HOME=" + remote_host_root / "config" + " XDG_DATA_HOME=" + remote_host_root / "data" + " XDG_RUNTIME_DIR=" + remote_host_root / "run"
 host_unit := "estafette-host"
+member_unit_prefix := "estafette-member-"
 lab_config_file := lab_root / "config/estafette/networks" / lab_network + ".toml"
 remote_host_config_file := remote_host_root / "config/estafette/networks" / lab_network + ".toml"
 remote_host_certificate_file := remote_host_root / "data/estafette/infra" / lab_network + ".cert"
@@ -87,6 +88,16 @@ member card:
 [group('lab')]
 call card tool arguments="{}":
     python3 -I just/remote/member.py call {{ lab_root }}/{{ card }}.control {{ tool }} '{{ arguments }}'
+
+[doc("Serve the card as a lab member on the server, as a systemd unit run by lab; its envelope and run record go to /home/lab/<card>.out and .err")]
+[group('lab')]
+member-on-server card:
+    ssh {{ ssh_opts }} root@$(hcloud server ip {{ server }}) systemd-run --collect --unit={{ member_unit_prefix }}{{ card }} --uid=lab --working-directory={{ remote_tree }} --property=StandardOutput=truncate:/home/lab/{{ card }}.out --property=StandardError=truncate:/home/lab/{{ card }}.err just remote::member {{ card }}
+
+[doc("Stop the card's lab member on the server cleanly, waiting out its departure")]
+[group('lab')]
+stop-member-on-server card:
+    ssh {{ ssh_opts }} root@$(hcloud server ip {{ server }}) systemctl stop {{ member_unit_prefix }}{{ card }}
 
 [doc("Print each frame of the inbox socket at the path init returned, stamped with this machine's clock")]
 [group('lab')]
