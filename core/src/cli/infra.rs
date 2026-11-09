@@ -2,6 +2,8 @@ use std::fmt;
 use std::fs::{self, Permissions};
 use std::future::Future;
 use std::io::{self, Write};
+#[cfg(feature = "relay")]
+use std::net::Ipv4Addr;
 use std::net::{IpAddr, SocketAddr};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -42,7 +44,6 @@ use crate::wire::{
 };
 
 const HTTPS_PORT: u16 = 443;
-const ACME_CHALLENGE_PORT: u16 = 80;
 const QUIC_ADDRESS_DISCOVERY_PORT: u16 = 7842;
 const INFRASTRUCTURE_RECORD_INTERVAL: Duration = Duration::from_secs(5);
 const LOST_RECORD_COUNTER: u64 = 0;
@@ -52,12 +53,14 @@ const RELAY_URL_ROOT_PATH: &str = "/";
 const LINE_END: char = '\n';
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 #[cfg(feature = "relay")]
+const PORT_CHOSEN_BY_OS: u16 = 0;
+#[cfg(feature = "relay")]
 const LETS_ENCRYPT_PRODUCTION_DIRECTORY: bool = true;
 const RUN_ABOUT: &str = "Run this host's relay and bootstrap node for a network";
 
 fn run_long_about() -> String {
     format!(
-        "Run this host's embedded relay and bootstrap node for a network until interrupted.\n\nReads: the network configuration file; the host key, created on the first run; the host certificate, written from the output of certify host; the last record counter.\nProduces: the host address line on stdout at start; HTTPS on TCP {HTTPS_PORT}, the ACME challenge on TCP {ACME_CHALLENGE_PORT} and QUIC address discovery on UDP {QUIC_ADDRESS_DISCOVERY_PORT} of the bind address, with a Let's Encrypt certificate for the domain; this host's signed record on the network when it joins and every {} seconds after; the hosts it learns, saved to the configuration; the run record on stderr.\nRefuses: a network with no configuration file here; a missing certificate, or one the owner key did not sign for this host, after printing the host address line; a domain {RelayDomainRefused}.",
+        "Run this host's embedded relay and bootstrap node for a network until interrupted.\n\nReads: the network configuration file; the host key, created on the first run; the host certificate, written from the output of certify host; the last record counter.\nProduces: the host address line on stdout at start; HTTPS on TCP {HTTPS_PORT}, which also answers the ACME challenge, and QUIC address discovery on UDP {QUIC_ADDRESS_DISCOVERY_PORT} of the bind address, with a Let's Encrypt certificate for the domain; this host's signed record on the network when it joins and every {} seconds after; the hosts it learns, saved to the configuration; the run record on stderr.\nRefuses: a network with no configuration file here; a missing certificate, or one the owner key did not sign for this host, after printing the host address line; a domain {RelayDomainRefused}.",
         INFRASTRUCTURE_RECORD_INTERVAL.as_secs()
     )
 }
@@ -108,7 +111,7 @@ pub enum InfrastructureCommand {
     RunInfrastructure {
         /// The network whose configuration file this host reads and joins
         network: Handle,
-        /// The IP address the embedded relay binds for HTTPS, the ACME challenge and QUIC address discovery
+        /// The IP address the embedded relay binds for HTTPS (which also answers the ACME challenge) and QUIC address discovery
         bind_address: IpAddr,
         /// The domain name of the relay, whose Let's Encrypt certificate it obtains and whose URL https://<domain>/ it announces
         #[arg(value_parser = parse_relay_domain)]
@@ -139,11 +142,10 @@ impl fmt::Display for RelayDomainRefused {
 
 impl std::error::Error for RelayDomainRefused {}
 
-/// Where the embedded relay serves: HTTPS, the ACME challenge and QUIC address discovery on the bind address, for the domain, caching its certificate in the directory.
+/// Where the embedded relay serves: HTTPS, which also answers the ACME challenge, and QUIC address discovery on the bind address, for the domain, caching its certificate in the directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelaySite {
     pub https: SocketAddr,
-    pub acme_challenge: SocketAddr,
     pub quic_address_discovery: SocketAddr,
     pub domain: String,
     pub certificate_cache: PathBuf,
@@ -571,7 +573,6 @@ impl LastRecord {
 fn relay_site(bind_address: IpAddr, domain: &RelayDomain, certificate_cache: PathBuf) -> RelaySite {
     RelaySite {
         https: SocketAddr::new(bind_address, HTTPS_PORT),
-        acme_challenge: SocketAddr::new(bind_address, ACME_CHALLENGE_PORT),
         quic_address_discovery: SocketAddr::new(bind_address, QUIC_ADDRESS_DISCOVERY_PORT),
         domain: domain.name.clone(),
         certificate_cache,
@@ -837,7 +838,7 @@ pub async fn start_embedded_relay(site: RelaySite) -> Result<RunningRelay, Relay
     let acme_config = AcmeConfig::letsencrypt(LETS_ENCRYPT_PRODUCTION_DIRECTORY)
         .domains(vec![site.domain])
         .cache_path(site.certificate_cache);
-    let mut relay = RelayConfig::new(site.acme_challenge);
+    let mut relay = RelayConfig::new(SocketAddr::from((Ipv4Addr::LOCALHOST, PORT_CHOSEN_BY_OS)));
     relay.tls = Some(TlsConfig::new(
         site.https,
         CertConfig::LetsEncrypt {
@@ -901,7 +902,6 @@ mod tests {
     const HELD_COUNTER: &str = "5\n";
     const RELAY_SHUTDOWN_FAILURE: &str = "the relay supervisor ended with an error";
     const SPEC_HTTPS_ADDRESS: &str = "192.0.2.7:443";
-    const SPEC_ACME_CHALLENGE_ADDRESS: &str = "192.0.2.7:80";
     const SPEC_QUIC_ADDRESS_DISCOVERY_ADDRESS: &str = "192.0.2.7:7842";
     const FROZEN_CLOCK_SECONDS: u64 = FROZEN_CLOCK_MS / MILLIS_PER_SECOND;
     const SCRATCH_PREFIX: &str = "estafette-infra";
@@ -1410,7 +1410,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_14_a_certified_host_serves_its_relay_on_443_80_and_7842_with_a_private_cache_and_binds_with_its_own_relay_alone()
+    async fn spec_3_14_a_certified_host_serves_its_relay_on_443_and_7842_with_a_private_cache_and_binds_with_its_own_relay_alone()
      {
         let scratch = Scratch::new("serving");
         scratch.configure_network();
@@ -1429,7 +1429,6 @@ mod tests {
         assert_eq!(printed, spec_host_line(HOST_SEED));
         let expected_site = RelaySite {
             https: SPEC_HTTPS_ADDRESS.parse().unwrap(),
-            acme_challenge: SPEC_ACME_CHALLENGE_ADDRESS.parse().unwrap(),
             quic_address_discovery: SPEC_QUIC_ADDRESS_DISCOVERY_ADDRESS.parse().unwrap(),
             domain: DOMAIN.to_owned(),
             certificate_cache: scratch.certificate_cache(),
@@ -1447,6 +1446,26 @@ mod tests {
             *seen.relay_shut_down_after_endpoint_closed.lock().unwrap(),
             vec![true]
         );
+    }
+
+    #[cfg(feature = "relay")]
+    #[tokio::test]
+    async fn spec_3_14_the_embedded_relay_starts_with_tcp_80_taken_and_answers_acme_on_https_alone()
+    {
+        const TCP_PORT_80: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 80);
+        let scratch = Scratch::new("relay-without-port-80");
+        let port_80_holder = std::net::TcpListener::bind(TCP_PORT_80);
+        let site = RelaySite {
+            https: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            quic_address_discovery: SocketAddr::from((Ipv4Addr::LOCALHOST, 0)),
+            domain: DOMAIN.to_owned(),
+            certificate_cache: scratch.certificate_cache(),
+        };
+
+        let shut_down = start_embedded_relay(site).await.unwrap();
+
+        shut_down().await.unwrap();
+        drop(port_80_holder);
     }
 
     #[tokio::test]
