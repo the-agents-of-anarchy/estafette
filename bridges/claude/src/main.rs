@@ -15,12 +15,13 @@ use estafette_bridge_claude::discover::{
 };
 use estafette_bridge_claude::doctor::{
     DoctorInputs, MESSAGING_SOCKET_VARIABLE, MessagingSocket, RUN_SUBCOMMAND, SettingsFile,
-    dropped_frames_path, run_doctor, running_bridge_for,
+    dropped_frames_path, permission_class_path, run_doctor, running_bridge_for,
 };
 use estafette_bridge_claude::inbox_client::{
     InboxConnector, InboxFrame, UnixSocketConnector, follow_inbox,
 };
 use estafette_bridge_claude::inject::SessionNotifier;
+use estafette_bridge_claude::permission_class::PermissionClass;
 
 const DOCTOR_SUBCOMMAND: &str = "doctor";
 const USAGE: &str = "usage: estafette-bridge-claude run <harness-pid> | doctor";
@@ -219,6 +220,17 @@ struct BridgeSession<S: InboxConnector, F: Files> {
 }
 
 impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
+    /// Writes the attested permission class where the doctor reads it and reports it, reporting a failed write.
+    fn record_permission_class(&self, class: PermissionClass, class_file: &Path) {
+        (self.report_error)(&format!("attested permission class: {class}"));
+        if let Err(error) = self
+            .files
+            .write_text_atomically(class_file, &class.to_string())
+        {
+            (self.report_error)(&format!("cannot write the permission class: {error}"));
+        }
+    }
+
     /// Injects one frame as a notice and records the dropped-frame count when it changed.
     fn deliver(&self, frame: &InboxFrame) {
         let mut notifier = lock(&self.notifier);
@@ -279,6 +291,7 @@ struct BridgeEffects<S, C, F> {
     temporary_dir: PathBuf,
     session_connector: S,
     session_token: String,
+    permission_class: PermissionClass,
     connect_binary_socket: C,
     files: F,
     elapsed: Elapsed,
@@ -294,6 +307,7 @@ type ProductionBridgeEffects<F> =
 fn bridge_effects<F: Files>(
     environment: &Environment,
     files: F,
+    permission_class: PermissionClass,
 ) -> Result<ProductionBridgeEffects<F>, CommandError> {
     let socket = environment
         .messaging_socket
@@ -310,6 +324,7 @@ fn bridge_effects<F: Files>(
         temporary_dir: environment.temporary_dir.clone(),
         session_connector: UnixSocketConnector::new(socket),
         session_token,
+        permission_class,
         connect_binary_socket: UnixSocketConnector::new,
         files,
         elapsed: Arc::new(move || started.elapsed()),
@@ -341,6 +356,7 @@ where
         notifier: Mutex::new(SessionNotifier::new(
             effects.session_connector,
             effects.session_token,
+            effects.permission_class,
         )),
         followed_sockets: Mutex::default(),
         dropped_frames_file: dropped_frames_path(&effects.temporary_dir, harness_pid),
@@ -350,6 +366,10 @@ where
         spawn: effects.spawn,
         wait,
     });
+    session.record_permission_class(
+        effects.permission_class,
+        &permission_class_path(&effects.temporary_dir, harness_pid),
+    );
     session.record_dropped_frames(0);
     follow_binary_sockets(
         harness_pid,
@@ -515,7 +535,8 @@ fn main() -> ExitCode {
     };
     match parse_command(&arguments) {
         Some(Command::Run { harness_pid }) => {
-            let outcome = bridge_effects(&environment, OperatingSystemFiles)
+            let permission_class = PermissionClass::from_hook_input(std::io::stdin());
+            let outcome = bridge_effects(&environment, OperatingSystemFiles, permission_class)
                 .and_then(|effects| run_bridge(harness_pid, effects, &PsProcessTable))
                 .map(|outcome| {
                     if let BridgeOutcome::AlreadyServed { bridge_pid } = outcome {
@@ -661,6 +682,7 @@ mod tests {
                 temporary_dir: PathBuf::from(TEST_TEMPORARY_DIR),
                 session_connector: DownConnector,
                 session_token: "token".to_owned(),
+                permission_class: PermissionClass::Bypass,
                 connect_binary_socket: Box::new(move |socket_path| {
                     lock(&recorded_paths).push(socket_path);
                     DownConnector
@@ -711,7 +733,11 @@ mod tests {
     #[test]
     fn spec_3_12_the_bridge_needs_the_session_socket_and_token_before_it_starts() {
         assert!(matches!(
-            bridge_effects(&bare_environment(), OperatingSystemFiles),
+            bridge_effects(
+                &bare_environment(),
+                OperatingSystemFiles,
+                PermissionClass::Prompting
+            ),
             Err(CommandError::MissingVariable(MESSAGING_SOCKET_VARIABLE))
         ));
     }
@@ -769,6 +795,24 @@ mod tests {
         assert_eq!(written_counts(&wiring.writes), ["0"]);
     }
 
+    const PERMISSION_CLASS_FILE: &str = "/var/tmp/estafette-bridge-claude-100.permission-class";
+
+    #[test]
+    fn harness_2_1_319_the_bridge_reports_and_records_the_class_it_attests_when_it_starts() {
+        let polls = SnapshotSequence(RefCell::new(vec![Vec::new()]));
+        let wiring = wiring();
+        run_bridge(100, wiring.effects, &polls).expect("bridge runs");
+        assert_eq!(*lock(&wiring.errors), ["attested permission class: bypass"]);
+        assert_eq!(
+            *lock(&wiring.writes)
+                .iter()
+                .filter(|(path, _)| path == Path::new(PERMISSION_CLASS_FILE))
+                .map(|(_, text)| text.clone())
+                .collect::<Vec<_>>(),
+            ["bypass"]
+        );
+    }
+
     #[test]
     fn spec_3_12_a_binary_socket_that_cannot_be_reached_is_reported_and_followed_again_later() {
         let harness = ProcessEntry {
@@ -784,8 +828,10 @@ mod tests {
         let task = lock(&wiring.spawned).pop().expect("one follower spawned");
         task();
         assert_eq!(
-            *lock(&wiring.errors),
-            ["/run/user/1000/estafette-1000/101.sock: cannot connect to the inbox socket: down"]
+            lock(&wiring.errors).last().map(String::as_str),
+            Some(
+                "/run/user/1000/estafette-1000/101.sock: cannot connect to the inbox socket: down"
+            )
         );
     }
 
@@ -805,10 +851,13 @@ mod tests {
         counts: Vec<String>,
     }
 
-    fn deliver_eleven_frames(seconds_between_frames: u64) -> DeliveryRun {
-        let wiring = wiring();
-        let session = BridgeSession {
-            notifier: Mutex::new(SessionNotifier::new(DownConnector, "token".to_owned())),
+    fn bridge_session(wiring: &Wiring) -> BridgeSession<DownConnector, StandInFiles> {
+        BridgeSession {
+            notifier: Mutex::new(SessionNotifier::new(
+                DownConnector,
+                "token".to_owned(),
+                PermissionClass::Bypass,
+            )),
             followed_sockets: Mutex::default(),
             dropped_frames_file: PathBuf::from(DROPPED_FRAMES_FILE),
             files: StandInFiles::default(),
@@ -816,7 +865,12 @@ mod tests {
             report_error: Arc::clone(&wiring.effects.report_error),
             spawn: Arc::clone(&wiring.effects.spawn),
             wait: |_| {},
-        };
+        }
+    }
+
+    fn deliver_eleven_frames(seconds_between_frames: u64) -> DeliveryRun {
+        let wiring = wiring();
+        let session = bridge_session(&wiring);
         for index in 0..11_u64 {
             *lock(&wiring.clock_seconds) = index.saturating_mul(seconds_between_frames);
             session.deliver(&frame_from("ana", &format!("body {index}")));
@@ -839,6 +893,16 @@ mod tests {
         let across_windows = deliver_eleven_frames(61);
         assert_eq!(across_windows.errors.len(), 11);
         assert_eq!(across_windows.counts, Vec::<String>::new());
+    }
+
+    #[test]
+    fn harness_2_1_319_a_frame_whose_sender_name_is_refused_is_reported_and_recorded_as_dropped() {
+        let wiring = wiring();
+        let session = bridge_session(&wiring);
+        session.deliver(&frame_from("an\"a", "x"));
+        assert_eq!(lock(&wiring.errors).len(), 1);
+        assert!(lock(&wiring.errors)[0].starts_with("frame from \"an\\\"a\" dropped"));
+        assert_eq!(written_counts(&session.files.writes), ["1"]);
     }
 
     fn scratch_directory(label: &str) -> PathBuf {

@@ -3,15 +3,24 @@ use std::io::{self, Write};
 use std::time::Duration;
 
 use serde::Serialize;
-use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 
 use crate::inbox_client::{InboxConnector, InboxFrame};
+use crate::permission_class::PermissionClass;
 use crate::ratelimit::{Admission, SenderRateLimit};
 
 const LINE_TERMINATOR: char = '\n';
-const MILLIS_PER_SECOND: u64 = 1000;
-const LATEST_RENDERABLE_SENT_AT: &str = "9999-12-31T23:59:59Z";
+const ENVELOPE_TAG: &str = "cross-session-message";
+const HARNESS_MESSAGE_VERSION: u8 = 1;
+const HARNESS_DEFAULT_PRIORITY: &str = "next";
+const LONGEST_ENVELOPE_NAME_CHARACTERS: usize = 64;
+const ENVELOPE_NAME_FORBIDDEN_CHARACTERS: [char; 4] = ['"', '<', '>', '\n'];
+
+#[derive(Serialize)]
+#[serde(rename_all = "lowercase")]
+enum LineType {
+    Auth,
+    User,
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -26,31 +35,38 @@ struct UserMessage {
 }
 
 #[derive(Serialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
-enum SocketLine<'a> {
-    Auth { token: &'a str },
-    User { message: UserMessage },
+struct AuthLine<'a> {
+    #[serde(rename = "type")]
+    line_type: LineType,
+    token: &'a str,
 }
 
-fn iso_8601_utc(unix_millis: u64) -> String {
-    let unix_seconds = unix_millis.div_euclid(MILLIS_PER_SECOND);
-    i64::try_from(unix_seconds)
-        .ok()
-        .and_then(|seconds| OffsetDateTime::from_unix_timestamp(seconds).ok())
-        .and_then(|instant| instant.format(&Rfc3339).ok())
-        .unwrap_or_else(|| LATEST_RENDERABLE_SENT_AT.to_owned())
+#[derive(Serialize)]
+struct PeerLine<'a> {
+    #[serde(rename = "msgV")]
+    message_version: u8,
+    msg_id: &'a str,
+    #[serde(rename = "type")]
+    line_type: LineType,
+    message: UserMessage,
+    priority: &'static str,
 }
 
-fn notice_text(frame: &InboxFrame) -> String {
+/// Tells whether the harness's envelope parser accepts the name as the `from-name` attribute.
+fn is_envelope_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().count() <= LONGEST_ENVELOPE_NAME_CHARACTERS
+        && !name.contains(ENVELOPE_NAME_FORBIDDEN_CHARACTERS)
+}
+
+/// Wraps the body in the envelope the harness writes for a peer send, naming the sender and attesting the class.
+fn envelope_content(name: &str, class: PermissionClass, body: &str) -> String {
     format!(
-        "Message from peer {} (verified member of your network), sent {}.\n{}\nReply with the send tool.",
-        frame.from,
-        iso_8601_utc(frame.sent_at),
-        frame.body
+        "<{ENVELOPE_TAG} from-name=\"{name}\" from-mode=\"{class}\">\n{body}\n</{ENVELOPE_TAG}>"
     )
 }
 
-fn write_line(stream: &mut impl Write, line: &SocketLine) -> io::Result<()> {
+fn write_line(stream: &mut impl Write, line: &impl Serialize) -> io::Result<()> {
     let mut text = serde_json::to_string(line)?;
     text.push(LINE_TERMINATOR);
     stream.write_all(text.as_bytes())?;
@@ -61,6 +77,7 @@ fn write_line(stream: &mut impl Write, line: &SocketLine) -> io::Result<()> {
 pub enum InjectError {
     ConnectFailed(io::Error),
     WriteFailed(io::Error),
+    SenderNameRefused(String),
 }
 
 impl fmt::Display for InjectError {
@@ -75,6 +92,10 @@ impl fmt::Display for InjectError {
             Self::WriteFailed(source) => {
                 write!(formatter, "cannot write to the messaging socket: {source}")
             }
+            Self::SenderNameRefused(name) => write!(
+                formatter,
+                "frame from {name:?} dropped: the harness takes a sender name of 1 to {LONGEST_ENVELOPE_NAME_CHARACTERS} characters with none of \" < > or a newline"
+            ),
         }
     }
 }
@@ -84,52 +105,67 @@ impl std::error::Error for InjectError {}
 pub struct SessionNotifier<C: InboxConnector> {
     connector: C,
     session_token: String,
+    class: PermissionClass,
     rate_limit: SenderRateLimit,
+    refused_frames: u64,
 }
 
 impl<C: InboxConnector> SessionNotifier<C> {
-    /// Names the messaging socket connector and the session token every notice authenticates with.
-    pub fn new(connector: C, session_token: String) -> Self {
+    /// Names the messaging socket connector, the session token every line authenticates with and the session's permission class.
+    pub fn new(connector: C, session_token: String, class: PermissionClass) -> Self {
         Self {
             connector,
             session_token,
+            class,
             rate_limit: SenderRateLimit::default(),
+            refused_frames: 0,
         }
     }
 
-    /// Injects one frame as a notice into the session unless the rate limit drops it.
+    /// Injects one frame as the harness's peer line unless its sender name is refused or the rate limit drops it.
     /// # Errors
-    /// Returns the `InjectError` of the failed connection or write.
+    /// Returns the `InjectError` of the refused name or of the failed connection or write.
     pub fn notify(&mut self, frame: &InboxFrame, now: Duration) -> Result<(), InjectError> {
+        if !is_envelope_name(&frame.from) {
+            self.refused_frames = self.refused_frames.saturating_add(1);
+            return Err(InjectError::SenderNameRefused(frame.from.clone()));
+        }
         match self.rate_limit.admit(&frame.from, &frame.body, now) {
             Admission::Dropped => Ok(()),
-            Admission::Admitted => self.write_notice(frame),
+            Admission::Admitted => self.write_peer_line(frame),
         }
     }
 
-    fn write_notice(&mut self, frame: &InboxFrame) -> Result<(), InjectError> {
+    fn write_peer_line(&mut self, frame: &InboxFrame) -> Result<(), InjectError> {
         let mut stream = self
             .connector
             .connect()
             .map_err(InjectError::ConnectFailed)?;
-        let auth = SocketLine::Auth {
+        let auth = AuthLine {
+            line_type: LineType::Auth,
             token: &self.session_token,
         };
-        let notice = SocketLine::User {
+        let peer_line = PeerLine {
+            message_version: HARNESS_MESSAGE_VERSION,
+            msg_id: &frame.id,
+            line_type: LineType::User,
             message: UserMessage {
                 role: Role::User,
-                content: notice_text(frame),
+                content: envelope_content(&frame.from, self.class, &frame.body),
             },
+            priority: HARNESS_DEFAULT_PRIORITY,
         };
         write_line(&mut stream, &auth)
-            .and_then(|()| write_line(&mut stream, &notice))
+            .and_then(|()| write_line(&mut stream, &peer_line))
             .map_err(InjectError::WriteFailed)
     }
 
-    /// Counts the frames the rate limit has dropped.
+    /// Counts the frames the rate limit has dropped and the frames whose sender name was refused.
     #[must_use]
     pub const fn dropped_frames(&self) -> u64 {
-        self.rate_limit.dropped_frames()
+        self.rate_limit
+            .dropped_frames()
+            .saturating_add(self.refused_frames)
     }
 }
 
@@ -187,6 +223,13 @@ mod tests {
 
     const TEST_TOKEN: &str = "session-token-77";
 
+    fn frame_with_id(id: &str, from: &str, body: &str) -> InboxFrame {
+        InboxFrame {
+            id: id.to_owned(),
+            ..frame_from(from, body, 0)
+        }
+    }
+
     fn frame_from(from: &str, body: &str, sent_at: u64) -> InboxFrame {
         InboxFrame {
             seq: 1,
@@ -198,21 +241,31 @@ mod tests {
         }
     }
 
-    fn notifier() -> (SessionNotifier<RecordingConnector>, RecordedConnections) {
+    fn notifier_of_class(
+        class: PermissionClass,
+    ) -> (SessionNotifier<RecordingConnector>, RecordedConnections) {
         let connections = RecordedConnections::default();
         let notifier = SessionNotifier::new(
             RecordingConnector(Rc::clone(&connections)),
             TEST_TOKEN.to_owned(),
+            class,
         );
         (notifier, connections)
     }
 
+    fn notifier() -> (SessionNotifier<RecordingConnector>, RecordedConnections) {
+        notifier_of_class(PermissionClass::Bypass)
+    }
+
+    const HARNESS_LINE_ID: &str = "2d3f9084-db21-40dc-9e8a-91780c582877";
+
     #[test]
-    fn spec_3_12_one_frame_opens_one_connection_with_the_auth_line_then_the_notice_line() {
-        let (mut notifier, connections) = notifier();
+    fn harness_2_1_319_one_frame_opens_one_connection_with_the_auth_line_then_the_harness_peer_line()
+     {
+        let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
         notifier
             .notify(
-                &frame_from("ana", "build is green", 1_700_000_000_000),
+                &frame_with_id(HARNESS_LINE_ID, "ana", "build is green"),
                 Duration::ZERO,
             )
             .expect("notify");
@@ -220,57 +273,83 @@ mod tests {
             *connections.borrow(),
             vec![
                 "{\"type\":\"auth\",\"token\":\"session-token-77\"}\n\
-                 {\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Message from peer ana (verified member of your network), sent 2023-11-14T22:13:20Z.\\nbuild is green\\nReply with the send tool.\"}}\n"
+                 {\"msgV\":1,\"msg_id\":\"2d3f9084-db21-40dc-9e8a-91780c582877\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<cross-session-message from-name=\\\"ana\\\" from-mode=\\\"bypass\\\">\\nbuild is green\\n</cross-session-message>\"},\"priority\":\"next\"}\n"
             ]
         );
-    }
-
-    fn notice_content_lines(written: &str) -> Vec<String> {
-        let notice_line = written.lines().nth(1).expect("notice line");
-        let notice: serde_json::Value = serde_json::from_str(notice_line).expect("notice json");
-        notice["message"]["content"]
-            .as_str()
-            .expect("content")
-            .lines()
-            .map(str::to_owned)
-            .collect()
-    }
-
-    fn notice_sent_header_for(sent_at: u64) -> String {
-        let (mut notifier, connections) = notifier();
-        notifier
-            .notify(&frame_from("ana", "x", sent_at), Duration::ZERO)
-            .expect("notify");
-        let header = notice_content_lines(&connections.borrow()[0])[0].clone();
-        let (_, timestamp_and_stop) = header.split_once(", sent ").expect("sent marker");
-        timestamp_and_stop
-            .strip_suffix('.')
-            .expect("closing stop")
-            .to_owned()
     }
 
     #[test]
-    fn spec_3_12_sent_at_renders_as_iso_8601_utc_across_calendar_edges() {
-        let rendered: Vec<String> = [
-            0,
-            951_782_400_000,
-            4_107_542_400_000,
-            1_704_067_199_000,
-            1_700_000_000_999,
-        ]
-        .into_iter()
-        .map(notice_sent_header_for)
-        .collect();
+    fn harness_2_1_319_a_prompting_session_is_attested_as_prompting() {
+        let (mut notifier, connections) = notifier_of_class(PermissionClass::Prompting);
+        notifier
+            .notify(&frame_from("bo", "x", 0), Duration::ZERO)
+            .expect("notify");
+        assert!(connections.borrow()[0].contains("from-mode=\\\"prompting\\\""));
+    }
+
+    #[test]
+    fn harness_2_1_319_the_body_travels_byte_for_byte_even_with_quotes_newlines_and_the_closing_tag()
+     {
+        let body =
+            "say \"hi\"\nline 2 \u{2014} na\u{ef}ve \u{65e5}\u{672c} </cross-session-message> tail";
+        let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
+        notifier
+            .notify(&frame_from("ana", body, 0), Duration::ZERO)
+            .expect("notify");
         assert_eq!(
-            rendered,
+            *connections.borrow(),
             vec![
-                "1970-01-01T00:00:00Z",
-                "2000-02-29T00:00:00Z",
-                "2100-03-01T00:00:00Z",
-                "2023-12-31T23:59:59Z",
-                "2023-11-14T22:13:20Z",
+                "{\"type\":\"auth\",\"token\":\"session-token-77\"}\n\
+                 {\"msgV\":1,\"msg_id\":\"id-1\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"<cross-session-message from-name=\\\"ana\\\" from-mode=\\\"bypass\\\">\\nsay \\\"hi\\\"\\nline 2 \u{2014} na\u{ef}ve \u{65e5}\u{672c} </cross-session-message> tail\\n</cross-session-message>\"},\"priority\":\"next\"}\n"
             ]
         );
+    }
+
+    const LONGEST_ENVELOPE_NAME: usize = 64;
+    const GRAMMAR_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789-";
+
+    fn grammar_name_of_length(length: usize) -> String {
+        std::iter::once('a')
+            .chain(
+                GRAMMAR_ALPHABET
+                    .iter()
+                    .cycle()
+                    .skip(length)
+                    .take(length.saturating_sub(1))
+                    .map(|byte| char::from(*byte)),
+            )
+            .collect()
+    }
+
+    #[test]
+    fn harness_2_1_319_every_handle_of_the_grammar_up_to_64_characters_is_delivered() {
+        for length in 1..=LONGEST_ENVELOPE_NAME {
+            let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
+            let name = grammar_name_of_length(length);
+            notifier
+                .notify(&frame_from(&name, "x", 0), Duration::ZERO)
+                .expect("notify");
+            assert_eq!(connections.borrow().len(), 1, "{name}");
+            assert!(
+                connections.borrow()[0].contains(&format!("from-name=\\\"{name}\\\" from-mode")),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn harness_2_1_319_a_sender_name_the_envelope_cannot_carry_is_refused_and_counted_as_dropped() {
+        let too_long = grammar_name_of_length(LONGEST_ENVELOPE_NAME + 1);
+        for name in [too_long.as_str(), "an\"a", "an<a", "an>a", "an\na", ""] {
+            let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
+            let outcome = notifier.notify(&frame_from(name, "x", 0), Duration::ZERO);
+            assert!(
+                matches!(outcome, Err(InjectError::SenderNameRefused(_))),
+                "{name:?}"
+            );
+            assert!(connections.borrow().is_empty(), "{name:?}");
+            assert_eq!(notifier.dropped_frames(), 1, "{name:?}");
+        }
     }
 
     fn notify_at(
@@ -284,11 +363,22 @@ mod tests {
             .expect("notify");
     }
 
+    fn injected_body(written: &str) -> String {
+        let peer_line = written.lines().nth(1).expect("peer line");
+        let line: serde_json::Value = serde_json::from_str(peer_line).expect("peer line json");
+        let content = line["message"]["content"].as_str().expect("content");
+        let (_, after_open_tag) = content.split_once(">\n").expect("open tag");
+        after_open_tag
+            .strip_suffix("\n</cross-session-message>")
+            .expect("close tag")
+            .to_owned()
+    }
+
     fn injected_bodies(connections: &RecordedConnections) -> Vec<String> {
         connections
             .borrow()
             .iter()
-            .map(|written| notice_content_lines(written)[1].clone())
+            .map(|written| injected_body(written))
             .collect()
     }
 
@@ -401,6 +491,7 @@ mod tests {
         let mut notifier = SessionNotifier::new(
             BrokenConnector(Some(io::ErrorKind::ConnectionRefused)),
             TEST_TOKEN.to_owned(),
+            PermissionClass::Bypass,
         );
         let outcome = notifier.notify(&frame_from("ana", "x", 0), Duration::ZERO);
         assert!(matches!(outcome, Err(InjectError::ConnectFailed(_))));
@@ -408,7 +499,11 @@ mod tests {
 
     #[test]
     fn spec_3_12_a_socket_that_cannot_be_written_is_reported_as_write_failed() {
-        let mut notifier = SessionNotifier::new(BrokenConnector(None), TEST_TOKEN.to_owned());
+        let mut notifier = SessionNotifier::new(
+            BrokenConnector(None),
+            TEST_TOKEN.to_owned(),
+            PermissionClass::Bypass,
+        );
         let outcome = notifier.notify(&frame_from("ana", "x", 0), Duration::ZERO);
         assert!(matches!(outcome, Err(InjectError::WriteFailed(_))));
     }
@@ -431,6 +526,7 @@ mod tests {
         let mut notifier = SessionNotifier::new(
             UnixSocketConnector::new(socket_path.clone()),
             TEST_TOKEN.to_owned(),
+            PermissionClass::Bypass,
         );
         notifier
             .notify(&frame_from("ana", "over a real socket", 0), Duration::ZERO)
@@ -444,21 +540,5 @@ mod tests {
             "{\"type\":\"auth\",\"token\":\"session-token-77\"}"
         );
         assert!(lines[1].contains("over a real socket"));
-    }
-
-    #[test]
-    fn spec_3_12_a_peer_chosen_sent_at_beyond_year_9999_renders_as_the_latest_iso_8601_instant() {
-        let rendered: Vec<String> = [253_402_300_798_000, 253_402_300_799_000, u64::MAX]
-            .into_iter()
-            .map(notice_sent_header_for)
-            .collect();
-        assert_eq!(
-            rendered,
-            vec![
-                "9999-12-31T23:59:58Z",
-                "9999-12-31T23:59:59Z",
-                "9999-12-31T23:59:59Z",
-            ]
-        );
     }
 }
