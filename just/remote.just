@@ -225,3 +225,36 @@ call-on-server card tool:
 [group('lab')]
 run-record-on-server card:
     ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) cat /home/lab/{{ card }}.err
+
+relay_only_mark := "estafette-relay-only"
+
+[doc("Drop UDP between the server and this machine, IPv4 to and from this machine's address as the server sees it and every IPv6 datagram but DNS, so members on the two reach each other through a relay alone; relay-paths-restored undoes it")]
+[group('lab')]
+relay-only-to-here:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh {{ ssh_opts }} root@"$(hcloud server ip {{ server }})" bash -s <<'RULES'
+    set -euo pipefail
+    here="${SSH_CLIENT%% *}"
+    iptables -I INPUT -s "$here" -p udp -m comment --comment {{ relay_only_mark }} -j DROP
+    iptables -I OUTPUT -d "$here" -p udp -m comment --comment {{ relay_only_mark }} -j DROP
+    ip6tables -I INPUT -p udp ! --sport 53 -m comment --comment {{ relay_only_mark }} -j DROP
+    ip6tables -I OUTPUT -p udp ! --dport 53 -m comment --comment {{ relay_only_mark }} -j DROP
+    RULES
+
+[doc("Print each rule relay-only-to-here put on the server with its drop counters, then delete every one of them; does nothing when none is there")]
+[group('lab')]
+relay-paths-restored:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ssh {{ ssh_opts }} root@"$(hcloud server ip {{ server }})" bash -s <<'RULES'
+    set -uo pipefail
+    for table in iptables ip6tables; do
+        for chain in INPUT OUTPUT; do
+            "$table" -L "$chain" -v -n | grep -- {{ relay_only_mark }} | sed "s/^/$table $chain /" || true
+            while rule="$("$table" -S "$chain" | grep -m 1 -- '--comment {{ relay_only_mark }}')"; do
+                "$table" ${rule/-A/-D} || exit 1
+            done
+        done
+    done
+    RULES

@@ -12,10 +12,19 @@ const LAB_SERVER_VARIABLE: &str = "LAB_SERVER";
 const LAB_BINARY_VARIABLE: &str = "LAB_BINARY";
 /// How messages and kept records name the live host's server, whose name the gate leaves to the recipes.
 const LIVE_HOST_SERVER_LABEL: &str = "live-host-server";
+/// The recipe that drops UDP between a server and this machine.
+const RELAY_ONLY_RECIPE: &str = "remote::relay-only-to-here";
+/// The recipe that deletes those drops, printing their counters.
+const RELAY_PATHS_RESTORED_RECIPE: &str = "remote::relay-paths-restored";
 
 /// A lab server the acceptance gate brought up, reached through the remote recipes.
 pub struct LabServer {
     name: Option<String>,
+}
+
+/// UDP between a lab server and this machine dropped both ways, so members on the two reach each other through a relay alone; restored when dropped, whether the test ended or failed.
+pub struct RelayOnlyPath<'server> {
+    server: &'server LabServer,
 }
 
 /// The server of the host the test may kill, the one server whose host the test stops and starts.
@@ -64,6 +73,14 @@ impl LabServer {
         running.stdin.take().unwrap().write_all(input).unwrap();
         running.wait_with_output().unwrap()
     }
+
+    /// Drops UDP between this server and this machine until the returned path is dropped, which also undoes a drop that failed half way.
+    #[track_caller]
+    pub fn relay_only_to_here(&self) -> RelayOnlyPath<'_> {
+        let path = RelayOnlyPath { server: self };
+        self.run(RELAY_ONLY_RECIPE, &[], &[]);
+        path
+    }
 }
 
 impl KillableHostServer {
@@ -82,5 +99,29 @@ impl KillableHostServer {
     /// The server itself, for members and paths on it.
     pub const fn server(&self) -> &LabServer {
         &self.server
+    }
+}
+
+impl Drop for RelayOnlyPath<'_> {
+    fn drop(&mut self) {
+        let restored = self.server.attempt(RELAY_PATHS_RESTORED_RECIPE, &[], &[]);
+        eprintln!(
+            "UDP paths between {} and this machine restored; the drops counted by each rule:\n{}",
+            self.server.label(),
+            String::from_utf8_lossy(&restored.stdout)
+        );
+        if restored.status.success() {
+            return;
+        }
+        let failure = format!(
+            "the UDP drops on {} were not deleted: {}",
+            self.server.label(),
+            String::from_utf8_lossy(&restored.stderr)
+        );
+        if std::thread::panicking() {
+            eprintln!("{failure}");
+        } else {
+            panic!("{failure}");
+        }
     }
 }
