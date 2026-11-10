@@ -136,7 +136,7 @@ fn main() -> ExitCode {
             command,
             |name: &str| std::env::var_os(name),
             &OperatingSystemFilesystem,
-            |seed| *seed = SecretKey::generate().to_bytes(),
+            fill_with_secure_random_bytes,
             &mut io::stdout(),
             &mut io::stderr(),
         ),
@@ -259,7 +259,7 @@ fn server_effects(inbox: Arc<InboxSocket>) -> ServerEffects {
             clock: Arc::new(wall_clock_milliseconds),
             monotonic: Arc::new(tokio::time::Instant::now),
             fill_probe_nonce: Arc::new(|nonce: &mut Nonce| fill_with_secure_random_bytes(nonce)),
-            report: Arc::new(|record: NodeRecord| drop(writeln!(io::stderr(), "{record}"))),
+            report: Arc::new(|record: NodeRecord| report_run_record(&record)),
             inbox,
             probe_relay: Arc::new(|relay| Box::pin(relay_answers(relay))),
         },
@@ -277,7 +277,7 @@ fn server_effects(inbox: Arc<InboxSocket>) -> ServerEffects {
         is_card_held: Arc::new(|sidecar_path: &Path| {
             sidecar::is_held(sidecar_path).is_ok_and(|held| held)
         }),
-        report: Arc::new(|record: ServerRecord| drop(writeln!(io::stderr(), "{record}"))),
+        report: Arc::new(|record: ServerRecord| report_run_record(&record)),
     }
 }
 
@@ -295,12 +295,22 @@ fn fill_with_secure_random_bytes<const LENGTH: usize>(bytes: &mut [u8; LENGTH]) 
     }
 }
 
-/// Writes the reason a gossip connection was closed at the network secret gate to the run record.
-fn report_gate_closing(failure: &GateFailure) {
+/// Writes the reason a gossip connection was closed at the network secret gate to the record.
+fn write_gate_closing(record: &mut impl Write, failure: &GateFailure) {
     drop(writeln!(
-        io::stderr(),
+        record,
         "a gossip connection was closed at the network secret gate: {failure}"
     ));
+}
+
+/// Writes the reason a gossip connection was closed at the network secret gate to the run record on stderr.
+fn report_gate_closing(failure: &GateFailure) {
+    write_gate_closing(&mut io::stderr(), failure);
+}
+
+/// Writes one entry of a run record to stderr.
+fn report_run_record(entry: &impl fmt::Display) {
+    drop(writeln!(io::stderr(), "{entry}"));
 }
 
 /// Shuts the runtime down as the session asked: awaited within its limit, or in the background, so a pending read of standard input never holds the exit.
@@ -341,7 +351,7 @@ fn run_network_command(
         command,
         &directories,
         &OperatingSystemFilesystem,
-        |bytes| *bytes = SecretKey::generate().to_bytes(),
+        fill_with_secure_random_bytes,
         now_unix_seconds,
         result,
         record,
@@ -437,14 +447,16 @@ fn observer_effects(
     let effects = ObserverEffects {
         clock: Arc::new(clock),
         monotonic: Arc::new(Instant::now),
-        fill_seed: Arc::new(|seed| *seed = SecretKey::generate().to_bytes()),
+        fill_seed: Arc::new(|seed: &mut [u8; RANDOM_BYTES_PER_SECRET_KEY]| {
+            fill_with_secure_random_bytes(seed);
+        }),
         bind_endpoint: Box::new(|key, gate_key, relays| {
             Box::pin(NodeEndpoint::bind(
                 key,
                 gate_key,
                 relays,
-                |nonce| *nonce = SecretKey::generate().to_bytes(),
-                |failure| drop(writeln!(io::stderr(), "{failure}")),
+                fill_with_secure_random_bytes,
+                |failure| report_gate_closing(&failure),
             ))
         }),
         interrupted: Box::pin(async {
@@ -452,12 +464,8 @@ fn observer_effects(
         }),
     };
     let operator_effects = OperatorEffects {
-        fill_probe_nonce: Arc::new(|nonce: &mut Nonce| {
-            for (slot, byte) in nonce.iter_mut().zip(SecretKey::generate().to_bytes()) {
-                *slot = byte;
-            }
-        }),
-        report: Arc::new(|record| drop(writeln!(io::stderr(), "{record}"))),
+        fill_probe_nonce: Arc::new(|nonce: &mut Nonce| fill_with_secure_random_bytes(nonce)),
+        report: Arc::new(|record| report_run_record(&record)),
         probe_relay: Arc::new(|relay| Box::pin(relay_answers(relay))),
         start_inbox: Box::new(move || {
             InboxSocket::start(
@@ -534,7 +542,9 @@ fn serve_infrastructure(
 #[cfg(feature = "relay")]
 fn infrastructure_effects(stopped: StopRequested) -> InfrastructureEffects {
     InfrastructureEffects {
-        fill_from_secure_source: Box::new(|seed| *seed = SecretKey::generate().to_bytes()),
+        fill_from_secure_source: Box::new(|seed: &mut [u8; RANDOM_BYTES_PER_SECRET_KEY]| {
+            fill_with_secure_random_bytes(seed);
+        }),
         clock: Arc::new(wall_clock_milliseconds),
         bind_endpoint: Box::new(|key, gate_key, relay| {
             Box::pin(NodeEndpoint::bind(
@@ -542,12 +552,12 @@ fn infrastructure_effects(stopped: StopRequested) -> InfrastructureEffects {
                 gate_key,
                 [relay],
                 fill_with_secure_random_bytes,
-                |closing: GateFailure| drop(writeln!(io::stderr(), "{closing}")),
+                |closing: GateFailure| report_gate_closing(&closing),
             ))
         }),
         start_relay: Box::new(|site| Box::pin(infra::start_embedded_relay(site))),
         stopped,
-        report: Arc::new(|record| drop(writeln!(io::stderr(), "{record}"))),
+        report: Arc::new(|record| report_run_record(&record)),
     }
 }
 
@@ -657,6 +667,18 @@ mod tests {
             unix_milliseconds_of(before).unwrap_err(),
             CommandLineFailure::ClockBeforeUnixEpoch
         ));
+    }
+
+    #[test]
+    fn spec_3_6_a_gate_closing_is_recorded_with_one_text_whichever_command_binds_the_endpoint() {
+        let mut record = Vec::new();
+
+        write_gate_closing(&mut record, &GateFailure::WrongProof);
+
+        assert_eq!(
+            String::from_utf8(record).unwrap(),
+            "a gossip connection was closed at the network secret gate: the peer's proof is not the gate proof\n"
+        );
     }
 
     #[test]
