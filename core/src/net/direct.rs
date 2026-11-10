@@ -4,13 +4,13 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use iroh::endpoint::{
-    ClosedStream, Connection, ConnectionError, Path, ReadError, ReadToEndError, RecvStream,
-    SendStream, VarInt, WriteError,
+    ClosedStream, Connection, ConnectionError, ReadError, ReadToEndError, RecvStream, SendStream,
+    VarInt, WriteError,
 };
 use iroh::protocol::{AcceptError, ProtocolHandler};
-use iroh::{Endpoint, EndpointId, TransportAddr};
+use iroh::{Endpoint, EndpointId};
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::time::timeout;
+use tokio::time::{Instant, sleep, timeout};
 
 use super::endpoint::DIRECT_ALPN;
 use crate::crypto::NetworkKeys;
@@ -32,6 +32,10 @@ const RESET_CODE_READ_TIMEOUT: u32 = 2;
 const RESET_CODE_UNANSWERED: u32 = 3;
 const SUPERSEDED_CONNECTION_CLOSE_CODE: u32 = 410;
 const SUPERSEDED_CONNECTION_CLOSE_REASON: &[u8] = b"superseded";
+/// How often the direct server reads what each accepted connection has heard, half the endpoint's QUIC keep-alive interval.
+const HEARING_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
+/// How long a connection hears nothing before it is taken for one of a process that no longer runs: three of the endpoint's QUIC keep-alive intervals, each of which a live peer answers.
+const GONE_PROCESS_SILENCE: Duration = Duration::from_millis(1500);
 
 /// What the direct server needs from the node: its identity and state, and the effects of a received Message and Introduce.
 pub trait DirectHost: Send + Sync + 'static {
@@ -60,30 +64,35 @@ pub trait DirectHost: Send + Sync + 'static {
 
 /// The connections the direct server accepted and has not seen close, by the card that dialed each.
 #[derive(Debug, Clone, Default)]
-pub struct AcceptedConnections(Arc<Mutex<HashMap<wire::PublicKey, Vec<Connection>>>>);
+pub struct AcceptedConnections(Arc<Mutex<HashMap<wire::PublicKey, Vec<Accepted>>>>);
 
 impl AcceptedConnections {
-    /// Closes every connection accepted from the card that cannot belong to the process announcing `addr`, so the endpoint forgets the path it held to a process that is gone (spec 3.8, address lookup).
-    pub(crate) fn close_from(&self, card: wire::PublicKey, addr: &wire::Addr) {
-        self.close_from_sparing(card, addr, None);
+    /// Closes every connection accepted from the card whose process no longer runs, so the endpoint forgets the path it held to that process (spec 3.8, address lookup).
+    pub(crate) fn close_from(&self, card: wire::PublicKey) {
+        self.close_from_sparing(card, None);
     }
 
-    /// Closes every connection accepted from the card that cannot belong to the process announcing `addr`, but the one an Introduce arrived on (spec 3.8, address lookup).
-    fn close_others_from(&self, card: wire::PublicKey, arrived_on: &Connection, addr: &wire::Addr) {
-        self.close_from_sparing(card, addr, Some(arrived_on.stable_id()));
+    /// Closes every connection accepted from the card whose process no longer runs, but the one an Introduce arrived on (spec 3.8, address lookup).
+    fn close_others_from(&self, card: wire::PublicKey, arrived_on: &Connection) {
+        self.close_from_sparing(card, Some(arrived_on.stable_id()));
     }
 
-    /// Closes every connection accepted from the card whose selected path does not reach `addr`, but the spared one.
-    fn close_from_sparing(&self, card: wire::PublicKey, addr: &wire::Addr, spared: Option<usize>) {
+    /// Closes every connection accepted from the card that has heard nothing from its peer for as long as a gone process is silent, but the spared one.
+    fn close_from_sparing(&self, card: wire::PublicKey, spared: Option<usize>) {
+        let now = Instant::now();
         let superseded = self
             .held()
             .get_mut(&card)
-            .map(|accepted| {
-                accepted
-                    .extract_if(.., |connection| {
-                        Some(connection.stable_id()) != spared
-                            && !selected_path_reaches(connection, addr)
+            .map(|from_card| {
+                for accepted in from_card.iter_mut() {
+                    accepted.note_hearing(now);
+                }
+                from_card
+                    .extract_if(.., |accepted| {
+                        Some(accepted.connection.stable_id()) != spared
+                            && accepted.is_from_a_gone_process(now)
                     })
+                    .map(|accepted| accepted.connection)
                     .collect()
             })
             .unwrap_or_default();
@@ -92,46 +101,75 @@ impl AcceptedConnections {
 
     /// Holds a connection just accepted from the card, forgetting every card left with no connection.
     fn hold(&self, card: wire::PublicKey, connection: &Connection) {
-        self.held().retain(|_, accepted| !accepted.is_empty());
-        self.held()
-            .entry(card)
-            .or_default()
-            .push(connection.clone());
+        let accepted = Accepted::heard_at(connection, Instant::now());
+        let mut held = self.held();
+        held.retain(|_, accepted| !accepted.is_empty());
+        held.entry(card).or_default().push(accepted);
+    }
+
+    /// Reads what the connection from the card has heard every hearing sample interval, for as long as it is held.
+    async fn follow_hearing(self, card: wire::PublicKey, connection: Connection) {
+        loop {
+            sleep(HEARING_SAMPLE_INTERVAL).await;
+            self.note_hearing(card, &connection);
+        }
+    }
+
+    /// Takes now as the last time the connection from the card heard from its peer, when it received a datagram since its last reading.
+    fn note_hearing(&self, card: wire::PublicKey, connection: &Connection) {
+        let now = Instant::now();
+        if let Some(accepted) = self.held().get_mut(&card).and_then(|accepted| {
+            accepted
+                .iter_mut()
+                .find(|accepted| accepted.connection.stable_id() == connection.stable_id())
+        }) {
+            accepted.note_hearing(now);
+        }
     }
 
     /// Forgets a connection from the card that has closed.
     fn forget(&self, card: wire::PublicKey, closed: &Connection) {
         if let Some(accepted) = self.held().get_mut(&card) {
-            accepted.retain(|connection| connection.stable_id() != closed.stable_id());
+            accepted.retain(|accepted| accepted.connection.stable_id() != closed.stable_id());
         }
     }
 
     /// The register, locked for one change.
-    fn held(&self) -> MutexGuard<'_, HashMap<wire::PublicKey, Vec<Connection>>> {
+    fn held(&self) -> MutexGuard<'_, HashMap<wire::PublicKey, Vec<Accepted>>> {
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-/// Whether the connection's selected path leads to a socket or relay that `addr` announces, so it can belong to the process announcing it.
-fn selected_path_reaches(connection: &Connection, addr: &wire::Addr) -> bool {
-    connection
-        .paths()
-        .iter()
-        .find(Path::is_selected)
-        .is_some_and(|path| path_reaches(path.remote_addr(), addr))
+/// A connection the direct server accepted, with the count of datagrams it had received when that count last moved and when it was seen to move.
+#[derive(Debug)]
+struct Accepted {
+    connection: Connection,
+    datagrams_heard: u64,
+    last_heard: Instant,
 }
 
-/// Whether a path to `remote` leads to a direct socket or a relay that `addr` announces.
-fn path_reaches(remote: &TransportAddr, addr: &wire::Addr) -> bool {
-    match remote {
-        TransportAddr::Ip(socket) => addr.direct().contains(socket),
-        TransportAddr::Relay(relay) => {
-            let relay = relay.to_string();
-            addr.relays()
-                .iter()
-                .any(|announced| announced.as_str() == relay)
+impl Accepted {
+    /// The connection, taken as heard from its peer at `now`.
+    fn heard_at(connection: &Connection, now: Instant) -> Self {
+        Self {
+            connection: connection.clone(),
+            datagrams_heard: connection.stats().udp_rx.datagrams,
+            last_heard: now,
         }
-        _ => false,
+    }
+
+    /// Takes `now` as the last time the peer was heard, when the connection received a datagram since the count was last read.
+    fn note_hearing(&mut self, now: Instant) {
+        let datagrams = self.connection.stats().udp_rx.datagrams;
+        if datagrams != self.datagrams_heard {
+            self.datagrams_heard = datagrams;
+            self.last_heard = now;
+        }
+    }
+
+    /// Whether the peer has been silent on the connection for as long as a process that no longer runs is, which a live peer answering keep-alives never is.
+    fn is_from_a_gone_process(&self, now: Instant) -> bool {
+        now.saturating_duration_since(self.last_heard) >= GONE_PROCESS_SILENCE
     }
 }
 
@@ -240,6 +278,12 @@ impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let sender = *connection.remote_id().as_bytes();
         self.shared.accepted.hold(sender, &connection);
+        let hearing = tokio::spawn(
+            self.shared
+                .accepted
+                .clone()
+                .follow_hearing(sender, connection.clone()),
+        );
         while let Ok((send, recv)) = connection.accept_bi().await {
             let shared = Arc::clone(&self.shared);
             let arrived_on = connection.clone();
@@ -247,6 +291,7 @@ impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
                 shared.serve_stream(sender, &arrived_on, send, recv).await;
             });
         }
+        hearing.abort();
         self.shared.accepted.forget(sender, &connection);
         Ok(())
     }
@@ -365,8 +410,7 @@ impl<H: DirectHost> ServerState<H> {
             Request::Probe(_) | Request::Introduce(_) if self.host.is_stopping() => Err(UNANSWERED),
             Request::Probe(probe) => Ok(Response::ProbeAck(self.answer_probe(&probe))),
             Request::Introduce(introduce) => {
-                self.accepted
-                    .close_others_from(sender, arrived_on, &introduce.addr);
+                self.accepted.close_others_from(sender, arrived_on);
                 Ok(Response::IntroduceAck(
                     self.host.receive_introduce(sender, introduce),
                 ))
@@ -664,6 +708,7 @@ mod tests {
         stopping: Arc<AtomicBool>,
         received: Arc<Mutex<Vec<(wire::PublicKey, Message)>>>,
         introduced: Arc<Mutex<Vec<(wire::PublicKey, wire::Introduce)>>>,
+        accepted: AcceptedConnections,
     }
 
     impl RecordingHost {
@@ -682,6 +727,7 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 received: Arc::new(Mutex::new(Vec::new())),
                 introduced: Arc::new(Mutex::new(Vec::new())),
+                accepted: AcceptedConnections::default(),
             }
         }
 
@@ -692,7 +738,7 @@ mod tests {
 
     impl DirectHost for RecordingHost {
         fn accepted_connections(&self) -> AcceptedConnections {
-            AcceptedConnections::default()
+            self.accepted.clone()
         }
 
         fn is_stopping(&self) -> bool {
@@ -1099,99 +1145,11 @@ mod tests {
         }
     }
 
-    const PROPERTY_CASES: u64 = 2000;
-    const SPEC_DIRECT_ADDRS_PER_ADDR: u64 = 8;
-    const SPEC_RELAY_URLS_PER_ADDR: u64 = 4;
-    const ANNOUNCED_OR_NOT: u64 = 2;
-    const RELAY_NAMES: u64 = 6;
-    const SHARED_HOSTS: u64 = 3;
-    const DOCUMENTATION_NETWORK_FIRST_HOST: u32 = 0xC000_0201;
-    const SHARED_PORTS: u64 = 3;
-    const SHARED_PORTS_FIRST: u16 = 53_821;
-    const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
-    const SPLITMIX_FIRST_MULTIPLIER: u64 = 0xBF58_476D_1CE4_E5B9;
-    const SPLITMIX_SECOND_MULTIPLIER: u64 = 0x94D0_49BB_1331_11EB;
-    const SPLITMIX_FIRST_SHIFT: u32 = 30;
-    const SPLITMIX_SECOND_SHIFT: u32 = 27;
-    const SPLITMIX_THIRD_SHIFT: u32 = 31;
-
-    struct Draws(u64);
-
-    impl Draws {
-        fn below(&mut self, bound: u64) -> u64 {
-            self.0 = self.0.wrapping_add(SPLITMIX_GAMMA);
-            let mut mixed = self.0;
-            mixed =
-                (mixed ^ (mixed >> SPLITMIX_FIRST_SHIFT)).wrapping_mul(SPLITMIX_FIRST_MULTIPLIER);
-            mixed =
-                (mixed ^ (mixed >> SPLITMIX_SECOND_SHIFT)).wrapping_mul(SPLITMIX_SECOND_MULTIPLIER);
-            (mixed ^ (mixed >> SPLITMIX_THIRD_SHIFT))
-                .checked_rem(bound)
-                .unwrap()
-        }
-
-        fn socket(&mut self) -> std::net::SocketAddr {
-            std::net::SocketAddr::from((
-                std::net::Ipv4Addr::from(
-                    DOCUMENTATION_NETWORK_FIRST_HOST
-                        .saturating_add(u32::try_from(self.below(SHARED_HOSTS)).unwrap()),
-                ),
-                SHARED_PORTS_FIRST.saturating_add(u16::try_from(self.below(SHARED_PORTS)).unwrap()),
-            ))
-        }
-
-        fn relay(&mut self) -> String {
-            format!("https://relay-{}.example/", self.below(RELAY_NAMES))
-        }
-
-        fn announced<T: Clone>(&mut self, pool: &[T]) -> Vec<T> {
-            pool.iter()
-                .filter(|_| self.below(ANNOUNCED_OR_NOT) == 0)
-                .cloned()
-                .collect()
-        }
-
-        fn one_of<'a, T>(&mut self, pool: &'a [T]) -> &'a T {
-            &pool[usize::try_from(self.below(u64::try_from(pool.len()).unwrap())).unwrap()]
-        }
-    }
-
-    #[test]
-    fn spec_3_8_a_path_is_kept_exactly_when_its_socket_or_relay_is_one_the_presence_announces() {
-        for case in 0..PROPERTY_CASES {
-            let mut draws = Draws(case);
-            let sockets: Vec<std::net::SocketAddr> = (0..SPEC_DIRECT_ADDRS_PER_ADDR)
-                .map(|_| draws.socket())
-                .collect();
-            let relays: Vec<String> = (0..SPEC_RELAY_URLS_PER_ADDR)
-                .map(|_| draws.relay())
-                .collect();
-            let announced_sockets = draws.announced(&sockets);
-            let announced_relays = draws.announced(&relays);
-            let addr = wire::Addr::from_endpoint_report(
-                announced_relays.clone(),
-                announced_sockets.clone(),
-            );
-            let socket = *draws.one_of(&sockets);
-            let relay = draws.one_of(&relays).clone();
-
-            assert_eq!(
-                path_reaches(&TransportAddr::Ip(socket), &addr),
-                announced_sockets.contains(&socket),
-                "case {case}: {socket} against {addr:?}"
-            );
-            assert_eq!(
-                path_reaches(&TransportAddr::Relay(relay.parse().unwrap()), &addr),
-                announced_relays.contains(&relay),
-                "case {case}: {relay} against {addr:?}"
-            );
-        }
-    }
-
-    const CLOSE_WAIT: Duration = Duration::from_secs(5);
+    const SILENCE_OF_A_GONE_PROCESS_JUDGED: Duration =
+        GONE_PROCESS_SILENCE.saturating_add(HEARING_SAMPLE_INTERVAL);
 
     #[tokio::test]
-    async fn spec_3_8_an_introduce_closes_every_other_connection_accepted_from_its_sender_and_keeps_its_own()
+    async fn spec_3_8_an_introduce_keeps_every_live_connection_accepted_from_its_sender_whatever_address_it_carries()
      {
         let rig = rig().await;
         let server = rig.link.server_node.endpoint().id();
@@ -1199,21 +1157,88 @@ mod tests {
         raw_exchange(&earlier, &sealed_message_to_server(&keys()))
             .await
             .unwrap();
+        tokio::time::sleep(SILENCE_OF_A_GONE_PROCESS_JUDGED).await;
 
         rig.link
             .client
             .introduce(server, introduction_from_client())
             .await
             .unwrap();
-        let earlier_closed = timeout(CLOSE_WAIT, earlier.closed()).await.unwrap();
+        let answered_on_the_earlier_connection =
+            raw_exchange(&earlier, &sealed_message_to_server(&keys()))
+                .await
+                .map(|response| open_response(&keys(), &response).unwrap());
+
+        assert!(
+            matches!(
+                answered_on_the_earlier_connection,
+                Ok(Response::MessageAck(MessageAck { accepted: true, .. }))
+            ),
+            "{answered_on_the_earlier_connection:?}"
+        );
+    }
+
+    /// Dials the server under the client's card from a process of its own, answers one Message there, and ends that process without closing its connection.
+    async fn connection_from_a_process_that_vanished(server: iroh::EndpointAddr) {
+        tokio::task::spawn_blocking(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let vanished = runtime.block_on(async {
+                let node = bind_node(CLIENT_SEED).await;
+                let server_id = server.id;
+                node.replace_address(server);
+                let connection = node
+                    .endpoint()
+                    .connect(server_id, DIRECT_ALPN)
+                    .await
+                    .unwrap();
+                raw_exchange(&connection, &sealed_message_to_server(&keys()))
+                    .await
+                    .unwrap();
+                (node, connection)
+            });
+            drop(runtime);
+            drop(vanished);
+        })
+        .await
+        .unwrap();
+    }
+
+    fn connections_accepted_from(host: &RecordingHost, card: wire::PublicKey) -> Vec<Connection> {
+        host.accepted
+            .held()
+            .get(&card)
+            .into_iter()
+            .flatten()
+            .map(|accepted| accepted.connection.clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_an_introduce_closes_the_connection_accepted_from_its_senders_process_that_is_gone_and_keeps_its_own()
+     {
+        let rig = rig().await;
+        let server = rig.link.server_node.endpoint().id();
+        connection_from_a_process_that_vanished(rig.link.server_node.endpoint().addr()).await;
+        let vanished = connections_accepted_from(&rig.host, card_of(CLIENT_SEED));
+        tokio::time::sleep(SILENCE_OF_A_GONE_PROCESS_JUDGED).await;
+
+        rig.link
+            .client
+            .introduce(server, introduction_from_client())
+            .await
+            .unwrap();
         let probed_on_the_kept_connection = rig.link.client.probe(server, PROBE_NONCE).await;
 
-        let ConnectionError::ApplicationClosed(close) = earlier_closed else {
-            panic!("the earlier connection was not closed by the server: {earlier_closed:?}");
-        };
-        assert_eq!(
-            close.error_code,
-            VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE)
+        assert_eq!(vanished.len(), 1);
+        assert!(
+            vanished
+                .iter()
+                .all(|connection| connection.close_reason() == Some(ConnectionError::LocallyClosed)),
+            "{:?}",
+            vanished.iter().map(Connection::close_reason).collect::<Vec<_>>()
         );
         assert_eq!(probed_on_the_kept_connection.unwrap().nonce, PROBE_NONCE);
     }
