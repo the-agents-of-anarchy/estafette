@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use clap::{Args, Subcommand};
 
-use crate::card::{Card, CardInvalid};
+use crate::card::{Card, CardInvalid, CardUnusable};
 use crate::cli::observer::tab_separated_line;
 use crate::dirs::{
     CARD_EXTENSION, CARDS_DIRECTORY_VARIABLE, CARDS_SUBDIRECTORY, Directories, DirectoriesError,
@@ -80,6 +80,7 @@ enum CardCommandError {
     Unreadable { path: PathBuf, source: io::Error },
     CardNameRefused { path: PathBuf, source: HandleError },
     CardInvalid { path: PathBuf, reason: CardInvalid },
+    CardUnusable { path: PathBuf, reason: CardUnusable },
     OutputUnwritable(io::Error),
 }
 
@@ -107,6 +108,9 @@ impl fmt::Display for CardCommandError {
                     "{} is not a valid card: {reason}",
                     path.display()
                 )
+            }
+            Self::CardUnusable { path, reason } => {
+                write!(formatter, "{} is not usable here: {reason}", path.display())
             }
             Self::OutputUnwritable(source) => {
                 write!(formatter, "cannot write the result: {source}")
@@ -255,7 +259,7 @@ fn list_registry_cards(
         }
     })?;
     for card_file in card_files {
-        let (name, line) = describe_card_file(filesystem, &card_file)?;
+        let (name, line) = describe_card_file(filesystem, &card_file, network)?;
         lines_by_card_name.insert(name, line);
     }
     Ok(lines_by_card_name.into_values().collect())
@@ -287,6 +291,7 @@ pub(crate) fn card_files_in(
 fn describe_card_file(
     filesystem: &impl CardRegistryReader,
     card_file: &Path,
+    network: &str,
 ) -> Result<(String, String), CardCommandError> {
     let name = card_name_of(card_file).map_err(|source| CardCommandError::CardNameRefused {
         path: card_file.to_owned(),
@@ -302,6 +307,11 @@ fn describe_card_file(
         path: card_file.to_owned(),
         reason,
     })?;
+    card.check_usable_on(network)
+        .map_err(|reason| CardCommandError::CardUnusable {
+            path: card_file.to_owned(),
+            reason,
+        })?;
     let line = tab_separated_line(&[name.as_str(), &card.handle, &card.public_key]);
     Ok((name.as_str().to_owned(), line))
 }

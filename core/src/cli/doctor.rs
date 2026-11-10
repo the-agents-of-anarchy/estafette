@@ -10,7 +10,7 @@ use std::time::Duration;
 use clap::Args;
 use iroh::{PublicKey, RelayUrl};
 
-use crate::card::{Card, CardInvalid};
+use crate::card::{Card, CardInvalid, CardUnusable};
 use crate::cli::cards::{CardRegistryReader, RegistryArgs, card_files_in, card_name_of};
 use crate::cli::network::NetworkFilesystem;
 use crate::cli::observer::{
@@ -19,8 +19,8 @@ use crate::cli::observer::{
 use crate::config::{NetworkConfig, OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
 use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use crate::errors::ExitStatus;
-use crate::handle::{AnnouncedHandle, Handle, HandleError};
-use crate::keys::{KeyError, parse_public_key};
+use crate::handle::{Handle, HandleError};
+
 use crate::node::{RelayProbe, known_host_addresses};
 use crate::sidecar::{Pause, SidecarError, claim};
 
@@ -201,7 +201,7 @@ async fn run_checks(
         Check::ConfigurationFile,
         &configuration_file_verdict(filesystem, &config_path),
     )?;
-    let registry = read_registry(filesystem, &cards_directory);
+    let registry = read_registry(filesystem, &cards_directory, network);
     report.record(Check::Cards, &cards_verdict(&registry))?;
     report.record(
         Check::Sidecars,
@@ -253,8 +253,7 @@ enum CardProblem {
     NameRefused(HandleError),
     Unreadable(io::Error),
     Invalid(CardInvalid),
-    HandleRefused(HandleError),
-    KeyRefused(KeyError),
+    Unusable(CardUnusable),
 }
 
 impl fmt::Display for CardProblem {
@@ -263,12 +262,7 @@ impl fmt::Display for CardProblem {
             Self::NameRefused(source) => write!(formatter, "not a valid card name: {source}"),
             Self::Unreadable(source) => write!(formatter, "cannot be read: {source}"),
             Self::Invalid(source) => write!(formatter, "not a valid card: {source}"),
-            Self::HandleRefused(source) => {
-                write!(formatter, "holds a handle that is not usable: {source}")
-            }
-            Self::KeyRefused(source) => {
-                write!(formatter, "holds a public key that is not usable: {source}")
-            }
+            Self::Unusable(source) => write!(formatter, "not usable: {source}"),
         }
     }
 }
@@ -287,6 +281,7 @@ impl fmt::Display for RegistryUnreadable {
 fn read_registry(
     filesystem: &impl CardRegistryReader,
     cards_directory: &Path,
+    network: &str,
 ) -> Result<Vec<RegistryCard>, RegistryUnreadable> {
     let card_files =
         card_files_in(filesystem, cards_directory).map_err(|source| RegistryUnreadable {
@@ -296,7 +291,7 @@ fn read_registry(
     let mut cards: Vec<RegistryCard> = card_files
         .into_iter()
         .map(|file| RegistryCard {
-            validated: validate_card_file(filesystem, &file),
+            validated: validate_card_file(filesystem, &file, network),
             file,
         })
         .collect();
@@ -307,17 +302,20 @@ fn read_registry(
 fn validate_card_file(
     filesystem: &impl CardRegistryReader,
     file: &Path,
+    network: &str,
 ) -> Result<ValidCard, CardProblem> {
     let name = card_name_of(file).map_err(CardProblem::NameRefused)?;
     let text = filesystem
         .read_text(file)
         .map_err(CardProblem::Unreadable)?;
     let card = Card::from_str(&text).map_err(CardProblem::Invalid)?;
-    card.handle
-        .parse::<AnnouncedHandle>()
-        .map_err(CardProblem::HandleRefused)?;
-    let public_key = parse_public_key(&card.public_key).map_err(CardProblem::KeyRefused)?;
-    Ok(ValidCard { name, public_key })
+    let usable = card
+        .check_usable_on(network)
+        .map_err(CardProblem::Unusable)?;
+    Ok(ValidCard {
+        name,
+        public_key: usable.public_key,
+    })
 }
 
 fn cards_verdict(registry: &Result<Vec<RegistryCard>, RegistryUnreadable>) -> Verdict {
@@ -835,6 +833,33 @@ mod tests {
             detail_of_check(&lines, "cards").contains("bad\\u{1}name.yaml"),
             "{lines:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn spec_3_5_doctor_fails_the_cards_check_for_a_card_init_would_refuse_naming_both_files()
+    {
+        let lab = Lab::healthy("unusable-cards").await;
+        let public_key = render_public_key(&secret_key(UNRELATED_SEED[0]).public());
+        let cards = lab.directories.cards_directory(NETWORK_NAME).unwrap();
+        fs::write(
+            cards.join("long-handle.yaml"),
+            format!("handle: abcdefghijklmnopqrstuvwxyzabcdef-2\npublic_key: {public_key}\n"),
+        )
+        .unwrap();
+        fs::write(
+            cards.join("other-network.yaml"),
+            format!("handle: ada\npublic_key: {public_key}\nnetwork: acme\n"),
+        )
+        .unwrap();
+
+        let (status, lines) = lab.diagnose().await;
+        drop(lab);
+
+        assert_eq!(status, ExitStatus::DoctorFoundFailedCheck);
+        assert_eq!(verdict_word_of_check(&lines, "cards"), "fail");
+        let detail = detail_of_check(&lines, "cards");
+        assert!(detail.contains("long-handle.yaml"), "{lines:?}");
+        assert!(detail.contains("other-network.yaml"), "{lines:?}");
     }
 
     #[tokio::test]

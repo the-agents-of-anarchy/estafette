@@ -31,7 +31,6 @@ use crate::dirs::{CARD_EXTENSION, Directories};
 use crate::errors::{Envelope, ErrorCode, You};
 use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
 use crate::inbox::buffer::InboxFrame;
-use crate::keys::parse_public_key;
 use crate::net::endpoint::NodeEndpoint;
 use crate::node::{
     BroadcastResult, DEPARTURE_WAIT, Delivery, Exit, Identity, Network, Node, NodeEffects,
@@ -268,12 +267,14 @@ impl Server {
         self.refuse_a_second_claim()?;
         let name = card_name(&input.card)?;
         let card = self.registry_card(&name)?;
-        let requested_handle = requested_handle_of(&card)?;
-        let public_key = public_key_of(&card)?;
-        self.refuse_another_network(&card)?;
+        let usable = card
+            .check_usable_on(self.served.network.as_str())
+            .map_err(|_unusable| ErrorCode::CardInvalid)?;
         let public = public_with_description(card, input.description.as_deref())?;
-        let lock = self.lock_sidecar(&name, public_key).await?;
-        let node = self.start_node(&lock, requested_handle, public).await?;
+        let lock = self.lock_sidecar(&name, usable.public_key).await?;
+        let node = self
+            .start_node(&lock, usable.requested_handle, public)
+            .await?;
         self.claim(name, node, lock)
     }
 
@@ -310,14 +311,6 @@ impl Server {
                 }
             })?;
         text.parse().map_err(|_invalid| ErrorCode::CardInvalid)
-    }
-
-    /// `card_invalid` for a card that names a network other than the one this process serves.
-    fn refuse_another_network(&self, card: &Card) -> Result<(), ErrorCode> {
-        match &card.network {
-            Some(network) if network != self.served.network.as_str() => Err(ErrorCode::CardInvalid),
-            Some(_) | None => Ok(()),
-        }
     }
 
     /// Validates the card's sidecar and takes its lock within the lock retry window, off the runtime's threads.
@@ -529,20 +522,22 @@ fn registry_cards(
     };
     entries
         .iter()
-        .filter_map(|path| registry_card_at(registry, path))
+        .filter_map(|path| registry_card_at(registry, path, served.network.as_str()))
         .collect()
 }
 
-/// The card at the path with its name, when the path is a card file whose stem is a card name and whose text is a card.
+/// The card at the path with its name, when the path is a card file whose stem is a card name and whose text is a card usable on the network.
 fn registry_card_at(
     registry: &(dyn CardRegistryReader + Send + Sync),
     path: &Path,
+    network: &str,
 ) -> Option<(Handle, Card)> {
     if path.extension()? != CARD_EXTENSION {
         return None;
     }
     let name = path.file_stem()?.to_str()?.parse().ok()?;
-    let card = registry.read_text(path).ok()?.parse().ok()?;
+    let card: Card = registry.read_text(path).ok()?.parse().ok()?;
+    card.check_usable_on(network).ok()?;
     Some((name, card))
 }
 
@@ -594,23 +589,6 @@ fn input_of<Input: DeserializeOwned>(arguments: JsonObject) -> Result<Input, Err
 fn card_name(card: &str) -> Result<Handle, ErrorCode> {
     card.parse()
         .map_err(|_not_a_card_name| ErrorCode::CardNotFound)
-}
-
-/// The handle the card requests, `card_invalid` when it is not a handle.
-fn requested_handle_of(card: &Card) -> Result<AnnouncedHandle, ErrorCode> {
-    let handle: Handle = card
-        .handle
-        .parse()
-        .map_err(|_not_a_handle| ErrorCode::CardInvalid)?;
-    handle
-        .as_str()
-        .parse()
-        .map_err(|_not_announceable| ErrorCode::CardInvalid)
-}
-
-/// The card's public key, `card_invalid` when it does not decode to an Ed25519 key.
-fn public_key_of(card: &Card) -> Result<PublicKey, ErrorCode> {
-    parse_public_key(&card.public_key).map_err(|_not_a_key| ErrorCode::CardInvalid)
 }
 
 /// The card's public mapping as the bytes Presence carries, with the description under `public.description`, `bad_request` past the cap.
@@ -1604,6 +1582,30 @@ mod tests {
                     { "name": "zed-card", "handle": "zed", "held": false }
                 ] }
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn spec_3_5_list_cards_leaves_out_a_card_init_would_refuse_as_card_invalid() {
+        let machine = Machine::new("list-unusable");
+        machine.create_card("amy-card", "amy", AMY_SEED);
+        let key = render_public_key(&SecretKey::from_bytes(&[AMY_SEED; KEY_BYTES]).public());
+        machine.write_card_text(
+            "announced-only",
+            &format!("handle: {}-2\npublic_key: {key}\n", "a".repeat(32)),
+        );
+        machine.write_card_text(
+            "other-network",
+            &format!("handle: amy\npublic_key: {key}\nnetwork: other\n"),
+        );
+        let mut client = start_server(&machine, ServerPlan::alone(FIRST_PROCESS_ID));
+        client.initialize().await;
+
+        let listed = client.envelope("list_cards", json!({})).await;
+
+        assert_eq!(
+            listed["result"]["cards"],
+            json!([{ "name": "amy-card", "handle": "amy", "held": false }])
         );
     }
 

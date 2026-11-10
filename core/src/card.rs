@@ -8,6 +8,9 @@ use yaml_rust2::Yaml;
 use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser, Tag};
 use yaml_rust2::scanner::{Marker, TScalarStyle};
 
+use crate::handle::{AnnouncedHandle, Handle, HandleError};
+use crate::keys::{KeyError, parse_public_key};
+
 const PUBLIC_MAX_BYTES: usize = 3072;
 /// The deepest nesting of mappings and sequences a member's JSON parser receives: `serde_json`'s recursion limit of 128 admits 127 levels.
 pub(crate) const PUBLIC_DEEPEST_NESTING: usize = 127;
@@ -158,6 +161,26 @@ impl Card {
         compact_json(&self.public)
     }
 
+    /// The handle the card requests and its public key, once the card is usable on the network.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CardUnusable`] when the handle breaks the handle grammar, the public key is not an Ed25519 key, or the card names another network.
+    pub fn check_usable_on(&self, network: &str) -> Result<UsableCard, CardUnusable> {
+        let handle: Handle = self.handle.parse().map_err(CardUnusable::Handle)?;
+        let requested_handle = handle.as_str().parse().map_err(CardUnusable::Handle)?;
+        let public_key = parse_public_key(&self.public_key).map_err(CardUnusable::PublicKey)?;
+        match &self.network {
+            Some(named) if named != network => Err(CardUnusable::OtherNetwork {
+                named: named.clone(),
+            }),
+            Some(_) | None => Ok(UsableCard {
+                requested_handle,
+                public_key,
+            }),
+        }
+    }
+
     /// Puts the description under `public.description`.
     ///
     /// # Errors
@@ -172,6 +195,37 @@ impl Card {
         Ok(self)
     }
 }
+
+/// What a card holds once it is usable on a network.
+#[derive(Debug)]
+pub struct UsableCard {
+    pub requested_handle: AnnouncedHandle,
+    pub public_key: iroh::PublicKey,
+}
+
+/// Why a card cannot be used on a network, mapped to `card_invalid` by the MCP server.
+#[derive(Debug)]
+pub enum CardUnusable {
+    Handle(HandleError),
+    PublicKey(KeyError),
+    OtherNetwork { named: String },
+}
+
+impl fmt::Display for CardUnusable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Handle(source) => write!(formatter, "handle refused: {source}"),
+            Self::PublicKey(source) => {
+                write!(formatter, "public key refused: {source}")
+            }
+            Self::OtherNetwork { named } => {
+                write!(formatter, "names network {named}, not this one")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CardUnusable {}
 
 /// The refusal of a description that pushes `public` past the cap, mapped to `bad_request` by the caller.
 #[derive(Debug, PartialEq, Eq)]
@@ -840,6 +894,61 @@ pub(crate) mod tests {
 
     fn card_with_public(public: &str) -> Result<Card, CardInvalid> {
         parse_card(&format!("handle: ada\npublic_key: abc\npublic:\n{public}"))
+    }
+
+    const VALID_PUBLIC_KEY: &str =
+        "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c";
+    const HANDLE_OF_32_CHARACTERS: &str = "abcdefghijklmnopqrstuvwxyzabcdef";
+    const HANDLE_OF_34_CHARACTERS: &str = "abcdefghijklmnopqrstuvwxyzabcdef-2";
+
+    fn card_with_key_and(card_lines: &str) -> Card {
+        parse_card(&format!("public_key: {VALID_PUBLIC_KEY}\n{card_lines}")).unwrap()
+    }
+
+    fn usable_on(network: &str, card_lines: &str) -> Result<UsableCard, CardUnusable> {
+        card_with_key_and(card_lines).check_usable_on(network)
+    }
+
+    #[test]
+    fn check_usable_on_hands_back_the_requested_handle_and_key_of_a_card_of_this_network_or_of_none_spec_3_5()
+     {
+        for card_lines in ["handle: ada\n", "handle: ada\nnetwork: lab\n"] {
+            let usable = usable_on("lab", card_lines).unwrap();
+            assert_eq!(usable.requested_handle.as_str(), "ada");
+            assert_eq!(
+                crate::keys::render_public_key(&usable.public_key),
+                VALID_PUBLIC_KEY
+            );
+        }
+    }
+
+    #[test]
+    fn check_usable_on_refuses_a_handle_past_the_32_characters_of_the_handle_grammar_though_it_is_a_suffixed_announced_handle_spec_3_1()
+     {
+        let card_lines = format!("handle: {HANDLE_OF_34_CHARACTERS}\n");
+        assert!(matches!(
+            usable_on("lab", &card_lines),
+            Err(CardUnusable::Handle(_))
+        ));
+        let at_the_limit = format!("handle: {HANDLE_OF_32_CHARACTERS}\n");
+        usable_on("lab", &at_the_limit).unwrap();
+    }
+
+    #[test]
+    fn check_usable_on_refuses_a_card_naming_another_network_spec_3_5() {
+        match usable_on("lab", "handle: ada\nnetwork: acme\n") {
+            Err(CardUnusable::OtherNetwork { named }) => assert_eq!(named, "acme"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn check_usable_on_refuses_a_public_key_that_is_not_an_ed25519_key_spec_3_5() {
+        let card = parse_card("handle: ada\npublic_key: abc\n").unwrap();
+        assert!(matches!(
+            card.check_usable_on("lab"),
+            Err(CardUnusable::PublicKey(_))
+        ));
     }
 
     #[test]

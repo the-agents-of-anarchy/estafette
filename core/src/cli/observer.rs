@@ -15,15 +15,15 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinError;
 use tokio::time::Instant;
 
-use crate::card::{Card, CardInvalid};
+use crate::card::{Card, CardInvalid, CardUnusable};
 use crate::cli::network::NetworkFilesystem;
 use crate::config::{ConfigError, NetworkConfig};
 use crate::crypto::GateKey;
 use crate::dirs::{Directories, DirectoriesError};
 use crate::errors::ErrorCode;
-use crate::handle::{AnnouncedHandle, Handle, HandleError, LocalHandle};
+use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
 use crate::inbox::socket::{InboxSocket, InboxSocketError};
-use crate::keys::{KeyError, parse_public_key};
+use crate::keys::parse_public_key;
 use crate::net::direct::{ClientTimeouts, DirectClient, DirectError, DirectHost, MonotonicClock};
 use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
@@ -144,13 +144,9 @@ enum Failure {
         path: PathBuf,
         reason: CardInvalid,
     },
-    CardKey {
+    CardUnusable {
         path: PathBuf,
-        source: KeyError,
-    },
-    CardHandle {
-        path: PathBuf,
-        source: HandleError,
+        reason: CardUnusable,
     },
     Session(ErrorCode),
     NotDelivered(ErrorCode),
@@ -181,16 +177,9 @@ impl fmt::Display for Failure {
                     path.display()
                 )
             }
-            Self::CardKey { path, source } => write!(
-                formatter,
-                "{} holds a public key that is not usable: {source}",
-                path.display()
-            ),
-            Self::CardHandle { path, source } => write!(
-                formatter,
-                "{} holds a handle that is not usable: {source}",
-                path.display()
-            ),
+            Self::CardUnusable { path, reason } => {
+                write!(formatter, "{} is not usable: {reason}", path.display())
+            }
             Self::Session(code) => write!(formatter, "the session did not take the node: {code}"),
             Self::TopicClosed => formatter.write_str("the gossip topic closed"),
             Self::RouterShutdown(source) => {
@@ -388,21 +377,17 @@ fn claim_operator_card(
         path: card_file.clone(),
         reason,
     })?;
-    let public_key = parse_public_key(&card.public_key).map_err(|source| Failure::CardKey {
-        path: card_file.clone(),
-        source,
-    })?;
-    let handle = card
-        .handle
-        .parse::<AnnouncedHandle>()
-        .map_err(|source| Failure::CardHandle {
-            path: card_file.clone(),
-            source,
-        })?;
-    let held = claim(&sidecar_file, public_key.as_bytes(), pause).map_err(Failure::Sidecar)?;
+    let usable =
+        card.check_usable_on(network.as_str())
+            .map_err(|reason| Failure::CardUnusable {
+                path: card_file.clone(),
+                reason,
+            })?;
+    let held =
+        claim(&sidecar_file, usable.public_key.as_bytes(), pause).map_err(Failure::Sidecar)?;
     Ok(OperatorCard {
         held,
-        handle,
+        handle: usable.requested_handle,
         public: card.public_json(),
     })
 }
@@ -1574,6 +1559,39 @@ mod tests {
         );
         assert_eq!(first_inbox_frame(&members[1]).await["from"], OPERATOR_CARD);
         assert!(!crate::sidecar::is_held(&sidecar_file).unwrap());
+        drop(lab);
+    }
+
+    #[tokio::test]
+    async fn spec_3_5_test_send_refuses_an_operator_card_that_names_another_network() {
+        let lab = Lab::new("send-other-network").await;
+        lab.write_network_config(&[]);
+        register_operator_card(&lab);
+        let card_file = lab
+            .directories
+            .card_file(NETWORK_NAME, OPERATOR_CARD)
+            .unwrap();
+        let mut text = fs::read_to_string(&card_file).unwrap();
+        text.push_str("network: acme\n");
+        fs::write(&card_file, text).unwrap();
+        let mut output = Vec::new();
+
+        let refusal = run(
+            &operator_test_send(),
+            &lab.directories,
+            &OperatingSystemFilesystem,
+            &NoPause,
+            lab.effects(Vec::new(), never_interrupted()),
+            &mut output,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            refusal.to_string().contains("names network acme"),
+            "{refusal}"
+        );
+        assert_eq!(String::from_utf8(output).unwrap(), "");
         drop(lab);
     }
 

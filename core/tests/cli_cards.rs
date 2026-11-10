@@ -285,6 +285,61 @@ fn list_cards_fails_naming_a_card_file_whose_name_is_outside_the_handle_grammar_
     );
 }
 
+fn list_canned_card(card_text: String) -> Result<Outcome, HandleError> {
+    let cards_dir = PathBuf::from("/nowhere-on-disk/cards");
+    let registry = CannedRegistry {
+        card_file: cards_dir.join(NETWORK).join("ana.yaml"),
+        card_text,
+    };
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let status = run(
+        list_cards(Some(cards_dir))?,
+        environment_under(Path::new("/nowhere-on-disk/base"), None),
+        &registry,
+        |_seed| {},
+        &mut stdout,
+        &mut stderr,
+    );
+    Ok(Outcome {
+        status,
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+    })
+}
+
+#[test]
+fn list_cards_refuses_a_card_whose_handle_passes_only_the_announced_grammar_of_spec_3_5() {
+    let listed = list_canned_card(format!(
+        "handle: abcdefghijklmnopqrstuvwxyzabcdef-2\npublic_key: {}\n",
+        public_key_of(21)
+    ))
+    .unwrap();
+    assert_eq!(listed.status, ExitStatus::Failure);
+    assert_eq!(listed.stdout, "");
+    assert!(
+        listed.stderr.contains("handle refused"),
+        "{}",
+        listed.stderr
+    );
+}
+
+#[test]
+fn list_cards_refuses_a_card_naming_another_network_of_spec_3_5() {
+    let listed = list_canned_card(format!(
+        "handle: ana\npublic_key: {}\nnetwork: other\n",
+        public_key_of(21)
+    ))
+    .unwrap();
+    assert_eq!(listed.status, ExitStatus::Failure);
+    assert_eq!(listed.stdout, "");
+    assert!(
+        listed.stderr.contains("names network other"),
+        "{}",
+        listed.stderr
+    );
+}
+
 #[test]
 fn list_cards_names_the_invalid_card_file_and_fails() {
     let root = common::scratch_root(SCRATCH_PREFIX, "invalid_card").unwrap();
