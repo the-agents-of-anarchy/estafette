@@ -36,7 +36,7 @@ use crate::node::{
     BroadcastResult, DEPARTURE_WAIT, Delivery, Exit, Identity, Network, Node, NodeEffects,
     NodeError, Session, ShutdownSignal, forward_standard_input,
 };
-use crate::peers::{Peer, Status};
+use crate::peers::Peer;
 use crate::sidecar::{self, HeldSidecar, Pause, SidecarError};
 
 /// The server name of spec 3.10, given to the harness in the server info.
@@ -735,7 +735,7 @@ impl PresentPeer {
     fn of(peer: &Peer) -> Self {
         Self {
             handle: peer.effective_handle.as_str().to_owned(),
-            status: status_name(peer.status),
+            status: peer.status.wire_word(),
             attached: peer.attached,
             public: peer
                 .public
@@ -744,15 +744,6 @@ impl PresentPeer {
                 .unwrap_or_default(),
             last_seen: peer.last_seen,
         }
-    }
-}
-
-/// The word the peers tool reports a status by.
-const fn status_name(status: Status) -> &'static str {
-    match status {
-        Status::Online => "online",
-        Status::Unreachable => "unreachable",
-        Status::Gone { .. } => "gone",
     }
 }
 

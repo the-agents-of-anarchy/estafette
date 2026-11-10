@@ -33,7 +33,7 @@ use crate::node::{
     observer_wait_over_at, seed_lookup_with_known_hosts, serve, sleep_until_deadline, wire_addr,
 };
 use crate::payload::{OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
-use crate::peers::{Effect, Peer, PeerTable, Status};
+use crate::peers::{Effect, Peer, PeerTable};
 use crate::sidecar::{HeldSidecar, Pause, SEED_BYTES, SidecarError, claim, create_card};
 use crate::wire::{
     self, Addr, Introduce, IntroduceAck, Message, Nonce, Payload, PresenceRequest, Version,
@@ -43,9 +43,6 @@ const OBSERVER_PUBLIC: &[u8] = b"{}";
 const OPERATOR_CARD: &str = "operator";
 const DELIVERED_KIND: &str = "delivered";
 const NO_PUBLIC_FIELDS: &str = "-";
-const ONLINE_STATUS: &str = "online";
-const UNREACHABLE_STATUS: &str = "unreachable";
-const GONE_STATUS: &str = "gone";
 const PRESENCE_KIND: &str = "presence";
 const DEPARTURE_KIND: &str = "departure";
 const UNREACHABLE_KIND: &str = "unreachable";
@@ -825,7 +822,7 @@ fn peer_line(peer: &Peer) -> String {
         .map_or_else(|| NO_PUBLIC_FIELDS.to_owned(), public_text);
     tab_separated_line(&[
         peer.effective_handle.as_str(),
-        status_text(peer.status),
+        peer.status.wire_word(),
         &peer.attached.to_string(),
         &public,
     ])
@@ -924,17 +921,9 @@ fn public_text(public: &[u8]) -> String {
     String::from_utf8_lossy(public).into_owned()
 }
 
-/// The word a peer status prints as.
-const fn status_text(status: Status) -> &'static str {
-    match status {
-        Status::Online => ONLINE_STATUS,
-        Status::Unreachable => UNREACHABLE_STATUS,
-        Status::Gone { .. } => GONE_STATUS,
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::peers::Status;
     use std::ffi::OsString;
     use std::fs;
     use std::path::PathBuf;

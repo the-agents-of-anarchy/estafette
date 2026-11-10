@@ -8,6 +8,9 @@ use crate::wire::{
 
 pub(crate) const ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
 const GONE_ENTRY_RETENTION_MS: u64 = 3_600_000;
+const ONLINE_STATUS_WORD: &str = "online";
+const UNREACHABLE_STATUS_WORD: &str = "unreachable";
+const GONE_STATUS_WORD: &str = "gone";
 
 mod kept {
     use std::collections::BTreeMap;
@@ -72,6 +75,18 @@ pub enum Status {
     Gone {
         since_ms: u64,
     },
+}
+
+impl Status {
+    /// The word the peers tool and the observer commands report the status by.
+    #[must_use]
+    pub const fn wire_word(self) -> &'static str {
+        match self {
+            Self::Online => ONLINE_STATUS_WORD,
+            Self::Unreachable => UNREACHABLE_STATUS_WORD,
+            Self::Gone { .. } => GONE_STATUS_WORD,
+        }
+    }
 }
 
 /// One member as this node knows it, keyed by its card.
@@ -848,6 +863,13 @@ mod tests {
         let oldest_accepted = presence(PEER_CARD, PEER_HANDLE, OLDEST_ACCEPTED_SEQ);
         assert_ne!(table.receive_presence(&oldest_accepted, NOW_MS), vec![]);
         assert_eq!(only_peer(&table, NOW_MS).card, PEER_CARD);
+    }
+
+    #[test]
+    fn spec_3_10_a_peer_status_is_reported_as_online_unreachable_or_gone() {
+        assert_eq!(Status::Online.wire_word(), "online");
+        assert_eq!(Status::Unreachable.wire_word(), "unreachable");
+        assert_eq!(Status::Gone { since_ms: NOW_MS }.wire_word(), "gone");
     }
 
     #[test]
