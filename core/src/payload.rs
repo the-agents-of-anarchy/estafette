@@ -390,6 +390,7 @@ pub fn open_response(keys: &NetworkKeys, bytes: &[u8]) -> Result<Response, Paylo
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card::tests::{SPEC_PUBLIC_CAP_BYTES, public_mapping_of_bytes};
     use crate::crypto::{KEY_LEN, NetworkSecret, sign_host_certificate};
     use crate::wire::{
         Addr, Departure, Infrastructure, Introduce, IntroduceAck, Message, MessageAck, Presence,
@@ -784,19 +785,11 @@ mod tests {
         );
     }
 
-    const SPEC_PUBLIC_MAX_BYTES: usize = 3072;
-    const ONE_KEY_MAPPING_FRAME: &str = r#"{"k":""}"#;
-
     fn presence_with_public(public: Vec<u8>) -> Payload {
         let Payload::Presence(presence) = unsealed_presence() else {
             panic!("a presence was built");
         };
         Payload::Presence(Presence { public, ..presence })
-    }
-
-    fn one_key_mapping_of_bytes(bytes: usize) -> Vec<u8> {
-        let filler = "f".repeat(bytes.checked_sub(ONE_KEY_MAPPING_FRAME.len()).unwrap());
-        format!(r#"{{"k":"{filler}"}}"#).into_bytes()
     }
 
     fn sealed_presence_with_public(public: Vec<u8>) -> Vec<u8> {
@@ -813,8 +806,8 @@ mod tests {
     /// Spec 3.5 and 3.7: a Presence whose `public` mapping is past 3072 bytes is dropped, one at 3072 bytes is accepted.
     #[test]
     fn spec_3_7_presence_whose_public_is_past_3072_bytes_is_dropped() {
-        let at_the_cap = one_key_mapping_of_bytes(SPEC_PUBLIC_MAX_BYTES);
-        let one_past = one_key_mapping_of_bytes(SPEC_PUBLIC_MAX_BYTES + 1);
+        let at_the_cap = public_mapping_of_bytes(SPEC_PUBLIC_CAP_BYTES);
+        let one_past = public_mapping_of_bytes(SPEC_PUBLIC_CAP_BYTES + 1);
 
         assert_eq!(
             opened(&sealed_presence_with_public(at_the_cap.clone())),
