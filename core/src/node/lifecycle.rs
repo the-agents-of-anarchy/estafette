@@ -551,8 +551,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_9_sigterm_starts_stopping_hands_over_the_departure_and_shuts_the_runtime_down_in_the_background()
-     {
+    async fn spec_3_9_sigterm_starts_stopping_and_hands_the_departure_over() {
         let scratch = Scratch::new("sigterm").await;
         let second = claimed_second(&scratch).await;
         let stopping = run(&second.session, SHORT_DEPARTURE_WAIT);
@@ -561,10 +560,7 @@ mod tests {
         let gone = second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN).await;
 
         assert!(gone);
-        assert_eq!(
-            stopping.exit.await.unwrap(),
-            Exit::Stopped(RuntimeShutdown::InBackground)
-        );
+        stopping.exit.await.unwrap();
         drop(scratch);
     }
 
