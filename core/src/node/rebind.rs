@@ -1088,6 +1088,20 @@ mod tests {
     }
 
     #[test]
+    fn spec_3_8_a_late_join_clears_the_join_timeout_mark_so_only_silence_makes_a_rebind_due() {
+        for case in 0..PROPERTY_CASES {
+            let mut draws = Draws::seeded(case);
+            let started = Instant::now();
+            let mut schedule = RebindSchedule::new(started);
+            let timed_out = started + Duration::from_millis(draws.below(LONGEST_DRAWN_MS));
+            schedule.join_timed_out(timed_out);
+            schedule.joined();
+
+            assert_eq!(schedule.due(), started + SPEC_DEAF_TIMEOUT, "case {case}");
+        }
+    }
+
+    #[test]
     fn spec_3_8_member_joins_start_1_5_s_after_a_rebinds_join_repeat_every_3_s_and_stop_after_10() {
         for case in 0..PROPERTY_CASES {
             let mut draws = Draws::seeded(case);
