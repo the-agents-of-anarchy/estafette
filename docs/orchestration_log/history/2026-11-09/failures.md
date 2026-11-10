@@ -47,3 +47,19 @@ What happened: The lead launched the ten wave-1 integration reviewers (spec-whol
 Mechanism: The agent-call convention says to pass worktree isolation on the Agent call; its ground is implementers landing on main. Applied to a read-only reviewer it confines every write to a worktree that git sees as unchanged (the recon scratch is gitignored), which the harness then removes. Earlier reviewers in this build ran without isolation and wrote the scratch root directly.
 
 Correction: A background copier (/tmp/estafette-lane/rescue.sh) copies each running reviewer's output out of its worktree every 3 s; the lead installs the copies at the briefed paths and checks byte size and headings; spec-whole-W3 was resumed to write its verdict again. Reviewers and other read-only agents are launched without isolation from now on; isolation is for agents that commit.
+
+## Usage limit stopped six agents with two lab servers up
+
+What happened: At 13:00-13:02 the account's 5-hour usage limit ended impl-U34 (mid lab stretch, between acceptance run 1 and run 2), impl-U46, impl-U47, impl-U48b, impl-U50 and debug-test18-gather. The two lab servers estafette-lab and estafette-lab-2 stayed up with no run using them from about 13:00 until impl-U34 was resumed at 13:23 on the owner's new login: 23 idle minutes for two servers. The fix round and the debugging round lost the same 23 minutes.
+
+Mechanism: The lead spent the window's budget in under two hours: between 11:34 and 12:22 it launched some 35 read-only sonnet reviewers (eight spec parts and a redo, two compatibility checks, eleven test-class parts, four cross-cutting reviews, two ledger agents, a resolver, an audit, a diagnosis, a hypothesis lister) beside three opus and three sonnet implementers and its own turns on the largest model, while a lab stretch was live. It had named this hazard at 11:30 (a limit hit during a lab stretch leaves idle servers and stops the lead too) and paced only by a cap on cargo users, not on tokens. No wake can fire for a session that is itself out of budget.
+
+Correction: Resume order puts the lab stretch first: impl-U34 resumed at 13:23 to finish and tear down, the others one at a time after it. From now on a lab stretch and a review wave do not overlap: while a server is up the lead launches no batch of more than three agents, and a wave of read-only reviewers is launched only with no server up; the fix round's remaining reviews are sequenced by that rule.
+
+## Second usage limit stopped ten agents at 15:33
+
+What happened: What happened: at 15:33 the 5-hour usage limit of the new login stopped impl-U34, U46, U47, U49, U50, U54, U56 and the spec reviewers of U47, U48 and U55 mid-run, 2 hours 10 minutes after the login (45 of them asleep); the limit reset at 18:20 and the lead's first turn back came at 19:04; no lab server was up; impl-U54 and impl-U56 had no commit, so their worktrees are gone.
+
+Mechanism: Mechanism: the lead ran nine to eleven agents at once, six of them opus with long contexts, and added early reviews, classifiers and two new implementers in the last ten minutes; the earlier pacing rule bounded agents only while a lab server is up, not the window's total; roughly 600 agent-minutes exhaust one window.
+
+Correction: Correction: at most four agents at once and at most three of them opus, critical path first; a lab stretch starts only in the first hour of a window with at most two other agents running; resumption after a limit goes one message at a time, nearest-to-done and critical-path first; an owner-only entry asks for more capacity.
