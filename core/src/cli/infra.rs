@@ -1877,6 +1877,7 @@ mod tests {
             &scratch.directories,
             u32::from(MEMBER_SEED),
             &EveryProcessRuns,
+            |_failure| {},
         )
         .unwrap();
         let node = Node::start(

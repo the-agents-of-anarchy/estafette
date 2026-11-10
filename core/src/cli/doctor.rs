@@ -615,8 +615,13 @@ mod tests {
             let address = endpoint.endpoint().addr();
             endpoint.replace_address(address.clone());
             let inbox = Arc::new(
-                InboxSocket::start(&self.directories, u32::from(MEMBER_SEED), &EveryProcessRuns)
-                    .unwrap(),
+                InboxSocket::start(
+                    &self.directories,
+                    u32::from(MEMBER_SEED),
+                    &EveryProcessRuns,
+                    |_failure| {},
+                )
+                .unwrap(),
             );
             let node = Node::start(
                 endpoint,
@@ -682,8 +687,13 @@ mod tests {
                 report: Arc::new(|_record: NodeRecord| {}),
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
                 start_inbox: Box::new(move || {
-                    InboxSocket::start(&directories, u32::from(OBSERVER_SEED), &EveryProcessRuns)
-                        .map(Arc::new)
+                    InboxSocket::start(
+                        &directories,
+                        u32::from(OBSERVER_SEED),
+                        &EveryProcessRuns,
+                        |_failure| {},
+                    )
+                    .map(Arc::new)
                 }),
             };
             (effects, operator_effects)

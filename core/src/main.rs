@@ -197,8 +197,13 @@ fn serve_mcp(
         .map_err(CommandLineFailure::Runtime)?;
     let process_id = std::process::id();
     let exit = runtime.block_on(async move {
-        let inbox = InboxSocket::start(&directories, process_id, &OperatingSystemProcessTable)
-            .map_err(CommandLineFailure::InboxSocket)?;
+        let inbox = InboxSocket::start(
+            &directories,
+            process_id,
+            &OperatingSystemProcessTable,
+            |failure| report_accept_failure(&failure),
+        )
+        .map_err(CommandLineFailure::InboxSocket)?;
         let signals = forward_shutdown_signals()?;
         let served = ServedNetwork {
             inbox_path: directories.inbox_socket_file(process_id),
@@ -325,6 +330,13 @@ fn write_gate_closing(record: &mut impl Write, failure: &GateFailure) {
 /// Writes the reason a gossip connection was closed at the network secret gate to the run record on stderr.
 fn report_gate_closing(failure: &GateFailure) {
     write_gate_closing(&mut io::stderr(), failure);
+}
+
+/// Writes the failure to accept a client of the inbox socket to the run record on stderr.
+fn report_accept_failure(failure: &io::Error) {
+    report_run_record(&format!(
+        "the inbox socket could not accept a client: {failure}"
+    ));
 }
 
 /// Writes one entry of a run record to stderr.
@@ -493,6 +505,7 @@ fn observer_effects(
                 &directories,
                 std::process::id(),
                 &OperatingSystemProcessTable,
+                |failure| report_accept_failure(&failure),
             )
             .map(Arc::new)
         }),

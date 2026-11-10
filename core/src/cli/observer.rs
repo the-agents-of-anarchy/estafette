@@ -1104,6 +1104,7 @@ mod tests {
                             &self.directories,
                             u32::from(plan.seed),
                             &EveryProcessRuns,
+                            |_failure| {},
                         )
                         .unwrap(),
                     );
@@ -1152,8 +1153,13 @@ mod tests {
                 report: Arc::new(|_record: NodeRecord| {}),
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
                 start_inbox: Box::new(move || {
-                    InboxSocket::start(&directories, u32::from(OBSERVER_SEED), &EveryProcessRuns)
-                        .map(Arc::new)
+                    InboxSocket::start(
+                        &directories,
+                        u32::from(OBSERVER_SEED),
+                        &EveryProcessRuns,
+                        |_failure| {},
+                    )
+                    .map(Arc::new)
                 }),
             };
             (effects, operator_effects)

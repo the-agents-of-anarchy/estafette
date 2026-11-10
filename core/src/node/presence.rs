@@ -1495,7 +1495,13 @@ pub(super) mod tests {
 
         fn inbox(&self, seed: u8) -> Arc<InboxSocket> {
             Arc::new(
-                InboxSocket::start(&self.directories, u32::from(seed), &EveryProcessRuns).unwrap(),
+                InboxSocket::start(
+                    &self.directories,
+                    u32::from(seed),
+                    &EveryProcessRuns,
+                    |_failure| {},
+                )
+                .unwrap(),
             )
         }
     }

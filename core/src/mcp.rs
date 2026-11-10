@@ -1269,8 +1269,15 @@ mod tests {
 
     fn start_server(machine: &Machine, plan: ServerPlan) -> Client {
         let directories = machine.directories();
-        let inbox =
-            Arc::new(InboxSocket::start(&directories, plan.process_id, &EveryProcessRuns).unwrap());
+        let inbox = Arc::new(
+            InboxSocket::start(
+                &directories,
+                plan.process_id,
+                &EveryProcessRuns,
+                |_failure| {},
+            )
+            .unwrap(),
+        );
         let inbox_path = directories.inbox_socket_file(plan.process_id);
         let message_id_byte = u8::try_from(plan.process_id).unwrap();
         let served = ServedNetwork {

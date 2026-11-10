@@ -196,20 +196,29 @@ impl InboxSocket {
         directories: &Directories,
         process_id: u32,
         processes: &impl ProcessTable,
+        report_accept_failure: impl Fn(io::Error) + Send + Sync + 'static,
     ) -> Result<Self, InboxSocketError> {
         let socket_path = directories.inbox_socket_file(process_id);
         remove_stale_sockets(directories, &socket_path, process_id, processes)?;
         let listener = bind_owner_only(&socket_path)?;
-        Ok(Self::serving(socket_path, listener))
+        Ok(Self::serving(socket_path, listener, report_accept_failure))
     }
 
-    fn serving(socket_path: PathBuf, acceptor: impl ClientAcceptor) -> Self {
+    fn serving(
+        socket_path: PathBuf,
+        acceptor: impl ClientAcceptor,
+        report_accept_failure: impl Fn(io::Error) + Send + 'static,
+    ) -> Self {
         let shared = Arc::new(Shared {
             buffer: Mutex::new(InboxBuffer::new()),
             newest_seq: watch::Sender::new(0),
             clients: watch::Sender::new(0),
         });
-        let accept_task = tokio::spawn(accept_clients(acceptor, Arc::clone(&shared)));
+        let accept_task = tokio::spawn(accept_clients(
+            acceptor,
+            Arc::clone(&shared),
+            report_accept_failure,
+        ));
         Self {
             socket_path,
             shared,
@@ -303,7 +312,11 @@ fn bind_owner_only(socket_path: &Path) -> Result<UnixListener, InboxSocketError>
     Ok(listener)
 }
 
-async fn accept_clients(acceptor: impl ClientAcceptor, shared: Arc<Shared>) {
+async fn accept_clients(
+    acceptor: impl ClientAcceptor,
+    shared: Arc<Shared>,
+    report_accept_failure: impl Fn(io::Error),
+) {
     let mut clients = JoinSet::new();
     loop {
         tokio::select! {
@@ -312,7 +325,8 @@ async fn accept_clients(acceptor: impl ClientAcceptor, shared: Arc<Shared>) {
                     let attachment = Attachment::begin(Arc::clone(&shared));
                     clients.spawn(serve_client(stream, Arc::clone(&shared), attachment));
                 }
-                Err(_failure) => {
+                Err(failure) => {
+                    report_accept_failure(failure);
                     tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
                 }
             },
@@ -374,7 +388,6 @@ mod tests {
     use super::*;
     use crate::dirs::OperatingSystemFilesystem;
     use std::ffi::OsString;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
     const OWN_PROCESS_ID: u32 = 4_242;
     const READ_DEADLINE: Duration = Duration::from_secs(5);
@@ -435,6 +448,7 @@ mod tests {
             directories,
             OWN_PROCESS_ID,
             &RunningProcesses(vec![OWN_PROCESS_ID]),
+            |_failure| {},
         )
         .unwrap()
     }
@@ -658,46 +672,49 @@ mod tests {
             fs::write(path, b"").unwrap();
         }
         let processes = RunningProcesses(vec![OWN_PROCESS_ID, LIVE]);
-        let _socket = InboxSocket::start(&directories, OWN_PROCESS_ID, &processes).unwrap();
+        let _socket =
+            InboxSocket::start(&directories, OWN_PROCESS_ID, &processes, |_failure| {}).unwrap();
         assert!(!dead.exists());
         assert!(live.exists());
         assert!(unrelated.iter().all(|path| path.exists()));
         UnixStream::connect(&own).await.unwrap();
     }
 
-    struct FailingAcceptor {
-        kind: io::ErrorKind,
-        attempts: Arc<AtomicUsize>,
-    }
+    struct FailingAcceptor(io::ErrorKind);
 
     impl ClientAcceptor for FailingAcceptor {
         fn accept_client(&self) -> impl Future<Output = io::Result<UnixStream>> + Send {
-            self.attempts.fetch_add(1, Ordering::SeqCst);
-            std::future::ready(Err(io::Error::from(self.kind)))
+            std::future::ready(Err(io::Error::from(self.0)))
         }
     }
 
     #[tokio::test]
-    async fn spec_3_11_an_accept_failure_does_not_end_the_accepting_it_is_tried_again() {
-        const ATTEMPTS_SEEN: usize = 3;
+    async fn spec_3_11_each_accept_failure_is_recorded_with_its_kind_and_accepting_is_tried_again()
+    {
+        const FAILURES_SEEN: usize = 3;
         let directories = scratch_directories("accept-failure");
         let socket_path = directories.inbox_socket_file(OWN_PROCESS_ID);
-        let attempts = Arc::new(AtomicUsize::new(0));
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&recorded);
         let _socket = InboxSocket::serving(
             socket_path,
-            FailingAcceptor {
-                kind: io::ErrorKind::OutOfMemory,
-                attempts: Arc::clone(&attempts),
-            },
+            FailingAcceptor(io::ErrorKind::OutOfMemory),
+            move |failure| locked(&sink).push(failure.kind()),
         );
 
         tokio::time::timeout(READ_DEADLINE, async {
-            while attempts.load(Ordering::SeqCst) < ATTEMPTS_SEEN {
+            while locked(&recorded).len() < FAILURES_SEEN {
                 tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
             }
         })
         .await
         .unwrap();
+
+        assert!(
+            locked(&recorded)
+                .iter()
+                .all(|kind| *kind == io::ErrorKind::OutOfMemory)
+        );
     }
 
     #[tokio::test]
@@ -717,7 +734,7 @@ mod tests {
             queries_made: std::cell::Cell::new(0),
             failed_process_id: std::cell::Cell::new(None),
         };
-        let refusal = InboxSocket::start(&directories, OWN_PROCESS_ID, &table)
+        let refusal = InboxSocket::start(&directories, OWN_PROCESS_ID, &table, |_failure| {})
             .err()
             .unwrap();
         let InboxSocketError::QueryProcessTable { process_id, .. } = refusal else {
