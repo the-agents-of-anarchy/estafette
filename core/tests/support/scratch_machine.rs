@@ -169,21 +169,27 @@ impl ScratchMachine {
         Ok(records)
     }
 
-    /// Every non-empty line of every file under this machine's configuration and data directories, each long run of letters and digits in one, and the exported invitation, longest first so a whole line is replaced before a part of it.
+    /// Every file under this machine's configuration, data and runtime directories, at any depth.
+    pub fn base_directory_files(&self) -> Vec<PathBuf> {
+        [CONFIG_HOME, DATA_HOME, RUNTIME_DIRECTORY]
+            .into_iter()
+            .flat_map(|base| files_beneath(&self.root.join(base)))
+            .collect()
+    }
+
+    /// Every non-empty line of every readable file under this machine's base directories, each long run of letters and digits in one, and the exported invitation, longest first so a whole line is replaced before a part of it.
     fn secrets_by_length(&self) -> Vec<String> {
         let mut secrets = BTreeSet::new();
-        for base in [CONFIG_HOME, DATA_HOME] {
-            for file in files_beneath(&self.root.join(base)) {
-                let Ok(content) = fs::read(&file) else {
-                    continue;
-                };
-                for line in String::from_utf8_lossy(&content).lines() {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        secrets.insert(trimmed.to_owned());
-                    }
-                    secrets.extend(long_alphanumeric_runs(line).map(str::to_owned));
+        for file in self.base_directory_files() {
+            let Ok(content) = fs::read(&file) else {
+                continue;
+            };
+            for line in String::from_utf8_lossy(&content).lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    secrets.insert(trimmed.to_owned());
                 }
+                secrets.extend(long_alphanumeric_runs(line).map(str::to_owned));
             }
         }
         if let Ok(invitation) = std::env::var(INVITATION_VARIABLE) {
