@@ -1,5 +1,8 @@
 exclude: ^research/
 
+default_install_hook_types: [pre-commit, commit-msg]
+default_stages: [pre-commit]
+
 repos:
     - repo: https://github.com/pre-commit/pre-commit-hooks
       rev: v6.0.0
@@ -23,3 +26,8 @@ repos:
             stages: [pre-commit]
             always_run: true
             pass_filenames: false
+          - id: commit-message
+            name: just dev::check-message
+            entry: just dev::check-message
+            language: system
+            stages: [commit-msg]
