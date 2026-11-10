@@ -5,6 +5,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
@@ -190,7 +191,7 @@ fn serve_mcp(registry: RegistryArgs) -> Result<ExitStatus, CommandLineFailure> {
     let config = NetworkConfig::load(&config_path).map_err(CommandLineFailure::NetworkConfig)?;
     Network::new(config.clone(), config_path.clone())
         .map_err(CommandLineFailure::NetworkRefused)?;
-    unix_milliseconds_of(SystemTime::now())?;
+    ensure_clock_after_unix_epoch()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -246,7 +247,7 @@ fn forward_shutdown_signals() -> io::Result<mpsc::UnboundedReceiver<ShutdownSign
 fn server_effects(inbox: Arc<InboxSocket>) -> ServerEffects {
     ServerEffects {
         node: NodeEffects {
-            clock: Arc::new(wall_clock_milliseconds),
+            clock: Arc::new(recording_wall_clock()),
             monotonic: Arc::new(tokio::time::Instant::now),
             fill_probe_nonce: Arc::new(|nonce: &mut Nonce| fill_with_secure_random_bytes(nonce)),
             report: Arc::new(|record: NodeRecord| report_run_record(&record)),
@@ -271,9 +272,37 @@ fn server_effects(inbox: Arc<InboxSocket>) -> ServerEffects {
     }
 }
 
-/// Milliseconds since the Unix epoch by this machine's clock, which start refuses to run before; 0 only if the clock is later set back past it.
-fn wall_clock_milliseconds() -> u64 {
-    unix_milliseconds_of(SystemTime::now()).unwrap_or_default()
+/// The wall clock handed to a node: milliseconds since the Unix epoch, holding its last reading when the machine's clock is set back before the epoch.
+fn recording_wall_clock() -> impl Fn() -> u64 + Send + Sync + 'static {
+    let last_reading = AtomicU64::new(0);
+    move || {
+        wall_clock_reading(SystemTime::now(), &last_reading, |failure| {
+            report_run_record(failure);
+        })
+    }
+}
+
+/// The milliseconds since the Unix epoch at `now`, remembered as the last reading; a `now` before the epoch is recorded and answered by the last reading.
+fn wall_clock_reading(
+    now: SystemTime,
+    last_reading: &AtomicU64,
+    record: impl Fn(&CommandLineFailure),
+) -> u64 {
+    match unix_milliseconds_of(now) {
+        Ok(milliseconds) => {
+            last_reading.store(milliseconds, Ordering::Relaxed);
+            milliseconds
+        }
+        Err(failure) => {
+            record(&failure);
+            last_reading.load(Ordering::Relaxed)
+        }
+    }
+}
+
+/// Refuses a machine clock reading a time before the Unix epoch.
+fn ensure_clock_after_unix_epoch() -> Result<(), CommandLineFailure> {
+    unix_milliseconds_of(SystemTime::now()).map(|_milliseconds| ())
 }
 
 /// Fills the bytes from the operating system's secure random source, by way of fresh secret keys.
@@ -505,7 +534,7 @@ fn serve_infrastructure(
 ) -> Result<(), CommandLineFailure> {
     let directories = Directories::establish(environment, &OperatingSystemFilesystem, None)
         .map_err(CommandLineFailure::Directories)?;
-    unix_seconds_of(SystemTime::now())?;
+    ensure_clock_after_unix_epoch()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -532,7 +561,7 @@ fn infrastructure_effects(stopped: StopRequested) -> InfrastructureEffects {
         fill_from_secure_source: Box::new(|seed: &mut [u8; RANDOM_BYTES_PER_SECRET_KEY]| {
             fill_with_secure_random_bytes(seed);
         }),
-        clock: Arc::new(wall_clock_milliseconds),
+        clock: Arc::new(recording_wall_clock()),
         bind_endpoint: Box::new(|key, gate_key, relay| {
             Box::pin(NodeEndpoint::bind(
                 key,
@@ -622,12 +651,23 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_13_a_clock_after_the_unix_epoch_gives_its_milliseconds() {
-        let instant = UNIX_EPOCH + Duration::from_millis(MILLISECONDS_AFTER_EPOCH);
+    fn spec_3_1_a_clock_set_back_before_the_epoch_is_recorded_and_the_last_reading_stands_not_zero()
+    {
+        let last_reading = AtomicU64::new(0);
+        let recorded = std::sync::Mutex::new(Vec::new());
+        let record =
+            |failure: &CommandLineFailure| recorded.lock().unwrap().push(failure.to_string());
+        let before_epoch = UNIX_EPOCH - Duration::from_secs(1);
+        let after_epoch = UNIX_EPOCH + Duration::from_millis(MILLISECONDS_AFTER_EPOCH);
 
+        let first = wall_clock_reading(after_epoch, &last_reading, record);
+        let set_back = wall_clock_reading(before_epoch, &last_reading, record);
+
+        assert_eq!(first, MILLISECONDS_AFTER_EPOCH);
+        assert_eq!(set_back, MILLISECONDS_AFTER_EPOCH);
         assert_eq!(
-            unix_milliseconds_of(instant).unwrap(),
-            MILLISECONDS_AFTER_EPOCH
+            *recorded.lock().unwrap(),
+            vec![CommandLineFailure::ClockBeforeUnixEpoch.to_string()]
         );
     }
 
