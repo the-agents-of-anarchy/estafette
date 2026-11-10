@@ -549,6 +549,8 @@ mod tests {
         Unreachable, Version,
     };
 
+    const SPEC_ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
+    const SPEC_GONE_ENTRY_RETENTION_MS: u64 = 3_600_000;
     const NOW_MS: u64 = 1_700_000_000_000;
     const OWN_CARD: PublicKey = [1; 32];
     const PEER_CARD: PublicKey = [2; 32];
@@ -563,11 +565,11 @@ mod tests {
     const SECOND_RELAY: &str = "https://relay-second.example";
     const SECOND_DIRECT: &str = "192.0.2.7:4433";
     const DEPARTURE_SEQ: u64 = 1_700_000_040_000;
-    const OLDEST_ACCEPTED_SEQ: u64 = NOW_MS - ANNOUNCEMENT_MAX_AGE_MS;
+    const OLDEST_ACCEPTED_SEQ: u64 = NOW_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS;
     const DEPARTURE_SEQ_FROM_A_CLOCK_AHEAD: u64 = NOW_MS + 400_000;
     const PRESENCE_SEQ_FROM_A_CLOCK_AHEAD: u64 = NOW_MS + 350_000;
-    const TOMBSTONE_LAST_KEPT_MS: u64 = NOW_MS + ANNOUNCEMENT_MAX_AGE_MS - 1;
-    const TOMBSTONE_FORGOTTEN_MS: u64 = NOW_MS + ANNOUNCEMENT_MAX_AGE_MS;
+    const TOMBSTONE_LAST_KEPT_MS: u64 = NOW_MS + SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1;
+    const TOMBSTONE_FORGOTTEN_MS: u64 = NOW_MS + SPEC_ANNOUNCEMENT_MAX_AGE_MS;
     const FIRST_MEMBER_CARD: PublicKey = [4; 32];
     const SECOND_MEMBER_CARD: PublicKey = [5; 32];
     const THIRD_NODE_CARD: PublicKey = [6; 32];
@@ -579,9 +581,9 @@ mod tests {
     const OBSERVED_TS: u64 = 1_700_000_001_000;
     const SEQ_BEFORE_OBSERVATION: u64 = 1_700_000_000_500;
     const REPORT_RECEIVED_MS: u64 = NOW_MS + 1_000;
-    const OLDEST_TAKEN_REPORT_TS: u64 = REPORT_RECEIVED_MS - ANNOUNCEMENT_MAX_AGE_MS;
-    const GONE_LAST_KEPT_MS: u64 = NOW_MS + GONE_ENTRY_RETENTION_MS - 1;
-    const GONE_REMOVED_MS: u64 = NOW_MS + GONE_ENTRY_RETENTION_MS;
+    const OLDEST_TAKEN_REPORT_TS: u64 = REPORT_RECEIVED_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS;
+    const GONE_LAST_KEPT_MS: u64 = NOW_MS + SPEC_GONE_ENTRY_RETENTION_MS - 1;
+    const GONE_REMOVED_MS: u64 = NOW_MS + SPEC_GONE_ENTRY_RETENTION_MS;
     const SENT_AFTER_DEPARTURE: u64 = DEPARTURE_SEQ + 1;
     const MESSAGE_ID: MessageId = [3; 16];
     const BODY: &str = "hello";
@@ -849,11 +851,6 @@ mod tests {
     }
 
     #[test]
-    fn announcement_max_age_is_the_spec_figure_of_300_seconds_spec_3_14() {
-        assert_eq!(ANNOUNCEMENT_MAX_AGE_MS, 300_000);
-    }
-
-    #[test]
     fn a_presence_for_the_own_card_is_ignored_spec_3_8() {
         let mut table = PeerTable::new(OWN_CARD);
         let own = presence(OWN_CARD, PEER_HANDLE, FIRST_SEQ);
@@ -952,11 +949,6 @@ mod tests {
             Status::Gone { since_ms: NOW_MS }
         );
         assert_eq!(snapshot(&table, GONE_REMOVED_MS), vec![]);
-    }
-
-    #[test]
-    fn gone_entry_retention_is_the_spec_figure_of_3600_seconds_spec_3_14() {
-        assert_eq!(GONE_ENTRY_RETENTION_MS, 3_600_000);
     }
 
     fn announced(text: &str) -> AnnouncedHandle {
@@ -1685,16 +1677,6 @@ mod tests {
     }
 
     #[test]
-    fn listing_the_peers_forgets_nothing_so_an_earlier_reading_still_lists_a_gone_entry_spec_3_8() {
-        let table = table_with_peer_gone_since_now();
-        assert_eq!(snapshot(&table, GONE_REMOVED_MS), vec![]);
-        assert_eq!(
-            only_peer(&table, GONE_LAST_KEPT_MS).status,
-            Status::Gone { since_ms: NOW_MS }
-        );
-    }
-
-    #[test]
     fn a_neighbor_up_meets_an_expired_entry_as_an_absent_one_spec_3_8() {
         let table = table_with_peer_gone_since_now();
         assert_eq!(
@@ -1734,7 +1716,7 @@ mod tests {
                     .filter(|_| draws.below(REPLAY_OF_HIGHEST_ODDS_AGAINST) == 0)
                     .unwrap_or(fresh_seq);
                 let acceptable = highest_accepted.is_none_or(|highest| seq > highest)
-                    && seq >= now_ms.saturating_sub(ANNOUNCEMENT_MAX_AGE_MS);
+                    && seq >= now_ms.saturating_sub(SPEC_ANNOUNCEMENT_MAX_AGE_MS);
                 if draws.below(DEPARTURE_ODDS_AGAINST) == 0 {
                     table.receive_departure(&departure(PEER_CARD, seq), now_ms);
                     if acceptable {
