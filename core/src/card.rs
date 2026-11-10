@@ -20,6 +20,7 @@ const JSON_OPEN_MAPPING: u8 = b'{';
 const JSON_OPEN_SEQUENCE: u8 = b'[';
 const JSON_CLOSE_MAPPING: u8 = b'}';
 const JSON_CLOSE_SEQUENCE: u8 = b']';
+const ALIAS_EXPANSION_MAX_NODES: usize = 3072;
 const HANDLE_FIELD: &str = "handle";
 const PUBLIC_KEY_FIELD: &str = "public_key";
 const NETWORK_FIELD: &str = "network";
@@ -113,7 +114,7 @@ impl fmt::Display for CardInvalid {
             ),
             Self::AliasExpansionTooLarge => write!(
                 formatter,
-                "card aliases expand to more than {PUBLIC_MAX_BYTES} nodes"
+                "card aliases expand to more than {ALIAS_EXPANSION_MAX_NODES} nodes"
             ),
             Self::IntegerTooWide => write!(
                 formatter,
@@ -300,7 +301,7 @@ impl DocumentCollector {
             return;
         };
         let expanded_nodes = self.expanded_nodes.saturating_add(target.node_count);
-        if expanded_nodes > PUBLIC_MAX_BYTES {
+        if expanded_nodes > ALIAS_EXPANSION_MAX_NODES {
             self.refuse(CardInvalid::AliasExpansionTooLarge);
             return;
         }
@@ -1033,18 +1034,15 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn parse_bounds_alias_expansion_by_the_public_cap_in_nodes_spec_3_5() {
+    fn parse_bounds_alias_expansion_at_3072_nodes_spec_3_5() {
         let aliases = |count: usize| {
             parse_card(&format!(
                 "handle: ada\npublic_key: abc\nanchor: &a x\nextra: [{}]\n",
                 vec!["*a"; count].join(",")
             ))
         };
-        assert_eq!(aliases(PUBLIC_MAX_BYTES).map(|_| ()), Ok(()));
-        assert_eq!(
-            aliases(PUBLIC_MAX_BYTES + 1),
-            Err(CardInvalid::AliasExpansionTooLarge)
-        );
+        assert_eq!(aliases(3072).map(|_| ()), Ok(()));
+        assert_eq!(aliases(3073), Err(CardInvalid::AliasExpansionTooLarge));
 
         let nested_levels = (0..7)
             .zip(1..8)
