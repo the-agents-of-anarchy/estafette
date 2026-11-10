@@ -524,6 +524,7 @@ impl Peer {
 mod tests {
     use super::*;
     use crate::card::tests::{SPEC_PUBLIC_CAP_BYTES, public_mapping_of_bytes};
+    use crate::seeded_draws::Draws;
     use crate::wire::{
         Departure, Introduce, IntroduceAck, Message, MessageId, Presence, SignatureBytes,
         Unreachable, Version,
@@ -1695,34 +1696,12 @@ mod tests {
     const SEQ_SPREAD_MS: u64 = 500_000;
     const DEPARTURE_ODDS_AGAINST: u64 = 4;
     const REPLAY_OF_HIGHEST_ODDS_AGAINST: u64 = 5;
-    const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
-    const SPLITMIX_FIRST_MULTIPLIER: u64 = 0xBF58_476D_1CE4_E5B9;
-    const SPLITMIX_SECOND_MULTIPLIER: u64 = 0x94D0_49BB_1331_11EB;
-    const SPLITMIX_FIRST_SHIFT: u32 = 30;
-    const SPLITMIX_SECOND_SHIFT: u32 = 27;
-    const SPLITMIX_THIRD_SHIFT: u32 = 31;
-
-    struct Draws(u64);
-
-    impl Draws {
-        fn below(&mut self, bound: u64) -> u64 {
-            self.0 = self.0.wrapping_add(SPLITMIX_GAMMA);
-            let mut mixed = self.0;
-            mixed =
-                (mixed ^ (mixed >> SPLITMIX_FIRST_SHIFT)).wrapping_mul(SPLITMIX_FIRST_MULTIPLIER);
-            mixed =
-                (mixed ^ (mixed >> SPLITMIX_SECOND_SHIFT)).wrapping_mul(SPLITMIX_SECOND_MULTIPLIER);
-            (mixed ^ (mixed >> SPLITMIX_THIRD_SHIFT))
-                .checked_rem(bound)
-                .unwrap()
-        }
-    }
 
     #[test]
     fn a_presence_is_accepted_exactly_when_its_seq_tops_every_accepted_seq_and_the_max_age_spec_3_8()
      {
         for case in 0..PROPERTY_CASES {
-            let mut draws = Draws(case);
+            let mut draws = Draws::seeded(case);
             let mut table = PeerTable::new(OWN_CARD);
             let mut highest_accepted: Option<u64> = None;
             let mut expected_status: Option<Status> = None;

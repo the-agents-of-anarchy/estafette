@@ -13,5 +13,7 @@ pub mod net;
 pub mod node;
 pub mod payload;
 pub mod peers;
+#[cfg(test)]
+mod seeded_draws;
 pub mod sidecar;
 pub mod wire;

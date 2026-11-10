@@ -818,6 +818,7 @@ fn convert_mapping(entries: &[(Node, Node)]) -> Result<Value, CardInvalid> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::seeded_draws::Draws;
 
     pub const SPEC_PUBLIC_CAP_BYTES: usize = 3072;
     const MAPPING_OF_ONE_EMPTY_TEXT: &str = r#"{"k":""}"#;
@@ -1289,12 +1290,6 @@ pub(crate) mod tests {
     const LARGEST_SEQUENCE: u64 = 4;
     const DEEPEST_NESTING: u32 = 3;
     const VALUE_KINDS: u64 = 9;
-    const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
-    const SPLITMIX_FIRST_MULTIPLIER: u64 = 0xBF58_476D_1CE4_E5B9;
-    const SPLITMIX_SECOND_MULTIPLIER: u64 = 0x94D0_49BB_1331_11EB;
-    const SPLITMIX_FIRST_SHIFT: u32 = 30;
-    const SPLITMIX_SECOND_SHIFT: u32 = 27;
-    const SPLITMIX_THIRD_SHIFT: u32 = 31;
     const FLOAT_TEXTS: [&str; 5] = ["1.5", "-2.5e-3", "1.0e19", "0.0", "123456789.125"];
     const WIDE_INTEGER_TEXTS: [&str; 4] = [
         "18446744073709551615",
@@ -1305,21 +1300,7 @@ pub(crate) mod tests {
     const SCALAR_TEXTS: [&str; 4] = ["true", "false", "null", "'18446744073709551616'"];
     const QUOTED_TEXT_WITH_JSON_PUNCTUATION: &str = r#""a, \"b\": [1e400] }""#;
 
-    struct Draws(u64);
-
     impl Draws {
-        fn below(&mut self, bound: u64) -> u64 {
-            self.0 = self.0.wrapping_add(SPLITMIX_GAMMA);
-            let mut mixed = self.0;
-            mixed =
-                (mixed ^ (mixed >> SPLITMIX_FIRST_SHIFT)).wrapping_mul(SPLITMIX_FIRST_MULTIPLIER);
-            mixed =
-                (mixed ^ (mixed >> SPLITMIX_SECOND_SHIFT)).wrapping_mul(SPLITMIX_SECOND_MULTIPLIER);
-            (mixed ^ (mixed >> SPLITMIX_THIRD_SHIFT))
-                .checked_rem(bound)
-                .unwrap()
-        }
-
         fn pick<'a>(&mut self, texts: &[&'a str]) -> &'a str {
             texts[usize::try_from(self.below(u64::try_from(texts.len()).unwrap())).unwrap()]
         }
@@ -1358,7 +1339,7 @@ pub(crate) mod tests {
     fn every_public_a_valid_card_serializes_is_a_card_public_spec_3_5() {
         let mut checked: u64 = 0;
         for case in 0..PROPERTY_CASES {
-            let mut draws = Draws(case);
+            let mut draws = Draws::seeded(case);
             let mapping = draws.yaml_mapping(0);
             let Ok(card) = parse_card(&format!(
                 "handle: ada\npublic_key: abc\npublic: {mapping}\n"
