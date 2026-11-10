@@ -3223,6 +3223,50 @@ pub(super) mod tests {
         drop(scratch);
     }
 
+    pub(in crate::node) const DUPLICATE_KEY_PUBLIC: &[u8] = br#"{"role":"first","role":"second"}"#;
+    pub(in crate::node) const INTEGER_PAST_64_BITS_PUBLIC: &[u8] = br#"{"a":18446744073709551616}"#;
+
+    #[tokio::test]
+    async fn spec_3_5_an_introduce_whose_public_no_card_sends_changes_nothing_at_the_node() {
+        let scratch = Scratch::new("introduce-public").await;
+        let mut members = start_members(
+            &scratch,
+            vec![
+                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC),
+                MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC).reaching(&[FIRST_SEED]),
+            ],
+        )
+        .await;
+        let second = members.pop().unwrap();
+        let first = members.pop().unwrap();
+        let introducing = DirectClient::new(second.endpoint.clone(), keys(), ClientTimeouts::SPEC);
+
+        for public in [DUPLICATE_KEY_PUBLIC, INTEGER_PAST_64_BITS_PUBLIC] {
+            let introduced = introducing
+                .introduce(
+                    first.endpoint.id(),
+                    Introduce {
+                        v: Version::CURRENT,
+                        handle: Some(SECOND_HANDLE.to_owned()),
+                        public: public.to_vec(),
+                        attached: true,
+                        addr: wire_addr(&second.endpoint.addr()),
+                        mac: ZERO_MAC,
+                    },
+                )
+                .await;
+
+            assert_eq!(
+                introduced,
+                Err(DirectError::Refused),
+                "{}",
+                String::from_utf8_lossy(public)
+            );
+            assert_eq!(first.node.peers(), Vec::<Peer>::new());
+        }
+        drop(scratch);
+    }
+
     #[tokio::test]
     async fn spec_3_8_presence_and_departure_for_this_nodes_own_card_are_ignored() {
         let scratch = Scratch::new("own-card").await;

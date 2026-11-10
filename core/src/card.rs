@@ -1,13 +1,19 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::str::FromStr;
 
+use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value};
 use yaml_rust2::Yaml;
 use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser, Tag};
 use yaml_rust2::scanner::{Marker, TScalarStyle};
 
 const PUBLIC_MAX_BYTES: usize = 3072;
+const JSON_QUOTE: u8 = b'"';
+const JSON_ESCAPE: u8 = b'\\';
+const JSON_MINUS: u8 = b'-';
+const JSON_NUMBER_BYTES: &[u8] = b"0123456789+-.eE";
+const JSON_FRACTION_OR_EXPONENT: [char; 3] = ['.', 'e', 'E'];
 const HANDLE_FIELD: &str = "handle";
 const PUBLIC_KEY_FIELD: &str = "public_key";
 const NETWORK_FIELD: &str = "network";
@@ -450,10 +456,129 @@ fn compact_json(mapping: &Map<String, Value>) -> Vec<u8> {
     Value::Object(mapping.clone()).to_string().into_bytes()
 }
 
-/// Whether `public` bytes a peer sent are what a card sends: a JSON mapping within the cap, counted as they arrived (spec 3.5).
+/// Whether `public` bytes a peer sent are what a card sends: a JSON mapping within the cap whose mappings name each key once and whose integers fit 64 bits, judged on the bytes as they arrived (spec 3.5).
 #[must_use]
 pub fn is_card_public(bytes: &[u8]) -> bool {
-    bytes.len() <= PUBLIC_MAX_BYTES && serde_json::from_slice::<Map<String, Value>>(bytes).is_ok()
+    bytes.len() <= PUBLIC_MAX_BYTES
+        && serde_json::from_slice::<ReceivedPublicMapping>(bytes).is_ok()
+        && every_integer_fits_64_bits(bytes)
+}
+
+/// A received `public` that is a JSON mapping in which no mapping, at any depth, names a key twice.
+struct ReceivedPublicMapping;
+
+impl<'de> Deserialize<'de> for ReceivedPublicMapping {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_map(UniqueKeys).map(|()| Self)
+    }
+}
+
+/// A JSON value inside a received `public` in which no mapping names a key twice.
+struct ReceivedPublicValue;
+
+impl<'de> Deserialize<'de> for ReceivedPublicValue {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(UniqueKeys).map(|()| Self)
+    }
+}
+
+/// The visitor that takes any JSON value a card holds and refuses a mapping that names a key twice.
+struct UniqueKeys;
+
+impl<'de> Visitor<'de> for UniqueKeys {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("JSON whose mappings name each key once")
+    }
+
+    fn visit_bool<E: de::Error>(self, _flag: bool) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_i64<E: de::Error>(self, _number: i64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_u64<E: de::Error>(self, _number: u64) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_f64<E: de::Error>(self, number: f64) -> Result<(), E> {
+        if number.is_finite() {
+            Ok(())
+        } else {
+            Err(E::custom(CardInvalid::NumberNotFinite))
+        }
+    }
+
+    fn visit_str<E: de::Error>(self, _text: &str) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_unit<E: de::Error>(self) -> Result<(), E> {
+        Ok(())
+    }
+
+    fn visit_seq<A: SeqAccess<'de>>(self, mut items: A) -> Result<(), A::Error> {
+        while items.next_element::<ReceivedPublicValue>()?.is_some() {}
+        Ok(())
+    }
+
+    fn visit_map<A: MapAccess<'de>>(self, mut entries: A) -> Result<(), A::Error> {
+        let mut keys = BTreeSet::new();
+        while let Some(key) = entries.next_key::<String>()? {
+            entries.next_value::<ReceivedPublicValue>()?;
+            if !keys.insert(key.clone()) {
+                return Err(de::Error::custom(CardInvalid::DuplicatePublicKey(key)));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether every integer a valid JSON text writes outside its strings fits 64 bits, signed or unsigned, as every integer a card holds does (spec 3.5).
+fn every_integer_fits_64_bits(json: &[u8]) -> bool {
+    json_number_tokens(json)
+        .iter()
+        .all(|token| token.contains(JSON_FRACTION_OR_EXPONENT) || fits_64_bits(token))
+}
+
+/// Whether the integer text parses as a signed or an unsigned 64-bit integer.
+fn fits_64_bits(integer: &str) -> bool {
+    integer.parse::<i64>().is_ok() || integer.parse::<u64>().is_ok()
+}
+
+/// The number tokens of a valid JSON text, in order, leaving out whatever its strings hold.
+fn json_number_tokens(json: &[u8]) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut bytes = json.iter().copied().peekable();
+    while let Some(byte) = bytes.next() {
+        if byte == JSON_QUOTE {
+            skip_rest_of_json_string(&mut bytes);
+        } else if byte == JSON_MINUS || byte.is_ascii_digit() {
+            let mut token = String::from(char::from(byte));
+            while let Some(next) = bytes.next_if(|next| JSON_NUMBER_BYTES.contains(next)) {
+                token.push(char::from(next));
+            }
+            tokens.push(token);
+        }
+    }
+    tokens
+}
+
+/// Consumes a JSON string's bytes up to and including its closing quote.
+fn skip_rest_of_json_string(bytes: &mut impl Iterator<Item = u8>) {
+    let mut escaped = false;
+    for byte in bytes {
+        if escaped {
+            escaped = false;
+        } else if byte == JSON_ESCAPE {
+            escaped = true;
+        } else if byte == JSON_QUOTE {
+            return;
+        }
+    }
 }
 
 /// The mapping itself, or the byte size of its compact JSON when that passes the cap.
@@ -1019,5 +1144,147 @@ mod tests {
             Err(CardInvalid::Tag)
         );
         assert_eq!(card_with_public("  !custom a: x\n"), Err(CardInvalid::Tag));
+    }
+
+    #[test]
+    fn a_received_public_the_card_check_refuses_is_not_a_card_public_spec_3_5() {
+        let over_cap = format!(r#"{{"k":"{}"}}"#, "x".repeat(PUBLIC_MAX_BYTES - 7));
+        let refused: [&[u8]; 13] = [
+            br#"{"a":1,"a":2}"#,
+            br#"{"a":{"b":1,"b":2}}"#,
+            br#"{"a":[{"b":1,"b":2}]}"#,
+            br#"{"a":1,"a":2}"#,
+            br#"{"a":18446744073709551616}"#,
+            br#"{"a":-9223372036854775809}"#,
+            br#"{"a":[1,18446744073709551616]}"#,
+            br#"{"a":1e400}"#,
+            br#"["a"]"#,
+            br#""a""#,
+            b"not json",
+            b"",
+            over_cap.as_bytes(),
+        ];
+        for public in refused {
+            assert!(
+                !is_card_public(public),
+                "{}",
+                String::from_utf8_lossy(public)
+            );
+        }
+    }
+
+    #[test]
+    fn a_received_public_at_the_edges_the_card_check_admits_is_a_card_public_spec_3_5() {
+        let at_cap = format!(r#"{{"k":"{}"}}"#, "x".repeat(PUBLIC_MAX_BYTES - 8));
+        let admitted: [&[u8]; 9] = [
+            b"{}",
+            br#"{"a":18446744073709551615}"#,
+            br#"{"a":-9223372036854775808}"#,
+            br#"{"a":1e19,"b":-2.5e-3,"c":1.5}"#,
+            br#"{"a":{"a":{"a":1}},"b":[{"a":1},{"a":2}]}"#,
+            br#"{"a":"18446744073709551616","b":"1,\"a\":2"}"#,
+            br#"{"<<":"a merge key text","a":null,"b":true}"#,
+            br#"{ "a" : [ 1 , 2 ] }"#,
+            at_cap.as_bytes(),
+        ];
+        for public in admitted {
+            assert!(
+                is_card_public(public),
+                "{}",
+                String::from_utf8_lossy(public)
+            );
+        }
+    }
+
+    const PROPERTY_CASES: u64 = 2000;
+    const LARGEST_MAPPING: u64 = 5;
+    const LARGEST_SEQUENCE: u64 = 4;
+    const DEEPEST_NESTING: u32 = 3;
+    const VALUE_KINDS: u64 = 9;
+    const SPLITMIX_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
+    const SPLITMIX_FIRST_MULTIPLIER: u64 = 0xBF58_476D_1CE4_E5B9;
+    const SPLITMIX_SECOND_MULTIPLIER: u64 = 0x94D0_49BB_1331_11EB;
+    const SPLITMIX_FIRST_SHIFT: u32 = 30;
+    const SPLITMIX_SECOND_SHIFT: u32 = 27;
+    const SPLITMIX_THIRD_SHIFT: u32 = 31;
+    const FLOAT_TEXTS: [&str; 5] = ["1.5", "-2.5e-3", "1.0e19", "0.0", "123456789.125"];
+    const WIDE_INTEGER_TEXTS: [&str; 4] = [
+        "18446744073709551615",
+        "9223372036854775808",
+        "-9223372036854775808",
+        "9223372036854775807",
+    ];
+    const SCALAR_TEXTS: [&str; 4] = ["true", "false", "null", "'18446744073709551616'"];
+    const QUOTED_TEXT_WITH_JSON_PUNCTUATION: &str = r#""a, \"b\": [1e400] }""#;
+
+    struct Draws(u64);
+
+    impl Draws {
+        fn below(&mut self, bound: u64) -> u64 {
+            self.0 = self.0.wrapping_add(SPLITMIX_GAMMA);
+            let mut mixed = self.0;
+            mixed =
+                (mixed ^ (mixed >> SPLITMIX_FIRST_SHIFT)).wrapping_mul(SPLITMIX_FIRST_MULTIPLIER);
+            mixed =
+                (mixed ^ (mixed >> SPLITMIX_SECOND_SHIFT)).wrapping_mul(SPLITMIX_SECOND_MULTIPLIER);
+            (mixed ^ (mixed >> SPLITMIX_THIRD_SHIFT))
+                .checked_rem(bound)
+                .unwrap()
+        }
+
+        fn pick<'a>(&mut self, texts: &[&'a str]) -> &'a str {
+            texts[usize::try_from(self.below(u64::try_from(texts.len()).unwrap())).unwrap()]
+        }
+
+        fn yaml_mapping(&mut self, depth: u32) -> String {
+            let entries: Vec<String> = (0..self.below(LARGEST_MAPPING))
+                .map(|index| format!("k{index}: {}", self.yaml_value(depth)))
+                .collect();
+            format!("{{{}}}", entries.join(", "))
+        }
+
+        fn yaml_sequence(&mut self, depth: u32) -> String {
+            let items: Vec<String> = (0..self.below(LARGEST_SEQUENCE))
+                .map(|_| self.yaml_value(depth))
+                .collect();
+            format!("[{}]", items.join(", "))
+        }
+
+        fn yaml_value(&mut self, depth: u32) -> String {
+            let deeper = depth.checked_add(1).unwrap();
+            match self.below(VALUE_KINDS) {
+                0 => format!("\"text {}\"", self.below(u64::MAX)),
+                1 => format!("{}", self.below(u64::MAX)),
+                2 => format!("-{}", self.below(u64::try_from(i64::MAX).unwrap())),
+                3 => self.pick(&WIDE_INTEGER_TEXTS).to_owned(),
+                4 => self.pick(&FLOAT_TEXTS).to_owned(),
+                5 => self.pick(&SCALAR_TEXTS).to_owned(),
+                6 if depth < DEEPEST_NESTING => self.yaml_sequence(deeper),
+                7 if depth < DEEPEST_NESTING => self.yaml_mapping(deeper),
+                _ => QUOTED_TEXT_WITH_JSON_PUNCTUATION.to_owned(),
+            }
+        }
+    }
+
+    #[test]
+    fn every_public_a_valid_card_serializes_is_a_card_public_spec_3_5() {
+        let mut checked: u64 = 0;
+        for case in 0..PROPERTY_CASES {
+            let mut draws = Draws(case);
+            let mapping = draws.yaml_mapping(0);
+            let Ok(card) = parse_card(&format!(
+                "handle: ada\npublic_key: abc\npublic: {mapping}\n"
+            )) else {
+                continue;
+            };
+            let public = card.public_json();
+            assert!(
+                is_card_public(&public),
+                "case {case}: {}",
+                String::from_utf8_lossy(&public)
+            );
+            checked = checked.checked_add(1).unwrap();
+        }
+        assert!(checked > PROPERTY_CASES / 2, "only {checked} cards parsed");
     }
 }

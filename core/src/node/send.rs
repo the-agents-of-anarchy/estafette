@@ -186,10 +186,11 @@ mod tests {
     use crate::net::direct::{ClientTimeouts, DirectClient, DirectServer};
     use crate::net::endpoint::DIRECT_ALPN;
     use crate::node::presence::tests::{
-        FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTRODUCE_ROUND_TRIP, Member, MemberPlan,
-        PROBE_NONCE, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE,
-        THIRD_SEED, WITNESS_HANDLE, WITNESS_SEED, bind, card, inbox_frames, keys, listed_within,
-        message_to, start_members_reaching, start_pair, start_third_through_second, wall_clock_ms,
+        DUPLICATE_KEY_PUBLIC, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTEGER_PAST_64_BITS_PUBLIC,
+        INTRODUCE_ROUND_TRIP, Member, MemberPlan, PROBE_NONCE, SECOND_HANDLE, SECOND_SEED,
+        SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_SEED, WITNESS_HANDLE, WITNESS_SEED, bind,
+        card, inbox_frames, keys, listed_within, message_to, start_members_reaching, start_pair,
+        start_third_through_second, wall_clock_ms,
     };
     use crate::node::presence::wire_addr;
     use crate::payload::{PayloadError, open_request, seal_response};
@@ -217,6 +218,8 @@ mod tests {
         own_card: wire::PublicKey,
         addr: Addr,
         phase: PeerPhase,
+        introduced_as: Option<&'static str>,
+        public: &'static [u8],
     }
 
     impl DirectHost for ScriptedHost {
@@ -247,8 +250,8 @@ mod tests {
         ) -> IntroduceAck {
             IntroduceAck {
                 v: Version::CURRENT,
-                handle: None,
-                public: Vec::new(),
+                handle: self.introduced_as.map(str::to_owned),
+                public: self.public.to_vec(),
                 attached: false,
                 addr: self.addr.clone(),
                 mac: ZERO_MAC,
@@ -299,6 +302,8 @@ mod tests {
                     own_card: card(WITNESS_SEED),
                     addr,
                     phase,
+                    introduced_as: None,
+                    public: &[],
                 },
             )
         })
@@ -589,6 +594,33 @@ mod tests {
             .status;
         assert_eq!(status, Status::Unreachable);
         drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_5_an_introduce_ack_whose_public_no_card_sends_changes_nothing_at_the_node() {
+        for public in [DUPLICATE_KEY_PUBLIC, INTEGER_PAST_64_BITS_PUBLIC] {
+            let scratch = Scratch::new("introduce-ack-public").await;
+            let (first, _peer) = first_member_listing_a_peer_served_by(&scratch, |addr| {
+                DirectServer::new(
+                    keys(),
+                    ScriptedHost {
+                        own_card: card(WITNESS_SEED),
+                        addr,
+                        phase: PeerPhase::Serving,
+                        introduced_as: Some(WITNESS_HANDLE),
+                        public,
+                    },
+                )
+            })
+            .await;
+
+            let listed = listed_within(&first, WITNESS_SEED, Duration::ZERO)
+                .await
+                .unwrap();
+
+            assert_eq!(listed.public, None, "{}", String::from_utf8_lossy(public));
+            drop(scratch);
+        }
     }
 
     #[tokio::test]
