@@ -527,6 +527,82 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 }
 
 #[cfg(test)]
+mod spec_3_15_test_19_on_one_machine {
+    use std::collections::BTreeSet;
+    use std::time::{Duration, Instant};
+
+    use iroh::{EndpointId, SecretKey};
+    use iroh_gossip::api::Event;
+
+    use crate::local_network::{LocalNetwork, MetPair};
+    use crate::mcp_server::online;
+    use crate::member::{loopback_address, loopback_address_of};
+    use crate::payloads::presence_signed_by;
+    use crate::scripted_node::ScriptedNode;
+
+    const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
+    const GOSSIP_NEIGHBOR_WAIT: Duration = Duration::from_secs(10);
+    const EVENTS_POLL: Duration = Duration::from_millis(50);
+
+    /// Every node the node's topic ever reported up as a gossip neighbor.
+    fn nodes_ever_gossip_neighbors(node: &ScriptedNode) -> BTreeSet<EndpointId> {
+        node.events()
+            .into_iter()
+            .filter_map(|event| {
+                if let Event::NeighborUp(neighbor) = event {
+                    Some(neighbor)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    #[track_caller]
+    fn wait_for_gossip_neighbor(node: &ScriptedNode, neighbor: EndpointId) {
+        let started = Instant::now();
+        while !nodes_ever_gossip_neighbors(node).contains(&neighbor) {
+            assert!(
+                started.elapsed() < GOSSIP_NEIGHBOR_WAIT,
+                "{neighbor} was no gossip neighbor within {GOSSIP_NEIGHBOR_WAIT:?}"
+            );
+            std::thread::sleep(EVENTS_POLL);
+        }
+    }
+
+    #[test]
+    fn spec_3_15_test_19_a_member_lists_a_node_whose_only_gossip_neighbor_is_another_member_within_the_observer_wait_of_its_presence()
+     {
+        let network = LocalNetwork::create("t19");
+        let host = network.stand_in_host();
+        let MetPair {
+            mut amy,
+            bob,
+            bob_card,
+            ..
+        } = network.amy_and_bob_met(&host);
+        let carol_key = SecretKey::generate();
+        let carol = network.scripted_member(&carol_key, "carol");
+        carol.admit(loopback_address(bob_card.id, &bob.bound_udp_ports()));
+        wait_for_gossip_neighbor(&carol, bob_card.id);
+
+        carol.broadcast(presence_signed_by(
+            network.keys(),
+            &carol_key,
+            "carol",
+            &loopback_address_of(&carol),
+        ));
+        let presence_sent = Instant::now();
+        amy.peer_within("carol", SPEC_OBSERVER_WAIT, online);
+        let listed_after = presence_sent.elapsed();
+        let carol_gossip_neighbors = nodes_ever_gossip_neighbors(&carol);
+
+        assert!(listed_after <= SPEC_OBSERVER_WAIT, "{listed_after:?}");
+        assert_eq!(carol_gossip_neighbors, BTreeSet::from([bob_card.id]));
+    }
+}
+
+#[cfg(test)]
 mod spec_3_15_with_one_member {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

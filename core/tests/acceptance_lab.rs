@@ -606,9 +606,7 @@ mod spec_3_15_two_members_through_the_live_host {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use estafette::keys::parse_secret_key;
-    use estafette::wire::{
-        self, Addr, HostAddr, Payload, Presence, RelayUrl, SignatureBytes, Version,
-    };
+    use estafette::wire::{self, Addr, Payload, Presence, SignatureBytes, Version};
     use iroh::{EndpointAddr, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
@@ -628,7 +626,6 @@ mod spec_3_15_two_members_through_the_live_host {
     const SPEC_QUIC_IDLE_TIMEOUT: Duration = Duration::from_millis(10_000);
     const QUIC_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(500);
     const SPEC_PROBE_TIMEOUT: Duration = Duration::from_millis(3000);
-    const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
     const SPEC_LARGEST_PRESENCE_BYTES: usize = 3951;
     const SPEC_GOSSIP_FRAME_BYTES: usize = 4096;
     const SPEC_GOSSIP_LAYER_OVERHEAD_BYTES: usize = 38;
@@ -752,15 +749,6 @@ mod spec_3_15_two_members_through_the_live_host {
             .card_sidecar_file(network.name(), &card.name)
             .unwrap();
         parse_secret_key(&fs::read_to_string(sidecar).unwrap()).unwrap()
-    }
-
-    /// The member as a host to join through, reached through the live host's relay.
-    fn member_as_host(network: &LiveNetwork, member: &Card) -> HostAddr {
-        HostAddr {
-            v: Version::CURRENT,
-            id: *member.id.as_bytes(),
-            relay: RelayUrl::try_from(network.host_relay().to_owned()).unwrap(),
-        }
     }
 
     fn largest_presence() -> Payload {
@@ -1201,33 +1189,6 @@ mod spec_3_15_two_members_through_the_live_host {
             delivered_after <= SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
             "{delivered_after:?}"
         );
-    }
-
-    #[test]
-    fn spec_3_15_test_19_a_member_sees_a_third_joined_through_another_member_alone_within_the_observer_wait()
-     {
-        let _live_host = live_host_to_itself();
-        let network = LiveNetwork::from_environment();
-        let mut amy = lab_member(&network, "t19-amy", &unique_handle("amy"), FIRST_SESSION);
-        let mut bob = lab_member(&network, "t19-bob", &unique_handle("bob"), FIRST_SESSION);
-        meet(&mut amy, &mut bob);
-        let carol_handle = unique_handle("carol");
-        let carol_machine = LabMachine::fresh("t19-carol", network.name());
-        network.join_through(
-            &carol_machine.directories(),
-            &[member_as_host(&network, &bob.card)],
-        );
-        let carol_card = carol_machine.create_card("t19-carol-card", &carol_handle);
-        let mut carol = carol_machine.start_server();
-
-        let claim = carol.call("init", &json!({ "card": carol_card.name }));
-        let presence_sent = Instant::now();
-        amy.member
-            .peer_within(&carol_handle, SPEC_OBSERVER_WAIT, online);
-        let seen_after = presence_sent.elapsed();
-
-        assert_eq!(claim["ok"], json!(true), "{claim}");
-        assert!(seen_after <= SPEC_OBSERVER_WAIT, "{seen_after:?}");
     }
 
     #[test]
