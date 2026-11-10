@@ -232,3 +232,95 @@ fn binary_owner_key_is_owner_read_write_under_any_umask_of_spec_3_3() {
         );
     }
 }
+
+const CARDS_DIRECTORY_VARIABLE: &str = "ESTAFETTE_CARDS_DIR";
+const CARDS_CHECK_LINE: &str = "cards\tpass\tcards valid: 1";
+
+fn create_network_and_card_in(root: &Path, cards_directory: &str) -> io::Result<bool> {
+    let network = run_binary(root, &["network", "create", "acme"])?;
+    let card = run_binary(
+        root,
+        &[
+            "create-card",
+            "acme",
+            "ana",
+            "ana",
+            "--cards-dir",
+            cards_directory,
+        ],
+    )?;
+    Ok(network.status.success() && card.status.success())
+}
+
+#[test]
+fn binary_doctor_reads_the_cards_of_the_cards_dir_flag_of_spec_3_3() {
+    let root = common::scratch_root(SCRATCH_PREFIX, "doctor_flag").unwrap();
+    let flagged = root.join("flagged");
+    assert!(create_network_and_card_in(&root, flagged.to_str().unwrap()).unwrap());
+
+    let diagnosed = run_binary(
+        &root,
+        &["doctor", "acme", "--cards-dir", flagged.to_str().unwrap()],
+    )
+    .unwrap();
+
+    let report = String::from_utf8(diagnosed.stdout).unwrap();
+    assert!(report.contains(CARDS_CHECK_LINE), "{report}");
+}
+
+#[test]
+fn binary_doctor_reads_the_cards_of_the_cards_dir_variable_of_spec_3_3() {
+    let root = common::scratch_root(SCRATCH_PREFIX, "doctor_variable").unwrap();
+    let flagged = root.join("flagged");
+    assert!(create_network_and_card_in(&root, flagged.to_str().unwrap()).unwrap());
+
+    let diagnosed = Command::new(BINARY)
+        .args(["doctor", "acme"])
+        .env_clear()
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_RUNTIME_DIR", root.join("runtime"))
+        .env(CARDS_DIRECTORY_VARIABLE, &flagged)
+        .output()
+        .unwrap();
+
+    let report = String::from_utf8(diagnosed.stdout).unwrap();
+    assert!(report.contains(CARDS_CHECK_LINE), "{report}");
+}
+
+#[test]
+fn binary_test_send_creates_its_operator_card_in_the_cards_dir_of_spec_3_3() {
+    let root = common::scratch_root(SCRATCH_PREFIX, "test_send_flag").unwrap();
+    let flagged = root.join("flagged");
+    assert!(create_network_and_card_in(&root, flagged.to_str().unwrap()).unwrap());
+
+    run_binary(
+        &root,
+        &[
+            "test-send",
+            "acme",
+            "ana",
+            "hello",
+            "--cards-dir",
+            flagged.to_str().unwrap(),
+        ],
+    )
+    .unwrap();
+
+    assert!(flagged.join("acme/operator.yaml").is_file());
+    assert!(
+        !root
+            .join("data/estafette/cards/acme/operator.yaml")
+            .exists()
+    );
+}
+
+#[test]
+fn binary_help_of_every_observer_command_names_the_cards_dir_flag_of_spec_3_3() {
+    let root = common::scratch_root(SCRATCH_PREFIX, "observer_help").unwrap();
+    for subcommand in ["show-peers", "tail", "test-send", "doctor"] {
+        let output = run_binary(&root, &[subcommand, "--help"]).unwrap();
+        let help = String::from_utf8(output.stdout).unwrap();
+        assert!(help.contains("--cards-dir"), "{subcommand}: {help}");
+    }
+}

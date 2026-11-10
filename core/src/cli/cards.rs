@@ -46,9 +46,10 @@ fn list_cards_long_about() -> String {
 }
 
 /// The network a command works on and the optional cards directory that replaces the default one.
-#[derive(Debug, Args)]
+#[derive(Debug, Clone, Args)]
 pub struct RegistryArgs {
     pub network: Handle,
+    /// The cards directory, replacing the default one
     #[arg(long)]
     pub cards_dir: Option<PathBuf>,
 }

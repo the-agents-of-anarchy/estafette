@@ -11,7 +11,7 @@ use clap::Args;
 use iroh::{PublicKey, RelayUrl};
 
 use crate::card::{Card, CardInvalid};
-use crate::cli::cards::{CardRegistryReader, card_files_in, card_name_of};
+use crate::cli::cards::{CardRegistryReader, RegistryArgs, card_files_in, card_name_of};
 use crate::cli::network::NetworkFilesystem;
 use crate::cli::observer::{self, ObserverCommand, ObserverEffects, OperatorEffects};
 use crate::config::{NetworkConfig, OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
@@ -32,7 +32,8 @@ const FAILED_WORD: &str = "fail";
 /// The network whose node the doctor checks.
 #[derive(Debug, Clone, Args)]
 pub struct DoctorArgs {
-    pub network: Handle,
+    #[command(flatten)]
+    pub registry: RegistryArgs,
 }
 
 /// The reads the doctor performs beyond the card registry and the network files, supplied by the composition root.
@@ -189,7 +190,7 @@ async fn run_checks(
     (effects, operator_effects): (ObserverEffects, OperatorEffects),
     stdout: &mut impl Write,
 ) -> Result<ExitStatus, Failure> {
-    let network = arguments.network.as_str();
+    let network = arguments.registry.network.as_str();
     let config_path = directories
         .network_config_file(network)
         .map_err(Failure::Directories)?;
@@ -406,7 +407,8 @@ async fn visible_peer_verdict(
 ) -> Verdict {
     let mut listing = Vec::new();
     let command = ObserverCommand::ShowPeers {
-        network: arguments.network.clone(),
+        network: arguments.registry.network.clone(),
+        cards_dir: arguments.registry.cards_dir.clone(),
     };
     let observed = observer::run(
         &command,
@@ -703,7 +705,10 @@ mod tests {
             let mut output = Vec::new();
             let status = run(
                 &DoctorArgs {
-                    network: NETWORK_NAME.parse().unwrap(),
+                    registry: RegistryArgs {
+                        network: NETWORK_NAME.parse().unwrap(),
+                        cards_dir: None,
+                    },
                 },
                 &self.directories,
                 &OperatingSystemFilesystem,

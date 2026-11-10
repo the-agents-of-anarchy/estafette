@@ -71,11 +71,17 @@ pub enum ObserverCommand {
     ShowPeers {
         /// The network whose members to list
         network: Handle,
+        /// The cards directory, replacing the default one
+        #[arg(long)]
+        cards_dir: Option<PathBuf>,
     },
     /// Join the network without a card and print each gossip payload as it arrives until interrupted, refusing a network without a configuration file
     Tail {
         /// The network whose gossip to print
         network: Handle,
+        /// The cards directory, replacing the default one
+        #[arg(long)]
+        cards_dir: Option<PathBuf>,
     },
     /// Send one message as the reserved operator card, creating the card when absent, and print the delivery, refusing a network without a configuration file or a card another process holds
     TestSend {
@@ -85,7 +91,22 @@ pub enum ObserverCommand {
         handle: LocalHandle,
         /// The text of the message
         body: String,
+        /// The cards directory, replacing the default one
+        #[arg(long)]
+        cards_dir: Option<PathBuf>,
     },
+}
+
+impl ObserverCommand {
+    /// The cards directory override the command was given.
+    #[must_use]
+    pub fn cards_dir(&self) -> Option<PathBuf> {
+        match self {
+            Self::ShowPeers { cards_dir, .. }
+            | Self::Tail { cards_dir, .. }
+            | Self::TestSend { cards_dir, .. } => cards_dir.clone(),
+        }
+    }
 }
 
 /// The side effects every observer command runs on, initialized by the composition root.
@@ -237,7 +258,7 @@ async fn run_command(
     stdout: &mut (impl Write + Send),
 ) -> Result<(), Failure> {
     match command {
-        ObserverCommand::ShowPeers { network } => {
+        ObserverCommand::ShowPeers { network, .. } => {
             let setup = load_network_setup(directories, network)?;
             let peers = start_observation(&setup, effects)
                 .await?
@@ -248,7 +269,7 @@ async fn run_command(
             }
             Ok(())
         }
-        ObserverCommand::Tail { network } => {
+        ObserverCommand::Tail { network, .. } => {
             let setup = load_network_setup(directories, network)?;
             start_observation(&setup, effects).await?.tail(stdout).await
         }
@@ -256,6 +277,7 @@ async fn run_command(
             network,
             handle,
             body,
+            ..
         } => {
             let setup = load_network_setup(directories, network)?;
             let operator =
@@ -1283,6 +1305,7 @@ mod tests {
         run(
             &ObserverCommand::ShowPeers {
                 network: NETWORK_NAME.parse().unwrap(),
+                cards_dir: None,
             },
             &lab.directories,
             &OperatingSystemFilesystem,
@@ -1382,6 +1405,7 @@ mod tests {
         );
         let tail = ObserverCommand::Tail {
             network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
         };
 
         let (tail_result, ()) = tokio::join!(
@@ -1445,6 +1469,7 @@ mod tests {
         let mut output = Vec::new();
         let test_send = ObserverCommand::TestSend {
             network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
             handle: SECOND_HANDLE.parse().unwrap(),
             body: OPERATOR_BODY.to_owned(),
         };
@@ -1511,6 +1536,7 @@ mod tests {
     fn operator_test_send() -> ObserverCommand {
         ObserverCommand::TestSend {
             network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
             handle: SECOND_HANDLE.parse().unwrap(),
             body: OPERATOR_BODY.to_owned(),
         }
@@ -1675,6 +1701,7 @@ mod tests {
         let mut output = Vec::new();
         let show_peers = ObserverCommand::ShowPeers {
             network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
         };
 
         run(
@@ -1730,6 +1757,7 @@ mod tests {
         lab.write_network_config(&[NEIGHBOR_SEED]);
         let show_peers = ObserverCommand::ShowPeers {
             network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
         };
         let effects = lab.effects(vec![neighbor.address.clone()], never_interrupted());
         let mut output = Vec::new();
@@ -1922,6 +1950,7 @@ mod tests {
         let wanted_lines = whole_payload_lines();
         let tail = ObserverCommand::Tail {
             network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
         };
 
         let (tail_result, ()) = tokio::join!(
@@ -2019,6 +2048,7 @@ mod tests {
         effects.monotonic = clock_moving_past_any_silence_at_each_reading();
         let tail = ObserverCommand::Tail {
             network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
         };
         let mut tail_output = Vec::new();
 
@@ -2069,6 +2099,7 @@ mod tests {
         let mut output = Vec::new();
         let show_peers = ObserverCommand::ShowPeers {
             network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
         };
 
         let refusal = run(

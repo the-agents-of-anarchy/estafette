@@ -2,7 +2,7 @@
 use std::ffi::OsString;
 use std::fmt;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -356,12 +356,12 @@ struct ObserverRuntime {
     operator_effects: OperatorEffects,
 }
 
-fn observer_runtime() -> Result<ObserverRuntime, CommandLineFailure> {
+fn observer_runtime(cards_dir: Option<PathBuf>) -> Result<ObserverRuntime, CommandLineFailure> {
     let directories = Arc::new(
         Directories::establish(
             |name| std::env::var_os(name),
             &OperatingSystemFilesystem,
-            None,
+            cards_dir,
         )
         .map_err(CommandLineFailure::Directories)?,
     );
@@ -393,7 +393,7 @@ fn run_observer_command(
         runtime,
         effects,
         operator_effects,
-    } = observer_runtime()?;
+    } = observer_runtime(command.cards_dir())?;
     runtime
         .block_on(observer::run(
             command,
@@ -416,7 +416,7 @@ fn run_doctor_command(
         runtime,
         effects,
         operator_effects,
-    } = observer_runtime()?;
+    } = observer_runtime(arguments.registry.cards_dir.clone())?;
     runtime
         .block_on(doctor::run(
             arguments,
