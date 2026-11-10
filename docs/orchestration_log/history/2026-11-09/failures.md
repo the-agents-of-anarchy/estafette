@@ -87,3 +87,19 @@ What happened: On 2026-11-10 the lead told impl-U49 (resume note, 20:30) and imp
 Mechanism: The lead wrote those items from the project rules (linear integration, ten-word subjects) and stated that rewording was allowed without ever having read the implementer agent definition; the earlier refusal by impl-U47 over an eleven-word subject was read as a one-off, not as a standing rule of the agent type.
 
 Correction: No brief orders an implementer to amend, rebase, reword or force-push; rebasing a unit onto the integration head and rewording its subjects are integrator steps, checked by identical patch ids and an empty tree diff; a facts agent quotes the implementer definition (recon reports/facts-implementer-history-rules.md) and the brief templates and resume notes are corrected from it; the two finished rebases stand and their changed commits are re-reviewed.
+
+## Records written through a memento binary found on the path
+
+What happened: From 22:45 to 23:41 on 2026-11-10, after a context compaction, the lead wrote journal lines, one failure entry, two architecture-log entries and one records commit (0c331f5) by calling a bare memento that the shell resolved to another login's plugin cache, version 0.10.1, and parked lines by hand in a scratch file while that commit ran; the owner ruled at 00:10: you must use the native memento tool.
+
+Mechanism: The compaction summary said records go through the memento binary; on resuming the lead ran the bare command to read its usage and kept using it, without reading just --list or just/records.just, where the project pins its own memento behind just records.
+
+Correction: Every record verb runs as just records <verb>; the lines and entries written by the other binary passed the pinned check in the pre-commit run of 0c331f5 and in just records check at 00:11; no event is parked in a scratch file again: a line that cannot be written while a records commit runs is written the moment the commit ends, and a records commit is started only when no event is due.
+
+## Unasked status message written to the conversation in silence
+
+What happened: At 01:02 on 2026-11-11 the lead ended a turn with a status report addressed to the owner (units integrated, reviews passed, next steps) although silence stood and no typed owner message had started that turn; the owner answered: 'i did not ask for this message, and you're supposed to stay silent unless spoken to.'
+
+Mechanism: Four typed owner questions had just been answered in the conversation at his word 'in a message'; the lead carried that licence over to a turn started by an agent notification and closed it with a report, without scanning the final message against the silence rule before it left.
+
+Correction: A final message carries text only when the input that started the turn is a question the owner typed, and then only its answer; every other turn ends empty, and state goes to the status file and the journal. The scan before each ending asks one thing first: what started this turn.
