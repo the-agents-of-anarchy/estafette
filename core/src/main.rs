@@ -147,43 +147,33 @@ fn main() -> ExitCode {
             &mut io::stdout(),
             &mut io::stderr(),
         ),
-        Command::Network { command } => {
-            let mut result = io::stdout().lock();
-            let mut record = io::stderr().lock();
-            match run_network_command(&command, &mut result, &mut record) {
-                Ok(()) => ExitStatus::Success,
-                Err(failure) => {
-                    drop(writeln!(record, "{failure}"));
-                    ExitStatus::Failure
-                }
-            }
-        }
-        Command::Observer(command) => {
-            let mut record = io::stderr().lock();
-            match run_observer_command(&command, &mut io::stdout()) {
-                Ok(()) => ExitStatus::Success,
-                Err(failure) => {
-                    drop(writeln!(record, "{failure}"));
-                    ExitStatus::Failure
-                }
-            }
-        }
-        Command::Mcp { registry } => serve_mcp(registry).unwrap_or_else(|failure| {
-            drop(writeln!(io::stderr(), "{failure}"));
-            ExitStatus::Failure
-        }),
-        Command::Doctor(arguments) => {
-            let mut record = io::stderr().lock();
-            match run_doctor_command(&arguments, &mut io::stdout()) {
-                Ok(status) => status,
-                Err(failure) => {
-                    drop(writeln!(record, "{failure}"));
-                    ExitStatus::Failure
-                }
-            }
-        }
+        Command::Network { command } => exit_status_after(
+            run_network_command(&command, &mut io::stdout(), &mut io::stderr())
+                .map(|()| ExitStatus::Success),
+            &mut io::stderr(),
+        ),
+        Command::Observer(command) => exit_status_after(
+            run_observer_command(&command, &mut io::stdout()).map(|()| ExitStatus::Success),
+            &mut io::stderr(),
+        ),
+        Command::Mcp { registry } => exit_status_after(serve_mcp(registry), &mut io::stderr()),
+        Command::Doctor(arguments) => exit_status_after(
+            run_doctor_command(&arguments, &mut io::stdout()),
+            &mut io::stderr(),
+        ),
     };
     ExitCode::from(u8::from(status))
+}
+
+/// Says how the process ends after a command: the status it reached, or failure after writing the failure's message to the record.
+fn exit_status_after(
+    outcome: Result<ExitStatus, CommandLineFailure>,
+    record: &mut impl Write,
+) -> ExitStatus {
+    outcome.unwrap_or_else(|failure| {
+        drop(writeln!(record, "{failure}"));
+        ExitStatus::Failure
+    })
 }
 
 /// Serves the MCP tools of the network until the session ends, building every side effect the server runs on.
@@ -500,13 +490,10 @@ fn run_infrastructure_command(
     result: &mut (impl Write + Send),
     record: &mut impl Write,
 ) -> ExitStatus {
-    match serve_infrastructure(command, environment, result) {
-        Ok(()) => ExitStatus::Success,
-        Err(failure) => {
-            drop(writeln!(record, "{failure}"));
-            ExitStatus::Failure
-        }
-    }
+    exit_status_after(
+        serve_infrastructure(command, environment, result).map(|()| ExitStatus::Success),
+        record,
+    )
 }
 
 /// Resolves the directories, refuses a clock before the Unix epoch, and serves the host until a stop signal.
@@ -678,6 +665,24 @@ mod tests {
         assert_eq!(
             String::from_utf8(record).unwrap(),
             "a gossip connection was closed at the network secret gate: the peer's proof is not the gate proof\n"
+        );
+    }
+
+    #[test]
+    fn spec_3_13_a_failed_command_writes_its_message_to_the_record_and_exits_1_while_a_reached_status_stands()
+     {
+        let mut record = Vec::new();
+
+        let after_failure =
+            exit_status_after(Err(CommandLineFailure::ClockBeforeUnixEpoch), &mut record);
+        let after_doctor_check =
+            exit_status_after(Ok(ExitStatus::DoctorFoundFailedCheck), &mut record);
+
+        assert_eq!(after_failure, ExitStatus::Failure);
+        assert_eq!(after_doctor_check, ExitStatus::DoctorFoundFailedCheck);
+        assert_eq!(
+            String::from_utf8(record).unwrap(),
+            format!("{}\n", CommandLineFailure::ClockBeforeUnixEpoch)
         );
     }
 
