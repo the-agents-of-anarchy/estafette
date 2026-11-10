@@ -144,7 +144,8 @@ impl fmt::Display for ServerRecord {
             ),
             Self::ListingTaskFailed(source) => write!(
                 formatter,
-                "list_cards listed no card: the listing task did not finish: {source}"
+                "list_cards answered {}: the listing task did not finish: {source}",
+                REGISTRY_UNREADABLE.code()
             ),
             Self::NetworkRefused(source) | Self::NodeNotStarted(source) => write!(
                 formatter,
@@ -431,10 +432,10 @@ impl Server {
                 ServerRecord::CardRegistryUnreadable(unreadable),
                 REGISTRY_UNREADABLE,
             )),
-            Err(failure) => {
-                (self.effects.report)(ServerRecord::ListingTaskFailed(failure));
-                Ok(ToolResult::Cards { cards: Vec::new() })
-            }
+            Err(failure) => Err(self.recorded(
+                ServerRecord::ListingTaskFailed(failure),
+                REGISTRY_UNREADABLE,
+            )),
         }
     }
 
@@ -1150,6 +1151,7 @@ mod tests {
         config: NetworkConfig,
         bind_endpoint: BindEndpoint,
         report: Arc<dyn Fn(ServerRecord) + Send + Sync>,
+        is_card_held: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
     }
 
     impl ServerPlan {
@@ -1159,6 +1161,9 @@ mod tests {
                 config: network_config(Vec::new()),
                 bind_endpoint: bind_alone(),
                 report: Arc::new(|_record: ServerRecord| {}),
+                is_card_held: Arc::new(|sidecar_path: &Path| {
+                    sidecar::is_held(sidecar_path).is_ok_and(|held| held)
+                }),
             }
         }
 
@@ -1175,6 +1180,9 @@ mod tests {
                 }]),
                 bind_endpoint: bind_meeting(meeting),
                 report: Arc::new(|_record: ServerRecord| {}),
+                is_card_held: Arc::new(|sidecar_path: &Path| {
+                    sidecar::is_held(sidecar_path).is_ok_and(|held| held)
+                }),
             }
         }
     }
@@ -1288,9 +1296,7 @@ mod tests {
             bind_endpoint: plan.bind_endpoint,
             registry: Arc::new(OperatingSystemFilesystem),
             pause_between_lock_tries: Arc::new(std::thread::sleep),
-            is_card_held: Arc::new(|sidecar_path: &Path| {
-                sidecar::is_held(sidecar_path).is_ok_and(|held| held)
-            }),
+            is_card_held: plan.is_card_held,
             report: plan.report,
         };
         let (server_input, to_server) = tokio::io::simplex(PIPE_BYTES);
@@ -1624,6 +1630,39 @@ mod tests {
         assert_eq!(
             listed["result"]["cards"],
             json!([{ "name": "amy-card", "handle": "amy", "held": false }])
+        );
+    }
+
+    #[tokio::test]
+    async fn spec_3_10_list_cards_whose_listing_task_fails_answers_card_invalid_and_records_why() {
+        let machine = Machine::new("listing-task");
+        machine.create_card("amy-card", "amy", AMY_SEED);
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&records);
+        let mut client = start_server(
+            &machine,
+            ServerPlan {
+                report: Arc::new(move |record: ServerRecord| {
+                    recorded.lock().unwrap().push(record.to_string());
+                }),
+                is_card_held: Arc::new(|_sidecar_path: &Path| {
+                    panic!("the lock probe fails under the listing task")
+                }),
+                ..ServerPlan::alone(FIRST_PROCESS_ID)
+            },
+        );
+        client.initialize().await;
+
+        let listed = client.envelope("list_cards", json!({})).await;
+
+        assert_eq!(listed["ok"], json!(false), "{listed}");
+        assert_eq!(listed["error"]["code"], "card_invalid");
+        let records = records.lock().unwrap().clone();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert!(
+            records[0]
+                .starts_with("list_cards answered card_invalid: the listing task did not finish"),
+            "{records:?}"
         );
     }
 
