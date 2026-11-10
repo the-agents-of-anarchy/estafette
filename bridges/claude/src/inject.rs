@@ -392,6 +392,32 @@ mod tests {
         assert_eq!(notifier.dropped_frames(), 0);
     }
 
+    /// The longest announced handle spec 3.1 allows, the announced-handle row at spec:465.
+    const LONGEST_ANNOUNCED_HANDLE: usize = 53;
+    const SUFFIX_SEPARATOR_CHARACTERS: usize = 1;
+    const SUFFIX_DIGITS_KEEPING_THE_NAME_WITHIN_THE_CUT: usize =
+        LONGEST_ENVELOPE_NAME_CHARACTERS - LONGEST_ANNOUNCED_HANDLE - SUFFIX_SEPARATOR_CHARACTERS;
+
+    #[test]
+    fn spec_3_1_the_longest_announced_handle_with_any_suffix_the_node_can_assign_is_delivered_uncut()
+     {
+        let largest_assignable_suffix = "9".repeat(SUFFIX_DIGITS_KEEPING_THE_NAME_WITHIN_THE_CUT);
+        let name = format!(
+            "{}-{largest_assignable_suffix}",
+            grammar_name_of_length(LONGEST_ANNOUNCED_HANDLE)
+        );
+        assert_eq!(name.chars().count(), LONGEST_ENVELOPE_NAME_CHARACTERS);
+        let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
+        notifier
+            .notify(&frame_from(&name, "x"), Duration::ZERO)
+            .expect("notify");
+        assert!(
+            connections.borrow()[0].contains(&format!("from-name=\\\"{name}\\\" from-mode")),
+            "{}",
+            connections.borrow()[0]
+        );
+    }
+
     fn peer_content(written: &str) -> String {
         let peer_line = written.lines().nth(1).expect("peer line");
         let line: serde_json::Value = serde_json::from_str(peer_line).expect("peer line json");
