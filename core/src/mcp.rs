@@ -108,6 +108,7 @@ pub enum ServerRecord {
     NodeNotStarted(NodeError),
     HandshakeFailed(Box<ServerInitializeError>),
     AnsweringFailed(JoinError),
+    StandardInputFailed(io::Error),
 }
 
 impl fmt::Display for ServerRecord {
@@ -138,6 +139,10 @@ impl fmt::Display for ServerRecord {
             Self::AnsweringFailed(source) => {
                 write!(formatter, "the MCP server stopped answering: {source}")
             }
+            Self::StandardInputFailed(source) => write!(
+                formatter,
+                "reading standard input failed and is treated as its end: {source}"
+            ),
         }
     }
 }
@@ -153,10 +158,12 @@ pub async fn serve(
     let session = Arc::new(Session::new());
     let (server_input, forwarded_input) = tokio::io::simplex(SERVER_INPUT_BUFFER_BYTES);
     let (input_ended, end_of_input) = oneshot::channel();
+    let reporting = Arc::clone(&effects.report);
     let forwarding = tokio::spawn(forward_standard_input(
         standard_input,
         forwarded_input,
         input_ended,
+        move |failure| reporting(ServerRecord::StandardInputFailed(failure)),
     ));
     let report = Arc::clone(&effects.report);
     let answering = tokio::spawn(answer_until_closed(

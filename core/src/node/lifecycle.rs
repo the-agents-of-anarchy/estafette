@@ -1,5 +1,6 @@
 //! The session state machine of spec 3.9: Unclaimed, Claimed, Stopping, and the stopping sequence of spec 3.8.
 
+use std::io;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -196,29 +197,35 @@ impl Default for Session {
     }
 }
 
-/// Copies standard input to the MCP server's input, buffering every unread chunk in memory, and notes the end of standard input the moment it is read.
+/// Copies standard input to the MCP server's input, buffering every unread chunk in memory, and notes the end of standard input the moment it is read or fails.
 pub async fn forward_standard_input(
     input: impl AsyncRead + Unpin,
     server_input: impl AsyncWrite + Unpin,
     input_ended: oneshot::Sender<()>,
+    record_failure: impl Fn(io::Error),
 ) {
     let (chunks, queued) = mpsc::unbounded_channel();
     tokio::join!(
-        read_until_end(input, chunks, input_ended),
+        read_until_end(input, chunks, input_ended, record_failure),
         write_queued(queued, server_input)
     );
 }
 
-/// Queues each chunk read from the input and signals the end the moment the input ends or fails.
+/// Queues each chunk read from the input and signals the end the moment the input ends, recording a failure to read it first.
 async fn read_until_end(
     mut input: impl AsyncRead + Unpin,
     chunks: mpsc::UnboundedSender<Vec<u8>>,
     input_ended: oneshot::Sender<()>,
+    record_failure: impl Fn(io::Error),
 ) {
     loop {
         let mut chunk = Vec::with_capacity(STANDARD_INPUT_CHUNK_BYTES);
         match input.read_buf(&mut chunk).await {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
+            Err(failure) => {
+                record_failure(failure);
+                break;
+            }
             Ok(_) => drop(chunks.send(chunk)),
         }
     }
@@ -243,8 +250,11 @@ async fn write_queued(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
     use std::time::Instant;
 
+    use tokio::io::ReadBuf;
     use tokio::task::JoinHandle;
 
     use super::*;
@@ -399,13 +409,53 @@ mod tests {
         drop(scratch);
     }
 
+    fn no_record(_failure: io::Error) {}
+
+    struct FailingInput(io::ErrorKind);
+
+    impl AsyncRead for FailingInput {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Ready(Err(io::Error::from(self.0)))
+        }
+    }
+
+    #[tokio::test]
+    async fn spec_3_9_a_failed_read_of_standard_input_is_recorded_and_ends_the_input() {
+        let (server_input, _server_reads) = tokio::io::duplex(STALLED_SERVER_CAPACITY_BYTES);
+        let (input_ended, ended) = oneshot::channel();
+        let recorded = std::sync::Mutex::new(Vec::new());
+
+        forward_standard_input(
+            FailingInput(io::ErrorKind::ConnectionReset),
+            server_input,
+            input_ended,
+            |failure: io::Error| recorded.lock().unwrap().push(failure.kind()),
+        )
+        .await;
+
+        assert_eq!(ended.await, Ok(()));
+        assert_eq!(
+            *recorded.lock().unwrap(),
+            vec![io::ErrorKind::ConnectionReset]
+        );
+    }
+
     #[tokio::test]
     async fn spec_3_9_standard_input_reaches_the_server_in_order_and_its_end_closes_the_server_input()
      {
         let (mut standard_input, input) = tokio::io::duplex(TYPED_BEFORE_THE_END.len());
         let (server_input, mut server_reads) = tokio::io::duplex(TYPED_BEFORE_THE_END.len());
         let (input_ended, ended) = oneshot::channel();
-        tokio::spawn(forward_standard_input(input, server_input, input_ended));
+        tokio::spawn(forward_standard_input(
+            input,
+            server_input,
+            input_ended,
+            no_record,
+        ));
 
         tokio::io::AsyncWriteExt::write_all(&mut standard_input, TYPED_BEFORE_THE_END)
             .await
@@ -425,7 +475,12 @@ mod tests {
         let (mut standard_input, input) = tokio::io::duplex(TYPED_BEFORE_THE_END.len());
         let (server_input, _server_not_reading) = tokio::io::duplex(STALLED_SERVER_CAPACITY_BYTES);
         let (input_ended, ended) = oneshot::channel();
-        tokio::spawn(forward_standard_input(input, server_input, input_ended));
+        tokio::spawn(forward_standard_input(
+            input,
+            server_input,
+            input_ended,
+            no_record,
+        ));
 
         tokio::io::AsyncWriteExt::write_all(&mut standard_input, TYPED_BEFORE_THE_END)
             .await
@@ -472,7 +527,12 @@ mod tests {
         let (server_input, _server_busy_in_a_tool_call) =
             tokio::io::duplex(STALLED_SERVER_CAPACITY_BYTES);
         let (input_ended, ended) = oneshot::channel();
-        tokio::spawn(forward_standard_input(input, server_input, input_ended));
+        tokio::spawn(forward_standard_input(
+            input,
+            server_input,
+            input_ended,
+            no_record,
+        ));
         let (_signals, signals_received) = mpsc::unbounded_channel();
         let session = Arc::clone(&second.session);
         tokio::spawn(async move {
