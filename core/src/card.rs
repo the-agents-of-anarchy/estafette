@@ -173,6 +173,18 @@ impl fmt::Display for DescriptionOverCap {
 
 impl std::error::Error for DescriptionOverCap {}
 
+/// Whether received `public` bytes are what a card's `public` admits: a JSON mapping whose bytes are within the cap (spec 3.5, 3.7).
+#[must_use]
+pub fn admits_public_json(public: &[u8]) -> bool {
+    is_within_public_cap(public.len())
+        && serde_json::from_slice::<Map<String, Value>>(public).is_ok()
+}
+
+/// Whether `public` of that many serialized bytes is within the cap.
+const fn is_within_public_cap(bytes: usize) -> bool {
+    bytes <= PUBLIC_MAX_BYTES
+}
+
 /// One YAML node of a card, with its tag and with every alias already replaced by its anchored value.
 #[derive(Clone)]
 enum Node {
@@ -441,7 +453,7 @@ fn compact_json(mapping: &Map<String, Value>) -> Vec<u8> {
 /// The mapping itself, or the byte size of its compact JSON when that passes the cap.
 fn refuse_over_cap(mapping: Map<String, Value>) -> Result<Map<String, Value>, usize> {
     let bytes = compact_json(&mapping).len();
-    if bytes > PUBLIC_MAX_BYTES {
+    if !is_within_public_cap(bytes) {
         return Err(bytes);
     }
     Ok(mapping)

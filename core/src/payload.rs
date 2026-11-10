@@ -2,14 +2,15 @@ use std::fmt;
 
 use iroh::{PublicKey, RelayUrl, SecretKey, Signature};
 
+use crate::card::admits_public_json;
 use crate::config::{AcceptedValue, host_relay_url};
 use crate::crypto::{
     CryptoError, MAC_LEN, Mac, NetworkKeys, SignedPayloadKind, sign_payload,
     verify_host_certificate, verify_payload_signature,
 };
 use crate::wire::{
-    self, CodecError, Infrastructure, Payload, Request, Response, SignatureBytes, Wire, decode,
-    encode,
+    self, CodecError, Infrastructure, Payload, Presence, Request, Response, SignatureBytes, Wire,
+    decode, encode,
 };
 
 const GOSSIP_FRAME_BYTES: usize = 4096;
@@ -26,6 +27,7 @@ pub enum PayloadError {
     HostNotCertified,
     HostRelayRefused,
     AddrRelaysNotTheHostRelay,
+    PublicNotAdmitted,
     OverGossipFrame { bytes: usize },
 }
 
@@ -47,6 +49,9 @@ impl fmt::Display for PayloadError {
             Self::AddrRelaysNotTheHostRelay => {
                 formatter.write_str("the infrastructure address must list exactly the host relay")
             }
+            Self::PublicNotAdmitted => formatter.write_str(
+                "the presence public mapping is not what a card admits: a JSON mapping within the serialized cap",
+            ),
             Self::OverGossipFrame { bytes } => write!(
                 formatter,
                 "a payload of {bytes} bytes is past the {LARGEST_GOSSIP_PAYLOAD_BYTES} bytes the gossip frame of {GOSSIP_FRAME_BYTES} bytes leaves after {GOSSIP_LAYER_OVERHEAD_BYTES} bytes of gossip layer overhead"
@@ -268,10 +273,18 @@ fn verify_infrastructure_rules(
     Ok(())
 }
 
-/// Decodes a gossip payload and accepts it only when its mac, signature and, for infrastructure, certificate and relay rules hold.
+fn verify_presence_rules(presence: &Presence) -> Result<(), PayloadError> {
+    if admits_public_json(&presence.public) {
+        Ok(())
+    } else {
+        Err(PayloadError::PublicNotAdmitted)
+    }
+}
+
+/// Decodes a gossip payload and accepts it only when its mac, its signature, and its kind's rules hold: certificate and relay for infrastructure, the card's `public` rule for presence.
 ///
 /// # Errors
-/// `PayloadError` for bytes that do not decode, a wrong mac, a wrong signature, or a failed infrastructure rule, checked in that order.
+/// `PayloadError` for bytes that do not decode, a wrong mac, a wrong signature, or a failed infrastructure or presence rule, checked in that order.
 pub fn open_payload(
     keys: &NetworkKeys,
     owner: &PublicKey,
@@ -283,10 +296,8 @@ pub fn open_payload(
         Payload::Infrastructure(infrastructure) => {
             verify_infrastructure_rules(owner, infrastructure)?;
         }
-        Payload::Presence(_)
-        | Payload::Departure(_)
-        | Payload::Unreachable(_)
-        | Payload::PresenceRequest(_) => {}
+        Payload::Presence(presence) => verify_presence_rules(presence)?,
+        Payload::Departure(_) | Payload::Unreachable(_) | Payload::PresenceRequest(_) => {}
     }
     Ok(payload)
 }
@@ -727,6 +738,68 @@ mod tests {
                 bytes: LARGEST_GOSSIP_PAYLOAD_BYTES + 1
             })
         );
+    }
+
+    const SPEC_PUBLIC_MAX_BYTES: usize = 3072;
+    const ONE_KEY_MAPPING_FRAME: &str = r#"{"k":""}"#;
+
+    fn presence_with_public(public: Vec<u8>) -> Payload {
+        let Payload::Presence(presence) = unsealed_presence() else {
+            panic!("a presence was built");
+        };
+        Payload::Presence(Presence { public, ..presence })
+    }
+
+    fn one_key_mapping_of_bytes(bytes: usize) -> Vec<u8> {
+        let filler = "f".repeat(bytes.checked_sub(ONE_KEY_MAPPING_FRAME.len()).unwrap());
+        format!(r#"{{"k":"{filler}"}}"#).into_bytes()
+    }
+
+    fn sealed_presence_with_public(public: Vec<u8>) -> Vec<u8> {
+        let payload = presence_with_public(public);
+        seal_payload(&keys(), &secret_key(REPORTED_CARD_SEED), payload).unwrap()
+    }
+
+    fn opened(sealed: &[u8]) -> Result<Payload, PayloadError> {
+        open_payload(&keys(), &owner_public(), sealed).map(without_authentication)
+    }
+
+    /// Spec 3.5 and 3.7: a Presence whose `public` mapping is past 3072 bytes is dropped, one at 3072 bytes is accepted.
+    #[test]
+    fn spec_3_7_presence_whose_public_is_past_3072_bytes_is_dropped() {
+        let at_the_cap = one_key_mapping_of_bytes(SPEC_PUBLIC_MAX_BYTES);
+        let one_past = one_key_mapping_of_bytes(SPEC_PUBLIC_MAX_BYTES + 1);
+
+        assert_eq!(
+            opened(&sealed_presence_with_public(at_the_cap.clone())),
+            Ok(presence_with_public(at_the_cap))
+        );
+        assert_eq!(
+            opened(&sealed_presence_with_public(one_past)),
+            Err(PayloadError::PublicNotAdmitted)
+        );
+    }
+
+    /// Spec 3.5 and 3.7: a Presence whose `public` is not a JSON mapping, as a card's `public` always is, is dropped.
+    #[test]
+    fn spec_3_7_presence_whose_public_is_no_json_mapping_is_dropped() {
+        let not_a_mapping: [&[u8]; 6] = [
+            b"",
+            b"[]",
+            b"\"text\"",
+            b"null",
+            b"{\"k\":1",
+            b"{\"k\":1}{}",
+        ];
+
+        for public in not_a_mapping {
+            assert_eq!(
+                opened(&sealed_presence_with_public(public.to_vec())),
+                Err(PayloadError::PublicNotAdmitted),
+                "{}",
+                String::from_utf8_lossy(public)
+            );
+        }
     }
 
     const MESSAGE_ID: [u8; 16] = [0x5A; 16];
