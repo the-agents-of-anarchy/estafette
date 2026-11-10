@@ -32,6 +32,7 @@ pub struct PendingCall {
 
 impl McpServer {
     /// Takes the spawned server over its piped standard streams and completes the MCP handshake.
+    #[track_caller]
     pub fn handshaken(mut process: Child) -> Self {
         let output = BufReader::new(process.stdout.take().unwrap());
         let (forward, messages) = mpsc::channel();
@@ -63,18 +64,21 @@ impl McpServer {
     }
 
     /// Sends the JSON-RPC request and returns the result its response carries.
+    #[track_caller]
     pub fn request(&mut self, method: &str, params: &Value) -> Value {
         let request_id = self.send_request(method, params);
         self.response_to(request_id)["result"].clone()
     }
 
     /// Calls the tool and returns the envelope its result carries.
+    #[track_caller]
     pub fn call(&mut self, tool: &str, arguments: &Value) -> Value {
         let call = self.start_call(tool, arguments);
         self.answer(&call)
     }
 
     /// The peer of that handle as the peers tool lists it once the peer meets the condition, requiring that within the wait.
+    #[track_caller]
     pub fn peer_within(
         &mut self,
         handle: &str,
@@ -111,6 +115,7 @@ impl McpServer {
     }
 
     /// The envelope the answer to the pending call carries.
+    #[track_caller]
     pub fn answer(&self, call: &PendingCall) -> Value {
         self.response_to(call.request_id)["result"]["structuredContent"].clone()
     }
@@ -144,6 +149,7 @@ impl McpServer {
     }
 
     /// The response to the request of that id, skipping every other message.
+    #[track_caller]
     fn response_to(&self, request_id: u64) -> Value {
         loop {
             let message = self.messages.recv_timeout(RESPONSE_WAIT).unwrap();

@@ -134,6 +134,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
 
     impl Scene {
         /// Claims a fresh card named for the test on a fresh machine and joins a forger under the seed's key.
+        #[track_caller]
         fn joined(card: &str, forger_seed: u8) -> Self {
             let live_host = live_host_to_itself();
             let network = LiveNetwork::from_environment();
@@ -166,6 +167,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
         }
 
         /// Broadcasts a valid record of the marker host after whatever went before, waits until the member saved the marker and then the forgery settle, and returns the hosts its configuration names then, so a forgery delivered after the marker by another gossip path is read too.
+        #[track_caller]
         fn hosts_after_marker(&self, marker: &SecretKey) -> Vec<Host> {
             let record = self.certified_record(marker, wall_clock_seconds());
             self.forger
@@ -507,6 +509,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     }
 
     /// Starts a member whose only host is the doomed one and a `tail` joined through it, returning them once its first announced relays are the doomed host's alone and it has relayed the live host's record, or nothing when iroh homed it elsewhere.
+    #[track_caller]
     fn start_member_homed_on(network: &LiveNetwork, doomed: &KillableHost) -> Option<HomedMember> {
         let machine = LabMachine::fresh(MEMBER_CARD, network.name());
         network.join_through(
@@ -654,6 +657,7 @@ mod spec_3_15_two_members_through_the_live_host {
     }
 
     /// Claims a fresh card requesting the handle, with the description, on a fresh machine joined to the live network.
+    #[track_caller]
     fn lab_member(
         network: &LiveNetwork,
         machine_tag: &str,
@@ -700,6 +704,7 @@ mod spec_3_15_two_members_through_the_live_host {
         peer["status"] == json!("gone")
     }
 
+    #[track_caller]
     fn meet(first: &mut LabMember, second: &mut LabMember) {
         first
             .member
@@ -709,10 +714,12 @@ mod spec_3_15_two_members_through_the_live_host {
             .peer_within(&first.handle, PRESENCE_WAIT, online);
     }
 
+    #[track_caller]
     fn send(from: &mut LabMember, to: &str, body: &str) -> Value {
         from.member.call("send", &json!({ "to": to, "body": body }))
     }
 
+    #[track_caller]
     fn listed_peer(member: &mut McpServer, handle: &str) -> Option<Value> {
         member.call("peers", &json!({}))["result"]["peers"]
             .as_array()
@@ -843,6 +850,7 @@ mod spec_3_15_two_members_through_the_live_host {
         assert_eq!(messages[0]["body"], json!(FIRST_BODY));
     }
 
+    #[track_caller]
     fn assert_stopped_member_is_gone_then_unreachable(
         amy: &mut LabMember,
         bob: &mut LabMember,

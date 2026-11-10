@@ -25,6 +25,7 @@ pub struct Forger {
 
 impl Forger {
     /// Binds under the key behind the network gate, homed on the host's relays, and joins the topic through the host, waiting until the host is a neighbor.
+    #[track_caller]
     pub fn join_through(
         key: SecretKey,
         gate_key: GateKey,
@@ -48,13 +49,13 @@ impl Forger {
         let router = Router::builder(endpoint.endpoint().clone())
             .accept(GOSSIP_ALPN, gossip.clone())
             .spawn();
-        let joined = runtime
-            .block_on(tokio::time::timeout(
-                JOIN_WAIT,
-                gossip.subscribe_and_join(topic, vec![host_id]),
-            ))
-            .unwrap_or_else(|_elapsed| panic!("the host was no neighbor within {JOIN_WAIT:?}"))
-            .unwrap();
+        let Ok(joined) = runtime.block_on(tokio::time::timeout(
+            JOIN_WAIT,
+            gossip.subscribe_and_join(topic, vec![host_id]),
+        )) else {
+            panic!("the host was no neighbor within {JOIN_WAIT:?}")
+        };
+        let joined = joined.unwrap();
         let (topic, receiver) = joined.split();
         runtime.spawn(drain(receiver));
         Self {

@@ -53,11 +53,13 @@ impl LabMachine {
     }
 
     /// Starts the binary's MCP server for the network, handshaken and with no card claimed.
+    #[track_caller]
     pub fn start_server(&self) -> McpServer {
         McpServer::handshaken(self.scratch.spawn_mcp_server())
     }
 
     /// Starts the binary's MCP server for the network and claims the card through its init tool, requiring the claim to succeed.
+    #[track_caller]
     pub fn start_member(&self, card: &str) -> ClaimedMember {
         let mut server = self.start_server();
         let claim = server.call("init", &json!({ "card": card }));
@@ -66,6 +68,7 @@ impl LabMachine {
     }
 
     /// The hosts the network configuration names once one of them has the id, requiring that within the wait.
+    #[track_caller]
     pub fn hosts_once_named(&self, id: &str, within: Duration) -> Vec<Host> {
         let config_file = self
             .directories()

@@ -64,6 +64,7 @@ impl KillableHost {
     }
 
     /// Opens the kill's SSH session and waits for the host to stand ready, then stamps the instant, sends the kill over the open session and stamps its return, so only the warmed round trip separates the stamp from the kill.
+    #[track_caller]
     pub fn kill(&self) -> KillStamps {
         let mut session = Command::new(TASK_RUNNER)
             .args([REMOTE_SHELL_RECIPE, "root", &armed_kill()])

@@ -14,6 +14,7 @@ pub struct Tail {
 
 impl Tail {
     /// Starts the command, a `tail` of the network, and waits for its first payload line, the sign it has joined the topic, leaving that line to be read.
+    #[track_caller]
     pub fn start(mut command: Command) -> Self {
         let mut process = command
             .stdin(Stdio::null())
@@ -37,21 +38,23 @@ impl Tail {
                 }
             }
         });
-        joined
-            .recv_timeout(FIRST_LINE_WAIT)
-            .unwrap_or_else(|_| panic!("tail printed no payload within {FIRST_LINE_WAIT:?}"));
+        assert!(
+            joined.recv_timeout(FIRST_LINE_WAIT).is_ok(),
+            "tail printed no payload within {FIRST_LINE_WAIT:?}"
+        );
         Self { process, lines }
     }
 
     /// Every line printed until the first that meets the condition, that one included, requiring it within the wait.
+    #[track_caller]
     pub fn lines_until(&self, within: Duration, condition: impl Fn(&str) -> bool) -> Vec<String> {
         let deadline = Instant::now().checked_add(within).unwrap();
         let mut printed = Vec::new();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let (_arrived, line) = self.lines.recv_timeout(remaining).unwrap_or_else(|_| {
+            let Ok((_arrived, line)) = self.lines.recv_timeout(remaining) else {
                 panic!("no wanted line within {within:?}; printed: {printed:?}")
-            });
+            };
             let wanted = condition(&line);
             printed.push(line);
             if wanted {
@@ -74,6 +77,7 @@ impl Tail {
     }
 
     /// Waits until no line meeting the condition has been printed for the quiet span, the span restarting at each such line, requiring the quiet within the wait.
+    #[track_caller]
     pub fn quiet_for(&self, quiet: Duration, within: Duration, condition: impl Fn(&str) -> bool) {
         let deadline = Instant::now().checked_add(within).unwrap();
         let mut quiet_from = Instant::now();
@@ -95,6 +99,7 @@ impl Tail {
     }
 
     /// The first line printed at or after the instant that meets the condition, with how long after the instant it arrived, requiring it within the wait.
+    #[track_caller]
     pub fn first_line_after(
         &self,
         since: Instant,
@@ -105,9 +110,11 @@ impl Tail {
         let mut printed_since = Vec::new();
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let (arrived, line) = self.lines.recv_timeout(remaining).unwrap_or_else(|_| {
-                panic!("no wanted line within {within:?} of the instant; printed since: {printed_since:#?}")
-            });
+            let Ok((arrived, line)) = self.lines.recv_timeout(remaining) else {
+                panic!(
+                    "no wanted line within {within:?} of the instant; printed since: {printed_since:#?}"
+                )
+            };
             if arrived < since {
                 continue;
             }

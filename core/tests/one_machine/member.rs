@@ -26,6 +26,7 @@ pub struct Member {
 
 impl Member {
     /// Takes the spawned MCP server over and completes the MCP handshake.
+    #[track_caller]
     pub fn start(process: Child) -> Self {
         let process_id = process.id();
         Self {
@@ -35,6 +36,7 @@ impl Member {
     }
 
     /// Calls the tool and returns the envelope its result carries.
+    #[track_caller]
     pub fn call(&mut self, tool: &str, arguments: &Value) -> Value {
         self.server.call(tool, arguments)
     }
@@ -45,16 +47,19 @@ impl Member {
     }
 
     /// The envelope the answer to the pending call carries.
+    #[track_caller]
     pub fn answer(&self, call: &PendingCall) -> Value {
         self.server.answer(call)
     }
 
     /// Sends the JSON-RPC request and returns the result its response carries.
+    #[track_caller]
     pub fn request(&mut self, method: &str, params: &Value) -> Value {
         self.server.request(method, params)
     }
 
     /// Claims the card while the node admits this process's endpoint, requiring the claim to succeed, and returns the init envelope.
+    #[track_caller]
     pub fn init_through(&mut self, card: &Card, node: &ScriptedNode) -> Value {
         let init = self.start_call("init", &json!({ "card": card.name }));
         node.admit(loopback_address(card.id, &self.bound_udp_ports()));
@@ -64,6 +69,7 @@ impl Member {
     }
 
     /// The peer of that handle as the peers tool lists it once the peer meets the condition, requiring that within the wait.
+    #[track_caller]
     pub fn peer_within(
         &mut self,
         handle: &str,
@@ -74,6 +80,7 @@ impl Member {
     }
 
     /// The loopback-reachable UDP ports this process's endpoint bound, waiting for the bind.
+    #[track_caller]
     pub fn bound_udp_ports(&self) -> Vec<u16> {
         let deadline = Instant::now().checked_add(ENDPOINT_BIND_WAIT).unwrap();
         loop {

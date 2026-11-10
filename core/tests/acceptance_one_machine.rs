@@ -77,6 +77,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         bob_card: Card,
     }
 
+    #[track_caller]
     fn amy_and_bob_met(network: &LocalNetwork, host: &ScriptedNode) -> MetPair {
         let amy_card = network.create_card("amy-card", "amy");
         let bob_card = network.create_card("bob-card", "bob");
@@ -94,6 +95,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         }
     }
 
+    #[track_caller]
     fn send(from: &mut Member, to: &str) -> Value {
         from.call("send", &json!({ "to": to, "body": BODY }))
     }
@@ -106,6 +108,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         departure_seq: u64,
     }
 
+    #[track_caller]
     fn amy_after_scripted_bob_departed(network: &LocalNetwork) -> ScriptedBobDeparted {
         let amy_card = network.create_card("amy-card", "amy");
         let bob_key = SecretKey::generate();
@@ -160,6 +163,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         })
     }
 
+    #[track_caller]
     fn request_directly(
         network: &LocalNetwork,
         node: &ScriptedNode,
@@ -243,6 +247,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         iroh::EndpointAddr::from_parts(address.id, sockets)
     }
 
+    #[track_caller]
     fn exchange_on(
         network: &LocalNetwork,
         node: &ScriptedNode,
@@ -264,6 +269,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         })
     }
 
+    #[track_caller]
     fn announce_until_seen(
         network: &LocalNetwork,
         node: &ScriptedNode,
@@ -293,6 +299,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         matches!(response, Response::MessageAck(ack) if ack.accepted)
     }
 
+    #[track_caller]
     fn statuses_throughout(member: &mut Member, handle: &str, span: Duration) -> Vec<Value> {
         let started = Instant::now();
         let mut statuses = Vec::new();
@@ -305,6 +312,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         statuses
     }
 
+    #[track_caller]
     fn inbox_bodies(member: &mut Member) -> Vec<Value> {
         member.call("inbox", &json!({}))["result"]["messages"]
             .as_array()
@@ -625,6 +633,7 @@ mod spec_3_15_with_one_member {
         ]
     }
 
+    #[track_caller]
     fn listed_handles(member: &mut Member) -> Vec<Value> {
         member.call("peers", &json!({}))["result"]["peers"]
             .as_array()
@@ -667,6 +676,7 @@ mod spec_3_15_with_one_member {
         count.load(Ordering::SeqCst)
     }
 
+    #[track_caller]
     fn rebound_ports(member: &Member, before: &[u16], within: Duration) -> Vec<u16> {
         let started = Instant::now();
         loop {
