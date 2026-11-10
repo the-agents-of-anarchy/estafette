@@ -444,6 +444,7 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
     let _live_host = live_host_to_itself();
     let network = LiveNetwork::from_environment();
     let killable = KillableHostServer::from_environment();
+    let _host_back = killable.host_started_when_dropped();
     let killable_host = KillableHost::from_environment();
     let added = killable_host.address();
     let added_id = host_id(added);
@@ -610,6 +611,7 @@ fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_othe
     let _live_host = live_host_to_itself();
     let network = LiveNetwork::from_environment();
     let killable = KillableHostServer::from_environment();
+    let _host_back = killable.host_started_when_dropped();
     let doomed = KillableHost::from_environment();
     let observer = LabMachine::joined("t23-tail", &network);
     let tail = timed("tail joined through the live host", || {
@@ -685,6 +687,7 @@ fn spec_3_15_test_25_with_one_host_dead_a_member_invited_through_the_live_host_l
     let _live_host = live_host_to_itself();
     let network = LiveNetwork::from_environment();
     let killable = KillableHostServer::from_environment();
+    let _host_back = killable.host_started_when_dropped();
     let doomed = KillableHost::from_environment();
     let observer = LabMachine::joined("t25-tail", &network);
     let tail = timed("tail joined through the live host", || {
@@ -754,6 +757,7 @@ fn spec_3_15_test_26_a_member_restarted_after_its_configured_host_died_joins_thr
     let _live_host = live_host_to_itself();
     let network = LiveNetwork::from_environment();
     let killable = KillableHostServer::from_environment();
+    let _host_back = killable.host_started_when_dropped();
     let doomed = KillableHost::from_environment();
     let live_id = live_host_id(&network);
     let doomed_id = host_id(doomed.address());

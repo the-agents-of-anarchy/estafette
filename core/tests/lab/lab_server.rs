@@ -36,6 +36,11 @@ pub struct KillableHostServer {
     server: LabServer,
 }
 
+/// The killable host started again when dropped, whether the test that stopped or killed it ended or failed, so every later test finds it serving.
+pub struct HostStartedWhenDropped<'killable> {
+    killable: &'killable KillableHostServer,
+}
+
 impl LabServer {
     /// The server of the live host, which the remote recipes reach as the gate left them.
     pub const fn of_the_live_host() -> Self {
@@ -116,6 +121,11 @@ impl KillableHostServer {
     pub fn stop_host(&self) {
         self.server.run(HOST_STOPPED_RECIPE, &[], &[]);
     }
+
+    /// Starts the host again once the returned guard is dropped, so a test may stop or kill it and leave it serving.
+    pub const fn host_started_when_dropped(&self) -> HostStartedWhenDropped<'_> {
+        HostStartedWhenDropped { killable: self }
+    }
 }
 
 impl Drop for RelayOnlyPath<'_> {
@@ -126,18 +136,35 @@ impl Drop for RelayOnlyPath<'_> {
             self.server.label(),
             String::from_utf8_lossy(&restored.stdout)
         );
-        if restored.status.success() {
-            return;
+        if !restored.status.success() {
+            fail_unless_panicking(&format!(
+                "the UDP drops on {} were not deleted: {}",
+                self.server.label(),
+                String::from_utf8_lossy(&restored.stderr)
+            ));
         }
-        let failure = format!(
-            "the UDP drops on {} were not deleted: {}",
-            self.server.label(),
-            String::from_utf8_lossy(&restored.stderr)
-        );
-        if std::thread::panicking() {
-            eprintln!("{failure}");
-        } else {
-            panic!("{failure}");
+    }
+}
+
+impl Drop for HostStartedWhenDropped<'_> {
+    fn drop(&mut self) {
+        let server = &self.killable.server;
+        let started = server.attempt(HOST_STARTED_RECIPE, &[], &[]);
+        if !started.status.success() {
+            fail_unless_panicking(&format!(
+                "the host on {} was not started again: {}",
+                server.label(),
+                String::from_utf8_lossy(&started.stderr)
+            ));
         }
+    }
+}
+
+/// Fails the test with the message, or prints it when the test is already failing, so a cleanup failure never hides the failure that came first.
+fn fail_unless_panicking(failure: &str) {
+    if std::thread::panicking() {
+        eprintln!("{failure}");
+    } else {
+        panic!("{failure}");
     }
 }
