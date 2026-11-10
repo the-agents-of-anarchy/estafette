@@ -701,7 +701,7 @@ impl From<ReadToEndError> for DirectError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
     use std::time::Instant;
 
@@ -756,6 +756,13 @@ mod tests {
                 received: Arc::new(Mutex::new(Vec::new())),
                 introduced: Arc::new(Mutex::new(Vec::new())),
                 accepted: AcceptedConnections::new(std::sync::Arc::new(tokio::time::Instant::now)),
+            }
+        }
+
+        fn measuring_silence_on(self, monotonic: MonotonicClock) -> Self {
+            Self {
+                accepted: AcceptedConnections::new(monotonic),
+                ..self
             }
         }
 
@@ -1245,7 +1252,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_8_an_introduce_closes_the_connection_accepted_from_its_senders_process_that_is_gone_and_keeps_its_own()
+    async fn spec_3_8_an_introduce_closes_the_connection_accepted_from_its_senders_process_that_is_gone()
      {
         let rig = rig().await;
         let server = rig.link.server_node.endpoint().id();
@@ -1317,6 +1324,40 @@ mod tests {
                 .map(Connection::close_reason)
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// A clock that moves a gone process's silence forward at every reading, so every held connection reads as gone when judged.
+    fn clock_reading_every_connection_as_gone() -> MonotonicClock {
+        let started = tokio::time::Instant::now();
+        let readings = Arc::new(AtomicU32::new(0));
+        Arc::new(move || {
+            started
+                .checked_add(
+                    GONE_PROCESS_SILENCE.saturating_mul(readings.fetch_add(1, Ordering::SeqCst)),
+                )
+                .unwrap()
+        })
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_an_introduce_keeps_the_connection_it_arrived_on_even_one_that_reads_as_gone()
+    {
+        let host = RecordingHost::with_card(card_of(SERVER_SEED))
+            .measuring_silence_on(clock_reading_every_connection_as_gone());
+        let link = link_to(DirectServer::new(keys(), host), ClientTimeouts::SPEC).await;
+        let server = link.server_node.endpoint().id();
+
+        let introduced = link
+            .client
+            .introduce(server, introduction_from_client())
+            .await;
+        let probed_on_the_same_connection = link.client.probe(server, PROBE_NONCE).await;
+
+        assert!(
+            matches!(introduced, Ok(IntroduceAck { .. })),
+            "{introduced:?}"
+        );
+        assert_eq!(probed_on_the_same_connection.unwrap().nonce, PROBE_NONCE);
     }
 
     #[tokio::test]
