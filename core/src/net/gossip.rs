@@ -8,7 +8,7 @@ use n0_future::StreamExt;
 use tokio::time::{Instant, sleep_until};
 
 use crate::crypto::NetworkKeys;
-use crate::payload::{PayloadError, open_payload, seal_payload};
+use crate::payload::{OpenedPayload, PayloadError, open_payload, seal_payload};
 use crate::wire::Payload;
 
 const JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
@@ -20,7 +20,7 @@ pub enum GossipEvent {
     JoinTimedOut,
     NeighborUp(EndpointId),
     NeighborDown(EndpointId),
-    Payload(Box<Payload>),
+    Payload(Box<OpenedPayload>),
 }
 
 #[derive(Debug)]
@@ -153,7 +153,7 @@ impl NetworkTopic {
     }
 }
 
-fn verified_payload(keys: &NetworkKeys, owner: &PublicKey, bytes: &[u8]) -> Option<Payload> {
+fn verified_payload(keys: &NetworkKeys, owner: &PublicKey, bytes: &[u8]) -> Option<OpenedPayload> {
     open_payload(keys, owner, bytes).ok()
 }
 
@@ -276,7 +276,7 @@ mod tests {
 
     async fn next_payload(topic: &mut NetworkTopic) -> Payload {
         event_where(topic, |event| match event {
-            GossipEvent::Payload(payload) => Some(*payload),
+            GossipEvent::Payload(payload) => Some(Payload::from(*payload)),
             GossipEvent::Joined
             | GossipEvent::JoinTimedOut
             | GossipEvent::NeighborUp(_)

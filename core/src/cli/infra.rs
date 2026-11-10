@@ -37,7 +37,7 @@ use crate::node::{
     KnownHostAddress, KnownHosts, Network, NodeError, NodeRecord, RecordVerdict, endpoint_addr,
     endpoint_id, known_host_addresses, seed_lookup_with_known_hosts,
 };
-use crate::payload::{ValidInfrastructure, ZERO_MAC, ZERO_SIGNATURE, validated_infrastructure};
+use crate::payload::{OpenedPayload, ValidInfrastructure, ZERO_MAC, ZERO_SIGNATURE};
 use crate::wire::{
     self, Addr, HostAddr, Infrastructure, IntroduceAck, MAX_RELAY_URL_BYTES, Message, Payload,
     SignatureBytes, Version,
@@ -646,7 +646,6 @@ struct BootstrapNode {
     endpoint: NodeEndpoint,
     router: Router,
     topic: NetworkTopic,
-    owner: iroh::PublicKey,
     known_hosts: KnownHosts,
     last_record: LastRecord,
     records_due: Option<Interval>,
@@ -689,7 +688,6 @@ impl BootstrapNode {
             endpoint,
             router,
             topic,
-            owner,
             known_hosts: files.network.into_known_hosts(),
             last_record: files.last_record,
             records_due: None,
@@ -733,16 +731,16 @@ impl BootstrapNode {
             Some(Err(failure)) => (self.report)(NodeRecord::TopicFailed(failure)),
             Some(Ok(GossipEvent::Joined)) => self.records_due = Some(record_interval()),
             Some(Ok(GossipEvent::Payload(payload))) => match *payload {
-                Payload::Infrastructure(record) if record.host != *self.key.public().as_bytes() => {
-                    if let Ok(record) = validated_infrastructure(&self.owner, &record) {
-                        self.learn_host(&record);
-                    }
+                OpenedPayload::Infrastructure(record)
+                    if record.record().host != *self.key.public().as_bytes() =>
+                {
+                    self.learn_host(&record);
                 }
-                Payload::Infrastructure(_)
-                | Payload::Presence(_)
-                | Payload::Departure(_)
-                | Payload::Unreachable(_)
-                | Payload::PresenceRequest(_) => {}
+                OpenedPayload::Infrastructure(_)
+                | OpenedPayload::Presence(_)
+                | OpenedPayload::Departure(_)
+                | OpenedPayload::Unreachable(_)
+                | OpenedPayload::PresenceRequest(_) => {}
             },
             Some(Ok(
                 GossipEvent::JoinTimedOut
@@ -1252,7 +1250,7 @@ mod tests {
                         if let Some(Ok(GossipEvent::Payload(payload))) =
                             self.topic.next_event().await
                         {
-                            heard.push(*payload);
+                            heard.push(Payload::from(*payload));
                         }
                     }
                 })
@@ -1265,7 +1263,7 @@ mod tests {
             tokio::time::timeout(within, async {
                 loop {
                     if let Some(Ok(GossipEvent::Payload(payload))) = self.topic.next_event().await
-                        && let Payload::Infrastructure(record) = *payload
+                        && let Payload::Infrastructure(record) = Payload::from(*payload)
                     {
                         return record;
                     }

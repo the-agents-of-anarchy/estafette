@@ -9,8 +9,8 @@ use crate::crypto::{
     verify_host_certificate, verify_payload_signature,
 };
 use crate::wire::{
-    self, CodecError, Infrastructure, Payload, Presence, Request, Response, SignatureBytes, Wire,
-    decode, encode,
+    self, CodecError, Departure, Infrastructure, Payload, Presence, PresenceRequest, Request,
+    Response, SignatureBytes, Unreachable, Wire, decode, encode,
 };
 
 const GOSSIP_FRAME_BYTES: usize = 4096;
@@ -247,7 +247,7 @@ fn sign_then_mac(
     Ok(encoded)
 }
 
-/// An Infrastructure record whose certificate, relay and address rules hold, carrying its relay parsed; only `validated_infrastructure` builds one.
+/// An Infrastructure record whose certificate, relay and address rules hold, carrying its relay parsed; only `open_payload` hands one out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidInfrastructure {
     record: Infrastructure,
@@ -268,13 +268,34 @@ impl ValidInfrastructure {
     }
 }
 
+/// A gossip payload whose mac, signature and kind rules hold: each kind its wire structure, an Infrastructure record its validated type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenedPayload {
+    Presence(Presence),
+    Departure(Departure),
+    Unreachable(Unreachable),
+    Infrastructure(ValidInfrastructure),
+    PresenceRequest(PresenceRequest),
+}
+
+#[cfg(test)]
+impl From<OpenedPayload> for Payload {
+    /// The wire structure an opened payload carries.
+    fn from(opened: OpenedPayload) -> Self {
+        match opened {
+            OpenedPayload::Presence(presence) => Self::Presence(presence),
+            OpenedPayload::Departure(departure) => Self::Departure(departure),
+            OpenedPayload::Unreachable(report) => Self::Unreachable(report),
+            OpenedPayload::Infrastructure(valid) => Self::Infrastructure(valid.record),
+            OpenedPayload::PresenceRequest(request) => Self::PresenceRequest(request),
+        }
+    }
+}
+
 /// Accepts an Infrastructure record only when the owner certified its host, its relay is a host relay, and its address lists exactly that relay.
-///
-/// # Errors
-/// `PayloadError::HostNotCertified`, `PayloadError::HostRelayRefused` or `PayloadError::AddrRelaysNotTheHostRelay`, checked in that order.
-pub fn validated_infrastructure(
+fn validated_infrastructure(
     owner: &PublicKey,
-    infrastructure: &Infrastructure,
+    infrastructure: Infrastructure,
 ) -> Result<ValidInfrastructure, PayloadError> {
     let certified = PublicKey::from_bytes(&infrastructure.host).is_ok_and(|host| {
         verify_host_certificate(owner, &host, &Signature::from_bytes(&infrastructure.cert.0))
@@ -296,7 +317,7 @@ pub fn validated_infrastructure(
         return Err(PayloadError::AddrRelaysNotTheHostRelay);
     }
     Ok(ValidInfrastructure {
-        record: infrastructure.clone(),
+        record: infrastructure,
         relay,
     })
 }
@@ -317,17 +338,21 @@ pub fn open_payload(
     keys: &NetworkKeys,
     owner: &PublicKey,
     bytes: &[u8],
-) -> Result<Payload, PayloadError> {
+) -> Result<OpenedPayload, PayloadError> {
     let payload: Payload = open_with_mac(keys, bytes)?;
     verify_signature(&payload)?;
-    match &payload {
-        Payload::Infrastructure(infrastructure) => {
-            validated_infrastructure(owner, infrastructure)?;
+    Ok(match payload {
+        Payload::Presence(presence) => {
+            verify_presence_rules(&presence)?;
+            OpenedPayload::Presence(presence)
         }
-        Payload::Presence(presence) => verify_presence_rules(presence)?,
-        Payload::Departure(_) | Payload::Unreachable(_) | Payload::PresenceRequest(_) => {}
-    }
-    Ok(payload)
+        Payload::Departure(departure) => OpenedPayload::Departure(departure),
+        Payload::Unreachable(report) => OpenedPayload::Unreachable(report),
+        Payload::Infrastructure(infrastructure) => {
+            OpenedPayload::Infrastructure(validated_infrastructure(owner, infrastructure)?)
+        }
+        Payload::PresenceRequest(request) => OpenedPayload::PresenceRequest(request),
+    })
 }
 
 /// Macs and encodes a direct request, ready to write to the stream.
@@ -401,7 +426,7 @@ mod tests {
 
         let opened = open_payload(&keys(), &owner_public(), &sealed).unwrap();
 
-        let Payload::Departure(departure) = opened else {
+        let Payload::Departure(departure) = Payload::from(opened) else {
             panic!("a departure was sealed");
         };
         let zeroed = encode(&unsealed_departure(1)).unwrap();
@@ -473,10 +498,7 @@ mod tests {
 
         for (payload, signer_seed) in kinds_with_their_signer_seed {
             let sealed = seal_payload(&keys(), &secret_key(signer_seed), payload.clone()).unwrap();
-            assert_eq!(
-                open_payload(&keys(), &owner_public(), &sealed).map(without_authentication),
-                Ok(payload.clone())
-            );
+            assert_eq!(opened(&sealed), Ok(payload.clone()));
             for other_seed in [REPORTED_CARD_SEED, REPORTER_SEED, FOREIGN_SEED]
                 .into_iter()
                 .filter(|seed| *seed != signer_seed)
@@ -629,10 +651,7 @@ mod tests {
         let payload = certified_infrastructure(HOST_RELAY, &[HOST_RELAY]);
         let sealed = seal_payload(&keys(), &secret_key(HOST_SEED), payload.clone()).unwrap();
 
-        assert_eq!(
-            open_payload(&keys(), &owner_public(), &sealed).map(without_authentication),
-            Ok(payload)
-        );
+        assert_eq!(opened(&sealed), Ok(payload));
     }
 
     #[test]
@@ -717,10 +736,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            open_payload(&keys(), &owner_public(), &sealed).map(without_authentication),
-            Ok(same_relay_spelled_differently)
-        );
+        assert_eq!(opened(&sealed), Ok(same_relay_spelled_differently));
     }
 
     const GOSSIP_FRAME_BYTES: usize = 4096;
@@ -789,7 +805,9 @@ mod tests {
     }
 
     fn opened(sealed: &[u8]) -> Result<Payload, PayloadError> {
-        open_payload(&keys(), &owner_public(), sealed).map(without_authentication)
+        open_payload(&keys(), &owner_public(), sealed)
+            .map(Payload::from)
+            .map(without_authentication)
     }
 
     /// Spec 3.5 and 3.7: a Presence whose `public` mapping is past 3072 bytes is dropped, one at 3072 bytes is accepted.

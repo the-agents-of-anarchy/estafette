@@ -30,7 +30,7 @@ use crate::net::direct::{
 };
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
-use crate::payload::{ValidInfrastructure, ZERO_MAC, ZERO_SIGNATURE, validated_infrastructure};
+use crate::payload::{OpenedPayload, ValidInfrastructure, ZERO_MAC, ZERO_SIGNATURE};
 use crate::peers::{
     ANNOUNCEMENT_MAX_AGE_MS, Effect, Peer, PeerTable, is_within_announcement_max_age,
 };
@@ -808,30 +808,28 @@ impl PresenceLoop {
     }
 
     /// Applies the row of spec 3.8 for a verified payload: Presence, Departure, Unreachable or Infrastructure.
-    async fn take_payload(&mut self, payload: Payload, now_ms: u64) {
+    async fn take_payload(&mut self, payload: OpenedPayload, now_ms: u64) {
         match payload {
-            Payload::Presence(presence) => {
+            OpenedPayload::Presence(presence) => {
                 let effects = self.state.take_presence(&presence, now_ms);
                 self.perform(effects).await;
             }
-            Payload::Departure(departure) => {
+            OpenedPayload::Departure(departure) => {
                 let effects = self.state.table().receive_departure(&departure, now_ms);
                 self.perform(effects).await;
             }
-            Payload::Unreachable(report) if report.card == self.state.own_card => {
+            OpenedPayload::Unreachable(report) if report.card == self.state.own_card => {
                 if is_rumor_to_answer(report.ts, self.announcer.last_seq(), now_ms) {
                     self.announce_presence().await;
                 }
             }
-            Payload::Unreachable(report) => {
+            OpenedPayload::Unreachable(report) => {
                 self.state.table().receive_unreachable(&report, now_ms);
             }
-            Payload::Infrastructure(record) => {
-                if let Ok(record) = validated_infrastructure(&self.owner, &record) {
-                    self.take_infrastructure(&record, now_ms).await;
-                }
+            OpenedPayload::Infrastructure(record) => {
+                self.take_infrastructure(&record, now_ms).await;
             }
-            Payload::PresenceRequest(request) => {
+            OpenedPayload::PresenceRequest(request) => {
                 self.answer_presence_request(&request, now_ms).await;
             }
         }
@@ -1993,10 +1991,11 @@ pub(super) mod tests {
         ) -> Option<Payload> {
             tokio::time::timeout(within, async {
                 loop {
-                    if let Some(Ok(GossipEvent::Payload(payload))) = self.topic.next_event().await
-                        && pick(&payload)
-                    {
-                        return *payload;
+                    if let Some(Ok(GossipEvent::Payload(payload))) = self.topic.next_event().await {
+                        let payload = Payload::from(*payload);
+                        if pick(&payload) {
+                            return payload;
+                        }
                     }
                 }
             })
@@ -3311,11 +3310,9 @@ pub(super) mod tests {
         drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&root).unwrap();
         let path = root.join(NETWORK_FILE_NAME);
-        let record = validated_infrastructure(
-            &owner(),
-            &record_of(HOST_SEED, HOST_RELAY, FROZEN_CLOCK_MS / MILLIS_PER_SECOND),
-        )
-        .unwrap();
+        let record = valid_record(
+            opened_record(HOST_SEED, HOST_RELAY, FROZEN_CLOCK_MS / MILLIS_PER_SECOND).unwrap(),
+        );
         let mut known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), path.clone());
 
         known_hosts.take_record(&record, FROZEN_CLOCK_MS);
@@ -3333,15 +3330,35 @@ pub(super) mod tests {
         saved
     }
 
-    fn owner() -> iroh::PublicKey {
-        secret_key(OWNER_SEED).public()
+    fn opened_record(
+        host_seed: u8,
+        relay: &str,
+        ts: u64,
+    ) -> Result<OpenedPayload, crate::payload::PayloadError> {
+        crate::payload::open_payload(
+            &keys(),
+            &secret_key(OWNER_SEED).public(),
+            &sealed_record(host_seed, relay, ts),
+        )
     }
 
-    fn record_of(host_seed: u8, relay: &str, ts: u64) -> Infrastructure {
-        let Payload::Infrastructure(record) = infrastructure_of(host_seed, relay, ts) else {
-            panic!("infrastructure_of builds an infrastructure record");
-        };
-        record
+    fn sealed_record(host_seed: u8, relay: &str, ts: u64) -> Vec<u8> {
+        crate::payload::seal_payload(
+            &keys(),
+            &secret_key(host_seed),
+            infrastructure_of(host_seed, relay, ts),
+        )
+        .unwrap()
+    }
+
+    fn valid_record(opened: OpenedPayload) -> ValidInfrastructure {
+        match opened {
+            OpenedPayload::Infrastructure(valid) => valid,
+            OpenedPayload::Presence(_)
+            | OpenedPayload::Departure(_)
+            | OpenedPayload::Unreachable(_)
+            | OpenedPayload::PresenceRequest(_) => panic!("an infrastructure record was sealed"),
+        }
     }
 
     /// Spec 3.3 and 3.8: a record whose relay the configuration refuses is neither held nor saved, and a later record of another host still saves.
@@ -3354,13 +3371,8 @@ pub(super) mod tests {
         let record_ts = FROZEN_CLOCK_MS / MILLIS_PER_SECOND;
         let mut known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), path.clone());
 
-        let refused = validated_infrastructure(
-            &owner(),
-            &record_of(SECOND_HOST_SEED, PLAIN_HTTP_HOST_RELAY, record_ts),
-        );
-        let accepted =
-            validated_infrastructure(&owner(), &record_of(HOST_SEED, HOST_RELAY, record_ts))
-                .unwrap();
+        let refused = opened_record(SECOND_HOST_SEED, PLAIN_HTTP_HOST_RELAY, record_ts);
+        let accepted = valid_record(opened_record(HOST_SEED, HOST_RELAY, record_ts).unwrap());
         let verdict = known_hosts.take_record(&accepted, FROZEN_CLOCK_MS);
         let saved = known_hosts.save(FROZEN_CLOCK_MS);
 

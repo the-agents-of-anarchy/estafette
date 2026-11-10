@@ -32,7 +32,7 @@ use crate::node::{
     NodeRecord, RelayProbe, Session, endpoint_addr, endpoint_id, known_host_addresses,
     observer_wait_over_at, seed_lookup_with_known_hosts, serve, sleep_until_deadline, wire_addr,
 };
-use crate::payload::{ZERO_MAC, ZERO_SIGNATURE};
+use crate::payload::{OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
 use crate::peers::{Effect, Peer, PeerTable, Status};
 use crate::sidecar::{HeldSidecar, Pause, SEED_BYTES, SidecarError, claim, create_card};
 use crate::wire::{
@@ -717,20 +717,20 @@ impl Observation {
     }
 
     /// Applies a verified payload to the peer table.
-    fn take_payload(&self, payload: Payload, now_ms: u64) {
+    fn take_payload(&self, payload: OpenedPayload, now_ms: u64) {
         match payload {
-            Payload::Presence(presence) => {
+            OpenedPayload::Presence(presence) => {
                 let effects = self.host.table().receive_presence(&presence, now_ms);
                 self.perform(effects);
             }
-            Payload::Departure(departure) => {
+            OpenedPayload::Departure(departure) => {
                 self.host.table().receive_departure(&departure, now_ms);
             }
-            Payload::Unreachable(report) => {
+            OpenedPayload::Unreachable(report) => {
                 self.host.table().receive_unreachable(&report, now_ms);
             }
-            Payload::Infrastructure(_record) => {}
-            Payload::PresenceRequest(_request) => {}
+            OpenedPayload::Infrastructure(_record) => {}
+            OpenedPayload::PresenceRequest(_request) => {}
         }
     }
 
@@ -824,9 +824,9 @@ fn peer_line(peer: &Peer) -> String {
 }
 
 /// The result line of a gossip payload: its kind, then every field of the payload in the order spec 3.7 declares them.
-fn payload_line(payload: &Payload) -> Result<String, Failure> {
+fn payload_line(payload: &OpenedPayload) -> Result<String, Failure> {
     Ok(match payload {
-        Payload::Presence(presence) => line_of(&[
+        OpenedPayload::Presence(presence) => line_of(&[
             PRESENCE_KIND,
             &json_text(PRESENCE_KIND, &presence.v)?,
             &hex_text(&presence.card),
@@ -838,7 +838,7 @@ fn payload_line(payload: &Payload) -> Result<String, Failure> {
             &hex_text(&presence.mac),
             &hex_text(&presence.sig.0),
         ]),
-        Payload::Departure(departure) => line_of(&[
+        OpenedPayload::Departure(departure) => line_of(&[
             DEPARTURE_KIND,
             &json_text(DEPARTURE_KIND, &departure.v)?,
             &hex_text(&departure.card),
@@ -846,7 +846,7 @@ fn payload_line(payload: &Payload) -> Result<String, Failure> {
             &hex_text(&departure.mac),
             &hex_text(&departure.sig.0),
         ]),
-        Payload::Unreachable(report) => line_of(&[
+        OpenedPayload::Unreachable(report) => line_of(&[
             UNREACHABLE_KIND,
             &json_text(UNREACHABLE_KIND, &report.v)?,
             &hex_text(&report.card),
@@ -855,18 +855,21 @@ fn payload_line(payload: &Payload) -> Result<String, Failure> {
             &hex_text(&report.mac),
             &hex_text(&report.sig.0),
         ]),
-        Payload::Infrastructure(record) => line_of(&[
-            INFRASTRUCTURE_KIND,
-            &json_text(INFRASTRUCTURE_KIND, &record.v)?,
-            &hex_text(&record.host),
-            record.relay.as_str(),
-            &json_text(INFRASTRUCTURE_KIND, &record.addr)?,
-            &record.ts.to_string(),
-            &hex_text(&record.cert.0),
-            &hex_text(&record.mac),
-            &hex_text(&record.sig.0),
-        ]),
-        Payload::PresenceRequest(request) => line_of(&[
+        OpenedPayload::Infrastructure(valid) => {
+            let record = valid.record();
+            line_of(&[
+                INFRASTRUCTURE_KIND,
+                &json_text(INFRASTRUCTURE_KIND, &record.v)?,
+                &hex_text(&record.host),
+                record.relay.as_str(),
+                &json_text(INFRASTRUCTURE_KIND, &record.addr)?,
+                &record.ts.to_string(),
+                &hex_text(&record.cert.0),
+                &hex_text(&record.mac),
+                &hex_text(&record.sig.0),
+            ])
+        }
+        OpenedPayload::PresenceRequest(request) => line_of(&[
             PRESENCE_REQUEST_KIND,
             &json_text(PRESENCE_REQUEST_KIND, &request.v)?,
             &hex_text(&request.requester),
@@ -1705,7 +1708,7 @@ mod tests {
         tokio::time::timeout(within, async {
             loop {
                 if let Some(Ok(GossipEvent::Payload(payload))) = topic.next_event().await
-                    && let Payload::PresenceRequest(request) = *payload
+                    && let Payload::PresenceRequest(request) = Payload::from(*payload)
                 {
                     return request;
                 }
@@ -2074,7 +2077,7 @@ mod tests {
             let hostile = hostile_text(index);
             let handle = String::from_utf8_lossy(&hostile).into_owned();
             let presence = presence_of(1, &handle, hostile.clone());
-            let presence_line = payload_line(&Payload::Presence(presence.clone())).unwrap();
+            let presence_line = payload_line(&OpenedPayload::Presence(presence.clone())).unwrap();
             let mut table = PeerTable::new(card_of(0));
             drop(table.receive_presence(&presence_of(1, "amy", hostile), LINE_CLOCK_MS));
             let peer_lines: Vec<String> = table.peers(LINE_CLOCK_MS).map(peer_line).collect();

@@ -457,7 +457,7 @@ mod tests {
                     };
                     match event {
                         Ok(GossipEvent::Payload(payload)) => {
-                            if let Payload::Presence(presence) = *payload {
+                            if let Payload::Presence(presence) = Payload::from(*payload) {
                                 heard.lock().unwrap().push((Instant::now(), presence.seq));
                             }
                         }
