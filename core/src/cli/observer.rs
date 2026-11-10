@@ -1964,7 +1964,6 @@ mod tests {
 
     const CLOCK_STEP_PAST_ANY_SILENCE: Duration = Duration::from_secs(3600);
     const SUPERSEDED_CLOSE_WAIT: Duration = Duration::from_secs(5);
-    const SUPERSEDED_CONNECTION_CLOSE_CODE: u32 = 410;
 
     /// A monotonic clock that moves an hour on at every reading, so every connection the observer holds reads as long silent whenever it is judged.
     fn clock_moving_past_any_silence_at_each_reading() -> MonotonicClock {
@@ -2060,7 +2059,7 @@ mod tests {
         };
         assert_eq!(
             close.error_code,
-            iroh::endpoint::VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE)
+            iroh::endpoint::VarInt::from_u32(crate::net::direct::SUPERSEDED_CONNECTION_CLOSE_CODE)
         );
         drop(lab);
     }
