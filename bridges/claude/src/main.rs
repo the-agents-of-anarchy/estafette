@@ -1028,6 +1028,18 @@ mod tests {
     }
 
     #[test]
+    fn spec_3_12_a_bridge_with_the_socket_but_no_token_names_the_token_variable() {
+        let environment = Environment {
+            messaging_socket: Some(PathBuf::from("/tmp/session.sock")),
+            ..bare_environment()
+        };
+        assert!(matches!(
+            bridge_effects(&environment, StandInFiles::default()),
+            Err(CommandError::MissingVariable(MESSAGING_TOKEN_VARIABLE))
+        ));
+    }
+
+    #[test]
     fn spec_3_12_the_bridge_needs_the_session_socket_and_token_before_it_starts() {
         assert!(matches!(
             bridge_effects(&bare_environment(), OperatingSystemFiles),
@@ -1393,6 +1405,22 @@ mod tests {
         let across_windows = deliver_eleven_frames(61);
         assert_eq!(across_windows.errors.len(), 11);
         assert_eq!(across_windows.counts, Vec::<String>::new());
+    }
+
+    #[test]
+    fn spec_3_12_frames_of_two_followed_sockets_share_one_rate_limit_per_sender() {
+        let wiring = wiring();
+        let session = bridge_session(&wiring);
+        let sockets = [
+            PathBuf::from("/run/user/1000/estafette-1000/101.sock"),
+            PathBuf::from("/run/user/1000/estafette-1000/102.sock"),
+        ];
+        for index in 0..11_usize {
+            let socket = &sockets[index % sockets.len()];
+            session.deliver_from_socket(socket, &frame_from("ana", &format!("body {index}")));
+        }
+        assert_eq!(connect_errors(&wiring).len(), 10);
+        assert_eq!(written_counts(&session.files.writes), ["1"]);
     }
 
     fn class_files_written(session: &BridgeSession<DownConnector, StandInFiles>) -> Vec<String> {

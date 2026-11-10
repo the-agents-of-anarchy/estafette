@@ -299,6 +299,15 @@ mod tests {
     }
 
     #[test]
+    fn spec_3_12_step_2_a_listing_line_whose_first_token_is_not_a_pid_is_malformed() {
+        let listing = entries_from_command_lines("abc 1 /bin/sh", &BTreeMap::new());
+        assert!(matches!(
+            listing,
+            Err(ProcessTableError::MalformedListingLine(line)) if line == "abc 1 /bin/sh"
+        ));
+    }
+
+    #[test]
     fn spec_3_12_step_2_listing_failure_stops_following_with_the_listing_error() {
         let mut reported = false;
         let following = follow_binary_sockets(

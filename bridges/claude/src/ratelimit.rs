@@ -55,3 +55,45 @@ impl SenderRateLimit {
         self.dropped_frames
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn admitted_bodies_at(limit: &mut SenderRateLimit, sender: &str, seconds: &[u64]) -> Vec<bool> {
+        seconds
+            .iter()
+            .enumerate()
+            .map(|(index, second)| {
+                matches!(
+                    limit.admit(
+                        sender,
+                        &format!("body {index}"),
+                        Duration::from_secs(*second)
+                    ),
+                    Admission::Admitted
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn spec_3_12_the_eleventh_injection_inside_60_seconds_is_dropped_and_the_window_slides() {
+        let mut limit = SenderRateLimit::default();
+        let mut seconds = vec![0; MAX_INJECTIONS_PER_WINDOW];
+        seconds.extend([59, 60]);
+        let admitted = admitted_bodies_at(&mut limit, "ana", &seconds);
+        assert_eq!(
+            admitted,
+            [vec![true; MAX_INJECTIONS_PER_WINDOW], vec![false, true]].concat()
+        );
+        assert_eq!(limit.dropped_frames(), 1);
+    }
+
+    #[test]
+    fn spec_3_12_each_sender_has_its_own_window() {
+        let mut limit = SenderRateLimit::default();
+        admitted_bodies_at(&mut limit, "ana", &[0; MAX_INJECTIONS_PER_WINDOW]);
+        assert_eq!(admitted_bodies_at(&mut limit, "bo", &[0]), [true]);
+    }
+}

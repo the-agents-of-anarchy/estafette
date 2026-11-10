@@ -82,6 +82,15 @@ mod tests {
     }
 
     #[test]
+    fn harness_2_1_319_a_newest_mode_entry_without_a_mode_hides_an_older_entry_that_has_one() {
+        let transcript = concat!(
+            "{\"type\":\"permission-mode\",\"permissionMode\":\"bypassPermissions\"}\n",
+            "{\"type\":\"permission-mode\"}\n",
+        );
+        assert_eq!(latest_permission_mode(transcript), None);
+    }
+
+    #[test]
     fn harness_2_1_319_the_registry_entry_gives_the_session_id_of_the_transcript() {
         let entry =
             "{\"pid\":1,\"sessionId\":\"33a25ba8-1545-4166-9762-1dc6bbf59e05\",\"name\":\"x\"}";
