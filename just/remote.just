@@ -264,13 +264,17 @@ relay-paths-restored:
 host-down:
     ssh {{ ssh_opts }} root@$(hcloud server ip {{ server }}) 'if systemctl is-active --quiet {{ host_unit }}; then systemctl stop {{ host_unit }}; fi'
 
-[doc("Start the network's host on the server unless it runs, as infrastructure set it up there, refusing with the server's name when the server does not exist; creates, pushes and builds nothing")]
+[doc("Start the network's host on the server unless it runs, as infrastructure set it up there, refusing with the server's name when hcloud reports the server not found and with hcloud's own error when describing it fails otherwise; creates, pushes and builds nothing")]
 [group('lab')]
 host-start:
     #!/usr/bin/env bash
     set -euo pipefail
-    if ! hcloud server describe {{ server }} > /dev/null 2>&1; then
-        echo "no lab server {{ server }}: host-start starts a host only on a server the run already brought up and creates none" >&2
+    if ! describe_failure="$(hcloud server describe {{ server }} 2>&1 > /dev/null)"; then
+        if [[ "$describe_failure" == *[Ss]"erver not found: {{ server }}"* ]]; then
+            echo "no lab server {{ server }}: host-start starts a host only on a server the run already brought up and creates none" >&2
+        else
+            printf '%s\n' "$describe_failure" >&2
+        fi
         exit 1
     fi
     address="$(hcloud server ip {{ server }})"
