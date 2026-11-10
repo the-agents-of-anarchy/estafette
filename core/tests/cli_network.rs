@@ -3,14 +3,14 @@ mod network_commands {
     use std::fs;
     use std::io::{self, Write};
     use std::os::unix::fs::PermissionsExt;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Output};
 
     use data_encoding::HEXLOWER;
-    use estafette::cli::network::{NetworkCommand, run};
+    use estafette::cli::network::{NetworkCommand, NetworkFilesystem, run};
     use estafette::config::{HostOrigin, NetworkConfig};
     use estafette::crypto::verify_host_certificate;
-    use estafette::dirs::{Directories, OperatingSystemFilesystem};
+    use estafette::dirs::{Directories, DirectoryFilesystem, OperatingSystemFilesystem};
     use estafette::handle::Handle;
     use estafette::invite::{parse_invitation, render_host_line, render_invitation};
     use estafette::keys::{parse_public_key, parse_secret_key, render_public_key};
@@ -132,6 +132,86 @@ mod network_commands {
             fs::read_to_string(machine.owner_key_file(NETWORK)).unwrap(),
             owner_key_before
         );
+    }
+
+    struct ConfigWriteBlockedAfterOwnerKey {
+        networks_directory: PathBuf,
+    }
+
+    impl DirectoryFilesystem for ConfigWriteBlockedAfterOwnerKey {
+        fn create_private_directory(&self, path: &Path) -> io::Result<()> {
+            OperatingSystemFilesystem.create_private_directory(path)
+        }
+
+        fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
+            OperatingSystemFilesystem.owner_user_id(path)
+        }
+    }
+
+    impl NetworkFilesystem for ConfigWriteBlockedAfterOwnerKey {
+        fn path_exists(&self, path: &Path) -> io::Result<bool> {
+            OperatingSystemFilesystem.path_exists(path)
+        }
+
+        fn read_to_string(&self, path: &Path) -> io::Result<String> {
+            OperatingSystemFilesystem.read_to_string(path)
+        }
+
+        fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
+            OperatingSystemFilesystem.create_new_owner_only_file(path, contents)?;
+            fs::set_permissions(&self.networks_directory, fs::Permissions::from_mode(0o500))
+        }
+
+        fn remove_file(&self, path: &Path) -> io::Result<()> {
+            fs::set_permissions(&self.networks_directory, fs::Permissions::from_mode(0o700))?;
+            OperatingSystemFilesystem.remove_file(path)
+        }
+    }
+
+    fn create_network_through(machine: &Machine, filesystem: &impl NetworkFilesystem) -> bool {
+        let root = machine.root.clone();
+        let directories = Directories::establish(
+            move |name| match name {
+                "XDG_CONFIG_HOME" => Some(root.join("config").into_os_string()),
+                "XDG_DATA_HOME" => Some(root.join("data").into_os_string()),
+                "XDG_RUNTIME_DIR" => Some(root.join("runtime").into_os_string()),
+                _ => None,
+            },
+            &OperatingSystemFilesystem,
+            None,
+        )
+        .unwrap();
+        run(
+            &NetworkCommand::Create {
+                network: NETWORK.parse().unwrap(),
+            },
+            &directories,
+            filesystem,
+            |bytes| bytes.fill(5),
+            1_700_000_000,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .is_ok()
+    }
+
+    #[test]
+    fn spec_3_13_a_create_network_whose_configuration_cannot_be_written_leaves_no_owner_key() {
+        let machine = Machine::fresh("create-config-unwritable");
+        let blocked = ConfigWriteBlockedAfterOwnerKey {
+            networks_directory: machine.networks_directory(),
+        };
+
+        let created = create_network_through(&machine, &blocked);
+
+        assert!(!created);
+        fs::set_permissions(
+            machine.networks_directory(),
+            fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        assert!(!machine.owner_key_file(NETWORK).exists());
+        assert!(create_network_through(&machine, &OperatingSystemFilesystem));
     }
 
     #[test]

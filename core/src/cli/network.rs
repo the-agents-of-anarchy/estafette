@@ -107,6 +107,13 @@ pub trait NetworkFilesystem: DirectoryFilesystem {
     ///
     /// Fails with `AlreadyExists` when the path exists, and with the operating system's error otherwise.
     fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()>;
+
+    /// Removes a file.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the operating system's error when the file cannot be removed.
+    fn remove_file(&self, path: &Path) -> io::Result<()>;
 }
 
 impl NetworkFilesystem for OperatingSystemFilesystem {
@@ -120,6 +127,10 @@ impl NetworkFilesystem for OperatingSystemFilesystem {
 
     fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
         create_new_owner_only_file(path)?.write_all(contents.as_bytes())
+    }
+
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        fs::remove_file(path)
     }
 }
 
@@ -156,6 +167,11 @@ enum Failure {
         source: KeyError,
     },
     Invitation(InviteError),
+    OwnerKeyLeftBehind {
+        path: PathBuf,
+        source: io::Error,
+        config: String,
+    },
 }
 
 impl fmt::Display for Failure {
@@ -208,6 +224,15 @@ impl fmt::Display for Failure {
                 )
             }
             Self::Invitation(source) => write!(formatter, "{source}"),
+            Self::OwnerKeyLeftBehind {
+                path,
+                source,
+                config,
+            } => write!(
+                formatter,
+                "{config}; {} was left behind and blocks the next create: {source}",
+                path.display()
+            ),
         }
     }
 }
@@ -318,13 +343,29 @@ fn create_network(
         owner: render_public_key(&owner.public()),
         hosts: Vec::new(),
     }
-    .rewrite(&config_file, now_unix_seconds)?;
+    .rewrite(&config_file, now_unix_seconds)
+    .map_err(|config| remove_owner_key_after(filesystem, &owner_key_file, config))?;
     writeln!(
         record,
         "created network {network}: it names no host yet, so it has no invitation until a host is added",
         network = network.as_str()
     )
     .map_err(Failure::Output)
+}
+
+fn remove_owner_key_after(
+    filesystem: &impl NetworkFilesystem,
+    owner_key_file: &Path,
+    config: ConfigError,
+) -> Failure {
+    match filesystem.remove_file(owner_key_file) {
+        Ok(()) => Failure::Config(config),
+        Err(source) => Failure::OwnerKeyLeftBehind {
+            path: owner_key_file.to_owned(),
+            source,
+            config: config.to_string(),
+        },
+    }
 }
 
 fn refuse_existing_file(
