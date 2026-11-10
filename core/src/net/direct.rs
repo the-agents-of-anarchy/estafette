@@ -12,7 +12,7 @@ use iroh::{Endpoint, EndpointId};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::{Instant, sleep, timeout};
 
-use super::endpoint::DIRECT_ALPN;
+use super::endpoint::{DIRECT_ALPN, QUIC_KEEP_ALIVE_INTERVAL};
 use crate::crypto::NetworkKeys;
 use crate::errors::ErrorCode;
 use crate::payload::{
@@ -32,10 +32,17 @@ const RESET_CODE_READ_TIMEOUT: u32 = 2;
 const RESET_CODE_UNANSWERED: u32 = 3;
 const SUPERSEDED_CONNECTION_CLOSE_CODE: u32 = 410;
 const SUPERSEDED_CONNECTION_CLOSE_REASON: &[u8] = b"superseded";
-/// How often the direct server reads what each accepted connection has heard, half the endpoint's QUIC keep-alive interval.
-const HEARING_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
-/// How long a connection hears nothing before it is taken for one of a process that no longer runs: three of the endpoint's QUIC keep-alive intervals, each of which a live peer answers.
-const GONE_PROCESS_SILENCE: Duration = Duration::from_millis(1500);
+const HEARING_SAMPLES_PER_KEEP_ALIVE: u32 = 2;
+const UNANSWERED_KEEP_ALIVES_OF_A_GONE_PROCESS: u32 = 3;
+/// How often the direct server reads what each accepted connection has heard.
+const HEARING_SAMPLE_INTERVAL: Duration =
+    match QUIC_KEEP_ALIVE_INTERVAL.checked_div(HEARING_SAMPLES_PER_KEEP_ALIVE) {
+        Some(interval) => interval,
+        None => QUIC_KEEP_ALIVE_INTERVAL,
+    };
+/// How long a connection hears nothing before it is taken for one of a process that no longer runs.
+const GONE_PROCESS_SILENCE: Duration =
+    QUIC_KEEP_ALIVE_INTERVAL.saturating_mul(UNANSWERED_KEEP_ALIVES_OF_A_GONE_PROCESS);
 
 /// What the direct server needs from the node: its identity and state, and the effects of a received Message and Introduce.
 pub trait DirectHost: Send + Sync + 'static {
