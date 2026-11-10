@@ -5,6 +5,7 @@ use estafette::config::{Host, NetworkConfig};
 use estafette::dirs::Directories;
 use serde_json::json;
 
+use crate::live_network::LiveNetwork;
 use crate::mcp_server::McpServer;
 use crate::scratch_machine::{Card, ScratchMachine};
 
@@ -29,6 +30,13 @@ impl LabMachine {
         }
     }
 
+    /// A fresh machine named for the test, joined to the live network as its invitation describes.
+    pub fn joined(test_tag: &str, network: &LiveNetwork) -> Self {
+        let machine = Self::fresh(test_tag, network.name());
+        network.join(&machine.directories());
+        machine
+    }
+
     /// The directories the binary derives from this machine's environment.
     pub fn directories(&self) -> Directories {
         self.scratch.directories()
@@ -44,9 +52,14 @@ impl LabMachine {
         self.scratch.create_card(name, handle)
     }
 
+    /// Starts the binary's MCP server for the network, handshaken and with no card claimed.
+    pub fn start_server(&self) -> McpServer {
+        McpServer::handshaken(self.scratch.spawn_mcp_server())
+    }
+
     /// Starts the binary's MCP server for the network and claims the card through its init tool, requiring the claim to succeed.
     pub fn start_member(&self, card: &str) -> ClaimedMember {
-        let mut server = McpServer::handshaken(self.scratch.spawn_mcp_server());
+        let mut server = self.start_server();
         let claim = server.call("init", &json!({ "card": card }));
         assert_eq!(claim["ok"], json!(true), "{claim}");
         ClaimedMember { _server: server }

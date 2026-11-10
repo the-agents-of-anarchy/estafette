@@ -1,7 +1,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ExitStatus};
 use std::sync::mpsc::{self, Receiver};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
@@ -15,6 +15,8 @@ const CLIENT_NAME: &str = "estafette-acceptance";
 const CLIENT_VERSION: &str = "0";
 /// How long the server may take to answer a request.
 const RESPONSE_WAIT: Duration = Duration::from_secs(60);
+/// How often the peers tool is called while waiting for a peer.
+const PEERS_POLL: Duration = Duration::from_millis(50);
 
 /// A running `estafette mcp` process driven as an MCP client over its standard streams, stopped when dropped.
 pub struct McpServer {
@@ -70,6 +72,32 @@ impl McpServer {
     pub fn call(&mut self, tool: &str, arguments: &Value) -> Value {
         let call = self.start_call(tool, arguments);
         self.answer(&call)
+    }
+
+    /// The peer of that handle as the peers tool lists it once the peer meets the condition, requiring that within the wait.
+    pub fn peer_within(
+        &mut self,
+        handle: &str,
+        within: Duration,
+        condition: impl Fn(&Value) -> bool,
+    ) -> Value {
+        let started = Instant::now();
+        loop {
+            let listed = self.call("peers", &json!({}));
+            let entry = listed["result"]["peers"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .find(|peer| peer["handle"] == handle);
+            if let Some(peer) = entry.filter(|peer| condition(peer)) {
+                return peer.clone();
+            }
+            assert!(
+                started.elapsed() < within,
+                "{handle} was not listed as wanted within {within:?}; its entry: {entry:?}"
+            );
+            std::thread::sleep(PEERS_POLL);
+        }
     }
 
     /// Writes the tool call without waiting for its answer.

@@ -9,7 +9,6 @@ use crate::mcp_server::{McpServer, PendingCall};
 use crate::scratch_machine::Card;
 use crate::scripted_node::ScriptedNode;
 
-const PEERS_POLL: Duration = Duration::from_millis(50);
 const ENDPOINT_BIND_WAIT: Duration = Duration::from_secs(10);
 const ENDPOINT_BIND_POLL: Duration = Duration::from_millis(20);
 const OPEN_FILES_COMMAND: &str = "lsof";
@@ -71,23 +70,7 @@ impl Member {
         within: Duration,
         condition: impl Fn(&Value) -> bool,
     ) -> Value {
-        let started = Instant::now();
-        loop {
-            let listed = self.call("peers", &json!({}));
-            let entry = listed["result"]["peers"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|peer| peer["handle"] == handle);
-            if let Some(peer) = entry.filter(|peer| condition(peer)) {
-                return peer.clone();
-            }
-            assert!(
-                started.elapsed() < within,
-                "{handle} was not listed as wanted within {within:?}; its entry: {entry:?}"
-            );
-            std::thread::sleep(PEERS_POLL);
-        }
+        self.server.peer_within(handle, within, condition)
     }
 
     /// The loopback-reachable UDP ports this process's endpoint bound, waiting for the bind.

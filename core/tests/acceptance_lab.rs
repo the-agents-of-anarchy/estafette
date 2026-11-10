@@ -5,6 +5,9 @@ mod forger;
 #[path = "lab/forgeries.rs"]
 mod forgeries;
 #[cfg(test)]
+#[path = "lab/inbox_client.rs"]
+mod inbox_client;
+#[cfg(test)]
 #[path = "lab/killable_host.rs"]
 mod killable_host;
 #[cfg(test)]
@@ -19,6 +22,9 @@ mod mcp_server;
 #[cfg(test)]
 #[path = "support/payload_placeholders.rs"]
 mod payload_placeholders;
+#[cfg(test)]
+#[path = "support/payloads.rs"]
+mod payloads;
 #[cfg(test)]
 #[path = "support/scratch_machine.rs"]
 mod scratch_machine;
@@ -131,8 +137,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
         fn joined(card: &str, forger_seed: u8) -> Self {
             let live_host = live_host_to_itself();
             let network = LiveNetwork::from_environment();
-            let machine = LabMachine::fresh(card, network.name());
-            network.join(&machine.directories());
+            let machine = LabMachine::joined(card, &network);
             let created = machine.create_card(card, card);
             let member = machine.start_member(&created.name);
             let forger = Forger::join_through(
@@ -579,5 +584,640 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
             kill.returned,
             kill.returned.duration_since(kill.sent)
         );
+    }
+}
+
+#[cfg(test)]
+mod spec_3_15_two_members_through_the_live_host {
+    use std::fs;
+    use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+    use estafette::keys::parse_secret_key;
+    use estafette::wire::{
+        self, Addr, HostAddr, Payload, Presence, RelayUrl, SignatureBytes, Version,
+    };
+    use iroh::{EndpointAddr, SecretKey, TransportAddr};
+    use serde_json::{Value, json};
+
+    use crate::forger::Forger;
+    use crate::inbox_client::InboxClient;
+    use crate::lab_machine::LabMachine;
+    use crate::live_host::live_host_to_itself;
+    use crate::live_network::LiveNetwork;
+    use crate::mcp_server::McpServer;
+    use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
+    use crate::payloads::presence_signed_by;
+    use crate::scratch_machine::Card;
+
+    const SPEC_GONE_WITHIN: Duration = Duration::from_millis(1000);
+    const SPEC_QUIC_IDLE_TIMEOUT: Duration = Duration::from_millis(10_000);
+    const QUIC_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(500);
+    const SPEC_PROBE_TIMEOUT: Duration = Duration::from_millis(3000);
+    const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
+    const SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE: Duration = Duration::from_millis(1000);
+    const SPEC_LARGEST_PRESENCE_BYTES: usize = 3951;
+    const SPEC_GOSSIP_FRAME_BYTES: usize = 4096;
+    const SPEC_GOSSIP_LAYER_OVERHEAD_BYTES: usize = 38;
+    const SPEC_PUBLIC_MAX_BYTES: usize = 3072;
+    const SPEC_ANNOUNCED_HANDLE_MAX_CHARACTERS: usize = 53;
+    const SPEC_REQUESTED_HANDLE_MAX_CHARACTERS: usize = 32;
+    const SPEC_RELAY_URLS_PER_ADDR: u16 = 4;
+    const SPEC_RELAY_URL_MAX_BYTES: usize = 128;
+    const SPEC_DIRECT_ADDRS_PER_ADDR: u16 = 8;
+    const LARGEST_THREE_BYTE_VARINT_PORT: u16 = 65_535;
+    const HANDLE_TAG_LETTERS: usize = 6;
+    const ALPHABET_LENGTH: u64 = 26;
+    const FIRST_LETTER: u8 = b'a';
+    const RELAY_URL_FRAME_BYTES: usize = "https://".len() + "/".len();
+    const DOCUMENTATION_PREFIX_FIRST_SEGMENT: u16 = 0x2001;
+    const DOCUMENTATION_PREFIX_SECOND_SEGMENT: u16 = 0x0db8;
+    const PUBLIC_NOTES_KEY: &str = "notes";
+    const COMPACT_JSON_MAPPING_FRAME_BYTES: usize = r#"{"":""}"#.len();
+    const PRESENCE_WAIT: Duration = Duration::from_secs(20);
+    const FRAME_WAIT: Duration = Duration::from_secs(10);
+    const NO_FURTHER_FRAME_WAIT: Duration = Duration::from_millis(1000);
+    const REPLAY_SETTLE_WAIT: Duration = Duration::from_millis(2000);
+    const FIRST_BODY: &str = "the parser review is ready";
+    const FIRST_SESSION: &str = "first session";
+    const SECOND_SESSION: &str = "second session";
+    const MESSAGES_BEFORE_RECONNECT: u64 = 3;
+    const MESSAGES_IN_ALL: u64 = 5;
+
+    /// A member on its own machine, joined to the live network with its card claimed.
+    struct LabMember {
+        member: McpServer,
+        card: Card,
+        handle: String,
+        claim: Value,
+        machine: LabMachine,
+    }
+
+    /// Claims a fresh card requesting the handle, with the description, on a fresh machine joined to the live network.
+    fn lab_member(
+        network: &LiveNetwork,
+        machine_tag: &str,
+        handle: &str,
+        description: &str,
+    ) -> LabMember {
+        let machine = LabMachine::joined(machine_tag, network);
+        let card = machine.create_card(&format!("{machine_tag}-card"), handle);
+        let mut member = machine.start_server();
+        let claim = member.call(
+            "init",
+            &json!({ "card": card.name, "description": description }),
+        );
+        assert_eq!(claim["ok"], json!(true), "{claim}");
+        LabMember {
+            member,
+            card,
+            handle: handle.to_owned(),
+            claim,
+            machine,
+        }
+    }
+
+    /// The base followed by letters drawn from the clock, so the handle is free on the live network whatever earlier runs announced.
+    fn unique_handle(base: &str) -> String {
+        let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+        let mut drawn = u64::from(since_epoch.subsec_nanos())
+            ^ since_epoch.as_secs()
+            ^ u64::from(std::process::id());
+        let mut handle = base.to_owned();
+        for _ in 0..HANDLE_TAG_LETTERS {
+            let letter = u8::try_from(drawn % ALPHABET_LENGTH).unwrap();
+            handle.push(char::from(FIRST_LETTER.checked_add(letter).unwrap()));
+            drawn /= ALPHABET_LENGTH;
+        }
+        handle
+    }
+
+    fn online(peer: &Value) -> bool {
+        peer["status"] == json!("online")
+    }
+
+    fn gone(peer: &Value) -> bool {
+        peer["status"] == json!("gone")
+    }
+
+    fn meet(first: &mut LabMember, second: &mut LabMember) {
+        first
+            .member
+            .peer_within(&second.handle, PRESENCE_WAIT, online);
+        second
+            .member
+            .peer_within(&first.handle, PRESENCE_WAIT, online);
+    }
+
+    fn send(from: &mut LabMember, to: &str, body: &str) -> Value {
+        from.member.call("send", &json!({ "to": to, "body": body }))
+    }
+
+    fn listed_peer(member: &mut McpServer, handle: &str) -> Option<Value> {
+        member.call("peers", &json!({}))["result"]["peers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|peer| peer["handle"] == handle)
+            .cloned()
+    }
+
+    /// Adds the public mapping, written as YAML, to the card's file.
+    fn add_public_mapping(
+        network: &LiveNetwork,
+        machine: &LabMachine,
+        card: &Card,
+        public_yaml: &str,
+    ) {
+        let card_file = machine
+            .directories()
+            .card_file(network.name(), &card.name)
+            .unwrap();
+        let text = fs::read_to_string(&card_file).unwrap();
+        fs::write(card_file, format!("{text}{public_yaml}")).unwrap();
+    }
+
+    /// The card's secret key, read from the sidecar the binary wrote beside it.
+    fn card_key(network: &LiveNetwork, machine: &LabMachine, card: &Card) -> SecretKey {
+        let sidecar = machine
+            .directories()
+            .card_sidecar_file(network.name(), &card.name)
+            .unwrap();
+        parse_secret_key(&fs::read_to_string(sidecar).unwrap()).unwrap()
+    }
+
+    /// The member as a host to join through, reached through the live host's relay.
+    fn member_as_host(network: &LiveNetwork, member: &Card) -> HostAddr {
+        HostAddr {
+            v: Version::CURRENT,
+            id: *member.id.as_bytes(),
+            relay: RelayUrl::try_from(network.host_relay().to_owned()).unwrap(),
+        }
+    }
+
+    fn largest_presence() -> Payload {
+        let relays = (0..SPEC_RELAY_URLS_PER_ADDR).map(|relay| {
+            let host_bytes = SPEC_RELAY_URL_MAX_BYTES - RELAY_URL_FRAME_BYTES;
+            format!("https://{relay}{}/", "r".repeat(host_bytes - 1))
+        });
+        let direct = (0..SPEC_DIRECT_ADDRS_PER_ADDR).map(|segment| {
+            SocketAddr::V6(SocketAddrV6::new(
+                Ipv6Addr::new(
+                    DOCUMENTATION_PREFIX_FIRST_SEGMENT,
+                    DOCUMENTATION_PREFIX_SECOND_SEGMENT,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    segment.checked_add(1).unwrap(),
+                ),
+                LARGEST_THREE_BYTE_VARINT_PORT,
+                0,
+                0,
+            ))
+        });
+        Payload::Presence(Presence {
+            v: Version::CURRENT,
+            card: [u8::MAX; 32],
+            handle: "h".repeat(SPEC_ANNOUNCED_HANDLE_MAX_CHARACTERS),
+            public: vec![b'p'; SPEC_PUBLIC_MAX_BYTES],
+            attached: true,
+            addr: Addr::from_endpoint_report(relays, direct),
+            seq: u64::MAX,
+            mac: UNSET_MAC,
+            sig: SignatureBytes([u8::MAX; 64]),
+        })
+    }
+
+    #[test]
+    fn spec_3_15_test_1_a_message_to_a_member_whose_inbox_socket_has_a_client_is_delivered_attached_as_one_frame()
+     {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let mut amy = lab_member(&network, "t1-amy", &unique_handle("amy"), FIRST_SESSION);
+        let mut bob = lab_member(&network, "t1-bob", &unique_handle("bob"), FIRST_SESSION);
+        meet(&mut amy, &mut bob);
+        let mut inbox = InboxClient::connect(&bob.claim["result"]["inbox_path"], 0);
+        amy.member.peer_within(&bob.handle, PRESENCE_WAIT, |bob| {
+            bob["attached"] == json!(true)
+        });
+
+        let sent = send(&mut amy, &bob.handle.clone(), FIRST_BODY);
+
+        let id = sent["result"]["id"].as_str().unwrap();
+        assert_eq!(
+            sent["result"],
+            json!({ "id": id, "delivered": true, "attached": true })
+        );
+        let frame = inbox.next_frame(FRAME_WAIT).unwrap();
+        assert_eq!(frame["seq"], json!(1));
+        assert_eq!(frame["id"], json!(id));
+        assert_eq!(frame["from"], json!(amy.handle));
+        assert_eq!(frame["body"], json!(FIRST_BODY));
+        assert_eq!(inbox.next_frame(NO_FURTHER_FRAME_WAIT), None);
+    }
+
+    #[test]
+    fn spec_3_15_test_2_a_message_to_a_member_with_no_inbox_client_is_delivered_unattached_and_its_inbox_tool_returns_it()
+     {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let mut amy = lab_member(&network, "t2-amy", &unique_handle("amy"), FIRST_SESSION);
+        let mut bob = lab_member(&network, "t2-bob", &unique_handle("bob"), FIRST_SESSION);
+        meet(&mut amy, &mut bob);
+
+        let sent = send(&mut amy, &bob.handle.clone(), FIRST_BODY);
+        let read = bob.member.call("inbox", &json!({}));
+
+        let id = sent["result"]["id"].as_str().unwrap();
+        assert_eq!(
+            sent["result"],
+            json!({ "id": id, "delivered": true, "attached": false })
+        );
+        assert_eq!(read["result"]["last_seq"], json!(1));
+        let messages = read["result"]["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["id"], json!(id));
+        assert_eq!(messages[0]["from"], json!(amy.handle));
+        assert_eq!(messages[0]["body"], json!(FIRST_BODY));
+    }
+
+    fn assert_stopped_member_is_gone_then_unreachable(
+        amy: &mut LabMember,
+        bob: &mut LabMember,
+        input_closed: Instant,
+    ) {
+        amy.member.peer_within(&bob.handle, SPEC_GONE_WITHIN, gone);
+        let gone_after = input_closed.elapsed();
+        let exit = bob.member.wait_for_exit();
+        let sent = send(amy, &bob.handle.clone(), FIRST_BODY);
+
+        assert!(gone_after <= SPEC_GONE_WITHIN, "{gone_after:?}");
+        assert!(exit.success(), "{exit:?}");
+        assert_eq!(sent["error"]["code"], json!("unreachable"), "{sent}");
+    }
+
+    #[test]
+    fn spec_3_15_test_4_a_member_stopped_by_the_end_of_input_is_gone_at_its_peer_within_1000_ms_and_unreachable()
+     {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let mut amy = lab_member(&network, "t4-amy", &unique_handle("amy"), FIRST_SESSION);
+        let mut bob = lab_member(&network, "t4-bob", &unique_handle("bob"), FIRST_SESSION);
+        meet(&mut amy, &mut bob);
+
+        let input_closed = Instant::now();
+        bob.member.close_standard_input();
+
+        assert_stopped_member_is_gone_then_unreachable(&mut amy, &mut bob, input_closed);
+    }
+
+    #[test]
+    fn spec_3_15_test_4_a_member_stopped_with_a_tool_call_in_flight_is_gone_at_its_peer_within_1000_ms_and_unreachable()
+     {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let mut amy = lab_member(&network, "t4f-amy", &unique_handle("amy"), FIRST_SESSION);
+        let mut bob = lab_member(&network, "t4f-bob", &unique_handle("bob"), FIRST_SESSION);
+        meet(&mut amy, &mut bob);
+
+        bob.member
+            .start_call("send", &json!({ "to": amy.handle, "body": FIRST_BODY }));
+        let input_closed = Instant::now();
+        bob.member.close_standard_input();
+
+        assert_stopped_member_is_gone_then_unreachable(&mut amy, &mut bob, input_closed);
+    }
+
+    #[test]
+    fn spec_3_15_test_5_a_killed_member_is_unreachable_at_its_peer_within_one_neighbor_down_and_one_probe_timeout()
+     {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let mut amy = lab_member(&network, "t5-amy", &unique_handle("amy"), FIRST_SESSION);
+        let mut bob = lab_member(&network, "t5-bob", &unique_handle("bob"), FIRST_SESSION);
+        meet(&mut amy, &mut bob);
+        let neighbor_down_and_probe = SPEC_QUIC_IDLE_TIMEOUT
+            .checked_add(QUIC_KEEP_ALIVE_INTERVAL)
+            .and_then(|neighbor_down| neighbor_down.checked_add(SPEC_PROBE_TIMEOUT))
+            .unwrap();
+
+        let killed = Instant::now();
+        bob.member.kill();
+        amy.member
+            .peer_within(&bob.handle, neighbor_down_and_probe, |bob| {
+                bob["status"] == json!("unreachable")
+            });
+        let unreachable_after = killed.elapsed();
+        let sent = send(&mut amy, &bob.handle.clone(), FIRST_BODY);
+
+        assert!(
+            unreachable_after <= neighbor_down_and_probe,
+            "{unreachable_after:?}"
+        );
+        assert_eq!(sent["error"]["code"], json!("unreachable"), "{sent}");
+    }
+
+    #[test]
+    fn spec_3_15_test_7_a_second_member_requesting_a_taken_handle_is_h_2_at_every_node_and_keeps_it_after_the_first_restarts()
+     {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let taken = unique_handle("amy");
+        let second_effective = format!("{taken}-2");
+        let mut amy = lab_member(&network, "t7-amy", &taken, FIRST_SESSION);
+        let mut bob = lab_member(&network, "t7-bob", &unique_handle("bob"), FIRST_SESSION);
+        meet(&mut amy, &mut bob);
+
+        let mut ann = lab_member(&network, "t7-ann", &taken, FIRST_SESSION);
+        let at_amy = amy
+            .member
+            .peer_within(&second_effective, PRESENCE_WAIT, online);
+        let at_bob = bob
+            .member
+            .peer_within(&second_effective, PRESENCE_WAIT, online);
+        amy.member.close_standard_input();
+        assert!(amy.member.wait_for_exit().success());
+        let mut restarted = amy.machine.start_server();
+        let restarted_claim = restarted.call("init", &json!({ "card": amy.card.name }));
+        let restarted_at_ann = ann.member.peer_within(&taken, PRESENCE_WAIT, online);
+        let own_after_restart = ann.member.call("peers", &json!({}));
+        let restarted_at_bob = bob.member.peer_within(&taken, PRESENCE_WAIT, online);
+
+        assert_eq!(ann.claim["result"]["handle"], json!(second_effective));
+        assert_eq!(at_amy["handle"], json!(second_effective));
+        assert_eq!(at_bob["handle"], json!(second_effective));
+        assert_eq!(restarted_claim["result"]["handle"], json!(taken));
+        assert_eq!(restarted_at_ann["handle"], json!(taken));
+        assert_eq!(restarted_at_bob["handle"], json!(taken));
+        assert_eq!(own_after_restart["you"]["handle"], json!(second_effective));
+        assert_eq!(
+            bob.member
+                .peer_within(&second_effective, PRESENCE_WAIT, online)["handle"],
+            json!(second_effective)
+        );
+    }
+
+    #[test]
+    fn spec_3_15_test_8_a_message_from_a_card_whose_presence_was_not_seen_is_accepted_and_lists_its_sender_online()
+     {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let mut amy = lab_member(&network, "t8-amy", &unique_handle("amy"), FIRST_SESSION);
+        let mut bob = lab_member(&network, "t8-bob", &unique_handle("bob"), FIRST_SESSION);
+        meet(&mut amy, &mut bob);
+        amy.member.close_standard_input();
+        assert!(amy.member.wait_for_exit().success());
+        let mut restarted = amy.machine.start_server();
+        let claim = restarted.call("init", &json!({ "card": amy.card.name }));
+        bob.member.peer_within(&amy.handle, PRESENCE_WAIT, online);
+
+        let unseen_before = listed_peer(&mut restarted, &bob.handle);
+        let sent = send(&mut bob, &amy.handle.clone(), FIRST_BODY);
+        let listed_after = listed_peer(&mut restarted, &bob.handle);
+
+        assert_eq!(claim["ok"], json!(true), "{claim}");
+        assert_eq!(unseen_before, None);
+        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
+        assert_eq!(listed_after.unwrap()["status"], json!("online"));
+    }
+
+    #[test]
+    fn spec_3_15_test_11_an_inbox_client_reconnecting_with_since_3_after_5_frames_receives_frames_4_and_5()
+     {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let mut amy = lab_member(&network, "t11-amy", &unique_handle("amy"), FIRST_SESSION);
+        let mut bob = lab_member(&network, "t11-bob", &unique_handle("bob"), FIRST_SESSION);
+        meet(&mut amy, &mut bob);
+        let bob_handle = bob.handle.clone();
+        let body_of = |seq: u64| format!("message {seq}");
+
+        let mut first_client = InboxClient::connect(&bob.claim["result"]["inbox_path"], 0);
+        for seq in 1..=MESSAGES_BEFORE_RECONNECT {
+            send(&mut amy, &bob_handle, &body_of(seq));
+            first_client.next_frame(FRAME_WAIT).unwrap();
+        }
+        drop(first_client);
+        for seq in MESSAGES_BEFORE_RECONNECT.checked_add(1).unwrap()..=MESSAGES_IN_ALL {
+            send(&mut amy, &bob_handle, &body_of(seq));
+        }
+        let mut reconnected = InboxClient::connect(
+            &bob.claim["result"]["inbox_path"],
+            MESSAGES_BEFORE_RECONNECT,
+        );
+        let replayed = [
+            reconnected.next_frame(FRAME_WAIT).unwrap(),
+            reconnected.next_frame(FRAME_WAIT).unwrap(),
+        ];
+
+        assert_eq!(replayed[0]["seq"], json!(4));
+        assert_eq!(replayed[0]["body"], json!(body_of(4)));
+        assert_eq!(replayed[1]["seq"], json!(5));
+        assert_eq!(replayed[1]["body"], json!(body_of(5)));
+        assert_eq!(reconnected.next_frame(NO_FURTHER_FRAME_WAIT), None);
+    }
+
+    #[test]
+    fn spec_3_15_test_14_a_broadcast_to_three_handles_one_unknown_returns_two_delivered_and_one_unknown_handle()
+     {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let mut amy = lab_member(&network, "t14-amy", &unique_handle("amy"), FIRST_SESSION);
+        let mut bob = lab_member(&network, "t14-bob", &unique_handle("bob"), FIRST_SESSION);
+        let mut cid = lab_member(&network, "t14-cid", &unique_handle("cid"), FIRST_SESSION);
+        meet(&mut amy, &mut bob);
+        meet(&mut amy, &mut cid);
+        let unknown = unique_handle("nobody");
+
+        let broadcast = amy.member.call(
+            "broadcast",
+            &json!({ "to": [bob.handle, unknown, cid.handle], "body": FIRST_BODY }),
+        );
+        let at_bob = bob.member.call("inbox", &json!({}));
+        let at_cid = cid.member.call("inbox", &json!({}));
+
+        let results = broadcast["result"]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 3, "{broadcast}");
+        assert_eq!(results[0]["to"], json!(bob.handle));
+        assert_eq!(results[0]["delivered"], json!(true));
+        assert_eq!(results[1]["to"], json!(unknown));
+        assert_eq!(results[1]["delivered"], json!(false));
+        assert_eq!(results[1]["error"]["code"], json!("unknown_handle"));
+        assert_eq!(results[2]["to"], json!(cid.handle));
+        assert_eq!(results[2]["delivered"], json!(true));
+        assert_eq!(at_bob["result"]["messages"][0]["id"], results[0]["id"]);
+        assert_eq!(at_cid["result"]["messages"][0]["id"], results[2]["id"]);
+    }
+
+    #[test]
+    fn spec_3_15_test_17_the_largest_presence_encodes_within_the_gossip_frame_and_the_largest_a_member_sends_arrives()
+     {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let largest = wire::encode(&largest_presence()).unwrap();
+        let longest_handle =
+            unique_handle(&"a".repeat(SPEC_REQUESTED_HANDLE_MAX_CHARACTERS - HANDLE_TAG_LETTERS));
+        let notes = "n".repeat(
+            SPEC_PUBLIC_MAX_BYTES - COMPACT_JSON_MAPPING_FRAME_BYTES - PUBLIC_NOTES_KEY.len(),
+        );
+        let machine = LabMachine::joined("t17-amy", &network);
+        let card = machine.create_card("t17-amy-card", &longest_handle);
+        add_public_mapping(
+            &network,
+            &machine,
+            &card,
+            &format!("public:\n  {PUBLIC_NOTES_KEY}: {notes}\n"),
+        );
+        let mut amy = machine.start_server();
+        let claim = amy.call("init", &json!({ "card": card.name }));
+        let mut bob = lab_member(&network, "t17-bob", &unique_handle("bob"), FIRST_SESSION);
+
+        let at_bob = bob
+            .member
+            .peer_within(&longest_handle, PRESENCE_WAIT, online);
+
+        assert_eq!(largest.len(), SPEC_LARGEST_PRESENCE_BYTES);
+        assert!(largest.len() <= SPEC_GOSSIP_FRAME_BYTES - SPEC_GOSSIP_LAYER_OVERHEAD_BYTES);
+        assert_eq!(claim["ok"], json!(true), "{claim}");
+        assert_eq!(longest_handle.len(), SPEC_REQUESTED_HANDLE_MAX_CHARACTERS);
+        assert_eq!(at_bob["public"], json!({ PUBLIC_NOTES_KEY: notes }));
+        assert_eq!(
+            serde_json::to_string(&at_bob["public"]).unwrap().len(),
+            SPEC_PUBLIC_MAX_BYTES
+        );
+    }
+
+    #[test]
+    fn spec_3_15_test_18_a_killed_member_restarted_with_its_card_is_delivered_to_within_1_s_of_its_new_presence()
+     {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let mut amy = lab_member(&network, "t18-amy", &unique_handle("amy"), FIRST_SESSION);
+        let mut bob = lab_member(&network, "t18-bob", &unique_handle("bob"), FIRST_SESSION);
+        meet(&mut amy, &mut bob);
+        let bob_handle = bob.handle.clone();
+        assert_eq!(
+            send(&mut amy, &bob_handle, FIRST_BODY)["result"]["delivered"],
+            json!(true)
+        );
+
+        bob.member.kill();
+        let killed_ms = wall_clock_ms();
+        let mut restarted = bob.machine.start_server();
+        let claim = restarted.call("init", &json!({ "card": bob.card.name }));
+        amy.member.peer_within(&bob_handle, PRESENCE_WAIT, |bob| {
+            online(bob) && bob["last_seen"].as_u64().unwrap() > killed_ms
+        });
+        let new_presence_reached = Instant::now();
+        let sent = send(&mut amy, &bob_handle, FIRST_BODY);
+        let delivered_after = new_presence_reached.elapsed();
+
+        assert_eq!(claim["ok"], json!(true), "{claim}");
+        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
+        assert!(
+            delivered_after <= SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
+            "{delivered_after:?}"
+        );
+    }
+
+    #[test]
+    fn spec_3_15_test_19_a_member_sees_a_third_joined_through_another_member_alone_within_the_observer_wait()
+     {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let mut amy = lab_member(&network, "t19-amy", &unique_handle("amy"), FIRST_SESSION);
+        let mut bob = lab_member(&network, "t19-bob", &unique_handle("bob"), FIRST_SESSION);
+        meet(&mut amy, &mut bob);
+        let carol_handle = unique_handle("carol");
+        let carol_machine = LabMachine::fresh("t19-carol", network.name());
+        network.join_through(
+            &carol_machine.directories(),
+            &[member_as_host(&network, &bob.card)],
+        );
+        let carol_card = carol_machine.create_card("t19-carol-card", &carol_handle);
+        let mut carol = carol_machine.start_server();
+
+        let claim = carol.call("init", &json!({ "card": carol_card.name }));
+        let presence_sent = Instant::now();
+        amy.member
+            .peer_within(&carol_handle, SPEC_OBSERVER_WAIT, online);
+        let seen_after = presence_sent.elapsed();
+
+        assert_eq!(claim["ok"], json!(true), "{claim}");
+        assert!(seen_after <= SPEC_OBSERVER_WAIT, "{seen_after:?}");
+    }
+
+    #[test]
+    fn spec_3_15_test_20_a_replayed_earlier_presence_changes_nothing_and_after_departure_leaves_the_member_gone()
+     {
+        let _live_host = live_host_to_itself();
+        let network = LiveNetwork::from_environment();
+        let mut amy = lab_member(&network, "t20-amy", &unique_handle("amy"), FIRST_SESSION);
+        let bob_handle = unique_handle("bob");
+        let bob_machine = LabMachine::joined("t20-bob", &network);
+        let bob_card = bob_machine.create_card("t20-bob-card", &bob_handle);
+        let bob_key = card_key(&network, &bob_machine, &bob_card);
+        let earlier = presence_signed_by(
+            network.keys(),
+            &bob_key,
+            &bob_handle,
+            &EndpointAddr::from_parts(bob_card.id, []),
+        );
+        let earlier_through_the_host = presence_signed_by(
+            network.keys(),
+            &bob_key,
+            &bob_handle,
+            &EndpointAddr::from_parts(
+                bob_card.id,
+                [TransportAddr::Relay(network.host_relay().parse().unwrap())],
+            ),
+        );
+        let mut bob = bob_machine.start_server();
+        let claim = bob.call(
+            "init",
+            &json!({ "card": bob_card.name, "description": SECOND_SESSION }),
+        );
+        let before_replay = amy.member.peer_within(&bob_handle, PRESENCE_WAIT, online);
+        let replayer = Forger::join_through(
+            SecretKey::generate(),
+            *network.keys().gate_key(),
+            network.topic(),
+            network.host_address(),
+        );
+        let marker = SecretKey::generate();
+        let marker_handle = unique_handle("marker");
+
+        replayer.broadcast(earlier);
+        replayer.broadcast(presence_signed_by(
+            network.keys(),
+            &marker,
+            &marker_handle,
+            &EndpointAddr::from_parts(marker.public(), []),
+        ));
+        amy.member
+            .peer_within(&marker_handle, PRESENCE_WAIT, |_marker| true);
+        std::thread::sleep(REPLAY_SETTLE_WAIT);
+        let after_replay = amy
+            .member
+            .peer_within(&bob_handle, PRESENCE_WAIT, |_bob| true);
+        bob.close_standard_input();
+        amy.member.peer_within(&bob_handle, PRESENCE_WAIT, gone);
+        replayer.broadcast(earlier_through_the_host);
+        std::thread::sleep(REPLAY_SETTLE_WAIT);
+        let after_departure_replay = amy
+            .member
+            .peer_within(&bob_handle, PRESENCE_WAIT, |_bob| true);
+
+        assert_eq!(claim["ok"], json!(true), "{claim}");
+        assert_eq!(
+            before_replay["public"],
+            json!({ "description": SECOND_SESSION })
+        );
+        assert_eq!(after_replay["public"], before_replay["public"]);
+        assert_eq!(after_replay["attached"], before_replay["attached"]);
+        assert_eq!(after_replay["status"], json!("online"));
+        assert_eq!(after_departure_replay["status"], json!("gone"));
     }
 }

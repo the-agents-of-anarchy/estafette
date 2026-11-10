@@ -11,7 +11,7 @@ mod member;
 #[path = "support/payload_placeholders.rs"]
 mod payload_placeholders;
 #[cfg(test)]
-#[path = "one_machine/payloads.rs"]
+#[path = "support/payloads.rs"]
 mod payloads;
 #[cfg(test)]
 #[path = "support/scratch_machine.rs"]
@@ -28,9 +28,10 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use estafette::crypto::NetworkKeys;
     use estafette::net::direct::{DirectHost, DirectServer};
     use estafette::net::endpoint::{DIRECT_ALPN, GateFailure};
-    use estafette::payload::{open_response, seal_request};
+    use estafette::payload::{open_response, seal_payload, seal_request};
     use estafette::wire::{
-        self, Addr, Introduce, Message, Request, Response, Version, WIRE_LIMIT_BYTES,
+        self, Addr, Departure, Introduce, Message, Payload, Request, Response, Version,
+        WIRE_LIMIT_BYTES,
     };
     use iroh::endpoint::Connection;
     use iroh::{EndpointId, SecretKey, TransportAddr};
@@ -38,8 +39,8 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
     use crate::local_network::LocalNetwork;
     use crate::member::{Member, loopback_address};
-    use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
-    use crate::payloads::{departure_signed_by, presence_signed_by};
+    use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
+    use crate::payloads::presence_signed_by;
     use crate::scratch_machine::Card;
     use crate::scripted_node::ScriptedNode;
 
@@ -132,6 +133,18 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             bob,
             departure_seq,
         }
+    }
+
+    /// A Departure of the signer's card carrying the seq, signed by the card and sealed under the network keys.
+    fn departure_signed_by(keys: &NetworkKeys, signer: &SecretKey, seq: u64) -> Vec<u8> {
+        let departure = Payload::Departure(Departure {
+            v: Version::CURRENT,
+            card: *signer.public().as_bytes(),
+            seq,
+            mac: UNSET_MAC,
+            sig: UNSIGNED,
+        });
+        seal_payload(keys, signer, departure).unwrap()
     }
 
     fn message_from_bob(to: EndpointId, sent_at: u64, body: &str) -> Request {

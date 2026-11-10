@@ -1,6 +1,6 @@
 use estafette::crypto::NetworkKeys;
 use estafette::payload::seal_payload;
-use estafette::wire::{Addr, Departure, Payload, Presence, Version};
+use estafette::wire::{Addr, Payload, Presence, Version};
 use iroh::{EndpointAddr, SecretKey};
 
 use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
@@ -29,16 +29,4 @@ pub fn presence_signed_by(
         sig: UNSIGNED,
     });
     seal_payload(keys, signer, presence).unwrap()
-}
-
-/// A Departure of the signer's card carrying the seq, signed by the card and sealed under the network keys.
-pub fn departure_signed_by(keys: &NetworkKeys, signer: &SecretKey, seq: u64) -> Vec<u8> {
-    let departure = Payload::Departure(Departure {
-        v: Version::CURRENT,
-        card: *signer.public().as_bytes(),
-        seq,
-        mac: UNSET_MAC,
-        sig: UNSIGNED,
-    });
-    seal_payload(keys, signer, departure).unwrap()
 }
