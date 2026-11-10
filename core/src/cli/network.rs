@@ -481,7 +481,8 @@ fn invitation_of(
     let hosts = config
         .hosts
         .iter()
-        .map(|host| host_address_of(host, config_file))
+        .enumerate()
+        .map(|(index_in_hosts, host)| host_address_of(host, index_in_hosts, config_file))
         .collect::<Result<_, _>>()?;
     Ok(Invitation {
         v: Version::CURRENT,
@@ -492,9 +493,13 @@ fn invitation_of(
     })
 }
 
-fn host_address_of(host: &Host, config_file: &Path) -> Result<HostAddr, Failure> {
+fn host_address_of(
+    host: &Host,
+    index_in_hosts: usize,
+    config_file: &Path,
+) -> Result<HostAddr, Failure> {
     let id = parse_public_key(&host.id).map_err(stored_key("host id"))?;
-    let relay = host.wire_relay(config_file)?;
+    let relay = host.wire_relay(index_in_hosts, config_file)?;
     Ok(HostAddr {
         v: Version::CURRENT,
         id: *id.as_bytes(),

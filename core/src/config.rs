@@ -219,7 +219,7 @@ pub enum ConfigError {
     },
     InvalidHost {
         path: PathBuf,
-        host: String,
+        entry: usize,
         field: &'static str,
         accepted: AcceptedValue,
     },
@@ -235,12 +235,12 @@ impl fmt::Display for ConfigError {
             } => write!(formatter, "{}: {field} must be {accepted}", path.display()),
             Self::InvalidHost {
                 path,
-                host,
+                entry,
                 field,
                 accepted,
             } => write!(
                 formatter,
-                "{}: the {field} of host {host} must be {accepted}",
+                "{}: the {field} of entry {entry} in hosts must be {accepted}",
                 path.display()
             ),
             Self::Io { path, source } => write!(formatter, "{}: {source}", path.display()),
@@ -275,33 +275,43 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl Host {
-    /// Reads the relay as the wire's relay URL, naming the configuration file and this host when it is refused.
+    /// Reads the relay of the host at that index of `hosts` as the wire's relay URL, naming the file and the host's entry when it is refused.
     ///
     /// # Errors
     ///
     /// Returns `ConfigError::InvalidHost` when the relay is over the wire's limit.
-    pub fn wire_relay(&self, path: &Path) -> Result<wire::RelayUrl, ConfigError> {
-        wire::RelayUrl::try_from(self.relay.clone())
-            .map_err(|_over_limit| self.refusal(path, HOST_RELAY_FIELD, AcceptedValue::RelayUrl))
+    pub fn wire_relay(
+        &self,
+        index_in_hosts: usize,
+        path: &Path,
+    ) -> Result<wire::RelayUrl, ConfigError> {
+        wire::RelayUrl::try_from(self.relay.clone()).map_err(|_over_limit| {
+            host_refusal(
+                path,
+                index_in_hosts,
+                HOST_RELAY_FIELD,
+                AcceptedValue::RelayUrl,
+            )
+        })
     }
 
-    /// The refusal of this host's field, naming the configuration file and the host.
-    fn refusal(&self, path: &Path, field: &'static str, accepted: AcceptedValue) -> ConfigError {
-        ConfigError::InvalidHost {
-            path: path.to_owned(),
-            host: self.id.clone(),
-            field,
-            accepted,
-        }
-    }
-
-    /// Refuses this host unless its id is a lowercase hex key and its relay is a host relay.
-    fn validate(&self, path: &Path) -> Result<(), ConfigError> {
+    /// Refuses the host at that index of `hosts` unless its id is a lowercase hex key and its relay is a host relay.
+    fn validate(&self, index_in_hosts: usize, path: &Path) -> Result<(), ConfigError> {
         if !is_lowercase_hex_key(&self.id) {
-            return Err(self.refusal(path, HOST_ID_FIELD, AcceptedValue::HexKey));
+            return Err(host_refusal(
+                path,
+                index_in_hosts,
+                HOST_ID_FIELD,
+                AcceptedValue::HexKey,
+            ));
         }
         if host_relay_url(&self.relay).is_none() {
-            return Err(self.refusal(path, HOST_RELAY_FIELD, AcceptedValue::RelayUrl));
+            return Err(host_refusal(
+                path,
+                index_in_hosts,
+                HOST_RELAY_FIELD,
+                AcceptedValue::RelayUrl,
+            ));
         }
         Ok(())
     }
@@ -360,8 +370,8 @@ impl NetworkConfig {
     fn validate(&self, path: &Path) -> Result<(), ConfigError> {
         require_hex_key(path, "secret", &self.secret)?;
         require_hex_key(path, "owner", &self.owner)?;
-        for host in &self.hosts {
-            host.validate(path)?;
+        for (index_in_hosts, host) in self.hosts.iter().enumerate() {
+            host.validate(index_in_hosts, path)?;
         }
         Ok(())
     }
@@ -421,6 +431,21 @@ fn position_in(text: &str, offset: usize) -> Option<FilePosition> {
         line: lines_begun,
         column: bytes_into_line.saturating_add(1),
     })
+}
+
+/// The refusal of a host's field, naming the file and the host's entry in `hosts` counted from one, never anything the file holds.
+fn host_refusal(
+    path: &Path,
+    index_in_hosts: usize,
+    field: &'static str,
+    accepted: AcceptedValue,
+) -> ConfigError {
+    ConfigError::InvalidHost {
+        path: path.to_owned(),
+        entry: index_in_hosts.saturating_add(1),
+        field,
+        accepted,
+    }
 }
 
 fn is_lowercase_hex_key(value: &str) -> bool {
@@ -526,6 +551,7 @@ mod tests {
     use std::fs;
 
     const NOW_SECONDS: u64 = 1_800_000_000;
+    const SECOND_INDEX_IN_HOSTS: usize = 1;
     const VALID_RELAY: &str = "https://relay.example/";
     const NOW_MILLIS: UnixMillis = UnixMillis(NOW_SECONDS * MILLIS_PER_SECOND);
     const GROUP_READABLE_FILE_MODE: u32 = 0o644;
@@ -565,9 +591,9 @@ mod tests {
         }
     }
 
-    /// Spec 3.4 and 3.6: a relay is a wire relay URL only up to the limit, and over it names the host and its relay field.
+    /// Spec 3.4 and 3.6: a relay is a wire relay URL only up to the limit, and over it names the host's entry and its relay field.
     #[test]
-    fn wire_relay_accepts_the_limit_and_refuses_one_byte_over_naming_the_host() {
+    fn wire_relay_accepts_the_limit_and_refuses_one_byte_over_naming_the_entry() {
         let path = Path::new("net.toml");
         let relay_of_bytes = |bytes: usize| {
             let scheme_and_slash = "https:///".len();
@@ -581,7 +607,7 @@ mod tests {
                 origin: HostOrigin::Configured,
             };
 
-            let outcome = host.wire_relay(path);
+            let outcome = host.wire_relay(SECOND_INDEX_IN_HOSTS, path);
 
             if bytes <= MAX_RELAY_URL_BYTES {
                 assert_eq!(outcome.unwrap().as_str(), host.relay, "{bytes} bytes");
@@ -589,12 +615,12 @@ mod tests {
                 match outcome.unwrap_err() {
                     ConfigError::InvalidHost {
                         path: refused_path,
-                        host: refused_host,
+                        entry,
                         field,
                         accepted,
                     } => {
                         assert_eq!(refused_path, path);
-                        assert_eq!(refused_host, host.id);
+                        assert_eq!(entry, SECOND_INDEX_IN_HOSTS + 1);
                         assert_eq!(field, "host relay");
                         assert_eq!(accepted, AcceptedValue::RelayUrl);
                     }
@@ -790,6 +816,8 @@ mod tests {
         let directory = scratch_directory("never-quoted");
         let owner = hex_key('b');
         let id = host_id(b'c');
+        let second_id = host_id(b'd');
+        let network_secret = hex_key('a');
         let malformed_files = [
             (
                 "missing-field",
@@ -819,6 +847,20 @@ mod tests {
                 "bad-key-text",
                 "secret must be 64 lowercase hexadecimal characters",
                 format!("secret = \"{CHOSEN_SECRET}0\"\nowner = \"{owner}\"\nhosts = []\n"),
+            ),
+            (
+                "secret-pasted-as-a-host-id",
+                "the host id of entry 2 in hosts must be 64 lowercase hexadecimal characters",
+                format!(
+                    "secret = \"{network_secret}\"\nowner = \"{owner}\"\nhosts = [{{ id = \"{id}\", relay = \"{VALID_RELAY}\" }}, {{ id = \"{CHOSEN_SECRET}0\", relay = \"{VALID_RELAY}\" }}]\n"
+                ),
+            ),
+            (
+                "secret-pasted-as-a-host-relay",
+                "the host relay of entry 2 in hosts must be an https URL of at most 128 bytes",
+                format!(
+                    "secret = \"{network_secret}\"\nowner = \"{owner}\"\nhosts = [{{ id = \"{id}\", relay = \"{VALID_RELAY}\" }}, {{ id = \"{second_id}\", relay = \"{CHOSEN_SECRET}\" }}]\n"
+                ),
             ),
         ];
 
@@ -934,9 +976,9 @@ mod tests {
         }
     }
 
-    /// Spec 3.1, 3.3 and 3.14: load refuses a host whose id is no lowercase hex key or whose relay is no https URL within the limit, naming that host.
+    /// Spec 3.1, 3.3 and 3.14: load refuses a host whose id is no lowercase hex key or whose relay is no https URL within the limit, naming its entry and never its text.
     #[test]
-    fn load_refuses_a_host_whose_id_or_relay_is_refused_naming_the_host() {
+    fn load_refuses_a_host_whose_id_or_relay_is_refused_naming_its_entry() {
         let directory = scratch_directory("host-shapes");
         let long_relay = format!("https://{}/", "r".repeat(MAX_RELAY_URL_BYTES));
         let refused_cases = [
@@ -985,12 +1027,15 @@ mod tests {
             assert!(
                 matches!(
                     &refusal,
-                    ConfigError::InvalidHost { host, field: refused, accepted: set, .. }
-                        if *host == id && *refused == field && *set == accepted
+                    ConfigError::InvalidHost { entry: 1, field: refused, accepted: set, .. }
+                        if *refused == field && *set == accepted
                 ),
                 "case {index}: {refusal}"
             );
-            assert!(refusal.to_string().contains(&id), "case {index}: {refusal}");
+            assert!(
+                !rendered_with_its_sources(&refusal).contains(&id),
+                "case {index}: {refusal}"
+            );
         }
     }
 
