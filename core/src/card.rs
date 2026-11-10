@@ -190,13 +190,6 @@ impl fmt::Display for DescriptionOverCap {
 
 impl std::error::Error for DescriptionOverCap {}
 
-/// Whether received `public` bytes are what a card's `public` admits: a JSON mapping whose bytes are within the cap (spec 3.5, 3.7).
-#[must_use]
-pub fn admits_public_json(public: &[u8]) -> bool {
-    is_within_public_cap(public.len())
-        && serde_json::from_slice::<Map<String, Value>>(public).is_ok()
-}
-
 /// Whether `public` of that many serialized bytes is within the cap.
 const fn is_within_public_cap(bytes: usize) -> bool {
     bytes <= PUBLIC_MAX_BYTES
@@ -480,7 +473,7 @@ fn compact_json(mapping: &Map<String, Value>) -> Vec<u8> {
 /// Whether `public` bytes a peer sent are what a card sends: a JSON mapping within the cap and the deepest nesting whose mappings name each key once and whose integers fit 64 bits, judged on the bytes as they arrived (spec 3.5).
 #[must_use]
 pub(crate) fn is_card_public(bytes: &[u8]) -> bool {
-    bytes.len() <= PUBLIC_MAX_BYTES
+    is_within_public_cap(bytes.len())
         && serde_json::from_slice::<ReceivedPublicMapping>(bytes).is_ok()
         && every_integer_fits_64_bits(bytes)
 }

@@ -2,7 +2,7 @@ use std::fmt;
 
 use iroh::{PublicKey, RelayUrl, SecretKey, Signature};
 
-use crate::card::admits_public_json;
+use crate::card::is_card_public;
 use crate::config::{AcceptedValue, host_relay_url};
 use crate::crypto::{
     CryptoError, MAC_LEN, Mac, NetworkKeys, SignedPayloadKind, sign_payload,
@@ -323,7 +323,7 @@ fn validated_infrastructure(
 }
 
 fn verify_presence_rules(presence: &Presence) -> Result<(), PayloadError> {
-    if admits_public_json(&presence.public) {
+    if is_card_public(&presence.public) {
         Ok(())
     } else {
         Err(PayloadError::PublicNotAdmitted)
@@ -839,6 +839,27 @@ mod tests {
         ];
 
         for public in not_a_mapping {
+            assert_eq!(
+                opened(&sealed_presence_with_public(public.to_vec())),
+                Err(PayloadError::PublicNotAdmitted),
+                "{}",
+                String::from_utf8_lossy(public)
+            );
+        }
+    }
+
+    /// Spec 3.5 and 3.7: a Presence whose `public` names a key twice, written plainly, escaped or nested, or holds an integer past 64 bits, which no card's `public` serializes to, is dropped.
+    #[test]
+    fn spec_3_7_presence_whose_public_no_card_sends_is_dropped() {
+        let no_card_sends: [&[u8]; 5] = [
+            br#"{"a":1,"\u0061":2}"#,
+            br#"{"a":1,"a":2}"#,
+            br#"{"x":{"a":1,"a":2}}"#,
+            br#"{"a":18446744073709551616}"#,
+            br#"{"a":-9223372036854775809}"#,
+        ];
+
+        for public in no_card_sends {
             assert_eq!(
                 opened(&sealed_presence_with_public(public.to_vec())),
                 Err(PayloadError::PublicNotAdmitted),
