@@ -27,6 +27,7 @@ use crate::inbox::socket::{Attached, InboxSocket};
 use crate::keys::{KeyError, parse_network_secret, parse_public_key};
 use crate::net::direct::{
     AcceptedConnections, ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer,
+    MonotonicClock,
 };
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
@@ -48,7 +49,6 @@ const SECRET_FIELD: &str = "secret";
 const OWNER_FIELD: &str = "owner";
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
-type MonotonicClock = Arc<dyn Fn() -> Instant + Send + Sync>;
 type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
 type RunRecord = Arc<dyn Fn(NodeRecord) + Send + Sync>;
 type Changes<T> = Pin<Box<dyn Stream<Item = T> + Send + Sync>>;

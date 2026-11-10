@@ -24,7 +24,7 @@ use crate::errors::ErrorCode;
 use crate::handle::{AnnouncedHandle, Handle, HandleError, LocalHandle};
 use crate::inbox::socket::{InboxSocket, InboxSocketError};
 use crate::keys::{KeyError, parse_public_key};
-use crate::net::direct::{ClientTimeouts, DirectClient, DirectError, DirectHost};
+use crate::net::direct::{ClientTimeouts, DirectClient, DirectError, DirectHost, MonotonicClock};
 use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
@@ -56,7 +56,6 @@ const FIELD_SEPARATOR: char = '\t';
 const LINE_END: &str = "\n";
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
-type MonotonicClock = Arc<dyn Fn() -> Instant + Send + Sync>;
 type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
 type RunRecord = Arc<dyn Fn(NodeRecord) + Send + Sync>;
 type SeedSource = Arc<dyn Fn(&mut [u8; SEED_BYTES]) + Send + Sync>;
