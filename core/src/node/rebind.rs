@@ -16,7 +16,7 @@ use crate::net::direct::DirectHost;
 use crate::net::gossip::NetworkTopic;
 use crate::node::presence::{
     NodeRecord, PresenceLoop, RelayLossWatch, endpoint_id, home_relay_changes, own_address_changes,
-    seed_lookup_with_known_hosts, serve,
+    serve,
 };
 use crate::peers::Status;
 
@@ -236,7 +236,6 @@ impl PresenceLoop {
     /// Serves the fresh endpoint and subscribes to the topic through every known host and every Online peer whose address the lookup holds.
     async fn subscribe_through_known_nodes(&mut self) -> ControlFlow<()> {
         let hosts = self.known_hosts.addresses();
-        seed_lookup_with_known_hosts(&self.endpoint, &hosts);
         let mut bootstrap: Vec<EndpointId> = hosts.iter().map(|host| host.id).collect();
         bootstrap.extend(
             self.peers_with_status(Status::Online)
