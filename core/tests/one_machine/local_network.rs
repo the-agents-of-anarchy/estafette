@@ -1,5 +1,6 @@
 use std::fs::{self, Permissions};
 use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 
 use estafette::config::NetworkConfig;
 use estafette::crypto::{NetworkKeys, NetworkSecret};
@@ -58,6 +59,11 @@ impl LocalNetwork {
     #[track_caller]
     pub fn start_member(&self) -> Member {
         Member::start(self.machine.spawn_mcp_server())
+    }
+
+    /// Every file under the base directories of the machine the members run on.
+    pub fn base_directory_files(&self) -> Vec<PathBuf> {
+        self.machine.base_directory_files()
     }
 
     /// The keys every member derives from the network secret.

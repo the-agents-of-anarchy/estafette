@@ -927,6 +927,279 @@ mod spec_3_15_with_one_member {
 }
 
 #[cfg(test)]
+mod spec_3_16_absences_on_one_machine {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    use estafette::crypto::NetworkKeys;
+    use estafette::payload::open_request;
+    use estafette::wire::{self, Payload, Request, WIRE_LIMIT_BYTES};
+    use iroh::SecretKey;
+    use iroh::endpoint::Connection;
+    use iroh::protocol::{AcceptError, ProtocolHandler};
+    use iroh_gossip::api::Event;
+    use serde_json::{Value, json};
+
+    use crate::local_network::{LocalNetwork, MetPair};
+    use crate::mcp_server::{PRESENCE_WAIT, gone, online};
+    use crate::member::{Member, loopback_address, loopback_address_of};
+    use crate::payload_placeholders::wall_clock_ms;
+    use crate::payloads::presence_signed_by;
+    use crate::scripted_node::ScriptedNode;
+
+    const BODY: &str = "the parser review is ready";
+    /// Longer than every interval spec 3.14 names below the announcement max age: the 2000 ms re-announce interval, the 15 s deaf timeout and the 20 s rebind interval.
+    const PRESENCE_QUIET_WINDOW: Duration = Duration::from_secs(30);
+    /// Time for the address set a member announces to settle after its first Presence, beyond the 2000 ms re-announce interval.
+    const ADDRESS_SETTLE: Duration = Duration::from_secs(5);
+    /// The ack timeout of spec 3.14 (10000 ms), the longest a send waits for an answer, with slack.
+    const SPEC_ACK_TIMEOUT_WITH_SLACK: Duration = Duration::from_secs(15);
+    /// Time after a failed send in which a retry would reach the receiver.
+    const RETRY_WATCH: Duration = Duration::from_secs(5);
+    /// Thrice the ten sends per sixty seconds the Claude Code bridge allows itself, so any limit of that order in the binary refuses some.
+    const SENDS_IN_A_ROW: usize = 30;
+    /// Time for a message held for an absent member to reach it once it returns.
+    const REDELIVERY_WATCH: Duration = Duration::from_secs(5);
+    const EVENTS_POLL: Duration = Duration::from_millis(100);
+
+    #[track_caller]
+    fn send(from: &mut Member, to: &str) -> Value {
+        from.call("send", &json!({ "to": to, "body": BODY }))
+    }
+
+    #[track_caller]
+    fn inbox_bodies(member: &mut Member) -> Vec<Value> {
+        member.call("inbox", &json!({}))["result"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["body"].clone())
+            .collect()
+    }
+
+    /// The files under the base directories whose content holds the text.
+    fn base_directory_files_holding(network: &LocalNetwork, text: &str) -> Vec<PathBuf> {
+        network
+            .base_directory_files()
+            .into_iter()
+            .filter(|file| {
+                fs::read(file).is_ok_and(|content| String::from_utf8_lossy(&content).contains(text))
+            })
+            .collect()
+    }
+
+    /// How many Presences of the card the node's topic has delivered so far.
+    fn presences_received_from(node: &ScriptedNode, card: wire::PublicKey) -> usize {
+        node.events()
+            .into_iter()
+            .filter(|event| {
+                if let Event::Received(message) = event {
+                    matches!(wire::decode::<Payload>(&message.content), Ok(Payload::Presence(presence)) if presence.card == card)
+                } else {
+                    false
+                }
+            })
+            .count()
+    }
+
+    /// A scripted member's peer that reads every direct request and answers none, counting the Messages among them.
+    #[derive(Debug)]
+    struct AnsweringNothing {
+        keys: NetworkKeys,
+        messages_read: Arc<AtomicUsize>,
+    }
+
+    impl ProtocolHandler for AnsweringNothing {
+        async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+            while let Ok((send, mut receive)) = connection.accept_bi().await {
+                let closed = connection.clone();
+                tokio::spawn(async move {
+                    let _unanswered_until_the_connection_closes = send;
+                    closed.closed().await;
+                });
+                if let Ok(request) = receive.read_to_end(WIRE_LIMIT_BYTES).await
+                    && matches!(open_request(&self.keys, &request), Ok(Request::Message(_)))
+                {
+                    self.messages_read.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn spec_3_16_no_file_under_the_base_directories_announces_the_inbox_socket() {
+        let network = LocalNetwork::create("n1");
+        let card = network.create_card("amy-card", "amy");
+        let host = network.stand_in_host();
+        let mut amy = network.start_member();
+
+        let claim = amy.init_through(&card, &host);
+
+        let socket = PathBuf::from(claim["result"]["inbox_path"].as_str().unwrap());
+        let socket_name = socket.file_name().unwrap().to_string_lossy().into_owned();
+        let listed_names: Vec<String> = network
+            .base_directory_files()
+            .iter()
+            .map(|file| file.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(listed_names.contains(&socket_name), "{listed_names:?}");
+        assert_eq!(
+            base_directory_files_holding(&network, &socket_name),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    #[test]
+    fn spec_3_16_a_received_message_is_not_in_the_inbox_of_the_next_process_on_the_card_nor_on_disk()
+     {
+        let network = LocalNetwork::create("n2");
+        let host = network.stand_in_host();
+        let MetPair {
+            mut amy,
+            mut bob,
+            bob_card,
+            ..
+        } = network.amy_and_bob_met(&host);
+        let delivered = send(&mut amy, "bob");
+        let before_exit = inbox_bodies(&mut bob);
+        bob.close_standard_input();
+        assert!(bob.wait_for_exit().success());
+
+        let mut restarted = network.start_member();
+        restarted.init_through(&bob_card, &host);
+
+        assert_eq!(delivered["result"]["delivered"], json!(true), "{delivered}");
+        assert_eq!(before_exit, [json!(BODY)]);
+        assert_eq!(inbox_bodies(&mut restarted), Vec::<Value>::new());
+        assert_eq!(
+            base_directory_files_holding(&network, BODY),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    #[test]
+    fn spec_3_16_a_message_to_an_absent_member_is_not_kept_for_its_return() {
+        let network = LocalNetwork::create("n3");
+        let host = network.stand_in_host();
+        let MetPair {
+            mut amy,
+            amy_card,
+            mut bob,
+            bob_card,
+        } = network.amy_and_bob_met(&host);
+        bob.close_standard_input();
+        assert!(bob.wait_for_exit().success());
+        amy.peer_within("bob", PRESENCE_WAIT, gone);
+        let stopped_ms = wall_clock_ms();
+
+        let refused = send(&mut amy, "bob");
+        let second_host = network.stand_in_host();
+        second_host.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
+        let mut restarted = network.start_member();
+        restarted.init_through(&bob_card, &second_host);
+        amy.peer_within("bob", PRESENCE_WAIT, |bob| {
+            online(bob) && bob["last_seen"].as_u64().unwrap() > stopped_ms
+        });
+        std::thread::sleep(REDELIVERY_WATCH);
+
+        assert_eq!(refused["error"]["code"], json!("unreachable"), "{refused}");
+        assert_eq!(inbox_bodies(&mut restarted), Vec::<Value>::new());
+    }
+
+    #[test]
+    fn spec_3_16_a_member_with_nothing_to_announce_sends_no_presence_for_longer_than_every_interval_of_spec_3_14()
+     {
+        let network = LocalNetwork::create("n4");
+        let card = network.create_card("amy-card", "amy");
+        let host = network.stand_in_host();
+        let mut amy = network.start_member();
+        amy.init_through(&card, &host);
+        let started = Instant::now();
+        while presences_received_from(&host, *card.id.as_bytes()) == 0 {
+            assert!(
+                started.elapsed() < PRESENCE_WAIT,
+                "amy announced no presence"
+            );
+            std::thread::sleep(EVENTS_POLL);
+        }
+        std::thread::sleep(ADDRESS_SETTLE);
+
+        let settled = presences_received_from(&host, *card.id.as_bytes());
+        std::thread::sleep(PRESENCE_QUIET_WINDOW);
+        let after_window = presences_received_from(&host, *card.id.as_bytes());
+
+        assert_eq!(after_window, settled);
+    }
+
+    #[test]
+    fn spec_3_16_a_send_whose_ack_never_comes_reaches_the_receiver_once() {
+        let network = LocalNetwork::create("n5");
+        let card = network.create_card("amy-card", "amy");
+        let host = network.stand_in_host();
+        let mut amy = network.start_member();
+        amy.init_through(&card, &host);
+        let messages_read = Arc::new(AtomicUsize::new(0));
+        let carol_key = SecretKey::generate();
+        let carol = ScriptedNode::start_answering_direct(
+            carol_key.clone(),
+            *network.keys().gate_key(),
+            network.topic(),
+            AnsweringNothing {
+                keys: NetworkKeys::clone(network.keys()),
+                messages_read: Arc::clone(&messages_read),
+            },
+        );
+        host.broadcast(presence_signed_by(
+            network.keys(),
+            &carol_key,
+            "carol",
+            &loopback_address_of(&carol),
+        ));
+        amy.peer_within("carol", PRESENCE_WAIT, |_carol| true);
+
+        let sent_at = Instant::now();
+        let sent = send(&mut amy, "carol");
+        let answered_after = sent_at.elapsed();
+        std::thread::sleep(RETRY_WATCH);
+
+        assert_eq!(sent["ok"], json!(false), "{sent}");
+        assert!(
+            answered_after <= SPEC_ACK_TIMEOUT_WITH_SLACK,
+            "{answered_after:?}"
+        );
+        assert_eq!(messages_read.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn spec_3_16_thirty_sends_in_a_row_are_all_delivered() {
+        let network = LocalNetwork::create("n6");
+        let card = network.create_card("amy-card", "amy");
+        let host = network.stand_in_host();
+        let mut amy = network.start_member();
+        amy.init_through(&card, &host);
+        let carol_key = SecretKey::generate();
+        let carol = network.scripted_member(&carol_key, "carol");
+        host.broadcast(presence_signed_by(
+            network.keys(),
+            &carol_key,
+            "carol",
+            &loopback_address_of(&carol),
+        ));
+        amy.peer_within("carol", PRESENCE_WAIT, online);
+
+        let outcomes: Vec<Value> = (0..SENDS_IN_A_ROW)
+            .map(|_| send(&mut amy, "carol")["result"]["delivered"].clone())
+            .collect();
+
+        assert_eq!(outcomes, vec![json!(true); SENDS_IN_A_ROW]);
+    }
+}
+
+#[cfg(test)]
 mod kept_run_records {
     use std::fs;
     use std::io::Write;
