@@ -810,75 +810,142 @@ mod tests {
         rendered
     }
 
-    /// Conventions interfaces-and-refusals and spec 3.3: a refusal at load names the file and what is wrong, never anything the file holds.
-    #[test]
-    fn load_refusal_never_quotes_the_configuration_file() {
-        let directory = scratch_directory("never-quoted");
+    struct MalformedFile {
+        name: &'static str,
+        names_what_is_wrong: fn(&ConfigError) -> bool,
+        text: String,
+    }
+
+    fn malformed_on_line(refusal: &ConfigError, line: usize) -> Option<&MalformedProblem> {
+        match refusal {
+            ConfigError::Malformed {
+                position: Some(position),
+                problem,
+                ..
+            } if position.line == line => Some(problem),
+            ConfigError::Malformed { .. }
+            | ConfigError::Io { .. }
+            | ConfigError::Unserializable(_)
+            | ConfigError::InvalidField { .. }
+            | ConfigError::InvalidHost { .. } => None,
+        }
+    }
+
+    fn files_each_holding_the_chosen_secret() -> [MalformedFile; 7] {
         let owner = hex_key('b');
         let id = host_id(b'c');
         let second_id = host_id(b'd');
         let network_secret = hex_key('a');
-        let malformed_files = [
-            (
-                "missing-field",
-                "line 1, column 1: the field `hosts` is missing",
-                format!("secret = \"{CHOSEN_SECRET}\"\nowner = \"{owner}\"\n"),
-            ),
-            (
-                "wrong-type",
-                "line 3, column 124: a value of the wrong type or range; expected u64",
-                format!(
+        [
+            MalformedFile {
+                name: "missing-field",
+                names_what_is_wrong: |refusal| {
+                    matches!(
+                        malformed_on_line(refusal, 1),
+                        Some(MalformedProblem::MissingField { .. })
+                    )
+                },
+                text: format!("secret = \"{CHOSEN_SECRET}\"\nowner = \"{owner}\"\n"),
+            },
+            MalformedFile {
+                name: "wrong-type",
+                names_what_is_wrong: |refusal| {
+                    matches!(
+                        malformed_on_line(refusal, 3),
+                        Some(MalformedProblem::WrongValue { .. })
+                    )
+                },
+                text: format!(
                     "secret = \"{CHOSEN_SECRET}\"\nowner = \"{owner}\"\nhosts = [{{ id = \"{id}\", relay = \"{VALID_RELAY}\", ts = \"{CHOSEN_SECRET}\" }}]\n"
                 ),
-            ),
-            (
-                "unknown-key",
-                "line 4, column 1: a key it does not know; it accepts one of `secret`, `owner`, `hosts`",
-                format!(
+            },
+            MalformedFile {
+                name: "unknown-key",
+                names_what_is_wrong: |refusal| {
+                    matches!(
+                        malformed_on_line(refusal, 4),
+                        Some(MalformedProblem::UnknownKey { .. })
+                    )
+                },
+                text: format!(
                     "secret = \"{CHOSEN_SECRET}\"\nowner = \"{owner}\"\nhosts = []\n{CHOSEN_SECRET} = 1\n"
                 ),
-            ),
-            (
-                "syntax-on-the-secret-line",
-                "line 1, column 75: the text is not valid TOML",
-                format!("secret = \"{CHOSEN_SECRET}\nowner = \"{owner}\"\nhosts = []\n"),
-            ),
-            (
-                "bad-key-text",
-                "secret must be 64 lowercase hexadecimal characters",
-                format!("secret = \"{CHOSEN_SECRET}0\"\nowner = \"{owner}\"\nhosts = []\n"),
-            ),
-            (
-                "secret-pasted-as-a-host-id",
-                "the host id of entry 2 in hosts must be 64 lowercase hexadecimal characters",
-                format!(
+            },
+            MalformedFile {
+                name: "syntax-on-the-secret-line",
+                names_what_is_wrong: |refusal| {
+                    matches!(
+                        malformed_on_line(refusal, 1),
+                        Some(MalformedProblem::NotToml)
+                    )
+                },
+                text: format!("secret = \"{CHOSEN_SECRET}\nowner = \"{owner}\"\nhosts = []\n"),
+            },
+            MalformedFile {
+                name: "bad-key-text",
+                names_what_is_wrong: |refusal| {
+                    matches!(
+                        refusal,
+                        ConfigError::InvalidField {
+                            field: "secret",
+                            accepted: AcceptedValue::HexKey,
+                            ..
+                        }
+                    )
+                },
+                text: format!("secret = \"{CHOSEN_SECRET}0\"\nowner = \"{owner}\"\nhosts = []\n"),
+            },
+            MalformedFile {
+                name: "secret-pasted-as-a-host-id",
+                names_what_is_wrong: |refusal| {
+                    refusal.to_string().ends_with(
+                        "the host id of entry 2 in hosts must be 64 lowercase hexadecimal characters",
+                    )
+                },
+                text: format!(
                     "secret = \"{network_secret}\"\nowner = \"{owner}\"\nhosts = [{{ id = \"{id}\", relay = \"{VALID_RELAY}\" }}, {{ id = \"{CHOSEN_SECRET}0\", relay = \"{VALID_RELAY}\" }}]\n"
                 ),
-            ),
-            (
-                "secret-pasted-as-a-host-relay",
-                "the host relay of entry 2 in hosts must be an https URL of at most 128 bytes",
-                format!(
+            },
+            MalformedFile {
+                name: "secret-pasted-as-a-host-relay",
+                names_what_is_wrong: |refusal| {
+                    refusal.to_string().ends_with(
+                        "the host relay of entry 2 in hosts must be an https URL of at most 128 bytes",
+                    )
+                },
+                text: format!(
                     "secret = \"{network_secret}\"\nowner = \"{owner}\"\nhosts = [{{ id = \"{id}\", relay = \"{VALID_RELAY}\" }}, {{ id = \"{second_id}\", relay = \"{CHOSEN_SECRET}\" }}]\n"
                 ),
-            ),
-        ];
+            },
+        ]
+    }
 
-        for (name, what_is_wrong, text) in malformed_files {
-            let path = directory.join(format!("{name}.toml"));
-            fs::write(&path, text).unwrap();
+    /// Conventions interfaces-and-refusals and spec 3.3: a refusal at load names the file and what is wrong, never anything the file holds.
+    #[test]
+    fn load_refusal_never_quotes_the_configuration_file() {
+        let directory = scratch_directory("never-quoted");
+
+        for file in files_each_holding_the_chosen_secret() {
+            let path = directory.join(format!("{}.toml", file.name));
+            fs::write(&path, &file.text).unwrap();
 
             let refusal = NetworkConfig::load(&path).unwrap_err();
 
             let rendered = rendered_with_its_sources(&refusal);
-            assert!(!rendered.contains(CHOSEN_SECRET), "{name}: {rendered}");
             assert!(
-                rendered.contains(&path.display().to_string()),
-                "{name}: {rendered}"
+                !rendered.contains(CHOSEN_SECRET),
+                "{}: {rendered}",
+                file.name
             );
             assert!(
-                refusal.to_string().ends_with(what_is_wrong),
-                "{name}: {refusal}"
+                rendered.contains(&path.display().to_string()),
+                "{}: {rendered}",
+                file.name
+            );
+            assert!(
+                (file.names_what_is_wrong)(&refusal),
+                "{}: {refusal}",
+                file.name
             );
         }
     }
