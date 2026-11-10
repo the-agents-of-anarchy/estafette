@@ -303,17 +303,14 @@ impl PeerTable {
         addr: &Addr,
         now_ms: u64,
     ) -> Vec<Effect> {
-        if !is_admissible_introduction(handle, public) {
+        let Ok(handle) = admissible_introduction_handle(handle, public) else {
             return Vec::new();
-        }
+        };
         if self.stands_departed(card, now_ms) {
             return lookup_refresh_effects(card, addr);
         }
         let Some(handle) = handle else {
             return lookup_refresh_effects(card, addr);
-        };
-        let Ok(handle) = handle.parse::<AnnouncedHandle>() else {
-            return Vec::new();
         };
         let mut effects = lookup_refresh_effects(card, addr);
         effects.extend(self.insert_if_unseen(card, &handle, now_ms));
@@ -412,9 +409,26 @@ pub(crate) fn announced_sender_handle(message: &Message) -> Option<AnnouncedHand
     message.handle.parse().ok()
 }
 
-/// Whether an Introduce or `IntroduceAck` may change anything at this node: it names no handle, or a handle that matches the announced-handle grammar with a `public` a card sends (spec 3.1, 3.5).
-pub(crate) fn is_admissible_introduction(handle: Option<&str>, public: &[u8]) -> bool {
-    handle.is_none_or(|handle| handle.parse::<AnnouncedHandle>().is_ok() && is_card_public(public))
+/// An Introduce or `IntroduceAck` the node drops: its handle is outside the announced-handle grammar, or its `public` is one no card sends (spec 3.1, 3.5).
+#[derive(Debug)]
+pub(crate) struct InadmissibleIntroduction;
+
+/// The handle an Introduce or `IntroduceAck` names, none when it names no handle, or `InadmissibleIntroduction` when the node drops it.
+pub(crate) fn admissible_introduction_handle(
+    handle: Option<&str>,
+    public: &[u8],
+) -> Result<Option<AnnouncedHandle>, InadmissibleIntroduction> {
+    let Some(handle) = handle else {
+        return Ok(None);
+    };
+    let announced = handle
+        .parse::<AnnouncedHandle>()
+        .map_err(|_outside_the_grammar| InadmissibleIntroduction)?;
+    if is_card_public(public) {
+        Ok(Some(announced))
+    } else {
+        Err(InadmissibleIntroduction)
+    }
 }
 
 /// Whether `stamp` is no older than the announcement max age by the clock reading `now_ms`.

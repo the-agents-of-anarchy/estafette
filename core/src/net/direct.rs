@@ -18,7 +18,7 @@ use crate::errors::ErrorCode;
 use crate::payload::{
     PayloadError, ZERO_MAC, open_request, open_response, seal_request, seal_response,
 };
-use crate::peers::{announced_sender_handle, is_admissible_introduction};
+use crate::peers::{admissible_introduction_handle, announced_sender_handle};
 use crate::wire::{
     self, IntroduceAck, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, Nonce, Probe, ProbeAck,
     Request, Response, Version, WIRE_LIMIT_BYTES,
@@ -469,7 +469,11 @@ impl<H: DirectHost> ServerState<H> {
             }
             Request::Probe(_) | Request::Introduce(_) if self.host.is_stopping() => Err(UNANSWERED),
             Request::Introduce(introduce)
-                if !is_admissible_introduction(introduce.handle.as_deref(), &introduce.public) =>
+                if admissible_introduction_handle(
+                    introduce.handle.as_deref(),
+                    &introduce.public,
+                )
+                .is_err() =>
             {
                 Err(UNANSWERED)
             }
