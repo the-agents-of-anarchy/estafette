@@ -485,6 +485,7 @@ async fn start_observation(
         endpoint: endpoint.endpoint().clone(),
         table: Mutex::new(PeerTable::new(own_card)),
         clock: effects.clock,
+        monotonic: Arc::clone(&effects.monotonic),
         to_loop,
     });
     let (router, gossip) = serve(&endpoint, keys, &host);
@@ -534,6 +535,7 @@ struct ObserverHost {
     endpoint: iroh::Endpoint,
     table: Mutex<PeerTable>,
     clock: Clock,
+    monotonic: MonotonicClock,
     to_loop: mpsc::UnboundedSender<ObserverEvent>,
 }
 
@@ -569,7 +571,7 @@ impl ObserverHost {
 
 impl DirectHost for Arc<ObserverHost> {
     fn accepted_connections(&self) -> crate::net::direct::AcceptedConnections {
-        crate::net::direct::AcceptedConnections::new(std::sync::Arc::new(tokio::time::Instant::now))
+        crate::net::direct::AcceptedConnections::new(Arc::clone(&self.monotonic))
     }
 
     fn is_stopping(&self) -> bool {
@@ -1634,6 +1636,7 @@ mod tests {
 
     struct SilentNeighbor {
         _router: iroh::protocol::Router,
+        endpoint: iroh::Endpoint,
         topic: NetworkTopic,
         address: EndpointAddr,
         introduces: Arc<Mutex<Vec<Introduce>>>,
@@ -1658,6 +1661,7 @@ mod tests {
         .unwrap();
         SilentNeighbor {
             _router: router,
+            endpoint: endpoint.endpoint().clone(),
             topic,
             address: endpoint.endpoint().addr(),
             introduces,
@@ -1956,6 +1960,109 @@ mod tests {
 
         tail_result.unwrap();
         assert_eq!(output.text(), wanted_lines.concat());
+        drop(lab);
+    }
+
+    const CLOCK_STEP_PAST_ANY_SILENCE: Duration = Duration::from_secs(3600);
+    const SUPERSEDED_CLOSE_WAIT: Duration = Duration::from_secs(5);
+    const SUPERSEDED_CONNECTION_CLOSE_CODE: u32 = 410;
+
+    /// A monotonic clock that moves an hour on at every reading, so every connection the observer holds reads as long silent whenever it is judged.
+    fn clock_moving_past_any_silence_at_each_reading() -> MonotonicClock {
+        let started = Instant::now();
+        let readings = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        Arc::new(move || {
+            started
+                .checked_add(
+                    CLOCK_STEP_PAST_ANY_SILENCE
+                        .saturating_mul(readings.fetch_add(1, std::sync::atomic::Ordering::SeqCst)),
+                )
+                .unwrap()
+        })
+    }
+
+    async fn answer_on(connection: &iroh::endpoint::Connection, request: wire::Request) -> Vec<u8> {
+        let sealed = crate::payload::seal_request(&network_keys(), request).unwrap();
+        let (mut send, mut receive) = connection.open_bi().await.unwrap();
+        send.write_all(&sealed).await.unwrap();
+        send.finish().unwrap();
+        receive.read_to_end(wire::WIRE_LIMIT_BYTES).await.unwrap()
+    }
+
+    fn introduce_from_neighbor() -> wire::Request {
+        wire::Request::Introduce(Introduce {
+            v: Version::CURRENT,
+            handle: Some(NEIGHBOR_HANDLE.to_owned()),
+            public: NEIGHBOR_PUBLIC.to_vec(),
+            attached: true,
+            addr: Addr::from_endpoint_report(Vec::new(), Vec::new()),
+            mac: ZERO_MAC,
+        })
+    }
+
+    fn probe_from_neighbor() -> wire::Request {
+        wire::Request::Probe(wire::Probe {
+            v: Version::CURRENT,
+            nonce: PROBE_NONCE,
+            mac: ZERO_MAC,
+        })
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_an_observer_judges_the_silence_of_its_accepted_connections_on_the_monotonic_clock_it_is_handed()
+     {
+        let lab = Lab::new("observer-clock").await;
+        let mut neighbor = start_silent_neighbor().await;
+        lab.write_network_config(&[NEIGHBOR_SEED]);
+        let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
+        let (mut effects, operator_effects) = lab.effects(
+            vec![neighbor.address.clone()],
+            Box::pin(async move { drop(interrupted.await) }),
+        );
+        effects.monotonic = clock_moving_past_any_silence_at_each_reading();
+        let tail = ObserverCommand::Tail {
+            network: NETWORK_NAME.parse().unwrap(),
+        };
+        let mut tail_output = Vec::new();
+
+        let (tail_result, earlier_closed) = tokio::join!(
+            run(
+                &tail,
+                &lab.directories,
+                &OperatingSystemFilesystem,
+                &NoPause,
+                (effects, operator_effects),
+                &mut tail_output,
+            ),
+            async {
+                next_presence_request(&mut neighbor.topic, PAYLOAD_WAIT).await;
+                let observer = secret_key(OBSERVER_SEED).public();
+                let earlier = neighbor
+                    .endpoint
+                    .connect(observer, crate::net::endpoint::DIRECT_ALPN)
+                    .await
+                    .unwrap();
+                answer_on(&earlier, probe_from_neighbor()).await;
+                let introducing = neighbor
+                    .endpoint
+                    .connect(observer, crate::net::endpoint::DIRECT_ALPN)
+                    .await
+                    .unwrap();
+                answer_on(&introducing, introduce_from_neighbor()).await;
+                let closed = tokio::time::timeout(SUPERSEDED_CLOSE_WAIT, earlier.closed()).await;
+                interrupt.send(()).unwrap_or_default();
+                closed
+            }
+        );
+
+        tail_result.unwrap();
+        let Ok(iroh::endpoint::ConnectionError::ApplicationClosed(close)) = earlier_closed else {
+            panic!("the observer kept the earlier connection: {earlier_closed:?}");
+        };
+        assert_eq!(
+            close.error_code,
+            iroh::endpoint::VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE)
+        );
         drop(lab);
     }
 
