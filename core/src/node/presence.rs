@@ -3267,6 +3267,64 @@ pub(super) mod tests {
         drop(scratch);
     }
 
+    fn public_nested(depth: usize) -> Vec<u8> {
+        format!("{}1{}", r#"{"a":"#.repeat(depth), "}".repeat(depth)).into_bytes()
+    }
+
+    #[tokio::test]
+    async fn spec_3_5_a_public_nested_at_the_deepest_bound_a_card_allows_is_received_and_one_deeper_is_not()
+     {
+        let scratch = Scratch::new("introduce-nesting").await;
+        let mut members = start_members(
+            &scratch,
+            vec![
+                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC),
+                MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC).reaching(&[FIRST_SEED]),
+            ],
+        )
+        .await;
+        let second = members.pop().unwrap();
+        let first = members.pop().unwrap();
+        let introducing = DirectClient::new(second.endpoint.clone(), keys(), ClientTimeouts::SPEC);
+        let introduction_carrying = |public: Vec<u8>| Introduce {
+            v: Version::CURRENT,
+            handle: Some(SECOND_HANDLE.to_owned()),
+            public,
+            attached: true,
+            addr: wire_addr(&second.endpoint.addr()),
+            mac: ZERO_MAC,
+        };
+        let at_bound = format!(
+            "handle: {SECOND_HANDLE}\npublic_key: abc\npublic: {}1{}\n",
+            "{a: ".repeat(crate::card::PUBLIC_DEEPEST_NESTING),
+            "}".repeat(crate::card::PUBLIC_DEEPEST_NESTING)
+        )
+        .parse::<crate::card::Card>()
+        .unwrap()
+        .public_json();
+
+        let one_deeper = introducing
+            .introduce(
+                first.endpoint.id(),
+                introduction_carrying(public_nested(crate::card::PUBLIC_DEEPEST_NESTING + 1)),
+            )
+            .await;
+        let deepest_allowed = introducing
+            .introduce(first.endpoint.id(), introduction_carrying(at_bound.clone()))
+            .await;
+
+        assert_eq!(one_deeper, Err(DirectError::Refused));
+        assert_eq!(
+            deepest_allowed.map(|answer| answer.handle),
+            Ok(Some(FIRST_HANDLE.to_owned()))
+        );
+        let listed = listed_within(&first, SECOND_SEED, Duration::ZERO)
+            .await
+            .unwrap();
+        assert_eq!(listed.public, Some(at_bound));
+        drop(scratch);
+    }
+
     #[tokio::test]
     async fn spec_3_8_presence_and_departure_for_this_nodes_own_card_are_ignored() {
         let scratch = Scratch::new("own-card").await;

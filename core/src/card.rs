@@ -9,11 +9,16 @@ use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser, Tag};
 use yaml_rust2::scanner::{Marker, TScalarStyle};
 
 const PUBLIC_MAX_BYTES: usize = 3072;
+pub(crate) const PUBLIC_DEEPEST_NESTING: usize = 127;
 const JSON_QUOTE: u8 = b'"';
 const JSON_ESCAPE: u8 = b'\\';
 const JSON_MINUS: u8 = b'-';
 const JSON_NUMBER_BYTES: &[u8] = b"0123456789+-.eE";
 const JSON_FRACTION_OR_EXPONENT: [char; 3] = ['.', 'e', 'E'];
+const JSON_OPEN_MAPPING: u8 = b'{';
+const JSON_OPEN_SEQUENCE: u8 = b'[';
+const JSON_CLOSE_MAPPING: u8 = b'}';
+const JSON_CLOSE_SEQUENCE: u8 = b']';
 const HANDLE_FIELD: &str = "handle";
 const PUBLIC_KEY_FIELD: &str = "public_key";
 const NETWORK_FIELD: &str = "network";
@@ -52,6 +57,7 @@ pub enum CardInvalid {
     MergeKey,
     DuplicatePublicKey(String),
     PublicOverCap { bytes: usize },
+    PublicTooDeep { depth: usize },
     AliasExpansionTooLarge,
     IntegerTooWide,
 }
@@ -99,6 +105,10 @@ impl fmt::Display for CardInvalid {
             Self::PublicOverCap { bytes } => write!(
                 formatter,
                 "card `public` serializes to {bytes} bytes; the cap is {PUBLIC_MAX_BYTES}"
+            ),
+            Self::PublicTooDeep { depth } => write!(
+                formatter,
+                "card `public` nests mappings and sequences {depth} deep; the most a member receives is {PUBLIC_DEEPEST_NESTING}"
             ),
             Self::AliasExpansionTooLarge => write!(
                 formatter,
@@ -448,7 +458,17 @@ fn public_mapping(entries: &[(Node, Node)]) -> Result<Map<String, Value>, CardIn
             }
         },
     };
-    refuse_over_cap(mapping).map_err(|bytes| CardInvalid::PublicOverCap { bytes })
+    let mapping = refuse_over_cap(mapping).map_err(|bytes| CardInvalid::PublicOverCap { bytes })?;
+    refuse_too_deep(mapping)
+}
+
+/// The mapping itself, or the refusal naming its depth when it nests deeper than a member receives.
+fn refuse_too_deep(mapping: Map<String, Value>) -> Result<Map<String, Value>, CardInvalid> {
+    let depth = json_nesting_depth(&compact_json(&mapping));
+    if depth > PUBLIC_DEEPEST_NESTING {
+        return Err(CardInvalid::PublicTooDeep { depth });
+    }
+    Ok(mapping)
 }
 
 /// The compact JSON bytes of the mapping, without whitespace.
@@ -456,12 +476,13 @@ fn compact_json(mapping: &Map<String, Value>) -> Vec<u8> {
     Value::Object(mapping.clone()).to_string().into_bytes()
 }
 
-/// Whether `public` bytes a peer sent are what a card sends: a JSON mapping within the cap whose mappings name each key once and whose integers fit 64 bits, judged on the bytes as they arrived (spec 3.5).
+/// Whether `public` bytes a peer sent are what a card sends: a JSON mapping within the cap and the deepest nesting whose mappings name each key once and whose integers fit 64 bits, judged on the bytes as they arrived (spec 3.5).
 #[must_use]
 pub fn is_card_public(bytes: &[u8]) -> bool {
     bytes.len() <= PUBLIC_MAX_BYTES
         && serde_json::from_slice::<ReceivedPublicMapping>(bytes).is_ok()
         && every_integer_fits_64_bits(bytes)
+        && json_nesting_depth(bytes) <= PUBLIC_DEEPEST_NESTING
 }
 
 /// A received `public` that is a JSON mapping in which no mapping, at any depth, names a key twice.
@@ -565,6 +586,25 @@ fn json_number_tokens(json: &[u8]) -> Vec<String> {
         }
     }
     tokens
+}
+
+/// The deepest nesting of mappings and sequences in a valid JSON text, the outermost counting one.
+fn json_nesting_depth(json: &[u8]) -> usize {
+    let mut depth: usize = 0;
+    let mut deepest = 0;
+    let mut bytes = json.iter().copied();
+    while let Some(byte) = bytes.next() {
+        match byte {
+            JSON_QUOTE => skip_rest_of_json_string(&mut bytes),
+            JSON_OPEN_MAPPING | JSON_OPEN_SEQUENCE => {
+                depth = depth.saturating_add(1);
+                deepest = deepest.max(depth);
+            }
+            JSON_CLOSE_MAPPING | JSON_CLOSE_SEQUENCE => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    deepest
 }
 
 /// Consumes a JSON string's bytes up to and including its closing quote.
@@ -1194,6 +1234,37 @@ mod tests {
                 String::from_utf8_lossy(public)
             );
         }
+    }
+
+    fn card_nested(depth: usize) -> Result<Card, CardInvalid> {
+        let opening = "{a: ".repeat(depth);
+        let closing = "}".repeat(depth);
+        parse_card(&format!(
+            "handle: ada\npublic_key: abc\npublic: {opening}1{closing}\n"
+        ))
+    }
+
+    #[test]
+    fn a_card_public_nested_at_the_deepest_bound_parses_and_is_received_one_deeper_is_refused_spec_3_5()
+     {
+        let at_bound = card_nested(PUBLIC_DEEPEST_NESTING).unwrap();
+        let one_deeper = card_nested(PUBLIC_DEEPEST_NESTING + 1);
+
+        assert!(is_card_public(&at_bound.public_json()));
+        assert_eq!(
+            one_deeper,
+            Err(CardInvalid::PublicTooDeep {
+                depth: PUBLIC_DEEPEST_NESTING + 1
+            })
+        );
+    }
+
+    #[test]
+    fn a_received_public_one_level_deeper_than_the_bound_is_not_a_card_public_spec_3_5() {
+        let opening = r#"{"a":"#.repeat(PUBLIC_DEEPEST_NESTING + 1);
+        let closing = "}".repeat(PUBLIC_DEEPEST_NESTING + 1);
+
+        assert!(!is_card_public(format!("{opening}1{closing}").as_bytes()));
     }
 
     const PROPERTY_CASES: u64 = 2000;
