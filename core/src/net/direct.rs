@@ -19,6 +19,7 @@ use crate::handle::AnnouncedHandle;
 use crate::payload::{
     PayloadError, ZERO_MAC, open_request, open_response, seal_request, seal_response,
 };
+use crate::peers::is_admissible_introduction;
 use crate::wire::{
     self, IntroduceAck, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, Nonce, Probe, ProbeAck,
     Request, Response, Version, WIRE_LIMIT_BYTES,
@@ -462,7 +463,7 @@ impl<H: DirectHost> ServerState<H> {
         seal_response(&self.keys, response).map_err(|_failure| UNANSWERED)
     }
 
-    /// The response to a validated request, or none while the process is stopping and the request is a Probe or an Introduce.
+    /// The response to a validated request, or none while the process is stopping and the request is a Probe or an Introduce, or for an Introduce the node would drop, before any connection of its sender is closed.
     fn answer(
         &self,
         sender: wire::PublicKey,
@@ -474,6 +475,11 @@ impl<H: DirectHost> ServerState<H> {
                 Ok(Response::MessageAck(self.answer_message(sender, message)))
             }
             Request::Probe(_) | Request::Introduce(_) if self.host.is_stopping() => Err(UNANSWERED),
+            Request::Introduce(introduce)
+                if !is_admissible_introduction(introduce.handle.as_deref()) =>
+            {
+                Err(UNANSWERED)
+            }
             Request::Probe(probe) => Ok(Response::ProbeAck(self.answer_probe(&probe))),
             Request::Introduce(introduce) => {
                 self.accepted.close_others_from(sender, arrived_on);
@@ -1430,6 +1436,48 @@ mod tests {
             "{introduced:?}"
         );
         assert_eq!(probed_on_the_same_connection.unwrap().nonce, PROBE_NONCE);
+    }
+
+    const NOT_AN_ANNOUNCED_HANDLE: &str = "Alice";
+    const AFTER_A_CLOSE_WOULD_HAVE_ARRIVED: Duration = Duration::from_millis(500);
+
+    async fn introduce_beside_an_earlier_connection(
+        introduction: wire::Introduce,
+    ) -> (Rig, Result<IntroduceAck, DirectError>, Connection) {
+        let host = RecordingHost::with_card(card_of(SERVER_SEED))
+            .measuring_silence_on(clock_reading_every_connection_as_gone());
+        let link = link_to(
+            DirectServer::new(keys(), host.clone()),
+            ClientTimeouts::SPEC,
+        )
+        .await;
+        let rig = Rig { host, link };
+        let earlier = raw_connection(&rig).await;
+        raw_exchange(&earlier, &sealed_message_to_server(&keys()))
+            .await
+            .unwrap();
+
+        let introduced = rig
+            .link
+            .client
+            .introduce(rig.link.server_node.endpoint().id(), introduction)
+            .await;
+        tokio::time::sleep(AFTER_A_CLOSE_WOULD_HAVE_ARRIVED).await;
+        (rig, introduced, earlier)
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_an_introduce_whose_announced_handle_does_not_match_is_dropped_before_any_connection_closes()
+     {
+        let (rig, introduced, earlier) = introduce_beside_an_earlier_connection(wire::Introduce {
+            handle: Some(NOT_AN_ANNOUNCED_HANDLE.to_owned()),
+            ..introduction_from_client()
+        })
+        .await;
+
+        assert_eq!(introduced, Err(DirectError::Refused));
+        assert_eq!(earlier.close_reason(), None);
+        assert_eq!(rig.host.introduced.lock().unwrap().len(), 0);
     }
 
     #[tokio::test]

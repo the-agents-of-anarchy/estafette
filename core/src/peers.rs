@@ -302,6 +302,9 @@ impl PeerTable {
         addr: &Addr,
         now_ms: u64,
     ) -> Vec<Effect> {
+        if !is_admissible_introduction(handle) {
+            return Vec::new();
+        }
         if self.stands_departed(card, now_ms) {
             return lookup_refresh_effects(card, addr);
         }
@@ -401,6 +404,11 @@ impl PeerTable {
             .collect();
         LocalHandle::assign(announced, &taken)
     }
+}
+
+/// Whether an Introduce or `IntroduceAck` may change anything at this node: it names no handle, or a handle that matches the announced-handle grammar (spec 3.1).
+pub(crate) fn is_admissible_introduction(handle: Option<&str>) -> bool {
+    handle.is_none_or(|handle| handle.parse::<AnnouncedHandle>().is_ok())
 }
 
 /// Whether `stamp` is no older than the announcement max age by the clock reading `now_ms`.
