@@ -8,7 +8,6 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 const RECONNECT_PAUSE: Duration = Duration::from_millis(500);
-const NO_FRAME_SEEN_YET: u64 = 0;
 const FRAME_LINE_TERMINATOR: char = '\n';
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -85,15 +84,16 @@ impl InboxConnector for UnixSocketConnector {
     }
 }
 
-/// Delivers each inbox frame once, in order, reconnecting with the last seq seen whenever the socket closes.
+/// Delivers each inbox frame above `since` once, in order, reconnecting with the last seq seen whenever the socket closes.
 /// # Errors
 /// Returns the `InboxClientError` that ended the following; a closed socket alone never ends it.
 pub fn follow_inbox<C: InboxConnector>(
     connector: &mut C,
+    since: u64,
     wait_before_reconnect: &mut impl FnMut(Duration),
     deliver_frame: &mut impl FnMut(&InboxFrame),
 ) -> Result<Infallible, InboxClientError> {
-    let mut last_seq = NO_FRAME_SEEN_YET;
+    let mut last_seq = since;
     loop {
         let stream = connector
             .connect()
@@ -198,6 +198,8 @@ mod tests {
         }
     }
 
+    const NO_FRAME_HANDLED_YET: u64 = 0;
+
     struct Followed {
         requests: Vec<String>,
         delivered: Vec<InboxFrame>,
@@ -260,6 +262,7 @@ mod tests {
         let mut pauses = Vec::new();
         let ended_with = follow_inbox(
             connector,
+            NO_FRAME_HANDLED_YET,
             &mut |pause| pauses.push(pause),
             &mut |received| delivered.push(received.clone()),
         )
@@ -435,9 +438,14 @@ mod tests {
         });
         let mut connector = UnixSocketConnector::new(socket_path);
         let mut delivered = Vec::new();
-        let ended_with = follow_inbox(&mut connector, &mut |_| {}, &mut |received| {
-            delivered.push(received.clone());
-        })
+        let ended_with = follow_inbox(
+            &mut connector,
+            NO_FRAME_HANDLED_YET,
+            &mut |_| {},
+            &mut |received| {
+                delivered.push(received.clone());
+            },
+        )
         .expect_err("a followed inbox never returns Ok");
         let since_lines = server.join().expect("server thread");
         assert_eq!(since_lines, vec!["{\"since\":0}\n", "{\"since\":6}\n"]);

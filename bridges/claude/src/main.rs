@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
@@ -261,6 +261,7 @@ impl fmt::Display for LiveClassError {
 struct BridgeSession<S: InboxConnector, F: Files> {
     notifier: Mutex<SessionNotifier<S>>,
     followed_sockets: Mutex<BTreeSet<PathBuf>>,
+    handled_seqs: Mutex<BTreeMap<PathBuf, u64>>,
     registry_file: PathBuf,
     projects_directory: PathBuf,
     transcript_file: Mutex<Option<PathBuf>>,
@@ -389,6 +390,25 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
         }
     }
 
+    /// Gives the seq of the last frame handled from a socket, 0 when none was.
+    fn last_handled_seq(&self, socket_path: &Path) -> u64 {
+        lock(&self.handled_seqs)
+            .get(socket_path)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Delivers a frame from a socket and remembers its seq as the point to follow that socket from again.
+    fn deliver_from_socket(&self, socket_path: &Path, frame: &InboxFrame) {
+        self.deliver(frame);
+        lock(&self.handled_seqs).insert(socket_path.to_owned(), frame.seq);
+    }
+
+    /// Forgets the handled seqs of every socket whose process no longer runs, so a socket path that returns is followed from the start.
+    fn forget_handled_seqs_except(&self, running_sockets: &[PathBuf]) {
+        lock(&self.handled_seqs).retain(|socket_path, _| running_sockets.contains(socket_path));
+    }
+
     /// Writes the dropped-frame count where the doctor reads it, reporting a failed write.
     fn record_dropped_frames(&self, count: u64) {
         if let Err(error) = self
@@ -414,9 +434,15 @@ fn follow_binary_socket<S, B, F>(
     let spawn = Arc::clone(&session.spawn);
     spawn(Box::new(move || {
         let wait = session.wait;
-        let outcome = follow_inbox(&mut connector, &mut |pause| wait(pause), &mut |frame| {
-            session.deliver(frame);
-        });
+        let since = session.last_handled_seq(&socket_path);
+        let outcome = follow_inbox(
+            &mut connector,
+            since,
+            &mut |pause| wait(pause),
+            &mut |frame| {
+                session.deliver_from_socket(&socket_path, frame);
+            },
+        );
         let Err(error) = outcome;
         (session.report_error)(&format!("{}: {error}", socket_path.display()));
         lock(&session.followed_sockets).remove(&socket_path);
@@ -503,6 +529,7 @@ where
             CLASS_BEFORE_THE_LIVE_MODE_IS_READ,
         )),
         followed_sockets: Mutex::default(),
+        handled_seqs: Mutex::default(),
         registry_file: effects
             .claude_config_directory
             .join(SESSIONS_DIRECTORY)
@@ -528,6 +555,7 @@ where
         processes,
         &mut |pause| wait(pause),
         &mut |sockets| {
+            session.forget_handled_seqs_except(sockets);
             for socket_path in sockets {
                 if lock(&session.followed_sockets).insert(socket_path.clone()) {
                     let connector = (effects.connect_binary_socket)(socket_path.clone());
@@ -722,7 +750,7 @@ mod tests {
     use super::*;
     use estafette_bridge_claude::discover::ProcessEntry;
     use std::cell::RefCell;
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::{BTreeMap, BTreeSet, VecDeque};
     use std::os::unix::net::UnixStream;
 
     fn arguments(words: &[&str]) -> Vec<String> {
@@ -968,6 +996,178 @@ mod tests {
         );
     }
 
+    type SinceLines = Arc<Mutex<Vec<String>>>;
+
+    struct ScriptedInboxStream {
+        replies: io::Cursor<Vec<u8>>,
+        fails_after_replies: bool,
+        since_lines: SinceLines,
+        written: Vec<u8>,
+    }
+
+    impl Read for ScriptedInboxStream {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            match self.replies.read(buffer)? {
+                0 if self.fails_after_replies => {
+                    Err(io::Error::from(io::ErrorKind::ConnectionReset))
+                }
+                read_bytes => Ok(read_bytes),
+            }
+        }
+    }
+
+    impl Write for ScriptedInboxStream {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.written.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            lock(&self.since_lines).push(String::from_utf8_lossy(&self.written).into_owned());
+            self.written.clear();
+            Ok(())
+        }
+    }
+
+    struct ScriptedInboxConnection {
+        replies: String,
+        fails_after_replies: bool,
+    }
+
+    struct ScriptedInboxSocket {
+        connections: Arc<Mutex<VecDeque<ScriptedInboxConnection>>>,
+        since_lines: SinceLines,
+    }
+
+    impl InboxConnector for ScriptedInboxSocket {
+        type Stream = ScriptedInboxStream;
+
+        fn connect(&mut self) -> io::Result<ScriptedInboxStream> {
+            let connection = lock(&self.connections)
+                .pop_front()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::ConnectionRefused))?;
+            Ok(ScriptedInboxStream {
+                replies: io::Cursor::new(connection.replies.into_bytes()),
+                fails_after_replies: connection.fails_after_replies,
+                since_lines: Arc::clone(&self.since_lines),
+                written: Vec::new(),
+            })
+        }
+    }
+
+    fn inbox_frame_line(seq: u64) -> String {
+        format!("{{\"seq\":{seq},\"id\":\"id-{seq}\",\"from\":\"ana\",\"body\":\"body {seq}\"}}\n")
+    }
+
+    struct ScriptedRun {
+        since_lines: Vec<String>,
+        delivered_frames: usize,
+    }
+
+    fn run_bridge_over_scripted_sockets(
+        connections: Vec<ScriptedInboxConnection>,
+        polls: Vec<Vec<ProcessEntry>>,
+    ) -> ScriptedRun {
+        let wiring = wiring();
+        let errors = Arc::clone(&wiring.errors);
+        let connections = Arc::new(Mutex::new(VecDeque::from(connections)));
+        let since_lines = SinceLines::default();
+        let socket_connections = Arc::clone(&connections);
+        let socket_since_lines = Arc::clone(&since_lines);
+        let effects = BridgeEffects {
+            own_pid: wiring.effects.own_pid,
+            runtime_inputs: wiring.effects.runtime_inputs,
+            temporary_dir: wiring.effects.temporary_dir,
+            session_connector: DownConnector,
+            session_token: wiring.effects.session_token,
+            claude_config_directory: wiring.effects.claude_config_directory,
+            connect_binary_socket: move |_socket_path| ScriptedInboxSocket {
+                connections: Arc::clone(&socket_connections),
+                since_lines: Arc::clone(&socket_since_lines),
+            },
+            files: wiring.effects.files,
+            elapsed: wiring.effects.elapsed,
+            report_error: wiring.effects.report_error,
+            spawn: Arc::new(|task| task()),
+            wait: |_| {},
+        };
+        run_bridge(100, effects, &SnapshotSequence(RefCell::new(polls))).expect("bridge runs");
+        ScriptedRun {
+            since_lines: lock(&since_lines).clone(),
+            delivered_frames: lock(&errors)
+                .iter()
+                .filter(|message| message.starts_with("cannot connect to the messaging"))
+                .count(),
+        }
+    }
+
+    fn harness_with_one_binary() -> Vec<ProcessEntry> {
+        vec![
+            ProcessEntry {
+                pid: 100,
+                parent_pid: 1,
+                executable: Some("/usr/bin/claude".to_owned()),
+                arguments: Vec::new(),
+            },
+            mcp_binary(101),
+        ]
+    }
+
+    #[test]
+    fn spec_3_12_step_5_a_socket_that_fails_mid_stream_is_followed_again_from_the_last_handled_seq()
+    {
+        let run = run_bridge_over_scripted_sockets(
+            vec![
+                ScriptedInboxConnection {
+                    replies: format!("{}{}", inbox_frame_line(3), inbox_frame_line(4)),
+                    fails_after_replies: true,
+                },
+                ScriptedInboxConnection {
+                    replies: inbox_frame_line(5),
+                    fails_after_replies: false,
+                },
+            ],
+            vec![
+                harness_with_one_binary(),
+                harness_with_one_binary(),
+                harness_with_one_binary(),
+                Vec::new(),
+            ],
+        );
+        assert_eq!(run.since_lines, ["{\"since\":0}\n", "{\"since\":4}\n"]);
+        assert_eq!(run.delivered_frames, 3);
+    }
+
+    fn harness_without_binaries() -> Vec<ProcessEntry> {
+        harness_with_one_binary().into_iter().take(1).collect()
+    }
+
+    #[test]
+    fn spec_3_12_step_5_a_socket_of_a_process_that_ended_is_followed_from_zero_if_its_path_returns()
+    {
+        let run = run_bridge_over_scripted_sockets(
+            vec![
+                ScriptedInboxConnection {
+                    replies: inbox_frame_line(3),
+                    fails_after_replies: true,
+                },
+                ScriptedInboxConnection {
+                    replies: inbox_frame_line(1),
+                    fails_after_replies: false,
+                },
+            ],
+            vec![
+                harness_with_one_binary(),
+                harness_with_one_binary(),
+                harness_without_binaries(),
+                harness_with_one_binary(),
+                Vec::new(),
+            ],
+        );
+        assert_eq!(run.since_lines, ["{\"since\":0}\n", "{\"since\":0}\n"]);
+        assert_eq!(run.delivered_frames, 2);
+    }
+
     fn frame_from(from: &str, body: &str) -> InboxFrame {
         InboxFrame {
             seq: 1,
@@ -1023,6 +1223,7 @@ mod tests {
                 CLASS_BEFORE_THE_LIVE_MODE_IS_READ,
             )),
             followed_sockets: Mutex::default(),
+            handled_seqs: Mutex::default(),
             registry_file: PathBuf::from(REGISTRY_FILE),
             projects_directory: PathBuf::from(PROJECTS_DIRECTORY_PATH),
             transcript_file: Mutex::default(),
