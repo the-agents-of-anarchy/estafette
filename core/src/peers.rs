@@ -1,5 +1,6 @@
 //! The peer table of spec 3.8: one entry per card, changed by pure operations that return the network effects they call for.
 
+use crate::card::is_card_public;
 use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::wire::{
     Addr, Departure, Introduce, IntroduceAck, Message, Presence, PublicKey, Unreachable,
@@ -302,7 +303,7 @@ impl PeerTable {
         addr: &Addr,
         now_ms: u64,
     ) -> Vec<Effect> {
-        if !is_admissible_introduction(handle) {
+        if !is_admissible_introduction(handle, public) {
             return Vec::new();
         }
         if self.stands_departed(card, now_ms) {
@@ -406,9 +407,9 @@ impl PeerTable {
     }
 }
 
-/// Whether an Introduce or `IntroduceAck` may change anything at this node: it names no handle, or a handle that matches the announced-handle grammar (spec 3.1).
-pub(crate) fn is_admissible_introduction(handle: Option<&str>) -> bool {
-    handle.is_none_or(|handle| handle.parse::<AnnouncedHandle>().is_ok())
+/// Whether an Introduce or `IntroduceAck` may change anything at this node: it names no handle, or a handle that matches the announced-handle grammar with a `public` a card sends (spec 3.1, 3.5).
+pub(crate) fn is_admissible_introduction(handle: Option<&str>, public: &[u8]) -> bool {
+    handle.is_none_or(|handle| handle.parse::<AnnouncedHandle>().is_ok() && is_card_public(public))
 }
 
 /// Whether `stamp` is no older than the announcement max age by the clock reading `now_ms`.
@@ -1145,6 +1146,84 @@ mod tests {
                 LATER_MS
             )]
         );
+    }
+
+    const SPEC_PUBLIC_CAP_BYTES: usize = 3072;
+    const PUBLIC_FILLER_KEY_OVERHEAD: &str = r#"{"k":""}"#;
+
+    fn public_mapping_of_bytes(bytes: usize) -> Vec<u8> {
+        let filler = "x".repeat(bytes.checked_sub(PUBLIC_FILLER_KEY_OVERHEAD.len()).unwrap());
+        let public = format!(r#"{{"k":"{filler}"}}"#).into_bytes();
+        assert_eq!(public.len(), bytes);
+        public
+    }
+
+    fn publics_no_card_sends() -> Vec<Vec<u8>> {
+        vec![
+            public_mapping_of_bytes(SPEC_PUBLIC_CAP_BYTES + 1),
+            br#"["a","sequence"]"#.to_vec(),
+            br#""a string""#.to_vec(),
+            b"not json".to_vec(),
+            Vec::new(),
+        ]
+    }
+
+    #[test]
+    fn an_introduce_or_ack_whose_public_is_over_the_cap_or_no_mapping_changes_nothing_spec_3_5() {
+        for public in publics_no_card_sends() {
+            let mut table = PeerTable::new(OWN_CARD);
+            let introduced = table.receive_introduce(
+                FIRST_MEMBER_CARD,
+                &Introduce {
+                    public: public.clone(),
+                    ..introduce(Some(PEER_HANDLE))
+                },
+                NOW_MS,
+            );
+            let acknowledged = table.receive_introduce_ack(
+                SECOND_MEMBER_CARD,
+                &IntroduceAck {
+                    public: public.clone(),
+                    ..introduce_ack(Some(SECOND_HANDLE))
+                },
+                NOW_MS,
+            );
+
+            assert_eq!(introduced, vec![], "{} bytes", public.len());
+            assert_eq!(acknowledged, vec![], "{} bytes", public.len());
+            assert_eq!(snapshot(&table, NOW_MS), vec![], "{} bytes", public.len());
+        }
+    }
+
+    #[test]
+    fn an_introduce_or_ack_whose_public_mapping_is_exactly_at_the_cap_is_taken_spec_3_5() {
+        let at_cap = public_mapping_of_bytes(SPEC_PUBLIC_CAP_BYTES);
+        let mut table = PeerTable::new(OWN_CARD);
+
+        let introduced = table.receive_introduce(
+            FIRST_MEMBER_CARD,
+            &Introduce {
+                public: at_cap.clone(),
+                ..introduce(Some(PEER_HANDLE))
+            },
+            NOW_MS,
+        );
+        let acknowledged = table.receive_introduce_ack(
+            SECOND_MEMBER_CARD,
+            &IntroduceAck {
+                public: at_cap.clone(),
+                ..introduce_ack(Some(SECOND_HANDLE))
+            },
+            NOW_MS,
+        );
+
+        assert_eq!(introduced, introduction_effects(FIRST_MEMBER_CARD));
+        assert_eq!(acknowledged, introduction_effects(SECOND_MEMBER_CARD));
+        let publics: Vec<Option<Vec<u8>>> = snapshot(&table, NOW_MS)
+            .into_iter()
+            .map(|peer| peer.public)
+            .collect();
+        assert_eq!(publics, vec![Some(at_cap.clone()), Some(at_cap)]);
     }
 
     #[test]

@@ -450,6 +450,12 @@ fn compact_json(mapping: &Map<String, Value>) -> Vec<u8> {
     Value::Object(mapping.clone()).to_string().into_bytes()
 }
 
+/// Whether `public` bytes a peer sent are what a card sends: a JSON mapping within the cap, counted as they arrived (spec 3.5).
+#[must_use]
+pub fn is_card_public(bytes: &[u8]) -> bool {
+    bytes.len() <= PUBLIC_MAX_BYTES && serde_json::from_slice::<Map<String, Value>>(bytes).is_ok()
+}
+
 /// The mapping itself, or the byte size of its compact JSON when that passes the cap.
 fn refuse_over_cap(mapping: Map<String, Value>) -> Result<Map<String, Value>, usize> {
     let bytes = compact_json(&mapping).len();
