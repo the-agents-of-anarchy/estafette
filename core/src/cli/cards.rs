@@ -9,6 +9,7 @@ use std::str::FromStr;
 use clap::{Args, Subcommand};
 
 use crate::card::{Card, CardInvalid};
+use crate::cli::observer::tab_separated_line;
 use crate::dirs::{
     CARD_EXTENSION, CARDS_DIRECTORY_VARIABLE, CARDS_SUBDIRECTORY, Directories, DirectoriesError,
     DirectoryFilesystem, OperatingSystemFilesystem,
@@ -18,7 +19,6 @@ use crate::handle::{Handle, HandleError};
 use crate::keys::render_public_key;
 use crate::sidecar::{CARD_FILE_MODE, SEED_BYTES, SidecarError, create_card};
 
-const LIST_FIELD_SEPARATOR: char = '\t';
 const LINE_END: &str = "\n";
 const CREATE_CARD_ABOUT: &str = "Create a card and its key file";
 const LIST_CARDS_ABOUT: &str = "List the cards of a network";
@@ -258,10 +258,7 @@ fn list_registry_cards(
         let (name, line) = describe_card_file(filesystem, &card_file)?;
         lines_by_card_name.insert(name, line);
     }
-    Ok(lines_by_card_name
-        .into_values()
-        .map(|line| line + LINE_END)
-        .collect())
+    Ok(lines_by_card_name.into_values().collect())
 }
 
 /// Returns the card files of a cards directory, none when it does not exist.
@@ -305,8 +302,7 @@ fn describe_card_file(
         path: card_file.to_owned(),
         reason,
     })?;
-    let line =
-        [name.as_str(), &card.handle, &card.public_key].join(&LIST_FIELD_SEPARATOR.to_string());
+    let line = tab_separated_line(&[name.as_str(), &card.handle, &card.public_key]);
     Ok((name.as_str().to_owned(), line))
 }
 

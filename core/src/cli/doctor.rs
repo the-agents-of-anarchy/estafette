@@ -13,7 +13,9 @@ use iroh::{PublicKey, RelayUrl};
 use crate::card::{Card, CardInvalid};
 use crate::cli::cards::{CardRegistryReader, RegistryArgs, card_files_in, card_name_of};
 use crate::cli::network::NetworkFilesystem;
-use crate::cli::observer::{self, ObserverCommand, ObserverEffects, OperatorEffects};
+use crate::cli::observer::{
+    self, ObserverCommand, ObserverEffects, OperatorEffects, tab_separated_line,
+};
 use crate::config::{NetworkConfig, OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
 use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use crate::errors::ExitStatus;
@@ -23,8 +25,6 @@ use crate::node::{RelayProbe, known_host_addresses};
 use crate::sidecar::{Pause, SidecarError, claim};
 
 const RELAY_ANSWER_DEADLINE: Duration = Duration::from_secs(5);
-const FIELD_SEPARATOR: char = '\t';
-const LINE_END: &str = "\n";
 const ITEM_SEPARATOR: &str = "; ";
 const PASSED_WORD: &str = "pass";
 const FAILED_WORD: &str = "fail";
@@ -138,9 +138,7 @@ impl<'stream, Stream: Write> Report<'stream, Stream> {
                 (FAILED_WORD, detail)
             }
         };
-        let line = [check.name(), word, &detail.replace(char::is_control, " ")]
-            .join(&FIELD_SEPARATOR.to_string())
-            + LINE_END;
+        let line = tab_separated_line(&[check.name(), word, detail]);
         self.stdout
             .write_all(line.as_bytes())
             .and_then(|()| self.stdout.flush())
@@ -447,6 +445,7 @@ mod tests {
     use tokio::time::Instant;
 
     use super::*;
+    use crate::cli::observer::FIELD_SEPARATOR;
     use crate::cli::observer::{ObserverEffects, OperatorEffects};
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
@@ -820,6 +819,22 @@ mod tests {
             "{lines:?}"
         );
         assert_eq!(detail_of_check(&lines, "sidecars"), "sidecars matching: 3");
+    }
+
+    #[tokio::test]
+    async fn spec_3_13_doctor_spells_out_a_control_character_of_a_card_file_name_as_every_line_does()
+     {
+        let lab = Lab::healthy("control-in-name").await;
+        let cards = lab.directories.cards_directory(NETWORK_NAME).unwrap();
+        fs::write(cards.join("bad\u{1}name.yaml"), "handle: [unclosed").unwrap();
+
+        let (_status, lines) = lab.diagnose().await;
+        drop(lab);
+
+        assert!(
+            detail_of_check(&lines, "cards").contains("bad\\u{1}name.yaml"),
+            "{lines:?}"
+        );
     }
 
     #[tokio::test]

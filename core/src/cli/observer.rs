@@ -52,7 +52,7 @@ const UNREACHABLE_KIND: &str = "unreachable";
 const INFRASTRUCTURE_KIND: &str = "infrastructure";
 const PRESENCE_REQUEST_KIND: &str = "presence-request";
 const OWNER_FIELD: &str = "owner";
-const FIELD_SEPARATOR: char = '\t';
+pub(crate) const FIELD_SEPARATOR: char = '\t';
 const LINE_END: &str = "\n";
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -441,7 +441,7 @@ async fn release_card(session: &Session) {
 
 /// The result line of a delivered message.
 fn delivery_line(delivery: &Delivery) -> String {
-    line_of(&[DELIVERED_KIND, &delivery.id, &delivery.attached.to_string()])
+    tab_separated_line(&[DELIVERED_KIND, &delivery.id, &delivery.attached.to_string()])
 }
 
 /// Writes the line to the result stream and flushes it.
@@ -838,7 +838,7 @@ fn peer_line(peer: &Peer) -> String {
         .public
         .as_deref()
         .map_or_else(|| NO_PUBLIC_FIELDS.to_owned(), public_text);
-    line_of(&[
+    tab_separated_line(&[
         peer.effective_handle.as_str(),
         status_text(peer.status),
         &peer.attached.to_string(),
@@ -849,7 +849,7 @@ fn peer_line(peer: &Peer) -> String {
 /// The result line of a gossip payload: its kind, then every field of the payload in the order spec 3.7 declares them.
 fn payload_line(payload: &OpenedPayload) -> Result<String, Failure> {
     Ok(match payload {
-        OpenedPayload::Presence(presence) => line_of(&[
+        OpenedPayload::Presence(presence) => tab_separated_line(&[
             PRESENCE_KIND,
             &json_text(PRESENCE_KIND, &presence.v)?,
             &hex_text(&presence.card),
@@ -861,7 +861,7 @@ fn payload_line(payload: &OpenedPayload) -> Result<String, Failure> {
             &hex_text(&presence.mac),
             &hex_text(&presence.sig.0),
         ]),
-        OpenedPayload::Departure(departure) => line_of(&[
+        OpenedPayload::Departure(departure) => tab_separated_line(&[
             DEPARTURE_KIND,
             &json_text(DEPARTURE_KIND, &departure.v)?,
             &hex_text(&departure.card),
@@ -869,7 +869,7 @@ fn payload_line(payload: &OpenedPayload) -> Result<String, Failure> {
             &hex_text(&departure.mac),
             &hex_text(&departure.sig.0),
         ]),
-        OpenedPayload::Unreachable(report) => line_of(&[
+        OpenedPayload::Unreachable(report) => tab_separated_line(&[
             UNREACHABLE_KIND,
             &json_text(UNREACHABLE_KIND, &report.v)?,
             &hex_text(&report.card),
@@ -880,7 +880,7 @@ fn payload_line(payload: &OpenedPayload) -> Result<String, Failure> {
         ]),
         OpenedPayload::Infrastructure(valid) => {
             let record = valid.record();
-            line_of(&[
+            tab_separated_line(&[
                 INFRASTRUCTURE_KIND,
                 &json_text(INFRASTRUCTURE_KIND, &record.v)?,
                 &hex_text(&record.host),
@@ -892,7 +892,7 @@ fn payload_line(payload: &OpenedPayload) -> Result<String, Failure> {
                 &hex_text(&record.sig.0),
             ])
         }
-        OpenedPayload::PresenceRequest(request) => line_of(&[
+        OpenedPayload::PresenceRequest(request) => tab_separated_line(&[
             PRESENCE_REQUEST_KIND,
             &json_text(PRESENCE_REQUEST_KIND, &request.v)?,
             &hex_text(&request.requester),
@@ -904,7 +904,7 @@ fn payload_line(payload: &OpenedPayload) -> Result<String, Failure> {
 }
 
 /// Joins the fields into one tab-separated line.
-fn line_of(fields: &[&str]) -> String {
+pub(crate) fn tab_separated_line(fields: &[&str]) -> String {
     let escaped: Vec<String> = fields.iter().map(|field| escape_controls(field)).collect();
     escaped.join(&FIELD_SEPARATOR.to_string()) + LINE_END
 }
