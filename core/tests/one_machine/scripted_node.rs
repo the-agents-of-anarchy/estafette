@@ -1,20 +1,25 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use estafette::crypto::GateKey;
 use estafette::net::endpoint::DIRECT_ALPN;
 use estafette::net::endpoint::{GateFailure, NodeEndpoint};
-use estafette::stream_items::StreamExt;
+use estafette::wire::WIRE_LIMIT_BYTES;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router, RouterBuilder};
 use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey};
 use iroh_gossip::api::{GossipReceiver, GossipSender};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId};
+use n0_future::StreamExt;
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 
 type Admitted = Arc<Mutex<BTreeSet<EndpointId>>>;
+
+/// How long a direct request may take to be answered: the server read timeout of spec 3.14 (10000 ms) with slack.
+const DIRECT_ANSWER_WAIT: Duration = Duration::from_secs(15);
 
 /// An iroh node the test drives on the network topic: it links the nodes it admits, and plays a host, a forger or an outsider.
 pub struct ScriptedNode {
@@ -114,6 +119,27 @@ impl ScriptedNode {
         self.runtime()
             .block_on(self.topic.broadcast(payload.into()))
             .unwrap();
+    }
+
+    /// Sends the bytes as one direct request to the node over a fresh connection and returns the answer, none when the connection, the stream or the wait fails.
+    pub fn request_directly(&self, to: EndpointId, request: &[u8]) -> Option<Vec<u8>> {
+        self.runtime().block_on(async {
+            tokio::time::timeout(DIRECT_ANSWER_WAIT, async {
+                let connection = self
+                    .endpoint()
+                    .endpoint()
+                    .connect(to, DIRECT_ALPN)
+                    .await
+                    .ok()?;
+                let (mut send, mut receive) = connection.open_bi().await.ok()?;
+                send.write_all(request).await.ok()?;
+                send.finish().ok()?;
+                receive.read_to_end(WIRE_LIMIT_BYTES).await.ok()
+            })
+            .await
+            .ok()
+            .flatten()
+        })
     }
 
     /// The node's endpoint.

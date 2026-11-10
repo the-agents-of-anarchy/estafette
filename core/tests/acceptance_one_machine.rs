@@ -154,22 +154,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         request: Request,
     ) -> Response {
         let sealed = seal_request(network.keys(), request).unwrap();
-        let answer = node.runtime().block_on(async {
-            tokio::time::timeout(DIRECT_REQUEST_WAIT, async {
-                let connection = node
-                    .endpoint()
-                    .endpoint()
-                    .connect(to, DIRECT_ALPN)
-                    .await
-                    .unwrap();
-                let (mut send, mut receive) = connection.open_bi().await.unwrap();
-                send.write_all(&sealed).await.unwrap();
-                send.finish().unwrap();
-                receive.read_to_end(WIRE_LIMIT_BYTES).await.unwrap()
-            })
-            .await
-            .unwrap()
-        });
+        let answer = node.request_directly(to, &sealed).unwrap();
         open_response(network.keys(), &answer).unwrap()
     }
 
