@@ -33,6 +33,9 @@ const EXIT_USAGE: u8 = 2;
 const EXIT_CHECK_FAILED: u8 = 3;
 const MESSAGING_TOKEN_VARIABLE: &str = "CLAUDE_CODE_MESSAGING_TOKEN";
 const HOME_VARIABLE: &str = "HOME";
+const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
+const CONFIG_HOME_UNDER_HOME: &str = ".config";
+const PRODUCT_DIRECTORY: &str = "estafette";
 const CLAUDE_CONFIG_DIR_VARIABLE: &str = "CLAUDE_CONFIG_DIR";
 const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
 const TEMPORARY_DIRECTORY_VARIABLE: &str = "TMPDIR";
@@ -76,6 +79,7 @@ struct Environment {
     messaging_socket: Option<PathBuf>,
     messaging_token: Option<String>,
     home: Option<PathBuf>,
+    xdg_config_home: Option<PathBuf>,
     claude_config_dir: Option<PathBuf>,
     xdg_runtime_dir: Option<PathBuf>,
     temporary_dir: PathBuf,
@@ -96,6 +100,7 @@ fn read_environment() -> Result<Environment, CommandError> {
         messaging_token: non_empty_variable(MESSAGING_TOKEN_VARIABLE)
             .and_then(|token| token.into_string().ok()),
         home: non_empty_variable(HOME_VARIABLE).map(PathBuf::from),
+        xdg_config_home: non_empty_variable(CONFIG_HOME_VARIABLE).map(PathBuf::from),
         claude_config_dir: non_empty_variable(CLAUDE_CONFIG_DIR_VARIABLE).map(PathBuf::from),
         xdg_runtime_dir: non_empty_variable(RUNTIME_DIRECTORY_VARIABLE).map(PathBuf::from),
         temporary_dir: non_empty_variable(TEMPORARY_DIRECTORY_VARIABLE)
@@ -109,7 +114,8 @@ fn read_environment() -> Result<Environment, CommandError> {
 #[derive(Debug)]
 enum CommandError {
     MissingVariable(&'static str),
-    HomeOwnerUnreadable { home: PathBuf, source: io::Error },
+    ConfigBaseUnresolvable,
+    ConfigDirectoryOwnerUnreadable { path: PathBuf, source: io::Error },
     SettingsUnreadable { path: PathBuf, source: io::Error },
     WorkingDirectoryUnreadable(io::Error),
     ReportUnwritable(io::Error),
@@ -120,10 +126,14 @@ impl fmt::Display for CommandError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingVariable(name) => write!(formatter, "{name} is not set"),
-            Self::HomeOwnerUnreadable { home, source } => write!(
+            Self::ConfigBaseUnresolvable => write!(
+                formatter,
+                "{CONFIG_HOME_VARIABLE} and {HOME_VARIABLE} are both unset or empty: set one of them"
+            ),
+            Self::ConfigDirectoryOwnerUnreadable { path, source } => write!(
                 formatter,
                 "cannot read the owner of {}: {source}",
-                home.display()
+                path.display()
             ),
             Self::SettingsUnreadable { path, source } => {
                 write!(formatter, "cannot read {}: {source}", path.display())
@@ -196,22 +206,33 @@ impl Files for OperatingSystemFiles {
     }
 }
 
-/// Names the runtime directory inputs, taking the user id from the owner of the home directory.
+/// Names the config directory the way core resolves it, from the config base variable or else the home directory.
+fn core_config_directory(environment: &Environment) -> Result<PathBuf, CommandError> {
+    environment
+        .xdg_config_home
+        .clone()
+        .or_else(|| {
+            environment
+                .home
+                .as_ref()
+                .map(|home| home.join(CONFIG_HOME_UNDER_HOME))
+        })
+        .map(|base| base.join(PRODUCT_DIRECTORY))
+        .ok_or(CommandError::ConfigBaseUnresolvable)
+}
+
+/// Names the runtime directory inputs, taking the user id from the owner of the config directory as core does.
 fn runtime_inputs(
     environment: &Environment,
     files: &impl Files,
 ) -> Result<RuntimeDirectoryInputs, CommandError> {
-    let home = environment
-        .home
-        .clone()
-        .ok_or(CommandError::MissingVariable(HOME_VARIABLE))?;
-    let user_id =
-        files
-            .owner_user_id(&home)
-            .map_err(|source| CommandError::HomeOwnerUnreadable {
-                home: home.clone(),
-                source,
-            })?;
+    let config_directory = core_config_directory(environment)?;
+    let user_id = files.owner_user_id(&config_directory).map_err(|source| {
+        CommandError::ConfigDirectoryOwnerUnreadable {
+            path: config_directory.clone(),
+            source,
+        }
+    })?;
     Ok(RuntimeDirectoryInputs {
         xdg_runtime_dir: environment.xdg_runtime_dir.clone(),
         temporary_dir: Some(environment.temporary_dir.clone()),
@@ -803,6 +824,7 @@ mod tests {
             messaging_socket: None,
             messaging_token: None,
             home: None,
+            xdg_config_home: None,
             claude_config_dir: None,
             xdg_runtime_dir: None,
             temporary_dir: PathBuf::from("/tmp"),
@@ -913,6 +935,96 @@ mod tests {
             BridgeOutcome::AlreadyServed { bridge_pid: 700 }
         );
         assert_eq!(lock(&wiring.spawned).len(), 0);
+    }
+
+    const CORE_OWNER_OF_CONFIG_BASE: u32 = 4242;
+    const CORE_OWNER_OF_HOME_CONFIG: u32 = 77;
+    const OWNER_OF_HOME: u32 = 55;
+
+    fn files_owned_as_core_reads_them() -> StandInFiles {
+        let mut files = StandInFiles::default();
+        files.owners.insert(
+            PathBuf::from("/cfg/estafette"),
+            Ok(CORE_OWNER_OF_CONFIG_BASE),
+        );
+        files.owners.insert(
+            PathBuf::from("/home/ana/.config/estafette"),
+            Ok(CORE_OWNER_OF_HOME_CONFIG),
+        );
+        files
+            .owners
+            .insert(PathBuf::from("/home/ana"), Ok(OWNER_OF_HOME));
+        files
+    }
+
+    fn runtime_user_id_for(environment: Environment) -> Result<u32, String> {
+        let environment = Environment {
+            messaging_socket: Some(PathBuf::from("/tmp/session.sock")),
+            messaging_token: Some("token".to_owned()),
+            claude_config_dir: Some(PathBuf::from(CLAUDE_CONFIG_DIRECTORY)),
+            ..environment
+        };
+        bridge_effects(&environment, files_owned_as_core_reads_them())
+            .map(|effects| effects.runtime_inputs.user_id)
+            .map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn spec_3_3_the_runtime_directory_user_id_is_the_owner_of_the_config_directory_core_resolves() {
+        let with_config_base = Environment {
+            xdg_config_home: Some(PathBuf::from("/cfg")),
+            home: Some(PathBuf::from("/home/ana")),
+            ..bare_environment()
+        };
+        assert_eq!(
+            runtime_user_id_for(with_config_base),
+            Ok(CORE_OWNER_OF_CONFIG_BASE)
+        );
+        let under_home = Environment {
+            home: Some(PathBuf::from("/home/ana")),
+            ..bare_environment()
+        };
+        assert_eq!(
+            runtime_user_id_for(under_home),
+            Ok(CORE_OWNER_OF_HOME_CONFIG)
+        );
+        let without_home = Environment {
+            xdg_config_home: Some(PathBuf::from("/cfg")),
+            ..bare_environment()
+        };
+        assert_eq!(
+            runtime_user_id_for(without_home),
+            Ok(CORE_OWNER_OF_CONFIG_BASE)
+        );
+    }
+
+    #[test]
+    fn spec_3_3_without_xdg_config_home_and_home_the_bridge_refuses_with_the_message_core_gives() {
+        assert_eq!(
+            runtime_user_id_for(bare_environment()),
+            Err("XDG_CONFIG_HOME and HOME are both unset or empty: set one of them".to_owned())
+        );
+    }
+
+    #[test]
+    fn spec_3_3_a_config_directory_whose_owner_cannot_be_read_is_refused_naming_it() {
+        let environment = Environment {
+            messaging_socket: Some(PathBuf::from("/tmp/session.sock")),
+            messaging_token: Some("token".to_owned()),
+            claude_config_dir: Some(PathBuf::from(CLAUDE_CONFIG_DIRECTORY)),
+            xdg_config_home: Some(PathBuf::from("/cfg")),
+            ..bare_environment()
+        };
+        let mut files = StandInFiles::default();
+        files.owners.insert(
+            PathBuf::from("/cfg/estafette"),
+            Err(io::ErrorKind::PermissionDenied),
+        );
+        let outcome = bridge_effects(&environment, files);
+        assert_eq!(
+            outcome.err().map(|error| error.to_string()),
+            Some("cannot read the owner of /cfg/estafette: permission denied".to_owned())
+        );
     }
 
     #[test]
@@ -1579,6 +1691,7 @@ mod tests {
         tail_reads: Mutex<Vec<PathBuf>>,
         listings: Mutex<usize>,
         writes: Arc<Mutex<Vec<(PathBuf, String)>>>,
+        owners: BTreeMap<PathBuf, Result<u32, io::ErrorKind>>,
     }
 
     impl StandInFiles {
@@ -1623,8 +1736,12 @@ mod tests {
             self.existing.contains(path) && !lock(&self.hidden).contains(path)
         }
 
-        fn owner_user_id(&self, _path: &Path) -> io::Result<u32> {
-            Ok(1000)
+        fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
+            match self.owners.get(path) {
+                Some(Ok(user_id)) => Ok(*user_id),
+                Some(Err(kind)) => Err(io::Error::from(*kind)),
+                None => Ok(1000),
+            }
         }
 
         fn write_text_atomically(&self, path: &Path, text: &str) -> io::Result<()> {
