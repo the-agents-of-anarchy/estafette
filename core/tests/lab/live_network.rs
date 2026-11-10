@@ -12,10 +12,8 @@ use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use iroh_gossip::TopicId;
 
 use crate::forgeries::wall_clock_seconds;
-use crate::scratch_machine::BINARY;
+use crate::scratch_machine::{BINARY, INVITATION_VARIABLE};
 
-/// The variable the acceptance gate exports the live host's invitation in.
-const INVITATION_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_INVITATION";
 /// The task runner every project task runs through.
 pub const TASK_RUNNER: &str = "just";
 /// The recipe that runs the binary in the lab owner's directories.

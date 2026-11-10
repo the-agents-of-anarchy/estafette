@@ -17,6 +17,8 @@ const CLIENT_VERSION: &str = "0";
 const RESPONSE_WAIT: Duration = Duration::from_secs(60);
 /// How often the peers tool is called while waiting for a peer.
 const PEERS_POLL: Duration = Duration::from_millis(50);
+/// How long a member may take to list a peer as a test wants it, through gossip or the direct protocol.
+pub const PRESENCE_WAIT: Duration = Duration::from_secs(20);
 
 /// A running `estafette mcp` process driven as an MCP client over its standard streams, stopped when dropped.
 pub struct McpServer {
@@ -173,4 +175,14 @@ impl Drop for McpServer {
         self.kill();
         self.wait_for_exit();
     }
+}
+
+/// Whether the peers tool lists the peer online.
+pub fn online(peer: &Value) -> bool {
+    peer["status"] == json!("online")
+}
+
+/// Whether the peers tool lists the peer gone.
+pub fn gone(peer: &Value) -> bool {
+    peer["status"] == json!("gone")
 }

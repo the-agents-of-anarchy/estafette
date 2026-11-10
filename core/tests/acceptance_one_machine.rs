@@ -1,4 +1,7 @@
 #[cfg(test)]
+#[path = "support/driven_runtime.rs"]
+mod driven_runtime;
+#[cfg(test)]
 #[path = "one_machine/local_network.rs"]
 mod local_network;
 #[cfg(test)]
@@ -20,8 +23,15 @@ mod scratch_machine;
 #[path = "one_machine/scripted_node.rs"]
 mod scripted_node;
 #[cfg(test)]
+#[path = "support/spec_bounds.rs"]
+mod spec_bounds;
+#[cfg(test)]
 #[path = "support/timed_step.rs"]
 mod timed_step;
+
+/// The id of every Message a test builds by hand, which no check of these tests reads.
+#[cfg(test)]
+const MESSAGE_ID: estafette::wire::MessageId = [9; 16];
 
 #[cfg(test)]
 mod spec_3_15_restart_and_departure_on_one_machine {
@@ -40,21 +50,21 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use iroh::{EndpointId, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
+    use crate::MESSAGE_ID;
     use crate::local_network::LocalNetwork;
+    use crate::mcp_server::{PRESENCE_WAIT, gone, online};
     use crate::member::{Member, loopback_address};
     use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
     use crate::payloads::presence_signed_by;
     use crate::scratch_machine::Card;
     use crate::scripted_node::ScriptedNode;
+    use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
     use crate::timed_step::timed;
 
-    const SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE: Duration = Duration::from_millis(1000);
-    const PRESENCE_WAIT: Duration = Duration::from_secs(20);
     const BODY: &str = "the parser review is ready";
     const SPEC_GONE_KEPT_FOR: Duration = Duration::from_millis(1000);
     const STATUS_POLL: Duration = Duration::from_millis(50);
     const DIRECT_REQUEST_WAIT: Duration = Duration::from_secs(15);
-    const MESSAGE_ID: wire::MessageId = [9; 16];
     const SENT_BEFORE_THE_DEPARTURE: &str = "sent before the departure";
     const SENT_AFTER_THE_DEPARTURE: &str = "sent after the departure";
     const SENT_BEFORE_THE_NEW_PRESENCE: &str = "sent before the new presence";
@@ -64,14 +74,6 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const DOCUMENTATION_HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
     const SENT_BEFORE_THE_PRESENCE: &str = "sent before the presence";
     const SENT_AFTER_THE_PRESENCE: &str = "sent after the presence";
-
-    fn online(peer: &Value) -> bool {
-        peer["status"] == json!("online")
-    }
-
-    fn gone(peer: &Value) -> bool {
-        peer["status"] == json!("gone")
-    }
 
     /// Two members joined through the host, each listing the other online.
     struct MetPair {
@@ -346,8 +348,10 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         bob.kill();
         let killed_ms = wall_clock_ms();
         let second_host = network.stand_in_host();
-        second_host.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
-        let mut restarted = network.start_member();
+        timed("a second host links amy", || {
+            second_host.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
+        });
+        let mut restarted = timed("the restarted bob starts", || network.start_member());
         timed("the restarted bob claims its card", || {
             restarted.init_through(&bob_card, &second_host)
         });
@@ -481,30 +485,38 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         let amy_card = network.create_card("amy-card", "amy");
         let bob_key = SecretKey::generate();
         let first_session = scripted_member(&network, &bob_key);
-        let mut amy = network.start_member();
-        amy.init_through(&amy_card, &first_session);
-        first_session.broadcast(presence_signed_by(
-            network.keys(),
-            &bob_key,
-            "bob",
-            &loopback_address_of(&first_session),
-        ));
+        let mut amy = timed("amy starts", || network.start_member());
+        timed("amy claims its card through the first bob", || {
+            amy.init_through(&amy_card, &first_session)
+        });
+        timed("the first bob's presence", || {
+            first_session.broadcast(presence_signed_by(
+                network.keys(),
+                &bob_key,
+                "bob",
+                &loopback_address_of(&first_session),
+            ));
+        });
         timed("amy lists the first bob online", || {
             amy.peer_within("bob", PRESENCE_WAIT, online)
         });
         drop(first_session);
 
         let restarted = scripted_member(&network, &bob_key);
-        restarted.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
-        let held = restarted
-            .runtime()
-            .block_on(
-                restarted
-                    .endpoint()
-                    .endpoint()
-                    .connect(amy_card.id, DIRECT_ALPN),
-            )
-            .unwrap();
+        timed("the restarted bob links amy", || {
+            restarted.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
+        });
+        let held = timed("the restarted bob connects to amy", || {
+            restarted
+                .runtime()
+                .block_on(
+                    restarted
+                        .endpoint()
+                        .endpoint()
+                        .connect(amy_card.id, DIRECT_ALPN),
+                )
+                .unwrap()
+        });
         let before_presence = timed("the restarted bob's message before its presence", || {
             exchange_on(
                 &network,
@@ -522,7 +534,9 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                 &mut amy,
             );
         });
-        std::thread::sleep(PRESENCE_APPLIED_SETTLE);
+        timed("amy applies the new presence", || {
+            std::thread::sleep(PRESENCE_APPLIED_SETTLE);
+        });
         let after_presence = timed("the restarted bob's message after its presence", || {
             exchange_on(
                 &network,
@@ -531,7 +545,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                 message_from_bob(amy_card.id, wall_clock_ms(), SENT_AFTER_THE_NEW_PRESENCE),
             )
         });
-        let bodies = inbox_bodies(&mut amy);
+        let bodies = timed("amy's inbox tool answers", || inbox_bodies(&mut amy));
         let sent = timed("amy's send to the restarted bob", || send(&mut amy, "bob"));
 
         assert!(
@@ -617,7 +631,9 @@ mod spec_3_15_with_one_member {
     use iroh_gossip::api::Event;
     use serde_json::{Value, json};
 
+    use crate::MESSAGE_ID;
     use crate::local_network::LocalNetwork;
+    use crate::mcp_server::PRESENCE_WAIT;
     use crate::member::{Member, loopback_address};
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::presence_signed_by;
@@ -635,8 +651,6 @@ mod spec_3_15_with_one_member {
     const HONEST_BODY: &str = "a message under the network mac";
     const ATTACKER_HANDLE: &str = "mallory";
     const OUTSIDER_SECRET_BYTE: u8 = 77;
-    const MESSAGE_ID: wire::MessageId = [9; 16];
-    const PRESENCE_WAIT: Duration = Duration::from_secs(10);
     const NOTHING_FURTHER_WAIT: Duration = Duration::from_millis(1000);
     const POLL: Duration = Duration::from_millis(100);
     const TRANSIENT_SOCKET_LIFETIME: Duration = Duration::from_millis(1000);
@@ -924,5 +938,87 @@ mod spec_3_15_with_one_member {
         assert!(closed_when_dialing >= 1);
         assert!(closed_when_dialed > closed_when_dialing);
         assert_eq!(outsider.events(), Vec::<Event>::new());
+    }
+}
+
+#[cfg(test)]
+mod kept_run_records {
+    use std::fs;
+    use std::io::Write;
+    use std::path::Path;
+
+    use crate::scratch_machine::{REDACTED, ScratchMachine};
+
+    const NETWORK: &str = "acme";
+    /// A network secret chosen by this test, in the shape the configuration file takes, not a real secret.
+    const CHOSEN_SECRET: &str = "5ec2e7c0ffee5ec2e7c0ffee5ec2e7c0ffee5ec2e7c0ffee5ec2e7c0ffee5ec2";
+    /// An owner key in the shape the configuration file takes, not a real key.
+    const CHOSEN_OWNER: &str = "0aa1e20aa1e20aa1e20aa1e20aa1e20aa1e20aa1e20aa1e20aa1e20aa1e20aa1";
+    /// A configuration line chosen by this test with no run of letters and digits as long as a key's.
+    const CHOSEN_SHORT_LINE: &str = "# acme lab, set up by hand";
+
+    /// Writes the network configuration of the lines in order, with no `hosts`, which the binary refuses.
+    fn write_configuration_without_hosts(machine: &ScratchMachine, lines: &[&str]) {
+        let config_file = machine.directories().network_config_file(NETWORK).unwrap();
+        fs::create_dir_all(config_file.parent().unwrap()).unwrap();
+        fs::write(&config_file, lines.join("\n")).unwrap();
+    }
+
+    /// Starts the binary's MCP server on the machine and requires it to exit refused.
+    fn start_refused(machine: &ScratchMachine) {
+        assert!(!machine.spawn_mcp_server().wait().unwrap().success());
+    }
+
+    /// Appends the lines to every run record of the machine, as a refusal quoting the configuration would print them.
+    fn append_to_every_run_record(machine: &ScratchMachine, lines: &[&str]) {
+        for record in machine.run_records().unwrap() {
+            let mut file = fs::OpenOptions::new().append(true).open(record).unwrap();
+            file.write_all(lines.join("\n").as_bytes()).unwrap();
+        }
+    }
+
+    /// The content of each record the machine keeps in the directory, which is removed once read.
+    fn kept_contents(machine: &ScratchMachine, directory: &Path) -> Vec<String> {
+        let kept = machine.keep_run_records(directory).unwrap();
+        let contents = kept
+            .iter()
+            .map(|record| fs::read_to_string(record).unwrap())
+            .collect();
+        drop(fs::remove_dir_all(directory));
+        contents
+    }
+
+    /// Kept run records of refused members that hold a line of their network configuration, the secret's line or a short one, hold the redaction marker in place of either.
+    #[test]
+    fn a_kept_run_record_holds_the_redaction_marker_in_place_of_every_configuration_line_a_member_record_holds()
+     {
+        let machine = ScratchMachine::fresh("kept-record", NETWORK);
+        let secret_line = format!("secret = \"{CHOSEN_SECRET}\"");
+        let owner_line = format!("owner = \"{CHOSEN_OWNER}\"");
+        write_configuration_without_hosts(&machine, &[&secret_line, &owner_line]);
+        start_refused(&machine);
+        write_configuration_without_hosts(
+            &machine,
+            &[CHOSEN_SHORT_LINE, &secret_line, &owner_line],
+        );
+        start_refused(&machine);
+        append_to_every_run_record(&machine, &[CHOSEN_SHORT_LINE, &secret_line, &owner_line]);
+        let kept_in =
+            std::env::temp_dir().join(format!("estafette-kept-record-test-{}", std::process::id()));
+
+        let records = kept_contents(&machine, &kept_in);
+
+        assert_eq!(records.len(), 2);
+        for record in &records {
+            assert!(
+                !record.contains(CHOSEN_SECRET),
+                "a kept record holds the secret"
+            );
+            assert!(
+                !record.contains(CHOSEN_SHORT_LINE),
+                "a kept record holds the short configuration line"
+            );
+            assert!(record.contains(REDACTED), "{record}");
+        }
     }
 }

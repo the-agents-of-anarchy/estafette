@@ -44,6 +44,7 @@ impl LocalNetwork {
     }
 
     /// Starts the binary's MCP server for this network, handshaken and with no card claimed.
+    #[track_caller]
     pub fn start_member(&self) -> Member {
         Member::start(self.machine.spawn_mcp_server())
     }

@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use estafette::crypto::GateKey;
@@ -14,7 +13,8 @@ use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId};
 use n0_future::StreamExt;
 use tokio::runtime::Handle;
-use tokio::sync::oneshot;
+
+use crate::driven_runtime::DrivenRuntime;
 
 type Admitted = Arc<Mutex<BTreeSet<EndpointId>>>;
 type Events = Arc<Mutex<Vec<Event>>>;
@@ -24,14 +24,12 @@ const DIRECT_ANSWER_WAIT: Duration = Duration::from_secs(15);
 
 /// An iroh node the test drives on the network topic: it links the nodes it admits, and plays a host, a forger or an outsider.
 pub struct ScriptedNode {
-    runtime: Handle,
+    runtime: DrivenRuntime,
     endpoint: NodeEndpoint,
     router: Router,
     topic: GossipSender,
     admitted: Admitted,
     events: Events,
-    stop_driver: Option<oneshot::Sender<()>>,
-    driver: Option<JoinHandle<()>>,
 }
 
 impl ScriptedNode {
@@ -69,7 +67,8 @@ impl ScriptedNode {
         report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
         extend: impl FnOnce(RouterBuilder) -> RouterBuilder,
     ) -> Self {
-        let (runtime, stop_driver, driver) = start_driver();
+        let driven = DrivenRuntime::start();
+        let runtime = driven.handle().clone();
         let endpoint = runtime
             .block_on(NodeEndpoint::bind(
                 key,
@@ -97,14 +96,12 @@ impl ScriptedNode {
             .split();
         runtime.spawn(record(receiver, Arc::clone(&events)));
         Self {
-            runtime: runtime.clone(),
+            runtime: driven,
             endpoint,
             router,
             topic,
             admitted,
             events,
-            stop_driver: Some(stop_driver),
-            driver: Some(driver),
         }
     }
 
@@ -158,17 +155,13 @@ impl ScriptedNode {
 
     /// The runtime the node's tasks run on, which the test thread may block on.
     pub const fn runtime(&self) -> &Handle {
-        &self.runtime
+        self.runtime.handle()
     }
 }
 
 impl Drop for ScriptedNode {
     fn drop(&mut self) {
-        drop(self.runtime.block_on(self.router.shutdown()));
-        drop(self.stop_driver.take());
-        if let Some(driver) = self.driver.take() {
-            drop(driver.join());
-        }
+        drop(self.runtime().block_on(self.router.shutdown()));
     }
 }
 
@@ -196,23 +189,6 @@ impl ProtocolHandler for AdmittedOnly {
     async fn shutdown(&self) {
         ProtocolHandler::shutdown(&self.gossip).await;
     }
-}
-
-/// A thread driving a runtime of its own until its stop sender is dropped, so the test thread may block on it while its tasks run.
-fn start_driver() -> (Handle, oneshot::Sender<()>, JoinHandle<()>) {
-    let (handle_sender, handle_receiver) = std::sync::mpsc::channel();
-    let (stop_driver, stopped) = oneshot::channel::<()>();
-    let driver = std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        handle_sender.send(runtime.handle().clone()).unwrap();
-        runtime.block_on(async {
-            drop(stopped.await);
-        });
-    });
-    (handle_receiver.recv().unwrap(), stop_driver, driver)
 }
 
 /// Records every event of the subscription, reading each so the topic never drops it for lagging.

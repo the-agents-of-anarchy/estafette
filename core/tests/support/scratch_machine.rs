@@ -1,6 +1,8 @@
 use std::cell::Cell;
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -32,6 +34,16 @@ const RUNTIME_DIRECTORY: &str = "r";
 const RUN_RECORD_EXTENSION: &str = "stderr";
 /// The start of a member's run record file name, before the member's number on its machine.
 const RUN_RECORD_PREFIX: &str = "member";
+/// The variable naming a directory where every member's run record is kept, redacted, when its scratch root is removed; unset, nothing is kept.
+pub const KEPT_RUN_RECORDS_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_RUN_RECORDS";
+/// The variable the acceptance gate exports the live host's invitation in.
+pub const INVITATION_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_INVITATION";
+/// What a kept run record holds in place of a secret.
+pub const REDACTED: &str = "<redacted>";
+/// The fewest letters and digits in a row that a key, a secret or an invitation is written with, so such a run is redacted even where the record quotes it apart from its line.
+const SHORTEST_SECRET_RUN: usize = 16;
+/// The directory a test's records are kept under when the harness gave its thread no name.
+const UNNAMED_TEST: &str = "unnamed-test";
 
 /// One machine's worth of estafette state under a scratch root of its own, short enough for an inbox socket path, configured for one network, counting the MCP servers it started so each keeps its own run record.
 pub struct ScratchMachine {
@@ -122,12 +134,119 @@ impl ScratchMachine {
             .spawn()
             .unwrap()
     }
+
+    /// Copies every member's run record into the directory, named for this machine and the member, each line that holds a secret of this machine kept with that secret replaced by the redaction marker, and returns the kept files.
+    pub fn keep_run_records(&self, directory: &Path) -> io::Result<Vec<PathBuf>> {
+        let secrets = self.secrets_by_length();
+        let machine_name = self.root.file_name().unwrap_or_default().to_string_lossy();
+        fs::create_dir_all(directory)?;
+        let mut kept = Vec::new();
+        for record in self.run_records()? {
+            let record_name = record.file_name().unwrap_or_default().to_string_lossy();
+            let kept_record = directory.join(format!("{machine_name}-{record_name}"));
+            let (text, redacted_lines) = redacted(&fs::read_to_string(&record)?, &secrets);
+            fs::write(&kept_record, text)?;
+            eprintln!(
+                "run record kept at {}: {redacted_lines} lines redacted",
+                kept_record.display()
+            );
+            kept.push(kept_record);
+        }
+        Ok(kept)
+    }
+
+    /// The run record files of the members this machine started.
+    pub fn run_records(&self) -> io::Result<Vec<PathBuf>> {
+        let mut records: Vec<PathBuf> = fs::read_dir(&self.root)?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == RUN_RECORD_EXTENSION)
+            })
+            .collect();
+        records.sort();
+        Ok(records)
+    }
+
+    /// Every non-empty line of every file under this machine's configuration and data directories, each long run of letters and digits in one, and the exported invitation, longest first so a whole line is replaced before a part of it.
+    fn secrets_by_length(&self) -> Vec<String> {
+        let mut secrets = BTreeSet::new();
+        for base in [CONFIG_HOME, DATA_HOME] {
+            for file in files_beneath(&self.root.join(base)) {
+                let Ok(content) = fs::read(&file) else {
+                    continue;
+                };
+                for line in String::from_utf8_lossy(&content).lines() {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        secrets.insert(trimmed.to_owned());
+                    }
+                    secrets.extend(long_alphanumeric_runs(line).map(str::to_owned));
+                }
+            }
+        }
+        if let Ok(invitation) = std::env::var(INVITATION_VARIABLE) {
+            secrets.insert(invitation.trim().to_owned());
+        }
+        let mut by_length: Vec<String> = secrets.into_iter().collect();
+        by_length.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+        by_length
+    }
 }
 
 impl Drop for ScratchMachine {
     fn drop(&mut self) {
+        if let Some(directory) = std::env::var_os(KEPT_RUN_RECORDS_VARIABLE) {
+            let test = std::thread::current()
+                .name()
+                .unwrap_or(UNNAMED_TEST)
+                .replace(':', "-");
+            if let Err(failure) = self.keep_run_records(&PathBuf::from(directory).join(test)) {
+                eprintln!("run records of {} not kept: {failure}", self.root.display());
+            }
+        }
         drop(fs::remove_dir_all(&self.root));
     }
+}
+
+/// The record with each secret replaced by the redaction marker, and how many of its lines held one.
+fn redacted(record: &str, secrets_by_length: &[String]) -> (String, usize) {
+    let mut redacted_lines = 0_usize;
+    let mut kept = String::with_capacity(record.len());
+    for line in record.split_inclusive('\n') {
+        let mut kept_line = line.to_owned();
+        for secret in secrets_by_length {
+            kept_line = kept_line.replace(secret.as_str(), REDACTED);
+        }
+        if kept_line != line {
+            redacted_lines = redacted_lines.saturating_add(1);
+        }
+        kept.push_str(&kept_line);
+    }
+    (kept, redacted_lines)
+}
+
+/// The runs of letters and digits in the line long enough to be a key, a secret or an invitation.
+fn long_alphanumeric_runs(line: &str) -> impl Iterator<Item = &str> {
+    line.split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|run| run.len() >= SHORTEST_SECRET_RUN)
+}
+
+/// Every file beneath the directory, at any depth; none when it does not exist.
+fn files_beneath(directory: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(directory) else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
+        if path.is_dir() {
+            files.extend(files_beneath(&path));
+        } else {
+            files.push(path);
+        }
+    }
+    files
 }
 
 /// The base directories under the scratch root, and the search path the binary finds `ps` on.

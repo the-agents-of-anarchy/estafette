@@ -1,26 +1,23 @@
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use estafette::crypto::GateKey;
 use estafette::net::endpoint::NodeEndpoint;
-use estafette::stream_items::StreamExt;
 use iroh::protocol::Router;
 use iroh::{EndpointAddr, SecretKey};
 use iroh_gossip::api::{GossipReceiver, GossipSender};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId};
-use tokio::runtime::Handle;
-use tokio::sync::oneshot;
+use n0_future::StreamExt;
+
+use crate::driven_runtime::DrivenRuntime;
 
 /// How long the forger may take to gain the host as a gossip neighbor.
 const JOIN_WAIT: Duration = Duration::from_secs(30);
 
 /// A node joined to the live network's topic through its host, broadcasting whatever bytes the test hands it.
 pub struct Forger {
-    runtime: Handle,
+    runtime: DrivenRuntime,
     router: Router,
     topic: GossipSender,
-    stop_driver: Option<oneshot::Sender<()>>,
-    driver: Option<JoinHandle<()>>,
 }
 
 impl Forger {
@@ -32,7 +29,8 @@ impl Forger {
         topic: TopicId,
         host: EndpointAddr,
     ) -> Self {
-        let (runtime, stop_driver, driver) = start_driver();
+        let driven = DrivenRuntime::start();
+        let runtime = driven.handle().clone();
         let endpoint = runtime
             .block_on(NodeEndpoint::bind(
                 key,
@@ -59,17 +57,16 @@ impl Forger {
         let (topic, receiver) = joined.split();
         runtime.spawn(drain(receiver));
         Self {
-            runtime,
+            runtime: driven,
             router,
             topic,
-            stop_driver: Some(stop_driver),
-            driver: Some(driver),
         }
     }
 
     /// Broadcasts the bytes on the topic as they are.
     pub fn broadcast(&self, payload: Vec<u8>) {
         self.runtime
+            .handle()
             .block_on(self.topic.broadcast(payload.into()))
             .unwrap();
     }
@@ -77,29 +74,8 @@ impl Forger {
 
 impl Drop for Forger {
     fn drop(&mut self) {
-        drop(self.runtime.block_on(self.router.shutdown()));
-        drop(self.stop_driver.take());
-        if let Some(driver) = self.driver.take() {
-            drop(driver.join());
-        }
+        drop(self.runtime.handle().block_on(self.router.shutdown()));
     }
-}
-
-/// A thread driving a runtime of its own until its stop sender is dropped, so the test thread may block on it while its tasks run.
-fn start_driver() -> (Handle, oneshot::Sender<()>, JoinHandle<()>) {
-    let (handle_sender, handle_receiver) = std::sync::mpsc::channel();
-    let (stop_driver, stopped) = oneshot::channel::<()>();
-    let driver = std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        handle_sender.send(runtime.handle().clone()).unwrap();
-        runtime.block_on(async {
-            drop(stopped.await);
-        });
-    });
-    (handle_receiver.recv().unwrap(), stop_driver, driver)
 }
 
 /// Reads every event of the subscription, so the topic never drops it for lagging.
