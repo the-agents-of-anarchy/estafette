@@ -718,43 +718,32 @@ mod tests {
         }
     }
 
-    fn every_direct_error() -> Vec<DirectError> {
-        let payload_error = || PayloadError::SignerIsNotThePayloadSigner;
-        vec![
-            DirectError::Unreachable,
-            DirectError::Timeout,
-            DirectError::Refused,
-            DirectError::UnsealableRequest(payload_error()),
-            DirectError::InvalidAck(payload_error()),
-            DirectError::OversizedAck,
-            DirectError::UnexpectedAck,
-            DirectError::MessageAckIdMismatch,
-            DirectError::ProbeNonceMismatch,
-        ]
-    }
-
     #[test]
     fn spec_3_10_a_failed_ack_is_unreachable_or_timeout_only_for_those_failures() {
-        for failure in every_direct_error() {
-            let expected = match failure {
-                DirectError::Unreachable => ErrorCode::Unreachable,
-                DirectError::Timeout => ErrorCode::Timeout,
-                DirectError::Refused
-                | DirectError::UnsealableRequest(_)
-                | DirectError::InvalidAck(_)
-                | DirectError::OversizedAck
-                | DirectError::UnexpectedAck
-                | DirectError::MessageAckIdMismatch
-                | DirectError::ProbeNonceMismatch => ErrorCode::Refused,
-            };
+        let payload_error = || PayloadError::SignerIsNotThePayloadSigner;
+        let expected = [
+            (DirectError::Unreachable, ErrorCode::Unreachable),
+            (DirectError::Timeout, ErrorCode::Timeout),
+            (DirectError::Refused, ErrorCode::Refused),
+            (
+                DirectError::UnsealableRequest(payload_error()),
+                ErrorCode::Refused,
+            ),
+            (DirectError::InvalidAck(payload_error()), ErrorCode::Refused),
+            (DirectError::OversizedAck, ErrorCode::Refused),
+            (DirectError::UnexpectedAck, ErrorCode::Refused),
+            (DirectError::MessageAckIdMismatch, ErrorCode::Refused),
+            (DirectError::ProbeNonceMismatch, ErrorCode::Refused),
+        ];
 
-            assert_eq!(failure_error(&failure), expected);
+        for (failure, code) in expected {
+            assert_eq!(failure_error(&failure), code, "{failure:?}");
         }
     }
 
     #[test]
     fn spec_3_10_a_refusal_reason_is_too_large_only_when_it_is_the_too_large_code() {
-        let reasons = [
+        let other_codes = [
             ErrorCode::NotClaimed,
             ErrorCode::CardNotFound,
             ErrorCode::CardHeld,
@@ -767,17 +756,11 @@ mod tests {
             ErrorCode::Unreachable,
             ErrorCode::Timeout,
             ErrorCode::Refused,
-            ErrorCode::TooLarge,
             ErrorCode::BadRequest,
         ];
-        for reason in &reasons {
-            let expected = if *reason == ErrorCode::TooLarge {
-                ErrorCode::TooLarge
-            } else {
-                ErrorCode::Refused
-            };
-
-            assert_eq!(refusal_error(Some(reason.code())), expected);
+        assert_eq!(refusal_error(Some("too_large")), ErrorCode::TooLarge);
+        for reason in &other_codes {
+            assert_eq!(refusal_error(Some(reason.code())), ErrorCode::Refused);
         }
         assert_eq!(refusal_error(None), ErrorCode::Refused);
     }
