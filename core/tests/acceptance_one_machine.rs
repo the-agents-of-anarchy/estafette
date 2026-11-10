@@ -1166,12 +1166,12 @@ mod spec_3_16_absences_on_one_machine {
         let answered_after = sent_at.elapsed();
         std::thread::sleep(RETRY_WATCH);
 
+        assert_eq!(messages_read.load(Ordering::SeqCst), 1);
         assert_eq!(sent["ok"], json!(false), "{sent}");
         assert!(
             answered_after <= SPEC_ACK_TIMEOUT_WITH_SLACK,
             "{answered_after:?}"
         );
-        assert_eq!(messages_read.load(Ordering::SeqCst), 1);
     }
 
     #[test]
