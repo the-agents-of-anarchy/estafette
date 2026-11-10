@@ -25,7 +25,7 @@ use tokio::task::JoinError;
 
 use crate::card::Card;
 use crate::cli::cards::CardRegistryReader;
-use crate::config::NetworkConfig;
+use crate::config::{NetworkConfig, host_relay_url};
 use crate::crypto::GateKey;
 use crate::dirs::{CARD_EXTENSION, Directories};
 use crate::errors::{Envelope, ErrorCode, You};
@@ -563,7 +563,7 @@ fn known_host_relays(config: &NetworkConfig) -> Vec<RelayUrl> {
     config
         .hosts
         .iter()
-        .filter_map(|host| host.relay.parse().ok())
+        .filter_map(|host| host_relay_url(&host.relay))
         .collect()
 }
 

@@ -19,7 +19,9 @@ use tokio::task::{JoinError, JoinHandle};
 use tokio::time::{Instant, sleep_until};
 
 use super::rebind::{MemberJoins, RebindSchedule, RelayProbe};
-use crate::config::{AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
+use crate::config::{
+    AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis, host_relay_url,
+};
 use crate::crypto::{NetworkKeys, NetworkSecret};
 use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::inbox::buffer::ReceivedMessage;
@@ -847,7 +849,7 @@ impl PresenceLoop {
             return;
         }
         self.replace_lookup_entry(&record.host, &record.addr);
-        if let Ok(relay) = record.relay.as_str().parse::<RelayUrl>() {
+        if let Some(relay) = host_relay_url(record.relay.as_str()) {
             self.endpoint.add_relay(relay).await;
         }
         if verdict == RecordVerdict::FromNewHost
