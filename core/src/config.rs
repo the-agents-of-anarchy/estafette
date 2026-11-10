@@ -21,6 +21,13 @@ const HEX_KEY_LENGTH: usize = 64;
 const RELAY_URL_SCHEME: &str = "https";
 const HOST_RELAY_FIELD: &str = "host relay";
 const HOST_ID_FIELD: &str = "host id";
+const SERDE_MISSING_FIELD_PREFIX: &str = "missing field `";
+const SERDE_UNKNOWN_FIELD_PREFIX: &str = "unknown field `";
+const SERDE_WRONG_VALUE_PREFIXES: [&str; 3] =
+    ["invalid type: ", "invalid value: ", "invalid length "];
+const SERDE_EXPECTED_SEPARATOR: &str = ", expected ";
+const SERDE_NAME_QUOTE: char = '`';
+const NEWLINE: u8 = b'\n';
 
 /// A timestamp of spec 3.1: milliseconds since the Unix epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -127,6 +134,71 @@ impl fmt::Display for AcceptedValue {
     }
 }
 
+/// Where in a configuration file a refusal points: a line and a column, both counted from one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilePosition {
+    pub line: usize,
+    pub column: usize,
+}
+
+/// What a file that is no network configuration gets wrong, in words of the configuration's own shape and never of the file's content.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MalformedProblem {
+    MissingField { field: String },
+    UnknownKey { accepted: String },
+    WrongValue { expected: String },
+    NotToml,
+}
+
+impl fmt::Display for MalformedProblem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingField { field } => write!(formatter, "the field `{field}` is missing"),
+            Self::UnknownKey { accepted } => {
+                write!(formatter, "a key it does not know; it accepts {accepted}")
+            }
+            Self::WrongValue { expected } => {
+                write!(
+                    formatter,
+                    "a value of the wrong type or range; expected {expected}"
+                )
+            }
+            Self::NotToml => formatter.write_str("the text is not valid TOML"),
+        }
+    }
+}
+
+impl MalformedProblem {
+    /// The problem a TOML decoding message names, keeping only the words the configuration's shape supplied.
+    fn of_decoding_message(message: &str) -> Self {
+        let shape_words = || {
+            message
+                .rsplit_once(SERDE_EXPECTED_SEPARATOR)
+                .map(|(_, expected)| expected.to_owned())
+        };
+        if let Some(field) = message
+            .strip_prefix(SERDE_MISSING_FIELD_PREFIX)
+            .and_then(|rest| rest.split_once(SERDE_NAME_QUOTE))
+            .map(|(field, _)| field.to_owned())
+        {
+            return Self::MissingField { field };
+        }
+        if message.starts_with(SERDE_UNKNOWN_FIELD_PREFIX)
+            && let Some(accepted) = shape_words()
+        {
+            return Self::UnknownKey { accepted };
+        }
+        if SERDE_WRONG_VALUE_PREFIXES
+            .iter()
+            .any(|prefix| message.starts_with(prefix))
+            && let Some(expected) = shape_words()
+        {
+            return Self::WrongValue { expected };
+        }
+        Self::NotToml
+    }
+}
+
 /// A refusal to load or rewrite a network configuration file.
 #[derive(Debug)]
 pub enum ConfigError {
@@ -136,7 +208,8 @@ pub enum ConfigError {
     },
     Malformed {
         path: PathBuf,
-        source: toml::de::Error,
+        position: Option<FilePosition>,
+        problem: MalformedProblem,
     },
     Unserializable(toml::ser::Error),
     InvalidField {
@@ -171,9 +244,22 @@ impl fmt::Display for ConfigError {
                 path.display()
             ),
             Self::Io { path, source } => write!(formatter, "{}: {source}", path.display()),
-            Self::Malformed { path, source } => write!(
+            Self::Malformed {
+                path,
+                position: Some(FilePosition { line, column }),
+                problem,
+            } => write!(
                 formatter,
-                "{}: not a valid network configuration: {source}",
+                "{}: not a valid network configuration at line {line}, column {column}: {problem}",
+                path.display()
+            ),
+            Self::Malformed {
+                path,
+                position: None,
+                problem,
+            } => write!(
+                formatter,
+                "{}: not a valid network configuration: {problem}",
                 path.display()
             ),
             Self::Unserializable(source) => {
@@ -311,12 +397,30 @@ fn io_error(path: &Path) -> impl FnOnce(io::Error) -> ConfigError {
 }
 
 fn parse(path: &Path, text: &str) -> Result<NetworkConfig, ConfigError> {
-    let config: NetworkConfig = toml::from_str(text).map_err(|source| ConfigError::Malformed {
-        path: path.to_owned(),
-        source,
-    })?;
+    let config: NetworkConfig =
+        toml::from_str(text).map_err(|decoding| ConfigError::Malformed {
+            path: path.to_owned(),
+            position: decoding
+                .span()
+                .and_then(|span| position_in(text, span.start)),
+            problem: MalformedProblem::of_decoding_message(decoding.message()),
+        })?;
     config.validate(path)?;
     Ok(config)
+}
+
+/// The line and column of a byte offset in the text, both counted from one.
+fn position_in(text: &str, offset: usize) -> Option<FilePosition> {
+    let before = text.as_bytes().get(..offset)?;
+    let lines_begun = before.split(|byte| *byte == NEWLINE).count();
+    let bytes_into_line = before
+        .rsplit(|byte| *byte == NEWLINE)
+        .next()
+        .map_or(0, <[u8]>::len);
+    Some(FilePosition {
+        line: lines_begun,
+        column: bytes_into_line.saturating_add(1),
+    })
 }
 
 fn is_lowercase_hex_key(value: &str) -> bool {
@@ -665,6 +769,76 @@ mod tests {
             NetworkConfig::load(&in_host),
             Err(ConfigError::Malformed { .. })
         ));
+    }
+
+    const CHOSEN_SECRET: &str = "c0ffee5ec2e7c0ffee5ec2e7c0ffee5ec2e7c0ffee5ec2e7c0ffee5ec2e7c0ff";
+
+    fn rendered_with_its_sources(refusal: &ConfigError) -> String {
+        use std::fmt::Write as _;
+        let mut rendered = format!("{refusal}\n{refusal:?}");
+        let mut source = std::error::Error::source(refusal);
+        while let Some(cause) = source {
+            write!(rendered, "\n{cause}\n{cause:?}").unwrap();
+            source = cause.source();
+        }
+        rendered
+    }
+
+    /// Conventions interfaces-and-refusals and spec 3.3: a refusal at load names the file and what is wrong, never anything the file holds.
+    #[test]
+    fn load_refusal_never_quotes_the_configuration_file() {
+        let directory = scratch_directory("never-quoted");
+        let owner = hex_key('b');
+        let id = host_id(b'c');
+        let malformed_files = [
+            (
+                "missing-field",
+                "line 1, column 1: the field `hosts` is missing",
+                format!("secret = \"{CHOSEN_SECRET}\"\nowner = \"{owner}\"\n"),
+            ),
+            (
+                "wrong-type",
+                "line 3, column 124: a value of the wrong type or range; expected u64",
+                format!(
+                    "secret = \"{CHOSEN_SECRET}\"\nowner = \"{owner}\"\nhosts = [{{ id = \"{id}\", relay = \"{VALID_RELAY}\", ts = \"{CHOSEN_SECRET}\" }}]\n"
+                ),
+            ),
+            (
+                "unknown-key",
+                "line 4, column 1: a key it does not know; it accepts one of `secret`, `owner`, `hosts`",
+                format!(
+                    "secret = \"{CHOSEN_SECRET}\"\nowner = \"{owner}\"\nhosts = []\n{CHOSEN_SECRET} = 1\n"
+                ),
+            ),
+            (
+                "syntax-on-the-secret-line",
+                "line 1, column 75: the text is not valid TOML",
+                format!("secret = \"{CHOSEN_SECRET}\nowner = \"{owner}\"\nhosts = []\n"),
+            ),
+            (
+                "bad-key-text",
+                "secret must be 64 lowercase hexadecimal characters",
+                format!("secret = \"{CHOSEN_SECRET}0\"\nowner = \"{owner}\"\nhosts = []\n"),
+            ),
+        ];
+
+        for (name, what_is_wrong, text) in malformed_files {
+            let path = directory.join(format!("{name}.toml"));
+            fs::write(&path, text).unwrap();
+
+            let refusal = NetworkConfig::load(&path).unwrap_err();
+
+            let rendered = rendered_with_its_sources(&refusal);
+            assert!(!rendered.contains(CHOSEN_SECRET), "{name}: {rendered}");
+            assert!(
+                rendered.contains(&path.display().to_string()),
+                "{name}: {rendered}"
+            );
+            assert!(
+                refusal.to_string().ends_with(what_is_wrong),
+                "{name}: {refusal}"
+            );
+        }
     }
 
     /// Spec 3.3: a rewrite over a malformed file refuses and leaves the file as it was.
