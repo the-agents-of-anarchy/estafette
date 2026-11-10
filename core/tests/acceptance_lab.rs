@@ -91,6 +91,10 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
     const VALID_FORGER_SEED: u8 = 151;
     /// Key seed of the certified host that record names.
     const VALID_HOST_SEED: u8 = 152;
+    /// Key seed of the forger that sends the unedited record whose mac `remacked` computed.
+    const REMACKED_FORGER_SEED: u8 = 161;
+    /// Key seed of the certified host that record names.
+    const REMACKED_HOST_SEED: u8 = 162;
 
     /// The key every byte of whose seed is the seed.
     fn key(seed: u8) -> SecretKey {
@@ -342,6 +346,30 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
         assert_eq!(
             saved.map(|saved| (saved.relay.as_str(), saved.ts)),
             Some((scene.network.host_relay(), Some(accepted_ts))),
+            "{hosts:?}"
+        );
+    }
+
+    /// Spec 3.15 test 27, control for the forged cases: a sealed record left unedited, its mac computed afresh by `remacked`, is saved, so a forgery built with `remacked` passes the mac and reaches the check its case names.
+    #[test]
+    fn spec_3_15_test_27_a_remacked_unedited_record_is_accepted() {
+        let scene = Scene::joined("u40-remacked", REMACKED_FORGER_SEED);
+        let host = key(REMACKED_HOST_SEED);
+        let ts = wall_clock_seconds();
+        let record = scene.certified_record(&host, ts);
+        let unedited = unsealed(&sealed(scene.network.keys(), &host, record));
+
+        scene
+            .forger
+            .broadcast(remacked(scene.network.keys(), unedited));
+        let hosts = scene
+            .machine
+            .hosts_once_named(&id_text(&host), ACCEPTANCE_WAIT);
+
+        let saved = hosts.iter().find(|saved| saved.id == id_text(&host));
+        assert_eq!(
+            saved.map(|saved| (saved.relay.as_str(), saved.ts)),
+            Some((scene.network.host_relay(), Some(ts))),
             "{hosts:?}"
         );
     }
