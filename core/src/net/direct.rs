@@ -83,11 +83,8 @@ impl AcceptedConnections {
         let superseded = self
             .held()
             .get_mut(&card)
-            .map(|from_card| {
-                for accepted in from_card.iter_mut() {
-                    accepted.note_hearing(now);
-                }
-                from_card
+            .map(|accepted| {
+                accepted
                     .extract_if(.., |accepted| {
                         Some(accepted.connection.stable_id()) != spared
                             && accepted.is_from_a_gone_process(now)
