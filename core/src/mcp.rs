@@ -29,7 +29,7 @@ use crate::config::{NetworkConfig, host_relay_url};
 use crate::crypto::GateKey;
 use crate::dirs::{CARD_EXTENSION, Directories};
 use crate::errors::{Envelope, ErrorCode, You};
-use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
+use crate::handle::{AnnouncedHandle, Handle, LocalHandle, MAX_LOCAL_LENGTH};
 use crate::inbox::buffer::InboxFrame;
 use crate::net::endpoint::NodeEndpoint;
 use crate::node::{
@@ -45,8 +45,6 @@ const SERVER_NAME: &str = "estafette";
 const SERVER_INPUT_BUFFER_BYTES: usize = 64 * 1024;
 /// The six tools of spec 3.10 (D28).
 const TOOL_COUNT: usize = 6;
-/// The longest local name of a member, and so the longest `to` (spec 3.1, effective handle).
-const LOCAL_HANDLE_MAX_CHARACTERS: usize = 74;
 const SCHEMA_TYPE_KEY: &str = "type";
 const SCHEMA_OBJECT_TYPE: &str = "object";
 const SCHEMA_PROPERTIES_KEY: &str = "properties";
@@ -659,7 +657,7 @@ impl TryFrom<String> for Recipient {
     type Error = RecipientTooLong;
 
     fn try_from(handle: String) -> Result<Self, RecipientTooLong> {
-        if handle.chars().count() > LOCAL_HANDLE_MAX_CHARACTERS {
+        if handle.chars().count() > MAX_LOCAL_LENGTH {
             Err(RecipientTooLong)
         } else {
             Ok(Self(handle))
@@ -675,7 +673,7 @@ impl fmt::Display for RecipientTooLong {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "a handle is at most {LOCAL_HANDLE_MAX_CHARACTERS} characters"
+            "a handle is at most {MAX_LOCAL_LENGTH} characters"
         )
     }
 }
@@ -874,10 +872,7 @@ impl ToolName {
         let recipient = || {
             typed(
                 SCHEMA_STRING_TYPE,
-                vec![(
-                    SCHEMA_MAX_LENGTH_KEY,
-                    Value::from(LOCAL_HANDLE_MAX_CHARACTERS),
-                )],
+                vec![(SCHEMA_MAX_LENGTH_KEY, Value::from(MAX_LOCAL_LENGTH))],
             )
         };
         match self {

@@ -10,7 +10,8 @@ const LEADING_ZERO: char = '0';
 const SUFFIX_SEPARATOR_LENGTH: usize = 1;
 const MAX_ANNOUNCED_LENGTH: usize =
     MAX_HANDLE_LENGTH + SUFFIX_SEPARATOR_LENGTH + SUFFIX_DIGITS_AFTER_FULL_LENGTH_BASE;
-const MAX_LOCAL_LENGTH: usize =
+/// The longest local handle, which no `to` of a tool call may exceed (spec 3.1, effective handle).
+pub const MAX_LOCAL_LENGTH: usize =
     MAX_ANNOUNCED_LENGTH + SUFFIX_SEPARATOR_LENGTH + SUFFIX_DIGITS_AFTER_FULL_LENGTH_BASE;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -227,10 +228,29 @@ mod tests {
     }
 
     #[test]
-    fn length_limits_are_the_spec_figures_32_53_and_74_spec_3_1() {
-        assert_eq!(MAX_HANDLE_LENGTH, 32);
-        assert_eq!(MAX_ANNOUNCED_LENGTH, 53);
-        assert_eq!(MAX_LOCAL_LENGTH, 74);
+    fn spec_3_1_the_longest_handles_are_32_53_and_74_characters_and_one_more_is_refused() {
+        let handle = "h".repeat(32);
+        let announced = format!("{handle}-{}", "2".repeat(20));
+        let local = format!("{announced}-{}", "2".repeat(20));
+        handle.parse::<Handle>().unwrap();
+        assert_eq!(
+            format!("{handle}h").parse::<Handle>().unwrap_err(),
+            HandleError::NotAHandle
+        );
+        assert_eq!(announced.len(), 53);
+        announced.parse::<AnnouncedHandle>().unwrap();
+        assert_eq!(
+            format!("{announced}2")
+                .parse::<AnnouncedHandle>()
+                .unwrap_err(),
+            HandleError::NotAnAnnouncedHandle
+        );
+        assert_eq!(local.len(), 74);
+        local.parse::<LocalHandle>().unwrap();
+        assert_eq!(
+            format!("{local}2").parse::<LocalHandle>().unwrap_err(),
+            HandleError::NotALocalHandle
+        );
     }
 
     fn base_handle() -> String {
