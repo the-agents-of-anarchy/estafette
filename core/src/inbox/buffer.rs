@@ -151,11 +151,12 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_11_reading_removes_nothing() {
-        let buffer = buffer_after_pushes(5);
-        let first_read = buffer.frames_since(0);
-        assert_eq!(buffer.frames_since(0), first_read);
-        assert_eq!(first_read.len(), 5);
+    fn spec_3_11_a_replay_between_pushes_removes_nothing_and_numbering_goes_on() {
+        let mut buffer = buffer_after_pushes(3);
+        assert_eq!(seqs(&buffer.frames_since(0)), vec![1, 2, 3]);
+        let next = buffer.push(message_number(4));
+        assert_eq!(next.seq, 4);
+        assert_eq!(seqs(&buffer.frames_since(0)), vec![1, 2, 3, 4]);
     }
 
     #[test]
