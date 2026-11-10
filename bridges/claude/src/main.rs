@@ -6,6 +6,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -176,14 +177,13 @@ trait Files {
 
 struct OperatingSystemFiles;
 
-/// Names the temporary file the calling thread stages a write of the path in, so no two threads share one.
-fn staging_path_of_this_thread(path: &Path) -> PathBuf {
-    let thread_number: String = format!("{:?}", thread::current().id())
-        .chars()
-        .filter(char::is_ascii_digit)
-        .collect();
+static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+/// Names a temporary file beside the path that no other staged write of this process uses.
+fn unique_staging_path(path: &Path) -> PathBuf {
+    let sequence_number = STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let mut staging_name = path.as_os_str().to_owned();
-    staging_name.push(format!(".{thread_number}{STAGING_SUFFIX}"));
+    staging_name.push(format!(".{sequence_number}{STAGING_SUFFIX}"));
     PathBuf::from(staging_name)
 }
 
@@ -231,7 +231,7 @@ impl Files for OperatingSystemFiles {
     }
 
     fn write_text_atomically(&self, path: &Path, text: &str) -> io::Result<()> {
-        let staging = staging_path_of_this_thread(path);
+        let staging = unique_staging_path(path);
         fs::write(&staging, text)?;
         fs::rename(staging, path)
     }
@@ -1045,6 +1045,7 @@ mod tests {
     }
 
     const CORE_PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+    const STAGED_WRITES: usize = 50;
 
     #[test]
     fn spec_3_3_a_bridge_starting_before_core_creates_the_missing_config_directory_as_core_does() {
@@ -1973,36 +1974,18 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_12_two_followed_sockets_write_their_state_files_each_through_its_own_staging_name() {
-        let directory = scratch_directory("staging");
-        let shared_staging_name = directory.join("estafette-bridge-claude-100.staging");
-        fs::create_dir(&shared_staging_name).expect("occupy the shared staging name");
-        let wiring = wiring();
-        let session = BridgeSession {
-            permission_class_file: permission_class_path(&directory, 100),
-            dropped_frames_file: dropped_frames_path(&directory, 100),
-            ..bridge_session_over(&wiring, OperatingSystemFiles, DownConnector)
-        };
-        thread::scope(|sockets| {
-            sockets.spawn(|| session.record_permission_class(PermissionClass::Bypass));
-            sockets.spawn(|| session.record_dropped_frames(7));
-        });
-        assert_eq!(
-            fs::read_to_string(permission_class_path(&directory, 100)).expect("class file"),
-            "bypass"
-        );
-        assert_eq!(
-            fs::read_to_string(dropped_frames_path(&directory, 100)).expect("count file"),
-            "7"
-        );
+    fn spec_3_12_every_staged_write_of_a_state_file_gets_a_staging_path_of_its_own() {
+        let target = Path::new("/state/count");
+        let staging_paths: BTreeSet<PathBuf> = (0..STAGED_WRITES)
+            .map(|_| unique_staging_path(target))
+            .collect();
+        assert_eq!(staging_paths.len(), STAGED_WRITES);
         assert!(
-            lock(&wiring.errors)
+            staging_paths
                 .iter()
-                .all(|message| !message.starts_with("cannot write")),
-            "{:?}",
-            lock(&wiring.errors)
+                .all(|path| path.parent() == target.parent()
+                    && path.to_string_lossy().ends_with(STAGING_SUFFIX))
         );
-        fs::remove_dir_all(&directory).expect("cleanup");
     }
 
     #[test]
