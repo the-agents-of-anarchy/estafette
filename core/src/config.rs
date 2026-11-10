@@ -303,12 +303,20 @@ fn require_hex_key(path: &Path, field: &'static str, value: &str) -> Result<(), 
     }
 }
 
+/// The relay URL a host relay names, when it is an https URL within the wire's limit: the one rule for a host relay, in a record and in the configuration.
+#[must_use]
+pub fn host_relay_url(relay: &str) -> Option<RelayUrl> {
+    if relay.len() > MAX_RELAY_URL_BYTES {
+        return None;
+    }
+    relay
+        .parse::<RelayUrl>()
+        .ok()
+        .filter(|url| url.scheme() == RELAY_URL_SCHEME)
+}
+
 fn require_relay_url(path: &Path, value: &str) -> Result<(), ConfigError> {
-    let is_https_relay_url = value.len() <= MAX_RELAY_URL_BYTES
-        && value
-            .parse::<RelayUrl>()
-            .is_ok_and(|relay| relay.scheme() == RELAY_URL_SCHEME);
-    if is_https_relay_url {
+    if host_relay_url(value).is_some() {
         Ok(())
     } else {
         Err(ConfigError::InvalidField {

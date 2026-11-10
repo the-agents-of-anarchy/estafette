@@ -2,6 +2,7 @@ use std::fmt;
 
 use iroh::{PublicKey, RelayUrl, SecretKey, Signature};
 
+use crate::config::{AcceptedValue, host_relay_url};
 use crate::crypto::{
     CryptoError, MAC_LEN, Mac, NetworkKeys, SignedPayloadKind, sign_payload,
     verify_host_certificate, verify_payload_signature,
@@ -23,7 +24,7 @@ pub enum PayloadError {
     Crypto(CryptoError),
     SignerIsNotThePayloadSigner,
     HostNotCertified,
-    RelayUrlUnparsable,
+    HostRelayRefused,
     AddrRelaysNotTheHostRelay,
     OverGossipFrame { bytes: usize },
 }
@@ -38,9 +39,11 @@ impl fmt::Display for PayloadError {
             Self::HostNotCertified => {
                 formatter.write_str("the owner key did not certify the infrastructure host")
             }
-            Self::RelayUrlUnparsable => {
-                formatter.write_str("the infrastructure relay is not a relay URL")
-            }
+            Self::HostRelayRefused => write!(
+                formatter,
+                "the infrastructure relay is not {}",
+                AcceptedValue::RelayUrl
+            ),
             Self::AddrRelaysNotTheHostRelay => {
                 formatter.write_str("the infrastructure address must list exactly the host relay")
             }
@@ -250,8 +253,8 @@ fn verify_infrastructure_rules(
     if !certified {
         return Err(PayloadError::HostNotCertified);
     }
-    let Ok(relay) = infrastructure.relay.as_str().parse::<RelayUrl>() else {
-        return Err(PayloadError::RelayUrlUnparsable);
+    let Some(relay) = host_relay_url(infrastructure.relay.as_str()) else {
+        return Err(PayloadError::HostRelayRefused);
     };
     let addr_relays: Vec<Option<RelayUrl>> = infrastructure
         .addr
@@ -630,7 +633,20 @@ mod tests {
 
         assert_eq!(
             open_payload(&keys(), &owner_public(), &sealed),
-            Err(PayloadError::RelayUrlUnparsable)
+            Err(PayloadError::HostRelayRefused)
+        );
+    }
+
+    /// Spec 3.3 and 3.8: a record whose relay the network configuration would refuse is dropped, so nothing of it is held or saved.
+    #[test]
+    fn spec_3_3_infrastructure_with_a_relay_the_configuration_refuses_is_dropped() {
+        let plain_http_relay = "http://relay.example/";
+        let payload = certified_infrastructure(plain_http_relay, &[plain_http_relay]);
+        let sealed = seal_payload(&keys(), &secret_key(HOST_SEED), payload).unwrap();
+
+        assert_eq!(
+            open_payload(&keys(), &owner_public(), &sealed),
+            Err(PayloadError::HostRelayRefused)
         );
     }
 
