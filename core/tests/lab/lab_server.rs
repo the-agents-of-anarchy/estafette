@@ -16,8 +16,8 @@ const LIVE_HOST_SERVER_LABEL: &str = "live-host-server";
 const RELAY_ONLY_RECIPE: &str = "remote::relay-only-to-here";
 /// The recipe that deletes those drops, printing their counters.
 const RELAY_PATHS_RESTORED_RECIPE: &str = "remote::relay-paths-restored";
-/// The recipe that starts the network's host on a server, reusing a live one.
-const HOST_STARTED_RECIPE: &str = "remote::infrastructure";
+/// The recipe that starts the network's host on a server that already exists, refusing to create one.
+const HOST_STARTED_RECIPE: &str = "remote::host-start";
 /// The recipe that stops the network's host on a server when it runs.
 const HOST_STOPPED_RECIPE: &str = "remote::host-down";
 
@@ -110,7 +110,7 @@ impl KillableHostServer {
         &self.server
     }
 
-    /// Starts the host on the server unless it runs, with the identity and certificate it had.
+    /// Starts the host on the server unless it runs, with the identity and certificate it had, failing with the server's name when the server does not exist.
     #[track_caller]
     pub fn start_host(&self) {
         self.server.run(HOST_STARTED_RECIPE, &[], &[]);

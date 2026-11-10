@@ -263,3 +263,20 @@ relay-paths-restored:
 [group('lab')]
 host-down:
     ssh {{ ssh_opts }} root@$(hcloud server ip {{ server }}) 'if systemctl is-active --quiet {{ host_unit }}; then systemctl stop {{ host_unit }}; fi'
+
+[doc("Start the network's host on the server unless it runs, as infrastructure set it up there, refusing with the server's name when the server does not exist; creates, pushes and builds nothing")]
+[group('lab')]
+host-start:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! hcloud server describe {{ server }} > /dev/null 2>&1; then
+        echo "no lab server {{ server }}: host-start starts a host only on a server the run already brought up and creates none" >&2
+        exit 1
+    fi
+    address="$(hcloud server ip {{ server }})"
+    domain="${address//./-}.sslip.io"
+    remote() { ssh {{ ssh_opts }} root@"$address" "$@"; }
+    if ! remote systemctl is-active --quiet {{ host_unit }}; then
+        remote systemctl reset-failed {{ host_unit }} 2> /dev/null || true
+        remote systemd-run --unit={{ host_unit }} $(printf -- '--setenv=%s ' {{ remote_host_directories }}) {{ remote_binary }} run-infrastructure {{ lab_network }} "$address" "$domain" >&2
+    fi
