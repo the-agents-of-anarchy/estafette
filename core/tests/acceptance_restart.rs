@@ -25,6 +25,7 @@ mod scripted_node;
 
 #[cfg(test)]
 mod spec_3_15_restart_and_departure_on_one_machine {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::time::{Duration, Instant};
 
     use estafette::crypto::NetworkKeys;
@@ -35,7 +36,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         self, Addr, Introduce, Message, Request, Response, Version, WIRE_LIMIT_BYTES,
     };
     use iroh::endpoint::Connection;
-    use iroh::{EndpointId, SecretKey};
+    use iroh::{EndpointId, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
     use crate::local_network::LocalNetwork;
@@ -57,6 +58,10 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const SENT_BEFORE_THE_NEW_PRESENCE: &str = "sent before the new presence";
     const SENT_AFTER_THE_NEW_PRESENCE: &str = "sent after the new presence";
     const PRESENCE_APPLIED_SETTLE: Duration = Duration::from_millis(500);
+    const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
+    const DOCUMENTATION_HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+    const SENT_BEFORE_THE_PRESENCE: &str = "sent before the presence";
+    const SENT_AFTER_THE_PRESENCE: &str = "sent after the presence";
 
     fn online(peer: &Value) -> bool {
         peer["status"] == json!("online")
@@ -232,6 +237,15 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         loopback_address(address.id, &ports)
     }
 
+    fn address_on_a_host_no_connection_runs_over(node: &ScriptedNode) -> iroh::EndpointAddr {
+        let address = node.endpoint().endpoint().addr();
+        let sockets: Vec<TransportAddr> = address
+            .ip_addrs()
+            .map(|socket| TransportAddr::Ip(SocketAddr::new(DOCUMENTATION_HOST, socket.port())))
+            .collect();
+        iroh::EndpointAddr::from_parts(address.id, sockets)
+    }
+
     fn exchange_on(
         network: &LocalNetwork,
         node: &ScriptedNode,
@@ -257,17 +271,13 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         network: &LocalNetwork,
         node: &ScriptedNode,
         key: &SecretKey,
+        address: &iroh::EndpointAddr,
         member: &mut Member,
     ) {
         let started = Instant::now();
         let first_sent_ms = wall_clock_ms();
         loop {
-            node.broadcast(presence_signed_by(
-                network.keys(),
-                key,
-                "bob",
-                &loopback_address_of(node),
-            ));
+            node.broadcast(presence_signed_by(network.keys(), key, "bob", address));
             let seen_ms = member.peer_within("bob", PRESENCE_WAIT, |_listed| true)["last_seen"]
                 .as_u64()
                 .unwrap();
@@ -479,7 +489,13 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             &held,
             message_from_bob(amy_card.id, wall_clock_ms(), SENT_BEFORE_THE_NEW_PRESENCE),
         );
-        announce_until_seen(&network, &restarted, &bob_key, &mut amy);
+        announce_until_seen(
+            &network,
+            &restarted,
+            &bob_key,
+            &loopback_address_of(&restarted),
+            &mut amy,
+        );
         std::thread::sleep(PRESENCE_APPLIED_SETTLE);
         let after_presence = exchange_on(
             &network,
@@ -508,5 +524,53 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             ]
         );
         assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
+    }
+
+    #[test]
+    fn spec_3_8_and_3_15_test_18_a_live_member_whose_presence_omits_the_address_its_connection_runs_over_keeps_that_connection_and_is_answered()
+     {
+        let network = LocalNetwork::create("live-unannounced-path");
+        let amy_card = network.create_card("amy-card", "amy");
+        let bob_key = SecretKey::generate();
+        let bob = scripted_member(&network, &bob_key);
+        let mut amy = network.start_member();
+        amy.init_through(&amy_card, &bob);
+        let held = bob
+            .runtime()
+            .block_on(bob.endpoint().endpoint().connect(amy_card.id, DIRECT_ALPN))
+            .unwrap();
+        let before_presence = exchange_on(
+            &network,
+            &bob,
+            &held,
+            message_from_bob(amy_card.id, wall_clock_ms(), SENT_BEFORE_THE_PRESENCE),
+        );
+        std::thread::sleep(SPEC_OBSERVER_WAIT);
+
+        announce_until_seen(
+            &network,
+            &bob,
+            &bob_key,
+            &address_on_a_host_no_connection_runs_over(&bob),
+            &mut amy,
+        );
+        std::thread::sleep(PRESENCE_APPLIED_SETTLE);
+        let after_presence = exchange_on(
+            &network,
+            &bob,
+            &held,
+            message_from_bob(amy_card.id, wall_clock_ms(), SENT_AFTER_THE_PRESENCE),
+        );
+
+        assert!(
+            before_presence
+                .as_ref()
+                .is_some_and(is_accepted_message_ack),
+            "{before_presence:?}"
+        );
+        assert!(
+            after_presence.as_ref().is_some_and(is_accepted_message_ack),
+            "{after_presence:?}"
+        );
     }
 }
