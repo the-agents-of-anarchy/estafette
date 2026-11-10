@@ -1,8 +1,10 @@
 #[cfg(feature = "relay")]
 use std::ffi::OsString;
 use std::fmt;
+use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,9 +35,7 @@ use estafette::sidecar::{self, ThreadSleep};
 use estafette::wire::Nonce;
 use iroh::SecretKey;
 use tokio::runtime::Runtime;
-#[cfg(feature = "relay")]
-use tokio::signal::unix::Signal;
-use tokio::signal::unix::{SignalKind, signal};
+use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
@@ -46,10 +46,9 @@ const RANDOM_BYTES_PER_SECRET_KEY: usize = 32;
 const AWAITED_SHUTDOWN_LIMIT: Duration = Duration::from_millis(1000);
 
 const PROGRAM_PURPOSE: &str = "Messaging between agents across machines and harnesses";
-#[cfg(feature = "relay")]
 const INTERRUPT_SIGNAL: &str = "SIGINT";
-#[cfg(feature = "relay")]
 const TERMINATE_SIGNAL: &str = "SIGTERM";
+const HANGUP_SIGNAL: &str = "SIGHUP";
 
 #[derive(Debug, Parser)]
 #[command(name = "estafette", about = PROGRAM_PURPOSE, long_about = PROGRAM_PURPOSE)]
@@ -90,9 +89,7 @@ enum CommandLineFailure {
     NetworkRefused(NodeError),
     Runtime(io::Error),
     InboxSocket(InboxSocketError),
-    Signals(io::Error),
     Observer(ObserverCommandError),
-    #[cfg(feature = "relay")]
     SignalNotHeard {
         signal: &'static str,
         source: io::Error,
@@ -115,14 +112,10 @@ impl fmt::Display for CommandLineFailure {
             Self::NetworkRefused(source) => write!(formatter, "{source}"),
             Self::Runtime(source) => write!(formatter, "cannot start the async runtime: {source}"),
             Self::InboxSocket(source) => write!(formatter, "{source}"),
-            Self::Signals(source) => {
-                write!(formatter, "cannot listen for shutdown signals: {source}")
-            }
             Self::Observer(source) => write!(formatter, "{source}"),
-            #[cfg(feature = "relay")]
             Self::SignalNotHeard { signal, source } => write!(
                 formatter,
-                "cannot listen for {signal}, so the host could not be stopped cleanly and does not start: {source}"
+                "cannot listen for {signal}, so the command does not start: {source}"
             ),
             #[cfg(feature = "relay")]
             Self::Infrastructure(source) => write!(formatter, "{source}"),
@@ -200,7 +193,7 @@ fn serve_mcp(registry: RegistryArgs) -> Result<ExitStatus, CommandLineFailure> {
     let exit = runtime.block_on(async move {
         let inbox = InboxSocket::start(&directories, process_id, &OperatingSystemProcessTable)
             .map_err(CommandLineFailure::InboxSocket)?;
-        let signals = forward_shutdown_signals().map_err(CommandLineFailure::Signals)?;
+        let signals = forward_shutdown_signals()?;
         let served = ServedNetwork {
             inbox_path: directories.inbox_socket_file(process_id),
             directories,
@@ -222,10 +215,11 @@ fn serve_mcp(registry: RegistryArgs) -> Result<ExitStatus, CommandLineFailure> {
 }
 
 /// Forwards SIGTERM, SIGINT and SIGHUP, as they arrive, to the session.
-fn forward_shutdown_signals() -> io::Result<mpsc::UnboundedReceiver<ShutdownSignal>> {
-    let mut terminate = signal(SignalKind::terminate())?;
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut hangup = signal(SignalKind::hangup())?;
+fn forward_shutdown_signals() -> Result<mpsc::UnboundedReceiver<ShutdownSignal>, CommandLineFailure>
+{
+    let mut terminate = listen_for(SignalKind::terminate(), TERMINATE_SIGNAL)?;
+    let mut interrupt = listen_for(SignalKind::interrupt(), INTERRUPT_SIGNAL)?;
+    let mut hangup = listen_for(SignalKind::hangup(), HANGUP_SIGNAL)?;
     let (signals, received) = mpsc::unbounded_channel();
     tokio::spawn(async move {
         loop {
@@ -400,11 +394,16 @@ fn observer_runtime(cards_dir: Option<PathBuf>) -> Result<ObserverRuntime, Comma
         let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         started_at_milliseconds.saturating_add(elapsed)
     };
-    let (effects, operator_effects) = observer_effects(Arc::clone(&directories), clock);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(CommandLineFailure::Runtime)?;
+    let interrupted = {
+        let _inside_runtime = runtime.enter();
+        interrupt_requested(SignalKind::interrupt())?
+    };
+    let (effects, operator_effects) =
+        observer_effects(Arc::clone(&directories), clock, interrupted);
     Ok(ObserverRuntime {
         directories,
         runtime,
@@ -462,6 +461,7 @@ fn run_doctor_command(
 fn observer_effects(
     directories: Arc<Directories>,
     clock: impl Fn() -> u64 + Send + Sync + 'static,
+    interrupted: Pin<Box<dyn Future<Output = ()> + Send>>,
 ) -> (ObserverEffects, OperatorEffects) {
     let effects = ObserverEffects {
         clock: Arc::new(clock),
@@ -478,9 +478,7 @@ fn observer_effects(
                 |failure| report_gate_closing(&failure),
             ))
         }),
-        interrupted: Box::pin(async {
-            drop(tokio::signal::ctrl_c().await);
-        }),
+        interrupted,
     };
     let operator_effects = OperatorEffects {
         fill_probe_nonce: Arc::new(|nonce: &mut Nonce| fill_with_secure_random_bytes(nonce)),
@@ -577,6 +575,16 @@ fn infrastructure_effects(stopped: StopRequested) -> InfrastructureEffects {
     }
 }
 
+/// Listens for the interrupt signal now, refusing to start when it cannot be heard, and resolves when it arrives.
+fn interrupt_requested(
+    kind: SignalKind,
+) -> Result<Pin<Box<dyn Future<Output = ()> + Send>>, CommandLineFailure> {
+    let mut interrupt = listen_for(kind, INTERRUPT_SIGNAL)?;
+    Ok(Box::pin(async move {
+        interrupt.recv().await;
+    }))
+}
+
 /// Listens for the interrupt and terminate signals now, refusing to start when either cannot be heard, and resolves at the first of them.
 #[cfg(feature = "relay")]
 fn stop_requested() -> Result<StopRequested, CommandLineFailure> {
@@ -591,7 +599,6 @@ fn stop_requested() -> Result<StopRequested, CommandLineFailure> {
 }
 
 /// The stream of one signal, refusing a signal this process cannot listen for.
-#[cfg(feature = "relay")]
 fn listen_for(kind: SignalKind, name: &'static str) -> Result<Signal, CommandLineFailure> {
     signal(kind).map_err(|source| CommandLineFailure::SignalNotHeard {
         signal: name,
@@ -724,6 +731,24 @@ mod tests {
             String::from_utf8(record).unwrap(),
             format!("{}\n", CommandLineFailure::ClockBeforeUnixEpoch)
         );
+    }
+
+    #[tokio::test]
+    async fn spec_3_13_a_signal_that_cannot_be_heard_is_a_failure_naming_it_not_an_interrupt() {
+        const UNLISTENABLE_SIGNAL_NUMBER: i32 = -1;
+
+        let refusal = interrupt_requested(SignalKind::from_raw(UNLISTENABLE_SIGNAL_NUMBER))
+            .err()
+            .unwrap();
+
+        assert!(matches!(
+            refusal,
+            CommandLineFailure::SignalNotHeard {
+                signal: "SIGINT",
+                ..
+            }
+        ));
+        assert!(refusal.to_string().starts_with("cannot listen for SIGINT"));
     }
 
     #[test]
