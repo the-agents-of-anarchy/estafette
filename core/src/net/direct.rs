@@ -10,7 +10,7 @@ use iroh::endpoint::{
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointId};
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::time::{Instant, sleep, timeout};
+use tokio::time::{Instant, sleep, timeout, timeout_at};
 
 use super::endpoint::{DIRECT_ALPN, QUIC_KEEP_ALIVE_INTERVAL};
 use crate::crypto::NetworkKeys;
@@ -227,6 +227,39 @@ impl ClientTimeouts {
         ack: ACK_TIMEOUT,
         probe: PROBE_TIMEOUT,
     };
+}
+
+/// When a request's acknowledgement is due, which also bounds how long getting a connection may take.
+#[derive(Debug, Clone, Copy)]
+enum AckDue {
+    /// Within the timeout from the moment a connection is in hand, after getting it within the connect timeout (spec 3.10, steps 4 and 5).
+    FromTheConnection(Duration),
+    /// Within the timeout from the call, getting the connection included (spec 3.6: a probe fails when no valid `ProbeAck` arrives within the probe timeout, for any reason).
+    FromTheCall(Duration),
+}
+
+impl AckDue {
+    /// The instant by which a request called at `called` must hold a connection, never later than the connect timeout allows.
+    fn connection_deadline(self, called: Instant, connect_timeout: Duration) -> Instant {
+        let within = match self {
+            Self::FromTheConnection(_) => connect_timeout,
+            Self::FromTheCall(ack_timeout) => ack_timeout.min(connect_timeout),
+        };
+        later_by(called, within)
+    }
+
+    /// The instant by which the acknowledgement of a request called at `called` and holding its connection from `connected` must arrive.
+    fn ack_deadline(self, called: Instant, connected: Instant) -> Instant {
+        match self {
+            Self::FromTheConnection(ack_timeout) => later_by(connected, ack_timeout),
+            Self::FromTheCall(ack_timeout) => later_by(called, ack_timeout),
+        }
+    }
+}
+
+/// The instant `period` after `start`, or `start` itself where the clock cannot reach that far.
+fn later_by(start: Instant, period: Duration) -> Instant {
+    start.checked_add(period).unwrap_or(start)
 }
 
 /// Why a direct request did not return its valid acknowledgement.
@@ -535,7 +568,11 @@ impl DirectClient {
         message: Message,
     ) -> Result<MessageAck, DirectError> {
         match self
-            .exchange(to, Request::Message(message), self.timeouts.ack)
+            .exchange(
+                to,
+                Request::Message(message),
+                AckDue::FromTheConnection(self.timeouts.ack),
+            )
             .await?
         {
             Response::MessageAck(ack) => Ok(ack),
@@ -546,7 +583,7 @@ impl DirectClient {
     /// Probes the peer and returns its acknowledgement when it is valid for the nonce.
     ///
     /// # Errors
-    /// `DirectError` when no valid acknowledgement arrives within the probe timeout.
+    /// `DirectError` when no valid acknowledgement arrives within the probe timeout of the call, the dial included.
     pub async fn probe(&self, to: EndpointId, nonce: Nonce) -> Result<ProbeAck, DirectError> {
         let probe = Probe {
             v: Version::CURRENT,
@@ -554,7 +591,11 @@ impl DirectClient {
             mac: ZERO_MAC,
         };
         match self
-            .exchange(to, Request::Probe(probe), self.timeouts.probe)
+            .exchange(
+                to,
+                Request::Probe(probe),
+                AckDue::FromTheCall(self.timeouts.probe),
+            )
             .await?
         {
             Response::ProbeAck(ack) if ack.nonce == nonce => Ok(ack),
@@ -573,7 +614,11 @@ impl DirectClient {
         introduce: wire::Introduce,
     ) -> Result<IntroduceAck, DirectError> {
         match self
-            .exchange(to, Request::Introduce(introduce), self.timeouts.ack)
+            .exchange(
+                to,
+                Request::Introduce(introduce),
+                AckDue::FromTheConnection(self.timeouts.ack),
+            )
             .await?
         {
             Response::IntroduceAck(ack) => Ok(ack),
@@ -581,30 +626,39 @@ impl DirectClient {
         }
     }
 
-    /// Sends the request over the held or a freshly dialed connection and returns the valid response, dropping that connection from its slot on any failure.
+    /// Sends the request over the held or a freshly dialed connection and returns the valid response when it is due, dropping that connection from its slot on any failure.
     async fn exchange(
         &self,
         to: EndpointId,
         request: Request,
-        ack_timeout: Duration,
+        due: AckDue,
     ) -> Result<Response, DirectError> {
         let sealed = seal_request(&self.keys, request).map_err(DirectError::UnsealableRequest)?;
-        let connection = self.connection_to(to).await?;
-        let response = self.round_trip(&connection, &sealed, ack_timeout).await;
+        let called = Instant::now();
+        let connection = self
+            .connection_to(to, due.connection_deadline(called, self.timeouts.connect))
+            .await?;
+        let response = self
+            .round_trip(
+                &connection,
+                &sealed,
+                due.ack_deadline(called, Instant::now()),
+            )
+            .await;
         if response.is_err() {
             self.forget_connection(to, &connection).await;
         }
         response
     }
 
-    /// Writes the sealed request on a new stream and reads the response, all within the ack timeout.
+    /// Writes the sealed request on a new stream and reads the response, all by the deadline.
     async fn round_trip(
         &self,
         connection: &Connection,
         sealed_request: &[u8],
-        ack_timeout: Duration,
+        deadline: Instant,
     ) -> Result<Response, DirectError> {
-        let response_bytes = timeout(ack_timeout, async {
+        let response_bytes = timeout_at(deadline, async {
             let (mut send, mut recv) = connection.open_bi().await?;
             send.write_all(sealed_request).await?;
             send.finish()?;
@@ -615,20 +669,29 @@ impl DirectClient {
         open_response(&self.keys, &response_bytes).map_err(DirectError::InvalidAck)
     }
 
-    /// The held connection to the peer, or a new one dialed by card id within the connect timeout and held, so concurrent callers share one dial.
-    async fn connection_to(&self, to: EndpointId) -> Result<Connection, DirectError> {
+    /// The held connection to the peer, or a new one dialed by card id and held, unreachable when neither is in hand by the deadline.
+    async fn connection_to(
+        &self,
+        to: EndpointId,
+        deadline: Instant,
+    ) -> Result<Connection, DirectError> {
+        timeout_at(deadline, self.held_or_dialed_connection(to))
+            .await
+            .map_err(|_elapsed| DirectError::Unreachable)?
+    }
+
+    /// The held connection to the peer, or a new one dialed by card id under the slot's lock and held, so concurrent callers share one dial.
+    async fn held_or_dialed_connection(&self, to: EndpointId) -> Result<Connection, DirectError> {
         let slot = self.slot_of(to);
         let mut held = slot.lock().await;
         if let Some(connection) = held.as_ref() {
             return Ok(connection.clone());
         }
-        let dialed = timeout(
-            self.timeouts.connect,
-            self.endpoint().connect(to, DIRECT_ALPN),
-        )
-        .await
-        .map_err(|_elapsed| DirectError::Unreachable)?
-        .map_err(|_failure| DirectError::Unreachable)?;
+        let dialed = self
+            .endpoint()
+            .connect(to, DIRECT_ALPN)
+            .await
+            .map_err(|_failure| DirectError::Unreachable)?;
         Ok(held.insert(dialed).clone())
     }
 
@@ -1612,15 +1675,20 @@ mod tests {
         assert!(SPEC_ACK_TIMEOUT <= waited && waited < SPEC_ACK_TIMEOUT + TIMEOUT_SLACK);
     }
 
-    #[tokio::test]
-    async fn spec_3_14_dial_to_an_unanswering_address_is_unreachable_after_the_connect_timeout() {
-        let link = link_to(ScriptedServer::replying(None), ClientTimeouts::SPEC).await;
+    fn point_the_server_at_a_silent_socket(link: &Link) -> std::net::UdpSocket {
         let black_hole = std::net::UdpSocket::bind(LOOPBACK_ANY_PORT).unwrap();
         link.client_node
             .replace_address(iroh::EndpointAddr::from_parts(
                 link.server_node.endpoint().id(),
                 [iroh::TransportAddr::Ip(black_hole.local_addr().unwrap())],
             ));
+        black_hole
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_dial_to_an_unanswering_address_is_unreachable_after_the_connect_timeout() {
+        let link = link_to(ScriptedServer::replying(None), ClientTimeouts::SPEC).await;
+        let _black_hole = point_the_server_at_a_silent_socket(&link);
 
         let started = Instant::now();
         let outcome = link
@@ -1634,6 +1702,64 @@ mod tests {
 
         assert_eq!(outcome, Err(DirectError::Unreachable));
         assert!(SPEC_CONNECT_TIMEOUT <= waited && waited < SPEC_CONNECT_TIMEOUT + TIMEOUT_SLACK);
+    }
+
+    const PROBE_FAILURE_SLACK: Duration = Duration::from_millis(500);
+
+    #[tokio::test]
+    async fn spec_3_6_probe_of_an_unanswering_address_with_no_held_connection_fails_within_the_probe_timeout()
+     {
+        let link = link_to(ScriptedServer::replying(None), ClientTimeouts::SPEC).await;
+        let _black_hole = point_the_server_at_a_silent_socket(&link);
+
+        let started = Instant::now();
+        let outcome = link
+            .client
+            .probe(link.server_node.endpoint().id(), PROBE_NONCE)
+            .await;
+        let waited = started.elapsed();
+
+        assert_eq!(outcome, Err(DirectError::Unreachable));
+        assert!(
+            SPEC_PROBE_TIMEOUT <= waited && waited < SPEC_PROBE_TIMEOUT + PROBE_FAILURE_SLACK,
+            "the probe failed after {waited:?}"
+        );
+    }
+
+    const HANDSHAKE_HELD_FOR: Duration = Duration::from_secs(2);
+    const PROBE_ACK_HELD_FOR: Duration = Duration::from_secs(2);
+
+    async fn answer_one_probe_late(server: Endpoint) {
+        let incoming = server.accept().await.unwrap();
+        tokio::time::sleep(HANDSHAKE_HELD_FOR).await;
+        let connection = incoming.accept().unwrap().await.unwrap();
+        let (mut send, mut recv) = connection.accept_bi().await.unwrap();
+        recv.read_to_end(WIRE_LIMIT_BYTES).await.unwrap();
+        tokio::time::sleep(PROBE_ACK_HELD_FOR).await;
+        if send.write_all(&sealed_probe_ack(PROBE_NONCE)).await.is_ok() {
+            let _finished_after_the_probe_timeout = send.finish();
+        }
+        connection.closed().await;
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_a_probe_ack_arriving_after_the_probe_timeout_of_the_call_is_a_failed_probe() {
+        let server_node = bind_node(SERVER_SEED).await;
+        let client_node = bind_node(CLIENT_SEED).await;
+        client_node.replace_address(server_node.endpoint().addr());
+        let client =
+            DirectClient::new(client_node.endpoint().clone(), keys(), ClientTimeouts::SPEC);
+        let _answering = tokio::spawn(answer_one_probe_late(server_node.endpoint().clone()));
+
+        let started = Instant::now();
+        let outcome = client.probe(server_node.endpoint().id(), PROBE_NONCE).await;
+        let waited = started.elapsed();
+
+        assert_eq!(outcome, Err(DirectError::Timeout));
+        assert!(
+            SPEC_PROBE_TIMEOUT <= waited && waited < SPEC_PROBE_TIMEOUT + PROBE_FAILURE_SLACK,
+            "the probe failed after {waited:?}"
+        );
     }
 
     #[tokio::test]
