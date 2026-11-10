@@ -57,6 +57,8 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
     const ACCEPTANCE_WAIT: Duration = Duration::from_secs(60);
     /// How far a forger moves a counter after the payload was signed.
     const TAMPERING_STEP: u64 = 7;
+    /// How long a forgery broadcast before its marker may still be on its way after the marker arrived, since gossip orders no delivery across neighbors; chosen, not measured.
+    const FORGERY_SETTLE: Duration = Duration::from_secs(5);
     /// The relay a replayed host record names, which the host's later record replaced.
     const RELAY_THE_HOST_LEFT: &str = "https://earlier-relay.estafette.invalid/";
     /// Key seed of the forger that sends the record signed by a foreign key.
@@ -149,11 +151,14 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             )
         }
 
-        /// Broadcasts a valid record of the marker host after whatever went before and returns the hosts the member's configuration names once it saved the marker.
+        /// Broadcasts a valid record of the marker host after whatever went before, waits until the member saved the marker and then the forgery settle, and returns the hosts its configuration names then, so a forgery delivered after the marker by another gossip path is read too.
         fn hosts_after_marker(&self, marker: &SecretKey) -> Vec<Host> {
             let record = self.certified_record(marker, wall_clock_seconds());
             self.forger
                 .broadcast(sealed(self.network.keys(), marker, record));
+            self.machine
+                .hosts_once_named(&id_text(marker), ACCEPTANCE_WAIT);
+            std::thread::sleep(FORGERY_SETTLE);
             self.machine
                 .hosts_once_named(&id_text(marker), ACCEPTANCE_WAIT)
         }
@@ -285,7 +290,9 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             &requester,
             presence_request(&requester.public(), valid_seq),
         ));
-        let printed = tail.lines_until(ACCEPTANCE_WAIT, |line| line.starts_with(&valid_line_start));
+        let mut printed =
+            tail.lines_until(ACCEPTANCE_WAIT, |line| line.starts_with(&valid_line_start));
+        printed.extend(tail.lines_during(FORGERY_SETTLE));
 
         assert!(
             !printed

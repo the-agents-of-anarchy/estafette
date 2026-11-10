@@ -60,6 +60,19 @@ impl Tail {
         }
     }
 
+    /// Every line printed from now until the span ends.
+    pub fn lines_during(&self, span: Duration) -> Vec<String> {
+        let deadline = Instant::now().checked_add(span).unwrap();
+        let mut printed = Vec::new();
+        while let Ok((_arrived, line)) = self
+            .lines
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        {
+            printed.push(line);
+        }
+        printed
+    }
+
     /// The first line printed at or after the instant that meets the condition, with how long after the instant it arrived, requiring it within the wait.
     pub fn first_line_after(
         &self,
