@@ -432,6 +432,10 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     const ANNOUNCEMENT_WAIT: Duration = Duration::from_secs(60);
     /// Spec 3.15 test 28: the bound within which a member's address lists only live relays after its home relay is killed.
     const SPEC_LIVE_RELAYS_WITHIN: Duration = Duration::from_millis(2000);
+    /// The re-announce interval of spec:777, which holds any address change for this long after the member's last Presence.
+    const SPEC_REANNOUNCE_INTERVAL: Duration = Duration::from_millis(2000);
+    /// How long the member may take to fall quiet for a re-announce interval before the kill.
+    const PRESENCE_QUIET_WAIT: Duration = Duration::from_secs(60);
     /// The card and handle of the member homed on the doomed host.
     const MEMBER_CARD: &str = "u40-relay-loss";
     /// The scratch tag of the machine whose `tail` observes the member.
@@ -535,7 +539,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
         })
     }
 
-    /// Spec 3.15 test 28: within 2000 ms of the kill of a member's home relay, the member announces an address whose relays are the live host's alone.
+    /// Spec 3.15 test 28: within 2000 ms of the kill of a member's home relay, the member announces an address whose relays are the live host's alone, the kill waiting until the member's last Presence is a re-announce interval old so spec:777 cannot hold that announcement past the bound.
     #[test]
     fn spec_3_15_test_28_within_2000_ms_of_its_home_relays_death_a_member_lists_only_live_relays() {
         let _live_host = live_host_to_itself();
@@ -545,6 +549,11 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
             .find_map(|_| start_member_homed_on(&network, &doomed))
             .unwrap_or_else(|| {
                 panic!("iroh homed the member on another relay than {} in each of {HOMING_ATTEMPTS} starts", doomed.relay())
+            });
+        homed
+            .tail
+            .quiet_for(SPEC_REANNOUNCE_INTERVAL, PRESENCE_QUIET_WAIT, |line| {
+                relays_announced_by(line, &homed.card).is_some()
             });
 
         let kill = doomed.kill();
