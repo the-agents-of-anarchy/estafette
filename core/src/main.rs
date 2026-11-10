@@ -876,6 +876,24 @@ mod tests {
         drop(std::fs::remove_dir_all(&root));
     }
 
+    #[tokio::test]
+    async fn spec_3_13_a_signal_that_cannot_be_heard_is_a_failure_naming_it_not_an_interrupt() {
+        const UNLISTENABLE_SIGNAL_NUMBER: i32 = -1;
+
+        let refusal = interrupt_requested(SignalKind::from_raw(UNLISTENABLE_SIGNAL_NUMBER))
+            .err()
+            .unwrap();
+
+        assert!(matches!(
+            refusal,
+            CommandLineFailure::SignalNotHeard {
+                signal: "SIGINT",
+                ..
+            }
+        ));
+        assert!(refusal.to_string().starts_with("cannot listen for SIGINT"));
+    }
+
     #[test]
     fn spec_3_13_a_malformed_invitation_or_host_line_is_a_usage_error_that_exits_2() {
         const MALFORMED: &str = "not-an-invitation";
