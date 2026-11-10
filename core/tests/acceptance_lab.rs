@@ -14,6 +14,15 @@ mod lab_machine;
 #[path = "lab/live_network.rs"]
 mod live_network;
 #[cfg(test)]
+#[path = "support/mcp_server.rs"]
+mod mcp_server;
+#[cfg(test)]
+#[path = "support/payload_placeholders.rs"]
+mod payload_placeholders;
+#[cfg(test)]
+#[path = "support/scratch_machine.rs"]
+mod scratch_machine;
+#[cfg(test)]
 #[path = "lab/tail.rs"]
 mod tail;
 
@@ -45,12 +54,12 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
 
     use crate::forger::Forger;
     use crate::forgeries::{
-        infrastructure_record, presence_request, remacked, sealed, unsealed, wall_clock_ms,
-        wall_clock_seconds,
+        infrastructure_record, presence_request, remacked, sealed, unsealed, wall_clock_seconds,
     };
     use crate::lab_machine::{ClaimedMember, LabMachine};
     use crate::live_host::live_host_to_itself;
     use crate::live_network::LiveNetwork;
+    use crate::payload_placeholders::wall_clock_ms;
     use crate::tail::Tail;
 
     /// How long a member or `tail` may take to show what a broadcast payload did.

@@ -1,25 +1,11 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use estafette::crypto::NetworkKeys;
 use estafette::payload::seal_payload;
-use estafette::wire::{self, Addr, Departure, Payload, Presence, SignatureBytes, Version};
+use estafette::wire::{Addr, Departure, Payload, Presence, Version};
 use iroh::{EndpointAddr, SecretKey};
 
-/// The mac a payload carries before sealing fills it.
-pub const UNSET_MAC: wire::Mac = [0; 32];
-const UNSIGNED: SignatureBytes = SignatureBytes([0; 64]);
-const EMPTY_PUBLIC: &[u8] = b"{}";
+use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
 
-/// Milliseconds since the Unix epoch by this machine's clock.
-pub fn wall_clock_ms() -> u64 {
-    u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis(),
-    )
-    .unwrap()
-}
+const EMPTY_PUBLIC: &[u8] = b"{}";
 
 /// A Presence of the signer's card under the handle at the address, signed by the card and sealed under the network keys, its seq the clock now.
 pub fn presence_signed_by(

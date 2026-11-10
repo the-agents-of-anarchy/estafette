@@ -1,5 +1,3 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use estafette::crypto::NetworkKeys;
 use estafette::payload::seal_payload;
 use estafette::wire::{
@@ -7,23 +5,10 @@ use estafette::wire::{
 };
 use iroh::SecretKey;
 
-/// The mac a payload carries before sealing fills it.
-const UNSET_MAC: wire::Mac = [0; 32];
-/// The signature a payload carries before sealing fills it.
-const UNSIGNED: SignatureBytes = SignatureBytes([0; 64]);
+use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
+
 /// Milliseconds in a second.
 const MILLISECONDS_PER_SECOND: u64 = 1000;
-
-/// Milliseconds since the Unix epoch by this machine's clock.
-pub fn wall_clock_ms() -> u64 {
-    u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis(),
-    )
-    .unwrap()
-}
 
 /// Seconds since the Unix epoch by this machine's clock, the unit of an Infrastructure `ts` (spec 3.14).
 pub fn wall_clock_seconds() -> u64 {

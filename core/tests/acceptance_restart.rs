@@ -5,11 +5,20 @@ mod local_network;
 #[path = "one_machine/machine.rs"]
 mod machine;
 #[cfg(test)]
+#[path = "support/mcp_server.rs"]
+mod mcp_server;
+#[cfg(test)]
 #[path = "one_machine/member.rs"]
 mod member;
 #[cfg(test)]
+#[path = "support/payload_placeholders.rs"]
+mod payload_placeholders;
+#[cfg(test)]
 #[path = "one_machine/payloads.rs"]
 mod payloads;
+#[cfg(test)]
+#[path = "support/scratch_machine.rs"]
+mod scratch_machine;
 #[cfg(test)]
 #[path = "one_machine/scripted_node.rs"]
 mod scripted_node;
@@ -32,7 +41,8 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use crate::local_network::LocalNetwork;
     use crate::machine::Card;
     use crate::member::{Member, loopback_address};
-    use crate::payloads::{UNSET_MAC, departure_signed_by, presence_signed_by, wall_clock_ms};
+    use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
+    use crate::payloads::{departure_signed_by, presence_signed_by};
     use crate::scripted_node::ScriptedNode;
 
     const SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE: Duration = Duration::from_millis(1000);

@@ -1,21 +1,14 @@
-use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::process::{Child, Command, ExitStatus};
 use std::time::{Duration, Instant};
 
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use serde_json::{Value, json};
 
 use crate::machine::Card;
+use crate::mcp_server::McpServer;
 use crate::scripted_node::ScriptedNode;
 
-const JSON_RPC_VERSION: &str = "2.0";
-const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
-const CLIENT_NAME: &str = "estafette-acceptance";
-const CLIENT_VERSION: &str = "0";
-const RESPONSE_WAIT: Duration = Duration::from_secs(30);
 const PEERS_POLL: Duration = Duration::from_millis(50);
 const ENDPOINT_BIND_WAIT: Duration = Duration::from_secs(10);
 const ENDPOINT_BIND_POLL: Duration = Duration::from_millis(20);
@@ -26,88 +19,34 @@ const LSOF_NAME_FIELD: char = 'n';
 const PORT_SEPARATOR: char = ':';
 const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
-/// A running `estafette mcp` process driven as an MCP client over its standard streams.
+/// A running `estafette mcp` process driven as an MCP client, with the process id its UDP sockets are listed by.
 pub struct Member {
-    process: Child,
-    messages: Receiver<Value>,
-    next_request_id: u64,
-}
-
-/// A tool call written to the member whose answer has not been read yet.
-pub struct PendingCall {
-    request_id: u64,
+    server: McpServer,
+    process_id: u32,
 }
 
 impl Member {
-    /// Starts the command as an MCP server writing its run record to the file, and completes the MCP handshake.
-    pub fn start(mut command: Command, run_record: File) -> Self {
-        let mut process = command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(run_record)
-            .spawn()
-            .unwrap();
-        let output = BufReader::new(process.stdout.take().unwrap());
-        let (forward, messages) = mpsc::channel();
-        std::thread::spawn(move || {
-            for line in output.lines().map_while(Result::ok) {
-                if let Ok(message) = serde_json::from_str(&line)
-                    && forward.send(message).is_err()
-                {
-                    return;
-                }
-            }
-        });
-        let mut member = Self {
-            process,
-            messages,
-            next_request_id: 1,
-        };
-        member.request(
-            "initialize",
-            &json!({
-                "protocolVersion": MCP_PROTOCOL_VERSION,
-                "capabilities": {},
-                "clientInfo": { "name": CLIENT_NAME, "version": CLIENT_VERSION }
-            }),
-        );
-        member
-            .write(&json!({ "jsonrpc": JSON_RPC_VERSION, "method": "notifications/initialized" }));
-        member
+    /// Takes the spawned MCP server over and completes the MCP handshake.
+    pub fn start(process: Child) -> Self {
+        let process_id = process.id();
+        Self {
+            server: McpServer::handshaken(process),
+            process_id,
+        }
     }
 
     /// Calls the tool and returns the envelope its result carries.
     pub fn call(&mut self, tool: &str, arguments: &Value) -> Value {
-        let call = self.start_call(tool, arguments);
-        self.answer(&call)
-    }
-
-    /// Writes the tool call without waiting for its answer.
-    pub fn start_call(&mut self, tool: &str, arguments: &Value) -> PendingCall {
-        PendingCall {
-            request_id: self.send_request(
-                "tools/call",
-                &json!({ "name": tool, "arguments": arguments }),
-            ),
-        }
-    }
-
-    /// The envelope the answer to the pending call carries.
-    pub fn answer(&self, call: &PendingCall) -> Value {
-        self.response_to(call.request_id)["result"]["structuredContent"].clone()
-    }
-
-    /// Sends the JSON-RPC request and returns the result of its response.
-    pub fn request(&mut self, method: &str, params: &Value) -> Value {
-        let request_id = self.send_request(method, params);
-        self.response_to(request_id)["result"].clone()
+        self.server.call(tool, arguments)
     }
 
     /// Claims the card while the node admits this process's endpoint, requiring the claim to succeed, and returns the init envelope.
     pub fn init_through(&mut self, card: &Card, node: &ScriptedNode) -> Value {
-        let init = self.start_call("init", &json!({ "card": card.name }));
+        let init = self
+            .server
+            .start_call("init", &json!({ "card": card.name }));
         node.admit(loopback_address(card.id, &self.bound_udp_ports()));
-        let claim = self.answer(&init);
+        let claim = self.server.answer(&init);
         assert_eq!(claim["ok"], json!(true), "{claim}");
         claim
     }
@@ -153,60 +92,22 @@ impl Member {
 
     /// The ports of the IPv4 UDP sockets this process holds now.
     pub fn ipv4_udp_ports(&self) -> Vec<u16> {
-        ipv4_udp_ports_of(self.process.id())
+        ipv4_udp_ports_of(self.process_id)
     }
 
     /// Closes the member's standard input, the end of input that stops its session.
     pub fn close_standard_input(&mut self) {
-        drop(self.process.stdin.take());
+        self.server.close_standard_input();
     }
 
     /// Kills the process with SIGKILL.
     pub fn kill(&mut self) {
-        drop(self.process.kill());
+        self.server.kill();
     }
 
     /// Waits for the process to exit and returns how it exited.
     pub fn wait_for_exit(&mut self) -> ExitStatus {
-        self.process.wait().unwrap()
-    }
-
-    /// Writes the request and returns its id.
-    fn send_request(&mut self, method: &str, params: &Value) -> u64 {
-        let request_id = self.next_request_id;
-        self.next_request_id = request_id.checked_add(1).unwrap();
-        self.write(&json!({
-            "jsonrpc": JSON_RPC_VERSION,
-            "id": request_id,
-            "method": method,
-            "params": params
-        }));
-        request_id
-    }
-
-    /// The response to the request of that id, skipping every other message.
-    fn response_to(&self, request_id: u64) -> Value {
-        loop {
-            let message = self.messages.recv_timeout(RESPONSE_WAIT).unwrap();
-            if message["id"] == json!(request_id) {
-                return message;
-            }
-        }
-    }
-
-    /// Writes one JSON-RPC message as a line on the member's standard input.
-    fn write(&mut self, message: &Value) {
-        let input = self.process.stdin.as_mut().unwrap();
-        writeln!(input, "{message}").unwrap();
-        input.flush().unwrap();
-    }
-}
-
-impl Drop for Member {
-    fn drop(&mut self) {
-        self.close_standard_input();
-        self.kill();
-        self.wait_for_exit();
+        self.server.wait_for_exit()
     }
 }
 
