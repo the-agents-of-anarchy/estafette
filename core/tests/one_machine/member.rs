@@ -124,6 +124,13 @@ pub fn loopback_address(node: EndpointId, ports: &[u16]) -> EndpointAddr {
     )
 }
 
+/// The address that reaches the scripted node at its UDP ports on this machine's loopback alone.
+pub fn loopback_address_of(node: &ScriptedNode) -> EndpointAddr {
+    let address = node.endpoint().endpoint().addr();
+    let ports: Vec<u16> = address.ip_addrs().map(SocketAddr::port).collect();
+    loopback_address(address.id, &ports)
+}
+
 /// The ports of the IPv4 UDP sockets the process holds, as the open files command lists them.
 fn ipv4_udp_ports_of(process_id: u32) -> Vec<u16> {
     let listing = Command::new(OPEN_FILES_COMMAND)

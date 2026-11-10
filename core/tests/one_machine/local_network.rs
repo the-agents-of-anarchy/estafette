@@ -5,12 +5,15 @@ use estafette::config::NetworkConfig;
 use estafette::crypto::{NetworkKeys, NetworkSecret};
 use estafette::invite::render_host_line;
 use estafette::keys::parse_network_secret;
+use estafette::net::direct::{AcceptedConnections, DirectHost, DirectServer};
 use estafette::net::endpoint::GateFailure;
-use estafette::wire::{HostAddr, RelayUrl, Version};
+use estafette::wire::{self, Addr, HostAddr, Introduce, IntroduceAck, Message, RelayUrl, Version};
 use iroh::SecretKey;
 use iroh_gossip::TopicId;
 
+use crate::mcp_server::{PRESENCE_WAIT, online};
 use crate::member::Member;
+use crate::payload_placeholders::UNSET_MAC;
 use crate::scratch_machine::{Card, ScratchMachine};
 use crate::scripted_node::ScriptedNode;
 
@@ -22,6 +25,14 @@ const SILENT_RELAY: &str = "https://relay.estafette.invalid/";
 pub struct LocalNetwork {
     machine: ScratchMachine,
     keys: NetworkKeys,
+}
+
+/// Two members, amy and bob, joined through a host, each listing the other online.
+pub struct MetPair {
+    pub amy: Member,
+    pub amy_card: Card,
+    pub bob: Member,
+    pub bob_card: Card,
 }
 
 impl LocalNetwork {
@@ -89,5 +100,78 @@ impl LocalNetwork {
             self.topic(),
             |_closing: GateFailure| {},
         )
+    }
+
+    /// Starts amy and bob on cards requesting those handles, each claiming through the host, and waits until each lists the other online.
+    #[track_caller]
+    pub fn amy_and_bob_met(&self, host: &ScriptedNode) -> MetPair {
+        let amy_card = self.create_card("amy-card", "amy");
+        let bob_card = self.create_card("bob-card", "bob");
+        let mut amy = self.start_member();
+        amy.init_through(&amy_card, host);
+        let mut bob = self.start_member();
+        bob.init_through(&bob_card, host);
+        amy.peer_within("bob", PRESENCE_WAIT, online);
+        bob.peer_within("amy", PRESENCE_WAIT, online);
+        MetPair {
+            amy,
+            amy_card,
+            bob,
+            bob_card,
+        }
+    }
+
+    /// Starts a node standing in for a member holding the key's card under the handle: it accepts every Message and answers every Introduce with that handle.
+    pub fn scripted_member(&self, key: &SecretKey, handle: &str) -> ScriptedNode {
+        ScriptedNode::start_answering_direct(
+            key.clone(),
+            *self.keys.gate_key(),
+            self.topic(),
+            DirectServer::new(
+                NetworkKeys::clone(&self.keys),
+                ScriptedMemberHost {
+                    card: *key.public().as_bytes(),
+                    handle: handle.to_owned(),
+                },
+            ),
+        )
+    }
+}
+
+/// The direct side of a scripted member holding a card under a handle: it accepts every Message and answers every Introduce with the handle.
+#[derive(Clone)]
+struct ScriptedMemberHost {
+    card: wire::PublicKey,
+    handle: String,
+}
+
+impl DirectHost for ScriptedMemberHost {
+    fn accepted_connections(&self) -> AcceptedConnections {
+        AcceptedConnections::new(std::sync::Arc::new(tokio::time::Instant::now))
+    }
+
+    fn is_stopping(&self) -> bool {
+        false
+    }
+
+    fn own_card(&self) -> Option<wire::PublicKey> {
+        Some(self.card)
+    }
+
+    fn is_attached(&self) -> bool {
+        false
+    }
+
+    fn receive_message(&self, _sender: wire::PublicKey, _message: Message) {}
+
+    fn receive_introduce(&self, _sender: wire::PublicKey, _introduce: Introduce) -> IntroduceAck {
+        IntroduceAck {
+            v: Version::CURRENT,
+            handle: Some(self.handle.clone()),
+            public: b"{}".to_vec(),
+            attached: false,
+            addr: Addr::from_endpoint_report(Vec::<String>::new(), []),
+            mac: UNSET_MAC,
+        }
     }
 }

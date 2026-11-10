@@ -39,21 +39,19 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use std::time::{Duration, Instant};
 
     use estafette::crypto::NetworkKeys;
-    use estafette::net::direct::{DirectHost, DirectServer};
     use estafette::net::endpoint::{DIRECT_ALPN, GateFailure};
     use estafette::payload::{open_response, seal_payload, seal_request};
     use estafette::wire::{
-        self, Addr, Departure, Introduce, Message, Payload, Request, Response, Version,
-        WIRE_LIMIT_BYTES,
+        Addr, Departure, Introduce, Message, Payload, Request, Response, Version, WIRE_LIMIT_BYTES,
     };
     use iroh::endpoint::Connection;
     use iroh::{EndpointId, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
     use crate::MESSAGE_ID;
-    use crate::local_network::LocalNetwork;
+    use crate::local_network::{LocalNetwork, MetPair};
     use crate::mcp_server::{PRESENCE_WAIT, gone, online};
-    use crate::member::{Member, loopback_address};
+    use crate::member::{Member, loopback_address, loopback_address_of};
     use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
     use crate::payloads::presence_signed_by;
     use crate::scratch_machine::Card;
@@ -74,32 +72,6 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const DOCUMENTATION_HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
     const SENT_BEFORE_THE_PRESENCE: &str = "sent before the presence";
     const SENT_AFTER_THE_PRESENCE: &str = "sent after the presence";
-
-    /// Two members joined through the host, each listing the other online.
-    struct MetPair {
-        amy: Member,
-        amy_card: Card,
-        bob: Member,
-        bob_card: Card,
-    }
-
-    #[track_caller]
-    fn amy_and_bob_met(network: &LocalNetwork, host: &ScriptedNode) -> MetPair {
-        let amy_card = network.create_card("amy-card", "amy");
-        let bob_card = network.create_card("bob-card", "bob");
-        let mut amy = network.start_member();
-        amy.init_through(&amy_card, host);
-        let mut bob = network.start_member();
-        bob.init_through(&bob_card, host);
-        amy.peer_within("bob", PRESENCE_WAIT, online);
-        bob.peer_within("amy", PRESENCE_WAIT, online);
-        MetPair {
-            amy,
-            amy_card,
-            bob,
-            bob_card,
-        }
-    }
 
     #[track_caller]
     fn send(from: &mut Member, to: &str) -> Value {
@@ -179,69 +151,6 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         let sealed = seal_request(network.keys(), request).unwrap();
         let answer = node.request_directly(to, &sealed).unwrap();
         open_response(network.keys(), &answer).unwrap()
-    }
-
-    /// The direct side of a scripted member holding a card: it accepts every Message and answers every Introduce with its handle.
-    #[derive(Clone)]
-    struct ScriptedMemberHost {
-        card: wire::PublicKey,
-    }
-
-    impl DirectHost for ScriptedMemberHost {
-        fn accepted_connections(&self) -> estafette::net::direct::AcceptedConnections {
-            estafette::net::direct::AcceptedConnections::new(std::sync::Arc::new(
-                tokio::time::Instant::now,
-            ))
-        }
-
-        fn is_stopping(&self) -> bool {
-            false
-        }
-
-        fn own_card(&self) -> Option<wire::PublicKey> {
-            Some(self.card)
-        }
-
-        fn is_attached(&self) -> bool {
-            false
-        }
-
-        fn receive_message(&self, _sender: wire::PublicKey, _message: Message) {}
-
-        fn receive_introduce(
-            &self,
-            _sender: wire::PublicKey,
-            _introduce: Introduce,
-        ) -> wire::IntroduceAck {
-            wire::IntroduceAck {
-                v: Version::CURRENT,
-                handle: Some("bob".to_owned()),
-                public: b"{}".to_vec(),
-                attached: false,
-                addr: Addr::from_endpoint_report(Vec::<String>::new(), []),
-                mac: UNSET_MAC,
-            }
-        }
-    }
-
-    fn scripted_member(network: &LocalNetwork, key: &SecretKey) -> ScriptedNode {
-        ScriptedNode::start_answering_direct(
-            key.clone(),
-            *network.keys().gate_key(),
-            network.topic(),
-            DirectServer::new(
-                NetworkKeys::clone(network.keys()),
-                ScriptedMemberHost {
-                    card: *key.public().as_bytes(),
-                },
-            ),
-        )
-    }
-
-    fn loopback_address_of(node: &ScriptedNode) -> iroh::EndpointAddr {
-        let address = node.endpoint().endpoint().addr();
-        let ports: Vec<u16> = address.ip_addrs().map(std::net::SocketAddr::port).collect();
-        loopback_address(address.id, &ports)
     }
 
     fn address_on_a_host_no_connection_runs_over(node: &ScriptedNode) -> iroh::EndpointAddr {
@@ -339,7 +248,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             mut bob,
             bob_card,
         } = timed("amy and bob list each other online", || {
-            amy_and_bob_met(&network, &first_host)
+            network.amy_and_bob_met(&first_host)
         });
         let first_send = timed("amy's send to bob before the kill", || {
             send(&mut amy, "bob")
@@ -386,7 +295,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         let host = network.stand_in_host();
         let MetPair {
             mut amy, mut bob, ..
-        } = amy_and_bob_met(&network, &host);
+        } = network.amy_and_bob_met(&host);
         let first_send = send(&mut amy, "bob");
 
         bob.close_standard_input();
@@ -484,7 +393,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         let network = LocalNetwork::create("r1k");
         let amy_card = network.create_card("amy-card", "amy");
         let bob_key = SecretKey::generate();
-        let first_session = scripted_member(&network, &bob_key);
+        let first_session = network.scripted_member(&bob_key, "bob");
         let mut amy = timed("amy starts", || network.start_member());
         timed("amy claims its card through the first bob", || {
             amy.init_through(&amy_card, &first_session)
@@ -502,7 +411,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         });
         drop(first_session);
 
-        let restarted = scripted_member(&network, &bob_key);
+        let restarted = network.scripted_member(&bob_key, "bob");
         timed("the restarted bob links amy", || {
             restarted.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
         });
@@ -574,7 +483,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         let network = LocalNetwork::create("live-unannounced-path");
         let amy_card = network.create_card("amy-card", "amy");
         let bob_key = SecretKey::generate();
-        let bob = scripted_member(&network, &bob_key);
+        let bob = network.scripted_member(&bob_key, "bob");
         let mut amy = network.start_member();
         amy.init_through(&amy_card, &bob);
         let held = bob
