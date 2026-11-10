@@ -569,7 +569,7 @@ impl ObserverHost {
 
 impl DirectHost for Arc<ObserverHost> {
     fn accepted_connections(&self) -> crate::net::direct::AcceptedConnections {
-        crate::net::direct::AcceptedConnections::default()
+        crate::net::direct::AcceptedConnections::new(std::sync::Arc::new(tokio::time::Instant::now))
     }
 
     fn is_stopping(&self) -> bool {
@@ -1590,7 +1590,9 @@ mod tests {
 
     impl DirectHost for RecordingNeighbor {
         fn accepted_connections(&self) -> crate::net::direct::AcceptedConnections {
-            crate::net::direct::AcceptedConnections::default()
+            crate::net::direct::AcceptedConnections::new(std::sync::Arc::new(
+                tokio::time::Instant::now,
+            ))
         }
 
         fn is_stopping(&self) -> bool {

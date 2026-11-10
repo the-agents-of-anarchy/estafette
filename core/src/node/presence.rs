@@ -419,7 +419,7 @@ impl NodeState {
             clock: Arc::clone(&effects.clock),
             to_loop,
             stopping: AtomicBool::new(false),
-            accepted_connections: AcceptedConnections::default(),
+            accepted_connections: AcceptedConnections::new(Arc::clone(&effects.monotonic)),
         }
     }
 
@@ -1865,7 +1865,9 @@ pub(super) mod tests {
 
     impl DirectHost for WitnessHost {
         fn accepted_connections(&self) -> crate::net::direct::AcceptedConnections {
-            crate::net::direct::AcceptedConnections::default()
+            crate::net::direct::AcceptedConnections::new(std::sync::Arc::new(
+                tokio::time::Instant::now,
+            ))
         }
 
         fn is_stopping(&self) -> bool {
