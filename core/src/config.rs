@@ -10,9 +10,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::wire::{self, MAX_RELAY_URL_BYTES};
 
-const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+const MILLIS_PER_SECOND: u64 = 1000;
+const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * MILLIS_PER_SECOND;
 const LEARNED_HOST_EXPIRY_DAYS: u64 = 30;
-const LEARNED_HOST_EXPIRY_SECONDS: u64 = LEARNED_HOST_EXPIRY_DAYS * SECONDS_PER_DAY;
+const LEARNED_HOST_EXPIRY_MILLIS: u64 = LEARNED_HOST_EXPIRY_DAYS * MILLIS_PER_DAY;
 pub const OWNER_ONLY_FILE_MODE: u32 = 0o600;
 pub const PERMISSION_BITS_MASK: u32 = 0o777;
 const TEMPORARY_FILE_SUFFIX: &str = "tmp";
@@ -20,11 +21,28 @@ const HEX_KEY_LENGTH: usize = 64;
 const RELAY_URL_SCHEME: &str = "https";
 const HOST_RELAY_FIELD: &str = "host relay";
 
+/// A timestamp of spec 3.1: milliseconds since the Unix epoch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct UnixMillis(pub u64);
+
+impl UnixMillis {
+    /// The timestamp at the start of a whole second since the Unix epoch.
+    const fn at_unix_second(unix_seconds: u64) -> Self {
+        Self(unix_seconds.saturating_mul(MILLIS_PER_SECOND))
+    }
+
+    /// Whether more than the span has passed from this timestamp to `now`.
+    const fn is_older_than(self, span_millis: u64, now: Self) -> bool {
+        now.0.saturating_sub(self.0) > span_millis
+    }
+}
+
 /// Where a host came from: the owner configured it and nothing removes it, or this member learned it and it expires.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostOrigin {
     Configured,
-    Learned { heard: u64 },
+    Learned { heard: UnixMillis },
 }
 
 /// One host of a network: its node id, relay, newest accepted record `ts`, and its origin.
@@ -45,7 +63,7 @@ struct WireHost {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ts: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    heard: Option<u64>,
+    heard: Option<UnixMillis>,
 }
 
 impl From<WireHost> for Host {
@@ -188,12 +206,10 @@ impl Host {
         }
     }
 
-    const fn is_learned_and_expired(&self, now_unix_seconds: u64) -> bool {
+    const fn is_learned_and_expired(&self, now: UnixMillis) -> bool {
         match self.origin {
             HostOrigin::Configured => false,
-            HostOrigin::Learned { heard } => {
-                now_unix_seconds.saturating_sub(heard) > LEARNED_HOST_EXPIRY_SECONDS
-            }
+            HostOrigin::Learned { heard } => heard.is_older_than(LEARNED_HOST_EXPIRY_MILLIS, now),
         }
     }
 }
@@ -216,7 +232,7 @@ impl NetworkConfig {
         self.validate(path)?;
         let merged = self
             .merged_with(read_current(path)?)
-            .without_expired_hosts(now_unix_seconds);
+            .without_expired_hosts(UnixMillis::at_unix_second(now_unix_seconds));
         let text = toml::to_string(&merged).map_err(ConfigError::Unserializable)?;
         write_atomically(path, &text).map_err(io_error(path))?;
         Ok(merged)
@@ -249,9 +265,8 @@ impl NetworkConfig {
         }
     }
 
-    fn without_expired_hosts(mut self, now_unix_seconds: u64) -> Self {
-        self.hosts
-            .retain(|host| !host.is_learned_and_expired(now_unix_seconds));
+    fn without_expired_hosts(mut self, now: UnixMillis) -> Self {
+        self.hosts.retain(|host| !host.is_learned_and_expired(now));
         self
     }
 }
@@ -371,7 +386,8 @@ mod tests {
     use super::*;
     use std::fs;
 
-    const NOW: u64 = 10_000_000;
+    const NOW_SECONDS: u64 = 1_800_000_000;
+    const NOW_MILLIS: UnixMillis = UnixMillis(NOW_SECONDS * MILLIS_PER_SECOND);
     const GROUP_READABLE_FILE_MODE: u32 = 0o644;
     const CONCURRENT_WRITERS: usize = 8;
     const CONCURRENT_ROUNDS: usize = 50;
@@ -392,7 +408,11 @@ mod tests {
         digit.to_string().repeat(HEX_KEY_LENGTH)
     }
 
-    fn learned(id: &str, relay: &str, ts: Option<u64>, heard: u64) -> Host {
+    fn heard_before(millis: u64) -> UnixMillis {
+        UnixMillis(NOW_MILLIS.0.checked_sub(millis).unwrap())
+    }
+
+    fn learned(id: &str, relay: &str, ts: Option<u64>, heard: UnixMillis) -> Host {
         Host {
             id: id.to_owned(),
             relay: relay.to_owned(),
@@ -452,30 +472,30 @@ mod tests {
         let directory = scratch_directory("merge");
         let path = directory.join("net.toml");
         let on_disk = network(vec![
-            learned(&hex_key('a'), "https://a/", Some(5), NOW - 10),
-            learned(&hex_key('b'), "https://b/", Some(8), NOW - 40),
-            learned(&hex_key('c'), "https://c/", Some(7), NOW - 20),
+            learned(&hex_key('a'), "https://a/", Some(5), heard_before(10)),
+            learned(&hex_key('b'), "https://b/", Some(8), heard_before(40)),
+            learned(&hex_key('c'), "https://c/", Some(7), heard_before(20)),
         ]);
-        on_disk.rewrite(&path, NOW).unwrap();
+        on_disk.rewrite(&path, NOW_SECONDS).unwrap();
         let held = network(vec![
-            learned(&hex_key('a'), "https://a/", Some(9), NOW - 50),
-            learned(&hex_key('b'), "https://b/", Some(4), NOW - 5),
-            learned(&hex_key('d'), "https://m/", Some(3), NOW - 30),
+            learned(&hex_key('a'), "https://a/", Some(9), heard_before(50)),
+            learned(&hex_key('b'), "https://b/", Some(4), heard_before(5)),
+            learned(&hex_key('d'), "https://m/", Some(3), heard_before(30)),
         ]);
 
-        let merged = held.rewrite(&path, NOW).unwrap();
+        let merged = held.rewrite(&path, NOW_SECONDS).unwrap();
 
         let expected = network(vec![
-            learned(&hex_key('a'), "https://a/", Some(9), NOW - 10),
-            learned(&hex_key('b'), "https://b/", Some(8), NOW - 5),
-            learned(&hex_key('c'), "https://c/", Some(7), NOW - 20),
-            learned(&hex_key('d'), "https://m/", Some(3), NOW - 30),
+            learned(&hex_key('a'), "https://a/", Some(9), heard_before(10)),
+            learned(&hex_key('b'), "https://b/", Some(8), heard_before(5)),
+            learned(&hex_key('c'), "https://c/", Some(7), heard_before(20)),
+            learned(&hex_key('d'), "https://m/", Some(3), heard_before(30)),
         ]);
         assert_eq!(merged, expected);
         assert_eq!(NetworkConfig::load(&path).unwrap(), expected);
     }
 
-    /// Spec 3.3 and 3.14: a learned host heard more than 30 days ago is dropped, one heard exactly 30 days ago and a configured host stay.
+    /// Spec 3.1, 3.3 and 3.14: a learned host heard more than 30 days of milliseconds ago is dropped, one heard exactly 30 days ago and a configured host stay.
     #[test]
     fn rewrite_drops_expired_learned_hosts_and_keeps_configured_ones() {
         let directory = scratch_directory("expiry");
@@ -485,13 +505,13 @@ mod tests {
                 &hex_key('1'),
                 "https://s/",
                 Some(1),
-                NOW - LEARNED_HOST_EXPIRY_SECONDS - 1,
+                heard_before(LEARNED_HOST_EXPIRY_MILLIS + 1),
             ),
             learned(
                 &hex_key('2'),
                 "https://b/",
                 Some(2),
-                NOW - LEARNED_HOST_EXPIRY_SECONDS,
+                heard_before(LEARNED_HOST_EXPIRY_MILLIS),
             ),
             Host {
                 id: hex_key('3'),
@@ -501,7 +521,7 @@ mod tests {
             },
         ]);
 
-        let written = held.rewrite(&path, NOW).unwrap();
+        let written = held.rewrite(&path, NOW_SECONDS).unwrap();
 
         let ids: Vec<&str> = written.hosts.iter().map(|host| host.id.as_str()).collect();
         assert_eq!(ids, [hex_key('2'), hex_key('3')]);
@@ -520,16 +540,16 @@ mod tests {
             origin: HostOrigin::Configured,
         };
         network(vec![owner_configured.clone()])
-            .rewrite(&path, NOW)
+            .rewrite(&path, NOW_SECONDS)
             .unwrap();
         let learned_long_ago = network(vec![learned(
             &hex_key('a'),
             "https://a/",
             Some(1),
-            NOW - LEARNED_HOST_EXPIRY_SECONDS - 5,
+            heard_before(LEARNED_HOST_EXPIRY_MILLIS + 5),
         )]);
 
-        let merged = learned_long_ago.rewrite(&path, NOW).unwrap();
+        let merged = learned_long_ago.rewrite(&path, NOW_SECONDS).unwrap();
 
         assert_eq!(merged.hosts, [owner_configured]);
     }
@@ -539,11 +559,16 @@ mod tests {
     fn rewrite_leaves_the_file_owner_only() {
         let directory = scratch_directory("mode");
         let path = directory.join("net.toml");
-        let held = network(vec![learned(&hex_key('a'), "https://a/", Some(1), NOW)]);
-        held.rewrite(&path, NOW).unwrap();
+        let held = network(vec![learned(
+            &hex_key('a'),
+            "https://a/",
+            Some(1),
+            NOW_MILLIS,
+        )]);
+        held.rewrite(&path, NOW_SECONDS).unwrap();
         fs::set_permissions(&path, Permissions::from_mode(GROUP_READABLE_FILE_MODE)).unwrap();
 
-        held.rewrite(&path, NOW).unwrap();
+        held.rewrite(&path, NOW_SECONDS).unwrap();
 
         let mode = fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & PERMISSION_BITS_MASK, OWNER_ONLY_FILE_MODE);
@@ -555,9 +580,14 @@ mod tests {
         let directory = scratch_directory("atomic");
         let path = directory.join("net.toml");
 
-        network(vec![learned(&hex_key('a'), "https://a/", Some(1), NOW)])
-            .rewrite(&path, NOW)
-            .unwrap();
+        network(vec![learned(
+            &hex_key('a'),
+            "https://a/",
+            Some(1),
+            NOW_MILLIS,
+        )])
+        .rewrite(&path, NOW_SECONDS)
+        .unwrap();
 
         let names: Vec<_> = fs::read_dir(&directory)
             .unwrap()
@@ -600,7 +630,7 @@ mod tests {
         let path = directory.join("net.toml");
         fs::write(&path, "secret = ").unwrap();
 
-        let outcome = network(vec![]).rewrite(&path, NOW);
+        let outcome = network(vec![]).rewrite(&path, NOW_SECONDS);
 
         assert!(matches!(outcome, Err(ConfigError::Malformed { .. })));
         assert_eq!(fs::read_to_string(&path).unwrap(), "secret = ");
@@ -611,13 +641,18 @@ mod tests {
     fn rewrite_by_concurrent_writers_of_the_same_content_all_succeed() {
         let directory = scratch_directory("concurrent");
         let path = directory.join("net.toml");
-        let held = network(vec![learned(&hex_key('a'), "https://a/", Some(1), NOW)]);
+        let held = network(vec![learned(
+            &hex_key('a'),
+            "https://a/",
+            Some(1),
+            NOW_MILLIS,
+        )]);
 
         for _round in 0..CONCURRENT_ROUNDS {
             std::thread::scope(|scope| {
                 let mut writers = Vec::new();
                 for _writer in 0..CONCURRENT_WRITERS {
-                    writers.push(scope.spawn(|| held.rewrite(&path, NOW)));
+                    writers.push(scope.spawn(|| held.rewrite(&path, NOW_SECONDS)));
                 }
                 for writer in writers {
                     assert_eq!(writer.join().unwrap().unwrap(), held);
@@ -739,11 +774,16 @@ mod tests {
     fn refusal_message_names_the_enforced_limits() {
         let directory = scratch_directory("message");
         let path = directory.join("net.toml");
-        let mut held = network(vec![learned(&hex_key('a'), "http://insecure/", None, NOW)]);
+        let mut held = network(vec![learned(
+            &hex_key('a'),
+            "http://insecure/",
+            None,
+            NOW_MILLIS,
+        )]);
         held.secret = "short".to_owned();
-        let secret_refusal = held.rewrite(&path, NOW).unwrap_err().to_string();
+        let secret_refusal = held.rewrite(&path, NOW_SECONDS).unwrap_err().to_string();
         held.secret = hex_key('5');
-        let relay_refusal = held.rewrite(&path, NOW).unwrap_err().to_string();
+        let relay_refusal = held.rewrite(&path, NOW_SECONDS).unwrap_err().to_string();
 
         assert!(secret_refusal.contains(&format!("{HEX_KEY_LENGTH} lowercase hexadecimal")));
         assert!(secret_refusal.contains("secret must be"));
@@ -759,7 +799,7 @@ mod tests {
         let mut held = network(vec![]);
         held.secret = "short".to_owned();
 
-        let outcome = held.rewrite(&path, NOW);
+        let outcome = held.rewrite(&path, NOW_SECONDS);
 
         assert!(matches!(outcome, Err(ConfigError::InvalidField { .. })));
         assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
@@ -771,8 +811,8 @@ mod tests {
         let directory = scratch_directory("missing");
         let path = directory.join("net.toml");
 
-        let written = network(vec![learned(&hex_key('a'), "https://a/", None, NOW)])
-            .rewrite(&path, NOW)
+        let written = network(vec![learned(&hex_key('a'), "https://a/", None, NOW_MILLIS)])
+            .rewrite(&path, NOW_SECONDS)
             .unwrap();
 
         assert_eq!(NetworkConfig::load(&path).unwrap(), written);

@@ -1832,7 +1832,7 @@ mod tests {
         assert_eq!(
             learned.origin,
             HostOrigin::Learned {
-                heard: FROZEN_CLOCK_MS
+                heard: crate::config::UnixMillis(FROZEN_CLOCK_MS)
             }
         );
         assert!(first_holds_own);

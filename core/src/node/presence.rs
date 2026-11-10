@@ -19,7 +19,7 @@ use tokio::task::{JoinError, JoinHandle};
 use tokio::time::{Instant, sleep_until};
 
 use super::rebind::{MemberJoins, RebindSchedule, RelayProbe};
-use crate::config::{AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig};
+use crate::config::{AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
 use crate::crypto::{NetworkKeys, NetworkSecret};
 use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::inbox::buffer::ReceivedMessage;
@@ -1230,7 +1230,9 @@ impl KnownHosts {
                 id,
                 relay: record.relay.as_str().to_owned(),
                 ts: Some(record.ts),
-                origin: HostOrigin::Learned { heard: now_ms },
+                origin: HostOrigin::Learned {
+                    heard: UnixMillis(now_ms),
+                },
             });
             self.newer_than_file = true;
             return RecordVerdict::FromNewHost;
@@ -1241,7 +1243,7 @@ impl KnownHosts {
         host.ts = Some(record.ts);
         record.relay.as_str().clone_into(&mut host.relay);
         if let HostOrigin::Learned { heard } = &mut host.origin {
-            *heard = now_ms;
+            *heard = UnixMillis(now_ms);
         }
         self.newer_than_file = true;
         RecordVerdict::FromKnownHost
@@ -1392,6 +1394,9 @@ pub(super) mod tests {
     const FAR_FUTURE_REQUEST_SEQ: u64 = FROZEN_CLOCK_MS + SPEC_ANNOUNCEMENT_MAX_AGE_MS + 1;
     const ANSWERED_AT_ONCE_WITHIN: Duration = Duration::from_millis(100);
     const SPEC_REANNOUNCE_INTERVAL_AND_NOTHING_MORE_WAIT: Duration = Duration::from_millis(3000);
+    const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * MILLIS_PER_SECOND;
+    const DAYS_WITHIN_EXPIRY: u64 = 29;
+    const DAYS_PAST_EXPIRY: u64 = 31;
 
     fn network_secret() -> NetworkSecret {
         NetworkSecret::from_bytes(NETWORK_SECRET)
@@ -3291,6 +3296,44 @@ pub(super) mod tests {
         assert_eq!(saved.relay, MOVED_HOST_RELAY);
         assert_eq!(saved.ts, Some(record_ts + 1));
         drop(scratch);
+    }
+
+    fn hosts_saved_days_after_a_record(tag: &str, days_after: u64) -> Vec<Host> {
+        let root = std::env::temp_dir().join(format!("u46-{tag}-{}", std::process::id()));
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join(NETWORK_FILE_NAME);
+        let Payload::Infrastructure(record) =
+            infrastructure_of(HOST_SEED, HOST_RELAY, FROZEN_CLOCK_MS / MILLIS_PER_SECOND)
+        else {
+            panic!("infrastructure_of builds an infrastructure record");
+        };
+        let mut known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), path.clone());
+
+        known_hosts.take_record(&record, FROZEN_CLOCK_MS);
+        known_hosts
+            .save(
+                days_after
+                    .checked_mul(MILLIS_PER_DAY)
+                    .and_then(|span| span.checked_add(FROZEN_CLOCK_MS))
+                    .unwrap(),
+            )
+            .unwrap();
+
+        let saved = NetworkConfig::load(&path).unwrap().hosts;
+        drop(fs::remove_dir_all(&root));
+        saved
+    }
+
+    /// Spec 3.3 and 3.14: a learned host stamped on the millisecond clock leaves the file when saved 31 days later and stays at 29 days.
+    #[test]
+    fn spec_3_3_a_learned_host_not_heard_for_30_days_is_dropped_at_the_next_save() {
+        let kept = hosts_saved_days_after_a_record("kept", DAYS_WITHIN_EXPIRY);
+        let dropped = hosts_saved_days_after_a_record("dropped", DAYS_PAST_EXPIRY);
+
+        let kept_relays: Vec<&str> = kept.iter().map(|host| host.relay.as_str()).collect();
+        assert_eq!(kept_relays, [HOST_RELAY]);
+        assert_eq!(dropped, []);
     }
 
     #[test]
