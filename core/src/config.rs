@@ -20,6 +20,7 @@ const TEMPORARY_FILE_SUFFIX: &str = "tmp";
 const HEX_KEY_LENGTH: usize = 64;
 const RELAY_URL_SCHEME: &str = "https";
 const HOST_RELAY_FIELD: &str = "host relay";
+const HOST_ID_FIELD: &str = "host id";
 
 /// A timestamp of spec 3.1: milliseconds since the Unix epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -143,6 +144,12 @@ pub enum ConfigError {
         field: &'static str,
         accepted: AcceptedValue,
     },
+    InvalidHost {
+        path: PathBuf,
+        host: String,
+        field: &'static str,
+        accepted: AcceptedValue,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -153,6 +160,16 @@ impl fmt::Display for ConfigError {
                 field,
                 accepted,
             } => write!(formatter, "{}: {field} must be {accepted}", path.display()),
+            Self::InvalidHost {
+                path,
+                host,
+                field,
+                accepted,
+            } => write!(
+                formatter,
+                "{}: the {field} of host {host} must be {accepted}",
+                path.display()
+            ),
             Self::Io { path, source } => write!(formatter, "{}: {source}", path.display()),
             Self::Malformed { path, source } => write!(
                 formatter,
@@ -172,19 +189,35 @@ impl fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl Host {
-    /// Reads the relay as the wire's relay URL, naming the configuration file when it is refused.
+    /// Reads the relay as the wire's relay URL, naming the configuration file and this host when it is refused.
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::InvalidField` when the relay is over the wire's limit.
+    /// Returns `ConfigError::InvalidHost` when the relay is over the wire's limit.
     pub fn wire_relay(&self, path: &Path) -> Result<wire::RelayUrl, ConfigError> {
-        wire::RelayUrl::try_from(self.relay.clone()).map_err(|_over_limit| {
-            ConfigError::InvalidField {
-                path: path.to_owned(),
-                field: HOST_RELAY_FIELD,
-                accepted: AcceptedValue::RelayUrl,
-            }
-        })
+        wire::RelayUrl::try_from(self.relay.clone())
+            .map_err(|_over_limit| self.refusal(path, HOST_RELAY_FIELD, AcceptedValue::RelayUrl))
+    }
+
+    /// The refusal of this host's field, naming the configuration file and the host.
+    fn refusal(&self, path: &Path, field: &'static str, accepted: AcceptedValue) -> ConfigError {
+        ConfigError::InvalidHost {
+            path: path.to_owned(),
+            host: self.id.clone(),
+            field,
+            accepted,
+        }
+    }
+
+    /// Refuses this host unless its id is a lowercase hex key and its relay is a host relay.
+    fn validate(&self, path: &Path) -> Result<(), ConfigError> {
+        if !is_lowercase_hex_key(&self.id) {
+            return Err(self.refusal(path, HOST_ID_FIELD, AcceptedValue::HexKey));
+        }
+        if host_relay_url(&self.relay).is_none() {
+            return Err(self.refusal(path, HOST_RELAY_FIELD, AcceptedValue::RelayUrl));
+        }
+        Ok(())
     }
 
     /// Combines two records of one host: the newer's relay, the larger `ts`, the later `heard`, configured if either is.
@@ -242,8 +275,7 @@ impl NetworkConfig {
         require_hex_key(path, "secret", &self.secret)?;
         require_hex_key(path, "owner", &self.owner)?;
         for host in &self.hosts {
-            require_hex_key(path, "host id", &host.id)?;
-            require_relay_url(path, &host.relay)?;
+            host.validate(path)?;
         }
         Ok(())
     }
@@ -287,12 +319,15 @@ fn parse(path: &Path, text: &str) -> Result<NetworkConfig, ConfigError> {
     Ok(config)
 }
 
-fn require_hex_key(path: &Path, field: &'static str, value: &str) -> Result<(), ConfigError> {
-    let is_lowercase_hex_key = value.len() == HEX_KEY_LENGTH
+fn is_lowercase_hex_key(value: &str) -> bool {
+    value.len() == HEX_KEY_LENGTH
         && value
             .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-    if is_lowercase_hex_key {
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn require_hex_key(path: &Path, field: &'static str, value: &str) -> Result<(), ConfigError> {
+    if is_lowercase_hex_key(value) {
         Ok(())
     } else {
         Err(ConfigError::InvalidField {
@@ -313,18 +348,6 @@ pub fn host_relay_url(relay: &str) -> Option<RelayUrl> {
         .parse::<RelayUrl>()
         .ok()
         .filter(|url| url.scheme() == RELAY_URL_SCHEME)
-}
-
-fn require_relay_url(path: &Path, value: &str) -> Result<(), ConfigError> {
-    if host_relay_url(value).is_some() {
-        Ok(())
-    } else {
-        Err(ConfigError::InvalidField {
-            path: path.to_owned(),
-            field: HOST_RELAY_FIELD,
-            accepted: AcceptedValue::RelayUrl,
-        })
-    }
 }
 
 fn read_current(path: &Path) -> Result<Option<NetworkConfig>, ConfigError> {
@@ -392,9 +415,14 @@ fn remove_temporary_file(temporary_path: &Path) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::KEY_LEN;
+    use crate::keys::render_public_key;
+    use iroh::SecretKey;
+    use std::collections::BTreeSet;
     use std::fs;
 
     const NOW_SECONDS: u64 = 1_800_000_000;
+    const VALID_RELAY: &str = "https://relay.example/";
     const NOW_MILLIS: UnixMillis = UnixMillis(NOW_SECONDS * MILLIS_PER_SECOND);
     const GROUP_READABLE_FILE_MODE: u32 = 0o644;
     const CONCURRENT_WRITERS: usize = 8;
@@ -416,6 +444,10 @@ mod tests {
         digit.to_string().repeat(HEX_KEY_LENGTH)
     }
 
+    fn host_id(seed: u8) -> String {
+        render_public_key(&SecretKey::from_bytes(&[seed; KEY_LEN]).public())
+    }
+
     fn heard_before(millis: u64) -> UnixMillis {
         UnixMillis(NOW_MILLIS.0.checked_sub(millis).unwrap())
     }
@@ -429,9 +461,9 @@ mod tests {
         }
     }
 
-    /// Spec 3.4 and 3.6: a relay is a wire relay URL only up to the limit, and over it names the host relay field.
+    /// Spec 3.4 and 3.6: a relay is a wire relay URL only up to the limit, and over it names the host and its relay field.
     #[test]
-    fn wire_relay_accepts_the_limit_and_refuses_one_byte_over_naming_the_field() {
+    fn wire_relay_accepts_the_limit_and_refuses_one_byte_over_naming_the_host() {
         let path = Path::new("net.toml");
         let relay_of_bytes = |bytes: usize| {
             let scheme_and_slash = "https:///".len();
@@ -439,7 +471,7 @@ mod tests {
         };
         for bytes in (MAX_RELAY_URL_BYTES - 2)..=(MAX_RELAY_URL_BYTES + 2) {
             let host = Host {
-                id: hex_key('a'),
+                id: host_id(b'a'),
                 relay: relay_of_bytes(bytes),
                 ts: None,
                 origin: HostOrigin::Configured,
@@ -451,12 +483,14 @@ mod tests {
                 assert_eq!(outcome.unwrap().as_str(), host.relay, "{bytes} bytes");
             } else {
                 match outcome.unwrap_err() {
-                    ConfigError::InvalidField {
+                    ConfigError::InvalidHost {
                         path: refused_path,
+                        host: refused_host,
                         field,
                         accepted,
                     } => {
                         assert_eq!(refused_path, path);
+                        assert_eq!(refused_host, host.id);
                         assert_eq!(field, "host relay");
                         assert_eq!(accepted, AcceptedValue::RelayUrl);
                     }
@@ -480,25 +514,27 @@ mod tests {
         let directory = scratch_directory("merge");
         let path = directory.join("net.toml");
         let on_disk = network(vec![
-            learned(&hex_key('a'), "https://a/", Some(5), heard_before(10)),
-            learned(&hex_key('b'), "https://b/", Some(8), heard_before(40)),
-            learned(&hex_key('c'), "https://c/", Some(7), heard_before(20)),
+            learned(&host_id(b'a'), "https://a/", Some(5), heard_before(10)),
+            learned(&host_id(b'b'), "https://b/", Some(8), heard_before(40)),
+            learned(&host_id(b'c'), "https://c/", Some(7), heard_before(20)),
         ]);
         on_disk.rewrite(&path, NOW_SECONDS).unwrap();
         let held = network(vec![
-            learned(&hex_key('a'), "https://a/", Some(9), heard_before(50)),
-            learned(&hex_key('b'), "https://b/", Some(4), heard_before(5)),
-            learned(&hex_key('d'), "https://m/", Some(3), heard_before(30)),
+            learned(&host_id(b'a'), "https://a/", Some(9), heard_before(50)),
+            learned(&host_id(b'b'), "https://b/", Some(4), heard_before(5)),
+            learned(&host_id(b'd'), "https://m/", Some(3), heard_before(30)),
         ]);
 
         let merged = held.rewrite(&path, NOW_SECONDS).unwrap();
 
-        let expected = network(vec![
-            learned(&hex_key('a'), "https://a/", Some(9), heard_before(10)),
-            learned(&hex_key('b'), "https://b/", Some(8), heard_before(5)),
-            learned(&hex_key('c'), "https://c/", Some(7), heard_before(20)),
-            learned(&hex_key('d'), "https://m/", Some(3), heard_before(30)),
-        ]);
+        let mut expected_hosts = vec![
+            learned(&host_id(b'a'), "https://a/", Some(9), heard_before(10)),
+            learned(&host_id(b'b'), "https://b/", Some(8), heard_before(5)),
+            learned(&host_id(b'c'), "https://c/", Some(7), heard_before(20)),
+            learned(&host_id(b'd'), "https://m/", Some(3), heard_before(30)),
+        ];
+        expected_hosts.sort_by(|first, second| first.id.cmp(&second.id));
+        let expected = network(expected_hosts);
         assert_eq!(merged, expected);
         assert_eq!(NetworkConfig::load(&path).unwrap(), expected);
     }
@@ -510,19 +546,19 @@ mod tests {
         let path = directory.join("net.toml");
         let held = network(vec![
             learned(
-                &hex_key('1'),
+                &host_id(b'1'),
                 "https://s/",
                 Some(1),
                 heard_before(LEARNED_HOST_EXPIRY_MILLIS + 1),
             ),
             learned(
-                &hex_key('2'),
+                &host_id(b'2'),
                 "https://b/",
                 Some(2),
                 heard_before(LEARNED_HOST_EXPIRY_MILLIS),
             ),
             Host {
-                id: hex_key('3'),
+                id: host_id(b'3'),
                 relay: "https://k/".to_owned(),
                 ts: Some(3),
                 origin: HostOrigin::Configured,
@@ -531,8 +567,8 @@ mod tests {
 
         let written = held.rewrite(&path, NOW_SECONDS).unwrap();
 
-        let ids: Vec<&str> = written.hosts.iter().map(|host| host.id.as_str()).collect();
-        assert_eq!(ids, [hex_key('2'), hex_key('3')]);
+        let ids: BTreeSet<String> = written.hosts.iter().map(|host| host.id.clone()).collect();
+        assert_eq!(ids, BTreeSet::from([host_id(b'2'), host_id(b'3')]));
         assert_eq!(NetworkConfig::load(&path).unwrap(), written);
     }
 
@@ -542,7 +578,7 @@ mod tests {
         let directory = scratch_directory("configured-wins");
         let path = directory.join("net.toml");
         let owner_configured = Host {
-            id: hex_key('a'),
+            id: host_id(b'a'),
             relay: "https://a/".to_owned(),
             ts: Some(1),
             origin: HostOrigin::Configured,
@@ -551,7 +587,7 @@ mod tests {
             .rewrite(&path, NOW_SECONDS)
             .unwrap();
         let learned_long_ago = network(vec![learned(
-            &hex_key('a'),
+            &host_id(b'a'),
             "https://a/",
             Some(1),
             heard_before(LEARNED_HOST_EXPIRY_MILLIS + 5),
@@ -568,7 +604,7 @@ mod tests {
         let directory = scratch_directory("mode");
         let path = directory.join("net.toml");
         let held = network(vec![learned(
-            &hex_key('a'),
+            &host_id(b'a'),
             "https://a/",
             Some(1),
             NOW_MILLIS,
@@ -589,7 +625,7 @@ mod tests {
         let path = directory.join("net.toml");
 
         network(vec![learned(
-            &hex_key('a'),
+            &host_id(b'a'),
             "https://a/",
             Some(1),
             NOW_MILLIS,
@@ -650,7 +686,7 @@ mod tests {
         let directory = scratch_directory("concurrent");
         let path = directory.join("net.toml");
         let held = network(vec![learned(
-            &hex_key('a'),
+            &host_id(b'a'),
             "https://a/",
             Some(1),
             NOW_MILLIS,
@@ -687,80 +723,27 @@ mod tests {
         assert_eq!(names, ["net.toml"]);
     }
 
-    /// Spec 3.1 and 3.3: load refuses a secret, owner, node id or relay of the wrong shape, naming the accepted set.
+    fn configuration_text(secret: &str, owner: &str, id: &str, relay: &str) -> String {
+        format!(
+            "secret = \"{secret}\"\nowner = \"{owner}\"\nhosts = [{{ id = \"{id}\", relay = \"{relay}\" }}]\n"
+        )
+    }
+
+    /// Spec 3.1 and 3.3: load refuses a secret or owner of the wrong shape, naming the field and the accepted set.
     #[test]
-    fn load_refuses_a_field_of_the_wrong_shape() {
+    fn load_refuses_a_secret_or_owner_of_the_wrong_shape() {
         let directory = scratch_directory("shapes");
-        let valid_relay = "https://relay.example/";
-        let long_relay = format!("https://{}/", "r".repeat(MAX_RELAY_URL_BYTES));
         let refused_cases = [
-            (
-                hex_key('a').to_uppercase(),
-                hex_key('b'),
-                hex_key('c'),
-                valid_relay.to_owned(),
-                "secret",
-                AcceptedValue::HexKey,
-            ),
-            (
-                "abc".to_owned(),
-                hex_key('b'),
-                hex_key('c'),
-                valid_relay.to_owned(),
-                "secret",
-                AcceptedValue::HexKey,
-            ),
-            (
-                hex_key('a'),
-                String::new(),
-                hex_key('c'),
-                valid_relay.to_owned(),
-                "owner",
-                AcceptedValue::HexKey,
-            ),
-            (
-                hex_key('a'),
-                hex_key('b'),
-                "g".repeat(HEX_KEY_LENGTH),
-                valid_relay.to_owned(),
-                "host id",
-                AcceptedValue::HexKey,
-            ),
-            (
-                hex_key('a'),
-                hex_key('b'),
-                hex_key('c'),
-                "http://relay.example/".to_owned(),
-                "host relay",
-                AcceptedValue::RelayUrl,
-            ),
-            (
-                hex_key('a'),
-                hex_key('b'),
-                hex_key('c'),
-                "not a url".to_owned(),
-                "host relay",
-                AcceptedValue::RelayUrl,
-            ),
-            (
-                hex_key('a'),
-                hex_key('b'),
-                hex_key('c'),
-                long_relay,
-                "host relay",
-                AcceptedValue::RelayUrl,
-            ),
+            (hex_key('a').to_uppercase(), hex_key('b'), "secret"),
+            ("abc".to_owned(), hex_key('b'), "secret"),
+            (hex_key('a'), String::new(), "owner"),
         ];
 
-        for (index, (secret, owner, id, relay, field, accepted)) in
-            refused_cases.into_iter().enumerate()
-        {
+        for (index, (secret, owner, field)) in refused_cases.into_iter().enumerate() {
             let path = directory.join(format!("case-{index}.toml"));
             fs::write(
                 &path,
-                format!(
-                    "secret = \"{secret}\"\nowner = \"{owner}\"\nhosts = [{{ id = \"{id}\", relay = \"{relay}\" }}]\n"
-                ),
+                configuration_text(&secret, &owner, &host_id(b'c'), VALID_RELAY),
             )
             .unwrap();
 
@@ -769,11 +752,71 @@ mod tests {
             assert!(
                 matches!(
                     refusal,
-                    ConfigError::InvalidField { field: refused, accepted: set, .. }
-                        if refused == field && set == accepted
+                    ConfigError::InvalidField { field: refused, accepted: AcceptedValue::HexKey, .. }
+                        if refused == field
                 ),
                 "case {index}: {refusal}"
             );
+        }
+    }
+
+    /// Spec 3.1, 3.3 and 3.14: load refuses a host whose id is no lowercase hex key or whose relay is no https URL within the limit, naming that host.
+    #[test]
+    fn load_refuses_a_host_whose_id_or_relay_is_refused_naming_the_host() {
+        let directory = scratch_directory("host-shapes");
+        let long_relay = format!("https://{}/", "r".repeat(MAX_RELAY_URL_BYTES));
+        let refused_cases = [
+            (
+                "g".repeat(HEX_KEY_LENGTH),
+                VALID_RELAY.to_owned(),
+                "host id",
+                AcceptedValue::HexKey,
+            ),
+            (
+                host_id(b'c').to_uppercase(),
+                VALID_RELAY.to_owned(),
+                "host id",
+                AcceptedValue::HexKey,
+            ),
+            (
+                host_id(b'c'),
+                "http://relay.example/".to_owned(),
+                "host relay",
+                AcceptedValue::RelayUrl,
+            ),
+            (
+                host_id(b'c'),
+                "not a url".to_owned(),
+                "host relay",
+                AcceptedValue::RelayUrl,
+            ),
+            (
+                host_id(b'c'),
+                long_relay,
+                "host relay",
+                AcceptedValue::RelayUrl,
+            ),
+        ];
+
+        for (index, (id, relay, field, accepted)) in refused_cases.into_iter().enumerate() {
+            let path = directory.join(format!("case-{index}.toml"));
+            fs::write(
+                &path,
+                configuration_text(&hex_key('a'), &hex_key('b'), &id, &relay),
+            )
+            .unwrap();
+
+            let refusal = NetworkConfig::load(&path).unwrap_err();
+
+            assert!(
+                matches!(
+                    &refusal,
+                    ConfigError::InvalidHost { host, field: refused, accepted: set, .. }
+                        if *host == id && *refused == field && *set == accepted
+                ),
+                "case {index}: {refusal}"
+            );
+            assert!(refusal.to_string().contains(&id), "case {index}: {refusal}");
         }
     }
 
@@ -783,7 +826,7 @@ mod tests {
         let directory = scratch_directory("message");
         let path = directory.join("net.toml");
         let mut held = network(vec![learned(
-            &hex_key('a'),
+            &host_id(b'a'),
             "http://insecure/",
             None,
             NOW_MILLIS,
@@ -819,9 +862,14 @@ mod tests {
         let directory = scratch_directory("missing");
         let path = directory.join("net.toml");
 
-        let written = network(vec![learned(&hex_key('a'), "https://a/", None, NOW_MILLIS)])
-            .rewrite(&path, NOW_SECONDS)
-            .unwrap();
+        let written = network(vec![learned(
+            &host_id(b'a'),
+            "https://a/",
+            None,
+            NOW_MILLIS,
+        )])
+        .rewrite(&path, NOW_SECONDS)
+        .unwrap();
 
         assert_eq!(NetworkConfig::load(&path).unwrap(), written);
     }
