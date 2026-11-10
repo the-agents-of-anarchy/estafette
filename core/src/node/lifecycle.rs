@@ -8,6 +8,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 
 use crate::errors::ErrorCode;
+use crate::handle::{Handle, LocalHandle};
 use crate::node::presence::Node;
 use crate::sidecar::HeldSidecar;
 
@@ -38,15 +39,23 @@ pub enum Exit {
     Stopped(RuntimeShutdown),
 }
 
+/// The card this session claimed and the effective handle its node assigned itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedCard {
+    pub card: Handle,
+    pub handle: LocalHandle,
+}
+
 struct Claimed {
     node: Arc<Node>,
     lock: HeldSidecar,
+    identity: ClaimedCard,
 }
 
 enum Phase {
     Unclaimed,
     Claimed(Box<Claimed>),
-    Stopping,
+    Stopping(Option<ClaimedCard>),
 }
 
 /// The one card this process claims for its life, and the end of that life.
@@ -67,20 +76,40 @@ impl Session {
     ///
     /// # Errors
     /// `ErrorCode::BadRequest` when a card is claimed, `ErrorCode::Refused` when the session is stopping.
-    pub fn claim(&self, node: Node, lock: HeldSidecar) -> Result<Arc<Node>, ErrorCode> {
+    pub fn claim(
+        &self,
+        card: Handle,
+        node: Node,
+        lock: HeldSidecar,
+    ) -> Result<Arc<Node>, ErrorCode> {
         let mut phase = self.phase();
         match &*phase {
             Phase::Unclaimed => {
+                let identity = ClaimedCard {
+                    card,
+                    handle: node.own_handle().clone(),
+                };
                 let node = Arc::new(node);
                 *phase = Phase::Claimed(Box::new(Claimed {
                     node: Arc::clone(&node),
                     lock,
+                    identity,
                 }));
                 drop(phase);
                 Ok(node)
             }
             Phase::Claimed(_) => Err(ErrorCode::BadRequest),
-            Phase::Stopping => Err(ErrorCode::Refused),
+            Phase::Stopping(_) => Err(ErrorCode::Refused),
+        }
+    }
+
+    /// The card and handle this session claimed, kept while it stops, none before a claim.
+    #[must_use]
+    pub fn claimed_card(&self) -> Option<ClaimedCard> {
+        match &*self.phase() {
+            Phase::Unclaimed => None,
+            Phase::Claimed(claimed) => Some(claimed.identity.clone()),
+            Phase::Stopping(identity) => identity.clone(),
         }
     }
 
@@ -92,7 +121,7 @@ impl Session {
         match &*self.phase() {
             Phase::Unclaimed => Err(ErrorCode::NotClaimed),
             Phase::Claimed(claimed) => Ok(Arc::clone(&claimed.node)),
-            Phase::Stopping => Err(ErrorCode::Refused),
+            Phase::Stopping(_) => Err(ErrorCode::Refused),
         }
     }
 
@@ -127,10 +156,17 @@ impl Session {
 
     /// Takes the claim out of the session and leaves it Stopping.
     fn enter_stopping(&self) -> Option<Box<Claimed>> {
-        let leaving = std::mem::replace(&mut *self.phase(), Phase::Stopping);
-        match leaving {
-            Phase::Claimed(claimed) => Some(claimed),
-            Phase::Unclaimed | Phase::Stopping => None,
+        let mut phase = self.phase();
+        match std::mem::replace(&mut *phase, Phase::Stopping(None)) {
+            Phase::Claimed(claimed) => {
+                *phase = Phase::Stopping(Some(claimed.identity.clone()));
+                Some(claimed)
+            }
+            Phase::Unclaimed => None,
+            Phase::Stopping(identity) => {
+                *phase = Phase::Stopping(identity);
+                None
+            }
         }
     }
 }
@@ -226,6 +262,8 @@ mod tests {
     use crate::sidecar;
     use crate::wire::{Introduce, Nonce, Version};
 
+    const FIRST_CARD: &str = "first-card";
+    const SECOND_CARD: &str = "second-card";
     const STALLED_SERVER_CAPACITY_BYTES: usize = 1;
     const TYPED_BEFORE_THE_END: &[u8] = b"a tool call the server is still answering";
     const END_NOTED_WITHIN: Duration = Duration::from_millis(500);
@@ -250,6 +288,10 @@ mod tests {
         (ShutdownSignal::Interrupt, RuntimeShutdown::Awaited),
         (ShutdownSignal::Hangup, RuntimeShutdown::Awaited),
     ];
+
+    fn card_named(name: &str) -> Handle {
+        name.parse().unwrap()
+    }
 
     struct Run {
         input_ended: oneshot::Sender<()>,
@@ -289,7 +331,9 @@ mod tests {
         tokio::time::sleep(INTRODUCE_ROUND_TRIP).await;
         let (sidecar_path, lock) = scratch.locked_card(SECOND_SEED);
         let session = Arc::new(Session::new());
-        session.claim(second.node, lock).unwrap();
+        session
+            .claim(card_named(SECOND_CARD), second.node, lock)
+            .unwrap();
         ClaimedSecond {
             first,
             session,
@@ -310,6 +354,26 @@ mod tests {
         .is_some()
     }
 
+    #[tokio::test]
+    async fn spec_3_10_the_session_names_the_card_and_handle_it_claimed_before_and_after_it_stops()
+    {
+        let scratch = Scratch::new("claimed-card").await;
+        let claimed = claimed_second(&scratch).await;
+        let expected = ClaimedCard {
+            card: card_named(SECOND_CARD),
+            handle: claimed.session.node().unwrap().own_handle().clone(),
+        };
+        assert_eq!(claimed.session.claimed_card(), Some(expected.clone()));
+        assert_eq!(Session::new().claimed_card(), None);
+
+        let run = run(&claimed.session, TEST_DEPARTURE_WAIT);
+        run.input_ended.send(()).unwrap();
+        run.exit.await.unwrap();
+
+        assert_eq!(claimed.session.claimed_card(), Some(expected));
+        drop(scratch);
+    }
+
     #[test]
     fn spec_3_9_before_init_the_session_is_unclaimed_and_every_tool_gets_not_claimed() {
         let session = Session::new();
@@ -325,8 +389,10 @@ mod tests {
         let (_, second_lock) = scratch.locked_card(SECOND_SEED);
         let session = Session::new();
 
-        let claimed = session.claim(first.node, first_lock).unwrap();
-        let second_claim = session.claim(second.node, second_lock);
+        let claimed = session
+            .claim(card_named(FIRST_CARD), first.node, first_lock)
+            .unwrap();
+        let second_claim = session.claim(card_named(SECOND_CARD), second.node, second_lock);
 
         assert_eq!(second_claim.err(), Some(ErrorCode::BadRequest));
         assert!(Arc::ptr_eq(&session.node().unwrap(), &claimed));
@@ -591,7 +657,9 @@ mod tests {
         let record_ts = wall_clock_ms() / 1000;
         let (_, lock) = scratch.locked_card(FIRST_SEED);
         let session = Arc::new(Session::new());
-        session.claim(member.node, lock).unwrap();
+        session
+            .claim(card_named(FIRST_CARD), member.node, lock)
+            .unwrap();
         witness
             .broadcast_as(
                 HOST_SEED,
@@ -639,7 +707,9 @@ mod tests {
         .await;
         let (_, lock) = scratch.locked_card(SECOND_SEED);
         let session = Arc::new(Session::new());
-        session.claim(member.node, lock).unwrap();
+        session
+            .claim(card_named(FIRST_CARD), member.node, lock)
+            .unwrap();
         tokio::time::timeout(CONNECTION_WAIT, async {
             while witness.accepted.lock().unwrap().is_empty() {
                 tokio::time::sleep(POLL).await;

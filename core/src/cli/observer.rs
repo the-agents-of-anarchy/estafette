@@ -278,6 +278,7 @@ async fn run_command(
 
 /// The reserved operator card as claimed: its held lock, its requested handle and its public mapping.
 struct OperatorCard {
+    name: Handle,
     held: HeldSidecar,
     handle: AnnouncedHandle,
     public: Vec<u8>,
@@ -334,7 +335,7 @@ async fn send_as_operator(
     .map_err(Failure::Node)?;
     let session = Session::new();
     let node = session
-        .claim(node, operator.held)
+        .claim(operator.name, node, operator.held)
         .map_err(Failure::Session)?;
     let delivery = node.send(to.as_str(), body).await;
     release_card(&session).await;
@@ -380,9 +381,16 @@ fn claim_operator_card(
                 path: card_file.clone(),
                 reason,
             })?;
+    let name = OPERATOR_CARD
+        .parse::<Handle>()
+        .map_err(|source| Failure::CardUnusable {
+            path: card_file.clone(),
+            reason: CardUnusable::Handle(source),
+        })?;
     let held =
         claim(&sidecar_file, usable.public_key.as_bytes(), pause).map_err(Failure::Sidecar)?;
     Ok(OperatorCard {
+        name,
         held,
         handle: usable.requested_handle,
         public: card.public_json(),

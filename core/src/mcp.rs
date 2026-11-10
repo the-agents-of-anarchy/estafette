@@ -5,7 +5,7 @@ use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use iroh::endpoint::BindError;
@@ -29,7 +29,7 @@ use crate::config::{NetworkConfig, host_relay_url};
 use crate::crypto::GateKey;
 use crate::dirs::{CARD_EXTENSION, Directories};
 use crate::errors::{Envelope, ErrorCode, You};
-use crate::handle::{AnnouncedHandle, Handle, LocalHandle, MAX_LOCAL_LENGTH};
+use crate::handle::{AnnouncedHandle, Handle, MAX_LOCAL_LENGTH};
 use crate::inbox::buffer::InboxFrame;
 use crate::net::endpoint::NodeEndpoint;
 use crate::node::{
@@ -194,15 +194,8 @@ async fn answer_until_closed(
 struct Server {
     session: Arc<Session>,
     init_gate: tokio::sync::Mutex<()>,
-    claimed: Mutex<Option<ClaimedCard>>,
     served: Arc<ServedNetwork>,
     effects: ServerEffects,
-}
-
-/// The card this session claimed and the effective handle its node assigned itself.
-struct ClaimedCard {
-    card: Handle,
-    handle: LocalHandle,
 }
 
 impl Server {
@@ -211,7 +204,6 @@ impl Server {
         Self {
             session,
             init_gate: tokio::sync::Mutex::const_new(()),
-            claimed: Mutex::new(None),
             served: Arc::new(served),
             effects,
         }
@@ -374,22 +366,13 @@ impl Server {
         answered
     }
 
-    /// Hands the node and the lock to the session and records the card with the node's handle in the same step, so no `you` sees one without the other.
+    /// Hands the card, the node and the lock to the session, which alone holds what the claim names.
     fn claim(&self, card: Handle, node: Node, lock: HeldSidecar) -> Result<ToolResult, ErrorCode> {
-        let mut claimed = self.claimed_card();
-        let handle = self.session.claim(node, lock)?.own_handle().clone();
-        let result = ToolResult::Claimed {
-            handle: handle.as_str().to_owned(),
+        let node = self.session.claim(card, node, lock)?;
+        Ok(ToolResult::Claimed {
+            handle: node.own_handle().as_str().to_owned(),
             inbox_path: self.served.inbox_path.clone(),
-        };
-        *claimed = Some(ClaimedCard { card, handle });
-        drop(claimed);
-        Ok(result)
-    }
-
-    /// The card this session claimed, none before init.
-    fn claimed_card(&self) -> MutexGuard<'_, Option<ClaimedCard>> {
-        self.claimed.lock().unwrap_or_else(PoisonError::into_inner)
+        })
     }
 
     /// Every card of the registry in name order, each with whether its sidecar lock is taken, read off the runtime's threads.
@@ -397,10 +380,7 @@ impl Server {
         let served = Arc::clone(&self.served);
         let registry = Arc::clone(&self.effects.registry);
         let is_card_held = Arc::clone(&self.effects.is_card_held);
-        let claimed = self
-            .claimed_card()
-            .as_ref()
-            .map(|claimed| claimed.card.clone());
+        let claimed = self.session.claimed_card().map(|claimed| claimed.card);
         let listing = tokio::task::spawn_blocking(move || {
             listed_cards(
                 &served,
@@ -419,8 +399,8 @@ impl Server {
 
     /// The caller as this session knows it now.
     fn you(&self) -> You {
-        self.claimed_card()
-            .as_ref()
+        self.session
+            .claimed_card()
             .map_or(You::Unclaimed, |claimed| You::Claimed {
                 card: claimed.card.as_str().to_owned(),
                 handle: claimed.handle.as_str().to_owned(),
