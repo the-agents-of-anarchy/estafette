@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use data_encoding::HEXLOWER;
 use estafette::config::{Host, NetworkConfig};
+use estafette::keys::render_public_key;
 use estafette::wire::HostAddr;
 use serde_json::{Value, json};
 
@@ -13,7 +15,7 @@ use crate::lab_server::{KillableHostServer, LabServer};
 use crate::live_host::live_host_to_itself;
 use crate::live_network::LiveNetwork;
 use crate::mcp_server::McpServer;
-use crate::scratch_machine::ScratchMachine;
+use crate::scratch_machine::{Card, ScratchMachine};
 use crate::server_member::ServerMember;
 use crate::tail::Tail;
 use crate::timed_step::timed;
@@ -56,6 +58,24 @@ const RECORD_TS_COLUMN: usize = 5;
 const SPEC_HOST_ADDED_WITHIN: Duration = Duration::from_millis(1000);
 /// How often the members' network configurations are read while waiting for a host.
 const CONFIG_POLL: Duration = Duration::from_millis(100);
+/// How `tail` begins the line of a presence (spec 3.13).
+const PRESENCE_KIND: &str = "presence";
+/// The column of a presence line holding the card's id.
+const PRESENCE_CARD_COLUMN: usize = 2;
+/// The column of a presence line holding the announced address as JSON.
+const PRESENCE_ADDR_COLUMN: usize = 6;
+/// The key of an announced address listing its relays.
+const RELAYS_KEY: &str = "relays";
+/// How long every member may take to answer a fresh `tail`'s presence request, its join included.
+const ANNOUNCEMENT_WAIT: Duration = Duration::from_secs(60);
+/// How long the `tail` is read at a time while answers are collected.
+const TAIL_READ_SPAN: Duration = Duration::from_millis(1000);
+/// How many times three fresh members are started to have each homed on the doomed host's relay alone.
+const HOMING_ATTEMPTS: usize = 3;
+/// How soon after the kill every member's send to every other must be delivered (spec 3.15 test 23).
+const SPEC_DELIVERED_WITHIN_OF_THE_KILL: Duration = Duration::from_secs(60);
+/// How many rebinds a member may record after the kill: none twice (spec 3.15 test 23).
+const SPEC_MOST_REBINDS_AFTER_THE_KILL: usize = 1;
 
 /// The base followed by letters drawn from the clock and the process, so the handle and the card named for it are free on the live network and on every lab server whatever earlier runs left.
 fn fresh_handle(base: &str) -> String {
@@ -187,6 +207,7 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
 struct Member {
     server: McpServer,
     machine: ScratchMachine,
+    card: Card,
     handle: String,
 }
 
@@ -200,6 +221,15 @@ impl Member {
         Self::claimed_on(machine, handle)
     }
 
+    /// A member requesting a fresh handle from the base, on a machine whose configuration names the hosts given alone.
+    #[track_caller]
+    fn joined_through(network: &LiveNetwork, base: &str, hosts: &[HostAddr]) -> Self {
+        let handle = fresh_handle(base);
+        let machine = ScratchMachine::fresh(&handle, network.name());
+        network.join_through(&machine.directories(), hosts);
+        Self::claimed_on(machine, handle)
+    }
+
     /// Creates a card named for the handle and requesting it on the machine, then serves and claims it, requiring the claim to succeed.
     #[track_caller]
     fn claimed_on(machine: ScratchMachine, handle: String) -> Self {
@@ -210,8 +240,14 @@ impl Member {
         Self {
             server,
             machine,
+            card,
             handle,
         }
+    }
+
+    /// The member's card id as `tail` writes it.
+    fn card_key(&self) -> String {
+        render_public_key(&self.card.id)
     }
 
     /// How many rebinds the member's run record names so far, read from a redacted copy kept for the count and removed after it.
@@ -426,4 +462,150 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
             read_at.duration_since(deadline)
         );
     }
+}
+
+/// The card and the announced relays of a `tail` line when it is a presence.
+fn presence_of(line: &str) -> Option<(String, Vec<String>)> {
+    let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
+    if columns.first() != Some(&PRESENCE_KIND) {
+        return None;
+    }
+    let addr: Value = serde_json::from_str(columns.get(PRESENCE_ADDR_COLUMN)?).ok()?;
+    let relays = addr
+        .get(RELAYS_KEY)?
+        .as_array()?
+        .iter()
+        .map(|relay| relay.as_str().map(str::to_owned))
+        .collect::<Option<Vec<String>>>()?;
+    Some(((*columns.get(PRESENCE_CARD_COLUMN)?).to_owned(), relays))
+}
+
+/// The relays each member announces in answer to the presence request of a fresh `tail` joined by the invitation, by card, requiring every member's answer within the wait.
+#[track_caller]
+fn relays_announced_now(
+    network: &LiveNetwork,
+    members: &[Member],
+) -> BTreeMap<String, Vec<String>> {
+    let observer = LabMachine::joined("t-homing-tail", network);
+    let tail = tail_of(&observer, network);
+    let cards: Vec<String> = members.iter().map(Member::card_key).collect();
+    let deadline = Instant::now().checked_add(ANNOUNCEMENT_WAIT).unwrap();
+    let mut announced = BTreeMap::new();
+    while !cards.iter().all(|card| announced.contains_key(card)) {
+        assert!(
+            Instant::now() < deadline,
+            "not every member answered the tail's presence request within {ANNOUNCEMENT_WAIT:?}: {announced:?}"
+        );
+        for line in tail.lines_during(TAIL_READ_SPAN) {
+            if let Some((card, relays)) = presence_of(&line)
+                && cards.contains(&card)
+            {
+                announced.insert(card, relays);
+            }
+        }
+    }
+    announced
+}
+
+/// Three members whose configuration names the doomed host alone, started until each announces the doomed host's relay alone, with what each announced, giving up after the homing attempts.
+#[track_caller]
+fn trio_homed_on(
+    network: &LiveNetwork,
+    doomed: &HostAddr,
+) -> (Vec<Member>, BTreeMap<String, Vec<String>>) {
+    let homed_alone = vec![doomed.relay.as_str().to_owned()];
+    let mut attempts = Vec::new();
+    for _ in 0..HOMING_ATTEMPTS {
+        let trio: Vec<Member> = TRIO
+            .iter()
+            .map(|base| Member::joined_through(network, base, std::slice::from_ref(doomed)))
+            .collect();
+        let announced = relays_announced_now(network, &trio);
+        if announced.values().all(|relays| *relays == homed_alone) {
+            return (trio, announced);
+        }
+        attempts.push(announced);
+    }
+    panic!(
+        "iroh homed a member on another relay than {} in each of {HOMING_ATTEMPTS} attempts: {attempts:#?}",
+        doomed.relay.as_str()
+    );
+}
+
+/// One send from every member to every other, in a fixed order, each timed, with its sender, receiver and envelope.
+fn sweep_of_sends(members: &mut [Member]) -> Vec<(String, String, Value)> {
+    let handles: Vec<String> = members.iter().map(|member| member.handle.clone()).collect();
+    let mut sends = Vec::new();
+    for member in members.iter_mut() {
+        for to in handles.iter().filter(|to| **to != member.handle) {
+            let sent = timed(&format!("{}'s send to {to}", member.handle), || {
+                member
+                    .server
+                    .call("send", &json!({ "to": to, "body": SENT_BODY }))
+            });
+            sends.push((member.handle.clone(), to.clone(), sent));
+        }
+    }
+    sends
+}
+
+/// Spec 3.15 test 23: three members on this machine whose configuration names the killable host alone, each announcing its relay alone to a fresh `tail` just before the kill, see that host's relay and bootstrap node killed while the live host lives, and a sweep of sends from every member to every other, sweeps following each other, is delivered whole and ends within 60 s of the kill, while no member's run record names a rebind twice by the end of those 60 s.
+#[test]
+fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_other_within_60_s_and_none_rebinds_twice()
+ {
+    let _live_host = live_host_to_itself();
+    let network = LiveNetwork::from_environment();
+    let killable = KillableHostServer::from_environment();
+    let doomed = KillableHost::from_environment();
+    let observer = LabMachine::joined("t23-tail", &network);
+    let tail = timed("tail joined through the live host", || {
+        tail_of(&observer, &network)
+    });
+    timed("the killable host serving", || {
+        killable_host_serving(&killable, doomed.address(), &tail);
+    });
+    let (mut trio, announced) = timed("three members homed on the killable host", || {
+        trio_homed_on(&network, doomed.address())
+    });
+
+    let kill = timed("the killable host killed", || doomed.kill());
+    let window_ends = kill
+        .sent
+        .checked_add(SPEC_DELIVERED_WITHIN_OF_THE_KILL)
+        .unwrap();
+    let mut sweeps = Vec::new();
+    let delivered_whole_at = loop {
+        let sweep = timed("a sweep of sends from every member to every other", || {
+            sweep_of_sends(&mut trio)
+        });
+        let ended = Instant::now();
+        let delivered_whole = sweep
+            .iter()
+            .all(|(_from, _to, sent)| sent["result"]["delivered"] == json!(true));
+        sweeps.push((ended.duration_since(kill.sent), sweep));
+        if delivered_whole {
+            break Some(ended);
+        }
+        if ended >= window_ends {
+            break None;
+        }
+    };
+    timed("the 60 s after the kill run out", || {
+        std::thread::sleep(window_ends.saturating_duration_since(Instant::now()));
+    });
+    let rebinds: Vec<(String, usize)> = trio
+        .iter()
+        .map(|member| (member.handle.clone(), member.rebinds_recorded()))
+        .collect();
+
+    assert!(
+        delivered_whole_at.is_some_and(|ended| ended <= window_ends),
+        "no sweep was delivered whole within {SPEC_DELIVERED_WITHIN_OF_THE_KILL:?} of the kill; members announced {announced:?}; sweeps after the kill: {sweeps:#?}"
+    );
+    assert!(
+        rebinds
+            .iter()
+            .all(|(_handle, count)| *count <= SPEC_MOST_REBINDS_AFTER_THE_KILL),
+        "{rebinds:?}"
+    );
 }
