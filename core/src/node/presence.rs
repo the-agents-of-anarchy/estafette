@@ -33,7 +33,8 @@ use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::payload::{OpenedPayload, ValidInfrastructure, ZERO_MAC, ZERO_SIGNATURE};
 use crate::peers::{
-    ANNOUNCEMENT_MAX_AGE_MS, Effect, Peer, PeerTable, is_within_announcement_max_age,
+    ANNOUNCEMENT_MAX_AGE_MS, Effect, Peer, PeerTable, announced_sender_handle,
+    is_within_announcement_max_age,
 };
 use crate::wire::{
     self, Addr, Departure, Introduce, IntroduceAck, Message, Nonce, Payload, Presence,
@@ -486,9 +487,7 @@ impl NodeState {
         message: &Message,
         now_ms: u64,
     ) -> Option<LocalHandle> {
-        if message.handle.parse::<AnnouncedHandle>().is_err() {
-            return None;
-        }
+        announced_sender_handle(message)?;
         let mut table = self.table();
         let effects = table.receive_message(sender, message, now_ms);
         let from = table

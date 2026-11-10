@@ -274,7 +274,7 @@ impl PeerTable {
         message: &Message,
         now_ms: u64,
     ) -> Vec<Effect> {
-        let Ok(handle) = message.handle.parse::<AnnouncedHandle>() else {
+        let Some(handle) = announced_sender_handle(message) else {
             return Vec::new();
         };
         if let Some(departure_seq) = self.departure_sent_since(card, message.sent_at, now_ms) {
@@ -405,6 +405,11 @@ impl PeerTable {
             .collect();
         LocalHandle::assign(announced, &taken)
     }
+}
+
+/// The handle a Message announces its sender by, or none when the text is outside the announced-handle grammar and the node drops the Message (spec 3.1).
+pub(crate) fn announced_sender_handle(message: &Message) -> Option<AnnouncedHandle> {
+    message.handle.parse().ok()
 }
 
 /// Whether an Introduce or `IntroduceAck` may change anything at this node: it names no handle, or a handle that matches the announced-handle grammar with a `public` a card sends (spec 3.1, 3.5).

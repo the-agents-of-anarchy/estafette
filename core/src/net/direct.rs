@@ -15,11 +15,10 @@ use tokio::time::{Instant, sleep, timeout};
 use super::endpoint::{DIRECT_ALPN, QUIC_KEEP_ALIVE_INTERVAL};
 use crate::crypto::NetworkKeys;
 use crate::errors::ErrorCode;
-use crate::handle::AnnouncedHandle;
 use crate::payload::{
     PayloadError, ZERO_MAC, open_request, open_response, seal_request, seal_response,
 };
-use crate::peers::is_admissible_introduction;
+use crate::peers::{announced_sender_handle, is_admissible_introduction};
 use crate::wire::{
     self, IntroduceAck, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, Nonce, Probe, ProbeAck,
     Request, Response, Version, WIRE_LIMIT_BYTES,
@@ -521,7 +520,7 @@ fn judge_message(
         Some(ErrorCode::Refused)
     } else if message.body.len() > MESSAGE_BODY_LIMIT_BYTES {
         Some(ErrorCode::TooLarge)
-    } else if message.handle.parse::<AnnouncedHandle>().is_err() {
+    } else if announced_sender_handle(message).is_none() {
         Some(ErrorCode::Refused)
     } else {
         None
