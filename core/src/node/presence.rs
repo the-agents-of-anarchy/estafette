@@ -3187,6 +3187,43 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
+    async fn spec_3_6_a_message_the_node_drops_for_its_announced_handle_is_acknowledged_refused() {
+        let scratch = Scratch::new("bad-handle-ack").await;
+        let mut members = start_members(
+            &scratch,
+            vec![
+                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC),
+                MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC).reaching(&[FIRST_SEED]),
+            ],
+        )
+        .await;
+        let second = members.pop().unwrap();
+        let first = members.pop().unwrap();
+        let sender = DirectClient::new(second.endpoint.clone(), keys(), ClientTimeouts::SPEC);
+
+        let ack = sender
+            .send_message(
+                first.endpoint.id(),
+                message_to(FIRST_SEED, NOT_AN_ANNOUNCED_HANDLE),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            ack,
+            crate::wire::MessageAck {
+                v: Version::CURRENT,
+                id: MESSAGE_ID,
+                accepted: false,
+                attached: false,
+                reason: Some(crate::errors::ErrorCode::Refused.code().to_owned()),
+            }
+        );
+        assert_eq!(first.node.peers(), Vec::<Peer>::new());
+        drop(scratch);
+    }
+
+    #[tokio::test]
     async fn spec_3_8_presence_and_departure_for_this_nodes_own_card_are_ignored() {
         let scratch = Scratch::new("own-card").await;
         let (member, witness) = start_witnessed(

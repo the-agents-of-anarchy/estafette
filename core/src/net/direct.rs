@@ -15,6 +15,7 @@ use tokio::time::{Instant, sleep, timeout, timeout_at};
 use super::endpoint::{DIRECT_ALPN, QUIC_KEEP_ALIVE_INTERVAL};
 use crate::crypto::NetworkKeys;
 use crate::errors::ErrorCode;
+use crate::handle::AnnouncedHandle;
 use crate::payload::{
     PayloadError, ZERO_MAC, open_request, open_response, seal_request, seal_response,
 };
@@ -506,7 +507,7 @@ impl<H: DirectHost> ServerState<H> {
     }
 }
 
-/// The error code a received Message is rejected with by the checks of spec 3.6 steps 3 and 4, or none when it is acceptable.
+/// The error code a received Message is rejected with by the checks of spec 3.6 steps 3 and 4, or by the node's drop of a Message whose announced handle does not match (spec 3.1), or none when it is acceptable.
 fn judge_message(
     own_card: Option<wire::PublicKey>,
     is_stopping: bool,
@@ -516,6 +517,8 @@ fn judge_message(
         Some(ErrorCode::Refused)
     } else if message.body.len() > MESSAGE_BODY_LIMIT_BYTES {
         Some(ErrorCode::TooLarge)
+    } else if message.handle.parse::<AnnouncedHandle>().is_err() {
+        Some(ErrorCode::Refused)
     } else {
         None
     }
