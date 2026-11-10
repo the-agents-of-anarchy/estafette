@@ -1584,6 +1584,36 @@ mod tests {
         assert_eq!(only_peer(&table, LATER_MS).card, PEER_CARD);
     }
 
+    #[test]
+    fn a_message_sets_a_gone_entry_online_once_its_departure_ages_out_whatever_its_sent_at_spec_3_8()
+     {
+        let sent_with_the_departure = Message {
+            sent_at: DEPARTURE_SEQ,
+            ..message_from(PEER_HANDLE, true)
+        };
+        let mut while_held = table_with_peer_gone_since_now();
+        let mut once_aged_out = table_with_peer_gone_since_now();
+
+        let while_held_effects =
+            while_held.receive_message(PEER_CARD, &sent_with_the_departure, TOMBSTONE_LAST_KEPT_MS);
+        let once_aged_out_effects = once_aged_out.receive_message(
+            PEER_CARD,
+            &sent_with_the_departure,
+            TOMBSTONE_FORGOTTEN_MS,
+        );
+
+        assert_eq!(while_held_effects, vec![]);
+        assert_eq!(once_aged_out_effects, vec![]);
+        assert_eq!(
+            only_peer(&while_held, TOMBSTONE_LAST_KEPT_MS).status,
+            Status::Gone { since_ms: NOW_MS }
+        );
+        assert_eq!(
+            only_peer(&once_aged_out, TOMBSTONE_FORGOTTEN_MS).status,
+            Status::Online
+        );
+    }
+
     fn table_with_peer_gone_since_now() -> PeerTable {
         let mut table = PeerTable::new(OWN_CARD);
         accept_presence(
