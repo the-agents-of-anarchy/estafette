@@ -154,6 +154,7 @@ const fn failure_error(failure: &DirectError) -> ErrorCode {
         | DirectError::InvalidAck(_)
         | DirectError::OversizedAck
         | DirectError::UnexpectedAck
+        | DirectError::MessageAckIdMismatch
         | DirectError::ProbeNonceMismatch => ErrorCode::Refused,
     }
 }
@@ -176,9 +177,11 @@ mod tests {
         start_members_reaching, start_pair, start_third_through_second,
     };
     use crate::node::presence::wire_addr;
-    use crate::payload::PayloadError;
+    use crate::payload::{PayloadError, open_request, seal_response};
     use crate::peers::Status;
-    use crate::wire::{Addr, Introduce, IntroduceAck};
+    use crate::wire::{
+        Addr, Introduce, IntroduceAck, ProbeAck, Request, Response, WIRE_LIMIT_BYTES,
+    };
 
     use super::*;
 
@@ -240,12 +243,12 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct CountedConnections {
-        server: DirectServer<ScriptedHost>,
+    struct CountedConnections<H> {
+        server: H,
         connections: Arc<AtomicUsize>,
     }
 
-    impl ProtocolHandler for CountedConnections {
+    impl<H: ProtocolHandler> ProtocolHandler for CountedConnections<H> {
         async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
             self.connections.fetch_add(1, Ordering::SeqCst);
             self.server.accept(connection).await
@@ -275,6 +278,23 @@ mod tests {
         scratch: &Scratch,
         phase: PeerPhase,
     ) -> (Member, ScriptedPeer) {
+        first_member_listing_a_peer_served_by(scratch, |addr| {
+            DirectServer::new(
+                keys(),
+                ScriptedHost {
+                    own_card: card(WITNESS_SEED),
+                    addr,
+                    phase,
+                },
+            )
+        })
+        .await
+    }
+
+    async fn first_member_listing_a_peer_served_by<H: ProtocolHandler>(
+        scratch: &Scratch,
+        server_at: impl FnOnce(Addr) -> H,
+    ) -> (Member, ScriptedPeer) {
         let endpoint = bind(WITNESS_SEED).await;
         let peer_address = endpoint.endpoint().addr();
         let mut members = start_members_reaching(
@@ -286,16 +306,11 @@ mod tests {
         let member = members.pop().unwrap();
         endpoint.replace_address(member.endpoint.addr());
         let connections = Arc::new(AtomicUsize::new(0));
-        let host = ScriptedHost {
-            own_card: card(WITNESS_SEED),
-            addr: wire_addr(&endpoint.endpoint().addr()),
-            phase,
-        };
         let router = Router::builder(endpoint.endpoint().clone())
             .accept(
                 DIRECT_ALPN,
                 CountedConnections {
-                    server: DirectServer::new(keys(), host),
+                    server: server_at(wire_addr(&endpoint.endpoint().addr())),
                     connections: Arc::clone(&connections),
                 },
             )
@@ -451,6 +466,80 @@ mod tests {
         drop(scratch);
     }
 
+    const ANOTHER_MESSAGE_ID: MessageId = [8; 16];
+
+    #[derive(Debug)]
+    struct AckingAnotherMessageId {
+        addr: Addr,
+    }
+
+    impl AckingAnotherMessageId {
+        fn answer(&self, request: Request) -> Response {
+            match request {
+                Request::Message(_) => Response::MessageAck(MessageAck {
+                    v: Version::CURRENT,
+                    id: ANOTHER_MESSAGE_ID,
+                    accepted: true,
+                    attached: true,
+                    reason: None,
+                }),
+                Request::Probe(probe) => Response::ProbeAck(ProbeAck {
+                    v: Version::CURRENT,
+                    nonce: probe.nonce,
+                    attached: false,
+                    mac: ZERO_MAC,
+                }),
+                Request::Introduce(_) => Response::IntroduceAck(IntroduceAck {
+                    v: Version::CURRENT,
+                    handle: None,
+                    public: Vec::new(),
+                    attached: false,
+                    addr: self.addr.clone(),
+                    mac: ZERO_MAC,
+                }),
+            }
+        }
+    }
+
+    impl ProtocolHandler for AckingAnotherMessageId {
+        async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+            while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                let request_bytes = recv.read_to_end(WIRE_LIMIT_BYTES).await.unwrap();
+                let request = open_request(&keys(), &request_bytes).unwrap();
+                let response = seal_response(&keys(), self.answer(request)).unwrap();
+                send.write_all(&response).await.unwrap();
+                send.finish().unwrap();
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn spec_3_10_a_send_acknowledged_for_another_id_fails_sets_the_peer_unreachable_and_drops_the_held_connection()
+     {
+        let scratch = Scratch::new("send-ack-id").await;
+        let (first, peer) =
+            first_member_listing_a_peer_served_by(&scratch, |addr| AckingAnotherMessageId { addr })
+                .await;
+
+        let failed = first.node.send(WITNESS_HANDLE, BODY).await;
+        let connections_after_failure = peer.connections.load(Ordering::SeqCst);
+        let failed_again = first.node.send(WITNESS_HANDLE, BODY).await;
+
+        assert_eq!(failed, Err(ErrorCode::Refused));
+        assert_eq!(failed_again, Err(ErrorCode::Refused));
+        assert_eq!(
+            peer.connections.load(Ordering::SeqCst),
+            connections_after_failure + 1
+        );
+        let status = listed_within(&first, WITNESS_SEED, Duration::ZERO)
+            .await
+            .unwrap()
+            .status;
+        assert_eq!(status, Status::Unreachable);
+        drop(scratch);
+    }
+
     #[tokio::test]
     async fn spec_3_8_a_send_answered_by_a_refusal_sets_an_unreachable_peer_online() {
         let scratch = Scratch::new("send-contact").await;
@@ -554,6 +643,7 @@ mod tests {
             DirectError::InvalidAck(payload_error()),
             DirectError::OversizedAck,
             DirectError::UnexpectedAck,
+            DirectError::MessageAckIdMismatch,
             DirectError::ProbeNonceMismatch,
         ]
     }
@@ -569,6 +659,7 @@ mod tests {
                 | DirectError::InvalidAck(_)
                 | DirectError::OversizedAck
                 | DirectError::UnexpectedAck
+                | DirectError::MessageAckIdMismatch
                 | DirectError::ProbeNonceMismatch => ErrorCode::Refused,
             };
 

@@ -273,6 +273,7 @@ pub enum DirectError {
     InvalidAck(PayloadError),
     OversizedAck,
     UnexpectedAck,
+    MessageAckIdMismatch,
     ProbeNonceMismatch,
 }
 
@@ -296,6 +297,9 @@ impl fmt::Display for DirectError {
             }
             Self::UnexpectedAck => {
                 formatter.write_str("the acknowledgement answers another kind of request")
+            }
+            Self::MessageAckIdMismatch => {
+                formatter.write_str("the message acknowledgement carries another message id")
             }
             Self::ProbeNonceMismatch => {
                 formatter.write_str("the probe acknowledgement carries another nonce")
@@ -561,15 +565,16 @@ impl DirectClient {
         self.drop_all_held_connections().await;
     }
 
-    /// Sends the message to the peer and returns its acknowledgement, accepted or not.
+    /// Sends the message to the peer and returns its acknowledgement of that message id, accepted or not.
     ///
     /// # Errors
-    /// `DirectError` when no valid acknowledgement arrives within the connect and ack timeouts.
+    /// `DirectError` when no valid acknowledgement of the message id arrives within the connect and ack timeouts.
     pub async fn send_message(
         &self,
         to: EndpointId,
         message: Message,
     ) -> Result<MessageAck, DirectError> {
+        let id = message.id;
         match self
             .exchange(
                 to,
@@ -578,7 +583,8 @@ impl DirectClient {
             )
             .await?
         {
-            Response::MessageAck(ack) => Ok(ack),
+            Response::MessageAck(ack) if ack.id == id => Ok(ack),
+            Response::MessageAck(_) => Err(DirectError::MessageAckIdMismatch),
             Response::ProbeAck(_) | Response::IntroduceAck(_) => Err(DirectError::UnexpectedAck),
         }
     }
@@ -1606,6 +1612,39 @@ mod tests {
             }),
         )
         .unwrap()
+    }
+
+    const ANOTHER_MESSAGE_ID: [u8; 16] = [10; 16];
+
+    fn sealed_accepting_message_ack(id: wire::MessageId) -> Vec<u8> {
+        seal_response(
+            &keys(),
+            Response::MessageAck(MessageAck {
+                v: Version::CURRENT,
+                id,
+                accepted: true,
+                attached: true,
+                reason: None,
+            }),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_a_message_ack_for_another_id_is_a_failed_send() {
+        let server =
+            ScriptedServer::replying(Some(sealed_accepting_message_ack(ANOTHER_MESSAGE_ID)));
+        let link = link_to(server, ClientTimeouts::SPEC).await;
+
+        let outcome = link
+            .client
+            .send_message(
+                link.server_node.endpoint().id(),
+                message_to(card_of(SERVER_SEED), BODY),
+            )
+            .await;
+
+        assert_eq!(outcome, Err(DirectError::MessageAckIdMismatch));
     }
 
     #[tokio::test]
