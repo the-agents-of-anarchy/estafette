@@ -1,0 +1,281 @@
+diff --git a/core/src/net/direct.rs b/core/src/net/direct.rs
+index e9ecc40..45cb692 100644
+--- a/core/src/net/direct.rs
++++ b/core/src/net/direct.rs
+@@ -75,6 +75,25 @@ impl AcceptedConnections {
+
+     /// Closes every connection accepted from the card whose selected path does not reach `addr`, but the spared one.
+     fn close_from_sparing(&self, card: wire::PublicKey, addr: &wire::Addr, spared: Option<usize>) {
++        {
++            let mut announced: Vec<String> = addr.direct().iter().map(|s| s.to_string()).collect();
++            announced.sort();
++            let relays: Vec<String> = addr.relays().iter().map(|r| r.as_str().to_owned()).collect();
++            let held = self.held();
++            let connections = held.get(&card).map(Vec::as_slice).unwrap_or_default();
++            eprintln!(
++                "T18DBG {} pid={} close_from card={} spared={:?} announced_direct={:?} announced_relays={:?} accepted_connections={}",
++                t18_now_ms(), std::process::id(), t18_hex(&card), spared, announced, relays, connections.len()
++            );
++            for connection in connections {
++                eprintln!(
++                    "T18DBG {} pid={} close_from card={} conn={} close_reason={:?} paths=[{}] reaches={} will_close={}",
++                    t18_now_ms(), std::process::id(), t18_hex(&card), connection.stable_id(), connection.close_reason(), t18_paths(connection),
++                    selected_path_reaches(connection, addr),
++                    Some(connection.stable_id()) != spared && !selected_path_reaches(connection, addr)
++                );
++            }
++        }
+         let superseded = self
+             .held()
+             .get_mut(&card)
+@@ -112,6 +131,33 @@ impl AcceptedConnections {
+     }
+ }
+
++fn t18_now_ms() -> u128 {
++    std::time::SystemTime::now()
++        .duration_since(std::time::UNIX_EPOCH)
++        .map(|d| d.as_millis())
++        .unwrap_or_default()
++}
++
++fn t18_hex(bytes: &[u8]) -> String {
++    bytes.iter().take(4).map(|b| format!("{b:02x}")).collect()
++}
++
++fn t18_paths(connection: &Connection) -> String {
++    connection
++        .paths()
++        .iter()
++        .map(|path| {
++            format!(
++                "{:?}{} rtt={:?}",
++                path.remote_addr(),
++                if path.is_selected() { " SELECTED" } else { "" },
++                path.rtt()
++            )
++        })
++        .collect::<Vec<_>>()
++        .join("; ")
++}
++
+ /// Whether the connection's selected path leads to a socket or relay that `addr` announces, so it can belong to the process announcing it.
+ fn selected_path_reaches(connection: &Connection, addr: &wire::Addr) -> bool {
+     connection
+@@ -138,6 +184,10 @@ fn path_reaches(remote: &TransportAddr, addr: &wire::Addr) -> bool {
+ /// Closes each connection as superseded by a newer one of its card.
+ fn close_superseded(connections: Vec<Connection>) {
+     for connection in connections {
++        eprintln!(
++            "T18DBG {} pid={} closing conn={} code=410 reason=superseded paths=[{}]",
++            t18_now_ms(), std::process::id(), connection.stable_id(), t18_paths(&connection)
++        );
+         connection.close(
+             VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE),
+             SUPERSEDED_CONNECTION_CLOSE_REASON,
+@@ -240,6 +290,10 @@ impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
+     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+         let sender = *connection.remote_id().as_bytes();
+         self.shared.accepted.hold(sender, &connection);
++        eprintln!(
++            "T18DBG {} pid={} accepted card={} conn={} paths=[{}]",
++            t18_now_ms(), std::process::id(), t18_hex(&sender), connection.stable_id(), t18_paths(&connection)
++        );
+         while let Ok((send, recv)) = connection.accept_bi().await {
+             let shared = Arc::clone(&self.shared);
+             let arrived_on = connection.clone();
+@@ -247,6 +301,10 @@ impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
+                 shared.serve_stream(sender, &arrived_on, send, recv).await;
+             });
+         }
++        eprintln!(
++            "T18DBG {} pid={} accept_loop_ended card={} conn={} close_reason={:?}",
++            t18_now_ms(), std::process::id(), t18_hex(&sender), connection.stable_id(), connection.close_reason()
++        );
+         self.shared.accepted.forget(sender, &connection);
+         Ok(())
+     }
+diff --git a/core/src/node/presence.rs b/core/src/node/presence.rs
+index 976c57e..7fa7838 100644
+--- a/core/src/node/presence.rs
++++ b/core/src/node/presence.rs
+@@ -473,6 +473,14 @@ impl NodeState {
+     /// Applies a Presence to the table and, when it is taken, closes every connection accepted from its card that cannot belong to the process it announces (spec 3.8, address lookup).
+     fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
+         let effects = self.table().receive_presence(presence, now_ms);
++        eprintln!(
++            "T18DBG {} pid={} presence_applied card={:02x?} drop_held={} effects={}",
++            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or_default(),
++            std::process::id(),
++            &presence.card[..4],
++            effects.contains(&Effect::DropHeldConnection(presence.card)),
++            effects.len()
++        );
+         if effects.contains(&Effect::DropHeldConnection(presence.card)) {
+             self.accepted_connections
+                 .close_from(presence.card, &presence.addr);
+diff --git a/core/tests/acceptance_restart.rs b/core/tests/acceptance_restart.rs
+index 3cbaeb3..9009753 100644
+--- a/core/tests/acceptance_restart.rs
++++ b/core/tests/acceptance_restart.rs
+@@ -226,8 +226,38 @@ mod spec_3_15_restart_and_departure_on_one_machine {
+         )
+     }
+
++    fn t18_now_ms() -> u128 {
++        std::time::SystemTime::now()
++            .duration_since(std::time::UNIX_EPOCH)
++            .map(|d| d.as_millis())
++            .unwrap_or_default()
++    }
++
++    fn t18_paths(connection: &Connection) -> String {
++        connection
++            .paths()
++            .iter()
++            .map(|path| {
++                format!(
++                    "{:?}{} rtt={:?}",
++                    path.remote_addr(),
++                    if path.is_selected() { " SELECTED" } else { "" },
++                    path.rtt()
++                )
++            })
++            .collect::<Vec<_>>()
++            .join("; ")
++    }
++
+     fn loopback_address_of(node: &ScriptedNode) -> iroh::EndpointAddr {
+         let address = node.endpoint().endpoint().addr();
++        eprintln!(
++            "T18DBG {} pid={} endpoint_addr id={} ip_addrs={:?}",
++            t18_now_ms(),
++            std::process::id(),
++            address.id,
++            address.ip_addrs().collect::<Vec<_>>()
++        );
+         let ports: Vec<u16> = address.ip_addrs().map(std::net::SocketAddr::port).collect();
+         loopback_address(address.id, &ports)
+     }
+@@ -239,18 +269,63 @@ mod spec_3_15_restart_and_departure_on_one_machine {
+         request: Request,
+     ) -> Option<Response> {
+         let sealed = seal_request(network.keys(), request).unwrap();
+-        node.runtime().block_on(async {
++        eprintln!(
++            "T18DBG {} pid={} exchange_start conn={} close_reason={:?} paths=[{}]",
++            t18_now_ms(),
++            std::process::id(),
++            connection.stable_id(),
++            connection.close_reason(),
++            t18_paths(connection)
++        );
++        let outcome = node.runtime().block_on(async {
+             tokio::time::timeout(DIRECT_REQUEST_WAIT, async {
+-                let (mut send, mut receive) = connection.open_bi().await.ok()?;
+-                send.write_all(&sealed).await.ok()?;
+-                send.finish().ok()?;
+-                let answer = receive.read_to_end(WIRE_LIMIT_BYTES).await.ok()?;
+-                open_response(network.keys(), &answer).ok()
++                let (mut send, mut receive) = match connection.open_bi().await {
++                    Ok(pair) => pair,
++                    Err(error) => {
++                        eprintln!("T18DBG {} exchange_error stage=open_bi error={error:?}", t18_now_ms());
++                        return None;
++                    }
++                };
++                if let Err(error) = send.write_all(&sealed).await {
++                    eprintln!("T18DBG {} exchange_error stage=write_all error={error:?}", t18_now_ms());
++                    return None;
++                }
++                if let Err(error) = send.finish() {
++                    eprintln!("T18DBG {} exchange_error stage=finish error={error:?}", t18_now_ms());
++                    return None;
++                }
++                let answer = match receive.read_to_end(WIRE_LIMIT_BYTES).await {
++                    Ok(answer) => answer,
++                    Err(error) => {
++                        eprintln!("T18DBG {} exchange_error stage=read_to_end error={error:?}", t18_now_ms());
++                        return None;
++                    }
++                };
++                match open_response(network.keys(), &answer) {
++                    Ok(response) => Some(response),
++                    Err(error) => {
++                        eprintln!("T18DBG {} exchange_error stage=open_response error={error:?}", t18_now_ms());
++                        None
++                    }
++                }
+             })
+             .await
++            .map_err(|elapsed| {
++                eprintln!("T18DBG {} exchange_error stage=timeout error={elapsed:?}", t18_now_ms());
++            })
+             .ok()
+             .flatten()
+-        })
++        });
++        eprintln!(
++            "T18DBG {} pid={} exchange_end conn={} answered={} close_reason={:?} paths=[{}]",
++            t18_now_ms(),
++            std::process::id(),
++            connection.stable_id(),
++            outcome.is_some(),
++            connection.close_reason(),
++            t18_paths(connection)
++        );
++        outcome
+     }
+
+     fn announce_until_seen(
+@@ -261,7 +336,10 @@ mod spec_3_15_restart_and_departure_on_one_machine {
+     ) {
+         let started = Instant::now();
+         let first_sent_ms = wall_clock_ms();
++        let mut broadcast_index = 0_u32;
+         loop {
++            broadcast_index += 1;
++            eprintln!("T18DBG {} pid={} presence_broadcast index={broadcast_index}", t18_now_ms(), std::process::id());
+             node.broadcast(presence_signed_by(
+                 network.keys(),
+                 key,
+@@ -463,6 +541,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
+         drop(first_session);
+
+         let restarted = scripted_member(&network, &bob_key);
++        eprintln!("T18DBG {} pid={} restarted_before_dial addr={:?}", t18_now_ms(), std::process::id(), restarted.endpoint().endpoint().addr());
+         restarted.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
+         let held = restarted
+             .runtime()
+@@ -473,6 +552,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
+                     .connect(amy_card.id, DIRECT_ALPN),
+             )
+             .unwrap();
++        eprintln!("T18DBG {} pid={} held_connected conn={} paths=[{}] endpoint_addr={:?}", t18_now_ms(), std::process::id(), held.stable_id(), t18_paths(&held), restarted.endpoint().endpoint().addr());
+         let before_presence = exchange_on(
+             &network,
+             &restarted,
+@@ -480,6 +560,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
+             message_from_bob(amy_card.id, wall_clock_ms(), SENT_BEFORE_THE_NEW_PRESENCE),
+         );
+         announce_until_seen(&network, &restarted, &bob_key, &mut amy);
++        eprintln!("T18DBG {} pid={} announce_returned", t18_now_ms(), std::process::id());
+         std::thread::sleep(PRESENCE_APPLIED_SETTLE);
+         let after_presence = exchange_on(
+             &network,
+diff --git a/core/tests/support/scratch_machine.rs b/core/tests/support/scratch_machine.rs
+index 4b5c068..926b2ef 100644
+--- a/core/tests/support/scratch_machine.rs
++++ b/core/tests/support/scratch_machine.rs
+@@ -95,7 +95,10 @@ impl ScratchMachine {
+             .args(["mcp", &self.network])
+             .stdin(Stdio::piped())
+             .stdout(Stdio::piped())
+-            .stderr(run_record)
++            .stderr({
++                drop(run_record);
++                Stdio::inherit()
++            })
+             .spawn()
+             .unwrap()
+     }
