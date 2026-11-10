@@ -53,7 +53,7 @@ const MANAGED_SETTINGS_FILE: &str = "managed-settings.json";
 const MANAGED_DROP_IN_DIRECTORY: &str = "managed-settings.d";
 const SETTINGS_EXTENSION: &str = "json";
 const HIDDEN_FILE_PREFIX: char = '.';
-const STAGING_EXTENSION: &str = "staging";
+const STAGING_SUFFIX: &str = ".staging";
 
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
@@ -188,7 +188,9 @@ impl Files for OperatingSystemFiles {
     }
 
     fn write_text_atomically(&self, path: &Path, text: &str) -> io::Result<()> {
-        let staging = path.with_extension(STAGING_EXTENSION);
+        let mut staging_name = path.as_os_str().to_owned();
+        staging_name.push(STAGING_SUFFIX);
+        let staging = PathBuf::from(staging_name);
         fs::write(&staging, text)?;
         fs::rename(staging, path)
     }
@@ -1211,11 +1213,11 @@ mod tests {
         files
     }
 
-    fn bridge_session_over<S: InboxConnector>(
+    fn bridge_session_over<S: InboxConnector, F: Files>(
         wiring: &Wiring,
-        files: StandInFiles,
+        files: F,
         connector: S,
-    ) -> BridgeSession<S, StandInFiles> {
+    ) -> BridgeSession<S, F> {
         BridgeSession {
             notifier: Mutex::new(SessionNotifier::new(
                 connector,
@@ -1731,6 +1733,39 @@ mod tests {
     }
 
     #[test]
+    fn spec_3_12_two_followed_sockets_write_their_state_files_each_through_its_own_staging_name() {
+        let directory = scratch_directory("staging");
+        let shared_staging_name = directory.join("estafette-bridge-claude-100.staging");
+        fs::create_dir(&shared_staging_name).expect("occupy the shared staging name");
+        let wiring = wiring();
+        let session = BridgeSession {
+            permission_class_file: permission_class_path(&directory, 100),
+            dropped_frames_file: dropped_frames_path(&directory, 100),
+            ..bridge_session_over(&wiring, OperatingSystemFiles, DownConnector)
+        };
+        thread::scope(|sockets| {
+            sockets.spawn(|| session.record_permission_class(PermissionClass::Bypass));
+            sockets.spawn(|| session.record_dropped_frames(7));
+        });
+        assert_eq!(
+            fs::read_to_string(permission_class_path(&directory, 100)).expect("class file"),
+            "bypass"
+        );
+        assert_eq!(
+            fs::read_to_string(dropped_frames_path(&directory, 100)).expect("count file"),
+            "7"
+        );
+        assert!(
+            lock(&wiring.errors)
+                .iter()
+                .all(|message| !message.starts_with("cannot write")),
+            "{:?}",
+            lock(&wiring.errors)
+        );
+        fs::remove_dir_all(&directory).expect("cleanup");
+    }
+
+    #[test]
     fn spec_3_12_the_operating_system_writes_the_count_by_staging_then_renaming() {
         let directory = scratch_directory("atomic");
         let target = directory.join("count");
@@ -1741,7 +1776,7 @@ mod tests {
             .write_text_atomically(&target, "12")
             .expect("second write");
         assert_eq!(fs::read_to_string(&target).expect("count"), "12");
-        assert!(!target.with_extension(STAGING_EXTENSION).exists());
+        assert!(!directory.join("count.staging").exists());
         fs::remove_dir_all(&directory).expect("cleanup");
     }
 }
