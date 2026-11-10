@@ -58,6 +58,17 @@ impl Member {
         self.server.request(method, params)
     }
 
+    /// The bodies of the messages the inbox tool returns, in the order it returns them.
+    #[track_caller]
+    pub fn inbox_bodies(&mut self) -> Vec<Value> {
+        self.call("inbox", &json!({}))["result"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| message["body"].clone())
+            .collect()
+    }
+
     /// Claims the card while the node admits this process's endpoint, requiring the claim to succeed, and returns the init envelope.
     #[track_caller]
     pub fn init_through(&mut self, card: &Card, node: &ScriptedNode) -> Value {

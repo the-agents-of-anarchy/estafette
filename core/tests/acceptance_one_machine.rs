@@ -33,6 +33,17 @@ mod timed_step;
 #[cfg(test)]
 const MESSAGE_ID: estafette::wire::MessageId = [9; 16];
 
+/// The body every send of these tests carries.
+#[cfg(test)]
+const BODY: &str = "the parser review is ready";
+
+/// Sends the body to the handle through the member's send tool and returns the envelope.
+#[cfg(test)]
+#[track_caller]
+fn send(from: &mut member::Member, to: &str) -> serde_json::Value {
+    from.call("send", &serde_json::json!({ "to": to, "body": BODY }))
+}
+
 #[cfg(test)]
 mod spec_3_15_restart_and_departure_on_one_machine {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -48,7 +59,6 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use iroh::{EndpointId, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
-    use crate::MESSAGE_ID;
     use crate::local_network::{LocalNetwork, MetPair};
     use crate::mcp_server::{PRESENCE_WAIT, gone, online};
     use crate::member::{Member, loopback_address, loopback_address_of};
@@ -58,8 +68,8 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use crate::scripted_node::ScriptedNode;
     use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
     use crate::timed_step::timed;
+    use crate::{MESSAGE_ID, send};
 
-    const BODY: &str = "the parser review is ready";
     const SPEC_GONE_KEPT_FOR: Duration = Duration::from_millis(1000);
     const STATUS_POLL: Duration = Duration::from_millis(50);
     const DIRECT_REQUEST_WAIT: Duration = Duration::from_secs(15);
@@ -72,11 +82,6 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const DOCUMENTATION_HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
     const SENT_BEFORE_THE_PRESENCE: &str = "sent before the presence";
     const SENT_AFTER_THE_PRESENCE: &str = "sent after the presence";
-
-    #[track_caller]
-    fn send(from: &mut Member, to: &str) -> Value {
-        from.call("send", &json!({ "to": to, "body": BODY }))
-    }
 
     /// A member, amy, who listed a scripted bob, then took bob's Departure of that seq and lists bob gone.
     struct ScriptedBobDeparted {
@@ -227,16 +232,6 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         statuses
     }
 
-    #[track_caller]
-    fn inbox_bodies(member: &mut Member) -> Vec<Value> {
-        member.call("inbox", &json!({}))["result"]["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|message| message["body"].clone())
-            .collect()
-    }
-
     #[test]
     fn spec_3_15_test_18_a_killed_member_restarted_with_its_card_is_delivered_to_within_1_s_of_its_new_presence()
      {
@@ -335,7 +330,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         );
         let statuses_after_the_earlier_message =
             statuses_throughout(&mut amy, "bob", SPEC_GONE_KEPT_FOR);
-        let bodies = inbox_bodies(&mut amy);
+        let bodies = amy.inbox_bodies();
         let sent_after = request_directly(
             &network,
             &bob,
@@ -454,7 +449,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                 message_from_bob(amy_card.id, wall_clock_ms(), SENT_AFTER_THE_NEW_PRESENCE),
             )
         });
-        let bodies = timed("amy's inbox tool answers", || inbox_bodies(&mut amy));
+        let bodies = timed("amy's inbox tool answers", || amy.inbox_bodies());
         let sent = timed("amy's send to the restarted bob", || send(&mut amy, "bob"));
 
         assert!(
@@ -766,7 +761,7 @@ mod spec_3_15_with_one_member {
                 &seal_request(network.keys(), message_to(&card.id, HONEST_BODY)).unwrap(),
             )
             .unwrap();
-        let inbox = amy.call("inbox", &json!({}));
+        let bodies = amy.inbox_bodies();
 
         assert_eq!(forged_answer, None);
         let Response::MessageAck(ack) = open_response(network.keys(), &honest_answer).unwrap()
@@ -774,13 +769,7 @@ mod spec_3_15_with_one_member {
             panic!("a Message is answered by a MessageAck");
         };
         assert!(ack.accepted);
-        let bodies: Vec<&Value> = inbox["result"]["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|message| &message["body"])
-            .collect();
-        assert_eq!(bodies, [&json!(HONEST_BODY)]);
+        assert_eq!(bodies, [json!(HONEST_BODY)]);
     }
 
     #[test]
@@ -945,12 +934,12 @@ mod spec_3_16_absences_on_one_machine {
 
     use crate::local_network::{LocalNetwork, MetPair};
     use crate::mcp_server::{PRESENCE_WAIT, gone, online};
-    use crate::member::{Member, loopback_address, loopback_address_of};
+    use crate::member::{loopback_address, loopback_address_of};
     use crate::payload_placeholders::wall_clock_ms;
     use crate::payloads::presence_signed_by;
     use crate::scripted_node::ScriptedNode;
+    use crate::{BODY, send};
 
-    const BODY: &str = "the parser review is ready";
     /// Longer than every interval spec 3.14 names below the announcement max age: the 2000 ms re-announce interval, the 15 s deaf timeout and the 20 s rebind interval.
     const PRESENCE_QUIET_WINDOW: Duration = Duration::from_secs(30);
     /// Time for the address set a member announces to settle after its first Presence, beyond the 2000 ms re-announce interval.
@@ -964,21 +953,6 @@ mod spec_3_16_absences_on_one_machine {
     /// Time for a message held for an absent member to reach it once it returns.
     const REDELIVERY_WATCH: Duration = Duration::from_secs(5);
     const EVENTS_POLL: Duration = Duration::from_millis(100);
-
-    #[track_caller]
-    fn send(from: &mut Member, to: &str) -> Value {
-        from.call("send", &json!({ "to": to, "body": BODY }))
-    }
-
-    #[track_caller]
-    fn inbox_bodies(member: &mut Member) -> Vec<Value> {
-        member.call("inbox", &json!({}))["result"]["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|message| message["body"].clone())
-            .collect()
-    }
 
     /// The files under the base directories whose content holds the text.
     fn base_directory_files_holding(network: &LocalNetwork, text: &str) -> Vec<PathBuf> {
@@ -1065,7 +1039,7 @@ mod spec_3_16_absences_on_one_machine {
             ..
         } = network.amy_and_bob_met(&host);
         let delivered = send(&mut amy, "bob");
-        let before_exit = inbox_bodies(&mut bob);
+        let before_exit = bob.inbox_bodies();
         bob.close_standard_input();
         assert!(bob.wait_for_exit().success());
 
@@ -1074,7 +1048,7 @@ mod spec_3_16_absences_on_one_machine {
 
         assert_eq!(delivered["result"]["delivered"], json!(true), "{delivered}");
         assert_eq!(before_exit, [json!(BODY)]);
-        assert_eq!(inbox_bodies(&mut restarted), Vec::<Value>::new());
+        assert_eq!(restarted.inbox_bodies(), Vec::<Value>::new());
         assert_eq!(
             base_directory_files_holding(&network, BODY),
             Vec::<PathBuf>::new()
@@ -1107,7 +1081,7 @@ mod spec_3_16_absences_on_one_machine {
         std::thread::sleep(REDELIVERY_WATCH);
 
         assert_eq!(refused["error"]["code"], json!("unreachable"), "{refused}");
-        assert_eq!(inbox_bodies(&mut restarted), Vec::<Value>::new());
+        assert_eq!(restarted.inbox_bodies(), Vec::<Value>::new());
     }
 
     #[test]
