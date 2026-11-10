@@ -6,10 +6,8 @@ use estafette::dirs::Directories;
 use serde_json::json;
 
 use crate::mcp_server::McpServer;
-use crate::scratch_machine::ScratchMachine;
+use crate::scratch_machine::{Card, ScratchMachine};
 
-/// The name of a member's run record file under its scratch root.
-const MEMBER_RUN_RECORD: &str = "member";
 /// How often the network configuration is read while waiting for a host.
 const CONFIG_POLL: Duration = Duration::from_millis(100);
 
@@ -36,19 +34,19 @@ impl LabMachine {
         self.scratch.directories()
     }
 
-    /// Runs the binary to completion on this machine, requiring success, and returns what it printed.
-    pub fn run(&self, arguments: &[&str]) -> String {
-        self.scratch.run(arguments)
-    }
-
     /// The binary with this machine's environment alone.
     pub fn command(&self) -> Command {
         self.scratch.command()
     }
 
+    /// Creates a card requesting the handle by the binary's own command.
+    pub fn create_card(&self, name: &str, handle: &str) -> Card {
+        self.scratch.create_card(name, handle)
+    }
+
     /// Starts the binary's MCP server for the network and claims the card through its init tool, requiring the claim to succeed.
     pub fn start_member(&self, card: &str) -> ClaimedMember {
-        let mut server = McpServer::handshaken(self.scratch.spawn_mcp_server(MEMBER_RUN_RECORD));
+        let mut server = McpServer::handshaken(self.scratch.spawn_mcp_server());
         let claim = server.call("init", &json!({ "card": card }));
         assert_eq!(claim["ok"], json!(true), "{claim}");
         ClaimedMember { _server: server }

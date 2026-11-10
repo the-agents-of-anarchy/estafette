@@ -133,8 +133,8 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             let network = LiveNetwork::from_environment();
             let machine = LabMachine::fresh(card, network.name());
             network.join(&machine.directories());
-            machine.run(&["create-card", network.name(), card, card]);
-            let member = machine.start_member(card);
+            let created = machine.create_card(card, card);
+            let member = machine.start_member(&created.name);
             let forger = Forger::join_through(
                 key(forger_seed),
                 *network.keys().gate_key(),
@@ -419,6 +419,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     use std::time::{Duration, Instant};
 
     use data_encoding::HEXLOWER;
+    use estafette::keys::render_public_key;
     use estafette::wire::{HostAddr, Version};
     use serde_json::Value;
 
@@ -507,10 +508,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
             &machine.directories(),
             std::slice::from_ref(doomed.address()),
         );
-        let card = machine
-            .run(&["create-card", network.name(), MEMBER_CARD, MEMBER_CARD])
-            .trim_end()
-            .to_owned();
+        let card = render_public_key(&machine.create_card(MEMBER_CARD, MEMBER_CARD).id);
         let started = Instant::now();
         let member = machine.start_member(MEMBER_CARD);
         let observer = LabMachine::fresh(OBSERVER_TAG, network.name());

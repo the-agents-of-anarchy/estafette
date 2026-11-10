@@ -2,9 +2,6 @@
 #[path = "one_machine/local_network.rs"]
 mod local_network;
 #[cfg(test)]
-#[path = "one_machine/machine.rs"]
-mod machine;
-#[cfg(test)]
 #[path = "support/mcp_server.rs"]
 mod mcp_server;
 #[cfg(test)]
@@ -40,10 +37,10 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use serde_json::{Value, json};
 
     use crate::local_network::LocalNetwork;
-    use crate::machine::Card;
     use crate::member::{Member, loopback_address};
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::{departure_signed_by, presence_signed_by};
+    use crate::scratch_machine::Card;
     use crate::scripted_node::ScriptedNode;
 
     const SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE: Duration = Duration::from_millis(1000);

@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use serde_json::{Value, json};
 
-use crate::machine::Card;
 use crate::mcp_server::McpServer;
+use crate::scratch_machine::Card;
 use crate::scripted_node::ScriptedNode;
 
 const PEERS_POLL: Duration = Duration::from_millis(50);

@@ -1,9 +1,12 @@
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
 use estafette::dirs::{Directories, OperatingSystemFilesystem};
+use estafette::keys::parse_public_key;
+use iroh::EndpointId;
 
 /// The binary under test.
 pub const BINARY: &str = env!("CARGO_BIN_EXE_estafette");
@@ -27,11 +30,20 @@ const DATA_HOME: &str = "d";
 const RUNTIME_DIRECTORY: &str = "r";
 /// The extension of a member's run record file under a scratch root.
 const RUN_RECORD_EXTENSION: &str = "stderr";
+/// The start of a member's run record file name, before the member's number on its machine.
+const RUN_RECORD_PREFIX: &str = "member";
 
-/// One machine's worth of estafette state under a scratch root of its own, short enough for an inbox socket path, configured for one network.
+/// One machine's worth of estafette state under a scratch root of its own, short enough for an inbox socket path, configured for one network, counting the MCP servers it started so each keeps its own run record.
 pub struct ScratchMachine {
     root: PathBuf,
     network: String,
+    servers_started: Cell<u32>,
+}
+
+/// A card the binary created: the name init claims it by and the node id its key gives.
+pub struct Card {
+    pub name: String,
+    pub id: EndpointId,
 }
 
 impl ScratchMachine {
@@ -46,6 +58,7 @@ impl ScratchMachine {
         Self {
             root,
             network: network.to_owned(),
+            servers_started: Cell::new(0),
         }
     }
 
@@ -84,12 +97,22 @@ impl ScratchMachine {
         String::from_utf8(output.stdout).unwrap()
     }
 
-    /// Starts the binary's MCP server for the network with its standard input and output piped, its run record written to the named file of the scratch root.
-    pub fn spawn_mcp_server(&self, run_record_name: &str) -> Child {
-        let run_record = File::create(
-            self.root
-                .join(format!("{run_record_name}.{RUN_RECORD_EXTENSION}")),
-        )
+    /// Creates a card requesting the handle by the binary's own command.
+    pub fn create_card(&self, name: &str, handle: &str) -> Card {
+        let printed_key = self.run(&["create-card", self.network(), name, handle]);
+        Card {
+            name: name.to_owned(),
+            id: parse_public_key(printed_key.trim_end()).unwrap(),
+        }
+    }
+
+    /// Starts the binary's MCP server for the network with its standard input and output piped, its run record written to a file of the scratch root numbered for the server.
+    pub fn spawn_mcp_server(&self) -> Child {
+        let started = self.servers_started.get();
+        self.servers_started.set(started.checked_add(1).unwrap());
+        let run_record = File::create(self.root.join(format!(
+            "{RUN_RECORD_PREFIX}-{started}.{RUN_RECORD_EXTENSION}"
+        )))
         .unwrap();
         self.command()
             .args(["mcp", &self.network])

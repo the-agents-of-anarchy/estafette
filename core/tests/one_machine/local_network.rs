@@ -5,22 +5,22 @@ use estafette::net::endpoint::GateFailure;
 use iroh::SecretKey;
 use iroh_gossip::TopicId;
 
-use crate::machine::{Card, Machine};
 use crate::member::Member;
+use crate::scratch_machine::{Card, ScratchMachine};
 use crate::scripted_node::ScriptedNode;
 
 const NETWORK: &str = "acme";
 
 /// A network the binary created on this machine, with the keys its members derive from its secret.
 pub struct LocalNetwork {
-    machine: Machine,
+    machine: ScratchMachine,
     keys: NetworkKeys,
 }
 
 impl LocalNetwork {
     /// Creates the network by the binary's own command on a fresh machine named for the test.
     pub fn create(test_tag: &str) -> Self {
-        let machine = Machine::fresh(test_tag, NETWORK);
+        let machine = ScratchMachine::fresh(test_tag, NETWORK);
         machine.run(&["network", "create", NETWORK]);
         let config_file = machine.directories().network_config_file(NETWORK).unwrap();
         let secret =
@@ -38,7 +38,7 @@ impl LocalNetwork {
 
     /// Starts the binary's MCP server for this network, handshaken and with no card claimed.
     pub fn start_member(&self) -> Member {
-        self.machine.start_member()
+        Member::start(self.machine.spawn_mcp_server())
     }
 
     /// The keys every member derives from the network secret.
