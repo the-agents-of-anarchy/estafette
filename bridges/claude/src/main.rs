@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -36,6 +36,7 @@ const HOME_VARIABLE: &str = "HOME";
 const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
 const CONFIG_HOME_UNDER_HOME: &str = ".config";
 const PRODUCT_DIRECTORY: &str = "estafette";
+const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 const CLAUDE_CONFIG_DIR_VARIABLE: &str = "CLAUDE_CONFIG_DIR";
 const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
 const TEMPORARY_DIRECTORY_VARIABLE: &str = "TMPDIR";
@@ -115,6 +116,7 @@ fn read_environment() -> Result<Environment, CommandError> {
 enum CommandError {
     MissingVariable(&'static str),
     ConfigBaseUnresolvable,
+    ConfigDirectoryCreationFailed { path: PathBuf, source: io::Error },
     ConfigDirectoryOwnerUnreadable { path: PathBuf, source: io::Error },
     SettingsUnreadable { path: PathBuf, source: io::Error },
     WorkingDirectoryUnreadable(io::Error),
@@ -130,6 +132,9 @@ impl fmt::Display for CommandError {
                 formatter,
                 "{CONFIG_HOME_VARIABLE} and {HOME_VARIABLE} are both unset or empty: set one of them"
             ),
+            Self::ConfigDirectoryCreationFailed { path, source } => {
+                write!(formatter, "cannot create {}: {source}", path.display())
+            }
             Self::ConfigDirectoryOwnerUnreadable { path, source } => write!(
                 formatter,
                 "cannot read the owner of {}: {source}",
@@ -161,6 +166,8 @@ trait Files {
     fn list_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>>;
     /// Tells whether anything exists at the path.
     fn exists(&self, path: &Path) -> bool;
+    /// Creates the directory with the private mode and its missing parents, leaving an existing directory untouched.
+    fn create_private_directory(&self, path: &Path) -> io::Result<()>;
     /// Gives the numeric id of the user owning the path.
     fn owner_user_id(&self, path: &Path) -> io::Result<u32>;
     /// Writes a file by staging it beside the final name and renaming it over that name.
@@ -193,6 +200,21 @@ impl Files for OperatingSystemFiles {
         path.exists()
     }
 
+    fn create_private_directory(&self, path: &Path) -> io::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        match fs::DirBuilder::new()
+            .mode(PRIVATE_DIRECTORY_MODE)
+            .create(path)
+        {
+            Err(failure) if failure.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {
+                Ok(())
+            }
+            outcome => outcome,
+        }
+    }
+
     fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
         Ok(fs::metadata(path)?.uid())
     }
@@ -221,12 +243,18 @@ fn core_config_directory(environment: &Environment) -> Result<PathBuf, CommandEr
         .ok_or(CommandError::ConfigBaseUnresolvable)
 }
 
-/// Names the runtime directory inputs, taking the user id from the owner of the config directory as core does.
+/// Names the runtime directory inputs, creating the config directory as core does and taking the user id from its owner.
 fn runtime_inputs(
     environment: &Environment,
     files: &impl Files,
 ) -> Result<RuntimeDirectoryInputs, CommandError> {
     let config_directory = core_config_directory(environment)?;
+    files
+        .create_private_directory(&config_directory)
+        .map_err(|source| CommandError::ConfigDirectoryCreationFailed {
+            path: config_directory.clone(),
+            source,
+        })?;
     let user_id = files.owner_user_id(&config_directory).map_err(|source| {
         CommandError::ConfigDirectoryOwnerUnreadable {
             path: config_directory.clone(),
@@ -774,6 +802,7 @@ mod tests {
     use estafette_bridge_claude::discover::ProcessEntry;
     use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
+    use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixStream;
 
     fn arguments(words: &[&str]) -> Vec<String> {
@@ -1003,6 +1032,53 @@ mod tests {
         assert_eq!(
             runtime_user_id_for(bare_environment()),
             Err("XDG_CONFIG_HOME and HOME are both unset or empty: set one of them".to_owned())
+        );
+    }
+
+    const CORE_PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+
+    #[test]
+    fn spec_3_3_a_bridge_starting_before_core_creates_the_missing_config_directory_as_core_does() {
+        let scratch = scratch_directory("config-creation");
+        let config_directory = scratch.join("missing-base").join(PRODUCT_DIRECTORY);
+        let environment = Environment {
+            messaging_socket: Some(PathBuf::from("/tmp/session.sock")),
+            messaging_token: Some("token".to_owned()),
+            claude_config_dir: Some(PathBuf::from(CLAUDE_CONFIG_DIRECTORY)),
+            xdg_config_home: Some(scratch.join("missing-base")),
+            ..bare_environment()
+        };
+        let effects = bridge_effects(&environment, OperatingSystemFiles)
+            .unwrap_or_else(|error| panic!("the bridge refused to start: {error}"));
+        let metadata = fs::metadata(&config_directory).expect("config directory created");
+        assert_eq!(
+            metadata.permissions().mode() & 0o777,
+            CORE_PRIVATE_DIRECTORY_MODE
+        );
+        assert_eq!(effects.runtime_inputs.user_id, metadata.uid());
+        fs::remove_dir_all(&scratch).expect("cleanup");
+    }
+
+    #[test]
+    fn spec_3_3_a_config_directory_the_bridge_cannot_create_is_refused_with_the_message_core_gives()
+    {
+        let environment = Environment {
+            messaging_socket: Some(PathBuf::from("/tmp/session.sock")),
+            messaging_token: Some("token".to_owned()),
+            claude_config_dir: Some(PathBuf::from(CLAUDE_CONFIG_DIRECTORY)),
+            xdg_config_home: Some(PathBuf::from("/cfg")),
+            ..bare_environment()
+        };
+        let mut files = StandInFiles::default();
+        files.creation_failures.insert(
+            PathBuf::from("/cfg/estafette"),
+            io::ErrorKind::PermissionDenied,
+        );
+        assert_eq!(
+            bridge_effects(&environment, files)
+                .err()
+                .map(|error| error.to_string()),
+            Some("cannot create /cfg/estafette: permission denied".to_owned())
         );
     }
 
@@ -1720,6 +1796,8 @@ mod tests {
         listings: Mutex<usize>,
         writes: Arc<Mutex<Vec<(PathBuf, String)>>>,
         owners: BTreeMap<PathBuf, Result<u32, io::ErrorKind>>,
+        creation_failures: BTreeMap<PathBuf, io::ErrorKind>,
+        created: Mutex<Vec<PathBuf>>,
     }
 
     impl StandInFiles {
@@ -1762,6 +1840,14 @@ mod tests {
 
         fn exists(&self, path: &Path) -> bool {
             self.existing.contains(path) && !lock(&self.hidden).contains(path)
+        }
+
+        fn create_private_directory(&self, path: &Path) -> io::Result<()> {
+            if let Some(kind) = self.creation_failures.get(path) {
+                return Err(io::Error::from(*kind));
+            }
+            lock(&self.created).push(path.to_owned());
+            Ok(())
         }
 
         fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
