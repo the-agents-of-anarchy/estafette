@@ -58,7 +58,7 @@ test:
 fmt:
     cargo fmt --all
 
-[doc("Run the host-bound acceptance tests: the core lab target against the live lab host and a second host it may kill, brought up first by just remote::infrastructure, then the bridge lab target, skipped with a line naming the unset ESTAFETTE_ACCEPTANCE_CLAUDE_* variables; exits with the first non-zero code; both servers are torn down by the run-hetzner-lab skill once it exits")]
+[doc("Run the acceptance tests of spec 3.15: every core acceptance target, the one-machine ones and the lab target against the live lab host and a second host it may kill, brought up first by just remote::infrastructure, then the bridge lab target, skipped with a line naming the unset ESTAFETTE_ACCEPTANCE_CLAUDE_* variables; exits with the first non-zero code; both servers are torn down by the run-hetzner-lab skill once it exits")]
 [group('verify')]
 acceptance:
     #!/usr/bin/env bash
@@ -70,7 +70,7 @@ acceptance:
     export ESTAFETTE_ACCEPTANCE_KILLABLE_SERVER={{ killable_server }}
     export ESTAFETTE_ACCEPTANCE_KILLABLE_HOST_LINE="$killable_host_line"
     first_failure=0
-    cargo test -p estafette --features lab --test acceptance_lab || first_failure=$?
+    cargo test -p estafette --features lab --no-fail-fast --test 'acceptance_*' || first_failure=$?
     unset_variables=()
     for variable in {{ claude_session_variables }}; do
         [[ -n "${!variable:-}" ]] || unset_variables+=("$variable")
