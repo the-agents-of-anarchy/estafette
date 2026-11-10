@@ -1,0 +1,43 @@
+name: debug-test18
+
+on:
+    push:
+        branches:
+            - debug/test18-**
+
+jobs:
+    loop:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - run: rustup toolchain install
+            - run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+            - name: Build the test binary once
+              run: cargo test -p estafette --features estafette/relay --test acceptance_restart --no-run
+            - name: Runner facts
+              run: |
+                  nproc
+                  ip -br addr
+                  ip -6 addr
+                  cat /etc/os-release
+                  echo "ImageOS=$ImageOS ImageVersion=$ImageVersion"
+            - name: Loop the test 100 times
+              run: |
+                  mkdir -p logs
+                  failures=0
+                  for i in $(seq 1 100); do
+                      n=$(printf '%03d' "$i")
+                      cargo test -p estafette --features estafette/relay --test acceptance_restart spec_3_15_test_18_a_restarted_member_whose_message_came_before_its_presence -- --nocapture > "logs/run-$n.log" 2>&1 && code=0 || code=$?
+                      echo "exit code: $code" >> "logs/run-$n.log"
+                      if [ "$code" -ne 0 ]; then
+                          failures=$((failures + 1))
+                          echo "run $n FAILED"
+                      fi
+                  done
+                  echo "failures: $failures of 100"
+                  echo "$failures" > logs/failures.txt
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              if: always()
+              with:
+                  name: test18-logs
+                  path: logs
