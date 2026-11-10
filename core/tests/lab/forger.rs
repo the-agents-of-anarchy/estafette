@@ -3,11 +3,11 @@ use std::time::Duration;
 
 use estafette::crypto::GateKey;
 use estafette::net::endpoint::NodeEndpoint;
+use estafette::stream_items::StreamExt;
 use iroh::protocol::Router;
 use iroh::{EndpointAddr, SecretKey};
 use iroh_gossip::api::{GossipReceiver, GossipSender};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId};
-use n0_future::StreamExt;
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 

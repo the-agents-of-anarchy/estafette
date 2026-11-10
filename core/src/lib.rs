@@ -16,4 +16,5 @@ pub mod peers;
 #[cfg(test)]
 mod seeded_draws;
 pub mod sidecar;
+pub mod stream_items;
 pub mod wire;

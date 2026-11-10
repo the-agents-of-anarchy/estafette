@@ -9,11 +9,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
+use crate::stream_items::{Stream, StreamExt};
 use iroh::endpoint::{BindError, RelayStatus};
 use iroh::protocol::Router;
 use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr, Watcher};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
-use n0_future::{Stream, StreamExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::{Instant, sleep_until};

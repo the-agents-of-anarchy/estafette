@@ -7,8 +7,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::stream_items::join_all;
 use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
-use n0_future::join_all;
 use tokio::net::TcpStream;
 use tokio::time::{Instant, timeout_at};
 
@@ -291,10 +291,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    use crate::stream_items::StreamExt;
     use iroh::protocol::Router;
     use iroh::{EndpointAddr, EndpointId, RelayUrl};
     use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
-    use n0_future::StreamExt;
     use tokio::task::JoinHandle;
     use tokio::time::Instant;
 

@@ -872,7 +872,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Mutex;
 
-    use n0_future::StreamExt;
+    use crate::stream_items::StreamExt;
 
     use super::*;
     use crate::config::{Host, HostOrigin, NetworkConfig};

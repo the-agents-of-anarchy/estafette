@@ -5,12 +5,12 @@ use std::thread::JoinHandle;
 use estafette::crypto::GateKey;
 use estafette::net::endpoint::DIRECT_ALPN;
 use estafette::net::endpoint::{GateFailure, NodeEndpoint};
+use estafette::stream_items::StreamExt;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router, RouterBuilder};
 use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey};
 use iroh_gossip::api::{GossipReceiver, GossipSender};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId};
-use n0_future::StreamExt;
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 
