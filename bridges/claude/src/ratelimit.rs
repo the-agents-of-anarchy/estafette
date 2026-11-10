@@ -55,3 +55,121 @@ impl SenderRateLimit {
         self.dropped_frames
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::seeded::next_below;
+
+    const GENERATED_CASES: u64 = 300;
+    const EVENTS_PER_CASE: usize = 80;
+    const SENDERS: [&str; 3] = ["ana", "bo", "cy"];
+    const LONGEST_GAP_SECONDS: usize = 4;
+
+    struct Event {
+        sender: &'static str,
+        at: Duration,
+    }
+
+    fn generated_events(seed: u64) -> Vec<Event> {
+        let mut state = seed;
+        let mut now_seconds = 0_u64;
+        (0..EVENTS_PER_CASE)
+            .map(|_| {
+                let gap = u64::try_from(next_below(&mut state, LONGEST_GAP_SECONDS)).unwrap_or(0);
+                now_seconds = now_seconds.saturating_add(gap);
+                Event {
+                    sender: SENDERS[next_below(&mut state, SENDERS.len())],
+                    at: Duration::from_secs(now_seconds),
+                }
+            })
+            .collect()
+    }
+
+    fn admissions(limit: &mut SenderRateLimit, events: &[Event]) -> Vec<bool> {
+        events
+            .iter()
+            .enumerate()
+            .map(|(index, event)| {
+                matches!(
+                    limit.admit(event.sender, &format!("body {index}"), event.at),
+                    Admission::Admitted
+                )
+            })
+            .collect()
+    }
+
+    fn events_of(sender: &str, events: &[Event]) -> Vec<Event> {
+        events
+            .iter()
+            .filter(|event| event.sender == sender)
+            .map(|event| Event {
+                sender: event.sender,
+                at: event.at,
+            })
+            .collect()
+    }
+
+    fn admissions_of(sender: &str, events: &[Event], admitted: &[bool]) -> Vec<bool> {
+        events
+            .iter()
+            .zip(admitted)
+            .filter(|(event, _)| event.sender == sender)
+            .map(|(_, was_admitted)| *was_admitted)
+            .collect()
+    }
+
+    fn most_admissions_in_one_window(own_events: &[Event], own_admitted: &[bool]) -> usize {
+        let admitted_times: Vec<Duration> = own_events
+            .iter()
+            .zip(own_admitted)
+            .filter(|(_, was_admitted)| **was_admitted)
+            .map(|(event, _)| event.at)
+            .collect();
+        admitted_times
+            .iter()
+            .map(|time| {
+                admitted_times
+                    .iter()
+                    .filter(|other| {
+                        **other <= *time && time.saturating_sub(**other) < INJECTION_WINDOW
+                    })
+                    .count()
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn spec_3_12_no_sender_has_more_than_ten_injections_in_any_60_seconds_and_senders_do_not_share_a_window()
+     {
+        let mut seeds_that_dropped = 0;
+        for seed in 0..GENERATED_CASES {
+            let events = generated_events(seed);
+            let mut limit = SenderRateLimit::default();
+            let admitted = admissions(&mut limit, &events);
+            for sender in SENDERS {
+                let own_events = events_of(sender, &events);
+                let own_admitted = admissions_of(sender, &events, &admitted);
+                let own_admitted_alone = admissions(&mut SenderRateLimit::default(), &own_events);
+                assert_eq!(own_admitted, own_admitted_alone, "seed {seed} {sender}");
+                assert!(
+                    most_admissions_in_one_window(&own_events, &own_admitted)
+                        <= MAX_INJECTIONS_PER_WINDOW,
+                    "seed {seed} {sender}"
+                );
+            }
+            let dropped = admitted
+                .iter()
+                .filter(|was_admitted| !**was_admitted)
+                .count();
+            assert_eq!(
+                limit.dropped_frames(),
+                u64::try_from(dropped).unwrap_or(0),
+                "seed {seed}"
+            );
+            seeds_that_dropped += usize::from(dropped > 0);
+        }
+        assert!(seeds_that_dropped > 50, "{seeds_that_dropped}");
+    }
+}

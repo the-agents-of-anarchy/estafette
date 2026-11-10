@@ -12,7 +12,7 @@ use iroh::{Endpoint, EndpointId};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::{Instant, sleep, timeout};
 
-use super::endpoint::DIRECT_ALPN;
+use super::endpoint::{DIRECT_ALPN, QUIC_KEEP_ALIVE_INTERVAL};
 use crate::crypto::NetworkKeys;
 use crate::errors::ErrorCode;
 use crate::payload::{
@@ -32,10 +32,17 @@ const RESET_CODE_READ_TIMEOUT: u32 = 2;
 const RESET_CODE_UNANSWERED: u32 = 3;
 const SUPERSEDED_CONNECTION_CLOSE_CODE: u32 = 410;
 const SUPERSEDED_CONNECTION_CLOSE_REASON: &[u8] = b"superseded";
-/// How often the direct server reads what each accepted connection has heard, half the endpoint's QUIC keep-alive interval.
-const HEARING_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
-/// How long a connection hears nothing before it is taken for one of a process that no longer runs: three of the endpoint's QUIC keep-alive intervals, each of which a live peer answers.
-const GONE_PROCESS_SILENCE: Duration = Duration::from_millis(1500);
+const HEARING_SAMPLES_PER_KEEP_ALIVE: u32 = 2;
+const UNANSWERED_KEEP_ALIVES_OF_A_GONE_PROCESS: u32 = 3;
+/// How often the direct server reads what each accepted connection has heard.
+const HEARING_SAMPLE_INTERVAL: Duration =
+    match QUIC_KEEP_ALIVE_INTERVAL.checked_div(HEARING_SAMPLES_PER_KEEP_ALIVE) {
+        Some(interval) => interval,
+        None => QUIC_KEEP_ALIVE_INTERVAL,
+    };
+/// How long a connection hears nothing before it is taken for one of a process that no longer runs.
+const GONE_PROCESS_SILENCE: Duration =
+    QUIC_KEEP_ALIVE_INTERVAL.saturating_mul(UNANSWERED_KEEP_ALIVES_OF_A_GONE_PROCESS);
 
 /// What the direct server needs from the node: its identity and state, and the effects of a received Message and Introduce.
 pub trait DirectHost: Send + Sync + 'static {
@@ -62,11 +69,34 @@ pub trait DirectHost: Send + Sync + 'static {
     fn accepted_connections(&self) -> AcceptedConnections;
 }
 
-/// The connections the direct server accepted and has not seen close, by the card that dialed each.
-#[derive(Debug, Clone, Default)]
-pub struct AcceptedConnections(Arc<Mutex<HashMap<wire::PublicKey, Vec<Accepted>>>>);
+/// A monotonic clock, read for the instant now.
+pub type MonotonicClock = Arc<dyn Fn() -> Instant + Send + Sync>;
+
+/// The connections the direct server accepted and has not seen close, by the card that dialed each, and the clock their silence is measured on.
+#[derive(Clone)]
+pub struct AcceptedConnections {
+    held: Arc<Mutex<HashMap<wire::PublicKey, Vec<Accepted>>>>,
+    monotonic: MonotonicClock,
+}
+
+impl fmt::Debug for AcceptedConnections {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AcceptedConnections")
+            .finish_non_exhaustive()
+    }
+}
 
 impl AcceptedConnections {
+    /// An empty register that measures each connection's silence on the monotonic clock.
+    #[must_use]
+    pub fn new(monotonic: MonotonicClock) -> Self {
+        Self {
+            held: Arc::default(),
+            monotonic,
+        }
+    }
+
     /// Closes every connection accepted from the card whose process no longer runs, so the endpoint forgets the path it held to that process (spec 3.8, address lookup).
     pub(crate) fn close_from(&self, card: wire::PublicKey) {
         self.close_from_sparing(card, None);
@@ -79,7 +109,7 @@ impl AcceptedConnections {
 
     /// Closes every connection accepted from the card that has heard nothing from its peer for as long as a gone process is silent, but the spared one.
     fn close_from_sparing(&self, card: wire::PublicKey, spared: Option<usize>) {
-        let now = Instant::now();
+        let now = (self.monotonic)();
         let superseded = self
             .held()
             .get_mut(&card)
@@ -98,23 +128,26 @@ impl AcceptedConnections {
 
     /// Holds a connection just accepted from the card, forgetting every card left with no connection.
     fn hold(&self, card: wire::PublicKey, connection: &Connection) {
-        let accepted = Accepted::heard_at(connection, Instant::now());
+        let accepted = Accepted::heard_at(connection, (self.monotonic)());
         let mut held = self.held();
         held.retain(|_, accepted| !accepted.is_empty());
         held.entry(card).or_default().push(accepted);
     }
 
-    /// Reads what the connection from the card has heard every hearing sample interval, for as long as it is held.
+    /// Reads what the connection from the card has heard every hearing sample interval until it closes, then forgets it.
     async fn follow_hearing(self, card: wire::PublicKey, connection: Connection) {
         loop {
-            sleep(HEARING_SAMPLE_INTERVAL).await;
-            self.note_hearing(card, &connection);
+            tokio::select! {
+                _closed = connection.closed() => break,
+                () = sleep(HEARING_SAMPLE_INTERVAL) => self.note_hearing(card, &connection),
+            }
         }
+        self.forget(card, &connection);
     }
 
     /// Takes now as the last time the connection from the card heard from its peer, when it received a datagram since its last reading.
     fn note_hearing(&self, card: wire::PublicKey, connection: &Connection) {
-        let now = Instant::now();
+        let now = (self.monotonic)();
         if let Some(accepted) = self.held().get_mut(&card).and_then(|accepted| {
             accepted
                 .iter_mut()
@@ -133,7 +166,7 @@ impl AcceptedConnections {
 
     /// The register, locked for one change.
     fn held(&self) -> MutexGuard<'_, HashMap<wire::PublicKey, Vec<Accepted>>> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -275,7 +308,7 @@ impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let sender = *connection.remote_id().as_bytes();
         self.shared.accepted.hold(sender, &connection);
-        let hearing = tokio::spawn(
+        tokio::spawn(
             self.shared
                 .accepted
                 .clone()
@@ -288,8 +321,6 @@ impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
                 shared.serve_stream(sender, &arrived_on, send, recv).await;
             });
         }
-        hearing.abort();
-        self.shared.accepted.forget(sender, &connection);
         Ok(())
     }
 }
@@ -670,7 +701,7 @@ impl From<ReadToEndError> for DirectError {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
     use std::time::Instant;
 
@@ -724,7 +755,14 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 received: Arc::new(Mutex::new(Vec::new())),
                 introduced: Arc::new(Mutex::new(Vec::new())),
-                accepted: AcceptedConnections::default(),
+                accepted: AcceptedConnections::new(std::sync::Arc::new(tokio::time::Instant::now)),
+            }
+        }
+
+        fn measuring_silence_on(self, monotonic: MonotonicClock) -> Self {
+            Self {
+                accepted: AcceptedConnections::new(monotonic),
+                ..self
             }
         }
 
@@ -1214,7 +1252,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_8_an_introduce_closes_the_connection_accepted_from_its_senders_process_that_is_gone_and_keeps_its_own()
+    async fn spec_3_8_an_introduce_closes_the_connection_accepted_from_its_senders_process_that_is_gone()
      {
         let rig = rig().await;
         let server = rig.link.server_node.endpoint().id();
@@ -1238,6 +1276,88 @@ mod tests {
             vanished.iter().map(Connection::close_reason).collect::<Vec<_>>()
         );
         assert_eq!(probed_on_the_kept_connection.unwrap().nonce, PROBE_NONCE);
+    }
+
+    const SAMPLERS_DONE_WAIT: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn spec_3_8_an_accept_a_router_shutdown_cuts_short_holds_its_connection_no_longer_than_the_connection_lives()
+     {
+        let server_node = bind_node(SERVER_SEED).await;
+        let client_node = bind_node(CLIENT_SEED).await;
+        client_node.replace_address(server_node.endpoint().addr());
+        let host = RecordingHost::with_card(card_of(SERVER_SEED));
+        let server = Arc::new(DirectServer::new(keys(), host.clone()));
+        let (dialed, accepted) = tokio::join!(
+            client_node
+                .endpoint()
+                .connect(server_node.endpoint().id(), DIRECT_ALPN),
+            async {
+                let incoming = server_node.endpoint().accept().await.unwrap();
+                incoming.accept().unwrap().await.unwrap()
+            }
+        );
+        let serving = tokio::spawn({
+            let server = Arc::clone(&server);
+            async move { server.accept(accepted).await }
+        });
+        let dialed = dialed.unwrap();
+        raw_exchange(&dialed, &sealed_message_to_server(&keys()))
+            .await
+            .unwrap();
+
+        serving.abort();
+        drop(serving.await);
+        dialed.close(VarInt::from_u32(0), b"");
+        let all_forgotten = timeout(SAMPLERS_DONE_WAIT, async {
+            while !connections_accepted_from(&host, card_of(CLIENT_SEED)).is_empty() {
+                tokio::time::sleep(HEARING_SAMPLE_INTERVAL).await;
+            }
+        })
+        .await;
+
+        assert!(
+            all_forgotten.is_ok(),
+            "connections still held after the accept was cut short and the connection closed: {:?}",
+            connections_accepted_from(&host, card_of(CLIENT_SEED))
+                .iter()
+                .map(Connection::close_reason)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// A clock that moves a gone process's silence forward at every reading, so every held connection reads as gone when judged.
+    fn clock_reading_every_connection_as_gone() -> MonotonicClock {
+        let started = tokio::time::Instant::now();
+        let readings = Arc::new(AtomicU32::new(0));
+        Arc::new(move || {
+            started
+                .checked_add(
+                    GONE_PROCESS_SILENCE.saturating_mul(readings.fetch_add(1, Ordering::SeqCst)),
+                )
+                .unwrap()
+        })
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_an_introduce_keeps_the_connection_it_arrived_on_even_one_that_reads_as_gone()
+    {
+        let host = RecordingHost::with_card(card_of(SERVER_SEED))
+            .measuring_silence_on(clock_reading_every_connection_as_gone());
+        let link = link_to(DirectServer::new(keys(), host), ClientTimeouts::SPEC).await;
+        let server = link.server_node.endpoint().id();
+
+        let introduced = link
+            .client
+            .introduce(server, introduction_from_client())
+            .await;
+        let probed_on_the_same_connection = link.client.probe(server, PROBE_NONCE).await;
+
+        assert!(
+            matches!(introduced, Ok(IntroduceAck { .. })),
+            "{introduced:?}"
+        );
+        assert_eq!(probed_on_the_same_connection.unwrap().nonce, PROBE_NONCE);
     }
 
     #[tokio::test]

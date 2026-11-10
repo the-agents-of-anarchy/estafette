@@ -83,6 +83,7 @@ impl Fixture {
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.root.join(HOME_DIRECTORY))
+            .env("XDG_CONFIG_HOME", self.root.join(CONFIG_HOME))
             .env("TMPDIR", self.root.join(TMP_DIRECTORY))
             .env("XDG_RUNTIME_DIR", self.root.join(RUNTIME_DIRECTORY))
             .env("CLAUDE_CODE_MESSAGING_SOCKET", &self.messaging_socket)

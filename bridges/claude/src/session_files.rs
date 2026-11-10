@@ -53,6 +53,7 @@ pub fn latest_permission_mode(transcript_text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seeded::next_below;
 
     const TRANSCRIPT_WITH_A_SWITCH: &str = concat!(
         "{\"type\":\"permission-mode\",\"permissionMode\":\"bypassPermissions\",\"sessionId\":\"s\"}\n",
@@ -117,19 +118,14 @@ mod tests {
             1 => format!("{{\"type\":\"user\",\"permissionMode\":\"{mode}\"}}"),
             2 => "not json {".to_owned(),
             3 => "{\"type\":\"user\",\"message\":\"{\\\"type\\\":\\\"permission-mode\\\",\\\"permissionMode\\\":\\\"x\\\"}\"}".to_owned(),
+            4 => "{\"type\":\"permission-mode\"}".to_owned(),
             _ => String::new(),
         }
     }
 
-    fn next_below(state: &mut u64, bound: usize) -> usize {
-        *state = state
-            .wrapping_mul(6_364_136_223_846_793_005)
-            .wrapping_add(1_442_695_040_888_963_407);
-        usize::try_from(*state >> 33)
-            .unwrap_or(0)
-            .checked_rem(bound)
-            .unwrap_or(0)
-    }
+    const TRANSCRIPT_LINE_KINDS: usize = 6;
+    const KIND_OF_MODE_ENTRY: usize = 0;
+    const KIND_OF_MODE_ENTRY_WITHOUT_A_MODE: usize = 4;
 
     #[test]
     fn harness_2_1_319_the_latest_permission_mode_entry_wins_whatever_surrounds_it() {
@@ -139,15 +135,17 @@ mod tests {
             let mut transcript = String::new();
             let mut expected = None;
             for _ in 0..next_below(&mut state, 12) {
-                let kind = next_below(&mut state, 5);
+                let kind = next_below(&mut state, TRANSCRIPT_LINE_KINDS);
                 let mode = MODES
                     .get(next_below(&mut state, MODES.len()))
                     .copied()
                     .unwrap_or("");
                 transcript.push_str(&transcript_line_of_kind(kind, mode));
                 transcript.push('\n');
-                if kind == 0 {
-                    expected = Some(mode.to_owned());
+                match kind {
+                    KIND_OF_MODE_ENTRY => expected = Some(mode.to_owned()),
+                    KIND_OF_MODE_ENTRY_WITHOUT_A_MODE => expected = None,
+                    _ => {}
                 }
             }
             seeds_with_an_entry += usize::from(expected.is_some());

@@ -204,7 +204,9 @@ mod tests {
 
     impl DirectHost for ScriptedHost {
         fn accepted_connections(&self) -> crate::net::direct::AcceptedConnections {
-            crate::net::direct::AcceptedConnections::default()
+            crate::net::direct::AcceptedConnections::new(std::sync::Arc::new(
+                tokio::time::Instant::now,
+            ))
         }
 
         fn is_stopping(&self) -> bool {

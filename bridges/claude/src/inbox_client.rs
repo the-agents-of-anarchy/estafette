@@ -8,7 +8,6 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 const RECONNECT_PAUSE: Duration = Duration::from_millis(500);
-const NO_FRAME_SEEN_YET: u64 = 0;
 const FRAME_LINE_TERMINATOR: char = '\n';
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -17,8 +16,6 @@ pub struct InboxFrame {
     pub id: String,
     pub from: String,
     pub body: String,
-    pub sent_at: u64,
-    pub received_at: u64,
 }
 
 #[derive(Serialize)]
@@ -87,15 +84,16 @@ impl InboxConnector for UnixSocketConnector {
     }
 }
 
-/// Delivers each inbox frame once, in order, reconnecting with the last seq seen whenever the socket closes.
+/// Delivers each inbox frame above `since` once, in order, reconnecting with the last seq seen whenever the socket closes.
 /// # Errors
 /// Returns the `InboxClientError` that ended the following; a closed socket alone never ends it.
 pub fn follow_inbox<C: InboxConnector>(
     connector: &mut C,
+    since: u64,
     wait_before_reconnect: &mut impl FnMut(Duration),
     deliver_frame: &mut impl FnMut(&InboxFrame),
 ) -> Result<Infallible, InboxClientError> {
-    let mut last_seq = NO_FRAME_SEEN_YET;
+    let mut last_seq = since;
     loop {
         let stream = connector
             .connect()
@@ -200,25 +198,13 @@ mod tests {
         }
     }
 
+    const NO_FRAME_HANDLED_YET: u64 = 0;
+
     struct Followed {
         requests: Vec<String>,
         delivered: Vec<InboxFrame>,
         pauses: Vec<Duration>,
         ended_with: InboxClientError,
-    }
-
-    const TEST_MILLIS_PER_SEQ: u64 = 1000;
-    const TEST_SENT_AT_OFFSET: u64 = 1;
-    const TEST_RECEIVED_AT_OFFSET: u64 = 2;
-
-    fn sent_at_of(seq: u64) -> u64 {
-        seq.saturating_mul(TEST_MILLIS_PER_SEQ)
-            .saturating_add(TEST_SENT_AT_OFFSET)
-    }
-
-    fn received_at_of(seq: u64) -> u64 {
-        seq.saturating_mul(TEST_MILLIS_PER_SEQ)
-            .saturating_add(TEST_RECEIVED_AT_OFFSET)
     }
 
     enum BrokenOperation {
@@ -276,6 +262,7 @@ mod tests {
         let mut pauses = Vec::new();
         let ended_with = follow_inbox(
             connector,
+            NO_FRAME_HANDLED_YET,
             &mut |pause| pauses.push(pause),
             &mut |received| delivered.push(received.clone()),
         )
@@ -299,9 +286,7 @@ mod tests {
 
     fn frame_line(seq: u64) -> String {
         format!(
-            "{{\"seq\":{seq},\"id\":\"id-{seq}\",\"from\":\"from-{seq}\",\"body\":\"body {seq}\",\"sent_at\":{},\"received_at\":{}}}\n",
-            sent_at_of(seq),
-            received_at_of(seq)
+            "{{\"seq\":{seq},\"id\":\"id-{seq}\",\"from\":\"from-{seq}\",\"body\":\"body {seq}\"}}\n"
         )
     }
 
@@ -311,8 +296,6 @@ mod tests {
             id: format!("id-{seq}"),
             from: format!("from-{seq}"),
             body: format!("body {seq}"),
-            sent_at: sent_at_of(seq),
-            received_at: received_at_of(seq),
         }
     }
 
@@ -455,9 +438,14 @@ mod tests {
         });
         let mut connector = UnixSocketConnector::new(socket_path);
         let mut delivered = Vec::new();
-        let ended_with = follow_inbox(&mut connector, &mut |_| {}, &mut |received| {
-            delivered.push(received.clone());
-        })
+        let ended_with = follow_inbox(
+            &mut connector,
+            NO_FRAME_HANDLED_YET,
+            &mut |_| {},
+            &mut |received| {
+                delivered.push(received.clone());
+            },
+        )
         .expect_err("a followed inbox never returns Ok");
         let since_lines = server.join().expect("server thread");
         assert_eq!(since_lines, vec!["{\"since\":0}\n", "{\"since\":6}\n"]);

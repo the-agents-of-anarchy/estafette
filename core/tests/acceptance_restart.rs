@@ -184,7 +184,9 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
     impl DirectHost for ScriptedMemberHost {
         fn accepted_connections(&self) -> estafette::net::direct::AcceptedConnections {
-            estafette::net::direct::AcceptedConnections::default()
+            estafette::net::direct::AcceptedConnections::new(std::sync::Arc::new(
+                tokio::time::Instant::now,
+            ))
         }
 
         fn is_stopping(&self) -> bool {
