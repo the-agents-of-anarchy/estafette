@@ -31,6 +31,9 @@ mod scratch_machine;
 #[cfg(test)]
 #[path = "lab/tail.rs"]
 mod tail;
+#[cfg(test)]
+#[path = "support/timed_step.rs"]
+mod timed_step;
 
 #[cfg(test)]
 mod live_host {
@@ -612,6 +615,7 @@ mod spec_3_15_two_members_through_the_live_host {
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::presence_signed_by;
     use crate::scratch_machine::Card;
+    use crate::timed_step::timed;
 
     const SPEC_GONE_WITHIN: Duration = Duration::from_millis(1000);
     const SPEC_QUIC_IDLE_TIMEOUT: Duration = Duration::from_millis(10_000);
@@ -939,19 +943,30 @@ mod spec_3_15_two_members_through_the_live_host {
         meet(&mut amy, &mut bob);
 
         let mut ann = lab_member(&network, "t7-ann", &taken, FIRST_SESSION);
-        let at_amy = amy
-            .member
-            .peer_within(&second_effective, PRESENCE_WAIT, online);
-        let at_bob = bob
-            .member
-            .peer_within(&second_effective, PRESENCE_WAIT, online);
+        let at_amy = timed("amy lists ann online as <h>-2", || {
+            amy.member
+                .peer_within(&second_effective, PRESENCE_WAIT, online)
+        });
+        let at_bob = timed("bob lists ann online as <h>-2", || {
+            bob.member
+                .peer_within(&second_effective, PRESENCE_WAIT, online)
+        });
         amy.member.close_standard_input();
-        assert!(amy.member.wait_for_exit().success());
+        assert!(
+            timed("amy exits after the end of input", || amy
+                .member
+                .wait_for_exit())
+            .success()
+        );
         let mut restarted = amy.machine.start_server();
         let restarted_claim = restarted.call("init", &json!({ "card": amy.card.name }));
-        let restarted_at_ann = ann.member.peer_within(&taken, PRESENCE_WAIT, online);
+        let restarted_at_ann = timed("ann lists the restarted amy online as <h>", || {
+            ann.member.peer_within(&taken, PRESENCE_WAIT, online)
+        });
         let own_after_restart = ann.member.call("peers", &json!({}));
-        let restarted_at_bob = bob.member.peer_within(&taken, PRESENCE_WAIT, online);
+        let restarted_at_bob = timed("bob lists the restarted amy online as <h>", || {
+            bob.member.peer_within(&taken, PRESENCE_WAIT, online)
+        });
 
         assert_eq!(ann.claim["result"]["handle"], json!(second_effective));
         assert_eq!(at_amy["handle"], json!(second_effective));
@@ -961,8 +976,9 @@ mod spec_3_15_two_members_through_the_live_host {
         assert_eq!(restarted_at_bob["handle"], json!(taken));
         assert_eq!(own_after_restart["you"]["handle"], json!(second_effective));
         assert_eq!(
-            bob.member
-                .peer_within(&second_effective, PRESENCE_WAIT, online)["handle"],
+            timed("bob still lists ann online as <h>-2", || bob
+                .member
+                .peer_within(&second_effective, PRESENCE_WAIT, online))["handle"],
             json!(second_effective)
         );
     }
@@ -974,15 +990,27 @@ mod spec_3_15_two_members_through_the_live_host {
         let network = LiveNetwork::from_environment();
         let mut amy = lab_member(&network, "t8-amy", &unique_handle("amy"), FIRST_SESSION);
         let mut bob = lab_member(&network, "t8-bob", &unique_handle("bob"), FIRST_SESSION);
-        meet(&mut amy, &mut bob);
+        timed("amy and bob list each other online", || {
+            meet(&mut amy, &mut bob);
+        });
         amy.member.close_standard_input();
-        assert!(amy.member.wait_for_exit().success());
+        assert!(
+            timed("amy exits after the end of input", || amy
+                .member
+                .wait_for_exit())
+            .success()
+        );
         let mut restarted = amy.machine.start_server();
         let claim = restarted.call("init", &json!({ "card": amy.card.name }));
-        bob.member.peer_within(&amy.handle, PRESENCE_WAIT, online);
+        timed("bob lists the restarted amy online", || {
+            bob.member.peer_within(&amy.handle, PRESENCE_WAIT, online)
+        });
 
         let unseen_before = listed_peer(&mut restarted, &bob.handle);
-        let sent = send(&mut bob, &amy.handle.clone(), FIRST_BODY);
+        let amy_handle = amy.handle.clone();
+        let sent = timed("bob's send to the restarted amy", || {
+            send(&mut bob, &amy_handle, FIRST_BODY)
+        });
         let listed_after = listed_peer(&mut restarted, &bob.handle);
 
         assert_eq!(claim["ok"], json!(true), "{claim}");
@@ -1104,10 +1132,16 @@ mod spec_3_15_two_members_through_the_live_host {
         let network = LiveNetwork::from_environment();
         let mut amy = lab_member(&network, "t18-amy", &unique_handle("amy"), FIRST_SESSION);
         let mut bob = lab_member(&network, "t18-bob", &unique_handle("bob"), FIRST_SESSION);
-        meet(&mut amy, &mut bob);
+        timed("amy and bob list each other online", || {
+            meet(&mut amy, &mut bob);
+        });
         let bob_handle = bob.handle.clone();
         assert_eq!(
-            send(&mut amy, &bob_handle, FIRST_BODY)["result"]["delivered"],
+            timed("amy's send to bob before the kill", || send(
+                &mut amy,
+                &bob_handle,
+                FIRST_BODY
+            ))["result"]["delivered"],
             json!(true)
         );
 
@@ -1115,11 +1149,18 @@ mod spec_3_15_two_members_through_the_live_host {
         let killed_ms = wall_clock_ms();
         let mut restarted = bob.machine.start_server();
         let claim = restarted.call("init", &json!({ "card": bob.card.name }));
-        amy.member.peer_within(&bob_handle, PRESENCE_WAIT, |bob| {
-            online(bob) && bob["last_seen"].as_u64().unwrap() > killed_ms
-        });
+        timed(
+            "amy lists the restarted bob online, seen after the kill",
+            || {
+                amy.member.peer_within(&bob_handle, PRESENCE_WAIT, |bob| {
+                    online(bob) && bob["last_seen"].as_u64().unwrap() > killed_ms
+                })
+            },
+        );
         let new_presence_reached = Instant::now();
-        let sent = send(&mut amy, &bob_handle, FIRST_BODY);
+        let sent = timed("amy's send to the restarted bob", || {
+            send(&mut amy, &bob_handle, FIRST_BODY)
+        });
         let delivered_after = new_presence_reached.elapsed();
 
         assert_eq!(claim["ok"], json!(true), "{claim}");

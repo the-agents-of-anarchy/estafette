@@ -19,6 +19,9 @@ mod scratch_machine;
 #[cfg(test)]
 #[path = "one_machine/scripted_node.rs"]
 mod scripted_node;
+#[cfg(test)]
+#[path = "support/timed_step.rs"]
+mod timed_step;
 
 #[cfg(test)]
 mod spec_3_15_restart_and_departure_on_one_machine {
@@ -43,6 +46,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use crate::payloads::presence_signed_by;
     use crate::scratch_machine::Card;
     use crate::scripted_node::ScriptedNode;
+    use crate::timed_step::timed;
 
     const SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE: Duration = Duration::from_millis(1000);
     const PRESENCE_WAIT: Duration = Duration::from_secs(20);
@@ -332,20 +336,31 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             amy_card,
             mut bob,
             bob_card,
-        } = amy_and_bob_met(&network, &first_host);
-        let first_send = send(&mut amy, "bob");
+        } = timed("amy and bob list each other online", || {
+            amy_and_bob_met(&network, &first_host)
+        });
+        let first_send = timed("amy's send to bob before the kill", || {
+            send(&mut amy, "bob")
+        });
 
         bob.kill();
         let killed_ms = wall_clock_ms();
         let second_host = network.stand_in_host();
         second_host.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
         let mut restarted = network.start_member();
-        restarted.init_through(&bob_card, &second_host);
-        amy.peer_within("bob", PRESENCE_WAIT, |bob| {
-            online(bob) && bob["last_seen"].as_u64().unwrap() > killed_ms
+        timed("the restarted bob claims its card", || {
+            restarted.init_through(&bob_card, &second_host)
         });
+        timed(
+            "amy lists the restarted bob online, seen after the kill",
+            || {
+                amy.peer_within("bob", PRESENCE_WAIT, |bob| {
+                    online(bob) && bob["last_seen"].as_u64().unwrap() > killed_ms
+                })
+            },
+        );
         let new_presence_reached = Instant::now();
-        let sent = send(&mut amy, "bob");
+        let sent = timed("amy's send to the restarted bob", || send(&mut amy, "bob"));
         let delivered_after = new_presence_reached.elapsed();
 
         assert_eq!(
@@ -474,7 +489,9 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             "bob",
             &loopback_address_of(&first_session),
         ));
-        amy.peer_within("bob", PRESENCE_WAIT, online);
+        timed("amy lists the first bob online", || {
+            amy.peer_within("bob", PRESENCE_WAIT, online)
+        });
         drop(first_session);
 
         let restarted = scripted_member(&network, &bob_key);
@@ -488,28 +505,34 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                     .connect(amy_card.id, DIRECT_ALPN),
             )
             .unwrap();
-        let before_presence = exchange_on(
-            &network,
-            &restarted,
-            &held,
-            message_from_bob(amy_card.id, wall_clock_ms(), SENT_BEFORE_THE_NEW_PRESENCE),
-        );
-        announce_until_seen(
-            &network,
-            &restarted,
-            &bob_key,
-            &loopback_address_of(&restarted),
-            &mut amy,
-        );
+        let before_presence = timed("the restarted bob's message before its presence", || {
+            exchange_on(
+                &network,
+                &restarted,
+                &held,
+                message_from_bob(amy_card.id, wall_clock_ms(), SENT_BEFORE_THE_NEW_PRESENCE),
+            )
+        });
+        timed("amy lists the restarted bob's new presence", || {
+            announce_until_seen(
+                &network,
+                &restarted,
+                &bob_key,
+                &loopback_address_of(&restarted),
+                &mut amy,
+            );
+        });
         std::thread::sleep(PRESENCE_APPLIED_SETTLE);
-        let after_presence = exchange_on(
-            &network,
-            &restarted,
-            &held,
-            message_from_bob(amy_card.id, wall_clock_ms(), SENT_AFTER_THE_NEW_PRESENCE),
-        );
+        let after_presence = timed("the restarted bob's message after its presence", || {
+            exchange_on(
+                &network,
+                &restarted,
+                &held,
+                message_from_bob(amy_card.id, wall_clock_ms(), SENT_AFTER_THE_NEW_PRESENCE),
+            )
+        });
         let bodies = inbox_bodies(&mut amy);
-        let sent = send(&mut amy, "bob");
+        let sent = timed("amy's send to the restarted bob", || send(&mut amy, "bob"));
 
         assert!(
             before_presence
