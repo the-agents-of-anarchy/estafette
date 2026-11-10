@@ -3,7 +3,7 @@ use std::fs;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use data_encoding::HEXLOWER;
-use estafette::config::{Host, NetworkConfig};
+use estafette::config::{Host, HostOrigin, NetworkConfig};
 use estafette::keys::render_public_key;
 use estafette::wire::HostAddr;
 use serde_json::{Value, json};
@@ -239,11 +239,36 @@ impl Member {
     #[track_caller]
     fn claimed_on(machine: ScratchMachine, handle: String) -> Self {
         let card = machine.create_card(&handle, &handle);
+        Self::serving(machine, card, handle)
+    }
+
+    /// Serves the card on the machine and claims it, requiring the claim to succeed.
+    #[track_caller]
+    fn serving(machine: ScratchMachine, card: Card, handle: String) -> Self {
         let mut server = McpServer::handshaken(machine.spawn_mcp_server());
         let claim = server.call("init", &json!({ "card": card.name }));
         assert_eq!(claim["ok"], json!(true), "{claim}");
         Self {
             server,
+            machine,
+            card,
+            handle,
+        }
+    }
+
+    /// Closes the member's standard input and requires a clean exit, keeping its machine and card for a restart.
+    #[track_caller]
+    fn stopped(self) -> StoppedMember {
+        let Self {
+            mut server,
+            machine,
+            card,
+            handle,
+        } = self;
+        server.close_standard_input();
+        let exit = server.wait_for_exit();
+        assert!(exit.success(), "{handle} stopped with {exit:?}");
+        StoppedMember {
             machine,
             card,
             handle,
@@ -279,13 +304,37 @@ impl Member {
 
     /// The hosts the member's network configuration names now.
     fn configured_hosts(&self) -> Vec<Host> {
-        let config_file = self
-            .machine
-            .directories()
-            .network_config_file(self.machine.network())
-            .unwrap();
-        NetworkConfig::load(&config_file).unwrap().hosts
+        hosts_configured_on(&self.machine)
     }
+}
+
+/// A member whose process exited cleanly, its machine and card kept for a restart.
+struct StoppedMember {
+    machine: ScratchMachine,
+    card: Card,
+    handle: String,
+}
+
+impl StoppedMember {
+    /// The hosts the stopped member's network configuration names.
+    fn configured_hosts(&self) -> Vec<Host> {
+        hosts_configured_on(&self.machine)
+    }
+
+    /// Serves and claims the member's card again on its machine, requiring the claim to succeed.
+    #[track_caller]
+    fn restarted(self) -> Member {
+        Member::serving(self.machine, self.card, self.handle)
+    }
+}
+
+/// The hosts the machine's network configuration names now.
+fn hosts_configured_on(machine: &ScratchMachine) -> Vec<Host> {
+    let config_file = machine
+        .directories()
+        .network_config_file(machine.network())
+        .unwrap();
+    NetworkConfig::load(&config_file).unwrap().hosts
 }
 
 /// A `tail` of the network on the observer's machine, returned once it printed its first payload.
@@ -691,4 +740,76 @@ fn spec_3_15_test_25_with_one_host_dead_a_member_invited_through_the_live_host_l
             at_ms.saturating_sub(deadline_ms)
         );
     }
+}
+
+/// Whether the saved host is one the member learned from a record, not one its configuration was written with.
+const fn is_learned(host: &Host) -> bool {
+    matches!(host.origin, HostOrigin::Learned { .. })
+}
+
+/// Spec 3.15 test 26: bob, configured with the killable host alone, learns the live host; the killable host is killed and bob stopped cleanly with both hosts in his configuration, the live one learned, then restarted with his card, and he joins through the learned host: amy, joined through the live host, lists him online as seen after the restart, and he lists her online.
+#[test]
+fn spec_3_15_test_26_a_member_restarted_after_its_configured_host_died_joins_through_its_learned_host()
+ {
+    let _live_host = live_host_to_itself();
+    let network = LiveNetwork::from_environment();
+    let killable = KillableHostServer::from_environment();
+    let doomed = KillableHost::from_environment();
+    let live_id = live_host_id(&network);
+    let doomed_id = host_id(doomed.address());
+    let observer = LabMachine::joined("t26-tail", &network);
+    let tail = timed("tail joined through the live host", || {
+        tail_of(&observer, &network)
+    });
+    timed("the killable host serving", || {
+        killable_host_serving(&killable, doomed.address(), &tail);
+    });
+    let mut amy = timed("amy claimed through the live host", || {
+        Member::joined_by_invitation(&network, "amy")
+    });
+    let bob = timed("bob claimed through the killable host alone", || {
+        Member::joined_through(&network, "bob", std::slice::from_ref(doomed.address()))
+    });
+    let learned = timed("bob's configuration names the live host", || {
+        hosts_first_read(
+            std::slice::from_ref(&bob),
+            &live_id,
+            Instant::now().checked_add(ANNOUNCEMENT_WAIT).unwrap(),
+        )
+    });
+    assert!(
+        learned.iter().all(Option::is_some),
+        "bob did not learn the live host within {ANNOUNCEMENT_WAIT:?}: {:?}",
+        bob.configured_hosts()
+    );
+    timed("the killable host killed", || doomed.kill());
+    let stopped = timed("bob stopped cleanly", || bob.stopped());
+    let configured_at_restart = stopped.configured_hosts();
+    let restarting_ms = wall_clock_ms();
+    let mut bob = timed("bob restarted with his card", || stopped.restarted());
+
+    timed("amy lists the restarted bob online", || {
+        amy.server.peer_within(&bob.handle, PRESENCE_WAIT, |peer| {
+            online(peer)
+                && peer["last_seen"]
+                    .as_u64()
+                    .is_some_and(|seen| seen > restarting_ms)
+        })
+    });
+    timed("the restarted bob lists amy online", || {
+        bob.server.peer_within(&amy.handle, PRESENCE_WAIT, online)
+    });
+
+    assert!(
+        configured_at_restart
+            .iter()
+            .any(|host| host.id == live_id && is_learned(host)),
+        "{configured_at_restart:?}"
+    );
+    assert!(
+        configured_at_restart
+            .iter()
+            .any(|host| host.id == doomed_id && !is_learned(host)),
+        "{configured_at_restart:?}"
+    );
 }
