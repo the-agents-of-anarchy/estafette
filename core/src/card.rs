@@ -478,7 +478,7 @@ fn compact_json(mapping: &Map<String, Value>) -> Vec<u8> {
 
 /// Whether `public` bytes a peer sent are what a card sends: a JSON mapping within the cap and the deepest nesting whose mappings name each key once and whose integers fit 64 bits, judged on the bytes as they arrived (spec 3.5).
 #[must_use]
-pub fn is_card_public(bytes: &[u8]) -> bool {
+pub(crate) fn is_card_public(bytes: &[u8]) -> bool {
     bytes.len() <= PUBLIC_MAX_BYTES
         && serde_json::from_slice::<ReceivedPublicMapping>(bytes).is_ok()
         && every_integer_fits_64_bits(bytes)
