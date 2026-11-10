@@ -176,6 +176,17 @@ trait Files {
 
 struct OperatingSystemFiles;
 
+/// Names the temporary file the calling thread stages a write of the path in, so no two threads share one.
+fn staging_path_of_this_thread(path: &Path) -> PathBuf {
+    let thread_number: String = format!("{:?}", thread::current().id())
+        .chars()
+        .filter(char::is_ascii_digit)
+        .collect();
+    let mut staging_name = path.as_os_str().to_owned();
+    staging_name.push(format!(".{thread_number}{STAGING_SUFFIX}"));
+    PathBuf::from(staging_name)
+}
+
 impl Files for OperatingSystemFiles {
     fn read_text(&self, path: &Path) -> io::Result<String> {
         fs::read_to_string(path)
@@ -220,9 +231,7 @@ impl Files for OperatingSystemFiles {
     }
 
     fn write_text_atomically(&self, path: &Path, text: &str) -> io::Result<()> {
-        let mut staging_name = path.as_os_str().to_owned();
-        staging_name.push(STAGING_SUFFIX);
-        let staging = PathBuf::from(staging_name);
+        let staging = staging_path_of_this_thread(path);
         fs::write(&staging, text)?;
         fs::rename(staging, path)
     }
@@ -1997,6 +2006,35 @@ mod tests {
     }
 
     #[test]
+    fn spec_3_12_two_threads_writing_one_state_file_each_land_a_whole_write() {
+        const WRITES_PER_THREAD: usize = 300;
+        const WRITE_LENGTH: usize = 65_536;
+        let directory = scratch_directory("same-file");
+        let target = directory.join("count");
+        let texts = ["a".repeat(WRITE_LENGTH), "b".repeat(WRITE_LENGTH)];
+        let write_repeatedly = |text: &String| -> Vec<io::Error> {
+            (0..WRITES_PER_THREAD)
+                .filter_map(|_| {
+                    OperatingSystemFiles
+                        .write_text_atomically(&target, text)
+                        .err()
+                })
+                .collect()
+        };
+        let failures: Vec<io::Error> = thread::scope(|writers| {
+            let first_writer = writers.spawn(|| write_repeatedly(&texts[0]));
+            let second_writer = writers.spawn(|| write_repeatedly(&texts[1]));
+            [first_writer, second_writer]
+                .into_iter()
+                .flat_map(|writer| writer.join().expect("writer"))
+                .collect()
+        });
+        assert!(failures.is_empty(), "{failures:?}");
+        assert!(texts.contains(&fs::read_to_string(&target).expect("final file")));
+        fs::remove_dir_all(&directory).expect("cleanup");
+    }
+
+    #[test]
     fn spec_3_12_the_operating_system_writes_the_count_by_staging_then_renaming() {
         let directory = scratch_directory("atomic");
         let target = directory.join("count");
@@ -2007,7 +2045,15 @@ mod tests {
             .write_text_atomically(&target, "12")
             .expect("second write");
         assert_eq!(fs::read_to_string(&target).expect("count"), "12");
-        assert!(!directory.join("count.staging").exists());
+        assert!(
+            fs::read_dir(&directory)
+                .expect("list")
+                .filter_map(Result::ok)
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(STAGING_SUFFIX))
+        );
         fs::remove_dir_all(&directory).expect("cleanup");
     }
 }
