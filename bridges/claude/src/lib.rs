@@ -5,4 +5,6 @@ pub mod inbox_client;
 pub mod inject;
 pub mod permission_class;
 mod ratelimit;
+#[cfg(test)]
+mod seeded;
 pub mod session_files;

@@ -963,13 +963,13 @@ mod tests {
     #[test]
     fn spec_3_12_a_second_start_for_the_same_harness_leaves_the_running_bridge_alone() {
         let running = FixedProcessTable(vec![
-            bridge_process(900, "100"),
-            bridge_process(700, "100"),
+            bridge_process(900, &HARNESS_PID.to_string()),
+            bridge_process(700, &HARNESS_PID.to_string()),
             bridge_process(701, "999"),
         ]);
         let wiring = wiring();
         assert_eq!(
-            run_bridge(100, wiring.effects, &running).expect("guarded start"),
+            run_bridge(HARNESS_PID, wiring.effects, &running).expect("guarded start"),
             BridgeOutcome::AlreadyServed { bridge_pid: 700 }
         );
         assert_eq!(lock(&wiring.spawned).len(), 0);
@@ -1045,6 +1045,8 @@ mod tests {
     }
 
     const CORE_PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+    const HARNESS_PID: u32 = 100;
+    const RATE_LIMIT_INJECTIONS_PER_SENDER: usize = 10;
     const STAGED_WRITES: usize = 50;
 
     #[test]
@@ -1149,7 +1151,7 @@ mod tests {
     fn mcp_binary(pid: u32) -> ProcessEntry {
         ProcessEntry {
             pid,
-            parent_pid: 100,
+            parent_pid: HARNESS_PID,
             executable: Some("/usr/bin/estafette".to_owned()),
             arguments: vec!["mcp".to_owned()],
         }
@@ -1158,7 +1160,7 @@ mod tests {
     #[test]
     fn spec_3_12_the_bridge_follows_each_binary_socket_once_however_many_polls_see_it() {
         let harness = ProcessEntry {
-            pid: 100,
+            pid: HARNESS_PID,
             parent_pid: 1,
             executable: Some("/usr/bin/claude".to_owned()),
             arguments: Vec::new(),
@@ -1172,7 +1174,7 @@ mod tests {
         ]));
         let wiring = wiring();
         assert_eq!(
-            run_bridge(100, wiring.effects, &polls).expect("bridge runs"),
+            run_bridge(HARNESS_PID, wiring.effects, &polls).expect("bridge runs"),
             BridgeOutcome::HarnessExited
         );
         assert_eq!(
@@ -1189,7 +1191,7 @@ mod tests {
     #[test]
     fn spec_3_12_a_binary_socket_that_cannot_be_reached_is_reported_and_followed_again_later() {
         let harness = ProcessEntry {
-            pid: 100,
+            pid: HARNESS_PID,
             parent_pid: 1,
             executable: Some("/usr/bin/claude".to_owned()),
             arguments: Vec::new(),
@@ -1197,7 +1199,7 @@ mod tests {
         let running = vec![harness, mcp_binary(101)];
         let polls = SnapshotSequence(RefCell::new(vec![running.clone(), running, Vec::new()]));
         let wiring = wiring();
-        run_bridge(100, wiring.effects, &polls).expect("bridge runs");
+        run_bridge(HARNESS_PID, wiring.effects, &polls).expect("bridge runs");
         let task = lock(&wiring.spawned).pop().expect("one follower spawned");
         task();
         assert_eq!(
@@ -1303,7 +1305,8 @@ mod tests {
             spawn: Arc::new(|task| task()),
             wait: |_| {},
         };
-        run_bridge(100, effects, &SnapshotSequence(RefCell::new(polls))).expect("bridge runs");
+        run_bridge(HARNESS_PID, effects, &SnapshotSequence(RefCell::new(polls)))
+            .expect("bridge runs");
         ScriptedRun {
             since_lines: lock(&since_lines).clone(),
             delivered_frames: lock(&errors)
@@ -1316,7 +1319,7 @@ mod tests {
     fn harness_with_one_binary() -> Vec<ProcessEntry> {
         vec![
             ProcessEntry {
-                pid: 100,
+                pid: HARNESS_PID,
                 parent_pid: 1,
                 executable: Some("/usr/bin/claude".to_owned()),
                 arguments: Vec::new(),
@@ -1501,11 +1504,14 @@ mod tests {
             PathBuf::from("/run/user/1000/estafette-1000/101.sock"),
             PathBuf::from("/run/user/1000/estafette-1000/102.sock"),
         ];
-        for index in 0..11_usize {
+        for index in 0..=RATE_LIMIT_INJECTIONS_PER_SENDER {
             let socket = &sockets[index % sockets.len()];
             session.deliver_from_socket(socket, &frame_from("ana", &format!("body {index}")));
         }
-        assert_eq!(connect_errors(&wiring).len(), 10);
+        assert_eq!(
+            connect_errors(&wiring).len(),
+            RATE_LIMIT_INJECTIONS_PER_SENDER
+        );
         assert_eq!(written_counts(&session.files.writes), ["1"]);
     }
 
@@ -1639,7 +1645,7 @@ mod tests {
             let mut wiring = wiring();
             wiring.effects.files = files_of_live_session(mode);
             let writes = Arc::clone(&wiring.effects.files.writes);
-            run_bridge(100, wiring.effects, &polls).expect("bridge runs");
+            run_bridge(HARNESS_PID, wiring.effects, &polls).expect("bridge runs");
             assert_eq!(
                 *lock(&wiring.errors),
                 [format!("attested permission class: {class}")],
@@ -1658,7 +1664,7 @@ mod tests {
     fn harness_2_1_319_the_bridge_logs_that_no_live_class_exists_yet_when_it_starts() {
         let polls = SnapshotSequence(RefCell::new(vec![Vec::new()]));
         let wiring = wiring();
-        run_bridge(100, wiring.effects, &polls).expect("bridge runs");
+        run_bridge(HARNESS_PID, wiring.effects, &polls).expect("bridge runs");
         assert_eq!(
             *lock(&wiring.errors),
             [

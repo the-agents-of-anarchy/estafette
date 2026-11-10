@@ -267,6 +267,7 @@ fn runs_binary_in_mcp_mode(entry: &ProcessEntry) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seeded::next_below;
     use std::cell::{Cell, RefCell};
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Command, Stdio};
@@ -298,13 +299,30 @@ mod tests {
         }
     }
 
+    const GENERATED_CASES: u64 = 300;
+    const NON_PID_TOKENS: [&str; 6] = ["abc", "-5", "1.5", "4294967296", "0x10", "12a"];
+    const TOKEN_SUFFIXES: [&str; 3] = ["", "z", "9"];
+
     #[test]
     fn spec_3_12_step_2_a_listing_line_whose_first_token_is_not_a_pid_is_malformed() {
-        let listing = entries_from_command_lines("abc 1 /bin/sh", &BTreeMap::new());
-        assert!(matches!(
-            listing,
-            Err(ProcessTableError::MalformedListingLine(line)) if line == "abc 1 /bin/sh"
-        ));
+        for seed in 0..GENERATED_CASES {
+            let mut state = seed;
+            let token = format!(
+                "{}{}",
+                NON_PID_TOKENS[next_below(&mut state, NON_PID_TOKENS.len())],
+                TOKEN_SUFFIXES[next_below(&mut state, TOKEN_SUFFIXES.len())]
+            );
+            let parent_pid = next_below(&mut state, usize::from(u16::MAX));
+            let line = format!("{token} {parent_pid} /bin/sh");
+            let listing = entries_from_command_lines(&line, &BTreeMap::new());
+            assert!(
+                matches!(
+                    &listing,
+                    Err(ProcessTableError::MalformedListingLine(reported)) if *reported == line
+                ),
+                "{line}"
+            );
+        }
     }
 
     #[test]
