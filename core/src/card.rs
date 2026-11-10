@@ -816,8 +816,18 @@ fn convert_mapping(entries: &[(Node, Node)]) -> Result<Value, CardInvalid> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    pub const SPEC_PUBLIC_CAP_BYTES: usize = 3072;
+    const MAPPING_OF_ONE_EMPTY_TEXT: &str = r#"{"k":""}"#;
+
+    pub fn public_mapping_of_bytes(bytes: usize) -> Vec<u8> {
+        let filler = "x".repeat(bytes.checked_sub(MAPPING_OF_ONE_EMPTY_TEXT.len()).unwrap());
+        let public = format!(r#"{{"k":"{filler}"}}"#).into_bytes();
+        assert_eq!(public.len(), bytes);
+        public
+    }
 
     fn parse_card(text: &str) -> Result<Card, CardInvalid> {
         text.parse()
@@ -1184,7 +1194,7 @@ mod tests {
 
     #[test]
     fn a_received_public_the_card_check_refuses_is_not_a_card_public_spec_3_5() {
-        let over_cap = format!(r#"{{"k":"{}"}}"#, "x".repeat(PUBLIC_MAX_BYTES - 7));
+        let over_cap = public_mapping_of_bytes(SPEC_PUBLIC_CAP_BYTES + 1);
         let refused: [&[u8]; 13] = [
             br#"{"a":1,"a":2}"#,
             br#"{"a":{"b":1,"b":2}}"#,
@@ -1198,7 +1208,7 @@ mod tests {
             br#""a""#,
             b"not json",
             b"",
-            over_cap.as_bytes(),
+            &over_cap,
         ];
         for public in refused {
             assert!(
@@ -1211,7 +1221,7 @@ mod tests {
 
     #[test]
     fn a_received_public_at_the_edges_the_card_check_admits_is_a_card_public_spec_3_5() {
-        let at_cap = format!(r#"{{"k":"{}"}}"#, "x".repeat(PUBLIC_MAX_BYTES - 8));
+        let at_cap = public_mapping_of_bytes(SPEC_PUBLIC_CAP_BYTES);
         let admitted: [&[u8]; 9] = [
             b"{}",
             br#"{"a":18446744073709551615}"#,
@@ -1221,7 +1231,7 @@ mod tests {
             br#"{"a":"18446744073709551616","b":"1,\"a\":2"}"#,
             br#"{"<<":"a merge key text","a":null,"b":true}"#,
             br#"{ "a" : [ 1 , 2 ] }"#,
-            at_cap.as_bytes(),
+            &at_cap,
         ];
         for public in admitted {
             assert!(

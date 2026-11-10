@@ -523,6 +523,7 @@ impl Peer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::card::tests::{SPEC_PUBLIC_CAP_BYTES, public_mapping_of_bytes};
     use crate::wire::{
         Departure, Introduce, IntroduceAck, Message, MessageId, Presence, SignatureBytes,
         Unreachable, Version,
@@ -1146,16 +1147,6 @@ mod tests {
                 LATER_MS
             )]
         );
-    }
-
-    const SPEC_PUBLIC_CAP_BYTES: usize = 3072;
-    const PUBLIC_FILLER_KEY_OVERHEAD: &str = r#"{"k":""}"#;
-
-    fn public_mapping_of_bytes(bytes: usize) -> Vec<u8> {
-        let filler = "x".repeat(bytes.checked_sub(PUBLIC_FILLER_KEY_OVERHEAD.len()).unwrap());
-        let public = format!(r#"{{"k":"{filler}"}}"#).into_bytes();
-        assert_eq!(public.len(), bytes);
-        public
     }
 
     fn publics_no_card_sends() -> Vec<Vec<u8>> {

@@ -788,6 +788,7 @@ mod tests {
     use iroh::protocol::Router;
 
     use super::*;
+    use crate::card::tests::{SPEC_PUBLIC_CAP_BYTES, public_mapping_of_bytes};
     use crate::crypto::{KEY_LEN, NetworkSecret};
     use crate::net::endpoint::NodeEndpoint;
 
@@ -1480,18 +1481,11 @@ mod tests {
         assert_eq!(rig.host.introduced.lock().unwrap().len(), 0);
     }
 
-    const SPEC_PUBLIC_CAP_BYTES: usize = 3072;
-    const PUBLIC_FILLER_KEY_OVERHEAD: &str = r#"{"k":""}"#;
-
     #[tokio::test]
     async fn spec_3_5_an_introduce_whose_public_is_over_the_cap_is_dropped_before_any_connection_closes()
      {
-        let over_cap = format!(
-            r#"{{"k":"{}"}}"#,
-            "x".repeat(SPEC_PUBLIC_CAP_BYTES + 1 - PUBLIC_FILLER_KEY_OVERHEAD.len())
-        );
         let (rig, introduced, earlier) = introduce_beside_an_earlier_connection(wire::Introduce {
-            public: over_cap.into_bytes(),
+            public: public_mapping_of_bytes(SPEC_PUBLIC_CAP_BYTES + 1),
             ..introduction_from_client()
         })
         .await;
