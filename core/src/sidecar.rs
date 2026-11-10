@@ -1,15 +1,17 @@
 use std::fmt;
-use std::fs::{File, OpenOptions, TryLockError};
+use std::fs::{File, TryLockError};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 
-use crate::config::PERMISSION_BITS_MASK;
+use crate::config::{
+    OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK, create_new_file_with_mode,
+    create_new_owner_only_file,
+};
 use data_encoding::{HEXLOWER, HEXLOWER_PERMISSIVE};
 use iroh::{PublicKey, SecretKey};
 
-const OWNER_READ_WRITE_ONLY: u32 = 0o600;
 pub(crate) const CARD_FILE_MODE: u32 = 0o644;
 pub const SEED_BYTES: usize = 32;
 const PUBLIC_KEY_BYTES: usize = 32;
@@ -156,7 +158,7 @@ fn refuse_existing_card(card_path: &Path) -> Result<(), SidecarError> {
 }
 
 fn write_sidecar_durably(sidecar_path: &Path, seed: &[u8; SEED_BYTES]) -> Result<(), SidecarError> {
-    let mut file = create_new_file(sidecar_path, OWNER_READ_WRITE_ONLY)?;
+    let mut file = create_new_owner_only_file(sidecar_path).map_err(creation_failure)?;
     file.write_all(format!("{}\n", HEXLOWER.encode(seed)).as_bytes())?;
     file.sync_all()?;
     let directory = sidecar_path.parent().ok_or_else(|| {
@@ -174,7 +176,8 @@ fn write_card(
     handle: &str,
     public_key: &[u8; PUBLIC_KEY_BYTES],
 ) -> Result<(), SidecarError> {
-    let mut file = create_new_file(card_path, CARD_FILE_MODE)?;
+    let mut file =
+        create_new_file_with_mode(card_path, CARD_FILE_MODE).map_err(creation_failure)?;
     let contents = format!(
         "handle: {handle}\npublic_key: {}\n",
         HEXLOWER.encode(public_key)
@@ -183,18 +186,11 @@ fn write_card(
     Ok(())
 }
 
-fn create_new_file(path: &Path, mode: u32) -> Result<File, SidecarError> {
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(mode)
-        .open(path)
-        .map_err(|error| match error.kind() {
-            io::ErrorKind::AlreadyExists => SidecarError::AlreadyExists,
-            _ => SidecarError::Io(error),
-        })?;
-    file.set_permissions(std::fs::Permissions::from_mode(mode))?;
-    Ok(file)
+fn creation_failure(error: io::Error) -> SidecarError {
+    match error.kind() {
+        io::ErrorKind::AlreadyExists => SidecarError::AlreadyExists,
+        _ => SidecarError::Io(error),
+    }
 }
 
 fn open_sidecar(sidecar_path: &Path) -> Result<File, SidecarError> {
@@ -206,7 +202,7 @@ fn open_sidecar(sidecar_path: &Path) -> Result<File, SidecarError> {
 
 fn require_owner_read_write_only(file: &File) -> Result<(), SidecarError> {
     let mode = file.metadata()?.permissions().mode() & PERMISSION_BITS_MASK;
-    if mode == OWNER_READ_WRITE_ONLY {
+    if mode == OWNER_ONLY_FILE_MODE {
         Ok(())
     } else {
         Err(SidecarError::Invalid(
@@ -535,7 +531,7 @@ mod tests {
         );
         assert_eq!(
             std::fs::metadata(&sidecar).unwrap().permissions().mode() & PERMISSION_BITS_MASK,
-            OWNER_READ_WRITE_ONLY
+            OWNER_ONLY_FILE_MODE
         );
         let held = claim(&sidecar, &public_key, &NoPause).unwrap();
         assert_eq!(held.secret_key().to_bytes(), seed);

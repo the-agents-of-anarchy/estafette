@@ -504,16 +504,27 @@ pub(crate) fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
     })
 }
 
+/// Creates a new file whose mode is exactly the given one whatever the umask, failing with `AlreadyExists` when the path exists.
+pub(crate) fn create_new_file_with_mode(path: &Path, mode: u32) -> io::Result<File> {
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(mode)
+        .open(path)?;
+    file.set_permissions(Permissions::from_mode(mode))?;
+    Ok(file)
+}
+
+/// Creates a new file readable and writable by its owner alone whatever the umask, failing with `AlreadyExists` when the path exists.
+pub(crate) fn create_new_owner_only_file(path: &Path) -> io::Result<File> {
+    create_new_file_with_mode(path, OWNER_ONLY_FILE_MODE)
+}
+
 fn create_unique_temporary_file(path: &Path) -> io::Result<(File, PathBuf)> {
     for attempt in 0..=u32::MAX {
         let temporary_path =
             path.with_added_extension(format!("{attempt}.{TEMPORARY_FILE_SUFFIX}"));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(OWNER_ONLY_FILE_MODE)
-            .open(&temporary_path)
-        {
+        match create_new_owner_only_file(&temporary_path) {
             Ok(file) => return Ok((file, temporary_path)),
             Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
             Err(source) => return Err(source),
@@ -528,7 +539,6 @@ fn fill_and_rename(
     path: &Path,
     contents: &str,
 ) -> io::Result<()> {
-    file.set_permissions(Permissions::from_mode(OWNER_ONLY_FILE_MODE))?;
     file.write_all(contents.as_bytes())?;
     file.sync_all()?;
     fs::rename(temporary_path, path)

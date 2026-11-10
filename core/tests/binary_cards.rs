@@ -13,6 +13,18 @@ const PERMISSION_BITS: u32 = 0o777;
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 const CARD_FILE_MODE: u32 = 0o644;
 const KEY_FILE_MODE: u32 = 0o600;
+const UMASKS: [&str; 2] = ["0400", "0000"];
+
+fn run_binary_under_umask(root: &Path, umask: &str, arguments: &[&str]) -> io::Result<Output> {
+    Command::new("sh")
+        .args(["-c", &format!("umask {umask}; exec \"$0\" \"$@\""), BINARY])
+        .args(arguments)
+        .env_clear()
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_RUNTIME_DIR", root.join("runtime"))
+        .output()
+}
 
 fn mode_of(path: &Path) -> io::Result<u32> {
     Ok(std::fs::metadata(path)?.permissions().mode() & PERMISSION_BITS)
@@ -196,22 +208,8 @@ fn binary_list_cards_creates_the_program_directories_as_its_help_states() {
 #[test]
 fn binary_create_card_sets_exact_file_modes_under_a_restrictive_umask_of_spec_3_5() {
     let root = common::scratch_root(SCRATCH_PREFIX, "restrictive_umask").unwrap();
-    let created = Command::new("sh")
-        .args([
-            "-c",
-            "umask 077; exec \"$0\" \"$@\"",
-            BINARY,
-            "create-card",
-            "acme",
-            "ana-card",
-            "ana",
-        ])
-        .env_clear()
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_RUNTIME_DIR", root.join("runtime"))
-        .output()
-        .unwrap();
+    let created =
+        run_binary_under_umask(&root, "077", &["create-card", "acme", "ana-card", "ana"]).unwrap();
     assert_eq!(created.status.code(), Some(0));
     let cards = root.join("data/estafette/cards/acme");
     assert_eq!(
@@ -219,4 +217,18 @@ fn binary_create_card_sets_exact_file_modes_under_a_restrictive_umask_of_spec_3_
         CARD_FILE_MODE
     );
     assert_eq!(mode_of(&cards.join("ana-card.key")).unwrap(), KEY_FILE_MODE);
+}
+
+#[test]
+fn binary_owner_key_is_owner_read_write_under_any_umask_of_spec_3_3() {
+    for umask in UMASKS {
+        let root = common::scratch_root(SCRATCH_PREFIX, &format!("key_modes_{umask}")).unwrap();
+        let network = run_binary_under_umask(&root, umask, &["network", "create", "acme"]).unwrap();
+        assert_eq!(network.status.code(), Some(0), "umask {umask}");
+        assert_eq!(
+            mode_of(&root.join("config/estafette/networks/acme.owner.key")).unwrap(),
+            KEY_FILE_MODE,
+            "owner key, umask {umask}"
+        );
+    }
 }

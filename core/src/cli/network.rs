@@ -1,14 +1,13 @@
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
 use clap::Subcommand;
 use iroh::PublicKey;
 
 use crate::config::{
-    AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, OWNER_ONLY_FILE_MODE,
+    AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, create_new_owner_only_file,
 };
 use crate::crypto::{
     HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, render_host_certificate, sign_host_certificate,
@@ -120,12 +119,7 @@ impl NetworkFilesystem for OperatingSystemFilesystem {
     }
 
     fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
-        OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(OWNER_ONLY_FILE_MODE)
-            .open(path)?
-            .write_all(contents.as_bytes())
+        create_new_owner_only_file(path)?.write_all(contents.as_bytes())
     }
 }
 
