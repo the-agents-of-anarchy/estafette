@@ -237,9 +237,6 @@ impl PeerTable {
         introduce: &Introduce,
         now_ms: u64,
     ) -> Vec<Effect> {
-        if self.stands_departed(card, now_ms) {
-            return lookup_refresh_effects(card, &introduce.addr);
-        }
         self.receive_introduction(
             card,
             introduce.handle.as_deref(),
@@ -250,7 +247,7 @@ impl PeerTable {
         )
     }
 
-    /// Takes an `IntroduceAck` that arrived on a connection to `card`, as an accepted Presence without the seq check.
+    /// Takes an `IntroduceAck` that arrived on a connection to `card`, as an accepted Presence without the seq check, or as a lookup refresh alone while the card stands departed.
     #[must_use]
     pub fn receive_introduce_ack(
         &mut self,
@@ -295,7 +292,7 @@ impl PeerTable {
         self.peers.values(now_ms)
     }
 
-    /// Takes what an Introduce or `IntroduceAck` from `card` carries.
+    /// Takes what an Introduce or `IntroduceAck` from `card` carries, refreshing the lookup alone while the card stands departed.
     fn receive_introduction(
         &mut self,
         card: PublicKey,
@@ -305,6 +302,9 @@ impl PeerTable {
         addr: &Addr,
         now_ms: u64,
     ) -> Vec<Effect> {
+        if self.stands_departed(card, now_ms) {
+            return lookup_refresh_effects(card, addr);
+        }
         let Some(handle) = handle else {
             return lookup_refresh_effects(card, addr);
         };
@@ -341,7 +341,7 @@ impl PeerTable {
                 .is_none_or(|tombstone| seq > tombstone.seq)
     }
 
-    /// Whether this node holds a Departure of `card` and no entry newer than it, so an Introduce, which carries no seq, cannot show the card back.
+    /// Whether this node holds a Departure of `card` and no entry newer than it, so an Introduce or `IntroduceAck`, which carry no seq, cannot show the card back.
     fn stands_departed(&self, card: PublicKey, now_ms: u64) -> bool {
         self.tombstones.get(&card, now_ms).is_some()
             && self.peers.get(&card, now_ms).is_none_or(Peer::is_gone)
@@ -627,6 +627,16 @@ mod tests {
             },
             Effect::DropHeldConnection(card),
             Effect::SendIntroduce(card),
+        ]
+    }
+
+    fn lookup_only(card: PublicKey) -> Vec<Effect> {
+        vec![
+            Effect::ReplaceLookupEntry {
+                card,
+                addr: second_addr(),
+            },
+            Effect::DropHeldConnection(card),
         ]
     }
 
@@ -1250,15 +1260,6 @@ mod tests {
         let mut table = table_with_peer_gone_since_now();
         table.receive_departure(&departure(SECOND_MEMBER_CARD, DEPARTURE_SEQ), NOW_MS);
         let departed = snapshot(&table, LATER_MS);
-        let lookup_only = |card| {
-            vec![
-                Effect::ReplaceLookupEntry {
-                    card,
-                    addr: second_addr(),
-                },
-                Effect::DropHeldConnection(card),
-            ]
-        };
         assert_eq!(
             table.receive_introduce(PEER_CARD, &introduce(Some(PEER_HANDLE)), LATER_MS),
             lookup_only(PEER_CARD)
@@ -1267,6 +1268,27 @@ mod tests {
             table.receive_introduce(
                 SECOND_MEMBER_CARD,
                 &introduce(Some(SECOND_HANDLE)),
+                LATER_MS
+            ),
+            lookup_only(SECOND_MEMBER_CARD)
+        );
+        assert_eq!(snapshot(&table, LATER_MS), departed);
+    }
+
+    #[test]
+    fn an_introduce_ack_while_a_held_departure_stands_refreshes_the_lookup_and_changes_no_entry_spec_3_8()
+     {
+        let mut table = table_with_peer_gone_since_now();
+        table.receive_departure(&departure(SECOND_MEMBER_CARD, DEPARTURE_SEQ), NOW_MS);
+        let departed = snapshot(&table, LATER_MS);
+        assert_eq!(
+            table.receive_introduce_ack(PEER_CARD, &introduce_ack(Some(PEER_HANDLE)), LATER_MS),
+            lookup_only(PEER_CARD)
+        );
+        assert_eq!(
+            table.receive_introduce_ack(
+                SECOND_MEMBER_CARD,
+                &introduce_ack(Some(SECOND_HANDLE)),
                 LATER_MS
             ),
             lookup_only(SECOND_MEMBER_CARD)
