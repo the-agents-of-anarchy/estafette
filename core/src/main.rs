@@ -1,4 +1,3 @@
-#[cfg(feature = "relay")]
 use std::ffi::OsString;
 use std::fmt;
 use std::future::Future;
@@ -125,38 +124,45 @@ impl fmt::Display for CommandLineFailure {
 }
 
 fn main() -> ExitCode {
-    let status = match EstafetteArguments::parse().command {
+    let status = run_command(EstafetteArguments::parse().command, |name| {
+        std::env::var_os(name)
+    });
+    ExitCode::from(u8::from(status))
+}
+
+/// Runs the command on the process's streams, reading the environment through the given lookup, and says how the process ends.
+fn run_command(command: Command, environment: impl Fn(&str) -> Option<OsString>) -> ExitStatus {
+    match command {
         Command::Cards(command) => cards::run(
             command,
-            |name: &str| std::env::var_os(name),
+            &environment,
             &OperatingSystemFilesystem,
             fill_with_secure_random_bytes,
             &mut io::stdout(),
             &mut io::stderr(),
         ),
         #[cfg(feature = "relay")]
-        Command::Infrastructure(command) => run_infrastructure_command(
-            command,
-            |name: &str| std::env::var_os(name),
-            &mut io::stdout(),
-            &mut io::stderr(),
-        ),
+        Command::Infrastructure(command) => {
+            run_infrastructure_command(command, &environment, &mut io::stdout(), &mut io::stderr())
+        }
         Command::Network { command } => exit_status_after(
-            run_network_command(&command, &mut io::stdout(), &mut io::stderr())
+            run_network_command(&command, &environment, &mut io::stdout(), &mut io::stderr())
                 .map(|()| ExitStatus::Success),
             &mut io::stderr(),
         ),
         Command::Observer(command) => exit_status_after(
-            run_observer_command(&command, &mut io::stdout()).map(|()| ExitStatus::Success),
+            run_observer_command(&command, &environment, &mut io::stdout())
+                .map(|()| ExitStatus::Success),
             &mut io::stderr(),
         ),
-        Command::Mcp { registry } => exit_status_after(serve_mcp(registry), &mut io::stderr()),
+        Command::Mcp { registry } => {
+            exit_status_after(serve_mcp(registry, &environment), &mut io::stderr())
+        }
         Command::Doctor(arguments) => exit_status_after(
-            run_doctor_command(&arguments, &mut io::stdout()),
+            run_doctor_command(&arguments, &environment, &mut io::stdout()),
             &mut io::stderr(),
         ),
-    };
-    ExitCode::from(u8::from(status))
+    }
 }
 
 /// Says how the process ends after a command: the status it reached, or failure after writing the failure's message to the record.
@@ -171,13 +177,13 @@ fn exit_status_after(
 }
 
 /// Serves the MCP tools of the network until the session ends, building every side effect the server runs on.
-fn serve_mcp(registry: RegistryArgs) -> Result<ExitStatus, CommandLineFailure> {
-    let directories = Directories::establish(
-        |name| std::env::var_os(name),
-        &OperatingSystemFilesystem,
-        registry.cards_dir,
-    )
-    .map_err(CommandLineFailure::Directories)?;
+fn serve_mcp(
+    registry: RegistryArgs,
+    environment: impl Fn(&str) -> Option<OsString>,
+) -> Result<ExitStatus, CommandLineFailure> {
+    let directories =
+        Directories::establish(environment, &OperatingSystemFilesystem, registry.cards_dir)
+            .map_err(CommandLineFailure::Directories)?;
     let config_path = directories
         .network_config_file(registry.network.as_str())
         .map_err(CommandLineFailure::Directories)?;
@@ -350,15 +356,12 @@ const fn exit_status_of(exit: Exit) -> ExitStatus {
 
 fn run_network_command(
     command: &NetworkCommand,
+    environment: impl Fn(&str) -> Option<OsString>,
     result: &mut impl Write,
     record: &mut impl Write,
 ) -> Result<(), CommandLineFailure> {
-    let directories = Directories::establish(
-        |name| std::env::var_os(name),
-        &OperatingSystemFilesystem,
-        None,
-    )
-    .map_err(CommandLineFailure::Directories)?;
+    let directories = Directories::establish(environment, &OperatingSystemFilesystem, None)
+        .map_err(CommandLineFailure::Directories)?;
     let now_unix_seconds = unix_seconds_of(SystemTime::now())?;
     network::run(
         command,
@@ -379,14 +382,13 @@ struct ObserverRuntime {
     operator_effects: OperatorEffects,
 }
 
-fn observer_runtime(cards_dir: Option<PathBuf>) -> Result<ObserverRuntime, CommandLineFailure> {
+fn observer_runtime(
+    environment: impl Fn(&str) -> Option<OsString>,
+    cards_dir: Option<PathBuf>,
+) -> Result<ObserverRuntime, CommandLineFailure> {
     let directories = Arc::new(
-        Directories::establish(
-            |name| std::env::var_os(name),
-            &OperatingSystemFilesystem,
-            cards_dir,
-        )
-        .map_err(CommandLineFailure::Directories)?,
+        Directories::establish(environment, &OperatingSystemFilesystem, cards_dir)
+            .map_err(CommandLineFailure::Directories)?,
     );
     let started_at_milliseconds = unix_milliseconds_of(SystemTime::now())?;
     let started = Instant::now();
@@ -414,6 +416,7 @@ fn observer_runtime(cards_dir: Option<PathBuf>) -> Result<ObserverRuntime, Comma
 
 fn run_observer_command(
     command: &ObserverCommand,
+    environment: impl Fn(&str) -> Option<OsString>,
     result: &mut (impl Write + Send),
 ) -> Result<(), CommandLineFailure> {
     let ObserverRuntime {
@@ -421,7 +424,7 @@ fn run_observer_command(
         runtime,
         effects,
         operator_effects,
-    } = observer_runtime(command.cards_dir())?;
+    } = observer_runtime(environment, command.cards_dir())?;
     runtime
         .block_on(observer::run(
             command,
@@ -437,6 +440,7 @@ fn run_observer_command(
 
 fn run_doctor_command(
     arguments: &DoctorArgs,
+    environment: impl Fn(&str) -> Option<OsString>,
     result: &mut impl Write,
 ) -> Result<ExitStatus, CommandLineFailure> {
     let ObserverRuntime {
@@ -444,7 +448,7 @@ fn run_doctor_command(
         runtime,
         effects,
         operator_effects,
-    } = observer_runtime(arguments.registry.cards_dir.clone())?;
+    } = observer_runtime(environment, arguments.registry.cards_dir.clone())?;
     runtime
         .block_on(doctor::run(
             arguments,
@@ -610,6 +614,8 @@ fn listen_for(kind: SignalKind, name: &'static str) -> Result<Signal, CommandLin
 mod tests {
     use std::time::{Duration, Instant};
 
+    use std::sync::atomic::AtomicBool;
+
     use clap::CommandFactory;
     #[cfg(feature = "relay")]
     use estafette::crypto::KEY_LEN;
@@ -749,6 +755,53 @@ mod tests {
             }
         ));
         assert!(refusal.to_string().starts_with("cannot listen for SIGINT"));
+    }
+
+    #[test]
+    fn spec_3_13_standard_error_stays_writable_by_another_thread_while_a_command_runs() {
+        const OTHER_THREAD_WRITES_WITHIN: Duration = Duration::from_millis(2000);
+        const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
+        const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
+        const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
+        const SCRATCH_PREFIX: &str = "estafette-stderr-writable";
+        let root = std::env::temp_dir().join(format!("{SCRATCH_PREFIX}-{}", std::process::id()));
+        let (written, other_thread_wrote) = std::sync::mpsc::channel();
+        let first_lookup = AtomicBool::new(true);
+        let wrote_in_time = AtomicBool::new(false);
+        let environment = |name: &str| {
+            if first_lookup.swap(false, Ordering::SeqCst) {
+                let written = written.clone();
+                std::thread::spawn(move || {
+                    writeln!(io::stderr(), "another thread writes while the command runs").unwrap();
+                    written.send(()).unwrap();
+                });
+                wrote_in_time.store(
+                    other_thread_wrote
+                        .recv_timeout(OTHER_THREAD_WRITES_WITHIN)
+                        .is_ok(),
+                    Ordering::SeqCst,
+                );
+            }
+            match name {
+                CONFIG_HOME_VARIABLE => Some(root.join("c").into_os_string()),
+                DATA_HOME_VARIABLE => Some(root.join("d").into_os_string()),
+                RUNTIME_DIRECTORY_VARIABLE => Some(root.join("r").into_os_string()),
+                _ => None,
+            }
+        };
+        let Command::Observer(observer) =
+            EstafetteArguments::try_parse_from(["estafette", "show-peers", "lab"])
+                .unwrap()
+                .command
+        else {
+            panic!("show-peers parses as an observer command");
+        };
+
+        let status = run_command(Command::Observer(observer), environment);
+
+        assert_eq!(status, ExitStatus::Failure);
+        assert!(wrote_in_time.load(Ordering::SeqCst));
+        drop(std::fs::remove_dir_all(&root));
     }
 
     #[test]
