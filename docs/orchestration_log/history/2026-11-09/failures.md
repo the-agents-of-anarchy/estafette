@@ -39,3 +39,11 @@ What happened: Four events lines, the charter's corrected lab directive and the 
 Mechanism: Writing tracked records in the root while another process runs a root pre-commit hook; the lead's own rule (hold events in _pending-events.txt while a hook or integrator holds the root) was skipped for a convention and a charter edit, and the agent's commit was not treated as a root hook run.
 
 Correction: Lost lines rewritten as reconstructions; directive and charter correction redone and committed at once; from now on no tracked record is written while any agent commits in the root checkout — the lead holds every record line in _pending-events.txt and defers charter and convention edits until the agent's commit lands.
+
+## Read-only reviewers launched with worktree isolation lost their output files
+
+What happened: The lead launched the ten wave-1 integration reviewers (spec-whole-W1..W8, compat-core, compat-bridge) with isolation: worktree; spec-whole-W3 ended at 11:36 with Verdict PASS and its verdict file was gone, because the harness had refused the write to the root checkout, the agent wrote the worktree copy of the gitignored path, and the harness deleted the unchanged worktree at the agent's end.
+
+Mechanism: The agent-call convention says to pass worktree isolation on the Agent call; its ground is implementers landing on main. Applied to a read-only reviewer it confines every write to a worktree that git sees as unchanged (the recon scratch is gitignored), which the harness then removes. Earlier reviewers in this build ran without isolation and wrote the scratch root directly.
+
+Correction: A background copier (/tmp/estafette-lane/rescue.sh) copies each running reviewer's output out of its worktree every 3 s; the lead installs the copies at the briefed paths and checks byte size and headings; spec-whole-W3 was resumed to write its verdict again. Reviewers and other read-only agents are launched without isolation from now on; isolation is for agents that commit.

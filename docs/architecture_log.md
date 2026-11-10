@@ -178,6 +178,7 @@ INVALIDATES:   The harness envelope, its attribute order, its 64-character name 
                Verified on macOS (Darwin 24.3.0, claude 2.1.319) only; the Linux registry and transcript layout are unread
                A seeded generator is written in two bridge test modules (quality Minor, standing)
 EVIDENCE:      bridges/claude/src/{main,inject,closing_tag,session_files,doctor}.rs at a0ebe3d; spec reviews 175208 FAIL, 182937, 192633, 213328 PASS; quality 184010, 193730 With fixes, 214420 Ready Yes; live runs 2/2 on test-peer (prompting) and test-peer-2 (bypass); integration suite green twice at a0ebe3d (576 tests)
+SUPERSEDED-BY: 2026-11-10, bridge peer line
 
 ## 2026-11-10 → 2026-11-10 — The embedded relay's plain HTTP listener binds loopback on an OS-chosen port instead of TCP 80
 KIND:          runnable
@@ -189,3 +190,28 @@ INVALIDATES:   A deployment whose firewall or documentation assumed the relay on
                The card help pins whole sentences in an integration test, so a help wording change breaks that test (quality Minor, standing)
                The gate's test step is now one `cargo test --workspace --features estafette/relay` run (owner ruling 2026-11-10); the feature-off build is covered by clippy alone
 EVIDENCE:      core/src/cli/{infra,cards}.rs, core/src/{dirs,sidecar}.rs, core/tests/binary_cards.rs, just/gate.just at 6f29b06; spec reviews 192728 FAIL, 220646, 232750 PASS; quality 221757 With fixes, 233744 Ready Yes; integration suite green twice at 6f29b06
+
+## 2026-11-10 → 2026-11-10 — The Claude Code bridge's peer line carries from-name and from-mode alone, never a from address or a hop chain
+KIND:          runnable
+FROM → TO:     A type-user socket line with the bridge's own header text (entry of 2026-10-28) → one connection per frame carrying two lines: `{"type":"auth","token":"<session token>"}`, then `{"msgV":1,"msg_id":"<frame id>","type":"user","message":{"role":"user","content":"<cross-session-message from-name=\"<sender handle>\" from-mode=\"bypass|prompting\">\n<body, closing tags rewritten>\n</cross-session-message>"},"priority":"next"}`; the name is cut to 64 characters plus an ellipsis and a frame whose name is empty or holds anything but visible ASCII without quote or angle brackets is dropped; from-mode is the receiving session's live permission class, read as the entry of 2026-11-09 states
+WHY:           the entry of 2026-11-09 stated the line with an envelope `from="uds:<sock>"`, a `hop-chain` and a top-level `"from"`, and called it the harness's own line byte for byte; no bridge commit ever wrote those three fields (the whole-branch review, spec part W6 finding 2 and the bridge compatibility check finding 1; a resolver read inject.rs and the interception reports: code right, log wrong); the harness delivers the line without them and gates on from-mode matching the receiver and on a body that survives its rebuild; this entry restates the same merged change truthfully and supersedes that one
+INVALIDATES:   The entry of 2026-11-09 on the bridge line is out of force; its statements on the permission class, the transcript read and the doctor stand as restated here
+               The envelope, its 64-character name cut, its closing-tag rewrite and its two mode words are those of Claude Code 2.1.319, checked the same on 2.1.321; a harness release that changes any of them, or begins to require a from address, holds every notice until the bridge follows
+               The receiving session sees the sender in from-name alone; what the harness shows as origin, and what a harness-level reply or receipt does without a from address, is undetermined
+               A hop-chain attribute was never tried alone; the harness parse treats it as optional
+               Delivery of this exact field set is on file for a hand-written sender (recon repro-bridge-hold, corrected isolation, rows i and i2, bypass receiver); the compiled bridge's two live runs on test-peer and test-peer-2 are on file through a review summary, not as pasted lines
+               A class read before the transcript was re-resolved is kept until the next frame's tail read, so a mode change in that window is attested one frame late
+               The real token path of a hook-started bridge is unverified live
+               The closing-tag tables follow Unicode 15; verified on macOS (Darwin 24.3.0) only
+EVIDENCE:      bridges/claude/src/inject.rs:46-81 and 164-180 at a0ebe3d; reviews spec-integration-build-estafette-093506 (finding 2); recon reports compat-bridge, resolve-bridge-wire-line, repro-bridge-hold
+
+## 2026-11-10 → 2026-11-10 — core names n0-future =0.3.2 as a direct dependency beyond the spec's manifest
+KIND:          runnable
+FROM → TO:     The manifest of spec 3.2 (spec:486-504), which lists no stream crate → `core/Cargo.toml` declares `n0-future = "=0.3.2"` since 01e88d0 (2026-10-28) and takes three items through it: the `Stream` trait, `StreamExt::next` and `join_all`, to read gossip and watcher streams and to run the dials of a broadcast and a rebind at once
+WHY:           iroh 1.3.0 and the vendored iroh-gossip hand out their events as streams of the futures-lite kind and name n0-future themselves; no crate the spec pins re-exports the trait or a join over a list (tokio's JoinSet differs: it spawns tasks), so reading those streams needs one of n0-future, futures-lite or tokio-stream, each equally absent from the manifest; n0-future is the one already in the lock through iroh, so the direct edge adds no package (spec:450 call, made by the unit that first read a gossip stream and recorded here after the whole-branch review found it unrecorded; lead decision 2026-11-10, closest alternative: drop the edge and hand-write the three items)
+INVALIDATES:   spec 3.2's manifest no longer lists every direct dependency of core; the pins and the patch of spec 2.12 stand
+               The lock holds n0-future 0.3.2 for nine other packages, iroh 1.3.0 and the vendored iroh-gossip among them; that the lock would change in exactly one edge was read from the lock, not resolved
+               Maintainer n0 (n0-computer), licence MIT OR Apache-2.0, released 2026-01-07, named by no RustSec advisory at the database head of 2026-11-09; its own suite (6 unit tests, 1 doc test) passed on rustc 1.91.1, not on the pinned 1.99.1
+               The crate is named in five files of core with no single module in front of it; the fix round of the whole-branch review puts it behind one
+               An iroh release that drops or replaces n0-future leaves core holding the edge alone
+EVIDENCE:      core/Cargo.toml:20 at 01e88d0; review spec-integration-build-estafette-093508 (finding 1); recon report dep-n0-future (Result PASS)

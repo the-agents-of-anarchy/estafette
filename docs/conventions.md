@@ -294,3 +294,10 @@ do      create the server for one run and tear it down with the recipes as soon 
 never   hold a server for a later run; leave one up while gating, reviewing, writing a report or waiting on an agent; count the 24-hour deadline or the backstop as the teardown
 why     A server waiting between runs burns the owner's money; the deadline and the backstop are the last resort, not the plan.
 ground  owner ruling 2026-11-10T00:38 ("no idle server standby is allowed. you're waiting and burning my money here.")
+
+### shorten-the-critical-path
+when    planning, dispatching or waking while Goal 1 is open
+do      look at every wake for critical-path work that can start now on code no running unit touches — reviews of frozen code, briefs for the next unit — and start it; land every product-code change before the final acceptance run; keep every prescribed check, run early on the frozen part and again on the delta at the final sha; record each reordering as a decision naming what it leaves to the final sha
+never   skip, narrow or merge away a check to save time; count an early pass for code that changed since; leave a wait on the critical path while startable work exists
+why     The owner pays for wall time; a check dropped for speed covers an integrity flaw, the one thing the ruling forbids.
+ground  owner ruling 2026-11-10T11:2x ("continually find ways to reduce completion wall time while introducing or covering zero project integrity flaws")
