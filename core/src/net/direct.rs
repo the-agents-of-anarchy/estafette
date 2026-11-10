@@ -104,12 +104,15 @@ impl AcceptedConnections {
         held.entry(card).or_default().push(accepted);
     }
 
-    /// Reads what the connection from the card has heard every hearing sample interval, for as long as it is held.
+    /// Reads what the connection from the card has heard every hearing sample interval until it closes, then forgets it.
     async fn follow_hearing(self, card: wire::PublicKey, connection: Connection) {
         loop {
-            sleep(HEARING_SAMPLE_INTERVAL).await;
-            self.note_hearing(card, &connection);
+            tokio::select! {
+                _closed = connection.closed() => break,
+                () = sleep(HEARING_SAMPLE_INTERVAL) => self.note_hearing(card, &connection),
+            }
         }
+        self.forget(card, &connection);
     }
 
     /// Takes now as the last time the connection from the card heard from its peer, when it received a datagram since its last reading.
@@ -275,7 +278,7 @@ impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let sender = *connection.remote_id().as_bytes();
         self.shared.accepted.hold(sender, &connection);
-        let hearing = tokio::spawn(
+        tokio::spawn(
             self.shared
                 .accepted
                 .clone()
@@ -288,8 +291,6 @@ impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
                 shared.serve_stream(sender, &arrived_on, send, recv).await;
             });
         }
-        hearing.abort();
-        self.shared.accepted.forget(sender, &connection);
         Ok(())
     }
 }
@@ -1238,6 +1239,54 @@ mod tests {
             vanished.iter().map(Connection::close_reason).collect::<Vec<_>>()
         );
         assert_eq!(probed_on_the_kept_connection.unwrap().nonce, PROBE_NONCE);
+    }
+
+    const SAMPLERS_DONE_WAIT: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn spec_3_8_an_accept_a_router_shutdown_cuts_short_holds_its_connection_no_longer_than_the_connection_lives()
+     {
+        let server_node = bind_node(SERVER_SEED).await;
+        let client_node = bind_node(CLIENT_SEED).await;
+        client_node.replace_address(server_node.endpoint().addr());
+        let host = RecordingHost::with_card(card_of(SERVER_SEED));
+        let server = Arc::new(DirectServer::new(keys(), host.clone()));
+        let (dialed, accepted) = tokio::join!(
+            client_node
+                .endpoint()
+                .connect(server_node.endpoint().id(), DIRECT_ALPN),
+            async {
+                let incoming = server_node.endpoint().accept().await.unwrap();
+                incoming.accept().unwrap().await.unwrap()
+            }
+        );
+        let serving = tokio::spawn({
+            let server = Arc::clone(&server);
+            async move { server.accept(accepted).await }
+        });
+        let dialed = dialed.unwrap();
+        raw_exchange(&dialed, &sealed_message_to_server(&keys()))
+            .await
+            .unwrap();
+
+        serving.abort();
+        drop(serving.await);
+        dialed.close(VarInt::from_u32(0), b"");
+        let all_forgotten = timeout(SAMPLERS_DONE_WAIT, async {
+            while !connections_accepted_from(&host, card_of(CLIENT_SEED)).is_empty() {
+                tokio::time::sleep(HEARING_SAMPLE_INTERVAL).await;
+            }
+        })
+        .await;
+
+        assert!(
+            all_forgotten.is_ok(),
+            "connections still held after the accept was cut short and the connection closed: {:?}",
+            connections_accepted_from(&host, card_of(CLIENT_SEED))
+                .iter()
+                .map(Connection::close_reason)
+                .collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]
