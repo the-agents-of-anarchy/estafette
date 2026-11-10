@@ -58,7 +58,7 @@ test:
 fmt:
     cargo fmt --all
 
-[doc("Run the acceptance tests of spec 3.15: every core acceptance target, the one-machine ones and the lab target against the live lab host and a second host it may kill, brought up first by just remote::infrastructure, then the bridge lab target, skipped with a line naming the unset ESTAFETTE_ACCEPTANCE_CLAUDE_* variables; exits with the first non-zero code; both servers are torn down by the run-hetzner-lab skill once it exits; set ESTAFETTE_ACCEPTANCE_RUN_RECORDS to a directory to keep every member run record there under the test name, secrets replaced by <redacted>")]
+[doc("Run the acceptance tests of spec 3.15: every core acceptance target, the one-machine ones and the lab target against the live lab host and a second host it may kill, brought up first by just remote::infrastructure; the lab target starts members on both servers and on this machine, stops, starts and kills the second host, and drops UDP between the second host's server and this machine while test 3 runs, deleting the drops when it ends; then the bridge lab target, skipped with a line naming the unset ESTAFETTE_ACCEPTANCE_CLAUDE_* variables; exits with the first non-zero code; both servers are torn down by the run-hetzner-lab skill once it exits; set ESTAFETTE_ACCEPTANCE_RUN_RECORDS to a directory to keep every member run record there under the test name, secrets replaced by <redacted>")]
 [group('verify')]
 acceptance:
     #!/usr/bin/env bash
