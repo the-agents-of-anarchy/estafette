@@ -51,7 +51,6 @@ pub enum ErrorCode {
 pub enum ExitStatus {
     Success,
     Failure,
-    UsageError,
     DoctorFoundFailedCheck,
 }
 
@@ -60,7 +59,6 @@ impl From<ExitStatus> for u8 {
         match status {
             ExitStatus::Success => 0,
             ExitStatus::Failure => 1,
-            ExitStatus::UsageError => 2,
             ExitStatus::DoctorFoundFailedCheck => 3,
         }
     }
@@ -269,7 +267,6 @@ mod tests {
         let expected = [
             (ExitStatus::Success, 0_u8),
             (ExitStatus::Failure, 1),
-            (ExitStatus::UsageError, 2),
             (ExitStatus::DoctorFoundFailedCheck, 3),
         ];
         for (status, code) in expected {

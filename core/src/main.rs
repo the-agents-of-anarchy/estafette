@@ -660,6 +660,21 @@ mod tests {
     }
 
     #[test]
+    fn spec_3_13_a_malformed_invitation_or_host_line_is_a_usage_error_that_exits_2() {
+        const MALFORMED: &str = "not-an-invitation";
+        const USAGE_ERROR_EXIT_CODE: i32 = 2;
+        for arguments in [
+            &["estafette", "network", "join", MALFORMED][..],
+            &["estafette", "network", "add-host", "lab", MALFORMED][..],
+        ] {
+            let refusal =
+                EstafetteArguments::try_parse_from(arguments.iter().copied()).unwrap_err();
+
+            assert_eq!(refusal.exit_code(), USAGE_ERROR_EXIT_CODE, "{arguments:?}");
+        }
+    }
+
+    #[test]
     fn spec_3_9_a_session_that_stopped_exits_zero_and_one_ended_at_once_by_a_second_signal_exits_one()
      {
         let expected = [
