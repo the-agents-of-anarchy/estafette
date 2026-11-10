@@ -15,6 +15,7 @@ use crate::lab_server::{KillableHostServer, LabServer};
 use crate::live_host::live_host_to_itself;
 use crate::live_network::LiveNetwork;
 use crate::mcp_server::McpServer;
+use crate::payload_placeholders::wall_clock_ms;
 use crate::scratch_machine::{Card, ScratchMachine};
 use crate::server_member::ServerMember;
 use crate::tail::Tail;
@@ -76,6 +77,10 @@ const HOMING_ATTEMPTS: usize = 3;
 const SPEC_DELIVERED_WITHIN_OF_THE_KILL: Duration = Duration::from_secs(60);
 /// How many rebinds a member may record after the kill: none twice (spec 3.15 test 23).
 const SPEC_MOST_REBINDS_AFTER_THE_KILL: usize = 1;
+/// The column of a presence line holding its seq.
+const PRESENCE_SEQ_COLUMN: usize = 7;
+/// How soon after its own first Presence a new member must list every present member, in milliseconds (spec 3.15 test 25, the observer wait of spec 3.14).
+const SPEC_OBSERVER_WAIT_MS: u64 = 3000;
 
 /// The base followed by letters drawn from the clock and the process, so the handle and the card named for it are free on the live network and on every lab server whatever earlier runs left.
 fn fresh_handle(base: &str) -> String {
@@ -608,4 +613,82 @@ fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_othe
             .all(|(_handle, count)| *count <= SPEC_MOST_REBINDS_AFTER_THE_KILL),
         "{rebinds:?}"
     );
+}
+
+/// The live host's node id as the network configuration writes it.
+fn live_host_id(network: &LiveNetwork) -> String {
+    render_public_key(&network.host_address().id)
+}
+
+/// The seq of a `tail` line when it is a presence of the card, the sender's clock in milliseconds at the send for a card's first Presence (spec 3.8).
+fn presence_seq_of(line: &str, card: &str) -> Option<u64> {
+    let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
+    if columns.first() != Some(&PRESENCE_KIND) || columns.get(PRESENCE_CARD_COLUMN) != Some(&card) {
+        return None;
+    }
+    columns.get(PRESENCE_SEQ_COLUMN)?.parse().ok()
+}
+
+/// Spec 3.15 test 25: with the killable host killed after two members joined, a member joined by the invitation, which names the live host alone, lists both online within 3000 ms of its first Presence, timed on this machine's clock from that Presence's seq.
+#[test]
+fn spec_3_15_test_25_with_one_host_dead_a_member_invited_through_the_live_host_lists_every_present_member_within_the_observer_wait()
+ {
+    let _live_host = live_host_to_itself();
+    let network = LiveNetwork::from_environment();
+    let killable = KillableHostServer::from_environment();
+    let doomed = KillableHost::from_environment();
+    let observer = LabMachine::joined("t25-tail", &network);
+    let tail = timed("tail joined through the live host", || {
+        tail_of(&observer, &network)
+    });
+    timed("the killable host serving", || {
+        killable_host_serving(&killable, doomed.address(), &tail);
+    });
+    let present = timed("amy and bob claimed through the live host", || {
+        [
+            Member::joined_by_invitation(&network, "amy"),
+            Member::joined_by_invitation(&network, "bob"),
+        ]
+    });
+    timed("the killable host killed", || doomed.kill());
+
+    let joining = Instant::now();
+    let mut newcomer = timed("cid joins by the invitation", || {
+        Member::joined_by_invitation(&network, "cid")
+    });
+    let newcomer_card = newcomer.card_key();
+    let (first_presence, _after) = timed("tail prints cid's first presence", || {
+        tail.first_line_after(joining, ANNOUNCEMENT_WAIT, |line| {
+            presence_seq_of(line, &newcomer_card).is_some()
+        })
+    });
+    let first_presence_sent_ms = presence_seq_of(&first_presence, &newcomer_card).unwrap();
+    let deadline_ms = first_presence_sent_ms
+        .checked_add(SPEC_OBSERVER_WAIT_MS)
+        .unwrap();
+    let mut listed_at_ms = Vec::new();
+    for member in &present {
+        timed(&format!("cid lists {} online", member.handle), || {
+            newcomer.server.peer_within(
+                &member.handle,
+                Duration::from_millis(deadline_ms.saturating_sub(wall_clock_ms())),
+                online,
+            )
+        });
+        listed_at_ms.push((member.handle.clone(), wall_clock_ms()));
+    }
+
+    let configured: Vec<String> = newcomer
+        .configured_hosts()
+        .into_iter()
+        .map(|host| host.id)
+        .collect();
+    assert_eq!(configured, [live_host_id(&network)]);
+    for (handle, at_ms) in listed_at_ms {
+        assert!(
+            at_ms <= deadline_ms,
+            "cid listed {handle} {} ms after the observer wait of its first presence",
+            at_ms.saturating_sub(deadline_ms)
+        );
+    }
 }
