@@ -16,6 +16,8 @@ const LIVE_HOST_SERVER_LABEL: &str = "live-host-server";
 const RELAY_ONLY_RECIPE: &str = "remote::relay-only-to-here";
 /// The recipe that deletes those drops, printing their counters.
 const RELAY_PATHS_RESTORED_RECIPE: &str = "remote::relay-paths-restored";
+/// The recipe that starts the network's host on a server, reusing a live one.
+const HOST_STARTED_RECIPE: &str = "remote::infrastructure";
 
 /// A lab server the acceptance gate brought up, reached through the remote recipes.
 pub struct LabServer {
@@ -99,6 +101,12 @@ impl KillableHostServer {
     /// The server itself, for members and paths on it.
     pub const fn server(&self) -> &LabServer {
         &self.server
+    }
+
+    /// Starts the host on the server unless it runs, with the identity and certificate it had.
+    #[track_caller]
+    pub fn start_host(&self) {
+        self.server.run(HOST_STARTED_RECIPE, &[], &[]);
     }
 }
 

@@ -1,13 +1,20 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::fs;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use data_encoding::HEXLOWER;
+use estafette::wire::HostAddr;
 use serde_json::{Value, json};
 
 use crate::inbox_client::InboxClient;
+use crate::killable_host::KillableHost;
 use crate::lab_machine::LabMachine;
 use crate::lab_server::{KillableHostServer, LabServer};
 use crate::live_host::live_host_to_itself;
 use crate::live_network::LiveNetwork;
+use crate::mcp_server::McpServer;
+use crate::scratch_machine::ScratchMachine;
 use crate::server_member::ServerMember;
+use crate::tail::Tail;
 use crate::timed_step::timed;
 
 /// How long a member may take to list a peer that just started as online.
@@ -30,6 +37,20 @@ const HANDLE_TAG_LETTERS: usize = 6;
 const ALPHABET_LENGTH: u64 = 26;
 /// The first letter a handle letter is drawn from.
 const FIRST_LETTER: u8 = b'a';
+/// The handle bases of the three members a test starts on this machine.
+const TRIO: [&str; 3] = ["amy", "bob", "cid"];
+/// How long the three members run with no host killed (spec 3.15 test 24).
+const SPEC_QUIET_RUN: Duration = Duration::from_secs(180);
+/// How a member's run record begins the line of a rebind (`NodeRecord::Rebinding`).
+const REBIND_RECORD_START: &str = "rebinding the endpoint";
+/// How long the killable host may take to send a record after its start began, the recipe's checks of the server included; chosen, not measured.
+const HOST_START_WAIT: Duration = Duration::from_secs(300);
+/// How `tail` begins the line of an infrastructure record (spec 3.13).
+const INFRASTRUCTURE_KIND: &str = "infrastructure";
+/// The column of an infrastructure line holding the host's node id.
+const RECORD_HOST_COLUMN: usize = 2;
+/// The column of an infrastructure line holding the record's ts.
+const RECORD_TS_COLUMN: usize = 5;
 
 /// The base followed by letters drawn from the clock and the process, so the handle and the card named for it are free on the live network and on every lab server whatever earlier runs left.
 fn fresh_handle(base: &str) -> String {
@@ -155,4 +176,134 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
     assert_eq!(frame["from"], json!(amy.handle()), "{frame}");
     assert_eq!(frame["body"], json!(SENT_BODY), "{frame}");
     assert_eq!(further, None);
+}
+
+/// A member serving a card on a scratch machine of this machine, its run record kept by the machine when asked.
+struct Member {
+    server: McpServer,
+    machine: ScratchMachine,
+    handle: String,
+}
+
+impl Member {
+    /// A member requesting a fresh handle from the base, on a machine joined to the network by the invitation.
+    #[track_caller]
+    fn joined_by_invitation(network: &LiveNetwork, base: &str) -> Self {
+        let handle = fresh_handle(base);
+        let machine = ScratchMachine::fresh(&handle, network.name());
+        network.join(&machine.directories());
+        Self::claimed_on(machine, handle)
+    }
+
+    /// Creates a card named for the handle and requesting it on the machine, then serves and claims it, requiring the claim to succeed.
+    #[track_caller]
+    fn claimed_on(machine: ScratchMachine, handle: String) -> Self {
+        let card = machine.create_card(&handle, &handle);
+        let mut server = McpServer::handshaken(machine.spawn_mcp_server());
+        let claim = server.call("init", &json!({ "card": card.name }));
+        assert_eq!(claim["ok"], json!(true), "{claim}");
+        Self {
+            server,
+            machine,
+            handle,
+        }
+    }
+
+    /// How many rebinds the member's run record names so far, read from a redacted copy kept for the count and removed after it.
+    fn rebinds_recorded(&self) -> usize {
+        let copies = std::env::temp_dir().join(format!(
+            "ea-{}-{}-rebind-count",
+            std::process::id(),
+            self.handle
+        ));
+        let kept = self.machine.keep_run_records(&copies).unwrap();
+        let rebinds = kept
+            .iter()
+            .map(|record| {
+                fs::read_to_string(record)
+                    .unwrap()
+                    .lines()
+                    .filter(|line| line.starts_with(REBIND_RECORD_START))
+                    .count()
+            })
+            .sum();
+        drop(fs::remove_dir_all(&copies));
+        rebinds
+    }
+}
+
+/// A `tail` of the network on the observer's machine, returned once it printed its first payload.
+#[track_caller]
+fn tail_of(observer: &LabMachine, network: &LiveNetwork) -> Tail {
+    let mut command = observer.command();
+    command.args(["tail", network.name()]);
+    Tail::start(command)
+}
+
+/// The host's node id as `tail` and the network configuration write it.
+fn host_id(host: &HostAddr) -> String {
+    HEXLOWER.encode(&host.id)
+}
+
+/// The `ts` of a `tail` line when it is an infrastructure record of the host.
+fn record_ts_of(line: &str, host: &str) -> Option<u64> {
+    let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
+    if columns.first() != Some(&INFRASTRUCTURE_KIND)
+        || columns.get(RECORD_HOST_COLUMN) != Some(&host)
+    {
+        return None;
+    }
+    columns.get(RECORD_TS_COLUMN)?.parse().ok()
+}
+
+/// Starts the killable host unless it runs and waits for the tail to print a record of it sent after the start began.
+#[track_caller]
+fn killable_host_serving(killable: &KillableHostServer, host: &HostAddr, tail: &Tail) {
+    let starting = Instant::now();
+    killable.start_host();
+    tail.first_line_after(starting, HOST_START_WAIT, |line| {
+        record_ts_of(line, &host_id(host)).is_some()
+    });
+}
+
+/// Spec 3.15 test 24: three members joined by the invitation run 180 s with both hosts serving and none killed; by the end each still lists the other two online and no member's run record names a rebind.
+#[test]
+fn spec_3_15_test_24_three_members_running_180_s_with_no_host_killed_never_rebind() {
+    let _live_host = live_host_to_itself();
+    let network = LiveNetwork::from_environment();
+    let killable = KillableHostServer::from_environment();
+    let killable_host = KillableHost::from_environment();
+    let observer = LabMachine::joined("t24-tail", &network);
+    let tail = timed("tail joined through the live host", || {
+        tail_of(&observer, &network)
+    });
+    timed("the killable host serving", || {
+        killable_host_serving(&killable, killable_host.address(), &tail);
+    });
+    let mut trio: Vec<Member> = timed("three members claimed through the live host", || {
+        TRIO.iter()
+            .map(|base| Member::joined_by_invitation(&network, base))
+            .collect()
+    });
+
+    timed("three members run for 180 s with no host killed", || {
+        std::thread::sleep(SPEC_QUIET_RUN);
+    });
+    let handles: Vec<String> = trio.iter().map(|member| member.handle.clone()).collect();
+    for member in &mut trio {
+        for other in handles.iter().filter(|other| **other != member.handle) {
+            timed(&format!("{} lists {other} online", member.handle), || {
+                member.server.peer_within(other, PRESENCE_WAIT, online)
+            });
+        }
+    }
+    let rebinds: Vec<(String, usize)> = trio
+        .iter()
+        .map(|member| (member.handle.clone(), member.rebinds_recorded()))
+        .collect();
+
+    assert!(
+        rebinds.iter().all(|(_handle, count)| *count == 0),
+        "{rebinds:?}"
+    );
 }
