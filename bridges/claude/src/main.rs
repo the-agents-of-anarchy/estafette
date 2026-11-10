@@ -974,8 +974,6 @@ mod tests {
             id: "id".to_owned(),
             from: from.to_owned(),
             body: body.to_owned(),
-            sent_at: 0,
-            received_at: 0,
         }
     }
 

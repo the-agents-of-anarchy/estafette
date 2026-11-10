@@ -17,8 +17,6 @@ pub struct InboxFrame {
     pub id: String,
     pub from: String,
     pub body: String,
-    pub sent_at: u64,
-    pub received_at: u64,
 }
 
 #[derive(Serialize)]
@@ -207,20 +205,6 @@ mod tests {
         ended_with: InboxClientError,
     }
 
-    const TEST_MILLIS_PER_SEQ: u64 = 1000;
-    const TEST_SENT_AT_OFFSET: u64 = 1;
-    const TEST_RECEIVED_AT_OFFSET: u64 = 2;
-
-    fn sent_at_of(seq: u64) -> u64 {
-        seq.saturating_mul(TEST_MILLIS_PER_SEQ)
-            .saturating_add(TEST_SENT_AT_OFFSET)
-    }
-
-    fn received_at_of(seq: u64) -> u64 {
-        seq.saturating_mul(TEST_MILLIS_PER_SEQ)
-            .saturating_add(TEST_RECEIVED_AT_OFFSET)
-    }
-
     enum BrokenOperation {
         Write,
         ReadAfterReplies,
@@ -299,9 +283,7 @@ mod tests {
 
     fn frame_line(seq: u64) -> String {
         format!(
-            "{{\"seq\":{seq},\"id\":\"id-{seq}\",\"from\":\"from-{seq}\",\"body\":\"body {seq}\",\"sent_at\":{},\"received_at\":{}}}\n",
-            sent_at_of(seq),
-            received_at_of(seq)
+            "{{\"seq\":{seq},\"id\":\"id-{seq}\",\"from\":\"from-{seq}\",\"body\":\"body {seq}\"}}\n"
         )
     }
 
@@ -311,8 +293,6 @@ mod tests {
             id: format!("id-{seq}"),
             from: format!("from-{seq}"),
             body: format!("body {seq}"),
-            sent_at: sent_at_of(seq),
-            received_at: received_at_of(seq),
         }
     }
 

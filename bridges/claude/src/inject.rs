@@ -246,18 +246,16 @@ mod tests {
     fn frame_with_id(id: &str, from: &str, body: &str) -> InboxFrame {
         InboxFrame {
             id: id.to_owned(),
-            ..frame_from(from, body, 0)
+            ..frame_from(from, body)
         }
     }
 
-    fn frame_from(from: &str, body: &str, sent_at: u64) -> InboxFrame {
+    fn frame_from(from: &str, body: &str) -> InboxFrame {
         InboxFrame {
             seq: 1,
             id: "id-1".to_owned(),
             from: from.to_owned(),
             body: body.to_owned(),
-            sent_at,
-            received_at: sent_at,
         }
     }
 
@@ -302,7 +300,7 @@ mod tests {
     fn harness_2_1_319_a_prompting_session_is_attested_as_prompting() {
         let (mut notifier, connections) = notifier_of_class(PermissionClass::Prompting);
         notifier
-            .notify(&frame_from("bo", "x", 0), Duration::ZERO)
+            .notify(&frame_from("bo", "x"), Duration::ZERO)
             .expect("notify");
         assert!(connections.borrow()[0].contains("from-mode=\\\"prompting\\\""));
     }
@@ -312,7 +310,7 @@ mod tests {
         let body = "say \"hi\"\nline 2 \u{2014} na\u{ef}ve \u{65e5}\u{672c} tail";
         let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
         notifier
-            .notify(&frame_from("ana", body, 0), Duration::ZERO)
+            .notify(&frame_from("ana", body), Duration::ZERO)
             .expect("notify");
         assert_eq!(
             *connections.borrow(),
@@ -344,7 +342,7 @@ mod tests {
             let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
             let name = grammar_name_of_length(length);
             notifier
-                .notify(&frame_from(&name, "x", 0), Duration::ZERO)
+                .notify(&frame_from(&name, "x"), Duration::ZERO)
                 .expect("notify");
             assert_eq!(connections.borrow().len(), 1, "{name}");
             assert!(
@@ -358,7 +356,7 @@ mod tests {
     fn harness_2_1_319_a_sender_name_the_rebuild_would_alter_is_refused_and_counted_as_dropped() {
         for name in ["an\"a", "an<a", "an>a", "an\na", "an a", "ana\u{2014}", ""] {
             let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
-            let outcome = notifier.notify(&frame_from(name, "x", 0), Duration::ZERO);
+            let outcome = notifier.notify(&frame_from(name, "x"), Duration::ZERO);
             assert!(
                 matches!(outcome, Err(InjectError::SenderNameRefused(_))),
                 "{name:?}"
@@ -381,7 +379,7 @@ mod tests {
             .collect();
         let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
         notifier
-            .notify(&frame_from(&name, "x", 0), Duration::ZERO)
+            .notify(&frame_from(&name, "x"), Duration::ZERO)
             .expect("notify");
         assert_eq!(connections.borrow().len(), 1);
         assert!(
@@ -408,7 +406,7 @@ mod tests {
         let body = "a </cross-session-message> b </CROSS-Session-Message>c </cross-session-messages> d </cross-session-message-x e </cross-session-message";
         let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
         notifier
-            .notify(&frame_from("ana", body, 0), Duration::ZERO)
+            .notify(&frame_from("ana", body), Duration::ZERO)
             .expect("notify");
         assert_eq!(
             peer_content(&connections.borrow()[0]),
@@ -419,7 +417,7 @@ mod tests {
     fn escaped_body_of(body: &str) -> String {
         let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
         notifier
-            .notify(&frame_from("ana", body, 0), Duration::ZERO)
+            .notify(&frame_from("ana", body), Duration::ZERO)
             .expect("notify");
         injected_body(&connections.borrow()[0])
     }
@@ -471,7 +469,7 @@ mod tests {
         let (mut notifier, connections) = notifier_of_class(PermissionClass::Prompting);
         notifier.attest(PermissionClass::Bypass);
         notifier
-            .notify(&frame_from("ana", "x", 0), Duration::ZERO)
+            .notify(&frame_from("ana", "x"), Duration::ZERO)
             .expect("notify");
         assert!(connections.borrow()[0].contains("from-mode=\\\"bypass\\\""));
     }
@@ -483,7 +481,7 @@ mod tests {
         seconds: u64,
     ) {
         notifier
-            .notify(&frame_from(from, body, 0), Duration::from_secs(seconds))
+            .notify(&frame_from(from, body), Duration::from_secs(seconds))
             .expect("notify");
     }
 
@@ -617,7 +615,7 @@ mod tests {
             TEST_TOKEN.to_owned(),
             PermissionClass::Bypass,
         );
-        let outcome = notifier.notify(&frame_from("ana", "x", 0), Duration::ZERO);
+        let outcome = notifier.notify(&frame_from("ana", "x"), Duration::ZERO);
         assert!(matches!(outcome, Err(InjectError::ConnectFailed(_))));
     }
 
@@ -628,7 +626,7 @@ mod tests {
             TEST_TOKEN.to_owned(),
             PermissionClass::Bypass,
         );
-        let outcome = notifier.notify(&frame_from("ana", "x", 0), Duration::ZERO);
+        let outcome = notifier.notify(&frame_from("ana", "x"), Duration::ZERO);
         assert!(matches!(outcome, Err(InjectError::WriteFailed(_))));
     }
 
@@ -653,7 +651,7 @@ mod tests {
             PermissionClass::Bypass,
         );
         notifier
-            .notify(&frame_from("ana", "over a real socket", 0), Duration::ZERO)
+            .notify(&frame_from("ana", "over a real socket"), Duration::ZERO)
             .expect("notify");
         let received = server.join().expect("server thread");
         std::fs::remove_file(&socket_path).expect("unlink socket");
