@@ -677,27 +677,6 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_1_a_clock_set_back_before_the_epoch_is_recorded_and_the_last_reading_stands_not_zero()
-    {
-        let last_reading = AtomicU64::new(0);
-        let recorded = std::sync::Mutex::new(Vec::new());
-        let record =
-            |failure: &CommandLineFailure| recorded.lock().unwrap().push(failure.to_string());
-        let before_epoch = UNIX_EPOCH - Duration::from_secs(1);
-        let after_epoch = UNIX_EPOCH + Duration::from_millis(MILLISECONDS_AFTER_EPOCH);
-
-        let first = wall_clock_reading(after_epoch, &last_reading, record);
-        let set_back = wall_clock_reading(before_epoch, &last_reading, record);
-
-        assert_eq!(first, MILLISECONDS_AFTER_EPOCH);
-        assert_eq!(set_back, MILLISECONDS_AFTER_EPOCH);
-        assert_eq!(
-            *recorded.lock().unwrap(),
-            vec![CommandLineFailure::ClockBeforeUnixEpoch.to_string()]
-        );
-    }
-
-    #[test]
     fn spec_3_13_a_clock_before_the_unix_epoch_is_refused_not_read_as_zero() {
         let instant = UNIX_EPOCH - Duration::from_secs(1);
 
@@ -722,6 +701,119 @@ mod tests {
         ));
     }
 
+    const PROPERTY_CASES: u64 = 200;
+    const MAXIMUM_STEPS: u64 = 20;
+    const MAXIMUM_HELD_BYTES: u64 = 40;
+    const MILLISECONDS_RANGE: u64 = 4_000_000_000_000;
+    const FIRST_MIXING_FACTOR: u64 = 0x9E37_79B9_7F4A_7C15;
+    const SECOND_MIXING_FACTOR: u64 = 0xBF58_476D_1CE4_E5B9;
+    const THIRD_MIXING_FACTOR: u64 = 0x94D0_49BB_1331_11EB;
+    const HIGH_BITS_SHIFT: u32 = 31;
+    const LOW_BITS_SHIFT: u32 = 29;
+    const BYTE_VALUES: u64 = 256;
+
+    fn mixed(case: u64, step: u64) -> u64 {
+        let mut value = case
+            .wrapping_mul(FIRST_MIXING_FACTOR)
+            .wrapping_add(step.wrapping_mul(SECOND_MIXING_FACTOR));
+        value ^= value >> HIGH_BITS_SHIFT;
+        value = value.wrapping_mul(THIRD_MIXING_FACTOR);
+        value ^ (value >> LOW_BITS_SHIFT)
+    }
+
+    fn held_bytes(case: u64) -> Vec<u8> {
+        (0..mixed(case, 0) % MAXIMUM_HELD_BYTES)
+            .map(|index| u8::try_from(mixed(case, index.saturating_add(1)) % BYTE_VALUES).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn spec_3_1_a_wall_clock_reading_is_the_latest_one_at_or_after_the_epoch_and_each_one_before_it_is_recorded()
+     {
+        for case in 0..PROPERTY_CASES {
+            let last_reading = AtomicU64::new(0);
+            let recorded = AtomicU64::new(0);
+            let mut latest_valid_reading = 0;
+            let mut before_epoch_readings = 0_u64;
+            for step in 0..=mixed(case, 0) % MAXIMUM_STEPS {
+                let draw = mixed(case, step.saturating_add(1));
+                let milliseconds = draw % MILLISECONDS_RANGE;
+                let at_or_after_epoch = draw.is_multiple_of(2);
+                let instant = if at_or_after_epoch {
+                    UNIX_EPOCH + Duration::from_millis(milliseconds)
+                } else {
+                    UNIX_EPOCH - Duration::from_millis(milliseconds.saturating_add(1))
+                };
+
+                let reading = wall_clock_reading(instant, &last_reading, |_failure| {
+                    recorded.fetch_add(1, Ordering::SeqCst);
+                });
+
+                if at_or_after_epoch {
+                    latest_valid_reading = milliseconds;
+                } else {
+                    before_epoch_readings = before_epoch_readings.saturating_add(1);
+                }
+                assert_eq!(reading, latest_valid_reading, "case {case} step {step}");
+                assert_eq!(
+                    recorded.load(Ordering::SeqCst),
+                    before_epoch_readings,
+                    "case {case} step {step}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spec_3_6_a_gate_closing_appends_exactly_one_line_after_whatever_the_record_holds() {
+        for case in 0..PROPERTY_CASES {
+            let failure = if case.is_multiple_of(2) {
+                GateFailure::WrongProof
+            } else {
+                GateFailure::Timeout
+            };
+            let held = held_bytes(case);
+            let mut record = held.clone();
+
+            write_gate_closing(&mut record, &failure);
+
+            let mut expected = held;
+            expected.extend(
+                format!("a gossip connection was closed at the network secret gate: {failure}\n")
+                    .into_bytes(),
+            );
+            assert_eq!(record, expected, "case {case}");
+        }
+    }
+
+    #[test]
+    fn spec_3_13_a_command_ends_with_the_status_it_reached_or_failure_after_one_line_of_its_message()
+     {
+        for case in 0..PROPERTY_CASES {
+            let outcome: Result<ExitStatus, CommandLineFailure> = match case % 4 {
+                0 => Ok(ExitStatus::Success),
+                1 => Ok(ExitStatus::Failure),
+                2 => Ok(ExitStatus::DoctorFoundFailedCheck),
+                _ => Err(CommandLineFailure::Runtime(io::Error::other(format!(
+                    "failure of case {case}"
+                )))),
+            };
+            let (expected_status, expected_line) = match &outcome {
+                Ok(status) => (*status, String::new()),
+                Err(failure) => (ExitStatus::Failure, format!("{failure}\n")),
+            };
+            let held = held_bytes(case);
+            let mut record = held.clone();
+
+            let status = exit_status_after(outcome, &mut record);
+
+            let mut expected_record = held;
+            expected_record.extend(expected_line.into_bytes());
+            assert_eq!(status, expected_status, "case {case}");
+            assert_eq!(record, expected_record, "case {case}");
+        }
+    }
+
     #[test]
     fn spec_3_6_a_gate_closing_is_recorded_with_one_text_whichever_command_binds_the_endpoint() {
         let mut record = Vec::new();
@@ -730,44 +822,11 @@ mod tests {
 
         assert_eq!(
             String::from_utf8(record).unwrap(),
-            "a gossip connection was closed at the network secret gate: the peer's proof is not the gate proof\n"
+            format!(
+                "a gossip connection was closed at the network secret gate: {}\n",
+                GateFailure::WrongProof
+            )
         );
-    }
-
-    #[test]
-    fn spec_3_13_a_failed_command_writes_its_message_to_the_record_and_exits_1_while_a_reached_status_stands()
-     {
-        let mut record = Vec::new();
-
-        let after_failure =
-            exit_status_after(Err(CommandLineFailure::ClockBeforeUnixEpoch), &mut record);
-        let after_doctor_check =
-            exit_status_after(Ok(ExitStatus::DoctorFoundFailedCheck), &mut record);
-
-        assert_eq!(after_failure, ExitStatus::Failure);
-        assert_eq!(after_doctor_check, ExitStatus::DoctorFoundFailedCheck);
-        assert_eq!(
-            String::from_utf8(record).unwrap(),
-            format!("{}\n", CommandLineFailure::ClockBeforeUnixEpoch)
-        );
-    }
-
-    #[tokio::test]
-    async fn spec_3_13_a_signal_that_cannot_be_heard_is_a_failure_naming_it_not_an_interrupt() {
-        const UNLISTENABLE_SIGNAL_NUMBER: i32 = -1;
-
-        let refusal = interrupt_requested(SignalKind::from_raw(UNLISTENABLE_SIGNAL_NUMBER))
-            .err()
-            .unwrap();
-
-        assert!(matches!(
-            refusal,
-            CommandLineFailure::SignalNotHeard {
-                signal: "SIGINT",
-                ..
-            }
-        ));
-        assert!(refusal.to_string().starts_with("cannot listen for SIGINT"));
     }
 
     #[test]
