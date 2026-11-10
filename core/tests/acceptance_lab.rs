@@ -291,7 +291,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
         );
     }
 
-    /// Spec 3.15 test 27: a host's earlier record with a `ts` below the last accepted leaves the saved host as the newer record left it.
+    /// Spec 3.15 test 27: a host's records with a `ts` below or equal to the last accepted leave the saved host as the accepted record left it.
     #[test]
     fn spec_3_15_test_27_a_replayed_infrastructure_record_with_a_ts_not_newer_than_the_last_accepted_is_dropped()
      {
@@ -299,13 +299,23 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
         let host = key(REPLAYED_HOST_SEED);
         let accepted_ts = wall_clock_seconds();
         let certificate = scene.network.certify(&host.public());
-        let earlier = sealed(
+        let replayed_below = sealed(
             scene.network.keys(),
             &host,
             infrastructure_record(
                 &host.public(),
                 RELAY_THE_HOST_LEFT,
                 accepted_ts.checked_sub(1).unwrap(),
+                certificate,
+            ),
+        );
+        let replayed_at_the_accepted_ts = sealed(
+            scene.network.keys(),
+            &host,
+            infrastructure_record(
+                &host.public(),
+                RELAY_THE_HOST_LEFT,
+                accepted_ts,
                 certificate,
             ),
         );
@@ -324,7 +334,8 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             .machine
             .hosts_once_named(&id_text(&host), ACCEPTANCE_WAIT);
 
-        scene.forger.broadcast(earlier);
+        scene.forger.broadcast(replayed_below);
+        scene.forger.broadcast(replayed_at_the_accepted_ts);
         let hosts = scene.hosts_after_marker(&key(REPLAY_MARKER_SEED));
 
         let saved = hosts.iter().find(|saved| saved.id == id_text(&host));
