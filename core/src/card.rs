@@ -9,6 +9,7 @@ use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser, Tag};
 use yaml_rust2::scanner::{Marker, TScalarStyle};
 
 const PUBLIC_MAX_BYTES: usize = 3072;
+/// The deepest nesting of mappings and sequences a member's JSON parser receives: `serde_json`'s recursion limit of 128 admits 127 levels.
 pub(crate) const PUBLIC_DEEPEST_NESTING: usize = 127;
 const JSON_QUOTE: u8 = b'"';
 const JSON_ESCAPE: u8 = b'\\';
@@ -482,7 +483,6 @@ pub(crate) fn is_card_public(bytes: &[u8]) -> bool {
     bytes.len() <= PUBLIC_MAX_BYTES
         && serde_json::from_slice::<ReceivedPublicMapping>(bytes).is_ok()
         && every_integer_fits_64_bits(bytes)
-        && json_nesting_depth(bytes) <= PUBLIC_DEEPEST_NESTING
 }
 
 /// A received `public` that is a JSON mapping in which no mapping, at any depth, names a key twice.
@@ -525,12 +525,8 @@ impl<'de> Visitor<'de> for UniqueKeys {
         Ok(())
     }
 
-    fn visit_f64<E: de::Error>(self, number: f64) -> Result<(), E> {
-        if number.is_finite() {
-            Ok(())
-        } else {
-            Err(E::custom(CardInvalid::NumberNotFinite))
-        }
+    fn visit_f64<E: de::Error>(self, _number: f64) -> Result<(), E> {
+        Ok(())
     }
 
     fn visit_str<E: de::Error>(self, _text: &str) -> Result<(), E> {
@@ -1257,6 +1253,17 @@ mod tests {
                 depth: PUBLIC_DEEPEST_NESTING + 1
             })
         );
+    }
+
+    #[test]
+    fn the_deepest_nesting_bound_is_the_deepest_the_json_parser_receives_spec_3_5() {
+        let nested = |depth: usize| format!("{}1{}", r#"{"a":"#.repeat(depth), "}".repeat(depth));
+
+        let at_bound = serde_json::from_str::<Value>(&nested(PUBLIC_DEEPEST_NESTING));
+        let one_deeper = serde_json::from_str::<Value>(&nested(PUBLIC_DEEPEST_NESTING + 1));
+
+        at_bound.unwrap();
+        one_deeper.unwrap_err();
     }
 
     #[test]
