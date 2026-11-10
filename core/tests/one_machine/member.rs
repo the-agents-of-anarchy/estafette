@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use serde_json::{Value, json};
 
-use crate::mcp_server::McpServer;
+use crate::mcp_server::{McpServer, PendingCall};
 use crate::scratch_machine::Card;
 use crate::scripted_node::ScriptedNode;
 
@@ -40,13 +40,26 @@ impl Member {
         self.server.call(tool, arguments)
     }
 
+    /// Writes the tool call without waiting for its answer.
+    pub fn start_call(&mut self, tool: &str, arguments: &Value) -> PendingCall {
+        self.server.start_call(tool, arguments)
+    }
+
+    /// The envelope the answer to the pending call carries.
+    pub fn answer(&self, call: &PendingCall) -> Value {
+        self.server.answer(call)
+    }
+
+    /// Sends the JSON-RPC request and returns the result its response carries.
+    pub fn request(&mut self, method: &str, params: &Value) -> Value {
+        self.server.request(method, params)
+    }
+
     /// Claims the card while the node admits this process's endpoint, requiring the claim to succeed, and returns the init envelope.
     pub fn init_through(&mut self, card: &Card, node: &ScriptedNode) -> Value {
-        let init = self
-            .server
-            .start_call("init", &json!({ "card": card.name }));
+        let init = self.start_call("init", &json!({ "card": card.name }));
         node.admit(loopback_address(card.id, &self.bound_udp_ports()));
-        let claim = self.server.answer(&init);
+        let claim = self.answer(&init);
         assert_eq!(claim["ok"], json!(true), "{claim}");
         claim
     }

@@ -558,3 +558,325 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         );
     }
 }
+
+#[cfg(test)]
+mod spec_3_15_with_one_member {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, Instant};
+
+    use estafette::crypto::{NetworkKeys, NetworkSecret};
+    use estafette::net::endpoint::GateFailure;
+    use estafette::payload::{open_response, seal_request};
+    use estafette::wire::{self, Message, Payload, Request, Response, Version};
+    use iroh::{EndpointAddr, EndpointId, SecretKey};
+    use iroh_gossip::api::Event;
+    use serde_json::{Value, json};
+
+    use crate::local_network::LocalNetwork;
+    use crate::member::{Member, loopback_address};
+    use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
+    use crate::payloads::presence_signed_by;
+    use crate::scripted_node::ScriptedNode;
+
+    const SPEC_SIMULTANEOUS_INIT_WINDOW: Duration = Duration::from_millis(100);
+    const SPEC_TOOL_NAMES: [&str; 6] =
+        ["list_cards", "init", "peers", "send", "broadcast", "inbox"];
+    const SPEC_GATE_TIMEOUT_WITH_SLACK: Duration = Duration::from_secs(5);
+    const SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK: Duration = Duration::from_secs(30);
+    const SPEC_MEMBER_JOIN_WAIT_WITH_SLACK: Duration = Duration::from_secs(10);
+    const LOOSE_SIDECAR_MODE: u32 = 0o644;
+    const ANY_BODY: &str = "the parser review is ready";
+    const FORGED_BODY: &str = "a message under a wrong mac";
+    const HONEST_BODY: &str = "a message under the network mac";
+    const ATTACKER_HANDLE: &str = "mallory";
+    const OUTSIDER_SECRET_BYTE: u8 = 77;
+    const MESSAGE_ID: wire::MessageId = [9; 16];
+    const PRESENCE_WAIT: Duration = Duration::from_secs(10);
+    const NOTHING_FURTHER_WAIT: Duration = Duration::from_millis(1000);
+    const POLL: Duration = Duration::from_millis(100);
+    const TRANSIENT_SOCKET_LIFETIME: Duration = Duration::from_millis(1000);
+
+    fn unclaimed() -> Value {
+        json!({ "card": null, "handle": null, "status": "unclaimed" })
+    }
+
+    fn every_tool_call(card: &str) -> [(&'static str, Value); 6] {
+        [
+            ("list_cards", json!({})),
+            ("init", json!({ "card": card })),
+            ("peers", json!({})),
+            ("send", json!({ "to": "nobody", "body": ANY_BODY })),
+            ("broadcast", json!({ "to": ["nobody"], "body": ANY_BODY })),
+            ("inbox", json!({})),
+        ]
+    }
+
+    fn listed_handles(member: &mut Member) -> Vec<Value> {
+        member.call("peers", &json!({}))["result"]["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|peer| peer["handle"].clone())
+            .collect()
+    }
+
+    fn message_to(card: &EndpointId, body: &str) -> Request {
+        Request::Message(Message {
+            v: Version::CURRENT,
+            id: MESSAGE_ID,
+            to: *card.as_bytes(),
+            handle: ATTACKER_HANDLE.to_owned(),
+            attached: false,
+            sent_at: wall_clock_ms(),
+            body: body.to_owned(),
+            mac: UNSET_MAC,
+        })
+    }
+
+    fn renamed_after_signing(keys: &NetworkKeys, sealed: &[u8], handle: &str) -> Vec<u8> {
+        let Payload::Presence(mut presence) = wire::decode::<Payload>(sealed).unwrap() else {
+            panic!("a sealed Presence decodes as a Presence");
+        };
+        handle.clone_into(&mut presence.handle);
+        presence.mac = UNSET_MAC;
+        presence.mac = *keys
+            .mac(&wire::encode(&Payload::Presence(presence.clone())).unwrap())
+            .as_bytes();
+        wire::encode(&Payload::Presence(presence)).unwrap()
+    }
+
+    fn count_beyond(count: &AtomicUsize, already: usize, within: Duration) -> usize {
+        let started = Instant::now();
+        while count.load(Ordering::SeqCst) <= already && started.elapsed() < within {
+            std::thread::sleep(POLL);
+        }
+        count.load(Ordering::SeqCst)
+    }
+
+    fn rebound_ports(member: &Member, before: &[u16], within: Duration) -> Vec<u16> {
+        let started = Instant::now();
+        loop {
+            let fresh = member.ipv4_udp_ports();
+            std::thread::sleep(TRANSIENT_SOCKET_LIFETIME);
+            let held: Vec<u16> = member
+                .ipv4_udp_ports()
+                .into_iter()
+                .filter(|port| fresh.contains(port) && !before.contains(port))
+                .collect();
+            if !held.is_empty() {
+                return held;
+            }
+            assert!(started.elapsed() < within, "the endpoint was not rebound");
+        }
+    }
+
+    #[test]
+    fn spec_3_15_test_6_two_processes_init_one_card_within_100_ms_and_exactly_one_claims_it() {
+        let network = LocalNetwork::create("t6");
+        let card = network.create_card("amy-card", "amy");
+        let mut first = network.start_member();
+        let mut second = network.start_member();
+
+        let first_written = Instant::now();
+        let first_init = first.start_call("init", &json!({ "card": card.name }));
+        let second_init = second.start_call("init", &json!({ "card": card.name }));
+        let between_inits = first_written.elapsed();
+        let answers = [first.answer(&first_init), second.answer(&second_init)];
+
+        assert!(between_inits < SPEC_SIMULTANEOUS_INIT_WINDOW);
+        let claimed: Vec<&Value> = answers
+            .iter()
+            .filter(|answer| answer["ok"] == json!(true))
+            .collect();
+        let refused: Vec<&Value> = answers
+            .iter()
+            .filter(|answer| answer["ok"] == json!(false))
+            .collect();
+        assert_eq!(claimed.len(), 1, "{answers:?}");
+        assert_eq!(claimed[0]["result"]["handle"], json!("amy"));
+        assert_eq!(claimed[0]["you"]["status"], json!("claimed"));
+        assert_eq!(refused.len(), 1, "{answers:?}");
+        assert_eq!(refused[0]["error"]["code"], json!("card_held"));
+        assert_eq!(refused[0]["you"], unclaimed());
+    }
+
+    #[test]
+    fn spec_3_15_test_9_a_message_with_a_wrong_mac_is_dropped_with_no_response() {
+        let network = LocalNetwork::create("t9");
+        let card = network.create_card("amy-card", "amy");
+        let attacker = network.stand_in_host();
+        let mut amy = network.start_member();
+        amy.init_through(&card, &attacker);
+        let outsider_keys =
+            NetworkKeys::derive(&NetworkSecret::from_bytes([OUTSIDER_SECRET_BYTE; 32]));
+
+        let forged_answer = attacker.request_directly(
+            card.id,
+            &seal_request(&outsider_keys, message_to(&card.id, FORGED_BODY)).unwrap(),
+        );
+        let honest_answer = attacker
+            .request_directly(
+                card.id,
+                &seal_request(network.keys(), message_to(&card.id, HONEST_BODY)).unwrap(),
+            )
+            .unwrap();
+        let inbox = amy.call("inbox", &json!({}));
+
+        assert_eq!(forged_answer, None);
+        let Response::MessageAck(ack) = open_response(network.keys(), &honest_answer).unwrap()
+        else {
+            panic!("a Message is answered by a MessageAck");
+        };
+        assert!(ack.accepted);
+        let bodies: Vec<&Value> = inbox["result"]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|message| &message["body"])
+            .collect();
+        assert_eq!(bodies, [&json!(HONEST_BODY)]);
+    }
+
+    #[test]
+    fn spec_3_15_test_10_a_gossip_payload_whose_signature_does_not_verify_against_its_card_is_dropped()
+     {
+        let network = LocalNetwork::create("t10");
+        let card = network.create_card("amy-card", "amy");
+        let host = network.stand_in_host();
+        let mut amy = network.start_member();
+        amy.init_through(&card, &host);
+        let forger = SecretKey::generate();
+        let honest = SecretKey::generate();
+        let nowhere = EndpointAddr::from_parts(forger.public(), []);
+
+        host.broadcast(renamed_after_signing(
+            network.keys(),
+            &presence_signed_by(network.keys(), &forger, "genuine", &nowhere),
+            "forged",
+        ));
+        host.broadcast(presence_signed_by(
+            network.keys(),
+            &honest,
+            "honest",
+            &nowhere,
+        ));
+
+        amy.peer_within("honest", PRESENCE_WAIT, |_honest| true);
+        std::thread::sleep(NOTHING_FURTHER_WAIT);
+        assert_eq!(listed_handles(&mut amy), [json!("honest")]);
+    }
+
+    #[test]
+    fn spec_3_15_test_12_the_mcp_tool_list_is_identical_before_and_after_init() {
+        let network = LocalNetwork::create("t12");
+        let card = network.create_card("amy-card", "amy");
+        let mut amy = network.start_member();
+
+        let before = amy.request("tools/list", &json!({}));
+        let claim = amy.call("init", &json!({ "card": card.name }));
+        let after = amy.request("tools/list", &json!({}));
+
+        assert_eq!(claim["ok"], json!(true), "{claim}");
+        assert_eq!(before, after);
+        let names: Vec<&str> = before["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, SPEC_TOOL_NAMES);
+    }
+
+    #[test]
+    fn spec_3_15_test_13_every_tool_response_contains_you_with_the_current_status_before_and_after_init()
+     {
+        let network = LocalNetwork::create("t13");
+        let card = network.create_card("amy-card", "amy");
+        let mut amy = network.start_member();
+        let claimed = json!({ "card": card.name, "handle": "amy", "status": "claimed" });
+
+        let before: Vec<Value> = every_tool_call("no-such-card")
+            .into_iter()
+            .map(|(tool, arguments)| amy.call(tool, &arguments))
+            .collect();
+        let claim = amy.call("init", &json!({ "card": card.name }));
+        let after: Vec<Value> = every_tool_call(&card.name)
+            .into_iter()
+            .map(|(tool, arguments)| amy.call(tool, &arguments))
+            .collect();
+
+        for envelope in &before {
+            assert_eq!(envelope["you"], unclaimed(), "{envelope}");
+        }
+        assert_eq!(claim["you"], claimed);
+        for envelope in &after {
+            assert_eq!(envelope["you"], claimed, "{envelope}");
+        }
+    }
+
+    #[test]
+    fn spec_3_15_test_16_a_card_whose_sidecar_has_permissions_0644_fails_init_with_sidecar_invalid()
+    {
+        let network = LocalNetwork::create("t16");
+        let card = network.create_card("amy-card", "amy");
+        network.set_sidecar_mode(&card, LOOSE_SIDECAR_MODE);
+        let mut amy = network.start_member();
+
+        let refused = amy.call("init", &json!({ "card": card.name }));
+
+        assert_eq!(refused["ok"], json!(false), "{refused}");
+        assert_eq!(refused["error"]["code"], json!("sidecar_invalid"));
+        assert_eq!(refused["you"], unclaimed());
+    }
+
+    #[test]
+    fn spec_3_15_test_21_a_node_with_the_topic_id_but_not_the_secret_gets_no_neighbor_and_no_payload_dialing_or_dialed()
+     {
+        let network = LocalNetwork::create("t21");
+        let card = network.create_card("amy-card", "amy");
+        network.add_host_that_never_answers();
+        let host = network.stand_in_host();
+        let mut amy = network.start_member();
+        amy.init_through(&card, &host);
+        let ports_before_rebind = amy.bound_udp_ports();
+        let outsider_key = SecretKey::generate();
+        let outsider_keys =
+            NetworkKeys::derive(&NetworkSecret::from_bytes([OUTSIDER_SECRET_BYTE; 32]));
+        let closings = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&closings);
+        let outsider = ScriptedNode::start(
+            outsider_key.clone(),
+            *outsider_keys.gate_key(),
+            network.topic(),
+            move |_closing: GateFailure| {
+                counted.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+
+        outsider.admit(loopback_address(card.id, &ports_before_rebind));
+        let closed_when_dialing = count_beyond(&closings, 0, SPEC_GATE_TIMEOUT_WITH_SLACK);
+        host.broadcast(presence_signed_by(
+            network.keys(),
+            &outsider_key,
+            "outsider",
+            &outsider.endpoint().endpoint().addr(),
+        ));
+        amy.peer_within("outsider", PRESENCE_WAIT, |_outsider| true);
+        let rebound = rebound_ports(
+            &amy,
+            &ports_before_rebind,
+            SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK,
+        );
+        host.admit(loopback_address(card.id, &rebound));
+        let closed_when_dialed = count_beyond(
+            &closings,
+            closed_when_dialing,
+            SPEC_MEMBER_JOIN_WAIT_WITH_SLACK,
+        );
+
+        assert!(closed_when_dialing >= 1);
+        assert!(closed_when_dialed > closed_when_dialing);
+        assert_eq!(outsider.events(), Vec::<Event>::new());
+    }
+}

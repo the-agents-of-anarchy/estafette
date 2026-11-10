@@ -47,7 +47,7 @@ impl McpServer {
             messages,
             next_request_id: 1,
         };
-        let request_id = server.send_request(
+        server.request(
             "initialize",
             &json!({
                 "protocolVersion": MCP_PROTOCOL_VERSION,
@@ -55,10 +55,15 @@ impl McpServer {
                 "clientInfo": { "name": CLIENT_NAME, "version": CLIENT_VERSION }
             }),
         );
-        server.response_to(request_id);
         server
             .write(&json!({ "jsonrpc": JSON_RPC_VERSION, "method": "notifications/initialized" }));
         server
+    }
+
+    /// Sends the JSON-RPC request and returns the result its response carries.
+    pub fn request(&mut self, method: &str, params: &Value) -> Value {
+        let request_id = self.send_request(method, params);
+        self.response_to(request_id)["result"].clone()
     }
 
     /// Calls the tool and returns the envelope its result carries.

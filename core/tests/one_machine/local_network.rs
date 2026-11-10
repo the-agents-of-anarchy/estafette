@@ -1,7 +1,12 @@
+use std::fs::{self, Permissions};
+use std::os::unix::fs::PermissionsExt;
+
 use estafette::config::NetworkConfig;
 use estafette::crypto::{NetworkKeys, NetworkSecret};
+use estafette::invite::render_host_line;
 use estafette::keys::parse_network_secret;
 use estafette::net::endpoint::GateFailure;
+use estafette::wire::{HostAddr, RelayUrl, Version};
 use iroh::SecretKey;
 use iroh_gossip::TopicId;
 
@@ -10,6 +15,8 @@ use crate::scratch_machine::{Card, ScratchMachine};
 use crate::scripted_node::ScriptedNode;
 
 const NETWORK: &str = "acme";
+/// A relay URL no resolver answers, for a host that is never reached.
+const SILENT_RELAY: &str = "https://relay.estafette.invalid/";
 
 /// A network the binary created on this machine, with the keys its members derive from its secret.
 pub struct LocalNetwork {
@@ -49,6 +56,28 @@ impl LocalNetwork {
     /// The gossip topic of the network.
     pub fn topic(&self) -> TopicId {
         TopicId::from_bytes(*self.keys.topic_id().as_bytes())
+    }
+
+    /// Adds by the binary's own command a configured host whose relay never answers, so a member always knows a host and may rebind.
+    pub fn add_host_that_never_answers(&self) {
+        let host_line = render_host_line(&HostAddr {
+            v: Version::CURRENT,
+            id: *SecretKey::generate().public().as_bytes(),
+            relay: RelayUrl::try_from(SILENT_RELAY.to_owned()).unwrap(),
+        })
+        .unwrap();
+        self.machine
+            .run(&["network", "add-host", NETWORK, &host_line]);
+    }
+
+    /// Sets the permission bits of the card's sidecar.
+    pub fn set_sidecar_mode(&self, card: &Card, mode: u32) {
+        let sidecar = self
+            .machine
+            .directories()
+            .card_sidecar_file(NETWORK, &card.name)
+            .unwrap();
+        fs::set_permissions(sidecar, Permissions::from_mode(mode)).unwrap();
     }
 
     /// Starts a node standing in for a bootstrap host: it holds the network secret and links the members it admits.

@@ -10,13 +10,14 @@ use estafette::wire::WIRE_LIMIT_BYTES;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router, RouterBuilder};
 use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey};
-use iroh_gossip::api::{GossipReceiver, GossipSender};
+use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId};
 use n0_future::StreamExt;
 use tokio::runtime::Handle;
 use tokio::sync::oneshot;
 
 type Admitted = Arc<Mutex<BTreeSet<EndpointId>>>;
+type Events = Arc<Mutex<Vec<Event>>>;
 
 /// How long a direct request may take to be answered: the server read timeout of spec 3.14 (10000 ms) with slack.
 const DIRECT_ANSWER_WAIT: Duration = Duration::from_secs(15);
@@ -28,6 +29,7 @@ pub struct ScriptedNode {
     router: Router,
     topic: GossipSender,
     admitted: Admitted,
+    events: Events,
     stop_driver: Option<oneshot::Sender<()>>,
     driver: Option<JoinHandle<()>>,
 }
@@ -78,6 +80,7 @@ impl ScriptedNode {
             ))
             .unwrap();
         let admitted = Admitted::default();
+        let events = Events::default();
         let _inside_runtime = runtime.enter();
         let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
         let router = extend(Router::builder(endpoint.endpoint().clone()).accept(
@@ -92,13 +95,14 @@ impl ScriptedNode {
             .block_on(gossip.subscribe(topic, Vec::new()))
             .unwrap()
             .split();
-        runtime.spawn(drain(receiver));
+        runtime.spawn(record(receiver, Arc::clone(&events)));
         Self {
             runtime: runtime.clone(),
             endpoint,
             router,
             topic,
             admitted,
+            events,
             stop_driver: Some(stop_driver),
             driver: Some(driver),
         }
@@ -119,6 +123,11 @@ impl ScriptedNode {
         self.runtime()
             .block_on(self.topic.broadcast(payload.into()))
             .unwrap();
+    }
+
+    /// Every event the topic gave this node so far, in order.
+    pub fn events(&self) -> Vec<Event> {
+        self.events.lock().unwrap().clone()
     }
 
     /// Sends the bytes as one direct request to the node over a fresh connection and returns the answer, none when the connection, the stream or the wait fails.
@@ -206,7 +215,9 @@ fn start_driver() -> (Handle, oneshot::Sender<()>, JoinHandle<()>) {
     (handle_receiver.recv().unwrap(), stop_driver, driver)
 }
 
-/// Reads every event of the subscription, so the topic never drops it for lagging.
-async fn drain(mut receiver: GossipReceiver) {
-    while let Some(Ok(_event)) = receiver.next().await {}
+/// Records every event of the subscription, reading each so the topic never drops it for lagging.
+async fn record(mut receiver: GossipReceiver, events: Events) {
+    while let Some(Ok(event)) = receiver.next().await {
+        events.lock().unwrap().push(event);
+    }
 }
