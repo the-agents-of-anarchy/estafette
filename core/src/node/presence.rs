@@ -19,9 +19,7 @@ use tokio::task::{JoinError, JoinHandle};
 use tokio::time::{Instant, sleep_until};
 
 use super::rebind::{MemberJoins, RebindSchedule, RelayProbe};
-use crate::config::{
-    AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis, host_relay_url,
-};
+use crate::config::{AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
 use crate::crypto::{NetworkKeys, NetworkSecret};
 use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::inbox::buffer::ReceivedMessage;
@@ -32,13 +30,13 @@ use crate::net::direct::{
 };
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
-use crate::payload::{ZERO_MAC, ZERO_SIGNATURE};
+use crate::payload::{ValidInfrastructure, ZERO_MAC, ZERO_SIGNATURE, validated_infrastructure};
 use crate::peers::{
     ANNOUNCEMENT_MAX_AGE_MS, Effect, Peer, PeerTable, is_within_announcement_max_age,
 };
 use crate::wire::{
-    self, Addr, Departure, Infrastructure, Introduce, IntroduceAck, Message, Nonce, Payload,
-    Presence, PresenceRequest, Unreachable, Version,
+    self, Addr, Departure, Introduce, IntroduceAck, Message, Nonce, Payload, Presence,
+    PresenceRequest, Unreachable, Version,
 };
 
 const OBSERVER_WAIT: Duration = Duration::from_millis(3000);
@@ -828,7 +826,11 @@ impl PresenceLoop {
             Payload::Unreachable(report) => {
                 self.state.table().receive_unreachable(&report, now_ms);
             }
-            Payload::Infrastructure(record) => self.take_infrastructure(&record, now_ms).await,
+            Payload::Infrastructure(record) => {
+                if let Ok(record) = validated_infrastructure(&self.owner, &record) {
+                    self.take_infrastructure(&record, now_ms).await;
+                }
+            }
             Payload::PresenceRequest(request) => {
                 self.answer_presence_request(&request, now_ms).await;
             }
@@ -843,15 +845,13 @@ impl PresenceLoop {
     }
 
     /// Applies the Infrastructure rows of spec 3.8: hold a newer record, point the lookup at it, add its relay, save a new host.
-    async fn take_infrastructure(&mut self, record: &Infrastructure, now_ms: u64) {
-        let verdict = self.known_hosts.take_record(record, now_ms);
+    async fn take_infrastructure(&mut self, valid: &ValidInfrastructure, now_ms: u64) {
+        let verdict = self.known_hosts.take_record(valid, now_ms);
         if verdict == RecordVerdict::Dropped {
             return;
         }
-        self.replace_lookup_entry(&record.host, &record.addr);
-        if let Some(relay) = host_relay_url(record.relay.as_str()) {
-            self.endpoint.add_relay(relay).await;
-        }
+        self.replace_lookup_entry(&valid.record().host, &valid.record().addr);
+        self.endpoint.add_relay(valid.relay().clone()).await;
         if verdict == RecordVerdict::FromNewHost
             && let Err(failure) = self.known_hosts.save(now_ms)
         {
@@ -1220,7 +1220,12 @@ impl KnownHosts {
     }
 
     /// Holds the relay and `ts` of a record newer than the newest held for its host and within the future bound, adding a host never known before.
-    pub(crate) fn take_record(&mut self, record: &Infrastructure, now_ms: u64) -> RecordVerdict {
+    pub(crate) fn take_record(
+        &mut self,
+        valid: &ValidInfrastructure,
+        now_ms: u64,
+    ) -> RecordVerdict {
+        let record = valid.record();
         let latest_accepted_ts =
             seconds_of(now_ms).saturating_add(INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS);
         if record.ts > latest_accepted_ts {
@@ -1321,7 +1326,7 @@ pub(super) mod tests {
     use crate::keys::render_public_key;
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
-    use crate::wire::SignatureBytes;
+    use crate::wire::{Infrastructure, SignatureBytes};
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];
     pub(in crate::node) const OWNER_SEED: u8 = 60;
@@ -1399,6 +1404,7 @@ pub(super) mod tests {
     const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * MILLIS_PER_SECOND;
     const DAYS_WITHIN_EXPIRY: u64 = 29;
     const DAYS_PAST_EXPIRY: u64 = 31;
+    const PLAIN_HTTP_HOST_RELAY: &str = "http://relay-second-host.estafette.invalid/";
 
     fn network_secret() -> NetworkSecret {
         NetworkSecret::from_bytes(NETWORK_SECRET)
@@ -3305,11 +3311,11 @@ pub(super) mod tests {
         drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&root).unwrap();
         let path = root.join(NETWORK_FILE_NAME);
-        let Payload::Infrastructure(record) =
-            infrastructure_of(HOST_SEED, HOST_RELAY, FROZEN_CLOCK_MS / MILLIS_PER_SECOND)
-        else {
-            panic!("infrastructure_of builds an infrastructure record");
-        };
+        let record = validated_infrastructure(
+            &owner(),
+            &record_of(HOST_SEED, HOST_RELAY, FROZEN_CLOCK_MS / MILLIS_PER_SECOND),
+        )
+        .unwrap();
         let mut known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), path.clone());
 
         known_hosts.take_record(&record, FROZEN_CLOCK_MS);
@@ -3325,6 +3331,50 @@ pub(super) mod tests {
         let saved = NetworkConfig::load(&path).unwrap().hosts;
         drop(fs::remove_dir_all(&root));
         saved
+    }
+
+    fn owner() -> iroh::PublicKey {
+        secret_key(OWNER_SEED).public()
+    }
+
+    fn record_of(host_seed: u8, relay: &str, ts: u64) -> Infrastructure {
+        let Payload::Infrastructure(record) = infrastructure_of(host_seed, relay, ts) else {
+            panic!("infrastructure_of builds an infrastructure record");
+        };
+        record
+    }
+
+    /// Spec 3.3 and 3.8: a record whose relay the configuration refuses is neither held nor saved, and a later record of another host still saves.
+    #[test]
+    fn spec_3_8_a_record_whose_relay_the_configuration_refuses_is_neither_held_nor_saved() {
+        let root = std::env::temp_dir().join(format!("u46-refused-relay-{}", std::process::id()));
+        drop(fs::remove_dir_all(&root));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join(NETWORK_FILE_NAME);
+        let record_ts = FROZEN_CLOCK_MS / MILLIS_PER_SECOND;
+        let mut known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), path.clone());
+
+        let refused = validated_infrastructure(
+            &owner(),
+            &record_of(SECOND_HOST_SEED, PLAIN_HTTP_HOST_RELAY, record_ts),
+        );
+        let accepted =
+            validated_infrastructure(&owner(), &record_of(HOST_SEED, HOST_RELAY, record_ts))
+                .unwrap();
+        let verdict = known_hosts.take_record(&accepted, FROZEN_CLOCK_MS);
+        let saved = known_hosts.save(FROZEN_CLOCK_MS);
+
+        assert_eq!(refused, Err(crate::payload::PayloadError::HostRelayRefused));
+        assert_eq!(verdict, RecordVerdict::FromNewHost);
+        assert!(saved.is_ok(), "{saved:?}");
+        let relays: Vec<String> = NetworkConfig::load(&path)
+            .unwrap()
+            .hosts
+            .into_iter()
+            .map(|host| host.relay)
+            .collect();
+        assert_eq!(relays, [HOST_RELAY]);
+        drop(fs::remove_dir_all(&root));
     }
 
     /// Spec 3.3 and 3.14: a learned host stamped on the millisecond clock leaves the file when saved 31 days later and stays at 29 days.

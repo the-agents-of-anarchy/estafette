@@ -247,10 +247,35 @@ fn sign_then_mac(
     Ok(encoded)
 }
 
-fn verify_infrastructure_rules(
+/// An Infrastructure record whose certificate, relay and address rules hold, carrying its relay parsed; only `validated_infrastructure` builds one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidInfrastructure {
+    record: Infrastructure,
+    relay: RelayUrl,
+}
+
+impl ValidInfrastructure {
+    /// The record as it arrived.
+    #[must_use]
+    pub const fn record(&self) -> &Infrastructure {
+        &self.record
+    }
+
+    /// The record's relay, a host relay by construction.
+    #[must_use]
+    pub const fn relay(&self) -> &RelayUrl {
+        &self.relay
+    }
+}
+
+/// Accepts an Infrastructure record only when the owner certified its host, its relay is a host relay, and its address lists exactly that relay.
+///
+/// # Errors
+/// `PayloadError::HostNotCertified`, `PayloadError::HostRelayRefused` or `PayloadError::AddrRelaysNotTheHostRelay`, checked in that order.
+pub fn validated_infrastructure(
     owner: &PublicKey,
     infrastructure: &Infrastructure,
-) -> Result<(), PayloadError> {
+) -> Result<ValidInfrastructure, PayloadError> {
     let certified = PublicKey::from_bytes(&infrastructure.host).is_ok_and(|host| {
         verify_host_certificate(owner, &host, &Signature::from_bytes(&infrastructure.cert.0))
             .is_ok()
@@ -267,10 +292,13 @@ fn verify_infrastructure_rules(
         .iter()
         .map(|url| url.as_str().parse().ok())
         .collect();
-    if addr_relays != [Some(relay)] {
+    if addr_relays != [Some(relay.clone())] {
         return Err(PayloadError::AddrRelaysNotTheHostRelay);
     }
-    Ok(())
+    Ok(ValidInfrastructure {
+        record: infrastructure.clone(),
+        relay,
+    })
 }
 
 fn verify_presence_rules(presence: &Presence) -> Result<(), PayloadError> {
@@ -294,7 +322,7 @@ pub fn open_payload(
     verify_signature(&payload)?;
     match &payload {
         Payload::Infrastructure(infrastructure) => {
-            verify_infrastructure_rules(owner, infrastructure)?;
+            validated_infrastructure(owner, infrastructure)?;
         }
         Payload::Presence(presence) => verify_presence_rules(presence)?,
         Payload::Departure(_) | Payload::Unreachable(_) | Payload::PresenceRequest(_) => {}

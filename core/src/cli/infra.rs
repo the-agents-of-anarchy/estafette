@@ -37,7 +37,7 @@ use crate::node::{
     KnownHostAddress, KnownHosts, Network, NodeError, NodeRecord, RecordVerdict, endpoint_addr,
     endpoint_id, known_host_addresses, seed_lookup_with_known_hosts,
 };
-use crate::payload::{ZERO_MAC, ZERO_SIGNATURE};
+use crate::payload::{ValidInfrastructure, ZERO_MAC, ZERO_SIGNATURE, validated_infrastructure};
 use crate::wire::{
     self, Addr, HostAddr, Infrastructure, IntroduceAck, MAX_RELAY_URL_BYTES, Message, Payload,
     SignatureBytes, Version,
@@ -646,6 +646,7 @@ struct BootstrapNode {
     endpoint: NodeEndpoint,
     router: Router,
     topic: NetworkTopic,
+    owner: iroh::PublicKey,
     known_hosts: KnownHosts,
     last_record: LastRecord,
     records_due: Option<Interval>,
@@ -688,6 +689,7 @@ impl BootstrapNode {
             endpoint,
             router,
             topic,
+            owner,
             known_hosts: files.network.into_known_hosts(),
             last_record: files.last_record,
             records_due: None,
@@ -732,7 +734,9 @@ impl BootstrapNode {
             Some(Ok(GossipEvent::Joined)) => self.records_due = Some(record_interval()),
             Some(Ok(GossipEvent::Payload(payload))) => match *payload {
                 Payload::Infrastructure(record) if record.host != *self.key.public().as_bytes() => {
-                    self.learn_host(&record);
+                    if let Ok(record) = validated_infrastructure(&self.owner, &record) {
+                        self.learn_host(&record);
+                    }
                 }
                 Payload::Infrastructure(_)
                 | Payload::Presence(_)
@@ -750,13 +754,13 @@ impl BootstrapNode {
     }
 
     /// Applies the Infrastructure rows of spec 3.8 to another host's record, adding no relay to the relay map (spec 3.14).
-    fn learn_host(&mut self, record: &Infrastructure) {
+    fn learn_host(&mut self, valid: &ValidInfrastructure) {
         let now_ms = (self.clock)();
-        match self.known_hosts.take_record(record, now_ms) {
+        match self.known_hosts.take_record(valid, now_ms) {
             RecordVerdict::Dropped => {}
-            RecordVerdict::FromKnownHost => self.point_lookup_at(record),
+            RecordVerdict::FromKnownHost => self.point_lookup_at(valid.record()),
             RecordVerdict::FromNewHost => {
-                self.point_lookup_at(record);
+                self.point_lookup_at(valid.record());
                 if let Err(failure) = self.known_hosts.save(now_ms) {
                     (self.report)(NodeRecord::KnownHostsNotSaved(failure));
                 }
