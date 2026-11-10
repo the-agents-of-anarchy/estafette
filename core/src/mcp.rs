@@ -27,7 +27,7 @@ use crate::card::Card;
 use crate::cli::cards::CardRegistryReader;
 use crate::config::{NetworkConfig, host_relay_url};
 use crate::crypto::GateKey;
-use crate::dirs::{CARD_EXTENSION, Directories};
+use crate::dirs::{CARD_EXTENSION, Directories, DirectoriesError};
 use crate::errors::{Envelope, ErrorCode, You};
 use crate::handle::{AnnouncedHandle, Handle, MAX_LOCAL_LENGTH};
 use crate::inbox::buffer::InboxFrame;
@@ -109,6 +109,29 @@ pub enum ServerRecord {
     HandshakeFailed(Box<ServerInitializeError>),
     AnsweringFailed(JoinError),
     StandardInputFailed(io::Error),
+    CardRegistryUnreadable(RegistryFailure),
+}
+
+/// Why the card registry of the network could not be read.
+#[derive(Debug)]
+pub enum RegistryFailure {
+    NoDirectory(DirectoriesError),
+    Unreadable { path: PathBuf, source: io::Error },
+}
+
+impl fmt::Display for RegistryFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoDirectory(source) => {
+                write!(formatter, "the card registry has no directory: {source}")
+            }
+            Self::Unreadable { path, source } => write!(
+                formatter,
+                "the card registry at {} could not be read: {source}",
+                path.display()
+            ),
+        }
+    }
 }
 
 impl fmt::Display for ServerRecord {
@@ -139,6 +162,11 @@ impl fmt::Display for ServerRecord {
             Self::AnsweringFailed(source) => {
                 write!(formatter, "the MCP server stopped answering: {source}")
             }
+            Self::CardRegistryUnreadable(source) => write!(
+                formatter,
+                "list_cards answered {}: {source}",
+                REGISTRY_UNREADABLE.code()
+            ),
             Self::StandardInputFailed(source) => write!(
                 formatter,
                 "reading standard input failed and is treated as its end: {source}"
@@ -221,7 +249,7 @@ impl Server {
         match ToolName::named(tool).ok_or(ErrorCode::BadRequest)? {
             ToolName::ListCards => {
                 input_of::<NoInput>(arguments)?;
-                Ok(self.list_cards().await)
+                self.list_cards().await
             }
             ToolName::Init => self.init(input_of(arguments)?).await,
             ToolName::Peers => {
@@ -383,7 +411,7 @@ impl Server {
     }
 
     /// Every card of the registry in name order, each with whether its sidecar lock is taken, read off the runtime's threads.
-    async fn list_cards(&self) -> ToolResult {
+    async fn list_cards(&self) -> Result<ToolResult, ErrorCode> {
         let served = Arc::clone(&self.served);
         let registry = Arc::clone(&self.effects.registry);
         let is_card_held = Arc::clone(&self.effects.is_card_held);
@@ -397,11 +425,17 @@ impl Server {
             )
         })
         .await;
-        let cards = listing.unwrap_or_else(|failure| {
-            (self.effects.report)(ServerRecord::ListingTaskFailed(failure));
-            Vec::new()
-        });
-        ToolResult::Cards { cards }
+        match listing {
+            Ok(Ok(cards)) => Ok(ToolResult::Cards { cards }),
+            Ok(Err(unreadable)) => Err(self.recorded(
+                ServerRecord::CardRegistryUnreadable(unreadable),
+                REGISTRY_UNREADABLE,
+            )),
+            Err(failure) => {
+                (self.effects.report)(ServerRecord::ListingTaskFailed(failure));
+                Ok(ToolResult::Cards { cards: Vec::new() })
+            }
+        }
     }
 
     /// The caller as this session knows it now.
@@ -481,8 +515,8 @@ fn listed_cards(
     registry: &(dyn CardRegistryReader + Send + Sync),
     is_card_held: &(dyn Fn(&Path) -> bool + Send + Sync),
     claimed: Option<&Handle>,
-) -> Vec<ListedCard> {
-    let mut cards: Vec<ListedCard> = registry_cards(served, registry)
+) -> Result<Vec<ListedCard>, RegistryFailure> {
+    let mut cards: Vec<ListedCard> = registry_cards(served, registry)?
         .into_iter()
         .map(|(name, card)| ListedCard {
             held: claimed == Some(&name) || is_locked(served, is_card_held, &name),
@@ -491,24 +525,32 @@ fn listed_cards(
         })
         .collect();
     cards.sort_by(|first, second| first.name.cmp(&second.name));
-    cards
+    Ok(cards)
 }
 
-/// The cards of the network's registry whose name and text are valid, an empty list when the registry cannot be read.
+/// The cards of the network's registry whose name and text are valid, none when its directory does not exist, a failure when it cannot be read.
 fn registry_cards(
     served: &ServedNetwork,
     registry: &(dyn CardRegistryReader + Send + Sync),
-) -> Vec<(Handle, Card)> {
-    let Ok(cards_directory) = served.directories.cards_directory(served.network.as_str()) else {
-        return Vec::new();
+) -> Result<Vec<(Handle, Card)>, RegistryFailure> {
+    let cards_directory = served
+        .directories
+        .cards_directory(served.network.as_str())
+        .map_err(RegistryFailure::NoDirectory)?;
+    let entries = match registry.read_directory(&cards_directory) {
+        Ok(entries) => entries,
+        Err(failure) if failure.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(source) => {
+            return Err(RegistryFailure::Unreadable {
+                path: cards_directory,
+                source,
+            });
+        }
     };
-    let Ok(entries) = registry.read_directory(&cards_directory) else {
-        return Vec::new();
-    };
-    entries
+    Ok(entries
         .iter()
         .filter_map(|path| registry_card_at(registry, path, served.network.as_str()))
-        .collect()
+        .collect())
 }
 
 /// The card at the path with its name, when the path is a card file whose stem is a card name and whose text is a card usable on the network.
@@ -561,6 +603,9 @@ fn node_effects_of(effects: &NodeEffects) -> NodeEffects {
 
 /// The error code of a claim whose network, endpoint or node did not start after the lock was taken.
 const NODE_NOT_STARTED: ErrorCode = ErrorCode::Unreachable;
+
+/// The error code of a `list_cards` whose registry could not be read, the code a card file that cannot be read gets at init.
+const REGISTRY_UNREADABLE: ErrorCode = ErrorCode::CardInvalid;
 
 /// The error code of a claim whose sidecar lock task ended without a result.
 const LOCK_TASK_FAILED: ErrorCode = ErrorCode::SidecarInvalid;
@@ -1579,6 +1624,54 @@ mod tests {
         assert_eq!(
             listed["result"]["cards"],
             json!([{ "name": "amy-card", "handle": "amy", "held": false }])
+        );
+    }
+
+    #[tokio::test]
+    async fn spec_3_10_list_cards_of_a_network_with_no_cards_directory_lists_no_card() {
+        let machine = Machine::new("no-cards-dir");
+        let mut client = start_server(&machine, ServerPlan::alone(FIRST_PROCESS_ID));
+        client.initialize().await;
+
+        let listed = client.envelope("list_cards", json!({})).await;
+
+        assert_eq!(listed["ok"], json!(true), "{listed}");
+        assert_eq!(listed["result"], json!({ "cards": [] }));
+    }
+
+    #[tokio::test]
+    async fn spec_3_10_list_cards_of_an_unreadable_cards_directory_answers_card_invalid_and_records_why()
+     {
+        let machine = Machine::new("bad-cards-dir");
+        let cards_directory = machine.directories().cards_directory(NETWORK).unwrap();
+        fs::create_dir_all(cards_directory.parent().unwrap()).unwrap();
+        fs::write(
+            &cards_directory,
+            "a file where the registry directory belongs",
+        )
+        .unwrap();
+        let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&records);
+        let mut client = start_server(
+            &machine,
+            ServerPlan {
+                report: Arc::new(move |record: ServerRecord| {
+                    recorded.lock().unwrap().push(record.to_string());
+                }),
+                ..ServerPlan::alone(FIRST_PROCESS_ID)
+            },
+        );
+        client.initialize().await;
+
+        let listed = client.envelope("list_cards", json!({})).await;
+
+        assert_eq!(listed["ok"], json!(false), "{listed}");
+        assert_eq!(listed["error"]["code"], "card_invalid");
+        let records = records.lock().unwrap().clone();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert!(
+            records[0].starts_with("list_cards answered card_invalid: the card registry at "),
+            "{records:?}"
         );
     }
 
