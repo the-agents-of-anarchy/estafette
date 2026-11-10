@@ -961,7 +961,6 @@ mod tests {
     const SECOND_PUBLIC: &[u8] = br#"{"role":"second"}"#;
     const UNREACHABLE_RELAY: &str = "https://relay.estafette.invalid/";
     const PROBE_NONCE: Nonce = [7; 16];
-    const PROBE_NONCE_AS_MESSAGE_ID: &str = "07070707-0707-0707-0707-070707070707";
     const OPERATOR_CARD: &str = "operator";
     const OPERATOR_BODY: &str = "a test message from the operator";
     const FRAME_WAIT: Duration = Duration::from_secs(2);
@@ -1467,11 +1466,11 @@ mod tests {
         .await
         .unwrap();
 
+        let frame = first_inbox_frame(&members[1]).await;
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            format!("delivered\t{PROBE_NONCE_AS_MESSAGE_ID}\tfalse\n")
+            format!("delivered\t{}\tfalse\n", frame["id"].as_str().unwrap())
         );
-        let frame = first_inbox_frame(&members[1]).await;
         assert_eq!(frame["from"], OPERATOR_CARD);
         assert_eq!(frame["body"], OPERATOR_BODY);
         let sidecar = lab

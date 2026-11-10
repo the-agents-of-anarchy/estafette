@@ -1341,7 +1341,7 @@ pub(super) mod tests {
     const INIT_ON_A_LAGGING_CLOCK_LATEST: Duration = Duration::from_millis(2000);
     pub(in crate::node) const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
     const LISTING_POLL: Duration = Duration::from_millis(20);
-    const PROBE_NONCE: crate::wire::Nonce = [7; 16];
+    pub(in crate::node) const PROBE_NONCE: crate::wire::Nonce = [7; 16];
     const NODE_TESTS_AT_ONCE: usize = 2;
     const INBOX_FRAME_WAIT: Duration = Duration::from_secs(2);
     const MESSAGE_ID: crate::wire::MessageId = [

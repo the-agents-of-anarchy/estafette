@@ -7,7 +7,9 @@ use crate::net::direct::{DirectError, DirectHost};
 use crate::node::presence::{Node, endpoint_id, message_id_text};
 use crate::payload::ZERO_MAC;
 use crate::peers::Peer;
-use crate::wire::{self, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, MessageId, Version};
+use crate::wire::{self, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, MessageId, Nonce, Version};
+
+const UUID_V7_RANDOM_BYTES: usize = 10;
 
 /// What a delivered message reports: its id and whether the recipient's inbox has a client attached.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,20 +48,33 @@ impl Node {
         .await
     }
 
-    /// The Message that carries the body to the recipient under a fresh id.
+    /// The Message that carries the body to the recipient under a fresh id stamped with its send time.
     fn message_for(&self, recipient: wire::PublicKey, body: &str) -> Message {
-        let mut id = MessageId::default();
-        (self.fill_message_id)(&mut id);
+        let sent_at = self.state.now_ms();
         Message {
             v: Version::CURRENT,
-            id,
+            id: self.message_id_stamped(sent_at),
             to: recipient,
             handle: self.own_handle().as_str().to_owned(),
             attached: self.state.is_attached(),
-            sent_at: self.state.now_ms(),
+            sent_at,
             body: body.to_owned(),
             mac: ZERO_MAC,
         }
+    }
+
+    /// A fresh message id: a UUID version 7 carrying `now_ms`, its other bits drawn from the node's secure random source (spec 3.1).
+    fn message_id_stamped(&self, now_ms: u64) -> MessageId {
+        let mut draw = Nonce::default();
+        (self.fill_message_id)(&mut draw);
+        let mut random = [0; UUID_V7_RANDOM_BYTES];
+        random
+            .iter_mut()
+            .zip(draw)
+            .for_each(|(byte, drawn)| *byte = drawn);
+        uuid::Builder::from_unix_timestamp_millis(now_ms, &random)
+            .into_uuid()
+            .into_bytes()
     }
 
     /// Writes the message to the recipient and waits for its ack, dropping the held connection and recording the contact on any failure.
@@ -172,9 +187,9 @@ mod tests {
     use crate::net::endpoint::DIRECT_ALPN;
     use crate::node::presence::tests::{
         FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTRODUCE_ROUND_TRIP, Member, MemberPlan,
-        SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_SEED,
-        WITNESS_HANDLE, WITNESS_SEED, bind, card, inbox_frames, keys, listed_within, message_to,
-        start_members_reaching, start_pair, start_third_through_second,
+        PROBE_NONCE, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE,
+        THIRD_SEED, WITNESS_HANDLE, WITNESS_SEED, bind, card, inbox_frames, keys, listed_within,
+        message_to, start_members_reaching, start_pair, start_third_through_second, wall_clock_ms,
     };
     use crate::node::presence::wire_addr;
     use crate::payload::{PayloadError, open_request, seal_response};
@@ -186,7 +201,6 @@ mod tests {
     use super::*;
 
     const BODY: &str = "a body sent by the send tool";
-    const SENT_ID_TEXT: &str = "07070707-0707-0707-0707-070707070707";
     const NO_ONE: &str = "nobody";
     const FIRST_CONNECTION_WAIT: Duration = Duration::from_secs(3);
     const CONNECTION_POLL: Duration = Duration::from_millis(20);
@@ -345,17 +359,54 @@ mod tests {
 
         let delivery = first.node.send(SECOND_HANDLE, BODY).await.unwrap();
 
-        assert_eq!(
-            delivery,
-            Delivery {
-                id: SENT_ID_TEXT.to_owned(),
-                attached: false
-            }
-        );
+        assert!(!delivery.attached);
         let frame = inbox_frames(&second, 1).await.remove(0);
         assert_eq!(frame["from"], FIRST_HANDLE);
         assert_eq!(frame["body"], BODY);
-        assert_eq!(frame["id"], SENT_ID_TEXT);
+        assert_eq!(frame["id"], delivery.id);
+        drop(scratch);
+    }
+
+    const SPEC_UUID_VERSION: usize = 7;
+    const UUID_TIMESTAMP_BYTES: usize = 6;
+    const BYTES_OF_A_MILLISECOND_COUNT: usize = 8;
+
+    fn unix_millis_stamped_in(id: &uuid::Uuid) -> u64 {
+        let mut millis = [0; BYTES_OF_A_MILLISECOND_COUNT];
+        millis[BYTES_OF_A_MILLISECOND_COUNT - UUID_TIMESTAMP_BYTES..]
+            .copy_from_slice(&id.as_bytes()[..UUID_TIMESTAMP_BYTES]);
+        u64::from_be_bytes(millis)
+    }
+
+    #[tokio::test]
+    async fn spec_3_1_the_id_the_recipient_stores_is_a_uuid_version_7_stamped_by_the_senders_clock()
+    {
+        let scratch = Scratch::new("send-uuid-v7").await;
+        let (first, second) = start_pair(&scratch).await;
+        listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
+            .await
+            .unwrap();
+
+        let sent_from = wall_clock_ms();
+        let delivery = first.node.send(SECOND_HANDLE, BODY).await.unwrap();
+        let sent_until = wall_clock_ms();
+
+        let frame = inbox_frames(&second, 1).await.remove(0);
+        assert_eq!(frame["id"], delivery.id);
+        let stored = uuid::Uuid::parse_str(frame["id"].as_str().unwrap()).unwrap();
+        assert_eq!(stored.get_version_num(), SPEC_UUID_VERSION);
+        assert_eq!(stored.get_variant(), uuid::Variant::RFC4122);
+        let stamped = unix_millis_stamped_in(&stored);
+        assert!(
+            (sent_from..=sent_until).contains(&stamped),
+            "stamped {stamped}, sent between {sent_from} and {sent_until}"
+        );
+        let drawn_by_the_node: [u8; UUID_V7_RANDOM_BYTES] =
+            PROBE_NONCE[..UUID_V7_RANDOM_BYTES].try_into().unwrap();
+        assert_eq!(
+            stored,
+            uuid::Builder::from_unix_timestamp_millis(stamped, &drawn_by_the_node).into_uuid()
+        );
         drop(scratch);
     }
 
@@ -589,11 +640,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             [THIRD_HANDLE, NO_ONE, SECOND_HANDLE]
         );
-        assert_eq!(results[0].outcome.as_ref().unwrap().id, SENT_ID_TEXT);
         assert_eq!(results[1].outcome, Err(ErrorCode::UnknownHandle));
-        assert_eq!(results[2].outcome.as_ref().unwrap().id, SENT_ID_TEXT);
-        assert_eq!(inbox_frames(&second, 1).await[0]["body"], BODY);
-        assert_eq!(inbox_frames(&third, 1).await[0]["body"], BODY);
+        let to_third = inbox_frames(&third, 1).await.remove(0);
+        let to_second = inbox_frames(&second, 1).await.remove(0);
+        assert_eq!(to_third["id"], results[0].outcome.as_ref().unwrap().id);
+        assert_eq!(to_second["id"], results[2].outcome.as_ref().unwrap().id);
+        assert_eq!(to_third["body"], BODY);
+        assert_eq!(to_second["body"], BODY);
         drop(scratch);
     }
 
