@@ -233,6 +233,37 @@ fn binary_owner_key_is_owner_read_write_under_any_umask_of_spec_3_3() {
     }
 }
 
+const SEARCH_BLOCKING_UMASK: &str = "0100";
+
+#[test]
+fn binary_program_directories_are_owner_only_under_any_umask_of_spec_3_3() {
+    for umask in [SEARCH_BLOCKING_UMASK, "0000"] {
+        let root = common::scratch_root(SCRATCH_PREFIX, &format!("dir_modes_{umask}")).unwrap();
+        for base in ["config", "data", "runtime"] {
+            std::fs::create_dir(root.join(base)).unwrap();
+        }
+        let listed = run_binary_under_umask(&root, umask, &["list-cards", "acme"]).unwrap();
+        assert_eq!(listed.status.code(), Some(0), "umask {umask}");
+        for created in ["config/estafette", "data/estafette"] {
+            assert_eq!(
+                mode_of(&root.join(created)).unwrap(),
+                PRIVATE_DIRECTORY_MODE,
+                "{created}, umask {umask}"
+            );
+        }
+        let runtime_directories: Vec<_> = std::fs::read_dir(root.join("runtime"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(runtime_directories.len(), 1);
+        assert_eq!(
+            mode_of(&runtime_directories[0]).unwrap(),
+            PRIVATE_DIRECTORY_MODE,
+            "runtime, umask {umask}"
+        );
+    }
+}
+
 const CARDS_DIRECTORY_VARIABLE: &str = "ESTAFETTE_CARDS_DIR";
 const CARDS_CHECK_LINE: &str = "cards\tpass\tcards valid: 1";
 

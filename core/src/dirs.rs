@@ -1,8 +1,8 @@
 use std::ffi::OsString;
 use std::fmt;
-use std::fs;
+use std::fs::{self, Permissions};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 const PRODUCT_DIRECTORY: &str = "estafette";
@@ -60,10 +60,11 @@ impl DirectoryFilesystem for OperatingSystemFilesystem {
             .mode(PRIVATE_DIRECTORY_MODE)
             .create(path)
         {
+            Ok(()) => fs::set_permissions(path, Permissions::from_mode(PRIVATE_DIRECTORY_MODE)),
             Err(failure) if failure.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {
                 Ok(())
             }
-            outcome => outcome,
+            Err(failure) => Err(failure),
         }
     }
 
