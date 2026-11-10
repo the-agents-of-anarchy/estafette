@@ -63,3 +63,11 @@ What happened: What happened: at 15:33 the 5-hour usage limit of the new login s
 Mechanism: Mechanism: the lead ran nine to eleven agents at once, six of them opus with long contexts, and added early reviews, classifiers and two new implementers in the last ten minutes; the earlier pacing rule bounded agents only while a lab server is up, not the window's total; roughly 600 agent-minutes exhaust one window.
 
 Correction: Correction: at most four agents at once and at most three of them opus, critical path first; a lab stretch starts only in the first hour of a window with at most two other agents running; resumption after a limit goes one message at a time, nearest-to-done and critical-path first; an owner-only entry asks for more capacity.
+
+## Disk full stopped every shell at 19:32
+
+What happened: At about 19:32 the Mac's data volume ran out of space: every Bash call of the lead and of every agent was refused (ENOSPC on the volume of /tmp/claude-501), file writes failed too; impl-U55 and impl-U56b reported BLOCKED mid-work, quality-reviewer-U46 could not write its report file, and the journal could not be written for about five minutes.
+
+Mechanism: Each agent worktree keeps its own cargo target directory of 7 to 14 GiB; twenty-odd worktrees of finished units were never cleaned, and spec reviewers left throwaway clones of 3 to 4 GiB each under /private/tmp; nothing measured free space before a launch.
+
+Correction: The lead removed, through the monitor tool (the one command path that still started), the target directory of every finished worktree (those carrying cargo's CACHEDIR.TAG, the eight active worktrees kept) and three finished review clones: free space went from 0 to 63 GiB; from now a unit's target is removed when it integrates, a review clone when its verdict is routed, and free space is read before every launch (stop below 20 GiB).
