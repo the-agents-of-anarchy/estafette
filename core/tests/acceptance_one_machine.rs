@@ -91,6 +91,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         departure_seq: u64,
     }
 
+    /// A member, amy, claimed through a scripted bob who announced a Presence and then a Departure, once amy lists bob gone.
     #[track_caller]
     fn amy_after_scripted_bob_departed(network: &LocalNetwork) -> ScriptedBobDeparted {
         let amy_card = network.create_card("amy-card", "amy");
@@ -133,6 +134,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         seal_payload(keys, signer, departure).unwrap()
     }
 
+    /// A Message from the handle bob to the card, stamped with the send time and carrying the body.
     fn message_from_bob(to: EndpointId, sent_at: u64, body: &str) -> Request {
         Request::Message(Message {
             v: Version::CURRENT,
@@ -146,6 +148,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         })
     }
 
+    /// Sends the request from the scripted node to the card directly and returns the opened response.
     #[track_caller]
     fn request_directly(
         network: &LocalNetwork,
@@ -167,6 +170,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         iroh::EndpointAddr::from_parts(address.id, sockets)
     }
 
+    /// Sends the request on the held connection and returns the opened response, or none when the exchange fails or no answer comes within the direct request wait.
     #[track_caller]
     fn exchange_on(
         network: &LocalNetwork,
@@ -189,6 +193,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         })
     }
 
+    /// Broadcasts bob's Presence from the scripted node until the member lists bob as last seen after the first broadcast.
     #[track_caller]
     fn announce_until_seen(
         network: &LocalNetwork,
@@ -215,10 +220,12 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         }
     }
 
+    /// Whether the response is a `MessageAck` that accepted the Message.
     fn is_accepted_message_ack(response: &Response) -> bool {
         matches!(response, Response::MessageAck(ack) if ack.accepted)
     }
 
+    /// Each distinct status the member lists the handle with, in order, polled over the span.
     #[track_caller]
     fn statuses_throughout(member: &mut Member, handle: &str, span: Duration) -> Vec<Value> {
         let started = Instant::now();
@@ -553,6 +560,7 @@ mod spec_3_15_test_19_on_one_machine {
             .collect()
     }
 
+    /// Waits until the node's topic has reported the neighbor up, requiring that within the gossip neighbor wait.
     #[track_caller]
     fn wait_for_gossip_neighbor(node: &ScriptedNode, neighbor: EndpointId) {
         let started = Instant::now();
@@ -635,10 +643,12 @@ mod spec_3_15_with_one_member {
     const POLL: Duration = Duration::from_millis(100);
     const TRANSIENT_SOCKET_LIFETIME: Duration = Duration::from_millis(1000);
 
+    /// The `you` of spec 3.10 for a session that has claimed no card.
     fn unclaimed() -> Value {
         json!({ "card": null, "handle": null, "status": "unclaimed" })
     }
 
+    /// One call of each of the six tools, with arguments that name the card for init.
     fn every_tool_call(card: &str) -> [(&'static str, Value); 6] {
         [
             ("list_cards", json!({})),
@@ -650,6 +660,7 @@ mod spec_3_15_with_one_member {
         ]
     }
 
+    /// The handles the member's peers tool lists, in its order.
     #[track_caller]
     fn listed_handles(member: &mut Member) -> Vec<Value> {
         member.call("peers", &json!({}))["result"]["peers"]
@@ -660,6 +671,7 @@ mod spec_3_15_with_one_member {
             .collect()
     }
 
+    /// A Message from the attacker's handle to the card, stamped now and carrying the body.
     fn message_to(card: &EndpointId, body: &str) -> Request {
         Request::Message(Message {
             v: Version::CURRENT,
@@ -673,6 +685,7 @@ mod spec_3_15_with_one_member {
         })
     }
 
+    /// The sealed Presence with its handle replaced after it was signed and its mac made anew under the network keys, so only its signature disagrees.
     fn renamed_after_signing(keys: &NetworkKeys, sealed: &[u8], handle: &str) -> Vec<u8> {
         let Payload::Presence(mut presence) = wire::decode::<Payload>(sealed).unwrap() else {
             panic!("a sealed Presence decodes as a Presence");
@@ -685,6 +698,7 @@ mod spec_3_15_with_one_member {
         wire::encode(&Payload::Presence(presence)).unwrap()
     }
 
+    /// The count once it rises above what it already was, or as it stands when the wait runs out.
     fn count_beyond(count: &AtomicUsize, already: usize, within: Duration) -> usize {
         let started = Instant::now();
         while count.load(Ordering::SeqCst) <= already && started.elapsed() < within {
@@ -693,6 +707,7 @@ mod spec_3_15_with_one_member {
         count.load(Ordering::SeqCst)
     }
 
+    /// The UDP ports the member holds that it did not hold before and that outlive a transient socket, requiring some within the wait.
     #[track_caller]
     fn rebound_ports(member: &Member, before: &[u16], within: Duration) -> Vec<u16> {
         let started = Instant::now();
