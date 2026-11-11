@@ -449,7 +449,6 @@ mod tests {
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
             .unwrap();
-        tokio::time::sleep(INTRODUCE_ROUND_TRIP).await;
         second.endpoint.close().await;
         let oversized = "x".repeat(MESSAGE_BODY_LIMIT_BYTES + 1);
 
@@ -716,6 +715,20 @@ mod tests {
         }
     }
 
+    const fn variant_name(failure: &DirectError) -> &'static str {
+        match failure {
+            DirectError::Unreachable => "Unreachable",
+            DirectError::Timeout => "Timeout",
+            DirectError::Refused => "Refused",
+            DirectError::UnsealableRequest(_) => "UnsealableRequest",
+            DirectError::InvalidAck(_) => "InvalidAck",
+            DirectError::OversizedAck => "OversizedAck",
+            DirectError::UnexpectedAck => "UnexpectedAck",
+            DirectError::MessageAckIdMismatch => "MessageAckIdMismatch",
+            DirectError::ProbeNonceMismatch => "ProbeNonceMismatch",
+        }
+    }
+
     #[test]
     fn spec_3_10_a_failed_ack_is_unreachable_or_timeout_only_for_those_failures() {
         let payload_error = || PayloadError::SignerIsNotThePayloadSigner;
@@ -735,7 +748,7 @@ mod tests {
         ];
 
         for (failure, code) in expected {
-            assert_eq!(failure_error(&failure), code, "{failure:?}");
+            assert_eq!(failure_error(&failure), code, "{}", variant_name(&failure));
         }
     }
 
