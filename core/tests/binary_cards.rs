@@ -300,18 +300,19 @@ fn binary_doctor_reads_the_cards_of_the_cards_dir_flag_of_spec_3_3() {
 }
 
 #[test]
-fn binary_doctor_reads_the_cards_of_the_cards_dir_variable_of_spec_3_3() {
-    let root = common::scratch_root(SCRATCH_PREFIX, "doctor_variable").unwrap();
+fn binary_doctor_reads_the_cards_of_the_cards_dir_flag_over_the_variable_of_spec_3_3() {
+    let root = common::scratch_root(SCRATCH_PREFIX, "doctor_flag_over_variable").unwrap();
     let flagged = root.join("flagged");
+    let cardless = root.join("cardless");
     assert!(create_network_and_card_in(&root, flagged.to_str().unwrap()).unwrap());
 
     let diagnosed = Command::new(BINARY)
-        .args(["doctor", "acme"])
+        .args(["doctor", "acme", "--cards-dir", flagged.to_str().unwrap()])
         .env_clear()
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_RUNTIME_DIR", root.join("runtime"))
-        .env(CARDS_DIRECTORY_VARIABLE, &flagged)
+        .env(CARDS_DIRECTORY_VARIABLE, &cardless)
         .output()
         .unwrap();
 
