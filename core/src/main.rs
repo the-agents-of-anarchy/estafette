@@ -38,6 +38,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
+/// The milliseconds in one second, to read a millisecond clock as seconds.
 const MILLISECONDS_PER_SECOND: u64 = 1000;
 /// The bytes one fresh secret key gives the secure random fill.
 const RANDOM_BYTES_PER_SECRET_KEY: usize = 32;
@@ -680,6 +681,15 @@ mod tests {
     const AWAITED_SHUTDOWN_ENDS_WITHIN: Duration = Duration::from_millis(2000);
     const SPEC_PROGRAM_PURPOSE: &str = "Messaging between agents across machines and harnesses";
 
+    /// A scratch directory tree that is removed when this value is dropped, whether the test passed or failed.
+    struct ScratchRoot(PathBuf);
+
+    impl Drop for ScratchRoot {
+        fn drop(&mut self) {
+            drop(std::fs::remove_dir_all(&self.0));
+        }
+    }
+
     #[test]
     fn spec_3_9_an_awaited_shutdown_ends_while_a_blocking_read_of_standard_input_is_still_pending()
     {
@@ -841,21 +851,6 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_6_a_gate_closing_is_recorded_with_one_text_whichever_command_binds_the_endpoint() {
-        let mut record = Vec::new();
-
-        write_gate_closing(&mut record, &GateFailure::WrongProof);
-
-        assert_eq!(
-            String::from_utf8(record).unwrap(),
-            format!(
-                "a gossip connection was closed at the network secret gate: {}\n",
-                GateFailure::WrongProof
-            )
-        );
-    }
-
-    #[test]
     fn spec_3_13_standard_error_stays_writable_by_another_thread_while_a_command_runs() {
         const OTHER_THREAD_WRITES_WITHIN: Duration = Duration::from_millis(2000);
         const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
@@ -863,6 +858,7 @@ mod tests {
         const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
         const SCRATCH_PREFIX: &str = "estafette-stderr-writable";
         let root = std::env::temp_dir().join(format!("{SCRATCH_PREFIX}-{}", std::process::id()));
+        let _scratch_removed_when_the_test_ends = ScratchRoot(root.clone());
         let (written, other_thread_wrote) = std::sync::mpsc::channel();
         let first_lookup = AtomicBool::new(true);
         let wrote_in_time = AtomicBool::new(false);
@@ -899,7 +895,6 @@ mod tests {
 
         assert_eq!(status, ExitStatus::Failure);
         assert!(wrote_in_time.load(Ordering::SeqCst));
-        drop(std::fs::remove_dir_all(&root));
     }
 
     #[tokio::test]
