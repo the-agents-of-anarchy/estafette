@@ -390,14 +390,48 @@ pub(super) struct NodeState {
     own_card: wire::PublicKey,
     public: Vec<u8>,
     own_handle: OnceLock<LocalHandle>,
-    table: Mutex<PeerTable>,
     own_address: OwnAddress,
     inbox: Arc<InboxSocket>,
     attached: Attached,
     clock: Clock,
     to_loop: mpsc::UnboundedSender<LoopEvent>,
     stopping: AtomicBool,
+    rows: PeerRows,
+}
+
+/// The peer table of a node of any kind and the register of the connections its direct server accepted, changed together by the rows of spec 3.8 every such node applies.
+pub struct PeerRows {
+    table: Mutex<PeerTable>,
     accepted_connections: AcceptedConnections,
+}
+
+impl PeerRows {
+    /// An empty table for the node of `own_card`, whose accepted connections are judged silent on the monotonic clock.
+    pub(crate) fn new(own_card: wire::PublicKey, monotonic: MonotonicClock) -> Self {
+        Self {
+            table: Mutex::new(PeerTable::new(own_card)),
+            accepted_connections: AcceptedConnections::new(monotonic),
+        }
+    }
+
+    /// The peer table, locked for one operation.
+    pub(crate) fn table(&self) -> MutexGuard<'_, PeerTable> {
+        self.table.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The register the direct server keeps the connections it accepted in.
+    pub(crate) fn accepted_connections(&self) -> AcceptedConnections {
+        self.accepted_connections.clone()
+    }
+
+    /// Applies a Presence to the table and, when it is taken, closes every connection accepted from its card whose process no longer runs (spec 3.8, address lookup).
+    pub(crate) fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
+        let effects = self.table().receive_presence(presence, now_ms);
+        if effects.contains(&Effect::DropHeldConnection(presence.card)) {
+            self.accepted_connections.close_from(presence.card);
+        }
+        effects
+    }
 }
 
 impl NodeState {
@@ -413,14 +447,13 @@ impl NodeState {
             own_card,
             public: identity.public.clone(),
             own_handle: OnceLock::new(),
-            table: Mutex::new(PeerTable::new(own_card)),
             own_address: Box::new(move || wire_addr(&client.endpoint().addr())),
             inbox: Arc::clone(&effects.inbox),
             attached: effects.inbox.attached(),
             clock: Arc::clone(&effects.clock),
             to_loop,
             stopping: AtomicBool::new(false),
-            accepted_connections: AcceptedConnections::new(Arc::clone(&effects.monotonic)),
+            rows: PeerRows::new(own_card, Arc::clone(&effects.monotonic)),
         }
     }
 
@@ -443,7 +476,7 @@ impl NodeState {
 
     /// The peer table, locked for one operation.
     pub(super) fn table(&self) -> MutexGuard<'_, PeerTable> {
-        self.table.lock().unwrap_or_else(PoisonError::into_inner)
+        self.rows.table()
     }
 
     /// The full current address of this node's endpoint, within the caps of spec 3.6.
@@ -469,15 +502,6 @@ impl NodeState {
     /// Hands an event to the presence loop, which is gone only once the node is.
     fn hand_to_loop(&self, event: LoopEvent) {
         drop(self.to_loop.send(event));
-    }
-
-    /// Applies a Presence to the table and, when it is taken, closes every connection accepted from its card whose process no longer runs (spec 3.8, address lookup).
-    fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
-        let effects = self.table().receive_presence(presence, now_ms);
-        if effects.contains(&Effect::DropHeldConnection(presence.card)) {
-            self.accepted_connections.close_from(presence.card);
-        }
-        effects
     }
 
     /// Applies a validated Message to the table and returns the handle this node names its sender by, or none when its announced handle does not match.
@@ -544,7 +568,7 @@ impl DirectHost for Arc<NodeState> {
     }
 
     fn accepted_connections(&self) -> AcceptedConnections {
-        self.accepted_connections.clone()
+        self.rows.accepted_connections()
     }
 }
 
@@ -809,7 +833,7 @@ impl PresenceLoop {
     async fn take_payload(&mut self, payload: OpenedPayload, now_ms: u64) {
         match payload {
             OpenedPayload::Presence(presence) => {
-                let effects = self.state.take_presence(&presence, now_ms);
+                let effects = self.state.rows.take_presence(&presence, now_ms);
                 self.perform(effects).await;
             }
             OpenedPayload::Departure(departure) => {

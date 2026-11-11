@@ -4,7 +4,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::str::FromStr;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, MutexGuard};
 
 use clap::Subcommand;
 use data_encoding::HEXLOWER;
@@ -29,7 +29,7 @@ use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
     DEPARTURE_WAIT, Delivery, Identity, KnownHostAddress, Network, Node, NodeEffects, NodeError,
-    NodeRecord, RelayProbe, Session, endpoint_addr, endpoint_id, known_host_addresses,
+    NodeRecord, PeerRows, RelayProbe, Session, endpoint_addr, endpoint_id, known_host_addresses,
     observer_wait_over_at, seed_lookup_with_known_hosts, serve, sleep_until_deadline, wire_addr,
 };
 use crate::payload::{OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
@@ -494,9 +494,8 @@ async fn start_observation(
     let (to_loop, from_loop) = mpsc::unbounded_channel();
     let host = Arc::new(ObserverHost {
         endpoint: endpoint.endpoint().clone(),
-        table: Mutex::new(PeerTable::new(own_card)),
+        rows: PeerRows::new(own_card, Arc::clone(&effects.monotonic)),
         clock: effects.clock,
-        monotonic: Arc::clone(&effects.monotonic),
         to_loop,
     });
     let (router, gossip) = serve(&endpoint, keys, &host);
@@ -544,9 +543,8 @@ enum ObserverEvent {
 /// The direct protocol host of an observer: no card, no inbox, and an introduction without a handle.
 struct ObserverHost {
     endpoint: iroh::Endpoint,
-    table: Mutex<PeerTable>,
+    rows: PeerRows,
     clock: Clock,
-    monotonic: MonotonicClock,
     to_loop: mpsc::UnboundedSender<ObserverEvent>,
 }
 
@@ -558,7 +556,7 @@ impl ObserverHost {
 
     /// The peer table, locked for one operation.
     fn table(&self) -> MutexGuard<'_, PeerTable> {
-        self.table.lock().unwrap_or_else(PoisonError::into_inner)
+        self.rows.table()
     }
 
     /// Hands an event to the observer loop, which is gone only once the run is.
@@ -582,7 +580,7 @@ impl ObserverHost {
 
 impl DirectHost for Arc<ObserverHost> {
     fn accepted_connections(&self) -> crate::net::direct::AcceptedConnections {
-        crate::net::direct::AcceptedConnections::new(Arc::clone(&self.monotonic))
+        self.rows.accepted_connections()
     }
 
     fn is_stopping(&self) -> bool {
@@ -733,7 +731,7 @@ impl Observation {
     fn take_payload(&self, payload: OpenedPayload, now_ms: u64) {
         match payload {
             OpenedPayload::Presence(presence) => {
-                let effects = self.host.table().receive_presence(&presence, now_ms);
+                let effects = self.host.rows.take_presence(&presence, now_ms);
                 self.perform(effects);
             }
             OpenedPayload::Departure(departure) => {
@@ -935,7 +933,7 @@ mod tests {
     use std::ffi::OsString;
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::Mutex;
+    use std::sync::{Mutex, PoisonError};
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use iroh::EndpointAddr;
@@ -2110,6 +2108,81 @@ mod tests {
         assert_eq!(
             close.error_code,
             iroh::endpoint::VarInt::from_u32(crate::net::direct::SUPERSEDED_CONNECTION_CLOSE_CODE)
+        );
+        drop(lab);
+    }
+
+    /// The Presence the restarted neighbor announces itself with, newer than anything its earlier process sent.
+    fn restarted_neighbor_presence() -> Payload {
+        Payload::Presence(wire::Presence {
+            v: Version::CURRENT,
+            card: *secret_key(NEIGHBOR_SEED).public().as_bytes(),
+            handle: NEIGHBOR_HANDLE.to_owned(),
+            public: NEIGHBOR_PUBLIC.to_vec(),
+            attached: true,
+            addr: neighbor_address(),
+            seq: wall_clock_ms(),
+            mac: ZERO_MAC,
+            sig: ZERO_SIGNATURE,
+        })
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_an_observer_closes_the_connection_of_a_restarted_members_earlier_process_at_its_next_presence_and_lists_it_online()
+     {
+        let lab = Lab::new("observer-restart").await;
+        let mut neighbor = start_silent_neighbor().await;
+        lab.write_network_config(&[NEIGHBOR_SEED]);
+        let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
+        let (mut effects, _operator_effects) = lab.effects(
+            vec![neighbor.address.clone()],
+            Box::pin(async move { drop(interrupted.await) }),
+        );
+        effects.monotonic = clock_moving_past_any_silence_at_each_reading();
+        let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap()).unwrap();
+        let observation = start_observation(&setup, effects).await.unwrap();
+        let observer_host = Arc::clone(&observation.host);
+        let mut tail_output = Vec::new();
+
+        let (tail_result, earlier_closed) =
+            tokio::join!(observation.tail(&mut tail_output), async {
+                next_presence_request(&mut neighbor.topic, PAYLOAD_WAIT).await;
+                let observer = secret_key(OBSERVER_SEED).public();
+                let earlier = neighbor
+                    .endpoint
+                    .connect(observer, crate::net::endpoint::DIRECT_ALPN)
+                    .await
+                    .unwrap();
+                answer_on(&earlier, introduce_from_neighbor()).await;
+                neighbor
+                    .topic
+                    .broadcast(&secret_key(NEIGHBOR_SEED), restarted_neighbor_presence())
+                    .await
+                    .unwrap();
+                let closed = tokio::time::timeout(SUPERSEDED_CLOSE_WAIT, earlier.closed()).await;
+                interrupt.send(()).unwrap_or_default();
+                closed
+            });
+
+        tail_result.unwrap();
+        let Ok(iroh::endpoint::ConnectionError::ApplicationClosed(close)) = earlier_closed else {
+            panic!("the observer kept the earlier process's connection: {earlier_closed:?}");
+        };
+        assert_eq!(
+            close.error_code,
+            iroh::endpoint::VarInt::from_u32(crate::net::direct::SUPERSEDED_CONNECTION_CLOSE_CODE)
+        );
+        let listed: Vec<String> = observer_host
+            .table()
+            .peers(wall_clock_ms())
+            .map(peer_line)
+            .collect();
+        assert_eq!(
+            listed,
+            [format!(
+                "{NEIGHBOR_HANDLE}\tonline\ttrue\t{}\n",
+                String::from_utf8_lossy(NEIGHBOR_PUBLIC)
+            )]
         );
         drop(lab);
     }
