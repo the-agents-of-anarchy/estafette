@@ -697,6 +697,7 @@ mod spec_3_15_two_members_through_the_live_host {
         }
     }
 
+    /// Waits until each member lists the other online.
     #[track_caller]
     fn meet(first: &mut LabMember, second: &mut LabMember) {
         first
@@ -707,11 +708,13 @@ mod spec_3_15_two_members_through_the_live_host {
             .peer_within(&first.handle, PRESENCE_WAIT, online);
     }
 
+    /// Sends the body to the handle through the member's send tool and returns the envelope.
     #[track_caller]
     fn send(from: &mut LabMember, to: &str, body: &str) -> Value {
         from.member.call("send", &json!({ "to": to, "body": body }))
     }
 
+    /// The peer of that handle as the member's peers tool lists it now, if it lists it.
     #[track_caller]
     fn listed_peer(member: &mut McpServer, handle: &str) -> Option<Value> {
         member.call("peers", &json!({}))["result"]["peers"]
@@ -746,6 +749,7 @@ mod spec_3_15_two_members_through_the_live_host {
         parse_secret_key(&fs::read_to_string(sidecar).unwrap()).unwrap()
     }
 
+    /// The Presence of the largest size spec 3.7 allows, every field at its bound.
     fn largest_presence() -> Payload {
         let relays = (0..SPEC_RELAY_URLS_PER_ADDR).map(|relay| {
             let host_bytes = SPEC_RELAY_URL_MAX_BYTES - RELAY_URL_FRAME_BYTES;
@@ -834,6 +838,7 @@ mod spec_3_15_two_members_through_the_live_host {
         assert_eq!(messages[0]["body"], json!(FIRST_BODY));
     }
 
+    /// Requires bob, whose standard input closed at that instant, listed gone by amy within the spec bound, exited cleanly, and unreachable to amy's send.
     #[track_caller]
     fn assert_stopped_member_is_gone_then_unreachable(
         amy: &mut LabMember,

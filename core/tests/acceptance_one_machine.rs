@@ -164,6 +164,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         open_response(network.keys(), &answer).unwrap()
     }
 
+    /// The node's id with each of its socket ports on the documentation host, an address no connection of this machine runs over.
     fn address_on_a_host_no_connection_runs_over(node: &ScriptedNode) -> iroh::EndpointAddr {
         let address = node.endpoint().endpoint().addr();
         let sockets: Vec<TransportAddr> = address
