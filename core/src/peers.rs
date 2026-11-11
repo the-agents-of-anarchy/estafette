@@ -451,6 +451,11 @@ pub(crate) const fn is_within_announcement_max_age(stamp: u64, now_ms: u64) -> b
     stamp >= now_ms.saturating_sub(ANNOUNCEMENT_MAX_AGE_MS)
 }
 
+/// Whether `seq` is dated no further ahead of the clock reading `now_ms` than the announcement max age.
+pub(crate) const fn is_within_announcement_max_age_ahead(seq: u64, now_ms: u64) -> bool {
+    seq <= now_ms.saturating_add(ANNOUNCEMENT_MAX_AGE_MS)
+}
+
 /// Whether something kept for `period_ms` from `since_ms` is still kept at `now_ms`.
 const fn is_still_kept(period_ms: u64, since_ms: u64, now_ms: u64) -> bool {
     now_ms.saturating_sub(since_ms) < period_ms

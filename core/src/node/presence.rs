@@ -34,8 +34,8 @@ use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::payload::{OpenedPayload, ValidInfrastructure, ZERO_MAC, ZERO_SIGNATURE};
 use crate::peers::{
-    ANNOUNCEMENT_MAX_AGE_MS, Effect, Peer, PeerTable, announced_sender_handle,
-    is_within_announcement_max_age,
+    Effect, Peer, PeerTable, announced_sender_handle, is_within_announcement_max_age,
+    is_within_announcement_max_age_ahead,
 };
 use crate::wire::{
     self, Addr, Departure, Introduce, IntroduceAck, Message, Nonce, Payload, Presence,
@@ -1121,11 +1121,6 @@ impl Announcer {
             ReannounceStep::AnnounceAt(earliest)
         }
     }
-}
-
-/// Whether `seq` is dated no further ahead of the clock reading `now_ms` than the announcement max age.
-const fn is_within_announcement_max_age_ahead(seq: u64, now_ms: u64) -> bool {
-    seq <= now_ms.saturating_add(ANNOUNCEMENT_MAX_AGE_MS)
 }
 
 /// The highest seq heard from each node that asked for Presence within the announcement max age.
