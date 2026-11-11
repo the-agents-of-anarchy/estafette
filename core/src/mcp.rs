@@ -45,21 +45,37 @@ const SERVER_NAME: &str = "estafette";
 const SERVER_INPUT_BUFFER_BYTES: usize = 64 * 1024;
 /// The six tools of spec 3.10 (D28).
 const TOOL_COUNT: usize = 6;
+/// The JSON Schema keyword naming a value's type.
 const SCHEMA_TYPE_KEY: &str = "type";
+/// The JSON Schema type of a tool's arguments.
 const SCHEMA_OBJECT_TYPE: &str = "object";
+/// The JSON Schema keyword listing an object's properties.
 const SCHEMA_PROPERTIES_KEY: &str = "properties";
+/// The JSON Schema keyword listing the properties an object must carry.
 const SCHEMA_REQUIRED_KEY: &str = "required";
+/// The JSON Schema keyword that admits or refuses properties beyond those listed.
 const SCHEMA_ADDITIONAL_PROPERTIES_KEY: &str = "additionalProperties";
+/// The JSON Schema keyword giving the schema of an array's items.
 const SCHEMA_ITEMS_KEY: &str = "items";
+/// The JSON Schema keyword bounding a number from below.
 const SCHEMA_MINIMUM_KEY: &str = "minimum";
+/// The JSON Schema keyword bounding a string's length.
 const SCHEMA_MAX_LENGTH_KEY: &str = "maxLength";
+/// The JSON Schema type of text.
 const SCHEMA_STRING_TYPE: &str = "string";
+/// The JSON Schema type of a list.
 const SCHEMA_ARRAY_TYPE: &str = "array";
+/// The JSON Schema type of a whole number.
 const SCHEMA_INTEGER_TYPE: &str = "integer";
+/// The argument naming the card, spec 3.10.
 const CARD_ARGUMENT: &str = "card";
+/// The argument carrying the member's description, spec 3.10.
 const DESCRIPTION_ARGUMENT: &str = "description";
+/// The argument naming the receiving handles, spec 3.10.
 const TO_ARGUMENT: &str = "to";
+/// The argument carrying the message body, spec 3.10.
 const BODY_ARGUMENT: &str = "body";
+/// The argument naming the sequence after which the inbox is read, spec 3.10.
 const SINCE_ARGUMENT: &str = "since";
 
 /// Binds the node's endpoint under the card key, the gate key and the relays of the known hosts, as the composition root binds it.
@@ -103,7 +119,6 @@ pub struct ServerEffects {
 pub enum ServerRecord {
     LockTaskFailed(JoinError),
     ListingTaskFailed(JoinError),
-    NetworkRefused(NodeError),
     EndpointUnbound(BindError),
     NodeNotStarted(NodeError),
     HandshakeFailed(Box<ServerInitializeError>),
@@ -145,9 +160,9 @@ impl fmt::Display for ServerRecord {
             Self::ListingTaskFailed(source) => write!(
                 formatter,
                 "list_cards answered {}: the listing task did not finish: {source}",
-                REGISTRY_UNREADABLE.code()
+                LISTING_TASK_NOT_FINISHED.code()
             ),
-            Self::NetworkRefused(source) | Self::NodeNotStarted(source) => write!(
+            Self::NodeNotStarted(source) => write!(
                 formatter,
                 "init answered {}: {source}",
                 NODE_NOT_STARTED.code()
@@ -158,7 +173,11 @@ impl fmt::Display for ServerRecord {
                 NODE_NOT_STARTED.code()
             ),
             Self::HandshakeFailed(source) => {
-                write!(formatter, "the MCP handshake failed: {source}")
+                write!(
+                    formatter,
+                    "the MCP handshake failed: {}",
+                    handshake_failure_reason(source)
+                )
             }
             Self::AnsweringFailed(source) => {
                 write!(formatter, "the MCP server stopped answering: {source}")
@@ -173,6 +192,19 @@ impl fmt::Display for ServerRecord {
                 "reading standard input failed and is treated as its end: {source}"
             ),
         }
+    }
+}
+
+/// Why a handshake failed, said without the client's message that the library's own text prints in full.
+fn handshake_failure_reason(failure: &ServerInitializeError) -> String {
+    match failure {
+        ServerInitializeError::ExpectedInitializeRequest(_) => {
+            "the first message was not an initialize request".to_owned()
+        }
+        ServerInitializeError::UnexpectedInitializeResponse(_) => {
+            "the client answered the initialize call with an unexpected result".to_owned()
+        }
+        other => other.to_string(),
     }
 }
 
@@ -368,7 +400,7 @@ impl Server {
     ) -> Result<Node, ErrorCode> {
         let network = Network::new(self.served.config.clone(), self.served.config_path.clone())
             .map_err(|refused| {
-                self.recorded(ServerRecord::NetworkRefused(refused), NODE_NOT_STARTED)
+                self.recorded(ServerRecord::NodeNotStarted(refused), NODE_NOT_STARTED)
             })?;
         let endpoint = (self.effects.bind_endpoint)(
             lock.secret_key().clone(),
@@ -434,7 +466,7 @@ impl Server {
             )),
             Err(failure) => Err(self.recorded(
                 ServerRecord::ListingTaskFailed(failure),
-                REGISTRY_UNREADABLE,
+                LISTING_TASK_NOT_FINISHED,
             )),
         }
     }
@@ -607,6 +639,9 @@ const NODE_NOT_STARTED: ErrorCode = ErrorCode::Unreachable;
 
 /// The error code of a `list_cards` whose registry could not be read, the code a card file that cannot be read gets at init.
 const REGISTRY_UNREADABLE: ErrorCode = ErrorCode::CardInvalid;
+
+/// The error code of a `list_cards` whose listing task ended without a result, the code of an unreadable registry.
+const LISTING_TASK_NOT_FINISHED: ErrorCode = REGISTRY_UNREADABLE;
 
 /// The error code of a claim whose sidecar lock task ended without a result.
 const LOCK_TASK_FAILED: ErrorCode = ErrorCode::SidecarInvalid;
@@ -1052,7 +1087,7 @@ mod tests {
 
     impl Machine {
         fn new(tag: &str) -> Self {
-            let root = std::env::temp_dir().join(format!("u24-{tag}-{}", std::process::id()));
+            let root = std::env::temp_dir().join(format!("mcp-{tag}-{}", std::process::id()));
             drop(fs::remove_dir_all(&root));
             fs::create_dir_all(&root).unwrap();
             Self { root }
@@ -1389,7 +1424,7 @@ mod tests {
                     json!({
                         "protocolVersion": CLIENT_PROTOCOL_VERSION,
                         "capabilities": {},
-                        "clientInfo": { "name": "u24-test", "version": "0" }
+                        "clientInfo": { "name": "estafette-mcp-test", "version": "0" }
                     }),
                 )
                 .await;
@@ -1462,6 +1497,70 @@ mod tests {
             exit.unwrap().unwrap(),
             Exit::Stopped(RuntimeShutdown::InBackground)
         );
+    }
+
+    #[tokio::test]
+    async fn spec_3_9_sigint_ends_the_session_with_its_runtime_awaited() {
+        let machine = Machine::new("sigint");
+        let mut client = start_server(&machine, ServerPlan::alone(FIRST_PROCESS_ID));
+        client.initialize().await;
+
+        client.signals.send(ShutdownSignal::Interrupt).unwrap();
+        let exit = tokio::time::timeout(RESPONSE_WAIT, client.exit).await;
+
+        assert_eq!(
+            exit.unwrap().unwrap(),
+            Exit::Stopped(RuntimeShutdown::Awaited)
+        );
+    }
+
+    #[tokio::test]
+    async fn spec_3_9_sighup_ends_the_session_with_its_runtime_awaited() {
+        let machine = Machine::new("sighup");
+        let mut client = start_server(&machine, ServerPlan::alone(FIRST_PROCESS_ID));
+        client.initialize().await;
+
+        client.signals.send(ShutdownSignal::Hangup).unwrap();
+        let exit = tokio::time::timeout(RESPONSE_WAIT, client.exit).await;
+
+        assert_eq!(
+            exit.unwrap().unwrap(),
+            Exit::Stopped(RuntimeShutdown::Awaited)
+        );
+    }
+
+    #[tokio::test]
+    async fn spec_3_10_a_failed_handshake_is_recorded_without_the_clients_first_message() {
+        const CLIENT_SECRET_TEXT: &str = "text-only-this-client-holds";
+        let machine = Machine::new("handshake-record");
+        let (recorded, mut records) = mpsc::unbounded_channel();
+        let mut client = start_server(
+            &machine,
+            ServerPlan {
+                report: Arc::new(move |record: ServerRecord| {
+                    recorded.send(record.to_string()).unwrap();
+                }),
+                ..ServerPlan::alone(FIRST_PROCESS_ID)
+            },
+        );
+
+        client
+            .write_message(&json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/cancelled",
+                "params": { "requestId": 1, "reason": CLIENT_SECRET_TEXT }
+            }))
+            .await;
+        let record = tokio::time::timeout(RESPONSE_WAIT, records.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            record,
+            "the MCP handshake failed: the first message was not an initialize request"
+        );
+        assert!(!record.contains(CLIENT_SECRET_TEXT), "{record}");
     }
 
     #[tokio::test]
@@ -2082,6 +2181,27 @@ mod tests {
         assert_eq!(claimed["ok"], json!(true));
         assert_eq!(before["tools"].as_array().unwrap().len(), SPEC_TOOL_COUNT);
         assert_eq!(after, before);
+    }
+
+    const fn position_in_the_tool_list(tool: ToolName) -> usize {
+        match tool {
+            ToolName::ListCards => 0,
+            ToolName::Init => 1,
+            ToolName::Peers => 2,
+            ToolName::Send => 3,
+            ToolName::Broadcast => 4,
+            ToolName::Inbox => 5,
+        }
+    }
+
+    #[test]
+    fn spec_3_10_the_tool_list_holds_each_of_the_six_tools_once_in_declaration_order() {
+        let positions: Vec<usize> = ToolName::ALL
+            .into_iter()
+            .map(position_in_the_tool_list)
+            .collect();
+
+        assert_eq!(positions, (0..SPEC_TOOL_COUNT).collect::<Vec<usize>>());
     }
 
     fn every_tool_call() -> Vec<(&'static str, Value)> {
