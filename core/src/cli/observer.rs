@@ -2249,6 +2249,89 @@ mod tests {
         })
     }
 
+    /// A process under the neighbor's card that is gone the way a killed process is: the runtime it ran on is no longer driven, so its connection falls silent and no close is ever sent.
+    struct GoneProcess {
+        runtime: tokio::runtime::Runtime,
+        endpoint: NodeEndpoint,
+        connection: iroh::endpoint::Connection,
+    }
+
+    impl GoneProcess {
+        /// Runs a second process under the neighbor's card on a runtime of its own, introduces it to the observer on a direct connection, then stops driving it.
+        async fn introduced_to(observer: EndpointAddr) -> Self {
+            tokio::task::spawn_blocking(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let (endpoint, connection) = runtime.block_on(async {
+                    let endpoint = bind_endpoint(secret_key(NEIGHBOR_SEED)).await;
+                    let observer_id = observer.id;
+                    endpoint.replace_address(observer);
+                    let connection = endpoint
+                        .endpoint()
+                        .connect(observer_id, crate::net::endpoint::DIRECT_ALPN)
+                        .await
+                        .unwrap();
+                    answer_on(&connection, introduce_from_neighbor()).await;
+                    (endpoint, connection)
+                });
+                Self {
+                    runtime,
+                    endpoint,
+                    connection,
+                }
+            })
+            .await
+            .unwrap()
+        }
+
+        /// Drives the process again only to read how the observer ended its connection, none when it did not end within the wait.
+        async fn connection_end_within(
+            self,
+            within: Duration,
+        ) -> Option<iroh::endpoint::ConnectionError> {
+            tokio::task::spawn_blocking(move || {
+                let Self {
+                    runtime,
+                    endpoint,
+                    connection,
+                } = self;
+                let ended = runtime.block_on(async {
+                    tokio::time::timeout(within, connection.closed()).await.ok()
+                });
+                drop(runtime);
+                drop((endpoint, connection));
+                ended
+            })
+            .await
+            .unwrap()
+        }
+    }
+
+    /// Waits until the observer has taken a Presence of the neighbor sent at or after `sent_ms`, failing by name when it has not within the payload wait.
+    async fn wait_until_the_observer_takes_the_neighbors_presence_sent_at(
+        observer: &ObserverHost,
+        sent_ms: u64,
+    ) {
+        let neighbor = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        let taken = tokio::time::timeout(PAYLOAD_WAIT, async {
+            while !observer
+                .rows
+                .table()
+                .peers(wall_clock_ms())
+                .any(|peer| peer.card == neighbor && peer.last_seen >= sent_ms)
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            taken.is_ok(),
+            "the observer took no presence of the neighbor sent at {sent_ms} within {PAYLOAD_WAIT:?}"
+        );
+    }
+
     #[tokio::test]
     async fn spec_3_8_an_observer_closes_the_connection_of_a_restarted_members_earlier_process_at_its_next_presence()
      {
@@ -2256,16 +2339,17 @@ mod tests {
         let mut neighbor = start_silent_neighbor().await;
         lab.write_network_config(&[NEIGHBOR_SEED]);
         let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
-        let (mut effects, _operator_effects) = lab.effects(
+        let (effects, _operator_effects) = lab.effects(
             vec![neighbor.address.clone()],
             Box::pin(async move { drop(interrupted.await) }),
         );
-        effects.monotonic = clock_moving_past_any_silence_at_each_reading();
         let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap()).unwrap();
         let observation = start_observation(&setup, effects).await.unwrap();
+        let observer_host = Arc::clone(&observation.host);
+        let observer_address = observation.endpoint.endpoint().addr();
         let mut tail_output = Vec::new();
 
-        let (tail_result, earlier_closed) =
+        let (tail_result, (earlier_closed, live_direct_closed, neighbor_events)) =
             tokio::join!(observation.tail(&mut tail_output), async {
                 assert!(
                     next_presence_request(&mut neighbor.topic, PAYLOAD_WAIT)
@@ -2274,12 +2358,15 @@ mod tests {
                     "the observer sent no presence request within {PAYLOAD_WAIT:?}"
                 );
                 let observer = secret_key(OBSERVER_SEED).public();
-                let earlier = neighbor
+                let earlier = GoneProcess::introduced_to(observer_address).await;
+                let live_direct = neighbor
                     .endpoint
                     .connect(observer, crate::net::endpoint::DIRECT_ALPN)
                     .await
                     .unwrap();
-                answer_on(&earlier, introduce_from_neighbor()).await;
+                answer_on(&live_direct, probe_from_neighbor()).await;
+                let _witnesses = lab.start_members(two_members()).await;
+                let presence_sent_ms = wall_clock_ms();
                 neighbor
                     .topic
                     .broadcast(
@@ -2288,18 +2375,37 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                let closed = tokio::time::timeout(SUPERSEDED_CLOSE_WAIT, earlier.closed()).await;
+                wait_until_the_observer_takes_the_neighbors_presence_sent_at(
+                    &observer_host,
+                    presence_sent_ms,
+                )
+                .await;
+                let closed = earlier.connection_end_within(SUPERSEDED_CLOSE_WAIT).await;
+                let live_direct_closed = live_direct.close_reason();
+                let mut neighbor_events = Vec::new();
+                while let Ok(Some(Ok(event))) =
+                    tokio::time::timeout(Duration::ZERO, neighbor.topic.next_event()).await
+                {
+                    neighbor_events.push(event);
+                }
                 interrupt.send(()).unwrap_or_default();
-                closed
+                (closed, live_direct_closed, neighbor_events)
             });
 
         tail_result.unwrap();
-        let Ok(iroh::endpoint::ConnectionError::ApplicationClosed(close)) = earlier_closed else {
+        let Some(iroh::endpoint::ConnectionError::ApplicationClosed(close)) = earlier_closed else {
             panic!("the observer kept the earlier process's connection: {earlier_closed:?}");
         };
         assert_eq!(
             close.error_code,
             iroh::endpoint::VarInt::from_u32(crate::net::direct::SUPERSEDED_CONNECTION_CLOSE_CODE)
+        );
+        assert_eq!(live_direct_closed, None);
+        assert!(
+            !neighbor_events
+                .iter()
+                .any(|event| matches!(event, GossipEvent::NeighborDown(node) if *node == secret_key(OBSERVER_SEED).public())),
+            "the observer closed its gossip connection to the restarted neighbor: {neighbor_events:?}"
         );
         drop(lab);
     }
