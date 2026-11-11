@@ -36,13 +36,18 @@ impl DrivenRuntime {
     pub const fn handle(&self) -> &Handle {
         &self.handle
     }
-}
 
-impl Drop for DrivenRuntime {
-    fn drop(&mut self) {
+    /// Stops driving the runtime and waits until it is gone with every task it ran, a no-op once stopped.
+    pub fn stop(&mut self) {
         drop(self.stop_driver.take());
         if let Some(driver) = self.driver.take() {
             drop(driver.join());
         }
+    }
+}
+
+impl Drop for DrivenRuntime {
+    fn drop(&mut self) {
+        self.stop();
     }
 }

@@ -29,7 +29,7 @@ use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use crate::handle::Handle;
 use crate::invite::{InviteError, render_host_line};
 use crate::keys::{KeyError, generate_secret_key, parse_secret_key, render_secret_key};
-use crate::net::direct::DirectHost;
+use crate::net::direct::{AcceptedConnections, DirectHost};
 use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
@@ -578,11 +578,12 @@ fn relay_site(bind_address: IpAddr, domain: &RelayDomain, certificate_cache: Pat
     }
 }
 
-/// What the bootstrap node answers on the direct protocol: no card, never attached, its own relay in every address.
+/// What the bootstrap node answers on the direct protocol: no card, never attached, its own relay in every address, and the register of its endpoint's connections.
 #[derive(Clone)]
 struct HostAnswers {
     endpoint: iroh::Endpoint,
     relay: wire::RelayUrl,
+    connections: AcceptedConnections,
 }
 
 impl HostAnswers {
@@ -596,8 +597,8 @@ impl HostAnswers {
 }
 
 impl DirectHost for HostAnswers {
-    fn accepted_connections(&self) -> crate::net::direct::AcceptedConnections {
-        crate::net::direct::AcceptedConnections::new(std::sync::Arc::new(tokio::time::Instant::now))
+    fn accepted_connections(&self) -> AcceptedConnections {
+        self.connections.clone()
     }
 
     fn is_stopping(&self) -> bool {
@@ -667,6 +668,7 @@ impl BootstrapNode {
         let answers = HostAnswers {
             endpoint: endpoint.endpoint().clone(),
             relay: domain.wire_url.clone(),
+            connections: AcceptedConnections::new(Arc::new(Instant::now)),
         };
         let (router, gossip) = serve(&endpoint, &keys, &answers);
         let bootstrap = files.other_hosts.iter().map(|host| host.id).collect();

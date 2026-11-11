@@ -294,6 +294,70 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     }
 
     #[test]
+    fn spec_3_15_test_18_a_killed_member_restarted_with_its_card_is_delivered_to_within_1_s_of_its_new_presence_while_the_sender_still_holds_a_gossip_connection_to_its_killed_process()
+     {
+        let network = LocalNetwork::create("r1g", &RunRecordKeeping::from_environment());
+        let amy_card = network.create_card("amy-card", "amy");
+        let bob_card = network.create_card("bob-card", "bob");
+        let bob_key = network.card_key(&bob_card);
+        let first_session = network.scripted_member(&bob_key, "bob");
+        let mut amy = timed("amy starts", || network.start_member());
+        timed(
+            "amy claims its card through the first bob, who links amy over gossip",
+            || amy.init_through(&amy_card, &first_session),
+        );
+        timed("the first bob's presence", || {
+            first_session.broadcast(presence_signed_by(
+                network.keys(),
+                &bob_key,
+                "bob",
+                &loopback_address_of(&first_session),
+            ));
+        });
+        timed("amy lists the first bob online", || {
+            amy.peer_within("bob", PRESENCE_WAIT, online)
+        });
+        let first_send = timed("amy's send to bob before the kill", || {
+            send(&mut amy, "bob")
+        });
+
+        timed("the first bob is killed with its connections open", || {
+            first_session.vanish();
+        });
+        let killed_ms = wall_clock_ms();
+        let second_host = network.stand_in_host();
+        timed("a second host links amy", || {
+            second_host.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
+        });
+        let mut restarted = timed("the restarted bob starts", || network.start_member());
+        timed("the restarted bob claims its card", || {
+            restarted.init_through(&bob_card, &second_host)
+        });
+        timed(
+            "amy lists the restarted bob online, seen after the kill",
+            || {
+                amy.peer_within("bob", PRESENCE_WAIT, |bob| {
+                    online(bob) && bob["last_seen"].as_u64().unwrap() > killed_ms
+                })
+            },
+        );
+        let new_presence_reached = Instant::now();
+        let sent = timed("amy's send to the restarted bob", || send(&mut amy, "bob"));
+        let delivered_after = new_presence_reached.elapsed();
+
+        assert_eq!(
+            first_send["result"]["delivered"],
+            json!(true),
+            "{first_send}"
+        );
+        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
+        assert!(
+            delivered_after <= SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
+            "{delivered_after:?}"
+        );
+    }
+
+    #[test]
     fn spec_3_15_test_4_a_send_to_a_member_gone_by_the_end_of_input_after_an_earlier_send_is_unreachable()
      {
         let network = LocalNetwork::create("r2", &RunRecordKeeping::from_environment());

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use estafette::config::NetworkConfig;
 use estafette::crypto::{NetworkKeys, NetworkSecret};
 use estafette::invite::render_host_line;
-use estafette::keys::parse_network_secret;
+use estafette::keys::{parse_network_secret, parse_secret_key};
 use estafette::net::direct::{AcceptedConnections, DirectHost, DirectServer};
 use estafette::net::endpoint::GateFailure;
 use estafette::wire::{self, Addr, HostAddr, Introduce, IntroduceAck, Message, RelayUrl, Version};
@@ -92,6 +92,16 @@ impl LocalNetwork {
         .unwrap();
         self.machine
             .run(&["network", "add-host", NETWORK, &host_line]);
+    }
+
+    /// The secret key the card's sidecar holds, so a scripted node can run under the card a member claims.
+    pub fn card_key(&self, card: &Card) -> SecretKey {
+        let sidecar = self
+            .machine
+            .directories()
+            .card_sidecar_file(NETWORK, &card.name)
+            .unwrap();
+        parse_secret_key(&fs::read_to_string(sidecar).unwrap()).unwrap()
     }
 
     /// Sets the permission bits of the card's sidecar.

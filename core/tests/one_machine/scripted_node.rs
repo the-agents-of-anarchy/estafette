@@ -26,7 +26,7 @@ const DIRECT_ANSWER_WAIT: Duration = Duration::from_secs(15);
 pub struct ScriptedNode {
     runtime: DrivenRuntime,
     endpoint: NodeEndpoint,
-    router: Router,
+    router: Option<Router>,
     topic: GossipSender,
     admitted: Admitted,
     events: Events,
@@ -98,7 +98,7 @@ impl ScriptedNode {
         Self {
             runtime: driven,
             endpoint,
-            router,
+            router: Some(router),
             topic,
             admitted,
             events,
@@ -157,11 +157,19 @@ impl ScriptedNode {
     pub const fn runtime(&self) -> &Handle {
         self.runtime.handle()
     }
+
+    /// Ends the node as a killed process ends: its runtime stops before any connection is closed, so no peer hears a close.
+    pub fn vanish(mut self) {
+        self.runtime.stop();
+        drop(self.router.take());
+    }
 }
 
 impl Drop for ScriptedNode {
     fn drop(&mut self) {
-        drop(self.runtime().block_on(self.router.shutdown()));
+        if let Some(router) = self.router.take() {
+            drop(self.runtime().block_on(router.shutdown()));
+        }
     }
 }
 

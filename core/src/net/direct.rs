@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use iroh::endpoint::{
-    ClosedStream, Connection, ConnectionError, ReadError, ReadToEndError, RecvStream, SendStream,
-    VarInt, WriteError,
+    Closed, ClosedStream, Connection, ConnectionError, ReadError, ReadToEndError, RecvStream,
+    SendStream, VarInt, WeakConnectionHandle, WriteError,
 };
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointId};
@@ -66,14 +66,14 @@ pub trait DirectHost: Send + Sync + 'static {
         introduce: wire::Introduce,
     ) -> IntroduceAck;
 
-    /// The register the direct server keeps the connections it accepted in, shared with whoever closes those of a card.
+    /// The register of every connection the node's endpoint holds, which the endpoint fills and the direct server and the node close those of a card through.
     fn accepted_connections(&self) -> AcceptedConnections;
 }
 
 /// A monotonic clock, read for the instant now.
 pub type MonotonicClock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
-/// The connections the direct server accepted and has not seen close, by the card that dialed each, and the clock their silence is measured on.
+/// Every connection the endpoint's gate let through and has not seen close, of any protocol, dialed or accepted, by the card at its other end, and the clock their silence is measured on.
 #[derive(Clone)]
 pub struct AcceptedConnections {
     held: Arc<Mutex<HashMap<wire::PublicKey, Vec<Accepted>>>>,
@@ -98,17 +98,17 @@ impl AcceptedConnections {
         }
     }
 
-    /// Closes every connection accepted from the card whose process no longer runs, so the endpoint forgets the path it held to that process (spec 3.8, address lookup).
+    /// Closes every connection to or from the card, of any protocol, whose process no longer runs, so the endpoint forgets the path it held to that process (spec 3.8, address lookup).
     pub(crate) fn close_from(&self, card: wire::PublicKey) {
         self.close_from_sparing(card, None);
     }
 
-    /// Closes every connection accepted from the card whose process no longer runs, but the one an Introduce arrived on (spec 3.8, address lookup).
+    /// Closes every connection to or from the card whose process no longer runs, but the one an Introduce arrived on (spec 3.8, address lookup).
     fn close_others_from(&self, card: wire::PublicKey, arrived_on: &Connection) {
         self.close_from_sparing(card, Some(arrived_on.stable_id()));
     }
 
-    /// Closes every connection accepted from the card that has heard nothing from its peer for as long as a gone process is silent, but the spared one.
+    /// Closes every connection to or from the card that has heard nothing from its peer for as long as a gone process is silent, but the spared one.
     fn close_from_sparing(&self, card: wire::PublicKey, spared: Option<usize>) {
         let now = (self.monotonic)();
         let superseded = self
@@ -117,51 +117,79 @@ impl AcceptedConnections {
             .map(|accepted| {
                 accepted
                     .extract_if(.., |accepted| {
-                        Some(accepted.connection.stable_id()) != spared
-                            && accepted.is_from_a_gone_process(now)
+                        Some(accepted.stable_id) != spared && accepted.is_from_a_gone_process(now)
                     })
-                    .map(|accepted| accepted.connection)
+                    .filter_map(|accepted| accepted.connection.upgrade())
                     .collect()
             })
             .unwrap_or_default();
         close_superseded(superseded);
     }
 
-    /// Holds a connection just accepted from the card, forgetting every card left with no connection.
-    fn hold(&self, card: wire::PublicKey, connection: &Connection) {
-        let accepted = Accepted::heard_at(connection, (self.monotonic)());
+    /// Holds a connection the gate just let through and follows what it hears until it closes, keeping it no more alive than its users do.
+    pub(crate) fn hold(&self, connection: &Connection) {
+        let card = *connection.remote_id().as_bytes();
+        let weak = connection.weak_handle();
+        let closed = weak.closed();
+        self.add(card, Accepted::heard_at(connection, (self.monotonic)()));
+        tokio::spawn(
+            self.clone()
+                .follow_hearing(card, connection.stable_id(), weak, closed),
+        );
+    }
+
+    /// Adds the connection under its card, forgetting every card left with no connection.
+    fn add(&self, card: wire::PublicKey, accepted: Accepted) {
         let mut held = self.held();
         held.retain(|_, accepted| !accepted.is_empty());
         held.entry(card).or_default().push(accepted);
     }
 
-    /// Reads what the connection from the card has heard every hearing sample interval until it closes, then forgets it.
-    async fn follow_hearing(self, card: wire::PublicKey, connection: Connection) {
+    /// Reads what the connection to or from the card has heard every hearing sample interval until it closes, then forgets it.
+    async fn follow_hearing(
+        self,
+        card: wire::PublicKey,
+        stable_id: usize,
+        connection: WeakConnectionHandle,
+        closed: impl Future<Output = Option<Closed>>,
+    ) {
+        tokio::pin!(closed);
         loop {
             tokio::select! {
-                _closed = connection.closed() => break,
-                () = sleep(HEARING_SAMPLE_INTERVAL) => self.note_hearing(card, &connection),
+                _closed = &mut closed => break,
+                () = sleep(HEARING_SAMPLE_INTERVAL) => self.note_hearing(card, stable_id, &connection),
             }
         }
-        self.forget(card, &connection);
+        self.forget(card, stable_id);
     }
 
-    /// Takes now as the last time the connection from the card heard from its peer, when it received a datagram since its last reading.
-    fn note_hearing(&self, card: wire::PublicKey, connection: &Connection) {
+    /// Takes now as the last time the connection to or from the card heard from its peer, when it received a datagram since its last reading.
+    fn note_hearing(
+        &self,
+        card: wire::PublicKey,
+        stable_id: usize,
+        connection: &WeakConnectionHandle,
+    ) {
+        let Some(datagrams) = connection
+            .upgrade()
+            .map(|live| live.stats().udp_rx.datagrams)
+        else {
+            return;
+        };
         let now = (self.monotonic)();
         if let Some(accepted) = self.held().get_mut(&card).and_then(|accepted| {
             accepted
                 .iter_mut()
-                .find(|accepted| accepted.connection.stable_id() == connection.stable_id())
+                .find(|accepted| accepted.stable_id == stable_id)
         }) {
-            accepted.note_hearing(now);
+            accepted.note_hearing(datagrams, now);
         }
     }
 
-    /// Forgets a connection from the card that has closed.
-    fn forget(&self, card: wire::PublicKey, closed: &Connection) {
+    /// Forgets a connection to or from the card that has closed.
+    fn forget(&self, card: wire::PublicKey, stable_id: usize) {
         if let Some(accepted) = self.held().get_mut(&card) {
-            accepted.retain(|accepted| accepted.connection.stable_id() != closed.stable_id());
+            accepted.retain(|accepted| accepted.stable_id != stable_id);
         }
     }
 
@@ -171,10 +199,11 @@ impl AcceptedConnections {
     }
 }
 
-/// A connection the direct server accepted, with the count of datagrams it had received when that count last moved and when it was seen to move.
+/// A connection the gate let through, held weakly, with the count of datagrams it had received when that count last moved and when it was seen to move.
 #[derive(Debug)]
 struct Accepted {
-    connection: Connection,
+    connection: WeakConnectionHandle,
+    stable_id: usize,
     datagrams_heard: u64,
     last_heard: Instant,
 }
@@ -183,15 +212,15 @@ impl Accepted {
     /// The connection, taken as heard from its peer at `now`.
     fn heard_at(connection: &Connection, now: Instant) -> Self {
         Self {
-            connection: connection.clone(),
+            connection: connection.weak_handle(),
+            stable_id: connection.stable_id(),
             datagrams_heard: connection.stats().udp_rx.datagrams,
             last_heard: now,
         }
     }
 
-    /// Takes `now` as the last time the peer was heard, when the connection received a datagram since the count was last read.
-    fn note_hearing(&mut self, now: Instant) {
-        let datagrams = self.connection.stats().udp_rx.datagrams;
+    /// Takes `now` as the last time the peer was heard, when the connection's count of received datagrams moved since it was last read.
+    const fn note_hearing(&mut self, datagrams: u64, now: Instant) {
         if datagrams != self.datagrams_heard {
             self.datagrams_heard = datagrams;
             self.last_heard = now;
@@ -339,13 +368,6 @@ impl<H> fmt::Debug for DirectServer<H> {
 impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let sender = *connection.remote_id().as_bytes();
-        self.shared.accepted.hold(sender, &connection);
-        tokio::spawn(
-            self.shared
-                .accepted
-                .clone()
-                .follow_hearing(sender, connection.clone()),
-        );
         while let Ok((send, recv)) = connection.accept_bi().await {
             let shared = Arc::clone(&self.shared);
             let arrived_on = connection.clone();
@@ -777,8 +799,9 @@ mod tests {
     use std::time::Instant;
 
     use iroh::SecretKey;
-    use iroh::endpoint::ReadToEndError;
+    use iroh::endpoint::{ReadToEndError, Side};
     use iroh::protocol::Router;
+    use iroh_gossip::ALPN as GOSSIP_ALPN;
 
     use super::*;
     use crate::card::tests::{SPEC_PUBLIC_CAP_BYTES, public_mapping_of_bytes};
@@ -934,9 +957,15 @@ mod tests {
     }
 
     async fn rig() -> Rig {
-        let host = RecordingHost::with_card(card_of(SERVER_SEED));
+        rig_over(RecordingHost::with_card(card_of(SERVER_SEED))).await
+    }
+
+    /// A server over the host whose endpoint holds every connection in the host's register, as the node's `serve` has it, and a client linked to it.
+    async fn rig_over(host: RecordingHost) -> Rig {
         let server = DirectServer::new(keys(), host.clone());
         let link = link_to(server, ClientTimeouts::SPEC).await;
+        link.server_node
+            .hold_connections_in(host.accepted_connections());
         Rig { host, link }
     }
 
@@ -1319,7 +1348,7 @@ mod tests {
             .get(&card)
             .into_iter()
             .flatten()
-            .map(|accepted| accepted.connection.clone())
+            .filter_map(|accepted| accepted.connection.upgrade())
             .collect()
     }
 
@@ -1359,6 +1388,7 @@ mod tests {
         let client_node = bind_node(CLIENT_SEED).await;
         client_node.replace_address(server_node.endpoint().addr());
         let host = RecordingHost::with_card(card_of(SERVER_SEED));
+        server_node.hold_connections_in(host.accepted_connections());
         let server = Arc::new(DirectServer::new(keys(), host.clone()));
         let (dialed, accepted) = tokio::join!(
             client_node
@@ -1377,6 +1407,7 @@ mod tests {
         raw_exchange(&dialed, &sealed_message_to_server(&keys()))
             .await
             .unwrap();
+        let held_while_serving = connections_accepted_from(&host, card_of(CLIENT_SEED)).len();
 
         serving.abort();
         drop(serving.await);
@@ -1388,6 +1419,7 @@ mod tests {
         })
         .await;
 
+        assert_eq!(held_while_serving, 1);
         assert!(
             all_forgotten.is_ok(),
             "connections still held after the accept was cut short and the connection closed: {:?}",
@@ -1412,11 +1444,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spec_3_8_closing_the_connections_of_a_gone_card_closes_the_gossip_connection_this_endpoint_dialed_to_it()
+     {
+        let this_node = bind_node(SERVER_SEED).await;
+        let gone_node = bind_node(CLIENT_SEED).await;
+        let register = AcceptedConnections::new(clock_reading_every_connection_as_gone());
+        this_node.hold_connections_in(register.clone());
+        this_node.replace_address(gone_node.endpoint().addr());
+        let (dialed, accepted) = tokio::join!(
+            this_node
+                .endpoint()
+                .connect(gone_node.endpoint().id(), GOSSIP_ALPN),
+            async {
+                let incoming = gone_node.endpoint().accept().await.unwrap();
+                incoming.accept().unwrap().await
+            }
+        );
+        let dialed = dialed.unwrap();
+        let _accepted = accepted.unwrap();
+
+        register.close_from(card_of(CLIENT_SEED));
+
+        assert_eq!(dialed.side(), Side::Client);
+        assert_eq!(dialed.close_reason(), Some(ConnectionError::LocallyClosed));
+    }
+
+    #[tokio::test]
     async fn spec_3_8_an_introduce_keeps_the_connection_it_arrived_on_even_one_that_reads_as_gone()
     {
-        let host = RecordingHost::with_card(card_of(SERVER_SEED))
-            .measuring_silence_on(clock_reading_every_connection_as_gone());
-        let link = link_to(DirectServer::new(keys(), host), ClientTimeouts::SPEC).await;
+        let Rig { link, .. } = rig_over(
+            RecordingHost::with_card(card_of(SERVER_SEED))
+                .measuring_silence_on(clock_reading_every_connection_as_gone()),
+        )
+        .await;
         let server = link.server_node.endpoint().id();
 
         let introduced = link
@@ -1438,14 +1498,11 @@ mod tests {
     async fn introduce_beside_an_earlier_connection(
         introduction: wire::Introduce,
     ) -> (Rig, Result<IntroduceAck, DirectError>, Connection) {
-        let host = RecordingHost::with_card(card_of(SERVER_SEED))
-            .measuring_silence_on(clock_reading_every_connection_as_gone());
-        let link = link_to(
-            DirectServer::new(keys(), host.clone()),
-            ClientTimeouts::SPEC,
+        let rig = rig_over(
+            RecordingHost::with_card(card_of(SERVER_SEED))
+                .measuring_silence_on(clock_reading_every_connection_as_gone()),
         )
         .await;
-        let rig = Rig { host, link };
         let earlier = raw_connection(&rig).await;
         raw_exchange(&earlier, &sealed_message_to_server(&keys()))
             .await

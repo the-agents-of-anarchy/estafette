@@ -361,12 +361,13 @@ pub fn seed_lookup_with_known_hosts(endpoint: &NodeEndpoint, hosts: &[KnownHostA
     }
 }
 
-/// Serves the direct protocol and a fresh gossip instance on the endpoint, returning the router that shuts both down with the endpoint, and the gossip.
+/// Serves the direct protocol and a fresh gossip instance on the endpoint, holding every connection of the endpoint in the host's register, returning the router that shuts both down with the endpoint, and the gossip.
 pub fn serve<H: DirectHost + Clone>(
     endpoint: &NodeEndpoint,
     keys: &NetworkKeys,
     host: &H,
 ) -> (Router, Gossip) {
+    endpoint.hold_connections_in(host.accepted_connections());
     let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
     let router = Router::builder(endpoint.endpoint().clone())
         .accept(DIRECT_ALPN, DirectServer::new(keys.clone(), host.clone()))
@@ -424,7 +425,7 @@ impl PeerRows {
         self.accepted_connections.clone()
     }
 
-    /// Applies a Presence to the table and, when it is taken, closes every connection accepted from its card whose process no longer runs (spec 3.8, address lookup).
+    /// Applies a Presence to the table and, when it is taken, closes every connection to or from its card, of any protocol, whose process no longer runs (spec 3.8, address lookup).
     pub(crate) fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
         let effects = self.table().receive_presence(presence, now_ms);
         if effects.contains(&Effect::DropHeldConnection(presence.card)) {

@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError};
 use std::time::Duration;
 
 use iroh::address_lookup::MemoryLookup;
@@ -8,7 +8,8 @@ use iroh::{
 };
 use iroh_gossip::ALPN as GOSSIP_ALPN;
 
-use super::gate::{NONCE_BYTES, NetworkSecretGate};
+use super::direct::AcceptedConnections;
+use super::gate::{ConnectionRegister, NONCE_BYTES, NetworkSecretGate};
 use crate::crypto::GateKey;
 
 pub use super::gate::GateFailure;
@@ -28,12 +29,13 @@ pub struct NodeEndpoint {
     binding: Binding,
 }
 
-/// What every endpoint of the node is bound with: the card key and the gate's key, nonce source and closing sink, the two shared as `Arc`s that each gate calls through a closure since an `Arc` is no `Fn`.
+/// What every endpoint of the node is bound with: the card key and the gate's key, nonce source, closing sink and connection register, the two callbacks shared as `Arc`s that each gate calls through a closure since an `Arc` is no `Fn`.
 struct Binding {
     secret_key: SecretKey,
     gate_key: GateKey,
     fill_nonce: FillNonce,
     report_gate_closing: ReportGateClosing,
+    connections: ConnectionRegister,
 }
 
 impl NodeEndpoint {
@@ -55,6 +57,7 @@ impl NodeEndpoint {
             gate_key,
             fill_nonce: Arc::new(fill_nonce),
             report_gate_closing: Arc::new(report_gate_closing),
+            connections: ConnectionRegister::default(),
         };
         let endpoint = bind_endpoint(&binding, &relay_map, &address_lookup).await?;
         Ok(Self {
@@ -73,6 +76,15 @@ impl NodeEndpoint {
         self.endpoint.close().await;
         self.endpoint = bind_endpoint(&self.binding, &self.relay_map, &self.address_lookup).await?;
         Ok(())
+    }
+
+    /// Holds every connection this endpoint and each endpoint it rebinds to lets through from now on, of any protocol, dialed or accepted, in the register.
+    pub(crate) fn hold_connections_in(&self, register: AcceptedConnections) {
+        *self
+            .binding
+            .connections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(register);
     }
 
     /// The iroh endpoint the gossip layer and the direct protocol run on.
@@ -121,6 +133,7 @@ async fn bind_endpoint(
         binding.secret_key.public(),
         move |nonce: &mut [u8; NONCE_BYTES]| fill_nonce(nonce),
         move |reason| report_gate_closing(reason),
+        Arc::clone(&binding.connections),
     );
     Endpoint::builder(presets::Minimal)
         .secret_key(binding.secret_key.clone())

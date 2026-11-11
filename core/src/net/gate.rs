@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use iroh::EndpointId;
@@ -10,6 +11,7 @@ use iroh_gossip::ALPN as GOSSIP_ALPN;
 use tokio::time::timeout;
 
 use crate::crypto::GateKey;
+use crate::net::direct::AcceptedConnections;
 
 pub const NONCE_BYTES: usize = 32;
 const PROOF_BYTES: usize = blake3::OUT_LEN;
@@ -20,28 +22,47 @@ const GATE_REFUSAL_REASON: &[u8] = b"gate";
 type Nonce = [u8; NONCE_BYTES];
 type Proof = [u8; PROOF_BYTES];
 
-/// The after-handshake hook that closes every gossip connection whose peer does not prove the network secret.
+/// Where the gate holds every connection it lets through: the register the node hands its endpoint, none until it does, shared by every gate of that endpoint and its rebinds.
+pub type ConnectionRegister = Arc<Mutex<Option<AcceptedConnections>>>;
+
+/// The after-handshake hook that closes every gossip connection whose peer does not prove the network secret and holds every connection it lets through in the register.
 pub struct NetworkSecretGate {
     gate_key: GateKey,
     own_id: EndpointId,
     fill_nonce: Box<dyn Fn(&mut Nonce) + Send + Sync>,
     report_closing: Box<dyn Fn(GateFailure) + Send + Sync>,
+    connections: ConnectionRegister,
 }
 
 impl NetworkSecretGate {
-    /// Builds the gate for this endpoint's id under the network's gate key, drawing each nonce from the source and handing each closing reason to the sink.
+    /// Builds the gate for this endpoint's id under the network's gate key, drawing each nonce from the source, handing each closing reason to the sink and holding each connection it lets through in the register.
     pub fn new(
         gate_key: GateKey,
         own_id: EndpointId,
         fill_nonce: impl Fn(&mut Nonce) + Send + Sync + 'static,
         report_closing: impl Fn(GateFailure) + Send + Sync + 'static,
+        connections: ConnectionRegister,
     ) -> Self {
         Self {
             gate_key,
             own_id,
             fill_nonce: Box::new(fill_nonce),
             report_closing: Box::new(report_closing),
+            connections,
         }
+    }
+
+    /// Lets the connection through, holding it in the register when the node has handed one in.
+    fn let_through(&self, connection: &Connection) -> AfterHandshakeOutcome {
+        if let Some(register) = self
+            .connections
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            register.hold(connection);
+        }
+        AfterHandshakeOutcome::accept()
     }
 
     /// Passes when the peer answered this side's nonce correctly and this side answered the peer's, both within the gate timeout.
@@ -100,10 +121,10 @@ impl fmt::Debug for NetworkSecretGate {
 impl EndpointHooks for NetworkSecretGate {
     async fn after_handshake<'a>(&'a self, connection: &'a Connection) -> AfterHandshakeOutcome {
         if connection.alpn() != GOSSIP_ALPN {
-            return AfterHandshakeOutcome::accept();
+            return self.let_through(connection);
         }
         match self.peer_proves_network_secret(connection).await {
-            Ok(()) => AfterHandshakeOutcome::accept(),
+            Ok(()) => self.let_through(connection),
             Err(closing_reason) => {
                 (self.report_closing)(closing_reason);
                 gate_refusal()
