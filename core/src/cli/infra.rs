@@ -22,6 +22,7 @@ use iroh_relay::server::{
 };
 use tokio::time::{Instant, Interval, MissedTickBehavior, interval};
 
+use super::debug::DebugArgs;
 use super::network::NetworkFilesystem;
 use crate::config::{ConfigError, NetworkConfig, write_atomically};
 use crate::crypto::{GateKey, HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, verify_host_certificate};
@@ -114,7 +115,18 @@ pub enum InfrastructureCommand {
         /// The domain name of the relay, whose Let's Encrypt certificate it obtains and whose URL https://<domain>/ it announces
         #[arg(value_parser = parse_relay_domain)]
         domain: RelayDomain,
+        #[command(flatten)]
+        debug: DebugArgs,
     },
+}
+
+impl InfrastructureCommand {
+    /// The `--debug` and `--no-debug` pair the command was given.
+    #[must_use]
+    pub const fn debug(&self) -> &DebugArgs {
+        let Self::RunInfrastructure { debug, .. } = self;
+        debug
+    }
 }
 
 /// The domain name of this host's relay and the relay URL `https://<domain>/` it gives, within the wire's relay URL limit.
@@ -309,6 +321,7 @@ pub async fn run(
         network,
         bind_address,
         domain,
+        ..
     } = command;
     serve_host(
         &network,
@@ -1021,6 +1034,7 @@ mod tests {
             network: NETWORK.parse().unwrap(),
             bind_address: BIND_ADDRESS,
             domain: parse_relay_domain(domain).unwrap(),
+            debug: DebugArgs::default(),
         }
     }
 

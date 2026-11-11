@@ -16,6 +16,7 @@ use tokio::task::JoinError;
 use tokio::time::Instant;
 
 use crate::card::{Card, CardInvalid, CardUnusable};
+use crate::cli::debug::DebugArgs;
 use crate::cli::lines::tab_separated_line;
 use crate::cli::network::NetworkFilesystem;
 use crate::config::{ConfigError, NetworkConfig};
@@ -83,6 +84,8 @@ pub enum ObserverCommand {
         /// The cards directory, replacing the default one
         #[arg(long)]
         cards_dir: Option<PathBuf>,
+        #[command(flatten)]
+        debug: DebugArgs,
     },
     /// Join the network without a card and print each gossip payload as it arrives until interrupted, refusing a network without a configuration file
     Tail {
@@ -91,6 +94,8 @@ pub enum ObserverCommand {
         /// The cards directory, replacing the default one
         #[arg(long)]
         cards_dir: Option<PathBuf>,
+        #[command(flatten)]
+        debug: DebugArgs,
     },
     /// Send one message as the reserved operator card, creating the card when absent, and print the delivery, refusing a network without a configuration file or a card another process holds
     TestSend {
@@ -103,6 +108,8 @@ pub enum ObserverCommand {
         /// The cards directory, replacing the default one
         #[arg(long)]
         cards_dir: Option<PathBuf>,
+        #[command(flatten)]
+        debug: DebugArgs,
     },
 }
 
@@ -123,6 +130,16 @@ impl ObserverCommand {
             Self::ShowPeers { cards_dir, .. }
             | Self::Tail { cards_dir, .. }
             | Self::TestSend { cards_dir, .. } => cards_dir.clone(),
+        }
+    }
+
+    /// The `--debug` and `--no-debug` pair the command was given.
+    #[must_use]
+    pub const fn debug(&self) -> &DebugArgs {
+        match self {
+            Self::ShowPeers { debug, .. }
+            | Self::Tail { debug, .. }
+            | Self::TestSend { debug, .. } => debug,
         }
     }
 }
@@ -1314,6 +1331,7 @@ mod tests {
             &ObserverCommand::ShowPeers {
                 network: NETWORK_NAME.parse().unwrap(),
                 cards_dir: None,
+                debug: DebugArgs::default(),
             },
             &lab.directories,
             &OperatingSystemFilesystem,
@@ -1414,6 +1432,7 @@ mod tests {
         let tail = ObserverCommand::Tail {
             network: NETWORK_NAME.parse().unwrap(),
             cards_dir: None,
+            debug: DebugArgs::default(),
         };
 
         let (tail_result, ()) = tokio::join!(
@@ -1480,6 +1499,7 @@ mod tests {
             cards_dir: None,
             handle: SECOND_HANDLE.parse().unwrap(),
             body: OPERATOR_BODY.to_owned(),
+            debug: DebugArgs::default(),
         };
 
         run(
@@ -1547,6 +1567,7 @@ mod tests {
             cards_dir: None,
             handle: SECOND_HANDLE.parse().unwrap(),
             body: OPERATOR_BODY.to_owned(),
+            debug: DebugArgs::default(),
         }
     }
 
@@ -1827,6 +1848,7 @@ mod tests {
         let show_peers = ObserverCommand::ShowPeers {
             network: NETWORK_NAME.parse().unwrap(),
             cards_dir: None,
+            debug: DebugArgs::default(),
         };
 
         run(
@@ -1883,6 +1905,7 @@ mod tests {
         let show_peers = ObserverCommand::ShowPeers {
             network: NETWORK_NAME.parse().unwrap(),
             cards_dir: None,
+            debug: DebugArgs::default(),
         };
         let effects = lab.effects(vec![neighbor.address.clone()], never_interrupted());
         let mut output = Vec::new();
@@ -2076,6 +2099,7 @@ mod tests {
         let tail = ObserverCommand::Tail {
             network: NETWORK_NAME.parse().unwrap(),
             cards_dir: None,
+            debug: DebugArgs::default(),
         };
 
         let (tail_result, ()) = tokio::join!(
@@ -2180,6 +2204,7 @@ mod tests {
         let tail = ObserverCommand::Tail {
             network: NETWORK_NAME.parse().unwrap(),
             cards_dir: None,
+            debug: DebugArgs::default(),
         };
         let mut tail_output = Vec::new();
 
@@ -2679,6 +2704,7 @@ mod tests {
         let show_peers = ObserverCommand::ShowPeers {
             network: NETWORK_NAME.parse().unwrap(),
             cards_dir: None,
+            debug: DebugArgs::default(),
         };
 
         let refusal = run(

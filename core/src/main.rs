@@ -5,12 +5,13 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use clap::{Parser, Subcommand};
 use estafette::cli::cards::{self, CardCommand, RegistryArgs};
+use estafette::cli::debug::{DebugArgs, Tracing};
 use estafette::cli::doctor::{self, DoctorArgs, DoctorError};
 #[cfg(feature = "relay")]
 use estafette::cli::infra::{
@@ -34,8 +35,10 @@ use estafette::node::{
     Exit, Network, NodeEffects, NodeError, RuntimeShutdown, ShutdownSignal, relay_answers,
 };
 use estafette::sidecar::{self, ThreadSleep};
+use estafette::trace::{RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceRefused};
 use estafette::wire::Nonce;
 use iroh::SecretKey;
+use iroh::endpoint::BindError;
 use tokio::runtime::Runtime;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::mpsc;
@@ -78,9 +81,16 @@ enum Command {
     Mcp {
         #[command(flatten)]
         registry: RegistryArgs,
+        #[command(flatten)]
+        debug: DebugArgs,
     },
     /// Check the configuration file permissions, each card, each sidecar, each known relay and the visibility of a peer, print one line per check, and exit 3 when any check fails
-    Doctor(DoctorArgs),
+    Doctor {
+        #[command(flatten)]
+        arguments: DoctorArgs,
+        #[command(flatten)]
+        debug: DebugArgs,
+    },
 }
 
 #[derive(Debug)]
@@ -100,6 +110,7 @@ enum CommandLineFailure {
     #[cfg(feature = "relay")]
     Infrastructure(InfrastructureCommandError),
     Doctor(DoctorError),
+    Trace(TraceRefused),
 }
 
 impl fmt::Display for CommandLineFailure {
@@ -120,6 +131,7 @@ impl fmt::Display for CommandLineFailure {
             #[cfg(feature = "relay")]
             Self::Infrastructure(source) => write!(formatter, "{source}"),
             Self::Doctor(source) => write!(formatter, "{source}"),
+            Self::Trace(source) => write!(formatter, "{source}"),
         }
     }
 }
@@ -146,38 +158,153 @@ fn run_command(command: Command, environment: impl Fn(&str) -> Option<OsString>)
         ),
         #[cfg(feature = "relay")]
         Command::Infrastructure(command) => {
-            run_infrastructure_command(command, &environment, &mut io::stdout(), &mut io::stderr())
+            run_infrastructure_command(command, &environment, &mut io::stdout(), io::stderr())
         }
         Command::Network { command } => exit_status_after(
             run_network_command(&command, &environment, &mut io::stdout(), &mut io::stderr())
                 .map(|()| ExitStatus::Success),
-            &mut io::stderr(),
+            standard_error_record().as_ref(),
         ),
-        Command::Observer(command) => exit_status_after(
-            run_observer_command(&command, &environment, &mut io::stdout())
-                .map(|()| ExitStatus::Success),
-            &mut io::stderr(),
+        Command::Observer(command) => run_traced(
+            command.debug().tracing(),
+            &environment,
+            command.cards_dir(),
+            io::stderr(),
+            |directories, process| {
+                run_observer_command(&command, directories, process, &mut io::stdout())
+                    .map(|()| ExitStatus::Success)
+            },
         ),
-        Command::Mcp { registry } => {
-            exit_status_after(serve_mcp(registry, &environment), &mut io::stderr())
-        }
-        Command::Doctor(arguments) => exit_status_after(
-            run_doctor_command(&arguments, &environment, &mut io::stdout()),
-            &mut io::stderr(),
+        Command::Mcp { registry, debug } => run_traced(
+            debug.tracing(),
+            &environment,
+            registry.cards_dir.clone(),
+            io::stderr(),
+            |directories, process| serve_mcp(registry, directories, process),
+        ),
+        Command::Doctor { arguments, debug } => run_traced(
+            debug.tracing(),
+            &environment,
+            arguments.registry.cards_dir.clone(),
+            io::stderr(),
+            |directories, process| {
+                run_doctor_command(&arguments, directories, process, &mut io::stdout())
+            },
         ),
     }
 }
 
-/// Says how the process ends after a command: the status it reached, or failure after writing the failure's message to the record.
+/// The run record of one process that starts an endpoint, and its debug trace unless `--no-debug` was given.
+struct ProcessRecord {
+    record: RunRecord,
+    trace: Option<Arc<Trace>>,
+}
+
+/// Runs a command that starts an endpoint: resolves the directories, starts the trace unless `--no-debug` and names its files first on standard error, runs the command, records how it ended, then empties the trace's queues within their bound before the process exits.
+fn run_traced<StandardError: Write + Send + 'static>(
+    tracing: Tracing,
+    environment: impl Fn(&str) -> Option<OsString>,
+    cards_dir: Option<PathBuf>,
+    stderr: StandardError,
+    command: impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure>,
+) -> ExitStatus {
+    let stderr = Arc::new(Mutex::new(stderr));
+    let started = Directories::establish(environment, &OperatingSystemFilesystem, cards_dir)
+        .map_err(CommandLineFailure::Directories)
+        .and_then(|directories| Ok((start_trace(tracing, &directories)?, directories)));
+    let (trace, directories) = match started {
+        Ok(started) => started,
+        Err(failure) => {
+            return exit_status_after(Err(failure), run_record_on(&stderr, None).as_ref());
+        }
+    };
+    if let Some(trace) = &trace {
+        drop(writeln!(
+            stderr.lock().unwrap_or_else(PoisonError::into_inner),
+            "{}",
+            trace.announcement()
+        ));
+    }
+    let process = ProcessRecord {
+        record: run_record_on(&stderr, trace.clone()),
+        trace,
+    };
+    let status = exit_status_after(command(directories, &process), process.record.as_ref());
+    if let Some(trace) = &process.trace {
+        trace.finish();
+    }
+    status
+}
+
+/// The debug trace of this process under `--debug`, its run id from the secure random source and its clocks started now; none under `--no-debug`.
+fn start_trace(
+    tracing: Tracing,
+    directories: &Directories,
+) -> Result<Option<Arc<Trace>>, CommandLineFailure> {
+    match tracing {
+        Tracing::NoDebug => Ok(None),
+        Tracing::Debug => {
+            let mut run_id = [0; RUN_ID_BYTES];
+            fill_with_secure_random_bytes(&mut run_id);
+            let started = std::time::Instant::now();
+            let last_wall_reading = AtomicU64::new(0);
+            let clocks = TraceClocks {
+                monotonic_ms: Arc::new(move || {
+                    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+                }),
+                wall_ms: Arc::new(move || {
+                    wall_clock_reading(SystemTime::now(), &last_wall_reading, &|_event| {})
+                }),
+            };
+            Trace::start(
+                directories,
+                &OperatingSystemFilesystem,
+                RunId::from_random_bytes(run_id),
+                clocks,
+                TraceBounds::SPEC,
+            )
+            .map(|trace| Some(Arc::new(trace)))
+            .map_err(CommandLineFailure::Trace)
+        }
+    }
+}
+
+/// The run record written to the standard error stream and, when there is one, into the trace.
+fn run_record_on<StandardError: Write + Send + 'static>(
+    stderr: &Arc<Mutex<StandardError>>,
+    trace: Option<Arc<Trace>>,
+) -> RunRecord {
+    let stderr = Arc::clone(stderr);
+    Arc::new(move |event: Event| {
+        drop(write_run_record(
+            &mut *stderr.lock().unwrap_or_else(PoisonError::into_inner),
+            &event,
+        ));
+        if let Some(trace) = &trace {
+            trace.record(&event);
+        }
+    })
+}
+
+/// Binds the endpoint, then names it in the trace when there is one.
+async fn bound_in_trace(
+    binding: impl Future<Output = Result<NodeEndpoint, BindError>>,
+    trace: Option<Arc<Trace>>,
+) -> Result<NodeEndpoint, BindError> {
+    let endpoint = binding.await?;
+    if let Some(trace) = trace {
+        trace.note_endpoint(endpoint.endpoint().id());
+    }
+    Ok(endpoint)
+}
+
+/// Says how the process ends after a command: the status it reached, or failure after recording the failure's message.
 fn exit_status_after(
     outcome: Result<ExitStatus, CommandLineFailure>,
-    record: &mut impl Write,
+    record: &dyn Fn(Event),
 ) -> ExitStatus {
     outcome.unwrap_or_else(|failure| {
-        drop(write_run_record(
-            record,
-            &ProcessEvent::CommandFailed(Box::new(failure)).into(),
-        ));
+        record(ProcessEvent::CommandFailed(Box::new(failure)).into());
         ExitStatus::Failure
     })
 }
@@ -185,11 +312,9 @@ fn exit_status_after(
 /// Serves the MCP tools of the network until the session ends, building every side effect the server runs on.
 fn serve_mcp(
     registry: RegistryArgs,
-    environment: impl Fn(&str) -> Option<OsString>,
+    directories: Directories,
+    process: &ProcessRecord,
 ) -> Result<ExitStatus, CommandLineFailure> {
-    let directories =
-        Directories::establish(environment, &OperatingSystemFilesystem, registry.cards_dir)
-            .map_err(CommandLineFailure::Directories)?;
     let config_path = directories
         .network_config_file(registry.network.as_str())
         .map_err(CommandLineFailure::Directories)?;
@@ -202,7 +327,8 @@ fn serve_mcp(
         .build()
         .map_err(CommandLineFailure::Runtime)?;
     let process_id = std::process::id();
-    let record = standard_error_record();
+    let record = Arc::clone(&process.record);
+    let trace = process.trace.clone();
     let exit = runtime.block_on(async move {
         let inbox = InboxSocket::start(
             &directories,
@@ -224,7 +350,7 @@ fn serve_mcp(
             tokio::io::stdout(),
             signals,
             served,
-            server_effects(Arc::new(inbox), record),
+            server_effects(Arc::new(inbox), record, trace),
         )
         .await)
     })?;
@@ -256,7 +382,11 @@ fn forward_shutdown_signals() -> Result<mpsc::UnboundedReceiver<ShutdownSignal>,
 }
 
 /// The side effects of the MCP server and its node: the clocks, a secure random source, the endpoint binding, the run record, and the filesystem.
-fn server_effects(inbox: Arc<InboxSocket>, record: RunRecord) -> ServerEffects {
+fn server_effects(
+    inbox: Arc<InboxSocket>,
+    record: RunRecord,
+    trace: Option<Arc<Trace>>,
+) -> ServerEffects {
     let gate_record = Arc::clone(&record);
     ServerEffects {
         node: NodeEffects {
@@ -268,13 +398,16 @@ fn server_effects(inbox: Arc<InboxSocket>, record: RunRecord) -> ServerEffects {
             probe_relay: Arc::new(|relay| Box::pin(relay_answers(relay))),
         },
         bind_endpoint: Arc::new(move |card_key, gate_key, relays, connections| {
-            Box::pin(NodeEndpoint::bind(
-                card_key,
-                gate_key,
-                relays,
-                fill_with_secure_random_bytes,
-                gate_closing_recorder(Arc::clone(&gate_record)),
-                connections,
+            Box::pin(bound_in_trace(
+                NodeEndpoint::bind(
+                    card_key,
+                    gate_key,
+                    relays,
+                    fill_with_secure_random_bytes,
+                    gate_closing_recorder(Arc::clone(&gate_record)),
+                    connections,
+                ),
+                trace.clone(),
             ))
         }),
         registry: Arc::new(OperatingSystemFilesystem),
@@ -332,7 +465,7 @@ fn accept_failure_recorder(record: RunRecord) -> impl Fn(io::Error) + Send + Syn
 
 /// The run record written to standard error alone.
 fn standard_error_record() -> RunRecord {
-    Arc::new(|event: Event| drop(write_run_record(&mut io::stderr(), &event)))
+    run_record_on(&Arc::new(Mutex::new(io::stderr())), None)
 }
 
 /// Shuts the runtime down as the session asked: awaited within its limit, or in the background, so a pending read of standard input never holds the exit.
@@ -386,14 +519,11 @@ struct ObserverRuntime {
 }
 
 fn observer_runtime(
-    environment: impl Fn(&str) -> Option<OsString>,
-    cards_dir: Option<PathBuf>,
+    directories: Directories,
+    process: &ProcessRecord,
     interruption: Interruption,
 ) -> Result<ObserverRuntime, CommandLineFailure> {
-    let directories = Arc::new(
-        Directories::establish(environment, &OperatingSystemFilesystem, cards_dir)
-            .map_err(CommandLineFailure::Directories)?,
-    );
+    let directories = Arc::new(directories);
     let started_at_milliseconds = unix_milliseconds_of(SystemTime::now())?;
     let started = Instant::now();
     let clock = move || {
@@ -408,12 +538,8 @@ fn observer_runtime(
         let _inside_runtime = runtime.enter();
         interrupt_for(interruption)?
     };
-    let (effects, operator_effects) = observer_effects(
-        Arc::clone(&directories),
-        clock,
-        interrupted,
-        standard_error_record(),
-    );
+    let (effects, operator_effects) =
+        observer_effects(Arc::clone(&directories), clock, interrupted, process);
     Ok(ObserverRuntime {
         directories,
         runtime,
@@ -424,7 +550,8 @@ fn observer_runtime(
 
 fn run_observer_command(
     command: &ObserverCommand,
-    environment: impl Fn(&str) -> Option<OsString>,
+    directories: Directories,
+    process: &ProcessRecord,
     result: &mut (impl Write + Send),
 ) -> Result<(), CommandLineFailure> {
     let ObserverRuntime {
@@ -432,7 +559,7 @@ fn run_observer_command(
         runtime,
         effects,
         operator_effects,
-    } = observer_runtime(environment, command.cards_dir(), command.interruption())?;
+    } = observer_runtime(directories, process, command.interruption())?;
     runtime
         .block_on(observer::run(
             command,
@@ -448,7 +575,8 @@ fn run_observer_command(
 
 fn run_doctor_command(
     arguments: &DoctorArgs,
-    environment: impl Fn(&str) -> Option<OsString>,
+    directories: Directories,
+    process: &ProcessRecord,
     result: &mut impl Write,
 ) -> Result<ExitStatus, CommandLineFailure> {
     let ObserverRuntime {
@@ -456,11 +584,7 @@ fn run_doctor_command(
         runtime,
         effects,
         operator_effects,
-    } = observer_runtime(
-        environment,
-        arguments.registry.cards_dir.clone(),
-        doctor::INTERRUPTION,
-    )?;
+    } = observer_runtime(directories, process, doctor::INTERRUPTION)?;
     runtime
         .block_on(doctor::run(
             arguments,
@@ -478,8 +602,10 @@ fn observer_effects(
     directories: Arc<Directories>,
     clock: impl Fn() -> u64 + Send + Sync + 'static,
     interrupted: Pin<Box<dyn Future<Output = ()> + Send>>,
-    record: RunRecord,
+    process: &ProcessRecord,
 ) -> (ObserverEffects, OperatorEffects) {
+    let record = Arc::clone(&process.record);
+    let trace = process.trace.clone();
     let gate_record = Arc::clone(&record);
     let accept_record = Arc::clone(&record);
     let effects = ObserverEffects {
@@ -489,13 +615,16 @@ fn observer_effects(
             fill_with_secure_random_bytes(seed);
         }),
         bind_endpoint: Box::new(move |key, gate_key, relays, connections| {
-            Box::pin(NodeEndpoint::bind(
-                key,
-                gate_key,
-                relays,
-                fill_with_secure_random_bytes,
-                gate_closing_recorder(Arc::clone(&gate_record)),
-                connections,
+            Box::pin(bound_in_trace(
+                NodeEndpoint::bind(
+                    key,
+                    gate_key,
+                    relays,
+                    fill_with_secure_random_bytes,
+                    gate_closing_recorder(Arc::clone(&gate_record)),
+                    connections,
+                ),
+                trace.clone(),
             ))
         }),
         interrupted,
@@ -530,29 +659,34 @@ fn unix_seconds_of(instant: SystemTime) -> Result<u64, CommandLineFailure> {
     unix_milliseconds_of(instant).map(|milliseconds| milliseconds / MILLISECONDS_PER_SECOND)
 }
 
-/// Runs the infrastructure command on a runtime of its own, writing a failure to `record`, and says how the process ends.
+/// Runs the infrastructure command on a runtime of its own, its run record on `stderr`, and says how the process ends.
 #[cfg(feature = "relay")]
 fn run_infrastructure_command(
     command: InfrastructureCommand,
     environment: impl Fn(&str) -> Option<OsString>,
     result: &mut (impl Write + Send),
-    record: &mut impl Write,
+    stderr: impl Write + Send + 'static,
 ) -> ExitStatus {
-    exit_status_after(
-        serve_infrastructure(command, environment, result).map(|()| ExitStatus::Success),
-        record,
+    run_traced(
+        command.debug().tracing(),
+        environment,
+        None,
+        stderr,
+        |directories, process| {
+            serve_infrastructure(command, &directories, process, result)
+                .map(|()| ExitStatus::Success)
+        },
     )
 }
 
-/// Resolves the directories, refuses a clock before the Unix epoch, and serves the host until a stop signal.
+/// Refuses a clock before the Unix epoch and serves the host until a stop signal.
 #[cfg(feature = "relay")]
 fn serve_infrastructure(
     command: InfrastructureCommand,
-    environment: impl Fn(&str) -> Option<OsString>,
+    directories: &Directories,
+    process: &ProcessRecord,
     result: &mut (impl Write + Send),
 ) -> Result<(), CommandLineFailure> {
-    let directories = Directories::establish(environment, &OperatingSystemFilesystem, None)
-        .map_err(CommandLineFailure::Directories)?;
     ensure_clock_after_unix_epoch()?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -565,9 +699,9 @@ fn serve_infrastructure(
     runtime
         .block_on(infra::run(
             command,
-            &directories,
+            directories,
             &OperatingSystemFilesystem,
-            infrastructure_effects(stopped, standard_error_record()),
+            infrastructure_effects(stopped, process),
             result,
         ))
         .map_err(CommandLineFailure::Infrastructure)
@@ -575,7 +709,12 @@ fn serve_infrastructure(
 
 /// The side effects of the infrastructure command: the secure random source, the wall clock, the gated endpoint, the embedded relay, the stop signals and the run record on stderr.
 #[cfg(feature = "relay")]
-fn infrastructure_effects(stopped: StopRequested, record: RunRecord) -> InfrastructureEffects {
+fn infrastructure_effects(
+    stopped: StopRequested,
+    process: &ProcessRecord,
+) -> InfrastructureEffects {
+    let record = Arc::clone(&process.record);
+    let trace = process.trace.clone();
     let gate_record = Arc::clone(&record);
     InfrastructureEffects {
         fill_from_secure_source: Box::new(|seed: &mut [u8; RANDOM_BYTES_PER_SECRET_KEY]| {
@@ -583,13 +722,16 @@ fn infrastructure_effects(stopped: StopRequested, record: RunRecord) -> Infrastr
         }),
         clock: Arc::new(recording_wall_clock(Arc::clone(&record))),
         bind_endpoint: Box::new(move |key, gate_key, relay, connections| {
-            Box::pin(NodeEndpoint::bind(
-                key,
-                gate_key,
-                [relay],
-                fill_with_secure_random_bytes,
-                gate_closing_recorder(Arc::clone(&gate_record)),
-                connections,
+            Box::pin(bound_in_trace(
+                NodeEndpoint::bind(
+                    key,
+                    gate_key,
+                    [relay],
+                    fill_with_secure_random_bytes,
+                    gate_closing_recorder(Arc::clone(&gate_record)),
+                    connections,
+                ),
+                trace.clone(),
             ))
         }),
         monotonic: Arc::new(Instant::now),
@@ -699,6 +841,113 @@ mod tests {
         let help = EstafetteArguments::command().render_help().to_string();
 
         assert_eq!(help.lines().next(), Some(SPEC_PROGRAM_PURPOSE));
+    }
+
+    const ENDPOINT_COMMANDS: &[&str] = &[
+        "show-peers",
+        "tail",
+        "test-send",
+        "mcp",
+        "doctor",
+        #[cfg(feature = "relay")]
+        "run-infrastructure",
+    ];
+    const COMMANDS_WITHOUT_AN_ENDPOINT: [&str; 3] = ["create-card", "list-cards", "network"];
+    const DEBUG_FLAG: &str = "debug";
+    const NO_DEBUG_FLAG: &str = "no-debug";
+    const SPEC_TRACE_HELP_STATEMENTS: [&str; 10] = [
+        "traces/ under the data directory",
+        "<start>-<run>-estafette.events.jsonl",
+        "which is the file safe to post",
+        "<start>-<run>-estafette.raw.jsonl",
+        "which is not safe to post",
+        "the default until v1.0.0",
+        "rolls over once at 64 MiB into a .1 file that replaces any earlier one",
+        "at most 128 MiB per file",
+        "at most 1 GiB",
+        "written in the last 10 minutes",
+    ];
+
+    fn long_flags_of(command: &clap::Command) -> Vec<String> {
+        command
+            .get_arguments()
+            .filter_map(clap::Arg::get_long)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn observability_decision_1_the_debug_pair_is_on_every_command_that_starts_an_endpoint_and_on_no_other()
+     {
+        let program = EstafetteArguments::command();
+
+        for name in ENDPOINT_COMMANDS {
+            let flags = long_flags_of(program.find_subcommand(name).unwrap());
+            assert!(
+                flags.iter().any(|flag| flag == DEBUG_FLAG),
+                "{name}: {flags:?}"
+            );
+            assert!(
+                flags.iter().any(|flag| flag == NO_DEBUG_FLAG),
+                "{name}: {flags:?}"
+            );
+        }
+        for name in COMMANDS_WITHOUT_AN_ENDPOINT {
+            let command = program.find_subcommand(name).unwrap();
+            for command in std::iter::once(command).chain(command.get_subcommands()) {
+                let flags = long_flags_of(command);
+                assert!(
+                    !flags.iter().any(|flag| flag == DEBUG_FLAG),
+                    "{name}: {flags:?}"
+                );
+                assert!(
+                    !flags.iter().any(|flag| flag == NO_DEBUG_FLAG),
+                    "{name}: {flags:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn observability_decision_1_the_last_of_debug_and_no_debug_wins_and_debug_is_the_default() {
+        let cases: [(&[&str], Tracing); 4] = [
+            (&[], Tracing::Debug),
+            (&["--no-debug"], Tracing::NoDebug),
+            (&["--debug", "--no-debug"], Tracing::NoDebug),
+            (&["--no-debug", "--debug"], Tracing::Debug),
+        ];
+        for (flags, expected) in cases {
+            let arguments = ["estafette", "mcp", "lab"].iter().chain(flags.iter());
+            let Command::Mcp { debug, .. } = EstafetteArguments::try_parse_from(arguments)
+                .unwrap()
+                .command
+            else {
+                panic!("mcp parses as the mcp command");
+            };
+
+            assert_eq!(debug.tracing(), expected, "{flags:?}");
+        }
+    }
+
+    #[test]
+    fn observability_decision_3_each_endpoint_command_help_states_what_the_trace_writes_where_which_file_is_safe_to_post_and_its_four_bounds()
+     {
+        let mut program = EstafetteArguments::command();
+        program.build();
+
+        for name in ENDPOINT_COMMANDS {
+            let help = program
+                .find_subcommand_mut(name)
+                .unwrap()
+                .render_long_help()
+                .to_string();
+            for statement in SPEC_TRACE_HELP_STATEMENTS {
+                assert!(
+                    help.contains(statement),
+                    "{name} help lacks {statement:?}:\n{help}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -822,10 +1071,13 @@ mod tests {
                 Err(failure) => (ExitStatus::Failure, format!("{failure}\n")),
             };
             let held = held_bytes(&mut Draws::seeded(case));
-            let mut record = held.clone();
+            let record = std::cell::RefCell::new(held.clone());
 
-            let status = exit_status_after(outcome, &mut record);
+            let status = exit_status_after(outcome, &|event| {
+                write_run_record(&mut *record.borrow_mut(), &event).unwrap();
+            });
 
+            let record = record.into_inner();
             let mut expected_record = held;
             expected_record.extend(expected_line.into_bytes());
             assert_eq!(status, expected_status, "case {case}");
@@ -932,6 +1184,24 @@ mod tests {
     }
 
     #[cfg(feature = "relay")]
+    #[derive(Clone, Default)]
+    struct SharedRecord(Arc<Mutex<Vec<u8>>>);
+
+    #[cfg(feature = "relay")]
+    impl Write for SharedRecord {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .write(bytes)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "relay")]
     #[test]
     fn spec_3_14_run_infrastructure_without_a_certificate_prints_the_host_line_and_exits_1() {
         const SCRATCH_PREFIX: &str = "estafette-infra-main";
@@ -978,11 +1248,17 @@ mod tests {
         else {
             panic!("run-infrastructure parses as the infrastructure command");
         };
-        let (mut printed, mut recorded) = (Vec::new(), Vec::new());
+        let mut printed = Vec::new();
+        let recorded = SharedRecord::default();
 
-        let status =
-            run_infrastructure_command(infrastructure, &environment, &mut printed, &mut recorded);
+        let status = run_infrastructure_command(
+            infrastructure,
+            &environment,
+            &mut printed,
+            recorded.clone(),
+        );
 
+        let recorded = recorded.0.lock().unwrap().clone();
         assert_eq!(u8::from(status), 1);
         let printed = String::from_utf8(printed).unwrap();
         assert_eq!(printed.lines().count(), 1);

@@ -226,11 +226,13 @@ impl ScratchMachine {
             .collect()
     }
 
-    /// The secrets of every readable file under this machine's base directories, longest first.
+    /// The secrets of every readable file under this machine's base directories but its debug traces, which are a record of the run like the run record itself, longest first.
     fn secrets_by_length(&self) -> Vec<String> {
+        let traces = self.directories().traces_directory();
         let contents: Vec<String> = self
             .base_directory_files()
             .iter()
+            .filter(|file| !file.starts_with(&traces))
             .filter_map(|file| fs::read(file).ok())
             .map(|content| String::from_utf8_lossy(&content).into_owned())
             .collect();

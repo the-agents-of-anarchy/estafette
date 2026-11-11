@@ -1,4 +1,5 @@
 pub mod cards;
+pub mod debug;
 pub mod doctor;
 pub mod infra;
 mod lines;

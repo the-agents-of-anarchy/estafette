@@ -7,6 +7,9 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 mod common;
+#[cfg(test)]
+#[path = "support/trace_files.rs"]
+mod trace_files;
 
 const SHORT_SCRATCH_PARENT: &str = "/tmp";
 const SCRATCH_PREFIX: &str = "estafette-binary-observer";
@@ -20,13 +23,14 @@ const RUNNING_BEFORE_THE_INTERRUPT: Duration = Duration::from_secs(1);
 const INTERRUPTED_COMMAND_ENDS_WITHIN: Duration = Duration::from_millis(1500);
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(20);
 const SIGINT_NUMBER: i32 = 2;
+const DATA_HOME: &str = "data";
 
 fn binary(root: &Path) -> Command {
     let mut command = Command::new(BINARY);
     command
         .env_clear()
         .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_DATA_HOME", root.join(DATA_HOME))
         .env("XDG_RUNTIME_DIR", root.join("runtime"));
     command
 }
@@ -46,7 +50,16 @@ fn create_network(root: &Path) -> io::Result<Output> {
 fn assert_refused_naming_the_missing_configuration(root: &Path, output: &Output) {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(output.stdout, Vec::<u8>::new());
-    let message = String::from_utf8_lossy(&output.stderr).into_owned();
+    let announcement = trace_files::announcement_of_one_run(&root.join(DATA_HOME));
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        stderr.starts_with(&announcement),
+        "{announcement:?}: {stderr}"
+    );
+    let message = stderr
+        .get(announcement.len()..)
+        .unwrap_or_default()
+        .to_owned();
     assert!(
         message.starts_with(&root.display().to_string()),
         "{message}"
@@ -91,7 +104,10 @@ fn binary_show_peers_on_a_network_without_members_prints_nothing_and_exits_zero_
 
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(output.stdout, Vec::<u8>::new());
-    assert_eq!(output.stderr, Vec::<u8>::new());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        trace_files::announcement_of_one_run(&root.join(DATA_HOME))
+    );
 }
 
 #[test]
@@ -130,7 +146,10 @@ fn binary_test_send_creates_the_operator_card_and_reports_an_unknown_handle_of_s
     assert_eq!(output.stdout, Vec::<u8>::new());
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
-        "the message was not delivered: No present member has that handle.\n"
+        format!(
+            "{}the message was not delivered: No present member has that handle.\n",
+            trace_files::announcement_of_one_run(&root.join(DATA_HOME))
+        )
     );
     let listed = run_binary(&root, &["list-cards", NETWORK]).unwrap();
     assert!(
