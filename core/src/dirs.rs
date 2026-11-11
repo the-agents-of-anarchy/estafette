@@ -27,6 +27,10 @@ const CERTIFICATE_EXTENSION: &str = "cert";
 const LAST_RECORD_TIMESTAMP_EXTENSION: &str = "ts";
 const CERTIFICATE_CACHE_EXTENSION: &str = "certs";
 const INBOX_SOCKET_EXTENSION: &str = "sock";
+const TRACES_SUBDIRECTORY: &str = "traces";
+const EVENTS_TRACE_SUFFIX: &str = ".events.jsonl";
+const RAW_TRACE_SUFFIX: &str = ".raw.jsonl";
+const ROLLED_OVER_TRACE_SUFFIX: &str = ".1";
 const PATH_SEPARATOR: char = '/';
 const CURRENT_DIRECTORY_COMPONENT: &str = ".";
 const PARENT_DIRECTORY_COMPONENT: &str = "..";
@@ -263,6 +267,22 @@ impl Directories {
         &self.runtime
     }
 
+    /// The directory holding the trace files of every run, under the data directory.
+    #[must_use]
+    pub fn traces_directory(&self) -> PathBuf {
+        self.data.join(TRACES_SUBDIRECTORY)
+    }
+
+    /// The events file and the raw file of the run named `run_name` in the trace directory.
+    #[must_use]
+    pub fn trace_files(&self, run_name: &str) -> TraceFiles {
+        let traces = self.traces_directory();
+        TraceFiles {
+            events: traces.join(format!("{run_name}{EVENTS_TRACE_SUFFIX}")),
+            raw: traces.join(format!("{run_name}{RAW_TRACE_SUFFIX}")),
+        }
+    }
+
     /// The inbox socket of the process with the given process id.
     #[must_use]
     pub fn inbox_socket_file(&self, process_id: u32) -> PathBuf {
@@ -293,6 +313,47 @@ impl Directories {
             .join(INFRASTRUCTURE_SUBDIRECTORY)
             .join(format!("{network}.{extension}")))
     }
+}
+
+/// The two trace files of one run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceFiles {
+    /// The typed events of the run, safe to post.
+    pub events: PathBuf,
+    /// iroh's own lines of the run, not safe to post.
+    pub raw: PathBuf,
+}
+
+/// Which of its run's two trace files a file is, counting the `.1` file it rolled over into as the same file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceFileKind {
+    Events,
+    Raw,
+}
+
+/// The file a trace file rolls over into, replacing any earlier one.
+#[must_use]
+pub fn rolled_over_trace_file(path: &Path) -> PathBuf {
+    let mut rolled_over = path.as_os_str().to_owned();
+    rolled_over.push(ROLLED_OVER_TRACE_SUFFIX);
+    PathBuf::from(rolled_over)
+}
+
+/// The run a file name of the trace directory belongs to and which of its files it is; none for a name no trace file has.
+#[must_use]
+pub fn trace_file_of(file_name: &str) -> Option<(&str, TraceFileKind)> {
+    let unrolled = file_name
+        .strip_suffix(ROLLED_OVER_TRACE_SUFFIX)
+        .unwrap_or(file_name);
+    let (run_name, kind) = unrolled
+        .strip_suffix(EVENTS_TRACE_SUFFIX)
+        .map(|run_name| (run_name, TraceFileKind::Events))
+        .or_else(|| {
+            unrolled
+                .strip_suffix(RAW_TRACE_SUFFIX)
+                .map(|run_name| (run_name, TraceFileKind::Raw))
+        })?;
+    (!run_name.is_empty()).then_some((run_name, kind))
 }
 
 fn single_path_component(name: &str) -> Result<&str, DirectoriesError> {
