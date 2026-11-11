@@ -5,9 +5,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 
+use crate::card::{HANDLE_FIELD, PUBLIC_KEY_FIELD};
 use crate::config::{
-    OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK, create_new_file_with_mode,
-    create_new_owner_only_file,
+    OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK, create_new_owner_only_file,
+    write_new_file_atomically,
 };
 use data_encoding::{HEXLOWER, HEXLOWER_PERMISSIVE};
 use iroh::{PublicKey, SecretKey};
@@ -17,6 +18,9 @@ pub const SEED_BYTES: usize = 32;
 const PUBLIC_KEY_BYTES: usize = 32;
 const LOCK_RETRY_WINDOW: Duration = Duration::from_millis(200);
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
+const LINE_TERMINATOR: &str = "\n";
+const LONGEST_VALID_SIDECAR_BYTES: u64 = 65;
+const SIDECAR_READ_LIMIT_BYTES: u64 = LONGEST_VALID_SIDECAR_BYTES + 1;
 
 /// Why a sidecar fails the claim checks of spec 3.5, all reported as `sidecar_invalid`.
 #[derive(Debug, PartialEq, Eq)]
@@ -132,16 +136,18 @@ pub fn is_held(sidecar_path: &Path) -> Result<bool, SidecarError> {
 /// Derives the key pair from the given seed, writes the 0600 sidecar durably, then writes a card of handle and public key.
 ///
 /// # Errors
-/// `AlreadyExists` when either file exists; nothing is written then.
+/// `AlreadyExists` when either file exists, and `Io` when a path names no directory; nothing is written then.
 pub fn create_card(
     card_path: &Path,
     sidecar_path: &Path,
     handle: &str,
     seed: [u8; SEED_BYTES],
 ) -> Result<PublicKey, SidecarError> {
+    directory_of(card_path)?;
+    let sidecar_directory = directory_of(sidecar_path)?;
     refuse_existing_card(card_path)?;
     let public_key = SecretKey::from_bytes(&seed).public();
-    write_sidecar_durably(sidecar_path, &seed)?;
+    write_sidecar_durably(sidecar_path, sidecar_directory, &seed)?;
     write_card(card_path, handle, public_key.as_bytes()).or_else(|error| {
         std::fs::remove_file(sidecar_path)?;
         Err(error)
@@ -157,17 +163,26 @@ fn refuse_existing_card(card_path: &Path) -> Result<(), SidecarError> {
     }
 }
 
-fn write_sidecar_durably(sidecar_path: &Path, seed: &[u8; SEED_BYTES]) -> Result<(), SidecarError> {
+fn directory_of(path: &Path) -> Result<&Path, SidecarError> {
+    path.parent()
+        .filter(|directory| !directory.as_os_str().is_empty())
+        .ok_or_else(|| {
+            SidecarError::Io(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{} names no directory", path.display()),
+            ))
+        })
+}
+
+fn write_sidecar_durably(
+    sidecar_path: &Path,
+    sidecar_directory: &Path,
+    seed: &[u8; SEED_BYTES],
+) -> Result<(), SidecarError> {
     let mut file = create_new_owner_only_file(sidecar_path).map_err(creation_failure)?;
-    file.write_all(format!("{}\n", HEXLOWER.encode(seed)).as_bytes())?;
+    file.write_all(format!("{}{LINE_TERMINATOR}", HEXLOWER.encode(seed)).as_bytes())?;
     file.sync_all()?;
-    let directory = sidecar_path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "the sidecar path has no directory",
-        )
-    })?;
-    File::open(directory)?.sync_all()?;
+    File::open(sidecar_directory)?.sync_all()?;
     Ok(())
 }
 
@@ -176,14 +191,11 @@ fn write_card(
     handle: &str,
     public_key: &[u8; PUBLIC_KEY_BYTES],
 ) -> Result<(), SidecarError> {
-    let mut file =
-        create_new_file_with_mode(card_path, CARD_FILE_MODE).map_err(creation_failure)?;
     let contents = format!(
-        "handle: {handle}\npublic_key: {}\n",
+        "{HANDLE_FIELD}: {handle}{LINE_TERMINATOR}{PUBLIC_KEY_FIELD}: {}{LINE_TERMINATOR}",
         HEXLOWER.encode(public_key)
     );
-    file.write_all(contents.as_bytes())?;
-    Ok(())
+    write_new_file_atomically(card_path, &contents, CARD_FILE_MODE).map_err(creation_failure)
 }
 
 fn creation_failure(error: io::Error) -> SidecarError {
@@ -211,10 +223,14 @@ fn require_owner_read_write_only(file: &File) -> Result<(), SidecarError> {
     }
 }
 
-fn read_secret_key(file: &mut File) -> Result<SecretKey, SidecarError> {
+fn read_secret_key(source: impl Read) -> Result<SecretKey, SidecarError> {
     let mut contents = Vec::new();
-    file.read_to_end(&mut contents)?;
-    let hex = contents.strip_suffix(b"\n").unwrap_or(&contents);
+    source
+        .take(SIDECAR_READ_LIMIT_BYTES)
+        .read_to_end(&mut contents)?;
+    let hex = contents
+        .strip_suffix(LINE_TERMINATOR.as_bytes())
+        .unwrap_or(&contents);
     let seed: [u8; SEED_BYTES] = HEXLOWER_PERMISSIVE
         .decode(hex)
         .ok()
@@ -263,20 +279,34 @@ mod tests {
         fn pause(&self, _duration: Duration) {}
     }
 
-    fn fresh_directory(test_name: &str) -> std::path::PathBuf {
+    struct ScratchDirectory(std::path::PathBuf);
+
+    impl std::ops::Deref for ScratchDirectory {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for ScratchDirectory {
+        fn drop(&mut self) {
+            drop(std::fs::remove_dir_all(&self.0));
+        }
+    }
+
+    fn fresh_directory(test_name: &str) -> ScratchDirectory {
         let directory = std::env::temp_dir().join(format!(
             "estafette-sidecar-{}-{test_name}",
             std::process::id()
         ));
-        if directory.exists() {
-            std::fs::remove_dir_all(&directory).unwrap();
-        }
+        drop(std::fs::remove_dir_all(&directory));
         std::fs::create_dir_all(&directory).unwrap();
-        directory
+        ScratchDirectory(directory)
     }
 
-    fn seed_of(index: u8) -> [u8; 32] {
-        let mut seed = [0u8; 32];
+    fn seed_of(index: u8) -> [u8; SEED_BYTES] {
+        let mut seed = [0u8; SEED_BYTES];
         for (position, byte) in seed.iter_mut().enumerate() {
             *byte = index
                 .wrapping_mul(31)
@@ -285,7 +315,7 @@ mod tests {
         seed
     }
 
-    fn public_key_of(seed: &[u8; 32]) -> [u8; 32] {
+    fn public_key_of(seed: &[u8; SEED_BYTES]) -> [u8; PUBLIC_KEY_BYTES] {
         *SecretKey::from_bytes(seed).public().as_bytes()
     }
 
@@ -299,7 +329,11 @@ mod tests {
         let directory = fresh_directory("claim_valid");
         let seed = seed_of(1);
         let sidecar = directory.join("a.key");
-        write_sidecar(&sidecar, &format!("{}\n", HEXLOWER.encode(&seed)), 0o600);
+        write_sidecar(
+            &sidecar,
+            &format!("{}\n", HEXLOWER.encode(&seed)),
+            OWNER_ONLY_FILE_MODE,
+        );
 
         let held = claim(&sidecar, &public_key_of(&seed), &NoPause).unwrap();
 
@@ -327,7 +361,11 @@ mod tests {
         let seed = seed_of(2);
         let public_key = public_key_of(&seed);
         let sidecar = directory.join("b.key");
-        write_sidecar(&sidecar, &format!("{}\n", HEXLOWER.encode(&seed)), 0o600);
+        write_sidecar(
+            &sidecar,
+            &format!("{}\n", HEXLOWER.encode(&seed)),
+            OWNER_ONLY_FILE_MODE,
+        );
         let holder = claim(&sidecar, &public_key, &NoPause).unwrap();
         let releasing_pause = ReleaseHolderAfter {
             pauses_left: std::cell::Cell::new(5),
@@ -355,7 +393,11 @@ mod tests {
         let seed = seed_of(3);
         let public_key = public_key_of(&seed);
         let sidecar = directory.join("c.key");
-        write_sidecar(&sidecar, &format!("{}\n", HEXLOWER.encode(&seed)), 0o600);
+        write_sidecar(
+            &sidecar,
+            &format!("{}\n", HEXLOWER.encode(&seed)),
+            OWNER_ONLY_FILE_MODE,
+        );
         let _first_holder = claim(&sidecar, &public_key, &NoPause).unwrap();
         let recording_pause = RecordingPause {
             paused: std::cell::Cell::new(Duration::ZERO),
@@ -401,7 +443,11 @@ mod tests {
         let directory = fresh_directory("uppercase");
         let seed = seed_of(5);
         let sidecar = directory.join("e.key");
-        write_sidecar(&sidecar, &HEXLOWER.encode(&seed).to_uppercase(), 0o600);
+        write_sidecar(
+            &sidecar,
+            &HEXLOWER.encode(&seed).to_uppercase(),
+            OWNER_ONLY_FILE_MODE,
+        );
 
         let held = claim(&sidecar, &public_key_of(&seed), &NoPause).unwrap();
 
@@ -415,7 +461,7 @@ mod tests {
         write_sidecar(
             &sidecar,
             &format!("{}\n", HEXLOWER.encode(&seed_of(6))),
-            0o600,
+            OWNER_ONLY_FILE_MODE,
         );
 
         let outcome = claim(&sidecar, &public_key_of(&seed_of(7)), &NoPause);
@@ -447,7 +493,7 @@ mod tests {
         let directory = fresh_directory("short_seed");
         let sidecar = directory.join("h.key");
         let sixty_three_hex: String = HEXLOWER.encode(&seed_of(9)).chars().skip(1).collect();
-        write_sidecar(&sidecar, &sixty_three_hex, 0o600);
+        write_sidecar(&sidecar, &sixty_three_hex, OWNER_ONLY_FILE_MODE);
 
         let outcome = claim(&sidecar, &public_key_of(&seed_of(9)), &NoPause);
 
@@ -464,7 +510,11 @@ mod tests {
         let directory = fresh_directory("trailing_bytes");
         let seed = seed_of(15);
         let sidecar = directory.join("n.key");
-        write_sidecar(&sidecar, &format!("{}\nX", HEXLOWER.encode(&seed)), 0o600);
+        write_sidecar(
+            &sidecar,
+            &format!("{}\nX", HEXLOWER.encode(&seed)),
+            OWNER_ONLY_FILE_MODE,
+        );
 
         let outcome = claim(&sidecar, &public_key_of(&seed), &NoPause);
 
@@ -482,7 +532,11 @@ mod tests {
         let seed = seed_of(10);
         let public_key = public_key_of(&seed);
         let sidecar = directory.join("i.key");
-        write_sidecar(&sidecar, &format!("{}\n", HEXLOWER.encode(&seed)), 0o600);
+        write_sidecar(
+            &sidecar,
+            &format!("{}\n", HEXLOWER.encode(&seed)),
+            OWNER_ONLY_FILE_MODE,
+        );
         let holder = claim(&sidecar, &public_key, &NoPause).unwrap();
 
         let held_while_claimed = is_held(&sidecar).unwrap();
@@ -557,7 +611,7 @@ mod tests {
         let card = directory.join("m.yaml");
         let sidecar = directory.join("m.key");
         let old_contents = format!("{}\n", HEXLOWER.encode(&seed_of(13)));
-        write_sidecar(&sidecar, &old_contents, 0o600);
+        write_sidecar(&sidecar, &old_contents, OWNER_ONLY_FILE_MODE);
 
         let outcome = create_card(&card, &sidecar, "scout", seed_of(14));
 
@@ -576,5 +630,86 @@ mod tests {
 
         assert!(matches!(outcome, Err(SidecarError::Io(_))));
         assert!(!sidecar.exists());
+    }
+
+    const BARE_FILE_NAME: &str = "estafette-bare-sidecar-name.key";
+    const OVERSIZED_SIDECAR_BYTES: u64 = 1_000_000;
+
+    #[test]
+    fn create_refuses_a_path_naming_no_directory_before_writing_anything_spec_3_5() {
+        let directory = fresh_directory("create_bare_name");
+        let card = directory.join("p.yaml");
+
+        let outcome = create_card(&card, Path::new(BARE_FILE_NAME), "scout", seed_of(17));
+
+        assert!(matches!(
+            &outcome,
+            Err(SidecarError::Io(failure)) if failure.kind() == io::ErrorKind::InvalidInput
+        ));
+        assert!(!card.exists());
+        assert!(!Path::new(BARE_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn created_card_has_mode_0644_and_leaves_only_the_card_and_its_sidecar_spec_3_5() {
+        let directory = fresh_directory("create_files");
+        let card = directory.join("q.yaml");
+        let sidecar = directory.join("q.key");
+
+        create_card(&card, &sidecar, "scout", seed_of(18)).unwrap();
+
+        assert_eq!(
+            std::fs::metadata(&card).unwrap().permissions().mode() & PERMISSION_BITS_MASK,
+            CARD_FILE_MODE
+        );
+        let mut names: Vec<_> = directory
+            .read_dir()
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        assert_eq!(names, ["q.key", "q.yaml"]);
+    }
+
+    struct ZeroDigits<'served> {
+        remaining: u64,
+        served: &'served std::cell::Cell<u64>,
+    }
+
+    impl Read for ZeroDigits<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let length = buffer
+                .len()
+                .min(usize::try_from(self.remaining).map_err(io::Error::other)?);
+            let served_now = u64::try_from(length).map_err(io::Error::other)?;
+            buffer[..length].fill(b'0');
+            self.remaining = self.remaining.saturating_sub(served_now);
+            self.served
+                .set(self.served.get().saturating_add(served_now));
+            Ok(length)
+        }
+    }
+
+    #[test]
+    fn a_sidecar_is_read_only_one_byte_past_its_longest_valid_content_spec_3_5() {
+        let served = std::cell::Cell::new(0);
+        let source = ZeroDigits {
+            remaining: OVERSIZED_SIDECAR_BYTES,
+            served: &served,
+        };
+
+        let outcome = read_secret_key(source);
+
+        assert!(matches!(
+            outcome,
+            Err(SidecarError::Invalid(
+                InvalidSidecar::SeedNotThirtyTwoHexBytes
+            ))
+        ));
+        assert_eq!(served.get(), SIDECAR_READ_LIMIT_BYTES);
+        assert_eq!(
+            LONGEST_VALID_SIDECAR_BYTES,
+            u64::try_from(SEED_BYTES.saturating_mul(2).saturating_add(1)).unwrap()
+        );
     }
 }

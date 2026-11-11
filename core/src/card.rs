@@ -27,8 +27,8 @@ const JSON_CLOSE_MAPPING: u8 = b'}';
 const JSON_CLOSE_SEQUENCE: u8 = b']';
 const ALIAS_EXPANSION_MAX_NODES: usize = 4096;
 const CARD_DEEPEST_NESTING: usize = 256;
-const HANDLE_FIELD: &str = "handle";
-const PUBLIC_KEY_FIELD: &str = "public_key";
+pub(crate) const HANDLE_FIELD: &str = "handle";
+pub(crate) const PUBLIC_KEY_FIELD: &str = "public_key";
 const NETWORK_FIELD: &str = "network";
 const PUBLIC_FIELD: &str = "public";
 const DESCRIPTION_FIELD: &str = "description";
@@ -508,7 +508,7 @@ impl MarkedEventReceiver for DocumentCollector {
 }
 
 /// Hands the parser's events to the collector one at a time, stopping at the end of the stream or at the first nesting past the bound.
-fn feed_events_until_end_or_nesting_exceeded(
+fn feed_events_until_end_or_nesting_refused(
     text: &str,
     collector: &mut DocumentCollector,
 ) -> Result<(), ScanError> {
@@ -526,7 +526,7 @@ fn feed_events_until_end_or_nesting_exceeded(
 /// The single document of the text, or the refusal for unparsable text, an alias refusal, or a wrong document count.
 fn read_single_document(text: &str) -> Result<Shared, CardInvalid> {
     let mut collector = DocumentCollector::default();
-    feed_events_until_end_or_nesting_exceeded(text, &mut collector)
+    feed_events_until_end_or_nesting_refused(text, &mut collector)
         .map_err(|error| CardInvalid::Unparsable(error.to_string()))?;
     if let Some(refusal) = collector.refusal {
         return Err(refusal);
@@ -589,7 +589,7 @@ fn required_scalar_text(entries: &[Entry], name: &'static str) -> Result<String,
     optional_scalar_text(entries, name)?.ok_or(CardInvalid::MissingKey(name))
 }
 
-/// The `public` mapping as JSON, empty when absent, refusing a non-mapping or one over the cap.
+/// The `public` mapping as JSON, empty when absent, refusing a non-mapping, one over the cap, or one nested deeper than a member receives.
 fn public_mapping(entries: &[Entry]) -> Result<Map<String, Value>, CardInvalid> {
     let mapping = match value_of_unique_key(entries, PUBLIC_FIELD)? {
         None => Map::new(),
@@ -967,6 +967,8 @@ pub(crate) mod tests {
 
     pub const SPEC_PUBLIC_CAP_BYTES: usize = 3072;
     const MAPPING_OF_ONE_EMPTY_TEXT: &str = r#"{"k":""}"#;
+    const DEEP_ANCHORED_LEVELS: usize = 1000;
+    const FAR_BEYOND_BOUND_LEVELS: usize = 100_000;
 
     pub fn public_mapping_of_bytes(bytes: usize) -> Vec<u8> {
         let filler = "x".repeat(bytes.checked_sub(MAPPING_OF_ONE_EMPTY_TEXT.len()).unwrap());
@@ -1007,19 +1009,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn check_usable_on_hands_back_the_requested_handle_and_key_of_a_card_of_this_network_or_of_none_spec_3_5()
-     {
-        for card_lines in ["handle: ada\n", "handle: ada\nnetwork: lab\n"] {
-            let usable = usable_on("lab", card_lines).unwrap();
-            assert_eq!(usable.requested_handle.as_str(), "ada");
-            assert_eq!(
-                crate::keys::render_public_key(&usable.public_key),
-                VALID_PUBLIC_KEY
-            );
-        }
-    }
-
-    #[test]
     fn check_usable_on_refuses_a_handle_past_the_32_characters_of_the_handle_grammar_though_it_is_a_suffixed_announced_handle_spec_3_1()
      {
         let card_lines = format!("handle: {HANDLE_OF_34_CHARACTERS}\n");
@@ -1031,21 +1020,65 @@ pub(crate) mod tests {
         usable_on("lab", &at_the_limit).unwrap();
     }
 
-    #[test]
-    fn check_usable_on_refuses_a_card_naming_another_network_spec_3_5() {
-        match usable_on("lab", "handle: ada\nnetwork: acme\n") {
-            Err(CardUnusable::OtherNetwork { named }) => assert_eq!(named, "acme"),
-            other => panic!("{other:?}"),
-        }
+    const USABLE_CASES: u64 = 500;
+    const USABLE_HANDLES: [&str; 3] = ["ada", HANDLE_OF_32_CHARACTERS, "a-b-9"];
+    const UNUSABLE_HANDLES: [&str; 4] = ["9ada", "Ada", "a_b", HANDLE_OF_34_CHARACTERS];
+    const UNUSABLE_KEYS: [&str; 2] = ["abc", "not hex at all"];
+    const NETWORK_LINES_OF_THIS_NETWORK: [&str; 2] = ["", "network: lab\n"];
+    const NETWORK_LINE_OF_ANOTHER_NETWORK: &str = "network: acme\n";
+
+    fn pick<'options>(draws: &mut Draws, options: &[&'options str]) -> &'options str {
+        let index = draws.below(u64::try_from(options.len()).unwrap());
+        options[usize::try_from(index).unwrap()]
     }
 
     #[test]
-    fn check_usable_on_refuses_a_public_key_that_is_not_an_ed25519_key_spec_3_5() {
-        let card = parse_card("handle: ada\npublic_key: abc\n").unwrap();
-        assert!(matches!(
-            card.check_usable_on("lab"),
-            Err(CardUnusable::PublicKey(_))
-        ));
+    fn check_usable_on_is_ok_exactly_when_handle_key_and_network_all_pass_spec_3_5() {
+        for case in 0..USABLE_CASES {
+            let mut draws = Draws::seeded(case);
+            let handle_passes = draws.below(2) == 0;
+            let key_passes = draws.below(2) == 0;
+            let network_passes = draws.below(2) == 0;
+            let handle = if handle_passes {
+                pick(&mut draws, &USABLE_HANDLES)
+            } else {
+                pick(&mut draws, &UNUSABLE_HANDLES)
+            };
+            let key = if key_passes {
+                VALID_PUBLIC_KEY
+            } else {
+                pick(&mut draws, &UNUSABLE_KEYS)
+            };
+            let network_line = if network_passes {
+                pick(&mut draws, &NETWORK_LINES_OF_THIS_NETWORK)
+            } else {
+                NETWORK_LINE_OF_ANOTHER_NETWORK
+            };
+            let card = parse_card(&format!(
+                "public_key: {key}\nhandle: {handle}\n{network_line}"
+            ))
+            .unwrap();
+
+            let outcome = card.check_usable_on("lab");
+
+            match (handle_passes, key_passes, network_passes, outcome) {
+                (true, true, true, Ok(usable)) => {
+                    assert_eq!(usable.requested_handle.as_str(), handle);
+                    assert_eq!(
+                        crate::keys::render_public_key(&usable.public_key),
+                        VALID_PUBLIC_KEY
+                    );
+                }
+                (false, _, _, Err(CardUnusable::Handle(_)))
+                | (true, false, _, Err(CardUnusable::PublicKey(_))) => {}
+                (true, true, false, Err(CardUnusable::OtherNetwork { named })) => {
+                    assert_eq!(named, "acme");
+                }
+                (_, _, _, outcome) => {
+                    panic!("case {case}: {handle} {key} {network_line}: {outcome:?}")
+                }
+            }
+        }
     }
 
     #[test]
@@ -1296,6 +1329,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn parse_keeps_a_hex_or_octal_integer_wider_than_64_bits_as_its_text_spec_3_5() {
+        let card =
+            card_with_public("  hex: 0xFFFFFFFFFFFFFFFFFF\n  octal: 0o7777777777777777777777\n")
+                .unwrap();
+        assert_eq!(
+            card.public_json(),
+            br#"{"hex":"0xFFFFFFFFFFFFFFFFFF","octal":"0o7777777777777777777777"}"#
+        );
+    }
+
+    #[test]
     fn parse_refuses_a_number_json_cannot_hold_in_public_spec_3_5() {
         for number in [".inf", "-.inf", ".nan"] {
             assert_eq!(
@@ -1459,9 +1503,6 @@ pub(crate) mod tests {
             assert_eq!(card.public_json(), b"{}");
         }
     }
-
-    const DEEP_ANCHORED_LEVELS: usize = 1000;
-    const FAR_BEYOND_BOUND_LEVELS: usize = 100_000;
 
     fn anchored_container_nesting(levels: usize) -> String {
         format!(
