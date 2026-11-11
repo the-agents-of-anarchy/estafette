@@ -21,7 +21,7 @@ pub struct DebugArgs {
     /// Write the debug trace of this run, the default until v1.0.0
     #[arg(long, overrides_with = "no_debug", long_help = debug_long_help())]
     debug: bool,
-    /// Write no trace file and install nothing for one
+    /// Write no debug trace for this run: create no trace file and start no trace writer
     #[arg(long = "no-debug", overrides_with = "debug")]
     no_debug: bool,
 }

@@ -880,7 +880,7 @@ mod tests {
     const COMMANDS_WITHOUT_AN_ENDPOINT: [&str; 3] = ["create-card", "list-cards", "network"];
     const DEBUG_FLAG: &str = "debug";
     const NO_DEBUG_FLAG: &str = "no-debug";
-    const SPEC_TRACE_HELP_STATEMENTS: [&str; 10] = [
+    const SPEC_TRACE_HELP_STATEMENTS: [&str; 11] = [
         "traces/ under the data directory",
         "<start>-<run>-estafette.events.jsonl",
         "which is the file safe to post",
@@ -891,6 +891,7 @@ mod tests {
         "at most 128 MiB per file",
         "at most 1 GiB",
         "written in the last 10 minutes",
+        "Write no debug trace for this run: create no trace file and start no trace writer",
     ];
 
     fn long_flags_of(command: &clap::Command) -> Vec<String> {
