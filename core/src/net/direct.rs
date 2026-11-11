@@ -1473,6 +1473,48 @@ mod tests {
         assert_eq!(dialed.close_reason(), Some(ConnectionError::LocallyClosed));
     }
 
+    const SILENCE_OF_A_GONE_PROCESS: Duration = Duration::from_millis(1500);
+    const JUST_BEFORE: Duration = Duration::from_millis(1);
+    const JUST_UNDER_THE_SILENCE_OF_A_GONE_PROCESS: Duration =
+        SILENCE_OF_A_GONE_PROCESS.saturating_sub(JUST_BEFORE);
+
+    #[tokio::test]
+    async fn spec_3_8_a_connection_silent_just_under_three_keep_alive_intervals_is_kept_and_one_silent_for_them_is_closed()
+     {
+        let this_node = bind_node(SERVER_SEED).await;
+        let peer_node = bind_node(CLIENT_SEED).await;
+        let held_at = tokio::time::Instant::now();
+        let reading = Arc::new(Mutex::new(held_at));
+        let register = AcceptedConnections::new({
+            let reading = Arc::clone(&reading);
+            Arc::new(move || *reading.lock().unwrap())
+        });
+        this_node.hold_connections_in(register.clone());
+        this_node.replace_address(peer_node.endpoint().addr());
+        let (dialed, accepted) = tokio::join!(
+            this_node
+                .endpoint()
+                .connect(peer_node.endpoint().id(), GOSSIP_ALPN),
+            async {
+                let incoming = peer_node.endpoint().accept().await.unwrap();
+                incoming.accept().unwrap().await
+            }
+        );
+        let dialed = dialed.unwrap();
+        let _accepted = accepted.unwrap();
+
+        *reading.lock().unwrap() = held_at
+            .checked_add(JUST_UNDER_THE_SILENCE_OF_A_GONE_PROCESS)
+            .unwrap();
+        register.close_from(card_of(CLIENT_SEED));
+        let closed_just_before_the_bound = dialed.close_reason();
+        *reading.lock().unwrap() = held_at.checked_add(SILENCE_OF_A_GONE_PROCESS).unwrap();
+        register.close_from(card_of(CLIENT_SEED));
+
+        assert_eq!(closed_just_before_the_bound, None);
+        assert_eq!(dialed.close_reason(), Some(ConnectionError::LocallyClosed));
+    }
+
     #[tokio::test]
     async fn spec_3_8_an_introduce_keeps_the_connection_it_arrived_on_even_one_that_reads_as_gone()
     {
