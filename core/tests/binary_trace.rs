@@ -26,6 +26,7 @@ mod observability {
     const UNKNOWN_HANDLE: &str = "bob";
     const BODY: &str = "hello";
     const NO_DEBUG: &str = "--no-debug";
+    const CONFIG_HOME: &str = "config";
     const DATA_HOME: &str = "data";
     const RUNTIME_DIRECTORY: &str = "runtime";
     const PERMISSION_BITS: u32 = 0o777;
@@ -68,7 +69,7 @@ mod observability {
         let mut command = Command::new(BINARY);
         command
             .env_clear()
-            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_CONFIG_HOME", root.join(CONFIG_HOME))
             .env("XDG_DATA_HOME", root.join(DATA_HOME))
             .env("XDG_RUNTIME_DIR", root.join(RUNTIME_DIRECTORY));
         command
@@ -173,7 +174,7 @@ mod observability {
             ])
             .args(["mcp", NETWORK])
             .env_clear()
-            .env("XDG_CONFIG_HOME", root.join("config"))
+            .env("XDG_CONFIG_HOME", root.join(CONFIG_HOME))
             .env("XDG_DATA_HOME", root.join(DATA_HOME))
             .env("XDG_RUNTIME_DIR", root.join(RUNTIME_DIRECTORY))
             .stdin(Stdio::null())
@@ -427,6 +428,34 @@ mod observability {
         assert!(message.contains(traces.to_str().unwrap()), "{message}");
         assert!(message.contains(NO_DEBUG), "{message}");
         assert!(!message.contains("handshake"), "{message}");
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn observability_decision_3_a_trace_that_cannot_start_refuses_before_any_base_directory_the_trace_does_not_need()
+     {
+        let root = PathBuf::from(SHORT_SCRATCH_PARENT).join(format!(
+            "{SCRATCH_PREFIX}-{}-refused-first",
+            std::process::id()
+        ));
+        drop(fs::remove_dir_all(&root));
+        let traces = traces_directory(&root.join(DATA_HOME));
+        fs::create_dir_all(traces.parent().unwrap()).unwrap();
+        fs::write(&traces, "a file where the trace directory belongs").unwrap();
+
+        let output = run_with_input(&root, &["mcp", NETWORK], NOT_JSON);
+
+        assert_eq!(output.status.code(), Some(1));
+        let message = String::from_utf8(output.stderr).unwrap();
+        assert!(message.contains(traces.to_str().unwrap()), "{message}");
+        assert!(
+            !root.join(CONFIG_HOME).exists(),
+            "the configuration base directory exists after the refusal"
+        );
+        assert!(
+            !root.join(RUNTIME_DIRECTORY).exists(),
+            "the runtime base directory exists after the refusal"
+        );
         drop(fs::remove_dir_all(&root));
     }
 

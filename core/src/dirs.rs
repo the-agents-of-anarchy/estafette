@@ -136,8 +136,7 @@ impl Directories {
         let config =
             home_based_directory(&environment, CONFIG_HOME_VARIABLE, CONFIG_HOME_UNDER_HOME)?
                 .join(PRODUCT_DIRECTORY);
-        let data = home_based_directory(&environment, DATA_HOME_VARIABLE, DATA_HOME_UNDER_HOME)?
-            .join(PRODUCT_DIRECTORY);
+        let data = data_base_directory(&environment)?;
         create_base_directory(filesystem, &config)?;
         create_base_directory(filesystem, &data)?;
         let user_id = filesystem.owner_user_id(&config).map_err(|source| {
@@ -267,19 +266,11 @@ impl Directories {
         &self.runtime
     }
 
-    /// The directory holding the trace files of every run, under the data directory.
+    /// The trace directory under this run's data directory.
     #[must_use]
-    pub fn traces_directory(&self) -> PathBuf {
-        self.data.join(TRACES_SUBDIRECTORY)
-    }
-
-    /// The events file and the raw file of the run named `run_name` in the trace directory.
-    #[must_use]
-    pub fn trace_files(&self, run_name: &str) -> TraceFiles {
-        let traces = self.traces_directory();
-        TraceFiles {
-            events: traces.join(format!("{run_name}{EVENTS_TRACE_SUFFIX}")),
-            raw: traces.join(format!("{run_name}{RAW_TRACE_SUFFIX}")),
+    pub fn trace_directory(&self) -> TraceDirectory {
+        TraceDirectory {
+            data: self.data.clone(),
         }
     }
 
@@ -322,6 +313,49 @@ pub struct TraceFiles {
     pub events: PathBuf,
     /// iroh's own lines of the run, not safe to post.
     pub raw: PathBuf,
+}
+
+/// The trace directory under the data base directory, resolved without creating anything, and the files of each run in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TraceDirectory {
+    data: PathBuf,
+}
+
+impl TraceDirectory {
+    /// The trace directory under the data base directory the environment names, creating nothing.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the data base directory cannot be resolved.
+    pub fn resolve(
+        environment: &impl Fn(&str) -> Option<OsString>,
+    ) -> Result<Self, DirectoriesError> {
+        Ok(Self {
+            data: data_base_directory(environment)?,
+        })
+    }
+
+    /// The directories the trace needs, outermost first: the data base directory, then the trace directory.
+    #[must_use]
+    pub fn private_directories(&self) -> [PathBuf; 2] {
+        [self.data.clone(), self.path()]
+    }
+
+    /// The directory holding the trace files of every run.
+    #[must_use]
+    pub fn path(&self) -> PathBuf {
+        self.data.join(TRACES_SUBDIRECTORY)
+    }
+
+    /// The events file and the raw file of the run named `run_name`.
+    #[must_use]
+    pub fn files_of(&self, run_name: &str) -> TraceFiles {
+        let traces = self.path();
+        TraceFiles {
+            events: traces.join(format!("{run_name}{EVENTS_TRACE_SUFFIX}")),
+            raw: traces.join(format!("{run_name}{RAW_TRACE_SUFFIX}")),
+        }
+    }
 }
 
 /// Which of its run's two trace files a file is, counting the `.1` file it rolled over into as the same file.
@@ -389,6 +423,15 @@ fn home_based_directory(
             non_empty_variable(environment, HOME_VARIABLE).map(|home| home.join(under_home))
         })
         .ok_or(DirectoriesError::BaseUnresolvable { variable })
+}
+
+fn data_base_directory(
+    environment: &impl Fn(&str) -> Option<OsString>,
+) -> Result<PathBuf, DirectoriesError> {
+    Ok(
+        home_based_directory(environment, DATA_HOME_VARIABLE, DATA_HOME_UNDER_HOME)?
+            .join(PRODUCT_DIRECTORY),
+    )
 }
 
 fn runtime_parent(environment: &impl Fn(&str) -> Option<OsString>) -> PathBuf {

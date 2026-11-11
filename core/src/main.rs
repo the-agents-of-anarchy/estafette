@@ -22,7 +22,7 @@ use estafette::cli::observer::{
     self, Interruption, ObserverCommand, ObserverCommandError, ObserverEffects, OperatorEffects,
 };
 use estafette::config::{ConfigError, NetworkConfig};
-use estafette::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
+use estafette::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem, TraceDirectory};
 use estafette::errors::ExitStatus;
 use estafette::event::{
     CLOCK_BEFORE_UNIX_EPOCH, Event, InboxEvent, ProcessEvent, RunRecord, TransportEvent,
@@ -211,11 +211,8 @@ fn run_traced<StandardError: Write + Send + 'static>(
     command: impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure>,
 ) -> ExitStatus {
     let stderr = Arc::new(Mutex::new(stderr));
-    let started = Directories::establish(environment, &OperatingSystemFilesystem, cards_dir)
-        .map_err(CommandLineFailure::Directories)
-        .and_then(|directories| Ok((start_trace(tracing, &directories)?, directories)));
-    let (trace, directories) = match started {
-        Ok(started) => started,
+    let trace = match start_trace(tracing, &environment) {
+        Ok(trace) => trace,
         Err(failure) => {
             return exit_status_after(Err(failure), run_record_on(&stderr, None).as_ref());
         }
@@ -231,7 +228,10 @@ fn run_traced<StandardError: Write + Send + 'static>(
         record: run_record_on(&stderr, trace.clone()),
         trace,
     };
-    let status = exit_status_after(command(directories, &process), process.record.as_ref());
+    let outcome = Directories::establish(environment, &OperatingSystemFilesystem, cards_dir)
+        .map_err(CommandLineFailure::Directories)
+        .and_then(|directories| command(directories, &process));
+    let status = exit_status_after(outcome, process.record.as_ref());
     if let Some(trace) = &process.trace {
         trace.finish();
     }
@@ -241,11 +241,13 @@ fn run_traced<StandardError: Write + Send + 'static>(
 /// The debug trace of this process under `--debug`, its run id from the secure random source and its clocks started now; none under `--no-debug`.
 fn start_trace(
     tracing: Tracing,
-    directories: &Directories,
+    environment: &impl Fn(&str) -> Option<OsString>,
 ) -> Result<Option<Arc<Trace>>, CommandLineFailure> {
     match tracing {
         Tracing::NoDebug => Ok(None),
         Tracing::Debug => {
+            let directory =
+                TraceDirectory::resolve(environment).map_err(CommandLineFailure::Directories)?;
             let mut run_id = [0; RUN_ID_BYTES];
             fill_with_secure_random_bytes(&mut run_id);
             let started = std::time::Instant::now();
@@ -259,7 +261,7 @@ fn start_trace(
                 }),
             };
             Trace::start(
-                directories,
+                &directory,
                 &OperatingSystemFilesystem,
                 RunId::from_random_bytes(run_id),
                 &TraceEffects::of_the_operating_system(clocks),

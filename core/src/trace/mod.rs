@@ -10,7 +10,7 @@ use iroh::EndpointId;
 
 use serde_json::Value;
 
-use crate::dirs::{Directories, DirectoryFilesystem, TraceFiles};
+use crate::dirs::{DirectoryFilesystem, TraceDirectory, TraceFiles};
 use crate::event::{Event, EventName, TraceLineName};
 
 mod files;
@@ -204,16 +204,18 @@ impl Trace {
     /// # Errors
     /// `TraceRefused` naming the path that could not be created, listed, removed or written.
     pub fn start(
-        directories: &Directories,
+        directory: &TraceDirectory,
         filesystem: &impl DirectoryFilesystem,
         run: RunId,
         effects: &TraceEffects,
         bounds: TraceBounds,
     ) -> Result<Self, TraceRefused> {
-        let traces = directories.traces_directory();
-        filesystem
-            .create_private_directory(&traces)
-            .map_err(|source| TraceRefused::new(TraceAction::CreateDirectory, &traces, source))?;
+        for path in directory.private_directories() {
+            filesystem
+                .create_private_directory(&path)
+                .map_err(|source| TraceRefused::new(TraceAction::CreateDirectory, &path, source))?;
+        }
+        let traces = directory.path();
         let header = Arc::new(HeaderSource::new(run, effects.clocks.clone()));
         let started_ms = header.wall_ms();
         remove_oldest_runs(
@@ -223,7 +225,7 @@ impl Trace {
             &effects.list_files,
             &effects.remove_file,
         )?;
-        let files = directories.trace_files(&run_name(started_ms, &run.hex()));
+        let files = directory.files_of(&run_name(started_ms, &run.hex()));
         let events = start_writer(
             &files.events,
             &header,
@@ -334,9 +336,7 @@ pub(super) mod tests {
     const FROZEN_MONOTONIC_MS: u64 = 7;
     const RUN_BYTES: [u8; RUN_ID_BYTES] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
     const RUN_HEX: &str = "a1b2c3d4e5f60718";
-    const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
     const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
-    const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
     const STAMPED_STARTS: [(u64, &str); 5] = [
         (0, "19700101T000000Z"),
         (951_868_800_123, "20000301T000000Z"),
@@ -358,26 +358,19 @@ pub(super) mod tests {
     const STAND_IN_FAILURE: &str = "a stand-in failure";
     const STALE_EVENTS_FILE: &str = "20000101T000000Z-0000000000000001-estafette.events.jsonl";
 
-    pub(super) fn scratch_directories(test_name: &str) -> (PathBuf, Directories) {
+    pub(super) fn scratch_trace_directory(test_name: &str) -> (PathBuf, TraceDirectory) {
         let root = std::env::temp_dir().join(format!(
             "estafette-trace-{test_name}-{}",
             std::process::id()
         ));
         drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&root).unwrap();
-        let base = root.clone();
-        let directories = Directories::establish(
-            move |name: &str| match name {
-                CONFIG_HOME_VARIABLE => Some(OsString::from(base.join("config"))),
-                DATA_HOME_VARIABLE => Some(OsString::from(base.join("data"))),
-                RUNTIME_DIRECTORY_VARIABLE => Some(OsString::from(base.join("runtime"))),
-                _ => None,
-            },
-            &OperatingSystemFilesystem,
-            None,
-        )
+        let data_home = root.join("data");
+        let directory = TraceDirectory::resolve(&move |name: &str| {
+            (name == DATA_HOME_VARIABLE).then(|| OsString::from(&data_home))
+        })
         .unwrap();
-        (root, directories)
+        (root, directory)
     }
 
     pub(super) fn frozen_clocks(wall_ms: u64) -> TraceClocks {
@@ -399,10 +392,10 @@ pub(super) mod tests {
     #[test]
     fn observability_decision_4_a_start_creates_two_files_named_for_its_utc_start_and_run_and_the_raw_file_says_it_is_not_safe_to_post()
      {
-        let (root, directories) = scratch_directories("start");
+        let (root, directory) = scratch_trace_directory("start");
 
         let trace = Trace::start(
-            &directories,
+            &directory,
             &OperatingSystemFilesystem,
             RunId::from_random_bytes(RUN_BYTES),
             &TraceEffects::of_the_operating_system(frozen_clocks(LEAP_DAY_LAST_SECOND_MS)),
@@ -412,7 +405,7 @@ pub(super) mod tests {
         trace.finish();
 
         let run_name = format!("20000229T235959Z-{RUN_HEX}-estafette");
-        let traces = directories.traces_directory();
+        let traces = directory.path();
         assert_eq!(
             names_in(&traces),
             [
@@ -420,7 +413,7 @@ pub(super) mod tests {
                 format!("{run_name}.raw.jsonl")
             ]
         );
-        assert_eq!(trace.files(), &directories.trace_files(&run_name));
+        assert_eq!(trace.files(), &directory.files_of(&run_name));
         assert_eq!(
             trace.announcement(),
             format!(
@@ -442,9 +435,9 @@ pub(super) mod tests {
         drop(fs::remove_dir_all(&root));
     }
 
-    fn started(directories: &Directories, wall_ms: u64, bounds: TraceBounds) -> Trace {
+    fn started(directory: &TraceDirectory, wall_ms: u64, bounds: TraceBounds) -> Trace {
         Trace::start(
-            directories,
+            directory,
             &OperatingSystemFilesystem,
             RunId::from_random_bytes(RUN_BYTES),
             &TraceEffects::of_the_operating_system(frozen_clocks(wall_ms)),
@@ -463,13 +456,13 @@ pub(super) mod tests {
     #[test]
     fn observability_decision_4_the_start_in_a_name_is_its_utc_second_across_month_year_and_leap_edges()
      {
-        let (root, directories) = scratch_directories("stamps");
+        let (root, directory) = scratch_trace_directory("stamps");
 
         for (wall_ms, _stamp) in STAMPED_STARTS {
-            assert!(started(&directories, wall_ms, TraceBounds::SPEC).finish());
+            assert!(started(&directory, wall_ms, TraceBounds::SPEC).finish());
         }
 
-        let names = names_in(&directories.traces_directory());
+        let names = names_in(&directory.path());
         for (wall_ms, stamp) in STAMPED_STARTS {
             let events = format!("{stamp}-{RUN_HEX}-estafette.events.jsonl");
             assert!(names.contains(&events), "{wall_ms}: {events} in {names:?}");
@@ -481,8 +474,8 @@ pub(super) mod tests {
     #[test]
     fn observability_decision_5_an_events_line_carries_the_header_then_names_the_node_once_the_endpoint_is_noted()
      {
-        let (root, directories) = scratch_directories("events");
-        let trace = started(&directories, NOW_MS, TraceBounds::SPEC);
+        let (root, directory) = scratch_trace_directory("events");
+        let trace = started(&directory, NOW_MS, TraceBounds::SPEC);
         let id = SecretKey::from_bytes(&[ENDPOINT_SEED; 32]).public();
         let node = data_encoding::HEXLOWER.encode(id.as_bytes());
         let node = node.get(..SPEC_NODE_HEX_CHARS).unwrap();
@@ -515,10 +508,10 @@ pub(super) mod tests {
     #[test]
     fn observability_decision_13_a_file_rolls_over_once_at_its_size_bound_and_each_rollover_replaces_the_earlier_one()
      {
-        let (root, directories) = scratch_directories("rollover");
+        let (root, directory) = scratch_trace_directory("rollover");
         let line_bytes = u64::try_from(clock_line(0, None).len()).unwrap();
         let trace = started(
-            &directories,
+            &directory,
             NOW_MS,
             TraceBounds {
                 rollover_bytes: line_bytes * LINES_PER_FILE,
@@ -537,7 +530,7 @@ pub(super) mod tests {
             fs::read_to_string(crate::dirs::rolled_over_trace_file(events)).unwrap(),
             format!("{}{}", clock_line(2, None), clock_line(3, None))
         );
-        assert_eq!(names_in(&directories.traces_directory()).len(), 3);
+        assert_eq!(names_in(&directory.path()).len(), 3);
         drop(fs::remove_dir_all(&root));
     }
 
@@ -550,14 +543,14 @@ pub(super) mod tests {
     #[test]
     fn observability_decision_7_every_raw_file_a_rollover_opens_begins_with_the_line_saying_it_is_not_safe_to_post()
      {
-        let (root, directories) = scratch_directories("raw-rollover");
+        let (root, directory) = scratch_trace_directory("raw-rollover");
         let not_safe_to_post = format!(
             "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":0,\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}{SPEC_RAW_FIRST_LINE_AFTER_HEADER}"
         );
         let line_bytes = u64::try_from(raw_line(1).len()).unwrap();
         let first_line_bytes = u64::try_from(not_safe_to_post.len()).unwrap();
         let trace = started(
-            &directories,
+            &directory,
             NOW_MS,
             TraceBounds {
                 rollover_bytes: first_line_bytes + line_bytes * LINES_PER_FILE,
@@ -587,12 +580,12 @@ pub(super) mod tests {
     }
 
     fn refusal_of(
-        directories: &Directories,
+        directory: &TraceDirectory,
         effects: &TraceEffects,
         bounds: TraceBounds,
     ) -> TraceRefused {
         match Trace::start(
-            directories,
+            directory,
             &OperatingSystemFilesystem,
             RunId::from_random_bytes(RUN_BYTES),
             effects,
@@ -606,11 +599,11 @@ pub(super) mod tests {
     #[test]
     fn observability_decision_3_a_trace_file_that_cannot_be_created_refuses_the_start_naming_its_path_and_no_debug()
      {
-        let (root, directories) = scratch_directories("refused-file");
-        let events = directories.trace_files(&run_name(NOW_MS, RUN_HEX)).events;
+        let (root, directory) = scratch_trace_directory("refused-file");
+        let events = directory.files_of(&run_name(NOW_MS, RUN_HEX)).events;
 
         let refusal = refusal_of(
-            &directories,
+            &directory,
             &TraceEffects {
                 create_file: Arc::new(|_path: &Path| Err(stand_in_failure())),
                 ..TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS))
@@ -633,11 +626,11 @@ pub(super) mod tests {
     #[test]
     fn observability_decision_3_a_writer_thread_that_cannot_start_refuses_the_start_naming_its_file()
      {
-        let (root, directories) = scratch_directories("refused-thread");
-        let events = directories.trace_files(&run_name(NOW_MS, RUN_HEX)).events;
+        let (root, directory) = scratch_trace_directory("refused-thread");
+        let events = directory.files_of(&run_name(NOW_MS, RUN_HEX)).events;
 
         let refusal = refusal_of(
-            &directories,
+            &directory,
             &TraceEffects {
                 spawn_thread: Arc::new(|_name: &str, _work| Err(stand_in_failure())),
                 ..TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS))
@@ -659,11 +652,11 @@ pub(super) mod tests {
 
     #[test]
     fn observability_decision_13_a_trace_directory_that_cannot_be_listed_refuses_the_start() {
-        let (root, directories) = scratch_directories("refused-list");
-        let traces = directories.traces_directory();
+        let (root, directory) = scratch_trace_directory("refused-list");
+        let traces = directory.path();
 
         let refusal = refusal_of(
-            &directories,
+            &directory,
             &TraceEffects {
                 list_files: Arc::new(|_directory: &Path| Err(stand_in_failure())),
                 ..TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS))
@@ -680,11 +673,11 @@ pub(super) mod tests {
     #[test]
     fn observability_decision_13_an_old_run_that_cannot_be_removed_refuses_the_start_naming_its_file()
      {
-        let (root, directories) = scratch_directories("refused-remove");
-        let traces = directories.traces_directory();
+        let (root, directory) = scratch_trace_directory("refused-remove");
+        let traces = directory.path();
 
         let refusal = refusal_of(
-            &directories,
+            &directory,
             &TraceEffects {
                 list_files: Arc::new(|_directory: &Path| {
                     Ok(vec![StoredFile {
@@ -850,12 +843,12 @@ pub(super) mod tests {
     }
 
     fn started_with(
-        directories: &Directories,
+        directory: &TraceDirectory,
         effects: &TraceEffects,
         bounds: TraceBounds,
     ) -> Trace {
         Trace::start(
-            directories,
+            directory,
             &OperatingSystemFilesystem,
             RunId::from_random_bytes(RUN_BYTES),
             effects,
@@ -875,9 +868,9 @@ pub(super) mod tests {
     #[test]
     fn observability_decision_12_a_line_whose_write_fails_is_counted_and_the_next_line_written_is_a_dropped_event_where_n_skips()
      {
-        let (root, directories) = scratch_directories("failed-writes");
+        let (root, directory) = scratch_trace_directory("failed-writes");
         let files = MemoryFiles::failing(&[1, 2], &[], &[]);
-        let trace = started_with(&directories, &files.effects(NOW_MS), TraceBounds::SPEC);
+        let trace = started_with(&directory, &files.effects(NOW_MS), TraceBounds::SPEC);
 
         for _event in 0..4 {
             trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
@@ -894,11 +887,11 @@ pub(super) mod tests {
     #[test]
     fn observability_decision_13_a_rollover_whose_rename_or_new_file_fails_loses_only_counted_lines_and_the_next_line_written_is_a_dropped_event()
      {
-        let (root, directories) = scratch_directories("failed-rollover");
+        let (root, directory) = scratch_trace_directory("failed-rollover");
         let files = MemoryFiles::failing(&[], &[1], &[0]);
         let line_bytes = u64::try_from(clock_line(0, None).len()).unwrap();
         let trace = started_with(
-            &directories,
+            &directory,
             &files.effects(NOW_MS),
             TraceBounds {
                 rollover_bytes: line_bytes * LINES_PER_FILE,
@@ -937,8 +930,8 @@ pub(super) mod tests {
     #[test]
     fn observability_decision_13_a_start_removes_the_oldest_stale_runs_both_files_together_until_the_directory_is_within_its_bound()
      {
-        let (root, directories) = scratch_directories("prune");
-        let traces = directories.traces_directory();
+        let (root, directory) = scratch_trace_directory("prune");
+        let traces = directory.path();
         fs::create_dir_all(&traces).unwrap();
         let fresh_at_the_bound = NOW_MS - SMALL_FRESHNESS_MS;
         let stale_by_one = NOW_MS - SMALL_FRESHNESS_MS - 1;
@@ -965,7 +958,7 @@ pub(super) mod tests {
         stored_run_file(&traces, &format!("{run_d}.events.jsonl"), 300, NOW_MS);
 
         let trace = started(
-            &directories,
+            &directory,
             NOW_MS,
             TraceBounds {
                 directory_bytes: SMALL_DIRECTORY_BYTES,

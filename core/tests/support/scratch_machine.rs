@@ -228,7 +228,7 @@ impl ScratchMachine {
 
     /// The secrets of every readable file under this machine's base directories but its debug traces, which are a record of the run like the run record itself, longest first.
     fn secrets_by_length(&self) -> Vec<String> {
-        let traces = self.directories().traces_directory();
+        let traces = self.directories().trace_directory().path();
         let contents: Vec<String> = self
             .base_directory_files()
             .iter()
