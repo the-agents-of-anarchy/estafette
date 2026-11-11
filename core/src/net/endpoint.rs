@@ -81,7 +81,7 @@ impl NodeEndpoint {
 
     /// The register holding every connection this endpoint and each endpoint it rebinds to lets through, of any protocol, dialed or accepted.
     #[must_use]
-    pub fn held_connections(&self) -> HeldConnections {
+    pub(crate) fn held_connections(&self) -> HeldConnections {
         self.binding.connections.clone()
     }
 
