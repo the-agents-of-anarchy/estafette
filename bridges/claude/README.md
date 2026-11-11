@@ -26,7 +26,7 @@ The working directory names the project whose `.claude/settings.json` and `.clau
 
 Checks, one line each on stdout:
 
-- hook installed: a `SessionStart` hook that starts `estafette-bridge-claude` is in the user, project or local settings.
+- hook installed: a `SessionStart` hook whose command is `estafette-bridge-claude run`, optionally after `nohup` and with or without a directory in front of the executable name, is in the user, project or local settings; any other prefix, such as `env`, `exec` or a quoted path, fails the check.
 - bridge process runs for this session: a bridge started for a parent process of the doctor is running.
 - socket path exists: the path in `CLAUDE_CODE_MESSAGING_SOCKET` exists.
 - no refuse applies: none of the settings sources that reach the session sets `crossSessionInbound` to `refuse`, to `hold`, or to any value other than `accept`, `hold` and `refuse`. The sources read are the user, project and local settings files, the managed `managed-settings.json` and `managed-settings.d/*.json` (macOS `/Library/Application Support/ClaudeCode/`, Linux `/etc/claude-code/`), and each `--settings` value on the session's command line, inline or a file. A source that exists but cannot be read, or is not valid JSON, makes the check `UNVERIFIED`, which fails it. MDM profiles and server-managed settings are not read.

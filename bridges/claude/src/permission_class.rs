@@ -46,7 +46,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn harness_2_1_319_bypass_permissions_mode_is_the_bypass_class() {
+    fn spec_3_12_harness_2_1_319_bypass_permissions_mode_is_the_bypass_class() {
         assert_eq!(
             PermissionClass::from_permission_mode("bypassPermissions"),
             PermissionClass::Bypass
@@ -54,7 +54,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_every_other_mode_is_the_prompting_class() {
+    fn spec_3_12_harness_2_1_319_every_other_mode_is_the_prompting_class() {
         for mode in [
             "default",
             "plan",

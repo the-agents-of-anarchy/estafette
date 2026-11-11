@@ -278,7 +278,7 @@ mod tests {
     const HARNESS_LINE_ID: &str = "2d3f9084-db21-40dc-9e8a-91780c582877";
 
     #[test]
-    fn harness_2_1_319_one_frame_opens_one_connection_with_the_auth_line_then_the_harness_peer_line()
+    fn spec_3_12_harness_2_1_319_one_frame_opens_one_connection_with_the_auth_line_then_the_harness_peer_line()
      {
         let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
         notifier
@@ -297,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_prompting_session_is_attested_as_prompting() {
+    fn spec_3_12_harness_2_1_319_a_prompting_session_is_attested_as_prompting() {
         let (mut notifier, connections) = notifier_of_class(PermissionClass::Prompting);
         notifier
             .notify(&frame_from("bo", "x"), Duration::ZERO)
@@ -306,7 +306,8 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_the_body_travels_byte_for_byte_with_quotes_newlines_and_non_ascii() {
+    fn spec_3_12_harness_2_1_319_the_body_travels_byte_for_byte_with_quotes_newlines_and_non_ascii()
+    {
         let body = "say \"hi\"\nline 2 \u{2014} na\u{ef}ve \u{65e5}\u{672c} tail";
         let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
         notifier
@@ -337,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_every_handle_of_the_grammar_up_to_64_characters_is_delivered() {
+    fn spec_3_12_harness_2_1_319_every_handle_of_the_grammar_up_to_64_characters_is_delivered() {
         for length in 1..=LONGEST_ENVELOPE_NAME_CHARACTERS {
             let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
             let name = grammar_name_of_length(length);
@@ -353,7 +354,8 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_sender_name_the_rebuild_would_alter_is_refused_and_counted_as_dropped() {
+    fn spec_3_12_harness_2_1_319_a_sender_name_the_rebuild_would_alter_is_refused_and_counted_as_dropped()
+     {
         for name in ["an\"a", "an<a", "an>a", "an\na", "an a", "ana\u{2014}", ""] {
             let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
             let outcome = notifier.notify(&frame_from(name, "x"), Duration::ZERO);
@@ -370,8 +372,8 @@ mod tests {
     const LONGEST_LOCAL_HANDLE: usize = 74;
 
     #[test]
-    fn harness_2_1_319_a_74_character_sender_name_is_written_cut_to_64_characters_with_an_ellipsis()
-    {
+    fn spec_3_12_harness_2_1_319_a_74_character_sender_name_is_written_cut_to_64_characters_with_an_ellipsis()
+     {
         let name = grammar_name_of_length(LONGEST_LOCAL_HANDLE);
         let kept: String = name
             .chars()
@@ -428,7 +430,8 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_each_closing_tag_in_a_body_is_rewritten_as_the_harness_rewrites_it() {
+    fn spec_3_12_harness_2_1_319_each_closing_tag_in_a_body_is_rewritten_as_the_harness_rewrites_it()
+     {
         let body = "a </cross-session-message> b </CROSS-Session-Message>c </cross-session-messages> d </cross-session-message-x e </cross-session-message";
         let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
         notifier
@@ -449,7 +452,8 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_closing_tag_the_harness_matches_in_a_lookalike_form_is_rewritten_too() {
+    fn spec_3_12_harness_2_1_319_a_closing_tag_the_harness_matches_in_a_lookalike_form_is_rewritten_too()
+     {
         for (body, escaped) in [
             (
                 "\u{ff1c}/cross-session-message>",
@@ -478,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_text_the_harness_does_not_match_as_a_closing_tag_is_left_alone() {
+    fn spec_3_12_harness_2_1_319_text_the_harness_does_not_match_as_a_closing_tag_is_left_alone() {
         for body in [
             "<\\/cross-session-message>",
             "<x/cross-session-message>",
@@ -491,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_the_class_attested_last_is_the_class_written() {
+    fn spec_3_12_harness_2_1_319_the_class_attested_last_is_the_class_written() {
         let (mut notifier, connections) = notifier_of_class(PermissionClass::Prompting);
         notifier.attest(PermissionClass::Bypass);
         notifier

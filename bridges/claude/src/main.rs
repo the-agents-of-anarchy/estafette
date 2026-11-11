@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,7 +12,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use estafette_bridge_claude::discover::{
-    ProcessTable, ProcessTableError, PsProcessTable, RuntimeDirectoryInputs, follow_binary_sockets,
+    Pid, ProcessTable, ProcessTableError, PsProcessTable, RuntimeDirectoryInputs,
+    follow_binary_sockets,
 };
 use estafette_bridge_claude::doctor::{
     DoctorInputs, MESSAGING_SOCKET_VARIABLE, MessagingSocket, RUN_SUBCOMMAND, SettingsFile,
@@ -62,7 +63,7 @@ const STAGING_SUFFIX: &str = ".staging";
 
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
-    Run { harness_pid: u32 },
+    Run { harness_pid: Pid },
     Doctor,
 }
 
@@ -85,7 +86,7 @@ struct Environment {
     claude_config_dir: Option<PathBuf>,
     xdg_runtime_dir: Option<PathBuf>,
     temporary_dir: PathBuf,
-    own_pid: u32,
+    own_pid: Pid,
     working_dir: PathBuf,
     started: Instant,
 }
@@ -107,7 +108,7 @@ fn read_environment() -> Result<Environment, CommandError> {
         xdg_runtime_dir: non_empty_variable(RUNTIME_DIRECTORY_VARIABLE).map(PathBuf::from),
         temporary_dir: non_empty_variable(TEMPORARY_DIRECTORY_VARIABLE)
             .map_or_else(|| PathBuf::from(SYSTEM_TEMPORARY_DIRECTORY), PathBuf::from),
-        own_pid: std::process::id(),
+        own_pid: Pid(std::process::id()),
         working_dir: std::env::current_dir().map_err(CommandError::WorkingDirectoryUnreadable)?,
         started: Instant::now(),
     })
@@ -157,7 +158,7 @@ impl fmt::Display for CommandError {
 
 impl std::error::Error for CommandError {}
 
-/// The file system reads the commands make, handed in from the entry.
+/// The file system reads and writes the commands make, handed in from the entry.
 trait Files {
     /// Reads a whole file as text.
     fn read_text(&self, path: &Path) -> io::Result<String>;
@@ -219,10 +220,11 @@ impl Files for OperatingSystemFiles {
             .mode(PRIVATE_DIRECTORY_MODE)
             .create(path)
         {
+            Ok(()) => fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_DIRECTORY_MODE)),
             Err(failure) if failure.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {
                 Ok(())
             }
-            outcome => outcome,
+            Err(failure) => Err(failure),
         }
     }
 
@@ -252,18 +254,26 @@ fn core_config_directory(environment: &Environment) -> Result<PathBuf, CommandEr
         .ok_or(CommandError::ConfigBaseUnresolvable)
 }
 
-/// Names the runtime directory inputs, creating the config directory as core does and taking the user id from its owner.
+/// Creates the config directory as core does, so a bridge started before core's first run finds it.
+fn create_config_directory(
+    environment: &Environment,
+    files: &impl Files,
+) -> Result<(), CommandError> {
+    let config_directory = core_config_directory(environment)?;
+    files
+        .create_private_directory(&config_directory)
+        .map_err(|source| CommandError::ConfigDirectoryCreationFailed {
+            path: config_directory,
+            source,
+        })
+}
+
+/// Names the runtime directory inputs, taking the user id from the owner of the config directory core resolves.
 fn runtime_inputs(
     environment: &Environment,
     files: &impl Files,
 ) -> Result<RuntimeDirectoryInputs, CommandError> {
     let config_directory = core_config_directory(environment)?;
-    files
-        .create_private_directory(&config_directory)
-        .map_err(|source| CommandError::ConfigDirectoryCreationFailed {
-            path: config_directory.clone(),
-            source,
-        })?;
     let user_id = files.owner_user_id(&config_directory).map_err(|source| {
         CommandError::ConfigDirectoryOwnerUnreadable {
             path: config_directory.clone(),
@@ -272,7 +282,7 @@ fn runtime_inputs(
     })?;
     Ok(RuntimeDirectoryInputs {
         xdg_runtime_dir: environment.xdg_runtime_dir.clone(),
-        temporary_dir: Some(environment.temporary_dir.clone()),
+        temporary_dir: environment.temporary_dir.clone(),
         user_id,
     })
 }
@@ -286,6 +296,7 @@ type ErrorSink = Arc<dyn Fn(&str) + Send + Sync>;
 type Elapsed = Arc<dyn Fn() -> Duration + Send + Sync>;
 type Task = Box<dyn FnOnce() + Send>;
 type Spawner = Arc<dyn Fn(Task) + Send + Sync>;
+type Pause = Arc<dyn Fn(Duration) + Send + Sync>;
 
 #[derive(Debug)]
 enum LiveClassError {
@@ -332,7 +343,7 @@ struct BridgeSession<S: InboxConnector, F: Files> {
     elapsed: Elapsed,
     report_error: ErrorSink,
     spawn: Spawner,
-    wait: fn(Duration),
+    wait: Pause,
 }
 
 impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
@@ -493,7 +504,7 @@ fn follow_binary_socket<S, B, F>(
     let session = Arc::clone(session);
     let spawn = Arc::clone(&session.spawn);
     spawn(Box::new(move || {
-        let wait = session.wait;
+        let wait = Arc::clone(&session.wait);
         let since = session.last_handled_seq(&socket_path);
         let outcome = follow_inbox(
             &mut connector,
@@ -512,13 +523,12 @@ fn follow_binary_socket<S, B, F>(
 #[derive(Debug, Eq, PartialEq)]
 enum BridgeOutcome {
     HarnessExited,
-    AlreadyServed { bridge_pid: u32 },
+    AlreadyServed { bridge_pid: Pid },
 }
 
 struct BridgeEffects<S, C, F> {
-    own_pid: u32,
+    own_pid: Pid,
     runtime_inputs: RuntimeDirectoryInputs,
-    temporary_dir: PathBuf,
     session_connector: S,
     session_token: String,
     claude_config_directory: PathBuf,
@@ -527,7 +537,7 @@ struct BridgeEffects<S, C, F> {
     elapsed: Elapsed,
     report_error: ErrorSink,
     spawn: Spawner,
-    wait: fn(Duration),
+    wait: Pause,
 }
 
 type ProductionBridgeEffects<F> =
@@ -546,11 +556,11 @@ fn bridge_effects<F: Files>(
         .messaging_token
         .clone()
         .ok_or(CommandError::MissingVariable(MESSAGING_TOKEN_VARIABLE))?;
+    create_config_directory(environment, &files)?;
     let started = environment.started;
     Ok(BridgeEffects {
         own_pid: environment.own_pid,
         runtime_inputs: runtime_inputs(environment, &files)?,
-        temporary_dir: environment.temporary_dir.clone(),
         session_connector: UnixSocketConnector::new(socket),
         session_token,
         claude_config_directory: claude_config_directory(environment)
@@ -562,13 +572,13 @@ fn bridge_effects<F: Files>(
         spawn: Arc::new(|task| {
             thread::spawn(task);
         }),
-        wait: thread::sleep,
+        wait: Arc::new(thread::sleep),
     })
 }
 
 /// Serves the harness process by following every binary socket under it until the harness exits, unless another bridge already serves it.
 fn run_bridge<S, B, F>(
-    harness_pid: u32,
+    harness_pid: Pid,
     effects: BridgeEffects<S, impl Fn(PathBuf) -> B, F>,
     processes: &impl ProcessTable,
 ) -> Result<BridgeOutcome, CommandError>
@@ -596,14 +606,20 @@ where
             .join(format!("{harness_pid}.{REGISTRY_ENTRY_EXTENSION}")),
         projects_directory: effects.claude_config_directory.join(PROJECTS_DIRECTORY),
         transcript_file: Mutex::default(),
-        permission_class_file: permission_class_path(&effects.temporary_dir, harness_pid),
+        permission_class_file: permission_class_path(
+            &effects.runtime_inputs.temporary_dir,
+            harness_pid,
+        ),
         attested_class: Mutex::default(),
-        dropped_frames_file: dropped_frames_path(&effects.temporary_dir, harness_pid),
+        dropped_frames_file: dropped_frames_path(
+            &effects.runtime_inputs.temporary_dir,
+            harness_pid,
+        ),
         files: effects.files,
         elapsed: effects.elapsed,
         report_error: effects.report_error,
         spawn: effects.spawn,
-        wait,
+        wait: Arc::clone(&wait),
     });
     if let Some(class) = session.read_live_permission_class() {
         lock(&session.notifier).attest(class);
@@ -746,7 +762,6 @@ fn run_doctor_command(
         messaging_socket: messaging_socket_state(environment, files),
         settings_files,
         unreadable_settings: managed.unreadable,
-        temporary_dir: environment.temporary_dir.clone(),
         runtime_inputs: runtime_inputs(environment, files)?,
     };
     let report = run_doctor(&inputs, processes, &|path: &Path| {
@@ -757,13 +772,18 @@ fn run_doctor_command(
     Ok(report.all_passed())
 }
 
+/// Writes an error's message to the error output, dropping a failed write because nothing remains to report it to.
+fn write_to_the_error_output(errors: &mut impl Write, error: &CommandError) {
+    drop(writeln!(errors, "{error}"));
+}
+
 /// Maps a command outcome to its exit status, writing an error's message alone to the error output.
 fn exit_code_of(outcome: Result<bool, CommandError>, errors: &mut impl Write) -> ExitCode {
     match outcome {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(EXIT_CHECK_FAILED),
         Err(error) => {
-            drop(writeln!(errors, "{error}"));
+            write_to_the_error_output(errors, &error);
             ExitCode::from(EXIT_FAILURE)
         }
     }
@@ -822,7 +842,9 @@ mod tests {
     fn spec_3_12_the_hook_command_line_starts_the_bridge_for_its_parent_pid() {
         assert_eq!(
             parse_command(&arguments(&["run", "4242"])),
-            Some(Command::Run { harness_pid: 4242 })
+            Some(Command::Run {
+                harness_pid: Pid(4242)
+            })
         );
     }
 
@@ -866,7 +888,7 @@ mod tests {
             claude_config_dir: None,
             xdg_runtime_dir: None,
             temporary_dir: PathBuf::from("/tmp"),
-            own_pid: 900,
+            own_pid: Pid(900),
             working_dir: PathBuf::from("/work"),
             started: Instant::now(),
         }
@@ -874,8 +896,8 @@ mod tests {
 
     fn bridge_process(pid: u32, harness_pid: &str) -> ProcessEntry {
         ProcessEntry {
-            pid,
-            parent_pid: 1,
+            pid: Pid(pid),
+            parent_pid: Pid(1),
             executable: Some("/opt/bin/estafette-bridge-claude".to_owned()),
             arguments: vec!["run".to_owned(), harness_pid.to_owned()],
         }
@@ -918,13 +940,12 @@ mod tests {
         let writes = Arc::clone(&files.writes);
         Wiring {
             effects: BridgeEffects {
-                own_pid: 900,
+                own_pid: Pid(900),
                 runtime_inputs: RuntimeDirectoryInputs {
                     xdg_runtime_dir: Some(PathBuf::from("/run/user/1000")),
-                    temporary_dir: None,
+                    temporary_dir: PathBuf::from(TEST_TEMPORARY_DIR),
                     user_id: 1000,
                 },
-                temporary_dir: PathBuf::from(TEST_TEMPORARY_DIR),
                 session_connector: DownConnector,
                 session_token: "token".to_owned(),
                 claude_config_directory: PathBuf::from(CLAUDE_CONFIG_DIRECTORY),
@@ -940,7 +961,7 @@ mod tests {
                 spawn: Arc::new(move |task| {
                     lock(&recorded_tasks).push(task);
                 }),
-                wait: |_| {},
+                wait: Arc::new(|_| {}),
             },
             factory_paths,
             spawned,
@@ -970,7 +991,9 @@ mod tests {
         let wiring = wiring();
         assert_eq!(
             run_bridge(HARNESS_PID, wiring.effects, &running).expect("guarded start"),
-            BridgeOutcome::AlreadyServed { bridge_pid: 700 }
+            BridgeOutcome::AlreadyServed {
+                bridge_pid: Pid(700)
+            }
         );
         assert_eq!(lock(&wiring.spawned).len(), 0);
     }
@@ -1045,8 +1068,8 @@ mod tests {
     }
 
     const CORE_PRIVATE_DIRECTORY_MODE: u32 = 0o700;
-    const HARNESS_PID: u32 = 100;
-    const RATE_LIMIT_INJECTIONS_PER_SENDER: usize = 10;
+    const HARNESS_PID: Pid = Pid(100);
+    const MOST_FRAMES_BEFORE_A_DROP: usize = 100;
     const STAGED_WRITES: usize = 50;
 
     #[test]
@@ -1150,7 +1173,7 @@ mod tests {
 
     fn mcp_binary(pid: u32) -> ProcessEntry {
         ProcessEntry {
-            pid,
+            pid: Pid(pid),
             parent_pid: HARNESS_PID,
             executable: Some("/usr/bin/estafette".to_owned()),
             arguments: vec!["mcp".to_owned()],
@@ -1161,7 +1184,7 @@ mod tests {
     fn spec_3_12_the_bridge_follows_each_binary_socket_once_however_many_polls_see_it() {
         let harness = ProcessEntry {
             pid: HARNESS_PID,
-            parent_pid: 1,
+            parent_pid: Pid(1),
             executable: Some("/usr/bin/claude".to_owned()),
             arguments: Vec::new(),
         };
@@ -1192,7 +1215,7 @@ mod tests {
     fn spec_3_12_a_binary_socket_that_cannot_be_reached_is_reported_and_followed_again_later() {
         let harness = ProcessEntry {
             pid: HARNESS_PID,
-            parent_pid: 1,
+            parent_pid: Pid(1),
             executable: Some("/usr/bin/claude".to_owned()),
             arguments: Vec::new(),
         };
@@ -1273,9 +1296,23 @@ mod tests {
         format!("{{\"seq\":{seq},\"id\":\"id-{seq}\",\"from\":\"ana\",\"body\":\"body {seq}\"}}\n")
     }
 
+    struct CountingDownConnector(Arc<Mutex<usize>>);
+
+    impl InboxConnector for CountingDownConnector {
+        type Stream = UnixStream;
+
+        fn connect(&mut self) -> io::Result<UnixStream> {
+            {
+                let mut attempts = lock(&self.0);
+                *attempts = attempts.saturating_add(1);
+            }
+            Err(io::Error::other("down"))
+        }
+    }
+
     struct ScriptedRun {
         since_lines: Vec<String>,
-        delivered_frames: usize,
+        injection_attempts: usize,
     }
 
     fn run_bridge_over_scripted_sockets(
@@ -1283,7 +1320,7 @@ mod tests {
         polls: Vec<Vec<ProcessEntry>>,
     ) -> ScriptedRun {
         let wiring = wiring();
-        let errors = Arc::clone(&wiring.errors);
+        let injection_attempts = Arc::new(Mutex::new(0));
         let connections = Arc::new(Mutex::new(VecDeque::from(connections)));
         let since_lines = SinceLines::default();
         let socket_connections = Arc::clone(&connections);
@@ -1291,8 +1328,7 @@ mod tests {
         let effects = BridgeEffects {
             own_pid: wiring.effects.own_pid,
             runtime_inputs: wiring.effects.runtime_inputs,
-            temporary_dir: wiring.effects.temporary_dir,
-            session_connector: DownConnector,
+            session_connector: CountingDownConnector(Arc::clone(&injection_attempts)),
             session_token: wiring.effects.session_token,
             claude_config_directory: wiring.effects.claude_config_directory,
             connect_binary_socket: move |_socket_path| ScriptedInboxSocket {
@@ -1303,16 +1339,13 @@ mod tests {
             elapsed: wiring.effects.elapsed,
             report_error: wiring.effects.report_error,
             spawn: Arc::new(|task| task()),
-            wait: |_| {},
+            wait: Arc::new(|_| {}),
         };
         run_bridge(HARNESS_PID, effects, &SnapshotSequence(RefCell::new(polls)))
             .expect("bridge runs");
         ScriptedRun {
             since_lines: lock(&since_lines).clone(),
-            delivered_frames: lock(&errors)
-                .iter()
-                .filter(|message| message.starts_with("cannot connect to the messaging"))
-                .count(),
+            injection_attempts: *lock(&injection_attempts),
         }
     }
 
@@ -1320,7 +1353,7 @@ mod tests {
         vec![
             ProcessEntry {
                 pid: HARNESS_PID,
-                parent_pid: 1,
+                parent_pid: Pid(1),
                 executable: Some("/usr/bin/claude".to_owned()),
                 arguments: Vec::new(),
             },
@@ -1350,7 +1383,7 @@ mod tests {
             ],
         );
         assert_eq!(run.since_lines, ["{\"since\":0}\n", "{\"since\":4}\n"]);
-        assert_eq!(run.delivered_frames, 3);
+        assert_eq!(run.injection_attempts, 3);
     }
 
     fn harness_without_binaries() -> Vec<ProcessEntry> {
@@ -1380,7 +1413,7 @@ mod tests {
             ],
         );
         assert_eq!(run.since_lines, ["{\"since\":0}\n", "{\"since\":0}\n"]);
-        assert_eq!(run.delivered_frames, 2);
+        assert_eq!(run.injection_attempts, 2);
     }
 
     fn frame_from(from: &str, body: &str) -> InboxFrame {
@@ -1449,7 +1482,7 @@ mod tests {
             elapsed: Arc::clone(&wiring.effects.elapsed),
             report_error: Arc::clone(&wiring.effects.report_error),
             spawn: Arc::clone(&wiring.effects.spawn),
-            wait: |_| {},
+            wait: Arc::new(|_| {}),
         }
     }
 
@@ -1500,19 +1533,26 @@ mod tests {
     fn spec_3_12_frames_of_two_followed_sockets_share_one_rate_limit_per_sender() {
         let wiring = wiring();
         let session = bridge_session(&wiring);
-        let sockets = [
-            PathBuf::from("/run/user/1000/estafette-1000/101.sock"),
-            PathBuf::from("/run/user/1000/estafette-1000/102.sock"),
-        ];
-        for index in 0..=RATE_LIMIT_INJECTIONS_PER_SENDER {
-            let socket = &sockets[index % sockets.len()];
-            session.deliver_from_socket(socket, &frame_from("ana", &format!("body {index}")));
+        let first_socket = PathBuf::from("/run/user/1000/estafette-1000/101.sock");
+        let second_socket = PathBuf::from("/run/user/1000/estafette-1000/102.sock");
+        let mut delivered_from_first_socket = 0_usize;
+        while written_counts(&session.files.writes).is_empty()
+            && delivered_from_first_socket < MOST_FRAMES_BEFORE_A_DROP
+        {
+            session.deliver_from_socket(
+                &first_socket,
+                &frame_from("ana", &format!("body {delivered_from_first_socket}")),
+            );
+            delivered_from_first_socket = delivered_from_first_socket.saturating_add(1);
         }
-        assert_eq!(
-            connect_errors(&wiring).len(),
-            RATE_LIMIT_INJECTIONS_PER_SENDER
-        );
         assert_eq!(written_counts(&session.files.writes), ["1"]);
+        let injected_before_second_socket = connect_errors(&wiring).len();
+        session.deliver_from_socket(
+            &second_socket,
+            &frame_from("ana", "body from the second socket"),
+        );
+        assert_eq!(connect_errors(&wiring).len(), injected_before_second_socket);
+        assert_eq!(written_counts(&session.files.writes), ["1", "2"]);
     }
 
     fn class_files_written(session: &BridgeSession<DownConnector, StandInFiles>) -> Vec<String> {
@@ -1524,7 +1564,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_session_started_by_hand_is_attested_from_its_live_transcript_on_every_frame()
+    fn spec_3_12_harness_2_1_319_a_session_started_by_hand_is_attested_from_its_live_transcript_on_every_frame()
      {
         for (mode, class) in [("bypassPermissions", "bypass"), ("auto", "prompting")] {
             let wiring = wiring();
@@ -1556,7 +1596,8 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_the_transcript_path_is_resolved_once_and_only_its_tail_is_read_per_frame() {
+    fn spec_3_12_harness_2_1_319_the_transcript_path_is_resolved_once_and_only_its_tail_is_read_per_frame()
+     {
         let wiring = wiring();
         let session = bridge_session(&wiring);
         for body in ["one", "two", "three"] {
@@ -1569,7 +1610,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_tail_without_a_mode_entry_falls_back_to_one_whole_read() {
+    fn spec_3_12_harness_2_1_319_a_tail_without_a_mode_entry_falls_back_to_one_whole_read() {
         let wiring = wiring();
         let mut files = files_of_live_session("bypassPermissions");
         files.tails.insert(
@@ -1583,7 +1624,8 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_mode_entry_older_than_the_tail_window_is_read_whole_once_not_per_frame() {
+    fn spec_3_12_harness_2_1_319_a_mode_entry_older_than_the_tail_window_is_read_whole_once_not_per_frame()
+     {
         let wiring = wiring();
         let mut files = files_of_live_session("bypassPermissions");
         let filler_line = "{\"type\":\"user\"}\n";
@@ -1602,7 +1644,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_cached_transcript_that_cannot_be_opened_is_resolved_again() {
+    fn spec_3_12_harness_2_1_319_a_cached_transcript_that_cannot_be_opened_is_resolved_again() {
         const OTHER_TRANSCRIPT: &str = "/home/ana/.claude/projects/-other/abc-1.jsonl";
         let wiring = wiring();
         let mut files = files_of_live_session("bypassPermissions");
@@ -1627,7 +1669,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_the_operating_system_reads_only_the_window_at_the_end_of_a_file() {
+    fn spec_3_12_harness_2_1_319_the_operating_system_reads_only_the_window_at_the_end_of_a_file() {
         let directory = scratch_directory("tail");
         let file = directory.join("transcript.jsonl");
         fs::write(&file, "first line\nsecond line\nthird line\n").expect("write");
@@ -1639,7 +1681,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_the_bridge_reads_and_logs_the_live_class_when_it_starts() {
+    fn spec_3_12_harness_2_1_319_the_bridge_reads_and_logs_the_live_class_when_it_starts() {
         let polls = SnapshotSequence(RefCell::new(vec![Vec::new()]));
         for (mode, class) in [("bypassPermissions", "bypass"), ("auto", "prompting")] {
             let mut wiring = wiring();
@@ -1661,7 +1703,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_the_bridge_logs_that_no_live_class_exists_yet_when_it_starts() {
+    fn spec_3_12_harness_2_1_319_the_bridge_logs_that_no_live_class_exists_yet_when_it_starts() {
         let polls = SnapshotSequence(RefCell::new(vec![Vec::new()]));
         let wiring = wiring();
         run_bridge(HARNESS_PID, wiring.effects, &polls).expect("bridge runs");
@@ -1674,7 +1716,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_the_class_read_live_is_the_class_written_to_the_session_socket() {
+    fn spec_3_12_harness_2_1_319_the_class_read_live_is_the_class_written_to_the_session_socket() {
         let socket_path =
             std::env::temp_dir().join(format!("estf-u43-{}.sock", std::process::id()));
         let listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind");
@@ -1697,7 +1739,8 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_session_whose_mode_cannot_be_read_is_reported_and_attests_nothing() {
+    fn spec_3_12_harness_2_1_319_a_session_whose_mode_cannot_be_read_is_reported_and_attests_nothing()
+     {
         let wiring = wiring();
         let session = bridge_session_over(&wiring, StandInFiles::default(), DownConnector);
         session.deliver(&frame_from("ana", "one"));
@@ -1708,7 +1751,8 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_frame_whose_sender_name_is_refused_is_reported_and_recorded_as_dropped() {
+    fn spec_3_12_harness_2_1_319_a_frame_whose_sender_name_is_refused_is_reported_and_recorded_as_dropped()
+     {
         let wiring = wiring();
         let session = bridge_session(&wiring);
         session.deliver(&frame_from("an\"a", "x"));
@@ -1732,17 +1776,33 @@ mod tests {
         directory
     }
 
+    const MANAGED_DIRECTORY: &str = "/managed";
+
     #[test]
     fn spec_3_12_managed_settings_are_the_file_and_the_visible_json_files_of_its_drop_in_directory()
     {
-        let directory = scratch_directory("read");
+        let directory = Path::new(MANAGED_DIRECTORY);
         let drop_in = directory.join(MANAGED_DROP_IN_DIRECTORY);
-        fs::write(directory.join(MANAGED_SETTINGS_FILE), "{\"a\":1}").expect("write");
-        fs::write(drop_in.join("20-b.json"), "{\"b\":2}").expect("write");
-        fs::write(drop_in.join("10-a.json"), "{\"c\":3}").expect("write");
-        fs::write(drop_in.join(".hidden.json"), "{\"d\":4}").expect("write");
-        fs::write(drop_in.join("notes.txt"), "e").expect("write");
-        let managed = read_managed_settings(&OperatingSystemFiles, &directory);
+        let mut files = StandInFiles::default();
+        for (path, text) in [
+            (directory.join(MANAGED_SETTINGS_FILE), "{\"a\":1}"),
+            (drop_in.join("20-b.json"), "{\"b\":2}"),
+            (drop_in.join("10-a.json"), "{\"c\":3}"),
+            (drop_in.join(".hidden.json"), "{\"d\":4}"),
+            (drop_in.join("notes.txt"), "e"),
+        ] {
+            files.texts.insert(path, Ok(text.to_owned()));
+        }
+        files.directories.insert(
+            drop_in.clone(),
+            Ok(vec![
+                drop_in.join("20-b.json"),
+                drop_in.join("10-a.json"),
+                drop_in.join(".hidden.json"),
+                drop_in.join("notes.txt"),
+            ]),
+        );
+        let managed = read_managed_settings(&files, directory);
         let read: Vec<(String, String)> = managed
             .files
             .iter()
@@ -1766,22 +1826,26 @@ mod tests {
             ]
         );
         assert_eq!(managed.unreadable, Vec::<PathBuf>::new());
-        fs::remove_dir_all(&directory).expect("cleanup");
+        assert!(!lock(&files.reads).contains(&drop_in.join("notes.txt")));
     }
 
     #[test]
     fn spec_3_12_a_managed_settings_path_that_exists_but_cannot_be_read_is_reported_unreadable() {
-        let directory = scratch_directory("unreadable");
-        let unreadable = directory
-            .join(MANAGED_DROP_IN_DIRECTORY)
-            .join("30-bad.json");
-        fs::create_dir(&unreadable).expect("a directory where a file is expected");
-        let managed = read_managed_settings(&OperatingSystemFiles, &directory);
+        let directory = Path::new(MANAGED_DIRECTORY);
+        let drop_in = directory.join(MANAGED_DROP_IN_DIRECTORY);
+        let unreadable = drop_in.join("30-bad.json");
+        let mut files = StandInFiles::default();
+        files
+            .texts
+            .insert(unreadable.clone(), Err(io::ErrorKind::PermissionDenied));
+        files
+            .directories
+            .insert(drop_in, Ok(vec![unreadable.clone()]));
+        let managed = read_managed_settings(&files, directory);
         assert_eq!(managed.unreadable, [unreadable]);
         assert_eq!(managed.files.len(), 0);
-        let absent = read_managed_settings(&OperatingSystemFiles, &directory.join("missing"));
+        let absent = read_managed_settings(&StandInFiles::default(), Path::new("/missing"));
         assert_eq!((absent.files.len(), absent.unreadable.len()), (0, 0));
-        fs::remove_dir_all(&directory).expect("cleanup");
     }
 
     #[test]
@@ -1923,6 +1987,37 @@ mod tests {
             ]
         );
         assert!(report.contains("ok    socket path exists\n"), "{report}");
+    }
+
+    struct UnwritableOutput;
+
+    impl Write for UnwritableOutput {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            Err(io::Error::from(io::ErrorKind::BrokenPipe))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn spec_3_12_a_doctor_report_that_cannot_be_written_ends_the_doctor_with_the_write_error() {
+        let outcome = run_doctor_command(
+            &doctor_environment(),
+            &StandInFiles::default(),
+            &FixedProcessTable(Vec::new()),
+            &mut UnwritableOutput,
+        );
+        assert!(matches!(outcome, Err(CommandError::ReportUnwritable(_))));
+    }
+
+    #[test]
+    fn spec_3_3_the_doctor_creates_no_directory() {
+        let files = StandInFiles::default();
+        let (outcome, _report) = doctor_output_with(&files);
+        outcome.expect("doctor ran");
+        assert_eq!(*lock(&files.created), Vec::<PathBuf>::new());
     }
 
     #[test]

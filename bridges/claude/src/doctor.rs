@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::discover::{
-    ProcessEntry, ProcessTable, ProcessTableError, RuntimeDirectoryInputs, binary_sockets_under,
+    Pid, ProcessEntry, ProcessTable, ProcessTableError, RuntimeDirectoryInputs,
+    binary_sockets_under,
 };
 use crate::permission_class::PermissionClass;
 
@@ -21,6 +22,7 @@ const COMMAND_LINE_SETTINGS_NAME: &str = "--settings on the harness command line
 const UNREADABLE_FILE_NOTE: &str = "(the file cannot be read)";
 const ACCEPT_VALUE: &str = "accept";
 const HOLD_VALUE: &str = "hold";
+const NOHUP_PROGRAM: &str = "nohup";
 const REFUSE_VALUE: &str = "refuse";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,14 +40,6 @@ pub enum Verdict {
     Failed(String),
     Unverified(String),
 }
-
-const CHECKS_IN_REPORT_ORDER: [Check; 5] = [
-    Check::HookInstalled,
-    Check::BridgeRunning,
-    Check::SocketPathExists,
-    Check::NoRefuseApplies,
-    Check::BinaryProcessFound,
-];
 
 #[derive(Debug)]
 pub struct DoctorReport {
@@ -71,12 +65,31 @@ impl DoctorReport {
         }
     }
 
+    const fn verdicts_in_report_order(&self) -> [(Check, &Verdict); 5] {
+        let Self {
+            hook_installed,
+            bridge_running,
+            socket_path_exists,
+            no_refuse_applies,
+            binary_process_found,
+            attested_class: _,
+            dropped_frames: _,
+        } = self;
+        [
+            (Check::HookInstalled, hook_installed),
+            (Check::BridgeRunning, bridge_running),
+            (Check::SocketPathExists, socket_path_exists),
+            (Check::NoRefuseApplies, no_refuse_applies),
+            (Check::BinaryProcessFound, binary_process_found),
+        ]
+    }
+
     /// Tells whether every check passed.
     #[must_use]
     pub fn all_passed(&self) -> bool {
-        CHECKS_IN_REPORT_ORDER
+        self.verdicts_in_report_order()
             .iter()
-            .all(|check| *self.verdict(*check) == Verdict::Passed)
+            .all(|(_, verdict)| **verdict == Verdict::Passed)
     }
 }
 
@@ -94,8 +107,8 @@ impl fmt::Display for Check {
 
 impl fmt::Display for DoctorReport {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for check in CHECKS_IN_REPORT_ORDER {
-            match self.verdict(check) {
+        for (check, verdict) in self.verdicts_in_report_order() {
+            match verdict {
                 Verdict::Passed => writeln!(formatter, "ok    {check}")?,
                 Verdict::Failed(reason) => writeln!(formatter, "FAIL  {check}: {reason}")?,
                 Verdict::Unverified(reason) => {
@@ -126,27 +139,26 @@ pub enum MessagingSocket {
 }
 
 pub struct DoctorInputs {
-    pub own_pid: u32,
+    pub own_pid: Pid,
     pub messaging_socket: MessagingSocket,
     pub settings_files: Vec<SettingsFile>,
     pub unreadable_settings: Vec<PathBuf>,
-    pub temporary_dir: PathBuf,
     pub runtime_inputs: RuntimeDirectoryInputs,
 }
 
-fn bridge_state_path(temporary_dir: &Path, harness_pid: u32, suffix: &str) -> PathBuf {
+fn bridge_state_path(temporary_dir: &Path, harness_pid: Pid, suffix: &str) -> PathBuf {
     temporary_dir.join(format!("{BRIDGE_EXECUTABLE_NAME}-{harness_pid}{suffix}"))
 }
 
 /// Names the file in which the bridge of this harness process keeps its count of dropped frames.
 #[must_use]
-pub fn dropped_frames_path(temporary_dir: &Path, harness_pid: u32) -> PathBuf {
+pub fn dropped_frames_path(temporary_dir: &Path, harness_pid: Pid) -> PathBuf {
     bridge_state_path(temporary_dir, harness_pid, DROPPED_FRAMES_SUFFIX)
 }
 
 /// Names the file in which the bridge of this harness process keeps the permission class it attests.
 #[must_use]
-pub fn permission_class_path(temporary_dir: &Path, harness_pid: u32) -> PathBuf {
+pub fn permission_class_path(temporary_dir: &Path, harness_pid: Pid) -> PathBuf {
     bridge_state_path(temporary_dir, harness_pid, PERMISSION_CLASS_SUFFIX)
 }
 
@@ -180,10 +192,20 @@ pub fn run_doctor(
             &inputs.runtime_inputs,
         ),
         attested_class: harness_pid
-            .and_then(|pid| read_text_file(&permission_class_path(&inputs.temporary_dir, pid)))
+            .and_then(|pid| {
+                read_text_file(&permission_class_path(
+                    &inputs.runtime_inputs.temporary_dir,
+                    pid,
+                ))
+            })
             .and_then(|text| PermissionClass::from_class_name(&text)),
         dropped_frames: harness_pid
-            .and_then(|pid| read_text_file(&dropped_frames_path(&inputs.temporary_dir, pid)))
+            .and_then(|pid| {
+                read_text_file(&dropped_frames_path(
+                    &inputs.runtime_inputs.temporary_dir,
+                    pid,
+                ))
+            })
             .and_then(|text| text.trim().parse().ok()),
     })
 }
@@ -227,7 +249,7 @@ fn judge_no_refuse_applies<'a>(
     if unverified.is_empty() {
         Verdict::Passed
     } else {
-        Verdict::Unverified(format!("not verified: {}", unverified.join("; ")))
+        Verdict::Unverified(unverified.join("; "))
     }
 }
 
@@ -253,7 +275,7 @@ struct CommandLineSettings {
 
 /// Collects the settings the harness process was started with and the sources it cannot verify.
 fn settings_of_harness_command_line(
-    harness_pid: Option<u32>,
+    harness_pid: Option<Pid>,
     entries: &[ProcessEntry],
     read_text_file: &impl Fn(&Path) -> Option<String>,
 ) -> CommandLineSettings {
@@ -321,7 +343,7 @@ fn settings_flag_values(arguments: &[String]) -> Vec<String> {
 
 /// Judges whether the binary runs in MCP mode under the harness process.
 fn judge_binary_process_found(
-    harness_pid: Option<u32>,
+    harness_pid: Option<Pid>,
     entries: &[ProcessEntry],
     runtime_inputs: &RuntimeDirectoryInputs,
 ) -> Verdict {
@@ -340,7 +362,7 @@ fn judge_binary_process_found(
 }
 
 /// Judges whether a bridge runs for an ancestor of the doctor.
-fn judge_bridge_running(harness_pid: Option<u32>) -> Verdict {
+fn judge_bridge_running(harness_pid: Option<Pid>) -> Verdict {
     match harness_pid {
         Some(_) => Verdict::Passed,
         None => Verdict::Failed(format!(
@@ -350,7 +372,7 @@ fn judge_bridge_running(harness_pid: Option<u32>) -> Verdict {
 }
 
 /// Collects the pids of every ancestor of a process, ending on a cyclic table.
-fn ancestor_pids(pid: u32, entries: &[ProcessEntry]) -> BTreeSet<u32> {
+fn ancestor_pids(pid: Pid, entries: &[ProcessEntry]) -> BTreeSet<Pid> {
     let mut ancestors = BTreeSet::new();
     let mut current = pid;
     while let Some(parent) = entries.iter().find(|entry| entry.pid == current) {
@@ -363,7 +385,7 @@ fn ancestor_pids(pid: u32, entries: &[ProcessEntry]) -> BTreeSet<u32> {
 }
 
 /// Finds the harness pid a running bridge serves that is an ancestor of this process.
-fn harness_of_bridge_for_session(own_pid: u32, entries: &[ProcessEntry]) -> Option<u32> {
+fn harness_of_bridge_for_session(own_pid: Pid, entries: &[ProcessEntry]) -> Option<Pid> {
     let ancestors = ancestor_pids(own_pid, entries);
     entries
         .iter()
@@ -373,7 +395,7 @@ fn harness_of_bridge_for_session(own_pid: u32, entries: &[ProcessEntry]) -> Opti
 
 /// Names the pid of a bridge process other than this one that already serves the harness process.
 #[must_use]
-pub fn running_bridge_for(harness_pid: u32, own_pid: u32, entries: &[ProcessEntry]) -> Option<u32> {
+pub fn running_bridge_for(harness_pid: Pid, own_pid: Pid, entries: &[ProcessEntry]) -> Option<Pid> {
     entries
         .iter()
         .find(|entry| entry.pid != own_pid && served_harness_pid(entry) == Some(harness_pid))
@@ -381,7 +403,7 @@ pub fn running_bridge_for(harness_pid: u32, own_pid: u32, entries: &[ProcessEntr
 }
 
 /// Reads the harness pid a bridge process serves from its arguments.
-fn served_harness_pid(entry: &ProcessEntry) -> Option<u32> {
+fn served_harness_pid(entry: &ProcessEntry) -> Option<Pid> {
     if is_bridge_process(entry) {
         entry.arguments.get(1)?.parse().ok()
     } else {
@@ -394,8 +416,13 @@ fn is_bridge_process(entry: &ProcessEntry) -> bool {
     entry
         .executable
         .as_deref()
-        .is_some_and(|path| Path::new(path).file_name() == Some(OsStr::new(BRIDGE_EXECUTABLE_NAME)))
+        .is_some_and(is_bridge_executable)
         && entry.arguments.first().map(String::as_str) == Some(RUN_SUBCOMMAND)
+}
+
+/// Tells whether a path names the bridge executable.
+fn is_bridge_executable(path: &str) -> bool {
+    Path::new(path).file_name() == Some(OsStr::new(BRIDGE_EXECUTABLE_NAME))
 }
 
 #[derive(Default, Deserialize)]
@@ -428,6 +455,14 @@ fn parse_settings(file: &SettingsFile) -> Option<SettingsDocument> {
     serde_json::from_str(&file.text).ok()
 }
 
+/// Tells whether a hook command runs the bridge executable with the run subcommand, after any `nohup`.
+fn command_starts_bridge(command: &str) -> bool {
+    let mut words = command
+        .split_whitespace()
+        .skip_while(|word| *word == NOHUP_PROGRAM);
+    words.next().is_some_and(is_bridge_executable) && words.next() == Some(RUN_SUBCOMMAND)
+}
+
 /// Judges whether a `SessionStart` hook starts the bridge.
 fn judge_hook_installed(settings_files: &[SettingsFile]) -> Verdict {
     let starts_bridge = |document: SettingsDocument| {
@@ -437,7 +472,7 @@ fn judge_hook_installed(settings_files: &[SettingsFile]) -> Verdict {
             .iter()
             .flat_map(|group| &group.hooks)
             .filter_map(|hook| hook.command.as_deref())
-            .any(|command| command.contains(BRIDGE_EXECUTABLE_NAME))
+            .any(command_starts_bridge)
     };
     if settings_files
         .iter()
@@ -456,6 +491,7 @@ fn judge_hook_installed(settings_files: &[SettingsFile]) -> Verdict {
 mod tests {
     use super::*;
     use crate::discover::ProcessEntry;
+    use crate::seeded::next_below;
 
     const TEST_TEMPORARY_DIR: &str = "/var/tmp";
     const DROPPED_FRAMES_FILE_OF_HARNESS_100: &str =
@@ -489,28 +525,23 @@ mod tests {
 
     fn inputs_without_any_wiring() -> DoctorInputs {
         DoctorInputs {
-            own_pid: 500,
+            own_pid: Pid(500),
             messaging_socket: MessagingSocket::Unset,
             settings_files: Vec::new(),
             unreadable_settings: Vec::new(),
-            temporary_dir: PathBuf::from(TEST_TEMPORARY_DIR),
             runtime_inputs: RuntimeDirectoryInputs {
                 xdg_runtime_dir: Some(PathBuf::from("/run/user/1000")),
-                temporary_dir: None,
+                temporary_dir: PathBuf::from(TEST_TEMPORARY_DIR),
                 user_id: 1000,
             },
         }
-    }
-
-    fn verdict_of(report: &DoctorReport, check: Check) -> &Verdict {
-        report.verdict(check)
     }
 
     #[test]
     fn spec_3_12_doctor_without_a_session_start_hook_fails_the_hook_check() {
         let report = doctor_report(&inputs_without_any_wiring(), &FixedProcessTable(Vec::new()));
         assert!(matches!(
-            verdict_of(&report, Check::HookInstalled),
+            report.verdict(Check::HookInstalled),
             Verdict::Failed(_)
         ));
         assert!(!report.all_passed());
@@ -543,10 +574,46 @@ mod tests {
         ));
     }
 
+    fn session_start_hook_running(command: &str) -> String {
+        format!(
+            r#"{{"hooks":{{"SessionStart":[{{"hooks":[{{"type":"command","command":"{command}"}}]}}]}}}}"#
+        )
+    }
+
+    #[test]
+    fn spec_3_12_doctor_passes_a_session_start_hook_only_when_it_runs_the_bridge_with_the_run_subcommand()
+     {
+        for command in [
+            "estafette-bridge-claude run 1",
+            "/opt/bin/estafette-bridge-claude run 1",
+            "nohup /opt/bin/estafette-bridge-claude run 1 &",
+        ] {
+            assert_eq!(
+                hook_verdict_for(&session_start_hook_running(command)),
+                Verdict::Passed,
+                "{command}"
+            );
+        }
+        for command in [
+            "echo estafette-bridge-claude run 1",
+            "estafette-bridge-claude doctor",
+            "estafette-bridge-claude",
+            "my-estafette-bridge-claude run 1",
+        ] {
+            assert!(
+                matches!(
+                    hook_verdict_for(&session_start_hook_running(command)),
+                    Verdict::Failed(_)
+                ),
+                "{command}"
+            );
+        }
+    }
+
     fn process(pid: u32, parent_pid: u32, executable: &str, arguments: &[&str]) -> ProcessEntry {
         ProcessEntry {
-            pid,
-            parent_pid,
+            pid: Pid(pid),
+            parent_pid: Pid(parent_pid),
             executable: Some(executable.to_owned()),
             arguments: arguments
                 .iter()
@@ -643,7 +710,7 @@ mod tests {
             inputs.messaging_socket = MessagingSocket::Missing(PathBuf::from("/tmp/gone.sock"));
         });
         assert_eq!(
-            verdict_of(&missing, Check::SocketPathExists),
+            missing.verdict(Check::SocketPathExists),
             &Verdict::Failed(
                 "CLAUDE_CODE_MESSAGING_SOCKET names /tmp/gone.sock, which does not exist"
                     .to_owned()
@@ -653,10 +720,10 @@ mod tests {
             inputs.messaging_socket = MessagingSocket::Unset;
         });
         assert!(matches!(
-            verdict_of(&unset, Check::SocketPathExists),
+            unset.verdict(Check::SocketPathExists),
             Verdict::Failed(_)
         ));
-        assert_eq!(verdict_of(&unset, Check::HookInstalled), &Verdict::Passed);
+        assert_eq!(unset.verdict(Check::HookInstalled), &Verdict::Passed);
     }
 
     #[test]
@@ -668,7 +735,7 @@ mod tests {
             ));
         });
         assert_eq!(
-            verdict_of(&report, Check::NoRefuseApplies),
+            report.verdict(Check::NoRefuseApplies),
             &Verdict::Failed(
                 "/work/.claude/settings.local.json sets crossSessionInbound to refuse, which drops the bridge's frames"
                     .to_owned()
@@ -699,7 +766,7 @@ mod tests {
                 ));
             });
             assert_eq!(
-                verdict_of(&report, Check::NoRefuseApplies),
+                report.verdict(Check::NoRefuseApplies),
                 &Verdict::Failed(format!(
                     "/work/.claude/settings.local.json sets crossSessionInbound to {effect}"
                 )),
@@ -707,13 +774,13 @@ mod tests {
             );
         }
         let (inputs, mut processes) = healthy_session();
-        processes.0.retain(|entry| entry.pid != 100);
+        processes.0.retain(|entry| entry.pid != Pid(100));
         processes.0.push(harness_with_arguments(&[
             "--settings",
             "{\"crossSessionInbound\":\"hold\"}",
         ]));
         assert!(matches!(
-            verdict_of(&doctor_report(&inputs, &processes), Check::NoRefuseApplies),
+            doctor_report(&inputs, &processes).verdict(Check::NoRefuseApplies),
             Verdict::Failed(_)
         ));
     }
@@ -721,7 +788,7 @@ mod tests {
     #[test]
     fn spec_3_12_doctor_fails_the_binary_check_when_no_mcp_binary_runs_under_the_session() {
         let report = report_of_healthy_session_after(|_, processes| {
-            processes.0.retain(|entry| entry.pid != 800);
+            processes.0.retain(|entry| entry.pid != Pid(800));
             processes
                 .0
                 .push(process(801, 1, "/usr/bin/estafette", &["mcp"]));
@@ -730,10 +797,10 @@ mod tests {
                 .push(process(802, 100, "/usr/bin/estafette", &["send"]));
         });
         assert_eq!(
-            verdict_of(&report, Check::BinaryProcessFound),
+            report.verdict(Check::BinaryProcessFound),
             &Verdict::Failed("no estafette process in mcp mode runs under process 100".to_owned())
         );
-        assert_eq!(verdict_of(&report, Check::BridgeRunning), &Verdict::Passed);
+        assert_eq!(report.verdict(Check::BridgeRunning), &Verdict::Passed);
     }
 
     #[test]
@@ -768,7 +835,8 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_doctor_reports_an_unknown_class_when_the_bridge_left_no_readable_class() {
+    fn spec_3_12_harness_2_1_319_doctor_reports_an_unknown_class_when_the_bridge_left_no_readable_class()
+     {
         let (inputs, processes) = healthy_session();
         for text in [None, Some("default")] {
             let report = run_doctor(&inputs, &processes, &|_: &Path| text.map(str::to_owned))
@@ -793,7 +861,7 @@ mod tests {
         read_text_file: &impl Fn(&Path) -> Option<String>,
     ) -> Verdict {
         let (inputs, mut processes) = healthy_session();
-        processes.0.retain(|entry| entry.pid != 100);
+        processes.0.retain(|entry| entry.pid != Pid(100));
         processes.0.push(harness_with_arguments(arguments));
         run_doctor(&inputs, &processes, read_text_file)
             .expect("the table never fails")
@@ -858,7 +926,7 @@ mod tests {
                 &read_nothing
             ),
             Verdict::Unverified(
-                "not verified: /work/session.json (the --settings file cannot be read)".to_owned()
+                "/work/session.json (the --settings file cannot be read)".to_owned()
             )
         );
         assert_eq!(
@@ -867,8 +935,7 @@ mod tests {
                 &read_nothing
             ),
             Verdict::Unverified(
-                "not verified: --settings on the harness command line is not valid settings JSON"
-                    .to_owned()
+                "--settings on the harness command line is not valid settings JSON".to_owned()
             )
         );
     }
@@ -879,10 +946,9 @@ mod tests {
         inputs.unreadable_settings = vec![PathBuf::from("/etc/claude-code/managed-settings.json")];
         let report = doctor_report(&inputs, &processes);
         assert_eq!(
-            verdict_of(&report, Check::NoRefuseApplies),
+            report.verdict(Check::NoRefuseApplies),
             &Verdict::Unverified(
-                "not verified: /etc/claude-code/managed-settings.json (the file cannot be read)"
-                    .to_owned()
+                "/etc/claude-code/managed-settings.json (the file cannot be read)".to_owned()
             )
         );
         assert!(!report.all_passed());
@@ -891,7 +957,7 @@ mod tests {
             REFUSE_JSON,
         ));
         assert!(matches!(
-            verdict_of(&doctor_report(&inputs, &processes), Check::NoRefuseApplies),
+            doctor_report(&inputs, &processes).verdict(Check::NoRefuseApplies),
             Verdict::Failed(_)
         ));
     }
@@ -900,32 +966,16 @@ mod tests {
     fn spec_3_12_doctor_cannot_verify_the_command_line_of_an_unknown_session() {
         let report = doctor_report(&inputs_without_any_wiring(), &FixedProcessTable(Vec::new()));
         assert_eq!(
-            verdict_of(&report, Check::NoRefuseApplies),
+            report.verdict(Check::NoRefuseApplies),
             &Verdict::Unverified(
-                "not verified: the harness command line is unknown without a running bridge"
-                    .to_owned()
+                "the harness command line is unknown without a running bridge".to_owned()
             )
         );
         assert!(
             report
                 .to_string()
-                .contains("UNVERIFIED no refuse applies: not verified:")
+                .contains("UNVERIFIED no refuse applies: the harness command line is unknown")
         );
-    }
-
-    struct Generator(u64);
-
-    impl Generator {
-        const MULTIPLIER: u64 = 6_364_136_223_846_793_005;
-        const INCREMENT: u64 = 1_442_695_040_888_963_407;
-
-        fn below(&mut self, bound: u64) -> u64 {
-            self.0 = self
-                .0
-                .wrapping_mul(Self::MULTIPLIER)
-                .wrapping_add(Self::INCREMENT);
-            (self.0 >> 33).checked_rem(bound).unwrap_or(0)
-        }
     }
 
     const GENERATED_CASES: u64 = 200;
@@ -933,9 +983,9 @@ mod tests {
     #[test]
     fn spec_3_12_settings_flag_takes_every_word_up_to_the_next_dash_word_for_any_command_line() {
         for seed in 0..GENERATED_CASES {
-            let mut generator = Generator(seed);
-            let words: Vec<String> = (0..generator.below(5))
-                .map(|index| format!("w{}x{index}", generator.below(1000)))
+            let mut state = seed;
+            let words: Vec<String> = (0..next_below(&mut state, 5))
+                .map(|index| format!("w{}x{index}", next_below(&mut state, 1000)))
                 .collect();
             let mut arguments = vec!["--model".to_owned(), "opus".to_owned()];
             arguments.push(SETTINGS_FLAG.to_owned());
@@ -952,22 +1002,22 @@ mod tests {
 
     #[test]
     fn spec_3_12_ancestor_walk_ends_on_any_process_table_even_a_cyclic_one() {
-        const PROCESS_COUNT: u64 = 8;
+        const PROCESS_COUNT: usize = 8;
         for seed in 0..GENERATED_CASES {
-            let mut generator = Generator(seed);
+            let mut state = seed;
             let entries: Vec<ProcessEntry> = (0..PROCESS_COUNT)
                 .map(|pid| {
                     process(
                         u32::try_from(pid).expect("small pid"),
-                        u32::try_from(generator.below(PROCESS_COUNT.saturating_add(1)))
+                        u32::try_from(next_below(&mut state, PROCESS_COUNT.saturating_add(1)))
                             .expect("small pid"),
                         "/bin/x",
                         &[],
                     )
                 })
                 .collect();
-            let ancestors = ancestor_pids(0, &entries);
-            let parents: BTreeSet<u32> = entries.iter().map(|entry| entry.parent_pid).collect();
+            let ancestors = ancestor_pids(Pid(0), &entries);
+            let parents: BTreeSet<Pid> = entries.iter().map(|entry| entry.parent_pid).collect();
             assert!(ancestors.is_subset(&parents), "seed {seed}");
             let first_parent = entries.first().map(|entry| entry.parent_pid);
             assert!(

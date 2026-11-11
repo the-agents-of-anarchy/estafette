@@ -63,7 +63,8 @@ mod tests {
     );
 
     #[test]
-    fn harness_2_1_319_the_latest_permission_mode_entry_names_the_live_mode_after_a_switch() {
+    fn spec_3_12_harness_2_1_319_the_latest_permission_mode_entry_names_the_live_mode_after_a_switch()
+     {
         assert_eq!(
             latest_permission_mode(TRANSCRIPT_WITH_A_SWITCH).as_deref(),
             Some("auto")
@@ -71,7 +72,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_transcript_without_a_permission_mode_entry_names_no_mode() {
+    fn spec_3_12_harness_2_1_319_a_transcript_without_a_permission_mode_entry_names_no_mode() {
         for transcript in [
             "",
             "not json\n",
@@ -83,7 +84,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_the_registry_entry_gives_the_session_id_of_the_transcript() {
+    fn spec_3_12_harness_2_1_319_the_registry_entry_gives_the_session_id_of_the_transcript() {
         let entry =
             "{\"pid\":1,\"sessionId\":\"33a25ba8-1545-4166-9762-1dc6bbf59e05\",\"name\":\"x\"}";
         assert_eq!(
@@ -97,7 +98,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_registry_entry_naming_another_path_or_no_session_gives_no_id() {
+    fn spec_3_12_harness_2_1_319_a_registry_entry_naming_another_path_or_no_session_gives_no_id() {
         for entry in [
             "{\"sessionId\":\"../x\"}",
             "{\"sessionId\":\"a/b\"}",
@@ -128,7 +129,7 @@ mod tests {
     const KIND_OF_MODE_ENTRY_WITHOUT_A_MODE: usize = 4;
 
     #[test]
-    fn harness_2_1_319_the_latest_permission_mode_entry_wins_whatever_surrounds_it() {
+    fn spec_3_12_harness_2_1_319_the_latest_permission_mode_entry_wins_whatever_surrounds_it() {
         let mut seeds_with_an_entry = 0;
         for seed in 0..GENERATED_CASES {
             let mut state = seed;
@@ -155,7 +156,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_session_id_with_a_path_character_is_never_returned() {
+    fn spec_3_12_harness_2_1_319_a_session_id_with_a_path_character_is_never_returned() {
         const ID_ALPHABET: [char; 8] = ['a', 'b', '-', '1', '/', '.', '\\', ' '];
         for seed in 0..GENERATED_CASES {
             let mut state = seed;

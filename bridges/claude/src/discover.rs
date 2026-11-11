@@ -3,15 +3,16 @@ use std::ffi::OsStr;
 use std::fmt;
 #[cfg(target_os = "linux")]
 use std::io::ErrorKind;
+use std::num::ParseIntError;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus};
+use std::str::FromStr;
 use std::time::Duration;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(2000);
 const BINARY_EXECUTABLE_NAME: &str = "estafette";
 const MCP_MODE_ARGUMENT: &str = "mcp";
 const RUNTIME_DIRECTORY_PREFIX: &str = "estafette-";
-const DEFAULT_TEMPORARY_DIRECTORY: &str = "/tmp";
 const SOCKET_FILE_SUFFIX: &str = ".sock";
 const PS_PROGRAM: &str = "ps";
 const PS_ALL_PROCESSES_FLAG: &str = "-A";
@@ -24,10 +25,28 @@ const PROC_DIRECTORY: &str = "/proc";
 #[cfg(target_os = "linux")]
 const EXECUTABLE_LINK_NAME: &str = "exe";
 
+/// An operating system process id.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct Pid(pub u32);
+
+impl fmt::Display for Pid {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl FromStr for Pid {
+    type Err = ParseIntError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        text.parse().map(Self)
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ProcessEntry {
-    pub pid: u32,
-    pub parent_pid: u32,
+    pub pid: Pid,
+    pub parent_pid: Pid,
     pub executable: Option<String>,
     pub arguments: Vec<String>,
 }
@@ -36,7 +55,7 @@ pub struct ProcessEntry {
 pub enum ProcessTableError {
     ListingFailed(std::io::Error),
     ListingExitedUnsuccessfully(ExitStatus),
-    MalformedListingLine(String),
+    MalformedListingLine,
 }
 
 impl fmt::Display for ProcessTableError {
@@ -46,11 +65,8 @@ impl fmt::Display for ProcessTableError {
             Self::ListingExitedUnsuccessfully(status) => {
                 write!(formatter, "{PS_PROGRAM} failed: {status}")
             }
-            Self::MalformedListingLine(line) => {
-                write!(
-                    formatter,
-                    "{PS_PROGRAM} printed a line it cannot read: {line}"
-                )
+            Self::MalformedListingLine => {
+                write!(formatter, "{PS_PROGRAM} printed a line it cannot read")
             }
         }
     }
@@ -82,7 +98,7 @@ fn run_ps(columns: &str) -> Result<String, ProcessTableError> {
 }
 
 #[cfg(target_os = "macos")]
-fn executable_paths() -> Result<BTreeMap<u32, String>, ProcessTableError> {
+fn executable_paths() -> Result<BTreeMap<Pid, String>, ProcessTableError> {
     run_ps(PS_EXECUTABLE_PATH_COLUMNS)?
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -92,13 +108,13 @@ fn executable_paths() -> Result<BTreeMap<u32, String>, ProcessTableError> {
                 .parse()
                 .ok()
                 .map(|pid| (pid, path.trim().to_owned()))
-                .ok_or_else(|| ProcessTableError::MalformedListingLine(line.to_owned()))
+                .ok_or(ProcessTableError::MalformedListingLine)
         })
         .collect()
 }
 
 #[cfg(target_os = "linux")]
-fn executable_paths() -> Result<BTreeMap<u32, String>, ProcessTableError> {
+fn executable_paths() -> Result<BTreeMap<Pid, String>, ProcessTableError> {
     let mut paths = BTreeMap::new();
     for process_directory in
         std::fs::read_dir(PROC_DIRECTORY).map_err(ProcessTableError::ListingFailed)?
@@ -135,15 +151,20 @@ fn split_first_token(text: &str) -> (&str, &str) {
 
 fn entries_from_command_lines(
     listing: &str,
-    executables: &BTreeMap<u32, String>,
+    executables: &BTreeMap<Pid, String>,
 ) -> Result<Vec<ProcessEntry>, ProcessTableError> {
     let mut entries = Vec::new();
     for line in listing.lines().filter(|line| !line.trim().is_empty()) {
-        let malformed = || ProcessTableError::MalformedListingLine(line.to_owned());
         let (pid_text, after_pid) = split_first_token(line);
         let (parent_pid_text, command_line) = split_first_token(after_pid);
-        let pid = pid_text.parse().ok().ok_or_else(malformed)?;
-        let parent_pid = parent_pid_text.parse().ok().ok_or_else(malformed)?;
+        let pid = pid_text
+            .parse()
+            .ok()
+            .ok_or(ProcessTableError::MalformedListingLine)?;
+        let parent_pid = parent_pid_text
+            .parse()
+            .ok()
+            .ok_or(ProcessTableError::MalformedListingLine)?;
         let executable = executables.get(&pid).cloned();
         entries.push(ProcessEntry {
             pid,
@@ -179,7 +200,7 @@ pub trait ProcessTable {
 
 pub struct RuntimeDirectoryInputs {
     pub xdg_runtime_dir: Option<PathBuf>,
-    pub temporary_dir: Option<PathBuf>,
+    pub temporary_dir: PathBuf,
     pub user_id: u32,
 }
 
@@ -187,7 +208,7 @@ pub struct RuntimeDirectoryInputs {
 /// # Errors
 /// Returns the `ProcessTableError` of the listing failure that ended the following.
 pub fn follow_binary_sockets(
-    harness_pid: u32,
+    harness_pid: Pid,
     runtime_inputs: &RuntimeDirectoryInputs,
     processes: &impl ProcessTable,
     wait_for_next_poll: &mut impl FnMut(Duration),
@@ -206,7 +227,7 @@ pub fn follow_binary_sockets(
 /// Lists the inbox socket paths of the binary's MCP-mode processes among the descendants of the harness process.
 #[must_use]
 pub fn binary_sockets_under(
-    harness_pid: u32,
+    harness_pid: Pid,
     runtime_inputs: &RuntimeDirectoryInputs,
     entries: &[ProcessEntry],
 ) -> Vec<PathBuf> {
@@ -221,20 +242,19 @@ fn runtime_directory(inputs: &RuntimeDirectoryInputs) -> PathBuf {
     let base = inputs
         .xdg_runtime_dir
         .clone()
-        .or_else(|| inputs.temporary_dir.clone())
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_TEMPORARY_DIRECTORY));
+        .unwrap_or_else(|| inputs.temporary_dir.clone());
     base.join(format!("{RUNTIME_DIRECTORY_PREFIX}{}", inputs.user_id))
 }
 
-fn socket_path(runtime_dir: &Path, pid: u32) -> PathBuf {
+fn socket_path(runtime_dir: &Path, pid: Pid) -> PathBuf {
     runtime_dir.join(format!("{pid}{SOCKET_FILE_SUFFIX}"))
 }
 
-fn is_running(pid: u32, entries: &[ProcessEntry]) -> bool {
+fn is_running(pid: Pid, entries: &[ProcessEntry]) -> bool {
     entries.iter().any(|entry| entry.pid == pid)
 }
 
-fn binary_pids_under(harness_pid: u32, entries: &[ProcessEntry]) -> BTreeSet<u32> {
+fn binary_pids_under(harness_pid: Pid, entries: &[ProcessEntry]) -> BTreeSet<Pid> {
     let descendants = descendant_pids(harness_pid, entries);
     entries
         .iter()
@@ -243,7 +263,7 @@ fn binary_pids_under(harness_pid: u32, entries: &[ProcessEntry]) -> BTreeSet<u32
         .collect()
 }
 
-fn descendant_pids(harness_pid: u32, entries: &[ProcessEntry]) -> BTreeSet<u32> {
+fn descendant_pids(harness_pid: Pid, entries: &[ProcessEntry]) -> BTreeSet<Pid> {
     let mut descendants = BTreeSet::new();
     let mut parents_to_expand = vec![harness_pid];
     while let Some(parent_pid) = parents_to_expand.pop() {
@@ -271,7 +291,6 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Command, Stdio};
-    use std::thread::sleep;
 
     struct SnapshotSequence(RefCell<Vec<Vec<ProcessEntry>>>);
 
@@ -287,15 +306,11 @@ mod tests {
         }
     }
 
-    const UNREADABLE_LISTING_LINE: &str = "  88";
-
     struct UnreadableListing;
 
     impl ProcessTable for UnreadableListing {
         fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
-            Err(ProcessTableError::MalformedListingLine(
-                UNREADABLE_LISTING_LINE.to_owned(),
-            ))
+            Err(ProcessTableError::MalformedListingLine)
         }
     }
 
@@ -316,10 +331,7 @@ mod tests {
             let line = format!("{token} {parent_pid} /bin/sh");
             let listing = entries_from_command_lines(&line, &BTreeMap::new());
             assert!(
-                matches!(
-                    &listing,
-                    Err(ProcessTableError::MalformedListingLine(reported)) if *reported == line
-                ),
+                matches!(&listing, Err(ProcessTableError::MalformedListingLine)),
                 "{line}"
             );
         }
@@ -329,23 +341,23 @@ mod tests {
     fn spec_3_12_step_2_listing_failure_stops_following_with_the_listing_error() {
         let mut reported = false;
         let following = follow_binary_sockets(
-            100,
+            Pid(100),
             &runtime_inputs(),
             &UnreadableListing,
             &mut |_| {},
             &mut |_| reported = true,
         );
-        assert_eq!(
-            following.expect_err("listing fails").to_string(),
-            "ps printed a line it cannot read:   88"
+        assert!(
+            matches!(following, Err(ProcessTableError::MalformedListingLine)),
+            "the listing failure ends the following"
         );
         assert!(!reported, "reported sockets from a failed listing");
     }
 
     fn entry(pid: u32, parent_pid: u32, executable: &str, arguments: &[&str]) -> ProcessEntry {
         ProcessEntry {
-            pid,
-            parent_pid,
+            pid: Pid(pid),
+            parent_pid: Pid(parent_pid),
             executable: Some(executable.to_owned()),
             arguments: arguments
                 .iter()
@@ -357,7 +369,7 @@ mod tests {
     fn runtime_inputs() -> RuntimeDirectoryInputs {
         RuntimeDirectoryInputs {
             xdg_runtime_dir: Some(PathBuf::from("/run/user/1000")),
-            temporary_dir: Some(PathBuf::from("/var/tmp")),
+            temporary_dir: PathBuf::from("/var/tmp"),
             user_id: 1000,
         }
     }
@@ -369,9 +381,15 @@ mod tests {
     ) -> Vec<Vec<PathBuf>> {
         let table = SnapshotSequence(RefCell::new(snapshots));
         let mut reports = Vec::new();
-        follow_binary_sockets(harness_pid, inputs, &table, &mut |_| {}, &mut |sockets| {
-            reports.push(sockets.to_vec());
-        })
+        follow_binary_sockets(
+            Pid(harness_pid),
+            inputs,
+            &table,
+            &mut |_| {},
+            &mut |sockets| {
+                reports.push(sockets.to_vec());
+            },
+        )
         .expect("the table never fails");
         reports
     }
@@ -421,20 +439,6 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_3_runtime_falls_back_to_tmp_without_xdg_runtime_dir_and_temporary_dir() {
-        let inputs = RuntimeDirectoryInputs {
-            xdg_runtime_dir: None,
-            temporary_dir: None,
-            ..runtime_inputs()
-        };
-        let reports = collect_reports(100, &inputs, vec![single_binary_under_harness(), vec![]]);
-        assert_eq!(
-            reports,
-            vec![vec![PathBuf::from("/tmp/estafette-1000/101.sock")]]
-        );
-    }
-
-    #[test]
     fn spec_3_12_steps_5_6_polls_again_after_each_wait_and_returns_when_harness_exits() {
         let without_binary = vec![entry(100, 1, "/usr/bin/claude", &[])];
         let snapshots = vec![
@@ -447,7 +451,7 @@ mod tests {
         let mut reports = Vec::new();
         let mut waited = Vec::new();
         follow_binary_sockets(
-            100,
+            Pid(100),
             &runtime_inputs(),
             &table,
             &mut |duration| waited.push(duration),
@@ -467,51 +471,39 @@ mod tests {
 
     #[test]
     fn spec_3_12_step_6_returns_after_exactly_the_polls_made_while_harness_ran() {
-        const POLLS_WHILE_HARNESS_RUNS: u32 = 4;
-        let snapshots = vec![
-            single_binary_under_harness(),
-            single_binary_under_harness(),
-            single_binary_under_harness(),
-            single_binary_under_harness(),
-            vec![],
-        ];
-        let table = SnapshotSequence(RefCell::new(snapshots));
-        let mut polls = 0_u32;
-        let mut waits = 0_u32;
-        follow_binary_sockets(
-            100,
-            &runtime_inputs(),
-            &table,
-            &mut |_| {
-                waits += 1;
-                assert!(
-                    waits <= POLLS_WHILE_HARNESS_RUNS,
-                    "kept polling after the harness exited"
-                );
-            },
-            &mut |_| polls += 1,
-        )
-        .expect("the table never fails");
-        assert_eq!(
-            (polls, waits),
-            (POLLS_WHILE_HARNESS_RUNS, POLLS_WHILE_HARNESS_RUNS)
-        );
-    }
-
-    #[test]
-    fn spec_3_12_step_6_reports_nothing_when_harness_is_not_running() {
-        let reports = collect_reports(
-            100,
-            &runtime_inputs(),
-            vec![vec![entry(101, 1, "/usr/bin/estafette", &["mcp"])]],
-        );
-        assert_eq!(reports, Vec::<Vec<PathBuf>>::new());
+        const MOST_POLLS_WHILE_HARNESS_RUNS: usize = 4;
+        for polls_while_harness_runs in 0..=MOST_POLLS_WHILE_HARNESS_RUNS {
+            let mut snapshots: Vec<Vec<ProcessEntry>> = (0..polls_while_harness_runs)
+                .map(|_| single_binary_under_harness())
+                .collect();
+            snapshots.push(vec![entry(101, 1, "/usr/bin/estafette", &["mcp"])]);
+            let table = SnapshotSequence(RefCell::new(snapshots));
+            let mut polls = 0_usize;
+            let mut waits = 0_usize;
+            follow_binary_sockets(
+                Pid(100),
+                &runtime_inputs(),
+                &table,
+                &mut |_| {
+                    waits = waits.saturating_add(1);
+                    assert!(
+                        waits <= polls_while_harness_runs,
+                        "kept polling after the harness exited"
+                    );
+                },
+                &mut |_| polls = polls.saturating_add(1),
+            )
+            .expect("the table never fails");
+            assert_eq!(
+                (polls, waits),
+                (polls_while_harness_runs, polls_while_harness_runs)
+            );
+        }
     }
 
     const TREE_STARTUP_POLL_LIMIT: u32 = 200;
-    const TREE_STARTUP_POLL_PAUSE: Duration = Duration::from_millis(25);
-    fn executable_table(pid: u32, executable: &str) -> BTreeMap<u32, String> {
-        BTreeMap::from([(pid, executable.to_owned())])
+    fn executable_table(pid: u32, executable: &str) -> BTreeMap<Pid, String> {
+        BTreeMap::from([(Pid(pid), executable.to_owned())])
     }
 
     fn only_entry(entries: &[ProcessEntry]) -> &ProcessEntry {
@@ -587,20 +579,25 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_12_step_2_ps_listing_without_a_parent_pid_is_refused_with_the_line() {
+    fn spec_3_12_step_2_ps_listing_without_a_parent_pid_is_refused() {
         let refusal = entries_from_command_lines("  77 1 /bin/sh -c run\n  88\n", &BTreeMap::new())
             .expect_err("refused");
-        assert_eq!(
-            refusal.to_string(),
-            "ps printed a line it cannot read:   88"
-        );
+        assert_eq!(refusal.to_string(), "ps printed a line it cannot read");
+    }
+
+    #[test]
+    fn spec_3_12_step_2_a_refused_ps_line_is_not_echoed_so_no_process_arguments_leak() {
+        const ARGUMENT_SECRET: &str = "hunter2";
+        let refusal = entries_from_command_lines(
+            &format!("77 not-a-pid /bin/tool --token {ARGUMENT_SECRET}"),
+            &BTreeMap::new(),
+        )
+        .expect_err("refused");
+        assert!(!refusal.to_string().contains(ARGUMENT_SECRET));
     }
 
     const PROPERTY_CASES: u64 = 300;
     const WORD_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz0123456789-_.";
-    const GENERATOR_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
-    const GENERATOR_INCREMENT: u64 = 1_442_695_040_888_963_407;
-    const GENERATOR_OUTPUT_SHIFT: u32 = 33;
     const LONGEST_GENERATED_WORD: u64 = 8;
     const MOST_GENERATED_PATH_SEGMENTS: u64 = 3;
     const MOST_GENERATED_ARGUMENTS: u64 = 4;
@@ -610,13 +607,8 @@ mod tests {
 
     impl SeededGenerator {
         fn below(&mut self, bound: u64) -> u64 {
-            self.0 = self
-                .0
-                .wrapping_mul(GENERATOR_MULTIPLIER)
-                .wrapping_add(GENERATOR_INCREMENT);
-            (self.0 >> GENERATOR_OUTPUT_SHIFT)
-                .checked_rem(bound)
-                .unwrap_or_default()
+            let bound = usize::try_from(bound).unwrap_or_default();
+            u64::try_from(next_below(&mut self.0, bound)).unwrap_or_default()
         }
 
         fn word(&mut self) -> String {
@@ -676,7 +668,7 @@ mod tests {
             let entry = only_entry(&entries);
             assert_eq!(
                 (entry.pid, entry.parent_pid, entry.executable.as_deref()),
-                (pid, parent_pid, Some(executable.as_str())),
+                (Pid(pid), Pid(parent_pid), Some(executable.as_str())),
                 "seed {seed}: {line}"
             );
             assert_eq!(entry.arguments, arguments, "seed {seed}: {line}");
@@ -696,8 +688,8 @@ mod tests {
             let refusal = entries_from_command_lines(&line, &BTreeMap::new()).expect_err("refused");
             assert_eq!(
                 refusal.to_string(),
-                format!("ps printed a line it cannot read: {line}"),
-                "seed {seed}"
+                "ps printed a line it cannot read",
+                "seed {seed}: {line}"
             );
         }
     }
@@ -710,13 +702,18 @@ mod tests {
     const OTHER_MODE_ARGUMENT: &str = "send";
     const SCRIPTS_DIRECTORY_NAME: &str = "scripts";
     const FAKE_BINARY_PERL_PROGRAM: &str = "sleep 600;\n";
-    const FAKE_TREE_SCRIPT: &str = r#"
-        "$1" mcp >/dev/null & echo $!
-        "$1" send >/dev/null & echo $!
-        "$2" scripts/estafette mcp >/dev/null & echo $!
-        sh -c '"$1" mcp >/dev/null & echo $!; wait' _ "$1" &
+
+    fn fake_tree_script() -> String {
+        format!(
+            r#"
+        "$1" {MCP_MODE_ARGUMENT} >/dev/null & echo $!
+        "$1" {OTHER_MODE_ARGUMENT} >/dev/null & echo $!
+        "$2" {SCRIPTS_DIRECTORY_NAME}/{BINARY_EXECUTABLE_NAME} {MCP_MODE_ARGUMENT} >/dev/null & echo $!
+        {SHELL_PROGRAM} -c '"$1" {MCP_MODE_ARGUMENT} >/dev/null & echo $!; wait' _ "$1" &
         wait
-    "#;
+    "#
+        )
+    }
 
     struct FakeProcessTree {
         harness: Child,
@@ -750,7 +747,7 @@ mod tests {
             )
             .expect("write a perl script named like the binary");
             let mut harness = Command::new(SHELL_PROGRAM)
-                .args([SHELL_COMMAND_FLAG, FAKE_TREE_SCRIPT, "_"])
+                .args([SHELL_COMMAND_FLAG, fake_tree_script().as_str(), "_"])
                 .arg(&fake_binary)
                 .arg(perl_path.trim())
                 .current_dir(&directory)
@@ -794,12 +791,13 @@ mod tests {
     impl Drop for FakeProcessTree {
         fn drop(&mut self) {
             for pid in &self.every_binary_pid {
-                Command::new(KILL_PROGRAM)
-                    .arg(pid.to_string())
-                    .status()
-                    .expect("kill a fake binary");
+                if let Err(error) = Command::new(KILL_PROGRAM).arg(pid.to_string()).status() {
+                    eprintln!("could not stop the fake process {pid}: {error}");
+                }
             }
-            std::fs::remove_dir_all(&self.directory).expect("remove fake binary directory");
+            if let Err(error) = std::fs::remove_dir_all(&self.directory) {
+                eprintln!("could not remove {}: {error}", self.directory.display());
+            }
         }
     }
 
@@ -824,21 +822,20 @@ mod tests {
             .collect();
         let mut polls = 0_u32;
         let matched = Cell::new(false);
-        let harness_pid = tree.harness.id();
+        let harness_pid = Pid(tree.harness.id());
         follow_binary_sockets(
             harness_pid,
             &runtime_inputs(),
             &PsProcessTable,
             &mut |_| {
                 polls = polls.saturating_add(1);
-                sleep(TREE_STARTUP_POLL_PAUSE);
                 if matched.get() || polls >= TREE_STARTUP_POLL_LIMIT {
                     tree.stop_harness();
                 }
             },
             &mut |sockets| matched.set(matched.get() || sockets == expected),
         )
-        .expect("the table never fails");
+        .expect("ps works");
         assert!(matched.get(), "no poll reported exactly {expected:?}");
     }
 }
