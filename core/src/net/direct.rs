@@ -1342,6 +1342,11 @@ mod tests {
         .unwrap();
     }
 
+    /// How many connections from the card the host's register holds, whether or not any is still alive.
+    fn connections_held_from(host: &RecordingHost, card: wire::PublicKey) -> usize {
+        host.accepted.held().get(&card).map_or(0, Vec::len)
+    }
+
     fn connections_accepted_from(host: &RecordingHost, card: wire::PublicKey) -> Vec<Connection> {
         host.accepted
             .held()
@@ -1399,6 +1404,7 @@ mod tests {
                 incoming.accept().unwrap().await.unwrap()
             }
         );
+        let accepted_closed = accepted.weak_handle().closed();
         let serving = tokio::spawn({
             let server = Arc::clone(&server);
             async move { server.accept(accepted).await }
@@ -1407,14 +1413,15 @@ mod tests {
         raw_exchange(&dialed, &sealed_message_to_server(&keys()))
             .await
             .unwrap();
-        let held_while_serving = connections_accepted_from(&host, card_of(CLIENT_SEED)).len();
+        let held_while_serving = connections_held_from(&host, card_of(CLIENT_SEED));
 
         serving.abort();
         drop(serving.await);
         dialed.close(VarInt::from_u32(0), b"");
         let all_forgotten = timeout(SAMPLERS_DONE_WAIT, async {
-            while !connections_accepted_from(&host, card_of(CLIENT_SEED)).is_empty() {
-                tokio::time::sleep(HEARING_SAMPLE_INTERVAL).await;
+            accepted_closed.await;
+            while connections_held_from(&host, card_of(CLIENT_SEED)) > 0 {
+                tokio::task::yield_now().await;
             }
         })
         .await;
@@ -1422,11 +1429,8 @@ mod tests {
         assert_eq!(held_while_serving, 1);
         assert!(
             all_forgotten.is_ok(),
-            "connections still held after the accept was cut short and the connection closed: {:?}",
-            connections_accepted_from(&host, card_of(CLIENT_SEED))
-                .iter()
-                .map(Connection::close_reason)
-                .collect::<Vec<_>>()
+            "the register still holds {} connection(s) from the client within {SAMPLERS_DONE_WAIT:?} after the accept was cut short and the connection closed",
+            connections_held_from(&host, card_of(CLIENT_SEED))
         );
     }
 
@@ -1493,11 +1497,11 @@ mod tests {
     }
 
     const NOT_AN_ANNOUNCED_HANDLE: &str = "Alice";
-    const AFTER_A_CLOSE_WOULD_HAVE_ARRIVED: Duration = Duration::from_millis(500);
+    const DIRECT_ANSWER_WAIT: Duration = Duration::from_secs(5);
 
     async fn introduce_beside_an_earlier_connection(
         introduction: wire::Introduce,
-    ) -> (Rig, Result<IntroduceAck, DirectError>, Connection) {
+    ) -> (Rig, Result<IntroduceAck, DirectError>, Connection, bool) {
         let rig = rig_over(
             RecordingHost::with_card(card_of(SERVER_SEED))
                 .measuring_silence_on(clock_reading_every_connection_as_gone()),
@@ -1513,20 +1517,48 @@ mod tests {
             .client
             .introduce(rig.link.server_node.endpoint().id(), introduction)
             .await;
-        tokio::time::sleep(AFTER_A_CLOSE_WOULD_HAVE_ARRIVED).await;
-        (rig, introduced, earlier)
+        let answered_on_the_earlier_connection = still_answers(&earlier).await;
+        (rig, introduced, earlier, answered_on_the_earlier_connection)
+    }
+
+    /// Whether a Message sent on the connection after the server's last answer is acknowledged, within the wait for a direct answer: any close the server made before that answer reaches the connection first.
+    async fn still_answers(connection: &Connection) -> bool {
+        timeout(DIRECT_ANSWER_WAIT, async {
+            let (mut send, mut recv) = connection.open_bi().await.ok()?;
+            send.write_all(&sealed_message_to_server(&keys()))
+                .await
+                .ok()?;
+            send.finish().ok()?;
+            let answer = recv.read_to_end(WIRE_LIMIT_BYTES).await.ok()?;
+            open_response(&keys(), &answer).ok()
+        })
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|response| {
+            matches!(
+                response,
+                Response::MessageAck(MessageAck { accepted: true, .. })
+            )
+        })
     }
 
     #[tokio::test]
     async fn spec_3_8_an_introduce_whose_announced_handle_does_not_match_is_dropped_before_any_connection_closes()
      {
-        let (rig, introduced, earlier) = introduce_beside_an_earlier_connection(wire::Introduce {
-            handle: Some(NOT_AN_ANNOUNCED_HANDLE.to_owned()),
-            ..introduction_from_client()
-        })
-        .await;
+        let (rig, introduced, earlier, answered_on_the_earlier_connection) =
+            introduce_beside_an_earlier_connection(wire::Introduce {
+                handle: Some(NOT_AN_ANNOUNCED_HANDLE.to_owned()),
+                ..introduction_from_client()
+            })
+            .await;
 
         assert_eq!(introduced, Err(DirectError::Refused));
+        assert!(
+            answered_on_the_earlier_connection,
+            "the earlier connection did not answer after the dropped introduce: {:?}",
+            earlier.close_reason()
+        );
         assert_eq!(earlier.close_reason(), None);
         assert_eq!(rig.host.introduced.lock().unwrap().len(), 0);
     }
@@ -1534,13 +1566,19 @@ mod tests {
     #[tokio::test]
     async fn spec_3_5_an_introduce_whose_public_is_over_the_cap_is_dropped_before_any_connection_closes()
      {
-        let (rig, introduced, earlier) = introduce_beside_an_earlier_connection(wire::Introduce {
-            public: public_mapping_of_bytes(SPEC_PUBLIC_CAP_BYTES + 1),
-            ..introduction_from_client()
-        })
-        .await;
+        let (rig, introduced, earlier, answered_on_the_earlier_connection) =
+            introduce_beside_an_earlier_connection(wire::Introduce {
+                public: public_mapping_of_bytes(SPEC_PUBLIC_CAP_BYTES + 1),
+                ..introduction_from_client()
+            })
+            .await;
 
         assert_eq!(introduced, Err(DirectError::Refused));
+        assert!(
+            answered_on_the_earlier_connection,
+            "the earlier connection did not answer after the dropped introduce: {:?}",
+            earlier.close_reason()
+        );
         assert_eq!(earlier.close_reason(), None);
         assert_eq!(rig.host.introduced.lock().unwrap().len(), 0);
     }
