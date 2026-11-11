@@ -11,7 +11,7 @@ key := env("LAB_KEY", home_directory() / ".ssh" / "estafette_lab")
 known_hosts := home_directory() / ".ssh" / "known_hosts_estafette_lab"
 ssh_opts := "-i " + key + " -o IdentitiesOnly=yes -o UserKnownHostsFile=" + known_hosts + " -o StrictHostKeyChecking=accept-new"
 lab_root := env("LAB_ROOT", "/tmp/estafette-lab")
-lab_binary := env("LAB_BINARY", "target/debug/estafette")
+mac_binary := env("LAB_BINARY", "target/debug/estafette")
 lab_network := "lab"
 lab_directories := "XDG_CONFIG_HOME=" + lab_root / "config" + " XDG_DATA_HOME=" + lab_root / "data" + " XDG_RUNTIME_DIR=" + lab_root / "run"
 lab_server_type := env("LAB_SERVER_TYPE", "cpx22")
@@ -23,7 +23,8 @@ lab_owner_label := "owner=estafette"
 lab_setup_wait_tries := "120"
 lab_setup_poll_seconds := "10"
 remote_tree := "/home/lab/work/estafette"
-remote_binary := remote_tree / "target/release/estafette"
+server_binary := "target/release/estafette"
+remote_binary := remote_tree / server_binary
 remote_host_root := "/root/estafette-lab"
 remote_host_directories := "XDG_CONFIG_HOME=" + remote_host_root / "config" + " XDG_DATA_HOME=" + remote_host_root / "data" + " XDG_RUNTIME_DIR=" + remote_host_root / "run"
 host_unit := "estafette-host"
@@ -76,24 +77,24 @@ backstop-status:
 [positional-arguments]
 estafette *arguments:
     umask 077 && mkdir -p {{ lab_root }}/run && chmod 0700 {{ lab_root }}
-    env {{ lab_directories }} {{ lab_binary }} "$@"
+    env {{ lab_directories }} {{ mac_binary }} "$@"
 
 [doc("Serve the card as a lab member on this machine until SIGTERM, printing its init envelope; its run record goes to stderr")]
 [group('lab')]
 member card:
     umask 077 && mkdir -p {{ lab_root }}/run && chmod 0700 {{ lab_root }}
     rm -f {{ lab_root }}/{{ card }}.control
-    env {{ lab_directories }} python3 -I just/remote/member.py serve {{ lab_binary }} {{ lab_network }} {{ card }} {{ lab_root }}/{{ card }}.control
+    env {{ lab_directories }} python3 -I just/remote/member.py serve {{ mac_binary }} {{ lab_network }} {{ card }} {{ lab_root }}/{{ card }}.control
 
 [doc("Call one tool of the lab member serving the card on this machine, e.g. just remote::call mac send '{\"to\":\"srv\",\"body\":\"hi\"}'")]
 [group('lab')]
 call card tool arguments="{}":
     python3 -I just/remote/member.py call {{ lab_root }}/{{ card }}.control {{ tool }} '{{ arguments }}'
 
-[doc("Serve the card as a lab member on the server, as a systemd unit run by lab; its envelope and run record go to /home/lab/<card>.out and .err")]
+[doc("Serve the card as a lab member on the server with its release binary, as a systemd unit run by lab, refusing when the server lacks the binary; its envelope and run record go to /home/lab/<card>.out and .err")]
 [group('lab')]
-member-on-server card:
-    ssh {{ ssh_opts }} root@$(hcloud server ip {{ server }}) systemd-run --collect --unit={{ member_unit_prefix }}{{ card }} --uid=lab --working-directory={{ remote_tree }} --property=StandardOutput=truncate:/home/lab/{{ card }}.out --property=StandardError=truncate:/home/lab/{{ card }}.err just remote::member {{ card }}
+member-on-server card: server-binary-built
+    ssh {{ ssh_opts }} root@$(hcloud server ip {{ server }}) systemd-run --collect --unit={{ member_unit_prefix }}{{ card }} --uid=lab --setenv=LAB_BINARY={{ server_binary }} --working-directory={{ remote_tree }} --property=StandardOutput=truncate:/home/lab/{{ card }}.out --property=StandardError=truncate:/home/lab/{{ card }}.err just remote::member {{ card }}
 
 [doc("Stop the card's lab member on the server cleanly, waiting out its departure")]
 [group('lab')]
@@ -108,7 +109,20 @@ attach inbox_path:
 [doc("Refuse, naming the missing path, unless the lab binary exists")]
 [private]
 lab-binary-built:
-    test -x {{ lab_binary }} || { echo "the lab binary {{ lab_binary }} does not exist: build it (cargo build -p estafette makes the default) or point LAB_BINARY at one" >&2; exit 1; }
+    test -x {{ mac_binary }} || { echo "the lab binary {{ mac_binary }} does not exist: build it (cargo build -p estafette makes the default) or point LAB_BINARY at one" >&2; exit 1; }
+
+[doc("Refuse, naming the server and the missing path, unless the server holds the release binary server-up builds")]
+[private]
+server-binary-built:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    address="$(hcloud server ip {{ server }})"
+    status=0
+    ssh {{ ssh_opts }} root@"$address" test -x {{ remote_binary }} || status=$?
+    if [ "$status" = 1 ]; then
+        echo "the server binary {{ remote_binary }} does not exist on {{ server }}: just remote::server-up builds it" >&2
+    fi
+    exit "$status"
 
 [doc("Create the lab server with its 24-hour deadline, or reuse it, wait for its setup, then push the committed tree and build the release binary with the relay there")]
 [group('lab')]
@@ -222,10 +236,10 @@ network-on-server:
 network-from-input:
     umask 077 && mkdir -p {{ lab_root }}/run "$(dirname {{ lab_config_file }})" && chmod 0700 {{ lab_root }} && cat > {{ lab_config_file }}.new && mv {{ lab_config_file }}.new {{ lab_config_file }}
 
-[doc("Create a card on the server's lab network as lab, printing its public key")]
+[doc("Create a card on the server's lab network as lab with the server's release binary, printing its public key; refuses when the server lacks the binary")]
 [group('lab')]
-card-on-server name handle:
-    ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) 'cd {{ remote_tree }} && just remote::estafette create-card {{ lab_network }} {{ name }} {{ handle }}'
+card-on-server name handle: server-binary-built
+    ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) 'cd {{ remote_tree }} && LAB_BINARY={{ server_binary }} just remote::estafette create-card {{ lab_network }} {{ name }} {{ handle }}'
 
 [doc("Call one tool of the lab member serving the card on the server, its arguments as JSON on stdin; prints the envelope stamped with the server's clock")]
 [group('lab')]
@@ -288,6 +302,7 @@ host-start:
         fi
         exit 1
     fi
+    just remote::server-binary-built
     address="$(hcloud server ip {{ server }})"
     domain="${address//./-}.sslip.io"
     remote() { ssh {{ ssh_opts }} root@"$address" "$@"; }
