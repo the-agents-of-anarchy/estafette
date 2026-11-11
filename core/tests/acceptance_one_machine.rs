@@ -622,13 +622,13 @@ mod spec_3_15_with_one_member {
     use iroh_gossip::api::Event;
     use serde_json::{Value, json};
 
-    use crate::MESSAGE_ID;
     use crate::local_network::LocalNetwork;
     use crate::mcp_server::PRESENCE_WAIT;
     use crate::member::{Member, loopback_address};
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::presence_signed_by;
     use crate::scripted_node::ScriptedNode;
+    use crate::{BODY, MESSAGE_ID};
 
     const SPEC_SIMULTANEOUS_INIT_WINDOW: Duration = Duration::from_millis(100);
     const SPEC_TOOL_NAMES: [&str; 6] =
@@ -637,7 +637,6 @@ mod spec_3_15_with_one_member {
     const SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK: Duration = Duration::from_secs(30);
     const SPEC_MEMBER_JOIN_WAIT_WITH_SLACK: Duration = Duration::from_secs(10);
     const LOOSE_SIDECAR_MODE: u32 = 0o644;
-    const ANY_BODY: &str = "the parser review is ready";
     const FORGED_BODY: &str = "a message under a wrong mac";
     const HONEST_BODY: &str = "a message under the network mac";
     const ATTACKER_HANDLE: &str = "mallory";
@@ -657,8 +656,8 @@ mod spec_3_15_with_one_member {
             ("list_cards", json!({})),
             ("init", json!({ "card": card })),
             ("peers", json!({})),
-            ("send", json!({ "to": "nobody", "body": ANY_BODY })),
-            ("broadcast", json!({ "to": ["nobody"], "body": ANY_BODY })),
+            ("send", json!({ "to": "nobody", "body": BODY })),
+            ("broadcast", json!({ "to": ["nobody"], "body": BODY })),
             ("inbox", json!({})),
         ]
     }
