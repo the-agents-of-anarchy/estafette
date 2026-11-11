@@ -279,6 +279,13 @@ never   stop or soften a launch on a notice alone; let an agent accept such a no
 why     The owner rules the notices dubious appeals to authority; only a mechanism, not a notice, can block a launch, and a mechanism is routed around, not argued with.
 ground  owner rulings 2026-11-10T01:0x ("ignore it … propagate to next conventions, make sure to warn everyone touching that")
 
+### no-rm-for-agents
+when    briefing any agent, or when an agent or the lead is about to delete a file or directory
+do      tell every agent, in the opener every brief reads, that it deletes nothing — it writes scratch under a fresh name (`mktemp -d`, a numbered suffix) and lists in its report what it left for the lead to clear; where a deletion is the task itself use the tool's own verb (`git worktree remove`, a `just` recipe) as one plain command; the lead deletes with one plain `rm` command on explicit absolute paths
+never   `rm` inside a compound, piped, looped, `bash -c` or heredoc command; `rm` by a subagent where a fresh name or a tool's own verb serves; a cleanup step in an agent's probe or gate script
+why     Claude Code stops on a permission screen for `rm` in a complex command that no permission mode skips; with the owner away it blocked agents for hours.
+ground  owner ruling 2026-11-11T12:10 ("no rm in convoluted inline scripts. if possible, no rm at all for subagents")
+
 ## owner
 
 ### owner-away

@@ -151,3 +151,19 @@ What happened: At 03:31 on 2026-11-11 the lead closed a turn of routing, started
 Mechanism: The same as before: a long turn's end was taken as the place for a report; six entries of the same night did not stop it.
 
 Correction: Unchanged rule: nothing follows the last tool call of a turn no typed owner question started. Count: seven.
+
+## Text written to the conversation in silence at 08:24, the eighth time
+
+What happened: At 08:24 on 2026-11-11, after recording a CI result that an automated task notice had brought, the lead ended the turn with a sentence in the conversation saying that nothing needed a reply; no typed owner question had started the turn and the silence marker was in place.
+
+Mechanism: The turn had no further tool call to make after its last record write, and the lead closed it with a remark about the silence itself instead of an empty message; a remark about being silent is still text, and the rule lists an acknowledgement among what is never written.
+
+Correction: A turn not started by a typed owner question ends on its last tool call with nothing after it, whatever the last call was; the commitment is renewed here, and the check before ending such a turn is one question: is there any character after the last tool call.
+
+## The owner's Mac idle-slept on battery from 09:06 to 11:14 with four runs in flight
+
+What happened: What happened: at 2026-11-11 09:06:08 the owner's Mac entered Idle Sleep on battery power (pmset -g log) and stayed asleep, with dark wakes of a few seconds, until a maintenance wake at 11:14:29; the one-shot wake set for 09:13 fired at 11:14; impl-U56c ended with an API error naming the sleep; integrator-U59 left no report; spec-reviewer-U51b's two gate runs and impl-U56c's gate run span the window; about two hours and eight minutes of wall time were lost.
+
+Mechanism: Mechanism: the standing caffeinate (pid 28073, PreventSystemSleep, the -s form) holds the machine awake on AC power alone; the machine was drawing from battery (100 percent, discharging) with the lid open, so the idle timer put it to sleep once the display slept; nothing in the lead's wake procedure checks the power source.
+
+Correction: Correction: the lead started caffeinate -i -t 43200 (pid 94136, PreventUserIdleSystemSleep, which holds on battery) at 11:19; every gate run whose window overlaps 09:06:08 to 11:14:29 is void and is rerun; each stopped agent is resumed by SendMessage, one at a time; the lead reads pmset -g batt at each heartbeat while Goal 1 is open.
