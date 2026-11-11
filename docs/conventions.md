@@ -168,6 +168,13 @@ do      match the run to its commit with `gh run list --branch main --commit <sh
 never   read the log in the lead's context
 ground  owner ruling 2026-10-23
 
+### no-sleep-in-tests
+when    writing or changing a test, or reviewing one
+do      wait on the condition the test needs, bounded, failing with the condition's name; where time itself must pass, drive a clock the test controls or wait on the event that time produces; replace a sleep met in a test that is being changed
+never   a sleep of any kind in a test, fixed or computed (`std::thread::sleep`, `tokio::time::sleep`, a shell `sleep` in a test script); a wait that passes silently when its bound runs out
+why     A sleep guesses a duration; it hides what the test waits for and passes or fails by machine load, as the lab runs showed.
+ground  owner ruling 2026-11-11T15:00 ("using any sleep in tests is forbidden.")
+
 ## writing craft
 
 ### prose
