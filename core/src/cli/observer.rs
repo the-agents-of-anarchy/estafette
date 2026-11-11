@@ -1302,6 +1302,7 @@ mod tests {
     }
 
     async fn attach_client(member: &Member) -> tokio::net::UnixStream {
+        let mut attached = member.inbox.attached();
         let mut stream = tokio::net::UnixStream::connect(&member.inbox_path)
             .await
             .unwrap();
@@ -1309,13 +1310,29 @@ mod tests {
             .await
             .unwrap();
         tokio::time::timeout(ATTACH_WAIT, async {
-            while !member.inbox.attached().is_attached() {
-                tokio::time::sleep(POLL_INTERVAL).await;
+            while !attached.is_attached() {
+                attached.changed().await.unwrap();
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_elapsed| {
+            panic!("the inbox has no client attached within {ATTACH_WAIT:?}")
+        });
         stream
+    }
+
+    async fn detach_client(member: &Member, client: tokio::net::UnixStream) {
+        let mut attached = member.inbox.attached();
+        drop(client);
+        tokio::time::timeout(ATTACH_WAIT, async {
+            while attached.is_attached() {
+                attached.changed().await.unwrap();
+            }
+        })
+        .await
+        .unwrap_or_else(|_elapsed| {
+            panic!("the inbox still has a client attached after {ATTACH_WAIT:?}")
+        });
     }
 
     #[tokio::test]
@@ -1374,26 +1391,28 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct SharedOutput(Arc<Mutex<Vec<u8>>>);
+    struct SharedOutput(Arc<tokio::sync::watch::Sender<Vec<u8>>>);
 
     impl SharedOutput {
         fn text(&self) -> String {
-            String::from_utf8(
+            String::from_utf8(self.0.borrow().clone()).unwrap()
+        }
+
+        async fn holds(&self, wanted: impl Fn(&str) -> bool + Send + Sync) {
+            drop(
                 self.0
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone(),
-            )
-            .unwrap()
+                    .subscribe()
+                    .wait_for(|bytes| wanted(&String::from_utf8_lossy(bytes)))
+                    .await,
+            );
         }
     }
 
     impl Write for SharedOutput {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.0
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .write(bytes)
+                .send_modify(|written| written.extend_from_slice(bytes));
+            Ok(bytes.len())
         }
 
         fn flush(&mut self) -> io::Result<()> {
@@ -1408,8 +1427,11 @@ mod tests {
     ) {
         tokio::time::timeout(PAYLOAD_WAIT, async {
             while !output.text().contains(wanted) {
-                drop(attach_client(member).await);
-                tokio::time::sleep(DETACH_WAIT).await;
+                detach_client(member, attach_client(member).await).await;
+                drop(
+                    tokio::time::timeout(DETACH_WAIT, output.holds(|text| text.contains(wanted)))
+                        .await,
+                );
             }
         })
         .await
@@ -2123,13 +2145,14 @@ mod tests {
                         .await
                         .unwrap();
                 }
-                tokio::time::timeout(PAYLOAD_WAIT, async {
-                    while !wanted_lines.iter().all(|line| output.text().contains(line)) {
-                        tokio::time::sleep(POLL_INTERVAL).await;
-                    }
-                })
+                tokio::time::timeout(
+                    PAYLOAD_WAIT,
+                    output.holds(|text| wanted_lines.iter().all(|line| text.contains(line))),
+                )
                 .await
-                .unwrap_or_default();
+                .unwrap_or_else(|_elapsed| {
+                    panic!("not every payload line was printed within {PAYLOAD_WAIT:?}")
+                });
                 interrupt.send(()).unwrap_or_default();
             }
         );
