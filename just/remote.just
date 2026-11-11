@@ -194,12 +194,14 @@ host-record-path:
     set -euo pipefail
     printf '%s\n' "${LAB_HOST_RECORD:-$({{ root_checkout_command }})/{{ host_record_under_root }}}"
 
-[doc("Check that lab/host.txt holds an invitation, printing none of it; fails naming the file when it does not")]
+[doc("Check that the lab holds a live host server and lab/host.txt holds an invitation, printing none of it; fails naming whichever is missing")]
 [group('lab')]
 invitation:
     #!/usr/bin/env bash
     set -euo pipefail
     record="$(just remote::host-record-path)"
+    address="$(hcloud server ip {{ server }} 2> /dev/null)" || { echo "no lab server {{ server }} exists: run just remote::host-up" >&2; exit 1; }
+    ssh {{ ssh_opts }} -o ConnectTimeout=5 root@"$address" systemctl is-active --quiet {{ host_unit }} 2> /dev/null || { echo "{{ server }} runs no live host: run just remote::host-up" >&2; exit 1; }
     grep -q '^invitation: .' "$record" 2> /dev/null || { echo "$record holds no invitation: run just remote::host-up" >&2; exit 1; }
 
 [doc("List every lab resource in the Hetzner project, to read before any creation")]
