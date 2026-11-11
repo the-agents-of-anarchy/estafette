@@ -701,7 +701,7 @@ mod tests {
     const KILL_PROGRAM: &str = "kill";
     const OTHER_MODE_ARGUMENT: &str = "send";
     const SCRIPTS_DIRECTORY_NAME: &str = "scripts";
-    const FAKE_BINARY_PERL_PROGRAM: &str = "sleep 600;\n";
+    const FAKE_BINARY_PERL_PROGRAM: &str = "select(undef, undef, undef, undef);\n";
 
     fn fake_tree_script() -> String {
         format!(
