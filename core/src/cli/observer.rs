@@ -1755,7 +1755,7 @@ mod tests {
         accepted[0].clone()
     }
 
-    /// Waits until the observer lists the neighbor, which it does once it has applied the neighbor's answer to its Introduce.
+    /// Waits until the observer lists the neighbor, which it does once it has applied the neighbor's answer to its Introduce, failing with what it holds when the wait ends first.
     async fn neighbor_listed_by(observer: &ObserverHost, within: Duration) {
         let neighbor = *secret_key(NEIGHBOR_SEED).public().as_bytes();
         tokio::time::timeout(within, async {
@@ -1768,7 +1768,14 @@ mod tests {
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_elapsed| {
+            let held: Vec<wire::PublicKey> = observer
+                .table()
+                .peers(wall_clock_ms())
+                .map(|peer| peer.card)
+                .collect();
+            panic!("the observer did not list the neighbor within {within:?}; it holds {held:?}")
+        });
     }
 
     #[tokio::test]
@@ -2307,13 +2314,16 @@ mod tests {
             });
 
         tail_result.unwrap();
-        assert!(closed_past_the_ack.is_err(), "{closed_past_the_ack:?}");
+        assert!(
+            closed_past_the_ack.is_err(),
+            "the observer closed the introduction's connection within {ACK_DROP_WOULD_SHOW_WITHIN:?} of the ack, before any Presence: {closed_past_the_ack:?}"
+        );
         assert!(
             matches!(
                 closed_at_the_presence,
                 Ok(iroh::endpoint::ConnectionError::ApplicationClosed(_))
             ),
-            "{closed_at_the_presence:?}"
+            "the observer did not close the introduction's connection within {SUPERSEDED_CLOSE_WAIT:?} of the member's next Presence: {closed_at_the_presence:?}"
         );
         drop(lab);
     }
