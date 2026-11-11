@@ -429,3 +429,28 @@ fn binary_list_cards_refuses_a_public_nested_too_deep_for_the_parser_as_an_inval
         }
     }
 }
+
+const IGNORED_KEY_DEPTHS: [usize; 2] = [300, 2000];
+
+#[test]
+fn binary_list_cards_lists_a_card_whose_ignored_key_nests_beyond_the_parser_bound_of_spec_3_5() {
+    for depth in IGNORED_KEY_DEPTHS {
+        let root = common::scratch_root(SCRATCH_PREFIX, &format!("ignored_{depth}")).unwrap();
+        let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
+        assert_eq!(created.status.code(), Some(0));
+        let card_file = root.join("data/estafette/cards/acme").join(CARD_FILE_NAME);
+        let mut text = std::fs::read_to_string(&card_file).unwrap();
+        text.push_str("ignored:\n");
+        text.push_str(&"- ".repeat(depth));
+        text.push_str("1\n");
+        std::fs::write(&card_file, text).unwrap();
+
+        let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
+
+        assert_eq!(listed.status.code(), Some(0), "depth {depth}");
+        assert!(
+            String::from_utf8_lossy(&listed.stdout).starts_with("ana-card\tana\t"),
+            "depth {depth}"
+        );
+    }
+}
