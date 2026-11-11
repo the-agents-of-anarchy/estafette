@@ -432,6 +432,29 @@ impl PeerRows {
         }
         effects
     }
+
+    /// Applies the answer to a direct request this node sent: an `IntroduceAck` as an introduction that spares the connection it came on, a failure as a failed contact, an acknowledged Probe as a contact that succeeded (spec 3.8).
+    pub(crate) fn take_direct_answer(&self, answer: DirectAnswer, now_ms: u64) -> Vec<Effect> {
+        match answer {
+            DirectAnswer::Introduce {
+                card,
+                answer: Ok(ack),
+            } => sparing_the_answering_connection(
+                self.table().receive_introduce_ack(card, &ack, now_ms),
+            ),
+            DirectAnswer::Introduce {
+                card,
+                answer: Err(_),
+            }
+            | DirectAnswer::Probe { card, acked: false } => {
+                self.table().direct_contact_failed(card, now_ms)
+            }
+            DirectAnswer::Probe { card, acked: true } => {
+                self.table().direct_contact_succeeded(card, now_ms);
+                Vec::new()
+            }
+        }
+    }
 }
 
 impl NodeState {
@@ -482,21 +505,6 @@ impl NodeState {
     /// The full current address of this node's endpoint, within the caps of spec 3.6.
     fn own_addr(&self) -> Addr {
         (self.own_address)()
-    }
-
-    /// This node's introduction: the effective handle once assigned, the public mapping, the attached flag and the address.
-    fn introduction(&self) -> Introduce {
-        Introduce {
-            v: Version::CURRENT,
-            handle: self
-                .own_handle
-                .get()
-                .map(|handle| handle.as_str().to_owned()),
-            public: self.public.clone(),
-            attached: self.attached.is_attached(),
-            addr: self.own_addr(),
-            mac: ZERO_MAC,
-        }
     }
 
     /// Hands an event to the presence loop, which is gone only once the node is.
@@ -556,19 +564,32 @@ impl DirectHost for Arc<NodeState> {
             .table()
             .receive_introduce(sender, &introduce, self.now_ms());
         self.hand_to_loop(LoopEvent::Effects(effects));
-        let introduction = self.introduction();
-        IntroduceAck {
-            v: introduction.v,
-            handle: introduction.handle,
-            public: introduction.public,
-            attached: introduction.attached,
-            addr: introduction.addr,
-            mac: introduction.mac,
-        }
+        acknowledgement_of(self.introduction())
     }
 
     fn accepted_connections(&self) -> AcceptedConnections {
         self.rows.accepted_connections()
+    }
+}
+
+impl DirectRequester for Arc<NodeState> {
+    /// This node's introduction: the effective handle once assigned, the public mapping, the attached flag and the address.
+    fn introduction(&self) -> Introduce {
+        Introduce {
+            v: Version::CURRENT,
+            handle: self
+                .own_handle
+                .get()
+                .map(|handle| handle.as_str().to_owned()),
+            public: self.public.clone(),
+            attached: self.attached.is_attached(),
+            addr: self.own_addr(),
+            mac: ZERO_MAC,
+        }
+    }
+
+    fn hand_answer(&self, answer: DirectAnswer) {
+        self.hand_to_loop(LoopEvent::Answered(answer));
     }
 }
 
@@ -577,26 +598,63 @@ enum LoopEvent {
     Depart,
     Effects(Vec<Effect>),
     PeerReached,
-    IntroduceAnswered {
-        card: wire::PublicKey,
-        answer: Result<IntroduceAck, DirectError>,
-    },
-    ProbeAnswered {
-        card: wire::PublicKey,
-        acked: bool,
-    },
+    Answered(DirectAnswer),
 }
 
-/// A direct request the loop hands to a task, so no dial holds the loop.
-enum DirectRequest {
+/// A direct request a loop hands to a task, so no dial holds the loop.
+pub enum DirectRequest {
     DropHeldConnection(wire::PublicKey),
     SendIntroduce(wire::PublicKey),
     SendProbe(wire::PublicKey, Nonce),
 }
 
+/// The answer to a direct request a node sent, for the loop that sent it to apply.
+pub enum DirectAnswer {
+    Introduce {
+        card: wire::PublicKey,
+        answer: Result<IntroduceAck, DirectError>,
+    },
+    Probe {
+        card: wire::PublicKey,
+        acked: bool,
+    },
+}
+
+/// What sending direct requests needs from a node of any kind: whether it is stopping, its introduction, and where each answer goes.
+pub trait DirectRequester: DirectHost {
+    /// The introduction this node sends, and answers an Introduce with.
+    fn introduction(&self) -> Introduce;
+
+    /// Hands the answer of a direct request this node sent to the loop that applies it.
+    fn hand_answer(&self, answer: DirectAnswer);
+}
+
+/// The `IntroduceAck` that answers an Introduce with this node's own introduction.
+pub fn acknowledgement_of(introduction: Introduce) -> IntroduceAck {
+    IntroduceAck {
+        v: introduction.v,
+        handle: introduction.handle,
+        public: introduction.public,
+        attached: introduction.attached,
+        addr: introduction.addr,
+        mac: introduction.mac,
+    }
+}
+
+/// Sends the direct requests in one task in their order, unless there are none, so no dial holds the loop.
+pub fn send_in_background<R: DirectRequester>(
+    requester: R,
+    client: &Arc<DirectClient>,
+    requests: Vec<DirectRequest>,
+) {
+    if !requests.is_empty() {
+        tokio::spawn(run_requests(requester, Arc::clone(client), requests));
+    }
+}
+
 /// Runs the requests in their order, handing each answer back to the loop, and sends no Introduce or Probe once the node is stopping.
-async fn run_requests(
-    state: Arc<NodeState>,
+async fn run_requests<R: DirectRequester>(
+    requester: R,
     client: Arc<DirectClient>,
     requests: Vec<DirectRequest>,
 ) {
@@ -608,20 +666,20 @@ async fn run_requests(
                 }
             }
             DirectRequest::SendIntroduce(_) | DirectRequest::SendProbe(..)
-                if state.is_stopping() => {}
+                if requester.is_stopping() => {}
             DirectRequest::SendIntroduce(card) => {
                 let answer = match endpoint_id(&card) {
-                    Some(id) => client.introduce(id, state.introduction()).await,
+                    Some(id) => client.introduce(id, requester.introduction()).await,
                     None => Err(DirectError::Unreachable),
                 };
-                state.hand_to_loop(LoopEvent::IntroduceAnswered { card, answer });
+                requester.hand_answer(DirectAnswer::Introduce { card, answer });
             }
             DirectRequest::SendProbe(card, nonce) => {
                 let acked = match endpoint_id(&card) {
                     Some(id) => client.probe(id, nonce).await.is_ok(),
                     None => false,
                 };
-                state.hand_to_loop(LoopEvent::ProbeAnswered { card, acked });
+                requester.hand_answer(DirectAnswer::Probe { card, acked });
             }
         }
     }
@@ -870,7 +928,7 @@ impl PresenceLoop {
         if verdict == RecordVerdict::Dropped {
             return;
         }
-        self.replace_lookup_entry(&valid.record().host, &valid.record().addr);
+        replace_lookup_entry(&self.endpoint, &valid.record().host, &valid.record().addr);
         self.endpoint.add_relay(valid.relay().clone()).await;
         if verdict == RecordVerdict::FromNewHost
             && let Err(failure) = self.known_hosts.save(now_ms)
@@ -886,24 +944,9 @@ impl PresenceLoop {
             LoopEvent::Depart => self.depart(now_ms).await,
             LoopEvent::Effects(effects) => self.perform(effects).await,
             LoopEvent::PeerReached => {}
-            LoopEvent::IntroduceAnswered {
-                card,
-                answer: Ok(ack),
-            } => {
-                let effects = self.state.table().receive_introduce_ack(card, &ack, now_ms);
-                self.perform(sparing_the_answering_connection(effects))
-                    .await;
-            }
-            LoopEvent::IntroduceAnswered {
-                card,
-                answer: Err(_),
-            }
-            | LoopEvent::ProbeAnswered { card, acked: false } => {
-                let effects = self.state.table().direct_contact_failed(card, now_ms);
+            LoopEvent::Answered(answer) => {
+                let effects = self.state.rows.take_direct_answer(answer, now_ms);
                 self.perform(effects).await;
-            }
-            LoopEvent::ProbeAnswered { card, acked: true } => {
-                self.state.table().direct_contact_succeeded(card, now_ms);
             }
         }
     }
@@ -914,7 +957,7 @@ impl PresenceLoop {
         for effect in effects {
             match effect {
                 Effect::ReplaceLookupEntry { card, addr } => {
-                    self.replace_lookup_entry(&card, &addr);
+                    replace_lookup_entry(&self.endpoint, &card, &addr);
                 }
                 Effect::BroadcastUnreachable(card) => self.broadcast_unreachable(card).await,
                 Effect::DropHeldConnection(card) => {
@@ -928,13 +971,7 @@ impl PresenceLoop {
                 }
             }
         }
-        if !requests.is_empty() {
-            tokio::spawn(run_requests(
-                Arc::clone(&self.state),
-                Arc::clone(&self.client),
-                requests,
-            ));
-        }
+        send_in_background(Arc::clone(&self.state), &self.client, requests);
     }
 
     /// Broadcasts the Departure, announces nothing after it, and saves the known hosts when a record is newer than the file.
@@ -1020,12 +1057,12 @@ impl PresenceLoop {
             self.endpoint.remove_relay(&relay).await;
         }
     }
+}
 
-    /// Replaces the card's lookup entry with the carried address.
-    fn replace_lookup_entry(&self, card: &wire::PublicKey, addr: &Addr) {
-        if let Some(id) = endpoint_id(card) {
-            self.endpoint.replace_address(endpoint_addr(id, addr));
-        }
+/// Replaces the card's lookup entry on the endpoint with the carried address, never merging the two (spec 3.8, address lookup).
+pub fn replace_lookup_entry(endpoint: &NodeEndpoint, card: &wire::PublicKey, addr: &Addr) {
+    if let Some(id) = endpoint_id(card) {
+        endpoint.replace_address(endpoint_addr(id, addr));
     }
 }
 

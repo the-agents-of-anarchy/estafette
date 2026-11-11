@@ -24,19 +24,20 @@ use crate::errors::ErrorCode;
 use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
 use crate::inbox::socket::{InboxSocket, InboxSocketError};
 use crate::keys::parse_public_key;
-use crate::net::direct::{ClientTimeouts, DirectClient, DirectError, DirectHost, MonotonicClock};
+use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, MonotonicClock};
 use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
-    DEPARTURE_WAIT, Delivery, Identity, KnownHostAddress, Network, Node, NodeEffects, NodeError,
-    NodeRecord, PeerRows, RelayProbe, Session, endpoint_addr, endpoint_id, known_host_addresses,
-    observer_wait_over_at, seed_lookup_with_known_hosts, serve, sleep_until_deadline, wire_addr,
+    DEPARTURE_WAIT, Delivery, DirectAnswer, DirectRequest, DirectRequester, Identity,
+    KnownHostAddress, Network, Node, NodeEffects, NodeError, NodeRecord, PeerRows, RelayProbe,
+    Session, acknowledgement_of, known_host_addresses, observer_wait_over_at, replace_lookup_entry,
+    seed_lookup_with_known_hosts, send_in_background, serve, sleep_until_deadline, wire_addr,
 };
 use crate::payload::{OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
 use crate::peers::{Effect, Peer, PeerTable};
 use crate::sidecar::{HeldSidecar, Pause, SEED_BYTES, SidecarError, claim, create_card};
 use crate::wire::{
-    self, Addr, Introduce, IntroduceAck, Message, Nonce, Payload, PresenceRequest, Version,
+    self, Introduce, IntroduceAck, Message, Nonce, Payload, PresenceRequest, Version,
 };
 
 const OBSERVER_PUBLIC: &[u8] = b"{}";
@@ -531,13 +532,10 @@ async fn start_observation(
     }
 }
 
-/// What reaches the observer loop from the direct server and from the requests it spawned.
+/// What reaches the observer loop from the direct server and from the requests it sent.
 enum ObserverEvent {
     Effects(Vec<Effect>),
-    IntroduceAnswered {
-        card: wire::PublicKey,
-        answer: Result<IntroduceAck, DirectError>,
-    },
+    Answered(DirectAnswer),
 }
 
 /// The direct protocol host of an observer: no card, no inbox, and an introduction without a handle.
@@ -562,19 +560,6 @@ impl ObserverHost {
     /// Hands an event to the observer loop, which is gone only once the run is.
     fn hand_to_loop(&self, event: ObserverEvent) {
         drop(self.to_loop.send(event));
-    }
-
-    /// This observer's introduction: no handle, an empty public mapping, not attached, and its current address.
-    fn introduction(&self) -> Introduce {
-        let own_address = self.endpoint.addr();
-        Introduce {
-            v: Version::CURRENT,
-            handle: None,
-            public: OBSERVER_PUBLIC.to_vec(),
-            attached: false,
-            addr: wire_addr(&own_address),
-            mac: ZERO_MAC,
-        }
     }
 }
 
@@ -602,15 +587,26 @@ impl DirectHost for Arc<ObserverHost> {
             .table()
             .receive_introduce(sender, &introduce, self.now_ms());
         self.hand_to_loop(ObserverEvent::Effects(effects));
-        let introduction = self.introduction();
-        IntroduceAck {
-            v: introduction.v,
-            handle: introduction.handle,
-            public: introduction.public,
-            attached: introduction.attached,
-            addr: introduction.addr,
-            mac: introduction.mac,
+        acknowledgement_of(self.introduction())
+    }
+}
+
+impl DirectRequester for Arc<ObserverHost> {
+    /// This observer's introduction: no handle, an empty public mapping, not attached, and its current address.
+    fn introduction(&self) -> Introduce {
+        let own_address = self.endpoint.addr();
+        Introduce {
+            v: Version::CURRENT,
+            handle: None,
+            public: OBSERVER_PUBLIC.to_vec(),
+            attached: false,
+            addr: wire_addr(&own_address),
+            mac: ZERO_MAC,
         }
+    }
+
+    fn hand_answer(&self, answer: DirectAnswer) {
+        self.hand_to_loop(ObserverEvent::Answered(answer));
     }
 }
 
@@ -735,7 +731,8 @@ impl Observation {
                 self.perform(effects);
             }
             OpenedPayload::Departure(departure) => {
-                self.host.table().receive_departure(&departure, now_ms);
+                let effects = self.host.table().receive_departure(&departure, now_ms);
+                self.perform(effects);
             }
             OpenedPayload::Unreachable(report) => {
                 self.host.table().receive_unreachable(&report, now_ms);
@@ -745,62 +742,36 @@ impl Observation {
         }
     }
 
-    /// Applies the effects the direct server handed over and the answer of each Introduce this node sent.
+    /// Applies the effects the direct server handed over and the answer of each direct request this node sent.
     fn take_loop_event(&self, event: ObserverEvent) {
-        let now_ms = self.host.now_ms();
         match event {
             ObserverEvent::Effects(effects) => self.perform(effects),
-            ObserverEvent::IntroduceAnswered {
-                card,
-                answer: Ok(ack),
-            } => {
-                let effects = self.host.table().receive_introduce_ack(card, &ack, now_ms);
-                self.perform(effects);
-            }
-            ObserverEvent::IntroduceAnswered {
-                card,
-                answer: Err(_failure),
-            } => {
-                let effects = self.host.table().direct_contact_failed(card, now_ms);
+            ObserverEvent::Answered(answer) => {
+                let effects = self
+                    .host
+                    .rows
+                    .take_direct_answer(answer, self.host.now_ms());
                 self.perform(effects);
             }
         }
     }
 
-    /// Performs the lookup and Introduce effects and leaves every effect that sends a payload or probes undone.
+    /// Performs the effects as a member does, but sends no Probe and no Unreachable report, since an observer sends Introduce alone and no payload (spec 3.13).
     fn perform(&self, effects: Vec<Effect>) {
+        let mut requests = Vec::new();
         for effect in effects {
             match effect {
                 Effect::ReplaceLookupEntry { card, addr } => {
-                    self.replace_lookup_entry(&card, &addr);
+                    replace_lookup_entry(&self.endpoint, &card, &addr);
                 }
-                Effect::SendIntroduce(card) => self.introduce_in_background(card),
-                Effect::DropHeldConnection(_card)
-                | Effect::SendProbe(_card)
-                | Effect::BroadcastUnreachable(_card) => {}
+                Effect::DropHeldConnection(card) => {
+                    requests.push(DirectRequest::DropHeldConnection(card));
+                }
+                Effect::SendIntroduce(card) => requests.push(DirectRequest::SendIntroduce(card)),
+                Effect::SendProbe(_card) | Effect::BroadcastUnreachable(_card) => {}
             }
         }
-    }
-
-    /// Replaces the card's lookup entry with the carried address.
-    fn replace_lookup_entry(&self, card: &wire::PublicKey, addr: &Addr) {
-        if let Some(id) = endpoint_id(card) {
-            self.endpoint.replace_address(endpoint_addr(id, addr));
-        }
-    }
-
-    /// Sends this observer's Introduce to the card in a task and hands the answer to the loop.
-    fn introduce_in_background(&self, card: wire::PublicKey) {
-        let Some(id) = endpoint_id(&card) else {
-            return;
-        };
-        let client = Arc::clone(&self.client);
-        let host = Arc::clone(&self.host);
-        let introduction = host.introduction();
-        tokio::spawn(async move {
-            let answer = client.introduce(id, introduction).await;
-            host.hand_to_loop(ObserverEvent::IntroduceAnswered { card, answer });
-        });
+        send_in_background(Arc::clone(&self.host), &self.client, requests);
     }
 }
 
@@ -945,6 +916,9 @@ mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::ProcessTable;
     use crate::keys::render_public_key;
+    use crate::net::direct::DirectServer;
+    use crate::wire::Addr;
+
     use crate::node::{Identity, Network, Node, NodeEffects};
 
     const NETWORK_NAME: &str = "lab";
@@ -1677,22 +1651,54 @@ mod tests {
         }
     }
 
+    /// The neighbor's direct server, keeping every connection it accepts for the test to watch.
+    #[derive(Debug)]
+    struct WatchedServer {
+        server: DirectServer<RecordingNeighbor>,
+        accepted: Arc<Mutex<Vec<iroh::endpoint::Connection>>>,
+    }
+
+    impl iroh::protocol::ProtocolHandler for WatchedServer {
+        async fn accept(
+            &self,
+            connection: iroh::endpoint::Connection,
+        ) -> Result<(), iroh::protocol::AcceptError> {
+            self.accepted
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(connection.clone());
+            self.server.accept(connection).await
+        }
+    }
+
     struct SilentNeighbor {
         _router: iroh::protocol::Router,
         endpoint: iroh::Endpoint,
         topic: NetworkTopic,
         address: EndpointAddr,
         introduces: Arc<Mutex<Vec<Introduce>>>,
+        accepted: Arc<Mutex<Vec<iroh::endpoint::Connection>>>,
     }
 
     async fn start_silent_neighbor() -> SilentNeighbor {
         let endpoint = bind_endpoint(secret_key(NEIGHBOR_SEED)).await;
         let introduces = Arc::new(Mutex::new(Vec::new()));
+        let accepted = Arc::new(Mutex::new(Vec::new()));
         let neighbor = RecordingNeighbor {
             card: *secret_key(NEIGHBOR_SEED).public().as_bytes(),
             introduces: Arc::clone(&introduces),
         };
-        let (router, gossip) = serve(&endpoint, &network_keys(), &neighbor);
+        let gossip = iroh_gossip::Gossip::builder().spawn(endpoint.endpoint().clone());
+        let router = iroh::protocol::Router::builder(endpoint.endpoint().clone())
+            .accept(
+                crate::net::endpoint::DIRECT_ALPN,
+                WatchedServer {
+                    server: DirectServer::new(network_keys(), neighbor),
+                    accepted: Arc::clone(&accepted),
+                },
+            )
+            .accept(iroh_gossip::ALPN, gossip.clone())
+            .spawn();
         let topic = NetworkTopic::join(
             &gossip,
             network_keys(),
@@ -1708,7 +1714,41 @@ mod tests {
             topic,
             address: endpoint.endpoint().addr(),
             introduces,
+            accepted,
         }
+    }
+
+    /// The first connection the neighbor accepted, once one arrives within the wait.
+    async fn first_connection_accepted(
+        neighbor: &SilentNeighbor,
+        within: Duration,
+    ) -> iroh::endpoint::Connection {
+        tokio::time::timeout(within, async {
+            loop {
+                if let Some(connection) = neighbor.accepted.lock().unwrap().first() {
+                    return connection.clone();
+                }
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+        })
+        .await
+        .unwrap()
+    }
+
+    /// Waits until the observer lists the neighbor, which it does once it has applied the neighbor's answer to its Introduce.
+    async fn neighbor_listed_by(observer: &ObserverHost, within: Duration) {
+        let neighbor = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        tokio::time::timeout(within, async {
+            while !observer
+                .table()
+                .peers(wall_clock_ms())
+                .any(|peer| peer.card == neighbor)
+            {
+                tokio::time::sleep(POLL_INTERVAL).await;
+            }
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -2011,6 +2051,7 @@ mod tests {
 
     const CLOCK_STEP_PAST_ANY_SILENCE: Duration = Duration::from_secs(3600);
     const SUPERSEDED_CLOSE_WAIT: Duration = Duration::from_secs(5);
+    const ACK_DROP_WOULD_SHOW_WITHIN: Duration = Duration::from_millis(500);
 
     /// A monotonic clock that moves an hour on at every reading, so every connection the observer holds reads as long silent whenever it is judged.
     fn clock_moving_past_any_silence_at_each_reading() -> MonotonicClock {
@@ -2183,6 +2224,51 @@ mod tests {
                 "{NEIGHBOR_HANDLE}\tonline\ttrue\t{}\n",
                 String::from_utf8_lossy(NEIGHBOR_PUBLIC)
             )]
+        );
+        drop(lab);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_an_observer_keeps_its_connection_to_a_member_past_the_introduce_ack_and_drops_it_at_the_members_next_presence()
+     {
+        let lab = Lab::new("observer-held").await;
+        let neighbor = start_silent_neighbor().await;
+        lab.write_network_config(&[NEIGHBOR_SEED]);
+        let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
+        let (effects, _operator_effects) = lab.effects(
+            vec![neighbor.address.clone()],
+            Box::pin(async move { drop(interrupted.await) }),
+        );
+        let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap()).unwrap();
+        let observation = start_observation(&setup, effects).await.unwrap();
+        let observer_host = Arc::clone(&observation.host);
+        let mut tail_output = Vec::new();
+
+        let (tail_result, (closed_past_the_ack, closed_at_the_presence)) =
+            tokio::join!(observation.tail(&mut tail_output), async {
+                let introduced_on = first_connection_accepted(&neighbor, PAYLOAD_WAIT).await;
+                neighbor_listed_by(&observer_host, PAYLOAD_WAIT).await;
+                let closed_past_the_ack =
+                    tokio::time::timeout(ACK_DROP_WOULD_SHOW_WITHIN, introduced_on.closed()).await;
+                neighbor
+                    .topic
+                    .broadcast(&secret_key(NEIGHBOR_SEED), restarted_neighbor_presence())
+                    .await
+                    .unwrap();
+                let closed_at_the_presence =
+                    tokio::time::timeout(SUPERSEDED_CLOSE_WAIT, introduced_on.closed()).await;
+                interrupt.send(()).unwrap_or_default();
+                (closed_past_the_ack, closed_at_the_presence)
+            });
+
+        tail_result.unwrap();
+        assert!(closed_past_the_ack.is_err(), "{closed_past_the_ack:?}");
+        assert!(
+            matches!(
+                closed_at_the_presence,
+                Ok(iroh::endpoint::ConnectionError::ApplicationClosed(_))
+            ),
+            "{closed_at_the_presence:?}"
         );
         drop(lab);
     }
