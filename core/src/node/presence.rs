@@ -217,6 +217,7 @@ impl Node {
         let (assigned, own_handle) = oneshot::channel();
         let presence_loop = PresenceLoop {
             attached: effects.inbox.attached(),
+            inbox: InboxWatch::Watching,
             own_addresses: own_address_changes(endpoint.endpoint()),
             relay_statuses: home_relay_changes(endpoint.endpoint()),
             state: Arc::clone(&state),
@@ -676,6 +677,58 @@ enum Init {
     Done,
 }
 
+/// What moves init on: a join of the topic at a monotonic instant, a join that gained no neighbor, or the end of the observer wait.
+enum InitEvent {
+    Joined { at: Instant },
+    JoinTimedOut,
+    ObserverWaitOver,
+}
+
+/// What a step of init asks the presence loop to do.
+enum InitAction {
+    Announce,
+    AssignHandle(oneshot::Sender<LocalHandle>),
+    AssignHandleThenAnnounce(oneshot::Sender<LocalHandle>),
+}
+
+impl Init {
+    /// The state init moves to on the event, with what the loop does for the step: a first join starts the observer wait, a later one announces, and the handle is assigned at a first join that gained no neighbor or at the end of the observer wait.
+    fn after(self, event: InitEvent) -> (Self, Option<InitAction>) {
+        match (self, event) {
+            (Self::AwaitingJoin { assigned }, InitEvent::Joined { at }) => (
+                Self::ObserverWait {
+                    until: observer_wait_over_at(at),
+                    assigned,
+                },
+                None,
+            ),
+            (Self::AwaitingJoin { assigned }, InitEvent::JoinTimedOut) => {
+                (Self::Done, Some(InitAction::AssignHandle(assigned)))
+            }
+            (Self::ObserverWait { assigned, .. }, InitEvent::ObserverWaitOver) => (
+                Self::Done,
+                Some(InitAction::AssignHandleThenAnnounce(assigned)),
+            ),
+            (Self::Done, InitEvent::Joined { .. }) => (Self::Done, Some(InitAction::Announce)),
+            (unchanged @ Self::AwaitingJoin { .. }, InitEvent::ObserverWaitOver)
+            | (
+                unchanged @ Self::ObserverWait { .. },
+                InitEvent::Joined { .. } | InitEvent::JoinTimedOut,
+            )
+            | (unchanged @ Self::Done, InitEvent::JoinTimedOut | InitEvent::ObserverWaitOver) => {
+                (unchanged, None)
+            }
+        }
+    }
+}
+
+/// Whether the presence loop still watches the inbox's attached flag, which it stops doing once the inbox is gone.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum InboxWatch {
+    Watching,
+    Gone,
+}
+
 /// What woke the presence loop.
 enum Wake {
     Topic(Option<Result<GossipEvent, GossipError>>),
@@ -704,6 +757,7 @@ pub(super) struct PresenceLoop {
     pub(super) topic: NetworkTopic,
     from_hosts: mpsc::UnboundedReceiver<LoopEvent>,
     attached: Attached,
+    inbox: InboxWatch,
     pub(super) own_addresses: Changes<EndpointAddr>,
     pub(super) relay_statuses: Changes<Vec<RelayStatus>>,
     requested_handle: AnnouncedHandle,
@@ -725,12 +779,8 @@ pub(super) struct PresenceLoop {
 impl PresenceLoop {
     /// Handles every wake until the topic closes.
     async fn run(mut self) {
-        let mut inbox_watched = true;
         loop {
-            let wake = self.next_wake(inbox_watched).await;
-            if matches!(wake, Wake::InboxGone) {
-                inbox_watched = false;
-            }
+            let wake = self.next_wake().await;
             if self.take(wake).await.is_break() {
                 return;
             }
@@ -738,7 +788,7 @@ impl PresenceLoop {
     }
 
     /// Waits for the next event, change or deadline.
-    async fn next_wake(&mut self, inbox_watched: bool) -> Wake {
+    async fn next_wake(&mut self) -> Wake {
         let observer_wait_over = match &self.init {
             Init::ObserverWait { until, .. } => Some(*until),
             Init::AwaitingJoin { .. } | Init::Done => None,
@@ -749,7 +799,7 @@ impl PresenceLoop {
         tokio::select! {
             event = self.topic.next_event() => Wake::Topic(event),
             Some(event) = self.from_hosts.recv() => Wake::Loop(event),
-            changed = self.attached.changed(), if inbox_watched => match changed {
+            changed = self.attached.changed(), if self.inbox == InboxWatch::Watching => match changed {
                 Ok(_) => Wake::AttachedChanged,
                 Err(_) => Wake::InboxGone,
             },
@@ -776,14 +826,14 @@ impl PresenceLoop {
             Wake::Topic(Some(Ok(event))) => self.take_gossip_event(event).await,
             Wake::Loop(event) => self.take_loop_event(event).await,
             Wake::AttachedChanged => self.announce_presence().await,
-            Wake::InboxGone => {}
+            Wake::InboxGone => self.inbox = InboxWatch::Gone,
             Wake::OwnAddressChanged => self.reconsider_own_address().await,
             Wake::HomeRelaysChanged(statuses) => {
                 self.relay_loss
                     .observe(&home_relays(&statuses), (self.monotonic)());
                 self.reconsider_own_address().await;
             }
-            Wake::ObserverWaitOver => self.finish_observer_wait().await,
+            Wake::ObserverWaitOver => self.advance_init(InitEvent::ObserverWaitOver).await,
             Wake::ReannounceDue => {
                 self.reannounce_due = None;
                 self.reconsider_own_address().await;
@@ -800,7 +850,7 @@ impl PresenceLoop {
         let now_ms = self.state.now_ms();
         match event {
             GossipEvent::Joined => self.take_joined().await,
-            GossipEvent::JoinTimedOut => self.take_join_timeout(),
+            GossipEvent::JoinTimedOut => self.take_join_timeout().await,
             GossipEvent::NeighborUp(node) => {
                 self.neighbors.insert(node);
                 let effects = self.state.rows.take_neighbor_up(node, now_ms);
@@ -822,39 +872,32 @@ impl PresenceLoop {
     async fn take_joined(&mut self) {
         self.schedule.joined();
         self.member_joins.joined((self.monotonic)());
-        match std::mem::replace(&mut self.init, Init::Done) {
-            Init::AwaitingJoin { assigned } => {
-                self.init = Init::ObserverWait {
-                    until: observer_wait_over_at((self.monotonic)()),
-                    assigned,
-                };
-            }
-            waiting @ Init::ObserverWait { .. } => self.init = waiting,
-            Init::Done => self.announce_presence().await,
-        }
+        self.advance_init(InitEvent::Joined {
+            at: (self.monotonic)(),
+        })
+        .await;
     }
 
     /// Assigns the handle against the table as it stands when the first join gains no neighbor, and has a join that gains none end in a rebind when this member may rebind then.
-    fn take_join_timeout(&mut self) {
+    async fn take_join_timeout(&mut self) {
         if self.may_rebind() {
             self.schedule.join_timed_out((self.monotonic)());
         }
-        match std::mem::replace(&mut self.init, Init::Done) {
-            Init::AwaitingJoin { assigned } => self.assign_own_handle(assigned),
-            waiting @ Init::ObserverWait { .. } => self.init = waiting,
-            Init::Done => {}
-        }
+        self.advance_init(InitEvent::JoinTimedOut).await;
     }
 
-    /// Assigns the handle and sends the first Presence once the observer wait is over.
-    async fn finish_observer_wait(&mut self) {
-        match std::mem::replace(&mut self.init, Init::Done) {
-            Init::ObserverWait { assigned, .. } => {
+    /// Moves init on by the event and does what that step asks: assigns the handle, announces, or both in that order.
+    async fn advance_init(&mut self, event: InitEvent) {
+        let (init, action) = std::mem::replace(&mut self.init, Init::Done).after(event);
+        self.init = init;
+        match action {
+            None => {}
+            Some(InitAction::Announce) => self.announce_presence().await,
+            Some(InitAction::AssignHandle(assigned)) => self.assign_own_handle(assigned),
+            Some(InitAction::AssignHandleThenAnnounce(assigned)) => {
                 self.assign_own_handle(assigned);
                 self.announce_presence().await;
             }
-            awaiting @ Init::AwaitingJoin { .. } => self.init = awaiting,
-            Init::Done => {}
         }
     }
 
