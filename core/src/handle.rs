@@ -149,16 +149,20 @@ fn ends_in_suffix_after(text: &str, matches_base: fn(&str) -> bool) -> bool {
 }
 
 fn is_suffix_from_first_assigned(text: &str) -> bool {
-    let largest_refused_suffix = FIRST_ASSIGNED_SUFFIX.saturating_sub(1).to_string();
+    let is_below_first_assigned = || {
+        text.parse::<u64>()
+            .is_ok_and(|suffix| suffix < FIRST_ASSIGNED_SUFFIX)
+    };
     text.chars().all(|digit| digit.is_ascii_digit())
         && !text.starts_with(LEADING_ZERO)
         && !text.is_empty()
-        && text != largest_refused_suffix
+        && !is_below_first_assigned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seeded_draws::Draws;
 
     #[test]
     fn handle_grammar_accepts_lowercase_start_then_lowercase_digits_hyphens_up_to_32_spec_3_1() {
@@ -421,10 +425,6 @@ mod tests {
     const TAKEN_ODDS_AGAINST: usize = 3;
     const ASSIGNMENT_CANDIDATE_SUFFIX_LIMIT: usize = 14;
 
-    const MIX_MULTIPLIER_FIRST: u64 = 0x9E37_79B9_7F4A_7C15;
-    const MIX_MULTIPLIER_SECOND: u64 = 0xBF58_476D_1CE4_E5B9;
-    const MIX_ROTATION_BITS: u32 = 29;
-    const MIX_DISCARDED_LOW_BITS: u32 = 16;
     const HANDLE_LENGTH_STREAM: usize = 0;
     const HANDLE_FIRST_CHARACTER_STREAM: usize = 1;
     const HANDLE_REST_STREAM: usize = 2;
@@ -437,17 +437,10 @@ mod tests {
     const TAKEN_STREAM: usize = 9;
 
     fn below(case: u64, stream: [usize; 2], bound: usize) -> usize {
-        let mixed = stream.iter().fold(case, |mixed, part| {
-            mixed
-                .wrapping_add(u64::try_from(*part).unwrap())
-                .wrapping_mul(MIX_MULTIPLIER_FIRST)
-                .rotate_left(MIX_ROTATION_BITS)
-                .wrapping_mul(MIX_MULTIPLIER_SECOND)
+        let seed = stream.iter().fold(case, |seed, part| {
+            Draws::seeded(seed.wrapping_add(u64::try_from(*part).unwrap())).below(u64::MAX)
         });
-        usize::try_from(mixed >> MIX_DISCARDED_LOW_BITS)
-            .unwrap()
-            .checked_rem(bound)
-            .unwrap()
+        usize::try_from(Draws::seeded(seed).below(u64::try_from(bound).unwrap())).unwrap()
     }
 
     fn generated_handle(case: u64) -> String {

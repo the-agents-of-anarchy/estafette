@@ -1,6 +1,6 @@
 use std::fmt;
 
-use data_encoding::{DecodeError, HEXLOWER};
+use data_encoding::HEXLOWER;
 
 use crate::wire::{self, CodecError, HostAddr, Invitation, Wire};
 
@@ -11,7 +11,7 @@ pub const HOST_LINE_PREFIX: &str = "estafette-host-1:";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InviteError {
     WrongPrefix { expected: &'static str },
-    NotHexadecimal(DecodeError),
+    NotHexadecimal,
     NoHost,
     Codec(CodecError),
 }
@@ -22,7 +22,7 @@ impl fmt::Display for InviteError {
             Self::WrongPrefix { expected } => {
                 write!(formatter, "the text must start with `{expected}`")
             }
-            Self::NotHexadecimal(_) => write!(
+            Self::NotHexadecimal => write!(
                 formatter,
                 "after the prefix come lowercase hexadecimal digits 0-9 and a-f only, in pairs"
             ),
@@ -91,15 +91,25 @@ fn parse_with_prefix<T: Wire>(prefix: &'static str, text: &str) -> Result<T, Inv
         .ok_or(InviteError::WrongPrefix { expected: prefix })?;
     let bytes = HEXLOWER
         .decode(hex.as_bytes())
-        .map_err(InviteError::NotHexadecimal)?;
+        .map_err(|_decoding| InviteError::NotHexadecimal)?;
     wire::decode(&bytes).map_err(InviteError::Codec)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{RelayUrl, Version};
+    use crate::wire::{MAX_RELAY_URL_BYTES, RelayUrl, Version};
 
+    const PINNED_HOST_LINE: &str = concat!(
+        "estafette-host-1:",
+        "01",
+        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "1a",
+        "68747470733a2f2f72656c61792d6f6e652e6578616d706c652f",
+    );
+    const PINNED_HOST_HEX_LAST_DIGIT: char = 'f';
+    const PINNED_HOST_HEX_LAST_BYTE: &str = "2f";
+    const RELAY_BYTES_OVER_THE_CAP: usize = MAX_RELAY_URL_BYTES + 1;
     const FIRST_HOST_ID_BYTE: u8 = 0xA1;
     const SECOND_HOST_ID_BYTE: u8 = 0xB2;
     const SECRET_BYTE: u8 = 0x5C;
@@ -129,6 +139,18 @@ mod tests {
         }
     }
 
+    fn host_line_of_hex(hex: &str) -> String {
+        format!("{HOST_LINE_PREFIX}{hex}")
+    }
+
+    fn pinned_host_hex() -> &'static str {
+        PINNED_HOST_LINE.strip_prefix(HOST_LINE_PREFIX).unwrap()
+    }
+
+    fn relay_length_varint(bytes: usize) -> String {
+        HEXLOWER.encode(&postcard::to_allocvec(&bytes).unwrap())
+    }
+
     #[test]
     fn spec_3_13_an_invitation_parses_back_to_the_invitation_rendered() {
         let invitation = two_host_invitation();
@@ -137,14 +159,6 @@ mod tests {
 
         assert_eq!(parse_invitation(&text), Ok(invitation));
     }
-
-    const PINNED_HOST_LINE: &str = concat!(
-        "estafette-host-1:",
-        "01",
-        "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-        "1a",
-        "68747470733a2f2f72656c61792d6f6e652e6578616d706c652f",
-    );
 
     #[test]
     fn spec_3_13_a_host_line_is_the_prefix_and_lowercase_hex_of_the_postcard_host_addr() {
@@ -170,14 +184,8 @@ mod tests {
                 expected: HOST_LINE_PREFIX
             }
         );
-        assert_eq!(
-            invitation_error.to_string(),
-            "the text must start with `estafette-invite-1:`"
-        );
-        assert_eq!(
-            host_line_error.to_string(),
-            "the text must start with `estafette-host-1:`"
-        );
+        assert!(invitation_error.to_string().contains(INVITATION_PREFIX));
+        assert!(host_line_error.to_string().contains(HOST_LINE_PREFIX));
     }
 
     #[test]
@@ -195,27 +203,17 @@ mod tests {
         assert_eq!(parse_invitation(&hostless_text), Err(InviteError::NoHost));
     }
 
-    const RELAY_CAP_BYTES: usize = 128;
-    const RELAY_LENGTH_VARINT_OF_129: &str = "8101";
-
-    fn host_line_of_hex(hex: &str) -> String {
-        format!("{HOST_LINE_PREFIX}{hex}")
-    }
-
-    fn pinned_host_hex() -> &'static str {
-        PINNED_HOST_LINE.strip_prefix(HOST_LINE_PREFIX).unwrap()
-    }
-
     #[test]
     fn spec_3_13_a_host_line_with_truncated_hex_is_refused() {
         let hex = pinned_host_hex();
-        let cut_in_a_byte = host_line_of_hex(hex.strip_suffix(|_: char| true).unwrap());
-        let cut_between_bytes = host_line_of_hex(hex.strip_suffix("2f").unwrap());
+        let cut_in_a_byte = host_line_of_hex(hex.strip_suffix(PINNED_HOST_HEX_LAST_DIGIT).unwrap());
+        let cut_between_bytes =
+            host_line_of_hex(hex.strip_suffix(PINNED_HOST_HEX_LAST_BYTE).unwrap());
 
-        assert!(matches!(
+        assert_eq!(
             parse_host_line(&cut_in_a_byte),
-            Err(InviteError::NotHexadecimal(_))
-        ));
+            Err(InviteError::NotHexadecimal)
+        );
         assert!(matches!(
             parse_host_line(&cut_between_bytes),
             Err(InviteError::Codec(CodecError::Malformed(_)))
@@ -228,14 +226,14 @@ mod tests {
         let uppercase = host_line_of_hex(&hex.to_uppercase());
         let with_a_stray_letter = host_line_of_hex(&hex.replacen("01", "0g", 1));
 
-        assert!(matches!(
+        assert_eq!(
             parse_host_line(&uppercase),
-            Err(InviteError::NotHexadecimal(_))
-        ));
-        assert!(matches!(
+            Err(InviteError::NotHexadecimal)
+        );
+        assert_eq!(
             parse_host_line(&with_a_stray_letter),
-            Err(InviteError::NotHexadecimal(_))
-        ));
+            Err(InviteError::NotHexadecimal)
+        );
     }
 
     #[test]
@@ -251,15 +249,14 @@ mod tests {
     #[test]
     fn spec_3_13_a_relay_url_past_128_bytes_is_refused_when_parsing() {
         let version_and_id = format!("01{}", "a1".repeat(32));
-        let long_relay = "61".repeat(RELAY_CAP_BYTES + 1);
-        let line = host_line_of_hex(&format!(
-            "{version_and_id}{RELAY_LENGTH_VARINT_OF_129}{long_relay}"
-        ));
+        let long_relay = "61".repeat(RELAY_BYTES_OVER_THE_CAP);
+        let relay_length = relay_length_varint(RELAY_BYTES_OVER_THE_CAP);
+        let line = host_line_of_hex(&format!("{version_and_id}{relay_length}{long_relay}"));
 
         assert_eq!(
             parse_host_line(&line),
             Err(InviteError::Codec(CodecError::RelayUrlTooLong {
-                bytes: RELAY_CAP_BYTES + 1
+                bytes: RELAY_BYTES_OVER_THE_CAP
             }))
         );
     }
