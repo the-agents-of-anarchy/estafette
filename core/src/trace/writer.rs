@@ -305,12 +305,15 @@ mod tests {
             SMALL_QUEUE_LINES,
         )
         .unwrap();
-        for _queued in 0..=SMALL_QUEUE_LINES {
+        writer.write(EVENT_NAME, &[]);
+        within_bound(&entering, "the writer holds the first line");
+        for _queued in 0..SMALL_QUEUE_LINES {
             writer.write(EVENT_NAME, &[]);
         }
         let releasing = thread::spawn(move || {
-            for _line in 0..=SMALL_QUEUE_LINES {
-                within_bound(&entering, "the writer holds a line");
+            release.send(()).unwrap();
+            for _line in 0..SMALL_QUEUE_LINES {
+                within_bound(&entering, "the writer holds a queued line");
                 release.send(()).unwrap();
             }
         });
