@@ -1,14 +1,9 @@
 use std::collections::BTreeMap;
-use std::fs::{self, File, OpenOptions, Permissions};
-use std::io;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
-use super::{TraceAction, TraceBounds, TraceRefused};
+use super::{ListFiles, RemoveFile, StoredFile, TraceAction, TraceBounds, TraceRefused};
 use crate::dirs::{TraceFileKind, trace_file_of};
 
-const PRIVATE_FILE_MODE: u32 = 0o600;
 const PROGRAM: &str = "estafette";
 const MILLISECONDS_PER_SECOND: u64 = 1000;
 const SECONDS_PER_DAY: u64 = 86_400;
@@ -83,17 +78,6 @@ fn days_in_month(year: u64, month: u64) -> u64 {
     common.saturating_add(u64::from(month == FEBRUARY && is_leap_year(year)))
 }
 
-/// Creates the file new, readable and writable by its owner alone whatever the umask, for appending.
-pub(super) fn create_private_file(path: &Path) -> io::Result<File> {
-    let file = OpenOptions::new()
-        .append(true)
-        .create_new(true)
-        .mode(PRIVATE_FILE_MODE)
-        .open(path)?;
-    fs::set_permissions(path, Permissions::from_mode(PRIVATE_FILE_MODE))?;
-    Ok(file)
-}
-
 /// The files of one run in the trace directory, their bytes, and when its events file was last written.
 #[derive(Default)]
 struct StoredRun {
@@ -107,9 +91,12 @@ pub(super) fn remove_oldest_runs(
     traces: &Path,
     now_ms: u64,
     bounds: &TraceBounds,
+    list_files: &ListFiles,
+    remove_file: &RemoveFile,
 ) -> Result<(), TraceRefused> {
-    let (runs, mut held_bytes) = stored_runs(traces)
+    let stored = list_files(traces)
         .map_err(|source| TraceRefused::new(TraceAction::ListDirectory, traces, source))?;
+    let (runs, mut held_bytes) = stored_runs(traces, &stored);
     let freshness_ms = u64::try_from(bounds.freshness.as_millis()).unwrap_or(u64::MAX);
     for run in runs.values() {
         if held_bytes <= bounds.directory_bytes {
@@ -122,7 +109,7 @@ pub(super) fn remove_oldest_runs(
             continue;
         }
         for file in &run.files {
-            fs::remove_file(file)
+            remove_file(file)
                 .map_err(|source| TraceRefused::new(TraceAction::RemoveOldFile, file, source))?;
         }
         held_bytes = held_bytes.saturating_sub(run.bytes);
@@ -130,33 +117,24 @@ pub(super) fn remove_oldest_runs(
     Ok(())
 }
 
-/// Every run in the trace directory, oldest name first, and the bytes of every file the directory holds.
-fn stored_runs(traces: &Path) -> io::Result<(BTreeMap<String, StoredRun>, u64)> {
+/// Every run among the files stored in the trace directory, oldest name first, and the bytes of every stored file.
+fn stored_runs(traces: &Path, stored: &[StoredFile]) -> (BTreeMap<String, StoredRun>, u64) {
     let mut runs: BTreeMap<String, StoredRun> = BTreeMap::new();
     let mut held_bytes: u64 = 0;
-    for entry in fs::read_dir(traces)? {
-        let entry = entry?;
-        let metadata = entry.metadata()?;
-        held_bytes = held_bytes.saturating_add(metadata.len());
-        let file_name = entry.file_name();
-        let Some((name, kind)) = file_name.to_str().and_then(trace_file_of) else {
+    for file in stored {
+        held_bytes = held_bytes.saturating_add(file.bytes);
+        let Some((name, kind)) = file.name.to_str().and_then(trace_file_of) else {
             continue;
         };
         let run = runs.entry(name.to_owned()).or_default();
-        run.files.push(entry.path());
-        run.bytes = run.bytes.saturating_add(metadata.len());
+        run.files.push(traces.join(&file.name));
+        run.bytes = run.bytes.saturating_add(file.bytes);
         if kind == TraceFileKind::Events {
-            let written_ms = metadata
-                .modified()?
-                .duration_since(UNIX_EPOCH)
-                .map_or(0, |since| {
-                    u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
-                });
             run.events_written_ms = Some(
                 run.events_written_ms
-                    .map_or(written_ms, |earlier| earlier.max(written_ms)),
+                    .map_or(file.written_ms, |earlier| earlier.max(file.written_ms)),
             );
         }
     }
-    Ok((runs, held_bytes))
+    (runs, held_bytes)
 }

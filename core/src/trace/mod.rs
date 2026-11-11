@@ -1,5 +1,6 @@
+use std::ffi::OsString;
 use std::fmt;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,9 +15,10 @@ use crate::event::{Event, EventName, TraceLineName};
 
 mod files;
 mod line;
+mod operating_system;
 mod writer;
 
-use files::{create_private_file, remove_oldest_runs, run_name};
+use files::{remove_oldest_runs, run_name};
 use line::HeaderSource;
 use writer::{RollingFile, RolloverOpening, TraceWriter};
 
@@ -69,11 +71,50 @@ impl TraceBounds {
 }
 
 /// The two clocks every trace line reads, handed in by the composition root.
+#[derive(Clone)]
 pub struct TraceClocks {
     /// Milliseconds on a clock that never goes back, from the process start.
     pub monotonic_ms: Clock,
     /// Milliseconds since the Unix epoch by this machine's clock.
     pub wall_ms: Clock,
+}
+
+/// Creates a trace file new, readable and writable by its owner alone, and returns where its lines are appended.
+pub type CreateTraceFile = Arc<dyn Fn(&Path) -> io::Result<Box<dyn Write + Send>> + Send + Sync>;
+/// Renames a file onto another path, replacing any file there.
+pub type RenameFile = Arc<dyn Fn(&Path, &Path) -> io::Result<()> + Send + Sync>;
+/// Every file in a directory with its size and when it was last written.
+pub type ListFiles = Arc<dyn Fn(&Path) -> io::Result<Vec<StoredFile>> + Send + Sync>;
+/// Removes a file.
+pub type RemoveFile = Arc<dyn Fn(&Path) -> io::Result<()> + Send + Sync>;
+/// Runs the work on a new thread of the name given.
+pub type SpawnThread = Arc<dyn Fn(&str, Box<dyn FnOnce() + Send>) -> io::Result<()> + Send + Sync>;
+
+/// One file in the trace directory: its name, its bytes, and when it was last written, in milliseconds since the Unix epoch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredFile {
+    /// The file's name in its directory.
+    pub name: OsString,
+    /// The file's size in bytes.
+    pub bytes: u64,
+    /// When the file was last written, in milliseconds since the Unix epoch.
+    pub written_ms: u64,
+}
+
+/// Every side effect a trace performs, built at the composition root and handed in.
+pub struct TraceEffects {
+    /// The two clocks every line reads.
+    pub clocks: TraceClocks,
+    /// Creates each trace file, at the start and at each rollover.
+    pub create_file: CreateTraceFile,
+    /// Renames a trace file to its `.1` file at a rollover.
+    pub rename_file: RenameFile,
+    /// Lists the trace directory at the start, to remove the oldest runs.
+    pub list_files: ListFiles,
+    /// Removes a file of an old run at the start.
+    pub remove_file: RemoveFile,
+    /// Starts the writer thread of each trace file.
+    pub spawn_thread: SpawnThread,
 }
 
 /// The id of one process start, drawn from the secure random source.
@@ -166,23 +207,36 @@ impl Trace {
         directories: &Directories,
         filesystem: &impl DirectoryFilesystem,
         run: RunId,
-        clocks: TraceClocks,
+        effects: &TraceEffects,
         bounds: TraceBounds,
     ) -> Result<Self, TraceRefused> {
         let traces = directories.traces_directory();
         filesystem
             .create_private_directory(&traces)
             .map_err(|source| TraceRefused::new(TraceAction::CreateDirectory, &traces, source))?;
-        let header = Arc::new(HeaderSource::new(run, clocks));
+        let header = Arc::new(HeaderSource::new(run, effects.clocks.clone()));
         let started_ms = header.wall_ms();
-        remove_oldest_runs(&traces, started_ms, &bounds)?;
+        remove_oldest_runs(
+            &traces,
+            started_ms,
+            &bounds,
+            &effects.list_files,
+            &effects.remove_file,
+        )?;
         let files = directories.trace_files(&run_name(started_ms, &run.hex()));
-        let events = start_writer(&files.events, &header, &bounds, RolloverOpening::Nothing)?;
+        let events = start_writer(
+            &files.events,
+            &header,
+            &bounds,
+            RolloverOpening::Nothing,
+            effects,
+        )?;
         let raw = start_writer(
             &files.raw,
             &header,
             &bounds,
             RolloverOpening::FirstLineAgain,
+            effects,
         )?;
         raw.write(
             TraceLineName::RawFileOpened.as_str(),
@@ -237,13 +291,22 @@ fn start_writer(
     header: &Arc<HeaderSource>,
     bounds: &TraceBounds,
     opening: RolloverOpening,
+    effects: &TraceEffects,
 ) -> Result<TraceWriter, TraceRefused> {
-    let file = create_private_file(path)
+    let file = (effects.create_file)(path)
         .map_err(|source| TraceRefused::new(TraceAction::CreateFile, path, source))?;
     TraceWriter::start(
-        RollingFile::new(path.to_path_buf(), file, bounds.rollover_bytes, opening),
+        RollingFile::new(
+            path.to_path_buf(),
+            file,
+            bounds.rollover_bytes,
+            opening,
+            Arc::clone(&effects.create_file),
+            Arc::clone(&effects.rename_file),
+        ),
         Arc::clone(header),
         bounds.queue_lines,
+        &effects.spawn_thread,
     )
     .map_err(|source| TraceRefused::new(TraceAction::StartWriter, path, source))
 }
@@ -257,6 +320,7 @@ pub(super) mod tests {
 
     use iroh::SecretKey;
 
+    use super::files::run_name;
     use super::*;
     use crate::dirs::OperatingSystemFilesystem;
     use crate::event::{InboxEvent, ProcessEvent};
@@ -286,6 +350,8 @@ pub(super) mod tests {
     const SMALL_FRESHNESS_MS: u64 = 10_000;
     const SMALL_DIRECTORY_BYTES: u64 = 1000;
     const RAW_EVENT: &str = "iroh_line";
+    const STAND_IN_FAILURE: &str = "a stand-in failure";
+    const STALE_EVENTS_FILE: &str = "20000101T000000Z-0000000000000001-estafette.events.jsonl";
 
     pub(super) fn scratch_directories(test_name: &str) -> (PathBuf, Directories) {
         let root = std::env::temp_dir().join(format!(
@@ -334,7 +400,7 @@ pub(super) mod tests {
             &directories,
             &OperatingSystemFilesystem,
             RunId::from_random_bytes(RUN_BYTES),
-            frozen_clocks(LEAP_DAY_LAST_SECOND_MS),
+            &TraceEffects::of_the_operating_system(frozen_clocks(LEAP_DAY_LAST_SECOND_MS)),
             TraceBounds::SPEC,
         )
         .unwrap();
@@ -376,7 +442,7 @@ pub(super) mod tests {
             directories,
             &OperatingSystemFilesystem,
             RunId::from_random_bytes(RUN_BYTES),
-            frozen_clocks(wall_ms),
+            &TraceEffects::of_the_operating_system(frozen_clocks(wall_ms)),
             bounds,
         )
         .unwrap()
@@ -508,6 +574,133 @@ pub(super) mod tests {
             fs::read_to_string(crate::dirs::rolled_over_trace_file(raw)).unwrap(),
             format!("{not_safe_to_post}{}{}", raw_line(3), raw_line(4))
         );
+        drop(fs::remove_dir_all(&root));
+    }
+
+    fn stand_in_failure() -> io::Error {
+        io::Error::other(STAND_IN_FAILURE)
+    }
+
+    fn refusal_of(
+        directories: &Directories,
+        effects: &TraceEffects,
+        bounds: TraceBounds,
+    ) -> TraceRefused {
+        match Trace::start(
+            directories,
+            &OperatingSystemFilesystem,
+            RunId::from_random_bytes(RUN_BYTES),
+            effects,
+            bounds,
+        ) {
+            Ok(_trace) => panic!("the trace started"),
+            Err(refusal) => refusal,
+        }
+    }
+
+    #[test]
+    fn observability_decision_3_a_trace_file_that_cannot_be_created_refuses_the_start_naming_its_path_and_no_debug()
+     {
+        let (root, directories) = scratch_directories("refused-file");
+        let events = directories.trace_files(&run_name(NOW_MS, RUN_HEX)).events;
+
+        let refusal = refusal_of(
+            &directories,
+            &TraceEffects {
+                create_file: Arc::new(|_path: &Path| Err(stand_in_failure())),
+                ..TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS))
+            },
+            TraceBounds::SPEC,
+        );
+
+        assert_eq!(refusal.action, TraceAction::CreateFile);
+        assert_eq!(refusal.path, events);
+        assert_eq!(
+            refusal.to_string(),
+            format!(
+                "cannot create the trace file {}: {STAND_IN_FAILURE}; run with --no-debug to write no trace",
+                events.display()
+            )
+        );
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn observability_decision_3_a_writer_thread_that_cannot_start_refuses_the_start_naming_its_file()
+     {
+        let (root, directories) = scratch_directories("refused-thread");
+        let events = directories.trace_files(&run_name(NOW_MS, RUN_HEX)).events;
+
+        let refusal = refusal_of(
+            &directories,
+            &TraceEffects {
+                spawn_thread: Arc::new(|_name: &str, _work| Err(stand_in_failure())),
+                ..TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS))
+            },
+            TraceBounds::SPEC,
+        );
+
+        assert_eq!(refusal.action, TraceAction::StartWriter);
+        assert_eq!(refusal.path, events);
+        assert_eq!(
+            refusal.to_string(),
+            format!(
+                "cannot start the writer of the trace file {}: {STAND_IN_FAILURE}; run with --no-debug to write no trace",
+                events.display()
+            )
+        );
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn observability_decision_13_a_trace_directory_that_cannot_be_listed_refuses_the_start() {
+        let (root, directories) = scratch_directories("refused-list");
+        let traces = directories.traces_directory();
+
+        let refusal = refusal_of(
+            &directories,
+            &TraceEffects {
+                list_files: Arc::new(|_directory: &Path| Err(stand_in_failure())),
+                ..TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS))
+            },
+            TraceBounds::SPEC,
+        );
+
+        assert_eq!(refusal.action, TraceAction::ListDirectory);
+        assert_eq!(refusal.path, traces);
+        assert_eq!(names_in(&traces), Vec::<String>::new());
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn observability_decision_13_an_old_run_that_cannot_be_removed_refuses_the_start_naming_its_file()
+     {
+        let (root, directories) = scratch_directories("refused-remove");
+        let traces = directories.traces_directory();
+
+        let refusal = refusal_of(
+            &directories,
+            &TraceEffects {
+                list_files: Arc::new(|_directory: &Path| {
+                    Ok(vec![StoredFile {
+                        name: OsString::from(STALE_EVENTS_FILE),
+                        bytes: SMALL_DIRECTORY_BYTES + 1,
+                        written_ms: NOW_MS - SMALL_FRESHNESS_MS - 1,
+                    }])
+                }),
+                remove_file: Arc::new(|_path: &Path| Err(stand_in_failure())),
+                ..TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS))
+            },
+            TraceBounds {
+                directory_bytes: SMALL_DIRECTORY_BYTES,
+                freshness: Duration::from_millis(SMALL_FRESHNESS_MS),
+                ..TraceBounds::SPEC
+            },
+        );
+
+        assert_eq!(refusal.action, TraceAction::RemoveOldFile);
+        assert_eq!(refusal.path, traces.join(STALE_EVENTS_FILE));
+        assert_eq!(names_in(&traces), Vec::<String>::new());
         drop(fs::remove_dir_all(&root));
     }
 

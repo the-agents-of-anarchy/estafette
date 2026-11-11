@@ -1,15 +1,13 @@
-use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::thread;
 use std::time::Duration;
 
 use serde_json::Value;
 
-use super::files::create_private_file;
 use super::line::HeaderSource;
+use super::{CreateTraceFile, RenameFile, SpawnThread};
 use crate::dirs::rolled_over_trace_file;
 use crate::event::{EventName, TraceLineName};
 
@@ -33,20 +31,24 @@ pub(super) enum RolloverOpening {
 /// A trace file that rolls over into its `.1` file, replacing any earlier one, before a line would take it past its size bound.
 pub(super) struct RollingFile {
     path: PathBuf,
-    file: File,
+    file: Box<dyn Write + Send>,
     written_bytes: u64,
     rollover_bytes: u64,
     opening: RolloverOpening,
     first_line: Option<Vec<u8>>,
+    create_file: CreateTraceFile,
+    rename_file: RenameFile,
 }
 
 impl RollingFile {
-    /// The newly created, empty file at `path`, rolled over at `rollover_bytes` into a file that starts with `opening`.
-    pub(super) const fn new(
+    /// The newly created, empty file at `path`, rolled over at `rollover_bytes` by `rename_file` into a file `create_file` starts that holds `opening`.
+    pub(super) fn new(
         path: PathBuf,
-        file: File,
+        file: Box<dyn Write + Send>,
         rollover_bytes: u64,
         opening: RolloverOpening,
+        create_file: CreateTraceFile,
+        rename_file: RenameFile,
     ) -> Self {
         Self {
             path,
@@ -55,13 +57,15 @@ impl RollingFile {
             rollover_bytes,
             opening,
             first_line: None,
+            create_file,
+            rename_file,
         }
     }
 
     /// Renames the file to its `.1` file and starts one in its place holding its opening.
     fn roll_over(&mut self) -> io::Result<()> {
-        fs::rename(&self.path, rolled_over_trace_file(&self.path))?;
-        self.file = create_private_file(&self.path)?;
+        (self.rename_file)(&self.path, &rolled_over_trace_file(&self.path))?;
+        self.file = (self.create_file)(&self.path)?;
         self.written_bytes = 0;
         match (&self.opening, &self.first_line) {
             (RolloverOpening::FirstLineAgain, Some(first_line)) => {
@@ -111,17 +115,19 @@ struct Sequence {
 }
 
 impl TraceWriter {
-    /// Starts the writer thread on the output behind a queue of at most `queue_lines` lines.
+    /// Starts the writer thread, through `spawn_thread`, on the output behind a queue of at most `queue_lines` lines.
     pub(super) fn start(
         output: impl TraceOutput + Send + 'static,
         header: Arc<HeaderSource>,
         queue_lines: usize,
+        spawn_thread: &SpawnThread,
     ) -> io::Result<Self> {
         let (queue, lines) = mpsc::sync_channel(queue_lines);
         let (ended_sender, ended) = mpsc::channel();
-        thread::Builder::new()
-            .name(WRITER_THREAD_NAME.to_owned())
-            .spawn(move || write_every_line(output, &lines, ended_sender))?;
+        spawn_thread(
+            WRITER_THREAD_NAME,
+            Box::new(move || write_every_line(output, &lines, ended_sender)),
+        )?;
         Ok(Self {
             sequence: Mutex::new(Sequence {
                 next_n: 0,
@@ -200,7 +206,7 @@ mod tests {
 
     use super::*;
     use crate::trace::tests::frozen_clocks;
-    use crate::trace::{RUN_ID_BYTES, RunId};
+    use crate::trace::{RUN_ID_BYTES, RunId, TraceEffects};
 
     const SMALL_QUEUE_LINES: usize = 2;
     const EVENT_NAME: &str = "process.clock_before_unix_epoch";
@@ -223,6 +229,10 @@ mod tests {
                 .send(String::from_utf8_lossy(line).into_owned())
                 .map_err(io::Error::other)
         }
+    }
+
+    fn operating_system_threads() -> SpawnThread {
+        TraceEffects::of_the_operating_system(frozen_clocks(WALL_MS)).spawn_thread
     }
 
     fn within_bound<T>(receiver: &Receiver<T>, condition: &str) -> T {
@@ -259,6 +269,7 @@ mod tests {
                 frozen_clocks(WALL_MS),
             )),
             SMALL_QUEUE_LINES,
+            &operating_system_threads(),
         )
         .unwrap();
 
@@ -303,6 +314,7 @@ mod tests {
                 frozen_clocks(WALL_MS),
             )),
             SMALL_QUEUE_LINES,
+            &operating_system_threads(),
         )
         .unwrap();
         writer.write(EVENT_NAME, &[]);
@@ -310,7 +322,7 @@ mod tests {
         for _queued in 0..SMALL_QUEUE_LINES {
             writer.write(EVENT_NAME, &[]);
         }
-        let releasing = thread::spawn(move || {
+        let releasing = std::thread::spawn(move || {
             release.send(()).unwrap();
             for _line in 0..SMALL_QUEUE_LINES {
                 within_bound(&entering, "the writer holds a queued line");

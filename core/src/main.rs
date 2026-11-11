@@ -35,7 +35,9 @@ use estafette::node::{
     Exit, Network, NodeEffects, NodeError, RuntimeShutdown, ShutdownSignal, relay_answers,
 };
 use estafette::sidecar::{self, ThreadSleep};
-use estafette::trace::{RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceRefused};
+use estafette::trace::{
+    RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceEffects, TraceRefused,
+};
 use estafette::wire::Nonce;
 use iroh::SecretKey;
 use iroh::endpoint::BindError;
@@ -260,7 +262,7 @@ fn start_trace(
                 directories,
                 &OperatingSystemFilesystem,
                 RunId::from_random_bytes(run_id),
-                clocks,
+                &TraceEffects::of_the_operating_system(clocks),
                 TraceBounds::SPEC,
             )
             .map(|trace| Some(Arc::new(trace)))
