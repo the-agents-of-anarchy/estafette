@@ -8,6 +8,9 @@ mod forger;
 #[path = "lab/forgeries.rs"]
 mod forgeries;
 #[cfg(test)]
+#[path = "lab/handles.rs"]
+mod handles;
+#[cfg(test)]
 #[path = "lab/inbox_client.rs"]
 mod inbox_client;
 #[cfg(test)]
@@ -612,7 +615,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
 mod spec_3_15_two_members_through_the_live_host {
     use std::fs;
     use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, Instant};
 
     use estafette::keys::parse_secret_key;
     use estafette::wire::{self, Addr, Payload, Presence, SignatureBytes, Version};
@@ -620,6 +623,7 @@ mod spec_3_15_two_members_through_the_live_host {
     use serde_json::{Value, json};
 
     use crate::forger::Forger;
+    use crate::handles::{HANDLE_TAG_LETTERS, unique_handle};
     use crate::inbox_client::InboxClient;
     use crate::lab_machine::LabMachine;
     use crate::live_host::live_host_to_itself;
@@ -645,9 +649,6 @@ mod spec_3_15_two_members_through_the_live_host {
     const SPEC_RELAY_URL_MAX_BYTES: usize = 128;
     const SPEC_DIRECT_ADDRS_PER_ADDR: u16 = 8;
     const LARGEST_THREE_BYTE_VARINT_PORT: u16 = 65_535;
-    const HANDLE_TAG_LETTERS: usize = 6;
-    const ALPHABET_LENGTH: u64 = 26;
-    const FIRST_LETTER: u8 = b'a';
     const RELAY_URL_FRAME_BYTES: usize = "https://".len() + "/".len();
     const DOCUMENTATION_PREFIX_FIRST_SEGMENT: u16 = 0x2001;
     const DOCUMENTATION_PREFIX_SECOND_SEGMENT: u16 = 0x0db8;
@@ -694,21 +695,6 @@ mod spec_3_15_two_members_through_the_live_host {
             claim,
             machine,
         }
-    }
-
-    /// The base followed by letters drawn from the clock, so the handle is free on the live network whatever earlier runs announced.
-    fn unique_handle(base: &str) -> String {
-        let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-        let mut drawn = u64::from(since_epoch.subsec_nanos())
-            ^ since_epoch.as_secs()
-            ^ u64::from(std::process::id());
-        let mut handle = base.to_owned();
-        for _ in 0..HANDLE_TAG_LETTERS {
-            let letter = u8::try_from(drawn % ALPHABET_LENGTH).unwrap();
-            handle.push(char::from(FIRST_LETTER.checked_add(letter).unwrap()));
-            drawn /= ALPHABET_LENGTH;
-        }
-        handle
     }
 
     #[track_caller]

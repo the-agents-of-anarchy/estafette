@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use data_encoding::HEXLOWER;
 use estafette::config::{Host, HostOrigin, NetworkConfig};
@@ -8,6 +8,7 @@ use estafette::keys::render_public_key;
 use estafette::wire::HostAddr;
 use serde_json::{Value, json};
 
+use crate::handles::unique_handle;
 use crate::inbox_client::InboxClient;
 use crate::killable_host::KillableHost;
 use crate::lab_machine::LabMachine;
@@ -35,12 +36,6 @@ const SENT_BODY: &str = "the relay carried this";
 const FRAME_WAIT: Duration = Duration::from_secs(10);
 /// How long an inbox socket is watched for a frame that must not come.
 const NO_FURTHER_FRAME_WAIT: Duration = Duration::from_millis(1000);
-/// How many clock-drawn letters follow the base of a fresh handle.
-const HANDLE_TAG_LETTERS: usize = 6;
-/// How many letters a handle letter is drawn from.
-const ALPHABET_LENGTH: u64 = 26;
-/// The first letter a handle letter is drawn from.
-const FIRST_LETTER: u8 = b'a';
 /// The handle bases of the three members a test starts on this machine.
 const TRIO: [&str; 3] = ["amy", "bob", "cid"];
 /// How long the three members run with no host killed (spec 3.15 test 24).
@@ -82,21 +77,6 @@ const PRESENCE_SEQ_COLUMN: usize = 7;
 /// How soon after its own first Presence a new member must list every present member, in milliseconds (spec 3.15 test 25, the observer wait of spec 3.14).
 const SPEC_OBSERVER_WAIT_MS: u64 = 3000;
 
-/// The base followed by letters drawn from the clock and the process, so the handle and the card named for it are free on the live network and on every lab server whatever earlier runs left.
-fn fresh_handle(base: &str) -> String {
-    let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
-    let mut drawn = u64::from(since_epoch.subsec_nanos())
-        ^ since_epoch.as_secs()
-        ^ u64::from(std::process::id());
-    let mut handle = base.to_owned();
-    for _ in 0..HANDLE_TAG_LETTERS {
-        let letter = u8::try_from(drawn % ALPHABET_LENGTH).unwrap();
-        handle.push(char::from(FIRST_LETTER.checked_add(letter).unwrap()));
-        drawn /= ALPHABET_LENGTH;
-    }
-    handle
-}
-
 /// Whether the peer as the peers tool lists it is online.
 fn online(peer: &Value) -> bool {
     peer["status"] == json!(ONLINE)
@@ -120,10 +100,10 @@ fn spec_3_15_test_15_show_peers_on_a_machine_with_no_session_lists_the_members_o
     let live_host_server = LabServer::of_the_live_host();
     let killable = KillableHostServer::from_environment();
     let amy = timed("amy serving on the live host's server", || {
-        ServerMember::started(&live_host_server, &network, &fresh_handle("amy"))
+        ServerMember::started(&live_host_server, &network, &unique_handle("amy"))
     });
     let bob = timed("bob serving on the killable host's server", || {
-        ServerMember::started(killable.server(), &network, &fresh_handle("bob"))
+        ServerMember::started(killable.server(), &network, &unique_handle("bob"))
     });
     timed("amy lists bob online", || {
         amy.peer_within(bob.handle(), PRESENCE_WAIT, online)
@@ -167,10 +147,10 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
         || killable.server().relay_only_to_here(),
     );
     let amy = timed("amy serving on the killable host's server", || {
-        ServerMember::started(killable.server(), &network, &fresh_handle("amy"))
+        ServerMember::started(killable.server(), &network, &unique_handle("amy"))
     });
     let bob_machine = LabMachine::joined("t3-bob", &network);
-    let bob_handle = fresh_handle("bob");
+    let bob_handle = unique_handle("bob");
     let bob_card = bob_machine.create_card(&bob_handle, &bob_handle);
     let mut bob = bob_machine.start_server();
     let claim = timed("bob claims his card on this machine", || {
@@ -220,7 +200,7 @@ impl Member {
     /// A member requesting a fresh handle from the base, on a machine joined to the network by the invitation.
     #[track_caller]
     fn joined_by_invitation(network: &LiveNetwork, base: &str) -> Self {
-        let handle = fresh_handle(base);
+        let handle = unique_handle(base);
         let machine = ScratchMachine::fresh(&handle, network.name());
         network.join(&machine.directories());
         Self::claimed_on(machine, handle)
@@ -229,7 +209,7 @@ impl Member {
     /// A member requesting a fresh handle from the base, on a machine whose configuration names the hosts given alone.
     #[track_caller]
     fn joined_through(network: &LiveNetwork, base: &str, hosts: &[HostAddr]) -> Self {
-        let handle = fresh_handle(base);
+        let handle = unique_handle(base);
         let machine = ScratchMachine::fresh(&handle, network.name());
         network.join_through(&machine.directories(), hosts);
         Self::claimed_on(machine, handle)
