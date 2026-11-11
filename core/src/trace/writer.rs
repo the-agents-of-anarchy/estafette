@@ -254,4 +254,39 @@ mod tests {
         assert_eq!(last["event"], EVENT_NAME);
         assert!(held.iter().all(|line| line["event"] == EVENT_NAME));
     }
+
+    #[test]
+    fn observability_decision_12_finish_returns_once_every_queued_line_is_written() {
+        let (entered, entering) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let (written_sender, written) = mpsc::channel();
+        let writer = TraceWriter::start(
+            HeldBackOutput {
+                entered,
+                released,
+                written: written_sender,
+            },
+            Arc::new(HeaderSource::new(
+                RunId::from_random_bytes([0; RUN_ID_BYTES]),
+                frozen_clocks(WALL_MS),
+            )),
+            SMALL_QUEUE_LINES,
+        )
+        .unwrap();
+        for _queued in 0..=SMALL_QUEUE_LINES {
+            writer.write(EVENT_NAME, &[]);
+        }
+        let releasing = thread::spawn(move || {
+            for _line in 0..=SMALL_QUEUE_LINES {
+                within_bound(&entering, "the writer holds a line");
+                release.send(()).unwrap();
+            }
+        });
+
+        let drained = writer.finish(SPEC_DRAIN_BOUND);
+
+        assert!(drained);
+        assert_eq!(written.try_iter().count(), SMALL_QUEUE_LINES + 1);
+        releasing.join().unwrap();
+    }
 }
