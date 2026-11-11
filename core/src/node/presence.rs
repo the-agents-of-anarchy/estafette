@@ -10,17 +10,18 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use crate::stream_items::{Stream, StreamExt};
-use iroh::endpoint::{BindError, RelayStatus};
+use iroh::endpoint::RelayStatus;
 use iroh::protocol::Router;
 use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr, Watcher};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::{JoinError, JoinHandle};
+use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
 use super::rebind::{MemberJoins, RebindSchedule, RelayProbe};
 use crate::config::{AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
 use crate::crypto::{NetworkKeys, NetworkSecret};
+use crate::event::{Event, RunRecord};
 use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::inbox::buffer::ReceivedMessage;
 use crate::inbox::socket::{Attached, InboxSocket};
@@ -51,7 +52,6 @@ const OWNER_FIELD: &str = "owner";
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
-type RunRecord = Arc<dyn Fn(NodeRecord) + Send + Sync>;
 type Changes<T> = Pin<Box<dyn Stream<Item = T> + Send + Sync>>;
 type OwnAddress = Box<dyn Fn() -> Addr + Send + Sync>;
 
@@ -126,46 +126,6 @@ pub struct NodeEffects {
     pub inbox: Arc<InboxSocket>,
     /// Whether a TCP connect to a relay's host and port succeeds, `relay_answers` in production; the node gives it the relay probe timeout.
     pub probe_relay: RelayProbe,
-}
-
-/// A failure or a rebind the node met while running, for the run record.
-#[derive(Debug)]
-pub enum NodeRecord {
-    BroadcastFailed(GossipError),
-    KnownHostsNotSaved(ConfigError),
-    TopicFailed(GossipError),
-    TopicClosed,
-    Rebinding,
-    RouterShutdownFailed(JoinError),
-    RebindFailed(BindError),
-}
-
-impl fmt::Display for NodeRecord {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::BroadcastFailed(source) => {
-                write!(formatter, "a gossip broadcast failed: {source}")
-            }
-            Self::KnownHostsNotSaved(source) => {
-                write!(formatter, "the known hosts were not saved: {source}")
-            }
-            Self::TopicFailed(source) => write!(formatter, "the gossip topic failed: {source}"),
-            Self::TopicClosed => {
-                formatter.write_str("the gossip topic closed, so this node announces nothing more")
-            }
-            Self::Rebinding => formatter.write_str(
-                "rebinding the endpoint: no gossip payload was heard for the deaf timeout, or the join gained no neighbor",
-            ),
-            Self::RouterShutdownFailed(source) => write!(
-                formatter,
-                "the old endpoint's listeners did not shut down cleanly before the rebind: {source}"
-            ),
-            Self::RebindFailed(source) => write!(
-                formatter,
-                "the endpoint was not bound again, so this node announces nothing more: {source}"
-            ),
-        }
-    }
 }
 
 /// Why the node did not start.
@@ -807,10 +767,12 @@ impl PresenceLoop {
     async fn take(&mut self, wake: Wake) -> ControlFlow<()> {
         match wake {
             Wake::Topic(None) => {
-                (self.report)(NodeRecord::TopicClosed);
+                (self.report)(crate::event::GossipEvent::TopicClosed.into());
                 return ControlFlow::Break(());
             }
-            Wake::Topic(Some(Err(failure))) => (self.report)(NodeRecord::TopicFailed(failure)),
+            Wake::Topic(Some(Err(failure))) => {
+                (self.report)(crate::event::GossipEvent::TopicFailed(failure).into());
+            }
             Wake::Topic(Some(Ok(event))) => self.take_gossip_event(event).await,
             Wake::Loop(event) => self.take_loop_event(event).await,
             Wake::AttachedChanged => self.announce_presence().await,
@@ -998,7 +960,7 @@ impl PresenceLoop {
         }))
         .await;
         if let Err(failure) = self.known_hosts.save_if_newer_than_file(now_ms) {
-            (self.report)(NodeRecord::KnownHostsNotSaved(failure));
+            (self.report)(crate::event::GossipEvent::KnownHostsNotSaved(failure).into());
         }
     }
 
@@ -1043,7 +1005,7 @@ impl PresenceLoop {
     /// Signs and broadcasts the payload under the card key, writing a failure to the run record.
     async fn broadcast(&self, payload: Payload) {
         if let Err(failure) = self.topic.broadcast(&self.card_key, payload).await {
-            (self.report)(NodeRecord::BroadcastFailed(failure));
+            (self.report)(crate::event::GossipEvent::BroadcastFailed(failure).into());
         }
     }
 
@@ -1302,7 +1264,7 @@ impl KnownHosts {
         now_ms: u64,
         endpoint: &NodeEndpoint,
         relay: RelayOfRecord,
-        report: &(dyn Fn(NodeRecord) + Send + Sync),
+        report: &(dyn Fn(Event) + Send + Sync),
     ) {
         let verdict = self.take_record(valid, now_ms);
         if verdict == RecordVerdict::Dropped {
@@ -1316,7 +1278,7 @@ impl KnownHosts {
         if verdict == RecordVerdict::FromNewHost
             && let Err(failure) = self.save(now_ms)
         {
-            report(NodeRecord::KnownHostsNotSaved(failure));
+            report(crate::event::GossipEvent::KnownHostsNotSaved(failure).into());
         }
     }
 
@@ -1418,6 +1380,7 @@ pub(super) mod tests {
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
     use crate::dirs::{Directories, OperatingSystemFilesystem};
+    use crate::event::Event;
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
@@ -1681,7 +1644,7 @@ pub(super) mod tests {
                 reachable: Vec::new(),
                 clock: Arc::new(wall_clock_ms),
                 monotonic: Arc::new(Instant::now),
-                report: Arc::new(|_record: NodeRecord| {}),
+                report: Arc::new(|_event: Event| {}),
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
             }
         }

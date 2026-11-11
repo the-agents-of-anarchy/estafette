@@ -26,6 +26,7 @@ use super::network::NetworkFilesystem;
 use crate::config::{ConfigError, NetworkConfig, write_atomically};
 use crate::crypto::{GateKey, HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, verify_host_certificate};
 use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
+use crate::event::{RunRecord, TransportEvent};
 use crate::handle::Handle;
 use crate::invite::{InviteError, render_host_line};
 use crate::keys::{KeyError, generate_secret_key, parse_secret_key, render_secret_key};
@@ -33,8 +34,8 @@ use crate::net::direct::{DirectHost, HeldConnections, MonotonicClock};
 use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
-    KnownHostAddress, KnownHosts, Network, NodeError, NodeRecord, RelayOfRecord,
-    known_host_addresses, seed_lookup_with_known_hosts, serve,
+    KnownHostAddress, KnownHosts, Network, NodeError, RelayOfRecord, known_host_addresses,
+    seed_lookup_with_known_hosts, serve,
 };
 use crate::payload::{OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
 use crate::wire::{
@@ -69,9 +70,6 @@ pub type FillFromSecureSource = Box<dyn FnOnce(&mut [u8; KEY_LEN]) + Send>;
 
 /// Milliseconds since the Unix epoch by this machine's clock.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
-
-/// The run record, written to standard error by the command-line layer; it must not block.
-pub type RunRecord = Arc<dyn Fn(NodeRecord) + Send + Sync>;
 
 /// Resolves when the process is to stop.
 pub type StopRequested = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -724,7 +722,9 @@ impl BootstrapNode {
     ) -> Result<(), Failure> {
         match event {
             None => return Err(Failure::TopicClosed),
-            Some(Err(failure)) => (self.report)(NodeRecord::TopicFailed(failure)),
+            Some(Err(failure)) => {
+                (self.report)(crate::event::GossipEvent::TopicFailed(failure).into());
+            }
             Some(Ok(GossipEvent::Joined)) => self.records_due = Some(record_interval()),
             Some(Ok(GossipEvent::Payload(payload))) => match *payload {
                 OpenedPayload::Infrastructure(record)
@@ -773,7 +773,7 @@ impl BootstrapNode {
             sig: ZERO_SIGNATURE,
         });
         if let Err(failure) = self.topic.broadcast(&self.key, record).await {
-            (self.report)(NodeRecord::BroadcastFailed(failure));
+            (self.report)(crate::event::GossipEvent::BroadcastFailed(failure).into());
         }
         Ok(())
     }
@@ -781,10 +781,10 @@ impl BootstrapNode {
     /// Saves the known hosts when a held record is newer than the file's, and shuts the endpoint's listeners down.
     async fn stop(mut self) {
         if let Err(failure) = self.known_hosts.save_if_newer_than_file((self.clock)()) {
-            (self.report)(NodeRecord::KnownHostsNotSaved(failure));
+            (self.report)(crate::event::GossipEvent::KnownHostsNotSaved(failure).into());
         }
         if let Err(failure) = self.router.shutdown().await {
-            (self.report)(NodeRecord::RouterShutdownFailed(failure));
+            (self.report)(TransportEvent::RouterShutdownFailed(failure).into());
         }
     }
 }

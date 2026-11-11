@@ -22,6 +22,7 @@ use crate::config::{ConfigError, NetworkConfig};
 use crate::crypto::GateKey;
 use crate::dirs::{Directories, DirectoriesError};
 use crate::errors::ErrorCode;
+use crate::event::RunRecord;
 use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
 use crate::inbox::socket::{InboxSocket, InboxSocketError};
 use crate::keys::parse_public_key;
@@ -32,8 +33,8 @@ use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
     DEPARTURE_WAIT, Delivery, DirectAnswer, DirectRequest, DirectRequester, Identity,
-    KnownHostAddress, Network, Node, NodeEffects, NodeError, NodeRecord, PeerRows, RelayProbe,
-    Session, acknowledgement_of, known_host_addresses, observer_wait_over_at, replace_lookup_entry,
+    KnownHostAddress, Network, Node, NodeEffects, NodeError, PeerRows, RelayProbe, Session,
+    acknowledgement_of, known_host_addresses, observer_wait_over_at, replace_lookup_entry,
     seed_lookup_with_known_hosts, send_in_background, serve, sleep_until_deadline, wire_addr,
 };
 use crate::payload::{OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
@@ -56,7 +57,6 @@ const OWNER_FIELD: &str = "owner";
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
-type RunRecord = Arc<dyn Fn(NodeRecord) + Send + Sync>;
 type SeedSource = Arc<dyn Fn(&mut [u8; SEED_BYTES]) + Send + Sync>;
 type EndpointBinding = Pin<Box<dyn Future<Output = Result<NodeEndpoint, BindError>> + Send>>;
 type BindEndpoint = Box<
@@ -953,6 +953,7 @@ mod tests {
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
     use crate::dirs::OperatingSystemFilesystem;
+    use crate::event::Event;
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::ProcessTable;
     use crate::keys::render_public_key;
@@ -1167,7 +1168,7 @@ mod tests {
             };
             let operator_effects = OperatorEffects {
                 fill_probe_nonce: Arc::new(|nonce: &mut Nonce| *nonce = PROBE_NONCE),
-                report: Arc::new(|_record: NodeRecord| {}),
+                report: Arc::new(|_event: Event| {}),
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
                 start_inbox: Box::new(move || {
                     InboxSocket::start(
@@ -1248,7 +1249,7 @@ mod tests {
                 clock: Arc::new(wall_clock_ms),
                 monotonic: Arc::new(Instant::now),
                 fill_probe_nonce: Arc::new(|nonce: &mut Nonce| *nonce = PROBE_NONCE),
-                report: Arc::new(|_record: NodeRecord| {}),
+                report: Arc::new(|_event: Event| {}),
                 inbox: Arc::clone(&inbox),
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
             },

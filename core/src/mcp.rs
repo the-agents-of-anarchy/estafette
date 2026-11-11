@@ -14,14 +14,13 @@ use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, Implementation, JsonObject,
     ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
 };
-use rmcp::service::{MaybeSendFuture, QuitReason, RequestContext, ServerInitializeError};
+use rmcp::service::{MaybeSendFuture, QuitReason, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler, serve_server};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{mpsc, oneshot};
-use tokio::task::JoinError;
 
 use crate::card::Card;
 use crate::cli::cards::CardRegistryReader;
@@ -29,13 +28,14 @@ use crate::config::{NetworkConfig, host_relay_url};
 use crate::crypto::GateKey;
 use crate::dirs::{CARD_EXTENSION, Directories, DirectoriesError};
 use crate::errors::{Envelope, ErrorCode, You};
+use crate::event::{Event, InboxEvent, ProcessEvent, RunRecord};
 use crate::handle::{AnnouncedHandle, Handle, MAX_LOCAL_LENGTH};
 use crate::inbox::buffer::InboxFrame;
 use crate::net::direct::HeldConnections;
 use crate::net::endpoint::NodeEndpoint;
 use crate::node::{
-    BroadcastResult, DEPARTURE_WAIT, Delivery, Exit, Identity, Network, Node, NodeEffects,
-    NodeError, Session, ShutdownSignal, forward_standard_input,
+    BroadcastResult, DEPARTURE_WAIT, Delivery, Exit, Identity, Network, Node, NodeEffects, Session,
+    ShutdownSignal, forward_standard_input,
 };
 use crate::peers::Peer;
 use crate::sidecar::{self, HeldSidecar, Pause, SidecarError};
@@ -102,20 +102,7 @@ pub struct ServerEffects {
     /// Whether a sidecar's lock is taken, learned by trying it and releasing it at once.
     pub is_card_held: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
     /// The run record, written to standard error by the command-line layer; it must not block.
-    pub report: Arc<dyn Fn(ServerRecord) + Send + Sync>,
-}
-
-/// A failure the server met, for the run record: what an init answered and why, or why the MCP transport stopped.
-#[derive(Debug)]
-pub enum ServerRecord {
-    LockTaskFailed(JoinError),
-    ListingTaskFailed(JoinError),
-    EndpointUnbound(BindError),
-    NodeNotStarted(NodeError),
-    HandshakeFailed(Box<ServerInitializeError>),
-    AnsweringFailed(JoinError),
-    StandardInputFailed(io::Error),
-    CardRegistryUnreadable(RegistryFailure),
+    pub report: RunRecord,
 }
 
 /// Why the card registry of the network could not be read.
@@ -140,62 +127,6 @@ impl fmt::Display for RegistryFailure {
     }
 }
 
-impl fmt::Display for ServerRecord {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::LockTaskFailed(source) => write!(
-                formatter,
-                "init answered {}: the sidecar lock task did not finish: {source}",
-                LOCK_TASK_FAILED.code()
-            ),
-            Self::ListingTaskFailed(source) => write!(
-                formatter,
-                "list_cards answered {}: the listing task did not finish: {source}",
-                LISTING_TASK_NOT_FINISHED.code()
-            ),
-            Self::NodeNotStarted(source) => write!(
-                formatter,
-                "init answered {}: {source}",
-                NODE_NOT_STARTED.code()
-            ),
-            Self::EndpointUnbound(source) => write!(
-                formatter,
-                "init answered {}: the endpoint was not bound: {source}",
-                NODE_NOT_STARTED.code()
-            ),
-            Self::HandshakeFailed(source) => {
-                write!(
-                    formatter,
-                    "the MCP handshake failed: {}",
-                    handshake_failure_reason(source)
-                )
-            }
-            Self::AnsweringFailed(source) => {
-                write!(formatter, "the MCP server stopped answering: {source}")
-            }
-            Self::CardRegistryUnreadable(source) => write!(
-                formatter,
-                "list_cards answered {}: {source}",
-                REGISTRY_UNREADABLE.code()
-            ),
-            Self::StandardInputFailed(source) => write!(
-                formatter,
-                "reading standard input failed and is treated as its end: {source}"
-            ),
-        }
-    }
-}
-
-/// Why a handshake failed, said without the client's message that the library's own text prints in full.
-fn handshake_failure_reason(failure: &ServerInitializeError) -> String {
-    match failure {
-        ServerInitializeError::ExpectedInitializeRequest(_) => {
-            "the first message was not an initialize request".to_owned()
-        }
-        other => other.to_string(),
-    }
-}
-
 /// Serves the six tools over the standard streams until the end of standard input or a signal, then says how the process is to end.
 pub async fn serve(
     standard_input: impl AsyncRead + Unpin + Send + 'static,
@@ -212,7 +143,7 @@ pub async fn serve(
         standard_input,
         forwarded_input,
         input_ended,
-        move |failure| reporting(ServerRecord::StandardInputFailed(failure)),
+        move |failure| reporting(InboxEvent::StandardInputFailed(failure).into()),
     ));
     let report = Arc::clone(&effects.report);
     let answering = tokio::spawn(answer_until_closed(
@@ -232,17 +163,17 @@ pub async fn serve(
 /// Answers MCP requests from the input on the output until the client closes the input, recording a failed handshake or a failed answering task.
 async fn answer_until_closed(
     server: Server,
-    report: Arc<dyn Fn(ServerRecord) + Send + Sync>,
+    report: RunRecord,
     input: impl AsyncRead + Unpin + Send + 'static,
     output: impl AsyncWrite + Unpin + Send + 'static,
 ) {
     match serve_server(server, (input, output)).await {
         Ok(running) => {
             if let Ok(QuitReason::JoinError(failure)) | Err(failure) = running.waiting().await {
-                report(ServerRecord::AnsweringFailed(failure));
+                report(InboxEvent::AnsweringFailed(failure).into());
             }
         }
-        Err(failure) => report(ServerRecord::HandshakeFailed(Box::new(failure))),
+        Err(failure) => report(InboxEvent::HandshakeFailed(Box::new(failure)).into()),
     }
 }
 
@@ -375,7 +306,9 @@ impl Server {
             sidecar::claim(&sidecar_path, public_key.as_bytes(), &pause)
         })
         .await
-        .map_err(|failure| self.recorded(ServerRecord::LockTaskFailed(failure), LOCK_TASK_FAILED))?
+        .map_err(|failure| {
+            self.recorded(ProcessEvent::ClaimLockTaskFailed(failure), LOCK_TASK_FAILED)
+        })?
         .map_err(|refusal| claim_refusal(&refusal))
     }
 
@@ -388,7 +321,7 @@ impl Server {
     ) -> Result<Node, ErrorCode> {
         let network = Network::new(self.served.config.clone(), self.served.config_path.clone())
             .map_err(|refused| {
-                self.recorded(ServerRecord::NodeNotStarted(refused), NODE_NOT_STARTED)
+                self.recorded(ProcessEvent::ClaimNetworkRefused(refused), NODE_NOT_STARTED)
             })?;
         let endpoint = (self.effects.bind_endpoint)(
             lock.secret_key().clone(),
@@ -398,7 +331,10 @@ impl Server {
         )
         .await
         .map_err(|unbound| {
-            self.recorded(ServerRecord::EndpointUnbound(unbound), NODE_NOT_STARTED)
+            self.recorded(
+                ProcessEvent::ClaimEndpointUnbound(unbound),
+                NODE_NOT_STARTED,
+            )
         })?;
         let identity = Identity {
             card_key: lock.secret_key().clone(),
@@ -413,13 +349,16 @@ impl Server {
         )
         .await
         .map_err(|not_started| {
-            self.recorded(ServerRecord::NodeNotStarted(not_started), NODE_NOT_STARTED)
+            self.recorded(
+                ProcessEvent::ClaimNodeNotStarted(not_started),
+                NODE_NOT_STARTED,
+            )
         })
     }
 
     /// Writes the failure to the run record and returns the error code init answers with.
-    fn recorded(&self, record: ServerRecord, answered: ErrorCode) -> ErrorCode {
-        (self.effects.report)(record);
+    fn recorded(&self, event: impl Into<Event>, answered: ErrorCode) -> ErrorCode {
+        (self.effects.report)(event.into());
         answered
     }
 
@@ -450,11 +389,11 @@ impl Server {
         match listing {
             Ok(Ok(cards)) => Ok(ToolResult::Cards { cards }),
             Ok(Err(unreadable)) => Err(self.recorded(
-                ServerRecord::CardRegistryUnreadable(unreadable),
+                InboxEvent::ListCardsRegistryUnreadable(unreadable),
                 REGISTRY_UNREADABLE,
             )),
             Err(failure) => Err(self.recorded(
-                ServerRecord::ListingTaskFailed(failure),
+                InboxEvent::ListCardsTaskFailed(failure),
                 LISTING_TASK_NOT_FINISHED,
             )),
         }
@@ -624,16 +563,16 @@ fn node_effects_of(effects: &NodeEffects) -> NodeEffects {
 }
 
 /// The error code of a claim whose network, endpoint or node did not start after the lock was taken.
-const NODE_NOT_STARTED: ErrorCode = ErrorCode::Unreachable;
+pub(crate) const NODE_NOT_STARTED: ErrorCode = ErrorCode::Unreachable;
 
 /// The error code of a `list_cards` whose registry could not be read, the code a card file that cannot be read gets at init.
-const REGISTRY_UNREADABLE: ErrorCode = ErrorCode::CardInvalid;
+pub(crate) const REGISTRY_UNREADABLE: ErrorCode = ErrorCode::CardInvalid;
 
 /// The error code of a `list_cards` whose listing task ended without a result, the code of an unreadable registry.
-const LISTING_TASK_NOT_FINISHED: ErrorCode = REGISTRY_UNREADABLE;
+pub(crate) const LISTING_TASK_NOT_FINISHED: ErrorCode = REGISTRY_UNREADABLE;
 
 /// The error code of a claim whose sidecar lock task ended without a result.
-const LOCK_TASK_FAILED: ErrorCode = ErrorCode::SidecarInvalid;
+pub(crate) const LOCK_TASK_FAILED: ErrorCode = ErrorCode::SidecarInvalid;
 
 /// The tool's arguments read as its input, `bad_request` when they do not match its schema.
 fn input_of<Input: DeserializeOwned>(arguments: JsonObject) -> Result<Input, ErrorCode> {
@@ -1025,7 +964,7 @@ mod tests {
     use crate::dirs::OperatingSystemFilesystem;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
-    use crate::node::{NodeRecord, RuntimeShutdown};
+    use crate::node::RuntimeShutdown;
     use crate::sidecar;
 
     const NETWORK: &str = "acme";
@@ -1175,7 +1114,7 @@ mod tests {
         process_id: u32,
         config: NetworkConfig,
         bind_endpoint: BindEndpoint,
-        report: Arc<dyn Fn(ServerRecord) + Send + Sync>,
+        report: RunRecord,
         is_card_held: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
     }
 
@@ -1185,7 +1124,7 @@ mod tests {
                 process_id,
                 config: network_config(Vec::new()),
                 bind_endpoint: bind_alone(),
-                report: Arc::new(|_record: ServerRecord| {}),
+                report: Arc::new(|_event: Event| {}),
                 is_card_held: Arc::new(|sidecar_path: &Path| {
                     sidecar::is_held(sidecar_path).is_ok_and(|held| held)
                 }),
@@ -1204,7 +1143,7 @@ mod tests {
                     origin: HostOrigin::Configured,
                 }]),
                 bind_endpoint: bind_meeting(meeting),
-                report: Arc::new(|_record: ServerRecord| {}),
+                report: Arc::new(|_event: Event| {}),
                 is_card_held: Arc::new(|sidecar_path: &Path| {
                     sidecar::is_held(sidecar_path).is_ok_and(|held| held)
                 }),
@@ -1322,7 +1261,7 @@ mod tests {
                 fill_probe_nonce: Arc::new(move |nonce: &mut crate::wire::Nonce| {
                     nonce.fill(message_id_byte);
                 }),
-                report: Arc::new(|_record: NodeRecord| {}),
+                report: Arc::new(|_event: Event| {}),
                 inbox,
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
             },
@@ -1528,8 +1467,10 @@ mod tests {
         let mut client = start_server(
             &machine,
             ServerPlan {
-                report: Arc::new(move |record: ServerRecord| {
-                    recorded.send(record.to_string()).unwrap();
+                report: Arc::new(move |event: Event| {
+                    if let Some(line) = event.run_record_line() {
+                        recorded.send(line).unwrap();
+                    }
                 }),
                 ..ServerPlan::alone(FIRST_PROCESS_ID)
             },
@@ -1736,8 +1677,8 @@ mod tests {
         let mut client = start_server(
             &machine,
             ServerPlan {
-                report: Arc::new(move |record: ServerRecord| {
-                    recorded.lock().unwrap().push(record.to_string());
+                report: Arc::new(move |event: Event| {
+                    recorded.lock().unwrap().extend(event.run_record_line());
                 }),
                 is_card_held: Arc::new(|_sidecar_path: &Path| {
                     panic!("the lock probe fails under the listing task")
@@ -1788,8 +1729,8 @@ mod tests {
         let mut client = start_server(
             &machine,
             ServerPlan {
-                report: Arc::new(move |record: ServerRecord| {
-                    recorded.lock().unwrap().push(record.to_string());
+                report: Arc::new(move |event: Event| {
+                    recorded.lock().unwrap().extend(event.run_record_line());
                 }),
                 ..ServerPlan::alone(FIRST_PROCESS_ID)
             },
@@ -2012,8 +1953,8 @@ mod tests {
                     secret: NOT_A_KEY.to_owned(),
                     ..network_config(Vec::new())
                 },
-                report: Arc::new(move |record: ServerRecord| {
-                    recorded.lock().unwrap().push(record.to_string());
+                report: Arc::new(move |event: Event| {
+                    recorded.lock().unwrap().extend(event.run_record_line());
                 }),
                 ..ServerPlan::alone(FIRST_PROCESS_ID)
             },

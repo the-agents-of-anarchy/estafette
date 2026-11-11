@@ -13,6 +13,7 @@ use crate::crypto::{
     HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, render_host_certificate, sign_host_certificate,
 };
 use crate::dirs::{Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem};
+use crate::event::{ProcessEvent, write_run_record};
 use crate::handle::{Handle, HandleError};
 use crate::invite::{
     HOST_LINE_PREFIX, INVITATION_PREFIX, InviteError, parse_host_line, parse_invitation,
@@ -345,10 +346,12 @@ fn create_network(
     }
     .rewrite(&config_file, now_unix_seconds)
     .map_err(|config| remove_owner_key_after(filesystem, &owner_key_file, config))?;
-    writeln!(
+    write_run_record(
         record,
-        "created network {network}: it names no host yet, so it has no invitation until a host is added",
-        network = network.as_str()
+        &ProcessEvent::NetworkCreated {
+            network: network.clone(),
+        }
+        .into(),
     )
     .map_err(Failure::Output)
 }

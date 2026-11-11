@@ -23,12 +23,15 @@ use estafette::cli::observer::{
 use estafette::config::{ConfigError, NetworkConfig};
 use estafette::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use estafette::errors::ExitStatus;
+use estafette::event::{
+    CLOCK_BEFORE_UNIX_EPOCH, Event, InboxEvent, ProcessEvent, RunRecord, TransportEvent,
+    write_run_record,
+};
 use estafette::inbox::socket::{InboxSocket, InboxSocketError, OperatingSystemProcessTable};
-use estafette::mcp::{self, ServedNetwork, ServerEffects, ServerRecord};
+use estafette::mcp::{self, ServedNetwork, ServerEffects};
 use estafette::net::endpoint::{GateFailure, NodeEndpoint};
 use estafette::node::{
-    Exit, Network, NodeEffects, NodeError, NodeRecord, RuntimeShutdown, ShutdownSignal,
-    relay_answers,
+    Exit, Network, NodeEffects, NodeError, RuntimeShutdown, ShutdownSignal, relay_answers,
 };
 use estafette::sidecar::{self, ThreadSleep};
 use estafette::wire::Nonce;
@@ -103,10 +106,7 @@ impl fmt::Display for CommandLineFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Directories(source) => write!(formatter, "{source}"),
-            Self::ClockBeforeUnixEpoch => write!(
-                formatter,
-                "the system clock reads a time before 1970-01-01: set the clock and run the command again"
-            ),
+            Self::ClockBeforeUnixEpoch => formatter.write_str(CLOCK_BEFORE_UNIX_EPOCH),
             Self::Network(source) => write!(formatter, "{source}"),
             Self::NetworkConfig(source) => write!(formatter, "{source}"),
             Self::NetworkRefused(source) => write!(formatter, "{source}"),
@@ -123,6 +123,8 @@ impl fmt::Display for CommandLineFailure {
         }
     }
 }
+
+impl std::error::Error for CommandLineFailure {}
 
 fn main() -> ExitCode {
     let status = run_command(EstafetteArguments::parse().command, |name| {
@@ -172,7 +174,10 @@ fn exit_status_after(
     record: &mut impl Write,
 ) -> ExitStatus {
     outcome.unwrap_or_else(|failure| {
-        drop(writeln!(record, "{failure}"));
+        drop(write_run_record(
+            record,
+            &ProcessEvent::CommandFailed(Box::new(failure)).into(),
+        ));
         ExitStatus::Failure
     })
 }
@@ -197,12 +202,13 @@ fn serve_mcp(
         .build()
         .map_err(CommandLineFailure::Runtime)?;
     let process_id = std::process::id();
+    let record = standard_error_record();
     let exit = runtime.block_on(async move {
         let inbox = InboxSocket::start(
             &directories,
             process_id,
             &OperatingSystemProcessTable,
-            |failure| report_accept_failure(&failure),
+            accept_failure_recorder(Arc::clone(&record)),
         )
         .map_err(CommandLineFailure::InboxSocket)?;
         let signals = forward_shutdown_signals()?;
@@ -218,7 +224,7 @@ fn serve_mcp(
             tokio::io::stdout(),
             signals,
             served,
-            server_effects(Arc::new(inbox)),
+            server_effects(Arc::new(inbox), record),
         )
         .await)
     })?;
@@ -249,24 +255,25 @@ fn forward_shutdown_signals() -> Result<mpsc::UnboundedReceiver<ShutdownSignal>,
     Ok(received)
 }
 
-/// The side effects of the MCP server and its node: the clocks, a secure random source, the endpoint binding, the stderr run record, and the filesystem.
-fn server_effects(inbox: Arc<InboxSocket>) -> ServerEffects {
+/// The side effects of the MCP server and its node: the clocks, a secure random source, the endpoint binding, the run record, and the filesystem.
+fn server_effects(inbox: Arc<InboxSocket>, record: RunRecord) -> ServerEffects {
+    let gate_record = Arc::clone(&record);
     ServerEffects {
         node: NodeEffects {
-            clock: Arc::new(recording_wall_clock()),
+            clock: Arc::new(recording_wall_clock(Arc::clone(&record))),
             monotonic: Arc::new(tokio::time::Instant::now),
             fill_probe_nonce: Arc::new(|nonce: &mut Nonce| fill_with_secure_random_bytes(nonce)),
-            report: Arc::new(|record: NodeRecord| report_run_record(&record)),
+            report: Arc::clone(&record),
             inbox,
             probe_relay: Arc::new(|relay| Box::pin(relay_answers(relay))),
         },
-        bind_endpoint: Arc::new(|card_key, gate_key, relays, connections| {
+        bind_endpoint: Arc::new(move |card_key, gate_key, relays, connections| {
             Box::pin(NodeEndpoint::bind(
                 card_key,
                 gate_key,
                 relays,
                 fill_with_secure_random_bytes,
-                |failure| report_gate_closing(&failure),
+                gate_closing_recorder(Arc::clone(&gate_record)),
                 connections,
             ))
         }),
@@ -275,33 +282,25 @@ fn server_effects(inbox: Arc<InboxSocket>) -> ServerEffects {
         is_card_held: Arc::new(|sidecar_path: &Path| {
             sidecar::is_held(sidecar_path).is_ok_and(|held| held)
         }),
-        report: Arc::new(|record: ServerRecord| report_run_record(&record)),
+        report: record,
     }
 }
 
 /// The wall clock handed to a node: milliseconds since the Unix epoch, holding its last reading when the machine's clock is set back before the epoch.
-fn recording_wall_clock() -> impl Fn() -> u64 + Send + Sync + 'static {
+fn recording_wall_clock(record: RunRecord) -> impl Fn() -> u64 + Send + Sync + 'static {
     let last_reading = AtomicU64::new(0);
-    move || {
-        wall_clock_reading(SystemTime::now(), &last_reading, |failure| {
-            report_run_record(failure);
-        })
-    }
+    move || wall_clock_reading(SystemTime::now(), &last_reading, record.as_ref())
 }
 
 /// The milliseconds since the Unix epoch at `now`, remembered as the last reading; a `now` before the epoch is recorded and answered by the last reading.
-fn wall_clock_reading(
-    now: SystemTime,
-    last_reading: &AtomicU64,
-    record: impl Fn(&CommandLineFailure),
-) -> u64 {
+fn wall_clock_reading(now: SystemTime, last_reading: &AtomicU64, record: &dyn Fn(Event)) -> u64 {
     match unix_milliseconds_of(now) {
         Ok(milliseconds) => {
             last_reading.store(milliseconds, Ordering::Relaxed);
             milliseconds
         }
-        Err(failure) => {
-            record(&failure);
+        Err(_before_epoch) => {
+            record(ProcessEvent::ClockBeforeUnixEpoch.into());
             last_reading.load(Ordering::Relaxed)
         }
     }
@@ -321,29 +320,19 @@ fn fill_with_secure_random_bytes<const LENGTH: usize>(bytes: &mut [u8; LENGTH]) 
     }
 }
 
-/// Writes the reason a gossip connection was closed at the network secret gate to the record.
-fn write_gate_closing(record: &mut impl Write, failure: &GateFailure) {
-    drop(writeln!(
-        record,
-        "a gossip connection was closed at the network secret gate: {failure}"
-    ));
+/// Hands the reason a gossip connection was closed at the network secret gate to the run record.
+fn gate_closing_recorder(record: RunRecord) -> impl Fn(GateFailure) + Send + Sync + 'static {
+    move |failure| record(TransportEvent::GateClosed(failure).into())
 }
 
-/// Writes the reason a gossip connection was closed at the network secret gate to the run record on stderr.
-fn report_gate_closing(failure: &GateFailure) {
-    write_gate_closing(&mut io::stderr(), failure);
+/// Hands the failure to accept a client of the inbox socket to the run record.
+fn accept_failure_recorder(record: RunRecord) -> impl Fn(io::Error) + Send + Sync + 'static {
+    move |failure| record(InboxEvent::AcceptFailed(failure).into())
 }
 
-/// Writes the failure to accept a client of the inbox socket to the run record on stderr.
-fn report_accept_failure(failure: &io::Error) {
-    report_run_record(&format!(
-        "the inbox socket could not accept a client: {failure}"
-    ));
-}
-
-/// Writes one entry of a run record to stderr.
-fn report_run_record(entry: &impl fmt::Display) {
-    drop(writeln!(io::stderr(), "{entry}"));
+/// The run record written to standard error alone.
+fn standard_error_record() -> RunRecord {
+    Arc::new(|event: Event| drop(write_run_record(&mut io::stderr(), &event)))
 }
 
 /// Shuts the runtime down as the session asked: awaited within its limit, or in the background, so a pending read of standard input never holds the exit.
@@ -419,8 +408,12 @@ fn observer_runtime(
         let _inside_runtime = runtime.enter();
         interrupt_for(interruption)?
     };
-    let (effects, operator_effects) =
-        observer_effects(Arc::clone(&directories), clock, interrupted);
+    let (effects, operator_effects) = observer_effects(
+        Arc::clone(&directories),
+        clock,
+        interrupted,
+        standard_error_record(),
+    );
     Ok(ObserverRuntime {
         directories,
         runtime,
@@ -485,20 +478,23 @@ fn observer_effects(
     directories: Arc<Directories>,
     clock: impl Fn() -> u64 + Send + Sync + 'static,
     interrupted: Pin<Box<dyn Future<Output = ()> + Send>>,
+    record: RunRecord,
 ) -> (ObserverEffects, OperatorEffects) {
+    let gate_record = Arc::clone(&record);
+    let accept_record = Arc::clone(&record);
     let effects = ObserverEffects {
         clock: Arc::new(clock),
         monotonic: Arc::new(Instant::now),
         fill_seed: Arc::new(|seed: &mut [u8; RANDOM_BYTES_PER_SECRET_KEY]| {
             fill_with_secure_random_bytes(seed);
         }),
-        bind_endpoint: Box::new(|key, gate_key, relays, connections| {
+        bind_endpoint: Box::new(move |key, gate_key, relays, connections| {
             Box::pin(NodeEndpoint::bind(
                 key,
                 gate_key,
                 relays,
                 fill_with_secure_random_bytes,
-                |failure| report_gate_closing(&failure),
+                gate_closing_recorder(Arc::clone(&gate_record)),
                 connections,
             ))
         }),
@@ -506,14 +502,14 @@ fn observer_effects(
     };
     let operator_effects = OperatorEffects {
         fill_probe_nonce: Arc::new(|nonce: &mut Nonce| fill_with_secure_random_bytes(nonce)),
-        report: Arc::new(|record| report_run_record(&record)),
+        report: record,
         probe_relay: Arc::new(|relay| Box::pin(relay_answers(relay))),
         start_inbox: Box::new(move || {
             InboxSocket::start(
                 &directories,
                 std::process::id(),
                 &OperatingSystemProcessTable,
-                |failure| report_accept_failure(&failure),
+                accept_failure_recorder(accept_record),
             )
             .map(Arc::new)
         }),
@@ -571,7 +567,7 @@ fn serve_infrastructure(
             command,
             &directories,
             &OperatingSystemFilesystem,
-            infrastructure_effects(stopped),
+            infrastructure_effects(stopped, standard_error_record()),
             result,
         ))
         .map_err(CommandLineFailure::Infrastructure)
@@ -579,26 +575,27 @@ fn serve_infrastructure(
 
 /// The side effects of the infrastructure command: the secure random source, the wall clock, the gated endpoint, the embedded relay, the stop signals and the run record on stderr.
 #[cfg(feature = "relay")]
-fn infrastructure_effects(stopped: StopRequested) -> InfrastructureEffects {
+fn infrastructure_effects(stopped: StopRequested, record: RunRecord) -> InfrastructureEffects {
+    let gate_record = Arc::clone(&record);
     InfrastructureEffects {
         fill_from_secure_source: Box::new(|seed: &mut [u8; RANDOM_BYTES_PER_SECRET_KEY]| {
             fill_with_secure_random_bytes(seed);
         }),
-        clock: Arc::new(recording_wall_clock()),
-        bind_endpoint: Box::new(|key, gate_key, relay, connections| {
+        clock: Arc::new(recording_wall_clock(Arc::clone(&record))),
+        bind_endpoint: Box::new(move |key, gate_key, relay, connections| {
             Box::pin(NodeEndpoint::bind(
                 key,
                 gate_key,
                 [relay],
                 fill_with_secure_random_bytes,
-                |closing: GateFailure| report_gate_closing(&closing),
+                gate_closing_recorder(Arc::clone(&gate_record)),
                 connections,
             ))
         }),
         monotonic: Arc::new(Instant::now),
         start_relay: Box::new(|site| Box::pin(infra::start_embedded_relay(site))),
         stopped,
-        report: Arc::new(|record| report_run_record(&record)),
+        report: record,
     }
 }
 
@@ -767,7 +764,7 @@ mod tests {
                     UNIX_EPOCH - Duration::from_millis(milliseconds.saturating_add(1))
                 };
 
-                let reading = wall_clock_reading(instant, &last_reading, |_failure| {
+                let reading = wall_clock_reading(instant, &last_reading, &|_event| {
                     recorded.fetch_add(1, Ordering::SeqCst);
                 });
 
@@ -797,13 +794,13 @@ mod tests {
             let held = held_bytes(&mut Draws::seeded(case));
             let mut record = held.clone();
 
-            write_gate_closing(&mut record, &failure);
+            let expected_line =
+                format!("a gossip connection was closed at the network secret gate: {failure}\n");
+
+            write_run_record(&mut record, &TransportEvent::GateClosed(failure).into()).unwrap();
 
             let mut expected = held;
-            expected.extend(
-                format!("a gossip connection was closed at the network secret gate: {failure}\n")
-                    .into_bytes(),
-            );
+            expected.extend(expected_line.into_bytes());
             assert_eq!(record, expected, "case {case}");
         }
     }

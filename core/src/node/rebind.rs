@@ -12,10 +12,11 @@ use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 use tokio::net::TcpStream;
 use tokio::time::{Instant, timeout_at};
 
+use crate::event::{GossipEvent, TransportEvent};
 use crate::net::direct::DirectHost;
 use crate::net::gossip::NetworkTopic;
 use crate::node::presence::{
-    NodeRecord, PresenceLoop, RelayLossWatch, endpoint_id, home_relay_changes, own_address_changes,
+    PresenceLoop, RelayLossWatch, endpoint_id, home_relay_changes, own_address_changes,
     seed_lookup_with_known_hosts, serve,
 };
 use crate::peers::Status;
@@ -146,7 +147,7 @@ impl PresenceLoop {
 
     /// Rebinds by spec 3.8, stopping the loop when no endpoint or topic comes of it.
     pub(super) async fn rebind(&mut self) -> ControlFlow<()> {
-        (self.report)(NodeRecord::Rebinding);
+        (self.report)(TransportEvent::Rebinding.into());
         self.schedule.rebound((self.monotonic)());
         self.member_joins = MemberJoins::AwaitingRebindJoin;
         self.neighbors.clear();
@@ -154,7 +155,7 @@ impl PresenceLoop {
         let down = self.relays_found_down().await;
         self.strip_relays_from_members(&down);
         if let Err(failure) = self.endpoint.rebind().await {
-            (self.report)(NodeRecord::RebindFailed(failure));
+            (self.report)(TransportEvent::RebindFailed(failure).into());
             return ControlFlow::Break(());
         }
         self.client.follow(self.endpoint.endpoint().clone()).await;
@@ -173,7 +174,7 @@ impl PresenceLoop {
         if let Err(failure) =
             NetworkTopic::join(&self.gossip, self.keys.clone(), self.owner, members, now).await
         {
-            (self.report)(NodeRecord::TopicFailed(failure));
+            (self.report)(GossipEvent::TopicFailed(failure).into());
         }
         self.member_joins.asked(now);
     }
@@ -191,7 +192,7 @@ impl PresenceLoop {
     /// Closes the endpoint with the direct listener and the gossip instance on it, and with them every connection, recording a shutdown that failed.
     async fn close_endpoint(&self) {
         if let Err(failure) = self.router.shutdown().await {
-            (self.report)(NodeRecord::RouterShutdownFailed(failure));
+            (self.report)(TransportEvent::RouterShutdownFailed(failure).into());
         }
     }
 
@@ -263,7 +264,7 @@ impl PresenceLoop {
                 ControlFlow::Continue(())
             }
             Err(failure) => {
-                (self.report)(NodeRecord::TopicFailed(failure));
+                (self.report)(GossipEvent::TopicFailed(failure).into());
                 ControlFlow::Break(())
             }
         }
@@ -299,10 +300,10 @@ mod tests {
     use tokio::time::Instant;
 
     use super::{MemberJoins, RebindSchedule, RelayProbe, relay_answers};
+    use crate::event::{Event, RunRecord, TransportEvent};
     use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, DirectServer};
     use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
     use crate::net::gossip::{GossipEvent, NetworkTopic};
-    use crate::node::NodeRecord;
     use crate::node::presence::tests::{
         Draws, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, MARKER_SEED, Member, MemberPlan,
         OWNER_SEED, PAYLOAD_WAIT, Scratch, WITNESS_SEED, Witness, bind, card, frozen_clock, keys,
@@ -353,10 +354,10 @@ mod tests {
     }
 
     impl RebindLog {
-        fn sink(&self) -> Arc<dyn Fn(NodeRecord) + Send + Sync> {
+        fn sink(&self) -> RunRecord {
             let started = Arc::clone(&self.started);
-            Arc::new(move |record| {
-                if matches!(record, NodeRecord::Rebinding) {
+            Arc::new(move |event| {
+                if matches!(event, Event::Transport(TransportEvent::Rebinding)) {
                     started.lock().unwrap().push(Instant::now());
                 }
             })

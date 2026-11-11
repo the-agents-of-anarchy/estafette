@@ -15,6 +15,7 @@ use crate::dirs::{
     DirectoryFilesystem, OperatingSystemFilesystem,
 };
 use crate::errors::ExitStatus;
+use crate::event::{ProcessEvent, write_run_record};
 use crate::handle::{Handle, HandleError};
 use crate::keys::render_public_key;
 use crate::sidecar::{CARD_FILE_MODE, SEED_BYTES, SidecarError, create_card};
@@ -162,7 +163,10 @@ pub fn run(
     match execute(command, environment, filesystem, fill_seed, stdout) {
         Ok(()) => ExitStatus::Success,
         Err(failure) => {
-            drop(writeln!(stderr, "{failure}"));
+            drop(write_run_record(
+                stderr,
+                &ProcessEvent::CommandFailed(Box::new(failure)).into(),
+            ));
             ExitStatus::Failure
         }
     }

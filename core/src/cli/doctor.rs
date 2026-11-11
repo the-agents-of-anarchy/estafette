@@ -418,11 +418,12 @@ mod tests {
     use crate::cli::observer::ObserverEffects;
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
+    use crate::event::Event;
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
     use crate::net::endpoint::NodeEndpoint;
-    use crate::node::{Identity, Network, Node, NodeEffects, NodeRecord};
+    use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::sidecar::{SEED_BYTES, create_card};
     use crate::wire::Nonce;
 
@@ -617,7 +618,7 @@ mod tests {
                     clock: Arc::new(wall_clock_ms),
                     monotonic: Arc::new(Instant::now),
                     fill_probe_nonce: Arc::new(|nonce: &mut Nonce| *nonce = PROBE_NONCE),
-                    report: Arc::new(|_record: NodeRecord| {}),
+                    report: Arc::new(|_event: Event| {}),
                     inbox,
                     probe_relay: Arc::new(|_relay| Box::pin(async { true })),
                 },

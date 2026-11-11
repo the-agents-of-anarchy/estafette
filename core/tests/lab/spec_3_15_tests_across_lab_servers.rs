@@ -55,7 +55,7 @@ const DELIVERED_KEY: &str = "delivered";
 const LAST_SEEN_KEY: &str = "last_seen";
 /// How long the three members run with no host killed (spec 3.15 test 24).
 const SPEC_QUIET_RUN: Duration = Duration::from_secs(180);
-/// How a member's run record begins the line of a rebind (`NodeRecord::Rebinding`).
+/// How a member's run record begins the line of a rebind (`TransportEvent::Rebinding`).
 const REBIND_RECORD_START: &str = "rebinding the endpoint";
 /// How long the killable host may take to send a record after its start began, the recipe's checks of the server included; chosen, not measured.
 const HOST_START_WAIT: Duration = Duration::from_secs(300);
