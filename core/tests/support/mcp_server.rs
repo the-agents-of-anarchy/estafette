@@ -17,6 +17,10 @@ const CLIENT_VERSION: &str = "0";
 const RESPONSE_WAIT: Duration = Duration::from_secs(60);
 /// The tool a member sends a message with (spec 3.10).
 pub const SEND_TOOL: &str = "send";
+/// The send tool's argument naming the handle the message goes to (spec 3.10).
+const TO_ARGUMENT: &str = "to";
+/// The send tool's argument holding the message body (spec 3.10).
+const BODY_ARGUMENT: &str = "body";
 /// The tool a member lists its peers with (spec 3.10).
 pub const PEERS_TOOL: &str = "peers";
 /// The key of a tool's envelope holding its result (spec 3.10).
@@ -92,7 +96,7 @@ impl McpServer {
     /// Sends the body to the handle through the send tool and returns the envelope.
     #[track_caller]
     pub fn send(&mut self, to: &str, body: &str) -> Value {
-        self.call(SEND_TOOL, &json!({ "to": to, "body": body }))
+        self.call(SEND_TOOL, &send_arguments(to, body))
     }
 
     /// The peer of that handle as the peers tool lists it once the peer meets the condition, requiring that within the wait.
@@ -191,6 +195,11 @@ impl Drop for McpServer {
         self.kill();
         self.wait_for_exit();
     }
+}
+
+/// The send tool's arguments for the body to the handle (spec 3.10).
+pub fn send_arguments(to: &str, body: &str) -> Value {
+    json!({ (TO_ARGUMENT): to, (BODY_ARGUMENT): body })
 }
 
 /// Whether the peers tool lists the peer online.

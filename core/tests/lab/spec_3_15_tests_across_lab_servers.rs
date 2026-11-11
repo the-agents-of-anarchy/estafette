@@ -15,7 +15,7 @@ use crate::lab_machine::LabMachine;
 use crate::lab_server::LabServer;
 use crate::live_host::live_host_to_itself;
 use crate::live_network::LiveNetwork;
-use crate::mcp_server::{McpServer, ONLINE, RESULT_KEY, SEND_TOOL, online};
+use crate::mcp_server::{McpServer, ONLINE, RESULT_KEY, online};
 use crate::message_body::BODY;
 use crate::payload_placeholders::wall_clock_ms;
 use crate::scratch_machine::{Card, ScratchMachine};
@@ -169,9 +169,7 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
         })
     });
 
-    let sent = timed("amy's send to bob", || {
-        amy.call(SEND_TOOL, &json!({ "to": bob_handle, "body": BODY }))
-    });
+    let sent = timed("amy's send to bob", || amy.send(&bob_handle, BODY));
     let frame = timed("bob's inbox socket emits the frame", || {
         inbox.next_frame(FRAME_WAIT)
     });

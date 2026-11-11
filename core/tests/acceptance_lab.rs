@@ -632,7 +632,7 @@ mod spec_3_15_two_members_through_the_live_host {
     use crate::lab_machine::LabMachine;
     use crate::live_host::live_host_to_itself;
     use crate::live_network::LiveNetwork;
-    use crate::mcp_server::{McpServer, PRESENCE_WAIT, gone, online};
+    use crate::mcp_server::{McpServer, PRESENCE_WAIT, SEND_TOOL, gone, online, send_arguments};
     use crate::message_body::BODY;
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::presence_signed_by;
@@ -883,7 +883,7 @@ mod spec_3_15_two_members_through_the_live_host {
         meet(&mut amy, &mut bob);
 
         bob.member
-            .start_call("send", &json!({ "to": amy.handle, "body": BODY }));
+            .start_call(SEND_TOOL, &send_arguments(&amy.handle, BODY));
         let input_closed = Instant::now();
         bob.member.close_standard_input();
 
