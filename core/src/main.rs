@@ -394,9 +394,29 @@ struct ObserverRuntime {
     operator_effects: OperatorEffects,
 }
 
+/// What SIGINT does while an observer runtime runs its command.
+#[derive(Debug, Clone, Copy)]
+enum Interruption {
+    /// The command listens for SIGINT and ends its own run when it arrives.
+    EndsTheCommand,
+    /// SIGINT keeps its default and ends the process, for a command that never waits for it.
+    EndsTheProcess,
+}
+
+/// How an observer command takes SIGINT: show peers and tail end their observation, test send leaves SIGINT to end the process.
+const fn interruption_of(command: &ObserverCommand) -> Interruption {
+    match command {
+        ObserverCommand::ShowPeers { .. } | ObserverCommand::Tail { .. } => {
+            Interruption::EndsTheCommand
+        }
+        ObserverCommand::TestSend { .. } => Interruption::EndsTheProcess,
+    }
+}
+
 fn observer_runtime(
     environment: impl Fn(&str) -> Option<OsString>,
     cards_dir: Option<PathBuf>,
+    interruption: Interruption,
 ) -> Result<ObserverRuntime, CommandLineFailure> {
     let directories = Arc::new(
         Directories::establish(environment, &OperatingSystemFilesystem, cards_dir)
@@ -414,7 +434,7 @@ fn observer_runtime(
         .map_err(CommandLineFailure::Runtime)?;
     let interrupted = {
         let _inside_runtime = runtime.enter();
-        interrupt_requested(SignalKind::interrupt())?
+        interrupt_for(interruption)?
     };
     let (effects, operator_effects) =
         observer_effects(Arc::clone(&directories), clock, interrupted);
@@ -436,7 +456,7 @@ fn run_observer_command(
         runtime,
         effects,
         operator_effects,
-    } = observer_runtime(environment, command.cards_dir())?;
+    } = observer_runtime(environment, command.cards_dir(), interruption_of(command))?;
     runtime
         .block_on(observer::run(
             command,
@@ -460,7 +480,11 @@ fn run_doctor_command(
         runtime,
         effects,
         operator_effects,
-    } = observer_runtime(environment, arguments.registry.cards_dir.clone())?;
+    } = observer_runtime(
+        environment,
+        arguments.registry.cards_dir.clone(),
+        Interruption::EndsTheProcess,
+    )?;
     runtime
         .block_on(doctor::run(
             arguments,
@@ -589,6 +613,16 @@ fn infrastructure_effects(stopped: StopRequested) -> InfrastructureEffects {
         start_relay: Box::new(|site| Box::pin(infra::start_embedded_relay(site))),
         stopped,
         report: Arc::new(|record| report_run_record(&record)),
+    }
+}
+
+/// The interrupt a command waits for: SIGINT heard from now on, or never, leaving SIGINT its default.
+fn interrupt_for(
+    interruption: Interruption,
+) -> Result<Pin<Box<dyn Future<Output = ()> + Send>>, CommandLineFailure> {
+    match interruption {
+        Interruption::EndsTheCommand => interrupt_requested(SignalKind::interrupt()),
+        Interruption::EndsTheProcess => Ok(Box::pin(std::future::pending())),
     }
 }
 

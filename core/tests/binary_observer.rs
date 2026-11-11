@@ -1,9 +1,10 @@
 use std::fs;
 use std::io;
+use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, ExitStatus, Output, Stdio};
 use std::thread::sleep;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod common;
 
@@ -15,6 +16,10 @@ const ABSENT_NETWORK: &str = "absent";
 const HANDLE: &str = "bob";
 const BODY: &str = "hello";
 const TAIL_RUNNING_TIME: Duration = Duration::from_secs(2);
+const RUNNING_BEFORE_THE_INTERRUPT: Duration = Duration::from_secs(1);
+const INTERRUPTED_COMMAND_ENDS_WITHIN: Duration = Duration::from_millis(1500);
+const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const SIGINT_NUMBER: i32 = 2;
 
 fn binary(root: &Path) -> Command {
     let mut command = Command::new(BINARY);
@@ -30,8 +35,8 @@ fn run_binary(root: &Path, arguments: &[&str]) -> io::Result<Output> {
     binary(root).args(arguments).output()
 }
 
-fn short_scratch_root() -> PathBuf {
-    PathBuf::from(SHORT_SCRATCH_PARENT).join(format!("eo-{}", std::process::id()))
+fn short_scratch_root(test_name: &str) -> PathBuf {
+    PathBuf::from(SHORT_SCRATCH_PARENT).join(format!("eo-{}-{test_name}", std::process::id()))
 }
 
 fn create_network(root: &Path) -> io::Result<Output> {
@@ -115,7 +120,7 @@ fn binary_tail_runs_until_interrupted_then_exits_zero_of_spec_3_13() {
 
 #[test]
 fn binary_test_send_creates_the_operator_card_and_reports_an_unknown_handle_of_spec_3_13() {
-    let root = short_scratch_root();
+    let root = short_scratch_root("test_send");
     fs::create_dir_all(&root).unwrap();
     assert_eq!(create_network(&root).unwrap().status.code(), Some(0));
 
@@ -134,6 +139,73 @@ fn binary_test_send_creates_the_operator_card_and_reports_an_unknown_handle_of_s
             .starts_with("operator\t")
     );
     drop(fs::remove_dir_all(&root));
+}
+
+/// Starts the command on a fresh network, sends it SIGINT once it has run a while, and says how it ended, its own status when it ended first, none when it outlived the bound.
+fn status_after_sigint(test_name: &str, arguments: &[&str]) -> io::Result<Option<ExitStatus>> {
+    let root = short_scratch_root(test_name);
+    fs::create_dir_all(&root)?;
+    let created = create_network(&root)?;
+    if !created.status.success() {
+        return Err(io::Error::other(
+            String::from_utf8_lossy(&created.stderr).into_owned(),
+        ));
+    }
+    let mut command = binary(&root)
+        .args(arguments)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    sleep(RUNNING_BEFORE_THE_INTERRUPT);
+    if let Some(ended_first) = command.try_wait()? {
+        return Ok(Some(ended_first));
+    }
+    let interrupt = Command::new("kill")
+        .args(["-INT", &command.id().to_string()])
+        .status()?;
+    if !interrupt.success() {
+        return Err(io::Error::other(format!(
+            "kill -INT {}: {interrupt}",
+            command.id()
+        )));
+    }
+    let interrupted = Instant::now();
+    let ended = loop {
+        if let Some(status) = command.try_wait()? {
+            break Some(status);
+        }
+        if interrupted.elapsed() >= INTERRUPTED_COMMAND_ENDS_WITHIN {
+            drop(command.kill());
+            drop(command.wait());
+            break None;
+        }
+        sleep(EXIT_POLL_INTERVAL);
+    };
+    drop(fs::remove_dir_all(&root));
+    Ok(ended)
+}
+
+#[test]
+fn binary_test_send_interrupted_by_sigint_ends_at_once_by_that_signal_of_spec_3_13() {
+    let ended =
+        status_after_sigint("test_send_sigint", &["test-send", NETWORK, HANDLE, BODY]).unwrap();
+
+    assert_eq!(
+        ended.map(|status| status.signal()),
+        Some(Some(SIGINT_NUMBER)),
+        "{ended:?}"
+    );
+}
+
+#[test]
+fn binary_doctor_interrupted_by_sigint_ends_at_once_by_that_signal_of_spec_3_13() {
+    let ended = status_after_sigint("doctor_sigint", &["doctor", NETWORK]).unwrap();
+
+    assert_eq!(
+        ended.map(|status| status.signal()),
+        Some(Some(SIGINT_NUMBER)),
+        "{ended:?}"
+    );
 }
 
 #[test]
