@@ -1663,7 +1663,7 @@ mod tests {
     #[derive(Debug)]
     struct WatchedServer {
         server: DirectServer<RecordingNeighbor>,
-        accepted: Arc<Mutex<Vec<iroh::endpoint::Connection>>>,
+        accepted: tokio::sync::watch::Sender<Vec<iroh::endpoint::Connection>>,
     }
 
     impl iroh::protocol::ProtocolHandler for WatchedServer {
@@ -1672,9 +1672,7 @@ mod tests {
             connection: iroh::endpoint::Connection,
         ) -> Result<(), iroh::protocol::AcceptError> {
             self.accepted
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .push(connection.clone());
+                .send_modify(|accepted| accepted.push(connection.clone()));
             self.server.accept(connection).await
         }
     }
@@ -1685,7 +1683,7 @@ mod tests {
         topic: NetworkTopic,
         address: EndpointAddr,
         introduces: Arc<Mutex<Vec<Introduce>>>,
-        accepted: Arc<Mutex<Vec<iroh::endpoint::Connection>>>,
+        accepted: tokio::sync::watch::Sender<Vec<iroh::endpoint::Connection>>,
         announced: Arc<Mutex<Addr>>,
     }
 
@@ -1696,7 +1694,7 @@ mod tests {
     async fn start_silent_neighbor_joined_through(bootstrap: Vec<EndpointAddr>) -> SilentNeighbor {
         let endpoint = bind_endpoint(secret_key(NEIGHBOR_SEED)).await;
         let introduces = Arc::new(Mutex::new(Vec::new()));
-        let accepted = Arc::new(Mutex::new(Vec::new()));
+        let accepted = tokio::sync::watch::Sender::new(Vec::new());
         let announced = Arc::new(Mutex::new(Addr::from_endpoint_report(
             Vec::new(),
             Vec::new(),
@@ -1716,7 +1714,7 @@ mod tests {
                 crate::net::endpoint::DIRECT_ALPN,
                 WatchedServer {
                     server: DirectServer::new(network_keys(), neighbor),
-                    accepted: Arc::clone(&accepted),
+                    accepted: accepted.clone(),
                 },
             )
             .accept(iroh_gossip::ALPN, gossip.clone())
@@ -1741,21 +1739,20 @@ mod tests {
         }
     }
 
-    /// The first connection the neighbor accepted, once one arrives within the wait.
+    /// The first connection the neighbor accepted, failing by name when none arrives within the wait.
     async fn first_connection_accepted(
         neighbor: &SilentNeighbor,
         within: Duration,
     ) -> iroh::endpoint::Connection {
-        tokio::time::timeout(within, async {
-            loop {
-                if let Some(connection) = neighbor.accepted.lock().unwrap().first() {
-                    return connection.clone();
-                }
-                tokio::time::sleep(POLL_INTERVAL).await;
-            }
-        })
+        let mut accepted = neighbor.accepted.subscribe();
+        let accepted = tokio::time::timeout(
+            within,
+            accepted.wait_for(|connections| !connections.is_empty()),
+        )
         .await
-        .unwrap()
+        .unwrap_or_else(|_elapsed| panic!("the neighbor accepted no connection within {within:?}"))
+        .unwrap();
+        accepted[0].clone()
     }
 
     /// Waits until the observer lists the neighbor, which it does once it has applied the neighbor's answer to its Introduce.
