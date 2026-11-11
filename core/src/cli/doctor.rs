@@ -12,16 +12,15 @@ use iroh::{PublicKey, RelayUrl};
 
 use crate::card::{Card, CardInvalid, CardUnusable};
 use crate::cli::cards::{CardRegistryReader, RegistryArgs, card_files_in, card_name_of};
+use crate::cli::lines::tab_separated_line;
 use crate::cli::network::NetworkFilesystem;
-use crate::cli::observer::{
-    self, ObserverCommand, ObserverEffects, OperatorEffects, tab_separated_line,
-};
-use crate::config::{NetworkConfig, OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
+use crate::cli::observer::{self, ObserverEffects, OperatorEffects};
+use crate::config::{ConfigError, NetworkConfig, OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
 use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use crate::errors::ExitStatus;
 use crate::handle::{Handle, HandleError};
 
-use crate::node::{RelayProbe, known_host_addresses};
+use crate::node::{NodeError, RelayProbe, known_host_addresses};
 use crate::sidecar::{Pause, SidecarError, claim};
 
 const RELAY_ANSWER_DEADLINE: Duration = Duration::from_secs(5);
@@ -78,6 +77,12 @@ impl fmt::Display for DoctorError {
 }
 
 impl std::error::Error for DoctorError {}
+
+impl From<Failure> for DoctorError {
+    fn from(failure: Failure) -> Self {
+        Self(failure)
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 enum Check {
@@ -168,26 +173,6 @@ pub async fn run(
     operator_effects: OperatorEffects,
     stdout: &mut impl Write,
 ) -> Result<ExitStatus, DoctorError> {
-    run_checks(
-        arguments,
-        directories,
-        filesystem,
-        pause,
-        (effects, operator_effects),
-        stdout,
-    )
-    .await
-    .map_err(DoctorError)
-}
-
-async fn run_checks(
-    arguments: &DoctorArgs,
-    directories: &Directories,
-    filesystem: &(impl DoctorFilesystem + Sync),
-    pause: &(impl Pause + Sync),
-    (effects, operator_effects): (ObserverEffects, OperatorEffects),
-    stdout: &mut impl Write,
-) -> Result<ExitStatus, Failure> {
     let network = arguments.registry.network.as_str();
     let config_path = directories
         .network_config_file(network)
@@ -195,7 +180,7 @@ async fn run_checks(
     let cards_directory = directories
         .cards_directory(network)
         .map_err(Failure::Directories)?;
-    let probe_relay = operator_effects.probe_relay.clone();
+    let OperatorEffects { probe_relay, .. } = operator_effects;
     let mut report = Report::new(stdout);
     report.record(
         Check::ConfigurationFile,
@@ -211,14 +196,8 @@ async fn run_checks(
         Check::KnownRelays,
         &known_relays_verdict(&config_path, &probe_relay).await,
     )?;
-    let visible_peer = visible_peer_verdict(
-        arguments,
-        directories,
-        filesystem,
-        pause,
-        (effects, operator_effects),
-    )
-    .await;
+    let visible_peer =
+        visible_peer_verdict(&arguments.registry.network, directories, effects).await;
     report.record(Check::VisiblePeer, &visible_peer)?;
     Ok(report.exit_status())
 }
@@ -370,7 +349,7 @@ fn sidecars_verdict(
 async fn known_relays_verdict(config_path: &Path, probe_relay: &RelayProbe) -> Verdict {
     let relays = match known_relays(config_path) {
         Ok(relays) => relays,
-        Err(refusal) => return Verdict::Failed(refusal),
+        Err(refusal) => return Verdict::Failed(refusal.to_string()),
     };
     let probes: Vec<_> = relays
         .iter()
@@ -388,46 +367,37 @@ async fn known_relays_verdict(config_path: &Path, probe_relay: &RelayProbe) -> V
     Verdict::of_failures(format!("relays answering: {}", relays.len()), &silent)
 }
 
-fn known_relays(config_path: &Path) -> Result<BTreeSet<RelayUrl>, String> {
-    let config = NetworkConfig::load(config_path).map_err(|source| source.to_string())?;
-    let hosts = known_host_addresses(&config).map_err(|source| source.to_string())?;
+fn known_relays(config_path: &Path) -> Result<BTreeSet<RelayUrl>, KnownRelaysUnreadable> {
+    let config = NetworkConfig::load(config_path).map_err(KnownRelaysUnreadable::Configuration)?;
+    let hosts = known_host_addresses(&config).map_err(KnownRelaysUnreadable::Host)?;
     Ok(hosts.into_iter().map(|host| host.relay).collect())
 }
 
-async fn visible_peer_verdict(
-    arguments: &DoctorArgs,
-    directories: &Directories,
-    filesystem: &(impl DoctorFilesystem + Sync),
-    pause: &(impl Pause + Sync),
-    (effects, operator_effects): (ObserverEffects, OperatorEffects),
-) -> Verdict {
-    let mut listing = Vec::new();
-    let command = ObserverCommand::ShowPeers {
-        network: arguments.registry.network.clone(),
-        cards_dir: arguments.registry.cards_dir.clone(),
-    };
-    let observed = observer::run(
-        &command,
-        directories,
-        filesystem,
-        pause,
-        effects,
-        operator_effects,
-        &mut listing,
-    )
-    .await;
-    match observed {
-        Ok(()) => peers_listed_verdict(&listing),
-        Err(refusal) => Verdict::Failed(refusal.to_string()),
+/// Why the known relays could not be read from the network configuration.
+#[derive(Debug)]
+enum KnownRelaysUnreadable {
+    Configuration(ConfigError),
+    Host(NodeError),
+}
+
+impl fmt::Display for KnownRelaysUnreadable {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Configuration(source) => write!(formatter, "{source}"),
+            Self::Host(source) => write!(formatter, "{source}"),
+        }
     }
 }
 
-fn peers_listed_verdict(listing: &[u8]) -> Verdict {
-    let peers = String::from_utf8_lossy(listing).lines().count();
-    if peers == 0 {
-        Verdict::Failed(String::from("the observer saw no peer"))
-    } else {
-        Verdict::Passed(format!("peers seen by the observer: {peers}"))
+async fn visible_peer_verdict(
+    network: &Handle,
+    directories: &Directories,
+    effects: ObserverEffects,
+) -> Verdict {
+    match observer::count_visible_peers(directories, network, effects).await {
+        Ok(0) => Verdict::Failed(String::from("the observer saw no peer")),
+        Ok(peers) => Verdict::Passed(format!("peers seen by the observer: {peers}")),
+        Err(refusal) => Verdict::Failed(refusal.to_string()),
     }
 }
 
@@ -443,7 +413,6 @@ mod tests {
     use tokio::time::Instant;
 
     use super::*;
-    use crate::cli::observer::FIELD_SEPARATOR;
     use crate::cli::observer::{ObserverEffects, OperatorEffects};
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
@@ -455,6 +424,7 @@ mod tests {
     use crate::sidecar::{SEED_BYTES, create_card};
     use crate::wire::Nonce;
 
+    const SPEC_FIELD_SEPARATOR: char = '\t';
     const NETWORK_NAME: &str = "lab";
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];
     const OWNER_SEED: u8 = 60;
@@ -770,14 +740,14 @@ mod tests {
 
     fn detail_of_check<'a>(lines: &'a [String], check: &str) -> &'a str {
         line_of_check(lines, check)
-            .split(FIELD_SEPARATOR)
+            .split(SPEC_FIELD_SEPARATOR)
             .nth(2)
             .unwrap()
     }
 
     fn verdict_word_of_check<'a>(lines: &'a [String], check: &str) -> &'a str {
         line_of_check(lines, check)
-            .split(FIELD_SEPARATOR)
+            .split(SPEC_FIELD_SEPARATOR)
             .nth(1)
             .unwrap()
     }
@@ -793,7 +763,7 @@ mod tests {
         assert_eq!(status, ExitStatus::Success);
         let checks: Vec<&str> = lines
             .iter()
-            .map(|line| line.split(FIELD_SEPARATOR).next().unwrap())
+            .map(|line| line.split(SPEC_FIELD_SEPARATOR).next().unwrap())
             .collect();
         assert_eq!(checks, ["config", "cards", "sidecars", "relays", "peers"]);
         for check in checks {

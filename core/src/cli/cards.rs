@@ -9,7 +9,7 @@ use std::str::FromStr;
 use clap::{Args, Subcommand};
 
 use crate::card::{Card, CardInvalid, CardUnusable};
-use crate::cli::observer::tab_separated_line;
+use crate::cli::lines::tab_separated_line;
 use crate::dirs::{
     CARD_EXTENSION, CARDS_DIRECTORY_VARIABLE, CARDS_SUBDIRECTORY, Directories, DirectoriesError,
     DirectoryFilesystem, OperatingSystemFilesystem,

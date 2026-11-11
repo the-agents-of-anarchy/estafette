@@ -16,6 +16,7 @@ use tokio::task::JoinError;
 use tokio::time::Instant;
 
 use crate::card::{Card, CardInvalid, CardUnusable};
+use crate::cli::lines::tab_separated_line;
 use crate::cli::network::NetworkFilesystem;
 use crate::config::{ConfigError, NetworkConfig};
 use crate::crypto::GateKey;
@@ -50,8 +51,6 @@ const UNREACHABLE_KIND: &str = "unreachable";
 const INFRASTRUCTURE_KIND: &str = "infrastructure";
 const PRESENCE_REQUEST_KIND: &str = "presence-request";
 const OWNER_FIELD: &str = "owner";
-pub(crate) const FIELD_SEPARATOR: char = '\t';
-const LINE_END: &str = "\n";
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
@@ -246,11 +245,7 @@ async fn run_command(
 ) -> Result<(), Failure> {
     match command {
         ObserverCommand::ShowPeers { network, .. } => {
-            let setup = load_network_setup(directories, network)?;
-            let peers = start_observation(&setup, effects)
-                .await?
-                .collect_peers()
-                .await?;
+            let peers = observed_peers(directories, network, effects).await?;
             for peer in &peers {
                 write_line(stdout, &peer_line(peer))?;
             }
@@ -275,6 +270,35 @@ async fn run_command(
             write_line(stdout, &delivery_line(&delivery))
         }
     }
+}
+
+/// Joins the network as an observer without a card and returns the peers it holds once the observer wait is over.
+async fn observed_peers(
+    directories: &Directories,
+    network: &Handle,
+    effects: ObserverEffects,
+) -> Result<Vec<Peer>, Failure> {
+    let setup = load_network_setup(directories, network)?;
+    start_observation(&setup, effects)
+        .await?
+        .collect_peers()
+        .await
+}
+
+/// Joins the network as an observer without a card, waits out the observer wait and counts the peers it sees.
+///
+/// # Errors
+///
+/// Returns [`ObserverCommandError`] naming what the operator must change.
+pub async fn count_visible_peers(
+    directories: &Directories,
+    network: &Handle,
+    effects: ObserverEffects,
+) -> Result<usize, ObserverCommandError> {
+    observed_peers(directories, network, effects)
+        .await
+        .map(|peers| peers.len())
+        .map_err(ObserverCommandError)
 }
 
 /// The reserved operator card as claimed: its held lock, its requested handle and its public mapping.
@@ -642,6 +666,7 @@ impl Observation {
         Ok(peers)
     }
 
+    /// Loops until the observer wait is over, the topic closes or the run is interrupted, then returns the peers.
     async fn collect_until_done(&mut self) -> Result<Vec<Peer>, Failure> {
         loop {
             match self.next_step().await {
@@ -668,6 +693,7 @@ impl Observation {
         shutdown.map_err(Failure::RouterShutdown)
     }
 
+    /// Prints each payload until the run is interrupted or the topic closes.
     async fn tail_until_done(&mut self, stdout: &mut impl Write) -> Result<(), Failure> {
         loop {
             match self.next_step().await {
@@ -860,27 +886,6 @@ fn payload_line(payload: &OpenedPayload) -> Result<String, Failure> {
             &hex_text(&request.sig.0),
         ]),
     })
-}
-
-/// Joins the fields into one tab-separated line.
-pub(crate) fn tab_separated_line(fields: &[&str]) -> String {
-    let escaped: Vec<String> = fields.iter().map(|field| escape_controls(field)).collect();
-    escaped.join(&FIELD_SEPARATOR.to_string()) + LINE_END
-}
-
-/// The field with every control character, tab and newline included, spelled out so it cannot end a column or a line.
-fn escape_controls(field: &str) -> String {
-    field
-        .chars()
-        .flat_map(|character| {
-            let spelled: Vec<char> = if character.is_control() {
-                character.escape_default().collect()
-            } else {
-                vec![character]
-            };
-            spelled
-        })
-        .collect()
 }
 
 /// Key, mac, certificate or signature bytes as lowercase hexadecimal.
