@@ -27,12 +27,18 @@ pub const PEERS_TOOL: &str = "peers";
 pub const RESULT_KEY: &str = "result";
 /// The key of the peers tool's result listing the peers (spec 3.10).
 pub const PEERS_KEY: &str = "peers";
+/// The key of a peers entry holding the peer's handle (spec 3.10).
+pub const HANDLE_KEY: &str = "handle";
+/// The key of a peers entry holding the peer's status (spec 3.10).
+const STATUS_KEY: &str = "status";
 /// How often the peers tool is called while waiting for a peer.
 const PEERS_POLL: Duration = Duration::from_millis(50);
 /// How long a member may take to list a peer as a test wants it, through gossip or the direct protocol.
 pub const PRESENCE_WAIT: Duration = Duration::from_secs(20);
 /// The status the peers tool and `show-peers` give a peer whose Presence arrived (spec 3.1).
 pub const ONLINE: &str = "online";
+/// The status the peers tool gives a peer whose Departure arrived (spec 3.1).
+const GONE: &str = "gone";
 
 /// A running `estafette mcp` process driven as an MCP client over its standard streams, stopped when dropped.
 pub struct McpServer {
@@ -114,7 +120,7 @@ impl McpServer {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .find(|peer| peer["handle"] == handle);
+                .find(|peer| peer[HANDLE_KEY] == handle);
             if let Some(peer) = entry.filter(|peer| condition(peer)) {
                 return peer.clone();
             }
@@ -204,10 +210,10 @@ pub fn send_arguments(to: &str, body: &str) -> Value {
 
 /// Whether the peers tool lists the peer online.
 pub fn online(peer: &Value) -> bool {
-    peer["status"] == json!(ONLINE)
+    peer[STATUS_KEY] == json!(ONLINE)
 }
 
 /// Whether the peers tool lists the peer gone.
 pub fn gone(peer: &Value) -> bool {
-    peer["status"] == json!("gone")
+    peer[STATUS_KEY] == json!(GONE)
 }

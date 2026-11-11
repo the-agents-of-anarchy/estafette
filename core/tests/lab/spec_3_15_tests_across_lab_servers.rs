@@ -45,6 +45,14 @@ const TRIO: [&str; 3] = [AMY, BOB, CID];
 const INIT_TOOL: &str = "init";
 /// The key of a peers entry and of a send result saying whether the peer's inbox socket has a client (spec 3.10).
 const ATTACHED_KEY: &str = "attached";
+/// The init tool's argument naming the card to claim (spec 3.10).
+const CARD_ARGUMENT: &str = "card";
+/// The key of the init tool's result holding the inbox socket's path (spec 3.10).
+const INBOX_PATH_KEY: &str = "inbox_path";
+/// The key of a send result holding the message id (spec 3.10).
+const ID_KEY: &str = "id";
+/// The key of a tool's envelope saying whether the call succeeded (spec 3.10).
+const OK_KEY: &str = "ok";
 /// The key of a send result saying whether the message was delivered (spec 3.10).
 const DELIVERED_KEY: &str = "delivered";
 /// The key of a peers entry holding when the peer was last seen, in milliseconds (spec 3.10).
@@ -160,9 +168,9 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
     let bob_card = bob_machine.create_card(&bob_handle, &bob_handle);
     let mut bob = bob_machine.start_server();
     let claim = timed("bob claims his card on this machine", || {
-        bob.call(INIT_TOOL, &json!({ "card": bob_card.name }))
+        bob.call(INIT_TOOL, &json!({ (CARD_ARGUMENT): bob_card.name }))
     });
-    let mut inbox = InboxClient::connect(&claim[RESULT_KEY]["inbox_path"], 0);
+    let mut inbox = InboxClient::connect(&claim[RESULT_KEY][INBOX_PATH_KEY], 0);
     timed("amy lists bob online and attached", || {
         amy.peer_within(&bob_handle, PRESENCE_WAIT, |bob| {
             online(bob) && bob[ATTACHED_KEY] == json!(true)
@@ -177,11 +185,11 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
         inbox.next_frame(NO_FURTHER_FRAME_WAIT)
     });
 
-    let id = sent[RESULT_KEY]["id"].as_str().unwrap();
-    assert_eq!(claim["ok"], json!(true), "{claim}");
+    let id = sent[RESULT_KEY][ID_KEY].as_str().unwrap();
+    assert_eq!(claim[OK_KEY], json!(true), "{claim}");
     assert_eq!(
         sent[RESULT_KEY],
-        json!({ "id": id, "delivered": true, "attached": true }),
+        json!({ (ID_KEY): id, (DELIVERED_KEY): true, (ATTACHED_KEY): true }),
         "{sent}"
     );
     let frame = frame.unwrap();
@@ -230,8 +238,8 @@ impl Member {
     #[track_caller]
     fn serving(machine: ScratchMachine, card: Card, handle: String) -> Self {
         let mut server = McpServer::handshaken(machine.spawn_mcp_server());
-        let claim = server.call(INIT_TOOL, &json!({ "card": card.name }));
-        assert_eq!(claim["ok"], json!(true), "{claim}");
+        let claim = server.call(INIT_TOOL, &json!({ (CARD_ARGUMENT): card.name }));
+        assert_eq!(claim[OK_KEY], json!(true), "{claim}");
         Self {
             server,
             machine,

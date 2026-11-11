@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use crate::lab_machine::LabMachine;
 use crate::lab_server::LabServer;
 use crate::live_network::LiveNetwork;
-use crate::mcp_server::{PEERS_KEY, PEERS_TOOL, RESULT_KEY, SEND_TOOL, send_arguments};
+use crate::mcp_server::{HANDLE_KEY, PEERS_KEY, PEERS_TOOL, RESULT_KEY, SEND_TOOL, send_arguments};
 use crate::scratch_machine::{fail_unless_panicking, keep_run_record};
 
 /// The recipe that writes the lab network's configuration on a server from its standard input.
@@ -94,7 +94,7 @@ impl<'server> ServerMember<'server> {
                 .as_array()
                 .into_iter()
                 .flatten()
-                .find(|peer| peer["handle"] == handle);
+                .find(|peer| peer[HANDLE_KEY] == handle);
             if let Some(peer) = entry.filter(|peer| condition(peer)) {
                 return peer.clone();
             }
