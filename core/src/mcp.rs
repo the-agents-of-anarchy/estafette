@@ -2113,6 +2113,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spec_3_10_two_inbox_reads_with_one_since_return_the_same_frames_and_remove_none() {
+        let _slot = node_slot().await;
+        let machine = Machine::new("two-reads");
+        let (mut amy, mut bob) = claimed_pair(&machine).await;
+        for body in ["first-body", "second-body"] {
+            let sent = amy
+                .envelope("send", json!({ "to": "bob", "body": body }))
+                .await;
+            assert_eq!(sent["ok"], json!(true), "{sent}");
+        }
+
+        let first_read = bob.envelope("inbox", json!({ "since": 1 })).await;
+        let second_read = bob.envelope("inbox", json!({ "since": 1 })).await;
+        let whole_inbox = bob.envelope("inbox", json!({})).await;
+
+        assert_eq!(first_read["result"]["last_seq"], json!(2));
+        assert_eq!(
+            first_read["result"]["messages"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(
+            first_read["result"]["messages"][0]["body"],
+            json!("second-body")
+        );
+        assert_eq!(second_read["result"], first_read["result"]);
+        assert_eq!(
+            whole_inbox["result"]["messages"].as_array().unwrap().len(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn spec_3_10_an_init_in_flight_beside_list_cards_probes_claims_its_card_and_each_listing_answers()
+     {
+        const LISTINGS_BESIDE_THE_INIT: usize = 8;
+        let _slot = node_slot().await;
+        let machine = Machine::new("init-and-probes");
+        machine.create_card("amy-card", "amy", AMY_SEED);
+        let mut client = start_server(&machine, ServerPlan::alone(FIRST_PROCESS_ID));
+        client.initialize().await;
+        let mut calls: Vec<(&str, Value)> = (0..LISTINGS_BESIDE_THE_INIT)
+            .map(|_listing| ("list_cards", json!({})))
+            .collect();
+        calls.push(("init", json!({ "card": "amy-card" })));
+
+        let answers = client.envelopes_of_calls_at_once(&calls).await;
+
+        let (init, listings) = answers.split_last().unwrap();
+        assert_eq!(init["result"]["handle"], json!("amy"), "{init}");
+        for listing in listings {
+            assert_eq!(listing["ok"], json!(true), "{listing}");
+            let cards = listing["result"]["cards"].as_array().unwrap();
+            assert_eq!(cards.len(), 1, "{listing}");
+            assert_eq!(cards[0]["name"], json!("amy-card"));
+        }
+        let after = client.envelope("list_cards", json!({})).await;
+        assert_eq!(after["result"]["cards"][0]["held"], json!(true));
+    }
+
+    #[tokio::test]
     async fn spec_3_10_peers_lists_the_other_member_with_its_status_public_mapping_and_last_seen() {
         let _slot = node_slot().await;
         let machine = Machine::new("peers");
@@ -2183,25 +2243,28 @@ mod tests {
         assert_eq!(after, before);
     }
 
-    const fn position_in_the_tool_list(tool: ToolName) -> usize {
-        match tool {
-            ToolName::ListCards => 0,
-            ToolName::Init => 1,
-            ToolName::Peers => 2,
-            ToolName::Send => 3,
-            ToolName::Broadcast => 4,
-            ToolName::Inbox => 5,
+    const fn tool_after(previous: Option<ToolName>) -> Option<ToolName> {
+        match previous {
+            None => Some(ToolName::ListCards),
+            Some(ToolName::ListCards) => Some(ToolName::Init),
+            Some(ToolName::Init) => Some(ToolName::Peers),
+            Some(ToolName::Peers) => Some(ToolName::Send),
+            Some(ToolName::Send) => Some(ToolName::Broadcast),
+            Some(ToolName::Broadcast) => Some(ToolName::Inbox),
+            Some(ToolName::Inbox) => None,
         }
     }
 
     #[test]
-    fn spec_3_10_the_tool_list_holds_each_of_the_six_tools_once_in_declaration_order() {
-        let positions: Vec<usize> = ToolName::ALL
-            .into_iter()
-            .map(position_in_the_tool_list)
-            .collect();
+    fn spec_3_10_the_tool_list_holds_every_tool_the_build_knows_once_in_declaration_order() {
+        let mut every_tool = Vec::new();
+        let mut previous = None;
+        while let Some(tool) = tool_after(previous) {
+            every_tool.push(tool);
+            previous = Some(tool);
+        }
 
-        assert_eq!(positions, (0..SPEC_TOOL_COUNT).collect::<Vec<usize>>());
+        assert_eq!(ToolName::ALL.to_vec(), every_tool);
     }
 
     fn every_tool_call() -> Vec<(&'static str, Value)> {
