@@ -14,6 +14,12 @@ pub(super) struct HeaderSource {
     node: Mutex<Option<String>>,
 }
 
+/// A trace line stamped with its clock readings, its node, its event and its fields, waiting for its number.
+pub(super) struct StampedLine {
+    before_n: String,
+    after_n: String,
+}
+
 impl HeaderSource {
     /// The header of a run with no endpoint yet.
     pub(super) fn new(run: RunId, clocks: TraceClocks) -> Self {
@@ -35,28 +41,52 @@ impl HeaderSource {
         (self.clocks.wall_ms)()
     }
 
-    /// One trace line numbered `n`: a JSON object of the header, the event name and the event's fields, ended by a newline.
-    pub(super) fn line(&self, n: u64, name: &str, fields: &[(&str, Value)]) -> String {
+    /// The event's line stamped now with both clocks and the node, its number left to the writer that writes it.
+    pub(super) fn stamp(&self, name: &str, fields: &[(&str, Value)]) -> StampedLine {
         let node = self
             .node
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
-        let header = [
-            ("v", Some(Value::from(FORMAT_VERSION))),
-            ("run", Some(Value::from(self.run.as_str()))),
-            ("n", Some(Value::from(n))),
-            ("mono_ms", Some(Value::from((self.clocks.monotonic_ms)()))),
-            ("wall_ms", Some(Value::from((self.clocks.wall_ms)()))),
-            ("node", node.map(Value::from)),
-            ("event", Some(Value::from(name))),
+        let mut after_n: Vec<(&str, Value)> = vec![
+            ("mono_ms", Value::from((self.clocks.monotonic_ms)())),
+            ("wall_ms", Value::from((self.clocks.wall_ms)())),
         ];
-        let members: Vec<String> = header
-            .into_iter()
-            .filter_map(|(key, value)| value.map(|value| (key, value)))
-            .chain(fields.iter().map(|(key, value)| (*key, value.clone())))
-            .map(|(key, value)| format!("{}:{value}", Value::from(key)))
-            .collect();
-        format!("{{{}}}\n", members.join(","))
+        after_n.extend(node.map(|node| ("node", Value::from(node))));
+        after_n.push(("event", Value::from(name)));
+        after_n.extend(fields.iter().map(|(key, value)| (*key, value.clone())));
+        StampedLine {
+            before_n: joined_members(&[
+                ("v", Value::from(FORMAT_VERSION)),
+                ("run", Value::from(self.run.as_str())),
+            ]),
+            after_n: joined_members(&after_n),
+        }
     }
+}
+
+impl StampedLine {
+    /// The line numbered `n`: one JSON object, ended by a newline.
+    pub(super) fn numbered(&self, n: u64) -> String {
+        format!(
+            "{{{},{},{}}}\n",
+            self.before_n,
+            member("n", &Value::from(n)),
+            self.after_n
+        )
+    }
+}
+
+/// The members of a JSON object in the order given, separated by commas.
+fn joined_members(members: &[(&str, Value)]) -> String {
+    members
+        .iter()
+        .map(|(key, value)| member(key, value))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// One member of a JSON object: its key, a colon and its value.
+fn member(key: &str, value: &Value) -> String {
+    format!("{}:{value}", Value::from(key))
 }

@@ -313,9 +313,11 @@ fn start_writer(
 
 #[cfg(test)]
 pub(super) mod tests {
+    use std::collections::BTreeMap;
     use std::ffi::OsString;
     use std::fs::{self, File};
     use std::path::Path;
+    use std::sync::Mutex;
     use std::time::{Duration, UNIX_EPOCH};
 
     use iroh::SecretKey;
@@ -350,6 +352,9 @@ pub(super) mod tests {
     const SMALL_FRESHNESS_MS: u64 = 10_000;
     const SMALL_DIRECTORY_BYTES: u64 = 1000;
     const RAW_EVENT: &str = "iroh_line";
+    const CLOCK_EVENT: &str = "process.clock_before_unix_epoch";
+    const DROPPED_EVENT: &str = "dropped";
+    const EVENTS_FILE_SUFFIX: &str = ".events.jsonl";
     const STAND_IN_FAILURE: &str = "a stand-in failure";
     const STALE_EVENTS_FILE: &str = "20000101T000000Z-0000000000000001-estafette.events.jsonl";
 
@@ -701,6 +706,220 @@ pub(super) mod tests {
         assert_eq!(refusal.action, TraceAction::RemoveOldFile);
         assert_eq!(refusal.path, traces.join(STALE_EVENTS_FILE));
         assert_eq!(names_in(&traces), Vec::<String>::new());
+        drop(fs::remove_dir_all(&root));
+    }
+
+    /// Trace files held in memory, whose events-file writes, creations and renames fail at the attempts a test names, each counted from 0.
+    #[derive(Clone, Default)]
+    struct MemoryFiles(Arc<Mutex<MemoryState>>);
+
+    #[derive(Default)]
+    struct MemoryState {
+        held: BTreeMap<PathBuf, Vec<u8>>,
+        failing_writes: Vec<usize>,
+        failing_creations: Vec<usize>,
+        failing_renames: Vec<usize>,
+        writes: usize,
+        creations: usize,
+        renames: usize,
+    }
+
+    /// One file of `MemoryFiles`, appending to what it holds at its path.
+    struct MemoryFile {
+        path: PathBuf,
+        files: MemoryFiles,
+    }
+
+    impl Write for MemoryFile {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.files.append(&self.path, bytes).map(|()| bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn is_events_file(path: &Path) -> bool {
+        path.to_str()
+            .is_some_and(|path| path.ends_with(EVENTS_FILE_SUFFIX))
+    }
+
+    fn is_failing_attempt(attempts: &mut usize, failing: &[usize]) -> bool {
+        let attempt = *attempts;
+        *attempts = attempt.saturating_add(1);
+        failing.contains(&attempt)
+    }
+
+    impl MemoryFiles {
+        fn failing(writes: &[usize], creations: &[usize], renames: &[usize]) -> Self {
+            Self(Arc::new(Mutex::new(MemoryState {
+                failing_writes: writes.to_vec(),
+                failing_creations: creations.to_vec(),
+                failing_renames: renames.to_vec(),
+                ..MemoryState::default()
+            })))
+        }
+
+        fn state(&self) -> std::sync::MutexGuard<'_, MemoryState> {
+            self.0.lock().unwrap()
+        }
+
+        fn effects(&self, wall_ms: u64) -> TraceEffects {
+            let creating = self.clone();
+            let renaming = self.clone();
+            TraceEffects {
+                create_file: Arc::new(move |path: &Path| creating.create(path)),
+                rename_file: Arc::new(move |from: &Path, to: &Path| renaming.rename(from, to)),
+                ..TraceEffects::of_the_operating_system(frozen_clocks(wall_ms))
+            }
+        }
+
+        fn create(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
+            let mut state = self.state();
+            if is_events_file(path) {
+                let MemoryState {
+                    creations,
+                    failing_creations,
+                    ..
+                } = &mut *state;
+                if is_failing_attempt(creations, failing_creations) {
+                    return Err(stand_in_failure());
+                }
+            }
+            state.held.insert(path.to_path_buf(), Vec::new());
+            drop(state);
+            Ok(Box::new(MemoryFile {
+                path: path.to_path_buf(),
+                files: self.clone(),
+            }))
+        }
+
+        fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+            let mut state = self.state();
+            let MemoryState {
+                renames,
+                failing_renames,
+                ..
+            } = &mut *state;
+            if is_failing_attempt(renames, failing_renames) {
+                return Err(stand_in_failure());
+            }
+            let moved = state.held.remove(from).unwrap_or_default();
+            state.held.insert(to.to_path_buf(), moved);
+            drop(state);
+            Ok(())
+        }
+
+        fn append(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+            let mut state = self.state();
+            if is_events_file(path) {
+                let MemoryState {
+                    writes,
+                    failing_writes,
+                    ..
+                } = &mut *state;
+                if is_failing_attempt(writes, failing_writes) {
+                    return Err(stand_in_failure());
+                }
+            }
+            state
+                .held
+                .entry(path.to_path_buf())
+                .or_default()
+                .extend_from_slice(bytes);
+            drop(state);
+            Ok(())
+        }
+
+        /// Each line the file holds as its number, its event and the count a `dropped` line carries.
+        fn numbered_events_of(&self, path: &Path) -> Vec<(u64, String, Option<u64>)> {
+            String::from_utf8(self.state().held.get(path).cloned().unwrap_or_default())
+                .unwrap()
+                .lines()
+                .map(|line| {
+                    let line: Value = serde_json::from_str(line).unwrap();
+                    (
+                        line["n"].as_u64().unwrap(),
+                        line["event"].as_str().unwrap().to_owned(),
+                        line["count"].as_u64(),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    fn started_with(
+        directories: &Directories,
+        effects: &TraceEffects,
+        bounds: TraceBounds,
+    ) -> Trace {
+        Trace::start(
+            directories,
+            &OperatingSystemFilesystem,
+            RunId::from_random_bytes(RUN_BYTES),
+            effects,
+            bounds,
+        )
+        .unwrap()
+    }
+
+    fn clock_event(n: u64) -> (u64, String, Option<u64>) {
+        (n, CLOCK_EVENT.to_owned(), None)
+    }
+
+    fn dropped_event(n: u64, count: u64) -> (u64, String, Option<u64>) {
+        (n, DROPPED_EVENT.to_owned(), Some(count))
+    }
+
+    #[test]
+    fn observability_decision_12_a_line_whose_write_fails_is_counted_and_the_next_line_written_is_a_dropped_event_where_n_skips()
+     {
+        let (root, directories) = scratch_directories("failed-writes");
+        let files = MemoryFiles::failing(&[1, 2], &[], &[]);
+        let trace = started_with(&directories, &files.effects(NOW_MS), TraceBounds::SPEC);
+
+        for _event in 0..4 {
+            trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
+        }
+        assert!(trace.finish());
+
+        assert_eq!(
+            files.numbered_events_of(&trace.files().events),
+            [clock_event(0), dropped_event(3, 2), clock_event(4)]
+        );
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn observability_decision_13_a_rollover_whose_rename_or_new_file_fails_loses_only_counted_lines_and_the_next_line_written_is_a_dropped_event()
+     {
+        let (root, directories) = scratch_directories("failed-rollover");
+        let files = MemoryFiles::failing(&[], &[1], &[0]);
+        let line_bytes = u64::try_from(clock_line(0, None).len()).unwrap();
+        let trace = started_with(
+            &directories,
+            &files.effects(NOW_MS),
+            TraceBounds {
+                rollover_bytes: line_bytes * LINES_PER_FILE,
+                ..TraceBounds::SPEC
+            },
+        );
+
+        for _event in 0..LINES_WRITTEN {
+            trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
+        }
+        assert!(trace.finish());
+
+        let events = &trace.files().events;
+        assert_eq!(
+            files.numbered_events_of(&crate::dirs::rolled_over_trace_file(events)),
+            [clock_event(0), clock_event(1)]
+        );
+        assert_eq!(
+            files.numbered_events_of(events),
+            [dropped_event(4, 2), clock_event(5)]
+        );
         drop(fs::remove_dir_all(&root));
     }
 
