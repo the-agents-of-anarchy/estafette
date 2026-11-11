@@ -41,6 +41,12 @@ impl Member {
         self.server.call(tool, arguments)
     }
 
+    /// Sends the body to the handle through the send tool and returns the envelope.
+    #[track_caller]
+    pub fn send(&mut self, to: &str, body: &str) -> Value {
+        self.server.send(to, body)
+    }
+
     /// Writes the tool call without waiting for its answer.
     pub fn start_call(&mut self, tool: &str, arguments: &Value) -> PendingCall {
         self.server.start_call(tool, arguments)

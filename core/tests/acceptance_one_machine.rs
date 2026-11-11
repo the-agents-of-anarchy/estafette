@@ -11,6 +11,9 @@ mod mcp_server;
 #[path = "one_machine/member.rs"]
 mod member;
 #[cfg(test)]
+#[path = "support/message_body.rs"]
+mod message_body;
+#[cfg(test)]
 #[path = "support/payload_placeholders.rs"]
 mod payload_placeholders;
 #[cfg(test)]
@@ -33,10 +36,6 @@ mod timed_step;
 #[cfg(test)]
 const MESSAGE_ID: estafette::wire::MessageId = [9; 16];
 
-/// The body every send of these tests carries.
-#[cfg(test)]
-const BODY: &str = "the parser review is ready";
-
 /// Spec 3.14 observer wait: how long a node waits after its topic reports joined before it assigns its handle, and within which a member lists a node after that node's Presence (spec 3.15 test 19).
 #[cfg(test)]
 const SPEC_OBSERVER_WAIT: std::time::Duration = std::time::Duration::from_millis(3000);
@@ -45,7 +44,7 @@ const SPEC_OBSERVER_WAIT: std::time::Duration = std::time::Duration::from_millis
 #[cfg(test)]
 #[track_caller]
 fn send(from: &mut member::Member, to: &str) -> serde_json::Value {
-    from.call("send", &serde_json::json!({ "to": to, "body": BODY }))
+    from.send(to, message_body::BODY)
 }
 
 #[cfg(test)]
@@ -636,13 +635,14 @@ mod spec_3_15_with_one_member {
     use iroh_gossip::api::Event;
     use serde_json::{Value, json};
 
+    use crate::MESSAGE_ID;
     use crate::local_network::LocalNetwork;
     use crate::mcp_server::PRESENCE_WAIT;
     use crate::member::{Member, loopback_address};
+    use crate::message_body::BODY;
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::presence_signed_by;
     use crate::scripted_node::ScriptedNode;
-    use crate::{BODY, MESSAGE_ID};
 
     const SPEC_SIMULTANEOUS_INIT_WINDOW: Duration = Duration::from_millis(100);
     const SPEC_TOOL_NAMES: [&str; 6] =
@@ -966,10 +966,11 @@ mod spec_3_16_absences_on_one_machine {
     use crate::local_network::{LocalNetwork, MetPair};
     use crate::mcp_server::{PRESENCE_WAIT, gone, online};
     use crate::member::{loopback_address, loopback_address_of};
+    use crate::message_body::BODY;
     use crate::payload_placeholders::wall_clock_ms;
     use crate::payloads::presence_signed_by;
     use crate::scripted_node::ScriptedNode;
-    use crate::{BODY, send};
+    use crate::send;
 
     /// Longer than every interval spec 3.14 names below the announcement max age: the 2000 ms re-announce interval, the 15 s deaf timeout and the 20 s rebind interval.
     const PRESENCE_QUIET_WINDOW: Duration = Duration::from_secs(30);

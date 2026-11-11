@@ -29,6 +29,9 @@ mod live_network;
 #[path = "support/mcp_server.rs"]
 mod mcp_server;
 #[cfg(test)]
+#[path = "support/message_body.rs"]
+mod message_body;
+#[cfg(test)]
 #[path = "support/payload_placeholders.rs"]
 mod payload_placeholders;
 #[cfg(test)]
@@ -629,6 +632,7 @@ mod spec_3_15_two_members_through_the_live_host {
     use crate::live_host::live_host_to_itself;
     use crate::live_network::LiveNetwork;
     use crate::mcp_server::{McpServer, PRESENCE_WAIT, gone, online};
+    use crate::message_body::BODY;
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::presence_signed_by;
     use crate::scratch_machine::Card;
@@ -657,7 +661,6 @@ mod spec_3_15_two_members_through_the_live_host {
     const FRAME_WAIT: Duration = Duration::from_secs(10);
     const NO_FURTHER_FRAME_WAIT: Duration = Duration::from_millis(1000);
     const REPLAY_SETTLE_WAIT: Duration = Duration::from_millis(2000);
-    const FIRST_BODY: &str = "the parser review is ready";
     const FIRST_SESSION: &str = "first session";
     const SECOND_SESSION: &str = "second session";
     const MESSAGES_BEFORE_RECONNECT: u64 = 3;
@@ -711,7 +714,7 @@ mod spec_3_15_two_members_through_the_live_host {
     /// Sends the body to the handle through the member's send tool and returns the envelope.
     #[track_caller]
     fn send(from: &mut LabMember, to: &str, body: &str) -> Value {
-        from.member.call("send", &json!({ "to": to, "body": body }))
+        from.member.send(to, body)
     }
 
     /// The peer of that handle as the member's peers tool lists it now, if it lists it.
@@ -798,7 +801,7 @@ mod spec_3_15_two_members_through_the_live_host {
             bob["attached"] == json!(true)
         });
 
-        let sent = send(&mut amy, &bob.handle.clone(), FIRST_BODY);
+        let sent = send(&mut amy, &bob.handle.clone(), BODY);
 
         let id = sent["result"]["id"].as_str().unwrap();
         assert_eq!(
@@ -809,7 +812,7 @@ mod spec_3_15_two_members_through_the_live_host {
         assert_eq!(frame["seq"], json!(1));
         assert_eq!(frame["id"], json!(id));
         assert_eq!(frame["from"], json!(amy.handle));
-        assert_eq!(frame["body"], json!(FIRST_BODY));
+        assert_eq!(frame["body"], json!(BODY));
         assert_eq!(inbox.next_frame(NO_FURTHER_FRAME_WAIT), None);
     }
 
@@ -822,7 +825,7 @@ mod spec_3_15_two_members_through_the_live_host {
         let mut bob = lab_member(&network, "t2-bob", &unique_handle("bob"), FIRST_SESSION);
         meet(&mut amy, &mut bob);
 
-        let sent = send(&mut amy, &bob.handle.clone(), FIRST_BODY);
+        let sent = send(&mut amy, &bob.handle.clone(), BODY);
         let read = bob.member.call("inbox", &json!({}));
 
         let id = sent["result"]["id"].as_str().unwrap();
@@ -835,7 +838,7 @@ mod spec_3_15_two_members_through_the_live_host {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0]["id"], json!(id));
         assert_eq!(messages[0]["from"], json!(amy.handle));
-        assert_eq!(messages[0]["body"], json!(FIRST_BODY));
+        assert_eq!(messages[0]["body"], json!(BODY));
     }
 
     /// Requires bob, whose standard input closed at that instant, listed gone by amy within the spec bound, exited cleanly, and unreachable to amy's send.
@@ -848,7 +851,7 @@ mod spec_3_15_two_members_through_the_live_host {
         amy.member.peer_within(&bob.handle, SPEC_GONE_WITHIN, gone);
         let gone_after = input_closed.elapsed();
         let exit = bob.member.wait_for_exit();
-        let sent = send(amy, &bob.handle.clone(), FIRST_BODY);
+        let sent = send(amy, &bob.handle.clone(), BODY);
 
         assert!(gone_after <= SPEC_GONE_WITHIN, "{gone_after:?}");
         assert!(exit.success(), "{exit:?}");
@@ -880,7 +883,7 @@ mod spec_3_15_two_members_through_the_live_host {
         meet(&mut amy, &mut bob);
 
         bob.member
-            .start_call("send", &json!({ "to": amy.handle, "body": FIRST_BODY }));
+            .start_call("send", &json!({ "to": amy.handle, "body": BODY }));
         let input_closed = Instant::now();
         bob.member.close_standard_input();
 
@@ -907,7 +910,7 @@ mod spec_3_15_two_members_through_the_live_host {
                 bob["status"] == json!("unreachable")
             });
         let unreachable_after = killed.elapsed();
-        let sent = send(&mut amy, &bob.handle.clone(), FIRST_BODY);
+        let sent = send(&mut amy, &bob.handle.clone(), BODY);
 
         assert!(
             unreachable_after <= neighbor_down_and_probe,
@@ -1020,7 +1023,7 @@ mod spec_3_15_two_members_through_the_live_host {
         );
         let amy_handle = amy.handle.clone();
         let sent = timed("bob's send to the restarted amy", || {
-            send(&mut bob, &amy_handle, FIRST_BODY)
+            send(&mut bob, &amy_handle, BODY)
         });
         let listed_after = timed(
             "the restarted amy's peers tool answers after bob's send",
@@ -1083,7 +1086,7 @@ mod spec_3_15_two_members_through_the_live_host {
 
         let broadcast = amy.member.call(
             "broadcast",
-            &json!({ "to": [bob.handle, unknown, cid.handle], "body": FIRST_BODY }),
+            &json!({ "to": [bob.handle, unknown, cid.handle], "body": BODY }),
         );
         let at_bob = bob.member.call("inbox", &json!({}));
         let at_cid = cid.member.call("inbox", &json!({}));
@@ -1158,7 +1161,7 @@ mod spec_3_15_two_members_through_the_live_host {
             timed("amy's send to bob before the kill", || send(
                 &mut amy,
                 &bob_handle,
-                FIRST_BODY
+                BODY
             ))["result"]["delivered"],
             json!(true)
         );
@@ -1179,7 +1182,7 @@ mod spec_3_15_two_members_through_the_live_host {
         );
         let new_presence_reached = Instant::now();
         let sent = timed("amy's send to the restarted bob", || {
-            send(&mut amy, &bob_handle, FIRST_BODY)
+            send(&mut amy, &bob_handle, BODY)
         });
         let delivered_after = new_presence_reached.elapsed();
 

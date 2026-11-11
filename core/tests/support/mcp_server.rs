@@ -15,6 +15,8 @@ const CLIENT_NAME: &str = "estafette-acceptance";
 const CLIENT_VERSION: &str = "0";
 /// How long the server may take to answer a request.
 const RESPONSE_WAIT: Duration = Duration::from_secs(60);
+/// The tool a member sends a message with (spec 3.10).
+const SEND_TOOL: &str = "send";
 /// How often the peers tool is called while waiting for a peer.
 const PEERS_POLL: Duration = Duration::from_millis(50);
 /// How long a member may take to list a peer as a test wants it, through gossip or the direct protocol.
@@ -79,6 +81,12 @@ impl McpServer {
     pub fn call(&mut self, tool: &str, arguments: &Value) -> Value {
         let call = self.start_call(tool, arguments);
         self.answer(&call)
+    }
+
+    /// Sends the body to the handle through the send tool and returns the envelope.
+    #[track_caller]
+    pub fn send(&mut self, to: &str, body: &str) -> Value {
+        self.call(SEND_TOOL, &json!({ "to": to, "body": body }))
     }
 
     /// The peer of that handle as the peers tool lists it once the peer meets the condition, requiring that within the wait.
