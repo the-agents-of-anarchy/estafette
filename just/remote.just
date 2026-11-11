@@ -30,6 +30,7 @@ member_unit_prefix := "estafette-member-"
 lab_config_file := lab_root / "config/estafette/networks" / lab_network + ".toml"
 remote_host_config_file := remote_host_root / "config/estafette/networks" / lab_network + ".toml"
 remote_host_certificate_file := remote_host_root / "data/estafette/infra" / lab_network + ".cert"
+remote_host_certificate_temporary := remote_host_certificate_file + ".tmp"
 remote_host_line_file := remote_host_root / "host-line"
 lab_invitation_file := lab_root / "invitation"
 host_record_under_root := "docs/orchestration_log/recon/2026-10-24/lab/host.txt"
@@ -159,7 +160,8 @@ infrastructure: lab-binary-built server-up
     remote 'umask 077 && mkdir -p {{ remote_host_root }}/run $(dirname {{ remote_host_config_file }}) && chmod 0700 {{ remote_host_root }} && { test -e {{ remote_host_config_file }} || cat > {{ remote_host_config_file }}; }' < {{ lab_config_file }}
     if ! remote test -e {{ remote_host_certificate_file }}; then
         remote 'env {{ remote_host_directories }} {{ remote_binary }} run-infrastructure {{ lab_network }} '"$address $domain"' > {{ remote_host_line_file }} 2> /dev/null || test -s {{ remote_host_line_file }}'
-        just remote::estafette network certify {{ lab_network }} "$(remote cat {{ remote_host_line_file }})" 2> /dev/null | remote 'umask 077 && cat > {{ remote_host_certificate_file }}'
+        certificate="$(just remote::estafette network certify {{ lab_network }} "$(remote cat {{ remote_host_line_file }})" 2> /dev/null)" || { echo "certifying the host of {{ server }} failed: no certificate was written" >&2; exit 1; }
+        printf '%s\n' "$certificate" | remote 'umask 077 && cat > {{ remote_host_certificate_temporary }} && mv {{ remote_host_certificate_temporary }} {{ remote_host_certificate_file }}'
     fi
     host_line="$(remote cat {{ remote_host_line_file }})"
     LAB_SERVER={{ server }} just remote::host-start >&2
