@@ -1214,6 +1214,8 @@ mod kept_run_records {
     const CHOSEN_OWNER: &str = "0aa1e20aa1e20aa1e20aa1e20aa1e20aa1e20aa1e20aa1e20aa1e20aa1e20aa1";
     /// A configuration line chosen by this test with no run of letters and digits as long as a key's.
     const CHOSEN_SHORT_LINE: &str = "# acme lab, set up by hand";
+    /// What the planted text puts before a key it quotes apart from the key's configuration line.
+    const KEY_QUOTED_APART_FROM_ITS_LINE: &str = "refused key ";
 
     /// Writes the network configuration of the lines in order, with no `hosts`, which the binary refuses.
     fn write_configuration_without_hosts(machine: &ScratchMachine, lines: &[&str]) {
@@ -1243,8 +1245,8 @@ mod kept_run_records {
         assert!(!machine.spawn_mcp_server().wait().unwrap().success());
     }
 
-    /// Appends the lines to every run record of the machine, as a refusal quoting the configuration would print them.
-    fn append_to_every_run_record(machine: &ScratchMachine, lines: &[&str]) {
+    /// Appends text the test plants to every run record of the machine, as a refusal quoting the configuration would print it.
+    fn plant_in_every_run_record(machine: &ScratchMachine, lines: &[&str]) {
         for record in machine.run_records().unwrap() {
             let mut file = fs::OpenOptions::new().append(true).open(record).unwrap();
             file.write_all(lines.join("\n").as_bytes()).unwrap();
@@ -1317,35 +1319,41 @@ mod kept_run_records {
         }
     }
 
-    /// Kept run records of refused members that hold a line of their network configuration, the secret's line or a short one, hold the redaction marker in place of either.
+    /// Text this test plants in a refused member's run record, the binary having written none of it: a short configuration line, the secret's whole line and the owner key quoted apart from its line; the kept record holds the redaction marker in place of each.
     #[test]
-    fn a_kept_run_record_holds_the_redaction_marker_in_place_of_every_configuration_line_a_member_record_holds()
+    fn a_kept_record_holds_none_of_the_configuration_lines_or_keys_the_test_planted_in_its_run_record()
      {
         let machine = ScratchMachine::fresh("kept-record", NETWORK);
         let secret_line = format!("secret = \"{CHOSEN_SECRET}\"");
         let owner_line = format!("owner = \"{CHOSEN_OWNER}\"");
-        write_configuration_without_hosts(&machine, &[&secret_line, &owner_line]);
-        start_refused(&machine);
+        let owner_quoted_apart = format!("{KEY_QUOTED_APART_FROM_ITS_LINE}{CHOSEN_OWNER}");
         write_configuration_without_hosts(
             &machine,
             &[CHOSEN_SHORT_LINE, &secret_line, &owner_line],
         );
         start_refused(&machine);
-        append_to_every_run_record(&machine, &[CHOSEN_SHORT_LINE, &secret_line, &owner_line]);
+        plant_in_every_run_record(
+            &machine,
+            &[CHOSEN_SHORT_LINE, &secret_line, &owner_quoted_apart],
+        );
         let kept_in =
             std::env::temp_dir().join(format!("estafette-kept-record-test-{}", std::process::id()));
 
         let records = kept_contents(&machine, &kept_in);
 
-        assert_eq!(records.len(), 2);
+        assert_eq!(records.len(), 1);
         for record in &records {
+            assert!(
+                !record.contains(CHOSEN_SHORT_LINE),
+                "a kept record holds the short configuration line"
+            );
             assert!(
                 !record.contains(CHOSEN_SECRET),
                 "a kept record holds the secret"
             );
             assert!(
-                !record.contains(CHOSEN_SHORT_LINE),
-                "a kept record holds the short configuration line"
+                !record.contains(CHOSEN_OWNER),
+                "a kept record holds the owner key quoted apart from its line"
             );
             assert!(record.contains(REDACTED), "{record}");
         }
