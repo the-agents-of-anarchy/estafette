@@ -712,4 +712,44 @@ mod tests {
             u64::try_from(SEED_BYTES.saturating_mul(2).saturating_add(1)).unwrap()
         );
     }
+
+    const SIZE_LIMITED_CHILD_MARKER: &str = "ESTAFETTE_SIDECAR_TEST_FILE_SIZE_LIMITED";
+    const CARD_WRITE_FAILURE_TEST_PATH: &str = "sidecar::tests::a_card_write_that_fails_part_way_leaves_nothing_at_its_final_name_spec_3_5";
+    const SIZE_LIMITED_CHILD_SCRIPT: &str = "ulimit -f 1; trap '' XFSZ; exec \"$0\" --exact \"$1\"";
+    const OVERSIZED_HANDLE_BYTES: usize = 1_000_000;
+
+    fn assert_a_failed_card_write_leaves_nothing_behind() {
+        let directory = fresh_directory("create_card_fails_part_way");
+        let card = directory.join("r.yaml");
+        let sidecar = directory.join("r.key");
+        let handle = "h".repeat(OVERSIZED_HANDLE_BYTES);
+
+        let outcome = create_card(&card, &sidecar, &handle, seed_of(19));
+
+        assert!(matches!(outcome, Err(SidecarError::Io(_))));
+        assert_eq!(directory.read_dir().unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_card_write_that_fails_part_way_leaves_nothing_at_its_final_name_spec_3_5() {
+        if std::env::var_os(SIZE_LIMITED_CHILD_MARKER).is_some() {
+            assert_a_failed_card_write_leaves_nothing_behind();
+            return;
+        }
+
+        let output = std::process::Command::new("sh")
+            .args(["-c", SIZE_LIMITED_CHILD_SCRIPT])
+            .arg(std::env::current_exe().unwrap())
+            .arg(CARD_WRITE_FAILURE_TEST_PATH)
+            .env(SIZE_LIMITED_CHILD_MARKER, "1")
+            .output()
+            .unwrap();
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}{stderr}"
+        );
+    }
 }
