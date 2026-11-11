@@ -422,6 +422,7 @@ mod tests {
                         AnsweringPeer {
                             addr: introduction.clone(),
                         },
+                        &endpoint,
                     ),
                 );
             }
@@ -555,10 +556,6 @@ mod tests {
     }
 
     impl DirectHost for AnsweringPeer {
-        fn held_connections(&self) -> crate::net::direct::HeldConnections {
-            crate::net::direct::HeldConnections::new(std::sync::Arc::new(tokio::time::Instant::now))
-        }
-
         fn is_stopping(&self) -> bool {
             false
         }

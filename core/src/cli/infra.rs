@@ -586,12 +586,11 @@ fn relay_site(bind_address: IpAddr, domain: &RelayDomain, certificate_cache: Pat
     }
 }
 
-/// What the bootstrap node answers on the direct protocol: no card, never attached, its own relay in every address, and the register of its endpoint's connections.
+/// What the bootstrap node answers on the direct protocol: no card, never attached, its own relay in every address.
 #[derive(Clone)]
 struct HostAnswers {
     endpoint: iroh::Endpoint,
     relay: wire::RelayUrl,
-    connections: HeldConnections,
 }
 
 impl HostAnswers {
@@ -605,10 +604,6 @@ impl HostAnswers {
 }
 
 impl DirectHost for HostAnswers {
-    fn held_connections(&self) -> HeldConnections {
-        self.connections.clone()
-    }
-
     fn is_stopping(&self) -> bool {
         false
     }
@@ -676,7 +671,6 @@ impl BootstrapNode {
         let answers = HostAnswers {
             endpoint: endpoint.endpoint().clone(),
             relay: domain.wire_url.clone(),
-            connections: endpoint.held_connections(),
         };
         let (router, gossip) = serve(&endpoint, &keys, &answers);
         let bootstrap = files.other_hosts.iter().map(|host| host.id).collect();

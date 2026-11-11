@@ -370,7 +370,10 @@ pub fn serve<H: DirectHost + Clone>(
 ) -> (Router, Gossip) {
     let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
     let router = Router::builder(endpoint.endpoint().clone())
-        .accept(DIRECT_ALPN, DirectServer::new(keys.clone(), host.clone()))
+        .accept(
+            DIRECT_ALPN,
+            DirectServer::new(keys.clone(), host.clone(), endpoint),
+        )
         .accept(GOSSIP_ALPN, gossip.clone())
         .spawn();
     (router, gossip)
@@ -418,11 +421,6 @@ impl PeerRows {
     /// The peer table, locked for one operation.
     pub(crate) fn table(&self) -> MutexGuard<'_, PeerTable> {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// The register of every connection the endpoint holds, which the direct server and these rows close through.
-    pub(crate) fn held_connections(&self) -> HeldConnections {
-        self.held_connections.clone()
     }
 
     /// Applies a Presence to the table and, when it is taken, closes every connection to or from its card, of any protocol, whose process no longer runs (spec 3.8, address lookup).
@@ -590,10 +588,6 @@ impl DirectHost for Arc<NodeState> {
             .receive_introduce(sender, &introduce, self.now_ms());
         self.hand_to_loop(LoopEvent::Effects(effects));
         acknowledgement_of(self.introduction())
-    }
-
-    fn held_connections(&self) -> HeldConnections {
-        self.rows.held_connections()
     }
 }
 
@@ -1994,10 +1988,6 @@ pub(super) mod tests {
     }
 
     impl DirectHost for WitnessHost {
-        fn held_connections(&self) -> crate::net::direct::HeldConnections {
-            crate::net::direct::HeldConnections::new(std::sync::Arc::new(tokio::time::Instant::now))
-        }
-
         fn is_stopping(&self) -> bool {
             false
         }
@@ -2062,7 +2052,7 @@ pub(super) mod tests {
             let direct_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let accepted = Arc::new(std::sync::Mutex::new(Vec::new()));
             let counting = CountingConnections {
-                server: DirectServer::new(keys(), host),
+                server: DirectServer::new(keys(), host, &node_endpoint),
                 connections: Arc::clone(&direct_connections),
                 accepted: Arc::clone(&accepted),
             };

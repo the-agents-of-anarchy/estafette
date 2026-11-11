@@ -611,10 +611,6 @@ impl ObserverHost {
 }
 
 impl DirectHost for Arc<ObserverHost> {
-    fn held_connections(&self) -> HeldConnections {
-        self.rows.held_connections()
-    }
-
     fn is_stopping(&self) -> bool {
         false
     }
@@ -1652,10 +1648,6 @@ mod tests {
     }
 
     impl DirectHost for RecordingNeighbor {
-        fn held_connections(&self) -> crate::net::direct::HeldConnections {
-            crate::net::direct::HeldConnections::new(std::sync::Arc::new(tokio::time::Instant::now))
-        }
-
         fn is_stopping(&self) -> bool {
             false
         }
@@ -1748,7 +1740,7 @@ mod tests {
             .accept(
                 crate::net::endpoint::DIRECT_ALPN,
                 WatchedServer {
-                    server: DirectServer::new(network_keys(), neighbor),
+                    server: DirectServer::new(network_keys(), neighbor, &endpoint),
                     accepted: accepted.clone(),
                 },
             )

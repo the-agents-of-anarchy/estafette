@@ -1222,7 +1222,7 @@ mod spec_3_16_absences_on_one_machine {
             carol_key.clone(),
             *network.keys().gate_key(),
             network.topic(),
-            AnsweringNothing {
+            |_endpoint| AnsweringNothing {
                 keys: NetworkKeys::clone(network.keys()),
                 messages_read: Arc::clone(&messages_read),
             },

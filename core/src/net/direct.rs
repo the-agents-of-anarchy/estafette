@@ -12,7 +12,7 @@ use iroh::{Endpoint, EndpointId};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::{Instant, sleep, timeout};
 
-use super::endpoint::{DIRECT_ALPN, QUIC_KEEP_ALIVE_INTERVAL};
+use super::endpoint::{DIRECT_ALPN, NodeEndpoint, QUIC_KEEP_ALIVE_INTERVAL};
 use crate::crypto::NetworkKeys;
 use crate::errors::ErrorCode;
 use crate::payload::{
@@ -65,9 +65,6 @@ pub trait DirectHost: Send + Sync + 'static {
         sender: wire::PublicKey,
         introduce: wire::Introduce,
     ) -> IntroduceAck;
-
-    /// The register of every connection the node's endpoint holds, which the endpoint fills and the direct server and the node close those of a card through.
-    fn held_connections(&self) -> HeldConnections;
 }
 
 /// A monotonic clock, read for the instant now.
@@ -349,12 +346,12 @@ struct ServerState<H> {
 }
 
 impl<H: DirectHost> DirectServer<H> {
-    /// Builds the server over the host, answering under the network keys and waiting the server read timeout of spec 3.14 for each request.
-    pub fn new(keys: NetworkKeys, host: H) -> Self {
+    /// Builds the server over the host on the endpoint it serves, answering under the network keys, closing connections through the endpoint's own register, and waiting the server read timeout of spec 3.14 for each request.
+    pub fn new(keys: NetworkKeys, host: H, endpoint: &NodeEndpoint) -> Self {
         Self {
             shared: Arc::new(ServerState {
                 keys,
-                held: host.held_connections(),
+                held: endpoint.held_connections(),
                 host,
             }),
         }
@@ -835,7 +832,6 @@ mod tests {
         stopping: Arc<AtomicBool>,
         received: Arc<Mutex<Vec<(wire::PublicKey, Message)>>>,
         introduced: Arc<Mutex<Vec<(wire::PublicKey, wire::Introduce)>>>,
-        accepted: HeldConnections,
     }
 
     impl RecordingHost {
@@ -854,14 +850,6 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 received: Arc::new(Mutex::new(Vec::new())),
                 introduced: Arc::new(Mutex::new(Vec::new())),
-                accepted: HeldConnections::new(std::sync::Arc::new(tokio::time::Instant::now)),
-            }
-        }
-
-        fn measuring_silence_on(self, monotonic: MonotonicClock) -> Self {
-            Self {
-                accepted: HeldConnections::new(monotonic),
-                ..self
             }
         }
 
@@ -871,10 +859,6 @@ mod tests {
     }
 
     impl DirectHost for RecordingHost {
-        fn held_connections(&self) -> HeldConnections {
-            self.accepted.clone()
-        }
-
         fn is_stopping(&self) -> bool {
             self.stopping.load(Ordering::SeqCst)
         }
@@ -955,21 +939,15 @@ mod tests {
     }
 
     async fn link_to(handler: impl ProtocolHandler, timeouts: ClientTimeouts) -> Link {
-        link_holding(
-            handler,
-            timeouts,
-            HeldConnections::new(Arc::new(tokio::time::Instant::now)),
-        )
-        .await
+        link_on(bind_node(SERVER_SEED).await, handler, timeouts).await
     }
 
-    /// A client linked to a server node serving the handler, the server's endpoint holding every connection in the register.
-    async fn link_holding(
+    /// A client linked to the server node serving the handler.
+    async fn link_on(
+        server_node: NodeEndpoint,
         handler: impl ProtocolHandler,
         timeouts: ClientTimeouts,
-        server_connections: HeldConnections,
     ) -> Link {
-        let server_node = bind_node_holding(SERVER_SEED, server_connections).await;
         let client_node = bind_node(CLIENT_SEED).await;
         let router = Router::builder(server_node.endpoint().clone())
             .accept(DIRECT_ALPN, handler)
@@ -985,13 +963,18 @@ mod tests {
     }
 
     async fn rig() -> Rig {
-        rig_over(RecordingHost::with_card(card_of(SERVER_SEED))).await
+        rig_over(
+            RecordingHost::with_card(card_of(SERVER_SEED)),
+            Arc::new(tokio::time::Instant::now),
+        )
+        .await
     }
 
-    /// A server over the host whose endpoint holds every connection in the host's register, as the node's `serve` has it, and a client linked to it.
-    async fn rig_over(host: RecordingHost) -> Rig {
-        let server = DirectServer::new(keys(), host.clone());
-        let link = link_holding(server, ClientTimeouts::SPEC, host.held_connections()).await;
+    /// A server over the host on an endpoint whose register measures silence on the clock, as the node's `serve` has it, and a client linked to it.
+    async fn rig_over(host: RecordingHost, monotonic: MonotonicClock) -> Rig {
+        let server_node = bind_node_holding(SERVER_SEED, HeldConnections::new(monotonic)).await;
+        let server = DirectServer::new(keys(), host.clone(), &server_node);
+        let link = link_on(server_node, server, ClientTimeouts::SPEC).await;
         Rig { host, link }
     }
 
@@ -1368,13 +1351,21 @@ mod tests {
         .unwrap();
     }
 
-    /// How many connections from the card the host's register holds, whether or not any is still alive.
-    fn connections_held_from(host: &RecordingHost, card: wire::PublicKey) -> usize {
-        host.accepted.held().get(&card).map_or(0, Vec::len)
+    /// How many connections from the card the endpoint's register holds, whether or not any is still alive.
+    fn connections_held_from(endpoint: &NodeEndpoint, card: wire::PublicKey) -> usize {
+        endpoint
+            .held_connections()
+            .held()
+            .get(&card)
+            .map_or(0, Vec::len)
     }
 
-    fn connections_held_open_from(host: &RecordingHost, card: wire::PublicKey) -> Vec<Connection> {
-        host.accepted
+    fn connections_held_open_from(
+        endpoint: &NodeEndpoint,
+        card: wire::PublicKey,
+    ) -> Vec<Connection> {
+        endpoint
+            .held_connections()
             .held()
             .get(&card)
             .into_iter()
@@ -1389,7 +1380,7 @@ mod tests {
         let rig = rig().await;
         let server = rig.link.server_node.endpoint().id();
         connection_from_a_process_that_vanished(rig.link.server_node.endpoint().addr()).await;
-        let vanished = connections_held_open_from(&rig.host, card_of(CLIENT_SEED));
+        let vanished = connections_held_open_from(&rig.link.server_node, card_of(CLIENT_SEED));
         tokio::time::sleep(SILENCE_OF_A_GONE_PROCESS_JUDGED).await;
 
         rig.link
@@ -1416,10 +1407,10 @@ mod tests {
     async fn spec_3_8_an_accept_a_router_shutdown_cuts_short_holds_its_connection_no_longer_than_the_connection_lives()
      {
         let host = RecordingHost::with_card(card_of(SERVER_SEED));
-        let server_node = bind_node_holding(SERVER_SEED, host.held_connections()).await;
+        let server_node = bind_node(SERVER_SEED).await;
         let client_node = bind_node(CLIENT_SEED).await;
         client_node.replace_address(server_node.endpoint().addr());
-        let server = Arc::new(DirectServer::new(keys(), host.clone()));
+        let server = Arc::new(DirectServer::new(keys(), host, &server_node));
         let (dialed, accepted) = tokio::join!(
             client_node
                 .endpoint()
@@ -1438,14 +1429,14 @@ mod tests {
         raw_exchange(&dialed, &sealed_message_to_server(&keys()))
             .await
             .unwrap();
-        let held_while_serving = connections_held_from(&host, card_of(CLIENT_SEED));
+        let held_while_serving = connections_held_from(&server_node, card_of(CLIENT_SEED));
 
         serving.abort();
         drop(serving.await);
         dialed.close(VarInt::from_u32(0), b"");
         let all_forgotten = timeout(SAMPLERS_DONE_WAIT, async {
             accepted_closed.await;
-            while connections_held_from(&host, card_of(CLIENT_SEED)) > 0 {
+            while connections_held_from(&server_node, card_of(CLIENT_SEED)) > 0 {
                 tokio::task::yield_now().await;
             }
         })
@@ -1455,7 +1446,7 @@ mod tests {
         assert!(
             all_forgotten.is_ok(),
             "the register still holds {} connection(s) from the client within {SAMPLERS_DONE_WAIT:?} after the accept was cut short and the connection closed",
-            connections_held_from(&host, card_of(CLIENT_SEED))
+            connections_held_from(&server_node, card_of(CLIENT_SEED))
         );
     }
 
@@ -1541,8 +1532,8 @@ mod tests {
     async fn spec_3_8_an_introduce_keeps_the_connection_it_arrived_on_even_one_that_reads_as_gone()
     {
         let Rig { link, .. } = rig_over(
-            RecordingHost::with_card(card_of(SERVER_SEED))
-                .measuring_silence_on(clock_reading_every_connection_as_gone()),
+            RecordingHost::with_card(card_of(SERVER_SEED)),
+            clock_reading_every_connection_as_gone(),
         )
         .await;
         let server = link.server_node.endpoint().id();
@@ -1567,8 +1558,8 @@ mod tests {
         introduction: wire::Introduce,
     ) -> (Rig, Result<IntroduceAck, DirectError>, Connection, bool) {
         let rig = rig_over(
-            RecordingHost::with_card(card_of(SERVER_SEED))
-                .measuring_silence_on(clock_reading_every_connection_as_gone()),
+            RecordingHost::with_card(card_of(SERVER_SEED)),
+            clock_reading_every_connection_as_gone(),
         )
         .await;
         let earlier = raw_connection(&rig).await;
@@ -1680,10 +1671,9 @@ mod tests {
     #[tokio::test]
     async fn spec_3_14_a_node_without_a_card_refuses_every_message_and_answers_probe_and_introduce()
     {
-        let host = RecordingHost::without_card();
-        let link = link_to(
-            DirectServer::new(keys(), host.clone()),
-            ClientTimeouts::SPEC,
+        let Rig { host, link } = rig_over(
+            RecordingHost::without_card(),
+            Arc::new(tokio::time::Instant::now),
         )
         .await;
         let server = link.server_node.endpoint().id();

@@ -184,7 +184,7 @@ mod tests {
     use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 
     use crate::net::direct::{ClientTimeouts, DirectClient, DirectServer};
-    use crate::net::endpoint::DIRECT_ALPN;
+    use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
     use crate::node::presence::tests::{
         DUPLICATE_KEY_PUBLIC, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTEGER_PAST_64_BITS_PUBLIC,
         INTRODUCE_ROUND_TRIP, Member, MemberPlan, PROBE_NONCE, SECOND_HANDLE, SECOND_SEED,
@@ -223,10 +223,6 @@ mod tests {
     }
 
     impl DirectHost for ScriptedHost {
-        fn held_connections(&self) -> crate::net::direct::HeldConnections {
-            crate::net::direct::HeldConnections::new(std::sync::Arc::new(tokio::time::Instant::now))
-        }
-
         fn is_stopping(&self) -> bool {
             self.phase == PeerPhase::Stopping
         }
@@ -293,7 +289,7 @@ mod tests {
         scratch: &Scratch,
         phase: PeerPhase,
     ) -> (Member, ScriptedPeer) {
-        first_member_listing_a_peer_served_by(scratch, |addr| {
+        first_member_listing_a_peer_served_by(scratch, |addr, endpoint| {
             DirectServer::new(
                 keys(),
                 ScriptedHost {
@@ -303,6 +299,7 @@ mod tests {
                     introduced_as: None,
                     public: &[],
                 },
+                endpoint,
             )
         })
         .await
@@ -310,7 +307,7 @@ mod tests {
 
     async fn first_member_listing_a_peer_served_by<H: ProtocolHandler>(
         scratch: &Scratch,
-        server_at: impl FnOnce(Addr) -> H,
+        server_at: impl FnOnce(Addr, &NodeEndpoint) -> H,
     ) -> (Member, ScriptedPeer) {
         let endpoint = bind(WITNESS_SEED).await;
         let peer_address = endpoint.endpoint().addr();
@@ -327,7 +324,7 @@ mod tests {
             .accept(
                 DIRECT_ALPN,
                 CountedConnections {
-                    server: server_at(wire_addr(&endpoint.endpoint().addr())),
+                    server: server_at(wire_addr(&endpoint.endpoint().addr()), &endpoint),
                     connections: Arc::clone(&connections),
                 },
             )
@@ -572,9 +569,10 @@ mod tests {
     async fn spec_3_10_a_send_acknowledged_for_another_id_fails_sets_the_peer_unreachable_and_drops_the_held_connection()
      {
         let scratch = Scratch::new("send-ack-id").await;
-        let (first, peer) =
-            first_member_listing_a_peer_served_by(&scratch, |addr| AckingAnotherMessageId { addr })
-                .await;
+        let (first, peer) = first_member_listing_a_peer_served_by(&scratch, |addr, _endpoint| {
+            AckingAnotherMessageId { addr }
+        })
+        .await;
 
         let failed = first.node.send(WITNESS_HANDLE, BODY).await;
         let connections_after_failure = peer.connections.load(Ordering::SeqCst);
@@ -598,19 +596,21 @@ mod tests {
     async fn spec_3_5_an_introduce_ack_whose_public_no_card_sends_changes_nothing_at_the_node() {
         for public in [DUPLICATE_KEY_PUBLIC, INTEGER_PAST_64_BITS_PUBLIC] {
             let scratch = Scratch::new("introduce-ack-public").await;
-            let (first, _peer) = first_member_listing_a_peer_served_by(&scratch, |addr| {
-                DirectServer::new(
-                    keys(),
-                    ScriptedHost {
-                        own_card: card(WITNESS_SEED),
-                        addr,
-                        phase: PeerPhase::Serving,
-                        introduced_as: Some(WITNESS_HANDLE),
-                        public,
-                    },
-                )
-            })
-            .await;
+            let (first, _peer) =
+                first_member_listing_a_peer_served_by(&scratch, |addr, endpoint| {
+                    DirectServer::new(
+                        keys(),
+                        ScriptedHost {
+                            own_card: card(WITNESS_SEED),
+                            addr,
+                            phase: PeerPhase::Serving,
+                            introduced_as: Some(WITNESS_HANDLE),
+                            public,
+                        },
+                        endpoint,
+                    )
+                })
+                .await;
 
             let listed = listed_within(&first, WITNESS_SEED, Duration::ZERO)
                 .await

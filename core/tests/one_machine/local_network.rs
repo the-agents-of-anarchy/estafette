@@ -6,7 +6,7 @@ use estafette::config::NetworkConfig;
 use estafette::crypto::{NetworkKeys, NetworkSecret};
 use estafette::invite::render_host_line;
 use estafette::keys::{parse_network_secret, parse_secret_key};
-use estafette::net::direct::{DirectHost, DirectServer, HeldConnections};
+use estafette::net::direct::{DirectHost, DirectServer};
 use estafette::net::endpoint::GateFailure;
 use estafette::wire::{self, Addr, HostAddr, Introduce, IntroduceAck, Message, RelayUrl, Version};
 use iroh::SecretKey;
@@ -149,13 +149,16 @@ impl LocalNetwork {
             key.clone(),
             *self.keys.gate_key(),
             self.topic(),
-            DirectServer::new(
-                NetworkKeys::clone(&self.keys),
-                ScriptedMemberHost {
-                    card: *key.public().as_bytes(),
-                    handle: handle.to_owned(),
-                },
-            ),
+            |endpoint| {
+                DirectServer::new(
+                    NetworkKeys::clone(&self.keys),
+                    ScriptedMemberHost {
+                        card: *key.public().as_bytes(),
+                        handle: handle.to_owned(),
+                    },
+                    endpoint,
+                )
+            },
         )
     }
 }
@@ -168,10 +171,6 @@ struct ScriptedMemberHost {
 }
 
 impl DirectHost for ScriptedMemberHost {
-    fn held_connections(&self) -> HeldConnections {
-        HeldConnections::new(std::sync::Arc::new(tokio::time::Instant::now))
-    }
-
     fn is_stopping(&self) -> bool {
         false
     }

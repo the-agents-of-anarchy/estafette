@@ -40,22 +40,28 @@ impl ScriptedNode {
         topic: TopicId,
         report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
     ) -> Self {
-        Self::start_with(key, gate_key, topic, report_gate_closing, |router| router)
+        Self::start_with(
+            key,
+            gate_key,
+            topic,
+            report_gate_closing,
+            |router, _endpoint| router,
+        )
     }
 
-    /// Starts the node as `start` does, also answering the direct protocol with the handler.
-    pub fn start_answering_direct(
+    /// Starts the node as `start` does, also answering the direct protocol with the handler it builds on the node's endpoint.
+    pub fn start_answering_direct<P: ProtocolHandler>(
         key: SecretKey,
         gate_key: GateKey,
         topic: TopicId,
-        direct: impl ProtocolHandler,
+        direct: impl FnOnce(&NodeEndpoint) -> P,
     ) -> Self {
         Self::start_with(
             key,
             gate_key,
             topic,
             |_closing: GateFailure| {},
-            |router| router.accept(DIRECT_ALPN, direct),
+            |router, endpoint| router.accept(DIRECT_ALPN, direct(endpoint)),
         )
     }
 
@@ -65,7 +71,7 @@ impl ScriptedNode {
         gate_key: GateKey,
         topic: TopicId,
         report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
-        extend: impl FnOnce(RouterBuilder) -> RouterBuilder,
+        extend: impl FnOnce(RouterBuilder, &NodeEndpoint) -> RouterBuilder,
     ) -> Self {
         let driven = DrivenRuntime::start();
         let runtime = driven.handle().clone();
@@ -85,13 +91,16 @@ impl ScriptedNode {
         let events = Events::default();
         let _inside_runtime = runtime.enter();
         let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
-        let router = extend(Router::builder(endpoint.endpoint().clone()).accept(
-            GOSSIP_ALPN,
-            AdmittedOnly {
-                gossip: gossip.clone(),
-                admitted: Arc::clone(&admitted),
-            },
-        ))
+        let router = extend(
+            Router::builder(endpoint.endpoint().clone()).accept(
+                GOSSIP_ALPN,
+                AdmittedOnly {
+                    gossip: gossip.clone(),
+                    admitted: Arc::clone(&admitted),
+                },
+            ),
+            &endpoint,
+        )
         .spawn();
         let (topic, receiver) = runtime
             .block_on(gossip.subscribe(topic, Vec::new()))
