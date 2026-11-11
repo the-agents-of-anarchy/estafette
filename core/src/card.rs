@@ -6,7 +6,7 @@ use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde_json::{Map, Number, Value};
 use yaml_rust2::Yaml;
 use yaml_rust2::parser::{Event, MarkedEventReceiver, Parser, Tag};
-use yaml_rust2::scanner::{Marker, TScalarStyle};
+use yaml_rust2::scanner::{Marker, ScanError, TScalarStyle};
 
 use crate::handle::{AnnouncedHandle, Handle, HandleError};
 use crate::keys::{KeyError, parse_public_key};
@@ -24,6 +24,7 @@ const JSON_OPEN_SEQUENCE: u8 = b'[';
 const JSON_CLOSE_MAPPING: u8 = b'}';
 const JSON_CLOSE_SEQUENCE: u8 = b']';
 const ALIAS_EXPANSION_MAX_NODES: usize = 4096;
+const CARD_DEEPEST_NESTING: usize = 256;
 const HANDLE_FIELD: &str = "handle";
 const PUBLIC_KEY_FIELD: &str = "public_key";
 const NETWORK_FIELD: &str = "network";
@@ -64,6 +65,7 @@ pub enum CardInvalid {
     PublicOverCap { bytes: usize },
     PublicTooDeep { depth: usize },
     AliasExpansionTooLarge,
+    NestingTooDeep,
     IntegerTooWide,
 }
 
@@ -118,6 +120,10 @@ impl fmt::Display for CardInvalid {
             Self::AliasExpansionTooLarge => write!(
                 formatter,
                 "card aliases expand to more than {ALIAS_EXPANSION_MAX_NODES} nodes"
+            ),
+            Self::NestingTooDeep => write!(
+                formatter,
+                "card nests mappings and sequences more than {CARD_DEEPEST_NESTING} deep"
             ),
             Self::IntegerTooWide => write!(
                 formatter,
@@ -306,6 +312,7 @@ struct DocumentCollector {
     anchored: HashMap<usize, AnchoredNode>,
     expanded_nodes: usize,
     refusal: Option<CardInvalid>,
+    nesting_exceeded: bool,
 }
 
 /// A finished anchored node and the number of nodes it holds.
@@ -364,6 +371,16 @@ impl DocumentCollector {
         self.place(node);
     }
 
+    /// Opens a sequence or mapping, or records the refusal and opens nothing when it would nest past the bound.
+    fn open_within_nesting_bound(&mut self, node: OpenNode) {
+        if self.open.len() >= CARD_DEEPEST_NESTING {
+            self.nesting_exceeded = true;
+            self.refuse(CardInvalid::NestingTooDeep);
+            return;
+        }
+        self.open.push(node);
+    }
+
     /// Keeps the first refusal and drops any later one.
     fn refuse(&mut self, refusal: CardInvalid) {
         self.refusal.get_or_insert(refusal);
@@ -393,14 +410,14 @@ impl MarkedEventReceiver for DocumentCollector {
             }
             Event::Alias(anchor) => self.place_alias_target(anchor),
             Event::SequenceStart(anchor, tag) => {
-                self.open.push(OpenNode::Sequence {
+                self.open_within_nesting_bound(OpenNode::Sequence {
                     anchor,
                     tag,
                     items: Vec::new(),
                 });
             }
             Event::MappingStart(anchor, tag) => {
-                self.open.push(OpenNode::Mapping {
+                self.open_within_nesting_bound(OpenNode::Mapping {
                     anchor,
                     tag,
                     entries: Vec::new(),
@@ -422,11 +439,26 @@ impl MarkedEventReceiver for DocumentCollector {
     }
 }
 
+/// Hands the parser's events to the collector one at a time, stopping at the end of the stream or at the first nesting past the bound.
+fn feed_events_until_end_or_nesting_exceeded(
+    text: &str,
+    collector: &mut DocumentCollector,
+) -> Result<(), ScanError> {
+    let mut parser = Parser::new_from_str(text);
+    loop {
+        let (event, mark) = parser.next_token()?;
+        let stream_ended = event == Event::StreamEnd;
+        collector.on_event(event, mark);
+        if stream_ended || collector.nesting_exceeded {
+            return Ok(());
+        }
+    }
+}
+
 /// The single document of the text, or the refusal for unparsable text, an alias refusal, or a wrong document count.
 fn read_single_document(text: &str) -> Result<Node, CardInvalid> {
     let mut collector = DocumentCollector::default();
-    Parser::new_from_str(text)
-        .load(&mut collector, true)
+    feed_events_until_end_or_nesting_exceeded(text, &mut collector)
         .map_err(|error| CardInvalid::Unparsable(error.to_string()))?;
     if let Some(refusal) = collector.refusal {
         return Err(refusal);
@@ -1346,6 +1378,24 @@ pub(crate) mod tests {
                 String::from_utf8_lossy(public)
             );
         }
+    }
+
+    fn card_with_ignored_key_nested(depth: usize) -> Result<Card, CardInvalid> {
+        parse_card(&format!(
+            "handle: ada\npublic_key: abc\nignored:\n{}1\n",
+            "- ".repeat(depth)
+        ))
+    }
+
+    #[test]
+    fn a_card_nesting_at_the_whole_document_bound_parses_and_one_level_deeper_is_refused_spec_3_5()
+    {
+        let ignored_key_levels = CARD_DEEPEST_NESTING - 1;
+        card_with_ignored_key_nested(ignored_key_levels).unwrap();
+        assert_eq!(
+            card_with_ignored_key_nested(ignored_key_levels + 1),
+            Err(CardInvalid::NestingTooDeep)
+        );
     }
 
     fn card_nested(depth: usize) -> Result<Card, CardInvalid> {

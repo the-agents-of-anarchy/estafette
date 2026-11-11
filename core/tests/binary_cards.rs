@@ -356,3 +356,76 @@ fn binary_help_of_every_observer_command_names_the_cards_dir_flag_of_spec_3_3() 
         assert!(help.contains("--cards-dir"), "{subcommand}: {help}");
     }
 }
+
+const CARD_FILE_NAME: &str = "ana-card.yaml";
+const REFUSED_CARD_EXIT_CODE: i32 = 1;
+const NESTING_DEPTHS: [usize; 3] = [3000, 10_000, 100_000];
+const REFUSAL_EXCERPT_CHARACTERS: usize = 300;
+
+type DeepPublicShape = (&'static str, fn(usize) -> String, &'static [usize]);
+
+fn block_mapping_public(depth: usize) -> String {
+    let mut text = String::from("public:\n");
+    for level in 1..=depth {
+        text.push_str(&" ".repeat(level));
+        text.push_str("a:\n");
+    }
+    text.push_str(&" ".repeat(depth.saturating_add(1)));
+    text.push_str("1\n");
+    text
+}
+
+fn block_sequence_public(depth: usize) -> String {
+    format!("public:\n{}1\n", "- ".repeat(depth))
+}
+
+fn flow_mapping_public(depth: usize) -> String {
+    format!("public: {}1{}\n", "{a: ".repeat(depth), "}".repeat(depth))
+}
+
+fn flow_sequence_public(depth: usize) -> String {
+    format!("public: {}1{}\n", "[".repeat(depth), "]".repeat(depth))
+}
+
+const DEEP_PUBLIC_SHAPES: [DeepPublicShape; 4] = [
+    ("block mapping", block_mapping_public, &[3000, 10_000]),
+    ("block sequence", block_sequence_public, &NESTING_DEPTHS),
+    ("flow mapping", flow_mapping_public, &NESTING_DEPTHS),
+    ("flow sequence", flow_sequence_public, &NESTING_DEPTHS),
+];
+
+#[test]
+fn binary_list_cards_refuses_a_public_nested_too_deep_for_the_parser_as_an_invalid_card_of_spec_3_5()
+ {
+    for (shape, public_at, depths) in DEEP_PUBLIC_SHAPES {
+        for &depth in depths {
+            let root = common::scratch_root(
+                SCRATCH_PREFIX,
+                &format!("deep_{}_{depth}", shape.replace(' ', "_")),
+            )
+            .unwrap();
+            let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
+            assert_eq!(created.status.code(), Some(0));
+            let card_file = root.join("data/estafette/cards/acme").join(CARD_FILE_NAME);
+            let mut text = std::fs::read_to_string(&card_file).unwrap();
+            text.push_str(&public_at(depth));
+            std::fs::write(&card_file, text).unwrap();
+
+            let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
+
+            let refusal: String = String::from_utf8_lossy(&listed.stderr)
+                .chars()
+                .take(REFUSAL_EXCERPT_CHARACTERS)
+                .collect();
+            assert_eq!(
+                listed.status.code(),
+                Some(REFUSED_CARD_EXIT_CODE),
+                "{shape} {depth}: {refusal}"
+            );
+            assert!(
+                refusal.contains("is not a valid card"),
+                "{shape} {depth}: {refusal}"
+            );
+        }
+    }
+}
