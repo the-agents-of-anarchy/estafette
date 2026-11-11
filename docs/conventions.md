@@ -175,6 +175,13 @@ never   a sleep of any kind in a test, fixed or computed (`std::thread::sleep`, 
 why     A sleep guesses a duration; it hides what the test waits for and passes or fails by machine load, as the lab runs showed.
 ground  owner ruling 2026-11-11T15:00 ("using any sleep in tests is forbidden.")
 
+### concerns-judged-by-the-spec-reviewer
+when    an implementer reports DONE_WITH_CONCERNS
+do      send the unit straight to its spec reviewer, whose brief orders it to class each concern, each not-determined entry and each decision as correctness, scope or observation, with its ground, before the review, and to fail the verdict on any correctness or scope row; continue the implementer with that one verdict file
+never   a separate agent launched to classify the concerns; a concern left unclassed in the verdict
+why     The classifier and the spec reviewer read the same report and the same diff; a classifier cost about 150 thousand tokens a round on 2026-11-11 and 2026-11-12.
+ground  owner ruling 2026-11-12T00:11 ("great idea", to the lead's "Folding the classifier's job into the spec reviewer drops one agent per cycle")
+
 ## writing craft
 
 ### prose
@@ -292,6 +299,13 @@ do      tell every agent, in the opener every brief reads, that it deletes nothi
 never   `rm` inside a compound, piped, looped, `bash -c` or heredoc command; `rm` by a subagent where a fresh name or a tool's own verb serves; a cleanup step in an agent's probe or gate script
 why     Claude Code stops on a permission screen for `rm` in a complex command that no permission mode skips; with the owner away it blocked agents for hours.
 ground  owner ruling 2026-11-11T12:10 ("no rm in convoluted inline scripts. if possible, no rm at all for subagents")
+
+### slug-unit-names
+when    naming a unit of work or a scope of work anywhere — plan, status file, brief, prompt, report, review, journal line, commit subject, agent name, message, conversation
+do      name it by one descriptive slug of lowercase hyphen-joined words that says what the work is, and by that slug alone; name a merged unit by a new slug for the whole; cite an older record's retired label only inside a quotation of that record
+never   a number, a letter, a code, a round or cluster label, or any other naming scheme for a unit or scope, alone or beside the slug; a new scheme under another name
+why     A numbered label tells its reader nothing and must be decoded from memory nobody has; the owner reads slugs.
+ground  owner ruling 2026-11-12T00:11 ("every unit identifier must by a descriptive slug and ONLY the descriptive slug exlusively"; by the same ruling the ban on every other naming convention for a unit or a scope of work is permanent and irrevocable)
 
 ## owner
 
