@@ -66,7 +66,7 @@ impl Node {
     /// A fresh message id: a UUID version 7 carrying `now_ms`, its other bits drawn from the node's secure random source (spec 3.1).
     fn message_id_stamped(&self, now_ms: u64) -> MessageId {
         let mut draw = Nonce::default();
-        (self.fill_message_id)(&mut draw);
+        (self.fill_random_bytes)(&mut draw);
         let mut random = [0; UUID_V7_RANDOM_BYTES];
         random
             .iter_mut()

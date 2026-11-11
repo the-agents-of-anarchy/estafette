@@ -170,7 +170,7 @@ impl std::error::Error for NodeError {}
 pub struct Node {
     pub(super) state: Arc<NodeState>,
     pub(super) client: Arc<DirectClient>,
-    pub(super) fill_message_id: ProbeNonceSource,
+    pub(super) fill_random_bytes: ProbeNonceSource,
     own_handle: LocalHandle,
     presence_loop: JoinHandle<()>,
 }
@@ -213,7 +213,7 @@ impl Node {
         .await
         .map_err(NodeError::Topic)?;
         let sending_client = Arc::clone(&client);
-        let fill_message_id = Arc::clone(&effects.fill_probe_nonce);
+        let fill_random_bytes = Arc::clone(&effects.fill_probe_nonce);
         let (assigned, own_handle) = oneshot::channel();
         let presence_loop = PresenceLoop {
             attached: effects.inbox.attached(),
@@ -254,7 +254,7 @@ impl Node {
             own_handle,
             presence_loop,
             client: sending_client,
-            fill_message_id,
+            fill_random_bytes,
         })
     }
 
