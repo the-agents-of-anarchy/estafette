@@ -922,6 +922,7 @@ mod tests {
     const SPEC_OWNER_ONLY_MODE: u32 = 0o600;
     const FILE_MODE_BITS: u32 = 0o777;
     const FROZEN_CLOCK_MS: u64 = 1_800_000_000_000;
+    const SPEC_RUN_INFRASTRUCTURE_INPUTS: [&str; 3] = ["network", "IP address", "domain name"];
 
     fn secret_key(seed: u8) -> SecretKey {
         SecretKey::from_bytes(&[seed; KEY_LEN])
@@ -1537,10 +1538,15 @@ mod tests {
             ..Plan::new(HOST_SEED)
         };
 
-        let ((_printed, outcome), heard) =
+        let ((_printed, outcome), (last_record, heard_before_the_next_is_due, next_record)) =
             tokio::join!(run_planned(&scratch, plan, &seen), async {
                 let host = bound_endpoint(&seen, 0).await;
                 let mut peer = Peer::joined_through(PEER_SEED, &host).await;
+                let last_record = peer
+                    .next_host_record(SPEC_RECORD_INTERVAL_LATEST)
+                    .await
+                    .unwrap();
+                let last_record_heard = Instant::now();
                 peer.topic
                     .broadcast(
                         &secret_key(PEER_SEED),
@@ -1554,17 +1560,21 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                let heard = peer.payloads_within(SPEC_RECORD_INTERVAL_LATEST).await;
+                let heard_before_the_next_is_due = peer
+                    .payloads_within(
+                        SPEC_RECORD_INTERVAL_EARLIEST.saturating_sub(last_record_heard.elapsed()),
+                    )
+                    .await;
+                let next_record = peer.next_host_record(SPEC_RECORD_INTERVAL_LATEST).await;
                 drop(stop);
-                heard
+                (last_record, heard_before_the_next_is_due, next_record)
             });
 
         outcome.unwrap();
-        assert_ne!(heard.len(), 0);
-        assert!(
-            heard
-                .iter()
-                .all(|payload| matches!(payload, Payload::Infrastructure(_)))
+        assert_eq!(heard_before_the_next_is_due, Vec::new());
+        assert_eq!(
+            next_record.map(|record| (record.host, record.ts)),
+            Some((last_record.host, last_record.ts.saturating_add(1)))
         );
     }
 
@@ -1615,19 +1625,20 @@ mod tests {
             ..Plan::new(HOST_SEED)
         };
 
-        let ((_printed, outcome), record) =
+        let ((_printed, outcome), (open_past_the_join_timeout, record)) =
             tokio::join!(run_planned(&scratch, plan, &seen), async {
                 let host = bound_endpoint(&seen, 0).await;
                 tokio::time::sleep(SPEC_JOIN_TIMEOUT_PAST).await;
+                let open_past_the_join_timeout = !host.is_closed();
                 let mut peer = Peer::joined_through(PEER_SEED, &host).await;
                 let record = peer.next_host_record(RECORD_AT_JOIN_WAIT).await;
                 stop.send(()).unwrap();
-                record
+                (open_past_the_join_timeout, record)
             });
 
         outcome.unwrap();
+        assert!(open_past_the_join_timeout);
         assert_eq!(record.unwrap().ts, FROZEN_CLOCK_SECONDS);
-        assert_eq!(seen.bound.lock().unwrap().len(), 1);
     }
 
     fn message_to(card: wire::PublicKey) -> Message {
@@ -2086,24 +2097,21 @@ mod tests {
         let mut arguments = InfrastructureArguments::command();
         let command = arguments.find_subcommand_mut(SPEC_COMMAND_NAME).unwrap();
 
-        let described: Vec<(String, bool)> = command
+        let described: Vec<(String, String)> = command
             .get_positionals()
             .map(|input| {
                 let help = input
                     .get_help()
                     .map(ToString::to_string)
                     .unwrap_or_default();
-                (input.get_id().to_string(), !help.is_empty())
+                (input.get_id().to_string(), help)
             })
             .collect();
 
-        assert_eq!(
-            described,
-            vec![
-                ("network".to_owned(), true),
-                ("bind_address".to_owned(), true),
-                ("domain".to_owned(), true),
-            ]
-        );
+        let inputs: Vec<&str> = described.iter().map(|(input, _)| input.as_str()).collect();
+        assert_eq!(inputs, ["network", "bind_address", "domain"]);
+        for ((_, help), spec_input) in described.iter().zip(SPEC_RUN_INFRASTRUCTURE_INPUTS) {
+            assert!(help.contains(spec_input), "{help}");
+        }
     }
 }
