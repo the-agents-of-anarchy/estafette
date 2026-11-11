@@ -289,13 +289,14 @@ fn later_by(at: Instant, span: Duration) -> Instant {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
     use std::time::Duration;
 
     use crate::stream_items::StreamExt;
     use iroh::protocol::Router;
     use iroh::{EndpointAddr, EndpointId, RelayUrl};
     use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
+    use tokio::sync::watch;
     use tokio::task::JoinHandle;
     use tokio::time::Instant;
 
@@ -348,40 +349,72 @@ mod tests {
     const REBIND_SLACK: Duration = Duration::from_secs(2);
     const REBIND_POLL: Duration = Duration::from_millis(20);
 
+    /// What a test heard, in order, waking each waiter at every new entry.
+    struct Heard<T>(Arc<watch::Sender<Vec<T>>>);
+
+    impl<T> Clone for Heard<T> {
+        fn clone(&self) -> Self {
+            Self(Arc::clone(&self.0))
+        }
+    }
+
+    impl<T> Default for Heard<T> {
+        fn default() -> Self {
+            Self(Arc::new(watch::Sender::new(Vec::new())))
+        }
+    }
+
+    impl<T: Send + Sync> Heard<T> {
+        fn push(&self, entry: T) {
+            self.0.send_modify(|entries| entries.push(entry));
+        }
+
+        fn entries(&self) -> watch::Ref<'_, Vec<T>> {
+            self.0.borrow()
+        }
+
+        async fn first_within<Found: Send>(
+            &self,
+            within: Duration,
+            found: impl Fn(&[T]) -> Option<Found> + Send + Sync,
+        ) -> Option<Found> {
+            let mut entries = self.0.subscribe();
+            let entries =
+                tokio::time::timeout(within, entries.wait_for(|entries| found(entries).is_some()))
+                    .await
+                    .ok()?
+                    .ok()?;
+            found(&entries)
+        }
+    }
+
     #[derive(Clone, Default)]
     struct RebindLog {
-        started: Arc<Mutex<Vec<Instant>>>,
+        started: Heard<Instant>,
     }
 
     impl RebindLog {
         fn sink(&self) -> RunRecord {
-            let started = Arc::clone(&self.started);
+            let started = self.started.clone();
             Arc::new(move |event| {
                 if matches!(event, Event::Transport(TransportEvent::Rebinding)) {
-                    started.lock().unwrap().push(Instant::now());
+                    started.push(Instant::now());
                 }
             })
         }
 
         async fn nth_within(&self, index: usize, within: Duration) -> Option<Instant> {
-            tokio::time::timeout(within, async {
-                loop {
-                    if let Some(at) = self.started.lock().unwrap().get(index) {
-                        return *at;
-                    }
-                    tokio::time::sleep(REBIND_POLL).await;
-                }
-            })
-            .await
-            .ok()
+            self.started
+                .first_within(within, |started| started.get(index).copied())
+                .await
         }
     }
 
     struct QuietNode {
         endpoint: NodeEndpoint,
         introduction: Addr,
-        presences: Arc<Mutex<Vec<(Instant, u64)>>>,
-        neighbors_up: Arc<Mutex<Vec<(Instant, EndpointId)>>>,
+        presences: Heard<(Instant, u64)>,
+        neighbors_up: Heard<(Instant, EndpointId)>,
         _router: Router,
         _listening: JoinHandle<()>,
     }
@@ -437,10 +470,10 @@ mod tests {
             )
             .await
             .unwrap();
-            let presences = Arc::new(Mutex::new(Vec::new()));
-            let neighbors_up = Arc::new(Mutex::new(Vec::new()));
-            let heard = Arc::clone(&presences);
-            let met = Arc::clone(&neighbors_up);
+            let presences = Heard::default();
+            let neighbors_up = Heard::default();
+            let heard = presences.clone();
+            let met = neighbors_up.clone();
             let mut broadcasts = broadcast_every.map(tokio::time::interval);
             let listening = tokio::spawn(async move {
                 loop {
@@ -460,11 +493,11 @@ mod tests {
                     match event {
                         Ok(GossipEvent::Payload(payload)) => {
                             if let Payload::Presence(presence) = Payload::from(*payload) {
-                                heard.lock().unwrap().push((Instant::now(), presence.seq));
+                                heard.push((Instant::now(), presence.seq));
                             }
                         }
                         Ok(GossipEvent::NeighborUp(neighbor)) => {
-                            met.lock().unwrap().push((Instant::now(), neighbor));
+                            met.push((Instant::now(), neighbor));
                         }
                         Ok(
                             GossipEvent::Joined
@@ -503,52 +536,32 @@ mod tests {
 
         async fn first_neighbor_up_of(&self, seed: u8, within: Duration) -> Option<Instant> {
             let neighbor = secret_key(seed).public();
-            tokio::time::timeout(within, async {
-                loop {
-                    let found = self
-                        .neighbors_up
-                        .lock()
-                        .unwrap()
-                        .iter()
+            self.neighbors_up
+                .first_within(within, |ups| {
+                    ups.iter()
                         .find(|(_, up)| *up == neighbor)
-                        .map(|(at, _)| *at);
-                    if let Some(at) = found {
-                        return at;
-                    }
-                    tokio::time::sleep(REBIND_POLL).await;
-                }
-            })
-            .await
-            .ok()
+                        .map(|(at, _)| *at)
+                })
+                .await
         }
 
         fn last_seq_before(&self, at: Instant) -> Option<u64> {
             self.presences
-                .lock()
-                .unwrap()
+                .entries()
                 .iter()
                 .rfind(|(heard, _)| *heard < at)
                 .map(|(_, seq)| *seq)
         }
 
         async fn first_seq_after(&self, at: Instant, within: Duration) -> Option<u64> {
-            tokio::time::timeout(within, async {
-                loop {
-                    let found = self
-                        .presences
-                        .lock()
-                        .unwrap()
+            self.presences
+                .first_within(within, |presences| {
+                    presences
                         .iter()
                         .find(|(heard, _)| *heard > at)
-                        .map(|(_, seq)| *seq);
-                    if let Some(seq) = found {
-                        return seq;
-                    }
-                    tokio::time::sleep(REBIND_POLL).await;
-                }
-            })
-            .await
-            .ok()
+                        .map(|(_, seq)| *seq)
+                })
+                .await
         }
     }
 
