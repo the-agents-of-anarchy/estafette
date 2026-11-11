@@ -223,3 +223,35 @@ What happened: impl-U67 (opus, own worktree from acd7e3d) hit the 5-hour limit a
 Mechanism: The harness cleans a worktree that holds no commit when its agent ends, and an agent killed by a limit ends; uncommitted edits count as nothing. The same happened to impl-U58 on 2026-11-11 at 01:56.
 
 Correction: The worktree was recreated at the same path and the agent resumed with an order to save git diff as a numbered patch in recon scratch after each compiling step; every implementer brief from now on carries that order.
+
+## A read-only classifier ran git checkout in the root checkout
+
+What happened: classifier-U67 ran git checkout --detach in the root checkout at about 16:08 to read files at a commit; git refused it on .git/index.lock, held by the lead's records commit, so nothing changed: the root stayed on integration/build-estafette at acd7e3d (verified by the lead at 16:10). Had the lock been free, the root would have been detached under a running commit and an integrator.
+
+Mechanism: The classifier template's scope line said read only and named Bash (git, sed, cat) as tools without forbidding a git command that writes; the agent chose checkout over git show to read a tree.
+
+Correction: The template's scope line now names the git reads allowed (show, diff, log, rev-parse, merge-base) and forbids checkout, switch, reset, stash, worktree, add and commit; reviewers' and other read-only briefs get the same line when next generated.
+
+## The lead wrote a line of text in a silent turn
+
+What happened: At 16:42 the lead ended a turn started by a wake with the visible line '[binding accepted — classifier-U60b; no reply needed]' while the silence marker .claude/work-silently was in place.
+
+Mechanism: A teammate's binding message arrived as the turn's last input and the lead wrote its acceptance as conversation text instead of nowhere: a binding that matches the Stack block needs no record at all.
+
+Correction: A turn not started by a typed owner message ends with an empty message; an accepted binding is not acknowledged, in the conversation or by message.
+
+## The lead let agent build trees fill the disk
+
+What happened: At 20:49 the data volume had 63 MiB free of 926 GiB. impl-U68 and impl-U67 stopped BLOCKED on ENOSPC with uncommitted or ungated work, integrator-U51's first gate run died, an investigator's two test suites did not run, and the harness refused commands; the owner noticed first and wrote 'warning: storage low, you may be the culprit'.
+
+Mechanism: Every agent worktree builds its own cargo target directory, 2.6 to 18 GiB each, and nothing removed one when its agent stopped; the lead launched three more cold builds for the debugging round without reading free space; no wake read df.
+
+Correction: The lead deleted nine build directories of worktrees whose agents were not running (71 GiB free at 20:54), continued the two blocked implementers and had the integrator void its killed run; df is now read at every wake and before any launch that builds, and under 40 GiB free the target directory of every worktree whose agent is not running is deleted.
+
+## Two reviewers launched with worktree isolation lost or nearly lost their output files
+
+What happened: At 21:09 the lead launched classifier-U68 and spec-reviewer-U68 with isolation worktree on the Agent call. The harness refused both a write to the root checkout's recon path, so each wrote its file inside its own worktree; the classifier copied its report over before ending, the spec reviewer did not, and the harness removed both worktrees at turn end as unchanged (recon is gitignored). The spec verdict of dc777fd..1cf159c (FAIL, seven findings) was gone; impl-U68 had been stopped to receive it and waited.
+
+Mechanism: The lead applied the agent-call convention's isolation parameter to agents that are not implementers. A reviewer, classifier, integrator or investigator writes only gitignored recon files, which an isolated worktree cannot write to the root and does not keep; the convention's ground (implementers landing on main) concerns agents that commit code.
+
+Correction: The spec reviewer is resumed by message to rewrite the verdict from its context to a path under /tmp, which the lead copies into reviews/. From now on only implementers launch with isolation worktree; every other agent launches without it and is told git reads only in the root checkout. The status file's pending line carries the rule.
