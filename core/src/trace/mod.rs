@@ -18,7 +18,7 @@ mod writer;
 
 use files::{create_private_file, remove_oldest_runs, run_name};
 use line::HeaderSource;
-use writer::{RollingFile, TraceWriter};
+use writer::{RollingFile, RolloverOpening, TraceWriter};
 
 /// The version of the trace line format, raised when an event name is renamed or removed or a field changes meaning.
 pub const FORMAT_VERSION: u64 = 1;
@@ -177,8 +177,13 @@ impl Trace {
         let started_ms = header.wall_ms();
         remove_oldest_runs(&traces, started_ms, &bounds)?;
         let files = directories.trace_files(&run_name(started_ms, &run.hex()));
-        let events = start_writer(&files.events, &header, &bounds)?;
-        let raw = start_writer(&files.raw, &header, &bounds)?;
+        let events = start_writer(&files.events, &header, &bounds, RolloverOpening::Nothing)?;
+        let raw = start_writer(
+            &files.raw,
+            &header,
+            &bounds,
+            RolloverOpening::FirstLineAgain,
+        )?;
         raw.write(
             TraceLineName::RawFileOpened.as_str(),
             &[(SAFE_TO_POST_FIELD, Value::Bool(false))],
@@ -226,16 +231,17 @@ impl Trace {
     }
 }
 
-/// Creates the trace file and starts its writer.
+/// Creates the trace file and starts its writer, each rollover starting a file that holds `opening`.
 fn start_writer(
     path: &Path,
     header: &Arc<HeaderSource>,
     bounds: &TraceBounds,
+    opening: RolloverOpening,
 ) -> Result<TraceWriter, TraceRefused> {
     let file = create_private_file(path)
         .map_err(|source| TraceRefused::new(TraceAction::CreateFile, path, source))?;
     TraceWriter::start(
-        RollingFile::new(path.to_path_buf(), file, bounds.rollover_bytes),
+        RollingFile::new(path.to_path_buf(), file, bounds.rollover_bytes, opening),
         Arc::clone(header),
         bounds.queue_lines,
     )
@@ -279,6 +285,7 @@ pub(super) mod tests {
     const NOW_MS: u64 = 2_000_000_000_000;
     const SMALL_FRESHNESS_MS: u64 = 10_000;
     const SMALL_DIRECTORY_BYTES: u64 = 1000;
+    const RAW_EVENT: &str = "iroh_line";
 
     pub(super) fn scratch_directories(test_name: &str) -> (PathBuf, Directories) {
         let root = std::env::temp_dir().join(format!(
@@ -460,6 +467,47 @@ pub(super) mod tests {
             format!("{}{}", clock_line(2, None), clock_line(3, None))
         );
         assert_eq!(names_in(&directories.traces_directory()).len(), 3);
+        drop(fs::remove_dir_all(&root));
+    }
+
+    fn raw_line(n: u64) -> String {
+        format!(
+            "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS},\"event\":\"{RAW_EVENT}\"}}\n"
+        )
+    }
+
+    #[test]
+    fn observability_decision_7_every_raw_file_a_rollover_opens_begins_with_the_line_saying_it_is_not_safe_to_post()
+     {
+        let (root, directories) = scratch_directories("raw-rollover");
+        let not_safe_to_post = format!(
+            "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":0,\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}{SPEC_RAW_FIRST_LINE_AFTER_HEADER}"
+        );
+        let line_bytes = u64::try_from(raw_line(1).len()).unwrap();
+        let first_line_bytes = u64::try_from(not_safe_to_post.len()).unwrap();
+        let trace = started(
+            &directories,
+            NOW_MS,
+            TraceBounds {
+                rollover_bytes: first_line_bytes + line_bytes * LINES_PER_FILE,
+                ..TraceBounds::SPEC
+            },
+        );
+
+        for _line in 0..LINES_WRITTEN {
+            trace.raw.write(RAW_EVENT, &[]);
+        }
+        assert!(trace.finish());
+
+        let raw = &trace.files().raw;
+        assert_eq!(
+            fs::read_to_string(raw).unwrap(),
+            format!("{not_safe_to_post}{}", raw_line(5))
+        );
+        assert_eq!(
+            fs::read_to_string(crate::dirs::rolled_over_trace_file(raw)).unwrap(),
+            format!("{not_safe_to_post}{}{}", raw_line(3), raw_line(4))
+        );
         drop(fs::remove_dir_all(&root));
     }
 

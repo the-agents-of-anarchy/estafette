@@ -22,46 +22,78 @@ pub(super) trait TraceOutput {
     fn write_line(&mut self, line: &[u8]) -> io::Result<()>;
 }
 
+/// What each file a rollover starts holds before the line that rolled the file over.
+pub(super) enum RolloverOpening {
+    /// Nothing.
+    Nothing,
+    /// The first line the trace file held.
+    FirstLineAgain,
+}
+
 /// A trace file that rolls over into its `.1` file, replacing any earlier one, before a line would take it past its size bound.
 pub(super) struct RollingFile {
     path: PathBuf,
     file: File,
     written_bytes: u64,
     rollover_bytes: u64,
+    opening: RolloverOpening,
+    first_line: Option<Vec<u8>>,
 }
 
 impl RollingFile {
-    /// The newly created, empty file at `path`, rolled over at `rollover_bytes`.
-    pub(super) const fn new(path: PathBuf, file: File, rollover_bytes: u64) -> Self {
+    /// The newly created, empty file at `path`, rolled over at `rollover_bytes` into a file that starts with `opening`.
+    pub(super) const fn new(
+        path: PathBuf,
+        file: File,
+        rollover_bytes: u64,
+        opening: RolloverOpening,
+    ) -> Self {
         Self {
             path,
             file,
             written_bytes: 0,
             rollover_bytes,
+            opening,
+            first_line: None,
         }
     }
 
-    /// Renames the file to its `.1` file and starts an empty one in its place.
+    /// Renames the file to its `.1` file and starts one in its place holding its opening.
     fn roll_over(&mut self) -> io::Result<()> {
         fs::rename(&self.path, rolled_over_trace_file(&self.path))?;
         self.file = create_private_file(&self.path)?;
         self.written_bytes = 0;
+        match (&self.opening, &self.first_line) {
+            (RolloverOpening::FirstLineAgain, Some(first_line)) => {
+                self.file.write_all(first_line)?;
+                self.written_bytes = byte_count(first_line);
+            }
+            (RolloverOpening::FirstLineAgain, None) | (RolloverOpening::Nothing, _) => {}
+        }
         Ok(())
     }
 }
 
 impl TraceOutput for RollingFile {
     fn write_line(&mut self, line: &[u8]) -> io::Result<()> {
-        let line_bytes = u64::try_from(line.len()).unwrap_or(u64::MAX);
+        let line_bytes = byte_count(line);
         if self.written_bytes > 0
             && self.written_bytes.saturating_add(line_bytes) > self.rollover_bytes
         {
             self.roll_over()?;
         }
         self.file.write_all(line)?;
+        if self.first_line.is_none() {
+            self.first_line = Some(line.to_vec());
+        }
         self.written_bytes = self.written_bytes.saturating_add(line_bytes);
         Ok(())
     }
+}
+
+/// The bytes a line takes on disk.
+fn byte_count(line: &[u8]) -> u64 {
+    u64::try_from(line.len()).unwrap_or(u64::MAX)
 }
 
 /// One trace file's writer: a bounded queue to a thread of its own, so a caller never waits for the disk.
