@@ -200,3 +200,28 @@ list:
     hcloud primary-ip list
     hcloud firewall list
     hcloud ssh-key list
+
+[doc("Write the lab network's configuration on the server as lab from stdin, replacing the one there; it holds the network secret, so it travels on stdin alone")]
+[group('lab')]
+network-on-server:
+    ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) 'cd {{ remote_tree }} && just remote::network-from-input'
+
+[doc("Write the lab network's configuration on this machine from stdin, replacing the one there")]
+[group('lab')]
+network-from-input:
+    umask 077 && mkdir -p {{ lab_root }}/run "$(dirname {{ lab_config_file }})" && chmod 0700 {{ lab_root }} && cat > {{ lab_config_file }}.new && mv {{ lab_config_file }}.new {{ lab_config_file }}
+
+[doc("Create a card on the server's lab network as lab, printing its public key")]
+[group('lab')]
+card-on-server name handle:
+    ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) 'cd {{ remote_tree }} && just remote::estafette create-card {{ lab_network }} {{ name }} {{ handle }}'
+
+[doc("Call one tool of the lab member serving the card on the server, its arguments as JSON on stdin; prints the envelope stamped with the server's clock")]
+[group('lab')]
+call-on-server card tool:
+    ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) 'cd {{ remote_tree }} && just remote::call {{ card }} {{ tool }} "$(cat)"'
+
+[doc("Print the run record of the card's lab member on the server")]
+[group('lab')]
+run-record-on-server card:
+    ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) cat /home/lab/{{ card }}.err

@@ -17,6 +17,9 @@ mod killable_host;
 #[path = "lab/lab_machine.rs"]
 mod lab_machine;
 #[cfg(test)]
+#[path = "lab/lab_server.rs"]
+mod lab_server;
+#[cfg(test)]
 #[path = "lab/live_network.rs"]
 mod live_network;
 #[cfg(test)]
@@ -31,6 +34,12 @@ mod payloads;
 #[cfg(test)]
 #[path = "support/scratch_machine.rs"]
 mod scratch_machine;
+#[cfg(test)]
+#[path = "lab/server_member.rs"]
+mod server_member;
+#[cfg(test)]
+#[path = "lab/spec_3_15_tests_across_lab_servers.rs"]
+mod spec_3_15_tests_across_lab_servers;
 #[cfg(test)]
 #[path = "support/spec_bounds.rs"]
 mod spec_bounds;
