@@ -33,10 +33,10 @@ use crate::net::direct::DirectHost;
 use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
-    KnownHostAddress, KnownHosts, Network, NodeError, NodeRecord, RecordVerdict, endpoint_addr,
-    endpoint_id, known_host_addresses, seed_lookup_with_known_hosts, serve,
+    KnownHostAddress, KnownHosts, Network, NodeError, NodeRecord, RelayOfRecord,
+    known_host_addresses, seed_lookup_with_known_hosts, serve,
 };
-use crate::payload::{OpenedPayload, ValidInfrastructure, ZERO_MAC, ZERO_SIGNATURE};
+use crate::payload::{OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
 use crate::wire::{
     self, Addr, HostAddr, Infrastructure, IntroduceAck, MAX_RELAY_URL_BYTES, Message, Payload,
     SignatureBytes, Version,
@@ -697,7 +697,7 @@ impl BootstrapNode {
         loop {
             match self.next_wake(&mut stopped).await {
                 Wake::Stopped => return Ok(()),
-                Wake::Topic(event) => self.take_topic_event(event)?,
+                Wake::Topic(event) => self.take_topic_event(event).await?,
                 Wake::RecordDue => self.broadcast_record(filesystem).await?,
             }
         }
@@ -713,8 +713,8 @@ impl BootstrapNode {
         }
     }
 
-    /// Starts the record broadcasts at the join, learns from a host record, and ignores every other event.
-    fn take_topic_event(
+    /// Starts the record broadcasts at the join, learns from another host's record without adding its relay (spec 3.14), and ignores every other event.
+    async fn take_topic_event(
         &mut self,
         event: Option<Result<GossipEvent, GossipError>>,
     ) -> Result<(), Failure> {
@@ -726,7 +726,15 @@ impl BootstrapNode {
                 OpenedPayload::Infrastructure(record)
                     if record.record().host != *self.key.public().as_bytes() =>
                 {
-                    self.learn_host(&record);
+                    self.known_hosts
+                        .take_infrastructure(
+                            &record,
+                            (self.clock)(),
+                            &self.endpoint,
+                            RelayOfRecord::LeaveOutOfRelayMap,
+                            &*self.report,
+                        )
+                        .await;
                 }
                 OpenedPayload::Infrastructure(_)
                 | OpenedPayload::Presence(_)
@@ -741,29 +749,6 @@ impl BootstrapNode {
             )) => {}
         }
         Ok(())
-    }
-
-    /// Applies the Infrastructure rows of spec 3.8 to another host's record, adding no relay to the relay map (spec 3.14).
-    fn learn_host(&mut self, valid: &ValidInfrastructure) {
-        let now_ms = (self.clock)();
-        match self.known_hosts.take_record(valid, now_ms) {
-            RecordVerdict::Dropped => {}
-            RecordVerdict::FromKnownHost => self.point_lookup_at(valid.record()),
-            RecordVerdict::FromNewHost => {
-                self.point_lookup_at(valid.record());
-                if let Err(failure) = self.known_hosts.save(now_ms) {
-                    (self.report)(NodeRecord::KnownHostsNotSaved(failure));
-                }
-            }
-        }
-    }
-
-    /// Replaces the lookup entry of the record's host with the address it carries.
-    fn point_lookup_at(&self, record: &Infrastructure) {
-        if let Some(id) = endpoint_id(&record.host) {
-            self.endpoint
-                .replace_address(endpoint_addr(id, &record.addr));
-        }
     }
 
     /// Writes the next record counter, then broadcasts this host's record carrying it.

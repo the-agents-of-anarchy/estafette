@@ -907,7 +907,15 @@ impl PresenceLoop {
                 self.state.table().receive_unreachable(&report, now_ms);
             }
             OpenedPayload::Infrastructure(record) => {
-                self.take_infrastructure(&record, now_ms).await;
+                self.known_hosts
+                    .take_infrastructure(
+                        &record,
+                        now_ms,
+                        &self.endpoint,
+                        RelayOfRecord::AddToRelayMap,
+                        &*self.report,
+                    )
+                    .await;
             }
             OpenedPayload::PresenceRequest(request) => {
                 self.answer_presence_request(&request, now_ms).await;
@@ -919,21 +927,6 @@ impl PresenceLoop {
     async fn answer_presence_request(&mut self, request: &PresenceRequest, now_ms: u64) {
         if self.heard_requests.admit(request, now_ms) {
             self.announce_presence().await;
-        }
-    }
-
-    /// Applies the Infrastructure rows of spec 3.8: hold a newer record, point the lookup at it, add its relay, save a new host.
-    async fn take_infrastructure(&mut self, valid: &ValidInfrastructure, now_ms: u64) {
-        let verdict = self.known_hosts.take_record(valid, now_ms);
-        if verdict == RecordVerdict::Dropped {
-            return;
-        }
-        replace_lookup_entry(&self.endpoint, &valid.record().host, &valid.record().addr);
-        self.endpoint.add_relay(valid.relay().clone()).await;
-        if verdict == RecordVerdict::FromNewHost
-            && let Err(failure) = self.known_hosts.save(now_ms)
-        {
-            (self.report)(NodeRecord::KnownHostsNotSaved(failure));
         }
     }
 
@@ -1245,6 +1238,13 @@ pub enum RecordVerdict {
     FromNewHost,
 }
 
+/// What a node does with the relay of a host record it takes: a member adds it to its relay map, a bootstrap host keeps its own relay alone (spec 3.14).
+#[derive(Debug, Clone, Copy)]
+pub enum RelayOfRecord {
+    AddToRelayMap,
+    LeaveOutOfRelayMap,
+}
+
 /// The known hosts of spec 3.8, with the newest record `ts` held for each and the file that keeps them.
 pub struct KnownHosts {
     config: NetworkConfig,
@@ -1276,12 +1276,33 @@ impl KnownHosts {
             .collect()
     }
 
-    /// Holds the relay and `ts` of a record newer than the newest held for its host and within the future bound, adding a host never known before.
-    pub(crate) fn take_record(
+    /// Applies the Infrastructure rows of spec 3.8: holds a record newer than its host's last, points the lookup at its address, adds its relay as `relay` says, and saves a host not known before, recording a save that failed.
+    pub(crate) async fn take_infrastructure(
         &mut self,
         valid: &ValidInfrastructure,
         now_ms: u64,
-    ) -> RecordVerdict {
+        endpoint: &NodeEndpoint,
+        relay: RelayOfRecord,
+        report: &(dyn Fn(NodeRecord) + Send + Sync),
+    ) {
+        let verdict = self.take_record(valid, now_ms);
+        if verdict == RecordVerdict::Dropped {
+            return;
+        }
+        replace_lookup_entry(endpoint, &valid.record().host, &valid.record().addr);
+        match relay {
+            RelayOfRecord::AddToRelayMap => endpoint.add_relay(valid.relay().clone()).await,
+            RelayOfRecord::LeaveOutOfRelayMap => {}
+        }
+        if verdict == RecordVerdict::FromNewHost
+            && let Err(failure) = self.save(now_ms)
+        {
+            report(NodeRecord::KnownHostsNotSaved(failure));
+        }
+    }
+
+    /// Holds the relay and `ts` of a record newer than the newest held for its host and within the future bound, adding a host never known before.
+    fn take_record(&mut self, valid: &ValidInfrastructure, now_ms: u64) -> RecordVerdict {
         let record = valid.record();
         let latest_accepted_ts =
             seconds_of(now_ms).saturating_add(INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS);

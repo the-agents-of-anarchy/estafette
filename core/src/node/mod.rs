@@ -9,9 +9,9 @@ pub use lifecycle::{
 };
 pub(crate) use presence::{
     DirectAnswer, DirectRequest, DirectRequester, KnownHostAddress, KnownHosts, PeerRows,
-    RecordVerdict, acknowledgement_of, endpoint_addr, endpoint_id, known_host_addresses,
-    observer_wait_over_at, replace_lookup_entry, seed_lookup_with_known_hosts, send_in_background,
-    serve, sleep_until_deadline, wire_addr,
+    RelayOfRecord, acknowledgement_of, known_host_addresses, observer_wait_over_at,
+    replace_lookup_entry, seed_lookup_with_known_hosts, send_in_background, serve,
+    sleep_until_deadline, wire_addr,
 };
 pub use presence::{Identity, Network, Node, NodeEffects, NodeError, NodeRecord};
 
