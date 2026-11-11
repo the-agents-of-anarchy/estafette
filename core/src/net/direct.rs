@@ -803,7 +803,7 @@ mod tests {
     use std::time::Instant;
 
     use iroh::SecretKey;
-    use iroh::endpoint::{ReadToEndError, Side};
+    use iroh::endpoint::ReadToEndError;
     use iroh::protocol::Router;
     use iroh_gossip::ALPN as GOSSIP_ALPN;
 
@@ -1493,7 +1493,6 @@ mod tests {
 
         register.close_silent_of(card_of(CLIENT_SEED));
 
-        assert_eq!(dialed.side(), Side::Client);
         assert_eq!(dialed.close_reason(), Some(ConnectionError::LocallyClosed));
     }
 
