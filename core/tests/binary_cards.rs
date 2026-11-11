@@ -430,7 +430,8 @@ fn binary_list_cards_refuses_a_public_nested_too_deep_for_the_parser_as_an_inval
     }
 }
 
-const IGNORED_KEY_DEPTHS: [usize; 2] = [300, 2000];
+const DEEPEST_IGNORED_KEY_DEPTH: usize = 2000;
+const IGNORED_KEY_DEPTHS: [usize; 2] = [300, DEEPEST_IGNORED_KEY_DEPTH];
 
 #[test]
 fn binary_list_cards_lists_a_card_whose_ignored_key_nests_beyond_the_parser_bound_of_spec_3_5() {
@@ -455,8 +456,6 @@ fn binary_list_cards_lists_a_card_whose_ignored_key_nests_beyond_the_parser_boun
     }
 }
 
-const CARD_DEEPEST_NESTING_BOUND: usize = 256;
-
 #[test]
 fn binary_list_cards_lists_a_card_whose_public_aliases_a_container_anchored_beyond_the_parser_bound_of_spec_3_5()
  {
@@ -466,7 +465,7 @@ fn binary_list_cards_lists_a_card_whose_public_aliases_a_container_anchored_beyo
     let card_file = root.join("data/estafette/cards/acme").join(CARD_FILE_NAME);
     let mut text = std::fs::read_to_string(&card_file).unwrap();
     text.push_str("ignored:\n");
-    text.push_str(&"- ".repeat(CARD_DEEPEST_NESTING_BOUND));
+    text.push_str(&"- ".repeat(DEEPEST_IGNORED_KEY_DEPTH));
     text.push_str("&anchor [7]\npublic:\n  seen: *anchor\n");
     std::fs::write(&card_file, text).unwrap();
 
