@@ -62,6 +62,15 @@ type BindEndpoint =
 type StartInbox = Box<dyn FnOnce() -> Result<Arc<InboxSocket>, InboxSocketError> + Send>;
 type Interrupted = Pin<Box<dyn Future<Output = ()> + Send>>;
 
+/// What SIGINT does while a runtime runs an observer command or the doctor.
+#[derive(Debug, Clone, Copy)]
+pub enum Interruption {
+    /// The command listens for SIGINT and ends its own run when it arrives.
+    EndsTheCommand,
+    /// SIGINT keeps its default and ends the process, for a command that never waits for it.
+    EndsTheProcess,
+}
+
 #[derive(Debug, Clone, Subcommand)]
 pub enum ObserverCommand {
     /// Join the network without a card, wait out the observer wait, and print each peer as handle, status, attached and public, refusing a network without a configuration file
@@ -95,6 +104,15 @@ pub enum ObserverCommand {
 }
 
 impl ObserverCommand {
+    /// How the command takes SIGINT: show peers and tail end their observation, test send leaves SIGINT to end the process.
+    #[must_use]
+    pub const fn interruption(&self) -> Interruption {
+        match self {
+            Self::ShowPeers { .. } | Self::Tail { .. } => Interruption::EndsTheCommand,
+            Self::TestSend { .. } => Interruption::EndsTheProcess,
+        }
+    }
+
     /// The cards directory override the command was given.
     #[must_use]
     pub fn cards_dir(&self) -> Option<PathBuf> {
@@ -674,7 +692,7 @@ impl Observation {
                 Step::Topic(Some(Err(failure))) => return Err(Failure::Topic(failure)),
                 Step::Topic(Some(Ok(GossipEvent::Joined))) => {
                     self.start_observer_wait();
-                    request_presence(&self.topic, &self.key, self.host.now_ms()).await?;
+                    self.request_presence_at_join().await?;
                 }
                 Step::Topic(Some(Ok(GossipEvent::JoinTimedOut))) => self.start_observer_wait(),
                 Step::Topic(Some(Ok(event))) => self.take_gossip_event(event),
@@ -700,7 +718,7 @@ impl Observation {
                 Step::Interrupted => return Ok(()),
                 Step::WaitOver | Step::Topic(Some(Ok(GossipEvent::JoinTimedOut))) => {}
                 Step::Topic(Some(Ok(GossipEvent::Joined))) => {
-                    request_presence(&self.topic, &self.key, self.host.now_ms()).await?;
+                    self.request_presence_at_join().await?;
                 }
                 Step::Topic(None) => return Err(Failure::TopicClosed),
                 Step::Topic(Some(Err(failure))) => return Err(Failure::Topic(failure)),
@@ -713,6 +731,11 @@ impl Observation {
                 Step::Loop(event) => self.take_loop_event(event),
             }
         }
+    }
+
+    /// Asks the members to announce themselves, once, at the join the topic reports.
+    fn request_presence_at_join(&self) -> impl Future<Output = Result<(), Failure>> + Send + '_ {
+        request_presence(&self.topic, &self.key, self.host.now_ms())
     }
 
     /// Starts the observer wait at the first join or join timeout and keeps one already started.
@@ -831,7 +854,7 @@ fn peer_line(peer: &Peer) -> String {
     ])
 }
 
-/// The result line of a gossip payload: its kind, then every field of the payload in the order spec 3.7 declares them.
+/// The result line of a gossip payload: its kind, then every field of the payload in the order spec 3.7 declares them, a `seq` or an Unreachable `ts` in milliseconds and an Infrastructure `ts` in seconds.
 fn payload_line(payload: &OpenedPayload) -> Result<String, Failure> {
     Ok(match payload {
         OpenedPayload::Presence(presence) => tab_separated_line(&[

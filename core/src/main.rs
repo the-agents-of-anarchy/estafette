@@ -18,7 +18,7 @@ use estafette::cli::infra::{
 };
 use estafette::cli::network::{self, NetworkCommand, NetworkCommandError};
 use estafette::cli::observer::{
-    self, ObserverCommand, ObserverCommandError, ObserverEffects, OperatorEffects,
+    self, Interruption, ObserverCommand, ObserverCommandError, ObserverEffects, OperatorEffects,
 };
 use estafette::config::{ConfigError, NetworkConfig};
 use estafette::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
@@ -395,25 +395,6 @@ struct ObserverRuntime {
     operator_effects: OperatorEffects,
 }
 
-/// What SIGINT does while an observer runtime runs its command.
-#[derive(Debug, Clone, Copy)]
-enum Interruption {
-    /// The command listens for SIGINT and ends its own run when it arrives.
-    EndsTheCommand,
-    /// SIGINT keeps its default and ends the process, for a command that never waits for it.
-    EndsTheProcess,
-}
-
-/// How an observer command takes SIGINT: show peers and tail end their observation, test send leaves SIGINT to end the process.
-const fn interruption_of(command: &ObserverCommand) -> Interruption {
-    match command {
-        ObserverCommand::ShowPeers { .. } | ObserverCommand::Tail { .. } => {
-            Interruption::EndsTheCommand
-        }
-        ObserverCommand::TestSend { .. } => Interruption::EndsTheProcess,
-    }
-}
-
 fn observer_runtime(
     environment: impl Fn(&str) -> Option<OsString>,
     cards_dir: Option<PathBuf>,
@@ -457,7 +438,7 @@ fn run_observer_command(
         runtime,
         effects,
         operator_effects,
-    } = observer_runtime(environment, command.cards_dir(), interruption_of(command))?;
+    } = observer_runtime(environment, command.cards_dir(), command.interruption())?;
     runtime
         .block_on(observer::run(
             command,
@@ -669,6 +650,7 @@ mod tests {
     use std::sync::atomic::AtomicBool;
 
     use clap::CommandFactory;
+    use clap::error::ErrorKind;
     #[cfg(feature = "relay")]
     use estafette::crypto::KEY_LEN;
 
@@ -916,7 +898,8 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_13_a_malformed_invitation_or_host_line_is_a_usage_error_that_exits_2() {
+    fn spec_3_13_a_command_line_naming_a_malformed_invitation_or_host_line_is_refused_before_any_command_runs_with_status_2()
+     {
         const MALFORMED: &str = "not-an-invitation";
         const USAGE_ERROR_EXIT_CODE: i32 = 2;
         for arguments in [
@@ -926,6 +909,7 @@ mod tests {
             let refusal =
                 EstafetteArguments::try_parse_from(arguments.iter().copied()).unwrap_err();
 
+            assert_eq!(refusal.kind(), ErrorKind::ValueValidation, "{arguments:?}");
             assert_eq!(refusal.exit_code(), USAGE_ERROR_EXIT_CODE, "{arguments:?}");
         }
     }
