@@ -18,7 +18,8 @@ use crate::payload_placeholders::UNSET_MAC;
 use crate::scratch_machine::{Card, ScratchMachine};
 use crate::scripted_node::ScriptedNode;
 
-const NETWORK: &str = "acme";
+/// The name of the network every local test creates.
+pub const NETWORK: &str = "acme";
 /// A relay URL no resolver answers, for a host that is never reached.
 const SILENT_RELAY: &str = "https://relay.estafette.invalid/";
 

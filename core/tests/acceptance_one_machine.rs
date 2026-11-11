@@ -1212,11 +1212,10 @@ mod kept_run_records {
 
     use serde_json::json;
 
-    use crate::local_network::{LocalNetwork, MetPair};
+    use crate::local_network::{LocalNetwork, MetPair, NETWORK};
     use crate::scratch_machine::{REDACTED, ScratchMachine};
     use crate::send;
 
-    const NETWORK: &str = "acme";
     /// The members the real-record test starts: amy, bob and the refused one.
     const MEMBERS_STARTED: usize = 3;
     /// The field the refused member's configuration lacks, as the binary's refusal names it.
