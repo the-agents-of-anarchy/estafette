@@ -18,6 +18,8 @@ const RELAY_ONLY_RECIPE: &str = "remote::relay-only-to-here";
 const RELAY_PATHS_RESTORED_RECIPE: &str = "remote::relay-paths-restored";
 /// The recipe that starts the network's host on a server, reusing a live one.
 const HOST_STARTED_RECIPE: &str = "remote::infrastructure";
+/// The recipe that stops the network's host on a server when it runs.
+const HOST_STOPPED_RECIPE: &str = "remote::host-down";
 
 /// A lab server the acceptance gate brought up, reached through the remote recipes.
 pub struct LabServer {
@@ -107,6 +109,12 @@ impl KillableHostServer {
     #[track_caller]
     pub fn start_host(&self) {
         self.server.run(HOST_STARTED_RECIPE, &[], &[]);
+    }
+
+    /// Stops the host on the server when it runs, relay and bootstrap node together.
+    #[track_caller]
+    pub fn stop_host(&self) {
+        self.server.run(HOST_STOPPED_RECIPE, &[], &[]);
     }
 }
 

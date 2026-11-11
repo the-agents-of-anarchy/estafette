@@ -2,6 +2,7 @@ use std::fs;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use data_encoding::HEXLOWER;
+use estafette::config::{Host, NetworkConfig};
 use estafette::wire::HostAddr;
 use serde_json::{Value, json};
 
@@ -51,6 +52,10 @@ const INFRASTRUCTURE_KIND: &str = "infrastructure";
 const RECORD_HOST_COLUMN: usize = 2;
 /// The column of an infrastructure line holding the record's ts.
 const RECORD_TS_COLUMN: usize = 5;
+/// How soon after the added host's first record every member's configuration must name it (spec 3.15 test 22).
+const SPEC_HOST_ADDED_WITHIN: Duration = Duration::from_millis(1000);
+/// How often the members' network configurations are read while waiting for a host.
+const CONFIG_POLL: Duration = Duration::from_millis(100);
 
 /// The base followed by letters drawn from the clock and the process, so the handle and the card named for it are free on the live network and on every lab server whatever earlier runs left.
 fn fresh_handle(base: &str) -> String {
@@ -230,6 +235,16 @@ impl Member {
         drop(fs::remove_dir_all(&copies));
         rebinds
     }
+
+    /// The hosts the member's network configuration names now.
+    fn configured_hosts(&self) -> Vec<Host> {
+        let config_file = self
+            .machine
+            .directories()
+            .network_config_file(self.machine.network())
+            .unwrap();
+        NetworkConfig::load(&config_file).unwrap().hosts
+    }
 }
 
 /// A `tail` of the network on the observer's machine, returned once it printed its first payload.
@@ -306,4 +321,109 @@ fn spec_3_15_test_24_three_members_running_180_s_with_no_host_killed_never_rebin
         rebinds.iter().all(|(_handle, count)| *count == 0),
         "{rebinds:?}"
     );
+}
+
+/// Each member's saved entry for the host with the instant it was first read, every configuration read at each poll until each names the host or the deadline passed; a member that did not name it by then has none.
+fn hosts_first_read(
+    members: &[Member],
+    id: &str,
+    deadline: Instant,
+) -> Vec<Option<(Host, Instant)>> {
+    let mut first_read: Vec<Option<(Host, Instant)>> = members.iter().map(|_| None).collect();
+    loop {
+        for (member, read) in members.iter().zip(first_read.iter_mut()) {
+            if read.is_none() {
+                *read = member
+                    .configured_hosts()
+                    .into_iter()
+                    .find(|host| host.id == id)
+                    .map(|host| (host, Instant::now()));
+            }
+        }
+        if first_read.iter().all(Option::is_some) || Instant::now() > deadline {
+            return first_read;
+        }
+        std::thread::sleep(CONFIG_POLL);
+    }
+}
+
+/// Spec 3.15 test 22: the killable host, stopped before the members start, is started while they run, and within 1000 ms of its first record reaching this machine's `tail` every member's network configuration names it with its relay, that record or a later one being the first each member accepted.
+#[test]
+fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configuration_within_1000_ms_of_its_first_record()
+ {
+    let _live_host = live_host_to_itself();
+    let network = LiveNetwork::from_environment();
+    let killable = KillableHostServer::from_environment();
+    let killable_host = KillableHost::from_environment();
+    let added = killable_host.address();
+    let added_id = host_id(added);
+    timed("the killable host stopped before any member starts", || {
+        killable.stop_host();
+    });
+    let observer = LabMachine::joined("t22-tail", &network);
+    let tail = timed("tail joined through the live host", || {
+        tail_of(&observer, &network)
+    });
+    let members = timed("amy and bob claimed through the live host", || {
+        [
+            Member::joined_by_invitation(&network, "amy"),
+            Member::joined_by_invitation(&network, "bob"),
+        ]
+    });
+    let named_before: Vec<bool> = members
+        .iter()
+        .map(|member| {
+            member
+                .configured_hosts()
+                .iter()
+                .any(|host| host.id == added_id)
+        })
+        .collect();
+
+    let starting = Instant::now();
+    timed("the killable host started while the members run", || {
+        killable.start_host();
+    });
+    let (first_record, after) = timed("tail prints the added host's first record", || {
+        tail.first_line_after(starting, HOST_START_WAIT, |line| {
+            record_ts_of(line, &added_id).is_some()
+        })
+    });
+    let first_record_ts = record_ts_of(&first_record, &added_id).unwrap();
+    let deadline = starting
+        .checked_add(after)
+        .and_then(|arrived| arrived.checked_add(SPEC_HOST_ADDED_WITHIN))
+        .unwrap();
+    let first_read = timed("every member's configuration names the added host", || {
+        hosts_first_read(&members, &added_id, deadline)
+    });
+
+    assert_eq!(named_before, [false, false]);
+    for (member, read) in members.iter().zip(&first_read) {
+        let Some((host, read_at)) = read else {
+            panic!(
+                "{} did not name the added host within {SPEC_HOST_ADDED_WITHIN:?} of its first record: {:?}",
+                member.handle,
+                member.configured_hosts()
+            );
+        };
+        assert_eq!(
+            host.relay,
+            added.relay.as_str(),
+            "{}: {host:?}",
+            member.handle
+        );
+        assert!(
+            host.ts.is_some_and(|ts| ts >= first_record_ts),
+            "{} accepted a record of ts {:?} before the first the tail printed, of ts {first_record_ts}, so that record's arrival does not time the host's first",
+            member.handle,
+            host.ts
+        );
+        assert!(
+            *read_at <= deadline,
+            "{} named the added host {:?} after the deadline",
+            member.handle,
+            read_at.duration_since(deadline)
+        );
+    }
 }

@@ -258,3 +258,8 @@ relay-paths-restored:
         done
     done
     RULES
+
+[doc("Stop the network's host on the server when it runs, relay and bootstrap node together; infrastructure starts it again")]
+[group('lab')]
+host-down:
+    ssh {{ ssh_opts }} root@$(hcloud server ip {{ server }}) 'if systemctl is-active --quiet {{ host_unit }}; then systemctl stop {{ host_unit }}; fi'
