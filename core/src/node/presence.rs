@@ -1340,6 +1340,10 @@ pub(super) mod tests {
     const INIT_ON_A_LAGGING_CLOCK_LATEST: Duration = Duration::from_millis(2000);
     pub(in crate::node) const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
     const LISTING_POLL: Duration = Duration::from_millis(20);
+    #[cfg(feature = "relay")]
+    const HOME_RELAY_STATUS_WITHIN: Duration = Duration::from_secs(10);
+    #[cfg(feature = "relay")]
+    const RELAY_LOSS_REMOVAL_SLACK: Duration = Duration::from_millis(1500);
     pub(in crate::node) const PROBE_NONCE: crate::wire::Nonce = [7; 16];
     const NODE_TESTS_AT_ONCE: usize = 2;
     const INBOX_FRAME_WAIT: Duration = Duration::from_secs(2);
@@ -3591,6 +3595,64 @@ pub(super) mod tests {
 
         assert!(started.elapsed() < INIT_ON_A_LAGGING_CLOCK_LATEST);
         drop(members.pop());
+        drop(scratch);
+    }
+
+    #[cfg(feature = "relay")]
+    async fn wait_for_home_relay_connection(endpoint: &iroh::Endpoint, connected: bool) {
+        tokio::time::timeout(HOME_RELAY_STATUS_WITHIN, async {
+            while !endpoint
+                .home_relay_status()
+                .get()
+                .iter()
+                .any(|status| status.is_connected() == connected)
+            {
+                tokio::time::sleep(LISTING_POLL).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_elapsed| panic!("the home relay never became connected={connected}"));
+    }
+
+    #[cfg(feature = "relay")]
+    #[tokio::test]
+    async fn spec_3_8_a_home_relay_lost_for_the_relay_loss_wait_leaves_the_relay_map() {
+        use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+
+        let scratch = Scratch::new("relay-loss").await;
+        let mut relay_config = ServerConfig::default();
+        relay_config.relay = Some(RelayConfig::new(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            0,
+        ))));
+        let relay = Server::spawn(relay_config).await.unwrap();
+        let relay_address = relay_url(&format!("http://{}/", relay.http_addr().unwrap()));
+        let endpoint = NodeEndpoint::bind(
+            secret_key(FIRST_SEED),
+            *keys().gate_key(),
+            vec![relay_address.clone()],
+            move |nonce: &mut [u8; KEY_LEN]| *nonce = [FIRST_SEED; KEY_LEN],
+            |_ignored| {},
+        )
+        .await
+        .unwrap();
+        let member = start_member(
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC),
+            endpoint,
+            (
+                scratch.inbox(FIRST_SEED),
+                scratch.directories.inbox_socket_file(u32::from(FIRST_SEED)),
+            ),
+            scratch.network_file(FIRST_SEED),
+        )
+        .await;
+        wait_for_home_relay_connection(&member.endpoint, true).await;
+
+        relay.shutdown().await.unwrap();
+        wait_for_home_relay_connection(&member.endpoint, false).await;
+        tokio::time::sleep(SPEC_RELAY_LOSS_WAIT + RELAY_LOSS_REMOVAL_SLACK).await;
+
+        assert!(member.endpoint.remove_relay(&relay_address).await.is_none());
         drop(scratch);
     }
 }
