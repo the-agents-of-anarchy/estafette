@@ -8,7 +8,13 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 const RECONNECT_PAUSE: Duration = Duration::from_millis(500);
-const FRAME_LINE_TERMINATOR: char = '\n';
+const FRAME_LINE_TERMINATOR_BYTE: u8 = b'\n';
+const WIRE_STRUCTURE_MAX_BYTES: u64 = 1_114_112;
+const WORST_CASE_ESCAPED_BYTES_PER_TEXT_BYTE: u64 = 6;
+const FRAME_FIELDS_ALLOWANCE_BYTES: u64 = 4096;
+const MAX_FRAME_LINE_BYTES: u64 = WIRE_STRUCTURE_MAX_BYTES
+    .saturating_mul(WORST_CASE_ESCAPED_BYTES_PER_TEXT_BYTE)
+    .saturating_add(FRAME_FIELDS_ALLOWANCE_BYTES);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct InboxFrame {
@@ -28,10 +34,8 @@ pub enum InboxClientError {
     ConnectFailed(io::Error),
     ResumeRequestFailed(io::Error),
     ReadFailed(io::Error),
-    MalformedFrame {
-        line: String,
-        reason: serde_json::Error,
-    },
+    MalformedFrame(serde_json::Error),
+    FrameLineTooLong,
 }
 
 impl fmt::Display for InboxClientError {
@@ -45,15 +49,29 @@ impl fmt::Display for InboxClientError {
                 "cannot send the since line to the inbox socket: {source}"
             ),
             Self::ReadFailed(source) => write!(formatter, "cannot read the inbox socket: {source}"),
-            Self::MalformedFrame { line, reason } => write!(
+            Self::MalformedFrame(reason) => write!(
                 formatter,
-                "the inbox socket sent a frame it cannot read ({reason}): {line}"
+                "the inbox socket sent a frame it cannot read: {reason}"
+            ),
+            Self::FrameLineTooLong => write!(
+                formatter,
+                "the inbox socket sent a frame line over {MAX_FRAME_LINE_BYTES} bytes"
             ),
         }
     }
 }
 
-impl std::error::Error for InboxClientError {}
+impl std::error::Error for InboxClientError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ConnectFailed(source)
+            | Self::ResumeRequestFailed(source)
+            | Self::ReadFailed(source) => Some(source),
+            Self::MalformedFrame(reason) => Some(reason),
+            Self::FrameLineTooLong => None,
+        }
+    }
+}
 
 pub trait InboxConnector {
     type Stream: Read + Write;
@@ -123,30 +141,40 @@ fn deliver_until_close(
 
 fn send_resume_request(stream: &mut impl Write, since: u64) -> io::Result<()> {
     let mut request = serde_json::to_string(&ResumeRequest { since })?;
-    request.push(FRAME_LINE_TERMINATOR);
+    request.push(char::from(FRAME_LINE_TERMINATOR_BYTE));
     stream.write_all(request.as_bytes())?;
     stream.flush()
 }
 
 fn read_complete_line(reader: &mut impl BufRead) -> Result<Option<String>, InboxClientError> {
-    let mut line = String::new();
+    let mut bytes = Vec::new();
     reader
-        .read_line(&mut line)
+        .by_ref()
+        .take(MAX_FRAME_LINE_BYTES)
+        .read_until(FRAME_LINE_TERMINATOR_BYTE, &mut bytes)
         .map_err(InboxClientError::ReadFailed)?;
-    Ok(line.strip_suffix(FRAME_LINE_TERMINATOR).map(str::to_owned))
+    if bytes.last() != Some(&FRAME_LINE_TERMINATOR_BYTE) {
+        return if u64::try_from(bytes.len()).is_ok_and(|length| length >= MAX_FRAME_LINE_BYTES) {
+            Err(InboxClientError::FrameLineTooLong)
+        } else {
+            Ok(None)
+        };
+    }
+    bytes.pop();
+    String::from_utf8(bytes).map(Some).map_err(|error| {
+        InboxClientError::ReadFailed(io::Error::new(io::ErrorKind::InvalidData, error))
+    })
 }
 
 fn parse_frame(line: &str) -> Result<InboxFrame, InboxClientError> {
-    serde_json::from_str(line).map_err(|reason| InboxClientError::MalformedFrame {
-        line: line.to_owned(),
-        reason,
-    })
+    serde_json::from_str(line).map_err(InboxClientError::MalformedFrame)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
+    use crate::seeded::next_below;
+    use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
     use std::io::Cursor;
     use std::rc::Rc;
@@ -201,7 +229,6 @@ mod tests {
     const NO_FRAME_HANDLED_YET: u64 = 0;
 
     struct Followed {
-        requests: Vec<String>,
         delivered: Vec<InboxFrame>,
         pauses: Vec<Duration>,
         ended_with: InboxClientError,
@@ -277,7 +304,6 @@ mod tests {
         }));
         let (delivered, pauses, ended_with) = follow_until_it_ends(&mut connector);
         Followed {
-            requests: Vec::new(),
             delivered,
             pauses,
             ended_with,
@@ -299,7 +325,7 @@ mod tests {
         }
     }
 
-    fn follow_scripted(connections: &[String]) -> Followed {
+    fn follow_scripted(connections: &[String]) -> (Vec<String>, Followed) {
         let requests = Rc::new(RefCell::new(Vec::new()));
         let mut connector = ScriptedConnector {
             connections: connections.iter().cloned().collect(),
@@ -307,30 +333,33 @@ mod tests {
         };
         let (delivered, pauses, ended_with) = follow_until_it_ends(&mut connector);
         let requests = requests.borrow().clone();
-        Followed {
+        (
             requests,
-            delivered,
-            pauses,
-            ended_with,
-        }
+            Followed {
+                delivered,
+                pauses,
+                ended_with,
+            },
+        )
     }
 
     #[test]
     fn spec_3_11_first_connection_asks_since_zero_and_delivers_replayed_frames_in_order() {
-        let followed = follow_scripted(&[format!("{}{}", frame_line(7), frame_line(9))]);
-        assert_eq!(followed.requests[0], "{\"since\":0}\n");
+        let (requests, followed) =
+            follow_scripted(&[format!("{}{}", frame_line(7), frame_line(9))]);
+        assert_eq!(requests[0], "{\"since\":0}\n");
         assert_eq!(followed.delivered, vec![frame(7), frame(9)]);
     }
 
     #[test]
     fn spec_3_12_step_5_reconnect_asks_since_the_last_seq_seen() {
-        let followed = follow_scripted(&[
+        let (requests, followed) = follow_scripted(&[
             format!("{}{}", frame_line(3), frame_line(4)),
             frame_line(8),
             String::new(),
         ]);
         assert_eq!(
-            followed.requests,
+            requests,
             vec!["{\"since\":0}\n", "{\"since\":4}\n", "{\"since\":8}\n"]
         );
         assert_eq!(followed.delivered, vec![frame(3), frame(4), frame(8)]);
@@ -338,7 +367,7 @@ mod tests {
 
     #[test]
     fn spec_3_12_step_5_a_frame_replayed_after_reconnect_is_delivered_once() {
-        let followed = follow_scripted(&[
+        let (_, followed) = follow_scripted(&[
             format!("{}{}", frame_line(3), frame_line(4)),
             format!("{}{}", frame_line(4), frame_line(5)),
         ]);
@@ -347,23 +376,23 @@ mod tests {
 
     #[test]
     fn spec_3_11_a_line_cut_off_by_the_close_is_dropped_and_resent_after_reconnect() {
-        let followed = follow_scripted(&[
+        let (requests, followed) = follow_scripted(&[
             format!("{}{{\"seq\":4,\"id\":\"id-4\",\"fr", frame_line(3)),
             frame_line(4),
         ]);
-        assert_eq!(followed.requests[1], "{\"since\":3}\n");
+        assert_eq!(requests[1], "{\"since\":3}\n");
         assert_eq!(followed.delivered, vec![frame(3), frame(4)]);
     }
 
     #[test]
     fn spec_3_12_step_5_waits_the_reconnect_pause_before_each_reconnect() {
-        let followed = follow_scripted(&[frame_line(1), frame_line(2)]);
+        let (_, followed) = follow_scripted(&[frame_line(1), frame_line(2)]);
         assert_eq!(followed.pauses, vec![RECONNECT_PAUSE, RECONNECT_PAUSE]);
     }
 
     #[test]
     fn spec_3_12_step_3_a_refused_connection_ends_the_following() {
-        let followed = follow_scripted(&[]);
+        let (_, followed) = follow_scripted(&[]);
         assert!(matches!(
             followed.ended_with,
             InboxClientError::ConnectFailed(_)
@@ -373,12 +402,201 @@ mod tests {
 
     #[test]
     fn spec_3_11_a_frame_that_is_not_json_ends_the_following() {
-        let followed = follow_scripted(&[format!("{}not json\n", frame_line(1))]);
+        let (_, followed) = follow_scripted(&[format!("{}not json\n", frame_line(1))]);
         assert!(matches!(
             &followed.ended_with,
-            InboxClientError::MalformedFrame { line, .. } if line == "not json"
+            InboxClientError::MalformedFrame(_)
         ));
         assert_eq!(followed.delivered, vec![frame(1)]);
+    }
+
+    #[test]
+    fn spec_3_11_the_error_of_a_frame_that_cannot_be_read_does_not_print_its_message_body() {
+        const BODY_SECRET: &str = "top-secret-body";
+        let (_, followed) = follow_scripted(&[format!(
+            "{{\"seq\":1,\"id\":\"id-1\",\"from\":\"ana\",\"body\":\"{BODY_SECRET}\"\n"
+        )]);
+        assert!(matches!(
+            &followed.ended_with,
+            InboxClientError::MalformedFrame(_)
+        ));
+        assert!(!followed.ended_with.to_string().contains(BODY_SECRET));
+    }
+
+    #[test]
+    fn spec_3_11_a_frame_line_longer_than_any_frame_can_be_ends_the_following() {
+        let overlong_line_without_terminator =
+            "x".repeat(usize::try_from(MAX_FRAME_LINE_BYTES).unwrap_or(usize::MAX));
+        let (_, followed) = follow_scripted(&[
+            frame_line(1),
+            overlong_line_without_terminator,
+            frame_line(2),
+        ]);
+        assert!(matches!(
+            followed.ended_with,
+            InboxClientError::FrameLineTooLong
+        ));
+        assert_eq!(followed.delivered, vec![frame(1)]);
+    }
+
+    #[test]
+    fn spec_3_11_an_overlong_line_cut_inside_a_multi_byte_character_ends_the_following() {
+        let characters_past_the_cap = usize::try_from(MAX_FRAME_LINE_BYTES).unwrap_or(usize::MAX);
+        let overlong_line_cut_inside_a_character =
+            format!("x{}", "\u{e9}".repeat(characters_past_the_cap));
+        let (_, followed) = follow_scripted(&[frame_line(1), overlong_line_cut_inside_a_character]);
+        assert!(
+            matches!(followed.ended_with, InboxClientError::FrameLineTooLong),
+            "{:?}",
+            followed.ended_with
+        );
+        assert_eq!(followed.delivered, vec![frame(1)]);
+    }
+
+    struct EndlessLineStream {
+        unread_bytes: u64,
+        consumed_bytes: Rc<Cell<u64>>,
+    }
+
+    impl Read for EndlessLineStream {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let served = usize::try_from(self.unread_bytes)
+                .unwrap_or(usize::MAX)
+                .min(buffer.len());
+            buffer.iter_mut().take(served).for_each(|byte| *byte = b'x');
+            let served_bytes = u64::try_from(served).unwrap_or_default();
+            self.unread_bytes = self.unread_bytes.saturating_sub(served_bytes);
+            self.consumed_bytes
+                .set(self.consumed_bytes.get().saturating_add(served_bytes));
+            Ok(served)
+        }
+    }
+
+    impl Write for EndlessLineStream {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct EndlessLineConnector(Option<EndlessLineStream>);
+
+    impl InboxConnector for EndlessLineConnector {
+        type Stream = EndlessLineStream;
+
+        fn connect(&mut self) -> io::Result<EndlessLineStream> {
+            self.0
+                .take()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::ConnectionRefused))
+        }
+    }
+
+    const READ_AHEAD_SLACK_BYTES: u64 = 65_536;
+
+    #[test]
+    fn spec_3_11_a_line_without_a_newline_is_read_no_further_than_the_frame_line_cap() {
+        let consumed_bytes = Rc::new(Cell::new(0));
+        let mut connector = EndlessLineConnector(Some(EndlessLineStream {
+            unread_bytes: MAX_FRAME_LINE_BYTES.saturating_mul(2),
+            consumed_bytes: Rc::clone(&consumed_bytes),
+        }));
+        let (_, _, ended_with) = follow_until_it_ends(&mut connector);
+        assert!(matches!(ended_with, InboxClientError::FrameLineTooLong));
+        assert!(
+            consumed_bytes.get() <= MAX_FRAME_LINE_BYTES.saturating_add(READ_AHEAD_SLACK_BYTES),
+            "{} bytes read",
+            consumed_bytes.get()
+        );
+    }
+
+    #[test]
+    fn spec_3_11_a_frame_the_core_writer_can_emit_at_its_largest_is_delivered() {
+        let escaped_control_byte = '\u{1}';
+        let largest_text_bytes = usize::try_from(WIRE_STRUCTURE_MAX_BYTES).unwrap_or_default();
+        let body: String = std::iter::repeat_n(escaped_control_byte, largest_text_bytes).collect();
+        let line = format!(
+            "{{\"seq\":1,\"id\":\"\",\"from\":\"\",\"body\":{},\"sent_at\":1,\"received_at\":1}}\n",
+            serde_json::to_string(&body).expect("a string serializes")
+        );
+        assert!(
+            u64::try_from(line.len()).unwrap_or(u64::MAX) <= MAX_FRAME_LINE_BYTES,
+            "the largest writable line is {} bytes",
+            line.len()
+        );
+        let (_, followed) = follow_scripted(&[line]);
+        assert_eq!(followed.delivered.len(), 1);
+        assert_eq!(
+            followed.delivered.first().map(|frame| frame.body.len()),
+            Some(largest_text_bytes)
+        );
+    }
+
+    #[test]
+    fn spec_3_11_a_valid_frame_line_of_exactly_the_cap_is_delivered() {
+        let frame_text = r#"{"seq":1,"id":"","from":"","body":""}"#;
+        let padding = usize::try_from(MAX_FRAME_LINE_BYTES)
+            .unwrap_or_default()
+            .saturating_sub(frame_text.len())
+            .saturating_sub(1);
+        let line = format!("{frame_text}{}\n", " ".repeat(padding));
+        assert_eq!(u64::try_from(line.len()).ok(), Some(MAX_FRAME_LINE_BYTES));
+        let (_, followed) = follow_scripted(&[line]);
+        assert_eq!(followed.delivered.len(), 1);
+    }
+
+    #[test]
+    fn spec_3_11_every_error_that_wraps_a_cause_names_it_as_its_source() {
+        use std::error::Error;
+        let cause = || io::Error::from(io::ErrorKind::BrokenPipe);
+        for error in [
+            InboxClientError::ConnectFailed(cause()),
+            InboxClientError::ResumeRequestFailed(cause()),
+            InboxClientError::ReadFailed(cause()),
+            InboxClientError::MalformedFrame(
+                serde_json::from_str::<InboxFrame>("x").expect_err("not a frame"),
+            ),
+        ] {
+            assert!(error.source().is_some(), "{error}");
+        }
+        assert!(InboxClientError::FrameLineTooLong.source().is_none());
+    }
+
+    const GENERATED_CASES: u64 = 200;
+    const MOST_RECONNECTS: usize = 5;
+    const MOST_FRAMES_PER_CONNECTION: usize = 6;
+    const MOST_FRAMES_REPLAYED_AGAIN: usize = 3;
+
+    #[test]
+    fn spec_3_12_step_5_generated_reconnects_deliver_each_seq_once_in_order() {
+        for seed in 0..GENERATED_CASES {
+            let mut state = seed;
+            let mut connections = Vec::new();
+            let mut expected = Vec::new();
+            let mut highest_delivered = NO_FRAME_HANDLED_YET;
+            for _ in 0..=next_below(&mut state, MOST_RECONNECTS) {
+                let replayed_again =
+                    u64::try_from(next_below(&mut state, MOST_FRAMES_REPLAYED_AGAIN))
+                        .unwrap_or_default();
+                let first_seq = highest_delivered
+                    .saturating_sub(replayed_again)
+                    .saturating_add(1);
+                let frame_count = u64::try_from(next_below(&mut state, MOST_FRAMES_PER_CONNECTION))
+                    .unwrap_or_default();
+                let seqs: Vec<u64> = (first_seq..first_seq.saturating_add(frame_count)).collect();
+                connections.push(seqs.iter().map(|seq| frame_line(*seq)).collect::<String>());
+                for seq in seqs {
+                    if seq > highest_delivered {
+                        highest_delivered = seq;
+                        expected.push(frame(seq));
+                    }
+                }
+            }
+            let (_, followed) = follow_scripted(&connections);
+            assert_eq!(followed.delivered, expected, "seed {seed}");
+        }
     }
 
     fn serve_reply(
@@ -424,6 +642,9 @@ mod tests {
         use std::os::unix::net::UnixListener;
         let socket_path =
             std::env::temp_dir().join(format!("estf-u31-{}.sock", std::process::id()));
+        if let Err(failure) = std::fs::remove_file(&socket_path) {
+            assert_eq!(failure.kind(), io::ErrorKind::NotFound, "stale socket file");
+        }
         let listener = UnixListener::bind(&socket_path).expect("bind");
         let socket_path_to_unlink = socket_path.clone();
         let server = std::thread::spawn(move || {
