@@ -12,7 +12,7 @@ use crate::handles::unique_handle;
 use crate::inbox_client::InboxClient;
 use crate::killable_host::KillableHost;
 use crate::lab_machine::LabMachine;
-use crate::lab_server::{KillableHostServer, LabServer};
+use crate::lab_server::LabServer;
 use crate::live_host::live_host_to_itself;
 use crate::live_network::LiveNetwork;
 use crate::mcp_server::{McpServer, ONLINE, online};
@@ -91,7 +91,7 @@ fn spec_3_15_test_15_show_peers_on_a_machine_with_no_session_lists_the_members_o
     let _live_host = live_host_to_itself();
     let network = LiveNetwork::from_environment();
     let live_host_server = LabServer::of_the_live_host();
-    let killable = KillableHostServer::from_environment();
+    let killable = KillableHost::from_environment();
     let amy = timed("amy serving on the live host's server", || {
         ServerMember::started(&live_host_server, &network, &unique_handle("amy"))
     });
@@ -134,7 +134,7 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
 {
     let _live_host = live_host_to_itself();
     let network = LiveNetwork::from_environment();
-    let killable = KillableHostServer::from_environment();
+    let killable = KillableHost::from_environment();
     let _relay_only = timed(
         "UDP between the killable host's server and this machine dropped",
         || killable.server().relay_only_to_here(),
@@ -336,11 +336,11 @@ fn record_ts_of(line: &str, host: &str) -> Option<u64> {
 
 /// Starts the killable host unless it runs and waits for the tail to print a record of it sent after the start began.
 #[track_caller]
-fn killable_host_serving(killable: &KillableHostServer, host: &HostAddr, tail: &Tail) {
+fn killable_host_serving(killable: &KillableHost, tail: &Tail) {
     let starting = Instant::now();
-    killable.start_host();
+    killable.start();
     tail.first_line_after(starting, HOST_START_WAIT, |line| {
-        record_ts_of(line, &host_id(host)).is_some()
+        record_ts_of(line, &host_id(killable.address())).is_some()
     });
 }
 
@@ -349,14 +349,13 @@ fn killable_host_serving(killable: &KillableHostServer, host: &HostAddr, tail: &
 fn spec_3_15_test_24_three_members_running_180_s_with_no_host_killed_never_rebind() {
     let _live_host = live_host_to_itself();
     let network = LiveNetwork::from_environment();
-    let killable = KillableHostServer::from_environment();
-    let killable_host = KillableHost::from_environment();
+    let killable = KillableHost::from_environment();
     let observer = LabMachine::joined("t24-tail", &network);
     let tail = timed("tail joined through the live host", || {
         tail_of(&observer, &network)
     });
     timed("the killable host serving", || {
-        killable_host_serving(&killable, killable_host.address(), &tail);
+        killable_host_serving(&killable, &tail);
     });
     let mut trio: Vec<Member> = timed("three members claimed through the live host", || {
         TRIO.iter()
@@ -416,13 +415,12 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
  {
     let _live_host = live_host_to_itself();
     let network = LiveNetwork::from_environment();
-    let killable = KillableHostServer::from_environment();
-    let _host_back = killable.host_started_when_dropped();
-    let killable_host = KillableHost::from_environment();
-    let added = killable_host.address();
+    let killable = KillableHost::from_environment();
+    let _host_back = killable.started_when_dropped();
+    let added = killable.address();
     let added_id = host_id(added);
     timed("the killable host stopped before any member starts", || {
-        killable.stop_host();
+        killable.stop();
     });
     let observer = LabMachine::joined("t22-tail", &network);
     let tail = timed("tail joined through the live host", || {
@@ -446,7 +444,7 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
 
     let starting = Instant::now();
     timed("the killable host started while the members run", || {
-        killable.start_host();
+        killable.start();
     });
     let (first_record, after) = timed("tail prints the added host's first record", || {
         tail.first_line_after(starting, HOST_START_WAIT, |line| {
@@ -583,15 +581,14 @@ fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_othe
  {
     let _live_host = live_host_to_itself();
     let network = LiveNetwork::from_environment();
-    let killable = KillableHostServer::from_environment();
-    let _host_back = killable.host_started_when_dropped();
     let doomed = KillableHost::from_environment();
+    let _host_back = doomed.started_when_dropped();
     let observer = LabMachine::joined("t23-tail", &network);
     let tail = timed("tail joined through the live host", || {
         tail_of(&observer, &network)
     });
     timed("the killable host serving", || {
-        killable_host_serving(&killable, doomed.address(), &tail);
+        killable_host_serving(&doomed, &tail);
     });
     let (mut trio, announced) = timed("three members homed on the killable host", || {
         trio_homed_on(&network, doomed.address())
@@ -659,15 +656,14 @@ fn spec_3_15_test_25_with_one_host_dead_a_member_invited_through_the_live_host_l
  {
     let _live_host = live_host_to_itself();
     let network = LiveNetwork::from_environment();
-    let killable = KillableHostServer::from_environment();
-    let _host_back = killable.host_started_when_dropped();
     let doomed = KillableHost::from_environment();
+    let _host_back = doomed.started_when_dropped();
     let observer = LabMachine::joined("t25-tail", &network);
     let tail = timed("tail joined through the live host", || {
         tail_of(&observer, &network)
     });
     timed("the killable host serving", || {
-        killable_host_serving(&killable, doomed.address(), &tail);
+        killable_host_serving(&doomed, &tail);
     });
     let present = timed("amy and bob claimed through the live host", || {
         [
@@ -729,9 +725,8 @@ fn spec_3_15_test_26_a_member_restarted_after_its_configured_host_died_joins_thr
  {
     let _live_host = live_host_to_itself();
     let network = LiveNetwork::from_environment();
-    let killable = KillableHostServer::from_environment();
-    let _host_back = killable.host_started_when_dropped();
     let doomed = KillableHost::from_environment();
+    let _host_back = doomed.started_when_dropped();
     let live_id = live_host_id(&network);
     let doomed_id = host_id(doomed.address());
     let observer = LabMachine::joined("t26-tail", &network);
@@ -739,7 +734,7 @@ fn spec_3_15_test_26_a_member_restarted_after_its_configured_host_died_joins_thr
         tail_of(&observer, &network)
     });
     timed("the killable host serving", || {
-        killable_host_serving(&killable, doomed.address(), &tail);
+        killable_host_serving(&doomed, &tail);
     });
     let mut amy = timed("amy claimed through the live host", || {
         Member::joined_by_invitation(&network, "amy")

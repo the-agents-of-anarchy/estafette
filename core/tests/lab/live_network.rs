@@ -19,7 +19,7 @@ pub const TASK_RUNNER: &str = "just";
 /// The recipe that runs the binary in the lab owner's directories.
 const OWNER_MACHINE_RECIPE: &str = "remote::estafette";
 /// The variable that recipe takes the binary's path from.
-const LAB_BINARY_VARIABLE: &str = "LAB_BINARY";
+pub const LAB_BINARY_VARIABLE: &str = "LAB_BINARY";
 
 /// The network the live lab host serves, as the invitation the acceptance gate exports names it.
 pub struct LiveNetwork {
