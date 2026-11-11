@@ -658,6 +658,10 @@ fn listen_for(kind: SignalKind, name: &'static str) -> Result<Signal, CommandLin
 }
 
 #[cfg(test)]
+#[path = "seeded_draws.rs"]
+mod seeded_draws;
+
+#[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
 
@@ -668,6 +672,7 @@ mod tests {
     use estafette::crypto::KEY_LEN;
 
     use super::*;
+    use crate::seeded_draws::Draws;
 
     const SECONDS_AFTER_EPOCH: u64 = 1_700_000_000;
     const MILLISECONDS_AFTER_EPOCH: u64 = 1_700_000_000_123;
@@ -739,25 +744,12 @@ mod tests {
     const MAXIMUM_STEPS: u64 = 20;
     const MAXIMUM_HELD_BYTES: u64 = 40;
     const MILLISECONDS_RANGE: u64 = 4_000_000_000_000;
-    const FIRST_MIXING_FACTOR: u64 = 0x9E37_79B9_7F4A_7C15;
-    const SECOND_MIXING_FACTOR: u64 = 0xBF58_476D_1CE4_E5B9;
-    const THIRD_MIXING_FACTOR: u64 = 0x94D0_49BB_1331_11EB;
-    const HIGH_BITS_SHIFT: u32 = 31;
-    const LOW_BITS_SHIFT: u32 = 29;
+    const SIDES_OF_THE_EPOCH: u64 = 2;
     const BYTE_VALUES: u64 = 256;
 
-    fn mixed(case: u64, step: u64) -> u64 {
-        let mut value = case
-            .wrapping_mul(FIRST_MIXING_FACTOR)
-            .wrapping_add(step.wrapping_mul(SECOND_MIXING_FACTOR));
-        value ^= value >> HIGH_BITS_SHIFT;
-        value = value.wrapping_mul(THIRD_MIXING_FACTOR);
-        value ^ (value >> LOW_BITS_SHIFT)
-    }
-
-    fn held_bytes(case: u64) -> Vec<u8> {
-        (0..mixed(case, 0) % MAXIMUM_HELD_BYTES)
-            .map(|index| u8::try_from(mixed(case, index.saturating_add(1)) % BYTE_VALUES).unwrap())
+    fn held_bytes(draws: &mut Draws) -> Vec<u8> {
+        (0..draws.below(MAXIMUM_HELD_BYTES))
+            .map(|_byte| u8::try_from(draws.below(BYTE_VALUES)).unwrap())
             .collect()
     }
 
@@ -769,10 +761,10 @@ mod tests {
             let recorded = AtomicU64::new(0);
             let mut latest_valid_reading = 0;
             let mut before_epoch_readings = 0_u64;
-            for step in 0..=mixed(case, 0) % MAXIMUM_STEPS {
-                let draw = mixed(case, step.saturating_add(1));
-                let milliseconds = draw % MILLISECONDS_RANGE;
-                let at_or_after_epoch = draw.is_multiple_of(2);
+            let mut draws = Draws::seeded(case);
+            for step in 0..=draws.below(MAXIMUM_STEPS) {
+                let milliseconds = draws.below(MILLISECONDS_RANGE);
+                let at_or_after_epoch = draws.below(SIDES_OF_THE_EPOCH) == 0;
                 let instant = if at_or_after_epoch {
                     UNIX_EPOCH + Duration::from_millis(milliseconds)
                 } else {
@@ -806,7 +798,7 @@ mod tests {
             } else {
                 GateFailure::Timeout
             };
-            let held = held_bytes(case);
+            let held = held_bytes(&mut Draws::seeded(case));
             let mut record = held.clone();
 
             write_gate_closing(&mut record, &failure);
@@ -836,7 +828,7 @@ mod tests {
                 Ok(status) => (*status, String::new()),
                 Err(failure) => (ExitStatus::Failure, format!("{failure}\n")),
             };
-            let held = held_bytes(case);
+            let held = held_bytes(&mut Draws::seeded(case));
             let mut record = held.clone();
 
             let status = exit_status_after(outcome, &mut record);
