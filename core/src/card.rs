@@ -345,13 +345,18 @@ struct DocumentCollector {
     anchored: HashMap<usize, AnchoredNode>,
     expanded_nodes: usize,
     refusal: Option<CardInvalid>,
-    nesting_exceeded: bool,
 }
 
-/// A finished anchored node and the number of nodes it holds.
+/// The nodes a tree holds and how many mappings and sequences nest one inside another in it.
+struct Extent {
+    node_count: usize,
+    nesting: usize,
+}
+
+/// A finished anchored node and its extent.
 struct AnchoredNode {
     node: Shared,
-    node_count: usize,
+    extent: Extent,
 }
 
 impl DocumentCollector {
@@ -375,12 +380,12 @@ impl DocumentCollector {
     fn place_remembering_anchor(&mut self, anchor: usize, node: Node) {
         let node = Rc::new(node);
         if anchor != NO_ANCHOR {
-            let node_count = count_nodes(&node);
+            let extent = extent_of(&node);
             self.anchored.insert(
                 anchor,
                 AnchoredNode {
                     node: Rc::clone(&node),
-                    node_count,
+                    extent,
                 },
             );
         }
@@ -395,20 +400,31 @@ impl DocumentCollector {
             ));
             return;
         };
-        let expanded_nodes = self.expanded_nodes.saturating_add(target.node_count);
+        let expanded_nodes = self.expanded_nodes.saturating_add(target.extent.node_count);
         if expanded_nodes > ALIAS_EXPANSION_MAX_NODES {
             self.refuse(CardInvalid::AliasExpansionTooLarge);
             return;
         }
+        let nesting = target.extent.nesting;
         let node = Rc::clone(&target.node);
+        if self.is_beyond_nesting_bound_inside_public(nesting) {
+            self.refuse(CardInvalid::NestingTooDeep);
+            return;
+        }
         self.expanded_nodes = expanded_nodes;
         self.place(node);
     }
 
+    /// Whether a subtree nesting that deep, put where the parser is, takes `public` past the nesting bound.
+    fn is_beyond_nesting_bound_inside_public(&self, subtree_nesting: usize) -> bool {
+        let enclosing_levels_of_public = self.open.len().saturating_sub(1);
+        self.is_inside_public()
+            && enclosing_levels_of_public.saturating_add(subtree_nesting) > CARD_DEEPEST_NESTING
+    }
+
     /// Opens a sequence or mapping; past the bound inside `public` it refuses and stops reading.
     fn open_within_nesting_bound(&mut self, node: OpenNode) {
-        if self.open.len() >= CARD_DEEPEST_NESTING && self.is_inside_public() {
-            self.nesting_exceeded = true;
+        if self.is_beyond_nesting_bound_inside_public(1) {
             self.refuse(CardInvalid::NestingTooDeep);
         } else {
             self.open.push(node);
@@ -430,31 +446,15 @@ impl DocumentCollector {
     }
 }
 
-/// The number of nodes in the tree, the node itself included, counted without recursion.
-fn count_nodes(root: &Node) -> usize {
-    let mut counted: usize = 0;
-    let mut pending = vec![root];
-    while let Some(node) = pending.pop() {
-        counted = counted.saturating_add(1);
-        match node {
-            Node::Scalar { .. } => {}
-            Node::Sequence { items, .. } => pending.extend(items.iter().map(|item| &**item)),
-            Node::Mapping { entries, .. } => pending.extend(
-                entries
-                    .iter()
-                    .flat_map(|(key, value)| [key, value])
-                    .map(|child| &**child),
-            ),
-        }
-    }
-    counted
-}
-
-/// The most mappings and sequences one inside another in the tree, counted without recursion.
-fn deepest_nesting(root: &Node) -> usize {
-    let mut deepest: usize = 0;
+/// The extent of the tree, measured without recursion.
+fn extent_of(root: &Node) -> Extent {
+    let mut extent = Extent {
+        node_count: 0,
+        nesting: 0,
+    };
     let mut pending = vec![(root, 0_usize)];
     while let Some((node, enclosing)) = pending.pop() {
+        extent.node_count = extent.node_count.saturating_add(1);
         let children: Vec<&Shared> = match node {
             Node::Scalar { .. } => continue,
             Node::Sequence { items, .. } => items.iter().collect(),
@@ -464,10 +464,10 @@ fn deepest_nesting(root: &Node) -> usize {
                 .collect(),
         };
         let level = enclosing.saturating_add(1);
-        deepest = deepest.max(level);
+        extent.nesting = extent.nesting.max(level);
         pending.extend(children.into_iter().map(|child| (&**child, level)));
     }
-    deepest
+    extent
 }
 
 impl MarkedEventReceiver for DocumentCollector {
@@ -517,7 +517,7 @@ fn feed_events_until_end_or_nesting_exceeded(
         let (event, mark) = parser.next_token()?;
         let stream_ended = event == Event::StreamEnd;
         collector.on_event(event, mark);
-        if stream_ended || collector.nesting_exceeded {
+        if stream_ended || matches!(collector.refusal, Some(CardInvalid::NestingTooDeep)) {
             return Ok(());
         }
     }
@@ -593,7 +593,7 @@ fn required_scalar_text(entries: &[Entry], name: &'static str) -> Result<String,
 fn public_mapping(entries: &[Entry]) -> Result<Map<String, Value>, CardInvalid> {
     let mapping = match value_of_unique_key(entries, PUBLIC_FIELD)? {
         None => Map::new(),
-        Some(node) => match convert_value(refuse_nesting_beyond_bound(node)?)? {
+        Some(node) => match convert_value(node)? {
             Value::Object(mapping) => mapping,
             Value::Null
             | Value::Bool(_)
@@ -606,14 +606,6 @@ fn public_mapping(entries: &[Entry]) -> Result<Map<String, Value>, CardInvalid> 
     };
     let mapping = refuse_over_cap(mapping).map_err(|bytes| CardInvalid::PublicOverCap { bytes })?;
     refuse_too_deep(mapping)
-}
-
-/// The node itself, or the refusal when it nests deeper than the bound the conversion can follow.
-fn refuse_nesting_beyond_bound(node: &Node) -> Result<&Node, CardInvalid> {
-    if deepest_nesting(node) > CARD_DEEPEST_NESTING {
-        return Err(CardInvalid::NestingTooDeep);
-    }
-    Ok(node)
 }
 
 /// The mapping itself, or the refusal naming its depth when it nests deeper than a member receives.
@@ -1471,12 +1463,16 @@ pub(crate) mod tests {
     const DEEP_ANCHORED_LEVELS: usize = 1000;
     const FAR_BEYOND_BOUND_LEVELS: usize = 100_000;
 
-    fn deep_anchored_container() -> String {
+    fn anchored_container_nesting(levels: usize) -> String {
         format!(
             "&anchor\n{}{}7",
             " ".repeat(CARD_DEEPEST_NESTING * 2),
-            "- ".repeat(DEEP_ANCHORED_LEVELS)
+            "- ".repeat(levels)
         )
+    }
+
+    fn deep_anchored_container() -> String {
+        anchored_container_nesting(DEEP_ANCHORED_LEVELS)
     }
 
     fn card_aliasing_into_public_an_anchor_beyond_the_bound(
@@ -1541,6 +1537,37 @@ pub(crate) mod tests {
             )),
             Err(CardInvalid::NestingTooDeep)
         );
+    }
+
+    fn public_nested_directly(depth: usize) -> Result<Card, CardInvalid> {
+        let sequence_levels = depth.saturating_sub(1);
+        parse_card(&format!(
+            "handle: ada\npublic_key: abc\npublic:\n  k:\n  {}1\n",
+            "- ".repeat(sequence_levels)
+        ))
+    }
+
+    fn public_nested_by_alias(depth: usize) -> Result<Card, CardInvalid> {
+        card_aliasing_into_public_an_anchor_beyond_the_bound(&anchored_container_nesting(
+            depth.saturating_sub(1),
+        ))
+    }
+
+    #[test]
+    fn a_public_at_the_deepest_nesting_bound_is_read_and_one_deeper_is_refused_directly_and_by_alias_spec_3_5()
+     {
+        for nested_to in [public_nested_directly, public_nested_by_alias] {
+            assert_eq!(
+                nested_to(CARD_DEEPEST_NESTING),
+                Err(CardInvalid::PublicTooDeep {
+                    depth: CARD_DEEPEST_NESTING
+                })
+            );
+            assert_eq!(
+                nested_to(CARD_DEEPEST_NESTING + 1),
+                Err(CardInvalid::NestingTooDeep)
+            );
+        }
     }
 
     fn card_nested(depth: usize) -> Result<Card, CardInvalid> {
