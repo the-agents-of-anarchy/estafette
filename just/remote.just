@@ -32,8 +32,8 @@ remote_host_config_file := remote_host_root / "config/estafette/networks" / lab_
 remote_host_certificate_file := remote_host_root / "data/estafette/infra" / lab_network + ".cert"
 remote_host_certificate_temporary := remote_host_certificate_file + ".tmp"
 remote_host_line_file := remote_host_root / "host-line"
-lab_invitation_file := lab_root / "invitation"
 host_record_under_root := "docs/orchestration_log/recon/2026-10-24/lab/host.txt"
+root_checkout_command := 'dirname "$(git rev-parse --path-format=absolute --git-common-dir)"'
 no_live_host := "no lab host is live; run just remote::host-up"
 
 [doc("List this module's recipes (what bare `just remote` runs)")]
@@ -167,35 +167,38 @@ infrastructure: lab-binary-built server-up
     LAB_SERVER={{ server }} just remote::host-start >&2
     printf '%s\n' "$host_line"
 
-[doc("Bring host A up for the lab network, add it to this machine's owner configuration, and record its invitation here and in the root checkout's lab/host.txt; refuses before creating anything when the lab binary is missing")]
+[doc("Bring host A up for the lab network: drop every host of an earlier stretch from this machine's owner configuration, start A, add A as its only host, and record the invitation in the root checkout's lab/host.txt alone; refuses before creating anything when the lab binary is missing")]
 [group('lab')]
 host-up: lab-binary-built
     #!/usr/bin/env bash
     set -euo pipefail
+    umask 077
+    if test -e {{ lab_config_file }}; then
+        awk '/^(\[\[hosts\]\]|hosts )/ { exit } { print }' {{ lab_config_file }} > {{ lab_config_file }}.tmp
+        printf 'hosts = []\n' >> {{ lab_config_file }}.tmp
+        mv {{ lab_config_file }}.tmp {{ lab_config_file }}
+    fi
     host_line="$(just remote::infrastructure)"
     address="$(hcloud server ip {{ server }})"
-    if ! just remote::estafette network show-invitation {{ lab_network }} > /dev/null 2>&1; then
-        just remote::estafette network add-host {{ lab_network }} "$host_line" >&2
-    fi
+    just remote::estafette network add-host {{ lab_network }} "$host_line" >&2
     invitation="$(just remote::estafette network show-invitation {{ lab_network }} 2> /dev/null)"
-    umask 077
-    printf '%s\n' "$invitation" > {{ lab_invitation_file }}
-    root_checkout="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+    root_checkout="$({{ root_checkout_command }})"
     printf 'network: %s\ninvitation: %s\nhost: %s\nserver: %s %s\ndomain: %s\nwritten: %s\n' {{ lab_network }} "$invitation" "$host_line" {{ server }} "$address" "${address//./-}.sslip.io" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$root_checkout/{{ host_record_under_root }}"
-    chmod 0600 "$root_checkout/{{ host_record_under_root }}" {{ lab_invitation_file }}
+    chmod 0600 "$root_checkout/{{ host_record_under_root }}"
     printf 'wrote %s for %s %s\n' "$root_checkout/{{ host_record_under_root }}" {{ server }} "$address" >&2
 
-[doc("Print the live lab host's invitation and nothing else; fails naming host-up when no host is live")]
+[doc("Print the live lab host's invitation from lab/host.txt and nothing else; fails naming host-up when no host is live")]
 [group('lab')]
 invitation:
     #!/usr/bin/env bash
     set -euo pipefail
+    record="$({{ root_checkout_command }})/{{ host_record_under_root }}"
     address="$(hcloud server ip {{ server }} 2> /dev/null)" || { echo "{{ no_live_host }}" >&2; exit 1; }
-    if ! test -s {{ lab_invitation_file }} || ! ssh {{ ssh_opts }} -o ConnectTimeout=5 root@"$address" systemctl is-active --quiet {{ host_unit }} 2> /dev/null; then
+    if ! test -s "$record" || ! ssh {{ ssh_opts }} -o ConnectTimeout=5 root@"$address" systemctl is-active --quiet {{ host_unit }} 2> /dev/null; then
         echo "{{ no_live_host }}" >&2
         exit 1
     fi
-    cat {{ lab_invitation_file }}
+    sed -n 's/^invitation: //p' "$record"
 
 [doc("List every lab resource in the Hetzner project, to read before any creation")]
 [group('read')]
