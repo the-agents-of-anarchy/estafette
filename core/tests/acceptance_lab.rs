@@ -621,6 +621,7 @@ mod spec_3_15_two_members_through_the_live_host {
     use std::time::{Duration, Instant};
 
     use estafette::keys::parse_secret_key;
+    use estafette::net::endpoint::QUIC_KEEP_ALIVE_INTERVAL;
     use estafette::wire::{self, Addr, Payload, Presence, SignatureBytes, Version};
     use iroh::{EndpointAddr, SecretKey, TransportAddr};
     use serde_json::{Value, json};
@@ -641,7 +642,6 @@ mod spec_3_15_two_members_through_the_live_host {
 
     const SPEC_GONE_WITHIN: Duration = Duration::from_millis(1000);
     const SPEC_QUIC_IDLE_TIMEOUT: Duration = Duration::from_millis(10_000);
-    const QUIC_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(500);
     const SPEC_PROBE_TIMEOUT: Duration = Duration::from_millis(3000);
     const SPEC_LARGEST_PRESENCE_BYTES: usize = 3951;
     const SPEC_GOSSIP_FRAME_BYTES: usize = 4096;

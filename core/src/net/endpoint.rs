@@ -15,7 +15,7 @@ pub use super::gate::GateFailure;
 
 pub const DIRECT_ALPN: &[u8] = b"estafette/direct/1";
 const QUIC_IDLE_TIMEOUT_MILLIS: u32 = 10_000;
-pub(crate) const QUIC_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(500);
+pub const QUIC_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(500);
 
 type FillNonce = Arc<dyn Fn(&mut [u8; NONCE_BYTES]) + Send + Sync>;
 type ReportGateClosing = Arc<dyn Fn(GateFailure) + Send + Sync>;
