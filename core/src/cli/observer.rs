@@ -2338,6 +2338,27 @@ mod tests {
         }
     }
 
+    /// Waits until the member holds the neighbor and the observer holds both, so each introduction a neighbor report started is answered, or until the wait ends.
+    async fn introduced_to_member_and_joined_observer(member: &Member, observer: &ObserverHost) {
+        let neighbor = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        let started = Instant::now();
+        while started.elapsed() <= SAME_ROWS_WAIT {
+            let held_by_member = member.node.peers().iter().any(|peer| peer.card == neighbor);
+            let held_by_observer: Vec<wire::PublicKey> = observer
+                .table()
+                .peers(wall_clock_ms())
+                .map(|peer| peer.card)
+                .collect();
+            if held_by_member
+                && held_by_observer.contains(&neighbor)
+                && held_by_observer.contains(member.address.id.as_bytes())
+            {
+                return;
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    }
+
     /// The address the neighbor announces: every direct address its endpoint reports, and one more when it has moved.
     fn neighbor_announcing(neighbor: &SilentNeighbor, moved: bool) -> Addr {
         let extra: Option<std::net::SocketAddr> =
@@ -2358,10 +2379,13 @@ mod tests {
             .map(|member| member.address.clone())
             .collect();
         let neighbor = start_silent_neighbor_joined_through(member_addresses.clone()).await;
-        lab.write_network_config(&[FIRST_SEED, SECOND_SEED]);
+        lab.write_network_config(&[FIRST_SEED, SECOND_SEED, NEIGHBOR_SEED]);
         let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
         let (effects, _operator_effects) = lab.effects(
-            member_addresses,
+            member_addresses
+                .into_iter()
+                .chain([neighbor.address.clone()])
+                .collect(),
             Box::pin(async move { drop(interrupted.await) }),
         );
         let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap()).unwrap();
@@ -2371,6 +2395,7 @@ mod tests {
         let mut tail_output = Vec::new();
 
         let (tail_result, held) = tokio::join!(observation.tail(&mut tail_output), async {
+            introduced_to_member_and_joined_observer(&members[0], &observer_host).await;
             let mut held = Vec::new();
             for moved in [false, true] {
                 let announced = neighbor_announcing(&neighbor, moved);
