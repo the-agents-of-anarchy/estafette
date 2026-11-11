@@ -1636,7 +1636,9 @@ mod tests {
         let ((_printed, outcome), (joined_through_the_first_endpoint, record)) =
             tokio::join!(run_planned(&scratch, plan, &seen), async {
                 let host = bound_endpoint(&seen, 0).await;
-                tokio::time::sleep(SPEC_JOIN_TIMEOUT_PAST).await;
+                tokio::time::pause();
+                tokio::time::advance(SPEC_JOIN_TIMEOUT_PAST).await;
+                tokio::time::resume();
                 let mut peer = Peer::subscribed_through(PEER_SEED, &host).await;
                 let joined_through_the_first_endpoint = peer.joined_within(PEER_JOIN_WAIT).await;
                 let record = peer.next_host_record(RECORD_AT_JOIN_WAIT).await;
