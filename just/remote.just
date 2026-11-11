@@ -11,7 +11,7 @@ key := env("LAB_KEY", home_directory() / ".ssh" / "estafette_lab")
 known_hosts := home_directory() / ".ssh" / "known_hosts_estafette_lab"
 ssh_opts := "-i " + key + " -o IdentitiesOnly=yes -o UserKnownHostsFile=" + known_hosts + " -o StrictHostKeyChecking=accept-new"
 lab_root := env("LAB_ROOT", "/tmp/estafette-lab")
-lab_binary := env("LAB_BINARY", "target/release/estafette")
+lab_binary := env("LAB_BINARY", "target/debug/estafette")
 lab_network := "lab"
 lab_directories := "XDG_CONFIG_HOME=" + lab_root / "config" + " XDG_DATA_HOME=" + lab_root / "data" + " XDG_RUNTIME_DIR=" + lab_root / "run"
 lab_server_type := env("LAB_SERVER_TYPE", "cpx22")
@@ -104,6 +104,11 @@ stop-member-on-server card:
 attach inbox_path:
     python3 -I just/remote/member.py attach {{ inbox_path }}
 
+[doc("Refuse, naming the missing path, unless the lab binary exists")]
+[private]
+lab-binary-built:
+    test -x {{ lab_binary }} || { echo "the lab binary {{ lab_binary }} does not exist: build it (cargo build -p estafette makes the default) or point LAB_BINARY at one" >&2; exit 1; }
+
 [doc("Create the lab server with its 24-hour deadline, or reuse it, wait for its setup, then push the committed tree and build the release binary with the relay there")]
 [group('lab')]
 server-up:
@@ -142,9 +147,9 @@ server-up:
     git archive HEAD | ssh {{ ssh_opts }} lab@"$address" 'mkdir -p {{ remote_tree }} && tar -x -C {{ remote_tree }}'
     ssh {{ ssh_opts }} lab@"$address" 'bash -l -c "cd {{ remote_tree }} && cargo build --release -p estafette --features relay"' >&2
 
-[doc("Bring the server up and run the network's relay and bootstrap node there as a systemd unit, reusing a live one; prints the host address line")]
+[doc("Bring the server up and run the network's relay and bootstrap node there as a systemd unit, reusing a live one; prints the host address line; refuses before creating anything when the lab binary is missing")]
 [group('lab')]
-infrastructure: server-up
+infrastructure: lab-binary-built server-up
     #!/usr/bin/env bash
     set -euo pipefail
     address="$(hcloud server ip {{ server }})"
@@ -160,9 +165,9 @@ infrastructure: server-up
     LAB_SERVER={{ server }} just remote::host-start >&2
     printf '%s\n' "$host_line"
 
-[doc("Bring host A up for the lab network, add it to this machine's owner configuration, and record its invitation here and in the root checkout's lab/host.txt")]
+[doc("Bring host A up for the lab network, add it to this machine's owner configuration, and record its invitation here and in the root checkout's lab/host.txt; refuses before creating anything when the lab binary is missing")]
 [group('lab')]
-host-up:
+host-up: lab-binary-built
     #!/usr/bin/env bash
     set -euo pipefail
     host_line="$(just remote::infrastructure)"
