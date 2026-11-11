@@ -37,6 +37,10 @@ const MESSAGE_ID: estafette::wire::MessageId = [9; 16];
 #[cfg(test)]
 const BODY: &str = "the parser review is ready";
 
+/// Spec 3.14 observer wait: how long a node waits after its topic reports joined before it assigns its handle, and within which a member lists a node after that node's Presence (spec 3.15 test 19).
+#[cfg(test)]
+const SPEC_OBSERVER_WAIT: std::time::Duration = std::time::Duration::from_millis(3000);
+
 /// Sends the body to the handle through the member's send tool and returns the envelope.
 #[cfg(test)]
 #[track_caller]
@@ -68,7 +72,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use crate::scripted_node::ScriptedNode;
     use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
     use crate::timed_step::timed;
-    use crate::{MESSAGE_ID, send};
+    use crate::{MESSAGE_ID, SPEC_OBSERVER_WAIT, send};
 
     const SPEC_GONE_KEPT_FOR: Duration = Duration::from_millis(1000);
     const STATUS_POLL: Duration = Duration::from_millis(50);
@@ -78,7 +82,6 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const SENT_BEFORE_THE_NEW_PRESENCE: &str = "sent before the new presence";
     const SENT_AFTER_THE_NEW_PRESENCE: &str = "sent after the new presence";
     const PRESENCE_APPLIED_SETTLE: Duration = Duration::from_millis(500);
-    const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
     const DOCUMENTATION_HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
     const SENT_BEFORE_THE_PRESENCE: &str = "sent before the presence";
     const SENT_AFTER_THE_PRESENCE: &str = "sent after the presence";
@@ -536,13 +539,13 @@ mod spec_3_15_test_19_on_one_machine {
     use iroh::{EndpointId, SecretKey};
     use iroh_gossip::api::Event;
 
+    use crate::SPEC_OBSERVER_WAIT;
     use crate::local_network::{LocalNetwork, MetPair};
     use crate::mcp_server::online;
     use crate::member::{loopback_address, loopback_address_of};
     use crate::payloads::presence_signed_by;
     use crate::scripted_node::ScriptedNode;
 
-    const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
     const GOSSIP_NEIGHBOR_WAIT: Duration = Duration::from_secs(10);
     const EVENTS_POLL: Duration = Duration::from_millis(50);
 
