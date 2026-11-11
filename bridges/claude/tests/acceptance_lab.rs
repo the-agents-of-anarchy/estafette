@@ -6,7 +6,7 @@ use std::process::Output;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::Fixture;
+use common::{CONFIG_HOME, Fixture};
 use estafette_bridge_claude::permission_class::PermissionClass;
 use serde_json::Value;
 
@@ -24,9 +24,8 @@ const SESSION_TRANSCRIPT_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_CLAUDE_TRANSCRIP
 const CLAUDE_CONFIG_DIRECTORY: &str = "claude-config";
 const SESSIONS_DIRECTORY: &str = "sessions";
 const PROJECTS_DIRECTORY: &str = "projects";
-const JOINED_NETWORKS_DIRECTORY: &str = "config/estafette/networks";
+const JOINED_NETWORKS_DIRECTORY: &str = "estafette/networks";
 const FIELD_SEPARATOR: char = '\t';
-const SEND_RESULT_FIELD_COUNT: usize = 3;
 const PEER_ATTACHED_FIELD: usize = 2;
 const DELIVERED_STATUS: &str = "delivered";
 const ATTACHED_FLAG: &str = "true";
@@ -56,7 +55,7 @@ fn required_variable(name: &str) -> Result<String, String> {
 }
 
 fn joined_network_name(root: &Path) -> io::Result<String> {
-    for entry in fs::read_dir(root.join(JOINED_NETWORKS_DIRECTORY))? {
+    for entry in fs::read_dir(root.join(CONFIG_HOME).join(JOINED_NETWORKS_DIRECTORY))? {
         let path = entry?.path();
         if path.extension().and_then(OsStr::to_str) == Some(NETWORK_CONFIG_EXTENSION)
             && let Some(name) = path.file_stem().and_then(OsStr::to_str)
@@ -148,9 +147,7 @@ impl<'line> SendResult<'line> {
     fn parse(line: &'line str) -> Option<Self> {
         let fields: Vec<&str> = line.trim_end().split(FIELD_SEPARATOR).collect();
         match fields.as_slice() {
-            [status, _id, attached] if fields.len() == SEND_RESULT_FIELD_COUNT => {
-                Some(Self { status, attached })
-            }
+            [status, _id, attached] => Some(Self { status, attached }),
             _ => None,
         }
     }

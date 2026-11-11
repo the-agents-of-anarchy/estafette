@@ -22,7 +22,7 @@ const HOME_DIRECTORY: &str = "home";
 const CLAUDE_DIRECTORY: &str = ".claude";
 const RUNTIME_DIRECTORY: &str = "runtime";
 const TMP_DIRECTORY: &str = "tmp";
-const CONFIG_HOME: &str = "config";
+pub const CONFIG_HOME: &str = "config";
 const DATA_HOME: &str = "data";
 const SETTINGS_FILE: &str = "settings.json";
 const MESSAGING_SOCKET_FILE: &str = "messaging.sock";
@@ -30,6 +30,7 @@ const BINARY_NOT_BUILT: &str = "build it first: cargo build -p estafette (cargo 
 const SUCCESS_EXIT_CODE: i32 = 0;
 const MISSING_PIPE: &str = "the spawned member has no piped standard stream";
 type Outcome<T> = Result<T, Box<dyn std::error::Error>>;
+type MemberLine = Result<Value, String>;
 
 pub struct Fixture {
     pub root: PathBuf,
@@ -42,7 +43,11 @@ impl Fixture {
     pub fn new() -> io::Result<Self> {
         let root = PathBuf::from(SHORT_SCRATCH_PARENT)
             .join(format!("{SCRATCH_PREFIX}-{}", std::process::id()));
-        drop(fs::remove_dir_all(&root));
+        if let Err(failure) = fs::remove_dir_all(&root)
+            && failure.kind() != io::ErrorKind::NotFound
+        {
+            return Err(failure);
+        }
         if !Self::binary_path().exists() {
             return Err(io::Error::new(io::ErrorKind::NotFound, BINARY_NOT_BUILT));
         }
@@ -150,7 +155,7 @@ impl Drop for Fixture {
 pub struct Member {
     pub claimed: Value,
     _input: ChildStdin,
-    _answers: Receiver<Value>,
+    _answers: Receiver<MemberLine>,
     _process: Spawned,
 }
 
@@ -163,13 +168,14 @@ impl Drop for Spawned {
     }
 }
 
-fn forward_json_lines(source: impl std::io::Read + Send + 'static) -> Receiver<Value> {
+fn forward_json_lines(source: impl std::io::Read + Send + 'static) -> Receiver<MemberLine> {
     let (sender, receiver) = mpsc::channel();
     thread::spawn(move || {
         for line in BufReader::new(source).lines().map_while(Result::ok) {
-            if let Ok(message) = serde_json::from_str(&line)
-                && sender.send(message).is_err()
-            {
+            let message = serde_json::from_str(&line).map_err(|failure| {
+                format!("the member printed a line that is not JSON ({failure}): {line}")
+            });
+            if sender.send(message).is_err() {
                 break;
             }
         }
@@ -182,9 +188,9 @@ fn send_message(input: &mut ChildStdin, message: &Value) -> io::Result<()> {
     input.flush()
 }
 
-fn answer_to(answers: &Receiver<Value>, request_id: u64) -> Outcome<Value> {
+fn answer_to(answers: &Receiver<MemberLine>, request_id: u64) -> Outcome<Value> {
     loop {
-        let answer = answers.recv_timeout(MCP_ANSWER_TIMEOUT)?;
+        let answer = answers.recv_timeout(MCP_ANSWER_TIMEOUT)??;
         if answer.get("id") == Some(&json!(request_id)) {
             return Ok(answer);
         }
@@ -193,7 +199,7 @@ fn answer_to(answers: &Receiver<Value>, request_id: u64) -> Outcome<Value> {
 
 fn claim_card_over_mcp(
     input: &mut ChildStdin,
-    answers: &Receiver<Value>,
+    answers: &Receiver<MemberLine>,
     card: &str,
 ) -> Outcome<Value> {
     send_message(
