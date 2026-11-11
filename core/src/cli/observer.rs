@@ -917,11 +917,9 @@ mod tests {
     use crate::inbox::socket::ProcessTable;
     use crate::keys::render_public_key;
     use crate::net::direct::DirectServer;
-    use crate::stream_items::StreamExt;
-
-    use crate::wire::Addr;
-
     use crate::node::{Identity, Network, Node, NodeEffects};
+    use crate::stream_items::StreamExt;
+    use crate::wire::Addr;
 
     const NETWORK_NAME: &str = "lab";
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];

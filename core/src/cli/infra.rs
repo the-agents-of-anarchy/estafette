@@ -849,11 +849,11 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Mutex;
 
-    use crate::stream_items::StreamExt;
     use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 
-    use super::*;
+    use crate::stream_items::StreamExt;
 
+    use super::*;
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{
         NetworkKeys, NetworkSecret, render_host_certificate, sign_host_certificate,

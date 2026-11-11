@@ -14,6 +14,5 @@ pub(crate) use presence::{
     sleep_until_deadline, wire_addr,
 };
 pub use presence::{Identity, Network, Node, NodeEffects, NodeError, NodeRecord};
-
 pub use rebind::{RelayProbe, relay_answers};
 pub use send::{BroadcastResult, Delivery};
