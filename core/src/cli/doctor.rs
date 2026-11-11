@@ -14,7 +14,7 @@ use crate::card::{Card, CardInvalid, CardUnusable};
 use crate::cli::cards::{CardRegistryReader, RegistryArgs, card_files_in, card_name_of};
 use crate::cli::lines::tab_separated_line;
 use crate::cli::network::NetworkFilesystem;
-use crate::cli::observer::{self, ObserverEffects, OperatorEffects};
+use crate::cli::observer::{self, Interruption, ObserverEffects};
 use crate::config::{ConfigError, NetworkConfig, OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
 use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use crate::errors::ExitStatus;
@@ -27,6 +27,9 @@ const RELAY_ANSWER_DEADLINE: Duration = Duration::from_secs(5);
 const ITEM_SEPARATOR: &str = "; ";
 const PASSED_WORD: &str = "pass";
 const FAILED_WORD: &str = "fail";
+
+/// How the doctor takes SIGINT: it leaves SIGINT to end the process.
+pub const INTERRUPTION: Interruption = Interruption::EndsTheProcess;
 
 /// The network whose node the doctor checks.
 #[derive(Debug, Clone, Args)]
@@ -170,7 +173,7 @@ pub async fn run(
     filesystem: &(impl DoctorFilesystem + Sync),
     pause: &(impl Pause + Sync),
     effects: ObserverEffects,
-    operator_effects: OperatorEffects,
+    probe_relay: RelayProbe,
     stdout: &mut impl Write,
 ) -> Result<ExitStatus, DoctorError> {
     let network = arguments.registry.network.as_str();
@@ -180,7 +183,6 @@ pub async fn run(
     let cards_directory = directories
         .cards_directory(network)
         .map_err(Failure::Directories)?;
-    let OperatorEffects { probe_relay, .. } = operator_effects;
     let mut report = Report::new(stdout);
     report.record(
         Check::ConfigurationFile,
@@ -413,7 +415,7 @@ mod tests {
     use tokio::time::Instant;
 
     use super::*;
-    use crate::cli::observer::{ObserverEffects, OperatorEffects};
+    use crate::cli::observer::ObserverEffects;
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
     use crate::handle::AnnouncedHandle;
@@ -623,13 +625,12 @@ mod tests {
             self
         }
 
-        fn effects(&self) -> (ObserverEffects, OperatorEffects) {
+        fn effects(&self) -> (ObserverEffects, RelayProbe) {
             let member_addresses: Vec<EndpointAddr> = self
                 .member
                 .iter()
                 .map(|(_node, address)| address.clone())
                 .collect();
-            let directories = Arc::clone(&self.directories);
             let effects = ObserverEffects {
                 clock: Arc::new(wall_clock_ms),
                 monotonic: Arc::new(Instant::now),
@@ -652,32 +653,19 @@ mod tests {
                 }),
                 interrupted: Box::pin(std::future::pending()),
             };
-            let operator_effects = OperatorEffects {
-                fill_probe_nonce: Arc::new(|nonce: &mut Nonce| *nonce = PROBE_NONCE),
-                report: Arc::new(|_record: NodeRecord| {}),
-                probe_relay: Arc::new(|_relay| Box::pin(async { true })),
-                start_inbox: Box::new(move || {
-                    InboxSocket::start(
-                        &directories,
-                        u32::from(OBSERVER_SEED),
-                        &EveryProcessRuns,
-                        |_failure| {},
-                    )
-                    .map(Arc::new)
-                }),
-            };
-            (effects, operator_effects)
+            let probe_relay: RelayProbe = Arc::new(|_relay| Box::pin(async { true }));
+            (effects, probe_relay)
         }
 
         async fn diagnose(&self) -> (ExitStatus, Vec<String>) {
-            let (effects, operator_effects) = self.effects();
-            self.diagnose_with(effects, operator_effects).await
+            let (effects, probe_relay) = self.effects();
+            self.diagnose_with(effects, probe_relay).await
         }
 
         async fn diagnose_with(
             &self,
             effects: ObserverEffects,
-            operator_effects: OperatorEffects,
+            probe_relay: RelayProbe,
         ) -> (ExitStatus, Vec<String>) {
             let mut output = Vec::new();
             let status = run(
@@ -691,7 +679,7 @@ mod tests {
                 &OperatingSystemFilesystem,
                 &NoPause,
                 effects,
-                operator_effects,
+                probe_relay,
                 &mut output,
             )
             .await
@@ -889,8 +877,8 @@ mod tests {
     async fn spec_3_13_doctor_fails_the_relays_check_naming_a_relay_that_does_not_answer_and_exits_3()
      {
         let lab = Lab::healthy("silent-relay").await;
-        let (effects, mut operator_effects) = lab.effects();
-        operator_effects.probe_relay = Arc::new(|relay| {
+        let (effects, _) = lab.effects();
+        let silent_probe: RelayProbe = Arc::new(|relay| {
             Box::pin(async move {
                 if relay.to_string() == SECOND_RELAY {
                     std::future::pending::<()>().await;
@@ -899,7 +887,7 @@ mod tests {
             })
         });
 
-        let (status, lines) = lab.diagnose_with(effects, operator_effects).await;
+        let (status, lines) = lab.diagnose_with(effects, silent_probe).await;
         drop(lab);
 
         assert_eq!(status, ExitStatus::DoctorFoundFailedCheck);

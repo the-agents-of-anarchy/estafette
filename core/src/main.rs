@@ -465,7 +465,7 @@ fn run_doctor_command(
     } = observer_runtime(
         environment,
         arguments.registry.cards_dir.clone(),
-        Interruption::EndsTheProcess,
+        doctor::INTERRUPTION,
     )?;
     runtime
         .block_on(doctor::run(
@@ -474,7 +474,7 @@ fn run_doctor_command(
             &OperatingSystemFilesystem,
             &ThreadSleep,
             effects,
-            operator_effects,
+            operator_effects.probe_relay,
             result,
         ))
         .map_err(CommandLineFailure::Doctor)

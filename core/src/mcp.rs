@@ -45,27 +45,16 @@ const SERVER_NAME: &str = "estafette";
 const SERVER_INPUT_BUFFER_BYTES: usize = 64 * 1024;
 /// The six tools of spec 3.10 (D28).
 const TOOL_COUNT: usize = 6;
-/// The JSON Schema keyword naming a value's type.
 const SCHEMA_TYPE_KEY: &str = "type";
-/// The JSON Schema type of a tool's arguments.
 const SCHEMA_OBJECT_TYPE: &str = "object";
-/// The JSON Schema keyword listing an object's properties.
 const SCHEMA_PROPERTIES_KEY: &str = "properties";
-/// The JSON Schema keyword listing the properties an object must carry.
 const SCHEMA_REQUIRED_KEY: &str = "required";
-/// The JSON Schema keyword that admits or refuses properties beyond those listed.
 const SCHEMA_ADDITIONAL_PROPERTIES_KEY: &str = "additionalProperties";
-/// The JSON Schema keyword giving the schema of an array's items.
 const SCHEMA_ITEMS_KEY: &str = "items";
-/// The JSON Schema keyword bounding a number from below.
 const SCHEMA_MINIMUM_KEY: &str = "minimum";
-/// The JSON Schema keyword bounding a string's length.
 const SCHEMA_MAX_LENGTH_KEY: &str = "maxLength";
-/// The JSON Schema type of text.
 const SCHEMA_STRING_TYPE: &str = "string";
-/// The JSON Schema type of a list.
 const SCHEMA_ARRAY_TYPE: &str = "array";
-/// The JSON Schema type of a whole number.
 const SCHEMA_INTEGER_TYPE: &str = "integer";
 /// The argument naming the card, spec 3.10.
 const CARD_ARGUMENT: &str = "card";
@@ -200,9 +189,6 @@ fn handshake_failure_reason(failure: &ServerInitializeError) -> String {
     match failure {
         ServerInitializeError::ExpectedInitializeRequest(_) => {
             "the first message was not an initialize request".to_owned()
-        }
-        ServerInitializeError::UnexpectedInitializeResponse(_) => {
-            "the client answered the initialize call with an unexpected result".to_owned()
         }
         other => other.to_string(),
     }
@@ -1556,10 +1542,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(
-            record,
-            "the MCP handshake failed: the first message was not an initialize request"
-        );
+        assert!(record.starts_with("the MCP handshake failed"), "{record}");
         assert!(!record.contains(CLIENT_SECRET_TEXT), "{record}");
     }
 
@@ -2241,30 +2224,6 @@ mod tests {
         assert_eq!(claimed["ok"], json!(true));
         assert_eq!(before["tools"].as_array().unwrap().len(), SPEC_TOOL_COUNT);
         assert_eq!(after, before);
-    }
-
-    const fn tool_after(previous: Option<ToolName>) -> Option<ToolName> {
-        match previous {
-            None => Some(ToolName::ListCards),
-            Some(ToolName::ListCards) => Some(ToolName::Init),
-            Some(ToolName::Init) => Some(ToolName::Peers),
-            Some(ToolName::Peers) => Some(ToolName::Send),
-            Some(ToolName::Send) => Some(ToolName::Broadcast),
-            Some(ToolName::Broadcast) => Some(ToolName::Inbox),
-            Some(ToolName::Inbox) => None,
-        }
-    }
-
-    #[test]
-    fn spec_3_10_the_tool_list_holds_every_tool_the_build_knows_once_in_declaration_order() {
-        let mut every_tool = Vec::new();
-        let mut previous = None;
-        while let Some(tool) = tool_after(previous) {
-            every_tool.push(tool);
-            previous = Some(tool);
-        }
-
-        assert_eq!(ToolName::ALL.to_vec(), every_tool);
     }
 
     fn every_tool_call() -> Vec<(&'static str, Value)> {

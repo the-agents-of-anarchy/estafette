@@ -62,7 +62,7 @@ type BindEndpoint =
 type StartInbox = Box<dyn FnOnce() -> Result<Arc<InboxSocket>, InboxSocketError> + Send>;
 type Interrupted = Pin<Box<dyn Future<Output = ()> + Send>>;
 
-/// What SIGINT does while a runtime runs an observer command or the doctor.
+/// What SIGINT does while a runtime runs an observer command or the doctor, each command naming its own.
 #[derive(Debug, Clone, Copy)]
 pub enum Interruption {
     /// The command listens for SIGINT and ends its own run when it arrives.
@@ -133,7 +133,7 @@ pub struct ObserverEffects {
     pub interrupted: Interrupted,
 }
 
-/// The side effects only a node that announces itself needs, which `test-send` alone runs on.
+/// The side effects only a node that announces itself needs; `test-send` alone reads the nonce source, the run record and the inbox start, and the doctor reads the relay probe.
 pub struct OperatorEffects {
     pub fill_probe_nonce: ProbeNonceSource,
     pub report: RunRecord,
@@ -675,7 +675,7 @@ enum Step {
 }
 
 impl Observation {
-    /// Handles events until the observer wait is over, the topic closes or the run is interrupted, then returns the peers.
+    /// Handles events until the observer wait is over, the topic closes or the run is interrupted, shuts the listeners down, then returns the peers.
     async fn collect_peers(mut self) -> Result<Vec<Peer>, Failure> {
         let outcome = self.collect_until_done().await;
         let shutdown = self.router.shutdown().await;
@@ -684,7 +684,7 @@ impl Observation {
         Ok(peers)
     }
 
-    /// Loops until the observer wait is over, the topic closes or the run is interrupted, then returns the peers.
+    /// Returns the peers the table holds once the loop ends at the observer wait, the closed topic or the interrupt.
     async fn collect_until_done(&mut self) -> Result<Vec<Peer>, Failure> {
         loop {
             match self.next_step().await {
