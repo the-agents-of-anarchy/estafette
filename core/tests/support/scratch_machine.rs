@@ -139,18 +139,16 @@ impl ScratchMachine {
     pub fn keep_run_records(&self, directory: &Path) -> io::Result<Vec<PathBuf>> {
         let secrets = self.secrets_by_length();
         let machine_name = self.root.file_name().unwrap_or_default().to_string_lossy();
-        fs::create_dir_all(directory)?;
         let mut kept = Vec::new();
         for record in self.run_records()? {
-            let record_name = record.file_name().unwrap_or_default().to_string_lossy();
-            let kept_record = directory.join(format!("{machine_name}-{record_name}"));
-            let (text, redacted_lines) = redacted(&fs::read_to_string(&record)?, &secrets);
-            fs::write(&kept_record, text)?;
-            eprintln!(
-                "run record kept at {}: {redacted_lines} lines redacted",
-                kept_record.display()
-            );
-            kept.push(kept_record);
+            let member_name = record.file_stem().unwrap_or_default().to_string_lossy();
+            kept.push(keep_run_record(
+                directory,
+                &machine_name,
+                &member_name,
+                &fs::read_to_string(&record)?,
+                &secrets,
+            )?);
         }
         Ok(kept)
     }
@@ -177,43 +175,76 @@ impl ScratchMachine {
             .collect()
     }
 
-    /// Every non-empty line of every readable file under this machine's base directories, each long run of letters and digits in one, and the exported invitation, longest first so a whole line is replaced before a part of it.
+    /// The secrets of every readable file under this machine's base directories, longest first.
     fn secrets_by_length(&self) -> Vec<String> {
-        let mut secrets = BTreeSet::new();
-        for file in self.base_directory_files() {
-            let Ok(content) = fs::read(&file) else {
-                continue;
-            };
-            for line in String::from_utf8_lossy(&content).lines() {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    secrets.insert(trimmed.to_owned());
-                }
-                secrets.extend(long_alphanumeric_runs(line).map(str::to_owned));
-            }
-        }
-        if let Ok(invitation) = std::env::var(INVITATION_VARIABLE) {
-            secrets.insert(invitation.trim().to_owned());
-        }
-        let mut by_length: Vec<String> = secrets.into_iter().collect();
-        by_length.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
-        by_length
+        let contents: Vec<String> = self
+            .base_directory_files()
+            .iter()
+            .filter_map(|file| fs::read(file).ok())
+            .map(|content| String::from_utf8_lossy(&content).into_owned())
+            .collect();
+        secrets_longest_first(contents.iter().map(String::as_str))
     }
 }
 
 impl Drop for ScratchMachine {
     fn drop(&mut self) {
-        if let Some(directory) = std::env::var_os(KEPT_RUN_RECORDS_VARIABLE) {
-            let test = std::thread::current()
-                .name()
-                .unwrap_or(UNNAMED_TEST)
-                .replace(':', "-");
-            if let Err(failure) = self.keep_run_records(&PathBuf::from(directory).join(test)) {
-                eprintln!("run records of {} not kept: {failure}", self.root.display());
-            }
+        if let Some(directory) = kept_run_records_directory()
+            && let Err(failure) = self.keep_run_records(&directory)
+        {
+            eprintln!("run records of {} not kept: {failure}", self.root.display());
         }
         drop(fs::remove_dir_all(&self.root));
     }
+}
+
+/// The directory the running test's run records are kept in, named for the test beneath the one the variable names; none while the variable is unset.
+pub fn kept_run_records_directory() -> Option<PathBuf> {
+    let directory = std::env::var_os(KEPT_RUN_RECORDS_VARIABLE)?;
+    let test = std::thread::current()
+        .name()
+        .unwrap_or(UNNAMED_TEST)
+        .replace(':', "-");
+    Some(PathBuf::from(directory).join(test))
+}
+
+/// Writes the member's run record into the directory, named for its machine and the member, each secret replaced by the redaction marker, and returns the kept file.
+pub fn keep_run_record(
+    directory: &Path,
+    machine_name: &str,
+    member_name: &str,
+    record: &str,
+    secrets_by_length: &[String],
+) -> io::Result<PathBuf> {
+    fs::create_dir_all(directory)?;
+    let kept_record = directory.join(format!(
+        "{machine_name}-{member_name}.{RUN_RECORD_EXTENSION}"
+    ));
+    let (text, redacted_lines) = redacted(record, secrets_by_length);
+    fs::write(&kept_record, text)?;
+    eprintln!(
+        "run record kept at {}: {redacted_lines} lines redacted",
+        kept_record.display()
+    );
+    Ok(kept_record)
+}
+
+/// Every non-empty line of the texts, each long run of letters and digits in one, and the exported invitation, longest first so a whole line is replaced before a part of it.
+pub fn secrets_longest_first<'text>(texts: impl IntoIterator<Item = &'text str>) -> Vec<String> {
+    let mut secrets = BTreeSet::new();
+    for line in texts.into_iter().flat_map(str::lines) {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            secrets.insert(trimmed.to_owned());
+        }
+        secrets.extend(long_alphanumeric_runs(line).map(str::to_owned));
+    }
+    if let Ok(invitation) = std::env::var(INVITATION_VARIABLE) {
+        secrets.insert(invitation.trim().to_owned());
+    }
+    let mut by_length: Vec<String> = secrets.into_iter().collect();
+    by_length.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    by_length
 }
 
 /// The record with each secret replaced by the redaction marker, and how many of its lines held one.
