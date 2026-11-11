@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use estafette::invite::parse_host_line;
 use estafette::wire::HostAddr;
 
-use crate::lab_server::{LabServer, fail_unless_panicking};
+use crate::lab_server::LabServer;
+use crate::scratch_machine::fail_unless_panicking;
 
 /// The variable the acceptance gate names the lab server in whose host the test may kill.
 const SERVER_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_KILLABLE_SERVER";

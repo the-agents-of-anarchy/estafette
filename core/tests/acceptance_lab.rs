@@ -298,7 +298,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
     fn spec_3_15_test_27_a_tampered_presence_request_is_dropped() {
         let _live_host = live_host_to_itself();
         let network = LiveNetwork::from_environment();
-        let observer = LabMachine::fresh("u40-tail", network.name());
+        let observer = LabMachine::fresh("u40-tail", &network);
         network.join(&observer.directories());
         let mut tail_command = observer.command();
         tail_command.args(["tail", network.name()]);
@@ -535,7 +535,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     /// Starts a member whose only host is the doomed one and a `tail` joined through it, returning them once its first announced relays are the doomed host's alone and it has relayed the live host's record, or nothing when iroh homed it elsewhere.
     #[track_caller]
     fn start_member_homed_on(network: &LiveNetwork, doomed: &KillableHost) -> Option<HomedMember> {
-        let machine = LabMachine::fresh(MEMBER_CARD, network.name());
+        let machine = LabMachine::fresh(MEMBER_CARD, network);
         network.join_through(
             &machine.directories(),
             std::slice::from_ref(doomed.address()),
@@ -543,7 +543,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
         let card = render_public_key(&machine.create_card(MEMBER_CARD, MEMBER_CARD).id);
         let started = Instant::now();
         let member = machine.start_member(MEMBER_CARD);
-        let observer = LabMachine::fresh(OBSERVER_TAG, network.name());
+        let observer = LabMachine::fresh(OBSERVER_TAG, network);
         network.join_through(
             &observer.directories(),
             &[member_reached_through_its_home_relay(&card, doomed)],

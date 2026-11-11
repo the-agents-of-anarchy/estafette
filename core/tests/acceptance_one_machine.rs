@@ -67,7 +67,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use crate::member::{Member, loopback_address, loopback_address_of};
     use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
     use crate::payloads::presence_signed_by;
-    use crate::scratch_machine::Card;
+    use crate::scratch_machine::{Card, RunRecordKeeping};
     use crate::scripted_node::ScriptedNode;
     use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
     use crate::timed_step::timed;
@@ -245,7 +245,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     #[test]
     fn spec_3_15_test_18_a_killed_member_restarted_with_its_card_is_delivered_to_within_1_s_of_its_new_presence()
      {
-        let network = LocalNetwork::create("r1");
+        let network = LocalNetwork::create("r1", &RunRecordKeeping::from_environment());
         let first_host = network.stand_in_host();
         let MetPair {
             mut amy,
@@ -296,7 +296,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     #[test]
     fn spec_3_15_test_4_a_send_to_a_member_gone_by_the_end_of_input_after_an_earlier_send_is_unreachable()
      {
-        let network = LocalNetwork::create("r2");
+        let network = LocalNetwork::create("r2", &RunRecordKeeping::from_environment());
         let host = network.stand_in_host();
         let MetPair {
             mut amy, mut bob, ..
@@ -320,7 +320,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     #[test]
     fn spec_3_15_test_4_a_message_sent_before_the_departure_amy_holds_reaches_her_inbox_and_leaves_its_sender_gone()
      {
-        let network = LocalNetwork::create("r3m");
+        let network = LocalNetwork::create("r3m", &RunRecordKeeping::from_environment());
         let ScriptedBobDeparted {
             mut amy,
             amy_card,
@@ -361,7 +361,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
     #[test]
     fn spec_3_15_test_4_an_introduce_from_a_member_amy_holds_departed_leaves_it_gone() {
-        let network = LocalNetwork::create("r3i");
+        let network = LocalNetwork::create("r3i", &RunRecordKeeping::from_environment());
         let ScriptedBobDeparted {
             mut amy,
             amy_card,
@@ -395,7 +395,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     #[test]
     fn spec_3_15_test_18_a_restarted_member_whose_message_came_before_its_presence_keeps_that_connection_and_is_delivered_to()
      {
-        let network = LocalNetwork::create("r1k");
+        let network = LocalNetwork::create("r1k", &RunRecordKeeping::from_environment());
         let amy_card = network.create_card("amy-card", "amy");
         let bob_key = SecretKey::generate();
         let first_session = network.scripted_member(&bob_key, "bob");
@@ -485,7 +485,10 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     #[test]
     fn spec_3_8_and_3_15_test_18_a_live_member_whose_presence_omits_the_address_its_connection_runs_over_keeps_that_connection_and_is_answered()
      {
-        let network = LocalNetwork::create("live-unannounced-path");
+        let network = LocalNetwork::create(
+            "live-unannounced-path",
+            &RunRecordKeeping::from_environment(),
+        );
         let amy_card = network.create_card("amy-card", "amy");
         let bob_key = SecretKey::generate();
         let bob = network.scripted_member(&bob_key, "bob");
@@ -557,6 +560,7 @@ mod spec_3_15_test_19_on_one_machine {
     use crate::mcp_server::online;
     use crate::member::{loopback_address, loopback_address_of};
     use crate::payloads::presence_signed_by;
+    use crate::scratch_machine::RunRecordKeeping;
     use crate::scripted_node::ScriptedNode;
 
     const GOSSIP_NEIGHBOR_WAIT: Duration = Duration::from_secs(10);
@@ -592,7 +596,7 @@ mod spec_3_15_test_19_on_one_machine {
     #[test]
     fn spec_3_15_test_19_a_member_lists_a_node_whose_only_gossip_neighbor_is_another_member_within_the_observer_wait_of_its_presence()
      {
-        let network = LocalNetwork::create("t19");
+        let network = LocalNetwork::create("t19", &RunRecordKeeping::from_environment());
         let host = network.stand_in_host();
         let MetPair {
             mut amy,
@@ -642,6 +646,7 @@ mod spec_3_15_with_one_member {
     use crate::message_body::BODY;
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::presence_signed_by;
+    use crate::scratch_machine::RunRecordKeeping;
     use crate::scripted_node::ScriptedNode;
 
     const SPEC_SIMULTANEOUS_INIT_WINDOW: Duration = Duration::from_millis(100);
@@ -744,7 +749,7 @@ mod spec_3_15_with_one_member {
 
     #[test]
     fn spec_3_15_test_6_two_processes_init_one_card_within_100_ms_and_exactly_one_claims_it() {
-        let network = LocalNetwork::create("t6");
+        let network = LocalNetwork::create("t6", &RunRecordKeeping::from_environment());
         let card = network.create_card("amy-card", "amy");
         let mut first = network.start_member();
         let mut second = network.start_member();
@@ -774,7 +779,7 @@ mod spec_3_15_with_one_member {
 
     #[test]
     fn spec_3_15_test_9_a_message_with_a_wrong_mac_is_dropped_with_no_response() {
-        let network = LocalNetwork::create("t9");
+        let network = LocalNetwork::create("t9", &RunRecordKeeping::from_environment());
         let card = network.create_card("amy-card", "amy");
         let attacker = network.stand_in_host();
         let mut amy = network.start_member();
@@ -806,7 +811,7 @@ mod spec_3_15_with_one_member {
     #[test]
     fn spec_3_15_test_10_a_gossip_payload_whose_signature_does_not_verify_against_its_card_is_dropped()
      {
-        let network = LocalNetwork::create("t10");
+        let network = LocalNetwork::create("t10", &RunRecordKeeping::from_environment());
         let card = network.create_card("amy-card", "amy");
         let host = network.stand_in_host();
         let mut amy = network.start_member();
@@ -834,7 +839,7 @@ mod spec_3_15_with_one_member {
 
     #[test]
     fn spec_3_15_test_12_the_mcp_tool_list_is_identical_before_and_after_init() {
-        let network = LocalNetwork::create("t12");
+        let network = LocalNetwork::create("t12", &RunRecordKeeping::from_environment());
         let card = network.create_card("amy-card", "amy");
         let mut amy = network.start_member();
 
@@ -856,7 +861,7 @@ mod spec_3_15_with_one_member {
     #[test]
     fn spec_3_15_test_13_every_tool_response_contains_you_with_the_current_status_before_and_after_init()
      {
-        let network = LocalNetwork::create("t13");
+        let network = LocalNetwork::create("t13", &RunRecordKeeping::from_environment());
         let card = network.create_card("amy-card", "amy");
         let mut amy = network.start_member();
         let claimed = json!({ "card": card.name, "handle": "amy", "status": "claimed" });
@@ -883,7 +888,7 @@ mod spec_3_15_with_one_member {
     #[test]
     fn spec_3_15_test_16_a_card_whose_sidecar_has_permissions_0644_fails_init_with_sidecar_invalid()
     {
-        let network = LocalNetwork::create("t16");
+        let network = LocalNetwork::create("t16", &RunRecordKeeping::from_environment());
         let card = network.create_card("amy-card", "amy");
         network.set_sidecar_mode(&card, LOOSE_SIDECAR_MODE);
         let mut amy = network.start_member();
@@ -898,7 +903,7 @@ mod spec_3_15_with_one_member {
     #[test]
     fn spec_3_15_test_21_a_node_with_the_topic_id_but_not_the_secret_gets_no_neighbor_and_no_payload_dialing_or_dialed()
      {
-        let network = LocalNetwork::create("t21");
+        let network = LocalNetwork::create("t21", &RunRecordKeeping::from_environment());
         let card = network.create_card("amy-card", "amy");
         network.add_host_that_never_answers();
         let host = network.stand_in_host();
@@ -969,6 +974,7 @@ mod spec_3_16_absences_on_one_machine {
     use crate::message_body::BODY;
     use crate::payload_placeholders::wall_clock_ms;
     use crate::payloads::presence_signed_by;
+    use crate::scratch_machine::RunRecordKeeping;
     use crate::scripted_node::ScriptedNode;
     use crate::send;
 
@@ -1038,7 +1044,7 @@ mod spec_3_16_absences_on_one_machine {
 
     #[test]
     fn spec_3_16_no_file_under_the_base_directories_announces_the_inbox_socket() {
-        let network = LocalNetwork::create("n1");
+        let network = LocalNetwork::create("n1", &RunRecordKeeping::from_environment());
         let card = network.create_card("amy-card", "amy");
         let host = network.stand_in_host();
         let mut amy = network.start_member();
@@ -1062,7 +1068,7 @@ mod spec_3_16_absences_on_one_machine {
     #[test]
     fn spec_3_16_a_received_message_is_not_in_the_inbox_of_the_next_process_on_the_card_nor_on_disk()
      {
-        let network = LocalNetwork::create("n2");
+        let network = LocalNetwork::create("n2", &RunRecordKeeping::from_environment());
         let host = network.stand_in_host();
         let MetPair {
             mut amy,
@@ -1089,7 +1095,7 @@ mod spec_3_16_absences_on_one_machine {
 
     #[test]
     fn spec_3_16_a_message_to_an_absent_member_is_not_kept_for_its_return() {
-        let network = LocalNetwork::create("n3");
+        let network = LocalNetwork::create("n3", &RunRecordKeeping::from_environment());
         let host = network.stand_in_host();
         let MetPair {
             mut amy,
@@ -1119,7 +1125,7 @@ mod spec_3_16_absences_on_one_machine {
     #[test]
     fn spec_3_16_a_member_with_nothing_to_announce_sends_no_presence_for_longer_than_every_interval_of_spec_3_14()
      {
-        let network = LocalNetwork::create("n4");
+        let network = LocalNetwork::create("n4", &RunRecordKeeping::from_environment());
         let card = network.create_card("amy-card", "amy");
         let host = network.stand_in_host();
         let mut amy = network.start_member();
@@ -1143,7 +1149,7 @@ mod spec_3_16_absences_on_one_machine {
 
     #[test]
     fn spec_3_16_a_send_whose_ack_never_comes_reaches_the_receiver_once() {
-        let network = LocalNetwork::create("n5");
+        let network = LocalNetwork::create("n5", &RunRecordKeeping::from_environment());
         let card = network.create_card("amy-card", "amy");
         let host = network.stand_in_host();
         let mut amy = network.start_member();
@@ -1182,7 +1188,7 @@ mod spec_3_16_absences_on_one_machine {
 
     #[test]
     fn spec_3_16_thirty_sends_in_a_row_are_all_delivered() {
-        let network = LocalNetwork::create("n6");
+        let network = LocalNetwork::create("n6", &RunRecordKeeping::from_environment());
         let card = network.create_card("amy-card", "amy");
         let host = network.stand_in_host();
         let mut amy = network.start_member();
@@ -1215,7 +1221,7 @@ mod kept_run_records {
     use serde_json::json;
 
     use crate::local_network::{LocalNetwork, MetPair, NETWORK};
-    use crate::scratch_machine::{REDACTED, ScratchMachine};
+    use crate::scratch_machine::{REDACTED, RunRecordKeeping, ScratchMachine};
     use crate::send;
 
     /// The members the real-record test starts: amy, bob and the refused one.
@@ -1284,7 +1290,7 @@ mod kept_run_records {
     #[test]
     fn run_records_of_members_that_ran_and_of_a_refused_member_are_kept_unredacted_holding_no_secret()
      {
-        let network = LocalNetwork::create("kept-real");
+        let network = LocalNetwork::create("kept-real", &RunRecordKeeping::from_environment());
         let host = network.stand_in_host();
         let MetPair {
             mut amy, mut bob, ..
@@ -1339,7 +1345,11 @@ mod kept_run_records {
     #[test]
     fn a_kept_record_holds_none_of_the_configuration_lines_or_keys_the_test_planted_in_its_run_record()
      {
-        let machine = ScratchMachine::fresh("kept-record", NETWORK);
+        let machine = ScratchMachine::fresh(
+            "kept-record",
+            NETWORK,
+            &RunRecordKeeping::from_environment(),
+        );
         let secret_line = format!("secret = \"{CHOSEN_SECRET}\"");
         let owner_line = format!("owner = \"{CHOSEN_OWNER}\"");
         let owner_quoted_apart = format!("{KEY_QUOTED_APART_FROM_ITS_LINE}{CHOSEN_OWNER}");

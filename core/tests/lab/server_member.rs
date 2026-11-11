@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use crate::lab_machine::LabMachine;
 use crate::lab_server::LabServer;
 use crate::live_network::LiveNetwork;
-use crate::scratch_machine::{keep_run_record, kept_run_records_directory, secrets_longest_first};
+use crate::scratch_machine::{fail_unless_panicking, keep_run_record};
 
 /// The recipe that writes the lab network's configuration on a server from its standard input.
 const NETWORK_ON_SERVER_RECIPE: &str = "remote::network-on-server";
@@ -28,11 +28,12 @@ const REMOTE_POLL: Duration = Duration::from_millis(1000);
 /// What separates the server's clock stamp from the envelope a remote tool call prints.
 const STAMP_SEPARATOR: char = '\t';
 
-/// A lab member serving a card on a lab server, configured as the live network's invitation describes, stopped when dropped with its run record kept when asked.
+/// A lab member serving a card on a lab server, configured as the live network's invitation describes, stopped when dropped with its run record kept when the test asks.
 pub struct ServerMember<'server> {
     server: &'server LabServer,
     card: String,
     secrets: Vec<String>,
+    kept_in: Option<PathBuf>,
 }
 
 impl<'server> ServerMember<'server> {
@@ -43,10 +44,12 @@ impl<'server> ServerMember<'server> {
         server.run(NETWORK_ON_SERVER_RECIPE, &[], configuration.as_bytes());
         let card_key = server.run(CARD_ON_SERVER_RECIPE, &[handle, handle], &[]);
         server.run(MEMBER_ON_SERVER_RECIPE, &[handle], &[]);
+        let run_records = network.run_records();
         let member = Self {
             server,
             card: handle.to_owned(),
-            secrets: secrets_longest_first([configuration.as_str(), card_key.as_str()]),
+            secrets: run_records.secrets_longest_first([configuration.as_str(), card_key.as_str()]),
+            kept_in: run_records.kept_in().map(Path::to_path_buf),
         };
         member.serving_within(SERVING_WAIT);
         member
@@ -120,18 +123,18 @@ impl<'server> ServerMember<'server> {
         }
     }
 
-    /// Keeps the member's run record in the directory by the scratch machines' layout and redaction rule, its secrets those of its configuration and card.
+    /// Keeps the member's run record in the directory by the scratch machines' layout and redaction rule, its secrets those of its configuration and card, failing the test when the record cannot be read or kept.
     fn keep_run_record(&self, directory: &Path) {
         let printed = self
             .server
             .attempt(RUN_RECORD_ON_SERVER_RECIPE, &[&self.card], &[]);
         if !printed.status.success() {
-            eprintln!(
+            fail_unless_panicking(&format!(
                 "run record of {} on {} not read: {}",
                 self.card,
                 self.server.label(),
                 String::from_utf8_lossy(&printed.stderr)
-            );
+            ));
             return;
         }
         let record = String::from_utf8_lossy(&printed.stdout);
@@ -142,7 +145,7 @@ impl<'server> ServerMember<'server> {
             &record,
             &self.secrets,
         ) {
-            eprintln!("run record of {} not kept: {failure}", self.card);
+            fail_unless_panicking(&format!("run record of {} not kept: {failure}", self.card));
         }
     }
 }
@@ -160,8 +163,8 @@ impl Drop for ServerMember<'_> {
                 String::from_utf8_lossy(&stopped.stderr)
             );
         }
-        if let Some(directory) = kept_run_records_directory() {
-            self.keep_run_record(&directory);
+        if let Some(directory) = &self.kept_in {
+            self.keep_run_record(directory);
         }
     }
 }

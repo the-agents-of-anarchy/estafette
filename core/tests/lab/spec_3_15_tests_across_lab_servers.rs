@@ -194,7 +194,7 @@ impl Member {
     #[track_caller]
     fn joined_by_invitation(network: &LiveNetwork, base: &str) -> Self {
         let handle = unique_handle(base);
-        let machine = ScratchMachine::fresh(&handle, network.name());
+        let machine = ScratchMachine::fresh(&handle, network.name(), network.run_records());
         network.join(&machine.directories());
         Self::claimed_on(machine, handle)
     }
@@ -203,7 +203,7 @@ impl Member {
     #[track_caller]
     fn joined_through(network: &LiveNetwork, base: &str, hosts: &[HostAddr]) -> Self {
         let handle = unique_handle(base);
-        let machine = ScratchMachine::fresh(&handle, network.name());
+        let machine = ScratchMachine::fresh(&handle, network.name(), network.run_records());
         network.join_through(&machine.directories(), hosts);
         Self::claimed_on(machine, handle)
     }

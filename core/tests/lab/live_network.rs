@@ -12,7 +12,7 @@ use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use iroh_gossip::TopicId;
 
 use crate::forgeries::wall_clock_seconds;
-use crate::scratch_machine::{BINARY, INVITATION_VARIABLE};
+use crate::scratch_machine::{BINARY, INVITATION_VARIABLE, RunRecordKeeping};
 
 /// The task runner every project task runs through.
 pub const TASK_RUNNER: &str = "just";
@@ -25,10 +25,11 @@ pub const LAB_BINARY_VARIABLE: &str = "LAB_BINARY";
 pub struct LiveNetwork {
     invitation: Invitation,
     keys: NetworkKeys,
+    run_records: RunRecordKeeping,
 }
 
 impl LiveNetwork {
-    /// Reads the invitation from the variable the acceptance gate exports, failing with the variable's name when it is unset.
+    /// Reads the invitation and the running test's run record keeping from the variables the acceptance gate exports, failing with the invitation variable's name when it is unset.
     pub fn from_environment() -> Self {
         let text = std::env::var(INVITATION_VARIABLE).unwrap_or_else(|source| {
             panic!(
@@ -38,7 +39,16 @@ impl LiveNetwork {
         let invitation = parse_invitation(text.trim())
             .unwrap_or_else(|refusal| panic!("{INVITATION_VARIABLE} is refused: {refusal}"));
         let keys = NetworkKeys::derive(&crypto::NetworkSecret::from_bytes(invitation.secret));
-        Self { invitation, keys }
+        Self {
+            invitation,
+            keys,
+            run_records: RunRecordKeeping::from_environment(),
+        }
+    }
+
+    /// How the running test keeps the run records of the members it starts on this network.
+    pub const fn run_records(&self) -> &RunRecordKeeping {
+        &self.run_records
     }
 
     /// The network's name.

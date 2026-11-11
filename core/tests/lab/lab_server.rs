@@ -2,7 +2,7 @@ use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
 use crate::live_network::{LAB_BINARY_VARIABLE, TASK_RUNNER};
-use crate::scratch_machine::BINARY;
+use crate::scratch_machine::{BINARY, fail_unless_panicking};
 
 /// The variable the remote recipes take the server's name from; left as the gate left it, they reach the live host's server.
 const LAB_SERVER_VARIABLE: &str = "LAB_SERVER";
@@ -102,14 +102,5 @@ impl Drop for RelayOnlyPath<'_> {
                 String::from_utf8_lossy(&restored.stderr)
             ));
         }
-    }
-}
-
-/// Fails the test with the message, or prints it when the test is already failing, so a cleanup failure never hides the failure that came first.
-pub fn fail_unless_panicking(failure: &str) {
-    if std::thread::panicking() {
-        eprintln!("{failure}");
-    } else {
-        panic!("{failure}");
     }
 }

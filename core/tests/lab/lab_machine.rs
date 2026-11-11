@@ -23,16 +23,16 @@ pub struct ClaimedMember {
 }
 
 impl LabMachine {
-    /// An empty scratch root named for the test, for the network of that name.
-    pub fn fresh(test_tag: &str, network: &str) -> Self {
+    /// An empty scratch root named for the test, for the live network, its members' run records kept as the test asks.
+    pub fn fresh(test_tag: &str, network: &LiveNetwork) -> Self {
         Self {
-            scratch: ScratchMachine::fresh(test_tag, network),
+            scratch: ScratchMachine::fresh(test_tag, network.name(), network.run_records()),
         }
     }
 
     /// A fresh machine named for the test, joined to the live network as its invitation describes.
     pub fn joined(test_tag: &str, network: &LiveNetwork) -> Self {
-        let machine = Self::fresh(test_tag, network.name());
+        let machine = Self::fresh(test_tag, network);
         network.join(&machine.directories());
         machine
     }

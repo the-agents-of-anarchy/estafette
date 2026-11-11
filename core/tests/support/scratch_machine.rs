@@ -50,6 +50,14 @@ pub struct ScratchMachine {
     root: PathBuf,
     network: String,
     servers_started: Cell<u32>,
+    run_records: RunRecordKeeping,
+}
+
+/// What a test asks of its members' run records, as the test reads it from the environment the acceptance gate exports: the directory they are kept in, none while unset, and the invitation they must not show.
+#[derive(Clone)]
+pub struct RunRecordKeeping {
+    kept_in: Option<PathBuf>,
+    invitation: Option<String>,
 }
 
 /// A card the binary created: the name init claims it by and the node id its key gives.
@@ -58,9 +66,50 @@ pub struct Card {
     pub id: EndpointId,
 }
 
+impl RunRecordKeeping {
+    /// The running test's keeping: a directory named for the test beneath the one the variable names, and the invitation the gate exports.
+    pub fn from_environment() -> Self {
+        let test = std::thread::current()
+            .name()
+            .unwrap_or(UNNAMED_TEST)
+            .replace(':', "-");
+        Self {
+            kept_in: std::env::var_os(KEPT_RUN_RECORDS_VARIABLE)
+                .map(|directory| PathBuf::from(directory).join(test)),
+            invitation: std::env::var(INVITATION_VARIABLE).ok(),
+        }
+    }
+
+    /// The directory the test keeps its members' run records in; none when it keeps none.
+    pub fn kept_in(&self) -> Option<&Path> {
+        self.kept_in.as_deref()
+    }
+
+    /// Every non-empty line of the texts, each long run of letters and digits in one, and the invitation, longest first so a whole line is replaced before a part of it.
+    pub fn secrets_longest_first<'text>(
+        &self,
+        texts: impl IntoIterator<Item = &'text str>,
+    ) -> Vec<String> {
+        let mut secrets = BTreeSet::new();
+        for line in texts.into_iter().flat_map(str::lines) {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                secrets.insert(trimmed.to_owned());
+            }
+            secrets.extend(long_alphanumeric_runs(line).map(str::to_owned));
+        }
+        if let Some(invitation) = &self.invitation {
+            secrets.insert(invitation.trim().to_owned());
+        }
+        let mut by_length: Vec<String> = secrets.into_iter().collect();
+        by_length.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+        by_length
+    }
+}
+
 impl ScratchMachine {
-    /// An empty scratch root named for the test and the machine, for the network of that name.
-    pub fn fresh(test_tag: &str, network: &str) -> Self {
+    /// An empty scratch root named for the test and the machine, for the network of that name, its members' run records kept as the test asks.
+    pub fn fresh(test_tag: &str, network: &str, run_records: &RunRecordKeeping) -> Self {
         let root = PathBuf::from(SHORT_SCRATCH_PARENT).join(format!(
             "{SCRATCH_PREFIX}-{}-{test_tag}",
             std::process::id()
@@ -71,6 +120,7 @@ impl ScratchMachine {
             root,
             network: network.to_owned(),
             servers_started: Cell::new(0),
+            run_records: run_records.clone(),
         }
     }
 
@@ -156,8 +206,9 @@ impl ScratchMachine {
     /// The run record files of the members this machine started.
     pub fn run_records(&self) -> io::Result<Vec<PathBuf>> {
         let mut records: Vec<PathBuf> = fs::read_dir(&self.root)?
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
+            .map(|entry| entry.map(|entry| entry.path()))
+            .collect::<io::Result<Vec<PathBuf>>>()?
+            .into_iter()
             .filter(|path| {
                 path.extension()
                     .is_some_and(|extension| extension == RUN_RECORD_EXTENSION)
@@ -183,29 +234,34 @@ impl ScratchMachine {
             .filter_map(|file| fs::read(file).ok())
             .map(|content| String::from_utf8_lossy(&content).into_owned())
             .collect();
-        secrets_longest_first(contents.iter().map(String::as_str))
+        self.run_records
+            .secrets_longest_first(contents.iter().map(String::as_str))
     }
 }
 
 impl Drop for ScratchMachine {
     fn drop(&mut self) {
-        if let Some(directory) = kept_run_records_directory()
-            && let Err(failure) = self.keep_run_records(&directory)
-        {
-            eprintln!("run records of {} not kept: {failure}", self.root.display());
-        }
+        let kept = self
+            .run_records
+            .kept_in()
+            .map(|directory| self.keep_run_records(directory));
         drop(fs::remove_dir_all(&self.root));
+        if let Some(Err(failure)) = kept {
+            fail_unless_panicking(&format!(
+                "run records of {} not kept: {failure}",
+                self.root.display()
+            ));
+        }
     }
 }
 
-/// The directory the running test's run records are kept in, named for the test beneath the one the variable names; none while the variable is unset.
-pub fn kept_run_records_directory() -> Option<PathBuf> {
-    let directory = std::env::var_os(KEPT_RUN_RECORDS_VARIABLE)?;
-    let test = std::thread::current()
-        .name()
-        .unwrap_or(UNNAMED_TEST)
-        .replace(':', "-");
-    Some(PathBuf::from(directory).join(test))
+/// Fails the test with the message, or prints it when the test is already failing, so a cleanup failure never hides the failure that came first.
+pub fn fail_unless_panicking(failure: &str) {
+    if std::thread::panicking() {
+        eprintln!("{failure}");
+    } else {
+        panic!("{failure}");
+    }
 }
 
 /// Writes the member's run record into the directory, named for its machine and the member, each secret replaced by the redaction marker, and returns the kept file.
@@ -227,24 +283,6 @@ pub fn keep_run_record(
         kept_record.display()
     );
     Ok(kept_record)
-}
-
-/// Every non-empty line of the texts, each long run of letters and digits in one, and the exported invitation, longest first so a whole line is replaced before a part of it.
-pub fn secrets_longest_first<'text>(texts: impl IntoIterator<Item = &'text str>) -> Vec<String> {
-    let mut secrets = BTreeSet::new();
-    for line in texts.into_iter().flat_map(str::lines) {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            secrets.insert(trimmed.to_owned());
-        }
-        secrets.extend(long_alphanumeric_runs(line).map(str::to_owned));
-    }
-    if let Ok(invitation) = std::env::var(INVITATION_VARIABLE) {
-        secrets.insert(invitation.trim().to_owned());
-    }
-    let mut by_length: Vec<String> = secrets.into_iter().collect();
-    by_length.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
-    by_length
 }
 
 /// The record with each secret replaced by the redaction marker, and how many of its lines held one.
