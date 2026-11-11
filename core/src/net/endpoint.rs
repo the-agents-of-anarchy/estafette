@@ -8,7 +8,7 @@ use iroh::{
 };
 use iroh_gossip::ALPN as GOSSIP_ALPN;
 
-use super::direct::AcceptedConnections;
+use super::direct::HeldConnections;
 use super::gate::{ConnectionRegister, NONCE_BYTES, NetworkSecretGate};
 use crate::crypto::GateKey;
 
@@ -79,7 +79,7 @@ impl NodeEndpoint {
     }
 
     /// Holds every connection this endpoint and each endpoint it rebinds to lets through from now on, of any protocol, dialed or accepted, in the register.
-    pub(crate) fn hold_connections_in(&self, register: AcceptedConnections) {
+    pub(crate) fn hold_connections_in(&self, register: HeldConnections) {
         *self
             .binding
             .connections

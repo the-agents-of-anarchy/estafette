@@ -35,7 +35,7 @@ pub(crate) const SUPERSEDED_CONNECTION_CLOSE_CODE: u32 = 410;
 const SUPERSEDED_CONNECTION_CLOSE_REASON: &[u8] = b"superseded";
 const HEARING_SAMPLES_PER_KEEP_ALIVE: u32 = 2;
 const UNANSWERED_KEEP_ALIVES_OF_A_GONE_PROCESS: u32 = 3;
-/// How often the direct server reads what each accepted connection has heard.
+/// How often the register reads what each held connection has heard.
 const HEARING_SAMPLE_INTERVAL: Duration =
     match QUIC_KEEP_ALIVE_INTERVAL.checked_div(HEARING_SAMPLES_PER_KEEP_ALIVE) {
         Some(interval) => interval,
@@ -67,7 +67,7 @@ pub trait DirectHost: Send + Sync + 'static {
     ) -> IntroduceAck;
 
     /// The register of every connection the node's endpoint holds, which the endpoint fills and the direct server and the node close those of a card through.
-    fn accepted_connections(&self) -> AcceptedConnections;
+    fn held_connections(&self) -> HeldConnections;
 }
 
 /// A monotonic clock, read for the instant now.
@@ -75,20 +75,20 @@ pub type MonotonicClock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 /// Every connection the endpoint's gate let through and has not seen close, of any protocol, dialed or accepted, by the card at its other end, and the clock their silence is measured on.
 #[derive(Clone)]
-pub struct AcceptedConnections {
-    held: Arc<Mutex<HashMap<wire::PublicKey, Vec<Accepted>>>>,
+pub struct HeldConnections {
+    held: Arc<Mutex<HashMap<wire::PublicKey, Vec<HeldConnection>>>>,
     monotonic: MonotonicClock,
 }
 
-impl fmt::Debug for AcceptedConnections {
+impl fmt::Debug for HeldConnections {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("AcceptedConnections")
+            .debug_struct("HeldConnections")
             .finish_non_exhaustive()
     }
 }
 
-impl AcceptedConnections {
+impl HeldConnections {
     /// An empty register that measures each connection's silence on the monotonic clock.
     #[must_use]
     pub fn new(monotonic: MonotonicClock) -> Self {
@@ -99,27 +99,28 @@ impl AcceptedConnections {
     }
 
     /// Closes every connection to or from the card, of any protocol, whose process no longer runs, so the endpoint forgets the path it held to that process (spec 3.8, address lookup).
-    pub(crate) fn close_from(&self, card: wire::PublicKey) {
-        self.close_from_sparing(card, None);
+    pub(crate) fn close_silent_of(&self, card: wire::PublicKey) {
+        self.close_silent_of_sparing(card, None);
     }
 
     /// Closes every connection to or from the card whose process no longer runs, but the one an Introduce arrived on (spec 3.8, address lookup).
-    fn close_others_from(&self, card: wire::PublicKey, arrived_on: &Connection) {
-        self.close_from_sparing(card, Some(arrived_on.stable_id()));
+    fn close_silent_others_of(&self, card: wire::PublicKey, arrived_on: &Connection) {
+        self.close_silent_of_sparing(card, Some(arrived_on.stable_id()));
     }
 
     /// Closes every connection to or from the card that has heard nothing from its peer for as long as a gone process is silent, but the spared one.
-    fn close_from_sparing(&self, card: wire::PublicKey, spared: Option<usize>) {
+    fn close_silent_of_sparing(&self, card: wire::PublicKey, spared: Option<usize>) {
         let now = (self.monotonic)();
         let superseded = self
             .held()
             .get_mut(&card)
-            .map(|accepted| {
-                accepted
-                    .extract_if(.., |accepted| {
-                        Some(accepted.stable_id) != spared && accepted.is_from_a_gone_process(now)
+            .map(|of_card| {
+                of_card
+                    .extract_if(.., |held_connection| {
+                        Some(held_connection.stable_id) != spared
+                            && held_connection.is_from_a_gone_process(now)
                     })
-                    .filter_map(|accepted| accepted.connection.upgrade())
+                    .filter_map(|held_connection| held_connection.connection.upgrade())
                     .collect()
             })
             .unwrap_or_default();
@@ -131,7 +132,10 @@ impl AcceptedConnections {
         let card = *connection.remote_id().as_bytes();
         let weak = connection.weak_handle();
         let closed = weak.closed();
-        self.add(card, Accepted::heard_at(connection, (self.monotonic)()));
+        self.add(
+            card,
+            HeldConnection::heard_at(connection, (self.monotonic)()),
+        );
         tokio::spawn(
             self.clone()
                 .follow_hearing(card, connection.stable_id(), weak, closed),
@@ -139,10 +143,10 @@ impl AcceptedConnections {
     }
 
     /// Adds the connection under its card, forgetting every card left with no connection.
-    fn add(&self, card: wire::PublicKey, accepted: Accepted) {
+    fn add(&self, card: wire::PublicKey, held_connection: HeldConnection) {
         let mut held = self.held();
-        held.retain(|_, accepted| !accepted.is_empty());
-        held.entry(card).or_default().push(accepted);
+        held.retain(|_, of_card| !of_card.is_empty());
+        held.entry(card).or_default().push(held_connection);
     }
 
     /// Reads what the connection to or from the card has heard every hearing sample interval until it closes, then forgets it.
@@ -177,38 +181,38 @@ impl AcceptedConnections {
             return;
         };
         let now = (self.monotonic)();
-        if let Some(accepted) = self.held().get_mut(&card).and_then(|accepted| {
-            accepted
+        if let Some(held_connection) = self.held().get_mut(&card).and_then(|of_card| {
+            of_card
                 .iter_mut()
-                .find(|accepted| accepted.stable_id == stable_id)
+                .find(|held_connection| held_connection.stable_id == stable_id)
         }) {
-            accepted.note_hearing(datagrams, now);
+            held_connection.note_hearing(datagrams, now);
         }
     }
 
     /// Forgets a connection to or from the card that has closed.
     fn forget(&self, card: wire::PublicKey, stable_id: usize) {
-        if let Some(accepted) = self.held().get_mut(&card) {
-            accepted.retain(|accepted| accepted.stable_id != stable_id);
+        if let Some(of_card) = self.held().get_mut(&card) {
+            of_card.retain(|held_connection| held_connection.stable_id != stable_id);
         }
     }
 
     /// The register, locked for one change.
-    fn held(&self) -> MutexGuard<'_, HashMap<wire::PublicKey, Vec<Accepted>>> {
+    fn held(&self) -> MutexGuard<'_, HashMap<wire::PublicKey, Vec<HeldConnection>>> {
         self.held.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
 /// A connection the gate let through, held weakly, with the count of datagrams it had received when that count last moved and when it was seen to move.
 #[derive(Debug)]
-struct Accepted {
+struct HeldConnection {
     connection: WeakConnectionHandle,
     stable_id: usize,
     datagrams_heard: u64,
     last_heard: Instant,
 }
 
-impl Accepted {
+impl HeldConnection {
     /// The connection, taken as heard from its peer at `now`.
     fn heard_at(connection: &Connection, now: Instant) -> Self {
         Self {
@@ -340,7 +344,7 @@ pub struct DirectServer<H> {
 
 struct ServerState<H> {
     keys: NetworkKeys,
-    accepted: AcceptedConnections,
+    held: HeldConnections,
     host: H,
 }
 
@@ -350,7 +354,7 @@ impl<H: DirectHost> DirectServer<H> {
         Self {
             shared: Arc::new(ServerState {
                 keys,
-                accepted: host.accepted_connections(),
+                held: host.held_connections(),
                 host,
             }),
         }
@@ -501,7 +505,7 @@ impl<H: DirectHost> ServerState<H> {
             }
             Request::Probe(probe) => Ok(Response::ProbeAck(self.answer_probe(&probe))),
             Request::Introduce(introduce) => {
-                self.accepted.close_others_from(sender, arrived_on);
+                self.held.close_silent_others_of(sender, arrived_on);
                 Ok(Response::IntroduceAck(
                     self.host.receive_introduce(sender, introduce),
                 ))
@@ -831,7 +835,7 @@ mod tests {
         stopping: Arc<AtomicBool>,
         received: Arc<Mutex<Vec<(wire::PublicKey, Message)>>>,
         introduced: Arc<Mutex<Vec<(wire::PublicKey, wire::Introduce)>>>,
-        accepted: AcceptedConnections,
+        accepted: HeldConnections,
     }
 
     impl RecordingHost {
@@ -850,13 +854,13 @@ mod tests {
                 stopping: Arc::new(AtomicBool::new(false)),
                 received: Arc::new(Mutex::new(Vec::new())),
                 introduced: Arc::new(Mutex::new(Vec::new())),
-                accepted: AcceptedConnections::new(std::sync::Arc::new(tokio::time::Instant::now)),
+                accepted: HeldConnections::new(std::sync::Arc::new(tokio::time::Instant::now)),
             }
         }
 
         fn measuring_silence_on(self, monotonic: MonotonicClock) -> Self {
             Self {
-                accepted: AcceptedConnections::new(monotonic),
+                accepted: HeldConnections::new(monotonic),
                 ..self
             }
         }
@@ -867,7 +871,7 @@ mod tests {
     }
 
     impl DirectHost for RecordingHost {
-        fn accepted_connections(&self) -> AcceptedConnections {
+        fn held_connections(&self) -> HeldConnections {
             self.accepted.clone()
         }
 
@@ -965,7 +969,7 @@ mod tests {
         let server = DirectServer::new(keys(), host.clone());
         let link = link_to(server, ClientTimeouts::SPEC).await;
         link.server_node
-            .hold_connections_in(host.accepted_connections());
+            .hold_connections_in(host.held_connections());
         Rig { host, link }
     }
 
@@ -1347,7 +1351,7 @@ mod tests {
         host.accepted.held().get(&card).map_or(0, Vec::len)
     }
 
-    fn connections_accepted_from(host: &RecordingHost, card: wire::PublicKey) -> Vec<Connection> {
+    fn connections_held_open_from(host: &RecordingHost, card: wire::PublicKey) -> Vec<Connection> {
         host.accepted
             .held()
             .get(&card)
@@ -1363,7 +1367,7 @@ mod tests {
         let rig = rig().await;
         let server = rig.link.server_node.endpoint().id();
         connection_from_a_process_that_vanished(rig.link.server_node.endpoint().addr()).await;
-        let vanished = connections_accepted_from(&rig.host, card_of(CLIENT_SEED));
+        let vanished = connections_held_open_from(&rig.host, card_of(CLIENT_SEED));
         tokio::time::sleep(SILENCE_OF_A_GONE_PROCESS_JUDGED).await;
 
         rig.link
@@ -1393,7 +1397,7 @@ mod tests {
         let client_node = bind_node(CLIENT_SEED).await;
         client_node.replace_address(server_node.endpoint().addr());
         let host = RecordingHost::with_card(card_of(SERVER_SEED));
-        server_node.hold_connections_in(host.accepted_connections());
+        server_node.hold_connections_in(host.held_connections());
         let server = Arc::new(DirectServer::new(keys(), host.clone()));
         let (dialed, accepted) = tokio::join!(
             client_node
@@ -1452,7 +1456,7 @@ mod tests {
      {
         let this_node = bind_node(SERVER_SEED).await;
         let gone_node = bind_node(CLIENT_SEED).await;
-        let register = AcceptedConnections::new(clock_reading_every_connection_as_gone());
+        let register = HeldConnections::new(clock_reading_every_connection_as_gone());
         this_node.hold_connections_in(register.clone());
         this_node.replace_address(gone_node.endpoint().addr());
         let (dialed, accepted) = tokio::join!(
@@ -1467,7 +1471,7 @@ mod tests {
         let dialed = dialed.unwrap();
         let _accepted = accepted.unwrap();
 
-        register.close_from(card_of(CLIENT_SEED));
+        register.close_silent_of(card_of(CLIENT_SEED));
 
         assert_eq!(dialed.side(), Side::Client);
         assert_eq!(dialed.close_reason(), Some(ConnectionError::LocallyClosed));
@@ -1485,7 +1489,7 @@ mod tests {
         let peer_node = bind_node(CLIENT_SEED).await;
         let held_at = tokio::time::Instant::now();
         let reading = Arc::new(Mutex::new(held_at));
-        let register = AcceptedConnections::new({
+        let register = HeldConnections::new({
             let reading = Arc::clone(&reading);
             Arc::new(move || *reading.lock().unwrap())
         });
@@ -1506,10 +1510,10 @@ mod tests {
         *reading.lock().unwrap() = held_at
             .checked_add(JUST_UNDER_THE_SILENCE_OF_A_GONE_PROCESS)
             .unwrap();
-        register.close_from(card_of(CLIENT_SEED));
+        register.close_silent_of(card_of(CLIENT_SEED));
         let closed_just_before_the_bound = dialed.close_reason();
         *reading.lock().unwrap() = held_at.checked_add(SILENCE_OF_A_GONE_PROCESS).unwrap();
-        register.close_from(card_of(CLIENT_SEED));
+        register.close_silent_of(card_of(CLIENT_SEED));
 
         assert_eq!(closed_just_before_the_bound, None);
         assert_eq!(dialed.close_reason(), Some(ConnectionError::LocallyClosed));

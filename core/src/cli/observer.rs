@@ -25,7 +25,9 @@ use crate::errors::ErrorCode;
 use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
 use crate::inbox::socket::{InboxSocket, InboxSocketError};
 use crate::keys::parse_public_key;
-use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, MonotonicClock};
+use crate::net::direct::{
+    ClientTimeouts, DirectClient, DirectHost, HeldConnections, MonotonicClock,
+};
 use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
@@ -606,8 +608,8 @@ impl ObserverHost {
 }
 
 impl DirectHost for Arc<ObserverHost> {
-    fn accepted_connections(&self) -> crate::net::direct::AcceptedConnections {
-        self.rows.accepted_connections()
+    fn held_connections(&self) -> HeldConnections {
+        self.rows.held_connections()
     }
 
     fn is_stopping(&self) -> bool {
@@ -1643,10 +1645,8 @@ mod tests {
     }
 
     impl DirectHost for RecordingNeighbor {
-        fn accepted_connections(&self) -> crate::net::direct::AcceptedConnections {
-            crate::net::direct::AcceptedConnections::new(std::sync::Arc::new(
-                tokio::time::Instant::now,
-            ))
+        fn held_connections(&self) -> crate::net::direct::HeldConnections {
+            crate::net::direct::HeldConnections::new(std::sync::Arc::new(tokio::time::Instant::now))
         }
 
         fn is_stopping(&self) -> bool {

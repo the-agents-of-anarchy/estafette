@@ -26,7 +26,7 @@ use crate::inbox::buffer::ReceivedMessage;
 use crate::inbox::socket::{Attached, InboxSocket};
 use crate::keys::{KeyError, parse_network_secret, parse_public_key};
 use crate::net::direct::{
-    AcceptedConnections, ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer,
+    ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, HeldConnections,
     MonotonicClock,
 };
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
@@ -367,7 +367,7 @@ pub fn serve<H: DirectHost + Clone>(
     keys: &NetworkKeys,
     host: &H,
 ) -> (Router, Gossip) {
-    endpoint.hold_connections_in(host.accepted_connections());
+    endpoint.hold_connections_in(host.held_connections());
     let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
     let router = Router::builder(endpoint.endpoint().clone())
         .accept(DIRECT_ALPN, DirectServer::new(keys.clone(), host.clone()))
@@ -400,18 +400,18 @@ pub(super) struct NodeState {
     rows: PeerRows,
 }
 
-/// The peer table of a node of any kind and the register of the connections its direct server accepted, changed together by the rows of spec 3.8 every such node applies.
+/// The peer table of a node of any kind and the register of every connection its endpoint holds, changed together by the rows of spec 3.8 every such node applies.
 pub struct PeerRows {
     table: Mutex<PeerTable>,
-    accepted_connections: AcceptedConnections,
+    held_connections: HeldConnections,
 }
 
 impl PeerRows {
-    /// An empty table for the node of `own_card`, whose accepted connections are judged silent on the monotonic clock.
+    /// An empty table for the node of `own_card`, whose held connections are judged silent on the monotonic clock.
     pub(crate) fn new(own_card: wire::PublicKey, monotonic: MonotonicClock) -> Self {
         Self {
             table: Mutex::new(PeerTable::new(own_card)),
-            accepted_connections: AcceptedConnections::new(monotonic),
+            held_connections: HeldConnections::new(monotonic),
         }
     }
 
@@ -420,16 +420,16 @@ impl PeerRows {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// The register the direct server keeps the connections it accepted in.
-    pub(crate) fn accepted_connections(&self) -> AcceptedConnections {
-        self.accepted_connections.clone()
+    /// The register of every connection the endpoint holds, which the direct server and these rows close through.
+    pub(crate) fn held_connections(&self) -> HeldConnections {
+        self.held_connections.clone()
     }
 
     /// Applies a Presence to the table and, when it is taken, closes every connection to or from its card, of any protocol, whose process no longer runs (spec 3.8, address lookup).
     pub(crate) fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
         let effects = self.table().receive_presence(presence, now_ms);
         if effects.contains(&Effect::DropHeldConnection(presence.card)) {
-            self.accepted_connections.close_from(presence.card);
+            self.held_connections.close_silent_of(presence.card);
         }
         effects
     }
@@ -591,8 +591,8 @@ impl DirectHost for Arc<NodeState> {
         acknowledgement_of(self.introduction())
     }
 
-    fn accepted_connections(&self) -> AcceptedConnections {
-        self.rows.accepted_connections()
+    fn held_connections(&self) -> HeldConnections {
+        self.rows.held_connections()
     }
 }
 
@@ -1990,10 +1990,8 @@ pub(super) mod tests {
     }
 
     impl DirectHost for WitnessHost {
-        fn accepted_connections(&self) -> crate::net::direct::AcceptedConnections {
-            crate::net::direct::AcceptedConnections::new(std::sync::Arc::new(
-                tokio::time::Instant::now,
-            ))
+        fn held_connections(&self) -> crate::net::direct::HeldConnections {
+            crate::net::direct::HeldConnections::new(std::sync::Arc::new(tokio::time::Instant::now))
         }
 
         fn is_stopping(&self) -> bool {

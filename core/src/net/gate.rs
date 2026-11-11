@@ -11,7 +11,7 @@ use iroh_gossip::ALPN as GOSSIP_ALPN;
 use tokio::time::timeout;
 
 use crate::crypto::GateKey;
-use crate::net::direct::AcceptedConnections;
+use crate::net::direct::HeldConnections;
 
 pub const NONCE_BYTES: usize = 32;
 const PROOF_BYTES: usize = blake3::OUT_LEN;
@@ -23,7 +23,7 @@ type Nonce = [u8; NONCE_BYTES];
 type Proof = [u8; PROOF_BYTES];
 
 /// Where the gate holds every connection it lets through: the register the node hands its endpoint, none until it does, shared by every gate of that endpoint and its rebinds.
-pub type ConnectionRegister = Arc<Mutex<Option<AcceptedConnections>>>;
+pub type ConnectionRegister = Arc<Mutex<Option<HeldConnections>>>;
 
 /// The after-handshake hook that closes every gossip connection whose peer does not prove the network secret and holds every connection it lets through in the register.
 pub struct NetworkSecretGate {
