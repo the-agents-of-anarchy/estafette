@@ -21,7 +21,7 @@ use tokio::time::{Instant, sleep_until};
 use super::rebind::{MemberJoins, RebindSchedule, RelayProbe};
 use crate::config::{AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
 use crate::crypto::{NetworkKeys, NetworkSecret};
-use crate::event::{Event, RunRecord};
+use crate::event::{DirectEvent, Event, RunRecord};
 use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::inbox::buffer::ReceivedMessage;
 use crate::inbox::socket::{Attached, InboxSocket};
@@ -429,10 +429,14 @@ impl PeerRows {
                 card,
                 answer: Err(_),
             }
-            | DirectAnswer::Probe { card, acked: false } => {
-                self.table().direct_contact_failed(card, now_ms)
-            }
-            DirectAnswer::Probe { card, acked: true } => {
+            | DirectAnswer::Probe {
+                card,
+                answer: Err(_),
+            } => self.table().direct_contact_failed(card, now_ms),
+            DirectAnswer::Probe {
+                card,
+                answer: Ok(()),
+            } => {
                 self.table().direct_contact_succeeded(card, now_ms);
                 Vec::new()
             }
@@ -596,8 +600,31 @@ pub enum DirectAnswer {
     },
     Probe {
         card: wire::PublicKey,
-        acked: bool,
+        answer: Result<(), DirectError>,
     },
+}
+
+impl DirectAnswer {
+    /// The run record of a request that got no valid acknowledgement, naming the node it went to and why.
+    fn failure_record(&self) -> Option<Event> {
+        match self {
+            Self::Introduce {
+                card,
+                answer: Err(reason),
+            }
+            | Self::Probe {
+                card,
+                answer: Err(reason),
+            } => endpoint_id(card).map(|peer| {
+                DirectEvent::ContactFailed {
+                    peer,
+                    reason: reason.clone(),
+                }
+                .into()
+            }),
+            Self::Introduce { answer: Ok(_), .. } | Self::Probe { answer: Ok(()), .. } => None,
+        }
+    }
 }
 
 /// What sending direct requests needs from a node of any kind: whether it is stopping, its introduction, and where each answer goes.
@@ -655,11 +682,11 @@ async fn run_requests<R: DirectRequester>(
                 requester.hand_answer(DirectAnswer::Introduce { card, answer });
             }
             DirectRequest::SendProbe(card, nonce) => {
-                let acked = match endpoint_id(&card) {
-                    Some(id) => client.probe(id, nonce).await.is_ok(),
-                    None => false,
+                let answer = match endpoint_id(&card) {
+                    Some(id) => client.probe(id, nonce).await.map(|_acknowledged| ()),
+                    None => Err(DirectError::Unreachable),
                 };
-                requester.hand_answer(DirectAnswer::Probe { card, acked });
+                requester.hand_answer(DirectAnswer::Probe { card, answer });
             }
         }
     }
@@ -962,6 +989,9 @@ impl PresenceLoop {
             LoopEvent::Effects(effects) => self.perform(effects).await,
             LoopEvent::PeerReached => {}
             LoopEvent::Answered(answer) => {
+                if let Some(record) = answer.failure_record() {
+                    (self.report)(record);
+                }
                 let effects = self.state.rows.take_direct_answer(answer, now_ms);
                 self.perform(effects).await;
             }
@@ -3051,6 +3081,87 @@ pub(super) mod tests {
             .await
             .unwrap();
         assert_eq!(listed.status, Status::Unreachable);
+        drop(scratch);
+    }
+
+    fn recorded_contact_failures() -> (
+        RunRecord,
+        mpsc::UnboundedReceiver<(EndpointId, DirectError)>,
+    ) {
+        let (failed, failures) = mpsc::unbounded_channel();
+        let report: RunRecord = Arc::new(move |record| {
+            if let Event::Direct(DirectEvent::ContactFailed { peer, reason }) = record {
+                drop(failed.send((peer, reason)));
+            }
+        });
+        (report, failures)
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_an_introduce_that_fails_is_recorded_naming_the_node_and_why() {
+        let scratch = Scratch::new("intro-fail-record").await;
+        let (report, mut failures) = recorded_contact_failures();
+        let (_member, witness) = start_witnessed(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
+            None,
+        )
+        .await;
+
+        witness
+            .broadcast_as(
+                MARKER_SEED,
+                presence_of(MARKER_SEED, MARKER_HANDLE, MARKER_PUBLIC, wall_clock_ms()),
+            )
+            .await;
+        let recorded = tokio::time::timeout(
+            SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT + PAYLOAD_WAIT,
+            failures.recv(),
+        )
+        .await
+        .ok()
+        .flatten();
+
+        assert_eq!(
+            recorded,
+            Some((secret_key(MARKER_SEED).public(), DirectError::Unreachable))
+        );
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_probe_that_fails_is_recorded_naming_the_node() {
+        let scratch = Scratch::new("probe-fail-record").await;
+        let (report, mut failures) = recorded_contact_failures();
+        let mut members = start_members(
+            &scratch,
+            vec![
+                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                    .with_hosts(&[SECOND_SEED])
+                    .with_report(report),
+                MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
+                    .with_hosts(&[FIRST_SEED]),
+            ],
+        )
+        .await;
+        let second = members.pop().unwrap();
+        let first = members.pop().unwrap();
+        listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
+            .await
+            .unwrap();
+
+        drop(second.node);
+        second.endpoint.close().await;
+        let recorded = tokio::time::timeout(
+            SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT + PAYLOAD_WAIT,
+            failures.recv(),
+        )
+        .await
+        .ok()
+        .flatten()
+        .map(|(peer, _reason)| peer);
+
+        assert_eq!(recorded, Some(secret_key(SECOND_SEED).public()));
         drop(scratch);
     }
 
