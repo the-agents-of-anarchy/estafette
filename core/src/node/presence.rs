@@ -1454,6 +1454,7 @@ pub(super) mod tests {
     use crate::keys::render_public_key;
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
+    use crate::seeded_draws::Draws;
     use crate::wire::{Infrastructure, SignatureBytes};
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];
@@ -3224,9 +3225,6 @@ pub(super) mod tests {
     const STEPS_PER_CASE: u64 = 40;
     const SPEC_REANNOUNCE_INTERVAL: Duration = Duration::from_millis(2000);
     const SPEC_RELAY_LOSS_WAIT: Duration = Duration::from_millis(500);
-    const LCG_MULTIPLIER: u64 = 6_364_136_223_846_793_005;
-    const LCG_INCREMENT: u64 = 1_442_695_040_888_963_407;
-    const LCG_HIGH_BITS_SHIFT: u32 = 33;
     const RELAY_POOL: [&str; 3] = [
         "https://relay-a.estafette.invalid/",
         "https://relay-b.estafette.invalid/",
@@ -3234,25 +3232,6 @@ pub(super) mod tests {
     ];
     const DIRECT_POOL: [&str; 2] = ["192.0.2.1:4433", "198.51.100.2:4433"];
     const LARGEST_STEP_MS: u64 = 700;
-
-    pub(in crate::node) struct Draws(u64);
-
-    impl Draws {
-        pub(in crate::node) fn seeded(case: u64) -> Self {
-            Self(
-                case.wrapping_mul(LCG_MULTIPLIER)
-                    .wrapping_add(LCG_INCREMENT),
-            )
-        }
-
-        pub(in crate::node) fn below(&mut self, bound: u64) -> u64 {
-            self.0 = self
-                .0
-                .wrapping_mul(LCG_MULTIPLIER)
-                .wrapping_add(LCG_INCREMENT);
-            (self.0 >> LCG_HIGH_BITS_SHIFT).checked_rem(bound).unwrap()
-        }
-    }
 
     fn drawn_addr(draws: &mut Draws) -> Addr {
         let relay = RELAY_POOL[usize::try_from(draws.below(3)).unwrap()];
@@ -3808,7 +3787,7 @@ pub(super) mod tests {
         let lagging: MonotonicClock =
             Arc::new(|| Instant::now().checked_sub(MONOTONIC_LAG).unwrap());
 
-        let mut members = start_members(
+        let _members = start_members(
             &scratch,
             vec![
                 MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
@@ -3822,24 +3801,39 @@ pub(super) mod tests {
         .await;
 
         assert!(started.elapsed() < INIT_ON_A_LAGGING_CLOCK_LATEST);
-        drop(members.pop());
         drop(scratch);
     }
 
     #[cfg(feature = "relay")]
-    async fn wait_for_home_relay_connection(endpoint: &iroh::Endpoint, connected: bool) {
-        tokio::time::timeout(HOME_RELAY_STATUS_WITHIN, async {
-            while !endpoint
-                .home_relay_status()
-                .get()
-                .iter()
-                .any(|status| status.is_connected() == connected)
-            {
-                tokio::time::sleep(LISTING_POLL).await;
+    async fn wait_until_home_relay_is(
+        endpoint: &iroh::Endpoint,
+        awaited: impl Fn(&RelayStatus) -> bool + Send + Sync,
+        awaited_state: &str,
+    ) {
+        let mut statuses = endpoint.home_relay_status().stream();
+        let reached = tokio::time::timeout(HOME_RELAY_STATUS_WITHIN, async {
+            while let Some(current) = statuses.next().await {
+                if current.iter().any(&awaited) {
+                    return true;
+                }
             }
+            false
         })
-        .await
-        .unwrap_or_else(|_elapsed| panic!("the home relay never became connected={connected}"));
+        .await;
+        assert!(
+            matches!(reached, Ok(true)),
+            "the home relay never became {awaited_state}"
+        );
+    }
+
+    #[cfg(feature = "relay")]
+    async fn wait_until_home_relay_connected(endpoint: &iroh::Endpoint) {
+        wait_until_home_relay_is(endpoint, RelayStatus::is_connected, "connected").await;
+    }
+
+    #[cfg(feature = "relay")]
+    async fn wait_until_home_relay_disconnected(endpoint: &iroh::Endpoint) {
+        wait_until_home_relay_is(endpoint, |status| !status.is_connected(), "disconnected").await;
     }
 
     #[cfg(feature = "relay")]
@@ -3877,10 +3871,10 @@ pub(super) mod tests {
             scratch.network_file(FIRST_SEED),
         )
         .await;
-        wait_for_home_relay_connection(&member.endpoint, true).await;
+        wait_until_home_relay_connected(&member.endpoint).await;
 
         relay.shutdown().await.unwrap();
-        wait_for_home_relay_connection(&member.endpoint, false).await;
+        wait_until_home_relay_disconnected(&member.endpoint).await;
         tokio::time::sleep(SPEC_RELAY_LOSS_WAIT + RELAY_LOSS_REMOVAL_SLACK).await;
 
         assert!(member.endpoint.remove_relay(&relay_address).await.is_none());

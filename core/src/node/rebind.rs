@@ -306,13 +306,14 @@ mod tests {
     use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
     use crate::net::gossip::{GossipEvent, NetworkTopic};
     use crate::node::presence::tests::{
-        Draws, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, MARKER_SEED, Member, MemberPlan,
+        FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, MARKER_SEED, Member, MemberPlan,
         OWNER_SEED, PAYLOAD_WAIT, Scratch, WITNESS_SEED, Witness, bind, card, frozen_clock, keys,
         secret_key, spawn_member, start_members, start_members_reaching, status_within,
         unreachable_about, wall_clock_ms,
     };
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
+    use crate::seeded_draws::Draws;
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
 
     const SPEC_DEAF_TIMEOUT: Duration = Duration::from_secs(15);
