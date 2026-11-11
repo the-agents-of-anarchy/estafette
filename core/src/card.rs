@@ -1,5 +1,7 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fmt;
+use std::mem;
+use std::rc::Rc;
 use std::str::FromStr;
 
 use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
@@ -256,8 +258,13 @@ const fn is_within_public_cap(bytes: usize) -> bool {
     bytes <= PUBLIC_MAX_BYTES
 }
 
-/// One YAML node of a card, with its tag and with every alias already replaced by its anchored value; `Elided` stands for a subtree past the nesting bound outside `public`, whose content is not kept.
-#[derive(Clone)]
+/// A node held by its parent and by every alias to it, so an alias copies a pointer, not a subtree.
+type Shared = Rc<Node>;
+
+/// A mapping's key and its value.
+type Entry = (Shared, Shared);
+
+/// One YAML node of a card, with its tag and with every alias already replaced by its anchored value.
 enum Node {
     Scalar {
         text: String,
@@ -266,13 +273,38 @@ enum Node {
     },
     Sequence {
         tag: Option<Tag>,
-        items: Vec<Self>,
+        items: Vec<Shared>,
     },
     Mapping {
         tag: Option<Tag>,
-        entries: Vec<(Self, Self)>,
+        entries: Vec<Entry>,
     },
-    Elided,
+}
+
+impl Node {
+    /// The children, moved out of the node.
+    fn take_children(&mut self) -> Vec<Shared> {
+        match self {
+            Self::Scalar { .. } => Vec::new(),
+            Self::Sequence { items, .. } => mem::take(items),
+            Self::Mapping { entries, .. } => mem::take(entries)
+                .into_iter()
+                .flat_map(<[Shared; 2]>::from)
+                .collect(),
+        }
+    }
+}
+
+impl Drop for Node {
+    /// Releases the descendants one at a time, so a deeply nested node cannot recurse the stack.
+    fn drop(&mut self) {
+        let mut pending = self.take_children();
+        while let Some(shared) = pending.pop() {
+            if let Ok(mut node) = Rc::try_unwrap(shared) {
+                pending.append(&mut node.take_children());
+            }
+        }
+    }
 }
 
 /// A sequence or mapping whose closing event has not arrived yet, with its anchor id.
@@ -280,24 +312,17 @@ enum OpenNode {
     Sequence {
         anchor: usize,
         tag: Option<Tag>,
-        items: Vec<Node>,
+        items: Vec<Shared>,
     },
     Mapping {
         anchor: usize,
         tag: Option<Tag>,
-        entries: Vec<(Node, Node)>,
-        pending_key: Option<Node>,
+        entries: Vec<Entry>,
+        pending_key: Option<Shared>,
     },
 }
 
 impl OpenNode {
-    /// The anchor id the node was opened with.
-    const fn anchor(&self) -> usize {
-        match self {
-            Self::Sequence { anchor, .. } | Self::Mapping { anchor, .. } => *anchor,
-        }
-    }
-
     /// The finished node and the anchor id it was opened with.
     fn close(self) -> (usize, Node) {
         match self {
@@ -316,30 +341,22 @@ impl OpenNode {
 #[derive(Default)]
 struct DocumentCollector {
     open: Vec<OpenNode>,
-    documents: Vec<Node>,
+    documents: Vec<Shared>,
     anchored: HashMap<usize, AnchoredNode>,
     expanded_nodes: usize,
     refusal: Option<CardInvalid>,
     nesting_exceeded: bool,
-    elision: Option<Elision>,
-    elided_anchors: HashSet<usize>,
-}
-
-/// A subtree being skipped past the nesting bound: the anchor of its root and the levels still open in it.
-struct Elision {
-    root_anchor: usize,
-    open_levels: usize,
 }
 
 /// A finished anchored node and the number of nodes it holds.
 struct AnchoredNode {
-    node: Node,
+    node: Shared,
     node_count: usize,
 }
 
 impl DocumentCollector {
     /// Puts a finished node where the parser is: a sequence item, a mapping key or value, or a document.
-    fn place(&mut self, node: Node) {
+    fn place(&mut self, node: Shared) {
         match self.open.last_mut() {
             None => self.documents.push(node),
             Some(OpenNode::Sequence { items, .. }) => items.push(node),
@@ -356,12 +373,13 @@ impl DocumentCollector {
 
     /// Places a finished node and remembers it when it carries an anchor.
     fn place_remembering_anchor(&mut self, anchor: usize, node: Node) {
+        let node = Rc::new(node);
         if anchor != NO_ANCHOR {
             let node_count = count_nodes(&node);
             self.anchored.insert(
                 anchor,
                 AnchoredNode {
-                    node: node.clone(),
+                    node: Rc::clone(&node),
                     node_count,
                 },
             );
@@ -382,23 +400,18 @@ impl DocumentCollector {
             self.refuse(CardInvalid::AliasExpansionTooLarge);
             return;
         }
-        let node = target.node.clone();
+        let node = Rc::clone(&target.node);
         self.expanded_nodes = expanded_nodes;
         self.place(node);
     }
 
-    /// Opens a sequence or mapping; past the bound it refuses inside `public` and skips the subtree elsewhere.
+    /// Opens a sequence or mapping; past the bound inside `public` it refuses and stops reading.
     fn open_within_nesting_bound(&mut self, node: OpenNode) {
-        if self.open.len() < CARD_DEEPEST_NESTING {
-            self.open.push(node);
-        } else if self.is_inside_public() {
+        if self.open.len() >= CARD_DEEPEST_NESTING && self.is_inside_public() {
             self.nesting_exceeded = true;
             self.refuse(CardInvalid::NestingTooDeep);
         } else {
-            self.elision = Some(Elision {
-                root_anchor: node.anchor(),
-                open_levels: 1,
-            });
+            self.open.push(node);
         }
     }
 
@@ -406,64 +419,9 @@ impl DocumentCollector {
     fn is_inside_public(&self) -> bool {
         matches!(
             self.open.first(),
-            Some(OpenNode::Mapping { pending_key: Some(Node::Scalar { text, .. }), .. })
-                if text == PUBLIC_FIELD
+            Some(OpenNode::Mapping { pending_key: Some(key), .. })
+                if matches!(&**key, Node::Scalar { text, .. } if text == PUBLIC_FIELD)
         )
-    }
-
-    /// Remembers an anchor defined inside a skipped subtree, so a later alias to it is known.
-    fn remember_elided_anchor(&mut self, anchor: usize) {
-        if anchor != NO_ANCHOR {
-            self.elided_anchors.insert(anchor);
-        }
-    }
-
-    /// Keeps a scalar defined inside a skipped subtree whole when it carries an anchor, as a scalar nests nothing.
-    fn remember_anchored_scalar(&mut self, anchor: usize, scalar: Node) {
-        if anchor != NO_ANCHOR {
-            self.anchored.insert(
-                anchor,
-                AnchoredNode {
-                    node: scalar,
-                    node_count: 1,
-                },
-            );
-        }
-    }
-
-    /// Follows the skipped subtree's events: keeps anchored scalars, counts its levels, and places `Elided` where its root stood once it closes.
-    fn skip_event_of_elided_subtree(&mut self, event: Event) {
-        match event {
-            Event::Scalar(text, style, anchor, tag) => {
-                self.remember_anchored_scalar(anchor, Node::Scalar { text, style, tag });
-            }
-            Event::SequenceStart(anchor, _) | Event::MappingStart(anchor, _) => {
-                self.remember_elided_anchor(anchor);
-                if let Some(elision) = self.elision.as_mut() {
-                    elision.open_levels = elision.open_levels.saturating_add(1);
-                }
-            }
-            Event::SequenceEnd | Event::MappingEnd => self.close_elided_level(),
-            Event::Alias(_)
-            | Event::Nothing
-            | Event::StreamStart
-            | Event::StreamEnd
-            | Event::DocumentStart
-            | Event::DocumentEnd => {}
-        }
-    }
-
-    /// Closes one level of the skipped subtree, placing `Elided` when its root closes.
-    fn close_elided_level(&mut self) {
-        let Some(elision) = self.elision.as_mut() else {
-            return;
-        };
-        elision.open_levels = elision.open_levels.saturating_sub(1);
-        if elision.open_levels == 0 {
-            let root_anchor = elision.root_anchor;
-            self.elision = None;
-            self.place_remembering_anchor(root_anchor, Node::Elided);
-        }
     }
 
     /// Keeps the first refusal and drops any later one.
@@ -472,33 +430,51 @@ impl DocumentCollector {
     }
 }
 
-/// The number of nodes in the tree, the node itself included.
-fn count_nodes(node: &Node) -> usize {
-    match node {
-        Node::Scalar { .. } | Node::Elided => 1,
-        Node::Sequence { items, .. } => {
-            items.iter().map(count_nodes).fold(1, usize::saturating_add)
+/// The number of nodes in the tree, the node itself included, counted without recursion.
+fn count_nodes(root: &Node) -> usize {
+    let mut counted: usize = 0;
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        counted = counted.saturating_add(1);
+        match node {
+            Node::Scalar { .. } => {}
+            Node::Sequence { items, .. } => pending.extend(items.iter().map(|item| &**item)),
+            Node::Mapping { entries, .. } => pending.extend(
+                entries
+                    .iter()
+                    .flat_map(|(key, value)| [key, value])
+                    .map(|child| &**child),
+            ),
         }
-        Node::Mapping { entries, .. } => entries
-            .iter()
-            .flat_map(|(key, value)| [key, value])
-            .map(count_nodes)
-            .fold(1, usize::saturating_add),
     }
+    counted
+}
+
+/// The most mappings and sequences one inside another in the tree, counted without recursion.
+fn deepest_nesting(root: &Node) -> usize {
+    let mut deepest: usize = 0;
+    let mut pending = vec![(root, 0_usize)];
+    while let Some((node, enclosing)) = pending.pop() {
+        let children: Vec<&Shared> = match node {
+            Node::Scalar { .. } => continue,
+            Node::Sequence { items, .. } => items.iter().collect(),
+            Node::Mapping { entries, .. } => entries
+                .iter()
+                .flat_map(|(key, value)| [key, value])
+                .collect(),
+        };
+        let level = enclosing.saturating_add(1);
+        deepest = deepest.max(level);
+        pending.extend(children.into_iter().map(|child| (&**child, level)));
+    }
+    deepest
 }
 
 impl MarkedEventReceiver for DocumentCollector {
     fn on_event(&mut self, event: Event, _mark: Marker) {
-        if self.elision.is_some() {
-            self.skip_event_of_elided_subtree(event);
-            return;
-        }
         match event {
             Event::Scalar(text, style, anchor, tag) => {
                 self.place_remembering_anchor(anchor, Node::Scalar { text, style, tag });
-            }
-            Event::Alias(anchor) if self.elided_anchors.contains(&anchor) => {
-                self.place(Node::Elided);
             }
             Event::Alias(anchor) => self.place_alias_target(anchor),
             Event::SequenceStart(anchor, tag) => {
@@ -548,7 +524,7 @@ fn feed_events_until_end_or_nesting_exceeded(
 }
 
 /// The single document of the text, or the refusal for unparsable text, an alias refusal, or a wrong document count.
-fn read_single_document(text: &str) -> Result<Node, CardInvalid> {
+fn read_single_document(text: &str) -> Result<Shared, CardInvalid> {
     let mut collector = DocumentCollector::default();
     feed_events_until_end_or_nesting_exceeded(text, &mut collector)
         .map_err(|error| CardInvalid::Unparsable(error.to_string()))?;
@@ -563,12 +539,10 @@ fn read_single_document(text: &str) -> Result<Node, CardInvalid> {
 }
 
 /// The key and value pairs of a mapping node, refusing any other node.
-fn mapping_entries(node: &Node) -> Result<&[(Node, Node)], CardInvalid> {
+fn mapping_entries(node: &Node) -> Result<&[Entry], CardInvalid> {
     match node {
         Node::Mapping { entries, .. } => Ok(entries),
-        Node::Scalar { .. } | Node::Sequence { .. } | Node::Elided => {
-            Err(CardInvalid::NotOneMappingDocument)
-        }
+        Node::Scalar { .. } | Node::Sequence { .. } => Err(CardInvalid::NotOneMappingDocument),
     }
 }
 
@@ -576,19 +550,19 @@ fn mapping_entries(node: &Node) -> Result<&[(Node, Node)], CardInvalid> {
 fn scalar_text_of(node: &Node) -> Option<&str> {
     match node {
         Node::Scalar { text, .. } => Some(text),
-        Node::Sequence { .. } | Node::Mapping { .. } | Node::Elided => None,
+        Node::Sequence { .. } | Node::Mapping { .. } => None,
     }
 }
 
 /// The value under the one key of that name, None when absent, refusing a key named twice.
 fn value_of_unique_key<'card>(
-    entries: &'card [(Node, Node)],
+    entries: &'card [Entry],
     name: &'static str,
 ) -> Result<Option<&'card Node>, CardInvalid> {
     let mut matching = entries
         .iter()
         .filter(|(key, _)| scalar_text_of(key) == Some(name))
-        .map(|(_, value)| value);
+        .map(|(_, value)| &**value);
     let first = matching.next();
     match matching.next() {
         None => Ok(first),
@@ -598,7 +572,7 @@ fn value_of_unique_key<'card>(
 
 /// The text of the scalar under the key, None when the key is absent, refusing a non-scalar value.
 fn optional_scalar_text(
-    entries: &[(Node, Node)],
+    entries: &[Entry],
     name: &'static str,
 ) -> Result<Option<String>, CardInvalid> {
     value_of_unique_key(entries, name)?
@@ -611,18 +585,15 @@ fn optional_scalar_text(
 }
 
 /// The text of the scalar under the key, refusing an absent key or a non-scalar value.
-fn required_scalar_text(
-    entries: &[(Node, Node)],
-    name: &'static str,
-) -> Result<String, CardInvalid> {
+fn required_scalar_text(entries: &[Entry], name: &'static str) -> Result<String, CardInvalid> {
     optional_scalar_text(entries, name)?.ok_or(CardInvalid::MissingKey(name))
 }
 
 /// The `public` mapping as JSON, empty when absent, refusing a non-mapping or one over the cap.
-fn public_mapping(entries: &[(Node, Node)]) -> Result<Map<String, Value>, CardInvalid> {
+fn public_mapping(entries: &[Entry]) -> Result<Map<String, Value>, CardInvalid> {
     let mapping = match value_of_unique_key(entries, PUBLIC_FIELD)? {
         None => Map::new(),
-        Some(node) => match convert_value(node)? {
+        Some(node) => match convert_value(refuse_nesting_beyond_bound(node)?)? {
             Value::Object(mapping) => mapping,
             Value::Null
             | Value::Bool(_)
@@ -635,6 +606,14 @@ fn public_mapping(entries: &[(Node, Node)]) -> Result<Map<String, Value>, CardIn
     };
     let mapping = refuse_over_cap(mapping).map_err(|bytes| CardInvalid::PublicOverCap { bytes })?;
     refuse_too_deep(mapping)
+}
+
+/// The node itself, or the refusal when it nests deeper than the bound the conversion can follow.
+fn refuse_nesting_beyond_bound(node: &Node) -> Result<&Node, CardInvalid> {
+    if deepest_nesting(node) > CARD_DEEPEST_NESTING {
+        return Err(CardInvalid::NestingTooDeep);
+    }
+    Ok(node)
 }
 
 /// The mapping itself, or the refusal naming its depth when it nests deeper than a member receives.
@@ -806,7 +785,6 @@ const fn tag_of(node: &Node) -> Option<&Tag> {
         Node::Scalar { tag, .. } | Node::Sequence { tag, .. } | Node::Mapping { tag, .. } => {
             tag.as_ref()
         }
-        Node::Elided => None,
     }
 }
 
@@ -831,11 +809,10 @@ fn convert_value(node: &Node) -> Result<Value, CardInvalid> {
         Node::Scalar { text, style, .. } => convert_scalar(text, *style),
         Node::Sequence { items, .. } => items
             .iter()
-            .map(convert_value)
+            .map(|item| convert_value(item))
             .collect::<Result<Vec<_>, _>>()
             .map(Value::Array),
         Node::Mapping { entries, .. } => convert_mapping(entries),
-        Node::Elided => Err(CardInvalid::NestingTooDeep),
     }
 }
 
@@ -956,10 +933,7 @@ fn is_merge_key(key: &Node) -> bool {
             style,
             tag: None,
         } => *style == TScalarStyle::Plain && text == YAML_MERGE_KEY,
-        Node::Scalar { tag: Some(_), .. }
-        | Node::Sequence { .. }
-        | Node::Mapping { .. }
-        | Node::Elided => false,
+        Node::Scalar { tag: Some(_), .. } | Node::Sequence { .. } | Node::Mapping { .. } => false,
     }
 }
 
@@ -970,7 +944,7 @@ fn is_integer_text(text: &str) -> bool {
 }
 
 /// The JSON object of a mapping, refusing a merge key, a non-string key and a duplicate key.
-fn convert_mapping(entries: &[(Node, Node)]) -> Result<Value, CardInvalid> {
+fn convert_mapping(entries: &[Entry]) -> Result<Value, CardInvalid> {
     let mut mapping = Map::new();
     for (key, value) in entries {
         if is_merge_key(key) {
@@ -1488,10 +1462,21 @@ pub(crate) mod tests {
 
     #[test]
     fn a_card_keeps_an_ignored_key_nested_beyond_the_nesting_bound_valid_spec_3_5() {
-        for depth in [CARD_DEEPEST_NESTING, 300, 2000] {
+        for depth in [CARD_DEEPEST_NESTING, 300, 2000, FAR_BEYOND_BOUND_LEVELS] {
             let card = card_with_ignored_key_nested(depth).unwrap();
             assert_eq!(card.public_json(), b"{}");
         }
+    }
+
+    const DEEP_ANCHORED_LEVELS: usize = 1000;
+    const FAR_BEYOND_BOUND_LEVELS: usize = 100_000;
+
+    fn deep_anchored_container() -> String {
+        format!(
+            "&anchor\n{}{}7",
+            " ".repeat(CARD_DEEPEST_NESTING * 2),
+            "- ".repeat(DEEP_ANCHORED_LEVELS)
+        )
     }
 
     fn card_aliasing_into_public_an_anchor_beyond_the_bound(
@@ -1510,10 +1495,40 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_alias_to_a_container_anchored_beyond_the_nesting_bound_is_refused_in_public_spec_3_5() {
+    fn an_alias_to_a_container_anchored_beyond_the_nesting_bound_resolves_to_its_value_spec_3_5() {
+        let card = card_aliasing_into_public_an_anchor_beyond_the_bound("&anchor [7]").unwrap();
+        assert_eq!(card.public_json(), br#"{"seen":[7]}"#);
+    }
+
+    #[test]
+    fn an_alias_to_a_container_nested_past_the_bound_is_refused_in_public_without_aborting_spec_3_5()
+     {
         assert_eq!(
-            card_aliasing_into_public_an_anchor_beyond_the_bound("&anchor [7]"),
+            card_aliasing_into_public_an_anchor_beyond_the_bound(&deep_anchored_container()),
             Err(CardInvalid::NestingTooDeep)
+        );
+    }
+
+    #[test]
+    fn an_alias_to_a_deep_container_stays_valid_in_an_ignored_key_spec_3_5() {
+        let beyond_bound = "- ".repeat(CARD_DEEPEST_NESTING);
+        let deep_container = deep_anchored_container();
+        let card = parse_card(&format!(
+            "handle: ada\npublic_key: abc\nignored:\n{beyond_bound}{deep_container}\nalso: *anchor\n"
+        ))
+        .unwrap();
+        assert_eq!(card.public_json(), b"{}");
+    }
+
+    #[test]
+    fn an_alias_bomb_beyond_the_nesting_bound_is_refused_by_the_expansion_bound_spec_3_5() {
+        let beyond_bound = "- ".repeat(CARD_DEEPEST_NESTING);
+        let aliases = "- *anchor\n".repeat(ALIAS_EXPANSION_MAX_NODES);
+        assert_eq!(
+            parse_card(&format!(
+                "handle: ada\npublic_key: abc\nignored:\n{beyond_bound}&anchor [1, 2]\nalso:\n{aliases}"
+            )),
+            Err(CardInvalid::AliasExpansionTooLarge)
         );
     }
 

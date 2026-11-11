@@ -454,3 +454,29 @@ fn binary_list_cards_lists_a_card_whose_ignored_key_nests_beyond_the_parser_boun
         );
     }
 }
+
+const CARD_DEEPEST_NESTING_BOUND: usize = 256;
+
+#[test]
+fn binary_list_cards_lists_a_card_whose_public_aliases_a_container_anchored_beyond_the_parser_bound_of_spec_3_5()
+ {
+    let root = common::scratch_root(SCRATCH_PREFIX, "alias_beyond_bound").unwrap();
+    let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
+    assert_eq!(created.status.code(), Some(0));
+    let card_file = root.join("data/estafette/cards/acme").join(CARD_FILE_NAME);
+    let mut text = std::fs::read_to_string(&card_file).unwrap();
+    text.push_str("ignored:\n");
+    text.push_str(&"- ".repeat(CARD_DEEPEST_NESTING_BOUND));
+    text.push_str("&anchor [7]\npublic:\n  seen: *anchor\n");
+    std::fs::write(&card_file, text).unwrap();
+
+    let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
+
+    assert_eq!(
+        listed.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    assert!(String::from_utf8_lossy(&listed.stdout).starts_with("ana-card\tana\t"));
+}
