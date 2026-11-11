@@ -257,6 +257,12 @@ impl Directories {
         self.infrastructure_path(network, CERTIFICATE_CACHE_EXTENSION)
     }
 
+    /// The directory holding the inbox sockets of this user's processes.
+    #[must_use]
+    pub(crate) fn runtime_directory(&self) -> &Path {
+        &self.runtime
+    }
+
     /// The inbox socket of the process with the given process id.
     #[must_use]
     pub fn inbox_socket_file(&self, process_id: u32) -> PathBuf {
@@ -396,12 +402,28 @@ mod tests {
         (directories, filesystem.created.into_inner())
     }
 
-    fn scratch_root(test_name: &str) -> PathBuf {
+    struct ScratchRoot(PathBuf);
+
+    impl std::ops::Deref for ScratchRoot {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for ScratchRoot {
+        fn drop(&mut self) {
+            drop(fs::remove_dir_all(&self.0));
+        }
+    }
+
+    fn scratch_root(test_name: &str) -> ScratchRoot {
         let root =
             std::env::temp_dir().join(format!("estafette-dirs-{test_name}-{}", std::process::id()));
         drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&root).unwrap();
-        root
+        ScratchRoot(root)
     }
 
     fn scratch_environment(root: &Path) -> impl Fn(&str) -> Option<OsString> {
@@ -636,6 +658,17 @@ mod tests {
     }
 
     #[test]
+    fn a_scratch_root_is_removed_when_its_test_ends_even_by_a_failed_assert() {
+        let root = scratch_root("guard");
+        let path = root.to_path_buf();
+        fs::write(path.join("left-behind"), b"").unwrap();
+
+        drop(root);
+
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn fresh_directories_get_mode_0700_spec_3_3() {
         let root = scratch_root("fresh");
         let directories =
@@ -662,7 +695,6 @@ mod tests {
             runtime_directory,
             root.join(format!("runtime/estafette-{user_id}"))
         );
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -691,7 +723,6 @@ mod tests {
         for directory in &existing {
             assert_eq!(mode_of(directory), EXISTING_DIRECTORY_MODE);
         }
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -707,7 +738,6 @@ mod tests {
             "cannot create {}",
             root.join("config/estafette").display()
         )));
-        drop(fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -781,6 +811,5 @@ mod tests {
             "cannot create {}",
             root.join("config/estafette").display()
         )));
-        drop(fs::remove_dir_all(&root));
     }
 }

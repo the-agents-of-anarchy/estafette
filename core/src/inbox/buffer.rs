@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use serde::Serialize;
 
-pub const INBOX_BUFFER_CAPACITY: usize = 1000;
+const INBOX_BUFFER_CAPACITY: usize = 1000;
 const FIRST_SEQ: u64 = 1;
 
 /// The five fields of a received message, spec D31.
@@ -18,12 +18,20 @@ pub struct ReceivedMessage {
 /// A received message numbered for the life of the process, as spec 3.11 serializes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InboxFrame {
-    pub seq: u64,
-    pub id: String,
-    pub from: String,
-    pub body: String,
-    pub sent_at: u64,
-    pub received_at: u64,
+    seq: u64,
+    id: String,
+    from: String,
+    body: String,
+    sent_at: u64,
+    received_at: u64,
+}
+
+impl InboxFrame {
+    /// The number the buffer gave this frame.
+    #[must_use]
+    pub const fn seq(&self) -> u64 {
+        self.seq
+    }
 }
 
 /// The last 1000 received frames of one process, replayable from any `since`.

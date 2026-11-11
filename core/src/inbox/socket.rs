@@ -13,6 +13,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 
+use crate::config::{remove_file_if_present, with_cleanup_outcome};
 use crate::dirs::Directories;
 use crate::inbox::buffer::{InboxBuffer, InboxFrame, ReceivedMessage};
 
@@ -199,7 +200,7 @@ impl InboxSocket {
         report_accept_failure: impl Fn(io::Error) + Send + Sync + 'static,
     ) -> Result<Self, InboxSocketError> {
         let socket_path = directories.inbox_socket_file(process_id);
-        remove_stale_sockets(directories, &socket_path, process_id, processes)?;
+        remove_stale_sockets(directories, process_id, processes)?;
         let listener = bind_owner_only(&socket_path)?;
         Ok(Self::serving(socket_path, listener, report_accept_failure))
     }
@@ -229,7 +230,7 @@ impl InboxSocket {
     /// Numbers the message, buffers it, and streams it to every attached client.
     pub fn publish(&self, message: ReceivedMessage) {
         let frame = locked(&self.shared.buffer).push(message);
-        self.shared.newest_seq.send_replace(frame.seq);
+        self.shared.newest_seq.send_replace(frame.seq());
     }
 
     /// Whether at least one client is connected, updated on the first connect and the last disconnect.
@@ -245,7 +246,7 @@ impl InboxSocket {
         let frames = buffer.frames_since(since);
         let newest_published = *self.shared.newest_seq.borrow();
         drop(buffer);
-        let newest_seq = frames.last().map_or(newest_published, |frame| frame.seq);
+        let newest_seq = frames.last().map_or(newest_published, InboxFrame::seq);
         (frames, newest_seq)
     }
 }
@@ -259,13 +260,10 @@ impl Drop for InboxSocket {
 
 fn remove_stale_sockets(
     directories: &Directories,
-    own_socket_path: &Path,
     own_process_id: u32,
     processes: &impl ProcessTable,
 ) -> Result<(), InboxSocketError> {
-    let Some(runtime) = own_socket_path.parent() else {
-        return Ok(());
-    };
+    let runtime = directories.runtime_directory();
     let clear_failure = |source| InboxSocketError::ClearStaleSockets {
         path: runtime.to_path_buf(),
         source,
@@ -301,12 +299,9 @@ fn bind_owner_only(socket_path: &Path) -> Result<UnixListener, InboxSocketError>
         source,
     })?;
     fs::set_permissions(socket_path, fs::Permissions::from_mode(SOCKET_MODE)).map_err(
-        |source| {
-            drop(fs::remove_file(socket_path));
-            InboxSocketError::RestrictPermissions {
-                path: socket_path.to_path_buf(),
-                source,
-            }
+        |source| InboxSocketError::RestrictPermissions {
+            path: socket_path.to_path_buf(),
+            source: with_cleanup_outcome(source, socket_path, remove_file_if_present(socket_path)),
         },
     )?;
     Ok(listener)
@@ -348,7 +343,7 @@ async fn serve_client(stream: UnixStream, shared: Arc<Shared>, _attachment: Atta
             if write_frame(&mut write_half, frame).await.is_err() {
                 return;
             }
-            last_sent = frame.seq;
+            last_sent = frame.seq();
         }
         tokio::select! {
             changed = newest_seq.changed() => if changed.is_err() { return; },
@@ -359,14 +354,11 @@ async fn serve_client(stream: UnixStream, shared: Arc<Shared>, _attachment: Atta
 
 async fn read_since(reader: &mut BufReader<impl AsyncRead + Unpin>) -> Option<u64> {
     let mut line = String::new();
-    let read = reader
+    reader
         .take(MAX_REQUEST_LINE_BYTES)
         .read_line(&mut line)
         .await
         .ok()?;
-    if read == 0 {
-        return None;
-    }
     serde_json::from_str::<SinceRequest>(&line)
         .ok()
         .map(|request| request.since)
