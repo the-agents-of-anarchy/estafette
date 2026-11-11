@@ -23,7 +23,7 @@ const JSON_OPEN_MAPPING: u8 = b'{';
 const JSON_OPEN_SEQUENCE: u8 = b'[';
 const JSON_CLOSE_MAPPING: u8 = b'}';
 const JSON_CLOSE_SEQUENCE: u8 = b']';
-const ALIAS_EXPANSION_MAX_NODES: usize = 3072;
+const ALIAS_EXPANSION_MAX_NODES: usize = 4096;
 const HANDLE_FIELD: &str = "handle";
 const PUBLIC_KEY_FIELD: &str = "public_key";
 const NETWORK_FIELD: &str = "network";
@@ -1142,16 +1142,21 @@ pub(crate) mod tests {
         ));
     }
 
+    const ALIAS_EXPANSION_LIMIT_NODES: usize = 4096;
+
     #[test]
-    fn parse_bounds_alias_expansion_at_3072_nodes_spec_3_5() {
+    fn parse_bounds_alias_expansion_at_4096_nodes_apart_from_the_public_cap_spec_3_5() {
         let aliases = |count: usize| {
             parse_card(&format!(
                 "handle: ada\npublic_key: abc\nanchor: &a x\nextra: [{}]\n",
                 vec!["*a"; count].join(",")
             ))
         };
-        assert_eq!(aliases(3072).map(|_| ()), Ok(()));
-        assert_eq!(aliases(3073), Err(CardInvalid::AliasExpansionTooLarge));
+        assert_eq!(aliases(ALIAS_EXPANSION_LIMIT_NODES).map(|_| ()), Ok(()));
+        assert_eq!(
+            aliases(ALIAS_EXPANSION_LIMIT_NODES + 1),
+            Err(CardInvalid::AliasExpansionTooLarge)
+        );
 
         let nested_levels = (0..7)
             .zip(1..8)
