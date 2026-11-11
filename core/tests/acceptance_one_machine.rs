@@ -1192,11 +1192,22 @@ mod spec_3_16_absences_on_one_machine {
 mod kept_run_records {
     use std::fs;
     use std::io::Write;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+    use std::process::ExitStatus;
 
+    use serde_json::json;
+
+    use crate::local_network::{LocalNetwork, MetPair};
     use crate::scratch_machine::{REDACTED, ScratchMachine};
+    use crate::send;
 
     const NETWORK: &str = "acme";
+    /// The members the real-record test starts: amy, bob and the refused one.
+    const MEMBERS_STARTED: usize = 3;
+    /// The field the refused member's configuration lacks, as the binary's refusal names it.
+    const REFUSED_FIELD: &str = "`hosts`";
+    /// The configuration lines the binary's own file keeps once its hosts are taken out.
+    const KEPT_CONFIGURATION_FIELDS: [&str; 2] = ["secret", "owner"];
     /// A network secret chosen by this test, in the shape the configuration file takes, not a real secret.
     const CHOSEN_SECRET: &str = "5ec2e7c0ffee5ec2e7c0ffee5ec2e7c0ffee5ec2e7c0ffee5ec2e7c0ffee5ec2";
     /// An owner key in the shape the configuration file takes, not a real key.
@@ -1209,6 +1220,22 @@ mod kept_run_records {
         let config_file = machine.directories().network_config_file(NETWORK).unwrap();
         fs::create_dir_all(config_file.parent().unwrap()).unwrap();
         fs::write(&config_file, lines.join("\n")).unwrap();
+    }
+
+    /// Rewrites the configuration file the binary wrote with its secret and owner lines alone, so it lacks the `hosts` field the binary requires.
+    fn keep_only_the_secret_and_owner_lines(config_file: &Path) {
+        let kept_lines: Vec<String> = fs::read_to_string(config_file)
+            .unwrap()
+            .lines()
+            .filter(|line| {
+                KEPT_CONFIGURATION_FIELDS
+                    .iter()
+                    .any(|field| line.starts_with(field))
+            })
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(kept_lines.len(), KEPT_CONFIGURATION_FIELDS.len());
+        fs::write(config_file, kept_lines.join("\n")).unwrap();
     }
 
     /// Starts the binary's MCP server on the machine and requires it to exit refused.
@@ -1233,6 +1260,61 @@ mod kept_run_records {
             .collect();
         drop(fs::remove_dir_all(directory));
         contents
+    }
+
+    /// Records of members that met, exchanged a message and stopped, and of a member the binary refused for its configuration's missing field, are kept as the binary wrote them, the redaction rule finding no line or key of the machine's configuration and key files in any.
+    #[test]
+    fn run_records_of_members_that_ran_and_of_a_refused_member_are_kept_unredacted_holding_no_secret()
+     {
+        let network = LocalNetwork::create("kept-real");
+        let host = network.stand_in_host();
+        let MetPair {
+            mut amy, mut bob, ..
+        } = network.amy_and_bob_met(&host);
+        let sent = send(&mut amy, "bob");
+        let received = bob.inbox_bodies();
+        amy.close_standard_input();
+        bob.close_standard_input();
+        let exits = [amy.wait_for_exit(), bob.wait_for_exit()];
+        let machine = network.machine();
+        let config_file = machine.directories().network_config_file(NETWORK).unwrap();
+        keep_only_the_secret_and_owner_lines(&config_file);
+        start_refused(machine);
+        let kept_in = std::env::temp_dir().join(format!(
+            "estafette-kept-real-record-test-{}",
+            std::process::id()
+        ));
+
+        let written: Vec<(PathBuf, String)> = machine
+            .run_records()
+            .unwrap()
+            .into_iter()
+            .map(|record| {
+                let text = fs::read_to_string(&record).unwrap();
+                (record, text)
+            })
+            .collect();
+        let kept = kept_contents(machine, &kept_in);
+
+        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
+        assert_eq!(received.len(), 1, "{received:?}");
+        assert!(exits.iter().all(ExitStatus::success), "{exits:?}");
+        assert_eq!(written.len(), MEMBERS_STARTED);
+        assert_eq!(kept.len(), MEMBERS_STARTED);
+        assert!(
+            written.iter().any(
+                |(_, text)| text.contains(&config_file.display().to_string())
+                    && text.contains(REFUSED_FIELD)
+            ),
+            "no record names the refused configuration file and its missing field"
+        );
+        for ((record, as_written), as_kept) in written.iter().zip(&kept) {
+            assert!(
+                as_kept == as_written,
+                "{} as kept differs from it as written: the binary wrote a secret of the machine there",
+                record.display()
+            );
+        }
     }
 
     /// Kept run records of refused members that hold a line of their network configuration, the secret's line or a short one, hold the redaction marker in place of either.

@@ -66,6 +66,11 @@ impl LocalNetwork {
         self.machine.base_directory_files()
     }
 
+    /// The machine the members run on.
+    pub const fn machine(&self) -> &ScratchMachine {
+        &self.machine
+    }
+
     /// The keys every member derives from the network secret.
     pub const fn keys(&self) -> &NetworkKeys {
         &self.keys
