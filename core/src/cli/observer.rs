@@ -917,6 +917,8 @@ mod tests {
     use crate::inbox::socket::ProcessTable;
     use crate::keys::render_public_key;
     use crate::net::direct::DirectServer;
+    use crate::stream_items::StreamExt;
+
     use crate::wire::Addr;
 
     use crate::node::{Identity, Network, Node, NodeEffects};
@@ -973,6 +975,7 @@ mod tests {
         inbox: Arc<InboxSocket>,
         inbox_path: PathBuf,
         address: EndpointAddr,
+        endpoint: iroh::Endpoint,
     }
 
     struct MemberPlan {
@@ -1172,6 +1175,7 @@ mod tests {
         config_path: PathBuf,
     ) -> Member {
         let address = endpoint.endpoint().addr();
+        let lookup_endpoint = endpoint.endpoint().clone();
         let hosts = [FIRST_SEED, SECOND_SEED]
             .into_iter()
             .filter(|&seed| seed != plan.seed)
@@ -1214,6 +1218,7 @@ mod tests {
             inbox,
             inbox_path,
             address,
+            endpoint: lookup_endpoint,
         }
     }
 
@@ -1608,6 +1613,7 @@ mod tests {
     struct RecordingNeighbor {
         card: wire::PublicKey,
         introduces: Arc<Mutex<Vec<Introduce>>>,
+        announced: Arc<Mutex<Addr>>,
     }
 
     impl DirectHost for RecordingNeighbor {
@@ -1645,7 +1651,11 @@ mod tests {
                 handle: Some(NEIGHBOR_HANDLE.to_owned()),
                 public: NEIGHBOR_PUBLIC.to_vec(),
                 attached: true,
-                addr: Addr::from_endpoint_report(Vec::new(), Vec::new()),
+                addr: self
+                    .announced
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone(),
                 mac: ZERO_MAC,
             }
         }
@@ -1678,16 +1688,30 @@ mod tests {
         address: EndpointAddr,
         introduces: Arc<Mutex<Vec<Introduce>>>,
         accepted: Arc<Mutex<Vec<iroh::endpoint::Connection>>>,
+        announced: Arc<Mutex<Addr>>,
     }
 
     async fn start_silent_neighbor() -> SilentNeighbor {
+        start_silent_neighbor_joined_through(Vec::new()).await
+    }
+
+    async fn start_silent_neighbor_joined_through(bootstrap: Vec<EndpointAddr>) -> SilentNeighbor {
         let endpoint = bind_endpoint(secret_key(NEIGHBOR_SEED)).await;
         let introduces = Arc::new(Mutex::new(Vec::new()));
         let accepted = Arc::new(Mutex::new(Vec::new()));
+        let announced = Arc::new(Mutex::new(Addr::from_endpoint_report(
+            Vec::new(),
+            Vec::new(),
+        )));
         let neighbor = RecordingNeighbor {
             card: *secret_key(NEIGHBOR_SEED).public().as_bytes(),
             introduces: Arc::clone(&introduces),
+            announced: Arc::clone(&announced),
         };
+        let bootstrap_ids = bootstrap.iter().map(|address| address.id).collect();
+        for address in bootstrap {
+            endpoint.replace_address(address);
+        }
         let gossip = iroh_gossip::Gossip::builder().spawn(endpoint.endpoint().clone());
         let router = iroh::protocol::Router::builder(endpoint.endpoint().clone())
             .accept(
@@ -1703,7 +1727,7 @@ mod tests {
             &gossip,
             network_keys(),
             secret_key(OWNER_SEED).public(),
-            Vec::new(),
+            bootstrap_ids,
             Instant::now(),
         )
         .await
@@ -1715,6 +1739,7 @@ mod tests {
             address: endpoint.endpoint().addr(),
             introduces,
             accepted,
+            announced,
         }
     }
 
@@ -2052,6 +2077,8 @@ mod tests {
     const CLOCK_STEP_PAST_ANY_SILENCE: Duration = Duration::from_secs(3600);
     const SUPERSEDED_CLOSE_WAIT: Duration = Duration::from_secs(5);
     const ACK_DROP_WOULD_SHOW_WITHIN: Duration = Duration::from_millis(500);
+    const GONE_COLUMN: &str = "\tgone\t";
+    const SAME_ROWS_WAIT: Duration = Duration::from_secs(5);
 
     /// A monotonic clock that moves an hour on at every reading, so every connection the observer holds reads as long silent whenever it is judged.
     fn clock_moving_past_any_silence_at_each_reading() -> MonotonicClock {
@@ -2153,15 +2180,15 @@ mod tests {
         drop(lab);
     }
 
-    /// The Presence the restarted neighbor announces itself with, newer than anything its earlier process sent.
-    fn restarted_neighbor_presence() -> Payload {
+    /// A Presence of the neighbor carrying the address, newer than any it sent before.
+    fn neighbor_presence_announcing(addr: Addr) -> Payload {
         Payload::Presence(wire::Presence {
             v: Version::CURRENT,
             card: *secret_key(NEIGHBOR_SEED).public().as_bytes(),
             handle: NEIGHBOR_HANDLE.to_owned(),
             public: NEIGHBOR_PUBLIC.to_vec(),
             attached: true,
-            addr: neighbor_address(),
+            addr,
             seq: wall_clock_ms(),
             mac: ZERO_MAC,
             sig: ZERO_SIGNATURE,
@@ -2197,7 +2224,10 @@ mod tests {
                 answer_on(&earlier, introduce_from_neighbor()).await;
                 neighbor
                     .topic
-                    .broadcast(&secret_key(NEIGHBOR_SEED), restarted_neighbor_presence())
+                    .broadcast(
+                        &secret_key(NEIGHBOR_SEED),
+                        neighbor_presence_announcing(neighbor_address()),
+                    )
                     .await
                     .unwrap();
                 let closed = tokio::time::timeout(SUPERSEDED_CLOSE_WAIT, earlier.closed()).await;
@@ -2252,7 +2282,10 @@ mod tests {
                     tokio::time::timeout(ACK_DROP_WOULD_SHOW_WITHIN, introduced_on.closed()).await;
                 neighbor
                     .topic
-                    .broadcast(&secret_key(NEIGHBOR_SEED), restarted_neighbor_presence())
+                    .broadcast(
+                        &secret_key(NEIGHBOR_SEED),
+                        neighbor_presence_announcing(neighbor_address()),
+                    )
                     .await
                     .unwrap();
                 let closed_at_the_presence =
@@ -2270,6 +2303,138 @@ mod tests {
             ),
             "{closed_at_the_presence:?}"
         );
+        drop(lab);
+    }
+
+    /// What a node holds for the neighbor: its entry as show-peers lists it, the address it carries, and the lookup entry the node dials it by.
+    #[derive(Debug, PartialEq, Eq)]
+    struct HeldNeighbor {
+        line: Option<String>,
+        addr: Option<Addr>,
+        lookup: Option<EndpointAddr>,
+    }
+
+    /// What a node listing the peers and dialing through the endpoint holds for the neighbor now.
+    async fn held_neighbor(peers: &[Peer], endpoint: &iroh::Endpoint) -> HeldNeighbor {
+        let neighbor = secret_key(NEIGHBOR_SEED).public();
+        let entry = peers.iter().find(|peer| peer.card == *neighbor.as_bytes());
+        let lookup = match endpoint.address_lookup() {
+            Ok(lookup) => match lookup.resolve(neighbor).next().await {
+                Some(Ok(Ok(item))) => Some(item.into_endpoint_addr()),
+                _ => None,
+            },
+            Err(_closed) => None,
+        };
+        HeldNeighbor {
+            line: entry.map(peer_line),
+            addr: entry.and_then(|peer| peer.addr.clone()),
+            lookup,
+        }
+    }
+
+    /// What the member and the observer hold for the neighbor once both hold what `settled` asks, or when the wait ends.
+    async fn held_by_member_and_observer(
+        member: &Member,
+        observer: &ObserverHost,
+        settled: impl Fn(&HeldNeighbor) -> bool,
+    ) -> (HeldNeighbor, HeldNeighbor) {
+        let started = Instant::now();
+        loop {
+            let by_member = held_neighbor(&member.node.peers(), &member.endpoint).await;
+            let observer_peers: Vec<Peer> =
+                observer.table().peers(wall_clock_ms()).cloned().collect();
+            let by_observer = held_neighbor(&observer_peers, &observer.endpoint).await;
+            if (settled(&by_member) && settled(&by_observer)) || started.elapsed() > SAME_ROWS_WAIT
+            {
+                return (by_member, by_observer);
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    }
+
+    /// The address the neighbor announces: every direct address its endpoint reports, and one more when it has moved.
+    fn neighbor_announcing(neighbor: &SilentNeighbor, moved: bool) -> Addr {
+        let extra: Option<std::net::SocketAddr> =
+            moved.then(|| NEIGHBOR_DIRECT_ADDRESS.parse().unwrap());
+        Addr::from_endpoint_report(
+            Vec::new(),
+            neighbor.endpoint.addr().ip_addrs().copied().chain(extra),
+        )
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_an_observer_and_a_member_given_the_same_presences_and_departure_hold_the_same_entry_and_lookup()
+     {
+        let lab = Lab::new("same-rows").await;
+        let members = lab.start_members(two_members()).await;
+        let member_addresses: Vec<EndpointAddr> = members
+            .iter()
+            .map(|member| member.address.clone())
+            .collect();
+        let neighbor = start_silent_neighbor_joined_through(member_addresses.clone()).await;
+        lab.write_network_config(&[FIRST_SEED, SECOND_SEED]);
+        let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
+        let (effects, _operator_effects) = lab.effects(
+            member_addresses,
+            Box::pin(async move { drop(interrupted.await) }),
+        );
+        let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap()).unwrap();
+        let observation = start_observation(&setup, effects).await.unwrap();
+        let observer_host = Arc::clone(&observation.host);
+        let neighbor_key = secret_key(NEIGHBOR_SEED);
+        let mut tail_output = Vec::new();
+
+        let (tail_result, held) = tokio::join!(observation.tail(&mut tail_output), async {
+            let mut held = Vec::new();
+            for moved in [false, true] {
+                let announced = neighbor_announcing(&neighbor, moved);
+                *neighbor.announced.lock().unwrap() = announced.clone();
+                neighbor
+                    .topic
+                    .broadcast(
+                        &neighbor_key,
+                        neighbor_presence_announcing(announced.clone()),
+                    )
+                    .await
+                    .unwrap();
+                held.push(
+                    held_by_member_and_observer(&members[0], &observer_host, |held| {
+                        held.addr.as_ref() == Some(&announced)
+                    })
+                    .await,
+                );
+            }
+            neighbor
+                .topic
+                .broadcast(
+                    &neighbor_key,
+                    Payload::Departure(wire::Departure {
+                        v: Version::CURRENT,
+                        card: *neighbor_key.public().as_bytes(),
+                        seq: wall_clock_ms(),
+                        mac: ZERO_MAC,
+                        sig: ZERO_SIGNATURE,
+                    }),
+                )
+                .await
+                .unwrap();
+            held.push(
+                held_by_member_and_observer(&members[0], &observer_host, |held| {
+                    held.line
+                        .as_deref()
+                        .is_some_and(|line| line.contains(GONE_COLUMN))
+                })
+                .await,
+            );
+            interrupt.send(()).unwrap_or_default();
+            held
+        });
+
+        tail_result.unwrap();
+        for (by_member, by_observer) in held {
+            assert!(by_member.line.is_some(), "{by_member:?}");
+            assert_eq!(by_member, by_observer);
+        }
         drop(lab);
     }
 
