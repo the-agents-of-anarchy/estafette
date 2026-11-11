@@ -433,6 +433,29 @@ impl PeerRows {
         effects
     }
 
+    /// Applies a Departure to the table, returning the drop of the held connection it calls for once it is taken (spec 3.8).
+    #[must_use]
+    pub(crate) fn take_departure(&self, departure: &Departure, now_ms: u64) -> Vec<Effect> {
+        self.table().receive_departure(departure, now_ms)
+    }
+
+    /// Applies an Unreachable report about another card to the table (spec 3.8).
+    pub(crate) fn take_unreachable(&self, report: &Unreachable, now_ms: u64) {
+        self.table().receive_unreachable(report, now_ms);
+    }
+
+    /// Applies a gossip report of a new neighbor, returning the Introduce it calls for (spec 3.8).
+    #[must_use]
+    pub(crate) fn take_neighbor_up(&self, node: EndpointId, now_ms: u64) -> Vec<Effect> {
+        self.table().neighbor_up(*node.as_bytes(), now_ms)
+    }
+
+    /// Applies a gossip report of a lost neighbor, returning the Probe it calls for (spec 3.8).
+    #[must_use]
+    pub(crate) fn take_neighbor_down(&self, node: EndpointId, now_ms: u64) -> Vec<Effect> {
+        self.table().neighbor_down(*node.as_bytes(), now_ms)
+    }
+
     /// Applies the answer to a direct request this node sent: an `IntroduceAck` as an introduction that spares the connection it came on, a failure as a failed contact, an acknowledged Probe as a contact that succeeded (spec 3.8).
     pub(crate) fn take_direct_answer(&self, answer: DirectAnswer, now_ms: u64) -> Vec<Effect> {
         match answer {
@@ -822,12 +845,12 @@ impl PresenceLoop {
             GossipEvent::JoinTimedOut => self.take_join_timeout(),
             GossipEvent::NeighborUp(node) => {
                 self.neighbors.insert(node);
-                let effects = self.state.table().neighbor_up(*node.as_bytes(), now_ms);
+                let effects = self.state.rows.take_neighbor_up(node, now_ms);
                 self.perform(effects).await;
             }
             GossipEvent::NeighborDown(node) => {
                 self.neighbors.remove(&node);
-                let effects = self.state.table().neighbor_down(*node.as_bytes(), now_ms);
+                let effects = self.state.rows.take_neighbor_down(node, now_ms);
                 self.perform(effects).await;
             }
             GossipEvent::Payload(payload) => {
@@ -895,7 +918,7 @@ impl PresenceLoop {
                 self.perform(effects).await;
             }
             OpenedPayload::Departure(departure) => {
-                let effects = self.state.table().receive_departure(&departure, now_ms);
+                let effects = self.state.rows.take_departure(&departure, now_ms);
                 self.perform(effects).await;
             }
             OpenedPayload::Unreachable(report) if report.card == self.state.own_card => {
@@ -904,7 +927,7 @@ impl PresenceLoop {
                 }
             }
             OpenedPayload::Unreachable(report) => {
-                self.state.table().receive_unreachable(&report, now_ms);
+                self.state.rows.take_unreachable(&report, now_ms);
             }
             OpenedPayload::Infrastructure(record) => {
                 self.known_hosts

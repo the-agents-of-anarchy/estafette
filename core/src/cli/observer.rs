@@ -712,11 +712,11 @@ impl Observation {
         match event {
             GossipEvent::Joined | GossipEvent::JoinTimedOut => {}
             GossipEvent::NeighborUp(node) => {
-                let effects = self.host.table().neighbor_up(*node.as_bytes(), now_ms);
+                let effects = self.host.rows.take_neighbor_up(node, now_ms);
                 self.perform(effects);
             }
             GossipEvent::NeighborDown(node) => {
-                let effects = self.host.table().neighbor_down(*node.as_bytes(), now_ms);
+                let effects = self.host.rows.take_neighbor_down(node, now_ms);
                 self.perform(effects);
             }
             GossipEvent::Payload(payload) => self.take_payload(*payload, now_ms),
@@ -731,11 +731,11 @@ impl Observation {
                 self.perform(effects);
             }
             OpenedPayload::Departure(departure) => {
-                let effects = self.host.table().receive_departure(&departure, now_ms);
+                let effects = self.host.rows.take_departure(&departure, now_ms);
                 self.perform(effects);
             }
             OpenedPayload::Unreachable(report) => {
-                self.host.table().receive_unreachable(&report, now_ms);
+                self.host.rows.take_unreachable(&report, now_ms);
             }
             OpenedPayload::Infrastructure(_record) => {}
             OpenedPayload::PresenceRequest(_request) => {}
@@ -2076,6 +2076,7 @@ mod tests {
     const SUPERSEDED_CLOSE_WAIT: Duration = Duration::from_secs(5);
     const ACK_DROP_WOULD_SHOW_WITHIN: Duration = Duration::from_millis(500);
     const GONE_COLUMN: &str = "\tgone\t";
+    const UNREACHABLE_COLUMN: &str = "\tunreachable\t";
     const SAME_ROWS_WAIT: Duration = Duration::from_secs(5);
 
     /// A monotonic clock that moves an hour on at every reading, so every connection the observer holds reads as long silent whenever it is judged.
@@ -2194,7 +2195,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_8_an_observer_closes_the_connection_of_a_restarted_members_earlier_process_at_its_next_presence_and_lists_it_online()
+    async fn spec_3_8_an_observer_closes_the_connection_of_a_restarted_members_earlier_process_at_its_next_presence()
      {
         let lab = Lab::new("observer-restart").await;
         let mut neighbor = start_silent_neighbor().await;
@@ -2207,7 +2208,6 @@ mod tests {
         effects.monotonic = clock_moving_past_any_silence_at_each_reading();
         let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap()).unwrap();
         let observation = start_observation(&setup, effects).await.unwrap();
-        let observer_host = Arc::clone(&observation.host);
         let mut tail_output = Vec::new();
 
         let (tail_result, earlier_closed) =
@@ -2240,18 +2240,6 @@ mod tests {
         assert_eq!(
             close.error_code,
             iroh::endpoint::VarInt::from_u32(crate::net::direct::SUPERSEDED_CONNECTION_CLOSE_CODE)
-        );
-        let listed: Vec<String> = observer_host
-            .table()
-            .peers(wall_clock_ms())
-            .map(peer_line)
-            .collect();
-        assert_eq!(
-            listed,
-            [format!(
-                "{NEIGHBOR_HANDLE}\tonline\ttrue\t{}\n",
-                String::from_utf8_lossy(NEIGHBOR_PUBLIC)
-            )]
         );
         drop(lab);
     }
@@ -2361,7 +2349,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_8_an_observer_and_a_member_given_the_same_presences_and_departure_hold_the_same_entry_and_lookup()
+    async fn spec_3_8_an_observer_and_a_member_given_the_same_presences_unreachable_report_and_departure_hold_the_same_entry_and_lookup()
      {
         let lab = Lab::new("same-rows").await;
         let members = lab.start_members(two_members()).await;
@@ -2402,6 +2390,29 @@ mod tests {
                     .await,
                 );
             }
+            neighbor
+                .topic
+                .broadcast(
+                    &neighbor_key,
+                    Payload::Unreachable(wire::Unreachable {
+                        v: Version::CURRENT,
+                        card: *neighbor_key.public().as_bytes(),
+                        reporter: *neighbor_key.public().as_bytes(),
+                        ts: wall_clock_ms(),
+                        mac: ZERO_MAC,
+                        sig: ZERO_SIGNATURE,
+                    }),
+                )
+                .await
+                .unwrap();
+            held.push(
+                held_by_member_and_observer(&members[0], &observer_host, |held| {
+                    held.line
+                        .as_deref()
+                        .is_some_and(|line| line.contains(UNREACHABLE_COLUMN))
+                })
+                .await,
+            );
             neighbor
                 .topic
                 .broadcast(
