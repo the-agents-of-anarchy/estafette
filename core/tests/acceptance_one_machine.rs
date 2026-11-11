@@ -242,6 +242,48 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         statuses
     }
 
+    /// Restarts bob's card through a second host that links amy, bob's first process gone since `killed_ms`, and requires amy's send before the kill delivered and her send to the restarted bob delivered within 1 s of its new Presence reaching her (spec 3.15 test 18).
+    #[track_caller]
+    fn restarted_bob_is_delivered_to_within_1_s_of_its_new_presence(
+        network: &LocalNetwork,
+        amy: &mut Member,
+        amy_card: &Card,
+        bob_card: &Card,
+        first_send: &Value,
+        killed_ms: u64,
+    ) {
+        let second_host = network.stand_in_host();
+        timed("a second host links amy", || {
+            second_host.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
+        });
+        let mut restarted = timed("the restarted bob starts", || network.start_member());
+        timed("the restarted bob claims its card", || {
+            restarted.init_through(bob_card, &second_host)
+        });
+        timed(
+            "amy lists the restarted bob online, seen after the kill",
+            || {
+                amy.peer_within("bob", PRESENCE_WAIT, |bob| {
+                    online(bob) && bob["last_seen"].as_u64().unwrap() > killed_ms
+                })
+            },
+        );
+        let new_presence_reached = Instant::now();
+        let sent = timed("amy's send to the restarted bob", || send(amy, "bob"));
+        let delivered_after = new_presence_reached.elapsed();
+
+        assert_eq!(
+            first_send["result"]["delivered"],
+            json!(true),
+            "{first_send}"
+        );
+        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
+        assert!(
+            delivered_after <= SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
+            "{delivered_after:?}"
+        );
+    }
+
     #[test]
     fn spec_3_15_test_18_a_killed_member_restarted_with_its_card_is_delivered_to_within_1_s_of_its_new_presence()
      {
@@ -261,35 +303,13 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
         bob.kill();
         let killed_ms = wall_clock_ms();
-        let second_host = network.stand_in_host();
-        timed("a second host links amy", || {
-            second_host.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
-        });
-        let mut restarted = timed("the restarted bob starts", || network.start_member());
-        timed("the restarted bob claims its card", || {
-            restarted.init_through(&bob_card, &second_host)
-        });
-        timed(
-            "amy lists the restarted bob online, seen after the kill",
-            || {
-                amy.peer_within("bob", PRESENCE_WAIT, |bob| {
-                    online(bob) && bob["last_seen"].as_u64().unwrap() > killed_ms
-                })
-            },
-        );
-        let new_presence_reached = Instant::now();
-        let sent = timed("amy's send to the restarted bob", || send(&mut amy, "bob"));
-        let delivered_after = new_presence_reached.elapsed();
-
-        assert_eq!(
-            first_send["result"]["delivered"],
-            json!(true),
-            "{first_send}"
-        );
-        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
-        assert!(
-            delivered_after <= SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
-            "{delivered_after:?}"
+        restarted_bob_is_delivered_to_within_1_s_of_its_new_presence(
+            &network,
+            &mut amy,
+            &amy_card,
+            &bob_card,
+            &first_send,
+            killed_ms,
         );
     }
 
@@ -325,35 +345,13 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             first_session.vanish();
         });
         let killed_ms = wall_clock_ms();
-        let second_host = network.stand_in_host();
-        timed("a second host links amy", || {
-            second_host.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
-        });
-        let mut restarted = timed("the restarted bob starts", || network.start_member());
-        timed("the restarted bob claims its card", || {
-            restarted.init_through(&bob_card, &second_host)
-        });
-        timed(
-            "amy lists the restarted bob online, seen after the kill",
-            || {
-                amy.peer_within("bob", PRESENCE_WAIT, |bob| {
-                    online(bob) && bob["last_seen"].as_u64().unwrap() > killed_ms
-                })
-            },
-        );
-        let new_presence_reached = Instant::now();
-        let sent = timed("amy's send to the restarted bob", || send(&mut amy, "bob"));
-        let delivered_after = new_presence_reached.elapsed();
-
-        assert_eq!(
-            first_send["result"]["delivered"],
-            json!(true),
-            "{first_send}"
-        );
-        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
-        assert!(
-            delivered_after <= SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
-            "{delivered_after:?}"
+        restarted_bob_is_delivered_to_within_1_s_of_its_new_presence(
+            &network,
+            &mut amy,
+            &amy_card,
+            &bob_card,
+            &first_send,
+            killed_ms,
         );
     }
 
