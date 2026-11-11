@@ -104,7 +104,7 @@ Extend a deadline on the owner's word, or while lab work on that lab resource is
 </extend-a-deadline-while-work-runs>
 
 <tear-down-in-order>
-Start the teardown the moment the run's last command exits. Delete the server first, then its firewall, then any primary IP address its deletion left, then the SSH key once no server needs it; never delete a firewall a server still holds, and never postpone the teardown to a later turn.
+Start the teardown the moment the run's last command exits, with `just remote::down`: it sets each server, firewall, and SSH key of the lab to expire at once, runs the backstop's check to delete them in order, server first, then the firewall, then the SSH key (the primary IP addresses go with their servers), and ends by printing `just remote::list`; never delete a firewall a server still holds, and never postpone the teardown to a later turn.
 
 Copy results off the server before deleting it; the server's `~/work/results/` is lost with it.
 

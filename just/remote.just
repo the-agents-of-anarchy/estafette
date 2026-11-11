@@ -19,6 +19,7 @@ lab_location := "nbg1"
 lab_image := "ubuntu-24.04"
 lab_resource_name := "estafette-lab"
 lab_skill := ".claude/skills/run-hetzner-lab"
+lab_owner_label := "owner=estafette"
 lab_setup_wait_tries := "120"
 lab_setup_poll_seconds := "10"
 remote_tree := "/home/lab/work/estafette"
@@ -291,3 +292,17 @@ host-start:
         remote systemctl reset-failed {{ host_unit }} 2> /dev/null || true
         remote systemd-run --unit={{ host_unit }} $(printf -- '--setenv=%s ' {{ remote_host_directories }}) {{ remote_binary }} run-infrastructure {{ lab_network }} "$address" "$domain" >&2
     fi
+
+[doc("Delete every lab resource of the stretch, servers first then firewall and key (primary IPs go with their servers), through the skill's backstop script, and end by printing just remote::list")]
+[group('lab')]
+down:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for kind in server firewall ssh-key; do
+        resource_ids="$(hcloud "$kind" list --selector {{ lab_owner_label }} --output noheader --output columns=id)"
+        for resource_id in $resource_ids; do
+            python3 -I {{ lab_skill }}/lab-backstop.py extend "$kind" "$resource_id" 0
+        done
+    done
+    python3 -I {{ lab_skill }}/lab-backstop.py check
+    just remote::list
