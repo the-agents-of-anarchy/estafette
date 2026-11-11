@@ -157,10 +157,7 @@ infrastructure: server-up
         just remote::estafette network certify {{ lab_network }} "$(remote cat {{ remote_host_line_file }})" 2> /dev/null | remote 'umask 077 && cat > {{ remote_host_certificate_file }}'
     fi
     host_line="$(remote cat {{ remote_host_line_file }})"
-    if ! remote systemctl is-active --quiet {{ host_unit }}; then
-        remote systemctl reset-failed {{ host_unit }} 2> /dev/null || true
-        remote systemd-run --unit={{ host_unit }} $(printf -- '--setenv=%s ' {{ remote_host_directories }}) {{ remote_binary }} run-infrastructure {{ lab_network }} "$address" "$domain" >&2
-    fi
+    LAB_SERVER={{ server }} just remote::host-start >&2
     printf '%s\n' "$host_line"
 
 [doc("Bring host A up for the lab network, add it to this machine's owner configuration, and record its invitation here and in the root checkout's lab/host.txt")]
