@@ -15,7 +15,7 @@ use crate::lab_machine::LabMachine;
 use crate::lab_server::{KillableHostServer, LabServer};
 use crate::live_host::live_host_to_itself;
 use crate::live_network::LiveNetwork;
-use crate::mcp_server::McpServer;
+use crate::mcp_server::{McpServer, ONLINE, online};
 use crate::payload_placeholders::wall_clock_ms;
 use crate::scratch_machine::{Card, ScratchMachine};
 use crate::server_member::ServerMember;
@@ -28,8 +28,6 @@ const PRESENCE_WAIT: Duration = Duration::from_secs(30);
 const COLUMN_SEPARATOR: char = '\t';
 /// The column of a `show-peers` line holding the peer's status, after its handle (spec 3.13).
 const PEER_STATUS_COLUMN: usize = 1;
-/// The status of a peer whose Presence arrived.
-const ONLINE: &str = "online";
 /// The body every send of this module carries.
 const SENT_BODY: &str = "the relay carried this";
 /// How long an inbox socket may take to emit the frame of a delivered message.
@@ -76,11 +74,6 @@ const SPEC_MOST_REBINDS_AFTER_THE_KILL: usize = 1;
 const PRESENCE_SEQ_COLUMN: usize = 7;
 /// How soon after its own first Presence a new member must list every present member, in milliseconds (spec 3.15 test 25, the observer wait of spec 3.14).
 const SPEC_OBSERVER_WAIT_MS: u64 = 3000;
-
-/// Whether the peer as the peers tool lists it is online.
-fn online(peer: &Value) -> bool {
-    peer["status"] == json!(ONLINE)
-}
 
 /// The status `show-peers` printed for the handle, if it printed the handle.
 fn shown_status<'printed>(printed: &'printed str, handle: &str) -> Option<&'printed str> {
