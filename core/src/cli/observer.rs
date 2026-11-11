@@ -2194,6 +2194,30 @@ mod tests {
         })
     }
 
+    /// An Unreachable report the neighbor signs about itself, stamped now.
+    fn neighbor_reporting_itself_unreachable() -> Payload {
+        let neighbor = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        Payload::Unreachable(wire::Unreachable {
+            v: Version::CURRENT,
+            card: neighbor,
+            reporter: neighbor,
+            ts: wall_clock_ms(),
+            mac: ZERO_MAC,
+            sig: ZERO_SIGNATURE,
+        })
+    }
+
+    /// The neighbor's Departure, its seq stamped now.
+    fn neighbor_departing() -> Payload {
+        Payload::Departure(wire::Departure {
+            v: Version::CURRENT,
+            card: *secret_key(NEIGHBOR_SEED).public().as_bytes(),
+            seq: wall_clock_ms(),
+            mac: ZERO_MAC,
+            sig: ZERO_SIGNATURE,
+        })
+    }
+
     #[tokio::test]
     async fn spec_3_8_an_observer_closes_the_connection_of_a_restarted_members_earlier_process_at_its_next_presence()
      {
@@ -2212,7 +2236,12 @@ mod tests {
 
         let (tail_result, earlier_closed) =
             tokio::join!(observation.tail(&mut tail_output), async {
-                next_presence_request(&mut neighbor.topic, PAYLOAD_WAIT).await;
+                assert!(
+                    next_presence_request(&mut neighbor.topic, PAYLOAD_WAIT)
+                        .await
+                        .is_some(),
+                    "the observer sent no presence request within {PAYLOAD_WAIT:?}"
+                );
                 let observer = secret_key(OBSERVER_SEED).public();
                 let earlier = neighbor
                     .endpoint
@@ -2318,10 +2347,11 @@ mod tests {
         }
     }
 
-    /// What the member and the observer hold for the neighbor once both hold what `settled` asks, or when the wait ends.
+    /// What the member and the observer hold for the neighbor once both hold what `settled` asks, failing with `awaited` and both holdings when the wait ends first.
     async fn held_by_member_and_observer(
         member: &Member,
         observer: &ObserverHost,
+        awaited: &str,
         settled: impl Fn(&HeldNeighbor) -> bool,
     ) -> (HeldNeighbor, HeldNeighbor) {
         let started = Instant::now();
@@ -2330,31 +2360,38 @@ mod tests {
             let observer_peers: Vec<Peer> =
                 observer.table().peers(wall_clock_ms()).cloned().collect();
             let by_observer = held_neighbor(&observer_peers, &observer.endpoint).await;
-            if (settled(&by_member) && settled(&by_observer)) || started.elapsed() > SAME_ROWS_WAIT
-            {
+            if settled(&by_member) && settled(&by_observer) {
                 return (by_member, by_observer);
             }
+            assert!(
+                started.elapsed() <= SAME_ROWS_WAIT,
+                "the member and the observer did not both hold {awaited} within {SAME_ROWS_WAIT:?}: member {by_member:?}, observer {by_observer:?}"
+            );
             tokio::time::sleep(POLL_INTERVAL).await;
         }
     }
 
-    /// Waits until the member holds the neighbor and the observer holds both, so each introduction a neighbor report started is answered, or until the wait ends.
+    /// Waits until the member holds the neighbor and the observer holds both, so each introduction a neighbor report started is answered, failing with what each holds when the wait ends first.
     async fn introduced_to_member_and_joined_observer(member: &Member, observer: &ObserverHost) {
         let neighbor = *secret_key(NEIGHBOR_SEED).public().as_bytes();
         let started = Instant::now();
-        while started.elapsed() <= SAME_ROWS_WAIT {
-            let held_by_member = member.node.peers().iter().any(|peer| peer.card == neighbor);
+        loop {
+            let member_holds_neighbor =
+                member.node.peers().iter().any(|peer| peer.card == neighbor);
             let held_by_observer: Vec<wire::PublicKey> = observer
                 .table()
                 .peers(wall_clock_ms())
                 .map(|peer| peer.card)
                 .collect();
-            if held_by_member
-                && held_by_observer.contains(&neighbor)
-                && held_by_observer.contains(member.address.id.as_bytes())
-            {
+            let observer_holds_neighbor = held_by_observer.contains(&neighbor);
+            let observer_holds_member = held_by_observer.contains(member.address.id.as_bytes());
+            if member_holds_neighbor && observer_holds_neighbor && observer_holds_member {
                 return;
             }
+            assert!(
+                started.elapsed() <= SAME_ROWS_WAIT,
+                "the neighbor was not introduced to the member and the joined observer within {SAME_ROWS_WAIT:?}: member holds the neighbor {member_holds_neighbor}, observer holds the neighbor {observer_holds_neighbor}, observer holds the member {observer_holds_member}"
+            );
             tokio::time::sleep(POLL_INTERVAL).await;
         }
     }
@@ -2409,55 +2446,49 @@ mod tests {
                     .await
                     .unwrap();
                 held.push(
-                    held_by_member_and_observer(&members[0], &observer_host, |held| {
-                        held.addr.as_ref() == Some(&announced)
-                    })
+                    held_by_member_and_observer(
+                        &members[0],
+                        &observer_host,
+                        "the announced address",
+                        |held| held.addr.as_ref() == Some(&announced),
+                    )
                     .await,
                 );
             }
             neighbor
                 .topic
-                .broadcast(
-                    &neighbor_key,
-                    Payload::Unreachable(wire::Unreachable {
-                        v: Version::CURRENT,
-                        card: *neighbor_key.public().as_bytes(),
-                        reporter: *neighbor_key.public().as_bytes(),
-                        ts: wall_clock_ms(),
-                        mac: ZERO_MAC,
-                        sig: ZERO_SIGNATURE,
-                    }),
-                )
+                .broadcast(&neighbor_key, neighbor_reporting_itself_unreachable())
                 .await
                 .unwrap();
             held.push(
-                held_by_member_and_observer(&members[0], &observer_host, |held| {
-                    held.line
-                        .as_deref()
-                        .is_some_and(|line| line.contains(UNREACHABLE_COLUMN))
-                })
+                held_by_member_and_observer(
+                    &members[0],
+                    &observer_host,
+                    "the neighbor listed unreachable",
+                    |held| {
+                        held.line
+                            .as_deref()
+                            .is_some_and(|line| line.contains(UNREACHABLE_COLUMN))
+                    },
+                )
                 .await,
             );
             neighbor
                 .topic
-                .broadcast(
-                    &neighbor_key,
-                    Payload::Departure(wire::Departure {
-                        v: Version::CURRENT,
-                        card: *neighbor_key.public().as_bytes(),
-                        seq: wall_clock_ms(),
-                        mac: ZERO_MAC,
-                        sig: ZERO_SIGNATURE,
-                    }),
-                )
+                .broadcast(&neighbor_key, neighbor_departing())
                 .await
                 .unwrap();
             held.push(
-                held_by_member_and_observer(&members[0], &observer_host, |held| {
-                    held.line
-                        .as_deref()
-                        .is_some_and(|line| line.contains(GONE_COLUMN))
-                })
+                held_by_member_and_observer(
+                    &members[0],
+                    &observer_host,
+                    "the neighbor listed gone",
+                    |held| {
+                        held.line
+                            .as_deref()
+                            .is_some_and(|line| line.contains(GONE_COLUMN))
+                    },
+                )
                 .await,
             );
             interrupt.send(()).unwrap_or_default();
@@ -2466,7 +2497,6 @@ mod tests {
 
         tail_result.unwrap();
         for (by_member, by_observer) in held {
-            assert!(by_member.line.is_some(), "{by_member:?}");
             assert_eq!(by_member, by_observer);
         }
         drop(lab);
