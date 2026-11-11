@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use crate::lab_machine::LabMachine;
 use crate::lab_server::LabServer;
 use crate::live_network::LiveNetwork;
+use crate::mcp_server::{PEERS_KEY, PEERS_TOOL, RESULT_KEY};
 use crate::scratch_machine::{fail_unless_panicking, keep_run_record};
 
 /// The recipe that writes the lab network's configuration on a server from its standard input.
@@ -82,8 +83,8 @@ impl<'server> ServerMember<'server> {
     ) -> Value {
         let started = Instant::now();
         loop {
-            let listed = self.call("peers", &json!({}));
-            let entry = listed["result"]["peers"]
+            let listed = self.call(PEERS_TOOL, &json!({}));
+            let entry = listed[RESULT_KEY][PEERS_KEY]
                 .as_array()
                 .into_iter()
                 .flatten()
@@ -108,7 +109,7 @@ impl<'server> ServerMember<'server> {
         loop {
             let answered =
                 self.server
-                    .attempt(CALL_ON_SERVER_RECIPE, &[&self.card, "peers"], b"{}");
+                    .attempt(CALL_ON_SERVER_RECIPE, &[&self.card, PEERS_TOOL], b"{}");
             if answered.status.success() {
                 return;
             }

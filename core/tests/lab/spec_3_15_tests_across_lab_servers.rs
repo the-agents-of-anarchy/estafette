@@ -15,7 +15,8 @@ use crate::lab_machine::LabMachine;
 use crate::lab_server::LabServer;
 use crate::live_host::live_host_to_itself;
 use crate::live_network::LiveNetwork;
-use crate::mcp_server::{McpServer, ONLINE, online};
+use crate::mcp_server::{McpServer, ONLINE, RESULT_KEY, SEND_TOOL, online};
+use crate::message_body::BODY;
 use crate::payload_placeholders::wall_clock_ms;
 use crate::scratch_machine::{Card, ScratchMachine};
 use crate::server_member::ServerMember;
@@ -28,14 +29,26 @@ const PRESENCE_WAIT: Duration = Duration::from_secs(30);
 const COLUMN_SEPARATOR: char = '\t';
 /// The column of a `show-peers` line holding the peer's status, after its handle (spec 3.13).
 const PEER_STATUS_COLUMN: usize = 1;
-/// The body every send of this module carries.
-const SENT_BODY: &str = "the relay carried this";
 /// How long an inbox socket may take to emit the frame of a delivered message.
 const FRAME_WAIT: Duration = Duration::from_secs(10);
 /// How long an inbox socket is watched for a frame that must not come.
 const NO_FURTHER_FRAME_WAIT: Duration = Duration::from_millis(1000);
+/// The handle base of the first member a test starts.
+const AMY: &str = "amy";
+/// The handle base of the second member a test starts.
+const BOB: &str = "bob";
+/// The handle base of the third member a test starts.
+const CID: &str = "cid";
 /// The handle bases of the three members a test starts on this machine.
-const TRIO: [&str; 3] = ["amy", "bob", "cid"];
+const TRIO: [&str; 3] = [AMY, BOB, CID];
+/// The tool a member claims its card with (spec 3.10).
+const INIT_TOOL: &str = "init";
+/// The key of a peers entry and of a send result saying whether the peer's inbox socket has a client (spec 3.10).
+const ATTACHED_KEY: &str = "attached";
+/// The key of a send result saying whether the message was delivered (spec 3.10).
+const DELIVERED_KEY: &str = "delivered";
+/// The key of a peers entry holding when the peer was last seen, in milliseconds (spec 3.10).
+const LAST_SEEN_KEY: &str = "last_seen";
 /// How long the three members run with no host killed (spec 3.15 test 24).
 const SPEC_QUIET_RUN: Duration = Duration::from_secs(180);
 /// How a member's run record begins the line of a rebind (`NodeRecord::Rebinding`).
@@ -93,10 +106,10 @@ fn spec_3_15_test_15_show_peers_on_a_machine_with_no_session_lists_the_members_o
     let live_host_server = LabServer::of_the_live_host();
     let killable = KillableHost::from_environment();
     let amy = timed("amy serving on the live host's server", || {
-        ServerMember::started(&live_host_server, &network, &unique_handle("amy"))
+        ServerMember::started(&live_host_server, &network, &unique_handle(AMY))
     });
     let bob = timed("bob serving on the killable host's server", || {
-        ServerMember::started(killable.server(), &network, &unique_handle("bob"))
+        ServerMember::started(killable.server(), &network, &unique_handle(BOB))
     });
     timed("amy lists bob online", || {
         amy.peer_within(bob.handle(), PRESENCE_WAIT, online)
@@ -140,24 +153,24 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
         || killable.server().relay_only_to_here(),
     );
     let amy = timed("amy serving on the killable host's server", || {
-        ServerMember::started(killable.server(), &network, &unique_handle("amy"))
+        ServerMember::started(killable.server(), &network, &unique_handle(AMY))
     });
     let bob_machine = LabMachine::joined("t3-bob", &network);
-    let bob_handle = unique_handle("bob");
+    let bob_handle = unique_handle(BOB);
     let bob_card = bob_machine.create_card(&bob_handle, &bob_handle);
     let mut bob = bob_machine.start_server();
     let claim = timed("bob claims his card on this machine", || {
-        bob.call("init", &json!({ "card": bob_card.name }))
+        bob.call(INIT_TOOL, &json!({ "card": bob_card.name }))
     });
-    let mut inbox = InboxClient::connect(&claim["result"]["inbox_path"], 0);
+    let mut inbox = InboxClient::connect(&claim[RESULT_KEY]["inbox_path"], 0);
     timed("amy lists bob online and attached", || {
         amy.peer_within(&bob_handle, PRESENCE_WAIT, |bob| {
-            online(bob) && bob["attached"] == json!(true)
+            online(bob) && bob[ATTACHED_KEY] == json!(true)
         })
     });
 
     let sent = timed("amy's send to bob", || {
-        amy.call("send", &json!({ "to": bob_handle, "body": SENT_BODY }))
+        amy.call(SEND_TOOL, &json!({ "to": bob_handle, "body": BODY }))
     });
     let frame = timed("bob's inbox socket emits the frame", || {
         inbox.next_frame(FRAME_WAIT)
@@ -166,10 +179,10 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
         inbox.next_frame(NO_FURTHER_FRAME_WAIT)
     });
 
-    let id = sent["result"]["id"].as_str().unwrap();
+    let id = sent[RESULT_KEY]["id"].as_str().unwrap();
     assert_eq!(claim["ok"], json!(true), "{claim}");
     assert_eq!(
-        sent["result"],
+        sent[RESULT_KEY],
         json!({ "id": id, "delivered": true, "attached": true }),
         "{sent}"
     );
@@ -177,7 +190,7 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
     assert_eq!(frame["seq"], json!(1), "{frame}");
     assert_eq!(frame["id"], json!(id), "{frame}");
     assert_eq!(frame["from"], json!(amy.handle()), "{frame}");
-    assert_eq!(frame["body"], json!(SENT_BODY), "{frame}");
+    assert_eq!(frame["body"], json!(BODY), "{frame}");
     assert_eq!(further, None);
 }
 
@@ -219,7 +232,7 @@ impl Member {
     #[track_caller]
     fn serving(machine: ScratchMachine, card: Card, handle: String) -> Self {
         let mut server = McpServer::handshaken(machine.spawn_mcp_server());
-        let claim = server.call("init", &json!({ "card": card.name }));
+        let claim = server.call(INIT_TOOL, &json!({ "card": card.name }));
         assert_eq!(claim["ok"], json!(true), "{claim}");
         Self {
             server,
@@ -422,8 +435,8 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
     });
     let members = timed("amy and bob claimed through the live host", || {
         [
-            Member::joined_by_invitation(&network, "amy"),
-            Member::joined_by_invitation(&network, "bob"),
+            Member::joined_by_invitation(&network, AMY),
+            Member::joined_by_invitation(&network, BOB),
         ]
     });
     let named_before: Vec<bool> = members
@@ -559,9 +572,7 @@ fn sweep_of_sends(members: &mut [Member]) -> Vec<(String, String, Value)> {
     for member in members.iter_mut() {
         for to in handles.iter().filter(|to| **to != member.handle) {
             let sent = timed(&format!("{}'s send to {to}", member.handle), || {
-                member
-                    .server
-                    .call("send", &json!({ "to": to, "body": SENT_BODY }))
+                member.server.send(to, BODY)
             });
             sends.push((member.handle.clone(), to.clone(), sent));
         }
@@ -601,7 +612,7 @@ fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_othe
         let ended = Instant::now();
         let delivered_whole = sweep
             .iter()
-            .all(|(_from, _to, sent)| sent["result"]["delivered"] == json!(true));
+            .all(|(_from, _to, sent)| sent[RESULT_KEY][DELIVERED_KEY] == json!(true));
         sweeps.push((ended.duration_since(kill.sent), sweep));
         if delivered_whole {
             break Some(ended);
@@ -661,15 +672,15 @@ fn spec_3_15_test_25_with_one_host_dead_a_member_invited_through_the_live_host_l
     });
     let present = timed("amy and bob claimed through the live host", || {
         [
-            Member::joined_by_invitation(&network, "amy"),
-            Member::joined_by_invitation(&network, "bob"),
+            Member::joined_by_invitation(&network, AMY),
+            Member::joined_by_invitation(&network, BOB),
         ]
     });
     timed("the killable host killed", || doomed.kill());
 
     let joining = Instant::now();
     let mut newcomer = timed("cid joins by the invitation", || {
-        Member::joined_by_invitation(&network, "cid")
+        Member::joined_by_invitation(&network, CID)
     });
     let newcomer_card = newcomer.card_key();
     let (first_presence, _after) = timed("tail prints cid's first presence", || {
@@ -731,10 +742,10 @@ fn spec_3_15_test_26_a_member_restarted_after_its_configured_host_died_joins_thr
         killable_host_serving(&doomed, &tail);
     });
     let mut amy = timed("amy claimed through the live host", || {
-        Member::joined_by_invitation(&network, "amy")
+        Member::joined_by_invitation(&network, AMY)
     });
     let bob = timed("bob claimed through the killable host alone", || {
-        Member::joined_through(&network, "bob", std::slice::from_ref(doomed.address()))
+        Member::joined_through(&network, BOB, std::slice::from_ref(doomed.address()))
     });
     let learned = timed("bob's configuration names the live host", || {
         hosts_first_read(
@@ -757,7 +768,7 @@ fn spec_3_15_test_26_a_member_restarted_after_its_configured_host_died_joins_thr
     timed("amy lists the restarted bob online", || {
         amy.server.peer_within(&bob.handle, PRESENCE_WAIT, |peer| {
             online(peer)
-                && peer["last_seen"]
+                && peer[LAST_SEEN_KEY]
                     .as_u64()
                     .is_some_and(|seen| seen > restarting_ms)
         })

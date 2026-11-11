@@ -16,7 +16,13 @@ const CLIENT_VERSION: &str = "0";
 /// How long the server may take to answer a request.
 const RESPONSE_WAIT: Duration = Duration::from_secs(60);
 /// The tool a member sends a message with (spec 3.10).
-const SEND_TOOL: &str = "send";
+pub const SEND_TOOL: &str = "send";
+/// The tool a member lists its peers with (spec 3.10).
+pub const PEERS_TOOL: &str = "peers";
+/// The key of a tool's envelope holding its result (spec 3.10).
+pub const RESULT_KEY: &str = "result";
+/// The key of the peers tool's result listing the peers (spec 3.10).
+pub const PEERS_KEY: &str = "peers";
 /// How often the peers tool is called while waiting for a peer.
 const PEERS_POLL: Duration = Duration::from_millis(50);
 /// How long a member may take to list a peer as a test wants it, through gossip or the direct protocol.
@@ -99,8 +105,8 @@ impl McpServer {
     ) -> Value {
         let started = Instant::now();
         loop {
-            let listed = self.call("peers", &json!({}));
-            let entry = listed["result"]["peers"]
+            let listed = self.call(PEERS_TOOL, &json!({}));
+            let entry = listed[RESULT_KEY][PEERS_KEY]
                 .as_array()
                 .into_iter()
                 .flatten()
