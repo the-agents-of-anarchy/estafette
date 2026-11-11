@@ -922,7 +922,10 @@ mod tests {
     const SPEC_OWNER_ONLY_MODE: u32 = 0o600;
     const FILE_MODE_BITS: u32 = 0o777;
     const FROZEN_CLOCK_MS: u64 = 1_800_000_000_000;
-    const SPEC_RUN_INFRASTRUCTURE_INPUTS: [&str; 3] = ["network", "IP address", "domain name"];
+    const NETWORK_INPUT_HELP: &str =
+        "The network whose configuration file this host reads and joins";
+    const BIND_ADDRESS_INPUT_HELP: &str = "The IP address the embedded relay binds for HTTPS (which also answers the ACME challenge) and QUIC address discovery";
+    const DOMAIN_INPUT_HELP: &str = "The domain name of the relay, whose Let's Encrypt certificate it obtains and whose URL https://<domain>/ it announces";
 
     fn secret_key(seed: u8) -> SecretKey {
         SecretKey::from_bytes(&[seed; KEY_LEN])
@@ -1182,12 +1185,17 @@ mod tests {
     impl Peer {
         async fn joined_through(seed: u8, host: &iroh::Endpoint) -> Self {
             let mut peer = Self::subscribed_through(seed, host).await;
-            tokio::time::timeout(PEER_JOIN_WAIT, async {
-                while peer.topic.next_event().await.unwrap().unwrap() != GossipEvent::Joined {}
+            assert!(peer.joined_within(PEER_JOIN_WAIT).await);
+            peer
+        }
+
+        /// Whether the peer's topic reports the join within the wait.
+        async fn joined_within(&mut self, within: Duration) -> bool {
+            tokio::time::timeout(within, async {
+                while self.topic.next_event().await.unwrap().unwrap() != GossipEvent::Joined {}
             })
             .await
-            .unwrap();
-            peer
+            .is_ok()
         }
 
         async fn subscribed_through(seed: u8, host: &iroh::Endpoint) -> Self {
@@ -1625,20 +1633,20 @@ mod tests {
             ..Plan::new(HOST_SEED)
         };
 
-        let ((_printed, outcome), (open_past_the_join_timeout, record)) =
+        let ((_printed, outcome), (joined_through_the_first_endpoint, record)) =
             tokio::join!(run_planned(&scratch, plan, &seen), async {
                 let host = bound_endpoint(&seen, 0).await;
                 tokio::time::sleep(SPEC_JOIN_TIMEOUT_PAST).await;
-                let open_past_the_join_timeout = !host.is_closed();
-                let mut peer = Peer::joined_through(PEER_SEED, &host).await;
+                let mut peer = Peer::subscribed_through(PEER_SEED, &host).await;
+                let joined_through_the_first_endpoint = peer.joined_within(PEER_JOIN_WAIT).await;
                 let record = peer.next_host_record(RECORD_AT_JOIN_WAIT).await;
-                stop.send(()).unwrap();
-                (open_past_the_join_timeout, record)
+                stop.send(()).unwrap_or_default();
+                (joined_through_the_first_endpoint, record)
             });
 
+        assert!(joined_through_the_first_endpoint);
+        assert_eq!(record.map(|record| record.ts), Some(FROZEN_CLOCK_SECONDS));
         outcome.unwrap();
-        assert!(open_past_the_join_timeout);
-        assert_eq!(record.unwrap().ts, FROZEN_CLOCK_SECONDS);
     }
 
     fn message_to(card: wire::PublicKey) -> Message {
@@ -2108,10 +2116,16 @@ mod tests {
             })
             .collect();
 
-        let inputs: Vec<&str> = described.iter().map(|(input, _)| input.as_str()).collect();
-        assert_eq!(inputs, ["network", "bind_address", "domain"]);
-        for ((_, help), spec_input) in described.iter().zip(SPEC_RUN_INFRASTRUCTURE_INPUTS) {
-            assert!(help.contains(spec_input), "{help}");
-        }
+        assert_eq!(
+            described,
+            [
+                ("network".to_owned(), NETWORK_INPUT_HELP.to_owned()),
+                (
+                    "bind_address".to_owned(),
+                    BIND_ADDRESS_INPUT_HELP.to_owned()
+                ),
+                ("domain".to_owned(), DOMAIN_INPUT_HELP.to_owned()),
+            ]
+        );
     }
 }
