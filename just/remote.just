@@ -148,7 +148,7 @@ server-up:
     git archive HEAD | ssh {{ ssh_opts }} lab@"$address" 'mkdir -p {{ remote_tree }} && tar -x -C {{ remote_tree }}'
     ssh {{ ssh_opts }} lab@"$address" 'bash -l -c "cd {{ remote_tree }} && cargo build --release -p estafette --features relay"' >&2
 
-[doc("Bring the server up and run the network's relay and bootstrap node there as a systemd unit, reusing a live one; prints the host address line; refuses before creating anything when the lab binary is missing")]
+[doc("Bring the server up and run the network's relay and bootstrap node there as a systemd unit, reusing a live one; prints the host address line; a second host starts after host-up so it joins the live host A, and restarts after A restarts; refuses before creating anything when the lab binary is missing")]
 [group('lab')]
 infrastructure: lab-binary-built server-up
     #!/usr/bin/env bash
@@ -167,7 +167,7 @@ infrastructure: lab-binary-built server-up
     LAB_SERVER={{ server }} just remote::host-start >&2
     printf '%s\n' "$host_line"
 
-[doc("Bring host A up for the lab network: drop every host of an earlier stretch from this machine's owner configuration, start A, add A as its only host, and record the invitation in the root checkout's lab/host.txt alone; refuses before creating anything when the lab binary is missing")]
+[doc("Bring host A up for the lab network: drop every host of an earlier stretch from this machine's owner configuration, start A, add A as its only host, and record the invitation in the root checkout's lab/host.txt alone; two hosts run in this order: host-up for A first, then LAB_SERVER=<name> just remote::infrastructure for B, which joins the live A, and after A restarts restart B, since a host does not rejoin a peer host that restarts; refuses before creating anything when the lab binary is missing")]
 [group('lab')]
 host-up: lab-binary-built
     #!/usr/bin/env bash
