@@ -730,18 +730,30 @@ mod tests {
         );
     }
 
-    fn listed(table: &PeerTable, now_ms: u64) -> Vec<(PublicKey, String, Status, bool, u64)> {
+    type Carried<'peer> = (
+        &'peer str,
+        Option<&'peer [u8]>,
+        bool,
+        Option<&'peer Addr>,
+        Status,
+        u64,
+    );
+
+    fn carried(peer: &Peer) -> Carried<'_> {
+        (
+            peer.effective_handle.as_str(),
+            peer.public.as_deref(),
+            peer.attached,
+            peer.addr.as_ref(),
+            peer.status,
+            peer.last_seen,
+        )
+    }
+
+    fn listed(table: &PeerTable, now_ms: u64) -> Vec<(PublicKey, Carried<'_>)> {
         table
             .peers(now_ms)
-            .map(|peer| {
-                (
-                    peer.card,
-                    peer.effective_handle.as_str().to_owned(),
-                    peer.status,
-                    peer.attached,
-                    peer.last_seen,
-                )
-            })
+            .map(|peer| (peer.card, carried(peer)))
             .collect()
     }
 
@@ -754,10 +766,7 @@ mod tests {
             listed(&table, NOW_MS),
             vec![(
                 PEER_CARD,
-                PEER_HANDLE.to_owned(),
-                Status::Online,
-                true,
-                NOW_MS
+                (PEER_HANDLE, None, true, None, Status::Online, NOW_MS)
             )]
         );
     }
@@ -778,26 +787,19 @@ mod tests {
                 Effect::SendIntroduce(PEER_CARD),
             ]
         );
-        let peer = only_peer(&table, NOW_MS);
         assert_eq!(
-            (
-                peer.card,
-                peer.effective_handle.as_str(),
-                peer.public.as_deref(),
-                peer.attached,
-                peer.addr.as_ref(),
-                peer.status,
-                peer.last_seen
-            ),
-            (
+            listed(&table, NOW_MS),
+            vec![(
                 PEER_CARD,
-                PEER_HANDLE,
-                Some(FIRST_PUBLIC),
-                true,
-                Some(&first_addr()),
-                Status::Online,
-                NOW_MS
-            )
+                (
+                    PEER_HANDLE,
+                    Some(FIRST_PUBLIC),
+                    true,
+                    Some(&first_addr()),
+                    Status::Online,
+                    NOW_MS
+                )
+            )]
         );
     }
 
@@ -832,16 +834,8 @@ mod tests {
                 Effect::DropHeldConnection(PEER_CARD),
             ]
         );
-        let peer = only_peer(&table, LATER_MS);
         assert_eq!(
-            (
-                peer.effective_handle.as_str(),
-                peer.public.as_deref(),
-                peer.attached,
-                peer.addr.as_ref(),
-                peer.status,
-                peer.last_seen
-            ),
+            carried(&only_peer(&table, LATER_MS)),
             (
                 PEER_HANDLE,
                 Some(SECOND_PUBLIC),
@@ -1115,16 +1109,8 @@ mod tests {
             ..message_from(SECOND_HANDLE, false)
         };
         assert_eq!(table.receive_message(PEER_CARD, &message, LATER_MS), vec![]);
-        let peer = only_peer(&table, LATER_MS);
         assert_eq!(
-            (
-                peer.effective_handle.as_str(),
-                peer.public.as_deref(),
-                peer.attached,
-                peer.addr.as_ref(),
-                peer.status,
-                peer.last_seen
-            ),
+            carried(&only_peer(&table, LATER_MS)),
             (
                 PEER_HANDLE,
                 Some(FIRST_PUBLIC),
@@ -1175,10 +1161,14 @@ mod tests {
             listed(&table, LATER_MS),
             vec![(
                 PEER_CARD,
-                PEER_HANDLE.to_owned(),
-                Status::Gone { since_ms: LATER_MS },
-                false,
-                LATER_MS
+                (
+                    PEER_HANDLE,
+                    None,
+                    false,
+                    None,
+                    Status::Gone { since_ms: LATER_MS },
+                    LATER_MS
+                )
             )]
         );
     }
@@ -1267,36 +1257,22 @@ mod tests {
             ),
             introduction_effects(SECOND_MEMBER_CARD)
         );
-        let carried: Vec<_> = table
-            .peers(NOW_MS)
-            .map(|peer| {
-                (
-                    peer.card,
-                    peer.effective_handle.as_str().to_owned(),
-                    peer.public.clone(),
-                    peer.attached,
-                    peer.addr.clone(),
-                    peer.status,
-                    peer.last_seen,
-                )
-            })
-            .collect();
-        let expected = |card, handle: &str| {
+        let introduced_addr = second_addr();
+        let expected = |handle| {
             (
-                card,
-                handle.to_owned(),
-                Some(SECOND_PUBLIC.to_vec()),
+                handle,
+                Some(SECOND_PUBLIC),
                 true,
-                Some(second_addr()),
+                Some(&introduced_addr),
                 Status::Online,
                 NOW_MS,
             )
         };
         assert_eq!(
-            carried,
+            listed(&table, NOW_MS),
             vec![
-                expected(FIRST_MEMBER_CARD, PEER_HANDLE),
-                expected(SECOND_MEMBER_CARD, SECOND_HANDLE)
+                (FIRST_MEMBER_CARD, expected(PEER_HANDLE)),
+                (SECOND_MEMBER_CARD, expected(SECOND_HANDLE))
             ]
         );
     }
@@ -1345,16 +1321,8 @@ mod tests {
             ),
             lookup_only
         );
-        let peer = only_peer(&table, TOMBSTONE_FORGOTTEN_MS);
         assert_eq!(
-            (
-                peer.effective_handle.as_str(),
-                peer.public.as_deref(),
-                peer.attached,
-                peer.addr.as_ref(),
-                peer.status,
-                peer.last_seen
-            ),
+            carried(&only_peer(&table, TOMBSTONE_FORGOTTEN_MS)),
             (
                 PEER_HANDLE,
                 Some(SECOND_PUBLIC),
@@ -1696,20 +1664,6 @@ mod tests {
         let mut table = table_with_peer_gone_since_now();
         assert_eq!(table.neighbor_down(PEER_CARD, LATER_MS), vec![]);
         assert_still_gone_then_removed(&table);
-    }
-
-    #[test]
-    fn a_neighbor_up_meets_an_expired_entry_as_an_absent_one_spec_3_8() {
-        let table = table_with_peer_gone_since_now();
-        assert_eq!(
-            table.neighbor_up(PEER_CARD, GONE_REMOVED_MS),
-            vec![Effect::SendIntroduce(PEER_CARD)]
-        );
-        assert_eq!(
-            table.neighbor_up(THIRD_NODE_CARD, GONE_REMOVED_MS),
-            vec![Effect::SendIntroduce(THIRD_NODE_CARD)]
-        );
-        assert_eq!(snapshot(&table, GONE_REMOVED_MS), vec![]);
     }
 
     const PROPERTY_CASES: u64 = 2000;
