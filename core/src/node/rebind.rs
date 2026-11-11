@@ -305,6 +305,7 @@ mod tests {
     use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, DirectServer};
     use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
     use crate::net::gossip::{GossipEvent, NetworkTopic};
+    use crate::node::presence::acknowledgement_of;
     use crate::node::presence::tests::{
         FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, MARKER_SEED, Member, MemberPlan,
         OWNER_SEED, PAYLOAD_WAIT, Scratch, WITNESS_SEED, Witness, bind, card, frozen_clock, keys,
@@ -349,6 +350,7 @@ mod tests {
     const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
     const REBIND_SLACK: Duration = Duration::from_secs(2);
     const REBIND_POLL: Duration = Duration::from_millis(20);
+    const ATTACHED_ONLY_IN_THE_PEERS_ACK: bool = true;
 
     /// What a test heard, in order, waking each waiter at every new entry.
     struct Heard<T>(Arc<watch::Sender<Vec<T>>>);
@@ -594,14 +596,9 @@ mod tests {
             _sender: crate::wire::PublicKey,
             _introduce: Introduce,
         ) -> IntroduceAck {
-            let introduction = peer_introduction(self.addr.clone());
             IntroduceAck {
-                v: introduction.v,
-                handle: introduction.handle,
-                public: introduction.public,
-                attached: introduction.attached,
-                addr: introduction.addr,
-                mac: introduction.mac,
+                attached: ATTACHED_ONLY_IN_THE_PEERS_ACK,
+                ..acknowledgement_of(peer_introduction(self.addr.clone()))
             }
         }
     }
@@ -964,6 +961,18 @@ mod tests {
         drop(scratch);
     }
 
+    async fn member_applied_the_peers_ack_within(member: &Member, within: Duration) -> bool {
+        tokio::time::timeout(within, async {
+            while !member.node.peers().iter().any(|listed| {
+                listed.card == card(PEER_SEED) && listed.attached == ATTACHED_ONLY_IN_THE_PEERS_ACK
+            }) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
     #[tokio::test]
     async fn spec_3_8_a_send_that_turns_its_unreachable_peer_online_lets_a_long_deaf_member_rebind_at_once()
      {
@@ -980,6 +989,10 @@ mod tests {
         .unwrap();
         let peer = QuietNode::answering(PEER_SEED, &[]).await;
         peer.introduce_to(&member.endpoint).await;
+        assert!(
+            member_applied_the_peers_ack_within(&member, PAYLOAD_WAIT).await,
+            "the member never applied the ack of its own Introduce to the peer"
+        );
         let witness = Witness::joined_through(WITNESS_SEED, None, &member.endpoint).await;
         witness
             .broadcast_as(
