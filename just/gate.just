@@ -64,7 +64,8 @@ acceptance:
     #!/usr/bin/env bash
     set -uo pipefail
     cargo build -p estafette || exit
-    invitation="$(just remote::invitation)" || exit
+    just remote::invitation || exit
+    invitation="$(sed -n 's/^invitation: //p' "$(just remote::host-record-path)")"
     killable_host_line="$(LAB_SERVER={{ killable_server }} LAB_BINARY={{ built_binary }} just remote::infrastructure)" || exit
     export ESTAFETTE_ACCEPTANCE_INVITATION="$invitation"
     export ESTAFETTE_ACCEPTANCE_KILLABLE_SERVER={{ killable_server }}

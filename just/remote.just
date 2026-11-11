@@ -35,7 +35,6 @@ remote_host_certificate_temporary := remote_host_certificate_file + ".tmp"
 remote_host_line_file := remote_host_root / "host-line"
 host_record_under_root := "docs/orchestration_log/recon/2026-10-24/lab/host.txt"
 root_checkout_command := 'dirname "$(git rev-parse --path-format=absolute --git-common-dir)"'
-no_live_host := "no lab host is live; run just remote::host-up"
 
 [doc("List this module's recipes (what bare `just remote` runs)")]
 [group('read')]
@@ -183,23 +182,25 @@ host-up: lab-binary-built
     address="$(hcloud server ip {{ server }})"
     just remote::estafette network add-host {{ lab_network }} "$host_line" >&2
     invitation="$(just remote::estafette network show-invitation {{ lab_network }} 2> /dev/null)"
-    root_checkout="$({{ root_checkout_command }})"
-    printf 'network: %s\ninvitation: %s\nhost: %s\nserver: %s %s\ndomain: %s\nwritten: %s\n' {{ lab_network }} "$invitation" "$host_line" {{ server }} "$address" "${address//./-}.sslip.io" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$root_checkout/{{ host_record_under_root }}"
-    chmod 0600 "$root_checkout/{{ host_record_under_root }}"
-    printf 'wrote %s for %s %s\n' "$root_checkout/{{ host_record_under_root }}" {{ server }} "$address" >&2
+    record="$(just remote::host-record-path)"
+    printf 'network: %s\ninvitation: %s\nhost: %s\nserver: %s %s\ndomain: %s\nwritten: %s\n' {{ lab_network }} "$invitation" "$host_line" {{ server }} "$address" "${address//./-}.sslip.io" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$record"
+    chmod 0600 "$record"
+    printf 'wrote %s for %s %s\n' "$record" {{ server }} "$address" >&2
 
-[doc("Print the live lab host's invitation from lab/host.txt and nothing else; fails naming host-up when no host is live")]
+[doc("Print the path of the file that holds the lab host's invitation: lab/host.txt of the root checkout, or LAB_HOST_RECORD")]
+[private]
+host-record-path:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    printf '%s\n' "${LAB_HOST_RECORD:-$({{ root_checkout_command }})/{{ host_record_under_root }}}"
+
+[doc("Check that lab/host.txt holds an invitation, printing none of it; fails naming the file when it does not")]
 [group('lab')]
 invitation:
     #!/usr/bin/env bash
     set -euo pipefail
-    record="$({{ root_checkout_command }})/{{ host_record_under_root }}"
-    address="$(hcloud server ip {{ server }} 2> /dev/null)" || { echo "{{ no_live_host }}" >&2; exit 1; }
-    if ! test -s "$record" || ! ssh {{ ssh_opts }} -o ConnectTimeout=5 root@"$address" systemctl is-active --quiet {{ host_unit }} 2> /dev/null; then
-        echo "{{ no_live_host }}" >&2
-        exit 1
-    fi
-    sed -n 's/^invitation: //p' "$record"
+    record="$(just remote::host-record-path)"
+    grep -q '^invitation: .' "$record" 2> /dev/null || { echo "$record holds no invitation: run just remote::host-up" >&2; exit 1; }
 
 [doc("List every lab resource in the Hetzner project, to read before any creation")]
 [group('read')]
