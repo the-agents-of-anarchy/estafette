@@ -489,34 +489,47 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         let amy_card = network.create_card("amy-card", "amy");
         let bob_key = SecretKey::generate();
         let bob = network.scripted_member(&bob_key, "bob");
-        let mut amy = network.start_member();
-        amy.init_through(&amy_card, &bob);
-        let held = bob
-            .runtime()
-            .block_on(bob.endpoint().endpoint().connect(amy_card.id, DIRECT_ALPN))
-            .unwrap();
-        let before_presence = exchange_on(
-            &network,
-            &bob,
-            &held,
-            message_from_bob(amy_card.id, wall_clock_ms(), SENT_BEFORE_THE_PRESENCE),
-        );
-        std::thread::sleep(SPEC_OBSERVER_WAIT);
+        let mut amy = timed("amy starts", || network.start_member());
+        timed("amy claims its card through bob", || {
+            amy.init_through(&amy_card, &bob)
+        });
+        let held = timed("bob connects to amy", || {
+            bob.runtime()
+                .block_on(bob.endpoint().endpoint().connect(amy_card.id, DIRECT_ALPN))
+                .unwrap()
+        });
+        let before_presence = timed("bob's message before its presence", || {
+            exchange_on(
+                &network,
+                &bob,
+                &held,
+                message_from_bob(amy_card.id, wall_clock_ms(), SENT_BEFORE_THE_PRESENCE),
+            )
+        });
+        timed("the observer wait after amy's join", || {
+            std::thread::sleep(SPEC_OBSERVER_WAIT);
+        });
 
-        announce_until_seen(
-            &network,
-            &bob,
-            &bob_key,
-            &address_on_a_host_no_connection_runs_over(&bob),
-            &mut amy,
-        );
-        std::thread::sleep(PRESENCE_APPLIED_SETTLE);
-        let after_presence = exchange_on(
-            &network,
-            &bob,
-            &held,
-            message_from_bob(amy_card.id, wall_clock_ms(), SENT_AFTER_THE_PRESENCE),
-        );
+        timed("amy lists bob's presence omitting the held path", || {
+            announce_until_seen(
+                &network,
+                &bob,
+                &bob_key,
+                &address_on_a_host_no_connection_runs_over(&bob),
+                &mut amy,
+            );
+        });
+        timed("amy applies the presence", || {
+            std::thread::sleep(PRESENCE_APPLIED_SETTLE);
+        });
+        let after_presence = timed("bob's message after its presence", || {
+            exchange_on(
+                &network,
+                &bob,
+                &held,
+                message_from_bob(amy_card.id, wall_clock_ms(), SENT_AFTER_THE_PRESENCE),
+            )
+        });
 
         assert!(
             before_presence
