@@ -535,6 +535,33 @@ mod tests {
     }
 
     #[test]
+    fn spec_3_11_the_six_key_envelope_of_a_frame_at_its_largest_numbers_fits_the_fields_allowance()
+    {
+        let envelope = format!(
+            "{{\"seq\":{max},\"id\":\"\",\"from\":\"\",\"body\":\"\",\"sent_at\":{max},\"received_at\":{max}}}\n",
+            max = u64::MAX
+        );
+        let envelope_bytes = u64::try_from(envelope.len()).unwrap_or(u64::MAX);
+        assert!(
+            envelope_bytes.saturating_mul(2) < FRAME_FIELDS_ALLOWANCE_BYTES,
+            "the envelope is {envelope_bytes} bytes"
+        );
+        let (_, followed) = follow_scripted(&[envelope]);
+        assert_eq!(followed.delivered.len(), 1);
+    }
+
+    #[test]
+    fn spec_3_11_the_wire_limit_restated_here_is_the_one_core_enforces() {
+        let core_wire = include_str!("../../../core/src/wire.rs");
+        let core_limit = core_wire
+            .lines()
+            .find_map(|line| line.strip_prefix("pub const WIRE_LIMIT_BYTES: usize = "))
+            .map(|rest| rest.trim_end_matches(';').replace('_', ""))
+            .and_then(|digits| digits.parse::<u64>().ok());
+        assert_eq!(core_limit, Some(WIRE_STRUCTURE_MAX_BYTES));
+    }
+
+    #[test]
     fn spec_3_11_a_valid_frame_line_of_exactly_the_cap_is_delivered() {
         let frame_text = r#"{"seq":1,"id":"","from":"","body":""}"#;
         let padding = usize::try_from(MAX_FRAME_LINE_BYTES)
