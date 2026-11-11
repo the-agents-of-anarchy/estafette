@@ -3,10 +3,9 @@ use std::time::{Duration, Instant};
 
 use estafette::config::{Host, NetworkConfig};
 use estafette::dirs::Directories;
-use serde_json::json;
 
 use crate::live_network::LiveNetwork;
-use crate::mcp_server::McpServer;
+use crate::mcp_server::{INIT_TOOL, McpServer, call_succeeded, init_arguments};
 use crate::scratch_machine::{Card, ScratchMachine};
 
 /// How often the network configuration is read while waiting for a host.
@@ -62,8 +61,8 @@ impl LabMachine {
     #[track_caller]
     pub fn start_member(&self, card: &str) -> ClaimedMember {
         let mut server = self.start_server();
-        let claim = server.call("init", &json!({ "card": card }));
-        assert_eq!(claim["ok"], json!(true), "{claim}");
+        let claim = server.call(INIT_TOOL, &init_arguments(card));
+        assert!(call_succeeded(&claim), "{claim}");
         ClaimedMember { _server: server }
     }
 

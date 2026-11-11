@@ -15,7 +15,9 @@ use crate::lab_machine::LabMachine;
 use crate::lab_server::LabServer;
 use crate::live_host::live_host_to_itself;
 use crate::live_network::LiveNetwork;
-use crate::mcp_server::{McpServer, ONLINE, RESULT_KEY, online};
+use crate::mcp_server::{
+    INIT_TOOL, McpServer, ONLINE, RESULT_KEY, call_succeeded, init_arguments, online,
+};
 use crate::message_body::BODY;
 use crate::payload_placeholders::wall_clock_ms;
 use crate::scratch_machine::{Card, ScratchMachine};
@@ -41,18 +43,12 @@ const BOB: &str = "bob";
 const CID: &str = "cid";
 /// The handle bases of the three members a test starts on this machine.
 const TRIO: [&str; 3] = [AMY, BOB, CID];
-/// The tool a member claims its card with (spec 3.10).
-const INIT_TOOL: &str = "init";
 /// The key of a peers entry and of a send result saying whether the peer's inbox socket has a client (spec 3.10).
 const ATTACHED_KEY: &str = "attached";
-/// The init tool's argument naming the card to claim (spec 3.10).
-const CARD_ARGUMENT: &str = "card";
 /// The key of the init tool's result holding the inbox socket's path (spec 3.10).
 const INBOX_PATH_KEY: &str = "inbox_path";
 /// The key of a send result holding the message id (spec 3.10).
 const ID_KEY: &str = "id";
-/// The key of a tool's envelope saying whether the call succeeded (spec 3.10).
-const OK_KEY: &str = "ok";
 /// The key of a send result saying whether the message was delivered (spec 3.10).
 const DELIVERED_KEY: &str = "delivered";
 /// The key of a peers entry holding when the peer was last seen, in milliseconds (spec 3.10).
@@ -168,7 +164,7 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
     let bob_card = bob_machine.create_card(&bob_handle, &bob_handle);
     let mut bob = bob_machine.start_server();
     let claim = timed("bob claims his card on this machine", || {
-        bob.call(INIT_TOOL, &json!({ (CARD_ARGUMENT): bob_card.name }))
+        bob.call(INIT_TOOL, &init_arguments(&bob_card.name))
     });
     let mut inbox = InboxClient::connect(&claim[RESULT_KEY][INBOX_PATH_KEY], 0);
     timed("amy lists bob online and attached", || {
@@ -186,7 +182,7 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
     });
 
     let id = sent[RESULT_KEY][ID_KEY].as_str().unwrap();
-    assert_eq!(claim[OK_KEY], json!(true), "{claim}");
+    assert!(call_succeeded(&claim), "{claim}");
     assert_eq!(
         sent[RESULT_KEY],
         json!({ (ID_KEY): id, (DELIVERED_KEY): true, (ATTACHED_KEY): true }),
@@ -238,8 +234,8 @@ impl Member {
     #[track_caller]
     fn serving(machine: ScratchMachine, card: Card, handle: String) -> Self {
         let mut server = McpServer::handshaken(machine.spawn_mcp_server());
-        let claim = server.call(INIT_TOOL, &json!({ (CARD_ARGUMENT): card.name }));
-        assert_eq!(claim[OK_KEY], json!(true), "{claim}");
+        let claim = server.call(INIT_TOOL, &init_arguments(&card.name));
+        assert!(call_succeeded(&claim), "{claim}");
         Self {
             server,
             machine,

@@ -15,6 +15,12 @@ const CLIENT_NAME: &str = "estafette-acceptance";
 const CLIENT_VERSION: &str = "0";
 /// How long the server may take to answer a request.
 const RESPONSE_WAIT: Duration = Duration::from_secs(60);
+/// The tool a member claims its card with (spec 3.10).
+pub const INIT_TOOL: &str = "init";
+/// The init tool's argument naming the card to claim (spec 3.10).
+const CARD_ARGUMENT: &str = "card";
+/// The key of a tool's envelope saying whether the call succeeded (spec 3.10).
+const OK_KEY: &str = "ok";
 /// The tool a member sends a message with (spec 3.10).
 pub const SEND_TOOL: &str = "send";
 /// The send tool's argument naming the handle the message goes to (spec 3.10).
@@ -201,6 +207,16 @@ impl Drop for McpServer {
         self.kill();
         self.wait_for_exit();
     }
+}
+
+/// The init tool's arguments claiming the card of that name (spec 3.10).
+pub fn init_arguments(card: &str) -> Value {
+    json!({ (CARD_ARGUMENT): card })
+}
+
+/// Whether the tool's envelope says its call succeeded (spec 3.10).
+pub fn call_succeeded(envelope: &Value) -> bool {
+    envelope[OK_KEY] == json!(true)
 }
 
 /// The send tool's arguments for the body to the handle (spec 3.10).

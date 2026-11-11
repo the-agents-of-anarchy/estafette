@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use serde_json::{Value, json};
 
-use crate::mcp_server::{McpServer, PendingCall};
+use crate::mcp_server::{INIT_TOOL, McpServer, PendingCall, call_succeeded, init_arguments};
 use crate::scratch_machine::Card;
 use crate::scripted_node::ScriptedNode;
 
@@ -78,10 +78,10 @@ impl Member {
     /// Claims the card while the node admits this process's endpoint, requiring the claim to succeed, and returns the init envelope.
     #[track_caller]
     pub fn init_through(&mut self, card: &Card, node: &ScriptedNode) -> Value {
-        let init = self.start_call("init", &json!({ "card": card.name }));
+        let init = self.start_call(INIT_TOOL, &init_arguments(&card.name));
         node.admit(loopback_address(card.id, &self.bound_udp_ports()));
         let claim = self.answer(&init);
-        assert_eq!(claim["ok"], json!(true), "{claim}");
+        assert!(call_succeeded(&claim), "{claim}");
         claim
     }
 
