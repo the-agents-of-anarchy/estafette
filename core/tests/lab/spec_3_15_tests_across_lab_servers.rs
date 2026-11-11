@@ -2,10 +2,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::time::{Duration, Instant};
 
-use data_encoding::HEXLOWER;
 use estafette::config::{Host, HostOrigin, NetworkConfig};
 use estafette::keys::render_public_key;
 use estafette::wire::HostAddr;
+use iroh::PublicKey;
 use serde_json::{Value, json};
 
 use crate::handles::unique_handle;
@@ -320,7 +320,7 @@ fn tail_of(observer: &LabMachine, network: &LiveNetwork) -> Tail {
 
 /// The host's node id as `tail` and the network configuration write it.
 fn host_id(host: &HostAddr) -> String {
-    HEXLOWER.encode(&host.id)
+    render_public_key(&PublicKey::from_bytes(&host.id).unwrap())
 }
 
 /// The `ts` of a `tail` line when it is an infrastructure record of the host.
