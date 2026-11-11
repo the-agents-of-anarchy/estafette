@@ -253,15 +253,11 @@ impl Member {
         render_public_key(&self.card.id)
     }
 
-    /// How many rebinds the member's run record names so far, read from a redacted copy kept for the count and removed after it.
+    /// How many rebinds the member's run records name so far.
     fn rebinds_recorded(&self) -> usize {
-        let copies = std::env::temp_dir().join(format!(
-            "ea-{}-{}-rebind-count",
-            std::process::id(),
-            self.handle
-        ));
-        let kept = self.machine.keep_run_records(&copies).unwrap();
-        let rebinds = kept
+        self.machine
+            .run_records()
+            .unwrap()
             .iter()
             .map(|record| {
                 fs::read_to_string(record)
@@ -270,9 +266,7 @@ impl Member {
                     .filter(|line| line.starts_with(REBIND_RECORD_START))
                     .count()
             })
-            .sum();
-        drop(fs::remove_dir_all(&copies));
-        rebinds
+            .sum()
     }
 
     /// The hosts the member's network configuration names now.
