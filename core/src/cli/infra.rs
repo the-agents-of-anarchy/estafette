@@ -16,7 +16,6 @@ use data_encoding::HEXLOWER;
 use iroh::endpoint::BindError;
 use iroh::protocol::Router;
 use iroh::{RelayUrl, SecretKey, Signature};
-use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 #[cfg(feature = "relay")]
 use iroh_relay::server::{
     AcmeConfig, CertConfig, QuicConfig, RelayConfig, Server, ServerConfig, TlsConfig,
@@ -30,12 +29,12 @@ use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use crate::handle::Handle;
 use crate::invite::{InviteError, render_host_line};
 use crate::keys::{KeyError, generate_secret_key, parse_secret_key, render_secret_key};
-use crate::net::direct::{DirectHost, DirectServer};
-use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
+use crate::net::direct::DirectHost;
+use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
     KnownHostAddress, KnownHosts, Network, NodeError, NodeRecord, RecordVerdict, endpoint_addr,
-    endpoint_id, known_host_addresses, seed_lookup_with_known_hosts,
+    endpoint_id, known_host_addresses, seed_lookup_with_known_hosts, serve,
 };
 use crate::payload::{OpenedPayload, ValidInfrastructure, ZERO_MAC, ZERO_SIGNATURE};
 use crate::wire::{
@@ -669,14 +668,7 @@ impl BootstrapNode {
             endpoint: endpoint.endpoint().clone(),
             relay: domain.wire_url.clone(),
         };
-        let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
-        let router = Router::builder(endpoint.endpoint().clone())
-            .accept(
-                DIRECT_ALPN,
-                DirectServer::new(keys.clone(), answers.clone()),
-            )
-            .accept(GOSSIP_ALPN, gossip.clone())
-            .spawn();
+        let (router, gossip) = serve(&endpoint, &keys, &answers);
         let bootstrap = files.other_hosts.iter().map(|host| host.id).collect();
         let topic = NetworkTopic::join(&gossip, keys, owner, bootstrap, Instant::now())
             .await
@@ -873,8 +865,10 @@ mod tests {
     use std::sync::Mutex;
 
     use crate::stream_items::StreamExt;
+    use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 
     use super::*;
+
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{
         NetworkKeys, NetworkSecret, render_host_certificate, sign_host_certificate,
