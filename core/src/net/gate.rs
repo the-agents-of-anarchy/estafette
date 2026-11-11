@@ -1,5 +1,4 @@
 use std::fmt;
-use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use iroh::EndpointId;
@@ -22,16 +21,13 @@ const GATE_REFUSAL_REASON: &[u8] = b"gate";
 type Nonce = [u8; NONCE_BYTES];
 type Proof = [u8; PROOF_BYTES];
 
-/// Where the gate holds every connection it lets through: the register the node hands its endpoint, none until it does, shared by every gate of that endpoint and its rebinds.
-pub type ConnectionRegister = Arc<Mutex<Option<HeldConnections>>>;
-
 /// The after-handshake hook that closes every gossip connection whose peer does not prove the network secret and holds every connection it lets through in the register.
 pub struct NetworkSecretGate {
     gate_key: GateKey,
     own_id: EndpointId,
     fill_nonce: Box<dyn Fn(&mut Nonce) + Send + Sync>,
     report_closing: Box<dyn Fn(GateFailure) + Send + Sync>,
-    connections: ConnectionRegister,
+    connections: HeldConnections,
 }
 
 impl NetworkSecretGate {
@@ -41,7 +37,7 @@ impl NetworkSecretGate {
         own_id: EndpointId,
         fill_nonce: impl Fn(&mut Nonce) + Send + Sync + 'static,
         report_closing: impl Fn(GateFailure) + Send + Sync + 'static,
-        connections: ConnectionRegister,
+        connections: HeldConnections,
     ) -> Self {
         Self {
             gate_key,
@@ -52,16 +48,9 @@ impl NetworkSecretGate {
         }
     }
 
-    /// Lets the connection through, holding it in the register when the node has handed one in.
+    /// Lets the connection through, holding it in the register.
     fn let_through(&self, connection: &Connection) -> AfterHandshakeOutcome {
-        if let Some(register) = self
-            .connections
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-        {
-            register.hold(connection);
-        }
+        self.connections.hold(connection);
         AfterHandshakeOutcome::accept()
     }
 

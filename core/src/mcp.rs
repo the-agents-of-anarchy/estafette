@@ -31,6 +31,7 @@ use crate::dirs::{CARD_EXTENSION, Directories, DirectoriesError};
 use crate::errors::{Envelope, ErrorCode, You};
 use crate::handle::{AnnouncedHandle, Handle, MAX_LOCAL_LENGTH};
 use crate::inbox::buffer::InboxFrame;
+use crate::net::direct::HeldConnections;
 use crate::net::endpoint::NodeEndpoint;
 use crate::node::{
     BroadcastResult, DEPARTURE_WAIT, Delivery, Exit, Identity, Network, Node, NodeEffects,
@@ -73,6 +74,7 @@ pub type BindEndpoint = Arc<
             SecretKey,
             GateKey,
             Vec<RelayUrl>,
+            HeldConnections,
         ) -> Pin<Box<dyn Future<Output = Result<NodeEndpoint, BindError>> + Send>>
         + Send
         + Sync,
@@ -392,6 +394,7 @@ impl Server {
             lock.secret_key().clone(),
             *network.keys().gate_key(),
             known_host_relays(&self.served.config),
+            HeldConnections::new(Arc::clone(&self.effects.node.monotonic)),
         )
         .await
         .map_err(|unbound| {
@@ -1149,20 +1152,21 @@ mod tests {
     fn bind_counted(binds: &Arc<AtomicUsize>) -> BindEndpoint {
         let binds = Arc::clone(binds);
         let bind = bind_alone();
-        Arc::new(move |card_key, gate_key, relays| {
+        Arc::new(move |card_key, gate_key, relays, connections| {
             binds.fetch_add(1, Ordering::SeqCst);
-            bind(card_key, gate_key, relays)
+            bind(card_key, gate_key, relays, connections)
         })
     }
 
     fn bind_alone() -> BindEndpoint {
-        Arc::new(|card_key, gate_key, _relays| {
+        Arc::new(|card_key, gate_key, _relays, connections| {
             Box::pin(NodeEndpoint::bind(
                 card_key,
                 gate_key,
                 Vec::new(),
                 |nonce: &mut [u8; KEY_BYTES]| *nonce = [GATE_NONCE_BYTE; KEY_BYTES],
                 |_closing| {},
+                connections,
             ))
         })
     }
@@ -1224,7 +1228,7 @@ mod tests {
 
     fn bind_meeting(meeting: &Arc<Meeting>) -> BindEndpoint {
         let meeting = Arc::clone(meeting);
-        Arc::new(move |card_key, gate_key, _relays| {
+        Arc::new(move |card_key, gate_key, _relays, connections| {
             let meeting = Arc::clone(&meeting);
             Box::pin(async move {
                 let endpoint = NodeEndpoint::bind(
@@ -1233,6 +1237,7 @@ mod tests {
                     Vec::new(),
                     |nonce: &mut [u8; KEY_BYTES]| *nonce = [GATE_NONCE_BYTE; KEY_BYTES],
                     |_closing| {},
+                    connections,
                 )
                 .await?;
                 meeting

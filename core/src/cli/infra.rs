@@ -29,7 +29,7 @@ use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use crate::handle::Handle;
 use crate::invite::{InviteError, render_host_line};
 use crate::keys::{KeyError, generate_secret_key, parse_secret_key, render_secret_key};
-use crate::net::direct::{DirectHost, HeldConnections};
+use crate::net::direct::{DirectHost, HeldConnections, MonotonicClock};
 use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
@@ -82,6 +82,7 @@ pub type BindHostEndpoint = Box<
             SecretKey,
             GateKey,
             RelayUrl,
+            HeldConnections,
         ) -> Pin<Box<dyn Future<Output = Result<NodeEndpoint, BindError>> + Send>>
         + Send,
 >;
@@ -158,6 +159,8 @@ pub struct InfrastructureEffects {
     pub clock: Clock,
     /// Binds the endpoint, with the gate's nonce source and closing sink the composition root chose.
     pub bind_endpoint: BindHostEndpoint,
+    /// The monotonic clock the register of the endpoint's connections measures their silence on.
+    pub monotonic: MonotonicClock,
     /// Starts the embedded relay.
     pub start_relay: StartRelay,
     /// Ends the run.
@@ -348,9 +351,14 @@ async fn serve_host(
     let relay = (effects.start_relay)(relay_site(bind_address, domain, certificate_cache))
         .await
         .map_err(Failure::RelayNotStarted)?;
-    let endpoint = (effects.bind_endpoint)(files.key.clone(), files.gate_key(), domain.url.clone())
-        .await
-        .map_err(Failure::EndpointNotBound)?;
+    let endpoint = (effects.bind_endpoint)(
+        files.key.clone(),
+        files.gate_key(),
+        domain.url.clone(),
+        HeldConnections::new(effects.monotonic),
+    )
+    .await
+    .map_err(Failure::EndpointNotBound)?;
     let mut node =
         BootstrapNode::start(files, endpoint, domain, effects.clock, effects.report).await?;
     let outcome = node.serve_until(effects.stopped, filesystem).await;
@@ -668,7 +676,7 @@ impl BootstrapNode {
         let answers = HostAnswers {
             endpoint: endpoint.endpoint().clone(),
             relay: domain.wire_url.clone(),
-            connections: HeldConnections::new(Arc::new(Instant::now)),
+            connections: endpoint.held_connections(),
         };
         let (router, gossip) = serve(&endpoint, &keys, &answers);
         let bootstrap = files.other_hosts.iter().map(|host| host.id).collect();
@@ -1074,7 +1082,7 @@ mod tests {
             InfrastructureEffects {
                 fill_from_secure_source: Box::new(move |bytes| *bytes = [seed; KEY_LEN]),
                 clock,
-                bind_endpoint: Box::new(move |key, gate_key, relay| {
+                bind_endpoint: Box::new(move |key, gate_key, relay, connections| {
                     Box::pin(async move {
                         let host = key.public();
                         let endpoint = NodeEndpoint::bind(
@@ -1083,6 +1091,7 @@ mod tests {
                             [relay.clone()],
                             move |nonce: &mut [u8; KEY_LEN]| *nonce = [seed; KEY_LEN],
                             |_ignored| {},
+                            connections,
                         )
                         .await?;
                         for address in reachable {
@@ -1097,6 +1106,7 @@ mod tests {
                         Ok(endpoint)
                     })
                 }),
+                monotonic: Arc::new(Instant::now),
                 start_relay: Box::new(move |site| {
                     Box::pin(async move {
                         let mode = mode_of(&site.certificate_cache);
@@ -1207,6 +1217,9 @@ mod tests {
                 Vec::new(),
                 move |nonce: &mut [u8; KEY_LEN]| *nonce = [seed; KEY_LEN],
                 |_ignored| {},
+                crate::net::direct::HeldConnections::new(std::sync::Arc::new(
+                    tokio::time::Instant::now,
+                )),
             )
             .await
             .unwrap();
@@ -1865,6 +1878,9 @@ mod tests {
             Vec::new(),
             |nonce: &mut [u8; KEY_LEN]| *nonce = [MEMBER_SEED; KEY_LEN],
             |_ignored| {},
+            crate::net::direct::HeldConnections::new(std::sync::Arc::new(
+                tokio::time::Instant::now,
+            )),
         )
         .await
         .unwrap();

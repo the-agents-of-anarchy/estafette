@@ -1,4 +1,4 @@
-use std::sync::{Arc, PoisonError};
+use std::sync::Arc;
 use std::time::Duration;
 
 use iroh::address_lookup::MemoryLookup;
@@ -9,7 +9,7 @@ use iroh::{
 use iroh_gossip::ALPN as GOSSIP_ALPN;
 
 use super::direct::HeldConnections;
-use super::gate::{ConnectionRegister, NONCE_BYTES, NetworkSecretGate};
+use super::gate::{NONCE_BYTES, NetworkSecretGate};
 use crate::crypto::GateKey;
 
 pub use super::gate::GateFailure;
@@ -35,11 +35,11 @@ struct Binding {
     gate_key: GateKey,
     fill_nonce: FillNonce,
     report_gate_closing: ReportGateClosing,
-    connections: ConnectionRegister,
+    connections: HeldConnections,
 }
 
 impl NodeEndpoint {
-    /// Binds an endpoint under the key with the relays, the fed lookup as its only address source, and the network secret gate on every gossip connection, which hands each closing reason to the sink.
+    /// Binds an endpoint under the key with the relays, the fed lookup as its only address source, and the network secret gate on every gossip connection, which hands each closing reason to the sink and holds every connection it lets through in the register.
     ///
     /// # Errors
     /// The iroh bind error when no socket can be bound.
@@ -49,6 +49,7 @@ impl NodeEndpoint {
         relays: impl IntoIterator<Item = RelayUrl>,
         fill_nonce: impl Fn(&mut [u8; NONCE_BYTES]) + Send + Sync + 'static,
         report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
+        connections: HeldConnections,
     ) -> Result<Self, BindError> {
         let relay_map: RelayMap = relays.into_iter().collect();
         let address_lookup = MemoryLookup::new();
@@ -57,7 +58,7 @@ impl NodeEndpoint {
             gate_key,
             fill_nonce: Arc::new(fill_nonce),
             report_gate_closing: Arc::new(report_gate_closing),
-            connections: ConnectionRegister::default(),
+            connections,
         };
         let endpoint = bind_endpoint(&binding, &relay_map, &address_lookup).await?;
         Ok(Self {
@@ -78,13 +79,10 @@ impl NodeEndpoint {
         Ok(())
     }
 
-    /// Holds every connection this endpoint and each endpoint it rebinds to lets through from now on, of any protocol, dialed or accepted, in the register.
-    pub(crate) fn hold_connections_in(&self, register: HeldConnections) {
-        *self
-            .binding
-            .connections
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(register);
+    /// The register holding every connection this endpoint and each endpoint it rebinds to lets through, of any protocol, dialed or accepted.
+    #[must_use]
+    pub fn held_connections(&self) -> HeldConnections {
+        self.binding.connections.clone()
     }
 
     /// The iroh endpoint the gossip layer and the direct protocol run on.
@@ -133,7 +131,7 @@ async fn bind_endpoint(
         binding.secret_key.public(),
         move |nonce: &mut [u8; NONCE_BYTES]| fill_nonce(nonce),
         move |reason| report_gate_closing(reason),
-        Arc::clone(&binding.connections),
+        binding.connections.clone(),
     );
     Endpoint::builder(presets::Minimal)
         .secret_key(binding.secret_key.clone())
@@ -218,6 +216,7 @@ mod tests {
             relays,
             move |nonce: &mut [u8; KEY_LEN]| *nonce = [seed; KEY_LEN],
             report_gate_closing,
+            HeldConnections::new(Arc::new(tokio::time::Instant::now)),
         )
         .await
         .unwrap()

@@ -260,13 +260,14 @@ fn server_effects(inbox: Arc<InboxSocket>) -> ServerEffects {
             inbox,
             probe_relay: Arc::new(|relay| Box::pin(relay_answers(relay))),
         },
-        bind_endpoint: Arc::new(|card_key, gate_key, relays| {
+        bind_endpoint: Arc::new(|card_key, gate_key, relays, connections| {
             Box::pin(NodeEndpoint::bind(
                 card_key,
                 gate_key,
                 relays,
                 fill_with_secure_random_bytes,
                 |failure| report_gate_closing(&failure),
+                connections,
             ))
         }),
         registry: Arc::new(OperatingSystemFilesystem),
@@ -491,13 +492,14 @@ fn observer_effects(
         fill_seed: Arc::new(|seed: &mut [u8; RANDOM_BYTES_PER_SECRET_KEY]| {
             fill_with_secure_random_bytes(seed);
         }),
-        bind_endpoint: Box::new(|key, gate_key, relays| {
+        bind_endpoint: Box::new(|key, gate_key, relays, connections| {
             Box::pin(NodeEndpoint::bind(
                 key,
                 gate_key,
                 relays,
                 fill_with_secure_random_bytes,
                 |failure| report_gate_closing(&failure),
+                connections,
             ))
         }),
         interrupted,
@@ -583,15 +585,17 @@ fn infrastructure_effects(stopped: StopRequested) -> InfrastructureEffects {
             fill_with_secure_random_bytes(seed);
         }),
         clock: Arc::new(recording_wall_clock()),
-        bind_endpoint: Box::new(|key, gate_key, relay| {
+        bind_endpoint: Box::new(|key, gate_key, relay, connections| {
             Box::pin(NodeEndpoint::bind(
                 key,
                 gate_key,
                 [relay],
                 fill_with_secure_random_bytes,
                 |closing: GateFailure| report_gate_closing(&closing),
+                connections,
             ))
         }),
+        monotonic: Arc::new(Instant::now),
         start_relay: Box::new(|site| Box::pin(infra::start_embedded_relay(site))),
         stopped,
         report: Arc::new(|record| report_run_record(&record)),

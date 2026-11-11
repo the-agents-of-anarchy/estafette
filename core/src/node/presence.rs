@@ -239,6 +239,7 @@ impl Node {
             Arc::clone(&client),
             &effects,
             to_loop,
+            endpoint.held_connections(),
         ));
         let (router, gossip) = serve(&endpoint, &network.keys, &state);
         let subscribed = (effects.monotonic)();
@@ -361,13 +362,12 @@ pub fn seed_lookup_with_known_hosts(endpoint: &NodeEndpoint, hosts: &[KnownHostA
     }
 }
 
-/// Serves the direct protocol and a fresh gossip instance on the endpoint, holding every connection of the endpoint in the host's register, returning the router that shuts both down with the endpoint, and the gossip.
+/// Serves the direct protocol and a fresh gossip instance on the endpoint, returning the router that shuts both down with the endpoint, and the gossip.
 pub fn serve<H: DirectHost + Clone>(
     endpoint: &NodeEndpoint,
     keys: &NetworkKeys,
     host: &H,
 ) -> (Router, Gossip) {
-    endpoint.hold_connections_in(host.held_connections());
     let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
     let router = Router::builder(endpoint.endpoint().clone())
         .accept(DIRECT_ALPN, DirectServer::new(keys.clone(), host.clone()))
@@ -407,11 +407,11 @@ pub struct PeerRows {
 }
 
 impl PeerRows {
-    /// An empty table for the node of `own_card`, whose held connections are judged silent on the monotonic clock.
-    pub(crate) fn new(own_card: wire::PublicKey, monotonic: MonotonicClock) -> Self {
+    /// An empty table for the node of `own_card`, closing connections through the register of the endpoint it runs on.
+    pub(crate) const fn new(own_card: wire::PublicKey, held_connections: HeldConnections) -> Self {
         Self {
             table: Mutex::new(PeerTable::new(own_card)),
-            held_connections: HeldConnections::new(monotonic),
+            held_connections,
         }
     }
 
@@ -482,12 +482,13 @@ impl PeerRows {
 }
 
 impl NodeState {
-    /// The shared state of a node that holds the identity's card, reading its address from the endpoint the client dials from.
+    /// The shared state of a node that holds the identity's card, reading its address from the endpoint the client dials from and closing connections through that endpoint's register.
     fn new(
         identity: &Identity,
         client: Arc<DirectClient>,
         effects: &NodeEffects,
         to_loop: mpsc::UnboundedSender<LoopEvent>,
+        held_connections: HeldConnections,
     ) -> Self {
         let own_card = *identity.card_key.public().as_bytes();
         Self {
@@ -500,7 +501,7 @@ impl NodeState {
             clock: Arc::clone(&effects.clock),
             to_loop,
             stopping: AtomicBool::new(false),
-            rows: PeerRows::new(own_card, Arc::clone(&effects.monotonic)),
+            rows: PeerRows::new(own_card, held_connections),
         }
     }
 
@@ -1625,6 +1626,9 @@ pub(super) mod tests {
             Vec::new(),
             move |nonce: &mut [u8; KEY_LEN]| *nonce = [seed; KEY_LEN],
             |_ignored| {},
+            crate::net::direct::HeldConnections::new(std::sync::Arc::new(
+                tokio::time::Instant::now,
+            )),
         )
         .await
         .unwrap()
@@ -3743,6 +3747,9 @@ pub(super) mod tests {
             vec![relay_address.clone()],
             move |nonce: &mut [u8; KEY_LEN]| *nonce = [FIRST_SEED; KEY_LEN],
             |_ignored| {},
+            crate::net::direct::HeldConnections::new(std::sync::Arc::new(
+                tokio::time::Instant::now,
+            )),
         )
         .await
         .unwrap();

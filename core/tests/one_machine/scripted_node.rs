@@ -76,6 +76,9 @@ impl ScriptedNode {
                 Vec::<RelayUrl>::new(),
                 |nonce| *nonce = SecretKey::generate().to_bytes(),
                 report_gate_closing,
+                estafette::net::direct::HeldConnections::new(std::sync::Arc::new(
+                    tokio::time::Instant::now,
+                )),
             ))
             .unwrap();
         let admitted = Admitted::default();

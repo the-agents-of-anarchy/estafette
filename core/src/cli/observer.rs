@@ -59,8 +59,9 @@ type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
 type RunRecord = Arc<dyn Fn(NodeRecord) + Send + Sync>;
 type SeedSource = Arc<dyn Fn(&mut [u8; SEED_BYTES]) + Send + Sync>;
 type EndpointBinding = Pin<Box<dyn Future<Output = Result<NodeEndpoint, BindError>> + Send>>;
-type BindEndpoint =
-    Box<dyn FnOnce(SecretKey, GateKey, Vec<iroh::RelayUrl>) -> EndpointBinding + Send>;
+type BindEndpoint = Box<
+    dyn FnOnce(SecretKey, GateKey, Vec<iroh::RelayUrl>, HeldConnections) -> EndpointBinding + Send,
+>;
 type StartInbox = Box<dyn FnOnce() -> Result<Arc<InboxSocket>, InboxSocketError> + Send>;
 type Interrupted = Pin<Box<dyn Future<Output = ()> + Send>>;
 
@@ -354,6 +355,7 @@ async fn send_as_operator(
         card_key.clone(),
         *setup.network.keys().gate_key(),
         setup.hosts.iter().map(|host| host.relay.clone()).collect(),
+        HeldConnections::new(Arc::clone(&monotonic)),
     )
     .await
     .map_err(Failure::Bind)?;
@@ -531,6 +533,7 @@ async fn start_observation(
         secret_key.clone(),
         *keys.gate_key(),
         setup.hosts.iter().map(|host| host.relay.clone()).collect(),
+        HeldConnections::new(Arc::clone(&effects.monotonic)),
     )
     .await
     .map_err(Failure::Bind)?;
@@ -539,7 +542,7 @@ async fn start_observation(
     let (to_loop, from_loop) = mpsc::unbounded_channel();
     let host = Arc::new(ObserverHost {
         endpoint: endpoint.endpoint().clone(),
-        rows: PeerRows::new(own_card, Arc::clone(&effects.monotonic)),
+        rows: PeerRows::new(own_card, endpoint.held_connections()),
         clock: effects.clock,
         to_loop,
     });
@@ -1037,6 +1040,9 @@ mod tests {
             Vec::new(),
             |nonce: &mut [u8; KEY_LEN]| *nonce = [OBSERVER_SEED; KEY_LEN],
             |_ignored| {},
+            crate::net::direct::HeldConnections::new(std::sync::Arc::new(
+                tokio::time::Instant::now,
+            )),
         )
         .await
         .unwrap()
@@ -1133,7 +1139,7 @@ mod tests {
                 clock: Arc::new(wall_clock_ms),
                 monotonic: Arc::new(Instant::now),
                 fill_seed: Arc::new(|seed| *seed = [OBSERVER_SEED; SEED_BYTES]),
-                bind_endpoint: Box::new(move |key, gate_key, relays| {
+                bind_endpoint: Box::new(move |key, gate_key, relays, connections| {
                     Box::pin(async move {
                         let endpoint = NodeEndpoint::bind(
                             key,
@@ -1141,6 +1147,7 @@ mod tests {
                             relays,
                             |nonce: &mut [u8; KEY_LEN]| *nonce = [OBSERVER_SEED; KEY_LEN],
                             |_ignored| {},
+                            connections,
                         )
                         .await?;
                         for address in member_addresses {

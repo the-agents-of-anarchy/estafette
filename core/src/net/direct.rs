@@ -921,12 +921,22 @@ mod tests {
     }
 
     async fn bind_node(seed: u8) -> NodeEndpoint {
+        bind_node_holding(
+            seed,
+            HeldConnections::new(Arc::new(tokio::time::Instant::now)),
+        )
+        .await
+    }
+
+    /// Binds the node of the seed, holding every connection its endpoint lets through in the register.
+    async fn bind_node_holding(seed: u8, connections: HeldConnections) -> NodeEndpoint {
         NodeEndpoint::bind(
             SecretKey::from_bytes(&[seed; KEY_LEN]),
             *keys().gate_key(),
             Vec::new(),
             |nonce: &mut [u8; KEY_LEN]| *nonce = [0; KEY_LEN],
             |_reason| {},
+            connections,
         )
         .await
         .unwrap()
@@ -945,7 +955,21 @@ mod tests {
     }
 
     async fn link_to(handler: impl ProtocolHandler, timeouts: ClientTimeouts) -> Link {
-        let server_node = bind_node(SERVER_SEED).await;
+        link_holding(
+            handler,
+            timeouts,
+            HeldConnections::new(Arc::new(tokio::time::Instant::now)),
+        )
+        .await
+    }
+
+    /// A client linked to a server node serving the handler, the server's endpoint holding every connection in the register.
+    async fn link_holding(
+        handler: impl ProtocolHandler,
+        timeouts: ClientTimeouts,
+        server_connections: HeldConnections,
+    ) -> Link {
+        let server_node = bind_node_holding(SERVER_SEED, server_connections).await;
         let client_node = bind_node(CLIENT_SEED).await;
         let router = Router::builder(server_node.endpoint().clone())
             .accept(DIRECT_ALPN, handler)
@@ -967,9 +991,7 @@ mod tests {
     /// A server over the host whose endpoint holds every connection in the host's register, as the node's `serve` has it, and a client linked to it.
     async fn rig_over(host: RecordingHost) -> Rig {
         let server = DirectServer::new(keys(), host.clone());
-        let link = link_to(server, ClientTimeouts::SPEC).await;
-        link.server_node
-            .hold_connections_in(host.held_connections());
+        let link = link_holding(server, ClientTimeouts::SPEC, host.held_connections()).await;
         Rig { host, link }
     }
 
@@ -1393,11 +1415,10 @@ mod tests {
     #[tokio::test]
     async fn spec_3_8_an_accept_a_router_shutdown_cuts_short_holds_its_connection_no_longer_than_the_connection_lives()
      {
-        let server_node = bind_node(SERVER_SEED).await;
+        let host = RecordingHost::with_card(card_of(SERVER_SEED));
+        let server_node = bind_node_holding(SERVER_SEED, host.held_connections()).await;
         let client_node = bind_node(CLIENT_SEED).await;
         client_node.replace_address(server_node.endpoint().addr());
-        let host = RecordingHost::with_card(card_of(SERVER_SEED));
-        server_node.hold_connections_in(host.held_connections());
         let server = Arc::new(DirectServer::new(keys(), host.clone()));
         let (dialed, accepted) = tokio::join!(
             client_node
@@ -1454,10 +1475,9 @@ mod tests {
     #[tokio::test]
     async fn spec_3_8_closing_the_connections_of_a_gone_card_closes_the_gossip_connection_this_endpoint_dialed_to_it()
      {
-        let this_node = bind_node(SERVER_SEED).await;
-        let gone_node = bind_node(CLIENT_SEED).await;
         let register = HeldConnections::new(clock_reading_every_connection_as_gone());
-        this_node.hold_connections_in(register.clone());
+        let this_node = bind_node_holding(SERVER_SEED, register.clone()).await;
+        let gone_node = bind_node(CLIENT_SEED).await;
         this_node.replace_address(gone_node.endpoint().addr());
         let (dialed, accepted) = tokio::join!(
             this_node
@@ -1485,15 +1505,14 @@ mod tests {
     #[tokio::test]
     async fn spec_3_8_a_connection_silent_just_under_three_keep_alive_intervals_is_kept_and_one_silent_for_them_is_closed()
      {
-        let this_node = bind_node(SERVER_SEED).await;
-        let peer_node = bind_node(CLIENT_SEED).await;
         let held_at = tokio::time::Instant::now();
         let reading = Arc::new(Mutex::new(held_at));
         let register = HeldConnections::new({
             let reading = Arc::clone(&reading);
             Arc::new(move || *reading.lock().unwrap())
         });
-        this_node.hold_connections_in(register.clone());
+        let this_node = bind_node_holding(SERVER_SEED, register.clone()).await;
+        let peer_node = bind_node(CLIENT_SEED).await;
         this_node.replace_address(peer_node.endpoint().addr());
         let (dialed, accepted) = tokio::join!(
             this_node

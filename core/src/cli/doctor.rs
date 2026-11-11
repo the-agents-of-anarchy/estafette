@@ -518,6 +518,9 @@ mod tests {
             Vec::new(),
             |nonce: &mut [u8; KEY_LEN]| *nonce = [OBSERVER_SEED; KEY_LEN],
             |_ignored| {},
+            crate::net::direct::HeldConnections::new(std::sync::Arc::new(
+                tokio::time::Instant::now,
+            )),
         )
         .await
         .unwrap()
@@ -635,7 +638,7 @@ mod tests {
                 clock: Arc::new(wall_clock_ms),
                 monotonic: Arc::new(Instant::now),
                 fill_seed: Arc::new(|seed| *seed = [OBSERVER_SEED; SEED_BYTES]),
-                bind_endpoint: Box::new(move |key, gate_key, relays| {
+                bind_endpoint: Box::new(move |key, gate_key, relays, connections| {
                     Box::pin(async move {
                         let endpoint = NodeEndpoint::bind(
                             key,
@@ -643,6 +646,7 @@ mod tests {
                             relays,
                             |nonce: &mut [u8; KEY_LEN]| *nonce = [OBSERVER_SEED; KEY_LEN],
                             |_ignored| {},
+                            connections,
                         )
                         .await?;
                         for address in member_addresses {

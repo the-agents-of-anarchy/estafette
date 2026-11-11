@@ -38,6 +38,9 @@ impl Forger {
                 host.relay_urls().cloned(),
                 |nonce| *nonce = SecretKey::generate().to_bytes(),
                 |_closing| {},
+                estafette::net::direct::HeldConnections::new(std::sync::Arc::new(
+                    tokio::time::Instant::now,
+                )),
             ))
             .unwrap();
         let host_id = host.id;
