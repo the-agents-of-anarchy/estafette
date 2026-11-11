@@ -21,6 +21,17 @@ struct SenderHistory {
     previous_received: Option<ReceivedBody>,
 }
 
+impl SenderHistory {
+    fn no_longer_limits_at(&self, now: Duration) -> bool {
+        self.injection_times
+            .iter()
+            .all(|injected_at| now.saturating_sub(*injected_at) >= INJECTION_WINDOW)
+            && self.previous_received.as_ref().is_none_or(|previous| {
+                now.saturating_sub(previous.at) >= REPEATED_BODY_QUIET_PERIOD
+            })
+    }
+}
+
 #[derive(Default)]
 pub struct SenderRateLimit {
     history_by_sender: HashMap<String, SenderHistory>,
@@ -30,6 +41,8 @@ pub struct SenderRateLimit {
 impl SenderRateLimit {
     /// Decides whether a frame from this sender may be injected at this moment.
     pub fn admit(&mut self, sender: &str, body: &str, now: Duration) -> Admission {
+        self.history_by_sender
+            .retain(|_, history| !history.no_longer_limits_at(now));
         let history = self.history_by_sender.entry(sender.to_owned()).or_default();
         history
             .injection_times
@@ -65,7 +78,9 @@ mod tests {
     const EVENTS_PER_CASE: usize = 80;
     const SENDERS: [&str; 3] = ["ana", "bo", "cy"];
     const LONGEST_GAP_SECONDS: usize = 4;
+    const MINIMUM_SEEDS_REACHING_A_DROP: usize = 50;
 
+    #[derive(Clone)]
     struct Event {
         sender: &'static str,
         at: Duration,
@@ -103,10 +118,7 @@ mod tests {
         events
             .iter()
             .filter(|event| event.sender == sender)
-            .map(|event| Event {
-                sender: event.sender,
-                at: event.at,
-            })
+            .cloned()
             .collect()
     }
 
@@ -170,6 +182,27 @@ mod tests {
             );
             seeds_that_dropped += usize::from(dropped > 0);
         }
-        assert!(seeds_that_dropped > 50, "{seeds_that_dropped}");
+        assert!(
+            seeds_that_dropped > MINIMUM_SEEDS_REACHING_A_DROP,
+            "{seeds_that_dropped}"
+        );
+    }
+
+    #[test]
+    fn spec_3_12_memory_bound_read_from_the_private_map_a_sender_is_forgotten_once_nothing_limits_it()
+     {
+        const SENDER_COUNT: usize = 20;
+        let mut limit = SenderRateLimit::default();
+        for index in 0..SENDER_COUNT {
+            limit.admit(&format!("sender-{index}"), "hello", Duration::ZERO);
+        }
+        let just_inside_the_window = INJECTION_WINDOW.saturating_sub(Duration::from_secs(1));
+        limit.admit("early", "hello", just_inside_the_window);
+        assert_eq!(
+            limit.history_by_sender.len(),
+            SENDER_COUNT.saturating_add(1)
+        );
+        limit.admit("late", "hello", INJECTION_WINDOW);
+        assert_eq!(limit.history_by_sender.len(), 2);
     }
 }

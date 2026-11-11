@@ -252,6 +252,7 @@ pub fn escape_closing_tags(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seeded::next_below;
 
     const GENERATED_CASES: u64 = 400;
     const NOISE: [char; 10] = ['a', ' ', 'x', '\n', '\u{e9}', '-', '_', '>', '\\', '9'];
@@ -262,18 +263,8 @@ mod tests {
     struct Generator(u64);
 
     impl Generator {
-        const MULTIPLIER: u64 = 6_364_136_223_846_793_005;
-        const INCREMENT: u64 = 1_442_695_040_888_963_407;
-
         fn below(&mut self, bound: usize) -> usize {
-            self.0 = self
-                .0
-                .wrapping_mul(Self::MULTIPLIER)
-                .wrapping_add(Self::INCREMENT);
-            usize::try_from(self.0 >> 33)
-                .unwrap_or(0)
-                .checked_rem(bound)
-                .unwrap_or(0)
+            next_below(&mut self.0, bound)
         }
 
         fn pick(&mut self, pool: &[char]) -> char {
@@ -340,7 +331,8 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_rewriting_closing_tags_is_idempotent_and_leaves_no_match_for_any_body() {
+    fn spec_3_12_harness_2_1_319_rewriting_closing_tags_is_idempotent_and_leaves_no_match_for_any_body()
+     {
         let mut bodies_with_a_match = 0;
         for seed in 0..GENERATED_CASES {
             let body = generated_body(seed);
@@ -353,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_a_body_without_a_closing_tag_match_is_returned_byte_for_byte() {
+    fn spec_3_12_harness_2_1_319_a_body_without_a_closing_tag_match_is_returned_byte_for_byte() {
         let mut untouched_bodies = 0;
         for seed in 0..GENERATED_CASES {
             let body = generated_body(seed);
@@ -366,7 +358,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_2_1_319_each_rewrite_adds_exactly_one_backslash() {
+    fn spec_3_12_harness_2_1_319_each_rewrite_adds_exactly_one_backslash() {
         for seed in 0..GENERATED_CASES {
             let body = generated_body(seed);
             assert_eq!(
