@@ -1768,6 +1768,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spec_3_8_an_introduce_from_a_restarted_process_closes_its_cards_gone_connection_and_keeps_the_one_it_arrived_on_though_it_reports_no_selected_path()
+     {
+        let (clock, reading) = clock_the_test_sets();
+        let Rig { link, .. } =
+            rig_over(RecordingHost::with_card(card_of(SERVER_SEED)), clock).await;
+        let server = link.server_node.endpoint().id();
+        connection_from_a_process_that_vanished(link.server_node.endpoint().addr()).await;
+        let gone = connections_held_open_from(&link.server_node, card_of(CLIENT_SEED));
+        move_past_the_silence_of_a_gone_process(&reading);
+
+        let introduced = link
+            .client
+            .introduce(server, introduction_from_client())
+            .await;
+        let reported_after = selected_path_reported_by_each_held_of(
+            &link.server_node.held_connections(),
+            card_of(CLIENT_SEED),
+        );
+        let probed_on_the_same_connection = link.client.probe(server, PROBE_NONCE).await;
+
+        assert!(
+            matches!(introduced, Ok(IntroduceAck { .. })),
+            "{introduced:?}"
+        );
+        assert_eq!(
+            gone.iter()
+                .map(Connection::close_reason)
+                .collect::<Vec<_>>(),
+            vec![Some(ConnectionError::LocallyClosed)]
+        );
+        assert_eq!(reported_after, vec![false]);
+        assert_eq!(probed_on_the_same_connection.unwrap().nonce, PROBE_NONCE);
+    }
+
+    #[tokio::test]
     async fn spec_3_8_an_introduce_keeps_the_connection_it_arrived_on_even_one_that_reads_as_gone()
     {
         let Rig { link, .. } = rig_over(
