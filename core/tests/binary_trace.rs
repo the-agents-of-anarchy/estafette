@@ -570,14 +570,15 @@ mod observability {
     fn observability_decision_4_commands_that_start_no_endpoint_write_no_trace() {
         let root = machine_with_network("no-endpoint");
 
-        for arguments in [
-            &["create-card", NETWORK, CARD, CARD][..],
-            &["list-cards", NETWORK],
-            &["network", "create", "other"],
-            &["network", "show-invitation", NETWORK],
-            &["network", "add-host", NETWORK, "not a host line"],
+        for (arguments, exit_code) in [
+            (&["create-card", NETWORK, CARD, CARD][..], 0),
+            (&["list-cards", NETWORK], 0),
+            (&["network", "create", "other"], 0),
+            (&["network", "show-invitation", NETWORK], 1),
+            (&["network", "add-host", NETWORK, "not a host line"], 2),
         ] {
-            binary(&root).args(arguments).output().unwrap();
+            let ran = binary(&root).args(arguments).output().unwrap();
+            assert_eq!(ran.status.code(), Some(exit_code), "{arguments:?}: {ran:?}");
         }
 
         assert!(!traces_directory(&root.join(DATA_HOME)).exists());
@@ -668,6 +669,16 @@ mod observability {
                 path.display()
             );
         }
+        let (_events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
+        let raw_bytes = fs::read(&raw).unwrap();
+        let first_raw_line = raw_bytes
+            .split_inclusive(|byte| *byte == b'\n')
+            .next()
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(first_raw_line).unwrap()["event"],
+            "raw_file_opened"
+        );
         drop(fs::remove_dir_all(&root));
     }
 
