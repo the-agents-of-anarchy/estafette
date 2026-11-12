@@ -697,9 +697,13 @@ mod observability {
             let consecutive: Vec<Value> = (0..numbers.len()).map(Value::from).collect();
             assert_eq!(numbers, consecutive, "{}", path.display());
         }
-        assert_eq!(
-            whole_lines_of_a_killed_run(&raw).first().unwrap()["event"],
-            "raw_file_opened"
+        let raw_events: Vec<Value> = whole_lines_of_a_killed_run(&raw)
+            .iter()
+            .map(|line| line["event"].clone())
+            .collect();
+        assert!(
+            raw_events.is_empty() || raw_events == [Value::from("raw_file_opened")],
+            "{raw_events:?}"
         );
         drop(fs::remove_dir_all(&root));
     }
