@@ -52,6 +52,7 @@ mod observability {
     const SPEC_TRACE_FILE_SIZED_AHEAD_BYTES: usize = 65_536;
     const UNREADABLE_CARDS_DIRECTORY: &str = "cards-is-a-file";
     const COMMAND_FAILED_EVENT: &str = "process.command_failed";
+    const RAW_FILE_OPENED_EVENT: &str = "raw_file_opened";
     const INITIALIZED_NOTIFICATION: &str =
         "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
     const CONFIG_HOME: &str = "config";
@@ -305,7 +306,7 @@ mod observability {
         );
         assert_eq!(line.values["v"], SPEC_FORMAT_VERSION);
         assert_eq!(line.values["n"], 0);
-        assert_eq!(line.values["event"], "raw_file_opened");
+        assert_eq!(line.values["event"], RAW_FILE_OPENED_EVENT);
         assert_eq!(line.values["safe_to_post"], false);
         let run = line.values["run"].as_str().unwrap();
         assert!(
@@ -351,7 +352,7 @@ mod observability {
             .partition(|lines| {
                 lines
                     .iter()
-                    .any(|line| line.values["event"] == "process.command_failed")
+                    .any(|line| line.values["event"] == COMMAND_FAILED_EVENT)
             });
         let [test_send_lines] = test_send_lines.as_slice() else {
             panic!("one test-send run: {runs:?}");
@@ -746,7 +747,7 @@ mod observability {
             .iter()
             .map(|line| line["event"].clone())
             .collect();
-        assert_eq!(raw_events, [Value::from("raw_file_opened")]);
+        assert_eq!(raw_events, [Value::from(RAW_FILE_OPENED_EVENT)]);
         drop(fs::remove_dir_all(&root));
     }
 
