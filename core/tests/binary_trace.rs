@@ -616,8 +616,46 @@ mod observability {
         drop(fs::remove_dir_all(&root));
     }
 
+    /// The whole lines of a killed run's trace file, failing unless all that follows them is at most one unended start of the run's own next line and then zero bytes.
+    fn whole_lines_of_a_killed_run(path: &Path) -> Vec<Value> {
+        let name = path.file_name().unwrap().to_str().unwrap();
+        let run = name.split('-').nth(1).unwrap();
+        let own_line_start = format!("{{\"v\":1,\"run\":\"{run}\"");
+        let bytes = fs::read(path).unwrap();
+        let content_end = bytes
+            .iter()
+            .rposition(|byte| *byte != 0)
+            .map_or(0, |last| last.saturating_add(1));
+        let content = &bytes[..content_end];
+        assert!(
+            !content.contains(&0),
+            "{name}: a zero byte before the file's last byte that is not one"
+        );
+        let mut segments: Vec<&[u8]> = content.split(|byte| *byte == b'\n').collect();
+        let unended = segments.pop().unwrap_or_default();
+        assert!(
+            unended.starts_with(own_line_start.as_bytes())
+                || own_line_start.as_bytes().starts_with(unended),
+            "{name}: the {} bytes after its last whole line are not the start of this run's own line",
+            unended.len()
+        );
+        segments
+            .iter()
+            .map(|line| {
+                let parsed: Value = serde_json::from_slice(line).unwrap_or_else(|_failure| {
+                    panic!(
+                        "{name}: a newline-ended line of {} bytes that is not a trace line",
+                        line.len()
+                    )
+                });
+                assert_eq!(parsed["run"], run, "{name}");
+                parsed
+            })
+            .collect()
+    }
+
     #[test]
-    fn observability_decision_12_a_killed_process_loses_at_most_its_line_in_flight_and_every_ended_line_is_whole_and_numbered_without_a_gap()
+    fn observability_decision_6_a_killed_process_leaves_in_its_trace_files_only_its_whole_numbered_lines_its_own_unended_line_and_zero_bytes()
      {
         let root = machine_with_network("killed");
         let cards = root.join(UNREADABLE_CARDS_DIRECTORY);
@@ -650,33 +688,17 @@ mod observability {
         drop(input);
 
         assert_eq!(answers, KILLED_AFTER_ANSWERS + 1);
-        for path in <[PathBuf; 2]>::from(trace_files_of_one_run(&root.join(DATA_HOME))) {
-            let bytes = fs::read(&path).unwrap();
-            let numbers: Vec<Value> = bytes
-                .split_inclusive(|byte| *byte == b'\n')
-                .filter(|line| line.ends_with(b"\n"))
-                .map(|line| serde_json::from_slice::<Value>(line).unwrap()["n"].clone())
+        let (events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
+        for path in [&events, &raw] {
+            let numbers: Vec<Value> = whole_lines_of_a_killed_run(path)
+                .iter()
+                .map(|line| line["n"].clone())
                 .collect();
             let consecutive: Vec<Value> = (0..numbers.len()).map(Value::from).collect();
             assert_eq!(numbers, consecutive, "{}", path.display());
-            assert!(
-                bytes
-                    .split_inclusive(|byte| *byte == b'\n')
-                    .filter(|line| !line.ends_with(b"\n"))
-                    .count()
-                    <= 1,
-                "{}",
-                path.display()
-            );
         }
-        let (_events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
-        let raw_bytes = fs::read(&raw).unwrap();
-        let first_raw_line = raw_bytes
-            .split_inclusive(|byte| *byte == b'\n')
-            .next()
-            .unwrap();
         assert_eq!(
-            serde_json::from_slice::<Value>(first_raw_line).unwrap()["event"],
+            whole_lines_of_a_killed_run(&raw).first().unwrap()["event"],
             "raw_file_opened"
         );
         drop(fs::remove_dir_all(&root));
