@@ -362,6 +362,7 @@ mod tests {
     use crate::dirs::OperatingSystemFilesystem;
     use crate::event::{ClaimFailure, InboxEvent, ProcessEvent};
     use crate::node::NodeError;
+    use crate::seeded_draws::Draws;
 
     const SPEC_RAW_FIRST_LINE_AFTER_HEADER: &str =
         ",\"event\":\"raw_file_opened\",\"safe_to_post\":false}\n";
@@ -588,36 +589,56 @@ mod tests {
     #[test]
     fn observability_decision_7_every_raw_file_a_rollover_opens_begins_with_the_line_saying_it_is_not_safe_to_post()
      {
-        let (root, directory) = scratch_trace_directory("raw-rollover");
+        const SEEDED_CASES: u64 = 24;
+        const MOST_LINES_PER_FILE: u64 = 4;
+        const MOST_LINES_WRITTEN: u64 = 12;
         let not_safe_to_post = format!(
             "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":0,\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}{SPEC_RAW_FIRST_LINE_AFTER_HEADER}"
         );
         let line_bytes = u64::try_from(raw_line(1).len()).unwrap();
         let first_line_bytes = u64::try_from(not_safe_to_post.len()).unwrap();
-        let trace = started(
-            &directory,
-            NOW_MS,
-            TraceBounds {
-                rollover_bytes: first_line_bytes + line_bytes * LINES_PER_FILE,
-                ..TraceBounds::SPEC
-            },
-        );
+        for case in 0..SEEDED_CASES {
+            let mut draws = Draws::seeded(case);
+            let lines_per_file = draws.below(MOST_LINES_PER_FILE).saturating_add(1);
+            let slack_bytes = draws.below(line_bytes);
+            let lines_written = draws.below(MOST_LINES_WRITTEN).saturating_add(1);
+            let (root, directory) = scratch_trace_directory(&format!("raw-rollover-{case}"));
+            let trace = started(
+                &directory,
+                NOW_MS,
+                TraceBounds {
+                    rollover_bytes: first_line_bytes
+                        .saturating_add(line_bytes.saturating_mul(lines_per_file))
+                        .saturating_add(slack_bytes),
+                    ..TraceBounds::SPEC
+                },
+            );
 
-        for _line in 0..LINES_WRITTEN {
-            trace.raw.write(RAW_EVENT, &[]);
+            for _line in 0..lines_written {
+                trace.raw.write(RAW_EVENT, &[]);
+            }
+            assert!(matches!(trace.finish(), TraceStop::Drained), "case {case}");
+
+            let raw = &trace.files().raw;
+            let held: Vec<String> = [crate::dirs::rolled_over_trace_file(raw), raw.clone()]
+                .iter()
+                .filter_map(|file| fs::read_to_string(file).ok())
+                .collect();
+            for file in &held {
+                assert!(file.starts_with(&not_safe_to_post), "case {case}: {file}");
+            }
+            let numbers: Vec<u64> = held
+                .iter()
+                .flat_map(|file| file.lines().skip(1).map(|line| numbered_event(line).0))
+                .collect();
+            let first_kept = numbers.first().copied().unwrap_or(lines_written);
+            assert_eq!(
+                numbers,
+                (first_kept..=lines_written).collect::<Vec<u64>>(),
+                "case {case}"
+            );
+            drop(fs::remove_dir_all(&root));
         }
-        assert!(matches!(trace.finish(), TraceStop::Drained));
-
-        let raw = &trace.files().raw;
-        assert_eq!(
-            fs::read_to_string(raw).unwrap(),
-            format!("{not_safe_to_post}{}", raw_line(5))
-        );
-        assert_eq!(
-            fs::read_to_string(crate::dirs::rolled_over_trace_file(raw)).unwrap(),
-            format!("{not_safe_to_post}{}{}", raw_line(3), raw_line(4))
-        );
-        drop(fs::remove_dir_all(&root));
     }
 
     /// The failure a stand-in file operation reports.
@@ -1257,28 +1278,60 @@ mod tests {
         drop(fs::remove_dir_all(&root));
     }
 
-    #[test]
-    fn observability_decision_6_a_line_longer_than_the_step_is_sized_ahead_by_whole_steps() {
-        const LONG_TEXT_BYTES: usize = 70_000;
-        let (root, directory) = scratch_trace_directory("sized-ahead-long");
+    /// The lengths the events file was given while it took one line carrying `text_bytes` bytes of text and stopped, and the bytes it then held.
+    fn lengths_given_for_one_line(directory: &TraceDirectory, text_bytes: u64) -> (Vec<u64>, u64) {
         let files = MemoryFiles::default();
-        let trace = started_with(&directory, &files.effects(NOW_MS), TraceBounds::SPEC);
-
+        let trace = started_with(directory, &files.effects(NOW_MS), TraceBounds::SPEC);
         trace.events.write(
             CLOCK_EVENT,
-            &[("text", Value::from("x".repeat(LONG_TEXT_BYTES)))],
+            &[(
+                "text",
+                Value::from("x".repeat(usize::try_from(text_bytes).unwrap())),
+            )],
         );
-        assert!(matches!(trace.finish(), TraceStop::Drained));
-
+        assert!(matches!(trace.finish(), TraceStop::Drained), "{text_bytes}");
         let held = files.text_of(&trace.files().events);
-        assert_eq!(
-            files.state().events_lengths,
+        assert!(held.ends_with("\"}\n"), "{text_bytes}: {}", held.len());
+        let lengths = files.state().events_lengths.clone();
+        (lengths, u64::try_from(held.len()).unwrap())
+    }
+
+    #[test]
+    fn observability_decision_6_a_line_is_sized_ahead_by_the_fewest_whole_steps_that_hold_it_and_a_clean_stop_cuts_back_to_it()
+     {
+        const STEP_COUNTS: [u64; 3] = [1, 2, 3];
+        const SEEDED_CASES: u64 = 20;
+        const SEEDED_TEXT_BOUND: u64 = 4 * TRACE_FILE_SIZED_AHEAD_BYTES;
+        let (root, directory) = scratch_trace_directory("sized-ahead-lines");
+        let (_, line_bytes_without_text) = lengths_given_for_one_line(&directory, 0);
+        let at_and_around_each_step = STEP_COUNTS.iter().flat_map(|steps| {
+            let boundary = steps.saturating_mul(TRACE_FILE_SIZED_AHEAD_BYTES);
             [
-                2 * TRACE_FILE_SIZED_AHEAD_BYTES,
-                u64::try_from(held.len()).unwrap()
+                boundary.saturating_sub(1),
+                boundary,
+                boundary.saturating_add(1),
             ]
-        );
-        assert!(held.ends_with("\"}\n"), "{}", held.len());
+            .map(|line_bytes| line_bytes.saturating_sub(line_bytes_without_text))
+        });
+        let seeded = (0..SEEDED_CASES).map(|case| Draws::seeded(case).below(SEEDED_TEXT_BOUND));
+
+        for text_bytes in at_and_around_each_step.chain(seeded) {
+            let (lengths, line_bytes) = lengths_given_for_one_line(&directory, text_bytes);
+
+            assert_eq!(
+                line_bytes,
+                line_bytes_without_text.saturating_add(text_bytes),
+                "{text_bytes}"
+            );
+            assert_eq!(
+                lengths,
+                [
+                    line_bytes.next_multiple_of(TRACE_FILE_SIZED_AHEAD_BYTES),
+                    line_bytes
+                ],
+                "{text_bytes}"
+            );
+        }
         drop(fs::remove_dir_all(&root));
     }
 
