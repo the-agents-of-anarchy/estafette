@@ -324,7 +324,6 @@ fn files_beneath(directory: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// The base directories under the scratch root, and the search path the binary finds `ps` on.
 /// The value the environment gives the variable, none when it names none.
 fn variable_of(environment: &[(&str, OsString)], name: &str) -> Option<OsString> {
     environment
@@ -333,6 +332,7 @@ fn variable_of(environment: &[(&str, OsString)], name: &str) -> Option<OsString>
         .map(|(_, value)| value.clone())
 }
 
+/// The base directories under the scratch root, and the search path the binary finds `ps` on.
 fn environment(root: &Path) -> Vec<(&'static str, OsString)> {
     vec![
         (
