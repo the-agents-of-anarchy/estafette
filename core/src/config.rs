@@ -499,16 +499,24 @@ pub(crate) fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
     })
 }
 
-/// Writes the contents to a new uniquely named file of exactly the given mode, syncs it, and links it to the path, failing with `AlreadyExists` when the path exists and removing the temporary file.
-pub(crate) fn write_new_file_atomically(path: &Path, contents: &str, mode: u32) -> io::Result<()> {
+/// Writes the contents to a new uniquely named file of exactly the given mode, syncs it, and links it to the path, failing with `AlreadyExists` when the path exists, and removes the temporary file through `remove_temporary`, naming it in the failure when its removal fails.
+pub(crate) fn write_new_file_atomically(
+    path: &Path,
+    contents: &str,
+    mode: u32,
+    remove_temporary: impl FnOnce(&Path) -> io::Result<()>,
+) -> io::Result<()> {
     let (file, temporary_path) = create_unique_temporary_file(path, mode)?;
     let linked = fill_and_link(file, &temporary_path, path, contents);
-    let removal = remove_file_if_present(&temporary_path);
+    let removal = remove_temporary(&temporary_path);
     match linked {
-        Ok(()) => {
-            drop(removal);
-            Ok(())
-        }
+        Ok(()) => removal.map_err(|cleanup| {
+            with_cleanup_outcome(
+                io::Error::other(format!("{} was written", path.display())),
+                &temporary_path,
+                Err(cleanup),
+            )
+        }),
         Err(failure) => Err(with_cleanup_outcome(failure, &temporary_path, removal)),
     }
 }
@@ -1088,7 +1096,13 @@ mod tests {
         let directory = scratch_directory("link-new");
         let path = directory.join("card.yaml");
 
-        write_new_file_atomically(&path, "handle: a\n", GROUP_READABLE_FILE_MODE).unwrap();
+        write_new_file_atomically(
+            &path,
+            "handle: a\n",
+            GROUP_READABLE_FILE_MODE,
+            remove_file_if_present,
+        )
+        .unwrap();
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "handle: a\n");
         assert_eq!(
@@ -1098,6 +1112,27 @@ mod tests {
         assert_eq!(names_in(&directory), ["card.yaml"]);
     }
 
+    /// Spec 3.5: a temporary file that cannot be removed once the link is made is named in the failure, and the file at the path stays whole.
+    #[test]
+    fn a_temporary_file_left_after_the_link_is_named_in_the_failure() {
+        let directory = scratch_directory("link-leftover");
+        let path = directory.join("card.yaml");
+        let failing_removal =
+            |_leftover: &Path| Err(io::Error::from(io::ErrorKind::PermissionDenied));
+
+        let failure = write_new_file_atomically(
+            &path,
+            "handle: a\n",
+            GROUP_READABLE_FILE_MODE,
+            failing_removal,
+        )
+        .unwrap_err();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "handle: a\n");
+        assert!(failure.to_string().contains("was left behind"), "{failure}");
+        assert_eq!(names_in(&directory).len(), 2);
+    }
+
     /// Spec 3.5: a path that exists is never replaced and no temporary file stays beside it.
     #[test]
     fn an_existing_file_is_never_replaced_by_a_new_file_write() {
@@ -1105,8 +1140,13 @@ mod tests {
         let path = directory.join("card.yaml");
         fs::write(&path, "old\n").unwrap();
 
-        let failure =
-            write_new_file_atomically(&path, "new\n", GROUP_READABLE_FILE_MODE).unwrap_err();
+        let failure = write_new_file_atomically(
+            &path,
+            "new\n",
+            GROUP_READABLE_FILE_MODE,
+            remove_file_if_present,
+        )
+        .unwrap_err();
 
         assert_eq!(failure.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(&path).unwrap(), "old\n");

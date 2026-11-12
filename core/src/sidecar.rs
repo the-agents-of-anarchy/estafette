@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use crate::card::{HANDLE_FIELD, PUBLIC_KEY_FIELD};
 use crate::config::{
-    OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK, create_new_owner_only_file,
+    OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK, create_new_owner_only_file, remove_file_if_present,
     write_new_file_atomically,
 };
 use data_encoding::{HEXLOWER, HEXLOWER_PERMISSIVE};
@@ -143,13 +143,32 @@ pub fn create_card(
     handle: &str,
     seed: [u8; SEED_BYTES],
 ) -> Result<PublicKey, SidecarError> {
-    directory_of(card_path)?;
-    let sidecar_directory = directory_of(sidecar_path)?;
+    create_card_removing_temporary_with(
+        remove_file_if_present,
+        card_path,
+        sidecar_path,
+        handle,
+        seed,
+    )
+}
+
+/// Creates a card as `create_card` does, removing the card's temporary file through the given remover.
+fn create_card_removing_temporary_with(
+    remove_temporary: impl FnOnce(&Path) -> io::Result<()>,
+    card_path: &Path,
+    sidecar_path: &Path,
+    handle: &str,
+    seed: [u8; SEED_BYTES],
+) -> Result<PublicKey, SidecarError> {
+    require_directory_of(card_path)?;
+    let sidecar_directory = require_directory_of(sidecar_path)?;
     refuse_existing_card(card_path)?;
     let public_key = SecretKey::from_bytes(&seed).public();
     write_sidecar_durably(sidecar_path, sidecar_directory, &seed)?;
-    write_card(card_path, handle, public_key.as_bytes()).or_else(|error| {
-        std::fs::remove_file(sidecar_path)?;
+    write_card(card_path, handle, public_key.as_bytes(), remove_temporary).or_else(|error| {
+        if !card_path.try_exists()? {
+            std::fs::remove_file(sidecar_path)?;
+        }
         Err(error)
     })?;
     Ok(public_key)
@@ -163,7 +182,7 @@ fn refuse_existing_card(card_path: &Path) -> Result<(), SidecarError> {
     }
 }
 
-fn directory_of(path: &Path) -> Result<&Path, SidecarError> {
+fn require_directory_of(path: &Path) -> Result<&Path, SidecarError> {
     path.parent()
         .filter(|directory| !directory.as_os_str().is_empty())
         .ok_or_else(|| {
@@ -190,12 +209,14 @@ fn write_card(
     card_path: &Path,
     handle: &str,
     public_key: &[u8; PUBLIC_KEY_BYTES],
+    remove_temporary: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), SidecarError> {
     let contents = format!(
         "{HANDLE_FIELD}: {handle}{LINE_TERMINATOR}{PUBLIC_KEY_FIELD}: {}{LINE_TERMINATOR}",
         HEXLOWER.encode(public_key)
     );
-    write_new_file_atomically(card_path, &contents, CARD_FILE_MODE).map_err(creation_failure)
+    write_new_file_atomically(card_path, &contents, CARD_FILE_MODE, remove_temporary)
+        .map_err(creation_failure)
 }
 
 fn creation_failure(error: io::Error) -> SidecarError {
@@ -723,5 +744,28 @@ mod tests {
             output.status.success() && stdout.contains("1 passed"),
             "{stdout}{stderr}"
         );
+    }
+
+    #[test]
+    fn a_card_whose_temporary_file_cannot_be_removed_stays_with_its_sidecar_and_names_the_leftover_spec_3_5()
+     {
+        let directory = fresh_directory("create_card_leftover");
+        let card = directory.join("s.yaml");
+        let sidecar = directory.join("s.key");
+        let failing_removal =
+            |_leftover: &Path| Err(io::Error::from(io::ErrorKind::PermissionDenied));
+
+        let outcome = create_card_removing_temporary_with(
+            failing_removal,
+            &card,
+            &sidecar,
+            "scout",
+            seed_of(20),
+        );
+
+        let failure = outcome.unwrap_err();
+        assert!(failure.to_string().contains("was left behind"), "{failure}");
+        assert!(card.exists());
+        assert!(sidecar.exists());
     }
 }
