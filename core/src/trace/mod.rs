@@ -279,7 +279,7 @@ impl Trace {
 
     /// Names the endpoint this process now runs on in every later line.
     pub fn note_endpoint(&self, id: EndpointId) {
-        self.header.note_node(id.as_bytes());
+        self.header.note_node(id);
     }
 
     /// Closes both queues and waits, within the drain bound for each, until their lines are on disk, saying whether every line got there.

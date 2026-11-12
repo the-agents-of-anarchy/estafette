@@ -1,11 +1,9 @@
 use std::sync::{Mutex, PoisonError};
 
-use data_encoding::HEXLOWER;
+use iroh::EndpointId;
 use serde_json::Value;
 
 use super::{FORMAT_VERSION, RunId, TraceClocks};
-
-const NODE_TAG_BYTES: usize = 5;
 
 /// What begins every line of both trace files, in the order decision 5 fixes: the format version, the run, the line number, the two clock readings and the node once there is one.
 pub(super) struct HeaderSource {
@@ -30,10 +28,10 @@ impl HeaderSource {
         }
     }
 
-    /// Names the endpoint, by the first five bytes of its id, in every later line.
-    pub(super) fn note_node(&self, id_bytes: &[u8]) {
-        let tag = HEXLOWER.encode(id_bytes.get(..NODE_TAG_BYTES).unwrap_or(id_bytes));
-        *self.node.lock().unwrap_or_else(PoisonError::into_inner) = Some(tag);
+    /// Names the endpoint, by the short form of its id iroh's own lines use, in every later line.
+    pub(super) fn note_node(&self, id: EndpointId) {
+        *self.node.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(id.fmt_short().to_string());
     }
 
     /// The wall clock's reading now.
