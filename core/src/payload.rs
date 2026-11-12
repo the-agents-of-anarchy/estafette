@@ -50,7 +50,7 @@ impl fmt::Display for PayloadError {
                 formatter.write_str("the infrastructure address must list exactly the host relay")
             }
             Self::PublicNotAdmitted => formatter.write_str(
-                "the presence public mapping is not what a card admits: a JSON mapping within the serialized cap",
+                "the presence public is not what a card sends: a JSON mapping within the serialized cap and the deepest nesting, naming each key once, with integers that fit 64 bits",
             ),
             Self::OverGossipFrame { bytes } => write!(
                 formatter,
