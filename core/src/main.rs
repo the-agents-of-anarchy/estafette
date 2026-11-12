@@ -860,6 +860,27 @@ mod tests {
         }
     }
 
+    /// A scratch root for the test, removed when the guard drops, and the environment naming its three base directories.
+    fn scratch_environment(prefix: &str) -> (ScratchRoot, impl Fn(&str) -> Option<OsString>) {
+        const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
+        const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
+        const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
+        const CONFIG_HOME_UNDER_ROOT: &str = "c";
+        const DATA_HOME_UNDER_ROOT: &str = "d";
+        const RUNTIME_DIRECTORY_UNDER_ROOT: &str = "r";
+        let root = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
+        let base = root.clone();
+        let environment = move |name: &str| match name {
+            CONFIG_HOME_VARIABLE => Some(base.join(CONFIG_HOME_UNDER_ROOT).into_os_string()),
+            DATA_HOME_VARIABLE => Some(base.join(DATA_HOME_UNDER_ROOT).into_os_string()),
+            RUNTIME_DIRECTORY_VARIABLE => {
+                Some(base.join(RUNTIME_DIRECTORY_UNDER_ROOT).into_os_string())
+            }
+            _ => None,
+        };
+        (ScratchRoot(root), environment)
+    }
+
     #[test]
     fn spec_3_9_an_awaited_shutdown_ends_while_a_blocking_read_of_standard_input_is_still_pending()
     {
@@ -1271,17 +1292,8 @@ mod tests {
         const EVENTS_RECORDED: usize = 1000;
         const SPEC_CLOCK_EVENT_NAME: &str = "process.clock_before_unix_epoch";
         const SCRATCH_PREFIX: &str = "estafette-trace-drain";
-        const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
-        const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
-        const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
-        let root = std::env::temp_dir().join(format!("{SCRATCH_PREFIX}-{}", std::process::id()));
-        drop(std::fs::remove_dir_all(&root));
-        let environment = |name: &str| match name {
-            CONFIG_HOME_VARIABLE => Some(root.join("c").into_os_string()),
-            DATA_HOME_VARIABLE => Some(root.join("d").into_os_string()),
-            RUNTIME_DIRECTORY_VARIABLE => Some(root.join("r").into_os_string()),
-            _ => None,
-        };
+        let (_scratch_removed_when_the_test_ends, environment) =
+            scratch_environment(SCRATCH_PREFIX);
         let body_ended = Arc::new(Mutex::new(()));
         let written = Arc::new(Mutex::new(Vec::new()));
         let held_back_files = Arc::clone(&body_ended);
@@ -1323,7 +1335,6 @@ mod tests {
             .count();
         assert_eq!(status, ExitStatus::Success);
         assert_eq!(recorded, EVENTS_RECORDED);
-        drop(std::fs::remove_dir_all(&root));
     }
 
     #[test]
@@ -1331,17 +1342,8 @@ mod tests {
      {
         const SPEC_UNDRAINED_LINE: &str = "the debug trace did not finish writing within 0 ms of the stop: its last lines may be missing from its files";
         const SCRATCH_PREFIX: &str = "estafette-trace-undrained";
-        const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
-        const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
-        const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
-        let root = std::env::temp_dir().join(format!("{SCRATCH_PREFIX}-{}", std::process::id()));
-        drop(std::fs::remove_dir_all(&root));
-        let environment = |name: &str| match name {
-            CONFIG_HOME_VARIABLE => Some(root.join("c").into_os_string()),
-            DATA_HOME_VARIABLE => Some(root.join("d").into_os_string()),
-            RUNTIME_DIRECTORY_VARIABLE => Some(root.join("r").into_os_string()),
-            _ => None,
-        };
+        let (_scratch_removed_when_the_test_ends, environment) =
+            scratch_environment(SCRATCH_PREFIX);
         let run_ended = Arc::new(Mutex::new(()));
         let held_back_files = Arc::clone(&run_ended);
         let trace_effects = TraceEffects {
@@ -1373,8 +1375,9 @@ mod tests {
         let recorded = String::from_utf8(standard_error.0.lock().unwrap().clone()).unwrap();
         assert_eq!(status, ExitStatus::Success);
         assert_eq!(recorded.lines().last(), Some(SPEC_UNDRAINED_LINE));
-        drop(std::fs::remove_dir_all(&root));
     }
+
+    const STAND_IN_SHRINK_REFUSAL: &str = "the file refuses to shrink";
 
     /// A trace file that refuses to be cut shorter than it was last sized, discarding what is written to it.
     struct UncuttableTraceFile {
@@ -1384,7 +1387,7 @@ mod tests {
     impl TraceFile for UncuttableTraceFile {
         fn set_length(&mut self, length: u64) -> io::Result<()> {
             if length < self.sized {
-                return Err(io::Error::other("the file refuses to shrink"));
+                return Err(io::Error::other(STAND_IN_SHRINK_REFUSAL));
             }
             self.sized = length;
             Ok(())
@@ -1404,19 +1407,10 @@ mod tests {
     #[test]
     fn observability_decision_12_a_trace_whose_file_cannot_be_cut_back_at_the_stop_says_so_on_standard_error_and_the_status_stands()
      {
-        const SPEC_NOT_CUT_LINE: &str = "the debug trace could not cut a file back to its last line at the stop, so the file ends in zero bytes: the file refuses to shrink";
+        const SPEC_NOT_CUT_LINE_BEFORE_ITS_CAUSE: &str = "the debug trace could not cut a file back to its last line at the stop, so the file ends in zero bytes";
         const SCRATCH_PREFIX: &str = "estafette-trace-not-cut";
-        const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
-        const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
-        const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
-        let root = std::env::temp_dir().join(format!("{SCRATCH_PREFIX}-{}", std::process::id()));
-        drop(std::fs::remove_dir_all(&root));
-        let environment = |name: &str| match name {
-            CONFIG_HOME_VARIABLE => Some(root.join("c").into_os_string()),
-            DATA_HOME_VARIABLE => Some(root.join("d").into_os_string()),
-            RUNTIME_DIRECTORY_VARIABLE => Some(root.join("r").into_os_string()),
-            _ => None,
-        };
+        let (_scratch_removed_when_the_test_ends, environment) =
+            scratch_environment(SCRATCH_PREFIX);
         let trace_effects = TraceEffects {
             create_file: Arc::new(|_path: &Path| -> io::Result<Box<dyn TraceFile>> {
                 Ok(Box::new(UncuttableTraceFile { sized: 0 }))
@@ -1437,8 +1431,12 @@ mod tests {
 
         let recorded = String::from_utf8(standard_error.0.lock().unwrap().clone()).unwrap();
         assert_eq!(status, ExitStatus::Success);
-        assert_eq!(recorded.lines().last(), Some(SPEC_NOT_CUT_LINE));
-        drop(std::fs::remove_dir_all(&root));
+        assert_eq!(
+            recorded.lines().last(),
+            Some(
+                format!("{SPEC_NOT_CUT_LINE_BEFORE_ITS_CAUSE}: {STAND_IN_SHRINK_REFUSAL}").as_str()
+            )
+        );
     }
 
     #[derive(Clone, Default)]
