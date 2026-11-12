@@ -47,6 +47,7 @@ mod observability {
     const CARD: &str = "alice";
     const KILLED_AFTER_ANSWERS: usize = 50;
     const FIRST_TOOL_CALL_ID: usize = 2;
+    const SPEC_TRACE_FILE_SIZED_AHEAD_BYTES: usize = 65_536;
     const UNREADABLE_CARDS_DIRECTORY: &str = "cards-is-a-file";
     const INITIALIZED_NOTIFICATION: &str =
         "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
@@ -616,7 +617,7 @@ mod observability {
         drop(fs::remove_dir_all(&root));
     }
 
-    /// The whole lines of a killed run's trace file, failing unless all that follows them is at most one unended start of the run's own next line and then zero bytes.
+    /// The whole lines of a killed run's trace file, failing unless all that follows them is at most one unended start of the run's own next line and then zero bytes to the next 64 KiB boundary.
     fn whole_lines_of_a_killed_run(path: &Path) -> Vec<Value> {
         let name = path.file_name().unwrap().to_str().unwrap();
         let run = name.split('-').nth(1).unwrap();
@@ -626,6 +627,16 @@ mod observability {
             .iter()
             .rposition(|byte| *byte != 0)
             .map_or(0, |last| last.saturating_add(1));
+        assert!(
+            bytes.is_empty()
+                || (bytes
+                    .len()
+                    .is_multiple_of(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES)
+                    && bytes.len().saturating_sub(content_end)
+                        <= SPEC_TRACE_FILE_SIZED_AHEAD_BYTES),
+            "{name}: {} bytes after {content_end} bytes of content do not end at the next 64 KiB boundary",
+            bytes.len().saturating_sub(content_end)
+        );
         let content = &bytes[..content_end];
         assert!(
             !content.contains(&0),
