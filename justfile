@@ -8,6 +8,7 @@ mod remote 'just/remote.just'
 mod spec 'just/spec.just'
 mod dev 'just/dev.just'
 mod awake 'just/awake.just'
+mod usage 'just/usage.just'
 
 # `just records` runs records::check, the [default] recipe of that module.
 # `just check` is the one gate that CI, pre-commit and every commit call.
