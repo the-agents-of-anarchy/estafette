@@ -319,6 +319,16 @@ mod tests {
         *SecretKey::from_bytes(seed).public().as_bytes()
     }
 
+    /// Held by a test for the whole life of a child it spawns and by a test from its first claim to its last check that a released lock is free, since a child holds a copy of every open descriptor, and so of every lock, until it execs.
+    static CHILD_SPAWNS_APART_FROM_LOCK_RELEASES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Waits until no child spawn and no lock release of another test is under way, and keeps both away until the guard drops.
+    fn kept_apart_from_child_spawns() -> std::sync::MutexGuard<'static, ()> {
+        CHILD_SPAWNS_APART_FROM_LOCK_RELEASES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn write_sidecar(path: &Path, contents: &str, mode: u32) {
         std::fs::write(path, contents).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
@@ -357,6 +367,7 @@ mod tests {
 
     #[test]
     fn claim_retries_until_the_holder_lets_go_within_the_window_spec_3_14() {
+        let _apart_from_child_spawns = kept_apart_from_child_spawns();
         let directory = fresh_directory("claim_retries");
         let seed = seed_of(2);
         let public_key = public_key_of(&seed);
@@ -528,6 +539,7 @@ mod tests {
 
     #[test]
     fn probe_sees_a_held_card_and_leaves_a_free_card_free_spec_837() {
+        let _apart_from_child_spawns = kept_apart_from_child_spawns();
         let directory = fresh_directory("probe");
         let seed = seed_of(10);
         let public_key = public_key_of(&seed);
@@ -706,12 +718,15 @@ mod tests {
         );
     }
 
+    const POSIX_SHELL: &str = "/bin/sh";
     const SIZE_LIMITED_CHILD_MARKER: &str = "ESTAFETTE_SIDECAR_TEST_FILE_SIZE_LIMITED";
     const CARD_WRITE_FAILURE_TEST_PATH: &str = "sidecar::tests::a_card_write_that_fails_part_way_leaves_nothing_at_its_final_name_spec_3_5";
     const SIZE_LIMITED_CHILD_SCRIPT: &str = "ulimit -f 1; trap '' XFSZ; exec \"$0\" --exact \"$1\"";
     const OVERSIZED_HANDLE_BYTES: usize = 1_000_000;
+    const CHILD_RAN_FILE: &str = "child-ran";
 
-    fn assert_a_failed_card_write_leaves_nothing_behind() {
+    fn assert_a_failed_card_write_leaves_nothing_behind(child_ran_path: &Path) {
+        std::fs::write(child_ran_path, b"ran").unwrap();
         let directory = fresh_directory("create_card_fails_part_way");
         let card = directory.join("r.yaml");
         let sidecar = directory.join("r.key");
@@ -725,25 +740,28 @@ mod tests {
 
     #[test]
     fn a_card_write_that_fails_part_way_leaves_nothing_at_its_final_name_spec_3_5() {
-        if std::env::var_os(SIZE_LIMITED_CHILD_MARKER).is_some() {
-            assert_a_failed_card_write_leaves_nothing_behind();
+        if let Some(child_ran_path) = std::env::var_os(SIZE_LIMITED_CHILD_MARKER) {
+            assert_a_failed_card_write_leaves_nothing_behind(Path::new(&child_ran_path));
             return;
         }
+        let marker_directory = fresh_directory("create_card_fails_part_way_marker");
+        let child_ran_path = marker_directory.join(CHILD_RAN_FILE);
+        let _apart_from_lock_releases = kept_apart_from_child_spawns();
 
-        let output = std::process::Command::new("sh")
+        let child = std::process::Command::new(POSIX_SHELL)
             .args(["-c", SIZE_LIMITED_CHILD_SCRIPT])
             .arg(std::env::current_exe().unwrap())
             .arg(CARD_WRITE_FAILURE_TEST_PATH)
-            .env(SIZE_LIMITED_CHILD_MARKER, "1")
+            .env(SIZE_LIMITED_CHILD_MARKER, &child_ran_path)
             .output()
             .unwrap();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let child_output = String::from_utf8_lossy(&child.stderr);
         assert!(
-            output.status.success() && stdout.contains("1 passed"),
-            "{stdout}{stderr}"
+            child_ran_path.exists(),
+            "the child never ran the test: {child_output}"
         );
+        assert!(child.status.success(), "{child_output}");
     }
 
     #[test]
