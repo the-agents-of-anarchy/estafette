@@ -506,6 +506,10 @@ mod observability {
             .unwrap();
 
         assert!(traced.status.success(), "{traced:?}");
+        assert!(
+            traces_directory(&traced_root.join(DATA_HOME)).exists(),
+            "an environment variable switched the trace off: no trace directory"
+        );
         let (events, raw) = trace_files_of_one_run(&traced_root.join(DATA_HOME));
         assert!(events.exists() && raw.exists());
         assert!(untraced.status.success(), "{untraced:?}");
