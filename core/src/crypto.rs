@@ -110,14 +110,9 @@ fn verify_under_prefix(
     body: &[u8],
     signature: &Signature,
 ) -> Result<(), CryptoError> {
-    if signer
+    signer
         .verify(&[domain_prefix, body].concat(), signature)
-        .is_ok()
-    {
-        Ok(())
-    } else {
-        Err(CryptoError::SignatureMismatch)
-    }
+        .map_err(|_refusal| CryptoError::SignatureMismatch)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
