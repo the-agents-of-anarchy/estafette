@@ -612,16 +612,28 @@ mod tests {
         const SEEDED_CASES: u64 = 24;
         const MOST_LINES_PER_FILE: u64 = 4;
         const MOST_LINES_WRITTEN: u64 = 12;
+        const EXACT_FILL_SLACK_BYTES: u64 = 0;
         let not_safe_to_post = format!(
             "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":0,\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}{SPEC_RAW_FIRST_LINE_AFTER_HEADER}"
         );
         let line_bytes = u64::try_from(raw_line(1).len()).unwrap();
         let first_line_bytes = u64::try_from(not_safe_to_post.len()).unwrap();
-        for case in 0..SEEDED_CASES {
+        let seeded_cases = (0..SEEDED_CASES).map(|case| {
             let mut draws = Draws::seeded(case);
             let lines_per_file = draws.below(MOST_LINES_PER_FILE).saturating_add(1);
             let slack_bytes = draws.below(line_bytes);
             let lines_written = draws.below(MOST_LINES_WRITTEN).saturating_add(1);
+            (case, lines_per_file, slack_bytes, lines_written)
+        });
+        let case_where_a_line_exactly_fills_a_file = (
+            SEEDED_CASES,
+            MOST_LINES_PER_FILE,
+            EXACT_FILL_SLACK_BYTES,
+            MOST_LINES_WRITTEN,
+        );
+        for (case, lines_per_file, slack_bytes, lines_written) in
+            seeded_cases.chain([case_where_a_line_exactly_fills_a_file])
+        {
             let rollover_bytes = first_line_bytes
                 .saturating_add(line_bytes.saturating_mul(lines_per_file))
                 .saturating_add(slack_bytes);
