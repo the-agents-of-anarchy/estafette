@@ -1717,6 +1717,56 @@ mod tests {
         );
     }
 
+    /// Takes the card's first held connection as last heard from as long ago as a gone process is silent, as a connection of a live process that stalled reads.
+    fn stall_the_first_held_of(register: &HeldConnections, card: wire::PublicKey) {
+        let stalled_since = tokio::time::Instant::now()
+            .checked_sub(SILENCE_OF_A_GONE_PROCESS)
+            .unwrap();
+        register
+            .held()
+            .get_mut(&card)
+            .unwrap()
+            .first_mut()
+            .unwrap()
+            .last_heard = stalled_since;
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_live_card_whose_other_connection_reports_a_selected_path_keeps_it_when_its_stalled_connection_closes()
+     {
+        let rig = rig().await;
+        let stalled = raw_connection(&rig).await;
+        raw_exchange(&stalled, &sealed_message_to_server(&keys()))
+            .await
+            .unwrap();
+        let healthy = raw_connection(&rig).await;
+        raw_exchange(&healthy, &sealed_message_to_server(&keys()))
+            .await
+            .unwrap();
+        let register = rig.link.server_node.held_connections();
+        let reported_before =
+            selected_path_reported_by_each_held_of(&register, card_of(CLIENT_SEED));
+
+        stall_the_first_held_of(&register, card_of(CLIENT_SEED));
+        register.close_silent_of(card_of(CLIENT_SEED));
+        let stalled_closed = timeout(DIRECT_ANSWER_WAIT, stalled.closed()).await;
+        let healthy_still_answers = still_answers(&healthy).await;
+
+        assert_eq!(reported_before, vec![true, true]);
+        assert!(
+            matches!(
+                &stalled_closed,
+                Ok(ConnectionError::ApplicationClosed(close))
+                    if close.error_code == VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE)
+            ),
+            "{stalled_closed:?}"
+        );
+        assert!(
+            healthy_still_answers,
+            "the healthy connection did not answer after its card's stalled one closed"
+        );
+    }
+
     #[tokio::test]
     async fn spec_3_8_an_introduce_keeps_the_connection_it_arrived_on_even_one_that_reads_as_gone()
     {
