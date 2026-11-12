@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-use estafette::dirs::{Directories, OperatingSystemFilesystem};
+use estafette::dirs::{Directories, OperatingSystemFilesystem, TraceDirectory};
 use estafette::keys::parse_public_key;
 use iroh::EndpointId;
 
@@ -133,12 +133,7 @@ impl ScratchMachine {
     pub fn directories(&self) -> Directories {
         let environment = environment(&self.root);
         Directories::establish(
-            |name: &str| {
-                environment
-                    .iter()
-                    .find(|(variable, _)| *variable == name)
-                    .map(|(_, value)| value.clone())
-            },
+            |name: &str| variable_of(&environment, name),
             &OperatingSystemFilesystem,
             None,
         )
@@ -228,7 +223,10 @@ impl ScratchMachine {
 
     /// The secrets of every readable file under this machine's base directories but its debug traces, which are a record of the run like the run record itself, longest first.
     fn secrets_by_length(&self) -> Vec<String> {
-        let traces = self.directories().trace_directory().path();
+        let environment = environment(&self.root);
+        let traces = TraceDirectory::resolve(&|name: &str| variable_of(&environment, name))
+            .unwrap()
+            .path();
         let contents: Vec<String> = self
             .base_directory_files()
             .iter()
@@ -327,6 +325,14 @@ fn files_beneath(directory: &Path) -> Vec<PathBuf> {
 }
 
 /// The base directories under the scratch root, and the search path the binary finds `ps` on.
+/// The value the environment gives the variable, none when it names none.
+fn variable_of(environment: &[(&str, OsString)], name: &str) -> Option<OsString> {
+    environment
+        .iter()
+        .find(|(variable, _)| *variable == name)
+        .map(|(_, value)| value.clone())
+}
+
 fn environment(root: &Path) -> Vec<(&'static str, OsString)> {
     vec![
         (

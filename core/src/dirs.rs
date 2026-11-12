@@ -266,14 +266,6 @@ impl Directories {
         &self.runtime
     }
 
-    /// The trace directory under this run's data directory.
-    #[must_use]
-    pub fn trace_directory(&self) -> TraceDirectory {
-        TraceDirectory {
-            data: self.data.clone(),
-        }
-    }
-
     /// The inbox socket of the process with the given process id.
     #[must_use]
     pub fn inbox_socket_file(&self, process_id: u32) -> PathBuf {
