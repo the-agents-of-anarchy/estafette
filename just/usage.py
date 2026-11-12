@@ -48,6 +48,7 @@ PARAMS_PATH = SCRIPT_DIRECTORY / 'usage-params.json'
 EFFORTS = ('low', 'high', 'max')
 ROLE_TTLS = {'agent': FIVE_MINUTE_TTL, 'lead': ONE_HOUR_TTL}
 COMPONENT_LABELS = {'output': 'output', 'carry': 'carry', 'cold_start': 'cold start', 'first_intake': 'first intake'}
+FULL_MODEL_BY_SHORT_NAME = {'haiku': 'claude-haiku-5-5', 'sonnet': 'claude-sonnet-5-5', 'opus': 'claude-opus-5-5', 'fable': 'claude-fable-5-2'}
 DOLLARS_UNIT = 'usd'
 LIMIT_WEIGHT_UNIT = 'percent'
 MINUTES_UNIT = 'min'
@@ -424,10 +425,15 @@ def required_value(entry, description, remedy=''):
     return entry['value']
 
 
+def full_model_name(name):
+    """The full model id of a short name, or the name itself when it is no short name."""
+    return FULL_MODEL_BY_SHORT_NAME.get(name, name)
+
+
 def checked_model_and_effort(prices, model, effort):
     """Refuse a model the price file does not list or an effort outside the three, naming the accepted set."""
     if model not in prices['models']:
-        raise Refusal(f'unknown model {model!r}; accepted: {", ".join(prices["models"])}')
+        raise Refusal(f'unknown model {model!r}; accepted: {", ".join([*FULL_MODEL_BY_SHORT_NAME, *prices["models"]])}')
     if effort not in EFFORTS:
         raise Refusal(f'unknown effort {effort!r}; accepted: {", ".join(EFFORTS)}')
 
@@ -521,7 +527,7 @@ def print_lines(lines):
 
 def add_attempt_arguments(parser):
     """Add the arguments that describe one attempt to a parser."""
-    parser.add_argument('model')
+    parser.add_argument('model', type=full_model_name)
     parser.add_argument('effort')
     parser.add_argument('context_k', type=float)
     parser.add_argument('steps', type=int)
