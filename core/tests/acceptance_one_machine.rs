@@ -31,6 +31,9 @@ mod spec_bounds;
 #[cfg(test)]
 #[path = "support/timed_step.rs"]
 mod timed_step;
+#[cfg(test)]
+#[path = "support/trace_reader.rs"]
+mod trace_reader;
 
 /// The id of every Message a test builds by hand, which no check of these tests reads.
 #[cfg(test)]

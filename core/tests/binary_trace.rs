@@ -1,11 +1,13 @@
 #[cfg(test)]
 #[path = "support/trace_files.rs"]
 mod trace_files;
+#[cfg(test)]
+#[path = "support/trace_reader.rs"]
+mod trace_reader;
 
 /// The trace seam of spec/observability.md, decisions 3, 4, 5 and 12, through the shipped binary.
 #[cfg(test)]
 mod observability {
-    use std::fmt;
     use std::fmt::Write as _;
     use std::fs;
     use std::io::{BufRead, BufReader, Write};
@@ -18,8 +20,8 @@ mod observability {
         EVENTS_SUFFIX, RAW_SUFFIX, announcement_of_one_run, trace_files_of_one_run,
         traces_directory,
     };
-    use serde::de::{Deserialize, Deserializer, IgnoredAny, MapAccess, Visitor};
-    use serde_json::Value;
+    use super::trace_reader::{TraceLine, parse_trace_lines, trace_lines_of};
+    use serde_json::json;
 
     const SHORT_SCRATCH_PARENT: &str = "/tmp";
     const SCRATCH_PREFIX: &str = "et";
@@ -115,56 +117,6 @@ mod observability {
             .unwrap();
         child.stdin.take().unwrap().write_all(input).unwrap();
         child.wait_with_output().unwrap()
-    }
-
-    /// The keys of a JSON object in the order the line writes them.
-    struct KeysInOrder(Vec<String>);
-
-    impl<'de> Deserialize<'de> for KeysInOrder {
-        fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-            struct KeysVisitor;
-
-            impl<'de> Visitor<'de> for KeysVisitor {
-                type Value = KeysInOrder;
-
-                fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                    formatter.write_str("a JSON object")
-                }
-
-                fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<KeysInOrder, A::Error> {
-                    let mut keys = Vec::new();
-                    while let Some(key) = map.next_key::<String>()? {
-                        map.next_value::<IgnoredAny>()?;
-                        keys.push(key);
-                    }
-                    Ok(KeysInOrder(keys))
-                }
-            }
-
-            deserializer.deserialize_map(KeysVisitor)
-        }
-    }
-
-    /// One line of a trace file: its keys in written order and its values by key.
-    #[derive(Debug)]
-    struct TraceLine {
-        keys: Vec<String>,
-        values: serde_json::Map<String, Value>,
-    }
-
-    /// Each line of a trace file.
-    fn trace_lines(path: &Path) -> Vec<TraceLine> {
-        BufReader::new(fs::File::open(path).unwrap())
-            .lines()
-            .map(|line| {
-                let line = line.unwrap();
-                let KeysInOrder(keys) = serde_json::from_str(&line).unwrap();
-                let Value::Object(values) = serde_json::from_str(&line).unwrap() else {
-                    panic!("a trace line is a JSON object: {line}");
-                };
-                TraceLine { keys, values }
-            })
-            .collect()
     }
 
     /// The mode bits of a path.
@@ -275,11 +227,6 @@ mod observability {
         drop(fs::remove_dir_all(&root));
     }
 
-    /// The keys of a trace line in their written order.
-    fn keys_of(line: &TraceLine) -> Vec<&str> {
-        line.keys.iter().map(String::as_str).collect()
-    }
-
     #[test]
     fn observability_decision_5_the_raw_file_holds_one_header_line_saying_it_is_not_safe_to_post() {
         let root = machine_with_network("raw-line");
@@ -288,12 +235,12 @@ mod observability {
 
         assert!(output.status.success(), "{output:?}");
         let (events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
-        let lines = trace_lines(&raw);
+        let lines = trace_lines_of(&raw);
         let [line] = lines.as_slice() else {
             panic!("the raw file holds one line: {lines:?}");
         };
         assert_eq!(
-            keys_of(line),
+            line.keys().collect::<Vec<_>>(),
             [
                 "v",
                 "run",
@@ -304,11 +251,11 @@ mod observability {
                 "safe_to_post"
             ]
         );
-        assert_eq!(line.values["v"], SPEC_FORMAT_VERSION);
-        assert_eq!(line.values["n"], 0);
-        assert_eq!(line.values["event"], RAW_FILE_OPENED_EVENT);
-        assert_eq!(line.values["safe_to_post"], false);
-        let run = line.values["run"].as_str().unwrap();
+        assert_eq!(line.value("v"), Some(&json!(SPEC_FORMAT_VERSION)));
+        assert_eq!(line.n, 0);
+        assert_eq!(line.event, RAW_FILE_OPENED_EVENT);
+        assert_eq!(line.value("safe_to_post"), Some(&json!(false)));
+        let run = line.run.as_str();
         assert!(
             events.to_str().unwrap().contains(&format!("-{run}-")),
             "{events:?} {run}"
@@ -348,12 +295,8 @@ mod observability {
         runs.sort();
         let (test_send_lines, mcp_lines): (Vec<_>, Vec<_>) = runs
             .iter()
-            .map(|path| trace_lines(path))
-            .partition(|lines| {
-                lines
-                    .iter()
-                    .any(|line| line.values["event"] == COMMAND_FAILED_EVENT)
-            });
+            .map(|path| trace_lines_of(path))
+            .partition(|lines| lines.iter().any(|line| line.event == COMMAND_FAILED_EVENT));
         let [test_send_lines] = test_send_lines.as_slice() else {
             panic!("one test-send run: {runs:?}");
         };
@@ -362,25 +305,27 @@ mod observability {
         };
         let failed = test_send_lines.last().unwrap();
         assert_eq!(
-            keys_of(failed),
+            failed.keys().collect::<Vec<_>>(),
             ["v", "run", "n", "mono_ms", "wall_ms", "node", "event"]
         );
         assert_eq!(
-            failed.values["node"],
-            operator_id.get(..SPEC_NODE_HEX_CHARS).unwrap()
+            failed.node.as_deref(),
+            operator_id.get(..SPEC_NODE_HEX_CHARS)
         );
         let handshake_failed = mcp_lines.last().unwrap();
         assert_eq!(
-            keys_of(handshake_failed),
+            handshake_failed.keys().collect::<Vec<_>>(),
             ["v", "run", "n", "mono_ms", "wall_ms", "event"]
         );
-        assert_eq!(handshake_failed.values["event"], "tool.handshake_failed");
+        assert_eq!(handshake_failed.event, "tool.handshake_failed");
         for line in test_send_lines.iter().chain(mcp_lines) {
             assert_eq!(
-                keys_of(line)[..SPEC_HEADER_FIELDS.len()],
+                line.keys()
+                    .take(SPEC_HEADER_FIELDS.len())
+                    .collect::<Vec<_>>(),
                 SPEC_HEADER_FIELDS
             );
-            assert_eq!(line.values["v"], SPEC_FORMAT_VERSION);
+            assert_eq!(line.value("v"), Some(&json!(SPEC_FORMAT_VERSION)));
         }
         drop(fs::remove_dir_all(&root));
     }
@@ -619,19 +564,19 @@ mod observability {
         runs.sort();
         let last_lines: Vec<TraceLine> = runs
             .iter()
-            .map(|path| trace_lines(path).pop().unwrap())
+            .map(|path| trace_lines_of(path).pop().unwrap())
             .collect();
         let [first, second] = last_lines.as_slice() else {
             panic!("two starts: {runs:?}");
         };
-        assert_eq!(first.values["node"], second.values["node"]);
-        assert!(first.values["node"].is_string(), "{:?}", first.values);
-        assert_ne!(first.values["run"], second.values["run"]);
+        assert_eq!(first.node, second.node);
+        assert!(first.node.is_some(), "{first:?}");
+        assert_ne!(first.run, second.run);
         drop(fs::remove_dir_all(&root));
     }
 
     /// The whole lines of a run's trace file, failing unless all that follows them is at most one unended start of the run's own next line and then zero bytes to the next 64 KiB boundary.
-    fn whole_lines_of_a_run_file(path: &Path) -> Vec<Value> {
+    fn whole_lines_of_a_run_file(path: &Path) -> Vec<TraceLine> {
         let name = path.file_name().unwrap().to_str().unwrap();
         let run = name.split('-').nth(1).unwrap();
         let own_line_start = format!("{{\"v\":1,\"run\":\"{run}\"");
@@ -653,27 +598,22 @@ mod observability {
             !content.contains(&0),
             "{name}: a zero byte before the file's last byte that is not one"
         );
-        let mut segments: Vec<&[u8]> = content.split(|byte| *byte == b'\n').collect();
-        let unended = segments.pop().unwrap_or_default();
+        let unended = content
+            .rsplit(|byte| *byte == b'\n')
+            .next()
+            .unwrap_or_default();
         assert!(
             unended.starts_with(own_line_start.as_bytes())
                 || own_line_start.as_bytes().starts_with(unended),
             "{name}: the {} bytes after its last whole line are not the start of this run's own line",
             unended.len()
         );
-        segments
-            .iter()
-            .map(|line| {
-                let parsed: Value = serde_json::from_slice(line).unwrap_or_else(|_failure| {
-                    panic!(
-                        "{name}: a newline-ended line of {} bytes that is not a trace line",
-                        line.len()
-                    )
-                });
-                assert_eq!(parsed["run"], run, "{name}");
-                parsed
-            })
-            .collect()
+        let lines =
+            parse_trace_lines(content).unwrap_or_else(|failure| panic!("{name}: {failure}"));
+        for line in &lines {
+            assert_eq!(line.run, run, "{name}");
+        }
+        lines
     }
 
     /// Whether the trace file of a running process comes to hold a whole line within `WHOLE_LINE_WAIT`.
@@ -731,23 +671,23 @@ mod observability {
 
         assert_eq!(answers, KILLED_AFTER_ANSWERS + 1);
         for path in [&events, &raw] {
-            let numbers: Vec<Value> = whole_lines_of_a_run_file(path)
+            let numbers: Vec<u64> = whole_lines_of_a_run_file(path)
                 .iter()
-                .map(|line| line["n"].clone())
+                .map(|line| line.n)
                 .collect();
             assert!(
                 !numbers.is_empty(),
                 "{}: the killed process left none of its whole numbered lines",
                 path.display()
             );
-            let consecutive: Vec<Value> = (0..numbers.len()).map(Value::from).collect();
+            let consecutive: Vec<u64> = (0..).take(numbers.len()).collect();
             assert_eq!(numbers, consecutive, "{}", path.display());
         }
-        let raw_events: Vec<Value> = whole_lines_of_a_run_file(&raw)
-            .iter()
-            .map(|line| line["event"].clone())
+        let raw_events: Vec<String> = whole_lines_of_a_run_file(&raw)
+            .into_iter()
+            .map(|line| line.event)
             .collect();
-        assert_eq!(raw_events, [Value::from(RAW_FILE_OPENED_EVENT)]);
+        assert_eq!(raw_events, [RAW_FILE_OPENED_EVENT]);
         drop(fs::remove_dir_all(&root));
     }
 
@@ -766,10 +706,10 @@ mod observability {
             !fs::read(&events).unwrap().contains(&0),
             "the stopped process left its events file sized ahead of the line of its last event"
         );
-        let lines = trace_lines(&events);
+        let lines = trace_lines_of(&events);
         assert_eq!(
-            lines.last().and_then(|line| line.values.get("event")),
-            Some(&Value::from(COMMAND_FAILED_EVENT)),
+            lines.last().map(|line| line.event.as_str()),
+            Some(COMMAND_FAILED_EVENT),
             "the last event of the stopped process is not the last line of its events file: {lines:?}"
         );
         drop(fs::remove_dir_all(&root));
