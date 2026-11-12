@@ -19,8 +19,8 @@ const PUBLIC_KEY_BYTES: usize = 32;
 const LOCK_RETRY_WINDOW: Duration = Duration::from_millis(200);
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 const LINE_TERMINATOR: &str = "\n";
-const LONGEST_VALID_SIDECAR_BYTES: u64 = 65;
-const SIDECAR_READ_LIMIT_BYTES: u64 = LONGEST_VALID_SIDECAR_BYTES + 1;
+const LONGEST_VALID_SIDECAR_BYTES: usize = SEED_BYTES * 2 + LINE_TERMINATOR.len();
+const SIDECAR_READ_LIMIT_BYTES: usize = LONGEST_VALID_SIDECAR_BYTES + 1;
 
 /// Why a sidecar fails the claim checks of spec 3.5, all reported as `sidecar_invalid`.
 #[derive(Debug, PartialEq, Eq)]
@@ -226,7 +226,7 @@ fn require_owner_read_write_only(file: &File) -> Result<(), SidecarError> {
 fn read_secret_key(source: impl Read) -> Result<SecretKey, SidecarError> {
     let mut contents = Vec::new();
     source
-        .take(SIDECAR_READ_LIMIT_BYTES)
+        .take(u64::try_from(SIDECAR_READ_LIMIT_BYTES).map_err(io::Error::other)?)
         .read_to_end(&mut contents)?;
     let hex = contents
         .strip_suffix(LINE_TERMINATOR.as_bytes())
@@ -706,10 +706,9 @@ mod tests {
                 InvalidSidecar::SeedNotThirtyTwoHexBytes
             ))
         ));
-        assert_eq!(served.get(), SIDECAR_READ_LIMIT_BYTES);
         assert_eq!(
-            LONGEST_VALID_SIDECAR_BYTES,
-            u64::try_from(SEED_BYTES.saturating_mul(2).saturating_add(1)).unwrap()
+            served.get(),
+            u64::try_from(SIDECAR_READ_LIMIT_BYTES).unwrap()
         );
     }
 
