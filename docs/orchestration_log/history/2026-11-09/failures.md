@@ -279,3 +279,11 @@ What happened: At about 02:19 on 2026-11-12 the login's five-hour usage limit st
 Mechanism: The window opened at the owner's login at 23:59 and the pacing rule of three opus and two sonnet agents at once spent it in two hours and twenty minutes: opus implementers resumed with half a million tokens of context each, and three closing-round units ran beside the two critical-path units.
 
 Correction: From 04:51 the window's tokens go to the critical path first: at most two opus and one sonnet agent at once, the restart fix and trace-seam before any closing-round unit, a closing-round agent only in a slot the critical path leaves idle; agents stopped by the limit are resumed by message one at a time, the cheapest finishing step first.
+
+## The usage limit stopped three agents a third time on 2026-11-12
+
+What happened: At 09:17 the five-hour usage limit ended the runs of three opus implementers (fix-restart-path-reselect at d548e83, trace-seam at 790e4a3 on the foreign-bytes writer fix, all-storage at e3a0c25) and held the lead until the reset at 09:50; each worktree was left with a clean tree and no work was lost; 33 minutes of wall time passed with nothing running.
+
+Mechanism: The pacing of 04:51 (two opus agents for the critical path, one closing-round agent) spends the window in about four and a half hours when a debugging round of five agents and two review rounds run inside it, as they did between 06:50 and 08:55; the window that began 04:50 was spent 33 minutes before its end.
+
+Correction: Lead decision: the pacing stands, since the window was used whole, the agents resume from saved work and a slower pace would cost more wall time than the 33 minutes lost; a debugging round counts against the closing-round slot from now on, so the closing-round agent waits while one runs. Closest alternative: drop to one opus agent on the critical path. The three agents were resumed by message at 09:52, one after another: all-storage, fix-restart-path-reselect, trace-seam.
