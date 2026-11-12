@@ -160,9 +160,10 @@ def subagents_directory_of(session_transcript):
 
 
 class Turn(NamedTuple):
-    """One model message: its model, its usage, and the seconds since the previous model message, which is how long its cache sat unused (None for the first message)."""
+    """One model message: its model, its effort, its usage, and the seconds since the previous model message, which is how long its cache sat unused (None for the first message)."""
 
     model: str
+    effort: str
     usage: dict
     gap_seconds: float | None
 
@@ -183,7 +184,7 @@ def assistant_turns(transcript_path):
             if usage and message.get('model') != '<synthetic>':
                 key = message.get('id') or len(seen)
                 gap_seconds = seen[key].gap_seconds if key in seen else (None if previous_model_time is None or entry_time is None else entry_time - previous_model_time)
-                seen[key] = Turn(message.get('model', '?'), usage, gap_seconds)
+                seen[key] = Turn(message.get('model', '?'), str(entry.get('effort') or UNKNOWN_MARK), usage, gap_seconds)
                 if entry_time is not None:
                     previous_model_time = entry_time
     return seen
@@ -271,29 +272,30 @@ def inflight(window_minutes, subagents_directory, now, prices, lead_transcript):
         messages = assistant_turns(transcript_path)
         totals = {kind: sum(token_count(turn.usage, kind) for turn in messages.values()) for kind in TOKEN_KINDS}
         models = sorted({turn.model for turn in messages.values()})
+        effort = list(messages.values())[-1].effort if messages else UNKNOWN_MARK
         fresh = totals['input_tokens'] + totals['output_tokens'] + totals['cache_creation_input_tokens']
         last_usage = list(messages.values())[-1].usage if messages else {}
         context = sum(token_count(last_usage, kind) for kind in PROMPT_KINDS)
         costs = cost_by_kind(prices, messages)
         tier = transcript_cache_tier(transcript_path)
-        rows.append((idle_minutes, fresh, totals['cache_read_input_tokens'], context, costs, cold_resume_cost(prices, messages, tier), tier, ','.join(models), agent_name(transcript_path)[:NAME_COLUMN_WIDTH]))
-    print('idle_min | fresh_k | cache_read_k | context_k | usd_fresh | usd_write | usd_read | usd_out | usd_total | usd_resume | tier | model | agent')
-    for idle_minutes, fresh, cache_read, context, costs, resume, tier, models, name in sorted(rows, key=lambda row: row[0]):
+        rows.append((idle_minutes, fresh, totals['cache_read_input_tokens'], context, costs, cold_resume_cost(prices, messages, tier), tier, ','.join(models), effort, agent_name(transcript_path)[:NAME_COLUMN_WIDTH]))
+    print('idle_min | fresh_k | cache_read_k | context_k | usd_fresh | usd_write | usd_read | usd_out | usd_total | usd_resume | tier | model | effort | agent')
+    for idle_minutes, fresh, cache_read, context, costs, resume, tier, models, effort, name in sorted(rows, key=lambda row: row[0]):
         by_kind = [dollars_column(None if costs is None else costs[kind]) for kind in COST_KINDS]
         total = dollars_column(None if costs is None else sum(costs.values()))
-        print(f'{idle_minutes:7.0f} | {fresh // TOKENS_PER_THOUSAND:7d} | {cache_read // TOKENS_PER_THOUSAND:12d} | {context // TOKENS_PER_THOUSAND:9d} | ' + ' | '.join(by_kind) + f' | {total} | {dollars_column(resume)} | {tier:>4} | {models} | {name}')
+        print(f'{idle_minutes:7.0f} | {fresh // TOKENS_PER_THOUSAND:7d} | {cache_read // TOKENS_PER_THOUSAND:12d} | {context // TOKENS_PER_THOUSAND:9d} | ' + ' | '.join(by_kind) + f' | {total} | {dollars_column(resume)} | {tier:>4} | {models} | {effort} | {name}')
     print(f'context_k of all rows: {sum(row[3] for row in rows) // TOKENS_PER_THOUSAND}')
     if lead_transcript is not None:
         print(f'lead transcript cache tier: {transcript_cache_tier(lead_transcript)}')
     return 0
 
 
-def token_totals_by_model(transcript_paths):
-    """Tokens by model and by kind over the transcripts, each message counted once."""
+def token_totals_by_model_and_effort(transcript_paths):
+    """Tokens by model with effort and by kind over the transcripts, each message counted once."""
     totals = {}
     for transcript_path in transcript_paths:
         for turn in assistant_turns(transcript_path).values():
-            by_kind = totals.setdefault(turn.model, dict.fromkeys(CHECKPOINT_KIND_FIELDS, 0))
+            by_kind = totals.setdefault(f'{turn.model} {turn.effort}', dict.fromkeys(CHECKPOINT_KIND_FIELDS, 0))
             for kind, field in CHECKPOINT_KIND_FIELDS.items():
                 by_kind[kind] += token_count(turn.usage, field)
     return totals
@@ -303,7 +305,7 @@ def checkpoint(label, now, limits_path, checkpoints_path, session_transcript):
     """Append one line holding the label, the limit figures last written and the session's tokens so far by model and kind."""
     limits_written = json.loads(limits_path.read_text()) if limits_path.exists() else None
     transcripts = [session_transcript, *subagents_directory_of(session_transcript).glob('agent-*.jsonl')]
-    line = {'at': int(now), 'label': label, 'limits': limits_written, 'tokens': token_totals_by_model(transcripts)}
+    line = {'at': int(now), 'label': label, 'limits': limits_written, 'tokens': token_totals_by_model_and_effort(transcripts)}
     with checkpoints_path.open('a') as checkpoints_file:
         checkpoints_file.write(json.dumps(line) + '\n')
     print(f'checkpoint {label!r} appended to {checkpoints_path}')
@@ -343,14 +345,14 @@ def checkpoints(checkpoints_path):
 
 
 def coldturns(session_transcript):
-    """Print, per source, model and cache tier, the turns after a gap past the cache lifetime and those within it, with their cache-write tokens and share."""
+    """Print, per source, model with effort and cache tier, the turns after a gap past the cache lifetime and those within it, with their cache-write tokens and share."""
     agent_transcripts = list(subagents_directory_of(session_transcript).glob('agent-*.jsonl'))
     tallies = {}
     for source, transcript_paths in (('lead', [session_transcript]), ('agents', agent_transcripts)):
         for transcript_path in transcript_paths:
             tier = transcript_cache_tier(transcript_path)
             for turn in assistant_turns(transcript_path).values():
-                tally = tallies.setdefault((source, turn.model, tier), dict.fromkeys(COLD_TURN_TALLY_FIELDS, 0))
+                tally = tallies.setdefault((source, turn.model, turn.effort, tier), dict.fromkeys(COLD_TURN_TALLY_FIELDS, 0))
                 written = token_count(turn.usage, 'cache_creation_input_tokens')
                 tally['all_written'] += written
                 if turn.gap_seconds is None:
@@ -358,10 +360,10 @@ def coldturns(session_transcript):
                 phase = 'cold' if turn.gap_seconds > CACHE_LIFETIME_SECONDS_BY_TIER[tier] else 'warm'
                 tally[f'{phase}_turns'] += 1
                 tally[f'{phase}_written'] += written
-    print('source | model | tier | cold_turns | cold_write_k | cold_share | warm_turns | warm_write_k | warm_share | all_write_k')
-    for (source, model, tier), tally in sorted(tallies.items()):
+    print('source | model | effort | tier | cold_turns | cold_write_k | cold_share | warm_turns | warm_write_k | warm_share | all_write_k')
+    for (source, model, effort, tier), tally in sorted(tallies.items()):
         shares = [UNKNOWN_MARK if not tally['all_written'] else f'{100 * tally[f"{phase}_written"] / tally["all_written"]:.1f}%' for phase in ('cold', 'warm')]
-        print(f'{source} | {model} | {tier} | {tally["cold_turns"]} | {tally["cold_written"] // TOKENS_PER_THOUSAND} | {shares[0]} | {tally["warm_turns"]} | {tally["warm_written"] // TOKENS_PER_THOUSAND} | {shares[1]} | {tally["all_written"] // TOKENS_PER_THOUSAND}')
+        print(f'{source} | {model} | {effort} | {tier} | {tally["cold_turns"]} | {tally["cold_written"] // TOKENS_PER_THOUSAND} | {shares[0]} | {tally["warm_turns"]} | {tally["warm_written"] // TOKENS_PER_THOUSAND} | {shares[1]} | {tally["all_written"] // TOKENS_PER_THOUSAND}')
     return 0
 
 
