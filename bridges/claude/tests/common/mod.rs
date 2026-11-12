@@ -82,6 +82,10 @@ impl Fixture {
         command
     }
 
+    pub fn temporary_directory(&self) -> PathBuf {
+        self.root.join(TMP_DIRECTORY)
+    }
+
     pub fn bridge(&self) -> Command {
         let mut command = Command::new(BRIDGE);
         command
@@ -89,7 +93,7 @@ impl Fixture {
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.root.join(HOME_DIRECTORY))
             .env("XDG_CONFIG_HOME", self.root.join(CONFIG_HOME))
-            .env("TMPDIR", self.root.join(TMP_DIRECTORY))
+            .env("TMPDIR", self.temporary_directory())
             .env("XDG_RUNTIME_DIR", self.root.join(RUNTIME_DIRECTORY))
             .env("CLAUDE_CODE_MESSAGING_SOCKET", &self.messaging_socket)
             .env("CLAUDE_CODE_MESSAGING_TOKEN", &self.messaging_token)

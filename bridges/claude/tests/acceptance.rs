@@ -1,9 +1,10 @@
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use common::Fixture;
+use estafette_bridge_claude::discover::Pid;
+use estafette_bridge_claude::doctor::dropped_frames_path;
 
 mod common;
 
@@ -12,17 +13,10 @@ const CARD: &str = "ana-card";
 const HANDLE: &str = "ana";
 const DOCTOR_CHECK_COUNT: usize = 5;
 const BRIDGE_START_DEADLINE: Duration = Duration::from_secs(30);
-const BRIDGE_TEMPORARY_DIRECTORY: &str = "tmp";
-
-fn dropped_frames_file(fixture: &Fixture) -> PathBuf {
-    fixture.root.join(BRIDGE_TEMPORARY_DIRECTORY).join(format!(
-        "estafette-bridge-claude-{}.dropped-frames",
-        std::process::id()
-    ))
-}
 
 fn wait_until_the_bridge_has_started(fixture: &Fixture) {
-    let dropped_frames_file = dropped_frames_file(fixture);
+    let dropped_frames_file =
+        dropped_frames_path(&fixture.temporary_directory(), Pid(std::process::id()));
     let started_waiting = Instant::now();
     while !dropped_frames_file.exists() {
         assert!(
