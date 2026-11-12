@@ -837,6 +837,7 @@ mod seeded_draws;
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::time::{Duration, Instant};
 
     use std::sync::atomic::AtomicBool;
@@ -845,6 +846,7 @@ mod tests {
     use clap::error::ErrorKind;
     #[cfg(feature = "relay")]
     use estafette::crypto::KEY_LEN;
+    use estafette::dirs::{TraceFileKind, trace_file_of};
     use estafette::trace::{CreateTraceFile, SpawnThread, TraceFile};
 
     use super::*;
@@ -1392,7 +1394,6 @@ mod tests {
     const STAND_IN_SHRINK_REFUSAL: &str = "the file refuses to shrink";
     const SPEC_EVENTS_FILE_WORD: &str = "events";
     const SPEC_RAW_FILE_WORD: &str = "raw";
-    const SPEC_EVENTS_FILE_SUFFIX: &str = ".events.jsonl";
     const STOP_REPORTED_WITHIN: Duration = Duration::from_secs(10);
 
     /// The line standard error gives, by the lead's ruling on decision 12, for a trace file whose writer did not report its stop within `drain`.
@@ -1427,20 +1428,17 @@ mod tests {
         }
     }
 
-    /// Trace effects that create each events file through `events_file` and each raw file through `raw_file`.
+    /// Trace effects that create each events file, as the trace directory names it, through `events_file` and every other file through `raw_file`.
     fn trace_effects_creating(
         events_file: CreateTraceFile,
         raw_file: CreateTraceFile,
     ) -> TraceEffects {
         TraceEffects {
             create_file: Arc::new(move |path: &Path| {
-                if path
-                    .to_str()
-                    .is_some_and(|path| path.ends_with(SPEC_EVENTS_FILE_SUFFIX))
-                {
-                    events_file(path)
-                } else {
-                    raw_file(path)
+                let file_name = path.file_name().and_then(OsStr::to_str).unwrap_or_default();
+                match trace_file_of(file_name) {
+                    Some((_, TraceFileKind::Events)) => events_file(path),
+                    Some((_, TraceFileKind::Raw)) | None => raw_file(path),
                 }
             }),
             ..TraceEffects::of_the_operating_system(trace_clocks_started_now())
