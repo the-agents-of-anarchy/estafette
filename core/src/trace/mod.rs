@@ -1187,10 +1187,10 @@ mod tests {
         }
         let held: Vec<_> = (0..3).map(|_line| written_line(&events)).collect();
         trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
-        let after: Vec<_> = (0..2).map(|_line| written_line(&events)).collect();
 
         assert_eq!(held, [clock_event(0), clock_event(1), clock_event(2)]);
-        assert_eq!(after, [dropped_event(5, 2), clock_event(6)]);
+        assert_eq!(written_line(&events), dropped_event(5, 2));
+        assert_eq!(written_line(&events), clock_event(6));
         drop(events.release);
         assert!(matches!(trace.finish(), TraceStop::Drained));
         drop(fs::remove_dir_all(&root));
