@@ -103,6 +103,13 @@ never   leave such a script only under /tmp, which a reboot clears; a colon in a
 why     A reboot clears /tmp; a colon breaks cargo on macOS through the `DYLD_FALLBACK_LIBRARY_PATH` separator.
 ground  owner ruling 2026-10-23
 
+### search-roots
+when    searching files recursively (`grep -r`, `rg`, `find`) or changing directory
+do      give every recursive search an absolute root inside the project or a scratch directory; test a root held in a variable for emptiness first (`[ -n "$D" ]`)
+never   search `/`, the home directory or the whole of `/tmp`; `cd /`; a search root taken from an unchecked variable
+why     An empty variable turns `grep -r x "$D/"` into a search of the whole disk; one ran 28 minutes on 2026-11-11.
+ground  owner ruling 2026-11-12
+
 ## measuring & quoting
 
 ### quote-figures
@@ -306,6 +313,13 @@ do      name it by one descriptive slug of lowercase hyphen-joined words that sa
 never   a number, a letter, a code, a round or cluster label, or any other naming scheme for a unit or scope, alone or beside the slug; a new scheme under another name
 why     A numbered label tells its reader nothing and must be decoded from memory nobody has; the owner reads slugs.
 ground  owner ruling 2026-11-12T00:11 ("every unit identifier must by a descriptive slug and ONLY the descriptive slug exlusively"; by the same ruling the ban on every other naming convention for a unit or a scope of work is permanent and irrevocable)
+
+### spare-the-strong-context
+when    an investigation or a judgement runs on the strongest model, or work would land in the lead's own context
+do      give reading, running and gathering to cheap agents (sonnet, haiku); bring the strong agent a compact file of their results and ask for its judgement; keep a strong agent that holds a matter and continue it by message once enough is gathered
+never   order a strong agent to run loops, builds or bulk reads a cheap agent can run; launch a fresh strong agent on a matter one already holds
+why     A strong agent's context, like the lead's, is the scarcest resource; grunt work fills it with what a cheap agent could have condensed.
+ground  owner ruling 2026-11-12
 
 ## owner
 
