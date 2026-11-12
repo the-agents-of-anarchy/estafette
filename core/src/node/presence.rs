@@ -3876,6 +3876,161 @@ pub(super) mod tests {
         .ok()
     }
 
+    const LONGER_THAN_ANY_SILENCE: Duration = Duration::from_secs(3600);
+    const INTRODUCED_WAIT: Duration = Duration::from_secs(10);
+
+    /// A clock that reads the time now, or an hour on while the flag is set, so the register takes every connection it holds as one of a gone process.
+    fn clock_reading_every_connection_as_gone_while(flag: Arc<AtomicBool>) -> MonotonicClock {
+        Arc::new(move || {
+            let now = Instant::now();
+            if flag.load(Ordering::SeqCst) {
+                now.checked_add(LONGER_THAN_ANY_SILENCE).unwrap()
+            } else {
+                now
+            }
+        })
+    }
+
+    /// A peer holding the witness card that queues every Message it accepts and, at the first, has its register close every connection of the sender before the ack is written, as the rule closes a connection with a Message in flight.
+    struct ClosingAtTheFirstMessage {
+        addr: Addr,
+        register: HeldConnections,
+        reads_every_connection_as_gone: Arc<AtomicBool>,
+        closed_once: AtomicBool,
+        queued: Arc<Mutex<Vec<Message>>>,
+        introductions: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl DirectHost for ClosingAtTheFirstMessage {
+        fn is_stopping(&self) -> bool {
+            false
+        }
+
+        fn own_card(&self) -> Option<crate::wire::PublicKey> {
+            Some(card(WITNESS_SEED))
+        }
+
+        fn is_attached(&self) -> bool {
+            false
+        }
+
+        fn receive_message(&self, sender: crate::wire::PublicKey, message: Message) {
+            self.queued.lock().unwrap().push(message);
+            if !self.closed_once.swap(true, Ordering::SeqCst) {
+                self.reads_every_connection_as_gone
+                    .store(true, Ordering::SeqCst);
+                self.register.close_silent_of(sender);
+                self.reads_every_connection_as_gone
+                    .store(false, Ordering::SeqCst);
+            }
+        }
+
+        fn receive_introduce(
+            &self,
+            _sender: crate::wire::PublicKey,
+            _introduce: Introduce,
+        ) -> IntroduceAck {
+            self.introductions.fetch_add(1, Ordering::SeqCst);
+            IntroduceAck {
+                v: Version::CURRENT,
+                handle: None,
+                public: Vec::new(),
+                attached: false,
+                addr: self.addr.clone(),
+                mac: ZERO_MAC,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn spec_3_10_a_message_whose_connection_its_recipient_closes_after_queueing_it_fails_at_its_sender_as_unreachable_and_its_resend_is_queued_twice()
+     {
+        let scratch = Scratch::new("cut").await;
+        let reads_every_connection_as_gone = Arc::new(AtomicBool::new(false));
+        let queued = Arc::new(Mutex::new(Vec::new()));
+        let introductions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let endpoint = bind_holding(
+            WITNESS_SEED,
+            HeldConnections::new(clock_reading_every_connection_as_gone_while(Arc::clone(
+                &reads_every_connection_as_gone,
+            ))),
+        )
+        .await;
+        let first = start_members_reaching(
+            &scratch,
+            vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).reaching(&[WITNESS_SEED])],
+            &[(WITNESS_SEED, endpoint.endpoint().addr())],
+        )
+        .await
+        .pop()
+        .unwrap();
+        endpoint.replace_address(first.endpoint.addr());
+        let _router = Router::builder(endpoint.endpoint().clone())
+            .accept(
+                DIRECT_ALPN,
+                DirectServer::new(
+                    keys(),
+                    ClosingAtTheFirstMessage {
+                        addr: wire_addr(&endpoint.endpoint().addr()),
+                        register: endpoint.held_connections(),
+                        reads_every_connection_as_gone,
+                        closed_once: AtomicBool::new(false),
+                        queued: Arc::clone(&queued),
+                        introductions: Arc::clone(&introductions),
+                    },
+                    &endpoint,
+                ),
+            )
+            .spawn();
+        DirectClient::new(endpoint.endpoint().clone(), keys(), ClientTimeouts::SPEC)
+            .send_message(first.endpoint.id(), message_to(FIRST_SEED, WITNESS_HANDLE))
+            .await
+            .unwrap();
+        let introduced = tokio::time::timeout(INTRODUCED_WAIT, async {
+            while introductions.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            introduced.is_ok(),
+            "the first member did not introduce itself to the peer within {INTRODUCED_WAIT:?}"
+        );
+
+        let failed = tokio::time::timeout(
+            ClientTimeouts::SPEC.ack,
+            first.node.send(WITNESS_HANDLE, MESSAGE_BODY),
+        )
+        .await;
+        let status_after_the_failure =
+            entry_meeting_within(&first, WITNESS_SEED, |_| true, Duration::ZERO)
+                .await
+                .map(|peer| peer.status);
+        let resent = first.node.send(WITNESS_HANDLE, MESSAGE_BODY).await;
+        let status_after_the_resend =
+            entry_meeting_within(&first, WITNESS_SEED, |_| true, Duration::ZERO)
+                .await
+                .map(|peer| peer.status);
+        let queued = queued.lock().unwrap().clone();
+
+        assert_eq!(failed, Ok(Err(crate::errors::ErrorCode::Unreachable)));
+        assert_eq!(status_after_the_failure, Some(Status::Unreachable));
+        assert!(
+            matches!(resent, Ok(crate::node::Delivery { .. })),
+            "{resent:?}"
+        );
+        assert_eq!(status_after_the_resend, Some(Status::Online));
+        assert_eq!(
+            queued
+                .iter()
+                .map(|message| message.body.as_str())
+                .collect::<Vec<_>>(),
+            vec![MESSAGE_BODY, MESSAGE_BODY]
+        );
+        assert_ne!(queued[0].id, queued[1].id);
+        drop(scratch);
+    }
+
     /// When the second member's process restarts after its earlier one vanished.
     enum RestartTiming {
         /// At once, so its gossip connection and Introduce reach the first member before the earlier process's connections read as gone.

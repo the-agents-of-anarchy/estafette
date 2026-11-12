@@ -176,21 +176,21 @@ const fn failure_error(failure: &DirectError) -> ErrorCode {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use iroh::endpoint::Connection;
     use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 
-    use crate::net::direct::{ClientTimeouts, DirectClient, DirectServer, HeldConnections};
+    use crate::net::direct::{ClientTimeouts, DirectClient, DirectServer};
     use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
     use crate::node::presence::tests::{
         DUPLICATE_KEY_PUBLIC, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTEGER_PAST_64_BITS_PUBLIC,
         INTRODUCE_ROUND_TRIP, Member, MemberPlan, PROBE_NONCE, SECOND_HANDLE, SECOND_SEED,
         SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_SEED, WITNESS_HANDLE, WITNESS_SEED, bind,
-        bind_holding, card, inbox_frames, keys, listed_within, message_to, start_members_reaching,
-        start_pair, start_third_through_second, wall_clock_ms,
+        card, inbox_frames, keys, listed_within, message_to, start_members_reaching, start_pair,
+        start_third_through_second, wall_clock_ms,
     };
     use crate::node::presence::wire_addr;
     use crate::payload::{PayloadError, open_request, seal_response};
@@ -309,15 +309,7 @@ mod tests {
         scratch: &Scratch,
         server_at: impl FnOnce(Addr, &NodeEndpoint) -> H,
     ) -> (Member, ScriptedPeer) {
-        first_member_listing_a_peer_bound_on(scratch, bind(WITNESS_SEED).await, server_at).await
-    }
-
-    /// The first member, listing the peer that serves the handler on the endpoint after it introduced itself.
-    async fn first_member_listing_a_peer_bound_on<H: ProtocolHandler>(
-        scratch: &Scratch,
-        endpoint: NodeEndpoint,
-        server_at: impl FnOnce(Addr, &NodeEndpoint) -> H,
-    ) -> (Member, ScriptedPeer) {
+        let endpoint = bind(WITNESS_SEED).await;
         let peer_address = endpoint.endpoint().addr();
         let mut members = start_members_reaching(
             scratch,
@@ -597,126 +589,6 @@ mod tests {
             .unwrap()
             .status;
         assert_eq!(status, Status::Unreachable);
-        drop(scratch);
-    }
-
-    const LONGER_THAN_ANY_SILENCE: Duration = Duration::from_secs(3600);
-
-    /// A clock that reads the time now, or an hour on while the flag is set, so the register takes every connection it holds as one of a gone process.
-    fn clock_reading_every_connection_as_gone_while(
-        flag: Arc<AtomicBool>,
-    ) -> crate::net::direct::MonotonicClock {
-        Arc::new(move || {
-            let now = tokio::time::Instant::now();
-            if flag.load(Ordering::SeqCst) {
-                now.checked_add(LONGER_THAN_ANY_SILENCE).unwrap()
-            } else {
-                now
-            }
-        })
-    }
-
-    /// A peer that queues every Message it accepts and, at the first, has its register close every connection of the sender before the ack is written, as the rule closes a connection with a Message in flight.
-    struct ClosingAtTheFirstMessage {
-        host: ScriptedHost,
-        register: HeldConnections,
-        reads_every_connection_as_gone: Arc<AtomicBool>,
-        closed_once: AtomicBool,
-        queued: Arc<Mutex<Vec<Message>>>,
-    }
-
-    impl DirectHost for ClosingAtTheFirstMessage {
-        fn is_stopping(&self) -> bool {
-            self.host.is_stopping()
-        }
-
-        fn own_card(&self) -> Option<wire::PublicKey> {
-            self.host.own_card()
-        }
-
-        fn is_attached(&self) -> bool {
-            self.host.is_attached()
-        }
-
-        fn receive_message(&self, sender: wire::PublicKey, message: Message) {
-            self.queued.lock().unwrap().push(message);
-            if !self.closed_once.swap(true, Ordering::SeqCst) {
-                self.reads_every_connection_as_gone
-                    .store(true, Ordering::SeqCst);
-                self.register.close_silent_of(sender);
-                self.reads_every_connection_as_gone
-                    .store(false, Ordering::SeqCst);
-            }
-        }
-
-        fn receive_introduce(&self, sender: wire::PublicKey, introduce: Introduce) -> IntroduceAck {
-            self.host.receive_introduce(sender, introduce)
-        }
-    }
-
-    #[tokio::test]
-    async fn spec_3_10_a_message_whose_connection_its_recipient_closes_after_queueing_it_fails_at_its_sender_as_unreachable_and_its_resend_is_queued_twice()
-     {
-        let scratch = Scratch::new("send-cut").await;
-        let reads_every_connection_as_gone = Arc::new(AtomicBool::new(false));
-        let queued = Arc::new(Mutex::new(Vec::new()));
-        let endpoint = bind_holding(
-            WITNESS_SEED,
-            HeldConnections::new(clock_reading_every_connection_as_gone_while(Arc::clone(
-                &reads_every_connection_as_gone,
-            ))),
-        )
-        .await;
-        let (first, _peer) =
-            first_member_listing_a_peer_bound_on(&scratch, endpoint, |addr, endpoint| {
-                DirectServer::new(
-                    keys(),
-                    ClosingAtTheFirstMessage {
-                        host: ScriptedHost {
-                            own_card: card(WITNESS_SEED),
-                            addr,
-                            phase: PeerPhase::Serving,
-                            introduced_as: None,
-                            public: &[],
-                        },
-                        register: endpoint.held_connections(),
-                        reads_every_connection_as_gone,
-                        closed_once: AtomicBool::new(false),
-                        queued: Arc::clone(&queued),
-                    },
-                    endpoint,
-                )
-            })
-            .await;
-
-        let failed = tokio::time::timeout(
-            ClientTimeouts::SPEC.ack,
-            first.node.send(WITNESS_HANDLE, BODY),
-        )
-        .await;
-        let status_after_the_failure = listed_within(&first, WITNESS_SEED, Duration::ZERO)
-            .await
-            .unwrap()
-            .status;
-        let resent = first.node.send(WITNESS_HANDLE, BODY).await;
-        let status_after_the_resend = listed_within(&first, WITNESS_SEED, Duration::ZERO)
-            .await
-            .unwrap()
-            .status;
-        let queued = queued.lock().unwrap().clone();
-
-        assert_eq!(failed, Ok(Err(ErrorCode::Unreachable)));
-        assert_eq!(status_after_the_failure, Status::Unreachable);
-        assert!(matches!(resent, Ok(Delivery { .. })), "{resent:?}");
-        assert_eq!(status_after_the_resend, Status::Online);
-        assert_eq!(
-            queued
-                .iter()
-                .map(|message| message.body.as_str())
-                .collect::<Vec<_>>(),
-            vec![BODY, BODY]
-        );
-        assert_ne!(queued[0].id, queued[1].id);
         drop(scratch);
     }
 
