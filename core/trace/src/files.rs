@@ -2,9 +2,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use super::{ListFiles, RemoveFile, StoredFile, TraceAction, TraceBounds, TraceRefused};
-use crate::dirs::{TraceFileKind, trace_file_of};
+use crate::directory::{TraceFileKind, trace_file_of};
 
-const PROGRAM: &str = "estafette";
+/// The name of the product and of the program that runs its binary, also the directory under the data base directory.
+pub const PRODUCT_NAME: &str = "estafette";
+const BRIDGE_PROGRAM_NAME: &str = "bridge";
 const START_PLACEHOLDER: &str = "<start>";
 const RUN_PLACEHOLDER: &str = "<run>";
 const MILLISECONDS_PER_SECOND: u64 = 1000;
@@ -20,23 +22,43 @@ const DAYS_PER_LEAP_YEAR: u64 = 366;
 const FEBRUARY: u64 = 2;
 const DAYS_PER_MONTH_OF_A_COMMON_YEAR: [u64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
-/// The name every file of a run starts with: `<start>-<run>-estafette`, the start in UTC basic ISO 8601 to the second.
-pub(super) fn run_name(start_wall_ms: u64, run_hex: &str) -> String {
+/// The program that writes a run's trace files, named in every file name of the run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Program {
+    Estafette,
+    Bridge,
+}
+
+impl Program {
+    /// The program's name as every file name of its runs carries it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Estafette => PRODUCT_NAME,
+            Self::Bridge => BRIDGE_PROGRAM_NAME,
+        }
+    }
+}
+
+/// The name every file of a run starts with: `<start>-<run>-<program>`, the start in UTC basic ISO 8601 to the second.
+#[must_use]
+pub fn run_name(program: Program, start_wall_ms: u64, run_hex: &str) -> String {
     run_name_of(
+        program,
         &basic_utc_stamp(start_wall_ms / MILLISECONDS_PER_SECOND),
         run_hex,
     )
 }
 
-/// The form of every run's name as the help states it: `<start>-<run>-estafette`.
+/// The form of every run's name of the program as the help states it: `<start>-<run>-<program>`.
 #[must_use]
-pub fn run_name_pattern() -> String {
-    run_name_of(START_PLACEHOLDER, RUN_PLACEHOLDER)
+pub fn run_name_pattern(program: Program) -> String {
+    run_name_of(program, START_PLACEHOLDER, RUN_PLACEHOLDER)
 }
 
-/// The name of the run that started at `start` with the run id `run`, both as written.
-fn run_name_of(start: &str, run: &str) -> String {
-    format!("{start}-{run}-{PROGRAM}")
+/// The name of the run of the program that started at `start` with the run id `run`, both as written.
+fn run_name_of(program: Program, start: &str, run: &str) -> String {
+    format!("{start}-{run}-{}", program.name())
 }
 
 /// The UTC time of `unix_seconds` in basic ISO 8601 to the second, such as `20261111T160600Z`.
@@ -100,7 +122,7 @@ struct StoredRun {
 }
 
 /// Removes the oldest runs, both files together, until the directory holds at most its bound, sparing every run whose events file was written within the freshness bound of `now_ms`.
-pub(super) fn remove_oldest_runs(
+pub fn remove_oldest_runs(
     traces: &Path,
     now_ms: u64,
     bounds: &TraceBounds,

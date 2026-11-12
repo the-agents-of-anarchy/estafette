@@ -10,15 +10,17 @@ use super::line::{HeaderSource, StampedLine};
 use super::{
     CreateTraceFile, RenameFile, SpawnThread, TRACE_FILE_SIZED_AHEAD_BYTES, TraceFile, TraceStop,
 };
-use crate::dirs::{TraceFileKind, rolled_over_trace_file};
-use crate::event::{EventName, TraceLineName};
+use crate::directory::{TraceFileKind, rolled_over_trace_file};
+use crate::files::PRODUCT_NAME;
 
+/// The name of the line a trace file writes of its own carrying the count of events a full queue lost.
+pub const DROPPED_LINE_NAME: &str = "dropped";
 const DROPPED_COUNT_FIELD: &str = "count";
 const LINE_END: u8 = b'\n';
-const WRITER_THREAD_NAME: &str = "estafette-trace-writer";
+const WRITER_THREAD_NAME_SUFFIX: &str = "trace-writer";
 
 /// Where a trace writer's thread puts each line.
-pub(super) trait TraceOutput {
+pub trait TraceOutput {
     /// Writes the line, newline included, whole in one write.
     fn write_line(&mut self, line: &[u8]) -> io::Result<()>;
 
@@ -27,7 +29,7 @@ pub(super) trait TraceOutput {
 }
 
 /// What each file a rollover starts holds before the line that rolled the file over.
-pub(super) enum RolloverOpening {
+pub enum RolloverOpening {
     /// Nothing.
     Nothing,
     /// The first line the trace file held.
@@ -35,7 +37,7 @@ pub(super) enum RolloverOpening {
 }
 
 /// A trace file, sized ahead of its lines, that rolls over into its `.1` file, replacing any earlier one, before a line would take it past its size bound.
-pub(super) struct RollingFile {
+pub struct RollingFile {
     path: PathBuf,
     file: Option<Box<dyn TraceFile>>,
     written_bytes: u64,
@@ -195,7 +197,7 @@ fn byte_count(line: &[u8]) -> u64 {
 }
 
 /// One trace file's writer: a bounded queue to a thread of its own, so a caller never waits for the disk.
-pub(super) struct TraceWriter {
+pub struct FileTrace {
     header: Arc<HeaderSource>,
     queue: Mutex<Queue>,
     lost_at_close: Arc<Mutex<u64>>,
@@ -214,7 +216,7 @@ struct QueuedLine {
     lost_before: u64,
 }
 
-impl TraceWriter {
+impl FileTrace {
     /// Starts the writer thread, through `spawn_thread`, on the output behind a queue of at most `queue_lines` lines.
     pub(super) fn start(
         output: impl TraceOutput + Send + 'static,
@@ -228,7 +230,7 @@ impl TraceWriter {
         let writer_header = Arc::clone(&header);
         let writer_lost_at_close = Arc::clone(&lost_at_close);
         spawn_thread(
-            WRITER_THREAD_NAME,
+            &format!("{PRODUCT_NAME}-{WRITER_THREAD_NAME_SUFFIX}"),
             Box::new(move || {
                 let closed =
                     write_every_line(output, &writer_header, &lines, &writer_lost_at_close);
@@ -247,7 +249,7 @@ impl TraceWriter {
     }
 
     /// Queues the event's line, or counts it lost when the queue is full; the thread numbers each line as it writes it.
-    pub(super) fn write(&self, name: &str, fields: &[(&str, Value)]) {
+    pub fn write(&self, name: &str, fields: &[(&str, Value)]) {
         let mut queue = locked(&self.queue);
         let queued = QueuedLine {
             line: self.header.stamp(name, fields),
@@ -265,7 +267,7 @@ impl TraceWriter {
     }
 
     /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most `within` for it to take every line it holds, report that loss and cut the file back to its last line, saying how the stop left `file`.
-    pub(super) fn finish(&self, within: Duration, file: TraceFileKind) -> TraceStop {
+    pub fn finish(&self, within: Duration, file: TraceFileKind) -> TraceStop {
         let mut queue = locked(&self.queue);
         *locked(&self.lost_at_close) = queue.lost;
         drop(queue.lines.take());
@@ -333,7 +335,7 @@ impl Numbering {
             return true;
         }
         let dropped = header.stamp(
-            TraceLineName::Dropped.as_str(),
+            DROPPED_LINE_NAME,
             &[(DROPPED_COUNT_FIELD, Value::from(self.unwritten))],
         );
         let is_written = output

@@ -283,8 +283,8 @@ fn start_trace(
     match tracing {
         Tracing::NoDebug => Ok(None),
         Tracing::Debug => {
-            let directory =
-                TraceDirectory::resolve(environment).map_err(CommandLineFailure::Directories)?;
+            let directory = TraceDirectory::resolve(environment)
+                .map_err(|failure| CommandLineFailure::Directories(failure.into()))?;
             let mut run_id = [0; RUN_ID_BYTES];
             fill_with_secure_random_bytes(&mut run_id);
             Trace::start(

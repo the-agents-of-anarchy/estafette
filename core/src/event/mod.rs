@@ -9,7 +9,7 @@ const CODE_FIELD: &str = "code";
 
 /// Declares the fixed names of one group of events: a fieldless enum, every value of it in `ALL`, and each value's name text.
 macro_rules! event_names {
-    ($(#[$meta:meta])* $group:ident { $($variant:ident => $text:literal),* $(,)? }) => {
+    ($(#[$meta:meta])* $group:ident { $($variant:ident => $text:expr),* $(,)? }) => {
         $(#[$meta])*
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum $group {
@@ -49,7 +49,7 @@ pub use transport::{TransportEvent, TransportEventName};
 event_names! {
     /// The names of the lines a trace writer writes of its own: the count of events a full queue lost, and the raw file's warning.
     TraceLineName {
-        Dropped => "dropped",
+        Dropped => estafette_trace::DROPPED_LINE_NAME,
         RawFileOpened => "raw_file_opened",
     }
 }

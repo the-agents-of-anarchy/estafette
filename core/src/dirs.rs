@@ -5,13 +5,18 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use estafette_trace::DataDirectoryUnresolvable;
+pub(crate) use estafette_trace::ROLLED_OVER_TRACE_SUFFIX;
+pub use estafette_trace::{
+    TraceDirectory, TraceFileKind, TraceFiles, events_trace_file_name, raw_trace_file_name,
+    rolled_over_trace_file, trace_file_of,
+};
+
 const PRODUCT_DIRECTORY: &str = "estafette";
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 const HOME_VARIABLE: &str = "HOME";
 const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
 const CONFIG_HOME_UNDER_HOME: &str = ".config";
-const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
-const DATA_HOME_UNDER_HOME: &str = ".local/share";
 const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
 const TEMPORARY_DIRECTORY_VARIABLE: &str = "TMPDIR";
 const SYSTEM_TEMPORARY_DIRECTORY: &str = "/tmp";
@@ -27,10 +32,6 @@ const CERTIFICATE_EXTENSION: &str = "cert";
 const LAST_RECORD_TIMESTAMP_EXTENSION: &str = "ts";
 const CERTIFICATE_CACHE_EXTENSION: &str = "certs";
 const INBOX_SOCKET_EXTENSION: &str = "sock";
-const TRACES_SUBDIRECTORY: &str = "traces";
-const EVENTS_TRACE_SUFFIX: &str = ".events.jsonl";
-const RAW_TRACE_SUFFIX: &str = ".raw.jsonl";
-pub(crate) const ROLLED_OVER_TRACE_SUFFIX: &str = ".1";
 const PATH_SEPARATOR: char = '/';
 const CURRENT_DIRECTORY_COMPONENT: &str = ".";
 const PARENT_DIRECTORY_COMPONENT: &str = "..";
@@ -112,6 +113,14 @@ impl fmt::Display for DirectoriesError {
 }
 
 impl std::error::Error for DirectoriesError {}
+
+impl From<DataDirectoryUnresolvable> for DirectoriesError {
+    fn from(failure: DataDirectoryUnresolvable) -> Self {
+        Self::BaseUnresolvable {
+            variable: failure.variable,
+        }
+    }
+}
 
 /// The three base directories and the cards directory of one run, and every path derived from them.
 #[derive(Debug)]
@@ -298,110 +307,6 @@ impl Directories {
     }
 }
 
-/// The two trace files of one run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TraceFiles {
-    /// The typed events of the run, safe to post.
-    pub events: PathBuf,
-    /// iroh's own lines of the run, not safe to post.
-    pub raw: PathBuf,
-}
-
-/// The trace directory under the data base directory, resolved without creating anything, and the files of each run in it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TraceDirectory {
-    data: PathBuf,
-}
-
-impl TraceDirectory {
-    /// The trace directory under the data base directory the environment names, creating nothing.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the data base directory cannot be resolved.
-    pub fn resolve(
-        environment: &impl Fn(&str) -> Option<OsString>,
-    ) -> Result<Self, DirectoriesError> {
-        Ok(Self {
-            data: data_base_directory(environment)?,
-        })
-    }
-
-    /// The directories the trace needs, outermost first: the data base directory, then the trace directory.
-    #[must_use]
-    pub fn private_directories(&self) -> [PathBuf; 2] {
-        [self.data.clone(), self.path()]
-    }
-
-    /// The directory holding the trace files of every run.
-    #[must_use]
-    pub fn path(&self) -> PathBuf {
-        self.data.join(TRACES_SUBDIRECTORY)
-    }
-
-    /// The events file and the raw file of the run named `run_name`.
-    #[must_use]
-    pub fn files_of(&self, run_name: &str) -> TraceFiles {
-        let traces = self.path();
-        TraceFiles {
-            events: traces.join(events_trace_file_name(run_name)),
-            raw: traces.join(raw_trace_file_name(run_name)),
-        }
-    }
-
-    /// Where the trace directory sits, as the help states it: under the data directory the environment names, or its default under the home directory.
-    #[must_use]
-    pub fn described() -> String {
-        format!(
-            "{TRACES_SUBDIRECTORY}/ under the data directory (${DATA_HOME_VARIABLE}/{PRODUCT_DIRECTORY}, or ~/{DATA_HOME_UNDER_HOME}/{PRODUCT_DIRECTORY})"
-        )
-    }
-}
-
-/// The name of the events file of the run named `run_name`.
-#[must_use]
-pub fn events_trace_file_name(run_name: &str) -> String {
-    format!("{run_name}{EVENTS_TRACE_SUFFIX}")
-}
-
-/// The name of the raw file of the run named `run_name`.
-#[must_use]
-pub fn raw_trace_file_name(run_name: &str) -> String {
-    format!("{run_name}{RAW_TRACE_SUFFIX}")
-}
-
-/// Which of its run's two trace files a file is, counting the `.1` file it rolled over into as the same file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TraceFileKind {
-    Events,
-    Raw,
-}
-
-/// The file a trace file rolls over into, replacing any earlier one.
-#[must_use]
-pub fn rolled_over_trace_file(path: &Path) -> PathBuf {
-    let mut rolled_over = path.as_os_str().to_owned();
-    rolled_over.push(ROLLED_OVER_TRACE_SUFFIX);
-    PathBuf::from(rolled_over)
-}
-
-/// The run a file name of the trace directory belongs to and which of its files it is; none for a name no trace file has.
-#[must_use]
-pub fn trace_file_of(file_name: &str) -> Option<(&str, TraceFileKind)> {
-    let unrolled = file_name
-        .strip_suffix(ROLLED_OVER_TRACE_SUFFIX)
-        .unwrap_or(file_name);
-    let (run_name, kind) = unrolled
-        .strip_suffix(EVENTS_TRACE_SUFFIX)
-        .map(|run_name| (run_name, TraceFileKind::Events))
-        .or_else(|| {
-            unrolled
-                .strip_suffix(RAW_TRACE_SUFFIX)
-                .map(|run_name| (run_name, TraceFileKind::Raw))
-        })?;
-    (!run_name.is_empty()).then_some((run_name, kind))
-}
-
 fn single_path_component(name: &str) -> Result<&str, DirectoriesError> {
     let is_single_component = !name.is_empty()
         && name != CURRENT_DIRECTORY_COMPONENT
@@ -441,10 +346,7 @@ fn home_based_directory(
 fn data_base_directory(
     environment: &impl Fn(&str) -> Option<OsString>,
 ) -> Result<PathBuf, DirectoriesError> {
-    Ok(
-        home_based_directory(environment, DATA_HOME_VARIABLE, DATA_HOME_UNDER_HOME)?
-            .join(PRODUCT_DIRECTORY),
-    )
+    Ok(estafette_trace::data_base_directory(environment)?)
 }
 
 fn runtime_parent(environment: &impl Fn(&str) -> Option<OsString>) -> PathBuf {
@@ -523,6 +425,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
+    const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
     const FAKE_USER_ID: u32 = 4242;
     const SPEC_PRIVATE_DIRECTORY_MODE: u32 = 0o700;
     const EXISTING_DIRECTORY_MODE: u32 = 0o755;

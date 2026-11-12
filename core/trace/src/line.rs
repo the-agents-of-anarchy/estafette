@@ -1,19 +1,18 @@
 use std::sync::{Mutex, PoisonError};
 
-use iroh::EndpointId;
 use serde_json::Value;
 
 use super::{FORMAT_VERSION, RunId, TraceClocks};
 
 /// What begins every line of both trace files, in the order decision 5 fixes: the format version, the run, the line number, the two clock readings and the node once there is one.
-pub(super) struct HeaderSource {
+pub struct HeaderSource {
     run: String,
     clocks: TraceClocks,
     node: Mutex<Option<String>>,
 }
 
 /// A trace line stamped with its clock readings, its node, its event and its fields, waiting for its number.
-pub(super) struct StampedLine {
+pub struct StampedLine {
     before_n: String,
     after_n: String,
 }
@@ -28,10 +27,9 @@ impl HeaderSource {
         }
     }
 
-    /// Names the endpoint, by the short form of its id iroh's own lines use, in every later line.
-    pub(super) fn note_node(&self, id: EndpointId) {
-        *self.node.lock().unwrap_or_else(PoisonError::into_inner) =
-            Some(id.fmt_short().to_string());
+    /// Names the node, by the short form of its id, in every later line.
+    pub(super) fn note_node(&self, short_id: String) {
+        *self.node.lock().unwrap_or_else(PoisonError::into_inner) = Some(short_id);
     }
 
     /// The wall clock's reading now.
