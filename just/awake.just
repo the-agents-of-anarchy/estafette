@@ -27,7 +27,7 @@ status:
     #!/usr/bin/env bash
     set -euo pipefail
     [[ "$(uname)" == Darwin ]] || { printf 'awake: nothing to do on %s\n' "$(uname)"; exit 0; }
-    if pid="$({{ guard_pid_recipe }})" && pmset -g assertions | grep -q "pid $pid(caffeinate)"; then
+    if pid="$({{ guard_pid_recipe }})" && assertions="$(pmset -g assertions)" && [[ "$assertions" == *"pid $pid(caffeinate)"* ]]; then
         printf 'awake: on pid %s since %s\n' "$pid" "$(ps -o etime= -p "$pid" | tr -d ' ')"
         exit 0
     fi
