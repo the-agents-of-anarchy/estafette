@@ -761,14 +761,12 @@ impl DirectClient {
             .map_err(|_elapsed| DirectError::Unreachable)?
     }
 
-    /// The held connection to the peer while the client knows of no close on it, or else a new one dialed by card id under the slot's lock and held, so concurrent callers share one dial.
+    /// The connection held for the peer, one the client knows closed counting as none and leaving the slot, or else a new one dialed by card id under the slot's lock and held, so concurrent callers share one dial.
     async fn held_or_dialed_connection(&self, to: EndpointId) -> Result<Connection, DirectError> {
         let slot = self.slot_of(to);
         let mut held = slot.lock().await;
-        if let Some(connection) = held
-            .as_ref()
-            .filter(|connection| connection.close_reason().is_none())
-        {
+        held.take_if(|connection| connection.close_reason().is_some());
+        if let Some(connection) = held.as_ref() {
             return Ok(connection.clone());
         }
         let dialed = self
@@ -2491,6 +2489,93 @@ mod tests {
         link.client.probe(peer, PROBE_NONCE).await.unwrap();
 
         assert_eq!(server.connections(), 2);
+    }
+
+    const CLOSE_KNOWN_WAIT: Duration = Duration::from_secs(5);
+    const CONNECT_TIMEOUT_SLACK: Duration = Duration::from_millis(500);
+
+    /// Whether the client's held connection to the peer reads closed within the wait, waited for without a sleep.
+    async fn held_connection_known_closed_within(
+        client: &DirectClient,
+        peer: EndpointId,
+        within: Duration,
+    ) -> bool {
+        timeout(within, async {
+            while client
+                .slot_of(peer)
+                .lock()
+                .await
+                .as_ref()
+                .is_none_or(|connection| connection.close_reason().is_none())
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
+    #[tokio::test]
+    async fn spec_3_10_a_request_after_a_live_peer_closed_the_held_connection_dials_afresh_and_is_answered()
+     {
+        let server = ScriptedServer::replying(Some(sealed_probe_ack(PROBE_NONCE)));
+        let server_node = bind_node_holding(
+            SERVER_SEED,
+            HeldConnections::new(clock_reading_every_connection_as_gone()),
+        )
+        .await;
+        let link = link_on(server_node, server.clone(), ClientTimeouts::SPEC).await;
+        let peer = link.server_node.endpoint().id();
+        link.client.probe(peer, PROBE_NONCE).await.unwrap();
+
+        link.server_node
+            .held_connections()
+            .close_silent_of(card_of(CLIENT_SEED));
+        let known_closed =
+            held_connection_known_closed_within(&link.client, peer, CLOSE_KNOWN_WAIT).await;
+        let probed_after_the_close = link.client.probe(peer, PROBE_NONCE).await;
+
+        assert!(
+            known_closed,
+            "the client did not learn of the peer's close within {CLOSE_KNOWN_WAIT:?}"
+        );
+        assert_eq!(probed_after_the_close.unwrap().nonce, PROBE_NONCE);
+        assert_eq!(server.connections(), 2);
+    }
+
+    #[tokio::test]
+    async fn spec_3_10_a_request_to_a_gone_peer_whose_held_connection_reads_closed_is_unreachable_within_the_connect_timeout_and_empties_the_slot()
+     {
+        let server = ScriptedServer::replying(Some(sealed_probe_ack(PROBE_NONCE)));
+        let link = link_to(server, ClientTimeouts::SPEC).await;
+        let peer = link.server_node.endpoint().id();
+        link.client.probe(peer, PROBE_NONCE).await.unwrap();
+
+        link.server_node.endpoint().close().await;
+        let known_closed =
+            held_connection_known_closed_within(&link.client, peer, CLOSE_KNOWN_WAIT).await;
+        let started = tokio::time::Instant::now();
+        let sent = link
+            .client
+            .send_message(peer, message_to(card_of(SERVER_SEED), BODY))
+            .await;
+        let answered_after = started.elapsed();
+        let slot_left_empty = link.client.slot_of(peer).lock().await.is_none();
+
+        assert!(
+            known_closed,
+            "the client did not learn of the peer's close within {CLOSE_KNOWN_WAIT:?}"
+        );
+        assert_eq!(
+            sent,
+            Err(DirectError::Unreachable),
+            "after {answered_after:?}"
+        );
+        assert!(
+            answered_after <= SPEC_CONNECT_TIMEOUT.saturating_add(CONNECT_TIMEOUT_SLACK),
+            "answered after {answered_after:?}"
+        );
+        assert!(slot_left_empty);
     }
 
     #[tokio::test]
