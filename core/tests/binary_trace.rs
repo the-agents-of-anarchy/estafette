@@ -630,8 +630,8 @@ mod observability {
         drop(fs::remove_dir_all(&root));
     }
 
-    /// The whole lines of a killed run's trace file, failing unless all that follows them is at most one unended start of the run's own next line and then zero bytes to the next 64 KiB boundary.
-    fn whole_lines_of_a_killed_run(path: &Path) -> Vec<Value> {
+    /// The whole lines of a run's trace file, failing unless all that follows them is at most one unended start of the run's own next line and then zero bytes to the next 64 KiB boundary.
+    fn whole_lines_of_a_run_file(path: &Path) -> Vec<Value> {
         let name = path.file_name().unwrap().to_str().unwrap();
         let run = name.split('-').nth(1).unwrap();
         let own_line_start = format!("{{\"v\":1,\"run\":\"{run}\"");
@@ -679,7 +679,7 @@ mod observability {
     /// Whether the trace file of a running process comes to hold a whole line within `WHOLE_LINE_WAIT`.
     fn holds_a_whole_line_within_the_wait(path: &Path) -> bool {
         let deadline = Instant::now().checked_add(WHOLE_LINE_WAIT).unwrap();
-        while whole_lines_of_a_killed_run(path).is_empty() {
+        while whole_lines_of_a_run_file(path).is_empty() {
             if Instant::now() >= deadline {
                 return false;
             }
@@ -731,7 +731,7 @@ mod observability {
 
         assert_eq!(answers, KILLED_AFTER_ANSWERS + 1);
         for path in [&events, &raw] {
-            let numbers: Vec<Value> = whole_lines_of_a_killed_run(path)
+            let numbers: Vec<Value> = whole_lines_of_a_run_file(path)
                 .iter()
                 .map(|line| line["n"].clone())
                 .collect();
@@ -743,7 +743,7 @@ mod observability {
             let consecutive: Vec<Value> = (0..numbers.len()).map(Value::from).collect();
             assert_eq!(numbers, consecutive, "{}", path.display());
         }
-        let raw_events: Vec<Value> = whole_lines_of_a_killed_run(&raw)
+        let raw_events: Vec<Value> = whole_lines_of_a_run_file(&raw)
             .iter()
             .map(|line| line["event"].clone())
             .collect();
