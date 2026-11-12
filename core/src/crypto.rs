@@ -303,6 +303,24 @@ mod tests {
         SignedPayloadKind::PresenceRequest,
     ];
 
+    /// The place of each kind in `ALL_KINDS`, named by a match so that a new kind breaks the build until it is listed.
+    const fn place_in_all_kinds(kind: SignedPayloadKind) -> usize {
+        match kind {
+            SignedPayloadKind::Presence => 0,
+            SignedPayloadKind::Departure => 1,
+            SignedPayloadKind::Unreachable => 2,
+            SignedPayloadKind::Infrastructure => 3,
+            SignedPayloadKind::PresenceRequest => 4,
+        }
+    }
+
+    #[test]
+    fn spec_3_4_all_kinds_lists_every_signed_payload_kind_in_its_place() {
+        for (place, kind) in ALL_KINDS.into_iter().enumerate() {
+            assert_eq!(place_in_all_kinds(kind), place);
+        }
+    }
+
     #[test]
     fn spec_3_4_payload_signature_under_one_prefix_fails_under_another() {
         let signer = SecretKey::from_bytes(&SIGNER_SEED);
