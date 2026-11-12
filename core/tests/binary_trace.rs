@@ -12,6 +12,7 @@ mod observability {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Output, Stdio};
+    use std::time::{Duration, Instant};
 
     use super::trace_files::{
         EVENTS_SUFFIX, RAW_SUFFIX, announcement_of_one_run, trace_files_of_one_run,
@@ -46,6 +47,7 @@ mod observability {
     const TOML_EXTENSION: &str = "toml";
     const CARD: &str = "alice";
     const KILLED_AFTER_ANSWERS: usize = 50;
+    const WHOLE_LINE_WAIT: Duration = Duration::from_secs(10);
     const FIRST_TOOL_CALL_ID: usize = 2;
     const SPEC_TRACE_FILE_SIZED_AHEAD_BYTES: usize = 65_536;
     const UNREADABLE_CARDS_DIRECTORY: &str = "cards-is-a-file";
@@ -637,12 +639,10 @@ mod observability {
             .rposition(|byte| *byte != 0)
             .map_or(0, |last| last.saturating_add(1));
         assert!(
-            bytes.is_empty()
-                || (bytes
-                    .len()
-                    .is_multiple_of(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES)
-                    && bytes.len().saturating_sub(content_end)
-                        <= SPEC_TRACE_FILE_SIZED_AHEAD_BYTES),
+            bytes
+                .len()
+                .is_multiple_of(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES)
+                && bytes.len().saturating_sub(content_end) <= SPEC_TRACE_FILE_SIZED_AHEAD_BYTES,
             "{name}: {} bytes after {content_end} bytes of content do not end at the next 64 KiB boundary",
             bytes.len().saturating_sub(content_end)
         );
@@ -674,6 +674,18 @@ mod observability {
             .collect()
     }
 
+    /// Whether the trace file of a running process comes to hold a whole line within `WHOLE_LINE_WAIT`.
+    fn holds_a_whole_line_within_the_wait(path: &Path) -> bool {
+        let deadline = Instant::now().checked_add(WHOLE_LINE_WAIT).unwrap();
+        while whole_lines_of_a_killed_run(path).is_empty() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::yield_now();
+        }
+        true
+    }
+
     #[test]
     fn observability_decision_6_a_killed_process_leaves_in_its_trace_files_only_its_whole_numbered_lines_its_own_unended_line_and_zero_bytes()
      {
@@ -702,18 +714,30 @@ mod observability {
             .map_while(Result::ok)
             .take(KILLED_AFTER_ANSWERS + 1)
             .count();
+        let (events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
+        for path in [&events, &raw] {
+            assert!(
+                holds_a_whole_line_within_the_wait(path),
+                "{}: the process wrote none of its whole numbered lines within {WHOLE_LINE_WAIT:?}",
+                path.display()
+            );
+        }
 
         child.kill().unwrap();
         child.wait().unwrap();
         drop(input);
 
         assert_eq!(answers, KILLED_AFTER_ANSWERS + 1);
-        let (events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
         for path in [&events, &raw] {
             let numbers: Vec<Value> = whole_lines_of_a_killed_run(path)
                 .iter()
                 .map(|line| line["n"].clone())
                 .collect();
+            assert!(
+                !numbers.is_empty(),
+                "{}: the killed process left none of its whole numbered lines",
+                path.display()
+            );
             let consecutive: Vec<Value> = (0..numbers.len()).map(Value::from).collect();
             assert_eq!(numbers, consecutive, "{}", path.display());
         }
@@ -721,10 +745,7 @@ mod observability {
             .iter()
             .map(|line| line["event"].clone())
             .collect();
-        assert!(
-            raw_events.is_empty() || raw_events == [Value::from("raw_file_opened")],
-            "{raw_events:?}"
-        );
+        assert_eq!(raw_events, [Value::from("raw_file_opened")]);
         drop(fs::remove_dir_all(&root));
     }
 
