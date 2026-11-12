@@ -330,7 +330,7 @@ pub(super) mod tests {
     use super::files::run_name;
     use super::*;
     use crate::dirs::OperatingSystemFilesystem;
-    use crate::event::{InboxEvent, ProcessEvent};
+    use crate::event::{ClaimFailure, InboxEvent, ProcessEvent};
     use crate::node::NodeError;
 
     const SPEC_RAW_FIRST_LINE_AFTER_HEADER: &str =
@@ -485,7 +485,7 @@ pub(super) mod tests {
 
         trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
         trace.note_endpoint(id);
-        trace.record(&ProcessEvent::ClaimNetworkRefused(NodeError::TopicClosedBeforeHandle).into());
+        trace.record(&ClaimFailure::NetworkRefused(NodeError::TopicClosedBeforeHandle).into());
         trace.record(&InboxEvent::AcceptFailed(io::Error::other("a marker")).into());
         assert!(trace.finish());
 

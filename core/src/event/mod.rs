@@ -40,9 +40,9 @@ mod transport;
 
 pub use direct::{DirectEvent, DirectEventName};
 pub use gossip::{GossipEvent, GossipEventName};
-pub use inbox::{InboxEvent, InboxEventName};
+pub use inbox::{InboxEvent, InboxEventName, ListCardsFailure};
 pub use peer_table::{PeerTableEvent, PeerTableEventName};
-pub use process::{CLOCK_BEFORE_UNIX_EPOCH, ProcessEvent, ProcessEventName};
+pub use process::{CLOCK_BEFORE_UNIX_EPOCH, ClaimFailure, ProcessEvent, ProcessEventName};
 pub use state::{StateEvent, StateEventName};
 pub use transport::{TransportEvent, TransportEventName};
 
@@ -67,6 +67,12 @@ pub trait EventName: Copy + 'static {
 
     /// The name as the events file writes it.
     fn as_str(self) -> &'static str;
+}
+
+/// A failure a tool answers with an error code of its own, recorded as an event.
+pub trait AnsweredFailure: Into<Event> {
+    /// The error code the tool answers with for this failure.
+    fn answered_code(&self) -> ErrorCode;
 }
 
 /// What each area of events tells about one of its events: its fixed name, its run-record line if it has one, and its fields.

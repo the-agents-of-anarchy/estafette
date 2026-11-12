@@ -1,9 +1,9 @@
 use iroh::endpoint::BindError;
 use tokio::task::JoinError;
 
-use super::{AreaEvent, EventFields, answered};
+use super::{AnsweredFailure, AreaEvent, Event, EventFields, answered};
+use crate::errors::ErrorCode;
 use crate::handle::Handle;
-use crate::mcp::{LOCK_TASK_FAILED, NODE_NOT_STARTED};
 use crate::node::NodeError;
 
 /// What the run record says when the machine's clock reads a time before the Unix epoch.
@@ -31,14 +31,37 @@ pub enum ProcessEvent {
     NetworkCreated { network: Handle },
     /// The machine's clock read a time before the Unix epoch.
     ClockBeforeUnixEpoch,
-    /// Init answered with the lock task's code: the sidecar lock task ended without a result.
-    ClaimLockTaskFailed(JoinError),
-    /// Init answered with the node's code: the network configuration was refused.
-    ClaimNetworkRefused(NodeError),
-    /// Init answered with the node's code: the endpoint was not bound.
-    ClaimEndpointUnbound(BindError),
-    /// Init answered with the node's code: the node did not start.
-    ClaimNodeNotStarted(NodeError),
+    /// Init answered with the failure's own code.
+    ClaimFailed(ClaimFailure),
+}
+
+/// Why init failed once it held or tried the card's sidecar lock, each cause answering its own code.
+pub enum ClaimFailure {
+    /// The sidecar lock task ended without a result.
+    LockTaskFailed(JoinError),
+    /// The network configuration was refused.
+    NetworkRefused(NodeError),
+    /// The endpoint was not bound.
+    EndpointUnbound(BindError),
+    /// The node did not start.
+    NodeNotStarted(NodeError),
+}
+
+impl AnsweredFailure for ClaimFailure {
+    fn answered_code(&self) -> ErrorCode {
+        match self {
+            Self::LockTaskFailed(_) => ErrorCode::SidecarInvalid,
+            Self::NetworkRefused(_) | Self::EndpointUnbound(_) | Self::NodeNotStarted(_) => {
+                ErrorCode::Unreachable
+            }
+        }
+    }
+}
+
+impl From<ClaimFailure> for Event {
+    fn from(failure: ClaimFailure) -> Self {
+        ProcessEvent::ClaimFailed(failure).into()
+    }
 }
 
 impl AreaEvent for ProcessEvent {
@@ -49,10 +72,18 @@ impl AreaEvent for ProcessEvent {
             Self::CommandFailed(_) => ProcessEventName::CommandFailed,
             Self::NetworkCreated { .. } => ProcessEventName::NetworkCreated,
             Self::ClockBeforeUnixEpoch => ProcessEventName::ClockBeforeUnixEpoch,
-            Self::ClaimLockTaskFailed(_) => ProcessEventName::ClaimLockTaskFailed,
-            Self::ClaimNetworkRefused(_) => ProcessEventName::ClaimNetworkRefused,
-            Self::ClaimEndpointUnbound(_) => ProcessEventName::ClaimEndpointUnbound,
-            Self::ClaimNodeNotStarted(_) => ProcessEventName::ClaimNodeNotStarted,
+            Self::ClaimFailed(ClaimFailure::LockTaskFailed(_)) => {
+                ProcessEventName::ClaimLockTaskFailed
+            }
+            Self::ClaimFailed(ClaimFailure::NetworkRefused(_)) => {
+                ProcessEventName::ClaimNetworkRefused
+            }
+            Self::ClaimFailed(ClaimFailure::EndpointUnbound(_)) => {
+                ProcessEventName::ClaimEndpointUnbound
+            }
+            Self::ClaimFailed(ClaimFailure::NodeNotStarted(_)) => {
+                ProcessEventName::ClaimNodeNotStarted
+            }
         }
     }
 
@@ -64,17 +95,22 @@ impl AreaEvent for ProcessEvent {
                 network = network.as_str()
             ),
             Self::ClockBeforeUnixEpoch => CLOCK_BEFORE_UNIX_EPOCH.to_owned(),
-            Self::ClaimLockTaskFailed(source) => format!(
-                "init answered {}: the sidecar lock task did not finish: {source}",
-                LOCK_TASK_FAILED.code()
-            ),
-            Self::ClaimNetworkRefused(source) | Self::ClaimNodeNotStarted(source) => {
-                format!("init answered {}: {source}", NODE_NOT_STARTED.code())
+            Self::ClaimFailed(failure) => {
+                let code = failure.answered_code();
+                match failure {
+                    ClaimFailure::LockTaskFailed(source) => format!(
+                        "init answered {}: the sidecar lock task did not finish: {source}",
+                        code.code()
+                    ),
+                    ClaimFailure::NetworkRefused(source) | ClaimFailure::NodeNotStarted(source) => {
+                        format!("init answered {}: {source}", code.code())
+                    }
+                    ClaimFailure::EndpointUnbound(source) => format!(
+                        "init answered {}: the endpoint was not bound: {source}",
+                        code.code()
+                    ),
+                }
             }
-            Self::ClaimEndpointUnbound(source) => format!(
-                "init answered {}: the endpoint was not bound: {source}",
-                NODE_NOT_STARTED.code()
-            ),
         })
     }
 
@@ -83,10 +119,7 @@ impl AreaEvent for ProcessEvent {
             Self::CommandFailed(_) | Self::NetworkCreated { .. } | Self::ClockBeforeUnixEpoch => {
                 Vec::new()
             }
-            Self::ClaimLockTaskFailed(_) => answered(&LOCK_TASK_FAILED),
-            Self::ClaimNetworkRefused(_)
-            | Self::ClaimEndpointUnbound(_)
-            | Self::ClaimNodeNotStarted(_) => answered(&NODE_NOT_STARTED),
+            Self::ClaimFailed(failure) => answered(&failure.answered_code()),
         }
     }
 }

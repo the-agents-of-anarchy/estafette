@@ -28,7 +28,7 @@ use crate::config::{NetworkConfig, host_relay_url};
 use crate::crypto::GateKey;
 use crate::dirs::{CARD_EXTENSION, Directories, DirectoriesError};
 use crate::errors::{Envelope, ErrorCode, You};
-use crate::event::{Event, InboxEvent, ProcessEvent, RunRecord};
+use crate::event::{AnsweredFailure, ClaimFailure, InboxEvent, ListCardsFailure, RunRecord};
 use crate::handle::{AnnouncedHandle, Handle, MAX_LOCAL_LENGTH};
 use crate::inbox::buffer::InboxFrame;
 use crate::net::direct::HeldConnections;
@@ -306,9 +306,7 @@ impl Server {
             sidecar::claim(&sidecar_path, public_key.as_bytes(), &pause)
         })
         .await
-        .map_err(|failure| {
-            self.recorded(ProcessEvent::ClaimLockTaskFailed(failure), LOCK_TASK_FAILED)
-        })?
+        .map_err(|failure| self.recorded(ClaimFailure::LockTaskFailed(failure)))?
         .map_err(|refusal| claim_refusal(&refusal))
     }
 
@@ -320,9 +318,7 @@ impl Server {
         public: Vec<u8>,
     ) -> Result<Node, ErrorCode> {
         let network = Network::new(self.served.config.clone(), self.served.config_path.clone())
-            .map_err(|refused| {
-                self.recorded(ProcessEvent::ClaimNetworkRefused(refused), NODE_NOT_STARTED)
-            })?;
+            .map_err(|refused| self.recorded(ClaimFailure::NetworkRefused(refused)))?;
         let endpoint = (self.effects.bind_endpoint)(
             lock.secret_key().clone(),
             *network.keys().gate_key(),
@@ -330,12 +326,7 @@ impl Server {
             HeldConnections::new(Arc::clone(&self.effects.node.monotonic)),
         )
         .await
-        .map_err(|unbound| {
-            self.recorded(
-                ProcessEvent::ClaimEndpointUnbound(unbound),
-                NODE_NOT_STARTED,
-            )
-        })?;
+        .map_err(|unbound| self.recorded(ClaimFailure::EndpointUnbound(unbound)))?;
         let identity = Identity {
             card_key: lock.secret_key().clone(),
             requested_handle,
@@ -348,17 +339,13 @@ impl Server {
             node_effects_of(&self.effects.node),
         )
         .await
-        .map_err(|not_started| {
-            self.recorded(
-                ProcessEvent::ClaimNodeNotStarted(not_started),
-                NODE_NOT_STARTED,
-            )
-        })
+        .map_err(|not_started| self.recorded(ClaimFailure::NodeNotStarted(not_started)))
     }
 
-    /// Writes the failure to the run record and returns the error code init answers with.
-    fn recorded(&self, event: impl Into<Event>, answered: ErrorCode) -> ErrorCode {
-        (self.effects.report)(event.into());
+    /// Writes the failure to the run record and returns the error code the tool answers with.
+    fn recorded(&self, failure: impl AnsweredFailure) -> ErrorCode {
+        let answered = failure.answered_code();
+        (self.effects.report)(failure.into());
         answered
     }
 
@@ -388,14 +375,10 @@ impl Server {
         .await;
         match listing {
             Ok(Ok(cards)) => Ok(ToolResult::Cards { cards }),
-            Ok(Err(unreadable)) => Err(self.recorded(
-                InboxEvent::ListCardsRegistryUnreadable(unreadable),
-                REGISTRY_UNREADABLE,
-            )),
-            Err(failure) => Err(self.recorded(
-                InboxEvent::ListCardsTaskFailed(failure),
-                LISTING_TASK_NOT_FINISHED,
-            )),
+            Ok(Err(unreadable)) => {
+                Err(self.recorded(ListCardsFailure::RegistryUnreadable(unreadable)))
+            }
+            Err(failure) => Err(self.recorded(ListCardsFailure::TaskFailed(failure))),
         }
     }
 
@@ -561,18 +544,6 @@ fn node_effects_of(effects: &NodeEffects) -> NodeEffects {
         probe_relay: Arc::clone(&effects.probe_relay),
     }
 }
-
-/// The error code of a claim whose network, endpoint or node did not start after the lock was taken.
-pub(crate) const NODE_NOT_STARTED: ErrorCode = ErrorCode::Unreachable;
-
-/// The error code of a `list_cards` whose registry could not be read, the code a card file that cannot be read gets at init.
-pub(crate) const REGISTRY_UNREADABLE: ErrorCode = ErrorCode::CardInvalid;
-
-/// The error code of a `list_cards` whose listing task ended without a result, the code of an unreadable registry.
-pub(crate) const LISTING_TASK_NOT_FINISHED: ErrorCode = REGISTRY_UNREADABLE;
-
-/// The error code of a claim whose sidecar lock task ended without a result.
-pub(crate) const LOCK_TASK_FAILED: ErrorCode = ErrorCode::SidecarInvalid;
 
 /// The tool's arguments read as its input, `bad_request` when they do not match its schema.
 fn input_of<Input: DeserializeOwned>(arguments: JsonObject) -> Result<Input, ErrorCode> {
@@ -962,6 +933,7 @@ mod tests {
     use super::*;
     use crate::config::{Host, HostOrigin};
     use crate::dirs::OperatingSystemFilesystem;
+    use crate::event::Event;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
     use crate::node::RuntimeShutdown;
