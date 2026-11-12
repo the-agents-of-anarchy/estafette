@@ -1,7 +1,11 @@
 use clap::Args;
 
+use crate::dirs::{
+    ROLLED_OVER_TRACE_SUFFIX, TraceDirectory, events_trace_file_name, raw_trace_file_name,
+};
 use crate::trace::{
-    TRACE_DIRECTORY_MAX_BYTES, TRACE_FILE_ROLLOVER_BYTES, TRACE_FRESHNESS, TRACE_RUN_FILE_MAX_BYTES,
+    TRACE_DIRECTORY_MAX_BYTES, TRACE_FILE_ROLLOVER_BYTES, TRACE_FRESHNESS,
+    TRACE_RUN_FILE_MAX_BYTES, run_name_pattern,
 };
 
 const BYTES_PER_MEBIBYTE: u64 = 1_048_576;
@@ -40,11 +44,15 @@ impl DebugArgs {
 
 /// The long help of `--debug`: what the trace writes, where, which file is safe to post, and its four bounds.
 fn debug_long_help() -> String {
+    let run = run_name_pattern();
     format!(
-        "Write the debug trace of this run, the default until v1.0.0.\n\nWrites two files per run, readable by you alone, in traces/ under the data directory ($XDG_DATA_HOME/estafette, or ~/.local/share/estafette): <start>-<run>-estafette.events.jsonl, the run's typed events, which is the file safe to post; and <start>-<run>-estafette.raw.jsonl, iroh's own lines with real addresses and full ids, which is not safe to post. The first line on standard error names both files.\n\nBounds: each file rolls over once at {} MiB into a .1 file that replaces any earlier one, so a run keeps at most {} MiB per file; at each start the oldest runs are removed, both files together, until the directory holds at most {} GiB, keeping every run whose events file was written in the last {} minutes.",
-        TRACE_FILE_ROLLOVER_BYTES / BYTES_PER_MEBIBYTE,
-        TRACE_RUN_FILE_MAX_BYTES / BYTES_PER_MEBIBYTE,
-        TRACE_DIRECTORY_MAX_BYTES / BYTES_PER_GIBIBYTE,
-        TRACE_FRESHNESS.as_secs() / SECONDS_PER_MINUTE
+        "Write the debug trace of this run, the default until v1.0.0.\n\nWrites two files per run, readable by you alone, in {directory}: {events}, the run's typed events, which is the file safe to post; and {raw}, iroh's own lines with real addresses and full ids, which is not safe to post. The first line on standard error names both files.\n\nBounds: each file rolls over once at {rollover_mib} MiB into a {ROLLED_OVER_TRACE_SUFFIX} file that replaces any earlier one, so a run keeps at most {run_file_mib} MiB per file; at each start the oldest runs are removed, both files together, until the directory holds at most {directory_gib} GiB, keeping every run whose events file was written in the last {freshness_minutes} minutes.",
+        directory = TraceDirectory::described(),
+        events = events_trace_file_name(&run),
+        raw = raw_trace_file_name(&run),
+        rollover_mib = TRACE_FILE_ROLLOVER_BYTES / BYTES_PER_MEBIBYTE,
+        run_file_mib = TRACE_RUN_FILE_MAX_BYTES / BYTES_PER_MEBIBYTE,
+        directory_gib = TRACE_DIRECTORY_MAX_BYTES / BYTES_PER_GIBIBYTE,
+        freshness_minutes = TRACE_FRESHNESS.as_secs() / SECONDS_PER_MINUTE
     )
 }

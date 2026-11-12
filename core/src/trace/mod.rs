@@ -18,6 +18,7 @@ mod line;
 mod operating_system;
 mod writer;
 
+pub use files::run_name_pattern;
 use files::{remove_oldest_runs, run_name};
 use line::HeaderSource;
 use writer::{RollingFile, RolloverOpening, TraceWriter};

@@ -30,7 +30,7 @@ const INBOX_SOCKET_EXTENSION: &str = "sock";
 const TRACES_SUBDIRECTORY: &str = "traces";
 const EVENTS_TRACE_SUFFIX: &str = ".events.jsonl";
 const RAW_TRACE_SUFFIX: &str = ".raw.jsonl";
-const ROLLED_OVER_TRACE_SUFFIX: &str = ".1";
+pub(crate) const ROLLED_OVER_TRACE_SUFFIX: &str = ".1";
 const PATH_SEPARATOR: char = '/';
 const CURRENT_DIRECTORY_COMPONENT: &str = ".";
 const PARENT_DIRECTORY_COMPONENT: &str = "..";
@@ -352,10 +352,30 @@ impl TraceDirectory {
     pub fn files_of(&self, run_name: &str) -> TraceFiles {
         let traces = self.path();
         TraceFiles {
-            events: traces.join(format!("{run_name}{EVENTS_TRACE_SUFFIX}")),
-            raw: traces.join(format!("{run_name}{RAW_TRACE_SUFFIX}")),
+            events: traces.join(events_trace_file_name(run_name)),
+            raw: traces.join(raw_trace_file_name(run_name)),
         }
     }
+
+    /// Where the trace directory sits, as the help states it: under the data directory the environment names, or its default under the home directory.
+    #[must_use]
+    pub fn described() -> String {
+        format!(
+            "{TRACES_SUBDIRECTORY}/ under the data directory (${DATA_HOME_VARIABLE}/{PRODUCT_DIRECTORY}, or ~/{DATA_HOME_UNDER_HOME}/{PRODUCT_DIRECTORY})"
+        )
+    }
+}
+
+/// The name of the events file of the run named `run_name`.
+#[must_use]
+pub fn events_trace_file_name(run_name: &str) -> String {
+    format!("{run_name}{EVENTS_TRACE_SUFFIX}")
+}
+
+/// The name of the raw file of the run named `run_name`.
+#[must_use]
+pub fn raw_trace_file_name(run_name: &str) -> String {
+    format!("{run_name}{RAW_TRACE_SUFFIX}")
 }
 
 /// Which of its run's two trace files a file is, counting the `.1` file it rolled over into as the same file.

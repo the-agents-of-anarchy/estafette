@@ -5,6 +5,8 @@ use super::{ListFiles, RemoveFile, StoredFile, TraceAction, TraceBounds, TraceRe
 use crate::dirs::{TraceFileKind, trace_file_of};
 
 const PROGRAM: &str = "estafette";
+const START_PLACEHOLDER: &str = "<start>";
+const RUN_PLACEHOLDER: &str = "<run>";
 const MILLISECONDS_PER_SECOND: u64 = 1000;
 const SECONDS_PER_DAY: u64 = 86_400;
 const SECONDS_PER_HOUR: u64 = 3_600;
@@ -20,10 +22,21 @@ const DAYS_PER_MONTH_OF_A_COMMON_YEAR: [u64; 12] = [31, 28, 31, 30, 31, 30, 31, 
 
 /// The name every file of a run starts with: `<start>-<run>-estafette`, the start in UTC basic ISO 8601 to the second.
 pub(super) fn run_name(start_wall_ms: u64, run_hex: &str) -> String {
-    format!(
-        "{}-{run_hex}-{PROGRAM}",
-        basic_utc_stamp(start_wall_ms / MILLISECONDS_PER_SECOND)
+    run_name_of(
+        &basic_utc_stamp(start_wall_ms / MILLISECONDS_PER_SECOND),
+        run_hex,
     )
+}
+
+/// The form of every run's name as the help states it: `<start>-<run>-estafette`.
+#[must_use]
+pub fn run_name_pattern() -> String {
+    run_name_of(START_PLACEHOLDER, RUN_PLACEHOLDER)
+}
+
+/// The name of the run that started at `start` with the run id `run`, both as written.
+fn run_name_of(start: &str, run: &str) -> String {
+    format!("{start}-{run}-{PROGRAM}")
 }
 
 /// The UTC time of `unix_seconds` in basic ISO 8601 to the second, such as `20261111T160600Z`.
