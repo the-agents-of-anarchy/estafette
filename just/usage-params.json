@@ -1,0 +1,307 @@
+{
+  "speed_tokens_per_second": {
+    "claude-sonnet-5-5": {
+      "value": 109.4,
+      "kind": "measured",
+      "source": "docs/orchestration_log/recon/2026-10-24/reports/research-generation-speed.md, table of tokens per second by model, unchecked",
+      "date": "2026-11-12"
+    },
+    "claude-opus-5-5": {
+      "value": 89.9,
+      "kind": "measured",
+      "source": "docs/orchestration_log/recon/2026-10-24/reports/research-generation-speed.md, table of tokens per second by model, unchecked",
+      "date": "2026-11-12"
+    },
+    "claude-fable-5-2": {
+      "value": 76.0,
+      "kind": "measured",
+      "source": "docs/orchestration_log/recon/2026-10-24/reports/research-generation-speed.md, table of tokens per second by model, unchecked",
+      "date": "2026-11-12"
+    },
+    "claude-fable-5-1": {
+      "value": 73.3,
+      "kind": "measured",
+      "source": "docs/orchestration_log/recon/2026-10-24/reports/research-generation-speed.md, table of tokens per second by model, unchecked",
+      "date": "2026-11-12"
+    },
+    "claude-haiku-5-5": {
+      "value": null,
+      "kind": "measured",
+      "source": "docs/orchestration_log/recon/2026-10-24/reports/research-generation-speed.md, table of tokens per second by model, unchecked; haiku has 7 messages in it, not a distribution",
+      "date": "2026-11-12"
+    }
+  },
+  "cache_life_seconds": {
+    "agent": {
+      "value": 300,
+      "kind": "measured",
+      "source": "this session's transcripts, every agent's cache writes are at the 5-minute tier",
+      "date": "2026-11-12"
+    },
+    "lead": {
+      "value": 3600,
+      "kind": "measured",
+      "source": "this session's transcripts",
+      "date": "2026-11-12"
+    }
+  },
+  "limit_share_percent_per_million_tokens": {
+    "claude-sonnet-5-5": {
+      "value": null,
+      "kind": "published",
+      "source": "SemiAnalysis, page 10, Claude Max 20x, gives Opus 5.5 only",
+      "date": "2026-10-05"
+    },
+    "claude-opus-5-5": {
+      "value": {
+        "input": 0.045,
+        "cache_write": 0.056,
+        "cache_read": 0.0011,
+        "output": 0.223
+      },
+      "kind": "published",
+      "source": "SemiAnalysis, page 10, Claude Max 20x, percent of one plan monthly limit",
+      "date": "2026-10-05"
+    },
+    "claude-fable-5-2": {
+      "value": null,
+      "kind": "published",
+      "source": "SemiAnalysis, page 10, Claude Max 20x, gives Opus 5.5 only",
+      "date": "2026-10-05"
+    },
+    "claude-fable-5-1": {
+      "value": null,
+      "kind": "published",
+      "source": "SemiAnalysis, page 10, Claude Max 20x, gives Opus 5.5 only",
+      "date": "2026-10-05"
+    },
+    "claude-haiku-5-5": {
+      "value": null,
+      "kind": "published",
+      "source": "SemiAnalysis, page 10, Claude Max 20x, gives Opus 5.5 only",
+      "date": "2026-10-05"
+    }
+  },
+  "per_attempt": {
+    "claude-sonnet-5-5": {
+      "low": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      },
+      "high": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      },
+      "max": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      }
+    },
+    "claude-opus-5-5": {
+      "low": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      },
+      "high": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      },
+      "max": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      }
+    },
+    "claude-fable-5-2": {
+      "low": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      },
+      "high": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      },
+      "max": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      }
+    },
+    "claude-fable-5-1": {
+      "low": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      },
+      "high": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      },
+      "max": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      }
+    },
+    "claude-haiku-5-5": {
+      "low": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      },
+      "high": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      },
+      "max": {
+        "reach": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        },
+        "tokens_generated_k": {
+          "value": null,
+          "kind": "measured",
+          "source": "not measured yet",
+          "date": null
+        }
+      }
+    }
+  }
+}
