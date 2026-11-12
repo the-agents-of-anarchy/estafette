@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use iroh::endpoint::BindError;
 use tokio::task::JoinError;
 
@@ -20,6 +22,7 @@ super::event_names! {
         ClaimNetworkRefused => "process.claim_network_refused",
         ClaimEndpointUnbound => "process.claim_endpoint_unbound",
         ClaimNodeNotStarted => "process.claim_node_not_started",
+        TraceNotDrained => "process.trace_not_drained",
     }
 }
 
@@ -33,6 +36,8 @@ pub enum ProcessEvent {
     ClockBeforeUnixEpoch,
     /// Init answered with the failure's own code.
     ClaimFailed(ClaimFailure),
+    /// The debug trace was still writing when its drain bound ran out at the stop.
+    TraceNotDrained { drain: Duration },
 }
 
 /// Why init failed once it held or tried the card's sidecar lock, each cause answering its own code.
@@ -84,6 +89,7 @@ impl AreaEvent for ProcessEvent {
             Self::ClaimFailed(ClaimFailure::NodeNotStarted(_)) => {
                 ProcessEventName::ClaimNodeNotStarted
             }
+            Self::TraceNotDrained { .. } => ProcessEventName::TraceNotDrained,
         }
     }
 
@@ -111,14 +117,19 @@ impl AreaEvent for ProcessEvent {
                     ),
                 }
             }
+            Self::TraceNotDrained { drain } => format!(
+                "the debug trace did not finish writing within {} ms of the stop: its last lines may be missing from its files",
+                drain.as_millis()
+            ),
         })
     }
 
     fn fields(&self) -> EventFields {
         match self {
-            Self::CommandFailed(_) | Self::NetworkCreated { .. } | Self::ClockBeforeUnixEpoch => {
-                Vec::new()
-            }
+            Self::CommandFailed(_)
+            | Self::NetworkCreated { .. }
+            | Self::ClockBeforeUnixEpoch
+            | Self::TraceNotDrained { .. } => Vec::new(),
             Self::ClaimFailed(failure) => answered(&failure.answered_code()),
         }
     }

@@ -145,15 +145,17 @@ fn main() -> ExitCode {
         EstafetteArguments::parse().command,
         |name| std::env::var_os(name),
         &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
+        TraceBounds::SPEC,
     );
     ExitCode::from(u8::from(status))
 }
 
-/// Runs the command on the process's streams, reading the environment through the given lookup and tracing through the given effects, and says how the process ends.
+/// Runs the command on the process's streams, reading the environment through the given lookup and tracing through the given effects within the given bounds, and says how the process ends.
 fn run_command(
     command: Command,
     environment: impl Fn(&str) -> Option<OsString>,
     trace_effects: &TraceEffects,
+    trace_bounds: TraceBounds,
 ) -> ExitStatus {
     match command {
         Command::Cards(command) => cards::run(
@@ -171,6 +173,7 @@ fn run_command(
             &mut io::stdout(),
             io::stderr(),
             trace_effects,
+            trace_bounds,
         ),
         Command::Network { command } => exit_status_after(
             run_network_command(&command, &environment, &mut io::stdout(), &mut io::stderr())
@@ -183,6 +186,7 @@ fn run_command(
             command.cards_dir(),
             io::stderr(),
             trace_effects,
+            trace_bounds,
             |directories, process| {
                 run_observer_command(&command, directories, process, &mut io::stdout())
                     .map(|()| ExitStatus::Success)
@@ -194,6 +198,7 @@ fn run_command(
             registry.cards_dir.clone(),
             io::stderr(),
             trace_effects,
+            trace_bounds,
             |directories, process| serve_mcp(registry, directories, process),
         ),
         Command::Doctor { arguments, debug } => run_traced(
@@ -202,6 +207,7 @@ fn run_command(
             arguments.registry.cards_dir.clone(),
             io::stderr(),
             trace_effects,
+            trace_bounds,
             |directories, process| {
                 run_doctor_command(&arguments, directories, process, &mut io::stdout())
             },
@@ -215,17 +221,18 @@ struct ProcessRecord {
     trace: Option<Arc<Trace>>,
 }
 
-/// Runs a command that starts an endpoint: resolves the directories, starts the trace on the given effects unless `--no-debug` and names its files first on standard error, runs the command, records how it ended, then empties the trace's queues within their bound before the process exits.
+/// Runs a command that starts an endpoint: resolves the directories, starts the trace on the given effects within the given bounds unless `--no-debug` and names its files first on standard error, runs the command, records how it ended, then empties the trace's queues within their bound before the process exits, saying on standard error when they did not empty.
 fn run_traced<StandardError: Write + Send + 'static>(
     tracing: Tracing,
     environment: impl Fn(&str) -> Option<OsString>,
     cards_dir: Option<PathBuf>,
     stderr: StandardError,
     trace_effects: &TraceEffects,
+    trace_bounds: TraceBounds,
     command: impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure>,
 ) -> ExitStatus {
     let stderr = Arc::new(Mutex::new(stderr));
-    let trace = match start_trace(tracing, &environment, trace_effects) {
+    let trace = match start_trace(tracing, &environment, trace_effects, trace_bounds) {
         Ok(trace) => trace,
         Err(failure) => {
             return exit_status_after(Err(failure), run_record_on(&stderr, None).as_ref());
@@ -246,17 +253,25 @@ fn run_traced<StandardError: Write + Send + 'static>(
         .map_err(CommandLineFailure::Directories)
         .and_then(|directories| command(directories, &process));
     let status = exit_status_after(outcome, process.record.as_ref());
-    if let Some(trace) = &process.trace {
-        trace.finish();
+    if let Some(trace) = &process.trace
+        && !trace.finish()
+    {
+        run_record_on(&stderr, None)(
+            ProcessEvent::TraceNotDrained {
+                drain: trace_bounds.drain,
+            }
+            .into(),
+        );
     }
     status
 }
 
-/// The debug trace of this process under `--debug`, its run id from the secure random source and its files written through the given effects; none under `--no-debug`.
+/// The debug trace of this process under `--debug`, its run id from the secure random source and its files written through the given effects within the given bounds; none under `--no-debug`.
 fn start_trace(
     tracing: Tracing,
     environment: &impl Fn(&str) -> Option<OsString>,
     trace_effects: &TraceEffects,
+    trace_bounds: TraceBounds,
 ) -> Result<Option<Arc<Trace>>, CommandLineFailure> {
     match tracing {
         Tracing::NoDebug => Ok(None),
@@ -270,7 +285,7 @@ fn start_trace(
                 &OperatingSystemFilesystem,
                 RunId::from_random_bytes(run_id),
                 trace_effects,
-                TraceBounds::SPEC,
+                trace_bounds,
             )
             .map(|trace| Some(Arc::new(trace)))
             .map_err(CommandLineFailure::Trace)
@@ -682,7 +697,7 @@ fn unix_seconds_of(instant: SystemTime) -> Result<u64, CommandLineFailure> {
     unix_milliseconds_of(instant).map(|milliseconds| milliseconds / MILLISECONDS_PER_SECOND)
 }
 
-/// Runs the infrastructure command on a runtime of its own, its run record on `stderr` and its trace on the given effects, and says how the process ends.
+/// Runs the infrastructure command on a runtime of its own, its run record on `stderr` and its trace on the given effects within the given bounds, and says how the process ends.
 #[cfg(feature = "relay")]
 fn run_infrastructure_command(
     command: InfrastructureCommand,
@@ -690,6 +705,7 @@ fn run_infrastructure_command(
     result: &mut (impl Write + Send),
     stderr: impl Write + Send + 'static,
     trace_effects: &TraceEffects,
+    trace_bounds: TraceBounds,
 ) -> ExitStatus {
     run_traced(
         command.debug().tracing(),
@@ -697,6 +713,7 @@ fn run_infrastructure_command(
         None,
         stderr,
         trace_effects,
+        trace_bounds,
         |directories, process| {
             serve_infrastructure(command, &directories, process, result)
                 .map(|()| ExitStatus::Success)
@@ -1156,6 +1173,7 @@ mod tests {
             Command::Observer(observer),
             environment,
             &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
+            TraceBounds::SPEC,
         );
 
         assert_eq!(status, ExitStatus::Failure);
@@ -1275,6 +1293,7 @@ mod tests {
             None,
             io::sink(),
             &trace_effects,
+            TraceBounds::SPEC,
             move |_directories, process| {
                 for _ in 0..EVENTS_RECORDED {
                     (process.record)(ProcessEvent::ClockBeforeUnixEpoch.into());
@@ -1297,11 +1316,59 @@ mod tests {
         drop(std::fs::remove_dir_all(&root));
     }
 
-    #[cfg(feature = "relay")]
+    #[test]
+    fn observability_decision_12_a_trace_still_writing_when_its_drain_bound_runs_out_says_so_on_standard_error_and_the_status_stands()
+     {
+        const SPEC_UNDRAINED_LINE: &str = "the debug trace did not finish writing within 0 ms of the stop: its last lines may be missing from its files";
+        const SCRATCH_PREFIX: &str = "estafette-trace-undrained";
+        const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
+        const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
+        const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
+        let root = std::env::temp_dir().join(format!("{SCRATCH_PREFIX}-{}", std::process::id()));
+        drop(std::fs::remove_dir_all(&root));
+        let environment = |name: &str| match name {
+            CONFIG_HOME_VARIABLE => Some(root.join("c").into_os_string()),
+            DATA_HOME_VARIABLE => Some(root.join("d").into_os_string()),
+            RUNTIME_DIRECTORY_VARIABLE => Some(root.join("r").into_os_string()),
+            _ => None,
+        };
+        let run_ended = Arc::new(Mutex::new(()));
+        let held_back_files = Arc::clone(&run_ended);
+        let trace_effects = TraceEffects {
+            create_file: Arc::new(move |_path: &Path| -> io::Result<Box<dyn Write + Send>> {
+                Ok(Box::new(HeldBackTraceFile {
+                    body_ended: Arc::clone(&held_back_files),
+                    written: Arc::default(),
+                }))
+            }),
+            ..TraceEffects::of_the_operating_system(trace_clocks_started_now())
+        };
+        let standard_error = SharedRecord::default();
+        let run_running = run_ended.lock().unwrap();
+
+        let status = run_traced(
+            Tracing::Debug,
+            environment,
+            None,
+            standard_error.clone(),
+            &trace_effects,
+            TraceBounds {
+                drain: Duration::ZERO,
+                ..TraceBounds::SPEC
+            },
+            |_directories, _process| Ok(ExitStatus::Success),
+        );
+
+        drop(run_running);
+        let recorded = String::from_utf8(standard_error.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(status, ExitStatus::Success);
+        assert_eq!(recorded.lines().last(), Some(SPEC_UNDRAINED_LINE));
+        drop(std::fs::remove_dir_all(&root));
+    }
+
     #[derive(Clone, Default)]
     struct SharedRecord(Arc<Mutex<Vec<u8>>>);
 
-    #[cfg(feature = "relay")]
     impl Write for SharedRecord {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.0
@@ -1371,6 +1438,7 @@ mod tests {
             &mut printed,
             recorded.clone(),
             &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
+            TraceBounds::SPEC,
         );
 
         let recorded = recorded.0.lock().unwrap().clone();
