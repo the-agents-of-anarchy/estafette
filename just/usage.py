@@ -493,19 +493,19 @@ def component_lines(prefix, unit, by_component):
 
 def generation_speed_of(parameters, attempt):
     """The generation speed of the attempt's variant, or of its model where no figure covers the variant, refused when both are null."""
-    variant_speed = parameters['per_attempt'][attempt.model][attempt.effort]['generation_speed_tokens_per_second']
-    speed = variant_speed if variant_speed['value'] is not None else parameters['generation_speed_tokens_per_second'][attempt.model]
-    return required_value(speed, f'generation speed of {attempt.model} {attempt.effort}')
+    variant_generation_speed = parameters['per_attempt'][attempt.model][attempt.effort]['generation_speed_tokens_per_second']
+    generation_speed = variant_generation_speed if variant_generation_speed['value'] is not None else parameters['generation_speed_tokens_per_second'][attempt.model]
+    return required_value(generation_speed, f'generation speed of {attempt.model} {attempt.effort}')
 
 
 def minute_lines(parameters, attempt):
     """Minutes of generation time, of tool time and their sum, refused when the generation speed is null."""
-    speed = generation_speed_of(parameters, attempt)
-    generation = attempt.appetite_k * TOKENS_PER_THOUSAND / speed / SECONDS_PER_MINUTE
+    generation_speed = generation_speed_of(parameters, attempt)
+    generation_time = attempt.appetite_k * TOKENS_PER_THOUSAND / generation_speed / SECONDS_PER_MINUTE
     return [
-        Line(f'{MINUTES_UNIT} generation time', generation, MINUTES_UNIT),
+        Line(f'{MINUTES_UNIT} generation time', generation_time, MINUTES_UNIT),
         Line(f'{MINUTES_UNIT} tool time', attempt.tool_time_min, MINUTES_UNIT),
-        Line(total_label(MINUTES_UNIT), generation + attempt.tool_time_min, MINUTES_UNIT),
+        Line(total_label(MINUTES_UNIT), generation_time + attempt.tool_time_min, MINUTES_UNIT),
     ]
 
 

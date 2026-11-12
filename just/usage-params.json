@@ -35,7 +35,7 @@
     "agent": {
       "value": 300,
       "kind": "measured",
-      "source": "this session's transcripts, every agent's cache writes are at the 5-minute tier",
+      "source": "this session's transcripts, every agent's cache writes are at the 5-minute TTL",
       "date": "2026-11-12"
     },
     "lead": {
