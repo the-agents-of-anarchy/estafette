@@ -168,7 +168,7 @@ pub enum TraceStop {
     Drained,
     /// The writer of the file named did not report within the drain bound that it took every queued line.
     NotDrained { file: TraceFileKind },
-    /// The writer of the file named took every queued line, but the file could not be cut back to its last line and keeps the zero bytes sized past it.
+    /// The writer of the file named took every queued line, but the file was sized past its last line and could not be cut back to it, so zero bytes follow that line.
     NotCut {
         file: TraceFileKind,
         source: io::Error,
@@ -1389,7 +1389,7 @@ mod tests {
     }
 
     #[test]
-    fn observability_decision_6_a_line_is_sized_ahead_by_the_fewest_whole_steps_that_hold_it_and_a_clean_stop_cuts_back_to_it()
+    fn observability_decision_6_a_line_is_sized_ahead_by_the_fewest_whole_steps_that_hold_it_and_a_clean_stop_cuts_back_to_it_only_when_sized_past_it()
      {
         const STEP_COUNTS: [u64; 3] = [1, 2, 3];
         const SEEDED_CASES: u64 = 20;
@@ -1415,14 +1415,12 @@ mod tests {
                 line_bytes_without_text.saturating_add(text_bytes),
                 "{text_bytes}"
             );
-            assert_eq!(
-                lengths,
-                [
-                    line_bytes.next_multiple_of(TRACE_FILE_SIZED_AHEAD_BYTES),
-                    line_bytes
-                ],
-                "{text_bytes}"
-            );
+            let sized_bytes = line_bytes.next_multiple_of(TRACE_FILE_SIZED_AHEAD_BYTES);
+            let cut_back_to_the_line = (sized_bytes > line_bytes).then_some(line_bytes);
+            let lengths_set: Vec<u64> = std::iter::once(sized_bytes)
+                .chain(cut_back_to_the_line)
+                .collect();
+            assert_eq!(lengths, lengths_set, "{text_bytes}");
         }
         drop(fs::remove_dir_all(&root));
     }

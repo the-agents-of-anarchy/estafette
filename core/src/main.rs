@@ -1465,14 +1465,14 @@ mod tests {
         })
     }
 
-    /// A trace file that refuses to be cut shorter than it was last sized, discarding what is written to it.
+    /// A trace file that refuses every length but one past the size it was last given, discarding what is written to it.
     struct UncuttableTraceFile {
         sized: u64,
     }
 
     impl TraceFile for UncuttableTraceFile {
         fn set_length(&mut self, length: u64) -> io::Result<()> {
-            if length < self.sized {
+            if length <= self.sized {
                 return Err(io::Error::other(STAND_IN_SHRINK_REFUSAL));
             }
             self.sized = length;
@@ -1593,6 +1593,36 @@ mod tests {
                 spec_not_drained_line(SPEC_EVENTS_FILE_WORD, STOP_REPORTED_WITHIN),
                 spec_not_cut_line(SPEC_RAW_FILE_WORD)
             ]
+        );
+    }
+
+    #[test]
+    fn observability_decision_12_an_events_file_holding_nothing_past_its_last_line_is_never_said_to_end_in_zero_bytes_while_the_raw_file_sized_past_its_line_is()
+     {
+        const SCRATCH_PREFIX: &str = "estafette-trace-nothing-past-the-last-line";
+        let (_scratch_removed_when_the_test_ends, environment) =
+            scratch_environment(SCRATCH_PREFIX);
+        let trace_effects =
+            trace_effects_creating(uncuttable_trace_files(), uncuttable_trace_files());
+        let standard_error = SharedRecord::default();
+
+        let status = run_traced(
+            Tracing::Debug,
+            environment,
+            None,
+            standard_error.clone(),
+            &trace_effects,
+            TraceBounds {
+                drain: STOP_REPORTED_WITHIN,
+                ..TraceBounds::SPEC
+            },
+            |_directories, _process| Ok(ExitStatus::Success),
+        );
+
+        assert_eq!(status, ExitStatus::Success);
+        assert_eq!(
+            lines_after_the_announcement(&standard_error),
+            [spec_not_cut_line(SPEC_RAW_FILE_WORD)]
         );
     }
 

@@ -118,9 +118,11 @@ impl RollingFile {
         written
     }
 
-    /// Cuts the file back to the last byte written, so nothing sized ahead remains.
+    /// Cuts the file back to the last byte written when it is sized past it, so nothing sized ahead remains.
     fn cut_to_written(&mut self) -> io::Result<()> {
-        if let Some(file) = self.file.as_mut() {
+        if self.sized_bytes > self.written_bytes
+            && let Some(file) = self.file.as_mut()
+        {
             file.set_length(self.written_bytes)?;
             self.sized_bytes = self.written_bytes;
         }
