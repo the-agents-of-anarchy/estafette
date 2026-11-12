@@ -1,6 +1,7 @@
 """Catch Claude Code's account limit figures from the status line input and report them, and list the agents in flight with their cost."""
 import argparse
 import json
+import math
 import os
 import re
 import shlex
@@ -53,10 +54,17 @@ DOLLARS_UNIT = 'usd'
 LIMIT_WEIGHT_UNIT = 'percent'
 MINUTES_UNIT = 'min'
 SECONDS_UNIT = 'seconds'
-UNIT_FORMATS = {DOLLARS_UNIT: '${:.2f}', LIMIT_WEIGHT_UNIT: '{:.4f}%', MINUTES_UNIT: '{:.1f}', SECONDS_UNIT: '{:.0f} s'}
+CAPABILITY_UNIT = 'capability'
+APPETITE_UNIT = 'thousand tokens'
+UNIT_FORMATS = {DOLLARS_UNIT: '${:.2f}', LIMIT_WEIGHT_UNIT: '{:.4f}%', MINUTES_UNIT: '{:.1f}', SECONDS_UNIT: '{:.0f} s', CAPABILITY_UNIT: '{:.3f}', APPETITE_UNIT: '{:.1f}'}
 LIMIT_WEIGHT_PREFIX = 'limit weight'
 TTL_LABEL = 'TTL'
 PUBLISHED_ATTEMPT_LABEL = f'{DOLLARS_UNIT} published attempt'
+LINEUP_ROLE = 'agent'
+LINEUP_HEADER = f'model | effort | {CAPABILITY_UNIT} | appetite_k | {DOLLARS_UNIT} attempt | {MINUTES_UNIT} | {DOLLARS_UNIT} per work unit'
+MISSING_CAPABILITY = 'capability'
+MISSING_APPETITE = 'appetite'
+MISSING_GENERATION_SPEED = 'generation speed'
 
 
 def login_directory(environment, home_directory):
@@ -514,9 +522,14 @@ def attempt_lines(prices, parameters, attempt):
     ]
 
 
+def figure_in_unit(figure, unit):
+    """A figure in its unit's format, or the unknown mark."""
+    return UNKNOWN_MARK if figure is None else UNIT_FORMATS[unit].format(figure)
+
+
 def figure_text(line):
     """A line's figure in its unit's format, or the unknown mark."""
-    return UNKNOWN_MARK if line.figure is None else UNIT_FORMATS[line.unit].format(line.figure)
+    return figure_in_unit(line.figure, line.unit)
 
 
 def print_lines(lines):
@@ -548,14 +561,19 @@ def figure_of(lines, label):
     return next(line.figure for line in lines if line.label == label)
 
 
+def checked_capability(capability, description):
+    """Refuse a capability outside 0 to 1 with 0 excluded, naming what it belongs to."""
+    if not 0 < capability <= 1:
+        raise Refusal(f'capability {capability} of {description} is outside 0 to 1, 0 excluded')
+    return capability
+
+
 def capability_from(parameters, parsed):
     """The capability a parsed command line gives or the parameter file holds, refused when null and not passed or outside 0 to 1 with 0 excluded."""
     capability = parsed.capability
     if capability is None:
         capability = required_value(parameters['per_attempt'][parsed.model][parsed.effort]['capability'], f'capability of {parsed.model} {parsed.effort}', ': pass --capability')
-    if not 0 < capability <= 1:
-        raise Refusal(f'capability {capability} is outside 0 to 1, 0 excluded')
-    return capability
+    return checked_capability(capability, f'{parsed.model} {parsed.effort}')
 
 
 def work_unit_figure(attempt, check, rework, capability):
@@ -594,7 +612,87 @@ def compare_command(parsed, prices, parameters):
     return 0
 
 
-CALCULATOR_COMMANDS = {'attempt': attempt_command, 'unit': unit_command, 'compare': compare_command}
+class LineupRequest(NamedTuple):
+    """The task a lineup prices: an attempt's context, steps, cold starts and tool time, the check and rework dollars, and the factor on every capability."""
+
+    context_k: float
+    steps: int
+    cold_starts: int
+    tool_time_min: float
+    check_usd: float
+    rework_usd: float
+    capability_scale: float
+
+
+class LineupRow(NamedTuple):
+    """One variant of the lineup: its figures, None where unknown, and the names of the figures it lacks."""
+
+    model: str
+    effort: str
+    capability: float | None
+    appetite_k: float | None
+    attempt_usd: float | None
+    minutes: float | None
+    work_unit_usd: float | None
+    missing: tuple[str, ...]
+
+
+def missing_fields(parameters, model, effort):
+    """The names of the figures no source gives for a variant: its capability, its appetite and its generation speed."""
+    variant = parameters['per_attempt'][model][effort]
+    model_speed = parameters['generation_speed_tokens_per_second'][model]
+    lacking = {
+        MISSING_CAPABILITY: variant['capability']['value'] is None,
+        MISSING_APPETITE: variant['appetite_k']['value'] is None,
+        MISSING_GENERATION_SPEED: variant['generation_speed_tokens_per_second']['value'] is None and model_speed['value'] is None,
+    }
+    return tuple(name for name, is_lacking in lacking.items() if is_lacking)
+
+
+def lineup_row(prices, parameters, request, short_name, model, effort):
+    """The row of one variant: attempt dollars and minutes where its appetite and generation speed are known, dollars per work unit where its capability is too."""
+    variant = parameters['per_attempt'][model][effort]
+    missing = missing_fields(parameters, model, effort)
+    capability = None if MISSING_CAPABILITY in missing else checked_capability(variant['capability']['value'] * request.capability_scale, f'{short_name} {effort} scaled by {request.capability_scale}')
+    appetite_k = variant['appetite_k']['value']
+    if MISSING_APPETITE in missing or MISSING_GENERATION_SPEED in missing:
+        return LineupRow(short_name, effort, capability, appetite_k, None, None, None, missing)
+    lines = attempt_lines(prices, parameters, Attempt(model, effort, request.context_k, request.steps, request.cold_starts, request.tool_time_min, LINEUP_ROLE, appetite_k))
+    attempt_usd = figure_of(lines, total_label(DOLLARS_UNIT))
+    work_unit_usd = None if capability is None else work_unit_figure(attempt_usd, request.check_usd, request.rework_usd, capability)
+    return LineupRow(short_name, effort, capability, appetite_k, attempt_usd, figure_of(lines, total_label(MINUTES_UNIT)), work_unit_usd, missing)
+
+
+def lineup_sort_key(row):
+    """The dollars per work unit of a row, infinite where unknown so that such rows come last."""
+    return math.inf if row.work_unit_usd is None else row.work_unit_usd
+
+
+def lineup_row_text(row):
+    """A row's cells in their units, with the names of the missing figures after them."""
+    cells = [
+        row.model,
+        row.effort,
+        figure_in_unit(row.capability, CAPABILITY_UNIT),
+        figure_in_unit(row.appetite_k, APPETITE_UNIT),
+        figure_in_unit(row.attempt_usd, DOLLARS_UNIT),
+        figure_in_unit(row.minutes, MINUTES_UNIT),
+        figure_in_unit(row.work_unit_usd, DOLLARS_UNIT),
+    ]
+    return ' | '.join(cells) + (f' | missing: {", ".join(row.missing)}' if row.missing else '')
+
+
+def lineup_command(parsed, prices, parameters):
+    """Print one row per newest model and effort, the cheapest work unit first."""
+    request = LineupRequest(parsed.context_k, parsed.steps, parsed.cold_starts, parsed.tool_time_min, parsed.check_usd, parsed.rework_usd, parsed.capability_scale)
+    rows = [lineup_row(prices, parameters, request, short_name, model, effort) for short_name, model in FULL_MODEL_BY_SHORT_NAME.items() for effort in EFFORTS]
+    print(LINEUP_HEADER)
+    for row in sorted(rows, key=lineup_sort_key):
+        print(lineup_row_text(row))
+    return 0
+
+
+CALCULATOR_COMMANDS = {'attempt': attempt_command, 'unit': unit_command, 'compare': compare_command, 'lineup': lineup_command}
 
 
 def run_refusing(command, *command_arguments):
@@ -687,6 +785,14 @@ def main(arguments, standard_input, now, environment, home_directory):
     compare_parser = subcommands.add_parser('compare', help='print two attempts side by side with the ratio of each line')
     compare_parser.add_argument('first')
     compare_parser.add_argument('second')
+    lineup_parser = subcommands.add_parser('lineup', help='print one row per newest model and effort with its capability, appetite, attempt dollars, minutes and dollars per work unit, cheapest work unit first')
+    lineup_parser.add_argument('context_k', type=float)
+    lineup_parser.add_argument('steps', type=int)
+    lineup_parser.add_argument('cold_starts', type=int)
+    lineup_parser.add_argument('tool_time_min', type=float)
+    lineup_parser.add_argument('check_usd', type=float)
+    lineup_parser.add_argument('rework_usd', type=float)
+    lineup_parser.add_argument('--capability-scale', type=float, default=1.0)
     parsed = parser.parse_args(arguments)
     if parsed.subcommand in CALCULATOR_COMMANDS:
         return run_refusing(CALCULATOR_COMMANDS[parsed.subcommand], parsed, json.loads(PRICES_PATH.read_text()), json.loads(PARAMS_PATH.read_text()))
