@@ -30,3 +30,9 @@ checkpoints:
 [group('usage')]
 coldturns:
     python3 -I {{ quote(script) }} coldturns
+
+[doc("Compute one attempt, arguments: model effort context_k rounds cold_restarts tool_min agent|lead [--generated-k N]; model is a key of usage-prices.json, effort is low, high or max, context_k the thousands of tokens carried on average, tool_min the minutes of tools; prints dollars for generation, re-reads and re-writes at the prices of usage-prices.json (the re-write at the 5m write price for an agent, the 1h price for the lead) and their sum, the limit share of the same three where usage-params.json knows the model's shares and ? where not, minutes of generation at the model's speed, of tools and their sum, and the cache life of the role; reads usage-prices.json and usage-params.json; refuses an unknown model or effort naming the accepted set, tokens generated null in usage-params.json and not passed with --generated-k, and a null speed")]
+[group('usage')]
+[no-exit-message]
+attempt *arguments:
+    python3 -I {{ quote(script) }} attempt {{ arguments }}

@@ -41,6 +41,17 @@ ONE_HOUR_TIER = '1h'
 CACHE_LIFETIME_SECONDS_BY_TIER = {FIVE_MINUTE_TIER: 5 * 60, ONE_HOUR_TIER: 60 * 60}
 CACHE_WRITE_RATE_BY_TIER = {FIVE_MINUTE_TIER: 'cache_write_5m', ONE_HOUR_TIER: 'cache_write_1h'}
 ONE_HOUR_WRITE_PATTERN = re.compile(r'"ephemeral_1h_input_tokens": ?[1-9]')
+PARAMS_PATH = SCRIPT_DIRECTORY / 'usage-params.json'
+EFFORTS = ('low', 'high', 'max')
+ROLE_TIERS = {'agent': FIVE_MINUTE_TIER, 'lead': ONE_HOUR_TIER}
+COMPONENT_LABELS = {'output': 'generation', 'cache_read': 're-reads', 'cache_write': 're-writes'}
+DOLLARS_UNIT = 'usd'
+SHARE_UNIT = 'percent'
+MINUTES_UNIT = 'min'
+SECONDS_UNIT = 'seconds'
+UNIT_FORMATS = {DOLLARS_UNIT: '${:.2f}', SHARE_UNIT: '{:.4f}%', MINUTES_UNIT: '{:.1f}', SECONDS_UNIT: '{:.0f} s'}
+SHARE_PREFIX = 'limit share'
+CACHE_LIFE_LABEL = 'cache life'
 
 
 def login_directory(environment, home_directory):
@@ -368,6 +379,148 @@ def coldturns(session_transcript):
     return 0
 
 
+class Refusal(Exception):
+    """An input the calculator refuses, whose message is printed alone."""
+
+
+class Attempt(NamedTuple):
+    """One attempt's inputs: model, effort, thousands of context carried, rounds, cold restarts, tool minutes, who runs it and thousands of tokens generated."""
+
+    model: str
+    effort: str
+    context_k: float
+    rounds: int
+    cold_restarts: int
+    tool_min: float
+    role: str
+    generated_k: float
+
+
+class Line(NamedTuple):
+    """One row of a calculator table: its label, its figure (None when unknown) and its unit."""
+
+    label: str
+    figure: float | None
+    unit: str
+
+
+def required_value(entry, description, remedy=''):
+    """The value of a parameter entry, or a refusal naming the entry and the file when the value is null."""
+    if entry['value'] is None:
+        raise Refusal(f'{description} is null in {PARAMS_PATH.name}{remedy}')
+    return entry['value']
+
+
+def checked_model_and_effort(prices, model, effort):
+    """Refuse a model the price file does not list or an effort outside the three, naming the accepted set."""
+    if model not in prices['models']:
+        raise Refusal(f'unknown model {model!r}; accepted: {", ".join(prices["models"])}')
+    if effort not in EFFORTS:
+        raise Refusal(f'unknown effort {effort!r}; accepted: {", ".join(EFFORTS)}')
+
+
+def attempt_from(prices, parameters, parsed):
+    """The attempt a parsed command line describes, refused when model or effort is unknown or the tokens generated are null and not passed."""
+    checked_model_and_effort(prices, parsed.model, parsed.effort)
+    generated_k = parsed.generated_k
+    if generated_k is None:
+        entry = parameters['per_attempt'][parsed.model][parsed.effort]['tokens_generated_k']
+        generated_k = required_value(entry, f'tokens_generated_k of {parsed.model} {parsed.effort}', ': pass --generated-k')
+    return Attempt(parsed.model, parsed.effort, parsed.context_k, parsed.rounds, parsed.cold_restarts, parsed.tool_min, parsed.role, generated_k)
+
+
+def component_tokens(attempt):
+    """Tokens of each cost component: generated, re-read from the cache, re-written into it."""
+    context = attempt.context_k * TOKENS_PER_THOUSAND
+    return {'output': attempt.generated_k * TOKENS_PER_THOUSAND, 'cache_read': context * attempt.rounds, 'cache_write': context * attempt.cold_restarts}
+
+
+def component_prices(prices, attempt):
+    """Dollars per million tokens of each cost component, the write price taken at the cache tier of the attempt's role."""
+    rates = rates_for(prices, attempt.model, attempt.context_k * TOKENS_PER_THOUSAND)
+    return {'output': rates['output'], 'cache_read': rates['cache_read'], 'cache_write': rates[CACHE_WRITE_RATE_BY_TIER[ROLE_TIERS[attempt.role]]]}
+
+
+def tokens_at_rates(tokens, rates_per_million_tokens):
+    """Each component's tokens times its rate per million tokens."""
+    return {kind: tokens[kind] * rates_per_million_tokens[kind] / TOKENS_PER_PRICE_UNIT for kind in tokens}
+
+
+def total_label(prefix):
+    """The label of the line that sums a prefix's lines."""
+    return f'{prefix} total'
+
+
+def component_lines(prefix, unit, by_component):
+    """The three components' lines and their total, every figure None when the figures are unknown."""
+    lines = [Line(f'{prefix} {label}', None if by_component is None else by_component[kind], unit) for kind, label in COMPONENT_LABELS.items()]
+    return [*lines, Line(total_label(prefix), None if by_component is None else sum(by_component.values()), unit)]
+
+
+def minute_lines(parameters, attempt):
+    """Minutes of generation, of tools and their sum, refused when the model's speed is null."""
+    speed = required_value(parameters['speed_tokens_per_second'][attempt.model], f'speed of {attempt.model}')
+    generation = attempt.generated_k * TOKENS_PER_THOUSAND / speed / SECONDS_PER_MINUTE
+    return [
+        Line(f'{MINUTES_UNIT} generation', generation, MINUTES_UNIT),
+        Line(f'{MINUTES_UNIT} tools', attempt.tool_min, MINUTES_UNIT),
+        Line(total_label(MINUTES_UNIT), generation + attempt.tool_min, MINUTES_UNIT),
+    ]
+
+
+def attempt_lines(prices, parameters, attempt):
+    """The cache life, dollars, limit share and minutes of one attempt as table lines."""
+    tokens = component_tokens(attempt)
+    shares = parameters['limit_share_percent_per_million_tokens'][attempt.model]['value']
+    return [
+        Line(CACHE_LIFE_LABEL, parameters['cache_life_seconds'][attempt.role]['value'], SECONDS_UNIT),
+        *component_lines(DOLLARS_UNIT, DOLLARS_UNIT, tokens_at_rates(tokens, component_prices(prices, attempt))),
+        *component_lines(SHARE_PREFIX, SHARE_UNIT, None if shares is None else tokens_at_rates(tokens, shares)),
+        *minute_lines(parameters, attempt),
+    ]
+
+
+def figure_text(line):
+    """A line's figure in its unit's format, or the unknown mark."""
+    return UNKNOWN_MARK if line.figure is None else UNIT_FORMATS[line.unit].format(line.figure)
+
+
+def print_lines(lines):
+    """Print each line as its label and its figure."""
+    for line in lines:
+        print(f'{line.label} | {figure_text(line)}')
+
+
+def add_attempt_arguments(parser):
+    """Add the arguments that describe one attempt to a parser."""
+    parser.add_argument('model')
+    parser.add_argument('effort')
+    parser.add_argument('context_k', type=float)
+    parser.add_argument('rounds', type=int)
+    parser.add_argument('cold_restarts', type=int)
+    parser.add_argument('tool_min', type=float)
+    parser.add_argument('role', choices=tuple(ROLE_TIERS))
+    parser.add_argument('--generated-k', type=float)
+
+
+def attempt_command(parsed, prices, parameters):
+    """Print the table of one attempt."""
+    print_lines(attempt_lines(prices, parameters, attempt_from(prices, parameters, parsed)))
+    return 0
+
+
+CALCULATOR_COMMANDS = {'attempt': attempt_command}
+
+
+def run_refusing(command, *command_arguments):
+    """Run a calculator command and return its exit code, printing a refusal alone on standard error and returning 1."""
+    try:
+        return command(*command_arguments)
+    except Refusal as refusal:
+        print(refusal, file=sys.stderr)
+        return 1
+
+
 def main(arguments, standard_input, now, environment, home_directory):
     """Run the subcommand named in the arguments and return the process exit code."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -382,7 +535,11 @@ def main(arguments, standard_input, now, environment, home_directory):
     checkpoint_parser.add_argument('label')
     subcommands.add_parser('checkpoints', help='print the checkpoints with the differences between lines')
     subcommands.add_parser('coldturns', help='print the turns after a gap past the cache lifetime and the share of cache-write tokens they carry')
+    attempt_parser = subcommands.add_parser('attempt', help='print the dollars, limit share and minutes of one attempt')
+    add_attempt_arguments(attempt_parser)
     parsed = parser.parse_args(arguments)
+    if parsed.subcommand in CALCULATOR_COMMANDS:
+        return run_refusing(CALCULATOR_COMMANDS[parsed.subcommand], parsed, json.loads(PRICES_PATH.read_text()), json.loads(PARAMS_PATH.read_text()))
     login = login_directory(environment, home_directory)
     directory = scratch_directory(environment, REPOSITORY_ROOT)
     limits_path = directory / LIMITS_FILE_NAME
