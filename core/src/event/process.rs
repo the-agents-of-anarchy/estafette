@@ -5,6 +5,7 @@ use iroh::endpoint::BindError;
 use tokio::task::JoinError;
 
 use super::{AnsweredFailure, AreaEvent, Event, EventFields, answered};
+use crate::dirs::TraceFileKind;
 use crate::errors::ErrorCode;
 use crate::handle::Handle;
 use crate::node::NodeError;
@@ -38,10 +39,16 @@ pub enum ProcessEvent {
     ClockBeforeUnixEpoch,
     /// Init answered with the failure's own code.
     ClaimFailed(ClaimFailure),
-    /// The debug trace was still writing when its drain bound ran out at the stop.
-    TraceNotDrained { drain: Duration },
-    /// The debug trace could not cut a file back to its last line at the stop, so the file ends in zero bytes.
-    TraceNotCut(io::Error),
+    /// The writer of the debug trace's file named did not report within the drain bound at the stop that it took every queued line.
+    TraceNotDrained {
+        file: TraceFileKind,
+        drain: Duration,
+    },
+    /// The debug trace could not cut the file named back to its last line at the stop.
+    TraceNotCut {
+        file: TraceFileKind,
+        source: io::Error,
+    },
 }
 
 /// Why init failed once it held or tried the card's sidecar lock, each cause answering its own code.
@@ -73,6 +80,14 @@ impl From<ClaimFailure> for Event {
     }
 }
 
+/// The word standard error names a trace file by.
+const fn trace_file_word(file: TraceFileKind) -> &'static str {
+    match file {
+        TraceFileKind::Events => "events",
+        TraceFileKind::Raw => "raw",
+    }
+}
+
 impl AreaEvent for ProcessEvent {
     type Name = ProcessEventName;
 
@@ -94,7 +109,7 @@ impl AreaEvent for ProcessEvent {
                 ProcessEventName::ClaimNodeNotStarted
             }
             Self::TraceNotDrained { .. } => ProcessEventName::TraceNotDrained,
-            Self::TraceNotCut(_) => ProcessEventName::TraceNotCut,
+            Self::TraceNotCut { .. } => ProcessEventName::TraceNotCut,
         }
     }
 
@@ -122,12 +137,14 @@ impl AreaEvent for ProcessEvent {
                     ),
                 }
             }
-            Self::TraceNotDrained { drain } => format!(
-                "the debug trace did not finish writing within {} ms of the stop: its last lines may be missing from its files",
+            Self::TraceNotDrained { file, drain } => format!(
+                "the debug trace did not finish writing its {} file within {} ms of the stop: the file's last lines may be missing",
+                trace_file_word(*file),
                 drain.as_millis()
             ),
-            Self::TraceNotCut(source) => format!(
-                "the debug trace could not cut a file back to its last line at the stop, so the file ends in zero bytes: {source}"
+            Self::TraceNotCut { file, source } => format!(
+                "the debug trace could not cut its {} file back to its last line at the stop, so the file ends in zero bytes: {source}",
+                trace_file_word(*file)
             ),
         })
     }
@@ -138,7 +155,7 @@ impl AreaEvent for ProcessEvent {
             | Self::NetworkCreated { .. }
             | Self::ClockBeforeUnixEpoch
             | Self::TraceNotDrained { .. }
-            | Self::TraceNotCut(_) => Vec::new(),
+            | Self::TraceNotCut { .. } => Vec::new(),
             Self::ClaimFailed(failure) => answered(&failure.answered_code()),
         }
     }

@@ -221,7 +221,7 @@ struct ProcessRecord {
     trace: Option<Arc<Trace>>,
 }
 
-/// Runs a command that starts an endpoint: resolves the directories, starts the trace on the given effects within the given bounds unless `--no-debug` and names its files first on standard error, runs the command, records how it ended, then empties the trace's queues within their bound before the process exits, saying on standard error when they did not empty.
+/// Runs a command that starts an endpoint: resolves the directories, starts the trace on the given effects within the given bounds unless `--no-debug` and names its files first on standard error, runs the command, records how it ended, then empties the trace's queues within their bound before the process exits, saying on standard error, file by file, when a queue did not empty or its file could not be cut back to its last line.
 fn run_traced<StandardError: Write + Send + 'static>(
     tracing: Tracing,
     environment: impl Fn(&str) -> Option<OsString>,
@@ -254,15 +254,20 @@ fn run_traced<StandardError: Write + Send + 'static>(
         .and_then(|directories| command(directories, &process));
     let status = exit_status_after(outcome, process.record.as_ref());
     if let Some(trace) = &process.trace {
-        let unfinished = match trace.finish() {
-            TraceStop::Drained => None,
-            TraceStop::NotDrained => Some(ProcessEvent::TraceNotDrained {
-                drain: trace_bounds.drain,
-            }),
-            TraceStop::NotCut(source) => Some(ProcessEvent::TraceNotCut(source)),
-        };
-        if let Some(unfinished) = unfinished {
-            run_record_on(&stderr, None)(unfinished.into());
+        for stop in trace.finish() {
+            let unfinished = match stop {
+                TraceStop::Drained => None,
+                TraceStop::NotDrained { file } => Some(ProcessEvent::TraceNotDrained {
+                    file,
+                    drain: trace_bounds.drain,
+                }),
+                TraceStop::NotCut { file, source } => {
+                    Some(ProcessEvent::TraceNotCut { file, source })
+                }
+            };
+            if let Some(unfinished) = unfinished {
+                run_record_on(&stderr, None)(unfinished.into());
+            }
         }
     }
     status
@@ -840,7 +845,7 @@ mod tests {
     use clap::error::ErrorKind;
     #[cfg(feature = "relay")]
     use estafette::crypto::KEY_LEN;
-    use estafette::trace::TraceFile;
+    use estafette::trace::{CreateTraceFile, SpawnThread, TraceFile};
 
     use super::*;
     use crate::seeded_draws::Draws;
@@ -1338,9 +1343,8 @@ mod tests {
     }
 
     #[test]
-    fn observability_decision_12_a_trace_still_writing_when_its_drain_bound_runs_out_says_so_on_standard_error_and_the_status_stands()
+    fn observability_decision_12_a_trace_still_writing_when_its_drain_bound_runs_out_says_so_for_each_file_events_first_and_the_status_stands()
      {
-        const SPEC_UNDRAINED_LINE: &str = "the debug trace did not finish writing within 0 ms of the stop: its last lines may be missing from its files";
         const SCRATCH_PREFIX: &str = "estafette-trace-undrained";
         let (_scratch_removed_when_the_test_ends, environment) =
             scratch_environment(SCRATCH_PREFIX);
@@ -1368,16 +1372,100 @@ mod tests {
                 drain: Duration::ZERO,
                 ..TraceBounds::SPEC
             },
-            |_directories, _process| Ok(ExitStatus::Success),
+            |_directories, process| {
+                record_in_the_events_file_alone(process);
+                Ok(ExitStatus::Success)
+            },
         );
 
         drop(run_running);
-        let recorded = String::from_utf8(standard_error.0.lock().unwrap().clone()).unwrap();
         assert_eq!(status, ExitStatus::Success);
-        assert_eq!(recorded.lines().last(), Some(SPEC_UNDRAINED_LINE));
+        assert_eq!(
+            lines_after_the_announcement(&standard_error),
+            [
+                spec_not_drained_line(SPEC_EVENTS_FILE_WORD, Duration::ZERO),
+                spec_not_drained_line(SPEC_RAW_FILE_WORD, Duration::ZERO)
+            ]
+        );
     }
 
     const STAND_IN_SHRINK_REFUSAL: &str = "the file refuses to shrink";
+    const SPEC_EVENTS_FILE_WORD: &str = "events";
+    const SPEC_RAW_FILE_WORD: &str = "raw";
+    const SPEC_EVENTS_FILE_SUFFIX: &str = ".events.jsonl";
+    const STOP_REPORTED_WITHIN: Duration = Duration::from_secs(10);
+
+    /// The line standard error gives, by the lead's ruling on decision 12, for a trace file whose writer did not report its stop within `drain`.
+    fn spec_not_drained_line(file_word: &str, drain: Duration) -> String {
+        format!(
+            "the debug trace did not finish writing its {file_word} file within {} ms of the stop: the file's last lines may be missing",
+            drain.as_millis()
+        )
+    }
+
+    /// The line standard error gives, by the lead's ruling on decision 12, for a trace file the stand-in refused to cut back to its last line.
+    fn spec_not_cut_line(file_word: &str) -> String {
+        format!(
+            "the debug trace could not cut its {file_word} file back to its last line at the stop, so the file ends in zero bytes: {STAND_IN_SHRINK_REFUSAL}"
+        )
+    }
+
+    /// The lines standard error holds after its first, the one naming the trace files.
+    fn lines_after_the_announcement(standard_error: &SharedRecord) -> Vec<String> {
+        String::from_utf8(standard_error.0.lock().unwrap().clone())
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// Records one event in the events file and nowhere else, so the file is sized ahead of a line and standard error gains nothing.
+    fn record_in_the_events_file_alone(process: &ProcessRecord) {
+        if let Some(trace) = &process.trace {
+            trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
+        }
+    }
+
+    /// Trace effects that create each events file through `events_file` and each raw file through `raw_file`.
+    fn trace_effects_creating(
+        events_file: CreateTraceFile,
+        raw_file: CreateTraceFile,
+    ) -> TraceEffects {
+        TraceEffects {
+            create_file: Arc::new(move |path: &Path| {
+                if path
+                    .to_str()
+                    .is_some_and(|path| path.ends_with(SPEC_EVENTS_FILE_SUFFIX))
+                {
+                    events_file(path)
+                } else {
+                    raw_file(path)
+                }
+            }),
+            ..TraceEffects::of_the_operating_system(trace_clocks_started_now())
+        }
+    }
+
+    /// Creates trace files that refuse to be cut back to their last line.
+    fn uncuttable_trace_files() -> CreateTraceFile {
+        Arc::new(|_path: &Path| -> io::Result<Box<dyn TraceFile>> {
+            Ok(Box::new(UncuttableTraceFile { sized: 0 }))
+        })
+    }
+
+    /// Starts each trace writer thread but the first, the events file's as `Trace::start` starts them, whose work is dropped unrun so it never reports its stop.
+    fn spawning_no_events_writer() -> SpawnThread {
+        let is_events_writer = AtomicBool::new(true);
+        let spawn_thread =
+            TraceEffects::of_the_operating_system(trace_clocks_started_now()).spawn_thread;
+        Arc::new(move |name: &str, work: Box<dyn FnOnce() + Send>| {
+            if is_events_writer.swap(false, Ordering::SeqCst) {
+                return Ok(());
+            }
+            spawn_thread(name, work)
+        })
+    }
 
     /// A trace file that refuses to be cut shorter than it was last sized, discarding what is written to it.
     struct UncuttableTraceFile {
@@ -1405,17 +1493,85 @@ mod tests {
     }
 
     #[test]
-    fn observability_decision_12_a_trace_whose_file_cannot_be_cut_back_at_the_stop_says_so_on_standard_error_and_the_status_stands()
+    fn observability_decision_12_a_trace_whose_two_files_cannot_be_cut_back_at_the_stop_says_so_for_each_file_events_first_and_the_status_stands()
      {
-        const SPEC_NOT_CUT_LINE_BEFORE_ITS_CAUSE: &str = "the debug trace could not cut a file back to its last line at the stop, so the file ends in zero bytes";
         const SCRATCH_PREFIX: &str = "estafette-trace-not-cut";
         let (_scratch_removed_when_the_test_ends, environment) =
             scratch_environment(SCRATCH_PREFIX);
+        let trace_effects =
+            trace_effects_creating(uncuttable_trace_files(), uncuttable_trace_files());
+        let standard_error = SharedRecord::default();
+
+        let status = run_traced(
+            Tracing::Debug,
+            environment,
+            None,
+            standard_error.clone(),
+            &trace_effects,
+            TraceBounds {
+                drain: STOP_REPORTED_WITHIN,
+                ..TraceBounds::SPEC
+            },
+            |_directories, process| {
+                record_in_the_events_file_alone(process);
+                Ok(ExitStatus::Success)
+            },
+        );
+
+        assert_eq!(status, ExitStatus::Success);
+        assert_eq!(
+            lines_after_the_announcement(&standard_error),
+            [
+                spec_not_cut_line(SPEC_EVENTS_FILE_WORD),
+                spec_not_cut_line(SPEC_RAW_FILE_WORD)
+            ]
+        );
+    }
+
+    #[test]
+    fn observability_decision_12_an_events_file_that_cannot_be_cut_back_beside_a_raw_file_that_drains_is_named_alone_on_standard_error()
+     {
+        const SCRATCH_PREFIX: &str = "estafette-trace-events-not-cut";
+        let (_scratch_removed_when_the_test_ends, environment) =
+            scratch_environment(SCRATCH_PREFIX);
+        let trace_effects = trace_effects_creating(
+            uncuttable_trace_files(),
+            TraceEffects::of_the_operating_system(trace_clocks_started_now()).create_file,
+        );
+        let standard_error = SharedRecord::default();
+
+        let status = run_traced(
+            Tracing::Debug,
+            environment,
+            None,
+            standard_error.clone(),
+            &trace_effects,
+            TraceBounds {
+                drain: STOP_REPORTED_WITHIN,
+                ..TraceBounds::SPEC
+            },
+            |_directories, process| {
+                record_in_the_events_file_alone(process);
+                Ok(ExitStatus::Success)
+            },
+        );
+
+        assert_eq!(status, ExitStatus::Success);
+        assert_eq!(
+            lines_after_the_announcement(&standard_error),
+            [spec_not_cut_line(SPEC_EVENTS_FILE_WORD)]
+        );
+    }
+
+    #[test]
+    fn observability_decision_12_an_events_file_whose_writer_never_reports_and_a_raw_file_that_cannot_be_cut_back_are_each_named_events_first()
+     {
+        const SCRATCH_PREFIX: &str = "estafette-trace-undrained-and-not-cut";
+        let (_scratch_removed_when_the_test_ends, environment) =
+            scratch_environment(SCRATCH_PREFIX);
         let trace_effects = TraceEffects {
-            create_file: Arc::new(|_path: &Path| -> io::Result<Box<dyn TraceFile>> {
-                Ok(Box::new(UncuttableTraceFile { sized: 0 }))
-            }),
-            ..TraceEffects::of_the_operating_system(trace_clocks_started_now())
+            spawn_thread: spawning_no_events_writer(),
+            ..trace_effects_creating(uncuttable_trace_files(), uncuttable_trace_files())
         };
         let standard_error = SharedRecord::default();
 
@@ -1425,17 +1581,20 @@ mod tests {
             None,
             standard_error.clone(),
             &trace_effects,
-            TraceBounds::SPEC,
+            TraceBounds {
+                drain: STOP_REPORTED_WITHIN,
+                ..TraceBounds::SPEC
+            },
             |_directories, _process| Ok(ExitStatus::Success),
         );
 
-        let recorded = String::from_utf8(standard_error.0.lock().unwrap().clone()).unwrap();
         assert_eq!(status, ExitStatus::Success);
         assert_eq!(
-            recorded.lines().last(),
-            Some(
-                format!("{SPEC_NOT_CUT_LINE_BEFORE_ITS_CAUSE}: {STAND_IN_SHRINK_REFUSAL}").as_str()
-            )
+            lines_after_the_announcement(&standard_error),
+            [
+                spec_not_drained_line(SPEC_EVENTS_FILE_WORD, STOP_REPORTED_WITHIN),
+                spec_not_cut_line(SPEC_RAW_FILE_WORD)
+            ]
         );
     }
 

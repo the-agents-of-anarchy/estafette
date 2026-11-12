@@ -10,7 +10,7 @@ use iroh::EndpointId;
 
 use serde_json::Value;
 
-use crate::dirs::{DirectoryFilesystem, TraceDirectory, TraceFiles};
+use crate::dirs::{DirectoryFilesystem, TraceDirectory, TraceFileKind, TraceFiles};
 use crate::event::{Event, EventName, TraceLineName};
 
 mod files;
@@ -160,15 +160,19 @@ pub struct Trace {
     drain: Duration,
 }
 
-/// How a trace's stop left its files.
+/// How a trace's stop left one of its files.
+#[must_use]
 #[derive(Debug)]
 pub enum TraceStop {
-    /// Every queued line is on disk and each file ends at its last line.
+    /// The writer took every queued line within the drain bound and the file ends at its last line, a line whose write failed missing from it and counted in the next `dropped` line that could be written.
     Drained,
-    /// The drain bound ran out before every queued line was on disk.
-    NotDrained,
-    /// Every queued line is on disk, but a file keeps the zero bytes sized past its last line.
-    NotCut(io::Error),
+    /// The writer of the file named did not report within the drain bound that it took every queued line.
+    NotDrained { file: TraceFileKind },
+    /// The writer of the file named took every queued line, but the file could not be cut back to its last line and keeps the zero bytes sized past it.
+    NotCut {
+        file: TraceFileKind,
+        source: io::Error,
+    },
 }
 
 /// A trace that could not start, refusing the command before any other side effect.
@@ -307,15 +311,12 @@ impl Trace {
         self.header.note_node(id);
     }
 
-    /// Closes both queues and waits, within the drain bound for each, until their lines are on disk and each file ends at its last line, saying how the stop left them.
-    pub fn finish(&self) -> TraceStop {
-        match (self.events.finish(self.drain), self.raw.finish(self.drain)) {
-            (TraceStop::Drained, TraceStop::Drained) => TraceStop::Drained,
-            (TraceStop::NotDrained, _) | (_, TraceStop::NotDrained) => TraceStop::NotDrained,
-            (TraceStop::NotCut(source), _) | (_, TraceStop::NotCut(source)) => {
-                TraceStop::NotCut(source)
-            }
-        }
+    /// Closes both queues and waits, within the drain bound for each, until their writers took every queued line and cut each file back to its last line, saying how the stop left the events file, then the raw file.
+    pub fn finish(&self) -> [TraceStop; 2] {
+        [
+            self.events.finish(self.drain, TraceFileKind::Events),
+            self.raw.finish(self.drain, TraceFileKind::Raw),
+        ]
     }
 }
 
@@ -442,7 +443,10 @@ mod tests {
             TraceBounds::SPEC,
         )
         .unwrap();
-        trace.finish();
+        assert!(matches!(
+            trace.finish(),
+            [TraceStop::Drained, TraceStop::Drained]
+        ));
 
         let run_name = format!("20000229T235959Z-{RUN_HEX}-estafette");
         let traces = directory.path();
@@ -503,7 +507,7 @@ mod tests {
         for (wall_ms, _stamp) in STAMPED_STARTS {
             assert!(matches!(
                 started(&directory, wall_ms, TraceBounds::SPEC).finish(),
-                TraceStop::Drained
+                [TraceStop::Drained, TraceStop::Drained]
             ));
         }
 
@@ -529,7 +533,10 @@ mod tests {
         trace.note_endpoint(id);
         trace.record(&ClaimFailure::NetworkRefused(NodeError::TopicClosedBeforeHandle).into());
         trace.record(&InboxEvent::AcceptFailed(io::Error::other("a marker")).into());
-        assert!(matches!(trace.finish(), TraceStop::Drained));
+        assert!(matches!(
+            trace.finish(),
+            [TraceStop::Drained, TraceStop::Drained]
+        ));
 
         let header = |n: u64| {
             format!(
@@ -567,7 +574,10 @@ mod tests {
         for _line in 0..LINES_WRITTEN {
             trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
         }
-        assert!(matches!(trace.finish(), TraceStop::Drained));
+        assert!(matches!(
+            trace.finish(),
+            [TraceStop::Drained, TraceStop::Drained]
+        ));
 
         let events = &trace.files().events;
         assert_eq!(fs::read_to_string(events).unwrap(), clock_line(4, None));
@@ -650,7 +660,10 @@ mod tests {
             for _line in 0..lines_written {
                 trace.raw.write(RAW_EVENT, &[]);
             }
-            assert!(matches!(trace.finish(), TraceStop::Drained), "case {case}");
+            assert!(
+                matches!(trace.finish(), [TraceStop::Drained, TraceStop::Drained]),
+                "case {case}"
+            );
 
             let raw = &trace.files().raw;
             let rolled_over = crate::dirs::rolled_over_trace_file(raw);
@@ -1056,7 +1069,10 @@ mod tests {
         for _event in 0..4 {
             trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
         }
-        assert!(matches!(trace.finish(), TraceStop::Drained));
+        assert!(matches!(
+            trace.finish(),
+            [TraceStop::Drained, TraceStop::Drained]
+        ));
 
         assert_eq!(
             files.numbered_events_of(&trace.files().events),
@@ -1075,7 +1091,10 @@ mod tests {
         for _event in 0..3 {
             trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
         }
-        assert!(matches!(trace.finish(), TraceStop::Drained));
+        assert!(matches!(
+            trace.finish(),
+            [TraceStop::Drained, TraceStop::Drained]
+        ));
 
         let held = files.text_of(&trace.files().events);
         let lines: Vec<&str> = held.lines().collect();
@@ -1204,7 +1223,10 @@ mod tests {
         assert_eq!(written_line(&events), dropped_event(5, 2));
         assert_eq!(written_line(&events), clock_event(6));
         drop(events.release);
-        assert!(matches!(trace.finish(), TraceStop::Drained));
+        assert!(matches!(
+            trace.finish(),
+            [TraceStop::Drained, TraceStop::Drained]
+        ));
         drop(fs::remove_dir_all(&root));
     }
 
@@ -1233,7 +1255,10 @@ mod tests {
 
         let stop = trace.finish();
 
-        assert!(matches!(stop, TraceStop::Drained), "{stop:?}");
+        assert!(
+            matches!(stop, [TraceStop::Drained, TraceStop::Drained]),
+            "{stop:?}"
+        );
         let lines: Vec<_> = written
             .try_iter()
             .map(|line| numbered_event(&line))
@@ -1275,7 +1300,10 @@ mod tests {
 
         let stop = trace.finish();
 
-        assert!(matches!(stop, TraceStop::Drained), "{stop:?}");
+        assert!(
+            matches!(stop, [TraceStop::Drained, TraceStop::Drained]),
+            "{stop:?}"
+        );
         assert_eq!(written.try_iter().count(), SMALL_QUEUE_LINES + 1);
         releasing.join().unwrap();
         drop(fs::remove_dir_all(&root));
@@ -1289,7 +1317,10 @@ mod tests {
         let trace = started_with(&directory, &files.effects(NOW_MS), TraceBounds::SPEC);
 
         trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
-        assert!(matches!(trace.finish(), TraceStop::Drained));
+        assert!(matches!(
+            trace.finish(),
+            [TraceStop::Drained, TraceStop::Drained]
+        ));
 
         let line = clock_line(0, None);
         assert_eq!(
@@ -1304,8 +1335,8 @@ mod tests {
     }
 
     #[test]
-    fn observability_decision_12_a_clean_stop_that_cannot_cut_a_file_back_to_its_last_line_says_so()
-    {
+    fn observability_decision_12_a_clean_stop_that_cannot_cut_its_files_back_to_their_last_line_says_so_for_each_file()
+     {
         let (root, directory) = scratch_trace_directory("not-cut");
         let files = MemoryFiles::refusing_to_shrink();
         let trace = started_with(&directory, &files.effects(NOW_MS), TraceBounds::SPEC);
@@ -1313,7 +1344,22 @@ mod tests {
         trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
         let stop = trace.finish();
 
-        assert!(matches!(stop, TraceStop::NotCut(_)), "{stop:?}");
+        assert!(
+            matches!(
+                stop,
+                [
+                    TraceStop::NotCut {
+                        file: TraceFileKind::Events,
+                        ..
+                    },
+                    TraceStop::NotCut {
+                        file: TraceFileKind::Raw,
+                        ..
+                    }
+                ]
+            ),
+            "{stop:?}"
+        );
         assert_eq!(
             files.text_of(&trace.files().events).len(),
             usize::try_from(TRACE_FILE_SIZED_AHEAD_BYTES).unwrap()
@@ -1332,7 +1378,10 @@ mod tests {
                 Value::from("x".repeat(usize::try_from(text_bytes).unwrap())),
             )],
         );
-        assert!(matches!(trace.finish(), TraceStop::Drained), "{text_bytes}");
+        assert!(
+            matches!(trace.finish(), [TraceStop::Drained, TraceStop::Drained]),
+            "{text_bytes}"
+        );
         let held = files.text_of(&trace.files().events);
         assert!(held.ends_with("\"}\n"), "{text_bytes}: {}", held.len());
         let lengths = files.state().events_lengths.clone();
@@ -1396,7 +1445,10 @@ mod tests {
         for _event in 0..LINES_WRITTEN {
             trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
         }
-        assert!(matches!(trace.finish(), TraceStop::Drained));
+        assert!(matches!(
+            trace.finish(),
+            [TraceStop::Drained, TraceStop::Drained]
+        ));
 
         let events = &trace.files().events;
         assert_eq!(
@@ -1461,7 +1513,10 @@ mod tests {
                 ..TraceBounds::SPEC
             },
         );
-        assert!(matches!(trace.finish(), TraceStop::Drained));
+        assert!(matches!(
+            trace.finish(),
+            [TraceStop::Drained, TraceStop::Drained]
+        ));
 
         let kept: Vec<String> = names_in(&traces)
             .into_iter()

@@ -10,7 +10,7 @@ use super::line::{HeaderSource, StampedLine};
 use super::{
     CreateTraceFile, RenameFile, SpawnThread, TRACE_FILE_SIZED_AHEAD_BYTES, TraceFile, TraceStop,
 };
-use crate::dirs::rolled_over_trace_file;
+use crate::dirs::{TraceFileKind, rolled_over_trace_file};
 use crate::event::{EventName, TraceLineName};
 
 const DROPPED_COUNT_FIELD: &str = "count";
@@ -262,8 +262,8 @@ impl TraceWriter {
         };
     }
 
-    /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most `within` for it to write every line it holds, report that loss and cut the file back to its last line, saying how the stop left the file.
-    pub(super) fn finish(&self, within: Duration) -> TraceStop {
+    /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most `within` for it to take every line it holds, report that loss and cut the file back to its last line, saying how the stop left `file`.
+    pub(super) fn finish(&self, within: Duration, file: TraceFileKind) -> TraceStop {
         let mut queue = locked(&self.queue);
         *locked(&self.lost_at_close) = queue.lost;
         drop(queue.lines.take());
@@ -273,9 +273,9 @@ impl TraceWriter {
         };
         match ended.recv_timeout(within) {
             Ok(Ok(())) => TraceStop::Drained,
-            Ok(Err(source)) => TraceStop::NotCut(source),
+            Ok(Err(source)) => TraceStop::NotCut { file, source },
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
-                TraceStop::NotDrained
+                TraceStop::NotDrained { file }
             }
         }
     }
