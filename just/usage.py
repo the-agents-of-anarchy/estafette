@@ -47,7 +47,7 @@ ONE_HOUR_WRITE_PATTERN = re.compile(r'"ephemeral_1h_input_tokens": ?[1-9]')
 PARAMS_PATH = SCRIPT_DIRECTORY / 'usage-params.json'
 EFFORTS = ('low', 'high', 'max')
 ROLE_TTLS = {'agent': FIVE_MINUTE_TTL, 'lead': ONE_HOUR_TTL}
-COMPONENT_LABELS = {'output': 'output', 'carry': 'carry', 'cold_start': 'cold start'}
+COMPONENT_LABELS = {'output': 'output', 'carry': 'carry', 'cold_start': 'cold start', 'first_intake': 'first intake'}
 DOLLARS_UNIT = 'usd'
 LIMIT_WEIGHT_UNIT = 'percent'
 MINUTES_UNIT = 'min'
@@ -443,20 +443,21 @@ def attempt_from(prices, parameters, parsed):
 
 
 def component_tokens(attempt):
-    """Tokens of each cost component: the output, the carry over the steps, the intake of the cold starts."""
+    """Tokens of each cost component: the output, the carry over the steps, the intake of the cold starts and the first intake of the context held at launch."""
     context = attempt.context_k * TOKENS_PER_THOUSAND
-    return {'output': attempt.appetite_k * TOKENS_PER_THOUSAND, 'carry': context * attempt.steps, 'cold_start': context * attempt.cold_starts}
+    return {'output': attempt.appetite_k * TOKENS_PER_THOUSAND, 'carry': context * attempt.steps, 'cold_start': context * attempt.cold_starts, 'first_intake': context}
 
 
 def component_prices(prices, attempt):
     """Dollars per million tokens of each cost component, the intake price taken at the TTL of the attempt's role."""
     rates = rates_for(prices, attempt.model, attempt.context_k * TOKENS_PER_THOUSAND)
-    return {'output': rates['output'], 'carry': rates['cache_read'], 'cold_start': rates[INTAKE_RATE_BY_TTL[ROLE_TTLS[attempt.role]]]}
+    intake_rate = rates[INTAKE_RATE_BY_TTL[ROLE_TTLS[attempt.role]]]
+    return {'output': rates['output'], 'carry': rates['cache_read'], 'cold_start': intake_rate, 'first_intake': intake_rate}
 
 
 def component_weights(weights):
     """The limit weight of each cost component, taken from the weights the parameter file holds for a model."""
-    return {'output': weights['output'], 'carry': weights['carry'], 'cold_start': weights['intake_5m']}
+    return {'output': weights['output'], 'carry': weights['carry'], 'cold_start': weights['intake_5m'], 'first_intake': weights['intake_5m']}
 
 
 def tokens_at_rates(tokens, rates_per_million_tokens):
