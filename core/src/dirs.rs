@@ -349,7 +349,58 @@ fn create_base_directory(
 }
 
 #[cfg(test)]
+pub(crate) mod scratch {
+    use std::ffi::OsString;
+    use std::fs;
+    use std::ops::Deref;
+    use std::path::{Path, PathBuf};
+
+    pub struct ScratchDirectory(PathBuf);
+
+    impl Deref for ScratchDirectory {
+        type Target = Path;
+
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for ScratchDirectory {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for ScratchDirectory {
+        fn drop(&mut self) {
+            drop(fs::remove_dir_all(&self.0));
+        }
+    }
+
+    pub fn scratch_directory(module: &str, test_name: &str) -> ScratchDirectory {
+        let directory = std::env::temp_dir().join(format!(
+            "estafette-{module}-{test_name}-{}",
+            std::process::id()
+        ));
+        drop(fs::remove_dir_all(&directory));
+        fs::create_dir_all(&directory).unwrap();
+        ScratchDirectory(directory)
+    }
+
+    pub fn names_in(directory: &Path) -> Vec<OsString> {
+        let mut names: Vec<_> = directory
+            .read_dir()
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        names.sort();
+        names
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use super::scratch::{ScratchDirectory, scratch_directory};
     use super::*;
     use std::cell::RefCell;
     use std::fs;
@@ -402,28 +453,8 @@ mod tests {
         (directories, filesystem.created.into_inner())
     }
 
-    struct ScratchRoot(PathBuf);
-
-    impl std::ops::Deref for ScratchRoot {
-        type Target = Path;
-
-        fn deref(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for ScratchRoot {
-        fn drop(&mut self) {
-            drop(fs::remove_dir_all(&self.0));
-        }
-    }
-
-    fn scratch_root(test_name: &str) -> ScratchRoot {
-        let root =
-            std::env::temp_dir().join(format!("estafette-dirs-{test_name}-{}", std::process::id()));
-        drop(fs::remove_dir_all(&root));
-        fs::create_dir_all(&root).unwrap();
-        ScratchRoot(root)
+    fn scratch_root(test_name: &str) -> ScratchDirectory {
+        scratch_directory("dirs", test_name)
     }
 
     fn scratch_environment(root: &Path) -> impl Fn(&str) -> Option<OsString> {
@@ -655,17 +686,6 @@ mod tests {
             directories.card_sidecar_file("net", "alice").unwrap(),
             Path::new("/from-environment/net/alice.key")
         );
-    }
-
-    #[test]
-    fn a_scratch_root_is_removed_when_its_test_ends_even_by_a_failed_assert() {
-        let root = scratch_root("guard");
-        let path = root.to_path_buf();
-        fs::write(path.join("left-behind"), b"").unwrap();
-
-        drop(root);
-
-        assert!(!path.exists());
     }
 
     #[test]

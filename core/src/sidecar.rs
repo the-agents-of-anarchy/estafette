@@ -272,6 +272,7 @@ fn acquire_exclusive_lock(file: &File, pause: &impl Pause) -> Result<(), Sidecar
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dirs::scratch::{ScratchDirectory, names_in, scratch_directory};
 
     struct NoPause;
 
@@ -279,30 +280,8 @@ mod tests {
         fn pause(&self, _duration: Duration) {}
     }
 
-    struct ScratchDirectory(std::path::PathBuf);
-
-    impl std::ops::Deref for ScratchDirectory {
-        type Target = Path;
-
-        fn deref(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for ScratchDirectory {
-        fn drop(&mut self) {
-            drop(std::fs::remove_dir_all(&self.0));
-        }
-    }
-
     fn fresh_directory(test_name: &str) -> ScratchDirectory {
-        let directory = std::env::temp_dir().join(format!(
-            "estafette-sidecar-{}-{test_name}",
-            std::process::id()
-        ));
-        drop(std::fs::remove_dir_all(&directory));
-        std::fs::create_dir_all(&directory).unwrap();
-        ScratchDirectory(directory)
+        scratch_directory("sidecar", test_name)
     }
 
     fn seed_of(index: u8) -> [u8; SEED_BYTES] {
@@ -662,13 +641,7 @@ mod tests {
             std::fs::metadata(&card).unwrap().permissions().mode() & PERMISSION_BITS_MASK,
             CARD_FILE_MODE
         );
-        let mut names: Vec<_> = directory
-            .read_dir()
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        names.sort();
-        assert_eq!(names, ["q.key", "q.yaml"]);
+        assert_eq!(names_in(&directory), ["q.key", "q.yaml"]);
     }
 
     struct ZeroDigits<'served> {

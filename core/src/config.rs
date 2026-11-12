@@ -597,6 +597,7 @@ pub(crate) fn remove_file_if_present(path: &Path) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::crypto::KEY_LEN;
+    use crate::dirs::scratch::{self, ScratchDirectory, names_in};
     use crate::keys::render_public_key;
     use iroh::SecretKey;
     use std::collections::BTreeSet;
@@ -610,16 +611,8 @@ mod tests {
     const CONCURRENT_WRITERS: usize = 8;
     const CONCURRENT_ROUNDS: usize = 50;
 
-    fn scratch_directory(test_name: &str) -> PathBuf {
-        let directory = std::env::temp_dir().join(format!(
-            "estafette-config-{test_name}-{}",
-            std::process::id()
-        ));
-        if directory.exists() {
-            fs::remove_dir_all(&directory).unwrap();
-        }
-        fs::create_dir_all(&directory).unwrap();
-        directory
+    fn scratch_directory(test_name: &str) -> ScratchDirectory {
+        scratch::scratch_directory("config", test_name)
     }
 
     fn hex_key(digit: char) -> String {
@@ -1087,16 +1080,6 @@ mod tests {
 
         assert_eq!(outcome.kind(), io::ErrorKind::PermissionDenied);
         assert_eq!(outcome.to_string(), failure_text);
-    }
-
-    fn names_in(directory: &Path) -> Vec<std::ffi::OsString> {
-        let mut names: Vec<_> = directory
-            .read_dir()
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        names.sort();
-        names
     }
 
     /// Spec 3.5: a new file appears whole at its path with exactly the given mode and no temporary file stays beside it.
