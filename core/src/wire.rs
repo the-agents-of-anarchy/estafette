@@ -540,6 +540,7 @@ const fn ensure_within_wire_limit(bytes: usize) -> Result<(), CodecError> {
     }
     Ok(())
 }
+
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv6Addr};
