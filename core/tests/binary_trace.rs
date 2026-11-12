@@ -51,6 +51,7 @@ mod observability {
     const FIRST_TOOL_CALL_ID: usize = 2;
     const SPEC_TRACE_FILE_SIZED_AHEAD_BYTES: usize = 65_536;
     const UNREADABLE_CARDS_DIRECTORY: &str = "cards-is-a-file";
+    const COMMAND_FAILED_EVENT: &str = "process.command_failed";
     const INITIALIZED_NOTIFICATION: &str =
         "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
     const CONFIG_HOME: &str = "config";
@@ -766,9 +767,9 @@ mod observability {
         );
         let lines = trace_lines(&events);
         assert_eq!(
-            lines.last().unwrap().values["event"],
-            "process.command_failed",
-            "{lines:?}"
+            lines.last().and_then(|line| line.values.get("event")),
+            Some(&Value::from(COMMAND_FAILED_EVENT)),
+            "the last event of the stopped process is not the last line of its events file: {lines:?}"
         );
         drop(fs::remove_dir_all(&root));
     }
