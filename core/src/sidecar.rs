@@ -295,6 +295,7 @@ fn acquire_exclusive_lock(file: &File, pause: &impl Pause) -> Result<(), Sidecar
 mod tests {
     use super::*;
     use crate::dirs::scratch::{ScratchDirectory, names_in, scratch_directory};
+    use crate::seeded_draws::Draws;
 
     struct NoPause;
 
@@ -730,32 +731,46 @@ mod tests {
 
     const POSIX_SHELL: &str = "/bin/sh";
     const SIZE_LIMITED_CHILD_MARKER: &str = "ESTAFETTE_SIDECAR_TEST_FILE_SIZE_LIMITED";
-    const CARD_WRITE_FAILURE_TEST_PATH: &str = "sidecar::tests::a_card_write_that_fails_part_way_leaves_nothing_at_its_final_name_spec_3_5";
+    const CARD_WRITE_FAILURE_TEST_PATH: &str = "sidecar::tests::a_card_write_that_fails_part_way_leaves_nothing_at_its_final_name_for_any_oversized_text_spec_3_5";
     const SIZE_LIMITED_CHILD_SCRIPT: &str = "ulimit -f 1; trap '' XFSZ; exec \"$0\" --exact \"$1\"";
-    const OVERSIZED_HANDLE_BYTES: usize = 1_000_000;
+    const SMALLEST_OVERSIZED_HANDLE_BYTES: u64 = 4096;
+    const OVERSIZED_HANDLE_BYTES_SPREAD: u64 = 1_000_000;
+    const OVERSIZED_HANDLE_CASES: u64 = 8;
     const CHILD_RAN_FILE: &str = "child-ran";
 
     fn assert_a_failed_card_write_leaves_nothing_behind(child_ran_path: &Path) {
         std::fs::write(child_ran_path, b"ran").unwrap();
-        let directory = fresh_directory("create_card_fails_part_way");
-        let card = directory.join("r.yaml");
-        let sidecar = directory.join("r.key");
-        let handle = "h".repeat(OVERSIZED_HANDLE_BYTES);
+        for case in 0..OVERSIZED_HANDLE_CASES {
+            let directory = fresh_directory(&format!("create_card_fails_part_way_{case}"));
+            let card = directory.join("r.yaml");
+            let sidecar = directory.join("r.key");
+            let oversized_bytes = SMALLEST_OVERSIZED_HANDLE_BYTES
+                .saturating_add(Draws::seeded(case).below(OVERSIZED_HANDLE_BYTES_SPREAD));
+            let handle = "h".repeat(usize::try_from(oversized_bytes).unwrap());
 
-        let outcome = create_card_removing_temporary_with(
-            remove_file_if_present,
-            &card,
-            &sidecar,
-            &handle,
-            seed_of(19),
-        );
+            let outcome = create_card_removing_temporary_with(
+                remove_file_if_present,
+                &card,
+                &sidecar,
+                &handle,
+                seed_of(u8::try_from(case).unwrap()),
+            );
 
-        assert!(matches!(outcome, Err(SidecarError::Io(_))));
-        assert_eq!(directory.read_dir().unwrap().count(), 0);
+            assert!(
+                matches!(outcome, Err(SidecarError::Io(_))),
+                "case {case}, {oversized_bytes} bytes"
+            );
+            assert_eq!(
+                directory.read_dir().unwrap().count(),
+                0,
+                "case {case}, {oversized_bytes} bytes"
+            );
+        }
     }
 
     #[test]
-    fn a_card_write_that_fails_part_way_leaves_nothing_at_its_final_name_spec_3_5() {
+    fn a_card_write_that_fails_part_way_leaves_nothing_at_its_final_name_for_any_oversized_text_spec_3_5()
+     {
         if let Some(child_ran_path) = std::env::var_os(SIZE_LIMITED_CHILD_MARKER) {
             assert_a_failed_card_write_leaves_nothing_behind(Path::new(&child_ran_path));
             return;
@@ -780,26 +795,72 @@ mod tests {
         assert!(child.status.success(), "{child_output}");
     }
 
+    const LEFTOVER_REMOVAL_CASES: u64 = 40;
+    const LEFTOVER_REMOVAL_FAILURE_KINDS: [io::ErrorKind; 5] = [
+        io::ErrorKind::PermissionDenied,
+        io::ErrorKind::NotFound,
+        io::ErrorKind::ReadOnlyFilesystem,
+        io::ErrorKind::TimedOut,
+        io::ErrorKind::Other,
+    ];
+    const ALPHABET_LETTERS: u64 = 26;
+    const LONGEST_HANDLE_LETTERS: u64 = 32;
+
+    fn handle_drawn_by(draws: &mut Draws) -> Handle {
+        let letters = draws.below(LONGEST_HANDLE_LETTERS).saturating_add(1);
+        (0..letters)
+            .map(|_| {
+                char::from(
+                    b'a'.saturating_add(u8::try_from(draws.below(ALPHABET_LETTERS)).unwrap()),
+                )
+            })
+            .collect::<String>()
+            .parse()
+            .unwrap()
+    }
+
     #[test]
-    fn a_card_whose_temporary_file_cannot_be_removed_stays_with_its_sidecar_and_names_the_leftover_spec_3_5()
+    fn a_card_whose_temporary_file_cannot_be_removed_stays_with_its_sidecar_and_names_the_leftover_for_any_handle_and_failure_spec_3_5()
      {
-        let directory = fresh_directory("create_card_leftover");
-        let card = directory.join("s.yaml");
-        let sidecar = directory.join("s.key");
-        let failing_removal =
-            |_leftover: &Path| Err(io::Error::from(io::ErrorKind::PermissionDenied));
+        for case in 0..LEFTOVER_REMOVAL_CASES {
+            let mut draws = Draws::seeded(case);
+            let handle = handle_drawn_by(&mut draws);
+            let failure_kind = LEFTOVER_REMOVAL_FAILURE_KINDS[usize::try_from(
+                draws.below(u64::try_from(LEFTOVER_REMOVAL_FAILURE_KINDS.len()).unwrap()),
+            )
+            .unwrap()];
+            let removal_reason = format!("removal refused in case {case}");
+            let directory = fresh_directory(&format!("create_card_leftover_{case}"));
+            let card = directory.join("s.yaml");
+            let sidecar = directory.join("s.key");
+            let seed = seed_of(u8::try_from(case).unwrap());
+            let failing_removal =
+                |_leftover: &Path| Err(io::Error::new(failure_kind, removal_reason.clone()));
 
-        let outcome = create_card_removing_temporary_with(
-            failing_removal,
-            &card,
-            &sidecar,
-            "scout",
-            seed_of(20),
-        );
+            let outcome = create_card_removing_temporary_with(
+                failing_removal,
+                &card,
+                &sidecar,
+                handle.as_str(),
+                seed,
+            );
 
-        let failure = outcome.unwrap_err();
-        assert!(failure.to_string().contains("was left behind"), "{failure}");
-        assert!(card.exists());
-        assert!(sidecar.exists());
+            let failure = outcome.unwrap_err().to_string();
+            assert!(
+                failure.contains("was left behind"),
+                "case {case}: {failure}"
+            );
+            assert!(failure.contains(&removal_reason), "case {case}: {failure}");
+            assert_eq!(
+                std::fs::read_to_string(&card).unwrap(),
+                format!(
+                    "handle: {}\npublic_key: {}\n",
+                    handle.as_str(),
+                    HEXLOWER.encode(&public_key_of(&seed))
+                ),
+                "case {case}"
+            );
+            assert!(sidecar.exists(), "case {case}");
+        }
     }
 }
