@@ -366,6 +366,7 @@ mod tests {
     const STAND_IN_FAILURE: &str = "a stand-in failure";
     const STALE_EVENTS_FILE: &str = "20000101T000000Z-0000000000000001-estafette.events.jsonl";
 
+    /// A fresh scratch root for the test and the trace directory under its data home.
     fn scratch_trace_directory(test_name: &str) -> (PathBuf, TraceDirectory) {
         let root = std::env::temp_dir().join(format!(
             "estafette-trace-{test_name}-{}",
@@ -381,6 +382,7 @@ mod tests {
         (root, directory)
     }
 
+    /// Clocks that always read `FROZEN_MONOTONIC_MS` and `wall_ms`.
     fn frozen_clocks(wall_ms: u64) -> TraceClocks {
         TraceClocks {
             monotonic_ms: Arc::new(|| FROZEN_MONOTONIC_MS),
@@ -388,6 +390,7 @@ mod tests {
         }
     }
 
+    /// The names of the files in the directory, sorted.
     fn names_in(directory: &Path) -> Vec<String> {
         let mut names: Vec<String> = fs::read_dir(directory)
             .unwrap()
@@ -443,6 +446,7 @@ mod tests {
         drop(fs::remove_dir_all(&root));
     }
 
+    /// A trace started on the operating system's files with its wall clock frozen at `wall_ms`.
     fn started(directory: &TraceDirectory, wall_ms: u64, bounds: TraceBounds) -> Trace {
         Trace::start(
             directory,
@@ -454,6 +458,7 @@ mod tests {
         .unwrap()
     }
 
+    /// The events line numbered `n` of a clock event, naming `node` when there is one.
     fn clock_line(n: u64, node: Option<&str>) -> String {
         let node = node.map_or_else(String::new, |node| format!(",\"node\":\"{node}\""));
         format!(
@@ -542,6 +547,7 @@ mod tests {
         drop(fs::remove_dir_all(&root));
     }
 
+    /// The raw line numbered `n` of the test raw event.
     fn raw_line(n: u64) -> String {
         format!(
             "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS},\"event\":\"{RAW_EVENT}\"}}\n"
@@ -583,10 +589,12 @@ mod tests {
         drop(fs::remove_dir_all(&root));
     }
 
+    /// The failure a stand-in file operation reports.
     fn stand_in_failure() -> io::Error {
         io::Error::other(STAND_IN_FAILURE)
     }
 
+    /// Why the trace refused to start, failing the test when it started.
     fn refusal_of(
         directory: &TraceDirectory,
         effects: &TraceEffects,
@@ -714,6 +722,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct MemoryFiles(Arc<Mutex<MemoryState>>);
 
+    /// What the memory files hold and how many attempts of each kind they saw.
     #[derive(Default)]
     struct MemoryState {
         held: BTreeMap<PathBuf, Vec<u8>>,
@@ -742,11 +751,13 @@ mod tests {
         }
     }
 
+    /// Whether the path names an events file.
     fn is_events_file(path: &Path) -> bool {
         path.to_str()
             .is_some_and(|path| path.ends_with(EVENTS_FILE_SUFFIX))
     }
 
+    /// Counts one more attempt and says whether it is one of the failing ones.
     fn is_failing_attempt(attempts: &mut usize, failing: &[usize]) -> bool {
         let attempt = *attempts;
         *attempts = attempt.saturating_add(1);
@@ -754,6 +765,7 @@ mod tests {
     }
 
     impl MemoryFiles {
+        /// Files whose events-file writes, creations and renames fail at the attempts named.
         fn failing(writes: &[usize], creations: &[usize], renames: &[usize]) -> Self {
             Self(Arc::new(Mutex::new(MemoryState {
                 failing_writes: writes.to_vec(),
@@ -771,10 +783,12 @@ mod tests {
             })))
         }
 
+        /// The files and attempt counts, locked.
         fn state(&self) -> std::sync::MutexGuard<'_, MemoryState> {
             self.0.lock().unwrap()
         }
 
+        /// Trace effects whose files are these, the rest the operating system's, with the wall clock frozen at `wall_ms`.
         fn effects(&self, wall_ms: u64) -> TraceEffects {
             let creating = self.clone();
             let renaming = self.clone();
@@ -785,6 +799,7 @@ mod tests {
             }
         }
 
+        /// Creates an empty file at the path, unless this is a failing creation of an events file.
         fn create(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
             let mut state = self.state();
             if is_events_file(path) {
@@ -805,6 +820,7 @@ mod tests {
             }))
         }
 
+        /// Moves what `from` holds to `to`, unless this is a failing rename.
         fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
             let mut state = self.state();
             let MemoryState {
@@ -871,6 +887,7 @@ mod tests {
         )
     }
 
+    /// A trace started with the given effects and bounds.
     fn started_with(
         directory: &TraceDirectory,
         effects: &TraceEffects,
@@ -886,10 +903,12 @@ mod tests {
         .unwrap()
     }
 
+    /// A clock event numbered `n`, as `numbered_event` reads it.
     fn clock_event(n: u64) -> (u64, String, Option<u64>) {
         (n, CLOCK_EVENT.to_owned(), None)
     }
 
+    /// A `dropped` line numbered `n` carrying `count`, as `numbered_event` reads it.
     fn dropped_event(n: u64, count: u64) -> (u64, String, Option<u64>) {
         (n, DROPPED_EVENT.to_owned(), Some(count))
     }
@@ -1149,6 +1168,7 @@ mod tests {
         drop(fs::remove_dir_all(&root));
     }
 
+    /// Creates a file of `bytes` bytes in the trace directory, last written at `written_ms`.
     fn stored_run_file(traces: &Path, name: &str, bytes: u64, written_ms: u64) {
         let file = File::create(traces.join(name)).unwrap();
         file.set_len(bytes).unwrap();

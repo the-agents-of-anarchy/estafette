@@ -911,6 +911,7 @@ mod tests {
         "Write no debug trace for this run: create no trace file and start no trace writer",
     ];
 
+    /// The long flags the command takes, without the leading dashes.
     fn long_flags_of(command: &clap::Command) -> Vec<String> {
         command
             .get_arguments()

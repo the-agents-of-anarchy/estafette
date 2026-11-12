@@ -1321,6 +1321,7 @@ mod tests {
         stream
     }
 
+    /// Closes the client and waits until the member's inbox has no client attached.
     async fn detach_client(member: &Member, client: tokio::net::UnixStream) {
         let mut attached = member.inbox.attached();
         drop(client);
@@ -1398,6 +1399,7 @@ mod tests {
             String::from_utf8(self.0.borrow().clone()).unwrap()
         }
 
+        /// Waits until the text written so far satisfies `wanted`.
         async fn holds(&self, wanted: impl Fn(&str) -> bool + Send + Sync) {
             drop(
                 self.0

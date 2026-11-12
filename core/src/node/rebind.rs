@@ -365,14 +365,17 @@ mod tests {
     }
 
     impl<T: Send + Sync> Heard<T> {
+        /// Records the entry after every earlier one and wakes each waiter.
         fn push(&self, entry: T) {
             self.0.send_modify(|entries| entries.push(entry));
         }
 
+        /// Every entry heard so far, in order.
         fn entries(&self) -> watch::Ref<'_, Vec<T>> {
             self.0.borrow()
         }
 
+        /// What `found` first finds in the entries heard within `within`, none when it finds nothing by then.
         async fn first_within<Found: Send>(
             &self,
             within: Duration,
@@ -394,6 +397,7 @@ mod tests {
     }
 
     impl RebindLog {
+        /// A run record that notes the instant of each rebind it is given.
         fn sink(&self) -> RunRecord {
             let started = self.started.clone();
             Arc::new(move |event| {

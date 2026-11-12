@@ -445,6 +445,7 @@ fn home_based_directory(
         .ok_or(DirectoriesError::BaseUnresolvable { variable })
 }
 
+/// The data base directory the environment names, creating nothing.
 fn data_base_directory(
     environment: &impl Fn(&str) -> Option<OsString>,
 ) -> Result<PathBuf, DirectoriesError> {
