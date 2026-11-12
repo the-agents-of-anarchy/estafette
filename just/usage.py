@@ -39,22 +39,22 @@ PROMPT_KINDS = ('input_tokens', 'cache_creation_input_tokens', 'cache_read_input
 TOKEN_KINDS = ('input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens')
 COST_KINDS = ('fresh', 'cache_write', 'cache_read', 'output')
 UNKNOWN_MARK = '?'
-FIVE_MINUTE_TIER = '5m'
-ONE_HOUR_TIER = '1h'
-CACHE_LIFETIME_SECONDS_BY_TIER = {FIVE_MINUTE_TIER: 5 * 60, ONE_HOUR_TIER: 60 * 60}
-CACHE_WRITE_RATE_BY_TIER = {FIVE_MINUTE_TIER: 'cache_write_5m', ONE_HOUR_TIER: 'cache_write_1h'}
+FIVE_MINUTE_TTL = '5m'
+ONE_HOUR_TTL = '1h'
+SECONDS_BY_TTL = {FIVE_MINUTE_TTL: 5 * 60, ONE_HOUR_TTL: 60 * 60}
+INTAKE_RATE_BY_TTL = {FIVE_MINUTE_TTL: 'cache_write_5m', ONE_HOUR_TTL: 'cache_write_1h'}
 ONE_HOUR_WRITE_PATTERN = re.compile(r'"ephemeral_1h_input_tokens": ?[1-9]')
 PARAMS_PATH = SCRIPT_DIRECTORY / 'usage-params.json'
 EFFORTS = ('low', 'high', 'max')
-ROLE_TIERS = {'agent': FIVE_MINUTE_TIER, 'lead': ONE_HOUR_TIER}
-COMPONENT_LABELS = {'output': 'generation', 'cache_read': 're-reads', 'cache_write': 're-writes'}
+ROLE_TTLS = {'agent': FIVE_MINUTE_TTL, 'lead': ONE_HOUR_TTL}
+COMPONENT_LABELS = {'output': 'output', 'carry': 'carry', 'cold_start': 'cold start'}
 DOLLARS_UNIT = 'usd'
-SHARE_UNIT = 'percent'
+LIMIT_WEIGHT_UNIT = 'percent'
 MINUTES_UNIT = 'min'
 SECONDS_UNIT = 'seconds'
-UNIT_FORMATS = {DOLLARS_UNIT: '${:.2f}', SHARE_UNIT: '{:.4f}%', MINUTES_UNIT: '{:.1f}', SECONDS_UNIT: '{:.0f} s'}
-SHARE_PREFIX = 'limit share'
-CACHE_LIFE_LABEL = 'cache life'
+UNIT_FORMATS = {DOLLARS_UNIT: '${:.2f}', LIMIT_WEIGHT_UNIT: '{:.4f}%', MINUTES_UNIT: '{:.1f}', SECONDS_UNIT: '{:.0f} s'}
+LIMIT_WEIGHT_PREFIX = 'limit weight'
+TTL_LABEL = 'TTL'
 
 
 def login_directory(environment, home_directory):
@@ -257,21 +257,21 @@ def cost_by_kind(prices, messages):
     return {kind: sum(cost[kind] for cost in costs) for kind in COST_KINDS}
 
 
-def transcript_cache_tier(transcript_path):
-    """The cache tier the transcript's cache writes are made at: 1h when any write is one-hour, else 5m."""
+def transcript_ttl(transcript_path):
+    """The TTL the transcript's cache writes are made at: 1h when any write is one-hour, else 5m."""
     with open(transcript_path, errors='replace') as lines:
         one_hour_written = any(ONE_HOUR_WRITE_PATTERN.search(line) for line in lines)
-    return ONE_HOUR_TIER if one_hour_written else FIVE_MINUTE_TIER
+    return ONE_HOUR_TTL if one_hour_written else FIVE_MINUTE_TTL
 
 
-def cold_resume_cost(prices, messages, tier):
-    """Dollars to write the agent's last context into the cache again at the tier's write price, or None when the model is not listed."""
+def cold_start_cost(prices, messages, ttl):
+    """Dollars to write the agent's last context into the cache again at the TTL's intake price, or None when the model is not listed."""
     if not messages:
         return 0.0
     last_turn = list(messages.values())[-1]
     context = sum(token_count(last_turn.usage, kind) for kind in PROMPT_KINDS)
     rates = rates_for(prices, last_turn.model, context)
-    return None if rates is None else context * rates[CACHE_WRITE_RATE_BY_TIER[tier]] / TOKENS_PER_PRICE_UNIT
+    return None if rates is None else context * rates[INTAKE_RATE_BY_TTL[ttl]] / TOKENS_PER_PRICE_UNIT
 
 
 def dollars_column(amount):
@@ -294,16 +294,16 @@ def inflight(window_minutes, subagents_directory, now, prices, lead_transcript):
         last_usage = list(messages.values())[-1].usage if messages else {}
         context = sum(token_count(last_usage, kind) for kind in PROMPT_KINDS)
         costs = cost_by_kind(prices, messages)
-        tier = transcript_cache_tier(transcript_path)
-        rows.append((idle_minutes, fresh, totals['cache_read_input_tokens'], context, costs, cold_resume_cost(prices, messages, tier), tier, ','.join(models), effort, agent_name(transcript_path)[:NAME_COLUMN_WIDTH]))
-    print('idle_min | fresh_k | cache_read_k | context_k | usd_fresh | usd_write | usd_read | usd_out | usd_total | usd_resume | tier | model | effort | agent')
-    for idle_minutes, fresh, cache_read, context, costs, resume, tier, models, effort, name in sorted(rows, key=lambda row: row[0]):
+        ttl = transcript_ttl(transcript_path)
+        rows.append((idle_minutes, fresh, totals['cache_read_input_tokens'], context, costs, cold_start_cost(prices, messages, ttl), ttl, ','.join(models), effort, agent_name(transcript_path)[:NAME_COLUMN_WIDTH]))
+    print('idle_min | fresh_k | cache_read_k | context_k | usd_fresh | usd_write | usd_read | usd_out | usd_total | usd_cold_start | ttl | model | effort | agent')
+    for idle_minutes, fresh, cache_read, context, costs, cold_start, ttl, models, effort, name in sorted(rows, key=lambda row: row[0]):
         by_kind = [dollars_column(None if costs is None else costs[kind]) for kind in COST_KINDS]
         total = dollars_column(None if costs is None else sum(costs.values()))
-        print(f'{idle_minutes:7.0f} | {fresh // TOKENS_PER_THOUSAND:7d} | {cache_read // TOKENS_PER_THOUSAND:12d} | {context // TOKENS_PER_THOUSAND:9d} | ' + ' | '.join(by_kind) + f' | {total} | {dollars_column(resume)} | {tier:>4} | {models} | {effort} | {name}')
+        print(f'{idle_minutes:7.0f} | {fresh // TOKENS_PER_THOUSAND:7d} | {cache_read // TOKENS_PER_THOUSAND:12d} | {context // TOKENS_PER_THOUSAND:9d} | ' + ' | '.join(by_kind) + f' | {total} | {dollars_column(cold_start)} | {ttl:>4} | {models} | {effort} | {name}')
     print(f'context_k of all rows: {sum(row[3] for row in rows) // TOKENS_PER_THOUSAND}')
     if lead_transcript is not None:
-        print(f'lead transcript cache tier: {transcript_cache_tier(lead_transcript)}')
+        print(f'lead transcript TTL: {transcript_ttl(lead_transcript)}')
     return 0
 
 
@@ -369,25 +369,25 @@ def checkpoints(checkpoints_path):
 
 
 def coldturns(session_transcript):
-    """Print, per source, model with effort and cache tier, the turns after a gap past the cache lifetime and those within it, with their cache-write tokens and share."""
+    """Print, per source, model with effort and TTL, the turns after a gap past the TTL and those within it, with their cache-write tokens and share."""
     agent_transcripts = list(subagents_directory_of(session_transcript).glob('agent-*.jsonl'))
     tallies = {}
     for source, transcript_paths in (('lead', [session_transcript]), ('agents', agent_transcripts)):
         for transcript_path in transcript_paths:
-            tier = transcript_cache_tier(transcript_path)
+            ttl = transcript_ttl(transcript_path)
             for turn in assistant_turns(transcript_path).values():
-                tally = tallies.setdefault((source, turn.model, turn.effort, tier), dict.fromkeys(COLD_TURN_TALLY_FIELDS, 0))
+                tally = tallies.setdefault((source, turn.model, turn.effort, ttl), dict.fromkeys(COLD_TURN_TALLY_FIELDS, 0))
                 written = token_count(turn.usage, 'cache_creation_input_tokens')
                 tally['all_written'] += written
                 if turn.gap_seconds is None:
                     continue
-                phase = 'cold' if turn.gap_seconds > CACHE_LIFETIME_SECONDS_BY_TIER[tier] else 'warm'
+                phase = 'cold' if turn.gap_seconds > SECONDS_BY_TTL[ttl] else 'warm'
                 tally[f'{phase}_turns'] += 1
                 tally[f'{phase}_written'] += written
-    print('source | model | effort | tier | cold_turns | cold_write_k | cold_share | warm_turns | warm_write_k | warm_share | all_write_k')
-    for (source, model, effort, tier), tally in sorted(tallies.items()):
+    print('source | model | effort | ttl | cold_turns | cold_write_k | cold_share | warm_turns | warm_write_k | warm_share | all_write_k')
+    for (source, model, effort, ttl), tally in sorted(tallies.items()):
         shares = [UNKNOWN_MARK if not tally['all_written'] else f'{100 * tally[f"{phase}_written"] / tally["all_written"]:.1f}%' for phase in ('cold', 'warm')]
-        print(f'{source} | {model} | {effort} | {tier} | {tally["cold_turns"]} | {tally["cold_written"] // TOKENS_PER_THOUSAND} | {shares[0]} | {tally["warm_turns"]} | {tally["warm_written"] // TOKENS_PER_THOUSAND} | {shares[1]} | {tally["all_written"] // TOKENS_PER_THOUSAND}')
+        print(f'{source} | {model} | {effort} | {ttl} | {tally["cold_turns"]} | {tally["cold_written"] // TOKENS_PER_THOUSAND} | {shares[0]} | {tally["warm_turns"]} | {tally["warm_written"] // TOKENS_PER_THOUSAND} | {shares[1]} | {tally["all_written"] // TOKENS_PER_THOUSAND}')
     return 0
 
 
@@ -396,16 +396,16 @@ class Refusal(Exception):
 
 
 class Attempt(NamedTuple):
-    """One attempt's inputs: model, effort, thousands of context carried, rounds, cold restarts, tool minutes, who runs it and thousands of tokens generated."""
+    """One attempt's inputs: model, effort, thousands of context carried, steps, cold starts, tool time in minutes, who runs it and its appetite in thousands of tokens."""
 
     model: str
     effort: str
     context_k: float
-    rounds: int
-    cold_restarts: int
-    tool_min: float
+    steps: int
+    cold_starts: int
+    tool_time_min: float
     role: str
-    generated_k: float
+    appetite_k: float
 
 
 class Line(NamedTuple):
@@ -432,25 +432,30 @@ def checked_model_and_effort(prices, model, effort):
 
 
 def attempt_from(prices, parameters, parsed):
-    """The attempt a parsed command line describes, refused when model or effort is unknown or the tokens generated are null and not passed."""
+    """The attempt a parsed command line describes, refused when model or effort is unknown or the appetite is null and not passed."""
     checked_model_and_effort(prices, parsed.model, parsed.effort)
-    generated_k = parsed.generated_k
-    if generated_k is None:
-        entry = parameters['per_attempt'][parsed.model][parsed.effort]['tokens_generated_k']
-        generated_k = required_value(entry, f'tokens_generated_k of {parsed.model} {parsed.effort}', ': pass --generated-k')
-    return Attempt(parsed.model, parsed.effort, parsed.context_k, parsed.rounds, parsed.cold_restarts, parsed.tool_min, parsed.role, generated_k)
+    appetite_k = parsed.appetite_k
+    if appetite_k is None:
+        entry = parameters['per_attempt'][parsed.model][parsed.effort]['appetite_k']
+        appetite_k = required_value(entry, f'appetite_k of {parsed.model} {parsed.effort}', ': pass --appetite-k')
+    return Attempt(parsed.model, parsed.effort, parsed.context_k, parsed.steps, parsed.cold_starts, parsed.tool_time_min, parsed.role, appetite_k)
 
 
 def component_tokens(attempt):
-    """Tokens of each cost component: generated, re-read from the cache, re-written into it."""
+    """Tokens of each cost component: the output, the carry over the steps, the intake of the cold starts."""
     context = attempt.context_k * TOKENS_PER_THOUSAND
-    return {'output': attempt.generated_k * TOKENS_PER_THOUSAND, 'cache_read': context * attempt.rounds, 'cache_write': context * attempt.cold_restarts}
+    return {'output': attempt.appetite_k * TOKENS_PER_THOUSAND, 'carry': context * attempt.steps, 'cold_start': context * attempt.cold_starts}
 
 
 def component_prices(prices, attempt):
-    """Dollars per million tokens of each cost component, the write price taken at the cache tier of the attempt's role."""
+    """Dollars per million tokens of each cost component, the intake price taken at the TTL of the attempt's role."""
     rates = rates_for(prices, attempt.model, attempt.context_k * TOKENS_PER_THOUSAND)
-    return {'output': rates['output'], 'cache_read': rates['cache_read'], 'cache_write': rates[CACHE_WRITE_RATE_BY_TIER[ROLE_TIERS[attempt.role]]]}
+    return {'output': rates['output'], 'carry': rates['cache_read'], 'cold_start': rates[INTAKE_RATE_BY_TTL[ROLE_TTLS[attempt.role]]]}
+
+
+def component_weights(weights):
+    """The limit weight of each cost component, taken from the weights the parameter file holds for a model."""
+    return {'output': weights['output'], 'carry': weights['carry'], 'cold_start': weights['intake_5m']}
 
 
 def tokens_at_rates(tokens, rates_per_million_tokens):
@@ -470,24 +475,24 @@ def component_lines(prefix, unit, by_component):
 
 
 def minute_lines(parameters, attempt):
-    """Minutes of generation, of tools and their sum, refused when the model's speed is null."""
-    speed = required_value(parameters['speed_tokens_per_second'][attempt.model], f'speed of {attempt.model}')
-    generation = attempt.generated_k * TOKENS_PER_THOUSAND / speed / SECONDS_PER_MINUTE
+    """Minutes of generation time, of tool time and their sum, refused when the model's generation speed is null."""
+    speed = required_value(parameters['generation_speed_tokens_per_second'][attempt.model], f'generation speed of {attempt.model}')
+    generation = attempt.appetite_k * TOKENS_PER_THOUSAND / speed / SECONDS_PER_MINUTE
     return [
-        Line(f'{MINUTES_UNIT} generation', generation, MINUTES_UNIT),
-        Line(f'{MINUTES_UNIT} tools', attempt.tool_min, MINUTES_UNIT),
-        Line(total_label(MINUTES_UNIT), generation + attempt.tool_min, MINUTES_UNIT),
+        Line(f'{MINUTES_UNIT} generation time', generation, MINUTES_UNIT),
+        Line(f'{MINUTES_UNIT} tool time', attempt.tool_time_min, MINUTES_UNIT),
+        Line(total_label(MINUTES_UNIT), generation + attempt.tool_time_min, MINUTES_UNIT),
     ]
 
 
 def attempt_lines(prices, parameters, attempt):
-    """The cache life, dollars, limit share and minutes of one attempt as table lines."""
+    """The TTL, dollars, limit weight and minutes of one attempt as table lines."""
     tokens = component_tokens(attempt)
-    shares = parameters['limit_share_percent_per_million_tokens'][attempt.model]['value']
+    weights = parameters['limit_weight_percent_per_million_tokens'][attempt.model]['value']
     return [
-        Line(CACHE_LIFE_LABEL, parameters['cache_life_seconds'][attempt.role]['value'], SECONDS_UNIT),
+        Line(TTL_LABEL, parameters['ttl_seconds'][attempt.role]['value'], SECONDS_UNIT),
         *component_lines(DOLLARS_UNIT, DOLLARS_UNIT, tokens_at_rates(tokens, component_prices(prices, attempt))),
-        *component_lines(SHARE_PREFIX, SHARE_UNIT, None if shares is None else tokens_at_rates(tokens, shares)),
+        *component_lines(LIMIT_WEIGHT_PREFIX, LIMIT_WEIGHT_UNIT, None if weights is None else tokens_at_rates(tokens, component_weights(weights))),
         *minute_lines(parameters, attempt),
     ]
 
@@ -508,11 +513,11 @@ def add_attempt_arguments(parser):
     parser.add_argument('model')
     parser.add_argument('effort')
     parser.add_argument('context_k', type=float)
-    parser.add_argument('rounds', type=int)
-    parser.add_argument('cold_restarts', type=int)
-    parser.add_argument('tool_min', type=float)
-    parser.add_argument('role', choices=tuple(ROLE_TIERS))
-    parser.add_argument('--generated-k', type=float)
+    parser.add_argument('steps', type=int)
+    parser.add_argument('cold_starts', type=int)
+    parser.add_argument('tool_time_min', type=float)
+    parser.add_argument('role', choices=tuple(ROLE_TTLS))
+    parser.add_argument('--appetite-k', type=float)
 
 
 def attempt_command(parsed, prices, parameters):
@@ -526,29 +531,29 @@ def figure_of(lines, label):
     return next(line.figure for line in lines if line.label == label)
 
 
-def reach_from(parameters, parsed):
-    """The reach a parsed command line gives or the parameter file holds, refused when null and not passed or outside 0 to 1 with 0 excluded."""
-    reach = parsed.reach
-    if reach is None:
-        reach = required_value(parameters['per_attempt'][parsed.model][parsed.effort]['reach'], f'reach of {parsed.model} {parsed.effort}', ': pass --reach')
-    if not 0 < reach <= 1:
-        raise Refusal(f'reach {reach} is outside 0 to 1, 0 excluded')
-    return reach
+def capability_from(parameters, parsed):
+    """The capability a parsed command line gives or the parameter file holds, refused when null and not passed or outside 0 to 1 with 0 excluded."""
+    capability = parsed.capability
+    if capability is None:
+        capability = required_value(parameters['per_attempt'][parsed.model][parsed.effort]['capability'], f'capability of {parsed.model} {parsed.effort}', ': pass --capability')
+    if not 0 < capability <= 1:
+        raise Refusal(f'capability {capability} is outside 0 to 1, 0 excluded')
+    return capability
 
 
-def delivered_unit_figure(attempt, check, miss, reach):
-    """The attempt and the check, plus the miss on the share of attempts that fall short, spread over the attempts that reach."""
-    return (attempt + check + (1 - reach) * miss) / reach
+def work_unit_figure(attempt, check, rework, capability):
+    """The attempt and the check, plus the rework on the share of attempts that fail, spread over the attempts that come back right."""
+    return (attempt + check + (1 - capability) * rework) / capability
 
 
 def unit_command(parsed, prices, parameters):
-    """Print the attempt and the dollars and minutes per delivered unit it rests on."""
+    """Print the attempt and the dollars and minutes per work unit it rests on."""
     attempt = attempt_from(prices, parameters, parsed)
-    reach = reach_from(parameters, parsed)
+    capability = capability_from(parameters, parsed)
     lines = attempt_lines(prices, parameters, attempt)
     per_unit = [
-        Line(f'{DOLLARS_UNIT} per delivered unit', delivered_unit_figure(figure_of(lines, total_label(DOLLARS_UNIT)), parsed.check_usd, parsed.miss_usd, reach), DOLLARS_UNIT),
-        Line(f'{MINUTES_UNIT} per delivered unit', delivered_unit_figure(figure_of(lines, total_label(MINUTES_UNIT)), parsed.check_min, parsed.miss_min, reach), MINUTES_UNIT),
+        Line(f'{DOLLARS_UNIT} per work unit', work_unit_figure(figure_of(lines, total_label(DOLLARS_UNIT)), parsed.check_usd, parsed.rework_usd, capability), DOLLARS_UNIT),
+        Line(f'{MINUTES_UNIT} per work unit', work_unit_figure(figure_of(lines, total_label(MINUTES_UNIT)), parsed.check_min, parsed.rework_min, capability), MINUTES_UNIT),
     ]
     print_lines([*lines, *per_unit])
     return 0
@@ -652,16 +657,16 @@ def main(arguments, standard_input, now, environment, home_directory):
     checkpoint_parser.add_argument('label')
     subcommands.add_parser('checkpoints', help='print the checkpoints with the differences between lines')
     subcommands.add_parser('calibrate', help='print the dollars per limit point between consecutive model-and-effort checkpoint lines and their median')
-    subcommands.add_parser('coldturns', help='print the turns after a gap past the cache lifetime and the share of cache-write tokens they carry')
-    attempt_parser = subcommands.add_parser('attempt', help='print the dollars, limit share and minutes of one attempt')
+    subcommands.add_parser('coldturns', help='print the turns after a gap past the TTL and the share of cache-write tokens they carry')
+    attempt_parser = subcommands.add_parser('attempt', help='print the dollars, limit weight and minutes of one attempt')
     add_attempt_arguments(attempt_parser)
-    unit_parser = subcommands.add_parser('unit', help='print one attempt and the dollars and minutes per delivered unit')
+    unit_parser = subcommands.add_parser('unit', help='print one attempt and the dollars and minutes per work unit')
     add_attempt_arguments(unit_parser)
     unit_parser.add_argument('check_usd', type=float)
     unit_parser.add_argument('check_min', type=float)
-    unit_parser.add_argument('miss_usd', type=float)
-    unit_parser.add_argument('miss_min', type=float)
-    unit_parser.add_argument('--reach', type=float)
+    unit_parser.add_argument('rework_usd', type=float)
+    unit_parser.add_argument('rework_min', type=float)
+    unit_parser.add_argument('--capability', type=float)
     compare_parser = subcommands.add_parser('compare', help='print two attempts side by side with the ratio of each line')
     compare_parser.add_argument('first')
     compare_parser.add_argument('second')

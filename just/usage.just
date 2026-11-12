@@ -10,7 +10,7 @@ script := source_directory() + '/usage.py'
 limits max_age_minutes="10":
     python3 -I {{ quote(script) }} limits {{ quote(max_age_minutes) }}
 
-[doc("Print one row per agent whose transcript changed within window_minutes: tokens, context size, dollars by kind at the prices of just/usage-prices.json, the dollars of one cold resume at the cache-write price of the tier each transcript writes at (5m or 1h, shown in the tier column; the lead transcript's tier is printed last), idle minutes, model, effort, name; the root checkout's newest session unless a subagents directory is given")]
+[doc("Print one row per agent whose transcript changed within window_minutes: tokens, context size, dollars by kind at the prices of just/usage-prices.json, the dollars of one cold start at the intake price of the TTL each transcript writes at (5m or 1h, shown in the ttl column; the lead transcript's TTL is printed last), idle minutes, model, effort, name; the root checkout's newest session unless a subagents directory is given")]
 [group('usage')]
 inflight window_minutes="30" subagents_directory="":
     python3 -I {{ quote(script) }} inflight {{ quote(window_minutes) }} {{ quote(subagents_directory) }}
@@ -26,24 +26,24 @@ checkpoint label:
 checkpoints:
     python3 -I {{ quote(script) }} checkpoints
 
-[doc("Print per source (the lead apart from the agents), model with effort and cache tier: the assistant turns whose gap to the model message before them exceeds the tier's cache lifetime (5 minutes or 1 hour), their cache-write tokens and share of all that group's cache-write tokens, and the same for turns within the lifetime; the first message of a transcript has no gap and counts in neither; the root checkout's newest session")]
+[doc("Print per source (the lead apart from the agents), model with effort and TTL: the assistant turns whose gap to the model message before them exceeds the TTL (5 minutes or 1 hour), their cache-write tokens and share of all that group's cache-write tokens, and the same for turns within the TTL; the first message of a transcript has no gap and counts in neither; the root checkout's newest session")]
 [group('usage')]
 coldturns:
     python3 -I {{ quote(script) }} coldturns
 
-[doc("Compute one attempt, arguments: model effort context_k rounds cold_restarts tool_min agent|lead [--generated-k N]; model is a key of usage-prices.json, effort is low, high or max, context_k the thousands of tokens carried on average, tool_min the minutes of tools; prints dollars for generation, re-reads and re-writes at the prices of usage-prices.json (the re-write at the 5m write price for an agent, the 1h price for the lead) and their sum, the limit share of the same three where usage-params.json knows the model's shares and ? where not, minutes of generation at the model's speed, of tools and their sum, and the cache life of the role; reads usage-prices.json and usage-params.json; refuses an unknown model or effort naming the accepted set, tokens generated null in usage-params.json and not passed with --generated-k, and a null speed")]
+[doc("Compute one attempt, arguments: model effort context_k steps cold_starts tool_time_min agent|lead [--appetite-k N]; model is a key of usage-prices.json, effort is low, high or max, context_k the thousands of tokens carried on average, tool_time_min the minutes of tool time; prints dollars for output, carry and cold starts at the prices of usage-prices.json (the cold start at the 5m intake price for an agent, the 1h price for the lead) and their sum, the limit weight of the same three where usage-params.json knows the model's weights and ? where not, minutes of generation time at the model's generation speed, of tool time and their sum, and the TTL of the role; reads usage-prices.json and usage-params.json; refuses an unknown model or effort naming the accepted set, appetite null in usage-params.json and not passed with --appetite-k, and a null generation speed")]
 [group('usage')]
 [no-exit-message]
 attempt *arguments:
     python3 -I {{ quote(script) }} attempt {{ arguments }}
 
-[doc("Compute the cost of one delivered unit, arguments: the arguments of attempt, then check_usd check_min miss_usd miss_min [--reach R] [--generated-k N]; prints the attempt table and then dollars and minutes per delivered unit = (attempt + check + (1 - reach) x miss) / reach, where the attempt's minutes are its total and reach is the share of attempts that deliver; reads usage-prices.json and usage-params.json; refuses everything attempt refuses, reach null in usage-params.json and not passed with --reach, and a reach outside 0 to 1 with 0 excluded")]
+[doc("Compute the cost of one work unit, arguments: the arguments of attempt, then check_usd check_min rework_usd rework_min [--capability C] [--appetite-k N]; prints the attempt table and then dollars and minutes per work unit = (attempt + check + (1 - capability) x rework) / capability, where the attempt's minutes are its total and capability is the share of attempts that come back right; reads usage-prices.json and usage-params.json; refuses everything attempt refuses, capability null in usage-params.json and not passed with --capability, and a capability outside 0 to 1 with 0 excluded")]
 [group('usage')]
 [no-exit-message]
 unit *arguments:
     python3 -I {{ quote(script) }} unit {{ arguments }}
 
-[doc("Compare two attempts, arguments: two quoted strings, each the arguments of attempt (for example \"claude-sonnet-5-5 high 200 30 1 10 agent --generated-k 50\"); prints the attempt table of each side by side and the ratio second over first of every line, ? where either figure is unknown or the first is zero; reads usage-prices.json and usage-params.json; refuses what attempt refuses for either side, before any output")]
+[doc("Compare two attempts, arguments: two quoted strings, each the arguments of attempt (for example \"claude-sonnet-5-5 high 200 30 1 10 agent --appetite-k 50\"); prints the attempt table of each side by side and the ratio second over first of every line, ? where either figure is unknown or the first is zero; reads usage-prices.json and usage-params.json; refuses what attempt refuses for either side, before any output")]
 [group('usage')]
 [no-exit-message]
 compare first second:

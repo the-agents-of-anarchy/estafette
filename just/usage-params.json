@@ -1,5 +1,5 @@
 {
-  "speed_tokens_per_second": {
+  "generation_speed_tokens_per_second": {
     "claude-sonnet-5-5": {
       "value": 109.4,
       "kind": "measured",
@@ -31,7 +31,7 @@
       "date": "2026-11-12"
     }
   },
-  "cache_life_seconds": {
+  "ttl_seconds": {
     "agent": {
       "value": 300,
       "kind": "measured",
@@ -45,7 +45,7 @@
       "date": "2026-11-12"
     }
   },
-  "limit_share_percent_per_million_tokens": {
+  "limit_weight_percent_per_million_tokens": {
     "claude-sonnet-5-5": {
       "value": null,
       "kind": "published",
@@ -54,9 +54,9 @@
     },
     "claude-opus-5-5": {
       "value": {
-        "input": 0.045,
-        "cache_write": 0.056,
-        "cache_read": 0.0011,
+        "uncached_intake": 0.045,
+        "intake_5m": 0.056,
+        "carry": 0.0011,
         "output": 0.223
       },
       "kind": "published",
@@ -85,13 +85,13 @@
   "per_attempt": {
     "claude-sonnet-5-5": {
       "low": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -99,13 +99,13 @@
         }
       },
       "high": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -113,13 +113,13 @@
         }
       },
       "max": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -129,13 +129,13 @@
     },
     "claude-opus-5-5": {
       "low": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -143,13 +143,13 @@
         }
       },
       "high": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -157,13 +157,13 @@
         }
       },
       "max": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -173,13 +173,13 @@
     },
     "claude-fable-5-2": {
       "low": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -187,13 +187,13 @@
         }
       },
       "high": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -201,13 +201,13 @@
         }
       },
       "max": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -217,13 +217,13 @@
     },
     "claude-fable-5-1": {
       "low": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -231,13 +231,13 @@
         }
       },
       "high": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -245,13 +245,13 @@
         }
       },
       "max": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -261,13 +261,13 @@
     },
     "claude-haiku-5-5": {
       "low": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -275,13 +275,13 @@
         }
       },
       "high": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
@@ -289,13 +289,13 @@
         }
       },
       "max": {
-        "reach": {
+        "capability": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
           "date": null
         },
-        "tokens_generated_k": {
+        "appetite_k": {
           "value": null,
           "kind": "measured",
           "source": "not measured yet",
