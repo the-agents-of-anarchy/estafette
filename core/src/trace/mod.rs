@@ -318,12 +318,13 @@ fn start_writer(
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+mod tests {
     use std::collections::BTreeMap;
     use std::ffi::OsString;
     use std::fs::{self, File};
     use std::path::Path;
     use std::sync::Mutex;
+    use std::sync::mpsc::{self, Receiver, Sender};
     use std::time::{Duration, UNIX_EPOCH};
 
     use iroh::SecretKey;
@@ -357,12 +358,15 @@ pub(super) mod tests {
     const SMALL_DIRECTORY_BYTES: u64 = 1000;
     const RAW_EVENT: &str = "iroh_line";
     const CLOCK_EVENT: &str = "process.clock_before_unix_epoch";
+    const SMALL_QUEUE_LINES: usize = 2;
+    const WRITER_STEP_BOUND: Duration = Duration::from_secs(10);
+    const TEST_DRAIN_BOUND: Duration = Duration::from_secs(10);
     const DROPPED_EVENT: &str = "dropped";
     const EVENTS_FILE_SUFFIX: &str = ".events.jsonl";
     const STAND_IN_FAILURE: &str = "a stand-in failure";
     const STALE_EVENTS_FILE: &str = "20000101T000000Z-0000000000000001-estafette.events.jsonl";
 
-    pub(super) fn scratch_trace_directory(test_name: &str) -> (PathBuf, TraceDirectory) {
+    fn scratch_trace_directory(test_name: &str) -> (PathBuf, TraceDirectory) {
         let root = std::env::temp_dir().join(format!(
             "estafette-trace-{test_name}-{}",
             std::process::id()
@@ -377,7 +381,7 @@ pub(super) mod tests {
         (root, directory)
     }
 
-    pub(super) fn frozen_clocks(wall_ms: u64) -> TraceClocks {
+    fn frozen_clocks(wall_ms: u64) -> TraceClocks {
         TraceClocks {
             monotonic_ms: Arc::new(|| FROZEN_MONOTONIC_MS),
             wall_ms: Arc::new(move || wall_ms),
@@ -932,6 +936,184 @@ pub(super) mod tests {
             [first, dropped, last].map(|line| numbered_event(line)),
             [clock_event(0), dropped_event(2, 1), clock_event(3)]
         );
+        drop(fs::remove_dir_all(&root));
+    }
+
+    /// An events file the test holds back: each write announces itself, waits for the test's release, then hands the line over.
+    struct HeldBackEventsFile {
+        entered: Sender<()>,
+        released: Receiver<()>,
+        written: Sender<String>,
+    }
+
+    impl Write for HeldBackEventsFile {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.entered.send(()).map_err(io::Error::other)?;
+            self.released.recv().map_err(io::Error::other)?;
+            self.written
+                .send(String::from_utf8_lossy(bytes).into_owned())
+                .map_err(io::Error::other)?;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The test's ends of a held-back events file: where a write announces itself, where the test releases it, and where its line arrives.
+    struct HeldBackEvents {
+        entering: Receiver<()>,
+        release: Sender<()>,
+        written: Receiver<String>,
+    }
+
+    /// A trace whose events file the test holds back and whose raw file is discarded, its queues `SMALL_QUEUE_LINES` long.
+    fn held_back_trace(directory: &TraceDirectory) -> (Trace, HeldBackEvents) {
+        let (entered, entering) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let (written_sender, written) = mpsc::channel();
+        let events_file = Mutex::new(Some(HeldBackEventsFile {
+            entered,
+            released,
+            written: written_sender,
+        }));
+        let effects = TraceEffects {
+            create_file: Arc::new(move |path: &Path| -> io::Result<Box<dyn Write + Send>> {
+                let held_back = is_events_file(path)
+                    .then(|| events_file.lock().unwrap().take())
+                    .flatten();
+                if let Some(file) = held_back {
+                    return Ok(Box::new(file));
+                }
+                Ok(Box::new(io::sink()))
+            }),
+            ..TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS))
+        };
+        let trace = started_with(
+            directory,
+            &effects,
+            TraceBounds {
+                queue_lines: SMALL_QUEUE_LINES,
+                drain: TEST_DRAIN_BOUND,
+                ..TraceBounds::SPEC
+            },
+        );
+        (
+            trace,
+            HeldBackEvents {
+                entering,
+                release,
+                written,
+            },
+        )
+    }
+
+    /// What the receiver gets within `WRITER_STEP_BOUND`, failing with the condition's name when it gets nothing.
+    fn within_bound<T>(receiver: &Receiver<T>, condition: &str) -> T {
+        receiver
+            .recv_timeout(WRITER_STEP_BOUND)
+            .unwrap_or_else(|failure| panic!("{condition} within {WRITER_STEP_BOUND:?}: {failure}"))
+    }
+
+    /// The next line the held-back events file writes once the test releases it.
+    fn written_line(events: &HeldBackEvents) -> (u64, String, Option<u64>) {
+        events.release.send(()).unwrap();
+        numbered_event(&within_bound(&events.written, "a released line is written"))
+    }
+
+    #[test]
+    fn observability_decision_12_a_full_queue_counts_each_lost_event_and_the_next_line_is_a_dropped_event_where_n_skips()
+     {
+        let (root, directory) = scratch_trace_directory("full-queue");
+        let (trace, events) = held_back_trace(&directory);
+
+        trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
+        within_bound(&events.entering, "the writer holds the first line");
+        for _queued_or_lost in 0..4 {
+            trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
+        }
+        let held: Vec<_> = (0..3).map(|_line| written_line(&events)).collect();
+        trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
+        let after: Vec<_> = (0..2).map(|_line| written_line(&events)).collect();
+
+        assert_eq!(held, [clock_event(0), clock_event(1), clock_event(2)]);
+        assert_eq!(after, [dropped_event(5, 2), clock_event(6)]);
+        drop(events.release);
+        assert!(trace.finish());
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn observability_decision_12_events_lost_after_the_last_line_queued_are_reported_by_a_dropped_event_at_the_close()
+     {
+        let (root, directory) = scratch_trace_directory("loss-at-close");
+        let (trace, events) = held_back_trace(&directory);
+        trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
+        within_bound(&events.entering, "the writer holds the first line");
+        for _queued_or_lost in 0..4 {
+            trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
+        }
+        let HeldBackEvents {
+            entering,
+            release,
+            written,
+        } = events;
+        let releasing = std::thread::spawn(move || {
+            release.send(()).unwrap();
+            for _line in 0..=SMALL_QUEUE_LINES {
+                within_bound(&entering, "the writer holds a later line");
+                release.send(()).unwrap();
+            }
+        });
+
+        let drained = trace.finish();
+
+        assert!(drained);
+        let lines: Vec<_> = written
+            .try_iter()
+            .map(|line| numbered_event(&line))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                clock_event(0),
+                clock_event(1),
+                clock_event(2),
+                dropped_event(5, 2)
+            ]
+        );
+        releasing.join().unwrap();
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn observability_decision_12_finish_returns_once_every_queued_line_is_written() {
+        let (root, directory) = scratch_trace_directory("finish-drains");
+        let (trace, events) = held_back_trace(&directory);
+        trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
+        within_bound(&events.entering, "the writer holds the first line");
+        for _queued in 0..SMALL_QUEUE_LINES {
+            trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
+        }
+        let HeldBackEvents {
+            entering,
+            release,
+            written,
+        } = events;
+        let releasing = std::thread::spawn(move || {
+            release.send(()).unwrap();
+            for _line in 0..SMALL_QUEUE_LINES {
+                within_bound(&entering, "the writer holds a queued line");
+                release.send(()).unwrap();
+            }
+        });
+
+        let drained = trace.finish();
+
+        assert!(drained);
+        assert_eq!(written.try_iter().count(), SMALL_QUEUE_LINES + 1);
+        releasing.join().unwrap();
         drop(fs::remove_dir_all(&root));
     }
 
