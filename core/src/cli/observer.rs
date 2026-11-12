@@ -2109,6 +2109,8 @@ mod tests {
     const GONE_COLUMN: &str = "\tgone\t";
     const UNREACHABLE_COLUMN: &str = "\tunreachable\t";
     const SAME_ROWS_WAIT: Duration = Duration::from_secs(5);
+    const SPEC_GONE_PROCESS_SILENCE: Duration = Duration::from_millis(1500);
+    const HEARING_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 
     /// A monotonic clock that moves an hour on at every reading, so every connection the observer holds reads as long silent whenever it is judged.
     fn clock_moving_past_any_silence_at_each_reading() -> MonotonicClock {
@@ -2309,6 +2311,20 @@ mod tests {
         }
     }
 
+    /// Starts two members, whose start outlasts the observer wait, so the gone process falls silent past the close bound and the sample that judges it; fails by name when it has not.
+    async fn let_the_gone_process_fall_silent_past_the_close_bound(
+        lab: &Lab,
+        gone_since: Instant,
+    ) -> Vec<Member> {
+        let members_outlasting_the_silence = lab.start_members(two_members()).await;
+        let silent_for = gone_since.elapsed();
+        assert!(
+            silent_for >= SPEC_GONE_PROCESS_SILENCE.saturating_add(HEARING_SAMPLE_INTERVAL),
+            "the gone process was silent only {silent_for:?}, under the {SPEC_GONE_PROCESS_SILENCE:?} close bound plus the {HEARING_SAMPLE_INTERVAL:?} sample that judges it"
+        );
+        members_outlasting_the_silence
+    }
+
     /// Waits until the observer has taken a Presence of the neighbor sent at or after `sent_ms`, failing by name when it has not within the payload wait.
     async fn wait_until_the_observer_takes_the_neighbors_presence_sent_at(
         observer: &ObserverHost,
@@ -2359,13 +2375,15 @@ mod tests {
                 );
                 let observer = secret_key(OBSERVER_SEED).public();
                 let earlier = GoneProcess::introduced_to(observer_address).await;
+                let gone_since = Instant::now();
                 let live_direct = neighbor
                     .endpoint
                     .connect(observer, crate::net::endpoint::DIRECT_ALPN)
                     .await
                     .unwrap();
                 answer_on(&live_direct, probe_from_neighbor()).await;
-                let _witnesses = lab.start_members(two_members()).await;
+                let _members_started_while_the_gone_process_fell_silent =
+                    let_the_gone_process_fall_silent_past_the_close_bound(&lab, gone_since).await;
                 let presence_sent_ms = wall_clock_ms();
                 neighbor
                     .topic
