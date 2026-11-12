@@ -1614,15 +1614,27 @@ pub(super) mod tests {
     }
 
     pub(in crate::node) async fn bind(seed: u8) -> NodeEndpoint {
+        bind_holding(
+            seed,
+            crate::net::direct::HeldConnections::new(std::sync::Arc::new(
+                tokio::time::Instant::now,
+            )),
+        )
+        .await
+    }
+
+    /// Binds the endpoint of the seed, holding every connection its gate lets through in the register.
+    pub(in crate::node) async fn bind_holding(
+        seed: u8,
+        connections: crate::net::direct::HeldConnections,
+    ) -> NodeEndpoint {
         NodeEndpoint::bind(
             secret_key(seed),
             *keys().gate_key(),
             Vec::new(),
             move |nonce: &mut [u8; KEY_LEN]| *nonce = [seed; KEY_LEN],
             |_ignored| {},
-            crate::net::direct::HeldConnections::new(std::sync::Arc::new(
-                tokio::time::Instant::now,
-            )),
+            connections,
         )
         .await
         .unwrap()
