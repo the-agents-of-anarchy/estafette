@@ -26,8 +26,11 @@ use writer::{RollingFile, RolloverOpening, TraceWriter};
 pub const FORMAT_VERSION: u64 = 1;
 /// The size at which a trace file rolls over into its `.1` file: 64 MiB.
 pub const TRACE_FILE_ROLLOVER_BYTES: u64 = 67_108_864;
+/// The files one run keeps of one trace file: the file and the one `.1` file it rolls over into.
+const FILES_A_RUN_KEEPS_PER_TRACE_FILE: u64 = 2;
 /// The most one run keeps of one trace file, the file and its `.1` file together: 128 MiB.
-pub const TRACE_RUN_FILE_MAX_BYTES: u64 = 134_217_728;
+pub const TRACE_RUN_FILE_MAX_BYTES: u64 =
+    FILES_A_RUN_KEEPS_PER_TRACE_FILE * TRACE_FILE_ROLLOVER_BYTES;
 /// The most the trace directory holds once the oldest runs are removed at a start: 1 GiB.
 pub const TRACE_DIRECTORY_MAX_BYTES: u64 = 1_073_741_824;
 /// How recently a run's events file was written for the run to be kept whatever the directory holds: ten minutes.
