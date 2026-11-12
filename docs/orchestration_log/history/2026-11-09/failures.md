@@ -287,3 +287,19 @@ What happened: At 09:17 the five-hour usage limit ended the runs of three opus i
 Mechanism: The pacing of 04:51 (two opus agents for the critical path, one closing-round agent) spends the window in about four and a half hours when a debugging round of five agents and two review rounds run inside it, as they did between 06:50 and 08:55; the window that began 04:50 was spent 33 minutes before its end.
 
 Correction: Lead decision: the pacing stands, since the window was used whole, the agents resume from saved work and a slower pace would cost more wall time than the 33 minutes lost; a debugging round counts against the closing-round slot from now on, so the closing-round agent waits while one runs. Closest alternative: drop to one opus agent on the critical path. The three agents were resumed by message at 09:52, one after another: all-storage, fix-restart-path-reselect, trace-seam.
+
+## cd at the head of compound commands
+
+What happened: On 2026-11-12 between 18:13 and 18:57 the lead opened several Bash commands with cd into the project root or the recon directory followed by further commands, one of them the background records commit; no command aborted, and one call left the shell in the recon directory until a plain cd returned it.
+
+Mechanism: Directive git-from-root forbids cd inside a compound command because the owner's zoxide alias can abort it; after the compaction the lead wrote commands from habit and did not scan them against the directive, which the compaction summary had named as a lesson still binding.
+
+Correction: Commands carry absolute paths, git -C and tool flags; a return to the root is one plain cd in a call of its own; the pre-compaction status line of 19:03 names the rule for the next reader.
+
+## A Minor finding ordered fixed where no fix within the rules existed
+
+What happened: On 2026-11-12 at 19:34 the lead ordered the all-bridge implementer to replace a yield_now spin in bridges/claude/tests/acceptance.rs with a wait on the condition; the implementer, with no event source in the unit, wrote thread::park_timeout(20 ms), a timed wait the no-sleep-in-tests directive forbids, and one more continuation was needed to take it out.
+
+Mechanism: Dev-cycle orders Critical and Important findings fixed and the rest noted; the lead added a Minor to the fix order to save a later pass without checking that the unit held the means (an event wait arrives with tests-on-events).
+
+Correction: Minor findings are noted in the status file and deferred to the unit that owns their means or to the whole-branch implementer; an order to fix one is written only after naming the mechanism that fixes it within the conventions.
