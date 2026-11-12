@@ -423,7 +423,7 @@ impl PeerRows {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Applies a Presence to the table and, when it is taken, closes every connection to or from its card, of any protocol, whose process no longer runs (spec 3.8, address lookup).
+    /// Applies a Presence to the table and, when it is taken, closes every connection to or from its card, of any protocol, whose process no longer runs, and then every other when none reports the path iroh selected (spec 3.8, address lookup).
     pub(crate) fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
         let effects = self.table().receive_presence(presence, now_ms);
         if effects.contains(&Effect::DropHeldConnection(presence.card)) {

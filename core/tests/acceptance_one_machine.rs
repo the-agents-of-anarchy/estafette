@@ -84,6 +84,8 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const DOCUMENTATION_HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
     const SENT_BEFORE_THE_PRESENCE: &str = "sent before the presence";
     const SENT_AFTER_THE_PRESENCE: &str = "sent after the presence";
+    const GONE_PROCESS_SILENCE: Duration = Duration::from_millis(1500);
+    const HEARING_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 
     /// A member, amy, who listed a scripted bob, then took bob's Departure of that seq and lists bob gone.
     struct ScriptedBobDeparted {
@@ -352,6 +354,85 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             &bob_card,
             &first_send,
             killed_ms,
+        );
+    }
+
+    #[test]
+    fn spec_3_15_test_18_a_killed_member_restarted_with_its_card_that_connects_to_the_sender_before_its_new_presence_is_delivered_to_within_1_s_of_that_presence()
+     {
+        let network = LocalNetwork::create("r1o", &RunRecordKeeping::from_environment());
+        let amy_card = network.create_card("amy-card", "amy");
+        let bob_card = network.create_card("bob-card", "bob");
+        let bob_key = network.card_key(&bob_card);
+        let first_session = network.scripted_member(&bob_key, "bob");
+        let mut amy = timed("amy starts", || network.start_member());
+        timed(
+            "amy claims its card through the first bob, who links amy over gossip",
+            || amy.init_through(&amy_card, &first_session),
+        );
+        timed("the first bob's presence", || {
+            first_session.broadcast(presence_signed_by(
+                network.keys(),
+                &bob_key,
+                "bob",
+                &loopback_address_of(&first_session),
+            ));
+        });
+        timed("amy lists the first bob online", || {
+            amy.peer_within("bob", PRESENCE_WAIT, online)
+        });
+        let first_send = timed("amy's send to bob before the kill", || {
+            send(&mut amy, "bob")
+        });
+
+        timed("the first bob is killed with its connections open", || {
+            first_session.vanish();
+        });
+        let killed = Instant::now();
+        let killed_ms = wall_clock_ms();
+        let restarted = network.scripted_member(&bob_key, "bob");
+        timed("the restarted bob connects to amy over gossip", || {
+            restarted.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
+            restarted.wait_for_neighbor_up(amy_card.id);
+        });
+        let witness_host = network.stand_in_host();
+        let witness_card = network.create_card("witness-card", "wit");
+        let mut witness = network.start_member();
+        timed(
+            "a witness claims through its own host, which takes the spec 3.14 observer wait, past the silence of a gone process",
+            || witness.init_through(&witness_card, &witness_host),
+        );
+        let silent_for = killed.elapsed();
+        assert!(
+            silent_for >= GONE_PROCESS_SILENCE.saturating_add(HEARING_SAMPLE_INTERVAL),
+            "the first bob was silent only {silent_for:?} before the restarted bob's presence, under the {GONE_PROCESS_SILENCE:?} close bound plus the {HEARING_SAMPLE_INTERVAL:?} sample that judges it"
+        );
+        timed("the restarted bob's presence", || {
+            restarted.broadcast(presence_signed_by(
+                network.keys(),
+                &bob_key,
+                "bob",
+                &loopback_address_of(&restarted),
+            ));
+        });
+        timed("amy lists the restarted bob's presence", || {
+            amy.peer_within("bob", PRESENCE_WAIT, |bob| {
+                bob["last_seen"].as_u64().unwrap() > killed_ms
+            })
+        });
+        let new_presence_reached = Instant::now();
+        let sent = timed("amy's send to the restarted bob", || send(&mut amy, "bob"));
+        let delivered_after = new_presence_reached.elapsed();
+
+        assert_eq!(
+            first_send["result"]["delivered"],
+            json!(true),
+            "{first_send}"
+        );
+        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
+        assert!(
+            delivered_after <= SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
+            "{delivered_after:?}"
         );
     }
 

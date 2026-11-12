@@ -13,14 +13,17 @@ use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId};
 use n0_future::StreamExt;
 use tokio::runtime::Handle;
+use tokio::sync::watch;
 
 use crate::driven_runtime::DrivenRuntime;
 
 type Admitted = Arc<Mutex<BTreeSet<EndpointId>>>;
-type Events = Arc<Mutex<Vec<Event>>>;
+type Events = Arc<watch::Sender<Vec<Event>>>;
 
 /// How long a direct request may take to be answered: the server read timeout of spec 3.14 (10000 ms) with slack.
 const DIRECT_ANSWER_WAIT: Duration = Duration::from_secs(15);
+/// How long a node joined to another may take to report it up as a gossip neighbor.
+const GOSSIP_NEIGHBOR_WAIT: Duration = Duration::from_secs(10);
 
 /// An iroh node the test drives on the network topic: it links the nodes it admits, and plays a host, a forger or an outsider.
 pub struct ScriptedNode {
@@ -88,7 +91,7 @@ impl ScriptedNode {
             ))
             .unwrap();
         let admitted = Admitted::default();
-        let events = Events::default();
+        let events = Arc::new(watch::Sender::new(Vec::new()));
         let _inside_runtime = runtime.enter();
         let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
         let router = extend(
@@ -136,7 +139,25 @@ impl ScriptedNode {
 
     /// Every event the topic gave this node so far, in order.
     pub fn events(&self) -> Vec<Event> {
-        self.events.lock().unwrap().clone()
+        self.events.borrow().clone()
+    }
+
+    /// Waits until the node's topic reports the neighbor up, requiring that within the gossip neighbor wait.
+    #[track_caller]
+    pub fn wait_for_neighbor_up(&self, neighbor: EndpointId) {
+        let mut events = self.events.subscribe();
+        let neighbor_up = self.runtime().block_on(async {
+            tokio::time::timeout(
+                GOSSIP_NEIGHBOR_WAIT,
+                events.wait_for(|events| events.contains(&Event::NeighborUp(neighbor))),
+            )
+            .await
+            .is_ok_and(|seen| seen.is_ok())
+        });
+        assert!(
+            neighbor_up,
+            "{neighbor} was no gossip neighbor within {GOSSIP_NEIGHBOR_WAIT:?}"
+        );
     }
 
     /// Sends the bytes as one direct request to the node over a fresh connection and returns the answer, none when the connection, the stream or the wait fails.
@@ -214,6 +235,6 @@ impl ProtocolHandler for AdmittedOnly {
 /// Records every event of the subscription, reading each so the topic never drops it for lagging.
 async fn record(mut receiver: GossipReceiver, events: Events) {
     while let Some(Ok(event)) = receiver.next().await {
-        events.lock().unwrap().push(event);
+        events.send_modify(|events| events.push(event));
     }
 }
