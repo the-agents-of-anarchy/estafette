@@ -2013,7 +2013,7 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_3_the_doctor_creates_no_directory() {
+    fn spec_3_12_the_doctor_creates_no_directory() {
         let files = StandInFiles::default();
         let (outcome, _report) = doctor_output_with(&files);
         outcome.expect("doctor ran");

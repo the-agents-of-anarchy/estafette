@@ -73,7 +73,7 @@ mod tests {
     }
 
     #[test]
-    fn harness_names_the_classes_bypass_and_prompting_and_reads_them_back() {
+    fn spec_3_12_harness_2_1_319_names_the_classes_bypass_and_prompting_and_reads_them_back() {
         for (class, name) in [
             (PermissionClass::Bypass, "bypass"),
             (PermissionClass::Prompting, "prompting"),
