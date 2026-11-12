@@ -1528,6 +1528,110 @@ mod tests {
         assert_eq!(dialed.close_reason(), Some(ConnectionError::LocallyClosed));
     }
 
+    const SETTLED_WAIT: Duration = Duration::from_secs(5);
+
+    /// Whether each connection to or from the card the register holds reports a path iroh selected, in the order held.
+    fn selected_path_reported_by_each_held_of(
+        register: &HeldConnections,
+        card: wire::PublicKey,
+    ) -> Vec<bool> {
+        register
+            .held()
+            .get(&card)
+            .into_iter()
+            .flatten()
+            .map(|held_connection| {
+                held_connection
+                    .connection
+                    .upgrade()
+                    .is_some_and(|live| live.paths().iter().any(|path| path.is_selected()))
+            })
+            .collect()
+    }
+
+    /// Whether the register holds connections to or from the card and has heard from the peer on every one of them at or after the instant.
+    fn every_held_of_heard_since(
+        register: &HeldConnections,
+        card: wire::PublicKey,
+        since: tokio::time::Instant,
+    ) -> bool {
+        register.held().get(&card).is_some_and(|of_card| {
+            !of_card.is_empty()
+                && of_card
+                    .iter()
+                    .all(|held_connection| held_connection.last_heard >= since)
+        })
+    }
+
+    /// Dials the peer node on the protocol from this node and returns the dialed connection with the one the peer accepted.
+    async fn dialed_and_accepted(
+        this_node: &NodeEndpoint,
+        peer_node: &NodeEndpoint,
+        alpn: &[u8],
+    ) -> (Connection, Connection) {
+        let (dialed, accepted) = tokio::join!(
+            this_node
+                .endpoint()
+                .connect(peer_node.endpoint().id(), alpn),
+            async {
+                let incoming = peer_node.endpoint().accept().await.unwrap();
+                incoming.accept().unwrap().await
+            }
+        );
+        (dialed.unwrap(), accepted.unwrap())
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_healthy_connection_of_each_protocol_reports_a_selected_path_at_both_ends_when_it_opens_and_three_keep_alive_intervals_later()
+     {
+        let this_register = HeldConnections::new(Arc::new(tokio::time::Instant::now));
+        let peer_register = HeldConnections::new(Arc::new(tokio::time::Instant::now));
+        let this_node = bind_node_holding(SERVER_SEED, this_register.clone()).await;
+        let peer_node = bind_node_holding(CLIENT_SEED, peer_register.clone()).await;
+        this_node.replace_address(peer_node.endpoint().addr());
+        let opened_at = tokio::time::Instant::now();
+
+        let mut reported_when_opened = Vec::new();
+        let mut open = Vec::new();
+        for alpn in [DIRECT_ALPN, GOSSIP_ALPN] {
+            open.push(dialed_and_accepted(&this_node, &peer_node, alpn).await);
+            reported_when_opened.push((
+                selected_path_reported_by_each_held_of(&this_register, card_of(CLIENT_SEED)),
+                selected_path_reported_by_each_held_of(&peer_register, card_of(SERVER_SEED)),
+            ));
+        }
+        let heard_since = opened_at.checked_add(SILENCE_OF_A_GONE_PROCESS).unwrap();
+        let heard_through_three_keep_alive_intervals = timeout(SETTLED_WAIT, async {
+            while !(every_held_of_heard_since(&this_register, card_of(CLIENT_SEED), heard_since)
+                && every_held_of_heard_since(&peer_register, card_of(SERVER_SEED), heard_since))
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        let reported_three_keep_alive_intervals_later = (
+            selected_path_reported_by_each_held_of(&this_register, card_of(CLIENT_SEED)),
+            selected_path_reported_by_each_held_of(&peer_register, card_of(SERVER_SEED)),
+        );
+
+        assert!(
+            heard_through_three_keep_alive_intervals.is_ok(),
+            "the peers were not heard on every connection {SILENCE_OF_A_GONE_PROCESS:?} after it opened, within {SETTLED_WAIT:?}"
+        );
+        assert_eq!(
+            reported_when_opened,
+            vec![
+                (vec![true], vec![true]),
+                (vec![true, true], vec![true, true])
+            ]
+        );
+        assert_eq!(
+            reported_three_keep_alive_intervals_later,
+            (vec![true, true], vec![true, true])
+        );
+        drop(open);
+    }
+
     #[tokio::test]
     async fn spec_3_8_an_introduce_keeps_the_connection_it_arrived_on_even_one_that_reads_as_gone()
     {
