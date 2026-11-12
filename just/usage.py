@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -542,7 +543,25 @@ def unit_command(parsed, prices, parameters):
     return 0
 
 
-CALCULATOR_COMMANDS = {'attempt': attempt_command, 'unit': unit_command}
+def ratio_text(first, second):
+    """The second figure over the first, or the unknown mark when either is unknown or the first is zero."""
+    if first is None or second is None or first == 0:
+        return UNKNOWN_MARK
+    return f'{second / first:.2f}x'
+
+
+def compare_command(parsed, prices, parameters):
+    """Print two attempts side by side with the ratio of each line."""
+    attempt_parser = argparse.ArgumentParser(prog='attempt')
+    add_attempt_arguments(attempt_parser)
+    both = [attempt_lines(prices, parameters, attempt_from(prices, parameters, attempt_parser.parse_args(shlex.split(text)))) for text in (parsed.first, parsed.second)]
+    print('line | first | second | second over first')
+    for first, second in zip(*both):
+        print(f'{first.label} | {figure_text(first)} | {figure_text(second)} | {ratio_text(first.figure, second.figure)}')
+    return 0
+
+
+CALCULATOR_COMMANDS = {'attempt': attempt_command, 'unit': unit_command, 'compare': compare_command}
 
 
 def run_refusing(command, *command_arguments):
@@ -577,6 +596,9 @@ def main(arguments, standard_input, now, environment, home_directory):
     unit_parser.add_argument('miss_usd', type=float)
     unit_parser.add_argument('miss_min', type=float)
     unit_parser.add_argument('--reach', type=float)
+    compare_parser = subcommands.add_parser('compare', help='print two attempts side by side with the ratio of each line')
+    compare_parser.add_argument('first')
+    compare_parser.add_argument('second')
     parsed = parser.parse_args(arguments)
     if parsed.subcommand in CALCULATOR_COMMANDS:
         return run_refusing(CALCULATOR_COMMANDS[parsed.subcommand], parsed, json.loads(PRICES_PATH.read_text()), json.loads(PARAMS_PATH.read_text()))

@@ -42,3 +42,9 @@ attempt *arguments:
 [no-exit-message]
 unit *arguments:
     python3 -I {{ quote(script) }} unit {{ arguments }}
+
+[doc("Compare two attempts, arguments: two quoted strings, each the arguments of attempt (for example \"claude-sonnet-5-5 high 200 30 1 10 agent --generated-k 50\"); prints the attempt table of each side by side and the ratio second over first of every line, ? where either figure is unknown or the first is zero; reads usage-prices.json and usage-params.json; refuses what attempt refuses for either side, before any output")]
+[group('usage')]
+[no-exit-message]
+compare first second:
+    python3 -I {{ quote(script) }} compare {{ quote(first) }} {{ quote(second) }}
