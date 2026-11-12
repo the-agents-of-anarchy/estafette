@@ -160,6 +160,17 @@ pub struct Trace {
     drain: Duration,
 }
 
+/// How a trace's stop left its files.
+#[derive(Debug)]
+pub enum TraceStop {
+    /// Every queued line is on disk and each file ends at its last line.
+    Drained,
+    /// The drain bound ran out before every queued line was on disk.
+    NotDrained,
+    /// Every queued line is on disk, but a file keeps the zero bytes sized past its last line.
+    NotCut(io::Error),
+}
+
 /// A trace that could not start, refusing the command before any other side effect.
 #[derive(Debug)]
 pub struct TraceRefused {
@@ -296,11 +307,15 @@ impl Trace {
         self.header.note_node(id);
     }
 
-    /// Closes both queues and waits, within the drain bound for each, until their lines are on disk, saying whether every line got there.
-    pub fn finish(&self) -> bool {
-        let events_drained = self.events.finish(self.drain);
-        let raw_drained = self.raw.finish(self.drain);
-        events_drained && raw_drained
+    /// Closes both queues and waits, within the drain bound for each, until their lines are on disk and each file ends at its last line, saying how the stop left them.
+    pub fn finish(&self) -> TraceStop {
+        match (self.events.finish(self.drain), self.raw.finish(self.drain)) {
+            (TraceStop::Drained, TraceStop::Drained) => TraceStop::Drained,
+            (TraceStop::NotDrained, _) | (_, TraceStop::NotDrained) => TraceStop::NotDrained,
+            (TraceStop::NotCut(source), _) | (_, TraceStop::NotCut(source)) => {
+                TraceStop::NotCut(source)
+            }
+        }
     }
 }
 
@@ -485,7 +500,10 @@ mod tests {
         let (root, directory) = scratch_trace_directory("stamps");
 
         for (wall_ms, _stamp) in STAMPED_STARTS {
-            assert!(started(&directory, wall_ms, TraceBounds::SPEC).finish());
+            assert!(matches!(
+                started(&directory, wall_ms, TraceBounds::SPEC).finish(),
+                TraceStop::Drained
+            ));
         }
 
         let names = names_in(&directory.path());
@@ -510,7 +528,7 @@ mod tests {
         trace.note_endpoint(id);
         trace.record(&ClaimFailure::NetworkRefused(NodeError::TopicClosedBeforeHandle).into());
         trace.record(&InboxEvent::AcceptFailed(io::Error::other("a marker")).into());
-        assert!(trace.finish());
+        assert!(matches!(trace.finish(), TraceStop::Drained));
 
         let header = |n: u64| {
             format!(
@@ -548,7 +566,7 @@ mod tests {
         for _line in 0..LINES_WRITTEN {
             trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
         }
-        assert!(trace.finish());
+        assert!(matches!(trace.finish(), TraceStop::Drained));
 
         let events = &trace.files().events;
         assert_eq!(fs::read_to_string(events).unwrap(), clock_line(4, None));
@@ -588,7 +606,7 @@ mod tests {
         for _line in 0..LINES_WRITTEN {
             trace.raw.write(RAW_EVENT, &[]);
         }
-        assert!(trace.finish());
+        assert!(matches!(trace.finish(), TraceStop::Drained));
 
         let raw = &trace.files().raw;
         assert_eq!(
@@ -742,6 +760,7 @@ mod tests {
         failing_writes: Vec<usize>,
         torn_writes: Vec<usize>,
         events_lengths: Vec<u64>,
+        refuses_shrinking: bool,
         failing_creations: Vec<usize>,
         failing_renames: Vec<usize>,
         writes: usize,
@@ -770,8 +789,7 @@ mod tests {
 
     impl TraceFile for MemoryFile {
         fn set_length(&mut self, length: u64) -> io::Result<()> {
-            self.files.set_len_of(&self.path, length);
-            Ok(())
+            self.files.set_len_of(&self.path, length)
         }
     }
 
@@ -803,6 +821,14 @@ mod tests {
         fn torn_at(write: usize) -> Self {
             Self(Arc::new(Mutex::new(MemoryState {
                 torn_writes: vec![write],
+                ..MemoryState::default()
+            })))
+        }
+
+        /// Files that refuse to set any file shorter than it is.
+        fn refusing_to_shrink() -> Self {
+            Self(Arc::new(Mutex::new(MemoryState {
+                refuses_shrinking: true,
                 ..MemoryState::default()
             })))
         }
@@ -892,17 +918,21 @@ mod tests {
             Ok(taken.len())
         }
 
-        /// Sets the length of the file at the path, the part past what it held reading as zeros, noting each length an events file is given.
-        fn set_len_of(&self, path: &Path, length: u64) {
+        /// Sets the length of the file at the path, the part past what it held reading as zeros, noting each length an events file is given, unless these files refuse to shrink it.
+        fn set_len_of(&self, path: &Path, length: u64) -> io::Result<()> {
             let mut state = self.state();
+            let held_length = usize::try_from(length).map_err(io::Error::other)?;
+            let refuses_shrinking = state.refuses_shrinking;
+            let held = state.held.entry(path.to_path_buf()).or_default();
+            if refuses_shrinking && held_length < held.len() {
+                return Err(stand_in_failure());
+            }
+            held.resize(held_length, 0);
             if is_events_file(path) {
                 state.events_lengths.push(length);
             }
-            state
-                .held
-                .entry(path.to_path_buf())
-                .or_default()
-                .resize(usize::try_from(length).unwrap(), 0);
+            drop(state);
+            Ok(())
         }
 
         /// The text the file holds.
@@ -962,7 +992,7 @@ mod tests {
         for _event in 0..4 {
             trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
         }
-        assert!(trace.finish());
+        assert!(matches!(trace.finish(), TraceStop::Drained));
 
         assert_eq!(
             files.numbered_events_of(&trace.files().events),
@@ -981,7 +1011,7 @@ mod tests {
         for _event in 0..3 {
             trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
         }
-        assert!(trace.finish());
+        assert!(matches!(trace.finish(), TraceStop::Drained));
 
         let held = files.text_of(&trace.files().events);
         let lines: Vec<&str> = held.lines().collect();
@@ -1110,7 +1140,7 @@ mod tests {
         assert_eq!(held, [clock_event(0), clock_event(1), clock_event(2)]);
         assert_eq!(after, [dropped_event(5, 2), clock_event(6)]);
         drop(events.release);
-        assert!(trace.finish());
+        assert!(matches!(trace.finish(), TraceStop::Drained));
         drop(fs::remove_dir_all(&root));
     }
 
@@ -1137,9 +1167,9 @@ mod tests {
             }
         });
 
-        let drained = trace.finish();
+        let stop = trace.finish();
 
-        assert!(drained);
+        assert!(matches!(stop, TraceStop::Drained), "{stop:?}");
         let lines: Vec<_> = written
             .try_iter()
             .map(|line| numbered_event(&line))
@@ -1179,9 +1209,9 @@ mod tests {
             }
         });
 
-        let drained = trace.finish();
+        let stop = trace.finish();
 
-        assert!(drained);
+        assert!(matches!(stop, TraceStop::Drained), "{stop:?}");
         assert_eq!(written.try_iter().count(), SMALL_QUEUE_LINES + 1);
         releasing.join().unwrap();
         drop(fs::remove_dir_all(&root));
@@ -1195,7 +1225,7 @@ mod tests {
         let trace = started_with(&directory, &files.effects(NOW_MS), TraceBounds::SPEC);
 
         trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
-        assert!(trace.finish());
+        assert!(matches!(trace.finish(), TraceStop::Drained));
 
         let line = clock_line(0, None);
         assert_eq!(
@@ -1210,6 +1240,24 @@ mod tests {
     }
 
     #[test]
+    fn observability_decision_12_a_clean_stop_that_cannot_cut_a_file_back_to_its_last_line_says_so()
+    {
+        let (root, directory) = scratch_trace_directory("not-cut");
+        let files = MemoryFiles::refusing_to_shrink();
+        let trace = started_with(&directory, &files.effects(NOW_MS), TraceBounds::SPEC);
+
+        trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
+        let stop = trace.finish();
+
+        assert!(matches!(stop, TraceStop::NotCut(_)), "{stop:?}");
+        assert_eq!(
+            files.text_of(&trace.files().events).len(),
+            usize::try_from(TRACE_FILE_SIZED_AHEAD_BYTES).unwrap()
+        );
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
     fn observability_decision_6_a_line_longer_than_the_step_is_sized_ahead_by_whole_steps() {
         const LONG_TEXT_BYTES: usize = 70_000;
         let (root, directory) = scratch_trace_directory("sized-ahead-long");
@@ -1220,7 +1268,7 @@ mod tests {
             CLOCK_EVENT,
             &[("text", Value::from("x".repeat(LONG_TEXT_BYTES)))],
         );
-        assert!(trace.finish());
+        assert!(matches!(trace.finish(), TraceStop::Drained));
 
         let held = files.text_of(&trace.files().events);
         assert_eq!(
@@ -1252,7 +1300,7 @@ mod tests {
         for _event in 0..LINES_WRITTEN {
             trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
         }
-        assert!(trace.finish());
+        assert!(matches!(trace.finish(), TraceStop::Drained));
 
         let events = &trace.files().events;
         assert_eq!(
@@ -1317,7 +1365,7 @@ mod tests {
                 ..TraceBounds::SPEC
             },
         );
-        assert!(trace.finish());
+        assert!(matches!(trace.finish(), TraceStop::Drained));
 
         let kept: Vec<String> = names_in(&traces)
             .into_iter()

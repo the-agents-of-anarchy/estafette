@@ -1,3 +1,4 @@
+use std::io;
 use std::time::Duration;
 
 use iroh::endpoint::BindError;
@@ -23,6 +24,7 @@ super::event_names! {
         ClaimEndpointUnbound => "process.claim_endpoint_unbound",
         ClaimNodeNotStarted => "process.claim_node_not_started",
         TraceNotDrained => "process.trace_not_drained",
+        TraceNotCut => "process.trace_not_cut",
     }
 }
 
@@ -38,6 +40,8 @@ pub enum ProcessEvent {
     ClaimFailed(ClaimFailure),
     /// The debug trace was still writing when its drain bound ran out at the stop.
     TraceNotDrained { drain: Duration },
+    /// The debug trace could not cut a file back to its last line at the stop, so the file ends in zero bytes.
+    TraceNotCut(io::Error),
 }
 
 /// Why init failed once it held or tried the card's sidecar lock, each cause answering its own code.
@@ -90,6 +94,7 @@ impl AreaEvent for ProcessEvent {
                 ProcessEventName::ClaimNodeNotStarted
             }
             Self::TraceNotDrained { .. } => ProcessEventName::TraceNotDrained,
+            Self::TraceNotCut(_) => ProcessEventName::TraceNotCut,
         }
     }
 
@@ -121,6 +126,9 @@ impl AreaEvent for ProcessEvent {
                 "the debug trace did not finish writing within {} ms of the stop: its last lines may be missing from its files",
                 drain.as_millis()
             ),
+            Self::TraceNotCut(source) => format!(
+                "the debug trace could not cut a file back to its last line at the stop, so the file ends in zero bytes: {source}"
+            ),
         })
     }
 
@@ -129,7 +137,8 @@ impl AreaEvent for ProcessEvent {
             Self::CommandFailed(_)
             | Self::NetworkCreated { .. }
             | Self::ClockBeforeUnixEpoch
-            | Self::TraceNotDrained { .. } => Vec::new(),
+            | Self::TraceNotDrained { .. }
+            | Self::TraceNotCut(_) => Vec::new(),
             Self::ClaimFailed(failure) => answered(&failure.answered_code()),
         }
     }

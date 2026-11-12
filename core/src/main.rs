@@ -36,7 +36,7 @@ use estafette::node::{
 };
 use estafette::sidecar::{self, ThreadSleep};
 use estafette::trace::{
-    RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceEffects, TraceRefused,
+    RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceEffects, TraceRefused, TraceStop,
 };
 use estafette::wire::Nonce;
 use iroh::SecretKey;
@@ -253,15 +253,17 @@ fn run_traced<StandardError: Write + Send + 'static>(
         .map_err(CommandLineFailure::Directories)
         .and_then(|directories| command(directories, &process));
     let status = exit_status_after(outcome, process.record.as_ref());
-    if let Some(trace) = &process.trace
-        && !trace.finish()
-    {
-        run_record_on(&stderr, None)(
-            ProcessEvent::TraceNotDrained {
+    if let Some(trace) = &process.trace {
+        let unfinished = match trace.finish() {
+            TraceStop::Drained => None,
+            TraceStop::NotDrained => Some(ProcessEvent::TraceNotDrained {
                 drain: trace_bounds.drain,
-            }
-            .into(),
-        );
+            }),
+            TraceStop::NotCut(source) => Some(ProcessEvent::TraceNotCut(source)),
+        };
+        if let Some(unfinished) = unfinished {
+            run_record_on(&stderr, None)(unfinished.into());
+        }
     }
     status
 }
@@ -1371,6 +1373,71 @@ mod tests {
         let recorded = String::from_utf8(standard_error.0.lock().unwrap().clone()).unwrap();
         assert_eq!(status, ExitStatus::Success);
         assert_eq!(recorded.lines().last(), Some(SPEC_UNDRAINED_LINE));
+        drop(std::fs::remove_dir_all(&root));
+    }
+
+    /// A trace file that refuses to be cut shorter than it was last sized, discarding what is written to it.
+    struct UncuttableTraceFile {
+        sized: u64,
+    }
+
+    impl TraceFile for UncuttableTraceFile {
+        fn set_length(&mut self, length: u64) -> io::Result<()> {
+            if length < self.sized {
+                return Err(io::Error::other("the file refuses to shrink"));
+            }
+            self.sized = length;
+            Ok(())
+        }
+    }
+
+    impl Write for UncuttableTraceFile {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn observability_decision_12_a_trace_whose_file_cannot_be_cut_back_at_the_stop_says_so_on_standard_error_and_the_status_stands()
+     {
+        const SPEC_NOT_CUT_LINE: &str = "the debug trace could not cut a file back to its last line at the stop, so the file ends in zero bytes: the file refuses to shrink";
+        const SCRATCH_PREFIX: &str = "estafette-trace-not-cut";
+        const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
+        const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
+        const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
+        let root = std::env::temp_dir().join(format!("{SCRATCH_PREFIX}-{}", std::process::id()));
+        drop(std::fs::remove_dir_all(&root));
+        let environment = |name: &str| match name {
+            CONFIG_HOME_VARIABLE => Some(root.join("c").into_os_string()),
+            DATA_HOME_VARIABLE => Some(root.join("d").into_os_string()),
+            RUNTIME_DIRECTORY_VARIABLE => Some(root.join("r").into_os_string()),
+            _ => None,
+        };
+        let trace_effects = TraceEffects {
+            create_file: Arc::new(|_path: &Path| -> io::Result<Box<dyn TraceFile>> {
+                Ok(Box::new(UncuttableTraceFile { sized: 0 }))
+            }),
+            ..TraceEffects::of_the_operating_system(trace_clocks_started_now())
+        };
+        let standard_error = SharedRecord::default();
+
+        let status = run_traced(
+            Tracing::Debug,
+            environment,
+            None,
+            standard_error.clone(),
+            &trace_effects,
+            TraceBounds::SPEC,
+            |_directories, _process| Ok(ExitStatus::Success),
+        );
+
+        let recorded = String::from_utf8(standard_error.0.lock().unwrap().clone()).unwrap();
+        assert_eq!(status, ExitStatus::Success);
+        assert_eq!(recorded.lines().last(), Some(SPEC_NOT_CUT_LINE));
         drop(std::fs::remove_dir_all(&root));
     }
 

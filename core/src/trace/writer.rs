@@ -7,7 +7,9 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::line::{HeaderSource, StampedLine};
-use super::{CreateTraceFile, RenameFile, SpawnThread, TRACE_FILE_SIZED_AHEAD_BYTES, TraceFile};
+use super::{
+    CreateTraceFile, RenameFile, SpawnThread, TRACE_FILE_SIZED_AHEAD_BYTES, TraceFile, TraceStop,
+};
 use crate::dirs::rolled_over_trace_file;
 use crate::event::{EventName, TraceLineName};
 
@@ -195,7 +197,7 @@ pub(super) struct TraceWriter {
     header: Arc<HeaderSource>,
     queue: Mutex<Queue>,
     lost_at_close: Arc<Mutex<u64>>,
-    ended: Mutex<Option<Receiver<()>>>,
+    ended: Mutex<Option<Receiver<io::Result<()>>>>,
 }
 
 /// The queue while it is open, and the events lost since the last line queued.
@@ -219,15 +221,16 @@ impl TraceWriter {
         spawn_thread: &SpawnThread,
     ) -> io::Result<Self> {
         let (queue, lines) = mpsc::sync_channel(queue_lines);
-        let (ended_sender, ended) = mpsc::channel::<()>();
+        let (ended_sender, ended) = mpsc::channel::<io::Result<()>>();
         let lost_at_close = Arc::new(Mutex::new(0));
         let writer_header = Arc::clone(&header);
         let writer_lost_at_close = Arc::clone(&lost_at_close);
         spawn_thread(
             WRITER_THREAD_NAME,
             Box::new(move || {
-                write_every_line(output, &writer_header, &lines, &writer_lost_at_close);
-                drop(ended_sender);
+                let closed =
+                    write_every_line(output, &writer_header, &lines, &writer_lost_at_close);
+                drop(ended_sender.send(closed));
             }),
         )?;
         Ok(Self {
@@ -259,28 +262,32 @@ impl TraceWriter {
         };
     }
 
-    /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most `within` for it to write every line it holds and report that loss, saying whether it did.
-    pub(super) fn finish(&self, within: Duration) -> bool {
+    /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most `within` for it to write every line it holds, report that loss and cut the file back to its last line, saying how the stop left the file.
+    pub(super) fn finish(&self, within: Duration) -> TraceStop {
         let mut queue = locked(&self.queue);
         *locked(&self.lost_at_close) = queue.lost;
         drop(queue.lines.take());
         drop(queue);
-        locked(&self.ended).take().is_none_or(|ended| {
-            matches!(
-                ended.recv_timeout(within),
-                Err(RecvTimeoutError::Disconnected)
-            )
-        })
+        let Some(ended) = locked(&self.ended).take() else {
+            return TraceStop::Drained;
+        };
+        match ended.recv_timeout(within) {
+            Ok(Ok(())) => TraceStop::Drained,
+            Ok(Err(source)) => TraceStop::NotCut(source),
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
+                TraceStop::NotDrained
+            }
+        }
     }
 }
 
-/// Writes each queued line under the next number until the queue closes, then reports the events lost at its close.
+/// Writes each queued line under the next number until the queue closes, then reports the events lost at its close and ends the output at its last line, saying whether it could.
 fn write_every_line(
     mut output: impl TraceOutput,
     header: &HeaderSource,
     lines: &Receiver<QueuedLine>,
     lost_at_close: &Mutex<u64>,
-) {
+) -> io::Result<()> {
     let mut numbering = Numbering::default();
     for queued in lines {
         numbering.count_unwritten(queued.lost_before);
@@ -288,7 +295,7 @@ fn write_every_line(
     }
     numbering.count_unwritten(*locked(lost_at_close));
     numbering.report_unwritten(&mut output, header);
-    drop(output.close());
+    output.close()
 }
 
 /// The number of the next line, and how many numbered lines never reached the output since the last `dropped` line.

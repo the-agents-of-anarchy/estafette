@@ -230,7 +230,7 @@ mod tests {
     use super::*;
 
     const SPEC_FORMAT_VERSION: u64 = 1;
-    const PINNED_EVENT_NAMES: [&str; 24] = [
+    const PINNED_EVENT_NAMES: [&str; 25] = [
         "process.command_failed",
         "process.network_created",
         "process.clock_before_unix_epoch",
@@ -239,6 +239,7 @@ mod tests {
         "process.claim_endpoint_unbound",
         "process.claim_node_not_started",
         "process.trace_not_drained",
+        "process.trace_not_cut",
         "gossip.broadcast_failed",
         "gossip.topic_failed",
         "gossip.topic_closed",
