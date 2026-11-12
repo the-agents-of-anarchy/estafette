@@ -218,7 +218,7 @@ def cold_resume_cost(prices, messages):
     model, usage = list(messages.values())[-1]
     context = sum(token_count(usage, kind) for kind in PROMPT_KINDS)
     rates = rates_for(prices, model, context)
-    return None if rates is None else context * rates['cache_write_5m'] / TOKENS_PER_PRICE_UNIT
+    return None if rates is None else context * rates['cache_write_1h'] / TOKENS_PER_PRICE_UNIT
 
 
 def dollars_column(amount):
@@ -241,7 +241,7 @@ def inflight(window_minutes, subagents_directory, now, prices):
         context = sum(token_count(last_usage, kind) for kind in PROMPT_KINDS)
         costs = cost_by_kind(prices, messages)
         rows.append((idle_minutes, fresh, totals['cache_read_input_tokens'], context, costs, cold_resume_cost(prices, messages), ','.join(models), agent_name(transcript_path)[:NAME_COLUMN_WIDTH]))
-    print('idle_min | fresh_k | cache_read_k | context_k | usd_fresh | usd_write | usd_read | usd_out | usd_total | usd_resume | model | agent')
+    print('idle_min | fresh_k | cache_read_k | context_k | usd_fresh | usd_write | usd_read | usd_out | usd_total | usd_resume_1h | model | agent')
     for idle_minutes, fresh, cache_read, context, costs, resume, models, name in sorted(rows, key=lambda row: row[0]):
         by_kind = [dollars_column(None if costs is None else costs[kind]) for kind in COST_KINDS]
         total = dollars_column(None if costs is None else sum(costs.values()))
