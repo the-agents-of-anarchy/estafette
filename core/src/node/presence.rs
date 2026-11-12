@@ -3762,4 +3762,207 @@ pub(super) mod tests {
         assert!(member.endpoint.remove_relay(&relay_address).await.is_none());
         drop(scratch);
     }
+
+    const RESTARTED_SECOND_INBOX: u8 = 162;
+    const FIRST_TO_THE_RESTARTED_SECOND: &str = "amy to the restarted bob";
+    const THE_RESTARTED_SECOND_TO_FIRST: &str = "the restarted bob to amy";
+    const GONE_PROCESS_SILENCE: Duration = Duration::from_millis(1500);
+    const HEARING_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
+    const RESTARTED_LISTED_WAIT: Duration = Duration::from_secs(5);
+
+    /// A member running on a runtime of its own, as a process does, until it vanishes.
+    struct MemberOnItsOwnRuntime {
+        vanish: tokio::sync::oneshot::Sender<()>,
+        vanished: tokio::task::JoinHandle<(tokio::runtime::Runtime, Member)>,
+    }
+
+    /// A member whose runtime is no longer driven, gone the way a killed process is: its connections fall silent and none is closed.
+    struct VanishedMember {
+        runtime: tokio::runtime::Runtime,
+        member: Member,
+    }
+
+    impl MemberOnItsOwnRuntime {
+        /// Starts the member of the plan on a runtime of its own, joined through the running nodes, and returns once it has assigned its handle.
+        async fn start(
+            scratch: &Scratch,
+            plan: MemberPlan,
+            running: Vec<(u8, iroh::EndpointAddr)>,
+        ) -> Self {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let inbox = {
+                let _on_its_own_runtime = runtime.enter();
+                scratch.inbox(plan.seed)
+            };
+            let inbox_path = scratch.directories.inbox_socket_file(u32::from(plan.seed));
+            let config_path = scratch.network_file(plan.seed);
+            let (started, started_here) = tokio::sync::oneshot::channel();
+            let (vanish, vanish_here) = tokio::sync::oneshot::channel::<()>();
+            let vanished = tokio::task::spawn_blocking(move || {
+                let member = runtime.block_on(async move {
+                    let endpoint = bind(plan.seed).await;
+                    for (_seed, address) in running {
+                        endpoint.replace_address(address);
+                    }
+                    let member =
+                        start_member(plan, endpoint, (inbox, inbox_path), config_path).await;
+                    started.send(()).unwrap();
+                    drop(vanish_here.await);
+                    member
+                });
+                (runtime, member)
+            });
+            started_here.await.unwrap();
+            Self { vanish, vanished }
+        }
+
+        /// Stops driving the member's runtime and returns it gone.
+        async fn vanish(self) -> VanishedMember {
+            self.vanish.send(()).unwrap();
+            let (runtime, member) = self.vanished.await.unwrap();
+            VanishedMember { runtime, member }
+        }
+    }
+
+    impl VanishedMember {
+        /// Drops the member inside its runtime, then the runtime, off the test's own runtime.
+        async fn forget(self) {
+            tokio::task::spawn_blocking(move || {
+                let Self { runtime, member } = self;
+                runtime.block_on(async move { drop(member) });
+                drop(runtime);
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    /// The member's entry for the card of the seed once it meets the condition, waited for without a sleep, or none when it does not within the wait.
+    async fn entry_meeting_within(
+        member: &Member,
+        seed: u8,
+        condition: impl Fn(&Peer) -> bool + Send + Sync,
+        within: Duration,
+    ) -> Option<Peer> {
+        tokio::time::timeout(within, async {
+            loop {
+                if let Some(peer) = member
+                    .node
+                    .peers()
+                    .into_iter()
+                    .find(|peer| peer.card == card(seed) && condition(peer))
+                {
+                    return peer;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .ok()
+    }
+
+    #[tokio::test]
+    async fn spec_3_15_test_18_a_restarted_member_whose_connections_its_sender_closed_at_its_presence_and_that_sender_list_each_other_online_and_exchange_messages_both_ways()
+     {
+        let scratch = Scratch::new("restart-both-ways").await;
+        let first_endpoint = bind(FIRST_SEED).await;
+        let first_address = first_endpoint.endpoint().addr();
+        let first_session = MemberOnItsOwnRuntime::start(
+            &scratch,
+            MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC).with_hosts(&[FIRST_SEED]),
+            vec![(FIRST_SEED, first_address.clone())],
+        )
+        .await;
+        let first = start_member(
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC),
+            first_endpoint,
+            (
+                scratch.inbox(FIRST_SEED),
+                scratch.directories.inbox_socket_file(u32::from(FIRST_SEED)),
+            ),
+            scratch.network_file(FIRST_SEED),
+        )
+        .await;
+        let listed_first_session = entry_meeting_within(
+            &first,
+            SECOND_SEED,
+            |peer| peer.status == Status::Online,
+            RESTARTED_LISTED_WAIT,
+        )
+        .await;
+        let sent_to_the_first_session = first.node.send(SECOND_HANDLE, MESSAGE_BODY).await;
+
+        let first_session = first_session.vanish().await;
+        let vanished = tokio::time::Instant::now();
+        let vanished_ms = wall_clock_ms();
+        let restarted_endpoint = bind(SECOND_SEED).await;
+        restarted_endpoint.replace_address(first_address);
+        let restarted = start_member(
+            MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC).with_hosts(&[FIRST_SEED]),
+            restarted_endpoint,
+            (
+                scratch.inbox(RESTARTED_SECOND_INBOX),
+                scratch
+                    .directories
+                    .inbox_socket_file(u32::from(RESTARTED_SECOND_INBOX)),
+            ),
+            scratch.network_file(RESTARTED_SECOND_INBOX),
+        )
+        .await;
+        let silent_for = vanished.elapsed();
+        let listed_restarted = entry_meeting_within(
+            &first,
+            SECOND_SEED,
+            |peer| peer.status == Status::Online && peer.last_seen > vanished_ms,
+            RESTARTED_LISTED_WAIT,
+        )
+        .await;
+        let sent_to_the_restarted = first
+            .node
+            .send(SECOND_HANDLE, FIRST_TO_THE_RESTARTED_SECOND)
+            .await;
+        let listed_by_the_restarted = entry_meeting_within(
+            &restarted,
+            FIRST_SEED,
+            |peer| peer.status == Status::Online,
+            RESTARTED_LISTED_WAIT,
+        )
+        .await;
+        let sent_by_the_restarted = restarted
+            .node
+            .send(FIRST_HANDLE, THE_RESTARTED_SECOND_TO_FIRST)
+            .await;
+
+        assert!(listed_first_session.is_some());
+        assert!(
+            sent_to_the_first_session.is_ok(),
+            "{sent_to_the_first_session:?}"
+        );
+        assert!(
+            silent_for >= GONE_PROCESS_SILENCE.saturating_add(HEARING_SAMPLE_INTERVAL),
+            "the first session was silent only {silent_for:?} when the restarted member announced itself, under the {GONE_PROCESS_SILENCE:?} close bound plus the {HEARING_SAMPLE_INTERVAL:?} sample that judges it"
+        );
+        assert!(
+            listed_restarted.is_some(),
+            "amy did not list the restarted bob online within {RESTARTED_LISTED_WAIT:?}"
+        );
+        assert!(sent_to_the_restarted.is_ok(), "{sent_to_the_restarted:?}");
+        assert!(
+            listed_by_the_restarted.is_some(),
+            "the restarted bob did not list amy online within {RESTARTED_LISTED_WAIT:?}"
+        );
+        assert!(sent_by_the_restarted.is_ok(), "{sent_by_the_restarted:?}");
+        let received_by_the_restarted = inbox_frames(&restarted, 1).await;
+        let received_by_first = inbox_frames(&first, 1).await;
+        assert_eq!(
+            received_by_the_restarted[0]["body"],
+            FIRST_TO_THE_RESTARTED_SECOND
+        );
+        assert_eq!(received_by_first[0]["body"], THE_RESTARTED_SECOND_TO_FIRST);
+        first_session.forget().await;
+        drop(scratch);
+    }
 }
