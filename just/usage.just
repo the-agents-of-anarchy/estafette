@@ -25,3 +25,8 @@ checkpoint label:
 [no-exit-message]
 checkpoints:
     python3 -I {{ quote(script) }} checkpoints
+
+[doc("Print per source (the lead apart from the agents), model and cache tier: the assistant turns whose gap to the model message before them exceeds the tier's cache lifetime (5 minutes or 1 hour), their cache-write tokens and share of all that group's cache-write tokens, and the same for turns within the lifetime; the first message of a transcript has no gap and counts in neither; the root checkout's newest session")]
+[group('usage')]
+coldturns:
+    python3 -I {{ quote(script) }} coldturns

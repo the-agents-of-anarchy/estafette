@@ -6,7 +6,9 @@ import re
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 SCRIPT_DIRECTORY = Path(__file__).resolve().parent
 REPOSITORY_ROOT = SCRIPT_DIRECTORY.parent
@@ -17,6 +19,7 @@ CONFIG_DIRECTORY_VARIABLE = 'CLAUDE_CONFIG_DIR'
 DEFAULT_CONFIG_DIRECTORY_NAME = '.claude'
 LIMITS_FILE_NAME = 'usage-limits.json'
 CHECKPOINTS_FILE_NAME = 'usage-checkpoints.jsonl'
+COLD_TURN_TALLY_FIELDS = ('cold_turns', 'cold_written', 'warm_turns', 'warm_written', 'all_written')
 CHECKPOINT_KIND_FIELDS = {'fresh': 'input_tokens', 'cache_write': 'cache_creation_input_tokens', 'cache_read': 'cache_read_input_tokens', 'output': 'output_tokens'}
 LIMIT_WINDOWS = ('five_hour', 'seven_day')
 LIMIT_FIELDS = ('used_percentage', 'resets_at')
@@ -35,6 +38,7 @@ COST_KINDS = ('fresh', 'cache_write', 'cache_read', 'output')
 UNKNOWN_MARK = '?'
 FIVE_MINUTE_TIER = '5m'
 ONE_HOUR_TIER = '1h'
+CACHE_LIFETIME_SECONDS_BY_TIER = {FIVE_MINUTE_TIER: 5 * 60, ONE_HOUR_TIER: 60 * 60}
 CACHE_WRITE_RATE_BY_TIER = {FIVE_MINUTE_TIER: 'cache_write_5m', ONE_HOUR_TIER: 'cache_write_1h'}
 ONE_HOUR_WRITE_PATTERN = re.compile(r'"ephemeral_1h_input_tokens": ?[1-9]')
 
@@ -155,20 +159,33 @@ def subagents_directory_of(session_transcript):
     return session_transcript.with_suffix('') / 'subagents'
 
 
-def usage_by_message(transcript_path):
-    """Each model message's model and usage, once per message id."""
+class Turn(NamedTuple):
+    """One model message: its model, its usage, and the seconds since the previous model message, which is how long its cache sat unused (None for the first message)."""
+
+    model: str
+    usage: dict
+    gap_seconds: float | None
+
+
+def assistant_turns(transcript_path):
+    """Each model message once per message id, in order of first appearance."""
     seen = {}
+    previous_model_time = None
     with open(transcript_path, errors='replace') as lines:
         for line in lines:
-            if '"usage"' not in line:
-                continue
             try:
-                message = json.loads(line).get('message') or {}
+                entry = json.loads(line)
             except ValueError:
                 continue
+            entry_time = datetime.fromisoformat(entry['timestamp']).timestamp() if entry.get('timestamp') else None
+            message = entry.get('message') or {}
             usage = message.get('usage')
             if usage and message.get('model') != '<synthetic>':
-                seen[message.get('id') or len(seen)] = (message.get('model', '?'), usage)
+                key = message.get('id') or len(seen)
+                gap_seconds = seen[key].gap_seconds if key in seen else (None if previous_model_time is None or entry_time is None else entry_time - previous_model_time)
+                seen[key] = Turn(message.get('model', '?'), usage, gap_seconds)
+                if entry_time is not None:
+                    previous_model_time = entry_time
     return seen
 
 
@@ -216,7 +233,7 @@ def message_cost(prices, model, usage):
 
 def cost_by_kind(prices, messages):
     """Dollars by kind summed over the messages, or None when any message's model is not listed."""
-    costs = [message_cost(prices, model, usage) for model, usage in messages.values()]
+    costs = [message_cost(prices, turn.model, turn.usage) for turn in messages.values()]
     if None in costs:
         return None
     return {kind: sum(cost[kind] for cost in costs) for kind in COST_KINDS}
@@ -233,9 +250,9 @@ def cold_resume_cost(prices, messages, tier):
     """Dollars to write the agent's last context into the cache again at the tier's write price, or None when the model is not listed."""
     if not messages:
         return 0.0
-    model, usage = list(messages.values())[-1]
-    context = sum(token_count(usage, kind) for kind in PROMPT_KINDS)
-    rates = rates_for(prices, model, context)
+    last_turn = list(messages.values())[-1]
+    context = sum(token_count(last_turn.usage, kind) for kind in PROMPT_KINDS)
+    rates = rates_for(prices, last_turn.model, context)
     return None if rates is None else context * rates[CACHE_WRITE_RATE_BY_TIER[tier]] / TOKENS_PER_PRICE_UNIT
 
 
@@ -251,11 +268,11 @@ def inflight(window_minutes, subagents_directory, now, prices, lead_transcript):
         idle_minutes = (now - transcript_path.stat().st_mtime) / SECONDS_PER_MINUTE
         if idle_minutes > window_minutes:
             continue
-        messages = usage_by_message(transcript_path)
-        totals = {kind: sum(token_count(usage, kind) for _, usage in messages.values()) for kind in TOKEN_KINDS}
-        models = sorted({model for model, _ in messages.values()})
+        messages = assistant_turns(transcript_path)
+        totals = {kind: sum(token_count(turn.usage, kind) for turn in messages.values()) for kind in TOKEN_KINDS}
+        models = sorted({turn.model for turn in messages.values()})
         fresh = totals['input_tokens'] + totals['output_tokens'] + totals['cache_creation_input_tokens']
-        last_usage = list(messages.values())[-1][1] if messages else {}
+        last_usage = list(messages.values())[-1].usage if messages else {}
         context = sum(token_count(last_usage, kind) for kind in PROMPT_KINDS)
         costs = cost_by_kind(prices, messages)
         tier = transcript_cache_tier(transcript_path)
@@ -275,10 +292,10 @@ def token_totals_by_model(transcript_paths):
     """Tokens by model and by kind over the transcripts, each message counted once."""
     totals = {}
     for transcript_path in transcript_paths:
-        for model, usage in usage_by_message(transcript_path).values():
-            by_kind = totals.setdefault(model, dict.fromkeys(CHECKPOINT_KIND_FIELDS, 0))
+        for turn in assistant_turns(transcript_path).values():
+            by_kind = totals.setdefault(turn.model, dict.fromkeys(CHECKPOINT_KIND_FIELDS, 0))
             for kind, field in CHECKPOINT_KIND_FIELDS.items():
-                by_kind[kind] += token_count(usage, field)
+                by_kind[kind] += token_count(turn.usage, field)
     return totals
 
 
@@ -325,6 +342,29 @@ def checkpoints(checkpoints_path):
     return 0
 
 
+def coldturns(session_transcript):
+    """Print, per source, model and cache tier, the turns after a gap past the cache lifetime and those within it, with their cache-write tokens and share."""
+    agent_transcripts = list(subagents_directory_of(session_transcript).glob('agent-*.jsonl'))
+    tallies = {}
+    for source, transcript_paths in (('lead', [session_transcript]), ('agents', agent_transcripts)):
+        for transcript_path in transcript_paths:
+            tier = transcript_cache_tier(transcript_path)
+            for turn in assistant_turns(transcript_path).values():
+                tally = tallies.setdefault((source, turn.model, tier), dict.fromkeys(COLD_TURN_TALLY_FIELDS, 0))
+                written = token_count(turn.usage, 'cache_creation_input_tokens')
+                tally['all_written'] += written
+                if turn.gap_seconds is None:
+                    continue
+                phase = 'cold' if turn.gap_seconds > CACHE_LIFETIME_SECONDS_BY_TIER[tier] else 'warm'
+                tally[f'{phase}_turns'] += 1
+                tally[f'{phase}_written'] += written
+    print('source | model | tier | cold_turns | cold_write_k | cold_share | warm_turns | warm_write_k | warm_share | all_write_k')
+    for (source, model, tier), tally in sorted(tallies.items()):
+        shares = [UNKNOWN_MARK if not tally['all_written'] else f'{100 * tally[f"{phase}_written"] / tally["all_written"]:.1f}%' for phase in ('cold', 'warm')]
+        print(f'{source} | {model} | {tier} | {tally["cold_turns"]} | {tally["cold_written"] // TOKENS_PER_THOUSAND} | {shares[0]} | {tally["warm_turns"]} | {tally["warm_written"] // TOKENS_PER_THOUSAND} | {shares[1]} | {tally["all_written"] // TOKENS_PER_THOUSAND}')
+    return 0
+
+
 def main(arguments, standard_input, now, environment, home_directory):
     """Run the subcommand named in the arguments and return the process exit code."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -338,6 +378,7 @@ def main(arguments, standard_input, now, environment, home_directory):
     checkpoint_parser = subcommands.add_parser('checkpoint', help='append the limit figures and the session token totals by model and kind to the checkpoints file')
     checkpoint_parser.add_argument('label')
     subcommands.add_parser('checkpoints', help='print the checkpoints with the differences between lines')
+    subcommands.add_parser('coldturns', help='print the turns after a gap past the cache lifetime and the share of cache-write tokens they carry')
     parsed = parser.parse_args(arguments)
     login = login_directory(environment, home_directory)
     directory = scratch_directory(environment, REPOSITORY_ROOT)
@@ -351,6 +392,8 @@ def main(arguments, standard_input, now, environment, home_directory):
         return checkpoint(parsed.label, now, limits_path, checkpoints_path, newest_session_transcript(login, root_checkout(REPOSITORY_ROOT)))
     if parsed.subcommand == 'checkpoints':
         return checkpoints(checkpoints_path)
+    if parsed.subcommand == 'coldturns':
+        return coldturns(newest_session_transcript(login, root_checkout(REPOSITORY_ROOT)))
     lead_transcript = None if parsed.subagents_directory else newest_session_transcript(login, root_checkout(REPOSITORY_ROOT))
     subagents_directory = Path(parsed.subagents_directory) if parsed.subagents_directory else subagents_directory_of(lead_transcript)
     return inflight(parsed.window_minutes, subagents_directory, now, json.loads(PRICES_PATH.read_text()), lead_transcript)
