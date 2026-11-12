@@ -761,11 +761,14 @@ impl DirectClient {
             .map_err(|_elapsed| DirectError::Unreachable)?
     }
 
-    /// The held connection to the peer, or a new one dialed by card id under the slot's lock and held, so concurrent callers share one dial.
+    /// The held connection to the peer while the client knows of no close on it, or else a new one dialed by card id under the slot's lock and held, so concurrent callers share one dial.
     async fn held_or_dialed_connection(&self, to: EndpointId) -> Result<Connection, DirectError> {
         let slot = self.slot_of(to);
         let mut held = slot.lock().await;
-        if let Some(connection) = held.as_ref() {
+        if let Some(connection) = held
+            .as_ref()
+            .filter(|connection| connection.close_reason().is_none())
+        {
             return Ok(connection.clone());
         }
         let dialed = self

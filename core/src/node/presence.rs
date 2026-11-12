@@ -3864,10 +3864,84 @@ pub(super) mod tests {
         .ok()
     }
 
+    /// When the second member's process restarts after its earlier one vanished.
+    enum RestartTiming {
+        /// At once, so its gossip connection and Introduce reach the first member before the earlier process's connections read as gone.
+        AtOnce,
+        /// Once a witness member has joined the first member, which takes the spec 3.14 observer wait, so its Introduce reaches the first member after the earlier process's connections read as gone.
+        AfterAWitnessJoins,
+    }
+
     #[tokio::test]
     async fn spec_3_15_test_18_a_restarted_member_whose_connections_its_sender_closed_at_its_presence_and_that_sender_list_each_other_online_and_exchange_messages_both_ways()
      {
-        let scratch = Scratch::new("restart-both-ways").await;
+        a_restarted_second_and_the_first_list_each_other_and_exchange_both_ways(
+            "restart-both-ways",
+            RestartTiming::AtOnce,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn spec_3_15_test_18_a_restarted_member_whose_introduce_comes_after_its_earlier_process_fell_silent_and_its_sender_exchange_messages_both_ways()
+     {
+        a_restarted_second_and_the_first_list_each_other_and_exchange_both_ways(
+            "late-introduce",
+            RestartTiming::AfterAWitnessJoins,
+        )
+        .await;
+    }
+
+    /// Starts the member of the plan on this runtime, its endpoint reaching the address, with its inbox and network file under the scratch index given.
+    async fn member_reaching(
+        scratch: &Scratch,
+        plan: MemberPlan,
+        reaching: &iroh::EndpointAddr,
+        files_index: u8,
+    ) -> Member {
+        let endpoint = bind(plan.seed).await;
+        endpoint.replace_address(reaching.clone());
+        start_member(
+            plan,
+            endpoint,
+            (
+                scratch.inbox(files_index),
+                scratch
+                    .directories
+                    .inbox_socket_file(u32::from(files_index)),
+            ),
+            scratch.network_file(files_index),
+        )
+        .await
+    }
+
+    /// The witness member the timing has join the first member before the restart, none for a restart at once.
+    async fn witness_joined_at(
+        timing: RestartTiming,
+        scratch: &Scratch,
+        first_address: &iroh::EndpointAddr,
+    ) -> Option<Member> {
+        match timing {
+            RestartTiming::AtOnce => None,
+            RestartTiming::AfterAWitnessJoins => Some(
+                member_reaching(
+                    scratch,
+                    MemberPlan::new(WITNESS_SEED, WITNESS_HANDLE, WITNESS_PUBLIC)
+                        .with_hosts(&[FIRST_SEED]),
+                    first_address,
+                    WITNESS_SEED,
+                )
+                .await,
+            ),
+        }
+    }
+
+    /// Runs the second member, vanishes it, restarts it under its card at the timing given, and requires the first member and the restarted one to list each other online and deliver a message each way (spec 3.15 test 18).
+    async fn a_restarted_second_and_the_first_list_each_other_and_exchange_both_ways(
+        tag: &str,
+        timing: RestartTiming,
+    ) {
+        let scratch = Scratch::new(tag).await;
         let first_endpoint = bind(FIRST_SEED).await;
         let first_address = first_endpoint.endpoint().addr();
         let first_session = MemberOnItsOwnRuntime::start(
@@ -3898,18 +3972,12 @@ pub(super) mod tests {
         let first_session = first_session.vanish().await;
         let vanished = tokio::time::Instant::now();
         let vanished_ms = wall_clock_ms();
-        let restarted_endpoint = bind(SECOND_SEED).await;
-        restarted_endpoint.replace_address(first_address);
-        let restarted = start_member(
+        let _witness = witness_joined_at(timing, &scratch, &first_address).await;
+        let restarted = member_reaching(
+            &scratch,
             MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC).with_hosts(&[FIRST_SEED]),
-            restarted_endpoint,
-            (
-                scratch.inbox(RESTARTED_SECOND_INBOX),
-                scratch
-                    .directories
-                    .inbox_socket_file(u32::from(RESTARTED_SECOND_INBOX)),
-            ),
-            scratch.network_file(RESTARTED_SECOND_INBOX),
+            &first_address,
+            RESTARTED_SECOND_INBOX,
         )
         .await;
         let silent_for = vanished.elapsed();
