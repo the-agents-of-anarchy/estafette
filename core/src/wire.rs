@@ -285,7 +285,7 @@ impl Addr {
 }
 
 macro_rules! wire_enum {
-    (pub enum $name:ident = $raw:ident in $shape:ident {  $($variant:ident($inner:ident) as $tag:ident),+ $(,)? }) => {
+    (pub enum $name:ident = $raw:ident in $shape:ident { $($variant:ident($inner:ident) as $tag:ident),+ $(,)? }) => {
         #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
         pub enum $name {
             $($variant($inner)),+
