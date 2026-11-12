@@ -61,6 +61,7 @@ LIMIT_WEIGHT_PREFIX = 'limit weight'
 TTL_LABEL = 'TTL'
 PUBLISHED_ATTEMPT_LABEL = f'{DOLLARS_UNIT} published attempt'
 LINEUP_ROLE = 'agent'
+HARNESS_EFFORT_NOTE_KEY = 'harness_recorded_effort_note'
 LINEUP_HEADER = f'model | effort | {CAPABILITY_UNIT} | appetite_k | {DOLLARS_UNIT} attempt | {MINUTES_UNIT} | {DOLLARS_UNIT} per work unit'
 MISSING_CAPABILITY = 'capability'
 MISSING_APPETITE = 'appetite'
@@ -683,12 +684,14 @@ def lineup_row_text(row):
 
 
 def lineup_command(parsed, prices, parameters):
-    """Print one row per newest model and effort, the cheapest work unit first."""
+    """Print one row per newest model and effort, the cheapest work unit first, then the note on the effort the harness records."""
     request = LineupRequest(parsed.context_k, parsed.steps, parsed.cold_starts, parsed.tool_time_min, parsed.check_usd, parsed.rework_usd, parsed.capability_scale)
     rows = [lineup_row(prices, parameters, request, short_name, model, effort) for short_name, model in FULL_MODEL_BY_SHORT_NAME.items() for effort in EFFORTS]
     print(LINEUP_HEADER)
     for row in sorted(rows, key=lineup_sort_key):
         print(lineup_row_text(row))
+    note = parameters[HARNESS_EFFORT_NOTE_KEY]
+    print(f'note: {note["value"]} ({note["source"]})')
     return 0
 
 

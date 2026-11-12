@@ -483,5 +483,12 @@
         }
       }
     }
+  },
+  "harness_recorded_effort_note": {
+    "description": "The effort the harness records for an agent launched at another effort.",
+    "value": "An agent launched on sonnet at high is recorded by the harness at medium.",
+    "kind": "measured",
+    "source": "reading of 2026-11-12, this project",
+    "date": "2026-11-12"
   }
 }
