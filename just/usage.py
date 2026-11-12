@@ -306,6 +306,7 @@ def checkpoint(label, now, limits_path, checkpoints_path, session_transcript):
     limits_written = json.loads(limits_path.read_text()) if limits_path.exists() else None
     transcripts = [session_transcript, *subagents_directory_of(session_transcript).glob('agent-*.jsonl')]
     line = {'at': int(now), 'label': label, 'limits': limits_written, 'tokens': token_totals_by_model_and_effort(transcripts)}
+    checkpoints_path.parent.mkdir(parents=True, exist_ok=True)
     with checkpoints_path.open('a') as checkpoints_file:
         checkpoints_file.write(json.dumps(line) + '\n')
     print(f'checkpoint {label!r} appended to {checkpoints_path}')
