@@ -14,3 +14,14 @@ limits max_age_minutes="10":
 [group('usage')]
 inflight window_minutes="30" subagents_directory="":
     python3 -I {{ quote(script) }} inflight {{ quote(window_minutes) }} {{ quote(subagents_directory) }}
+
+[doc("Append one line to usage-checkpoints.jsonl beside the limits file: the time, the label, the limit figures last written, and the root checkout's newest session's tokens so far by model and kind (fresh input, cache write, cache read, output) over the lead and every agent")]
+[group('usage')]
+checkpoint label:
+    python3 -I {{ quote(script) }} checkpoint {{ quote(label) }}
+
+[doc("Print the checkpoint lines as a table; each line after the first adds the change in limit percentage points and in tokens by model and kind since the line before; exit 1 when no file exists")]
+[group('usage')]
+[no-exit-message]
+checkpoints:
+    python3 -I {{ quote(script) }} checkpoints

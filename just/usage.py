@@ -16,6 +16,8 @@ SCRATCH_ROOT_BELOW_CHECKOUT = Path('docs') / 'orchestration_log' / 'recon'
 CONFIG_DIRECTORY_VARIABLE = 'CLAUDE_CONFIG_DIR'
 DEFAULT_CONFIG_DIRECTORY_NAME = '.claude'
 LIMITS_FILE_NAME = 'usage-limits.json'
+CHECKPOINTS_FILE_NAME = 'usage-checkpoints.jsonl'
+CHECKPOINT_KIND_FIELDS = {'fresh': 'input_tokens', 'cache_write': 'cache_creation_input_tokens', 'cache_read': 'cache_read_input_tokens', 'output': 'output_tokens'}
 LIMIT_WINDOWS = ('five_hour', 'seven_day')
 LIMIT_FIELDS = ('used_percentage', 'resets_at')
 GIT_FILE_POINTER_PREFIX = 'gitdir:'
@@ -30,7 +32,7 @@ LONG_PROMPT_RATES_KEY = 'over_100k_prompt'
 PROMPT_KINDS = ('input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens')
 TOKEN_KINDS = ('input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens')
 COST_KINDS = ('fresh', 'cache_write', 'cache_read', 'output')
-UNPRICED_COLUMN = '?'
+UNKNOWN_MARK = '?'
 
 
 def login_directory(environment, home_directory):
@@ -48,10 +50,10 @@ def root_checkout(repository_root):
     return worktree_git_directory.parents[LEVELS_FROM_WORKTREE_GIT_DIRECTORY_TO_CHECKOUT - 1]
 
 
-def limits_file_path(environment, repository_root):
-    """The one file the limit figures are written to, the same whichever checkout runs."""
+def scratch_directory(environment, repository_root):
+    """The directory the usage files live in, the same whichever checkout runs."""
     scratch_root = environment.get(SCRATCH_ROOT_VARIABLE)
-    return (Path(scratch_root) if scratch_root else root_checkout(repository_root) / SCRATCH_ROOT_BELOW_CHECKOUT) / LIMITS_FILE_NAME
+    return Path(scratch_root) if scratch_root else root_checkout(repository_root) / SCRATCH_ROOT_BELOW_CHECKOUT
 
 
 def window_figures(window):
@@ -135,13 +137,18 @@ def limits(max_age_minutes, now, limits_path):
     return 1 if age_minutes > max_age_minutes else 0
 
 
-def newest_session_subagents_directory(login, checkout):
-    """The subagents directory of the checkout's most recently written session."""
+def newest_session_transcript(login, checkout):
+    """The lead's transcript of the checkout's most recently written session."""
     project_directory = login / 'projects' / re.sub(r'[^A-Za-z0-9]', '-', str(checkout))
     sessions = list(project_directory.glob('*.jsonl'))
     if not sessions:
         raise SystemExit(f'no session transcript under {project_directory}')
-    return project_directory / max(sessions, key=lambda session: session.stat().st_mtime).stem / 'subagents'
+    return max(sessions, key=lambda session: session.stat().st_mtime)
+
+
+def subagents_directory_of(session_transcript):
+    """The directory holding the transcripts of the agents a session launched."""
+    return session_transcript.with_suffix('') / 'subagents'
 
 
 def usage_by_message(transcript_path):
@@ -223,7 +230,7 @@ def cold_resume_cost(prices, messages):
 
 def dollars_column(amount):
     """One dollar figure for a table column, or the unpriced mark."""
-    return f'{UNPRICED_COLUMN:>9}' if amount is None else f'{amount:9.2f}'
+    return f'{UNKNOWN_MARK:>9}' if amount is None else f'{amount:9.2f}'
 
 
 def inflight(window_minutes, subagents_directory, now, prices):
@@ -250,6 +257,60 @@ def inflight(window_minutes, subagents_directory, now, prices):
     return 0
 
 
+def token_totals_by_model(transcript_paths):
+    """Tokens by model and by kind over the transcripts, each message counted once."""
+    totals = {}
+    for transcript_path in transcript_paths:
+        for model, usage in usage_by_message(transcript_path).values():
+            by_kind = totals.setdefault(model, dict.fromkeys(CHECKPOINT_KIND_FIELDS, 0))
+            for kind, field in CHECKPOINT_KIND_FIELDS.items():
+                by_kind[kind] += token_count(usage, field)
+    return totals
+
+
+def checkpoint(label, now, limits_path, checkpoints_path, session_transcript):
+    """Append one line holding the label, the limit figures last written and the session's tokens so far by model and kind."""
+    limits_written = json.loads(limits_path.read_text()) if limits_path.exists() else None
+    transcripts = [session_transcript, *subagents_directory_of(session_transcript).glob('agent-*.jsonl')]
+    line = {'at': int(now), 'label': label, 'limits': limits_written, 'tokens': token_totals_by_model(transcripts)}
+    with checkpoints_path.open('a') as checkpoints_file:
+        checkpoints_file.write(json.dumps(line) + '\n')
+    print(f'checkpoint {label!r} appended to {checkpoints_path}')
+    return 0
+
+
+def used_percentage(line, window):
+    """The used percentage of a window in a checkpoint line, or None when the line holds none."""
+    rate_limits = (line['limits'] or {}).get('rate_limits') or {}
+    return (rate_limits.get(window) or {}).get('used_percentage')
+
+
+def percentage_points_text(window, before, after):
+    """The change of a window's used percentage between two lines, or the unknown mark when either lacks it."""
+    first, second = used_percentage(before, window), used_percentage(after, window)
+    return UNKNOWN_MARK if first is None or second is None else f'{second - first:+.1f}'
+
+
+def checkpoints(checkpoints_path):
+    """Print the checkpoints as a table, each line after the first with its difference to the line before."""
+    if not checkpoints_path.exists():
+        print(f'no checkpoints written: {checkpoints_path} is missing', file=sys.stderr)
+        return 1
+    lines = [json.loads(text) for text in checkpoints_path.read_text().splitlines()]
+    print('at | label | five_hour% | seven_day% | d_five_hour_points | d_seven_day_points')
+    for index, line in enumerate(lines):
+        shown = [str(used_percentage(line, window)) for window in LIMIT_WINDOWS]
+        deltas = [UNKNOWN_MARK] * len(LIMIT_WINDOWS) if index == 0 else [percentage_points_text(window, lines[index - 1], line) for window in LIMIT_WINDOWS]
+        print(' | '.join([str(line['at']), line['label'], *shown, *deltas]))
+        if index == 0:
+            continue
+        before = lines[index - 1]['tokens']
+        for model in sorted(set(before) | set(line['tokens'])):
+            changes = {kind: line['tokens'].get(model, {}).get(kind, 0) - before.get(model, {}).get(kind, 0) for kind in CHECKPOINT_KIND_FIELDS}
+            print(f'    {model}: ' + ' '.join(f'{kind} {change:+d}' for kind, change in changes.items()))
+    return 0
+
+
 def main(arguments, standard_input, now, environment, home_directory):
     """Run the subcommand named in the arguments and return the process exit code."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -260,14 +321,23 @@ def main(arguments, standard_input, now, environment, home_directory):
     inflight_parser = subcommands.add_parser('inflight', help='print the agents whose transcript changed within the window')
     inflight_parser.add_argument('window_minutes', type=int, nargs='?', default=DEFAULT_WINDOW_MINUTES)
     inflight_parser.add_argument('subagents_directory', nargs='?', default='')
+    checkpoint_parser = subcommands.add_parser('checkpoint', help='append the limit figures and the session token totals by model and kind to the checkpoints file')
+    checkpoint_parser.add_argument('label')
+    subcommands.add_parser('checkpoints', help='print the checkpoints with the differences between lines')
     parsed = parser.parse_args(arguments)
     login = login_directory(environment, home_directory)
-    limits_path = limits_file_path(environment, REPOSITORY_ROOT)
+    directory = scratch_directory(environment, REPOSITORY_ROOT)
+    limits_path = directory / LIMITS_FILE_NAME
+    checkpoints_path = directory / CHECKPOINTS_FILE_NAME
     if parsed.subcommand == 'capture':
         return capture(standard_input.buffer.read(), now, limits_path, login)
     if parsed.subcommand == 'limits':
         return limits(parsed.max_age_minutes, now, limits_path)
-    subagents_directory = Path(parsed.subagents_directory) if parsed.subagents_directory else newest_session_subagents_directory(login, root_checkout(REPOSITORY_ROOT))
+    if parsed.subcommand == 'checkpoint':
+        return checkpoint(parsed.label, now, limits_path, checkpoints_path, newest_session_transcript(login, root_checkout(REPOSITORY_ROOT)))
+    if parsed.subcommand == 'checkpoints':
+        return checkpoints(checkpoints_path)
+    subagents_directory = Path(parsed.subagents_directory) if parsed.subagents_directory else subagents_directory_of(newest_session_transcript(login, root_checkout(REPOSITORY_ROOT)))
     return inflight(parsed.window_minutes, subagents_directory, now, json.loads(PRICES_PATH.read_text()))
 
 
