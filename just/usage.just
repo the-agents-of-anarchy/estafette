@@ -48,3 +48,9 @@ unit *arguments:
 [no-exit-message]
 compare first second:
     python3 -I {{ quote(script) }} compare {{ quote(first) }} {{ quote(second) }}
+
+[doc("Calibrate the limit against list price: over consecutive lines of usage-checkpoints.jsonl keyed by model and effort, print the dollars spent in between at the list prices of usage-prices.json by kind (fresh, cache write at the 5m price, cache read, output), the five-hour and seven-day points moved and the dollars per point of each window, then the median dollars per point of each window over the intervals where the window rose; lines of the older format (tokens keyed by model alone) are skipped and counted; ? where a figure is unknown; refuses with fewer than two usable lines, naming how many it found")]
+[group('usage')]
+[no-exit-message]
+calibrate:
+    python3 -I {{ quote(script) }} calibrate

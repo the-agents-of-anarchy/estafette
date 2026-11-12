@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shlex
+import statistics
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ CHECKPOINTS_FILE_NAME = 'usage-checkpoints.jsonl'
 COLD_TURN_TALLY_FIELDS = ('cold_turns', 'cold_written', 'warm_turns', 'warm_written', 'all_written')
 CHECKPOINT_KIND_FIELDS = {'fresh': 'input_tokens', 'cache_write': 'cache_creation_input_tokens', 'cache_read': 'cache_read_input_tokens', 'output': 'output_tokens'}
 LIMIT_WINDOWS = ('five_hour', 'seven_day')
+MODEL_EFFORT_SEPARATOR = ' '
 LIMIT_FIELDS = ('used_percentage', 'resets_at')
 GIT_FILE_POINTER_PREFIX = 'gitdir:'
 LEVELS_FROM_WORKTREE_GIT_DIRECTORY_TO_CHECKOUT = 3
@@ -225,23 +227,26 @@ def rates_for(prices, model, prompt_tokens):
     return rates.get(LONG_PROMPT_RATES_KEY, rates) if prompt_tokens > LONG_PROMPT_TOKENS else rates
 
 
-def message_cost(prices, model, usage):
-    """Dollars by kind for one message, or None when the model is not listed."""
+def dollars_at_rates(rates, usage):
+    """Dollars by kind for one usage record at the given rates per million tokens."""
     fresh = token_count(usage, 'input_tokens')
     cache_write = token_count(usage, 'cache_creation_input_tokens')
-    cache_read = token_count(usage, 'cache_read_input_tokens')
-    rates = rates_for(prices, model, fresh + cache_write + cache_read)
-    if rates is None:
-        return None
     write_one_hour = token_count(usage.get('cache_creation') or {}, 'ephemeral_1h_input_tokens')
     write_five_minutes = cache_write - write_one_hour
     dollars = {
         'fresh': fresh * rates['input'],
         'cache_write': write_five_minutes * rates['cache_write_5m'] + write_one_hour * rates['cache_write_1h'],
-        'cache_read': cache_read * rates['cache_read'],
+        'cache_read': token_count(usage, 'cache_read_input_tokens') * rates['cache_read'],
         'output': token_count(usage, 'output_tokens') * rates['output'],
     }
     return {kind: amount / TOKENS_PER_PRICE_UNIT for kind, amount in dollars.items()}
+
+
+def message_cost(prices, model, usage):
+    """Dollars by kind for one message, or None when the model is not listed."""
+    prompt_tokens = sum(token_count(usage, kind) for kind in PROMPT_KINDS)
+    rates = rates_for(prices, model, prompt_tokens)
+    return None if rates is None else dollars_at_rates(rates, usage)
 
 
 def cost_by_kind(prices, messages):
@@ -307,7 +312,7 @@ def token_totals_by_model_and_effort(transcript_paths):
     totals = {}
     for transcript_path in transcript_paths:
         for turn in assistant_turns(transcript_path).values():
-            by_kind = totals.setdefault(f'{turn.model} {turn.effort}', dict.fromkeys(CHECKPOINT_KIND_FIELDS, 0))
+            by_kind = totals.setdefault(f'{turn.model}{MODEL_EFFORT_SEPARATOR}{turn.effort}', dict.fromkeys(CHECKPOINT_KIND_FIELDS, 0))
             for kind, field in CHECKPOINT_KIND_FIELDS.items():
                 by_kind[kind] += token_count(turn.usage, field)
     return totals
@@ -331,10 +336,16 @@ def used_percentage(line, window):
     return (rate_limits.get(window) or {}).get('used_percentage')
 
 
+def points_moved(window, before, after):
+    """The change of a window's used percentage between two lines, or None when either lacks it."""
+    first, second = used_percentage(before, window), used_percentage(after, window)
+    return None if first is None or second is None else second - first
+
+
 def percentage_points_text(window, before, after):
     """The change of a window's used percentage between two lines, or the unknown mark when either lacks it."""
-    first, second = used_percentage(before, window), used_percentage(after, window)
-    return UNKNOWN_MARK if first is None or second is None else f'{second - first:+.1f}'
+    moved = points_moved(window, before, after)
+    return UNKNOWN_MARK if moved is None else f'{moved:+.1f}'
 
 
 def checkpoints(checkpoints_path):
@@ -573,6 +584,60 @@ def run_refusing(command, *command_arguments):
         return 1
 
 
+def is_keyed_by_model_and_effort(line):
+    """Whether every key of the line's tokens names a model and an effort, which the older format's model-only keys do not."""
+    return bool(line['tokens']) and all(MODEL_EFFORT_SEPARATOR in key for key in line['tokens'])
+
+
+def interval_cost(prices, before, after):
+    """Dollars by kind spent between two checkpoint lines at list price, or None when a model is not listed."""
+    totals = dict.fromkeys(COST_KINDS, 0.0)
+    for key, tokens in after['tokens'].items():
+        rates = rates_for(prices, key.rsplit(MODEL_EFFORT_SEPARATOR, 1)[0], 0)
+        if rates is None:
+            return None
+        earlier = before['tokens'].get(key, {})
+        usage = {field: tokens.get(kind, 0) - earlier.get(kind, 0) for kind, field in CHECKPOINT_KIND_FIELDS.items()}
+        for kind, dollars in dollars_at_rates(rates, usage).items():
+            totals[kind] += dollars
+    return totals
+
+
+def dollars_per_point(dollars, moved):
+    """Dollars spent over the points a window rose, or None when either is unknown or the window did not rise."""
+    if dollars is None or moved is None or moved <= 0:
+        return None
+    return dollars / moved
+
+
+def median_text(values):
+    """The median of the values to cents, or the unknown mark when there are none."""
+    return UNKNOWN_MARK if not values else f'{statistics.median(values):.2f}'
+
+
+def calibrate(checkpoints_path, prices):
+    """Print the dollars spent between consecutive model-and-effort checkpoint lines against the limit points moved, with the median dollars per point; refuse with fewer than two such lines."""
+    lines = [json.loads(text) for text in checkpoints_path.read_text().splitlines()] if checkpoints_path.exists() else []
+    usable = [line for line in lines if is_keyed_by_model_and_effort(line)]
+    skipped = len(lines) - len(usable)
+    if len(usable) < 2:
+        raise Refusal(f'calibrate needs two checkpoint lines keyed by model and effort; {checkpoints_path} holds {len(usable)} ({skipped} of the older format skipped)')
+    per_point = {window: [] for window in LIMIT_WINDOWS}
+    print(' | '.join(['from', 'to', *[f'usd_{kind}' for kind in COST_KINDS], 'usd_total', *[f'd_{window}_points' for window in LIMIT_WINDOWS], *[f'usd_per_{window}_point' for window in LIMIT_WINDOWS]]))
+    for before, after in zip(usable, usable[1:]):
+        costs = interval_cost(prices, before, after)
+        total = None if costs is None else sum(costs.values())
+        rates = {window: dollars_per_point(total, points_moved(window, before, after)) for window in LIMIT_WINDOWS}
+        for window, rate in rates.items():
+            if rate is not None:
+                per_point[window].append(rate)
+        print(' | '.join([before['label'], after['label'], *[dollars_column(None if costs is None else costs[kind]) for kind in COST_KINDS], dollars_column(total), *[percentage_points_text(window, before, after) for window in LIMIT_WINDOWS], *[dollars_column(rates[window]) for window in LIMIT_WINDOWS]]))
+    print(f'lines of the older format skipped: {skipped}')
+    for window, values in per_point.items():
+        print(f'median usd per {window} point: {median_text(values)} over {len(values)} intervals')
+    return 0
+
+
 def main(arguments, standard_input, now, environment, home_directory):
     """Run the subcommand named in the arguments and return the process exit code."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -586,6 +651,7 @@ def main(arguments, standard_input, now, environment, home_directory):
     checkpoint_parser = subcommands.add_parser('checkpoint', help='append the limit figures and the session token totals by model and kind to the checkpoints file')
     checkpoint_parser.add_argument('label')
     subcommands.add_parser('checkpoints', help='print the checkpoints with the differences between lines')
+    subcommands.add_parser('calibrate', help='print the dollars per limit point between consecutive model-and-effort checkpoint lines and their median')
     subcommands.add_parser('coldturns', help='print the turns after a gap past the cache lifetime and the share of cache-write tokens they carry')
     attempt_parser = subcommands.add_parser('attempt', help='print the dollars, limit share and minutes of one attempt')
     add_attempt_arguments(attempt_parser)
@@ -614,6 +680,8 @@ def main(arguments, standard_input, now, environment, home_directory):
         return checkpoint(parsed.label, now, limits_path, checkpoints_path, newest_session_transcript(login, root_checkout(REPOSITORY_ROOT)))
     if parsed.subcommand == 'checkpoints':
         return checkpoints(checkpoints_path)
+    if parsed.subcommand == 'calibrate':
+        return run_refusing(calibrate, checkpoints_path, json.loads(PRICES_PATH.read_text()))
     if parsed.subcommand == 'coldturns':
         return coldturns(newest_session_transcript(login, root_checkout(REPOSITORY_ROOT)))
     lead_transcript = None if parsed.subagents_directory else newest_session_transcript(login, root_checkout(REPOSITORY_ROOT))
