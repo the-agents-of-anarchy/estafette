@@ -675,22 +675,20 @@ mod tests {
         io::Error::other(STAND_IN_FAILURE)
     }
 
-    /// Why the trace refused to start, failing the test when it started.
+    /// Why the trace refused to start, or nothing when it started.
     fn refusal_of(
         directory: &TraceDirectory,
         effects: &TraceEffects,
         bounds: TraceBounds,
-    ) -> TraceRefused {
-        match Trace::start(
+    ) -> Option<TraceRefused> {
+        Trace::start(
             directory,
             &OperatingSystemFilesystem,
             RunId::from_random_bytes(RUN_BYTES),
             effects,
             bounds,
-        ) {
-            Ok(_trace) => panic!("the trace started"),
-            Err(refusal) => refusal,
-        }
+        )
+        .err()
     }
 
     #[test]
@@ -706,7 +704,8 @@ mod tests {
                 ..TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS))
             },
             TraceBounds::SPEC,
-        );
+        )
+        .expect("a trace file that cannot be created refuses the start");
 
         assert_eq!(refusal.action, TraceAction::CreateFile);
         assert_eq!(refusal.path, events);
@@ -733,7 +732,8 @@ mod tests {
                 ..TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS))
             },
             TraceBounds::SPEC,
-        );
+        )
+        .expect("a writer thread that cannot start refuses the start");
 
         assert_eq!(refusal.action, TraceAction::StartWriter);
         assert_eq!(refusal.path, events);
@@ -759,7 +759,8 @@ mod tests {
                 ..TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS))
             },
             TraceBounds::SPEC,
-        );
+        )
+        .expect("a trace directory that cannot be listed refuses the start");
 
         assert_eq!(refusal.action, TraceAction::ListDirectory);
         assert_eq!(refusal.path, traces);
@@ -791,7 +792,8 @@ mod tests {
                 freshness: Duration::from_millis(SMALL_FRESHNESS_MS),
                 ..TraceBounds::SPEC
             },
-        );
+        )
+        .expect("an old run that cannot be removed refuses the start");
 
         assert_eq!(refusal.action, TraceAction::RemoveOldFile);
         assert_eq!(refusal.path, traces.join(STALE_EVENTS_FILE));
