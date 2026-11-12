@@ -55,6 +55,7 @@ SECONDS_UNIT = 'seconds'
 UNIT_FORMATS = {DOLLARS_UNIT: '${:.2f}', LIMIT_WEIGHT_UNIT: '{:.4f}%', MINUTES_UNIT: '{:.1f}', SECONDS_UNIT: '{:.0f} s'}
 LIMIT_WEIGHT_PREFIX = 'limit weight'
 TTL_LABEL = 'TTL'
+PUBLISHED_ATTEMPT_LABEL = f'{DOLLARS_UNIT} published attempt'
 
 
 def login_directory(environment, home_directory):
@@ -474,9 +475,16 @@ def component_lines(prefix, unit, by_component):
     return [*lines, Line(total_label(prefix), None if by_component is None else sum(by_component.values()), unit)]
 
 
+def generation_speed_of(parameters, attempt):
+    """The generation speed of the attempt's variant, or of its model where no figure covers the variant, refused when both are null."""
+    variant_speed = parameters['per_attempt'][attempt.model][attempt.effort]['generation_speed_tokens_per_second']
+    speed = variant_speed if variant_speed['value'] is not None else parameters['generation_speed_tokens_per_second'][attempt.model]
+    return required_value(speed, f'generation speed of {attempt.model} {attempt.effort}')
+
+
 def minute_lines(parameters, attempt):
-    """Minutes of generation time, of tool time and their sum, refused when the model's generation speed is null."""
-    speed = required_value(parameters['generation_speed_tokens_per_second'][attempt.model], f'generation speed of {attempt.model}')
+    """Minutes of generation time, of tool time and their sum, refused when the generation speed is null."""
+    speed = generation_speed_of(parameters, attempt)
     generation = attempt.appetite_k * TOKENS_PER_THOUSAND / speed / SECONDS_PER_MINUTE
     return [
         Line(f'{MINUTES_UNIT} generation time', generation, MINUTES_UNIT),
@@ -489,9 +497,11 @@ def attempt_lines(prices, parameters, attempt):
     """The TTL, dollars, limit weight and minutes of one attempt as table lines."""
     tokens = component_tokens(attempt)
     weights = parameters['limit_weight_percent_per_million_tokens'][attempt.model]['value']
+    published_attempt_dollars = parameters['per_attempt'][attempt.model][attempt.effort]['attempt_dollars']['value']
     return [
         Line(TTL_LABEL, parameters['ttl_seconds'][attempt.role]['value'], SECONDS_UNIT),
         *component_lines(DOLLARS_UNIT, DOLLARS_UNIT, tokens_at_rates(tokens, component_prices(prices, attempt))),
+        Line(PUBLISHED_ATTEMPT_LABEL, published_attempt_dollars, DOLLARS_UNIT),
         *component_lines(LIMIT_WEIGHT_PREFIX, LIMIT_WEIGHT_UNIT, None if weights is None else tokens_at_rates(tokens, component_weights(weights))),
         *minute_lines(parameters, attempt),
     ]
