@@ -760,6 +760,10 @@ mod observability {
 
         assert_eq!(sent.status.code(), Some(1));
         let (events, _raw) = trace_files_of_one_run(&root.join(DATA_HOME));
+        assert!(
+            !fs::read(&events).unwrap().contains(&0),
+            "the stopped process left its events file sized ahead of the line of its last event"
+        );
         let lines = trace_lines(&events);
         assert_eq!(
             lines.last().unwrap().values["event"],
