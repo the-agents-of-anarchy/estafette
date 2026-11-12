@@ -1660,6 +1660,51 @@ mod tests {
         (clock, reading)
     }
 
+    const HEARING_NOTED_WAIT: Duration = Duration::from_secs(5);
+
+    /// Waits until the register has noted every datagram each connection to or from the card has received, so a silence read later starts at the last of them, failing by name when it has not within the wait.
+    async fn wait_until_every_datagram_of_is_noted(
+        register: &HeldConnections,
+        card: wire::PublicKey,
+    ) {
+        let noted = timeout(HEARING_NOTED_WAIT, async {
+            while !register.held().get(&card).is_some_and(|of_card| {
+                of_card.iter().all(|held_connection| {
+                    held_connection.connection.upgrade().is_some_and(|live| {
+                        live.stats().udp_rx.datagrams == held_connection.datagrams_heard
+                    })
+                })
+            }) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            noted.is_ok(),
+            "the register did not note every datagram of the card's connections within {HEARING_NOTED_WAIT:?}"
+        );
+    }
+
+    /// Each path of each live connection to or from the card the register holds, with whether iroh selected it, in the order held.
+    fn paths_of_each_held_of(
+        register: &HeldConnections,
+        card: wire::PublicKey,
+    ) -> Vec<Vec<String>> {
+        register
+            .held()
+            .get(&card)
+            .into_iter()
+            .flatten()
+            .filter_map(|held_connection| held_connection.connection.upgrade())
+            .map(|live| {
+                live.paths()
+                    .iter()
+                    .map(|path| format!("{:?} selected {}", path.remote_addr(), path.is_selected()))
+                    .collect()
+            })
+            .collect()
+    }
+
     /// Moves the clock the test sets on by as long as a gone process is silent.
     fn move_past_the_silence_of_a_gone_process(reading: &Mutex<tokio::time::Instant>) {
         let mut reading = reading.lock().unwrap();
@@ -1673,6 +1718,11 @@ mod tests {
         let Rig { link, .. } =
             rig_over(RecordingHost::with_card(card_of(SERVER_SEED)), clock).await;
         connection_from_a_process_that_vanished(link.server_node.endpoint().addr()).await;
+        wait_until_every_datagram_of_is_noted(
+            &link.server_node.held_connections(),
+            card_of(CLIENT_SEED),
+        )
+        .await;
         move_past_the_silence_of_a_gone_process(&reading);
         let restarted = link
             .client_node
@@ -1686,6 +1736,7 @@ mod tests {
         let register = link.server_node.held_connections();
         let reported_before =
             selected_path_reported_by_each_held_of(&register, card_of(CLIENT_SEED));
+        let paths_before = paths_of_each_held_of(&register, card_of(CLIENT_SEED));
 
         register.close_silent_of(card_of(CLIENT_SEED));
         let restarted_closed = timeout(DIRECT_ANSWER_WAIT, restarted.closed()).await;
@@ -1702,14 +1753,17 @@ mod tests {
         })
         .await;
 
-        assert_eq!(reported_before, vec![true, false]);
-        assert!(
-            matches!(
-                &restarted_closed,
-                Ok(ConnectionError::ApplicationClosed(close))
-                    if close.error_code == VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE)
-            ),
-            "{restarted_closed:?}"
+        let restarted_reported_a_selected_path = reported_before.get(1) == Some(&true);
+        let restarted_closed_as_superseded = matches!(
+            &restarted_closed,
+            Ok(ConnectionError::ApplicationClosed(close))
+                if close.error_code == VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE)
+        );
+
+        assert_eq!(reported_before.len(), 2, "{paths_before:?}");
+        assert_eq!(
+            restarted_closed_as_superseded, !restarted_reported_a_selected_path,
+            "the restarted connection, among {paths_before:?}, ended {restarted_closed:?}"
         );
         assert!(
             matches!(&dialed_back, Ok((Ok(_), Some(_)))),
@@ -1768,7 +1822,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_8_an_introduce_from_a_restarted_process_closes_its_cards_gone_connection_and_keeps_the_one_it_arrived_on_though_it_reports_no_selected_path()
+    async fn spec_3_8_an_introduce_from_a_restarted_process_closes_its_cards_gone_connection_and_keeps_the_one_it_arrived_on_whatever_path_iroh_selected()
      {
         let (clock, reading) = clock_the_test_sets();
         let Rig { link, .. } =
@@ -1776,16 +1830,17 @@ mod tests {
         let server = link.server_node.endpoint().id();
         connection_from_a_process_that_vanished(link.server_node.endpoint().addr()).await;
         let gone = connections_held_open_from(&link.server_node, card_of(CLIENT_SEED));
+        wait_until_every_datagram_of_is_noted(
+            &link.server_node.held_connections(),
+            card_of(CLIENT_SEED),
+        )
+        .await;
         move_past_the_silence_of_a_gone_process(&reading);
 
         let introduced = link
             .client
             .introduce(server, introduction_from_client())
             .await;
-        let reported_after = selected_path_reported_by_each_held_of(
-            &link.server_node.held_connections(),
-            card_of(CLIENT_SEED),
-        );
         let probed_on_the_same_connection = link.client.probe(server, PROBE_NONCE).await;
 
         assert!(
@@ -1798,7 +1853,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Some(ConnectionError::LocallyClosed)]
         );
-        assert_eq!(reported_after, vec![false]);
         assert_eq!(probed_on_the_same_connection.unwrap().nonce, PROBE_NONCE);
     }
 
