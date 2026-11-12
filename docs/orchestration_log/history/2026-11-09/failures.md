@@ -311,3 +311,19 @@ What happened: On 2026-11-12 at 20:25 the lead ended a turn that a heartbeat had
 Mechanism: Silence is in force: only a message the owner typed is answered in the conversation; the no-visible-output notice is inert, and the lead answered it as if it were a request.
 
 Correction: A turn started by a heartbeat, a notification or an agent message ends with zero characters whatever notice follows; the state goes to the status file and the journal.
+
+## A ruled standard-error text that says more than the code guarantees
+
+What happened: What happened: the lead ruled at 20:50 the not-cut line of the trace stop with the words "so the file ends in zero bytes"; the spec re-review of trace-seam failed on it at 23:26, because the cut is also attempted when nothing is sized past the last line, and a failure there prints a line that is false.
+
+Mechanism: Mechanism: the lead wrote a user-facing text from the common case without asking an agent to list every state in which the line is printed; the implementer marked it Not determined, and the brief had no gate that a ruled text be true in every state that prints it.
+
+Correction: Correction: a ruled user-facing text is gated in its brief by a list of every state that prints it, each shown true; here the text stays and the code attempts the cut only where zero bytes follow the last line (prompts/implementer-trace-seam-5.md).
+
+## Model and effort taken from two habitual variants, the lineup not priced
+
+What happened: What happened: of the eleven launches and continuations after the 23:10 reset on 2026-11-12, every fresh agent ran on opus at high or on sonnet at high (which the harness records as medium); the counts journaled for them compared fresh against continued and, once, opus against sonnet, and priced no low or max effort, no haiku and no fable.
+
+Mechanism: Mechanism: the lead counted the shape of each act (fresh or continued, warm or cold) and carried the variant over from the previous act of the same role, which is the role table the orchestration-economics skill forbids; the agentic-delegation tier table, which bars haiku from any reading task, was applied where the owner ruling of 2026-11-12 ranks above it.
+
+Correction: Correction: before each launch the lead prices the work unit, check and rework included, for at least one variant below and one above the habitual one across models (just usage::compare), journals the losing variants with their figures, and sets the effort it counted, not the one it used last.

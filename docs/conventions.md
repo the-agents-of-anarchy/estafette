@@ -328,6 +328,14 @@ never   a launch, continuation or stop whose cost was not counted; a model or an
 why     The owner ruled one mental model inside which the lead makes every such decision without his word; the skill holds it and the usage recipes compute it.
 ground  owner rulings 2026-11-12 ("we're setting up a single mental model within which you operate and make EVERY decision"; "the goal is EXACTLY for me to not weigh in on this ever again"; "resumption must be cache-and-token-spend-aware")
 
+### work-in-progress
+when    choosing the next act while any unit is open, a unit being open from its first implementer launch until its merge reaches main
+do      take startable steps in order of distance to merge: integrate a passed unit; route a verdict or report that has arrived; continue a fix round; launch the reviews of a reported unit; only then start a new unit; start a new unit only when every open unit has an agent working on it or waits on a wake the lead set, and the usage window carries the new unit's first attempt and its check to their reports; route each open unit's next step inside its agents' cache life; start an integrator's or an acceptance gate pair when no other gate is due beside it, or name to it the gate that may overlap and order a test that fails on a time bound rerun alone; journal at each launch the number of open units and the cold-start dollars the launch causes
+never   a new implementer while an open unit waits on the lead; a unit left past its agents' cache life without a journaled reason and its cost; a cap by number before a measurement supplies one
+why     A unit took about 2.6 implementer attempts and 2.6 review pairs to merge (62 units counted 2026-11-12); a round resumed past the cache life pays the agent's whole context again (2.4 to 3.2 dollars of each 4.4 to 4.9 dollar review on 2026-11-12); tests failed under load when gates ran together.
+ground  owner word 2026-11-13 ("refine the WIP directive."; "figure things out, will you?"); text by the lead; for this project it replaces the dev-cycle rule to launch in one turn every unit whose dependencies are integrated
+except  a unit blocked on what no agent can do now (a window reset, a lab run, an act only the owner can perform) does not hold back a new unit
+
 ## owner
 
 ### owner-away
