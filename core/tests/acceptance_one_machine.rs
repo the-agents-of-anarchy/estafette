@@ -32,6 +32,9 @@ mod spec_bounds;
 #[path = "support/timed_step.rs"]
 mod timed_step;
 #[cfg(test)]
+#[path = "one_machine/trace_events.rs"]
+mod trace_events;
+#[cfg(test)]
 #[path = "support/trace_reader.rs"]
 mod trace_reader;
 

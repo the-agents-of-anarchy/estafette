@@ -6,7 +6,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
-use estafette::dirs::{Directories, OperatingSystemFilesystem, TraceDirectory};
+use estafette::dirs::{
+    Directories, DirectoryFilesystem, OperatingSystemFilesystem, TraceDirectory, trace_file_of,
+};
 use estafette::keys::parse_public_key;
 use iroh::EndpointId;
 
@@ -22,12 +24,16 @@ const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
 const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
 /// The base directory variable for runtime files (spec 3.3).
 const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
+/// The variable naming the directory a member finds the machine's cards under, so a member may keep a data directory of its own (spec:534).
+const CARDS_DIRECTORY_VARIABLE: &str = "ESTAFETTE_CARDS_DIR";
 /// The search path the binary finds `ps` on.
 const SEARCH_PATH_VARIABLE: &str = "PATH";
 /// The configuration directory under a scratch root.
 const CONFIG_HOME: &str = "c";
 /// The data directory under a scratch root.
 const DATA_HOME: &str = "d";
+/// Where under the machine's data directory each member's own data directory lies, named by the member's number.
+const MEMBERS_UNDER_DATA_HOME: &str = "members";
 /// The runtime directory under a scratch root.
 const RUNTIME_DIRECTORY: &str = "r";
 /// The extension of a member's run record file under a scratch root.
@@ -163,15 +169,38 @@ impl ScratchMachine {
         }
     }
 
-    /// Starts the binary's MCP server for the network with its standard input and output piped, its run record written to a file of the scratch root numbered for the server.
+    /// How many MCP servers this machine has started, which is also the number of the next one.
+    pub fn members_started(&self) -> u32 {
+        self.servers_started.get()
+    }
+
+    /// The trace directory of the member of that number, which no other member writes in.
+    pub fn traces_directory_of_member(&self, number: u32) -> PathBuf {
+        let environment = self.member_environment(number);
+        TraceDirectory::resolve(&|name: &str| variable_of(&environment, name))
+            .unwrap()
+            .path()
+    }
+
+    /// The binary with the environment of the member of that number: the machine's, but a data directory of its own and the machine's cards.
+    pub fn member_command(&self, number: u32) -> Command {
+        let mut command = Command::new(BINARY);
+        command.env_clear().envs(self.member_environment(number));
+        command
+    }
+
+    /// Starts the binary's MCP server for the network with its standard input and output piped, its run record written to a file of the scratch root numbered for the server, and a trace directory of its own made ready.
     pub fn spawn_mcp_server(&self) -> Child {
-        let started = self.servers_started.get();
+        let started = self.members_started();
         self.servers_started.set(started.checked_add(1).unwrap());
+        OperatingSystemFilesystem
+            .create_private_directory(&self.traces_directory_of_member(started))
+            .unwrap();
         let run_record = File::create(self.root.join(format!(
             "{RUN_RECORD_PREFIX}-{started}.{RUN_RECORD_EXTENSION}"
         )))
         .unwrap();
-        self.command()
+        self.member_command(started)
             .args(["mcp", &self.network])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -221,16 +250,39 @@ impl ScratchMachine {
             .collect()
     }
 
+    /// The environment of the member of that number: the machine's, but with a data directory of its own under the machine's data directory, and the machine's cards.
+    fn member_environment(&self, number: u32) -> Vec<(&'static str, OsString)> {
+        let cards = self.directories().cards_directory(&self.network).unwrap();
+        let mut variables: Vec<(&'static str, OsString)> = environment(&self.root)
+            .into_iter()
+            .filter(|(name, _)| *name != DATA_HOME_VARIABLE)
+            .collect();
+        variables.push((
+            DATA_HOME_VARIABLE,
+            self.root
+                .join(DATA_HOME)
+                .join(MEMBERS_UNDER_DATA_HOME)
+                .join(number.to_string())
+                .into_os_string(),
+        ));
+        variables.push((
+            CARDS_DIRECTORY_VARIABLE,
+            cards.parent().unwrap().as_os_str().to_owned(),
+        ));
+        variables
+    }
+
     /// The secrets of every readable file under this machine's base directories but its debug traces, which are a record of the run like the run record itself, longest first.
     fn secrets_by_length(&self) -> Vec<String> {
-        let environment = environment(&self.root);
-        let traces = TraceDirectory::resolve(&|name: &str| variable_of(&environment, name))
-            .unwrap()
-            .path();
         let contents: Vec<String> = self
             .base_directory_files()
             .iter()
-            .filter(|file| !file.starts_with(&traces))
+            .filter(|file| {
+                file.file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(trace_file_of)
+                    .is_none()
+            })
             .filter_map(|file| fs::read(file).ok())
             .map(|content| String::from_utf8_lossy(&content).into_owned())
             .collect();
