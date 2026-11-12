@@ -12,6 +12,7 @@ use crate::dirs::rolled_over_trace_file;
 use crate::event::{EventName, TraceLineName};
 
 const DROPPED_COUNT_FIELD: &str = "count";
+const LINE_END: u8 = b'\n';
 const WRITER_THREAD_NAME: &str = "estafette-trace-writer";
 
 /// Where a trace writer's thread puts each line.
@@ -33,6 +34,7 @@ pub(super) struct RollingFile {
     path: PathBuf,
     file: Option<Box<dyn Write + Send>>,
     written_bytes: u64,
+    ends_mid_line: bool,
     rollover_bytes: u64,
     opening: RolloverOpening,
     first_line: Option<Vec<u8>>,
@@ -54,6 +56,7 @@ impl RollingFile {
             path,
             file: Some(file),
             written_bytes: 0,
+            ends_mid_line: false,
             rollover_bytes,
             opening,
             first_line: None,
@@ -76,6 +79,7 @@ impl RollingFile {
         }
         let created = (self.create_file)(&self.path)?;
         self.written_bytes = 0;
+        self.ends_mid_line = false;
         Ok(created)
     }
 
@@ -97,8 +101,21 @@ impl TraceOutput for RollingFile {
             self.file = None;
         }
         let mut file = self.current_file()?;
-        let whole = [self.opening_of_an_empty_file(), line].concat();
-        let written = file.write_all(&whole);
+        let line_end_after_a_torn_line: &[u8] = if self.ends_mid_line { &[LINE_END] } else { &[] };
+        let whole = [
+            line_end_after_a_torn_line,
+            self.opening_of_an_empty_file(),
+            line,
+        ]
+        .concat();
+        let mut counted = CountedFile {
+            file: &mut *file,
+            accepted: 0,
+        };
+        let written = counted.write_all(&whole);
+        if let Some(last_accepted) = whole.get(..counted.accepted).and_then(<[u8]>::last) {
+            self.ends_mid_line = *last_accepted != LINE_END;
+        }
         self.file = Some(file);
         written?;
         if self.first_line.is_none() {
@@ -106,6 +123,24 @@ impl TraceOutput for RollingFile {
         }
         self.written_bytes = self.written_bytes.saturating_add(byte_count(&whole));
         Ok(())
+    }
+}
+
+/// A trace file that counts the bytes it accepts, so a write that fails part-way says where the file now ends.
+struct CountedFile<'file> {
+    file: &'file mut (dyn Write + Send),
+    accepted: usize,
+}
+
+impl Write for CountedFile<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let accepted = self.file.write(bytes)?;
+        self.accepted = self.accepted.saturating_add(accepted);
+        Ok(accepted)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.file.flush()
     }
 }
 

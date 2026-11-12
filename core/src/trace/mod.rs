@@ -702,7 +702,7 @@ pub(super) mod tests {
         drop(fs::remove_dir_all(&root));
     }
 
-    /// Trace files held in memory, whose events-file writes, creations and renames fail at the attempts a test names, each counted from 0.
+    /// Trace files held in memory, whose events-file writes, creations and renames fail at the attempts a test names, each counted from 0, and whose torn writes take half their bytes before the next attempt fails.
     #[derive(Clone, Default)]
     struct MemoryFiles(Arc<Mutex<MemoryState>>);
 
@@ -710,6 +710,7 @@ pub(super) mod tests {
     struct MemoryState {
         held: BTreeMap<PathBuf, Vec<u8>>,
         failing_writes: Vec<usize>,
+        torn_writes: Vec<usize>,
         failing_creations: Vec<usize>,
         failing_renames: Vec<usize>,
         writes: usize,
@@ -725,7 +726,7 @@ pub(super) mod tests {
 
     impl Write for MemoryFile {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.files.append(&self.path, bytes).map(|()| bytes.len())
+            self.files.append(&self.path, bytes)
         }
 
         fn flush(&mut self) -> io::Result<()> {
@@ -750,6 +751,14 @@ pub(super) mod tests {
                 failing_writes: writes.to_vec(),
                 failing_creations: creations.to_vec(),
                 failing_renames: renames.to_vec(),
+                ..MemoryState::default()
+            })))
+        }
+
+        /// Files whose events-file write at attempt `write` takes half its bytes, so the attempt after it fails.
+        fn torn_at(write: usize) -> Self {
+            Self(Arc::new(Mutex::new(MemoryState {
+                torn_writes: vec![write],
                 ..MemoryState::default()
             })))
         }
@@ -804,42 +813,54 @@ pub(super) mod tests {
             Ok(())
         }
 
-        fn append(&self, path: &Path, bytes: &[u8]) -> io::Result<()> {
+        /// Appends what the attempt takes of `bytes` and says how many bytes it took.
+        fn append(&self, path: &Path, bytes: &[u8]) -> io::Result<usize> {
             let mut state = self.state();
+            let mut taken = bytes;
             if is_events_file(path) {
                 let MemoryState {
                     writes,
                     failing_writes,
+                    torn_writes,
                     ..
                 } = &mut *state;
+                let attempt = *writes;
                 if is_failing_attempt(writes, failing_writes) {
                     return Err(stand_in_failure());
+                }
+                if torn_writes.contains(&attempt) {
+                    failing_writes.push(*writes);
+                    taken = &bytes[..bytes.len() / 2];
                 }
             }
             state
                 .held
                 .entry(path.to_path_buf())
                 .or_default()
-                .extend_from_slice(bytes);
+                .extend_from_slice(taken);
             drop(state);
-            Ok(())
+            Ok(taken.len())
+        }
+
+        /// The text the file holds.
+        fn text_of(&self, path: &Path) -> String {
+            String::from_utf8(self.state().held.get(path).cloned().unwrap_or_default()).unwrap()
         }
 
         /// Each line the file holds as its number, its event and the count a `dropped` line carries.
         fn numbered_events_of(&self, path: &Path) -> Vec<(u64, String, Option<u64>)> {
-            String::from_utf8(self.state().held.get(path).cloned().unwrap_or_default())
-                .unwrap()
-                .lines()
-                .map(|line| {
-                    let line: Value = serde_json::from_str(line).unwrap();
-                    (
-                        line["n"].as_u64().unwrap(),
-                        line["event"].as_str().unwrap().to_owned(),
-                        line["count"].as_u64(),
-                    )
-                })
-                .collect()
+            self.text_of(path).lines().map(numbered_event).collect()
         }
+    }
+
+    /// The line's number, its event and the count a `dropped` line carries.
+    fn numbered_event(line: &str) -> (u64, String, Option<u64>) {
+        let line: Value = serde_json::from_str(line).unwrap();
+        (
+            line["n"].as_u64().unwrap(),
+            line["event"].as_str().unwrap().to_owned(),
+            line["count"].as_u64(),
+        )
     }
 
     fn started_with(
@@ -880,6 +901,32 @@ pub(super) mod tests {
         assert_eq!(
             files.numbered_events_of(&trace.files().events),
             [clock_event(0), dropped_event(3, 2), clock_event(4)]
+        );
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn observability_decision_12_a_line_written_in_part_before_its_write_fails_is_counted_and_the_dropped_line_after_it_stands_whole_on_its_own_line()
+     {
+        let (root, directory) = scratch_trace_directory("torn-write");
+        let files = MemoryFiles::torn_at(1);
+        let trace = started_with(&directory, &files.effects(NOW_MS), TraceBounds::SPEC);
+
+        for _event in 0..3 {
+            trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
+        }
+        assert!(trace.finish());
+
+        let held = files.text_of(&trace.files().events);
+        let lines: Vec<&str> = held.lines().collect();
+        let [first, fragment, dropped, last] = lines.as_slice() else {
+            panic!("four lines, the fragment on its own: {held:?}");
+        };
+        let torn_line = clock_line(1, None).into_bytes();
+        assert_eq!(fragment.as_bytes(), &torn_line[..torn_line.len() / 2]);
+        assert_eq!(
+            [first, dropped, last].map(|line| numbered_event(line)),
+            [clock_event(0), dropped_event(2, 1), clock_event(3)]
         );
         drop(fs::remove_dir_all(&root));
     }
