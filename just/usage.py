@@ -509,7 +509,40 @@ def attempt_command(parsed, prices, parameters):
     return 0
 
 
-CALCULATOR_COMMANDS = {'attempt': attempt_command}
+def figure_of(lines, label):
+    """The figure of the line with this label."""
+    return next(line.figure for line in lines if line.label == label)
+
+
+def reach_from(parameters, parsed):
+    """The reach a parsed command line gives or the parameter file holds, refused when null and not passed or outside 0 to 1 with 0 excluded."""
+    reach = parsed.reach
+    if reach is None:
+        reach = required_value(parameters['per_attempt'][parsed.model][parsed.effort]['reach'], f'reach of {parsed.model} {parsed.effort}', ': pass --reach')
+    if not 0 < reach <= 1:
+        raise Refusal(f'reach {reach} is outside 0 to 1, 0 excluded')
+    return reach
+
+
+def delivered_unit_figure(attempt, check, miss, reach):
+    """The attempt and the check, plus the miss on the share of attempts that fall short, spread over the attempts that reach."""
+    return (attempt + check + (1 - reach) * miss) / reach
+
+
+def unit_command(parsed, prices, parameters):
+    """Print the attempt and the dollars and minutes per delivered unit it rests on."""
+    attempt = attempt_from(prices, parameters, parsed)
+    reach = reach_from(parameters, parsed)
+    lines = attempt_lines(prices, parameters, attempt)
+    per_unit = [
+        Line(f'{DOLLARS_UNIT} per delivered unit', delivered_unit_figure(figure_of(lines, total_label(DOLLARS_UNIT)), parsed.check_usd, parsed.miss_usd, reach), DOLLARS_UNIT),
+        Line(f'{MINUTES_UNIT} per delivered unit', delivered_unit_figure(figure_of(lines, total_label(MINUTES_UNIT)), parsed.check_min, parsed.miss_min, reach), MINUTES_UNIT),
+    ]
+    print_lines([*lines, *per_unit])
+    return 0
+
+
+CALCULATOR_COMMANDS = {'attempt': attempt_command, 'unit': unit_command}
 
 
 def run_refusing(command, *command_arguments):
@@ -537,6 +570,13 @@ def main(arguments, standard_input, now, environment, home_directory):
     subcommands.add_parser('coldturns', help='print the turns after a gap past the cache lifetime and the share of cache-write tokens they carry')
     attempt_parser = subcommands.add_parser('attempt', help='print the dollars, limit share and minutes of one attempt')
     add_attempt_arguments(attempt_parser)
+    unit_parser = subcommands.add_parser('unit', help='print one attempt and the dollars and minutes per delivered unit')
+    add_attempt_arguments(unit_parser)
+    unit_parser.add_argument('check_usd', type=float)
+    unit_parser.add_argument('check_min', type=float)
+    unit_parser.add_argument('miss_usd', type=float)
+    unit_parser.add_argument('miss_min', type=float)
+    unit_parser.add_argument('--reach', type=float)
     parsed = parser.parse_args(arguments)
     if parsed.subcommand in CALCULATOR_COMMANDS:
         return run_refusing(CALCULATOR_COMMANDS[parsed.subcommand], parsed, json.loads(PRICES_PATH.read_text()), json.loads(PARAMS_PATH.read_text()))

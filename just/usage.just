@@ -36,3 +36,9 @@ coldturns:
 [no-exit-message]
 attempt *arguments:
     python3 -I {{ quote(script) }} attempt {{ arguments }}
+
+[doc("Compute the cost of one delivered unit, arguments: the arguments of attempt, then check_usd check_min miss_usd miss_min [--reach R] [--generated-k N]; prints the attempt table and then dollars and minutes per delivered unit = (attempt + check + (1 - reach) x miss) / reach, where the attempt's minutes are its total and reach is the share of attempts that deliver; reads usage-prices.json and usage-params.json; refuses everything attempt refuses, reach null in usage-params.json and not passed with --reach, and a reach outside 0 to 1 with 0 excluded")]
+[group('usage')]
+[no-exit-message]
+unit *arguments:
+    python3 -I {{ quote(script) }} unit {{ arguments }}
