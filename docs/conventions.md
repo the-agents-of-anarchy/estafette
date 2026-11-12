@@ -267,8 +267,8 @@ ground  owner ruling 2026-10-23
 
 ### wakes-and-resumes
 when    work is in flight, an agent is dispatched, or an agent stopped at a usage limit
-do      while work is in flight keep a recurring heartbeat, at most hourly, its prompt one generic line; re-arm it on waking; journal only an event; arm a backstop per dispatch or continuation at the unit class's P90 with the ladder quiet, quiet, probe, stop; kill it in the turn its subject completes; resume an agent stopped at a usage limit by SendMessage, one agent at a time, cheapest finishing step first; when the limit stopped the session too, resume on the first turn back
-never   facts or a journaling instruction in a wake prompt; a journal line saying nothing happened; leave a backstop after its subject completes; relaunch a usage-limited agent; resume all at once; a reset-aligned wake, which cannot be set
+do      while work is in flight keep a recurring heartbeat whose wakes fall less than an hour apart, inside the prompt cache lifetime, its prompt one generic line; re-arm it on waking; journal only an event; arm a backstop per dispatch or continuation at the unit class's P90 with the ladder quiet, quiet, probe, stop; kill it in the turn its subject completes; after a usage-limit stop decide each agent by orchestration-economics, one agent at a time, cheapest finishing step first; when the limit stopped the session too, decide on the first turn back
+never   facts or a journaling instruction in a wake prompt; a journal line saying nothing happened; leave a backstop after its subject completes; resume all at once; a reset-aligned wake, which cannot be set
 why     Session crons die and recurring ones expire in seven days; an 8-hour dormancy followed a skipped backstop; a mass resume hits the limit again.
 ground  owner ruling 2026-10-23
 
@@ -320,6 +320,13 @@ do      give reading, running and gathering to cheap agents (sonnet, haiku); bri
 never   order a strong agent to run loops, builds or bulk reads a cheap agent can run; launch a fresh strong agent on a matter one already holds
 why     A strong agent's context, like the lead's, is the scarcest resource; grunt work fills it with what a cheap agent could have condensed.
 ground  owner ruling 2026-11-12
+
+### orchestration-economics
+when    planning a unit, launching, continuing, resuming or stopping an agent, choosing its model and effort, deciding how many run at once, reading bulk into a context, or waking after a usage-limit stop, a login change or a gap past the cache's life
+do      decide inside the project skill orchestration-economics (.claude/skills/orchestration-economics/SKILL.md), loaded before the first such decision of a session; read the clock, `just usage::limits` and `just usage::inflight <minutes>` at every wake; set model and effort on every Agent call and journal the pair with the count that chose it; keep every agent's state in files so that a fresh start stays possible; take `just usage::checkpoint <label>` before and after a stretch of work and correct `just/usage-params.json` by what moved
+never   a launch, continuation or stop whose cost was not counted; a model or an effort by habit, by role or from a table; a figure from memory or from the skill's examples; a question to the owner about model or effort
+why     The owner ruled one mental model inside which the lead makes every such decision without his word; the skill holds it and the usage recipes compute it.
+ground  owner rulings 2026-11-12 ("we're setting up a single mental model within which you operate and make EVERY decision"; "the goal is EXACTLY for me to not weigh in on this ever again"; "resumption must be cache-and-token-spend-aware")
 
 ## owner
 
