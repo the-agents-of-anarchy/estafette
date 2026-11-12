@@ -586,6 +586,26 @@ mod tests {
         )
     }
 
+    /// The numbers of the raw lines each file holds after its first line, in the order the files open, when a line that would take a file past `rollover_bytes` opens the next file.
+    fn raw_numbers_by_file(
+        lines_written: u64,
+        first_line_bytes: u64,
+        rollover_bytes: u64,
+    ) -> Vec<Vec<u64>> {
+        let mut files = vec![Vec::new()];
+        let mut file_bytes = first_line_bytes;
+        for n in 1..=lines_written {
+            let line_bytes = u64::try_from(raw_line(n).len()).unwrap();
+            if file_bytes.saturating_add(line_bytes) > rollover_bytes {
+                files.push(Vec::new());
+                file_bytes = first_line_bytes;
+            }
+            file_bytes = file_bytes.saturating_add(line_bytes);
+            files.last_mut().unwrap().push(n);
+        }
+        files
+    }
+
     #[test]
     fn observability_decision_7_every_raw_file_a_rollover_opens_begins_with_the_line_saying_it_is_not_safe_to_post()
      {
@@ -602,14 +622,15 @@ mod tests {
             let lines_per_file = draws.below(MOST_LINES_PER_FILE).saturating_add(1);
             let slack_bytes = draws.below(line_bytes);
             let lines_written = draws.below(MOST_LINES_WRITTEN).saturating_add(1);
+            let rollover_bytes = first_line_bytes
+                .saturating_add(line_bytes.saturating_mul(lines_per_file))
+                .saturating_add(slack_bytes);
             let (root, directory) = scratch_trace_directory(&format!("raw-rollover-{case}"));
             let trace = started(
                 &directory,
                 NOW_MS,
                 TraceBounds {
-                    rollover_bytes: first_line_bytes
-                        .saturating_add(line_bytes.saturating_mul(lines_per_file))
-                        .saturating_add(slack_bytes),
+                    rollover_bytes,
                     ..TraceBounds::SPEC
                 },
             );
@@ -620,23 +641,31 @@ mod tests {
             assert!(matches!(trace.finish(), TraceStop::Drained), "case {case}");
 
             let raw = &trace.files().raw;
-            let held: Vec<String> = [crate::dirs::rolled_over_trace_file(raw), raw.clone()]
-                .iter()
-                .filter_map(|file| fs::read_to_string(file).ok())
-                .collect();
-            for file in &held {
-                assert!(file.starts_with(&not_safe_to_post), "case {case}: {file}");
-            }
-            let numbers: Vec<u64> = held
-                .iter()
-                .flat_map(|file| file.lines().skip(1).map(|line| numbered_event(line).0))
-                .collect();
-            let first_kept = numbers.first().copied().unwrap_or(lines_written);
+            let rolled_over = crate::dirs::rolled_over_trace_file(raw);
+            let numbers_by_file =
+                raw_numbers_by_file(lines_written, first_line_bytes, rollover_bytes);
+            let (current, earlier) = numbers_by_file.split_last().unwrap();
             assert_eq!(
-                numbers,
-                (first_kept..=lines_written).collect::<Vec<u64>>(),
-                "case {case}"
+                rolled_over.exists(),
+                !earlier.is_empty(),
+                "case {case}: whether a rollover opened a raw file for {lines_written} lines at {lines_per_file} a file"
             );
+            let raw_file_holding = |numbers: &[u64]| {
+                let lines: String = numbers.iter().map(|n| raw_line(*n)).collect();
+                format!("{not_safe_to_post}{lines}")
+            };
+            assert_eq!(
+                fs::read_to_string(raw).unwrap(),
+                raw_file_holding(current),
+                "case {case}: the raw file lines go to begins with the not-safe line and holds the lines since the last rollover"
+            );
+            if let Some(before_current) = earlier.last() {
+                assert_eq!(
+                    fs::read_to_string(&rolled_over).unwrap(),
+                    raw_file_holding(before_current),
+                    "case {case}: the raw file the last rollover renamed begins with the not-safe line and holds the lines before it"
+                );
+            }
             drop(fs::remove_dir_all(&root));
         }
     }
