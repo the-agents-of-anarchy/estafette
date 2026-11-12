@@ -1,12 +1,12 @@
-use std::fs::{self, OpenOptions, Permissions};
-use std::io::{self, Write};
+use std::fs::{self, File, OpenOptions, Permissions};
+use std::io;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::UNIX_EPOCH;
 
-use super::{StoredFile, TraceClocks, TraceEffects};
+use super::{StoredFile, TraceClocks, TraceEffects, TraceFile};
 
 const PRIVATE_FILE_MODE: u32 = 0o600;
 
@@ -25,10 +25,16 @@ impl TraceEffects {
     }
 }
 
-/// Creates the file new, readable and writable by its owner alone whatever the umask, for appending.
-fn create_private_file(path: &Path) -> io::Result<Box<dyn Write + Send>> {
+impl TraceFile for File {
+    fn set_length(&mut self, length: u64) -> io::Result<()> {
+        self.set_len(length)
+    }
+}
+
+/// Creates the file new, readable and writable by its owner alone whatever the umask, written from its start.
+fn create_private_file(path: &Path) -> io::Result<Box<dyn TraceFile>> {
     let file = OpenOptions::new()
-        .append(true)
+        .write(true)
         .create_new(true)
         .mode(PRIVATE_FILE_MODE)
         .open(path)?;

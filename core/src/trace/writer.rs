@@ -7,7 +7,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use super::line::{HeaderSource, StampedLine};
-use super::{CreateTraceFile, RenameFile, SpawnThread};
+use super::{CreateTraceFile, RenameFile, SpawnThread, TRACE_FILE_SIZED_AHEAD_BYTES, TraceFile};
 use crate::dirs::rolled_over_trace_file;
 use crate::event::{EventName, TraceLineName};
 
@@ -19,6 +19,9 @@ const WRITER_THREAD_NAME: &str = "estafette-trace-writer";
 pub(super) trait TraceOutput {
     /// Writes the line, newline included, whole in one write.
     fn write_line(&mut self, line: &[u8]) -> io::Result<()>;
+
+    /// Ends the output at the last byte written, nothing sized past it.
+    fn close(&mut self) -> io::Result<()>;
 }
 
 /// What each file a rollover starts holds before the line that rolled the file over.
@@ -29,11 +32,12 @@ pub(super) enum RolloverOpening {
     FirstLineAgain,
 }
 
-/// A trace file that rolls over into its `.1` file, replacing any earlier one, before a line would take it past its size bound.
+/// A trace file, sized ahead of its lines, that rolls over into its `.1` file, replacing any earlier one, before a line would take it past its size bound.
 pub(super) struct RollingFile {
     path: PathBuf,
-    file: Option<Box<dyn Write + Send>>,
+    file: Option<Box<dyn TraceFile>>,
     written_bytes: u64,
+    sized_bytes: u64,
     ends_mid_line: bool,
     rollover_bytes: u64,
     opening: RolloverOpening,
@@ -46,7 +50,7 @@ impl RollingFile {
     /// The newly created, empty file at `path`, rolled over at `rollover_bytes` by `rename_file` into a file `create_file` starts that holds `opening`.
     pub(super) fn new(
         path: PathBuf,
-        file: Box<dyn Write + Send>,
+        file: Box<dyn TraceFile>,
         rollover_bytes: u64,
         opening: RolloverOpening,
         create_file: CreateTraceFile,
@@ -56,6 +60,7 @@ impl RollingFile {
             path,
             file: Some(file),
             written_bytes: 0,
+            sized_bytes: 0,
             ends_mid_line: false,
             rollover_bytes,
             opening,
@@ -73,14 +78,51 @@ impl RollingFile {
     }
 
     /// The file lines go to now, created in place of one a rollover renamed.
-    fn current_file(&mut self) -> io::Result<Box<dyn Write + Send>> {
+    fn current_file(&mut self) -> io::Result<Box<dyn TraceFile>> {
         if let Some(file) = self.file.take() {
             return Ok(file);
         }
         let created = (self.create_file)(&self.path)?;
         self.written_bytes = 0;
+        self.sized_bytes = 0;
         self.ends_mid_line = false;
         Ok(created)
+    }
+
+    /// Sizes the file ahead, in whole steps, so the next `bytes` land inside it.
+    fn size_ahead(&mut self, file: &mut dyn TraceFile, bytes: u64) -> io::Result<()> {
+        let needed = self.written_bytes.saturating_add(bytes);
+        if needed <= self.sized_bytes {
+            return Ok(());
+        }
+        let sized = needed
+            .checked_next_multiple_of(TRACE_FILE_SIZED_AHEAD_BYTES)
+            .unwrap_or(u64::MAX);
+        file.set_length(sized)?;
+        self.sized_bytes = sized;
+        Ok(())
+    }
+
+    /// Writes the bytes after the last byte written, counting every byte the file takes, so a write that fails part-way leaves the file's end known.
+    fn write_counted(&mut self, file: &mut dyn TraceFile, bytes: &[u8]) -> io::Result<()> {
+        let mut counted = CountedFile { file, accepted: 0 };
+        let written = counted.write_all(bytes);
+        if let Some(last_accepted) = bytes.get(..counted.accepted).and_then(<[u8]>::last) {
+            self.ends_mid_line = *last_accepted != LINE_END;
+        }
+        self.written_bytes = self.written_bytes.saturating_add(byte_count(
+            bytes.get(..counted.accepted).unwrap_or_default(),
+        ));
+        written
+    }
+
+    /// Cuts the file back to the last byte written, so nothing sized ahead remains.
+    fn cut_to_written(&mut self) -> io::Result<()> {
+        if let Some(file) = self.file.as_mut() {
+            file.set_length(self.written_bytes)?;
+            self.sized_bytes = self.written_bytes;
+        }
+        Ok(())
     }
 
     /// What goes before a line in a file that holds nothing yet: the opening, once the trace file held a first line.
@@ -97,6 +139,7 @@ impl RollingFile {
 impl TraceOutput for RollingFile {
     fn write_line(&mut self, line: &[u8]) -> io::Result<()> {
         if self.is_due_to_roll_over(line) {
+            self.cut_to_written()?;
             (self.rename_file)(&self.path, &rolled_over_trace_file(&self.path))?;
             self.file = None;
         }
@@ -108,27 +151,25 @@ impl TraceOutput for RollingFile {
             line,
         ]
         .concat();
-        let mut counted = CountedFile {
-            file: &mut *file,
-            accepted: 0,
-        };
-        let written = counted.write_all(&whole);
-        if let Some(last_accepted) = whole.get(..counted.accepted).and_then(<[u8]>::last) {
-            self.ends_mid_line = *last_accepted != LINE_END;
-        }
+        let written = self
+            .size_ahead(file.as_mut(), byte_count(&whole))
+            .and_then(|()| self.write_counted(file.as_mut(), &whole));
         self.file = Some(file);
         written?;
         if self.first_line.is_none() {
             self.first_line = Some(line.to_vec());
         }
-        self.written_bytes = self.written_bytes.saturating_add(byte_count(&whole));
         Ok(())
+    }
+
+    fn close(&mut self) -> io::Result<()> {
+        self.cut_to_written()
     }
 }
 
 /// A trace file that counts the bytes it accepts, so a write that fails part-way says where the file now ends.
 struct CountedFile<'file> {
-    file: &'file mut (dyn Write + Send),
+    file: &'file mut dyn TraceFile,
     accepted: usize,
 }
 
@@ -247,6 +288,7 @@ fn write_every_line(
     }
     numbering.count_unwritten(*locked(lost_at_close));
     numbering.report_unwritten(&mut output, header);
+    drop(output.close());
 }
 
 /// The number of the next line, and how many numbered lines never reached the output since the last `dropped` line.

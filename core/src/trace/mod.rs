@@ -83,8 +83,21 @@ pub struct TraceClocks {
     pub wall_ms: Clock,
 }
 
-/// Creates a trace file new, readable and writable by its owner alone, and returns where its lines are appended.
-pub type CreateTraceFile = Arc<dyn Fn(&Path) -> io::Result<Box<dyn Write + Send>> + Send + Sync>;
+/// How far ahead of its lines a trace file is sized, in whole steps, so each line is written into zeros the file already holds and never extends it.
+const TRACE_FILE_SIZED_AHEAD_BYTES: u64 = 65_536;
+
+/// A trace file its writer sizes ahead of the lines it writes, the bytes past them reading as zeros, and cuts back to its lines at a clean stop.
+pub trait TraceFile: Write + Send {
+    /// Sets the file's length, the part past what was written reading as zeros.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the file's length cannot be set.
+    fn set_length(&mut self, length: u64) -> io::Result<()>;
+}
+
+/// Creates a trace file new, readable and writable by its owner alone, and returns it for its writer to size and write from its start.
+pub type CreateTraceFile = Arc<dyn Fn(&Path) -> io::Result<Box<dyn TraceFile>> + Send + Sync>;
 /// Renames a file onto another path, replacing any file there.
 pub type RenameFile = Arc<dyn Fn(&Path, &Path) -> io::Result<()> + Send + Sync>;
 /// Every file in a directory with its size and when it was last written.
@@ -728,6 +741,7 @@ mod tests {
         held: BTreeMap<PathBuf, Vec<u8>>,
         failing_writes: Vec<usize>,
         torn_writes: Vec<usize>,
+        events_lengths: Vec<u64>,
         failing_creations: Vec<usize>,
         failing_renames: Vec<usize>,
         writes: usize,
@@ -739,14 +753,24 @@ mod tests {
     struct MemoryFile {
         path: PathBuf,
         files: MemoryFiles,
+        position: usize,
     }
 
     impl Write for MemoryFile {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.files.append(&self.path, bytes)
+            let taken = self.files.write_at(&self.path, self.position, bytes)?;
+            self.position = self.position.saturating_add(taken);
+            Ok(taken)
         }
 
         fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl TraceFile for MemoryFile {
+        fn set_length(&mut self, length: u64) -> io::Result<()> {
+            self.files.set_len_of(&self.path, length);
             Ok(())
         }
     }
@@ -800,7 +824,7 @@ mod tests {
         }
 
         /// Creates an empty file at the path, unless this is a failing creation of an events file.
-        fn create(&self, path: &Path) -> io::Result<Box<dyn Write + Send>> {
+        fn create(&self, path: &Path) -> io::Result<Box<dyn TraceFile>> {
             let mut state = self.state();
             if is_events_file(path) {
                 let MemoryState {
@@ -817,6 +841,7 @@ mod tests {
             Ok(Box::new(MemoryFile {
                 path: path.to_path_buf(),
                 files: self.clone(),
+                position: 0,
             }))
         }
 
@@ -837,8 +862,8 @@ mod tests {
             Ok(())
         }
 
-        /// Appends what the attempt takes of `bytes` and says how many bytes it took.
-        fn append(&self, path: &Path, bytes: &[u8]) -> io::Result<usize> {
+        /// Writes at `position` what the attempt takes of `bytes` and says how many bytes it took.
+        fn write_at(&self, path: &Path, position: usize, bytes: &[u8]) -> io::Result<usize> {
             let mut state = self.state();
             let mut taken = bytes;
             if is_events_file(path) {
@@ -857,13 +882,27 @@ mod tests {
                     taken = &bytes[..bytes.len() / 2];
                 }
             }
+            let held = state.held.entry(path.to_path_buf()).or_default();
+            let end = position.saturating_add(taken.len());
+            if held.len() < end {
+                held.resize(end, 0);
+            }
+            held[position..end].copy_from_slice(taken);
+            drop(state);
+            Ok(taken.len())
+        }
+
+        /// Sets the length of the file at the path, the part past what it held reading as zeros, noting each length an events file is given.
+        fn set_len_of(&self, path: &Path, length: u64) {
+            let mut state = self.state();
+            if is_events_file(path) {
+                state.events_lengths.push(length);
+            }
             state
                 .held
                 .entry(path.to_path_buf())
                 .or_default()
-                .extend_from_slice(taken);
-            drop(state);
-            Ok(taken.len())
+                .resize(usize::try_from(length).unwrap(), 0);
         }
 
         /// The text the file holds.
@@ -965,6 +1004,18 @@ mod tests {
         written: Sender<String>,
     }
 
+    impl TraceFile for HeldBackEventsFile {
+        fn set_length(&mut self, _length: u64) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl TraceFile for io::Sink {
+        fn set_length(&mut self, _length: u64) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     impl Write for HeldBackEventsFile {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             self.entered.send(()).map_err(io::Error::other)?;
@@ -998,7 +1049,7 @@ mod tests {
             written: written_sender,
         }));
         let effects = TraceEffects {
-            create_file: Arc::new(move |path: &Path| -> io::Result<Box<dyn Write + Send>> {
+            create_file: Arc::new(move |path: &Path| -> io::Result<Box<dyn TraceFile>> {
                 let held_back = is_events_file(path)
                     .then(|| events_file.lock().unwrap().take())
                     .flatten();
@@ -1133,6 +1184,53 @@ mod tests {
         assert!(drained);
         assert_eq!(written.try_iter().count(), SMALL_QUEUE_LINES + 1);
         releasing.join().unwrap();
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn observability_decision_6_a_trace_file_is_sized_ahead_of_its_lines_and_cut_back_to_them_at_a_clean_stop()
+     {
+        let (root, directory) = scratch_trace_directory("sized-ahead");
+        let files = MemoryFiles::default();
+        let trace = started_with(&directory, &files.effects(NOW_MS), TraceBounds::SPEC);
+
+        trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
+        assert!(trace.finish());
+
+        let line = clock_line(0, None);
+        assert_eq!(
+            files.state().events_lengths,
+            [
+                TRACE_FILE_SIZED_AHEAD_BYTES,
+                u64::try_from(line.len()).unwrap()
+            ]
+        );
+        assert_eq!(files.text_of(&trace.files().events), line);
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn observability_decision_6_a_line_longer_than_the_step_is_sized_ahead_by_whole_steps() {
+        const LONG_TEXT_BYTES: usize = 70_000;
+        let (root, directory) = scratch_trace_directory("sized-ahead-long");
+        let files = MemoryFiles::default();
+        let trace = started_with(&directory, &files.effects(NOW_MS), TraceBounds::SPEC);
+
+        trace.events.write(
+            CLOCK_EVENT,
+            &[("text", Value::from("x".repeat(LONG_TEXT_BYTES)))],
+        );
+        assert!(trace.finish());
+
+        let held = files.text_of(&trace.files().events);
+        assert_eq!(
+            files.state().events_lengths,
+            [
+                2 * TRACE_FILE_SIZED_AHEAD_BYTES,
+                u64::try_from(held.len()).unwrap()
+            ]
+        );
+        assert!(held.ends_with("\"}\n"), "{}", held.len());
         drop(fs::remove_dir_all(&root));
     }
 

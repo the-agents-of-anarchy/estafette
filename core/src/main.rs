@@ -838,6 +838,7 @@ mod tests {
     use clap::error::ErrorKind;
     #[cfg(feature = "relay")]
     use estafette::crypto::KEY_LEN;
+    use estafette::trace::TraceFile;
 
     use super::*;
     use crate::seeded_draws::Draws;
@@ -1238,6 +1239,12 @@ mod tests {
         written: Arc<Mutex<Vec<u8>>>,
     }
 
+    impl TraceFile for HeldBackTraceFile {
+        fn set_length(&mut self, _length: u64) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     impl Write for HeldBackTraceFile {
         fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
             drop(
@@ -1278,7 +1285,7 @@ mod tests {
         let held_back_files = Arc::clone(&body_ended);
         let files_written = Arc::clone(&written);
         let trace_effects = TraceEffects {
-            create_file: Arc::new(move |_path: &Path| -> io::Result<Box<dyn Write + Send>> {
+            create_file: Arc::new(move |_path: &Path| -> io::Result<Box<dyn TraceFile>> {
                 Ok(Box::new(HeldBackTraceFile {
                     body_ended: Arc::clone(&held_back_files),
                     written: Arc::clone(&files_written),
@@ -1336,7 +1343,7 @@ mod tests {
         let run_ended = Arc::new(Mutex::new(()));
         let held_back_files = Arc::clone(&run_ended);
         let trace_effects = TraceEffects {
-            create_file: Arc::new(move |_path: &Path| -> io::Result<Box<dyn Write + Send>> {
+            create_file: Arc::new(move |_path: &Path| -> io::Result<Box<dyn TraceFile>> {
                 Ok(Box::new(HeldBackTraceFile {
                     body_ended: Arc::clone(&held_back_files),
                     written: Arc::default(),
