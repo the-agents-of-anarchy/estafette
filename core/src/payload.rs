@@ -398,9 +398,14 @@ mod tests {
     };
 
     const NETWORK_SECRET: NetworkSecret = NetworkSecret::from_bytes([7; KEY_LEN]);
+    const OTHER_NETWORK_SECRET: NetworkSecret = NetworkSecret::from_bytes([8; KEY_LEN]);
 
     fn keys() -> NetworkKeys {
         NetworkKeys::derive(&NETWORK_SECRET)
+    }
+
+    fn other_network() -> NetworkKeys {
+        NetworkKeys::derive(&OTHER_NETWORK_SECRET)
     }
 
     fn secret_key(seed: u8) -> SecretKey {
@@ -598,8 +603,7 @@ mod tests {
 
     #[test]
     fn spec_3_4_payload_macked_under_another_network_is_dropped() {
-        let other_network = NetworkKeys::derive(&NetworkSecret::from_bytes([8; KEY_LEN]));
-        let sealed = seal_payload(&other_network, &secret_key(1), unsealed_departure(1)).unwrap();
+        let sealed = seal_payload(&other_network(), &secret_key(1), unsealed_departure(1)).unwrap();
 
         assert_eq!(
             open_payload(&keys(), &owner_public(), &sealed),
@@ -926,10 +930,6 @@ mod tests {
             attached: true,
             reason: Some("card_invalid".to_owned()),
         })
-    }
-
-    fn other_network() -> NetworkKeys {
-        NetworkKeys::derive(&NetworkSecret::from_bytes([8; KEY_LEN]))
     }
 
     #[test]
