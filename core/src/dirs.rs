@@ -5,14 +5,13 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use estafette_trace::DataDirectoryUnresolvable;
 pub(crate) use estafette_trace::ROLLED_OVER_TRACE_SUFFIX;
+use estafette_trace::{DataDirectoryUnresolvable, PRODUCT_NAME};
 pub use estafette_trace::{
     TraceDirectory, TraceFileKind, TraceFiles, events_trace_file_name, raw_trace_file_name,
     rolled_over_trace_file, trace_file_of,
 };
 
-const PRODUCT_DIRECTORY: &str = "estafette";
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 const HOME_VARIABLE: &str = "HOME";
 const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
@@ -144,7 +143,7 @@ impl Directories {
     ) -> Result<Self, DirectoriesError> {
         let config =
             home_based_directory(&environment, CONFIG_HOME_VARIABLE, CONFIG_HOME_UNDER_HOME)?
-                .join(PRODUCT_DIRECTORY);
+                .join(PRODUCT_NAME);
         let data = data_base_directory(&environment)?;
         create_base_directory(filesystem, &config)?;
         create_base_directory(filesystem, &data)?;
@@ -154,7 +153,7 @@ impl Directories {
                 source,
             }
         })?;
-        let runtime = runtime_parent(&environment).join(format!("{PRODUCT_DIRECTORY}-{user_id}"));
+        let runtime = runtime_parent(&environment).join(format!("{PRODUCT_NAME}-{user_id}"));
         create_base_directory(filesystem, &runtime)?;
         let cards = cards_directory_flag
             .or_else(|| non_empty_variable(&environment, CARDS_DIRECTORY_VARIABLE))
