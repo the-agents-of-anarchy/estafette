@@ -271,3 +271,11 @@ What happened: At 00:31 on 2026-11-12 the lead committed 19a63dc on the integrat
 Mechanism: The lead read the owner's ruling (no file the lead references may hold a non-slug identifier) as reaching the journal's written lines and edited them, though the journal tool had already refused an add over the edited file with 'written lines are never edited'; that refusal was the check speaking and the lead committed past it. The records gate, itself an owner ruling for every commit, makes written journal lines immutable in history.
 
 Correction: The unmerged tip is rewritten: the integration branch goes back to 168c698 and one new commit carries the two directives, the relabelled architecture log and capabilities record, and the journal files with every earlier line as first written and only the lines added since appended; pushed with force-with-lease; the two branches rebased onto 19a63dc are rebased onto the new tip. Journal lines already written keep their retired labels; lines written from 2026-11-12T00:11 on use slugs. Relabelling written journal lines needs the owner's word on the schema and waits in his queue. A refusal by the records tool is read as the gate's verdict before any commit.
+
+## The usage limit stopped five agents and the session a second time on 2026-11-12
+
+What happened: At about 02:19 on 2026-11-12 the login's five-hour usage limit stopped the restart fix's implementer in its 20-run loops, the reviewers of trace-seam and all-node, and the implementers of all-storage and all-acceptance-tests; the session lay dormant until the reset at 04:50, two and a half hours on the critical path.
+
+Mechanism: The window opened at the owner's login at 23:59 and the pacing rule of three opus and two sonnet agents at once spent it in two hours and twenty minutes: opus implementers resumed with half a million tokens of context each, and three closing-round units ran beside the two critical-path units.
+
+Correction: From 04:51 the window's tokens go to the critical path first: at most two opus and one sonnet agent at once, the restart fix and trace-seam before any closing-round unit, a closing-round agent only in a slot the critical path leaves idle; agents stopped by the limit are resumed by message one at a time, the cheapest finishing step first.
