@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -70,11 +70,11 @@ pub trait DirectHost: Send + Sync + 'static {
 /// A monotonic clock, read for the instant now.
 pub type MonotonicClock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
-/// Every connection the endpoint's gate let through and has not seen close, of any protocol, dialed or accepted, by the card at its other end, the cards whose spared connection still leaves iroh on a gone process's path, and the clock their silence is measured on.
+/// Every connection the endpoint's gate let through and has not seen close, of any protocol, dialed or accepted, by the card at its other end, the cards whose spared connection still leaves iroh on a gone process's path with when that process was last heard, and the clock their silence is measured on.
 #[derive(Clone)]
 pub struct HeldConnections {
     held: Arc<Mutex<HashMap<wire::PublicKey, Vec<HeldConnection>>>>,
-    left_on_a_gone_path: Arc<Mutex<HashSet<wire::PublicKey>>>,
+    left_on_a_gone_path: Arc<Mutex<HashMap<wire::PublicKey, Instant>>>,
     monotonic: MonotonicClock,
 }
 
@@ -97,17 +97,17 @@ impl HeldConnections {
         }
     }
 
-    /// Closes every connection to or from the card, of any protocol, whose process no longer runs, and every other while iroh stays on that process's path, so the endpoint forgets the path it held to that process (spec 3.8, address lookup).
+    /// Closes every connection to or from the card, of any protocol, whose process no longer runs, and every one a later process opened while iroh stays on that process's path, so the endpoint forgets the path it held to that process (spec 3.8, address lookup).
     pub(crate) fn close_silent_of(&self, card: wire::PublicKey) {
         self.close_silent_of_sparing(card, None);
     }
 
-    /// Closes every connection to or from the card whose process no longer runs, and every other while iroh stays on that process's path, but the one an Introduce arrived on (spec 3.8, address lookup).
+    /// Closes every connection to or from the card whose process no longer runs, and every one a later process opened while iroh stays on that process's path, but the one an Introduce arrived on (spec 3.8, address lookup).
     fn close_silent_others_of(&self, card: wire::PublicKey, arrived_on: &Connection) {
         self.close_silent_of_sparing(card, Some(arrived_on.stable_id()));
     }
 
-    /// Closes every connection to or from the card that has heard nothing from its peer for as long as a gone process is silent, but the spared one, and then, when this pass or an earlier one found a gone process and none left reports a path iroh selected, every other but the spared one too.
+    /// Closes every connection to or from the card that has heard nothing from its peer for as long as a gone process is silent, but the spared one, and then, when this pass or an earlier one found a gone process and none left reports a path iroh selected, every one a later process opened but the spared one too.
     fn close_silent_of_sparing(&self, card: wire::PublicKey, spared: Option<usize>) {
         let now = (self.monotonic)();
         let mut held = self.held();
@@ -118,10 +118,15 @@ impl HeldConnections {
         let superseded = held
             .get_mut(&card)
             .map_or_else(Superseded::default, |of_card| {
-                take_superseded(of_card, spared, now, left_on_a_gone_path.contains(&card))
+                take_superseded(
+                    of_card,
+                    spared,
+                    now,
+                    left_on_a_gone_path.get(&card).copied(),
+                )
             });
-        if superseded.spared_leaves_a_gone_path {
-            left_on_a_gone_path.insert(card);
+        if let Some(last_heard) = superseded.spared_leaves_the_path_of_a_process_last_heard_at {
+            left_on_a_gone_path.insert(card, last_heard);
         } else {
             left_on_a_gone_path.remove(&card);
         }
@@ -206,11 +211,12 @@ impl HeldConnections {
     }
 }
 
-/// A connection the gate let through, held weakly, with the count of datagrams it had received when that count last moved and when it was seen to move.
+/// A connection the gate let through, held weakly, with when it was held, the count of datagrams it had received when that count last moved and when it was seen to move.
 #[derive(Debug)]
 struct HeldConnection {
     connection: WeakConnectionHandle,
     stable_id: usize,
+    held_at: Instant,
     datagrams_heard: u64,
     last_heard: Instant,
 }
@@ -221,6 +227,7 @@ impl HeldConnection {
         Self {
             connection: connection.weak_handle(),
             stable_id: connection.stable_id(),
+            held_at: now,
             datagrams_heard: connection.stats().udp_rx.datagrams,
             last_heard: now,
         }
@@ -239,6 +246,11 @@ impl HeldConnection {
         now.saturating_duration_since(self.last_heard) >= GONE_PROCESS_SILENCE
     }
 
+    /// Whether the connection was held no earlier than one hearing sample before a process of its card was last heard at that instant, so a process started after that one fell silent opened it.
+    fn is_from_a_process_started_after_one_last_heard_at(&self, last_heard: Instant) -> bool {
+        last_heard.saturating_duration_since(self.held_at) <= HEARING_SAMPLE_INTERVAL
+    }
+
     /// Whether the connection is open and one of its paths is the one iroh selected to reach the card's endpoint.
     fn reports_a_selected_path(&self) -> bool {
         self.connection
@@ -247,40 +259,50 @@ impl HeldConnection {
     }
 }
 
-/// The connections one pass takes out of a card's held connections, and whether the connection it spared still leaves iroh on a gone process's path.
+/// The connections one pass takes out of a card's held connections, and, when the connection it spared still leaves iroh on a gone process's path, when that process was last heard.
 #[derive(Default)]
 struct Superseded {
     connections: Vec<Connection>,
-    spared_leaves_a_gone_path: bool,
+    spared_leaves_the_path_of_a_process_last_heard_at: Option<Instant>,
 }
 
-/// Takes out the card's connections from a gone process but the spared one, and with them every other but the spared one when this pass found a gone process, or an earlier one left the card on its path, and none left reports a path iroh selected, since iroh keeps the gone process's path selected until the card's last connection closes.
+/// Takes out the card's connections from a gone process but the spared one, and with them every one a later process opened but the spared one when this pass found a gone process, or an earlier one left the card on its path, and none left reports a path iroh selected, since iroh keeps the gone process's path selected until the card's last connection closes.
 fn take_superseded(
     of_card: &mut Vec<HeldConnection>,
     spared: Option<usize>,
     now: Instant,
-    left_on_a_gone_path: bool,
+    left_on_the_path_of_a_process_last_heard_at: Option<Instant>,
 ) -> Superseded {
-    let mut connections: Vec<Connection> = of_card
-        .extract_if(.., |held_connection| {
-            Some(held_connection.stable_id) != spared && held_connection.is_from_a_gone_process(now)
-        })
-        .filter_map(|held_connection| held_connection.connection.upgrade())
-        .collect();
-    let on_a_gone_path = (!connections.is_empty() || left_on_a_gone_path)
-        && !of_card.iter().any(HeldConnection::reports_a_selected_path);
-    if on_a_gone_path {
+    let mut gone_process_last_heard = left_on_the_path_of_a_process_last_heard_at;
+    let mut connections = Vec::new();
+    for held_connection in of_card.extract_if(.., |held_connection| {
+        Some(held_connection.stable_id) != spared && held_connection.is_from_a_gone_process(now)
+    }) {
+        if let Some(connection) = held_connection.connection.upgrade() {
+            gone_process_last_heard = gone_process_last_heard.max(Some(held_connection.last_heard));
+            connections.push(connection);
+        }
+    }
+    let on_a_gone_path = gone_process_last_heard
+        .filter(|_| !of_card.iter().any(HeldConnection::reports_a_selected_path));
+    if let Some(last_heard) = on_a_gone_path {
         connections.extend(
             of_card
                 .extract_if(.., |held_connection| {
                     Some(held_connection.stable_id) != spared
+                        && held_connection
+                            .is_from_a_process_started_after_one_last_heard_at(last_heard)
                 })
                 .filter_map(|held_connection| held_connection.connection.upgrade()),
         );
     }
     Superseded {
         connections,
-        spared_leaves_a_gone_path: on_a_gone_path && !of_card.is_empty(),
+        spared_leaves_the_path_of_a_process_last_heard_at: on_a_gone_path.filter(|last_heard| {
+            of_card.iter().any(|held_connection| {
+                held_connection.is_from_a_process_started_after_one_last_heard_at(*last_heard)
+            })
+        }),
     }
 }
 
@@ -1846,6 +1868,131 @@ mod tests {
         assert!(
             healthy_still_answers,
             "the healthy connection did not answer after its card's stalled one closed"
+        );
+    }
+
+    const DIVERGENT_SELECTION_ATTEMPTS: usize = 10;
+    const LIVE_CARD_HEARD_WAIT: Duration = Duration::from_secs(10);
+
+    /// The node's address on the loopback interface, at the port its endpoint bound.
+    fn address_on_loopback(node: &NodeEndpoint) -> iroh::EndpointAddr {
+        let address = node.endpoint().addr();
+        iroh::EndpointAddr::from_parts(
+            address.id,
+            address.ip_addrs().map(|socket| {
+                iroh::TransportAddr::Ip(std::net::SocketAddr::new(
+                    std::net::Ipv4Addr::LOCALHOST.into(),
+                    socket.port(),
+                ))
+            }),
+        )
+    }
+
+    /// Two live nodes, the peer's card held in this node's register, with the connection this node dialed and the one it accepted from the peer, each with its other end.
+    struct LiveCard {
+        register: HeldConnections,
+        _nodes: (NodeEndpoint, NodeEndpoint),
+        dialed: (Connection, Connection),
+        accepted: (Connection, Connection),
+    }
+
+    /// A live card whose connections this node dialed on loopback and accepted from the network at once, each heard for twice as long as a gone process is silent after it opened.
+    async fn live_card_dialed_on_loopback_and_accepted_from_the_network() -> LiveCard {
+        let register = HeldConnections::new(Arc::new(tokio::time::Instant::now));
+        let this_node = bind_node_holding(SERVER_SEED, register.clone()).await;
+        let peer_node = bind_node(CLIENT_SEED).await;
+        this_node.replace_address(address_on_loopback(&peer_node));
+        peer_node.replace_address(this_node.endpoint().addr());
+        let opened_at = tokio::time::Instant::now();
+        let (dialed, (accepted_at_peer, accepted)) = tokio::join!(
+            dialed_and_accepted(&this_node, &peer_node, DIRECT_ALPN),
+            dialed_and_accepted(&peer_node, &this_node, GOSSIP_ALPN)
+        );
+        let heard_since = opened_at
+            .checked_add(SILENCE_OF_A_GONE_PROCESS.saturating_mul(2))
+            .unwrap();
+        let heard = timeout(LIVE_CARD_HEARD_WAIT, async {
+            while !every_held_of_heard_since(&register, card_of(CLIENT_SEED), heard_since) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(
+            heard.is_ok(),
+            "the live card was not heard on every connection twice {SILENCE_OF_A_GONE_PROCESS:?} after they opened, within {LIVE_CARD_HEARD_WAIT:?}"
+        );
+        LiveCard {
+            register,
+            _nodes: (this_node, peer_node),
+            dialed,
+            accepted: (accepted, accepted_at_peer),
+        }
+    }
+
+    /// Whether the register holds the connection to or from the card on a path iroh selected.
+    fn held_on_a_selected_path(
+        register: &HeldConnections,
+        card: wire::PublicKey,
+        connection: &Connection,
+    ) -> bool {
+        register.held().get(&card).is_some_and(|of_card| {
+            of_card.iter().any(|held_connection| {
+                held_connection.stable_id == connection.stable_id()
+                    && held_connection.reports_a_selected_path()
+            })
+        })
+    }
+
+    /// Takes the held connection as last heard from as long ago as a gone process is silent, as a connection of a live process that stalled reads.
+    fn stall_the_held(register: &HeldConnections, card: wire::PublicKey, connection: &Connection) {
+        let stalled_since = tokio::time::Instant::now()
+            .checked_sub(SILENCE_OF_A_GONE_PROCESS)
+            .unwrap();
+        for held_connection in register.held().get_mut(&card).unwrap() {
+            if held_connection.stable_id == connection.stable_id() {
+                held_connection.last_heard = stalled_since;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_live_card_whose_other_connection_reports_no_selected_path_keeps_it_when_its_stalled_connection_closes()
+     {
+        let mut off_the_selected_path = None;
+        for _ in 0..DIVERGENT_SELECTION_ATTEMPTS {
+            let live_card = live_card_dialed_on_loopback_and_accepted_from_the_network().await;
+            if held_on_a_selected_path(
+                &live_card.register,
+                card_of(CLIENT_SEED),
+                &live_card.dialed.0,
+            ) && !held_on_a_selected_path(
+                &live_card.register,
+                card_of(CLIENT_SEED),
+                &live_card.accepted.0,
+            ) {
+                off_the_selected_path = Some(live_card);
+                break;
+            }
+        }
+        let live_card = off_the_selected_path.unwrap_or_else(|| {
+            panic!("iroh selected one path at both ends in each of {DIVERGENT_SELECTION_ATTEMPTS} attempts")
+        });
+
+        stall_the_held(
+            &live_card.register,
+            card_of(CLIENT_SEED),
+            &live_card.dialed.0,
+        );
+        live_card.register.close_silent_of(card_of(CLIENT_SEED));
+
+        assert_eq!(
+            live_card.dialed.0.close_reason(),
+            Some(ConnectionError::LocallyClosed)
+        );
+        assert_eq!(
+            live_card.accepted.0.close_reason(),
+            None,
+            "the live card's connection off the selected path closed with its stalled one"
         );
     }
 
