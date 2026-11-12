@@ -443,6 +443,7 @@ mod observability {
         let root = machine_with_network("refused");
         let traces = traces_directory(&root.join(DATA_HOME));
         fs::write(&traces, "a file where the trace directory belongs").unwrap();
+        fs::remove_dir_all(root.join(RUNTIME_DIRECTORY)).unwrap();
 
         let output = run_with_input(&root, &["mcp", NETWORK], NOT_JSON);
 
@@ -453,6 +454,10 @@ mod observability {
         assert!(message.contains(traces.to_str().unwrap()), "{message}");
         assert!(message.contains(NO_DEBUG), "{message}");
         assert!(!message.contains("handshake"), "{message}");
+        assert!(
+            !root.join(RUNTIME_DIRECTORY).exists(),
+            "the runtime base directory exists after the refusal"
+        );
         drop(fs::remove_dir_all(&root));
     }
 
