@@ -1,6 +1,6 @@
 //! The presence half of the node of spec 3.8: init, the peer table fed by gossip and direct contact, and every announcement.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
@@ -12,14 +12,19 @@ use std::time::Duration;
 use crate::stream_items::{Stream, StreamExt};
 use iroh::endpoint::RelayStatus;
 use iroh::protocol::Router;
-use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr, Watcher};
+use iroh::{EndpointAddr, EndpointId, SecretKey, Watcher};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep_until};
 
-use super::rebind::{MemberJoins, RebindSchedule, RelayProbe};
-use crate::config::{AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
+use super::addresses::{endpoint_id, replace_lookup_entry, wire_addr};
+use super::known_hosts::{
+    KnownHosts, RelayOfRecord, known_host_addresses, seed_lookup_with_known_hosts,
+};
+use super::rebind::{Rebinding, RelayProbe};
+use super::relay_loss::{RelayLossWatch, home_relays};
+use crate::config::{AcceptedValue, NetworkConfig};
 use crate::crypto::{NetworkKeys, NetworkSecret};
 use crate::event::{DirectEvent, Event, RunRecord};
 use crate::handle::{AnnouncedHandle, LocalHandle};
@@ -32,7 +37,7 @@ use crate::net::direct::{
 };
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
-use crate::payload::{OpenedPayload, ValidInfrastructure, ZERO_MAC, ZERO_SIGNATURE};
+use crate::payload::{OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
 use crate::peers::{
     Effect, Peer, PeerTable, announced_sender_handle, is_within_announcement_max_age,
     is_within_announcement_max_age_ahead,
@@ -44,9 +49,6 @@ use crate::wire::{
 
 const OBSERVER_WAIT: Duration = Duration::from_millis(3000);
 const REANNOUNCE_INTERVAL: Duration = Duration::from_millis(2000);
-const RELAY_LOSS_WAIT: Duration = Duration::from_millis(500);
-const INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS: u64 = 300;
-const MILLIS_PER_SECOND: u64 = 1000;
 const SECRET_FIELD: &str = "secret";
 const OWNER_FIELD: &str = "owner";
 
@@ -186,8 +188,6 @@ impl Node {
         network: Network,
         effects: NodeEffects,
     ) -> Result<Self, NodeError> {
-        let hosts = known_host_addresses(&network.config)?;
-        seed_lookup_with_known_hosts(&endpoint, &hosts);
         let client = Arc::new(DirectClient::new(
             endpoint.endpoint().clone(),
             network.keys.clone(),
@@ -201,60 +201,27 @@ impl Node {
             to_loop,
             endpoint.held_connections(),
         ));
-        let (router, gossip) = serve(&endpoint, &network.keys, &state);
-        let subscribed = (effects.monotonic)();
-        let topic = NetworkTopic::join(
-            &gossip,
-            network.keys.clone(),
-            network.owner,
-            hosts.iter().map(|host| host.id).collect(),
-            subscribed,
-        )
-        .await
-        .map_err(NodeError::Topic)?;
-        let sending_client = Arc::clone(&client);
         let fill_random_bytes = Arc::clone(&effects.fill_probe_nonce);
-        let (assigned, own_handle) = oneshot::channel();
-        let presence_loop = PresenceLoop {
-            attached: effects.inbox.attached(),
-            inbox: InboxWatch::Watching,
-            own_addresses: own_address_changes(endpoint.endpoint()),
-            relay_statuses: home_relay_changes(endpoint.endpoint()),
-            state: Arc::clone(&state),
-            card_key: identity.card_key,
+        let (presence_loop, own_handle) = PresenceLoop::join(
             endpoint,
-            router,
-            gossip,
-            keys: network.keys,
-            owner: network.owner,
-            client,
-            topic,
+            identity,
+            network,
+            effects,
+            Arc::clone(&state),
+            Arc::clone(&client),
             from_hosts,
-            requested_handle: identity.requested_handle,
-            init: Init::AwaitingJoin { assigned },
-            announcer: Announcer::default(),
-            reannounce_due: None,
-            heard_requests: HeardPresenceRequests::default(),
-            relay_loss: RelayLossWatch::default(),
-            known_hosts: KnownHosts::new(network.config, network.config_path),
-            schedule: RebindSchedule::new(subscribed),
-            member_joins: MemberJoins::Idle,
-            neighbors: BTreeSet::new(),
-            fill_probe_nonce: effects.fill_probe_nonce,
-            probe_relay: effects.probe_relay,
-            monotonic: effects.monotonic,
-            report: effects.report,
-        };
+        )
+        .await?;
         let presence_loop = tokio::spawn(presence_loop.run());
         let own_handle = own_handle
             .await
             .map_err(|_closed| NodeError::TopicClosedBeforeHandle)?;
         Ok(Self {
             state,
+            client,
+            fill_random_bytes,
             own_handle,
             presence_loop,
-            client: sending_client,
-            fill_random_bytes,
         })
     }
 
@@ -286,40 +253,6 @@ impl Node {
 impl Drop for Node {
     fn drop(&mut self) {
         self.presence_loop.abort();
-    }
-}
-
-/// A known host's node id and relay, as the configuration names them.
-pub struct KnownHostAddress {
-    pub id: EndpointId,
-    pub relay: RelayUrl,
-}
-
-/// The node id and relay of every host of the configuration, refusing a host whose id or relay does not parse.
-pub fn known_host_addresses(config: &NetworkConfig) -> Result<Vec<KnownHostAddress>, NodeError> {
-    config.hosts.iter().map(known_host_address).collect()
-}
-
-/// The host's node id and relay, refusing a host whose id or relay does not parse.
-fn known_host_address(host: &Host) -> Result<KnownHostAddress, NodeError> {
-    let invalid = || NodeError::KnownHostInvalid {
-        id: host.id.clone(),
-    };
-    Ok(KnownHostAddress {
-        id: parse_public_key(&host.id).map_err(|_unparsed| invalid())?,
-        relay: host.relay.parse().map_err(|_unparsed| invalid())?,
-    })
-}
-
-/// Gives each known host whose lookup entry holds no address its relay as its only address (spec 3.8).
-pub fn seed_lookup_with_known_hosts(endpoint: &NodeEndpoint, hosts: &[KnownHostAddress]) {
-    for host in hosts {
-        if endpoint.address_of(host.id).is_none() {
-            endpoint.replace_address(EndpointAddr::from_parts(
-                host.id,
-                [TransportAddr::Relay(host.relay.clone())],
-            ));
-        }
     }
 }
 
@@ -794,16 +727,69 @@ pub(super) struct PresenceLoop {
     heard_requests: HeardPresenceRequests,
     pub(super) relay_loss: RelayLossWatch,
     pub(super) known_hosts: KnownHosts,
-    pub(super) schedule: RebindSchedule,
-    pub(super) member_joins: MemberJoins,
-    pub(super) neighbors: BTreeSet<EndpointId>,
+    pub(super) rebinding: Rebinding,
     fill_probe_nonce: ProbeNonceSource,
-    pub(super) probe_relay: RelayProbe,
     pub(super) monotonic: MonotonicClock,
     pub(super) report: RunRecord,
 }
 
 impl PresenceLoop {
+    /// Serves the endpoint and joins the topic through the known hosts, returning the loop and the receiver of the handle its init assigns, or a `NodeError` when a known host is malformed or the topic cannot be joined.
+    async fn join(
+        endpoint: NodeEndpoint,
+        identity: Identity,
+        network: Network,
+        effects: NodeEffects,
+        state: Arc<NodeState>,
+        client: Arc<DirectClient>,
+        from_hosts: mpsc::UnboundedReceiver<LoopEvent>,
+    ) -> Result<(Self, oneshot::Receiver<LocalHandle>), NodeError> {
+        let hosts = known_host_addresses(&network.config)?;
+        seed_lookup_with_known_hosts(&endpoint, &hosts);
+        let (router, gossip) = serve(&endpoint, &network.keys, &state);
+        let subscribed = (effects.monotonic)();
+        let topic = NetworkTopic::join(
+            &gossip,
+            network.keys.clone(),
+            network.owner,
+            hosts.iter().map(|host| host.id).collect(),
+            subscribed,
+        )
+        .await
+        .map_err(NodeError::Topic)?;
+        let (assigned, own_handle) = oneshot::channel();
+        let own_addresses = own_address_changes(endpoint.endpoint());
+        let relay_statuses = home_relay_changes(endpoint.endpoint());
+        let presence_loop = Self {
+            state,
+            card_key: identity.card_key,
+            endpoint,
+            router,
+            gossip,
+            keys: network.keys,
+            owner: network.owner,
+            client,
+            topic,
+            from_hosts,
+            attached: effects.inbox.attached(),
+            inbox: InboxWatch::Watching,
+            own_addresses,
+            relay_statuses,
+            requested_handle: identity.requested_handle,
+            init: Init::AwaitingJoin { assigned },
+            announcer: Announcer::default(),
+            reannounce_due: None,
+            heard_requests: HeardPresenceRequests::default(),
+            relay_loss: RelayLossWatch::default(),
+            known_hosts: KnownHosts::new(network.config, network.config_path),
+            rebinding: Rebinding::new(subscribed, effects.probe_relay),
+            fill_probe_nonce: effects.fill_probe_nonce,
+            monotonic: effects.monotonic,
+            report: effects.report,
+        };
+        Ok((presence_loop, own_handle))
+    }
+
     /// Handles every wake until the topic closes.
     async fn run(mut self) {
         loop {
@@ -821,8 +807,8 @@ impl PresenceLoop {
             Init::AwaitingJoin { .. } | Init::Done => None,
         };
         let relay_loss_due = self.relay_loss.next_deadline();
-        let rebind_due = self.may_rebind().then(|| self.schedule.due());
-        let member_join_due = self.member_joins.next_ask();
+        let rebind_due = self.may_rebind().then(|| self.rebinding.due());
+        let member_join_due = self.rebinding.next_ask();
         tokio::select! {
             event = self.topic.next_event() => Wake::Topic(event),
             Some(event) = self.from_hosts.recv() => Wake::Loop(event),
@@ -879,17 +865,17 @@ impl PresenceLoop {
             GossipEvent::Joined => self.take_joined().await,
             GossipEvent::JoinTimedOut => self.take_join_timeout().await,
             GossipEvent::NeighborUp(node) => {
-                self.neighbors.insert(node);
+                self.rebinding.neighbor_up(node);
                 let effects = self.state.rows.take_neighbor_up(node, now_ms);
                 self.perform(effects).await;
             }
             GossipEvent::NeighborDown(node) => {
-                self.neighbors.remove(&node);
+                self.rebinding.neighbor_down(node);
                 let effects = self.state.rows.take_neighbor_down(node, now_ms);
                 self.perform(effects).await;
             }
             GossipEvent::Payload(payload) => {
-                self.schedule.heard((self.monotonic)());
+                self.rebinding.heard((self.monotonic)());
                 self.take_payload(*payload, now_ms).await;
             }
         }
@@ -897,8 +883,7 @@ impl PresenceLoop {
 
     /// Starts the observer wait at the first join, announces at every later join, and starts the member join wait after a rebind's.
     async fn take_joined(&mut self) {
-        self.schedule.joined();
-        self.member_joins.joined((self.monotonic)());
+        self.rebinding.joined((self.monotonic)());
         self.advance_init(InitEvent::Joined {
             at: (self.monotonic)(),
         })
@@ -908,7 +893,7 @@ impl PresenceLoop {
     /// Assigns the handle against the table as it stands when the first join gains no neighbor, and has a join that gains none end in a rebind when this member may rebind then.
     async fn take_join_timeout(&mut self) {
         if self.may_rebind() {
-            self.schedule.join_timed_out((self.monotonic)());
+            self.rebinding.join_timed_out((self.monotonic)());
         }
         self.advance_init(InitEvent::JoinTimedOut).await;
     }
@@ -1106,13 +1091,6 @@ impl PresenceLoop {
     }
 }
 
-/// Replaces the card's lookup entry on the endpoint with the carried address, never merging the two (spec 3.8, address lookup).
-pub fn replace_lookup_entry(endpoint: &NodeEndpoint, card: &wire::PublicKey, addr: &Addr) {
-    if let Some(id) = endpoint_id(card) {
-        endpoint.replace_address(endpoint_addr(id, addr));
-    }
-}
-
 /// When the observer wait that starts at `joined` is over.
 pub fn observer_wait_over_at(joined: Instant) -> Instant {
     joined.checked_add(OBSERVER_WAIT).unwrap_or(joined)
@@ -1220,218 +1198,9 @@ impl HeardPresenceRequests {
     }
 }
 
-/// One home relay and whether the endpoint is connected to it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HomeRelay {
-    url: RelayUrl,
-    connected: bool,
-}
-
-/// Each home relay iroh reports, with whether the endpoint is connected to it.
-fn home_relays(statuses: &[RelayStatus]) -> Vec<HomeRelay> {
-    statuses
-        .iter()
-        .map(|status| HomeRelay {
-            url: status.url().clone(),
-            connected: status.is_connected(),
-        })
-        .collect()
-}
-
-/// When each lost home relay is due for removal, the relay-loss wait after its loss.
-#[derive(Default)]
-pub(super) struct RelayLossWatch {
-    due: BTreeMap<RelayUrl, Instant>,
-}
-
-impl RelayLossWatch {
-    /// Starts the wait for each newly lost home relay and forgets each relay that is connected again or no longer home.
-    fn observe(&mut self, home: &[HomeRelay], now: Instant) {
-        self.due.retain(|url, _| {
-            home.iter()
-                .any(|relay| relay.url == *url && !relay.connected)
-        });
-        for relay in home.iter().filter(|relay| !relay.connected) {
-            self.due
-                .entry(relay.url.clone())
-                .or_insert_with(|| now.checked_add(RELAY_LOSS_WAIT).unwrap_or(now));
-        }
-    }
-
-    /// The earliest moment a lost home relay is due for removal.
-    fn next_deadline(&self) -> Option<Instant> {
-        self.due.values().min().copied()
-    }
-
-    /// The home relays still disconnected whose wait is over at `now`, forgotten once returned.
-    fn lost_relays(&mut self, home: &[HomeRelay], now: Instant) -> Vec<RelayUrl> {
-        self.observe(home, now);
-        let lost: Vec<RelayUrl> = self
-            .due
-            .iter()
-            .filter(|(_, due)| **due <= now)
-            .map(|(url, _)| url.clone())
-            .collect();
-        for url in &lost {
-            self.due.remove(url);
-        }
-        lost
-    }
-}
-
-/// What a valid Infrastructure record does to the known hosts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecordVerdict {
-    Dropped,
-    FromKnownHost,
-    FromNewHost,
-}
-
-/// What a node does with the relay of a host record it takes: a member adds it to its relay map, a bootstrap host keeps its own relay alone (spec 3.14).
-#[derive(Debug, Clone, Copy)]
-pub enum RelayOfRecord {
-    AddToRelayMap,
-    LeaveOutOfRelayMap,
-}
-
-/// The known hosts of spec 3.8, with the newest record `ts` held for each and the file that keeps them.
-pub struct KnownHosts {
-    config: NetworkConfig,
-    path: PathBuf,
-    newer_than_file: bool,
-}
-
-impl KnownHosts {
-    /// The known hosts as the file holds them.
-    const fn new(config: NetworkConfig, path: PathBuf) -> Self {
-        Self {
-            config,
-            path,
-            newer_than_file: false,
-        }
-    }
-
-    /// Whether no host is known.
-    pub(super) const fn is_empty(&self) -> bool {
-        self.config.hosts.is_empty()
-    }
-
-    /// The node id and relay of every known host whose id and relay parse.
-    pub(super) fn addresses(&self) -> Vec<KnownHostAddress> {
-        self.config
-            .hosts
-            .iter()
-            .filter_map(|host| known_host_address(host).ok())
-            .collect()
-    }
-
-    /// Applies the Infrastructure rows of spec 3.8: holds a record newer than its host's last, points the lookup at its address, adds its relay as `relay` says, and saves a host not known before, recording a save that failed.
-    pub(crate) async fn take_infrastructure(
-        &mut self,
-        valid: &ValidInfrastructure,
-        now_ms: u64,
-        endpoint: &NodeEndpoint,
-        relay: RelayOfRecord,
-        report: &(dyn Fn(Event) + Send + Sync),
-    ) {
-        let verdict = self.take_record(valid, now_ms);
-        if verdict == RecordVerdict::Dropped {
-            return;
-        }
-        replace_lookup_entry(endpoint, &valid.record().host, &valid.record().addr);
-        match relay {
-            RelayOfRecord::AddToRelayMap => endpoint.add_relay(valid.relay().clone()).await,
-            RelayOfRecord::LeaveOutOfRelayMap => {}
-        }
-        if verdict == RecordVerdict::FromNewHost
-            && let Err(failure) = self.save(now_ms)
-        {
-            report(crate::event::GossipEvent::KnownHostsNotSaved(failure).into());
-        }
-    }
-
-    /// Holds the relay and `ts` of a record newer than the newest held for its host and within the future bound, adding a host never known before.
-    fn take_record(&mut self, valid: &ValidInfrastructure, now_ms: u64) -> RecordVerdict {
-        let record = valid.record();
-        let latest_accepted_ts =
-            seconds_of(now_ms).saturating_add(INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS);
-        if record.ts > latest_accepted_ts {
-            return RecordVerdict::Dropped;
-        }
-        let id = data_encoding::HEXLOWER.encode(&record.host);
-        let Some(host) = self.config.hosts.iter_mut().find(|host| host.id == id) else {
-            self.config.hosts.push(Host {
-                id,
-                relay: record.relay.as_str().to_owned(),
-                ts: Some(record.ts),
-                origin: HostOrigin::Learned {
-                    heard: UnixMillis(now_ms),
-                },
-            });
-            self.newer_than_file = true;
-            return RecordVerdict::FromNewHost;
-        };
-        if host.ts.is_some_and(|held| record.ts <= held) {
-            return RecordVerdict::Dropped;
-        }
-        host.ts = Some(record.ts);
-        record.relay.as_str().clone_into(&mut host.relay);
-        if let HostOrigin::Learned { heard } = &mut host.origin {
-            *heard = UnixMillis(now_ms);
-        }
-        self.newer_than_file = true;
-        RecordVerdict::FromKnownHost
-    }
-
-    /// Rewrites the network configuration with the known hosts (spec 3.3).
-    pub(crate) fn save(&mut self, now_ms: u64) -> Result<(), ConfigError> {
-        self.config.rewrite(&self.path, seconds_of(now_ms))?;
-        self.newer_than_file = false;
-        Ok(())
-    }
-
-    /// Rewrites the network configuration only when a held record is newer than the file's (spec 3.3).
-    pub(crate) fn save_if_newer_than_file(&mut self, now_ms: u64) -> Result<(), ConfigError> {
-        if self.newer_than_file {
-            self.save(now_ms)
-        } else {
-            Ok(())
-        }
-    }
-}
-
-/// Whole seconds in a span of milliseconds.
-const fn seconds_of(milliseconds: u64) -> u64 {
-    milliseconds / MILLIS_PER_SECOND
-}
-
 /// The text a message id takes in the inbox and in a send result.
 pub(super) fn message_id_text(id: wire::MessageId) -> String {
     uuid::Uuid::from_bytes(id).to_string()
-}
-
-/// The card as an iroh node id, or none when its bytes are not a valid key.
-pub fn endpoint_id(card: &wire::PublicKey) -> Option<EndpointId> {
-    EndpointId::from_bytes(card).ok()
-}
-
-/// The wire form of an endpoint address, within the caps of spec 3.6.
-pub fn wire_addr(addr: &EndpointAddr) -> Addr {
-    Addr::from_endpoint_report(
-        addr.relay_urls().map(ToString::to_string),
-        addr.ip_addrs().copied(),
-    )
-}
-
-/// The endpoint address of the node at a carried wire address, leaving out relay URLs that do not parse.
-pub fn endpoint_addr(id: EndpointId, addr: &Addr) -> EndpointAddr {
-    let relays = addr
-        .relays()
-        .iter()
-        .filter_map(|relay| relay.as_str().parse().ok())
-        .map(TransportAddr::Relay);
-    let direct = addr.direct().iter().copied().map(TransportAddr::Ip);
-    EndpointAddr::from_parts(id, relays.chain(direct))
 }
 
 #[cfg(test)]
@@ -1442,7 +1211,7 @@ pub(super) mod tests {
     use std::sync::Arc;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use iroh::SecretKey;
+    use iroh::{RelayUrl, SecretKey};
 
     use super::*;
     use crate::config::{Host, HostOrigin, NetworkConfig};
@@ -1467,7 +1236,7 @@ pub(super) mod tests {
     pub(in crate::node) const SECOND_PUBLIC: &[u8] = br#"{"role":"second"}"#;
     const UNREACHABLE_RELAY: &str = "https://relay.estafette.invalid/";
     const SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT: Duration = Duration::from_millis(8000);
-    const NETWORK_FILE_NAME: &str = "network.toml";
+    pub(in crate::node) const NETWORK_FILE_NAME: &str = "network.toml";
     const NOT_A_KEY: &str = "not a key";
     const MONOTONIC_LAG: Duration = Duration::from_millis(2000);
     const INIT_ON_A_LAGGING_CLOCK_LATEST: Duration = Duration::from_millis(2000);
@@ -1509,7 +1278,7 @@ pub(super) mod tests {
     const IMPOSTOR_HANDLE: &str = "imp";
     pub(in crate::node) const HOST_SEED: u8 = 90;
     const REPLAY_DIRECT_ADDRESS: &str = "203.0.113.9:4433";
-    const SECOND_HOST_SEED: u8 = 91;
+    pub(in crate::node) const SECOND_HOST_SEED: u8 = 91;
     const THIRD_HOST_SEED: u8 = 92;
     pub(in crate::node) const HOST_RELAY: &str = "https://relay-host.estafette.invalid/";
     const SECOND_HOST_RELAY: &str = "https://relay-second-host.estafette.invalid/";
@@ -1518,7 +1287,7 @@ pub(super) mod tests {
     const SPEC_INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS: u64 = 300;
     const SPEC_ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
-    const FROZEN_CLOCK_MS: u64 = 1_800_000_000_000;
+    pub(in crate::node) const FROZEN_CLOCK_MS: u64 = 1_800_000_000_000;
     const CLOCK_AFTER_MAX_AGE_MS: u64 = FROZEN_CLOCK_MS + 400_000;
     const STALE_RUMOR_TS: u64 = CLOCK_AFTER_MAX_AGE_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1;
     const FRESH_RUMOR_TS: u64 = CLOCK_AFTER_MAX_AGE_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS;
@@ -1534,10 +1303,6 @@ pub(super) mod tests {
     const FAR_FUTURE_REQUEST_SEQ: u64 = FROZEN_CLOCK_MS + SPEC_ANNOUNCEMENT_MAX_AGE_MS + 1;
     const ANSWERED_AT_ONCE_WITHIN: Duration = Duration::from_millis(100);
     const SPEC_REANNOUNCE_INTERVAL_AND_NOTHING_MORE_WAIT: Duration = Duration::from_millis(3000);
-    const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * MILLIS_PER_SECOND;
-    const DAYS_WITHIN_EXPIRY: u64 = 29;
-    const DAYS_PAST_EXPIRY: u64 = 31;
-    const PLAIN_HTTP_HOST_RELAY: &str = "http://relay-second-host.estafette.invalid/";
 
     fn network_secret() -> NetworkSecret {
         NetworkSecret::from_bytes(NETWORK_SECRET)
@@ -1681,7 +1446,7 @@ pub(super) mod tests {
         }
     }
 
-    fn config_with_hosts(hosts: Vec<Host>) -> NetworkConfig {
+    pub(in crate::node) fn config_with_hosts(hosts: Vec<Host>) -> NetworkConfig {
         NetworkConfig {
             secret: data_encoding::HEXLOWER.encode(&NETWORK_SECRET),
             owner: render_public_key(&secret_key(OWNER_SEED).public()),
@@ -3221,17 +2986,16 @@ pub(super) mod tests {
         drop(scratch);
     }
 
-    const PROPERTY_CASES: u64 = 500;
-    const STEPS_PER_CASE: u64 = 40;
+    pub(in crate::node) const PROPERTY_CASES: u64 = 500;
     const SPEC_REANNOUNCE_INTERVAL: Duration = Duration::from_millis(2000);
-    const SPEC_RELAY_LOSS_WAIT: Duration = Duration::from_millis(500);
-    const RELAY_POOL: [&str; 3] = [
+    pub(in crate::node) const SPEC_RELAY_LOSS_WAIT: Duration = Duration::from_millis(500);
+    pub(in crate::node) const RELAY_POOL: [&str; 3] = [
         "https://relay-a.estafette.invalid/",
         "https://relay-b.estafette.invalid/",
         "https://relay-c.estafette.invalid/",
     ];
     const DIRECT_POOL: [&str; 2] = ["192.0.2.1:4433", "198.51.100.2:4433"];
-    const LARGEST_STEP_MS: u64 = 700;
+    pub(in crate::node) const LARGEST_STEP_MS: u64 = 700;
 
     fn drawn_addr(draws: &mut Draws) -> Addr {
         let relay = RELAY_POOL[usize::try_from(draws.below(3)).unwrap()];
@@ -3277,69 +3041,6 @@ pub(super) mod tests {
                     announcer.reannounce_step(&last_announced_addr, due),
                     ReannounceStep::Unchanged
                 );
-            }
-        }
-    }
-
-    fn drawn_home_relays(draws: &mut Draws) -> Vec<HomeRelay> {
-        RELAY_POOL
-            .iter()
-            .filter_map(|relay| match draws.below(3) {
-                0 => None,
-                state => Some(HomeRelay {
-                    url: relay_url(relay),
-                    connected: state == 1,
-                }),
-            })
-            .collect()
-    }
-
-    #[test]
-    fn spec_3_8_a_home_relay_is_removed_only_once_disconnected_for_the_relay_loss_wait_and_then_without_fail()
-     {
-        let origin = Instant::now();
-        for case in 0..PROPERTY_CASES {
-            let mut draws = Draws::seeded(case);
-            let mut watch = RelayLossWatch::default();
-            let mut lost_since: BTreeMap<RelayUrl, Instant> = BTreeMap::new();
-            let mut last_removed: BTreeMap<RelayUrl, Instant> = BTreeMap::new();
-            let mut now = origin;
-            for step in 0..STEPS_PER_CASE {
-                now += Duration::from_millis(draws.below(LARGEST_STEP_MS));
-                let home = drawn_home_relays(&mut draws);
-                lost_since.retain(|url, _| {
-                    home.iter()
-                        .any(|relay| relay.url == *url && !relay.connected)
-                });
-                for relay in home.iter().filter(|relay| !relay.connected) {
-                    lost_since.entry(relay.url.clone()).or_insert(now);
-                }
-                if step % 2 == 0 {
-                    watch.observe(&home, now);
-                    continue;
-                }
-                let removed = watch.lost_relays(&home, now);
-                for url in &removed {
-                    let since = lost_since[url];
-                    let waited_from = last_removed
-                        .get(url)
-                        .map_or(since, |removed_at| since.max(*removed_at));
-                    assert!(
-                        now >= waited_from + SPEC_RELAY_LOSS_WAIT,
-                        "case {case} step {step}"
-                    );
-                }
-                for (url, since) in &lost_since {
-                    let never_removed_since = last_removed
-                        .get(url)
-                        .is_none_or(|removed_at| removed_at < since);
-                    if never_removed_since && now >= *since + SPEC_RELAY_LOSS_WAIT {
-                        assert!(removed.contains(url), "case {case} step {step}");
-                    }
-                }
-                for url in removed {
-                    last_removed.insert(url, now);
-                }
             }
         }
     }
@@ -3653,101 +3354,6 @@ pub(super) mod tests {
         assert_eq!(saved.relay, MOVED_HOST_RELAY);
         assert_eq!(saved.ts, Some(record_ts + 1));
         drop(scratch);
-    }
-
-    fn hosts_saved_days_after_a_record(tag: &str, days_after: u64) -> Vec<Host> {
-        let root = std::env::temp_dir().join(format!("u46-{tag}-{}", std::process::id()));
-        drop(fs::remove_dir_all(&root));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join(NETWORK_FILE_NAME);
-        let record = valid_record(
-            opened_record(HOST_SEED, HOST_RELAY, FROZEN_CLOCK_MS / MILLIS_PER_SECOND).unwrap(),
-        );
-        let mut known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), path.clone());
-
-        known_hosts.take_record(&record, FROZEN_CLOCK_MS);
-        known_hosts
-            .save(
-                days_after
-                    .checked_mul(MILLIS_PER_DAY)
-                    .and_then(|span| span.checked_add(FROZEN_CLOCK_MS))
-                    .unwrap(),
-            )
-            .unwrap();
-
-        let saved = NetworkConfig::load(&path).unwrap().hosts;
-        drop(fs::remove_dir_all(&root));
-        saved
-    }
-
-    fn opened_record(
-        host_seed: u8,
-        relay: &str,
-        ts: u64,
-    ) -> Result<OpenedPayload, crate::payload::PayloadError> {
-        crate::payload::open_payload(
-            &keys(),
-            &secret_key(OWNER_SEED).public(),
-            &sealed_record(host_seed, relay, ts),
-        )
-    }
-
-    fn sealed_record(host_seed: u8, relay: &str, ts: u64) -> Vec<u8> {
-        crate::payload::seal_payload(
-            &keys(),
-            &secret_key(host_seed),
-            infrastructure_of(host_seed, relay, ts),
-        )
-        .unwrap()
-    }
-
-    fn valid_record(opened: OpenedPayload) -> ValidInfrastructure {
-        match opened {
-            OpenedPayload::Infrastructure(valid) => valid,
-            OpenedPayload::Presence(_)
-            | OpenedPayload::Departure(_)
-            | OpenedPayload::Unreachable(_)
-            | OpenedPayload::PresenceRequest(_) => panic!("an infrastructure record was sealed"),
-        }
-    }
-
-    /// Spec 3.3 and 3.8: a record whose relay the configuration refuses is neither held nor saved, and a later record of another host still saves.
-    #[test]
-    fn spec_3_8_a_record_whose_relay_the_configuration_refuses_is_neither_held_nor_saved() {
-        let root = std::env::temp_dir().join(format!("u46-refused-relay-{}", std::process::id()));
-        drop(fs::remove_dir_all(&root));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join(NETWORK_FILE_NAME);
-        let record_ts = FROZEN_CLOCK_MS / MILLIS_PER_SECOND;
-        let mut known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), path.clone());
-
-        let refused = opened_record(SECOND_HOST_SEED, PLAIN_HTTP_HOST_RELAY, record_ts);
-        let accepted = valid_record(opened_record(HOST_SEED, HOST_RELAY, record_ts).unwrap());
-        let verdict = known_hosts.take_record(&accepted, FROZEN_CLOCK_MS);
-        let saved = known_hosts.save(FROZEN_CLOCK_MS);
-
-        assert_eq!(refused, Err(crate::payload::PayloadError::HostRelayRefused));
-        assert_eq!(verdict, RecordVerdict::FromNewHost);
-        assert!(saved.is_ok(), "{saved:?}");
-        let relays: Vec<String> = NetworkConfig::load(&path)
-            .unwrap()
-            .hosts
-            .into_iter()
-            .map(|host| host.relay)
-            .collect();
-        assert_eq!(relays, [HOST_RELAY]);
-        drop(fs::remove_dir_all(&root));
-    }
-
-    /// Spec 3.3 and 3.14: a learned host stamped on the millisecond clock leaves the file when saved 31 days later and stays at 29 days.
-    #[test]
-    fn spec_3_3_a_learned_host_not_heard_for_30_days_is_dropped_at_the_next_save() {
-        let kept = hosts_saved_days_after_a_record("kept", DAYS_WITHIN_EXPIRY);
-        let dropped = hosts_saved_days_after_a_record("dropped", DAYS_PAST_EXPIRY);
-
-        let kept_relays: Vec<&str> = kept.iter().map(|host| host.relay.as_str()).collect();
-        assert_eq!(kept_relays, [HOST_RELAY]);
-        assert_eq!(dropped, []);
     }
 
     #[test]

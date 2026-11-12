@@ -4,7 +4,8 @@ use iroh::EndpointId;
 use crate::errors::ErrorCode;
 use crate::keys::render_public_key;
 use crate::net::direct::{DirectError, DirectHost};
-use crate::node::presence::{Node, endpoint_id, message_id_text};
+use crate::node::addresses::endpoint_id;
+use crate::node::presence::{Node, message_id_text};
 use crate::payload::ZERO_MAC;
 use crate::peers::Peer;
 use crate::wire::{self, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, MessageId, Nonce, Version};
@@ -185,6 +186,7 @@ mod tests {
 
     use crate::net::direct::{ClientTimeouts, DirectClient, DirectServer};
     use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
+    use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
         DUPLICATE_KEY_PUBLIC, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTEGER_PAST_64_BITS_PUBLIC,
         INTRODUCE_ROUND_TRIP, Member, MemberPlan, PROBE_NONCE, SECOND_HANDLE, SECOND_SEED,
@@ -192,7 +194,6 @@ mod tests {
         card, inbox_frames, keys, listed_within, message_to, start_members_reaching, start_pair,
         start_third_through_second, wall_clock_ms,
     };
-    use crate::node::presence::wire_addr;
     use crate::payload::{PayloadError, open_request, seal_response};
     use crate::peers::Status;
     use crate::wire::{

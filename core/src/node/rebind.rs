@@ -15,10 +15,10 @@ use tokio::time::{Instant, timeout_at};
 use crate::event::{GossipEvent, TransportEvent};
 use crate::net::direct::DirectHost;
 use crate::net::gossip::NetworkTopic;
-use crate::node::presence::{
-    PresenceLoop, RelayLossWatch, endpoint_id, home_relay_changes, own_address_changes,
-    seed_lookup_with_known_hosts, serve,
-};
+use crate::node::addresses::endpoint_id;
+use crate::node::known_hosts::seed_lookup_with_known_hosts;
+use crate::node::presence::{PresenceLoop, home_relay_changes, own_address_changes, serve};
+use crate::node::relay_loss::RelayLossWatch;
 use crate::peers::Status;
 
 /// Silence after which a member that knows another node is deaf and rebinds (spec:781, spec:1016, D46).
@@ -47,7 +47,7 @@ pub async fn relay_answers(relay: RelayUrl) -> bool {
 }
 
 /// When this member is due to rebind: after the deaf timeout of silence or at a join that gained no neighbor, never sooner than the rebind interval after the last rebind (spec 3.8, D46).
-pub(super) struct RebindSchedule {
+struct RebindSchedule {
     silent_since: Instant,
     unjoined_since: Option<Instant>,
     last_rebind: Option<Instant>,
@@ -55,7 +55,7 @@ pub(super) struct RebindSchedule {
 
 impl RebindSchedule {
     /// The schedule of a member that has heard nothing since it subscribed.
-    pub(super) const fn new(subscribed: Instant) -> Self {
+    const fn new(subscribed: Instant) -> Self {
         Self {
             silent_since: subscribed,
             unjoined_since: None,
@@ -64,28 +64,28 @@ impl RebindSchedule {
     }
 
     /// Notes a gossip payload heard.
-    pub(super) const fn heard(&mut self, now: Instant) {
+    const fn heard(&mut self, now: Instant) {
         self.silent_since = now;
     }
 
     /// Notes that the topic's join gained no neighbor within the join timeout.
-    pub(super) const fn join_timed_out(&mut self, now: Instant) {
+    const fn join_timed_out(&mut self, now: Instant) {
         self.unjoined_since = Some(now);
     }
 
     /// Notes that the topic reported joined.
-    pub(super) const fn joined(&mut self) {
+    const fn joined(&mut self) {
         self.unjoined_since = None;
     }
 
     /// Notes a rebind, whose fresh topic has not joined yet.
-    pub(super) const fn rebound(&mut self, now: Instant) {
+    const fn rebound(&mut self, now: Instant) {
         self.last_rebind = Some(now);
         self.unjoined_since = None;
     }
 
     /// When the next rebind is due, for a member that may rebind.
-    pub(super) fn due(&self) -> Instant {
+    fn due(&self) -> Instant {
         let deaf_at = later_by(self.silent_since, DEAF_TIMEOUT);
         let triggered_at = self
             .unjoined_since
@@ -98,7 +98,7 @@ impl RebindSchedule {
 
 /// The member join loop of spec 3.8 after a rebind: when the next ask to join the members is due, and how many asks are left.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum MemberJoins {
+enum MemberJoins {
     Idle,
     AwaitingRebindJoin,
     Asking { next: Instant, asks_left: u32 },
@@ -106,7 +106,7 @@ pub(super) enum MemberJoins {
 
 impl MemberJoins {
     /// Starts the member join wait when the topic of a rebind reports joined.
-    pub(super) fn joined(&mut self, now: Instant) {
+    fn joined(&mut self, now: Instant) {
         if *self == Self::AwaitingRebindJoin {
             *self = Self::Asking {
                 next: later_by(now, MEMBER_JOIN_WAIT),
@@ -116,7 +116,7 @@ impl MemberJoins {
     }
 
     /// When the next ask is due, if one is.
-    pub(super) const fn next_ask(&self) -> Option<Instant> {
+    const fn next_ask(&self) -> Option<Instant> {
         match self {
             Self::Asking { next, .. } => Some(*next),
             Self::Idle | Self::AwaitingRebindJoin => None,
@@ -124,7 +124,7 @@ impl MemberJoins {
     }
 
     /// Counts an ask and schedules the next one the member join interval later, or stops after the member join tries.
-    pub(super) fn asked(&mut self, now: Instant) {
+    fn asked(&mut self, now: Instant) {
         *self = match *self {
             Self::Asking { asks_left, .. } => asks_left
                 .checked_sub(1)
@@ -138,6 +138,62 @@ impl MemberJoins {
     }
 }
 
+/// What the rebind of spec 3.8 keeps between wakes: when it is due, the member join loop after it, the gossip neighbors and the relay probe.
+pub(super) struct Rebinding {
+    schedule: RebindSchedule,
+    member_joins: MemberJoins,
+    neighbors: BTreeSet<EndpointId>,
+    probe_relay: RelayProbe,
+}
+
+impl Rebinding {
+    /// The rebind state of a member that has heard nothing since it subscribed.
+    pub(super) const fn new(subscribed: Instant, probe_relay: RelayProbe) -> Self {
+        Self {
+            schedule: RebindSchedule::new(subscribed),
+            member_joins: MemberJoins::Idle,
+            neighbors: BTreeSet::new(),
+            probe_relay,
+        }
+    }
+
+    /// Notes a gossip payload heard.
+    pub(super) const fn heard(&mut self, now: Instant) {
+        self.schedule.heard(now);
+    }
+
+    /// Notes a gossip neighbor that came up.
+    pub(super) fn neighbor_up(&mut self, node: EndpointId) {
+        self.neighbors.insert(node);
+    }
+
+    /// Notes a gossip neighbor that went down.
+    pub(super) fn neighbor_down(&mut self, node: EndpointId) {
+        self.neighbors.remove(&node);
+    }
+
+    /// Notes that the topic reported joined, starting the member join wait when the join was a rebind's.
+    pub(super) fn joined(&mut self, now: Instant) {
+        self.schedule.joined();
+        self.member_joins.joined(now);
+    }
+
+    /// Notes that the topic's join gained no neighbor within the join timeout.
+    pub(super) const fn join_timed_out(&mut self, now: Instant) {
+        self.schedule.join_timed_out(now);
+    }
+
+    /// When the next rebind is due, for a member that may rebind.
+    pub(super) fn due(&self) -> Instant {
+        self.schedule.due()
+    }
+
+    /// When the next ask to join the members is due, if one is.
+    pub(super) const fn next_ask(&self) -> Option<Instant> {
+        self.member_joins.next_ask()
+    }
+}
+
 impl PresenceLoop {
     /// Whether this member may rebind: it knows another node, a known host or an Online peer, and is not stopping.
     pub(super) fn may_rebind(&self) -> bool {
@@ -148,9 +204,9 @@ impl PresenceLoop {
     /// Rebinds by spec 3.8, stopping the loop when no endpoint or topic comes of it.
     pub(super) async fn rebind(&mut self) -> ControlFlow<()> {
         (self.report)(TransportEvent::Rebinding.into());
-        self.schedule.rebound((self.monotonic)());
-        self.member_joins = MemberJoins::AwaitingRebindJoin;
-        self.neighbors.clear();
+        self.rebinding.schedule.rebound((self.monotonic)());
+        self.rebinding.member_joins = MemberJoins::AwaitingRebindJoin;
+        self.rebinding.neighbors.clear();
         self.close_endpoint().await;
         let down = self.relays_found_down().await;
         self.strip_relays_from_members(&down);
@@ -166,8 +222,12 @@ impl PresenceLoop {
     pub(super) async fn ask_members_to_join(&mut self) {
         let mut members = self.peers_with_status(Status::Online);
         members.extend(self.peers_with_status(Status::Unreachable));
-        if members.is_empty() || members.iter().any(|member| self.neighbors.contains(member)) {
-            self.member_joins = MemberJoins::Idle;
+        if members.is_empty()
+            || members
+                .iter()
+                .any(|member| self.rebinding.neighbors.contains(member))
+        {
+            self.rebinding.member_joins = MemberJoins::Idle;
             return;
         }
         let now = (self.monotonic)();
@@ -176,7 +236,7 @@ impl PresenceLoop {
         {
             (self.report)(GossipEvent::TopicFailed(failure).into());
         }
-        self.member_joins.asked(now);
+        self.rebinding.member_joins.asked(now);
     }
 
     /// The node ids of the peers whose status is `wanted`.
@@ -208,7 +268,7 @@ impl PresenceLoop {
         let answers = join_all(
             relays
                 .iter()
-                .map(|relay| timeout_at(deadline, (self.probe_relay)(relay.clone()))),
+                .map(|relay| timeout_at(deadline, (self.rebinding.probe_relay)(relay.clone()))),
         )
         .await;
         relays

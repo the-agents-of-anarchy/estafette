@@ -260,6 +260,7 @@ mod tests {
     use super::*;
     use crate::config::HostOrigin;
     use crate::net::direct::{ClientTimeouts, DirectClient};
+    use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
         FIRST_SEED, HOST_RELAY, HOST_SEED, INTRODUCE_ROUND_TRIP, MARKER_SEED, MOVED_HOST_RELAY,
         Member, MemberPlan, PAYLOAD_WAIT, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch,
@@ -267,7 +268,6 @@ mod tests {
         keys, listed_within, marker_reaches, relay_map_holds, saved_host, start_pair,
         start_witnessed, status_within, wall_clock_ms,
     };
-    use crate::node::presence::wire_addr;
     use crate::peers::Status;
     use crate::sidecar;
     use crate::wire::{Introduce, Nonce, Version};
