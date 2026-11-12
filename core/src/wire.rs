@@ -559,8 +559,10 @@ mod tests {
     const SHORT_RELAY_BYTES: usize = 8;
     const DISTINCT_SHORT_RELAY_LENGTHS: [usize; 4] = [10, 20, 30, 40];
     const REQUEST_PROBE_INDEX: u8 = 1;
-    const PAYLOAD_PRESENCE_INDEX: u8 = 0;
-    const PAYLOAD_DEPARTURE_INDEX: u8 = 1;
+    const SPEC_REQUEST_VARIANT_INDICES: [u8; 3] = [0, 1, 2];
+    const SPEC_RESPONSE_VARIANT_INDICES: [u8; 3] = [0, 1, 2];
+    const SPEC_PAYLOAD_VARIANT_INDICES: [u8; 5] = [0, 1, 2, 3, 4];
+    const SPEC_WIRE_LIMIT_BYTES: usize = 1_114_112;
     const VARIANT_TAG_BYTES: usize = 1;
     const VERSION_BYTES: usize = 1;
     const ZERO_VARINT_BYTES: usize = 1;
@@ -823,20 +825,38 @@ mod tests {
         );
     }
 
-    #[test]
-    fn spec_2_wire_encoding_variants_are_indexed_in_the_order_the_spec_lists_them() {
-        let presence_index = encode(&largest_presence()).unwrap()[0];
-        let departure_index = encode(&Payload::Departure(departure())).unwrap()[0];
-        let probe_index = encode(&probe_request()).unwrap()[0];
+    fn variant_index_of<T: Wire>(structure: &T) -> u8 {
+        encode(structure).unwrap()[0]
+    }
 
-        assert_eq!(
-            [presence_index, departure_index, probe_index],
-            [
-                PAYLOAD_PRESENCE_INDEX,
-                PAYLOAD_DEPARTURE_INDEX,
-                REQUEST_PROBE_INDEX
-            ]
-        );
+    #[test]
+    fn spec_2_wire_encoding_every_variant_is_indexed_in_the_order_the_spec_lists_it() {
+        let seed = &mut Seeded::for_case(0);
+
+        let request_indices = [
+            Request::Message(seed.message()),
+            Request::Probe(seed.probe()),
+            Request::Introduce(seed.introduce()),
+        ]
+        .map(|request| variant_index_of(&request));
+        let response_indices = [
+            Response::MessageAck(seed.message_ack()),
+            Response::ProbeAck(seed.probe_ack()),
+            Response::IntroduceAck(seed.introduce_ack()),
+        ]
+        .map(|response| variant_index_of(&response));
+        let payload_indices = [
+            Payload::Presence(seed.presence()),
+            Payload::Departure(seed.departure()),
+            Payload::Unreachable(seed.unreachable()),
+            Payload::Infrastructure(seed.infrastructure()),
+            Payload::PresenceRequest(seed.presence_request()),
+        ]
+        .map(|payload| variant_index_of(&payload));
+
+        assert_eq!(request_indices, SPEC_REQUEST_VARIANT_INDICES);
+        assert_eq!(response_indices, SPEC_RESPONSE_VARIANT_INDICES);
+        assert_eq!(payload_indices, SPEC_PAYLOAD_VARIANT_INDICES);
     }
 
     #[test]
@@ -856,7 +876,7 @@ mod tests {
             handle: String::new(),
             attached: false,
             sent_at: 0,
-            body: "b".repeat(WIRE_LIMIT_BYTES),
+            body: "b".repeat(SPEC_WIRE_LIMIT_BYTES),
             mac: [0; MAC_BYTES],
         });
 
@@ -882,7 +902,7 @@ mod tests {
     fn message_encoding_to_exactly_the_wire_limit(extra_body_bytes: usize) -> Request {
         let empty_body_encoding_bytes = encode(&message_with_body_of(0)).unwrap().len();
         message_with_body_of(
-            WIRE_LIMIT_BYTES
+            SPEC_WIRE_LIMIT_BYTES
                 .saturating_sub(empty_body_encoding_bytes)
                 .saturating_sub(LONG_BODY_EXTRA_LENGTH_PREFIX_BYTES)
                 .saturating_add(extra_body_bytes),
@@ -895,7 +915,7 @@ mod tests {
 
         let encoded = encode(&at_the_limit).unwrap();
 
-        assert_eq!(encoded.len(), WIRE_LIMIT_BYTES);
+        assert_eq!(encoded.len(), SPEC_WIRE_LIMIT_BYTES);
         assert_eq!(decode::<Request>(&encoded), Ok(at_the_limit));
     }
 
@@ -906,19 +926,19 @@ mod tests {
         assert_eq!(
             encode(&past_the_limit),
             Err(CodecError::PastWireLimit {
-                bytes: WIRE_LIMIT_BYTES.saturating_add(1)
+                bytes: SPEC_WIRE_LIMIT_BYTES.saturating_add(1)
             })
         );
     }
 
     #[test]
     fn spec_3_14_bytes_past_the_wire_limit_do_not_decode() {
-        let past_the_limit = vec![0; WIRE_LIMIT_BYTES + 1];
+        let past_the_limit = vec![0; SPEC_WIRE_LIMIT_BYTES + 1];
 
         assert_eq!(
             decode::<Request>(&past_the_limit),
             Err(CodecError::PastWireLimit {
-                bytes: WIRE_LIMIT_BYTES + 1
+                bytes: SPEC_WIRE_LIMIT_BYTES + 1
             })
         );
     }
