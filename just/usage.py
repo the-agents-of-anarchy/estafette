@@ -33,6 +33,10 @@ PROMPT_KINDS = ('input_tokens', 'cache_creation_input_tokens', 'cache_read_input
 TOKEN_KINDS = ('input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens')
 COST_KINDS = ('fresh', 'cache_write', 'cache_read', 'output')
 UNKNOWN_MARK = '?'
+FIVE_MINUTE_TIER = '5m'
+ONE_HOUR_TIER = '1h'
+CACHE_WRITE_RATE_BY_TIER = {FIVE_MINUTE_TIER: 'cache_write_5m', ONE_HOUR_TIER: 'cache_write_1h'}
+ONE_HOUR_WRITE_PATTERN = re.compile(r'"ephemeral_1h_input_tokens": ?[1-9]')
 
 
 def login_directory(environment, home_directory):
@@ -218,14 +222,21 @@ def cost_by_kind(prices, messages):
     return {kind: sum(cost[kind] for cost in costs) for kind in COST_KINDS}
 
 
-def cold_resume_cost(prices, messages):
-    """Dollars to write the agent's last context into the cache again, or None when the model is not listed."""
+def transcript_cache_tier(transcript_path):
+    """The cache tier the transcript's cache writes are made at: 1h when any write is one-hour, else 5m."""
+    with open(transcript_path, errors='replace') as lines:
+        one_hour_written = any(ONE_HOUR_WRITE_PATTERN.search(line) for line in lines)
+    return ONE_HOUR_TIER if one_hour_written else FIVE_MINUTE_TIER
+
+
+def cold_resume_cost(prices, messages, tier):
+    """Dollars to write the agent's last context into the cache again at the tier's write price, or None when the model is not listed."""
     if not messages:
         return 0.0
     model, usage = list(messages.values())[-1]
     context = sum(token_count(usage, kind) for kind in PROMPT_KINDS)
     rates = rates_for(prices, model, context)
-    return None if rates is None else context * rates['cache_write_1h'] / TOKENS_PER_PRICE_UNIT
+    return None if rates is None else context * rates[CACHE_WRITE_RATE_BY_TIER[tier]] / TOKENS_PER_PRICE_UNIT
 
 
 def dollars_column(amount):
@@ -233,7 +244,7 @@ def dollars_column(amount):
     return f'{UNKNOWN_MARK:>9}' if amount is None else f'{amount:9.2f}'
 
 
-def inflight(window_minutes, subagents_directory, now, prices):
+def inflight(window_minutes, subagents_directory, now, prices, lead_transcript):
     """Print one row per agent whose transcript changed within the window."""
     rows = []
     for transcript_path in subagents_directory.glob('agent-*.jsonl'):
@@ -247,13 +258,16 @@ def inflight(window_minutes, subagents_directory, now, prices):
         last_usage = list(messages.values())[-1][1] if messages else {}
         context = sum(token_count(last_usage, kind) for kind in PROMPT_KINDS)
         costs = cost_by_kind(prices, messages)
-        rows.append((idle_minutes, fresh, totals['cache_read_input_tokens'], context, costs, cold_resume_cost(prices, messages), ','.join(models), agent_name(transcript_path)[:NAME_COLUMN_WIDTH]))
-    print('idle_min | fresh_k | cache_read_k | context_k | usd_fresh | usd_write | usd_read | usd_out | usd_total | usd_resume_1h | model | agent')
-    for idle_minutes, fresh, cache_read, context, costs, resume, models, name in sorted(rows, key=lambda row: row[0]):
+        tier = transcript_cache_tier(transcript_path)
+        rows.append((idle_minutes, fresh, totals['cache_read_input_tokens'], context, costs, cold_resume_cost(prices, messages, tier), tier, ','.join(models), agent_name(transcript_path)[:NAME_COLUMN_WIDTH]))
+    print('idle_min | fresh_k | cache_read_k | context_k | usd_fresh | usd_write | usd_read | usd_out | usd_total | usd_resume | tier | model | agent')
+    for idle_minutes, fresh, cache_read, context, costs, resume, tier, models, name in sorted(rows, key=lambda row: row[0]):
         by_kind = [dollars_column(None if costs is None else costs[kind]) for kind in COST_KINDS]
         total = dollars_column(None if costs is None else sum(costs.values()))
-        print(f'{idle_minutes:7.0f} | {fresh // TOKENS_PER_THOUSAND:7d} | {cache_read // TOKENS_PER_THOUSAND:12d} | {context // TOKENS_PER_THOUSAND:9d} | ' + ' | '.join(by_kind) + f' | {total} | {dollars_column(resume)} | {models} | {name}')
+        print(f'{idle_minutes:7.0f} | {fresh // TOKENS_PER_THOUSAND:7d} | {cache_read // TOKENS_PER_THOUSAND:12d} | {context // TOKENS_PER_THOUSAND:9d} | ' + ' | '.join(by_kind) + f' | {total} | {dollars_column(resume)} | {tier:>4} | {models} | {name}')
     print(f'context_k of all rows: {sum(row[3] for row in rows) // TOKENS_PER_THOUSAND}')
+    if lead_transcript is not None:
+        print(f'lead transcript cache tier: {transcript_cache_tier(lead_transcript)}')
     return 0
 
 
@@ -337,8 +351,9 @@ def main(arguments, standard_input, now, environment, home_directory):
         return checkpoint(parsed.label, now, limits_path, checkpoints_path, newest_session_transcript(login, root_checkout(REPOSITORY_ROOT)))
     if parsed.subcommand == 'checkpoints':
         return checkpoints(checkpoints_path)
-    subagents_directory = Path(parsed.subagents_directory) if parsed.subagents_directory else subagents_directory_of(newest_session_transcript(login, root_checkout(REPOSITORY_ROOT)))
-    return inflight(parsed.window_minutes, subagents_directory, now, json.loads(PRICES_PATH.read_text()))
+    lead_transcript = None if parsed.subagents_directory else newest_session_transcript(login, root_checkout(REPOSITORY_ROOT))
+    subagents_directory = Path(parsed.subagents_directory) if parsed.subagents_directory else subagents_directory_of(lead_transcript)
+    return inflight(parsed.window_minutes, subagents_directory, now, json.loads(PRICES_PATH.read_text()), lead_transcript)
 
 
 if __name__ == '__main__':
