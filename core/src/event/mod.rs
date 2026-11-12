@@ -225,6 +225,8 @@ pub fn write_run_record(stderr: &mut impl Write, event: &Event) -> io::Result<()
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     const SPEC_FORMAT_VERSION: u64 = 1;
@@ -260,8 +262,10 @@ mod tests {
         let named: Vec<&str> = every_event_name()
             .chain(names_of::<TraceLineName>())
             .collect();
+        let distinct: BTreeSet<&str> = named.iter().copied().collect();
 
-        assert_eq!(named, PINNED_EVENT_NAMES);
+        assert_eq!(distinct.len(), named.len(), "{named:?}");
+        assert_eq!(distinct, BTreeSet::from(PINNED_EVENT_NAMES));
         assert_eq!(crate::trace::FORMAT_VERSION, SPEC_FORMAT_VERSION);
     }
 }
