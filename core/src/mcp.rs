@@ -1099,7 +1099,7 @@ mod tests {
             sidecar::create_card(
                 &directories.card_file(NETWORK, name).unwrap(),
                 &directories.card_sidecar_file(NETWORK, name).unwrap(),
-                handle,
+                &handle.parse().unwrap(),
                 [seed; KEY_BYTES],
             )
             .unwrap();

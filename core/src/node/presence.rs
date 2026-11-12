@@ -1580,7 +1580,7 @@ pub(super) mod tests {
             crate::sidecar::create_card(
                 &self.root.join(format!("{seed}-card.toml")),
                 &sidecar_path,
-                "card",
+                &"card".parse().unwrap(),
                 [seed; KEY_LEN],
             )
             .unwrap();

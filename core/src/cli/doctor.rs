@@ -579,7 +579,7 @@ mod tests {
                     .directories
                     .card_sidecar_file(NETWORK_NAME, name)
                     .unwrap(),
-                name,
+                &name.parse().unwrap(),
                 seed,
             )
             .unwrap();

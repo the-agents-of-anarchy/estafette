@@ -428,12 +428,7 @@ fn claim_operator_card(
                 path: card_file.clone(),
                 reason,
             })?;
-    let name = OPERATOR_CARD
-        .parse::<Handle>()
-        .map_err(|source| Failure::CardUnusable {
-            path: card_file.clone(),
-            reason: CardUnusable::Handle(source),
-        })?;
+    let name = operator_name(&card_file)?;
     let held =
         claim(&sidecar_file, usable.public_key.as_bytes(), pause).map_err(Failure::Sidecar)?;
     Ok(OperatorCard {
@@ -464,8 +459,24 @@ fn create_operator_card(
         })?;
     let mut fresh_seed = [0; SEED_BYTES];
     fill_seed(&mut fresh_seed);
-    create_card(card_file, sidecar_file, OPERATOR_CARD, fresh_seed).map_err(Failure::Sidecar)?;
+    create_card(
+        card_file,
+        sidecar_file,
+        &operator_name(card_file)?,
+        fresh_seed,
+    )
+    .map_err(Failure::Sidecar)?;
     Ok(())
+}
+
+/// Returns the operator card's name as a handle, refusing it for the card file when it is no handle.
+fn operator_name(card_file: &Path) -> Result<Handle, Failure> {
+    OPERATOR_CARD
+        .parse::<Handle>()
+        .map_err(|source| Failure::CardUnusable {
+            path: card_file.to_path_buf(),
+            reason: CardUnusable::Handle(source),
+        })
 }
 
 /// Has the session depart and release the card as when standard input ends.
@@ -1522,7 +1533,7 @@ mod tests {
         crate::sidecar::create_card(
             &card_file,
             &sidecar_file,
-            OPERATOR_CARD,
+            &OPERATOR_CARD.parse().unwrap(),
             [OPERATOR_SEED; SEED_BYTES],
         )
         .unwrap();

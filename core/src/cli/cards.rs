@@ -187,7 +187,7 @@ fn execute(
                 filesystem,
                 registry.network.as_str(),
                 card.as_str(),
-                handle.as_str(),
+                &handle,
                 fill_seed,
             )?
         }
@@ -215,7 +215,7 @@ fn create_card_with_fresh_key(
     filesystem: &impl DirectoryFilesystem,
     network: &str,
     card: &str,
-    handle: &str,
+    handle: &Handle,
     fill_seed: impl FnOnce(&mut [u8; SEED_BYTES]),
 ) -> Result<String, CardCommandError> {
     let cards_directory = directories

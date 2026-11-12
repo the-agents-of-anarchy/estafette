@@ -10,6 +10,7 @@ use crate::config::{
     OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK, create_new_owner_only_file, remove_file_if_present,
     write_new_file_atomically,
 };
+use crate::handle::Handle;
 use data_encoding::{HEXLOWER, HEXLOWER_PERMISSIVE};
 use iroh::{PublicKey, SecretKey};
 
@@ -140,14 +141,14 @@ pub fn is_held(sidecar_path: &Path) -> Result<bool, SidecarError> {
 pub fn create_card(
     card_path: &Path,
     sidecar_path: &Path,
-    handle: &str,
+    handle: &Handle,
     seed: [u8; SEED_BYTES],
 ) -> Result<PublicKey, SidecarError> {
     create_card_removing_temporary_with(
         remove_file_if_present,
         card_path,
         sidecar_path,
-        handle,
+        handle.as_str(),
         seed,
     )
 }
@@ -303,6 +304,10 @@ mod tests {
 
     fn fresh_directory(test_name: &str) -> ScratchDirectory {
         scratch_directory("sidecar", test_name)
+    }
+
+    fn scout_handle() -> Handle {
+        "scout".parse().unwrap()
     }
 
     fn seed_of(index: u8) -> [u8; SEED_BYTES] {
@@ -580,7 +585,7 @@ mod tests {
         let card = directory.join("k.yaml");
         let sidecar = directory.join("k.key");
 
-        let returned_key = create_card(&card, &sidecar, "scout", seed).unwrap();
+        let returned_key = create_card(&card, &sidecar, &scout_handle(), seed).unwrap();
 
         let public_key = public_key_of(&seed);
         assert_eq!(returned_key.as_bytes(), &public_key);
@@ -610,7 +615,7 @@ mod tests {
         let sidecar = directory.join("l.key");
         std::fs::write(&card, "handle: old\n").unwrap();
 
-        let outcome = create_card(&card, &sidecar, "scout", seed_of(12));
+        let outcome = create_card(&card, &sidecar, &scout_handle(), seed_of(12));
 
         assert!(matches!(outcome, Err(SidecarError::AlreadyExists)));
         assert_eq!(std::fs::read_to_string(&card).unwrap(), "handle: old\n");
@@ -625,7 +630,7 @@ mod tests {
         let old_contents = format!("{}\n", HEXLOWER.encode(&seed_of(13)));
         write_sidecar(&sidecar, &old_contents, OWNER_ONLY_FILE_MODE);
 
-        let outcome = create_card(&card, &sidecar, "scout", seed_of(14));
+        let outcome = create_card(&card, &sidecar, &scout_handle(), seed_of(14));
 
         assert!(matches!(outcome, Err(SidecarError::AlreadyExists)));
         assert_eq!(std::fs::read_to_string(&sidecar).unwrap(), old_contents);
@@ -638,7 +643,7 @@ mod tests {
         let card = directory.join("absent-directory").join("o.yaml");
         let sidecar = directory.join("o.key");
 
-        let outcome = create_card(&card, &sidecar, "scout", seed_of(16));
+        let outcome = create_card(&card, &sidecar, &scout_handle(), seed_of(16));
 
         assert!(matches!(outcome, Err(SidecarError::Io(_))));
         assert!(!sidecar.exists());
@@ -652,7 +657,12 @@ mod tests {
         let directory = fresh_directory("create_bare_name");
         let card = directory.join("p.yaml");
 
-        let outcome = create_card(&card, Path::new(BARE_FILE_NAME), "scout", seed_of(17));
+        let outcome = create_card(
+            &card,
+            Path::new(BARE_FILE_NAME),
+            &scout_handle(),
+            seed_of(17),
+        );
 
         assert!(matches!(
             &outcome,
@@ -668,7 +678,7 @@ mod tests {
         let card = directory.join("q.yaml");
         let sidecar = directory.join("q.key");
 
-        create_card(&card, &sidecar, "scout", seed_of(18)).unwrap();
+        create_card(&card, &sidecar, &scout_handle(), seed_of(18)).unwrap();
 
         assert_eq!(
             std::fs::metadata(&card).unwrap().permissions().mode() & PERMISSION_BITS_MASK,
@@ -732,7 +742,13 @@ mod tests {
         let sidecar = directory.join("r.key");
         let handle = "h".repeat(OVERSIZED_HANDLE_BYTES);
 
-        let outcome = create_card(&card, &sidecar, &handle, seed_of(19));
+        let outcome = create_card_removing_temporary_with(
+            remove_file_if_present,
+            &card,
+            &sidecar,
+            &handle,
+            seed_of(19),
+        );
 
         assert!(matches!(outcome, Err(SidecarError::Io(_))));
         assert_eq!(directory.read_dir().unwrap().count(), 0);
