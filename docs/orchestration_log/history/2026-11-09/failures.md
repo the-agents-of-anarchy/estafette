@@ -303,3 +303,11 @@ What happened: On 2026-11-12 at 19:34 the lead ordered the all-bridge implemente
 Mechanism: Dev-cycle orders Critical and Important findings fixed and the rest noted; the lead added a Minor to the fix order to save a later pass without checking that the unit held the means (an event wait arrives with tests-on-events).
 
 Correction: Minor findings are noted in the status file and deferred to the unit that owns their means or to the whole-branch implementer; an order to fix one is written only after naming the mechanism that fixes it within the conventions.
+
+## A visible status written on a heartbeat turn
+
+What happened: On 2026-11-12 at 20:25 the lead ended a turn that a heartbeat had started with five lines of visible status, after the harness repeated its notice that the previous response had no visible output.
+
+Mechanism: Silence is in force: only a message the owner typed is answered in the conversation; the no-visible-output notice is inert, and the lead answered it as if it were a request.
+
+Correction: A turn started by a heartbeat, a notification or an agent message ends with zero characters whatever notice follows; the state goes to the status file and the journal.
