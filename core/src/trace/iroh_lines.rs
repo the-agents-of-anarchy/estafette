@@ -118,17 +118,20 @@ impl std::error::Error for IrohLinesRefused {}
 mod tests {
     use std::ffi::OsString;
     use std::fs;
+    use std::io::{self, Write};
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
+    use std::sync::mpsc::{self, Receiver, Sender};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use iroh::SecretKey;
     use serde_json::Value;
     use tracing::subscriber::with_default;
 
     use super::raw_file_subscriber;
-    use crate::dirs::{OperatingSystemFilesystem, TraceDirectory};
+    use crate::dirs::{OperatingSystemFilesystem, TraceDirectory, rolled_over_trace_file};
     use crate::trace::{
-        RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceEffects, TraceStop,
+        RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceEffects, TraceFile, TraceStop,
     };
 
     const RUN_BYTES: [u8; RUN_ID_BYTES] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
@@ -140,6 +143,7 @@ mod tests {
     const SPEC_NODE_HEX_CHARS: usize = 10;
     const SPEC_RAW_FILE_OPENED: &str = "raw_file_opened";
     const SPEC_IROH_LINE: &str = "iroh_line";
+    const SPEC_DROPPED: &str = "dropped";
     const SPEC_LEVELS_COARSEST_FIRST: [&str; 5] = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
     const SPEC_TARGETS_AND_FINEST_LEVELS: [(&str, &str); 4] = [
         ("iroh::_events", "DEBUG"),
@@ -147,6 +151,11 @@ mod tests {
         ("iroh_gossip::proto::hyparview", "DEBUG"),
         ("iroh_gossip::net", "DEBUG"),
     ];
+    const RAW_FILE_SUFFIX: &str = ".raw.jsonl";
+    const SMALL_QUEUE_LINES: usize = 2;
+    const WRITER_STEP_BOUND: Duration = Duration::from_secs(10);
+    const TEST_DRAIN_BOUND: Duration = Duration::from_secs(10);
+    const DIRECT_ADDRS_LINE_AFTER_HEADER: &str = ",\"target\":\"iroh::_events::direct_addrs\",\"level\":\"DEBUG\",\"message\":\"a line\",\"fields\":{}}\n";
 
     /// How iroh's `Side` reads in its lines.
     #[derive(Debug)]
@@ -354,6 +363,212 @@ mod tests {
             targets_and_levels_after_the_first_line(&trace.files().raw),
             expected
         );
+        drop(fs::remove_dir_all(&root));
+    }
+
+    /// Writes one line of `iroh::_events::direct_addrs` with the message "a line".
+    fn one_direct_addrs_line() {
+        tracing::debug!(target: "iroh::_events::direct_addrs", "a line");
+    }
+
+    /// The raw line numbered `n` that `one_direct_addrs_line` writes.
+    fn direct_addrs_line(n: u64) -> String {
+        format!(
+            "{}{DIRECT_ADDRS_LINE_AFTER_HEADER}",
+            header(n, None, SPEC_IROH_LINE)
+        )
+    }
+
+    #[test]
+    fn observability_decision_13_iroh_lines_roll_the_raw_file_over_and_each_raw_file_opens_with_its_first_line()
+     {
+        const LINES_WRITTEN: u64 = 3;
+        let (root, directory) = scratch_trace_directory("rollover");
+        let first_line_bytes = u64::try_from(raw_file_opened_line().len()).unwrap();
+        let iroh_line_bytes = u64::try_from(direct_addrs_line(1).len()).unwrap();
+        let trace = started(
+            &directory,
+            &TraceEffects::of_the_operating_system(frozen_clocks()),
+            TraceBounds {
+                rollover_bytes: first_line_bytes + iroh_line_bytes,
+                ..TraceBounds::SPEC
+            },
+        );
+
+        with_default(raw_file_subscriber(Arc::clone(&trace)), || {
+            for _line in 0..LINES_WRITTEN {
+                one_direct_addrs_line();
+            }
+        });
+        assert!(matches!(
+            trace.finish(),
+            [TraceStop::Drained, TraceStop::Drained]
+        ));
+
+        let raw = &trace.files().raw;
+        assert_eq!(
+            fs::read_to_string(rolled_over_trace_file(raw)).unwrap(),
+            format!("{}{}", raw_file_opened_line(), direct_addrs_line(2))
+        );
+        assert_eq!(
+            fs::read_to_string(raw).unwrap(),
+            format!("{}{}", raw_file_opened_line(), direct_addrs_line(3))
+        );
+        drop(fs::remove_dir_all(&root));
+    }
+
+    /// A raw file the test holds back: each write announces itself, waits for the test's release, then hands the line over.
+    struct HeldBackRawFile {
+        entered: Sender<()>,
+        released: Receiver<()>,
+        written: Sender<String>,
+    }
+
+    impl Write for HeldBackRawFile {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.entered.send(()).map_err(io::Error::other)?;
+            self.released.recv().map_err(io::Error::other)?;
+            self.written
+                .send(String::from_utf8_lossy(bytes).into_owned())
+                .map_err(io::Error::other)?;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl TraceFile for HeldBackRawFile {
+        fn set_length(&mut self, _length: u64) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A trace file that discards every byte written to it.
+    struct DiscardedFile;
+
+    impl Write for DiscardedFile {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl TraceFile for DiscardedFile {
+        fn set_length(&mut self, _length: u64) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The test's ends of a held-back raw file: where a write announces itself, where the test releases it, and where its line arrives.
+    struct HeldBackRaw {
+        entering: Receiver<()>,
+        release: Sender<()>,
+        written: Receiver<String>,
+    }
+
+    /// A trace whose raw file the test holds back and whose events file is discarded, its queues `SMALL_QUEUE_LINES` long.
+    fn held_back_trace(directory: &TraceDirectory) -> (Arc<Trace>, HeldBackRaw) {
+        let (entered, entering) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let (written_sender, written) = mpsc::channel();
+        let raw_file = Mutex::new(Some(HeldBackRawFile {
+            entered,
+            released,
+            written: written_sender,
+        }));
+        let effects = TraceEffects {
+            create_file: Arc::new(move |path: &Path| -> io::Result<Box<dyn TraceFile>> {
+                let is_raw = path
+                    .to_str()
+                    .is_some_and(|path| path.ends_with(RAW_FILE_SUFFIX));
+                let held_back = is_raw.then(|| raw_file.lock().unwrap().take()).flatten();
+                if let Some(file) = held_back {
+                    return Ok(Box::new(file));
+                }
+                Ok(Box::new(DiscardedFile))
+            }),
+            ..TraceEffects::of_the_operating_system(frozen_clocks())
+        };
+        let trace = started(
+            directory,
+            &effects,
+            TraceBounds {
+                queue_lines: SMALL_QUEUE_LINES,
+                drain: TEST_DRAIN_BOUND,
+                ..TraceBounds::SPEC
+            },
+        );
+        (
+            trace,
+            HeldBackRaw {
+                entering,
+                release,
+                written,
+            },
+        )
+    }
+
+    /// What the receiver gets within `WRITER_STEP_BOUND`, failing with the condition's name when it gets nothing.
+    fn within_bound<T>(receiver: &Receiver<T>, condition: &str) -> T {
+        receiver
+            .recv_timeout(WRITER_STEP_BOUND)
+            .unwrap_or_else(|failure| panic!("{condition} within {WRITER_STEP_BOUND:?}: {failure}"))
+    }
+
+    /// The next line the held-back raw file writes once the test releases it: its number, its event and the count a `dropped` line carries.
+    fn released_line(raw: &HeldBackRaw) -> (u64, String, Option<u64>) {
+        raw.release.send(()).unwrap();
+        let line: Value =
+            serde_json::from_str(&within_bound(&raw.written, "a released line is written"))
+                .unwrap();
+        (
+            line["n"].as_u64().unwrap(),
+            line["event"].as_str().unwrap().to_owned(),
+            line["count"].as_u64(),
+        )
+    }
+
+    #[test]
+    fn observability_decision_12_the_iroh_lines_a_full_raw_queue_loses_are_counted_and_the_next_line_is_a_dropped_line_where_n_skips()
+     {
+        const LINES_PAST_THE_HELD_FIRST_LINE: usize = SMALL_QUEUE_LINES + 2;
+        let (root, directory) = scratch_trace_directory("full-queue");
+        let (trace, raw) = held_back_trace(&directory);
+        within_bound(&raw.entering, "the writer holds the raw file's first line");
+
+        with_default(raw_file_subscriber(Arc::clone(&trace)), || {
+            for _queued_or_lost in 0..LINES_PAST_THE_HELD_FIRST_LINE {
+                one_direct_addrs_line();
+            }
+        });
+        let held: Vec<_> = (0..=SMALL_QUEUE_LINES)
+            .map(|_line| released_line(&raw))
+            .collect();
+        with_default(
+            raw_file_subscriber(Arc::clone(&trace)),
+            one_direct_addrs_line,
+        );
+
+        assert_eq!(
+            held,
+            [
+                (0, SPEC_RAW_FILE_OPENED.to_owned(), None),
+                (1, SPEC_IROH_LINE.to_owned(), None),
+                (2, SPEC_IROH_LINE.to_owned(), None),
+            ]
+        );
+        assert_eq!(released_line(&raw), (5, SPEC_DROPPED.to_owned(), Some(2)));
+        assert_eq!(released_line(&raw), (6, SPEC_IROH_LINE.to_owned(), None));
+        drop(raw.release);
+        assert!(matches!(
+            trace.finish(),
+            [TraceStop::Drained, TraceStop::Drained]
+        ));
         drop(fs::remove_dir_all(&root));
     }
 }
