@@ -179,6 +179,8 @@ mod tests {
     use super::*;
     use crate::crypto::KEY_LEN;
     use crate::event::{Event, write_run_record};
+    use crate::net::direct::tests::assert_each_arm;
+    use crate::payload::PayloadError;
 
     const PEER_KEY_BYTE: u8 = 7;
 
@@ -194,5 +196,41 @@ mod tests {
         write_run_record(&mut standard_error, &event).unwrap();
 
         assert_eq!(String::from_utf8(standard_error).unwrap(), "");
+    }
+
+    #[test]
+    fn observability_decision_9_each_way_a_sent_request_fails_is_written_as_a_word_of_its_own() {
+        let cases = [
+            (DirectError::Unreachable, "unreachable"),
+            (DirectError::Timeout, "timeout"),
+            (DirectError::Refused, "refused"),
+            (
+                DirectError::UnsealableRequest(PayloadError::SignerIsNotThePayloadSigner),
+                "unsealable_request",
+            ),
+            (
+                DirectError::InvalidAck(PayloadError::SignerIsNotThePayloadSigner),
+                "invalid_ack",
+            ),
+            (DirectError::OversizedAck, "oversized_ack"),
+            (DirectError::UnexpectedAck, "unexpected_ack"),
+            (DirectError::MessageAckIdMismatch, "message_ack_id_mismatch"),
+            (DirectError::ProbeNonceMismatch, "probe_nonce_mismatch"),
+        ];
+
+        assert_each_arm(&cases, |failure| failure_text(failure), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_each_way_a_served_request_goes_unanswered_is_written_as_a_word_of_its_own()
+     {
+        let cases = [
+            (StreamEnd::OverWireLimit, "over_wire_limit"),
+            (StreamEnd::ReadTimeout, "read_timeout"),
+            (StreamEnd::Unanswered, "unanswered"),
+            (StreamEnd::PeerGone, "peer_gone"),
+        ];
+
+        assert_each_arm(&cases, |end| stream_end_text(*end), cases.len());
     }
 }

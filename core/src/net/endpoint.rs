@@ -1149,4 +1149,88 @@ mod tests {
                 if close.error_code == PEER_CLOSE_CODE && close.reason == PEER_CLOSE_REASON
         )));
     }
+
+    const VENDORED_GOSSIP_ALPN: &[u8] = b"/iroh-gossip/1";
+    const SPEC_SUPERSEDED_CLOSE_REASON: &[u8] = b"superseded";
+    const SPEC_GATE_CLOSE_REASON: &[u8] = b"gate";
+    const UNLISTED_CLOSE_REASON: &[u8] = b"a reason estafette never writes";
+    const UNLISTED_ALPN: &[u8] = b"h3";
+    const SPEC_SUPERSEDED_CLOSE_CODE: u32 = 410;
+    const PEER_TRANSPORT_CLOSE_CODE: u32 = 0x0a;
+    const CLOSES_APART: usize = 6;
+
+    #[test]
+    fn observability_decision_9_each_protocol_is_read_from_the_alpn_it_negotiated() {
+        let cases = [
+            (SPEC_DIRECT_ALPN, Protocol::Direct),
+            (VENDORED_GOSSIP_ALPN, Protocol::Gossip),
+            (UNLISTED_ALPN, Protocol::Other),
+        ];
+
+        crate::net::direct::tests::assert_each_arm(&cases, |alpn| Protocol::of(alpn), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_a_close_reason_is_read_as_one_estafette_writes_or_by_its_length_alone()
+     {
+        let cases = [
+            (SPEC_SUPERSEDED_CLOSE_REASON, CloseReason::Superseded),
+            (SPEC_GATE_CLOSE_REASON, CloseReason::Gate),
+            (
+                UNLISTED_CLOSE_REASON,
+                CloseReason::Unlisted {
+                    bytes: UNLISTED_CLOSE_REASON.len(),
+                },
+            ),
+        ];
+
+        crate::net::direct::tests::assert_each_arm(
+            &cases,
+            |reason| CloseReason::of(reason),
+            cases.len(),
+        );
+    }
+
+    #[test]
+    fn observability_decision_9_each_close_iroh_reports_is_read_as_its_side_and_a_peers_close_with_its_code_and_reason()
+     {
+        let cases = [
+            (ConnectionError::LocallyClosed, Close::ThisSide),
+            (
+                ConnectionError::ApplicationClosed(iroh::endpoint::ApplicationClose {
+                    error_code: VarInt::from_u32(SPEC_SUPERSEDED_CLOSE_CODE),
+                    reason: SPEC_SUPERSEDED_CLOSE_REASON.into(),
+                }),
+                Close::Peer {
+                    code: u64::from(SPEC_SUPERSEDED_CLOSE_CODE),
+                    reason: CloseReason::Superseded,
+                },
+            ),
+            (
+                ConnectionError::ConnectionClosed(iroh::endpoint::ConnectionClose::from(
+                    iroh::endpoint::TransportError::new(
+                        VarInt::from_u32(PEER_TRANSPORT_CLOSE_CODE).into(),
+                        String::from_utf8(SPEC_GATE_CLOSE_REASON.to_vec()).unwrap(),
+                    ),
+                )),
+                Close::Peer {
+                    code: u64::from(PEER_TRANSPORT_CLOSE_CODE),
+                    reason: CloseReason::Gate,
+                },
+            ),
+            (ConnectionError::Reset, Close::PeerReset),
+            (ConnectionError::TimedOut, Close::IdleTimeout),
+            (ConnectionError::VersionMismatch, Close::TransportFailure),
+            (
+                ConnectionError::TransportError(iroh::endpoint::TransportError::new(
+                    VarInt::from_u32(PEER_TRANSPORT_CLOSE_CODE).into(),
+                    String::new(),
+                )),
+                Close::TransportFailure,
+            ),
+            (ConnectionError::CidsExhausted, Close::TransportFailure),
+        ];
+
+        crate::net::direct::tests::assert_each_arm(&cases, Close::of, CLOSES_APART);
+    }
 }

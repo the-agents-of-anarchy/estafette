@@ -284,3 +284,74 @@ fn location_fields(location: Location) -> EventFields {
     fields.push((LOCATION_FIELD, Value::from(location.hash.hex())));
     fields
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::net::direct::tests::assert_each_arm;
+
+    const SPEC_SUPERSEDED_CLOSE_CODE: u64 = 410;
+    const UNLISTED_REASON_BYTES: usize = 37;
+
+    #[test]
+    fn observability_decision_9_each_protocol_a_connection_carries_is_written_as_a_word_of_its_own()
+    {
+        let cases = [
+            (Protocol::Direct, "direct"),
+            (Protocol::Gossip, "gossip"),
+            (Protocol::Other, "other"),
+        ];
+
+        assert_each_arm(&cases, |protocol| protocol_text(*protocol), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_a_close_reason_estafette_writes_is_named_and_any_other_is_written_by_its_length_alone()
+     {
+        let cases = [
+            (
+                CloseReason::Superseded,
+                vec![("reason", Value::from("superseded"))],
+            ),
+            (CloseReason::Gate, vec![("reason", Value::from("gate"))]),
+            (
+                CloseReason::Unlisted {
+                    bytes: UNLISTED_REASON_BYTES,
+                },
+                vec![("reason_bytes", Value::from(UNLISTED_REASON_BYTES))],
+            ),
+        ];
+
+        assert_each_arm(&cases, |reason| reason_fields(*reason), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_each_way_a_connection_closes_is_written_with_its_side_and_a_peers_close_with_its_code_and_reason()
+     {
+        let cases = [
+            (Close::ThisSide, vec![("side", Value::from("this_side"))]),
+            (
+                Close::Peer {
+                    code: SPEC_SUPERSEDED_CLOSE_CODE,
+                    reason: CloseReason::Gate,
+                },
+                vec![
+                    ("side", Value::from("peer")),
+                    ("code", Value::from(SPEC_SUPERSEDED_CLOSE_CODE)),
+                    ("reason", Value::from("gate")),
+                ],
+            ),
+            (Close::PeerReset, vec![("side", Value::from("peer_reset"))]),
+            (
+                Close::IdleTimeout,
+                vec![("side", Value::from("idle_timeout"))],
+            ),
+            (
+                Close::TransportFailure,
+                vec![("side", Value::from("transport_failure"))],
+            ),
+        ];
+
+        assert_each_arm(&cases, |close| close_fields(*close), cases.len());
+    }
+}
