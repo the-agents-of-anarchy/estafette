@@ -892,7 +892,9 @@ mod tests {
         let (before_the_snapshot, at_the_rebind) =
             recorded_until(&mut events, "state.counters").await;
         assert!(
-            !before_the_snapshot.contains(&"transport.relay_probed"),
+            !before_the_snapshot
+                .iter()
+                .any(|name| SHOWS_THE_OLD_ENDPOINT_CLOSED.contains(name)),
             "the counters are read before the old endpoint closes: {before_the_snapshot:?}"
         );
         let first_probe = next_recorded(&mut events, "transport.relay_probed").await;
@@ -962,6 +964,12 @@ mod tests {
     }
 
     const RECORDED_UNTIL_WITHIN: Duration = Duration::from_secs(10);
+    /// The events a rebind records only once its old endpoint has closed: that endpoint's connections and paths ending, then the relay probes.
+    const SHOWS_THE_OLD_ENDPOINT_CLOSED: [&str; 3] = [
+        "transport.connection_closed",
+        "transport.path_closed",
+        "transport.relay_probed",
+    ];
     const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
     const SNAPSHOT_WAIT: Duration = Duration::from_secs(61);
 
