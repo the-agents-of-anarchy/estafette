@@ -1,5 +1,3 @@
-# The gate, in a light half (every commit) and a heavy half (once per head). CI, pre-commit and `just check` run this one definition.
-
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set working-directory := '..'
 
