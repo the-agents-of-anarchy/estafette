@@ -20,7 +20,7 @@ mod observability {
         EVENTS_SUFFIX, RAW_SUFFIX, announcement_of_one_run, trace_files_of_one_run,
         traces_directory,
     };
-    use super::trace_reader::{TraceLine, parse_trace_lines, trace_lines_of};
+    use super::trace_reader::{TraceLine, parse_trace_lines, stopped_trace_lines_of};
     use serde_json::json;
 
     const SHORT_SCRATCH_PARENT: &str = "/tmp";
@@ -235,7 +235,7 @@ mod observability {
 
         assert!(output.status.success(), "{output:?}");
         let (events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
-        let lines = trace_lines_of(&raw);
+        let lines = stopped_trace_lines_of(&raw);
         let [line] = lines.as_slice() else {
             panic!("the raw file holds one line: {lines:?}");
         };
@@ -295,7 +295,7 @@ mod observability {
         runs.sort();
         let (test_send_lines, mcp_lines): (Vec<_>, Vec<_>) = runs
             .iter()
-            .map(|path| trace_lines_of(path))
+            .map(|path| stopped_trace_lines_of(path))
             .partition(|lines| lines.iter().any(|line| line.event == COMMAND_FAILED_EVENT));
         let [test_send_lines] = test_send_lines.as_slice() else {
             panic!("one test-send run: {runs:?}");
@@ -564,7 +564,7 @@ mod observability {
         runs.sort();
         let last_lines: Vec<TraceLine> = runs
             .iter()
-            .map(|path| trace_lines_of(path).pop().unwrap())
+            .map(|path| stopped_trace_lines_of(path).pop().unwrap())
             .collect();
         let [first, second] = last_lines.as_slice() else {
             panic!("two starts: {runs:?}");
@@ -706,7 +706,7 @@ mod observability {
             !fs::read(&events).unwrap().contains(&0),
             "the stopped process left its events file sized ahead of the line of its last event"
         );
-        let lines = trace_lines_of(&events);
+        let lines = stopped_trace_lines_of(&events);
         assert_eq!(
             lines.last().map(|line| line.event.as_str()),
             Some(COMMAND_FAILED_EVENT),

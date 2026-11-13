@@ -233,10 +233,21 @@ pub fn read_trace_file(path: &Path) -> Result<Vec<TraceLine>, TraceReadError> {
     })
 }
 
-/// Every whole line of the trace file, failing the test that reads a file it cannot read.
+/// Every line of the trace file of a stopped process, failing the test when the file cannot be read or keeps any byte after its last newline.
 #[track_caller]
-pub fn trace_lines_of(path: &Path) -> Vec<TraceLine> {
-    read_trace_file(path).unwrap_or_else(|failure| panic!("{failure}"))
+pub fn stopped_trace_lines_of(path: &Path) -> Vec<TraceLine> {
+    let bytes = fs::read(path).unwrap_or_else(|failure| panic!("{}: {failure}", path.display()));
+    let unended = bytes
+        .rsplit(|byte| *byte == b'\n')
+        .next()
+        .unwrap_or_default();
+    assert!(
+        unended.is_empty(),
+        "{}: {} bytes after its last whole line",
+        path.display(),
+        unended.len()
+    );
+    parse_trace_lines(&bytes).unwrap_or_else(|failure| panic!("{}: {failure}", path.display()))
 }
 
 /// The events files in the trace directory, oldest run first and each run's earlier lines first; none when the directory does not exist.
@@ -425,6 +436,29 @@ mod tests {
     }
 
     #[test]
+    fn observability_decision_12_a_stopped_process_file_keeping_bytes_after_its_last_line_fails_the_test_reading_it()
+     {
+        const UNENDED_BYTES: usize = 40;
+        let stopped_file =
+            std::env::temp_dir().join(format!("trace-reader-{}-stopped", std::process::id()));
+        let mut bytes = MEMBER_LINE.as_bytes().to_vec();
+        bytes.extend_from_slice(&MEMBER_LINE.as_bytes()[..UNENDED_BYTES]);
+        fs::write(&stopped_file, bytes).unwrap();
+
+        let failure = std::panic::catch_unwind(|| stopped_trace_lines_of(&stopped_file))
+            .map(|lines| lines.len());
+
+        assert_eq!(
+            failure.map_err(|payload| payload.downcast_ref::<String>().cloned()),
+            Err(Some(format!(
+                "{}: {UNENDED_BYTES} bytes after its last whole line",
+                stopped_file.display()
+            )))
+        );
+        drop(fs::remove_file(&stopped_file));
+    }
+
+    #[test]
     fn observability_decision_4_a_trace_directory_reads_as_its_events_files_in_run_order_leaving_out_raw_files()
      {
         let directory =
@@ -456,7 +490,7 @@ mod tests {
 
         assert_eq!(numbers, [4, 9]);
         assert_eq!(
-            trace_lines_of(
+            stopped_trace_lines_of(
                 &directory.join("20261112T225914Z-aaaaaaaaaaaaaaaa-estafette.events.jsonl")
             )[0]
             .n,
