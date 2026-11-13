@@ -7,6 +7,7 @@ use iroh::RelayUrl;
 use iroh::endpoint::RelayStatus;
 use tokio::time::Instant;
 
+/// How long a home relay stays disconnected before it leaves the relay map (spec:778, spec:1010).
 const RELAY_LOSS_WAIT: Duration = Duration::from_millis(500);
 
 /// One home relay and whether the endpoint is connected to it.
@@ -77,15 +78,17 @@ mod tests {
     use crate::seeded_draws::Draws;
 
     const STEPS_PER_CASE: u64 = 40;
+    const HOME_RELAY_STATES: u64 = 3;
+    const CONNECTED_STATE: u64 = 1;
 
     fn drawn_home_relays(draws: &mut Draws) -> Vec<HomeRelay> {
         RELAY_POOL
             .iter()
-            .filter_map(|relay| match draws.below(3) {
+            .filter_map(|relay| match draws.below(HOME_RELAY_STATES) {
                 0 => None,
                 state => Some(HomeRelay {
                     url: relay_url(relay),
-                    connected: state == 1,
+                    connected: state == CONNECTED_STATE,
                 }),
             })
             .collect()
