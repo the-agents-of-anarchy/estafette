@@ -1991,7 +1991,6 @@ pub(crate) mod tests {
     }
 
     const LONGEST_DRAWN_TEXT: u64 = 24;
-    const WAYS_TO_DRAW_BESIDE: u64 = 7;
     const SIDES_TO_PAD: u64 = 2;
     const BYTE_VALUES: u64 = 256;
     const ASCII_WHITESPACE: &[u8] = b" \t\n\x0c\r";
@@ -2057,33 +2056,80 @@ pub(crate) mod tests {
         }
     }
 
-    /// The units drawn beside the named units: lengthened, shortened, with one unit changed, with its case swapped, padded with whitespace on one side, with a unit put before it, or any units at all.
-    fn drawn_beside<Unit: DrawnUnit>(named: Vec<Unit>, draws: &mut Draws) -> Vec<Unit> {
-        let mut beside = named;
-        match draws.below(WAYS_TO_DRAW_BESIDE) {
-            0 => beside.push(Unit::drawn(draws)),
-            1 => drop(beside.pop()),
-            2 => {
-                let position = drawn_index(draws, beside.len());
-                beside[position] = Unit::drawn(draws);
-            }
-            3 => beside = beside.into_iter().map(Unit::case_swapped).collect(),
-            4 => {
-                let whitespace = Unit::drawn_whitespace(draws);
-                if draws.below(SIDES_TO_PAD) == 0 {
-                    beside.insert(0, whitespace);
-                } else {
-                    beside.push(whitespace);
-                }
-            }
-            5 => beside.insert(0, Unit::drawn(draws)),
-            _ => {
-                beside = (0..draws.below(LONGEST_DRAWN_TEXT))
-                    .map(|_| Unit::drawn(draws))
-                    .collect();
-            }
+    /// One way to draw units beside the named units.
+    type WayBeside<Unit> = fn(Vec<Unit>, &mut Draws) -> Vec<Unit>;
+
+    /// Every way to draw beside the named units, so the count of ways is the count of arms.
+    fn ways_beside<Unit: DrawnUnit>() -> [WayBeside<Unit>; 7] {
+        [
+            lengthened_by_a_unit,
+            shortened_by_a_unit,
+            with_one_unit_changed,
+            with_case_swapped,
+            padded_with_whitespace,
+            with_a_unit_before,
+            any_units,
+        ]
+    }
+
+    /// The named units with a drawn unit after them.
+    fn lengthened_by_a_unit<Unit: DrawnUnit>(mut named: Vec<Unit>, draws: &mut Draws) -> Vec<Unit> {
+        named.push(Unit::drawn(draws));
+        named
+    }
+
+    /// The named units without their last.
+    fn shortened_by_a_unit<Unit: DrawnUnit>(mut named: Vec<Unit>, _draws: &mut Draws) -> Vec<Unit> {
+        named.truncate(named.len().saturating_sub(1));
+        named
+    }
+
+    /// The named units with one of them replaced by a drawn unit.
+    fn with_one_unit_changed<Unit: DrawnUnit>(
+        mut named: Vec<Unit>,
+        draws: &mut Draws,
+    ) -> Vec<Unit> {
+        let position = drawn_index(draws, named.len());
+        named[position] = Unit::drawn(draws);
+        named
+    }
+
+    /// The named units with every ASCII letter's case swapped.
+    fn with_case_swapped<Unit: DrawnUnit>(named: Vec<Unit>, _draws: &mut Draws) -> Vec<Unit> {
+        named.into_iter().map(Unit::case_swapped).collect()
+    }
+
+    /// The named units with a drawn whitespace unit before or after them.
+    fn padded_with_whitespace<Unit: DrawnUnit>(
+        mut named: Vec<Unit>,
+        draws: &mut Draws,
+    ) -> Vec<Unit> {
+        let whitespace = Unit::drawn_whitespace(draws);
+        if draws.below(SIDES_TO_PAD) == 0 {
+            named.insert(0, whitespace);
+        } else {
+            named.push(whitespace);
         }
-        beside
+        named
+    }
+
+    /// The named units with a drawn unit before them.
+    fn with_a_unit_before<Unit: DrawnUnit>(mut named: Vec<Unit>, draws: &mut Draws) -> Vec<Unit> {
+        named.insert(0, Unit::drawn(draws));
+        named
+    }
+
+    /// Any drawn units, the named ones aside.
+    fn any_units<Unit: DrawnUnit>(_named: Vec<Unit>, draws: &mut Draws) -> Vec<Unit> {
+        (0..draws.below(LONGEST_DRAWN_TEXT))
+            .map(|_| Unit::drawn(draws))
+            .collect()
+    }
+
+    /// The units drawn beside the named units by one of the ways beside, drawn alike often.
+    fn drawn_beside<Unit: DrawnUnit>(named: Vec<Unit>, draws: &mut Draws) -> Vec<Unit> {
+        let ways = ways_beside::<Unit>();
+        ways[drawn_index(draws, ways.len())](named, draws)
     }
 
     /// Bytes drawn beside one of the named byte strings, over all 256 byte values.
