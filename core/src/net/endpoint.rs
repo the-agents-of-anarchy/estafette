@@ -1338,7 +1338,8 @@ mod tests {
         let salt = crate::net::direct::tests::test_salt();
         for case in 0..CATCH_ALL_CASES {
             let mut draws = Draws::seeded(case);
-            let transport = draws.below(u64::MAX);
+            let id_width = u32::try_from(draws.below(u64::from(u64::BITS))).unwrap();
+            let transport = draws.below(u64::MAX.checked_shr(id_width).unwrap());
             let data: Vec<u8> = (0..draws.below(LONGEST_DRAWN_CUSTOM_DATA))
                 .map(|_| u8::drawn(&mut draws))
                 .collect();
