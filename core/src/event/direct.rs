@@ -233,4 +233,109 @@ mod tests {
 
         assert_each_arm(&cases, |end| stream_end_text(*end), cases.len());
     }
+
+    const MESSAGE_ID: [u8; 16] = [
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87, 0x98, 0xA9, 0xBA, 0xCB, 0xDC, 0xED, 0xFE,
+        0x0F,
+    ];
+    const MESSAGE_ID_TEXT: &str = "10213243-5465-7687-98a9-bacbdcedfe0f";
+
+    #[test]
+    fn observability_decision_9_a_held_and_a_dialed_connection_are_written_apart() {
+        let cases = [
+            (ConnectionSource::Held, "held"),
+            (ConnectionSource::Dialed, "dialed"),
+        ];
+
+        assert_each_arm(&cases, |source| source_text(*source), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_each_refusal_code_is_written_as_the_wire_writes_it() {
+        let cases = [
+            (AckRefusal::TooLarge, "too_large"),
+            (AckRefusal::Refused, "refused"),
+            (AckRefusal::Unlisted, "unlisted"),
+        ];
+
+        assert_each_arm(&cases, |refusal| refusal_text(*refusal), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_each_request_kind_is_written_as_a_word_and_a_message_with_its_id() {
+        let cases = [
+            (
+                RequestSummary::Message(MESSAGE_ID),
+                vec![
+                    ("kind", Value::from("message")),
+                    ("message", Value::from(MESSAGE_ID_TEXT)),
+                ],
+            ),
+            (RequestSummary::Probe, vec![("kind", Value::from("probe"))]),
+            (
+                RequestSummary::Introduce,
+                vec![("kind", Value::from("introduce"))],
+            ),
+        ];
+
+        assert_each_arm(&cases, |request| request_fields(*request), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_each_outcome_of_a_sent_request_is_written_as_a_word_with_its_code_or_error()
+     {
+        let cases = [
+            (
+                SentOutcome::Acknowledged,
+                vec![("outcome", Value::from("acknowledged"))],
+            ),
+            (
+                SentOutcome::Refused(AckRefusal::TooLarge),
+                vec![
+                    ("outcome", Value::from("refused")),
+                    ("code", Value::from("too_large")),
+                ],
+            ),
+            (
+                SentOutcome::Failed(DirectError::Timeout),
+                vec![
+                    ("outcome", Value::from("failed")),
+                    ("error", Value::from("timeout")),
+                ],
+            ),
+        ];
+
+        assert_each_arm(&cases, sent_outcome_fields, cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_each_outcome_of_a_served_request_is_written_as_a_word_with_its_code_or_error()
+     {
+        let cases = [
+            (
+                ServedOutcome::Answered,
+                vec![("outcome", Value::from("answered"))],
+            ),
+            (
+                ServedOutcome::Refused(AckRefusal::Refused),
+                vec![
+                    ("outcome", Value::from("refused")),
+                    ("code", Value::from("refused")),
+                ],
+            ),
+            (
+                ServedOutcome::Unanswered(StreamEnd::PeerGone),
+                vec![
+                    ("outcome", Value::from("unanswered")),
+                    ("error", Value::from("peer_gone")),
+                ],
+            ),
+        ];
+
+        assert_each_arm(
+            &cases,
+            |outcome| served_outcome_fields(*outcome),
+            cases.len(),
+        );
+    }
 }
