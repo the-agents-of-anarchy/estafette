@@ -434,17 +434,7 @@ impl PeerTable {
         introduce: &Introduce,
         now_ms: u64,
     ) -> Operated<Vec<Effect>> {
-        self.receive_introduction(
-            card,
-            introduce,
-            &Introduction {
-                handle: introduce.handle.as_deref(),
-                public: &introduce.public,
-                attached: introduce.attached,
-                addr: &introduce.addr,
-            },
-            now_ms,
-        )
+        self.receive_introduction(card, introduce, now_ms)
     }
 
     /// Takes an `IntroduceAck` that arrived on a connection to `card`, as an accepted Presence without the seq check, or as a lookup refresh alone while the card stands departed.
@@ -454,17 +444,7 @@ impl PeerTable {
         ack: &IntroduceAck,
         now_ms: u64,
     ) -> Operated<Vec<Effect>> {
-        self.receive_introduction(
-            card,
-            ack,
-            &Introduction {
-                handle: ack.handle.as_deref(),
-                public: &ack.public,
-                attached: ack.attached,
-                addr: &ack.addr,
-            },
-            now_ms,
-        )
+        self.receive_introduction(card, ack, now_ms)
     }
 
     /// Takes a validated Message from `card`, inserting an unseen sender Online and asking to introduce this node to it, unless a Departure held for the card was sent at or after the Message.
@@ -506,10 +486,10 @@ impl PeerTable {
     fn receive_introduction(
         &mut self,
         card: PublicKey,
-        request: &impl MovesTheTable,
-        introduction: &Introduction<'_>,
+        request: &impl Introduces,
         now_ms: u64,
     ) -> Operated<Vec<Effect>> {
+        let introduction = request.introduction();
         self.operate(now_ms, |table, changes| {
             let Ok(handle) =
                 admissible_introduction_handle(introduction.handle, introduction.public)
@@ -724,6 +704,34 @@ struct Introduction<'request> {
     public: &'request [u8],
     attached: bool,
     addr: &'request Addr,
+}
+
+/// An Introduce or `IntroduceAck`: a request that moves the table by what it carries.
+trait Introduces: MovesTheTable {
+    /// What this request carries.
+    fn introduction(&self) -> Introduction<'_>;
+}
+
+impl Introduces for Introduce {
+    fn introduction(&self) -> Introduction<'_> {
+        Introduction {
+            handle: self.handle.as_deref(),
+            public: &self.public,
+            attached: self.attached,
+            addr: &self.addr,
+        }
+    }
+}
+
+impl Introduces for IntroduceAck {
+    fn introduction(&self) -> Introduction<'_> {
+        Introduction {
+            handle: self.handle.as_deref(),
+            public: &self.public,
+            attached: self.attached,
+            addr: &self.addr,
+        }
+    }
 }
 
 /// An Introduce or `IntroduceAck` the node drops: its handle is outside the announced-handle grammar, or its `public` is one no card sends (spec 3.1, 3.5).
