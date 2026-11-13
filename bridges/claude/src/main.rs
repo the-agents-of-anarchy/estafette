@@ -96,6 +96,11 @@ fn usage() -> String {
     )
 }
 
+/// The clause a trace-start refusal ends with, naming the flag that runs without a trace.
+fn trace_skip_hint() -> String {
+    format!("run with {NO_DEBUG_FLAG} to write no trace")
+}
+
 /// The help of `run`: what it does, reads, writes and refuses, and what its debug trace writes, where, that it is safe to post, and its bounds.
 fn run_help() -> String {
     let events = events_trace_file_name(&run_name_pattern(Program::Bridge));
@@ -219,11 +224,13 @@ impl fmt::Display for CommandError {
             Self::ProcessTable(source) => source.fmt(formatter),
             Self::DataDirectoryUnresolvable(source) => write!(
                 formatter,
-                "cannot place the debug trace: {source}; run with --no-debug to write no trace"
+                "cannot place the debug trace: {source}; {}",
+                trace_skip_hint()
             ),
             Self::RunIdUnreadable(source) => write!(
                 formatter,
-                "cannot read the secure random source for the run id of the debug trace: {source}; run with --no-debug to write no trace"
+                "cannot read the secure random source for the run id of the debug trace: {source}; {}",
+                trace_skip_hint()
             ),
             Self::TraceRefused(source) => source.fmt(formatter),
         }
