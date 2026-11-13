@@ -234,9 +234,10 @@ fn observability_decision_14_a_gate_closing_reported_while_the_wait_runs_is_coun
         report_gate_closing(GateFailure::Timeout);
     });
 
-    release_reporter.send(()).unwrap();
     let waiting_since = Instant::now();
-    let counted = closings.wait_beyond(0, EVENT_BOUND);
+    let counted = closings.wait_beyond_after(0, EVENT_BOUND, || {
+        release_reporter.send(()).unwrap();
+    });
     let waited = waiting_since.elapsed();
 
     assert_eq!(counted, 1);

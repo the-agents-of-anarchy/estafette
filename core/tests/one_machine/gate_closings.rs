@@ -32,10 +32,25 @@ impl GateClosings {
     /// The count of closings once it rises above `already`, failing naming the closing awaited when the bound runs out first.
     #[track_caller]
     pub fn wait_beyond(&self, already: usize, within: Duration) -> usize {
+        self.wait_beyond_after(already, within, || {})
+    }
+
+    /// As `wait_beyond`, running `once_waiting` while the wait holds the count, so a closing it lets a reporter make is counted only once the wait runs.
+    #[track_caller]
+    pub fn wait_beyond_after(
+        &self,
+        already: usize,
+        within: Duration,
+        once_waiting: impl FnOnce(),
+    ) -> usize {
+        let mut once_waiting = Some(once_waiting);
         let (count, outcome) = self
             .reported
             .rose
             .wait_timeout_while(self.reported.count.lock().unwrap(), within, |count| {
+                if let Some(release_while_held) = once_waiting.take() {
+                    release_while_held();
+                }
                 *count <= already
             })
             .unwrap();
