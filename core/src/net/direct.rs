@@ -13,12 +13,12 @@ use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::{Instant, sleep, timeout};
 
 use super::endpoint::{
-    Close, CloseReason, ConnectionId, DIRECT_ALPN, Direction, NodeEndpoint, PathChange, PeerId,
-    Protocol, QUIC_KEEP_ALIVE_INTERVAL, TransportRecord,
+    Close, CloseReason, ConnectionId, DIRECT_ALPN, Direction, NodeEndpoint, PathChange, Protocol,
+    QUIC_KEEP_ALIVE_INTERVAL, TransportRecord,
 };
 use crate::crypto::NetworkKeys;
 use crate::errors::ErrorCode;
-use crate::event::{DirectEvent, Event, TransportEvent};
+use crate::event::{DirectEvent, Event, ShortId, TransportEvent};
 use crate::payload::{
     PayloadError, ZERO_MAC, open_request, open_response, seal_request, seal_response,
 };
@@ -142,7 +142,7 @@ impl HeldConnections {
         for connection in connections {
             self.record(|_transport| TransportEvent::ConnectionClosing {
                 connection: ConnectionId::of(&connection),
-                peer: PeerId::of(connection.remote_id()),
+                peer: ShortId::from(connection.remote_id()),
                 code: SUPERSEDED_CONNECTION_CLOSE_CODE,
                 reason: CloseReason::Superseded,
             });
@@ -169,7 +169,7 @@ impl HeldConnections {
         let paths = connection.path_events();
         self.record(|_transport| TransportEvent::ConnectionOpened {
             connection: ConnectionId::of(connection),
-            peer: PeerId::of(connection.remote_id()),
+            peer: ShortId::from(connection.remote_id()),
             direction: Direction::of(connection.side()),
             protocol: Protocol::of(connection.alpn()),
         });
@@ -497,7 +497,7 @@ impl ServedOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SentRequest {
     pub request: RequestSummary,
-    pub peer: PeerId,
+    pub peer: ShortId,
     pub connection: Option<(ConnectionId, ConnectionSource)>,
     pub outcome: SentOutcome,
     pub elapsed_ms: u64,
@@ -507,7 +507,7 @@ pub struct SentRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServedRequest {
     pub request: Option<RequestSummary>,
-    pub peer: PeerId,
+    pub peer: ShortId,
     pub connection: ConnectionId,
     pub outcome: ServedOutcome,
     pub elapsed_ms: u64,
@@ -722,7 +722,7 @@ impl<H: DirectHost> ServerState<H> {
         self.held.record(|_transport| {
             DirectEvent::RequestServed(ServedRequest {
                 request,
-                peer: PeerId::of(arrived_on.remote_id()),
+                peer: ShortId::from(arrived_on.remote_id()),
                 connection: ConnectionId::of(arrived_on),
                 outcome: outcome.unwrap_or_else(ServedOutcome::Unanswered),
                 elapsed_ms: milliseconds_of(elapsed),
@@ -983,7 +983,7 @@ impl DirectClient {
         self.register.record(|_transport| {
             DirectEvent::RequestSent(SentRequest {
                 request: summary,
-                peer: PeerId::of(to),
+                peer: ShortId::from(to),
                 connection,
                 outcome: acknowledged.as_ref().map_or_else(
                     |failure| SentOutcome::Failed(failure.clone()),

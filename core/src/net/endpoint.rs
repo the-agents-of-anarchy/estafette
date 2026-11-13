@@ -285,24 +285,6 @@ impl ConnectionId {
     }
 }
 
-/// A node named by iroh's short form of its endpoint id, the form iroh's own trace lines and this trace's `node` use.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeerId(String);
-
-impl PeerId {
-    /// The node's endpoint id in iroh's short form.
-    #[must_use]
-    pub fn of(node: EndpointId) -> Self {
-        Self(node.fmt_short().to_string())
-    }
-
-    /// The short form as text.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 /// Whether this side dialed a connection or accepted it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -530,6 +512,7 @@ impl CounterSnapshot {
 mod tests {
     use super::*;
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
+    use crate::event::ShortId;
     use crate::net::direct::tests::{CATCH_ALL_CASES, DrawnUnit, bytes_beside};
     use crate::seeded_draws::Draws;
     use iroh::endpoint::{
@@ -1393,7 +1376,7 @@ mod tests {
             (
                 TransportEvent::ConnectionOpened {
                     connection: ConnectionId(TESTED_CONNECTION),
-                    peer: PeerId::of(tested_peer()),
+                    peer: ShortId::from(tested_peer()),
                     direction: Direction::Dialed,
                     protocol: Protocol::Direct,
                 }
@@ -1403,7 +1386,7 @@ mod tests {
             (
                 TransportEvent::ConnectionClosing {
                     connection: ConnectionId(TESTED_CONNECTION),
-                    peer: PeerId::of(tested_peer()),
+                    peer: ShortId::from(tested_peer()),
                     code: SPEC_SUPERSEDED_CLOSE_CODE,
                     reason: CloseReason::Superseded,
                 }
@@ -1485,7 +1468,7 @@ mod tests {
             (
                 crate::event::DirectEvent::RequestSent(crate::net::direct::SentRequest {
                     request: crate::net::direct::RequestSummary::Probe,
-                    peer: PeerId::of(tested_peer()),
+                    peer: ShortId::from(tested_peer()),
                     connection: None,
                     outcome: crate::net::direct::SentOutcome::Acknowledged,
                     elapsed_ms: ELAPSED_MS,
@@ -1496,7 +1479,7 @@ mod tests {
             (
                 crate::event::DirectEvent::RequestServed(crate::net::direct::ServedRequest {
                     request: None,
-                    peer: PeerId::of(tested_peer()),
+                    peer: ShortId::from(tested_peer()),
                     connection: ConnectionId(TESTED_CONNECTION),
                     outcome: crate::net::direct::ServedOutcome::Answered,
                     elapsed_ms: ELAPSED_MS,

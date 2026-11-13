@@ -2,10 +2,11 @@ use iroh::endpoint::{BindError, PathId};
 use serde_json::Value;
 use tokio::task::JoinError;
 
+use super::gossip::ShortId;
 use super::{AreaEvent, EventFields};
 use crate::net::endpoint::{
     Close, CloseReason, ConnectionId, Direction, GateFailure, Location, LocationKind, PathChange,
-    PeerId, Protocol, RebindCause,
+    Protocol, RebindCause,
 };
 
 const CAUSE_FIELD: &str = "cause";
@@ -52,14 +53,14 @@ pub enum TransportEvent {
     /// The gate let a connection through: this side dialed it or accepted it, for one protocol.
     ConnectionOpened {
         connection: ConnectionId,
-        peer: PeerId,
+        peer: ShortId,
         direction: Direction,
         protocol: Protocol,
     },
     /// This process closes a connection it holds, with the code and reason it writes.
     ConnectionClosing {
         connection: ConnectionId,
-        peer: PeerId,
+        peer: ShortId,
         code: u32,
         reason: CloseReason,
     },
@@ -151,7 +152,7 @@ impl AreaEvent for TransportEvent {
                 protocol,
             } => vec![
                 connection_field(*connection),
-                peer_field(peer),
+                peer_field(*peer),
                 (DIRECTION_FIELD, Value::from(direction_text(*direction))),
                 (PROTOCOL_FIELD, Value::from(protocol_text(*protocol))),
             ],
@@ -163,7 +164,7 @@ impl AreaEvent for TransportEvent {
             } => [
                 vec![
                     connection_field(*connection),
-                    peer_field(peer),
+                    peer_field(*peer),
                     (CODE_FIELD, Value::from(*code)),
                 ],
                 reason_fields(*reason),
@@ -224,9 +225,9 @@ pub(super) fn connection_field(connection: ConnectionId) -> (&'static str, Value
     (CONNECTION_FIELD, Value::from(connection.value()))
 }
 
-/// The node's id in iroh's short form, as a field.
-pub(super) fn peer_field(peer: &PeerId) -> (&'static str, Value) {
-    (PEER_FIELD, Value::from(peer.as_str()))
+/// The node's five-byte id, as a field.
+pub(super) fn peer_field(peer: ShortId) -> (&'static str, Value) {
+    (PEER_FIELD, peer.field())
 }
 
 /// The direction of a connection as the events file writes it.

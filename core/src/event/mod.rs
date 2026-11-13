@@ -39,7 +39,7 @@ mod state;
 mod transport;
 
 pub use direct::{DirectEvent, DirectEventName};
-pub use gossip::{GossipEvent, GossipEventName};
+pub use gossip::{GossipEvent, GossipEventName, ShortId};
 pub use inbox::{InboxEvent, InboxEventName, ListCardsFailure};
 pub use peer_table::{PeerTableEvent, PeerTableEventName};
 pub use process::{CLOCK_BEFORE_UNIX_EPOCH, ClaimFailure, ProcessEvent, ProcessEventName};

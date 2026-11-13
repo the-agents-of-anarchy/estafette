@@ -61,7 +61,7 @@ impl AreaEvent for DirectEvent {
             Self::ContactFailed { .. } => Vec::new(),
             Self::RequestSent(sent) => [
                 request_fields(sent.request),
-                vec![peer_field(&sent.peer)],
+                vec![peer_field(sent.peer)],
                 sent.connection
                     .map(|(connection, source)| {
                         vec![
@@ -76,10 +76,7 @@ impl AreaEvent for DirectEvent {
             .concat(),
             Self::RequestServed(served) => [
                 served.request.map(request_fields).unwrap_or_default(),
-                vec![
-                    peer_field(&served.peer),
-                    connection_field(served.connection),
-                ],
+                vec![peer_field(served.peer), connection_field(served.connection)],
                 served_outcome_fields(served.outcome),
                 vec![(ELAPSED_FIELD, Value::from(served.elapsed_ms))],
             ]
