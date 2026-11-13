@@ -383,14 +383,17 @@ mod tests {
 
     use super::{MemberJoins, RebindSchedule, RelayProbe, relay_answers};
     use crate::event::{Event, RunRecord, TransportEvent};
-    use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, DirectServer};
+    use crate::net::direct::{
+        ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock,
+    };
     use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
     use crate::net::gossip::{GossipEvent, NetworkTopic};
     use crate::node::presence::acknowledgement_of;
     use crate::node::presence::tests::{
         FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, MARKER_SEED, Member, MemberPlan,
-        OWNER_SEED, PAYLOAD_WAIT, Scratch, WITNESS_SEED, Witness, bind, card, entry_meeting_within,
-        frozen_clock, keys, secret_key, spawn_member, start_members, start_members_reaching,
+        OWNER_SEED, PAYLOAD_WAIT, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, Scratch, WITNESS_SEED,
+        Witness, bind, card, entry_meeting_within, frozen_clock, keys, presence_from,
+        presence_request_by, secret_key, spawn_member, start_members, start_members_reaching,
         status_within, unreachable_about, wall_clock_ms,
     };
     use crate::payload::ZERO_MAC;
@@ -432,6 +435,11 @@ mod tests {
     const REBIND_SLACK: Duration = Duration::from_secs(2);
     const REBIND_POLL: Duration = Duration::from_millis(20);
     const ATTACHED_ONLY_IN_THE_PEERS_ACK: bool = true;
+    const ANSWERING_MEMBER_DEAF_LATER_BY: Duration = Duration::from_secs(20);
+    const SPEC_REBINDS_JOIN_WITHIN: Duration = SPEC_DEAF_TIMEOUT
+        .saturating_add(IROH_DOCUMENTED_CLOSE_LATENCY)
+        .saturating_add(SPEC_RELAY_PROBE_TIMEOUT)
+        .saturating_add(REBIND_SLACK);
 
     /// What a test heard, in order, waking each waiter at every new entry.
     struct Heard<T>(Arc<watch::Sender<Vec<T>>>);
@@ -893,6 +901,60 @@ mod tests {
         assert_eq!(host.last_seq_before(rebound), Some(FROZEN_CLOCK_MS));
         assert_eq!(announced_after, Some(FROZEN_CLOCK_MS + 1));
         drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_member_whose_wall_clock_stands_still_asks_again_at_its_rebinds_join_and_a_member_answers()
+     {
+        let scratch = Scratch::new("ask-again").await;
+        let leading: MonotonicClock = Arc::new(|| {
+            Instant::now()
+                .checked_add(ANSWERING_MEMBER_DEAF_LATER_BY)
+                .unwrap()
+        });
+        let answering = start_members(
+            &scratch,
+            vec![
+                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                    .with_clock(frozen_clock(FROZEN_CLOCK_MS))
+                    .with_monotonic(leading),
+            ],
+        )
+        .await
+        .pop()
+        .unwrap();
+        let mut witness = Witness::joined_through(WITNESS_SEED, None, &answering.endpoint).await;
+
+        let _asking = start_members_reaching(
+            &scratch,
+            vec![
+                MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
+                    .with_hosts(&[WITNESS_SEED])
+                    .with_clock(frozen_clock(FROZEN_CLOCK_MS)),
+            ],
+            &[(WITNESS_SEED, witness.address())],
+        )
+        .await;
+        let first_ask = witness
+            .payload_where(PAYLOAD_WAIT, presence_request_by(SECOND_SEED))
+            .await;
+        let ask_at_the_rebinds_join = witness
+            .payload_where(SPEC_REBINDS_JOIN_WITHIN, presence_request_by(SECOND_SEED))
+            .await;
+        let answer = witness
+            .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
+            .await;
+
+        assert!(request_seq(first_ask) < request_seq(ask_at_the_rebinds_join));
+        assert!(answer.is_some());
+        drop(scratch);
+    }
+
+    fn request_seq(payload: Option<Payload>) -> u64 {
+        let Some(Payload::PresenceRequest(request)) = payload else {
+            panic!("a presence request was expected");
+        };
+        request.seq
     }
 
     #[tokio::test]

@@ -755,6 +755,7 @@ pub(super) struct PresenceLoop {
     announcer: Announcer,
     reannounce_due: Option<Instant>,
     heard_requests: HeardPresenceRequests,
+    last_request_seq: Option<u64>,
     pub(super) relay_loss: RelayLossWatch,
     pub(super) known_hosts: KnownHosts,
     pub(super) rebinding: Rebinding,
@@ -813,6 +814,7 @@ impl PresenceLoop {
             announcer: Announcer::default(),
             reannounce_due: None,
             heard_requests: HeardPresenceRequests::default(),
+            last_request_seq: None,
             relay_loss: RelayLossWatch::default(),
             known_hosts: KnownHosts::new(network.config, network.config_path),
             rebinding: Rebinding::new(subscribed, effects.probe_relay),
@@ -924,12 +926,14 @@ impl PresenceLoop {
         .await;
     }
 
-    /// Broadcasts a request that every member announce itself at once, signed by this node's card and dated now, unless this node is stopping.
-    async fn request_presence(&self) {
+    /// Broadcasts a request that every member announce itself at once, signed by this node's card with a seq above its last request's, unless this node is stopping.
+    async fn request_presence(&mut self) {
         if self.state.is_stopping() {
             return;
         }
-        self.broadcast(presence_request(self.state.own_card, self.state.now_ms()))
+        let seq = next_seq_after(self.last_request_seq, self.state.now_ms());
+        self.last_request_seq = Some(seq);
+        self.broadcast(presence_request(self.state.own_card, seq))
             .await;
     }
 
@@ -1183,6 +1187,11 @@ fn sparing_the_answering_connection(effects: Vec<Effect>) -> Vec<Effect> {
         .collect()
 }
 
+/// The seq a payload this node signs carries after the last of its kind: `max(now_ms, last + 1)`, rising whatever the wall clock does.
+fn next_seq_after(last: Option<u64>, now_ms: u64) -> u64 {
+    last.map_or(now_ms, |last| now_ms.max(last.saturating_add(1)))
+}
+
 /// Whether an Unreachable report about this node calls for a new Presence: within the announcement max age and not below the last Presence's seq.
 fn is_rumor_to_answer(report_ts: u64, last_presence_seq: Option<u64>, now_ms: u64) -> bool {
     is_within_announcement_max_age(report_ts, now_ms)
@@ -1211,11 +1220,9 @@ struct Announcer {
 }
 
 impl Announcer {
-    /// The seq of the next Presence: `max(now_ms, last_seq + 1)`.
+    /// The seq of the next Presence, above the last one this node sent.
     fn next_seq(&self, now_ms: u64) -> u64 {
-        self.last
-            .as_ref()
-            .map_or(now_ms, |last| now_ms.max(last.seq.saturating_add(1)))
+        next_seq_after(self.last_seq(), now_ms)
     }
 
     /// The seq of the last Presence this node sent, if any.
@@ -2281,7 +2288,7 @@ pub(super) mod tests {
             Self { clock, ..self }
         }
 
-        fn with_monotonic(self, monotonic: MonotonicClock) -> Self {
+        pub(in crate::node) fn with_monotonic(self, monotonic: MonotonicClock) -> Self {
             Self { monotonic, ..self }
         }
     }
@@ -2514,11 +2521,11 @@ pub(super) mod tests {
         drop(scratch);
     }
 
-    fn presence_from(seed: u8) -> impl FnMut(&Payload) -> bool {
+    pub(in crate::node) fn presence_from(seed: u8) -> impl FnMut(&Payload) -> bool {
         move |payload| matches!(payload, Payload::Presence(presence) if presence.card == card(seed))
     }
 
-    fn presence_request_by(seed: u8) -> impl FnMut(&Payload) -> bool {
+    pub(in crate::node) fn presence_request_by(seed: u8) -> impl FnMut(&Payload) -> bool {
         move |payload| matches!(payload, Payload::PresenceRequest(request) if request.requester == card(seed))
     }
 
