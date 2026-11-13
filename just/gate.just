@@ -16,7 +16,7 @@ check: check-light check-heavy
 [group('verify')]
 check-light: fmt-check clippy clippy-relay
 
-[doc("The heavy gate, run once at a head: every test of the workspace, then the pinned advisory audit, both always run; writes one evidence file (commit, tree, worktree status, times, each exit code, every test result line with its binary, ignored tests, the full log's path) under target/heavy-evidence/ or at evidence_path, whatever the outcome, prints its absolute path as the last line of standard output and exits nonzero when either command failed")]
+[doc("The heavy gate, run once at a head: takes the machine-wide heavy gate lock first, printing the holder and waiting while another heavy gate holds it, then every test of the workspace, then the pinned advisory audit, both always run; writes one evidence file (commit, tree, worktree status, seconds waited for the lock, times, each exit code, every test result line with its binary, ignored tests, the full log's path) under target/heavy-evidence/ or at evidence_path, whatever the outcome, prints its absolute path as the last line of standard output and exits nonzero when either command failed")]
 [group('verify')]
 check-heavy evidence_path="":
     python3 -I {{ quote(heavy_evidence_script) }} {{ quote(evidence_path) }}

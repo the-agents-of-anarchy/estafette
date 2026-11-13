@@ -1,14 +1,22 @@
-"""Run the two commands of the heavy gate and write one evidence file for the run."""
+"""Run the two commands of the heavy gate under a machine-wide lock and write one evidence file for the run."""
 import argparse
+import fcntl
+import os
 import re
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, NamedTuple, Sequence
+from typing import IO, Callable, Iterator, NamedTuple, Sequence
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_EVIDENCE_DIRECTORY = REPOSITORY_ROOT / 'target' / 'heavy-evidence'
+HEAVY_GATE_LOCK_PATH = Path.home() / '.cache' / 'estafette' / 'heavy-gate.lock'
+LOCK_POLL_SECONDS = 1
+LOCK_WAIT_REPORT_SECONDS = 60
+UNKNOWN_HOLDER = 'unknown (its record is not written yet)'
 EVIDENCE_SUFFIX = '.txt'
 LOG_SUFFIX = '.log'
 PARTIAL_SUFFIX = '.partial'
@@ -94,7 +102,43 @@ def render_entries(entries: Sequence[str]) -> str:
     return '\n'.join(entries) if entries else NO_ENTRIES_WORD
 
 
-def render_evidence(identity: HeadIdentity, started: datetime, ended: datetime, test_run: CommandRun, audit_run: CommandRun, log_path: Path) -> str:
+def render_holder_record() -> str:
+    """Name this process, its checkout and the moment it took the lock."""
+    since = datetime.now().astimezone().isoformat(timespec='seconds')
+    return f'pid {os.getpid()}, checkout {REPOSITORY_ROOT}, since {since}'
+
+
+def read_holder_record(lock_path: Path) -> str:
+    """Return the record the lock's holder wrote, or say it is unknown."""
+    return lock_path.read_text().strip() or UNKNOWN_HOLDER
+
+
+@contextmanager
+def hold_exclusive_lock(lock_path: Path, render_record: Callable[[], str]) -> Iterator[int]:
+    """Hold an exclusive lock the operating system releases with the process, yielding the seconds waited for it."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a+') as lock_file:
+        waiting_since = time.monotonic()
+        report_after = 0.0
+        while True:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                waited = time.monotonic() - waiting_since
+                if waited >= report_after:
+                    sys.stderr.write(f'waiting for the heavy gate lock held by {read_holder_record(lock_path)}; waited {round(waited)} s\n')
+                    report_after = waited + LOCK_WAIT_REPORT_SECONDS
+                time.sleep(LOCK_POLL_SECONDS)
+        seconds_waited = round(time.monotonic() - waiting_since)
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(render_record())
+        lock_file.flush()
+        yield seconds_waited
+
+
+def render_evidence(identity: HeadIdentity, seconds_waited: int, started: datetime, ended: datetime, test_run: CommandRun, audit_run: CommandRun, log_path: Path) -> str:
     """Render the evidence file of one heavy run."""
     results = find_test_results(test_run.lines)
     result_entries = [f'{result.binary_line}\n    {result.result_line}' for result in results]
@@ -102,6 +146,7 @@ def render_evidence(identity: HeadIdentity, started: datetime, ended: datetime, 
         f'commit: {identity.commit}',
         f'tree: {identity.tree}',
         render_worktree_status(identity.status),
+        f'seconds waited for the lock: {seconds_waited}',
         f'started: {started.isoformat(timespec="seconds")}',
         f'ended: {ended.isoformat(timespec="seconds")}',
         f'exit code of {" ".join(test_run.command)}: {test_run.exit_code}',
@@ -138,18 +183,19 @@ def parse_arguments() -> argparse.Namespace:
 
 
 def main() -> int:
-    """Run the test command, then the audit command, write the evidence and print its path; exit with the first failing code."""
+    """Wait for the lock, run the test command, then the audit command, write the evidence and print its path; exit with the first failing code."""
     arguments = parse_arguments()
-    identity = read_head_identity()
-    started = datetime.now().astimezone()
-    evidence_path = choose_evidence_path(arguments.evidence_path, started, identity.commit)
-    log_path = evidence_path.with_name(evidence_path.name + LOG_SUFFIX)
-    evidence_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open('w') as log:
-        test_run = run_command_into_log(TEST_COMMAND, log)
-        audit_run = run_command_into_log(AUDIT_COMMAND, log)
-    ended = datetime.now().astimezone()
-    write_by_rename(evidence_path, render_evidence(identity, started, ended, test_run, audit_run, log_path))
+    with hold_exclusive_lock(HEAVY_GATE_LOCK_PATH, render_holder_record) as seconds_waited:
+        identity = read_head_identity()
+        started = datetime.now().astimezone()
+        evidence_path = choose_evidence_path(arguments.evidence_path, started, identity.commit)
+        log_path = evidence_path.with_name(evidence_path.name + LOG_SUFFIX)
+        evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open('w') as log:
+            test_run = run_command_into_log(TEST_COMMAND, log)
+            audit_run = run_command_into_log(AUDIT_COMMAND, log)
+        ended = datetime.now().astimezone()
+        write_by_rename(evidence_path, render_evidence(identity, seconds_waited, started, ended, test_run, audit_run, log_path))
     print(evidence_path)
     return test_run.exit_code or audit_run.exit_code
 
