@@ -5,6 +5,10 @@ mod trace_files;
 #[path = "support/trace_reader.rs"]
 mod trace_reader;
 
+#[cfg(test)]
+#[path = "support/whole_trace_lines.rs"]
+mod whole_trace_lines;
+
 /// The trace seam of spec/observability.md, decisions 3, 4, 5 and 12, through the shipped binary.
 #[cfg(test)]
 mod observability {
@@ -14,13 +18,15 @@ mod observability {
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Output, Stdio};
-    use std::time::{Duration, Instant};
 
     use super::trace_files::{
         EVENTS_SUFFIX, RAW_SUFFIX, announcement_of_one_run, trace_files_of_one_run,
         traces_directory,
     };
-    use super::trace_reader::{TraceLine, parse_trace_lines, stopped_trace_lines_of};
+    use super::trace_reader::{TraceLine, stopped_trace_lines_of};
+    use super::whole_trace_lines::{
+        WHOLE_LINE_WAIT, holds_within_the_wait, whole_lines_of_a_run_file,
+    };
     use serde_json::json;
 
     const SHORT_SCRATCH_PARENT: &str = "/tmp";
@@ -49,9 +55,7 @@ mod observability {
     const TOML_EXTENSION: &str = "toml";
     const CARD: &str = "alice";
     const KILLED_AFTER_ANSWERS: usize = 50;
-    const WHOLE_LINE_WAIT: Duration = Duration::from_secs(10);
     const FIRST_TOOL_CALL_ID: usize = 2;
-    const SPEC_TRACE_FILE_SIZED_AHEAD_BYTES: usize = 65_536;
     const UNREADABLE_CARDS_DIRECTORY: &str = "cards-is-a-file";
     const COMMAND_FAILED_EVENT: &str = "process.command_failed";
     const RAW_FILE_OPENED_EVENT: &str = "raw_file_opened";
@@ -575,57 +579,9 @@ mod observability {
         drop(fs::remove_dir_all(&root));
     }
 
-    /// The whole lines of a run's trace file, failing unless all that follows them is at most one unended start of the run's own next line and then zero bytes to the next 64 KiB boundary.
-    fn whole_lines_of_a_run_file(path: &Path) -> Vec<TraceLine> {
-        let name = path.file_name().unwrap().to_str().unwrap();
-        let run = name.split('-').nth(1).unwrap();
-        let own_line_start = format!("{{\"v\":1,\"run\":\"{run}\"");
-        let bytes = fs::read(path).unwrap();
-        let content_end = bytes
-            .iter()
-            .rposition(|byte| *byte != 0)
-            .map_or(0, |last| last.saturating_add(1));
-        assert!(
-            bytes
-                .len()
-                .is_multiple_of(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES)
-                && bytes.len().saturating_sub(content_end) <= SPEC_TRACE_FILE_SIZED_AHEAD_BYTES,
-            "{name}: {} bytes after {content_end} bytes of content do not end at the next 64 KiB boundary",
-            bytes.len().saturating_sub(content_end)
-        );
-        let content = &bytes[..content_end];
-        assert!(
-            !content.contains(&0),
-            "{name}: a zero byte before the file's last byte that is not one"
-        );
-        let unended = content
-            .rsplit(|byte| *byte == b'\n')
-            .next()
-            .unwrap_or_default();
-        assert!(
-            unended.starts_with(own_line_start.as_bytes())
-                || own_line_start.as_bytes().starts_with(unended),
-            "{name}: the {} bytes after its last whole line are not the start of this run's own line",
-            unended.len()
-        );
-        let lines =
-            parse_trace_lines(content).unwrap_or_else(|failure| panic!("{name}: {failure}"));
-        for line in &lines {
-            assert_eq!(line.run, run, "{name}");
-        }
-        lines
-    }
-
     /// Whether the trace file of a running process comes to hold a whole line within `WHOLE_LINE_WAIT`.
     fn holds_a_whole_line_within_the_wait(path: &Path) -> bool {
-        let deadline = Instant::now().checked_add(WHOLE_LINE_WAIT).unwrap();
-        while whole_lines_of_a_run_file(path).is_empty() {
-            if Instant::now() >= deadline {
-                return false;
-            }
-            std::thread::yield_now();
-        }
-        true
+        holds_within_the_wait(path, |lines| !lines.is_empty())
     }
 
     #[test]
