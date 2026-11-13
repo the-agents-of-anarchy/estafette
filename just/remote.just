@@ -13,7 +13,11 @@ ssh_opts := "-i " + key + " -o IdentitiesOnly=yes -o UserKnownHostsFile=" + know
 lab_root := env("LAB_ROOT", "/tmp/estafette-lab")
 mac_binary := env("LAB_BINARY", "target/debug/estafette")
 lab_network := "lab"
-lab_directories := "XDG_CONFIG_HOME=" + lab_root / "config" + " XDG_DATA_HOME=" + lab_root / "data" + " XDG_RUNTIME_DIR=" + lab_root / "run"
+lab_data := lab_root / "data"
+lab_config_and_runtime := "XDG_CONFIG_HOME=" + lab_root / "config" + " XDG_RUNTIME_DIR=" + lab_root / "run"
+lab_directories := lab_config_and_runtime + " XDG_DATA_HOME=" + lab_data
+lab_cards_directory := lab_data / "estafette/cards"
+lab_members_data := lab_data / "members"
 lab_server_type := env("LAB_SERVER_TYPE", "cpx22")
 lab_location := "nbg1"
 lab_image := "ubuntu-24.04"
@@ -79,12 +83,12 @@ estafette *arguments:
     umask 077 && mkdir -p {{ lab_root }}/run && chmod 0700 {{ lab_root }}
     env {{ lab_directories }} {{ mac_binary }} "$@"
 
-[doc("Serve the card as a lab member on this machine until SIGTERM, printing its init envelope; its run record goes to stderr")]
+[doc("Serve the card as a lab member on this machine until SIGTERM, printing its init envelope, with the default debug trace in a data directory of its own under LAB_ROOT/data/members/<card> and the lab's cards; its run record goes to stderr")]
 [group('lab')]
 member card:
-    umask 077 && mkdir -p {{ lab_root }}/run && chmod 0700 {{ lab_root }}
+    umask 077 && mkdir -p {{ lab_root }}/run {{ lab_members_data }} && chmod 0700 {{ lab_root }}
     rm -f {{ lab_root }}/{{ card }}.control
-    env {{ lab_directories }} python3 -I just/remote/member.py serve {{ mac_binary }} {{ lab_network }} {{ card }} {{ lab_root }}/{{ card }}.control
+    env {{ lab_config_and_runtime }} XDG_DATA_HOME={{ lab_members_data }}/{{ card }} ESTAFETTE_CARDS_DIR={{ lab_cards_directory }} python3 -I just/remote/member.py serve {{ mac_binary }} {{ lab_network }} {{ card }} {{ lab_root }}/{{ card }}.control
 
 [doc("Call one tool of the lab member serving the card on this machine, e.g. just remote::call mac send '{\"to\":\"srv\",\"body\":\"hi\"}'")]
 [group('lab')]
