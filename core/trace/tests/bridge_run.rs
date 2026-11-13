@@ -11,7 +11,6 @@ mod observability {
         BridgeRun, RUN_ID_BYTES, RunId, TraceBounds, TraceClocks, TraceDirectory, TraceEffects,
         TraceStop,
     };
-    use serde_json::Value;
 
     const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
     const RUN_BYTES: [u8; RUN_ID_BYTES] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
@@ -21,7 +20,7 @@ mod observability {
     const START_STAMP: &str = "20000229T235959Z";
     const NOW_MS: u64 = 2_000_000_000_000;
     const SMALL_FRESHNESS_MS: u64 = 10_000;
-    const SMALL_DIRECTORY_BYTES: u64 = 250;
+    const SMALL_DIRECTORY_BYTES: u64 = 150;
     const OLD_FILE_BYTES: u64 = 100;
     const ONE_EVENT: &str = "process.clock_before_unix_epoch";
 
@@ -109,9 +108,16 @@ mod observability {
         drop(fs::remove_dir_all(&root));
     }
 
+    /// The line a bridge run writes for `ONE_EVENT` as its line `n`: the header in its order and no node.
+    fn one_event_line(n: u64) -> String {
+        format!(
+            "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{START_WALL_MS},\"event\":\"{ONE_EVENT}\"}}\n"
+        )
+    }
+
     #[test]
-    fn observability_decision_5_the_lines_of_a_bridge_run_carry_no_node_and_begin_with_the_header()
-    {
+    fn observability_decision_5_the_lines_of_a_bridge_run_begin_with_the_header_in_its_order_and_carry_no_node()
+     {
         let (root, directory) = scratch_trace_directory("bridge-no-node");
         let run = begun_bridge_run(&directory, START_WALL_MS, TraceBounds::SPEC);
         let events = run.open_events().unwrap();
@@ -120,27 +126,10 @@ mod observability {
         events.write(ONE_EVENT, &[]);
         assert!(matches!(events.finish(), TraceStop::Drained));
 
-        let written = fs::read_to_string(run.events_file()).unwrap();
-        let lines: Vec<Value> = written
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
-        assert_eq!(lines.len(), 2, "{written}");
-        for (n, line) in lines.iter().enumerate() {
-            let keys: Vec<&str> = line
-                .as_object()
-                .unwrap()
-                .keys()
-                .map(String::as_str)
-                .collect();
-            let mut header_keys = ["v", "run", "n", "mono_ms", "wall_ms", "event"];
-            header_keys.sort_unstable();
-            let mut sorted_keys = keys.clone();
-            sorted_keys.sort_unstable();
-            assert_eq!(sorted_keys, header_keys, "{written}");
-            assert_eq!(line["run"], RUN_HEX);
-            assert_eq!(line["n"], n);
-        }
+        assert_eq!(
+            fs::read_to_string(run.events_file()).unwrap(),
+            format!("{}{}", one_event_line(0), one_event_line(1))
+        );
         drop(fs::remove_dir_all(&root));
     }
 
