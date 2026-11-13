@@ -4,7 +4,7 @@ use std::time::Duration;
 use iroh::{EndpointId, PublicKey, SecretKey};
 use iroh_gossip::api::{ApiError, Event, GossipReceiver, GossipSender, JoinOptions};
 use iroh_gossip::{Gossip, TopicId};
-use tokio::time::{Instant, sleep_until};
+use tokio::time::{Instant, sleep};
 
 use crate::crypto::NetworkKeys;
 use crate::payload::{OpenedPayload, PayloadError, open_payload, seal_payload};
@@ -51,13 +51,13 @@ pub struct NetworkTopic {
     keys: NetworkKeys,
     owner: PublicKey,
     join_progress: JoinProgress,
-    neighbor_up_after_joined: Option<EndpointId>,
 }
 
 #[derive(Clone, Copy)]
 enum JoinProgress {
-    AwaitingFirstNeighbor { deadline: Instant },
+    AwaitingFirstNeighbor { since: Instant },
     TimedOut,
+    JoinedWithNeighborUpToReport(EndpointId),
     Joined,
 }
 
@@ -84,10 +84,7 @@ impl NetworkTopic {
             receiver,
             keys,
             owner,
-            join_progress: JoinProgress::AwaitingFirstNeighbor {
-                deadline: now.checked_add(JOIN_TIMEOUT).unwrap_or(now),
-            },
-            neighbor_up_after_joined: None,
+            join_progress: JoinProgress::AwaitingFirstNeighbor { since: now },
         })
     }
 
@@ -106,14 +103,15 @@ impl NetworkTopic {
     /// The next event of the topic, an error naming why the topic failed, or none once the topic has closed cleanly.
     pub async fn next_event(&mut self) -> Option<Result<GossipEvent, GossipError>> {
         loop {
-            if let Some(neighbor) = self.neighbor_up_after_joined.take() {
-                return Some(Ok(GossipEvent::NeighborUp(neighbor)));
-            }
             let incoming = match self.join_progress {
-                JoinProgress::AwaitingFirstNeighbor { deadline } => {
+                JoinProgress::JoinedWithNeighborUpToReport(neighbor) => {
+                    self.join_progress = JoinProgress::Joined;
+                    return Some(Ok(GossipEvent::NeighborUp(neighbor)));
+                }
+                JoinProgress::AwaitingFirstNeighbor { since } => {
                     tokio::select! {
                         incoming = self.receiver.next() => incoming,
-                        () = sleep_until(deadline) => {
+                        () = sleep(JOIN_TIMEOUT.saturating_sub(since.elapsed())) => {
                             self.join_progress = JoinProgress::TimedOut;
                             return Some(Ok(GossipEvent::JoinTimedOut));
                         }
@@ -144,11 +142,12 @@ impl NetworkTopic {
     const fn announce_neighbor_up(&mut self, neighbor: EndpointId) -> GossipEvent {
         match self.join_progress {
             JoinProgress::AwaitingFirstNeighbor { .. } | JoinProgress::TimedOut => {
-                self.join_progress = JoinProgress::Joined;
-                self.neighbor_up_after_joined = Some(neighbor);
+                self.join_progress = JoinProgress::JoinedWithNeighborUpToReport(neighbor);
                 GossipEvent::Joined
             }
-            JoinProgress::Joined => GossipEvent::NeighborUp(neighbor),
+            JoinProgress::JoinedWithNeighborUpToReport(_) | JoinProgress::Joined => {
+                GossipEvent::NeighborUp(neighbor)
+            }
         }
     }
 }
@@ -186,6 +185,7 @@ mod tests {
     const DELIVERY_POLL: Duration = Duration::from_millis(10);
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     const JOIN_TIMEOUT_SLACK: Duration = Duration::from_millis(1000);
+    const JOIN_HANDED_THIS_LONG_AGO: Duration = Duration::from_millis(3000);
     const NOTHING_MORE_WAIT: Duration = Duration::from_millis(500);
     const OVERSIZE_PUBLIC_BYTES: usize = 4000;
     const EVENT_WAIT: Duration = Duration::from_millis(8000);
@@ -497,6 +497,29 @@ mod tests {
         assert_eq!(event, GossipEvent::JoinTimedOut);
         assert!(started.elapsed() >= SPEC_JOIN_TIMEOUT);
         assert!(started.elapsed() < SPEC_JOIN_TIMEOUT + JOIN_TIMEOUT_SLACK);
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_join_timeout_counts_from_the_instant_the_join_was_handed() {
+        let lonely = bind_member(FIRST_SEED).await;
+        let absent = secret_key(ABSENT_BOOTSTRAP_SEED).public();
+        let started = Instant::now();
+        let handed_instant = started.checked_sub(JOIN_HANDED_THIS_LONG_AGO).unwrap();
+        let mut topic = NetworkTopic::join(
+            &lonely.gossip,
+            keys(),
+            secret_key(OWNER_SEED).public(),
+            vec![absent],
+            handed_instant,
+        )
+        .await
+        .unwrap();
+
+        let event = topic.next_event().await.unwrap().unwrap();
+
+        assert_eq!(event, GossipEvent::JoinTimedOut);
+        assert!(started.elapsed() >= SPEC_JOIN_TIMEOUT.saturating_sub(JOIN_HANDED_THIS_LONG_AGO));
+        assert!(started.elapsed() < SPEC_JOIN_TIMEOUT);
     }
 
     #[tokio::test]
