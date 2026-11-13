@@ -180,6 +180,9 @@ mod tests {
 
     use super::{forget_files_renamed_or_removed, wakes_the_wait};
 
+    /// The kind the exhaustive match places last, whose position plus one is how many kinds the list must hold.
+    const LAST_KIND_OF_THE_MATCH: EventKind = EventKind::Remove(RemoveKind::Other);
+
     /// Where the kind stands in `every_event_kind`, naming every kind notify-types has, so a kind it adds breaks the build.
     fn position_among_every_kind(kind: EventKind) -> usize {
         match kind {
@@ -326,6 +329,12 @@ mod tests {
                 .copied()
                 .map(position_among_every_kind)
                 .eq(0..kinds.len())
+        );
+        assert_eq!(
+            kinds.len(),
+            position_among_every_kind(LAST_KIND_OF_THE_MATCH)
+                .checked_add(1)
+                .unwrap()
         );
         assert!(
             failures
