@@ -3,7 +3,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use notify::event::ModifyKind;
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
 use crate::trace_reader::{TraceLine, events_files_in, events_lines_in, timeline_in};
 
@@ -60,10 +61,11 @@ impl MemberEvents {
             let remaining = deadline.saturating_duration_since(Instant::now());
             match watch.notices.recv_timeout(remaining) {
                 Ok(notice) => {
-                    notice.unwrap_or_else(|failure| {
+                    let notice = notice.unwrap_or_else(|failure| {
                         panic!("{}: the file watcher failed: {failure}", self.label)
                     });
                     assert!(Instant::now() < deadline, "{}", self.ran_out(event, within));
+                    forget_files_renamed_or_removed(&mut watch.watched_files, &notice);
                 }
                 Err(RecvTimeoutError::Timeout) => panic!("{}", self.ran_out(event, within)),
                 Err(RecvTimeoutError::Disconnected) => {
@@ -143,9 +145,23 @@ fn wakes_the_wait(notice: &Notice) -> bool {
     }
 }
 
+/// Forgets each watched file the notice says was renamed or removed, so the next look watches the file that takes its name, as an events file's does when it rolls over.
+fn forget_files_renamed_or_removed(watched_files: &mut BTreeSet<PathBuf>, notice: &notify::Event) {
+    if matches!(
+        notice.kind,
+        EventKind::Modify(ModifyKind::Name(_)) | EventKind::Remove(_)
+    ) {
+        for path in &notice.paths {
+            watched_files.remove(path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::io;
+    use std::path::PathBuf;
 
     use notify::event::{
         AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind,
@@ -153,7 +169,7 @@ mod tests {
     };
     use notify::{Config, Error, ErrorKind, Event, EventKind};
 
-    use super::wakes_the_wait;
+    use super::{forget_files_renamed_or_removed, wakes_the_wait};
 
     /// How many kinds of notice the pinned notify-types names, counted from its enums.
     const EVERY_KIND_COUNT: usize = 41;
@@ -256,6 +272,33 @@ mod tests {
         for failure in failures {
             let notice = Err(Error::new(failure));
             assert!(wakes_the_wait(&notice), "{notice:?}");
+        }
+    }
+
+    #[test]
+    fn observability_decision_13_a_watched_events_file_renamed_or_removed_is_forgotten_so_its_name_is_watched_again_and_no_other_notice_forgets_one()
+     {
+        let rolled_over =
+            PathBuf::from("/traces/20261112T225913Z-6c935f82c118f7b3-estafette.events.jsonl");
+        let other_run =
+            PathBuf::from("/traces/20261112T225914Z-aaaaaaaaaaaaaaaa-estafette.events.jsonl");
+
+        for kind in every_event_kind() {
+            let mut watched_files = BTreeSet::from([rolled_over.clone(), other_run.clone()]);
+            let notice = Event::new(kind).add_path(rolled_over.clone());
+
+            forget_files_renamed_or_removed(&mut watched_files, &notice);
+
+            let is_rename_or_removal = matches!(
+                kind,
+                EventKind::Modify(ModifyKind::Name(_)) | EventKind::Remove(_)
+            );
+            assert_eq!(
+                watched_files.contains(&rolled_over),
+                !is_rename_or_removal,
+                "{kind:?}"
+            );
+            assert!(watched_files.contains(&other_run), "{kind:?}");
         }
     }
 }
