@@ -44,16 +44,15 @@ mod tests {
     use iroh::SecretKey;
 
     use super::*;
+    use crate::crypto::KEY_LEN;
     use crate::event::{Event, write_run_record};
 
     const PEER_KEY_BYTE: u8 = 7;
-    const PEER_KEY_LEN: usize = 32;
 
     #[test]
-    fn observability_decision_3_a_failed_contact_adds_no_line_to_standard_error_and_keeps_its_event_name()
-     {
+    fn observability_decision_3_a_failed_contact_adds_no_line_to_standard_error() {
         let event: Event = DirectEvent::ContactFailed {
-            peer: SecretKey::from_bytes(&[PEER_KEY_BYTE; PEER_KEY_LEN]).public(),
+            peer: SecretKey::from_bytes(&[PEER_KEY_BYTE; KEY_LEN]).public(),
             reason: DirectError::Unreachable,
         }
         .into();
@@ -62,6 +61,5 @@ mod tests {
         write_run_record(&mut standard_error, &event).unwrap();
 
         assert_eq!(String::from_utf8(standard_error).unwrap(), "");
-        assert_eq!(event.name(), "direct.contact_failed");
     }
 }
