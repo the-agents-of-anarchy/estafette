@@ -12,6 +12,7 @@ use crate::keys::parse_public_key;
 use crate::net::endpoint::NodeEndpoint;
 use crate::payload::ValidInfrastructure;
 
+/// How far ahead of this node's clock a host record's ts may be and still be held (spec:779, spec:1013).
 const INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS: u64 = 300;
 const MILLIS_PER_SECOND: u64 = 1000;
 
