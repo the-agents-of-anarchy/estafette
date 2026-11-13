@@ -221,7 +221,7 @@ const fn cause_text(cause: RebindCause) -> &'static str {
 
 /// The connection's identifier as a field.
 pub(super) fn connection_field(connection: ConnectionId) -> (&'static str, Value) {
-    (CONNECTION_FIELD, Value::from(connection.0))
+    (CONNECTION_FIELD, Value::from(connection.value()))
 }
 
 /// The node's five-byte id as a field.

@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use iroh::address_lookup::MemoryLookup;
 use iroh::endpoint::{
-    BindError, ConnectionError, QuicTransportConfig, RelayStatus, Side, VarInt, presets,
+    BindError, Connection, ConnectionError, QuicTransportConfig, RelayStatus, Side, VarInt, presets,
 };
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey,
@@ -270,7 +270,21 @@ impl Location {
 
 /// The identifier iroh gives a connection for its whole life, the `conn_id` of iroh's own trace lines.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConnectionId(pub usize);
+pub struct ConnectionId(usize);
+
+impl ConnectionId {
+    /// The identifier iroh gave the connection.
+    #[must_use]
+    pub(crate) fn of(connection: &Connection) -> Self {
+        Self(connection.stable_id())
+    }
+
+    /// The identifier as the number iroh's trace lines print.
+    #[must_use]
+    pub const fn value(self) -> usize {
+        self.0
+    }
+}
 
 /// A node named by the first five bytes of its endpoint id, the form iroh's own trace lines use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

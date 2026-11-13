@@ -150,7 +150,7 @@ impl HeldConnections {
     fn close_superseded(&self, connections: Vec<Connection>) {
         for connection in connections {
             self.record(|_transport| TransportEvent::ConnectionClosing {
-                connection: ConnectionId(connection.stable_id()),
+                connection: ConnectionId::of(&connection),
                 peer: PeerId::of(connection.remote_id()),
                 code: SUPERSEDED_CONNECTION_CLOSE_CODE,
                 reason: CloseReason::Superseded,
@@ -179,7 +179,7 @@ impl HeldConnections {
         let closed = weak.closed();
         let paths = connection.path_events();
         self.record(|_transport| TransportEvent::ConnectionOpened {
-            connection: ConnectionId(connection.stable_id()),
+            connection: ConnectionId::of(connection),
             peer: PeerId::of(connection.remote_id()),
             direction: Direction::of(connection.side()),
             protocol: Protocol::of(connection.alpn()),
@@ -191,7 +191,7 @@ impl HeldConnections {
         );
         tokio::spawn(self.clone().follow_hearing(
             card,
-            connection.stable_id(),
+            ConnectionId::of(connection),
             weak,
             closed,
             paths,
@@ -209,7 +209,7 @@ impl HeldConnections {
     async fn follow_hearing(
         self,
         card: wire::PublicKey,
-        stable_id: usize,
+        connection_id: ConnectionId,
         connection: WeakConnectionHandle,
         closed: impl Future<Output = Option<Closed>>,
         mut paths: PathEventStream,
@@ -218,18 +218,18 @@ impl HeldConnections {
         let ended = loop {
             tokio::select! {
                 biased;
-                Some(change) = paths.next() => self.record_path_change(stable_id, &connection, change),
+                Some(change) = paths.next() => self.record_path_change(connection_id, &connection, change),
                 ended = &mut closed => break ended,
-                () = sleep(HEARING_SAMPLE_INTERVAL) => self.note_hearing(card, stable_id, &connection),
+                () = sleep(HEARING_SAMPLE_INTERVAL) => self.note_hearing(card, connection_id.value(), &connection),
             }
         };
         if let Some(ended) = ended {
             self.record(|_transport| TransportEvent::ConnectionClosed {
-                connection: ConnectionId(stable_id),
+                connection: connection_id,
                 close: Close::of(&ended.reason),
             });
         }
-        self.forget(card, stable_id);
+        self.forget(card, connection_id.value());
     }
 
     /// Records each path the connection opened before the register held it, and the one selected among them, since the path events it follows from then on omit them.
@@ -242,7 +242,7 @@ impl HeldConnections {
             };
             for change in changes {
                 self.record(|transport| TransportEvent::PathChanged {
-                    connection: ConnectionId(connection.stable_id()),
+                    connection: ConnectionId::of(connection),
                     change: *change,
                     path: path.id(),
                     location: transport.locate(path.remote_addr()),
@@ -255,11 +255,10 @@ impl HeldConnections {
     /// Records a change of one of the connection's paths with where the path leads and its round-trip time, or the count iroh lost, and nothing for a path event this build cannot read.
     fn record_path_change(
         &self,
-        stable_id: usize,
+        connection_id: ConnectionId,
         connection: &WeakConnectionHandle,
         change: PathEvent,
     ) {
-        let connection_id = ConnectionId(stable_id);
         let live_round_trip = |path| {
             connection
                 .upgrade()
@@ -737,7 +736,7 @@ impl<H: DirectHost> ServerState<H> {
             DirectEvent::RequestServed(ServedRequest {
                 request,
                 peer: PeerId::of(arrived_on.remote_id()),
-                connection: ConnectionId(arrived_on.stable_id()),
+                connection: ConnectionId::of(arrived_on),
                 outcome: outcome.unwrap_or_else(ServedOutcome::Unanswered),
                 elapsed_ms: milliseconds_of(elapsed),
             })
@@ -1046,10 +1045,7 @@ impl DirectClient {
         if response.is_err() {
             self.forget_connection(to, &connection).await;
         }
-        (
-            Some((ConnectionId(connection.stable_id()), source)),
-            response,
-        )
+        (Some((ConnectionId::of(&connection), source)), response)
     }
 
     /// Writes the sealed request on a new stream and reads the response, all within the ack timeout.
@@ -2314,9 +2310,18 @@ pub(crate) mod tests {
         drop(router);
     }
 
-    #[test]
-    fn observability_decision_9_a_connections_lost_path_events_are_recorded_with_the_count_iroh_reports()
+    #[tokio::test]
+    async fn observability_decision_9_a_connections_lost_path_events_are_recorded_with_the_count_iroh_reports()
      {
+        let rig = rig().await;
+        let dialed = rig
+            .link
+            .client_node
+            .endpoint()
+            .connect(rig.link.server_node.endpoint().id(), DIRECT_ALPN)
+            .await
+            .unwrap();
+        let connection = ConnectionId::of(&dialed);
         for case in 0..MISSED_COUNT_CASES {
             let missed = match case {
                 0 => 0,
@@ -2324,14 +2329,13 @@ pub(crate) mod tests {
                 2 => u64::MAX,
                 _ => case.wrapping_mul(MISSED_COUNT_SPREAD),
             };
-            let connection = ConnectionId(usize::try_from(case).unwrap());
             let event = crate::event::Event::from(path_events_missed(connection, missed));
 
             assert_eq!(event.name(), "transport.path_events_missed", "case {case}");
             assert_eq!(
                 event.fields(),
                 vec![
-                    ("connection", serde_json::Value::from(connection.0)),
+                    ("connection", serde_json::Value::from(dialed.stable_id())),
                     ("missed", serde_json::Value::from(missed)),
                 ],
                 "case {case}"
