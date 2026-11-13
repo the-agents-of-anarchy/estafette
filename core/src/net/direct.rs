@@ -973,7 +973,7 @@ impl From<ReadToEndError> for DirectError {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
     use std::time::Instant;
@@ -1722,10 +1722,10 @@ mod tests {
     const SPEC_SUPERSEDED_CLOSE_CODE: u64 = 410;
 
     /// The name and fields of one recorded event.
-    type RecordedEvent = (&'static str, crate::event::EventFields);
+    pub type RecordedEvent = (&'static str, crate::event::EventFields);
 
     /// A run record that hands the name and fields of each event to the receiver.
-    fn recorded_events() -> (
+    pub fn recorded_events() -> (
         crate::event::RunRecord,
         tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
     ) {
@@ -1737,14 +1737,14 @@ mod tests {
     }
 
     /// The salt every test register hashes locations under.
-    fn test_salt() -> crate::trace::LocationSalt {
+    pub fn test_salt() -> crate::trace::LocationSalt {
         crate::trace::LocationSalt::from_random_bytes(
             [SALT_BYTE; crate::trace::LOCATION_SALT_BYTES],
         )
     }
 
     /// Waits for the next recorded event of the name, within the bound, failing with the name and the events seen.
-    async fn next_recorded(
+    pub async fn next_recorded(
         receiver: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
         name: &str,
     ) -> crate::event::EventFields {
@@ -1763,7 +1763,7 @@ mod tests {
     }
 
     /// The value of the field of the name among the fields.
-    fn field<'a>(
+    pub fn field<'a>(
         fields: &'a crate::event::EventFields,
         name: &str,
     ) -> Option<&'a serde_json::Value> {

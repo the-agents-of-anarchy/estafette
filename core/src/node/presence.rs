@@ -1010,6 +1010,7 @@ impl PresenceLoop {
             Wake::InboxGone => self.inbox = InboxWatch::Gone,
             Wake::OwnAddressChanged => self.reconsider_own_address().await,
             Wake::HomeRelaysChanged(statuses) => {
+                self.endpoint.record_home_relays(&statuses);
                 self.relay_loss
                     .observe(&home_relays(&statuses), (self.monotonic)());
                 self.reconsider_own_address().await;
@@ -1794,6 +1795,7 @@ pub(super) mod tests {
         monotonic: MonotonicClock,
         report: RunRecord,
         probe_relay: RelayProbe,
+        register: HeldConnections,
     }
 
     impl MemberPlan {
@@ -1809,7 +1811,12 @@ pub(super) mod tests {
                 monotonic: Arc::new(Instant::now),
                 report: Arc::new(|_event: Event| {}),
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
+                register: HeldConnections::new(Arc::new(Instant::now)),
             }
+        }
+
+        pub(in crate::node) fn with_register(self, register: HeldConnections) -> Self {
+            Self { register, ..self }
         }
 
         pub(in crate::node) fn with_host_relays(self, hosts: &[(u8, &'static str)]) -> Self {
@@ -1867,7 +1874,7 @@ pub(super) mod tests {
     ) -> Vec<Member> {
         let mut endpoints = Vec::new();
         for plan in &plans {
-            endpoints.push(bind(plan.seed).await);
+            endpoints.push(bind_holding(plan.seed, plan.register.clone()).await);
         }
         let addresses: Vec<(u8, iroh::EndpointAddr)> = plans
             .iter()
@@ -2507,7 +2514,7 @@ pub(super) mod tests {
         scratch: &Scratch,
         plan: MemberPlan,
     ) -> (iroh::Endpoint, JoinHandle<Member>) {
-        let node_endpoint = bind(plan.seed).await;
+        let node_endpoint = bind_holding(plan.seed, plan.register.clone()).await;
         let endpoint = node_endpoint.endpoint().clone();
         let inbox = scratch.inbox(plan.seed);
         let inbox_path = scratch.directories.inbox_socket_file(u32::from(plan.seed));
@@ -4042,6 +4049,75 @@ pub(super) mod tests {
         tokio::time::sleep(SPEC_RELAY_LOSS_WAIT + RELAY_LOSS_REMOVAL_SLACK).await;
 
         assert!(member.endpoint.remove_relay(&relay_address).await.is_none());
+        drop(scratch);
+    }
+
+    #[cfg(feature = "relay")]
+    #[tokio::test]
+    async fn observability_decision_9_the_home_relays_status_is_recorded_by_port_and_salted_hash_connected_then_lost()
+     {
+        use crate::net::direct::tests::{next_recorded, recorded_events, test_salt};
+        use crate::net::endpoint::{LocationHash, TransportRecord};
+        use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+
+        let scratch = Scratch::new("home-relay-record").await;
+        let mut relay_config = ServerConfig::default();
+        relay_config.relay = Some(RelayConfig::new(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            0,
+        ))));
+        let relay = Server::spawn(relay_config).await.unwrap();
+        let relay_address = relay_url(&format!("http://{}/", relay.http_addr().unwrap()));
+        let (record, mut events) = recorded_events();
+        let endpoint = NodeEndpoint::bind(
+            secret_key(FIRST_SEED),
+            *keys().gate_key(),
+            vec![relay_address.clone()],
+            move |nonce: &mut [u8; KEY_LEN]| *nonce = [FIRST_SEED; KEY_LEN],
+            |_ignored| {},
+            HeldConnections::new(Arc::new(Instant::now))
+                .recording_to(TransportRecord::new(record, test_salt())),
+        )
+        .await
+        .unwrap();
+        let _member = start_member(
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC),
+            endpoint,
+            (
+                scratch.inbox(FIRST_SEED),
+                scratch.directories.inbox_socket_file(u32::from(FIRST_SEED)),
+            ),
+            scratch.network_file(FIRST_SEED),
+        )
+        .await;
+        let home_relay = |connected: bool| {
+            vec![
+                ("kind", serde_json::Value::from("relay")),
+                (
+                    "port",
+                    serde_json::Value::from(relay_address.port().unwrap()),
+                ),
+                (
+                    "location",
+                    serde_json::Value::from(
+                        LocationHash::of(&test_salt(), relay_address.as_str()).hex(),
+                    ),
+                ),
+                ("connected", serde_json::Value::from(connected)),
+            ]
+        };
+
+        let mut connected = next_recorded(&mut events, "transport.home_relay").await;
+        while connected != home_relay(true) {
+            connected = next_recorded(&mut events, "transport.home_relay").await;
+        }
+        relay.shutdown().await.unwrap();
+        let mut lost = next_recorded(&mut events, "transport.home_relay").await;
+        while lost != home_relay(false) {
+            lost = next_recorded(&mut events, "transport.home_relay").await;
+        }
+
+        assert_eq!(lost, home_relay(false));
         drop(scratch);
     }
 

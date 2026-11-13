@@ -295,7 +295,7 @@ impl PresenceLoop {
         }
     }
 
-    /// The relays of the known hosts that do not answer the probe within the relay probe timeout.
+    /// The relays of the known hosts that do not answer the probe within the relay probe timeout, recording each probe's answer.
     async fn relays_found_down(&self) -> BTreeSet<RelayUrl> {
         let relays: BTreeSet<RelayUrl> = self
             .known_hosts
@@ -310,12 +310,19 @@ impl PresenceLoop {
                 .map(|relay| timeout_at(deadline, self.rebinding.probe(relay.clone()))),
         )
         .await;
-        relays
-            .into_iter()
-            .zip(answers)
-            .filter(|(_, answer)| !matches!(answer, Ok(true)))
-            .map(|(relay, _)| relay)
-            .collect()
+        let mut down = BTreeSet::new();
+        for (relay, answer) in relays.into_iter().zip(answers) {
+            let answered = matches!(answer, Ok(true));
+            self.endpoint
+                .record(|transport| TransportEvent::RelayProbed {
+                    location: transport.locate(&TransportAddr::Relay(relay.clone())),
+                    answered,
+                });
+            if !answered {
+                down.insert(relay);
+            }
+        }
+        down
     }
 
     /// Strips the relays found down from the lookup entry of every other member.
@@ -401,18 +408,21 @@ mod tests {
 
     use super::{MemberJoins, RebindSchedule, RelayProbe, relay_answers};
     use crate::event::{Event, RunRecord, TransportEvent};
+    use crate::net::direct::tests::{next_recorded, recorded_events, test_salt};
     use crate::net::direct::{
         ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock,
     };
-    use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint, RebindCause};
+    use crate::net::endpoint::{
+        DIRECT_ALPN, LocationHash, NodeEndpoint, RebindCause, TransportRecord,
+    };
     use crate::net::gossip::{GossipEvent, NetworkTopic};
     use crate::node::presence::acknowledgement_of;
     use crate::node::presence::tests::{
         FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, MARKER_SEED, Member, MemberPlan,
         OWNER_SEED, PAYLOAD_WAIT, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, Scratch, WITNESS_SEED,
         Witness, bind, card, entry_meeting_within, frozen_clock, keys, presence_from,
-        presence_request_by, secret_key, spawn_member, start_members, start_members_reaching,
-        status_within, unreachable_about, wall_clock_ms,
+        presence_request_by, relay_url, secret_key, spawn_member, start_members,
+        start_members_reaching, status_within, unreachable_about, wall_clock_ms,
     };
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
@@ -855,6 +865,65 @@ mod tests {
         assert_eq!(
             stripped.as_ref().map(relays_of),
             Some(vec![KEPT_RELAY.to_owned()])
+        );
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_rebind_records_its_cause_and_each_relay_probes_answer_by_port_and_salted_hash()
+     {
+        let scratch = Scratch::new("probe-record").await;
+        let (record, mut events) = recorded_events();
+        let peer = QuietNode::answering(PEER_SEED, &[KEPT_RELAY, STRIPPED_RELAY]).await;
+        let (member_endpoint, starting) = spawn_member(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                .with_host_relays(&[
+                    (LIVE_HOST_SEED, KEPT_RELAY),
+                    (DEAD_HOST_SEED, STRIPPED_RELAY),
+                ])
+                .with_relay_probe(answering_after(&[
+                    (KEPT_RELAY, ANSWER_WITHIN_THE_PROBE_TIMEOUT),
+                    (STRIPPED_RELAY, ANSWER_AFTER_THE_PROBE_TIMEOUT),
+                ]))
+                .with_report(Arc::clone(&record))
+                .with_register(
+                    crate::net::direct::HeldConnections::new(Arc::new(Instant::now))
+                        .recording_to(TransportRecord::new(record, test_salt())),
+                ),
+        )
+        .await;
+        peer.introduce_to(&member_endpoint).await;
+        let _member = starting.await.unwrap();
+
+        let rebinding = next_recorded(&mut events, "transport.rebinding").await;
+        let first_probe = next_recorded(&mut events, "transport.relay_probed").await;
+        let second_probe = next_recorded(&mut events, "transport.relay_probed").await;
+
+        assert_eq!(
+            rebinding,
+            vec![("cause", serde_json::Value::from("join_gained_no_neighbor"))]
+        );
+        let probe_of = |relay: &str, answered: bool| {
+            let relay = relay_url(relay);
+            vec![
+                ("kind", serde_json::Value::from("relay")),
+                (
+                    "port",
+                    serde_json::Value::from(relay.port_or_known_default().unwrap()),
+                ),
+                (
+                    "location",
+                    serde_json::Value::from(LocationHash::of(&test_salt(), relay.as_str()).hex()),
+                ),
+                ("answered", serde_json::Value::from(answered)),
+            ]
+        };
+        let mut probes = vec![first_probe, second_probe];
+        probes.sort_by_key(|fields| fields.last().map(|(_, answered)| answered.to_string()));
+        assert_eq!(
+            probes,
+            vec![probe_of(STRIPPED_RELAY, false), probe_of(KEPT_RELAY, true)]
         );
         drop(scratch);
     }

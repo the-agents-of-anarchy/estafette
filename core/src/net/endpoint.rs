@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iroh::address_lookup::MemoryLookup;
-use iroh::endpoint::{BindError, ConnectionError, QuicTransportConfig, Side, VarInt, presets};
+use iroh::endpoint::{
+    BindError, ConnectionError, QuicTransportConfig, RelayStatus, Side, VarInt, presets,
+};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey,
     TransportAddr,
@@ -89,6 +91,21 @@ impl NodeEndpoint {
     #[must_use]
     pub(crate) fn held_connections(&self) -> HeldConnections {
         self.binding.connections.clone()
+    }
+
+    /// Records each home relay's connection status, as the node reads it.
+    pub(crate) fn record_home_relays(&self, statuses: &[RelayStatus]) {
+        for status in statuses {
+            self.record(|transport| TransportEvent::HomeRelay {
+                location: transport.locate(&TransportAddr::Relay(status.url().clone())),
+                connected: status.is_connected(),
+            });
+        }
+    }
+
+    /// Hands the transport event, built against the transport record, to the record the endpoint's register holds, when it records.
+    pub(crate) fn record(&self, event: impl FnOnce(&TransportRecord) -> TransportEvent) {
+        self.binding.connections.record(event);
     }
 
     /// The iroh endpoint the gossip layer and the direct protocol run on.
