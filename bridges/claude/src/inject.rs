@@ -118,10 +118,15 @@ pub struct RefusedSenderName(String);
 
 impl fmt::Display for RefusedSenderName {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let forbidden: Vec<String> = ENVELOPE_NAME_FORBIDDEN_CHARACTERS
+            .iter()
+            .map(char::to_string)
+            .collect();
         write!(
             formatter,
-            "frame from {:?} dropped: the harness's envelope rebuild alters a sender name that is empty or holds anything but visible ASCII without \" < >",
-            self.0
+            "frame from {:?} dropped: the harness's envelope rebuild alters a sender name that is empty or holds anything but visible ASCII without {}",
+            self.0,
+            forbidden.join(" ")
         )
     }
 }
