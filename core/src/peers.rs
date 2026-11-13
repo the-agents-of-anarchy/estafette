@@ -2319,6 +2319,8 @@ mod tests {
     const ONLINE_WORD: &str = "online";
     const PRESENCE_CAUSE_WORD: &str = "presence";
     const MESSAGE_CAUSE_WORD: &str = "message";
+    const INTRODUCE_CAUSE_WORD: &str = "introduce";
+    const INTRODUCE_ACK_CAUSE_WORD: &str = "introduce_ack";
 
     fn table_with_peer_unreachable_since_now() -> PeerTable {
         let mut table = PeerTable::new(OWN_CARD);
@@ -2385,6 +2387,35 @@ mod tests {
         assert_eq!(
             written_lines(moved.changes),
             [peer_moved_online_from_unreachable_by(MESSAGE_CAUSE_WORD)]
+        );
+    }
+
+    #[test]
+    fn observability_decision_9_an_introduce_that_moves_an_unreachable_entry_online_writes_the_cause_introduce_spec_3_8()
+     {
+        let mut table = table_with_peer_unreachable_since_now();
+
+        let moved = table.receive_introduce(PEER_CARD, &introduce(Some(PEER_HANDLE)), LATER_MS);
+
+        assert_eq!(
+            written_lines(moved.changes),
+            [peer_moved_online_from_unreachable_by(INTRODUCE_CAUSE_WORD)]
+        );
+    }
+
+    #[test]
+    fn observability_decision_9_an_introduce_ack_that_moves_an_unreachable_entry_online_writes_the_cause_introduce_ack_spec_3_8()
+     {
+        let mut table = table_with_peer_unreachable_since_now();
+
+        let moved =
+            table.receive_introduce_ack(PEER_CARD, &introduce_ack(Some(PEER_HANDLE)), LATER_MS);
+
+        assert_eq!(
+            written_lines(moved.changes),
+            [peer_moved_online_from_unreachable_by(
+                INTRODUCE_ACK_CAUSE_WORD
+            )]
         );
     }
 }
