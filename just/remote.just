@@ -255,6 +255,17 @@ call-on-server card tool:
 run-record-on-server card:
     ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) cat /home/lab/{{ card }}.err
 
+[doc("Write every trace file of the card's lab member on this machine to stdout as one tar stream: both files of each of its runs, rolled-over files included")]
+[group('lab')]
+member-trace-files card:
+    tar -c -C {{ lab_members_data }}/{{ card }}/estafette/traces .
+
+[doc("Fetch every trace file of the card's lab member on the server into the directory, created 0700: both files of each of its runs, rolled-over files included; the raw files hold real addresses and full ids and are not safe to post")]
+[group('lab')]
+trace-files-on-server card directory:
+    umask 077 && mkdir -p "{{ directory }}"
+    ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) 'cd {{ remote_tree }} && just remote::member-trace-files {{ card }}' | tar -x -C "{{ directory }}"
+
 relay_only_mark := "estafette-relay-only"
 
 [doc("Drop UDP between the server and this machine, IPv4 to and from this machine's address as the server sees it and every IPv6 datagram but DNS, so members on the two reach each other through a relay alone; relay-paths-restored undoes it")]
