@@ -1042,6 +1042,7 @@ mod tests {
     struct Seen {
         relay_sites: Arc<Mutex<Vec<(RelaySite, u32)>>>,
         bound: Arc<Mutex<Vec<Bound>>>,
+        bound_count: tokio::sync::watch::Sender<usize>,
         relay_shut_down_after_endpoint_closed: Arc<Mutex<Vec<bool>>>,
     }
 
@@ -1088,6 +1089,7 @@ mod tests {
             } = self;
             let relay_sites = Arc::clone(&seen.relay_sites);
             let bound = Arc::clone(&seen.bound);
+            let bound_count = seen.bound_count.clone();
             let bound_at_shutdown = Arc::clone(&seen.bound);
             let shut_down = Arc::clone(&seen.relay_shut_down_after_endpoint_closed);
             InfrastructureEffects {
@@ -1108,12 +1110,15 @@ mod tests {
                         for address in reachable {
                             endpoint.replace_address(address);
                         }
-                        bound.lock().unwrap().push(Bound {
+                        let mut bound_so_far = bound.lock().unwrap();
+                        bound_so_far.push(Bound {
                             host,
                             gate_key,
                             relay,
                             endpoint: endpoint.endpoint().clone(),
                         });
+                        bound_count.send_replace(bound_so_far.len());
+                        drop(bound_so_far);
                         Ok(endpoint)
                     })
                 }),
@@ -1182,16 +1187,21 @@ mod tests {
     }
 
     async fn bound_endpoint(seen: &Seen, index: usize) -> iroh::Endpoint {
-        tokio::time::timeout(BIND_WAIT, async {
-            loop {
-                if let Some(bound) = seen.bound.lock().unwrap().get(index) {
-                    return bound.endpoint.clone();
-                }
-                tokio::time::sleep(POLL).await;
-            }
-        })
-        .await
-        .unwrap()
+        let mut bound_count = seen.bound_count.subscribe();
+        drop(
+            tokio::time::timeout(BIND_WAIT, bound_count.wait_for(|count| *count > index))
+                .await
+                .unwrap_or_else(|_elapsed| {
+                    panic!("endpoint {index} of the host not bound within {BIND_WAIT:?}")
+                })
+                .unwrap(),
+        );
+        seen.bound
+            .lock()
+            .unwrap()
+            .get(index)
+            .map(|bound| bound.endpoint.clone())
+            .unwrap()
     }
 
     fn network_keys() -> NetworkKeys {
