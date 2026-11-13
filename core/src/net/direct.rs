@@ -1990,9 +1990,14 @@ pub(crate) mod tests {
             .map(|(_, value)| value)
     }
 
-    const DRAWN_TEXT_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz_/0123456789";
     const LONGEST_DRAWN_TEXT: u64 = 24;
-    const WAYS_TO_DRAW_BESIDE: u64 = 4;
+    const WAYS_TO_DRAW_BESIDE: u64 = 7;
+    const SIDES_TO_PAD: u64 = 2;
+    const BYTE_VALUES: u64 = 256;
+    const ASCII_WHITESPACE: &[u8] = b" \t\n\x0c\r";
+    const FIRST_SURROGATE: u32 = 0xD800;
+    const SURROGATES: u32 = 0x800;
+    const SCALAR_VALUES: u32 = 0x11_0000 - SURROGATES;
     pub const CATCH_ALL_CASES: u64 = 2000;
 
     /// An index below the length, drawn from the sequence.
@@ -2000,28 +2005,97 @@ pub(crate) mod tests {
         usize::try_from(draws.below(u64::try_from(length).unwrap())).unwrap()
     }
 
-    /// A byte of the drawn-text alphabet, drawn from the sequence.
-    fn drawn_letter(draws: &mut Draws) -> u8 {
-        DRAWN_TEXT_ALPHABET[drawn_index(draws, DRAWN_TEXT_ALPHABET.len())]
+    /// One unit of an input a property test draws: a byte or a character.
+    pub trait DrawnUnit: Copy {
+        /// Any unit, drawn from the sequence.
+        fn drawn(draws: &mut Draws) -> Self;
+        /// An ASCII whitespace unit, drawn from the sequence.
+        fn drawn_whitespace(draws: &mut Draws) -> Self;
+        /// The unit with an ASCII letter's case swapped, any other unit unchanged.
+        fn case_swapped(self) -> Self;
     }
 
-    /// Bytes drawn beside the named byte strings: one of them lengthened, shortened or with one byte changed, or any text of the alphabet.
-    pub fn bytes_beside(named: &[&[u8]], draws: &mut Draws) -> Vec<u8> {
-        let mut beside = named[drawn_index(draws, named.len())].to_vec();
+    impl DrawnUnit for u8 {
+        fn drawn(draws: &mut Draws) -> Self {
+            Self::try_from(draws.below(BYTE_VALUES)).unwrap()
+        }
+
+        fn drawn_whitespace(draws: &mut Draws) -> Self {
+            ASCII_WHITESPACE[drawn_index(draws, ASCII_WHITESPACE.len())]
+        }
+
+        fn case_swapped(self) -> Self {
+            if self.is_ascii_lowercase() {
+                self.to_ascii_uppercase()
+            } else {
+                self.to_ascii_lowercase()
+            }
+        }
+    }
+
+    impl DrawnUnit for char {
+        fn drawn(draws: &mut Draws) -> Self {
+            let below_the_gap = u32::try_from(draws.below(u64::from(SCALAR_VALUES))).unwrap();
+            let scalar = if below_the_gap < FIRST_SURROGATE {
+                below_the_gap
+            } else {
+                below_the_gap.saturating_add(SURROGATES)
+            };
+            Self::from_u32(scalar).unwrap()
+        }
+
+        fn drawn_whitespace(draws: &mut Draws) -> Self {
+            Self::from(u8::drawn_whitespace(draws))
+        }
+
+        fn case_swapped(self) -> Self {
+            if self.is_ascii_lowercase() {
+                self.to_ascii_uppercase()
+            } else {
+                self.to_ascii_lowercase()
+            }
+        }
+    }
+
+    /// The units drawn beside the named units: lengthened, shortened, with one unit changed, with its case swapped, padded with whitespace on one side, with a unit put before it, or any units at all.
+    fn drawn_beside<Unit: DrawnUnit>(named: Vec<Unit>, draws: &mut Draws) -> Vec<Unit> {
+        let mut beside = named;
         match draws.below(WAYS_TO_DRAW_BESIDE) {
-            0 => beside.push(drawn_letter(draws)),
+            0 => beside.push(Unit::drawn(draws)),
             1 => drop(beside.pop()),
             2 => {
                 let position = drawn_index(draws, beside.len());
-                beside[position] = drawn_letter(draws);
+                beside[position] = Unit::drawn(draws);
             }
+            3 => beside = beside.into_iter().map(Unit::case_swapped).collect(),
+            4 => {
+                let whitespace = Unit::drawn_whitespace(draws);
+                if draws.below(SIDES_TO_PAD) == 0 {
+                    beside.insert(0, whitespace);
+                } else {
+                    beside.push(whitespace);
+                }
+            }
+            5 => beside.insert(0, Unit::drawn(draws)),
             _ => {
                 beside = (0..draws.below(LONGEST_DRAWN_TEXT))
-                    .map(|_| drawn_letter(draws))
+                    .map(|_| Unit::drawn(draws))
                     .collect();
             }
         }
         beside
+    }
+
+    /// Bytes drawn beside one of the named byte strings, over all 256 byte values.
+    pub fn bytes_beside(named: &[&[u8]], draws: &mut Draws) -> Vec<u8> {
+        let picked = named[drawn_index(draws, named.len())].to_vec();
+        drawn_beside(picked, draws)
+    }
+
+    /// Text drawn beside one of the named strings, over every character.
+    fn text_beside(named: &[&str], draws: &mut Draws) -> String {
+        let picked = named[drawn_index(draws, named.len())].chars().collect();
+        drawn_beside(picked, draws).into_iter().collect()
     }
 
     #[tokio::test]
@@ -3917,10 +3991,10 @@ pub(crate) mod tests {
     #[test]
     fn observability_decision_9_every_reason_but_the_two_codes_estafette_writes_reads_as_unlisted()
     {
-        let named = [SPEC_TOO_LARGE_CODE.as_bytes(), SPEC_REFUSED_CODE.as_bytes()];
+        let named = [SPEC_TOO_LARGE_CODE, SPEC_REFUSED_CODE];
         for case in 0..CATCH_ALL_CASES {
-            let reason = String::from_utf8(bytes_beside(&named, &mut Draws::seeded(case))).unwrap();
-            if named.contains(&reason.as_bytes()) {
+            let reason = text_beside(&named, &mut Draws::seeded(case));
+            if named.contains(&reason.as_str()) {
                 continue;
             }
             assert_eq!(

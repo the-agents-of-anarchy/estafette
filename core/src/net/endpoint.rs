@@ -530,7 +530,7 @@ impl CounterSnapshot {
 mod tests {
     use super::*;
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
-    use crate::net::direct::tests::{CATCH_ALL_CASES, bytes_beside};
+    use crate::net::direct::tests::{CATCH_ALL_CASES, DrawnUnit, bytes_beside};
     use crate::seeded_draws::Draws;
     use iroh::endpoint::{
         ConnectError, ConnectWithOptsError, ConnectingError, Connection, ConnectionError,
@@ -1173,7 +1173,6 @@ mod tests {
     const PEER_TRANSPORT_CLOSE_CODE: u32 = 0x0a;
     const CLOSES_APART: usize = 6;
     const LONGEST_DRAWN_CUSTOM_DATA: u64 = 32;
-    const BYTE_VALUES: u64 = 256;
 
     #[test]
     fn observability_decision_9_each_protocol_is_read_from_the_alpn_it_negotiated() {
@@ -1341,7 +1340,7 @@ mod tests {
             let mut draws = Draws::seeded(case);
             let transport = draws.below(u64::MAX);
             let data: Vec<u8> = (0..draws.below(LONGEST_DRAWN_CUSTOM_DATA))
-                .map(|_| u8::try_from(draws.below(BYTE_VALUES)).unwrap())
+                .map(|_| u8::drawn(&mut draws))
                 .collect();
             let address = TransportAddr::Custom((transport, data.as_slice()).into());
             assert_eq!(
