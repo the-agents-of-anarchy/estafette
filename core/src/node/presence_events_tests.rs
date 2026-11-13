@@ -9,8 +9,8 @@ use super::tests::{
     FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_SEED,
     MemberPlan, SECOND_EFFECTIVE_FIRST_HANDLE, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED,
     SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_PUBLIC, THIRD_SEED, WITNESS_SEED, bind, card,
-    infrastructure_of, keys, listed_within, message_to, secret_key, settable_clock, start_members,
-    start_members_reaching, start_pair, start_witnessed, wall_clock_ms,
+    entry_meeting_within, infrastructure_of, keys, message_to, secret_key, settable_clock,
+    start_members, start_members_reaching, start_pair, start_witnessed, wall_clock_ms,
 };
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{Event, EventFields, RunRecord};
@@ -815,9 +815,11 @@ async fn observability_decision_9_a_member_records_its_own_handle_requested_and_
     let scratch = Scratch::new("events-own-handle").await;
     let (report, mut recorded) = recording();
     let (first, second) = start_pair(&scratch).await;
-    listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
+    entry_meeting_within(&first, SECOND_SEED, |_listed| true, SPEC_OBSERVER_WAIT)
         .await
-        .unwrap();
+        .unwrap_or_else(|| {
+            panic!("the first member did not list the second within {SPEC_OBSERVER_WAIT:?}")
+        });
 
     let _third = start_members_reaching(
         &scratch,
