@@ -31,7 +31,7 @@ pub struct NetworkSecretGate {
 }
 
 impl NetworkSecretGate {
-    /// Builds the gate for this endpoint's id under the network's gate key, drawing each nonce from the source, handing each closing reason to the sink and holding each connection it lets through in the register.
+    /// Builds the gate for this endpoint's id under the network's gate key, drawing each nonce from the source, handing each closing reason to the sink, which runs inside the handshake and must return without blocking, and holding each connection it lets through in the register.
     pub fn new(
         gate_key: GateKey,
         own_id: EndpointId,
