@@ -32,6 +32,19 @@ const FORCED_FAILURE_VARIABLE: &str = "ESTAFETTE_FORCED_FAILURE";
 const FORCED_FAILURE_TEST: &str =
     "trace_events::forced_failure_after_two_members_for_the_timeline_print";
 const FORCED_FAILURE_MESSAGE: &str = "the failure the timeline print follows";
+/// How far a stand-in clock moves at each reading, longer than any notice takes to arrive.
+const TICK: Duration = Duration::from_secs(10);
+/// The bound, in ticks, that holds a member wait's readings of its clock up to the end of the look its first notice wakes.
+const TICKS_UNTIL_THE_LOOK_AFTER_A_NOTICE_ENDS: u32 = 3;
+
+/// A stand-in clock whose every reading is one tick later than the last, so where a wait's bound runs out follows from how often it reads the time.
+fn clock_ticking_by(tick: Duration) -> impl FnMut() -> Instant {
+    let mut now = Instant::now();
+    move || {
+        now = now.checked_add(tick).unwrap();
+        now
+    }
+}
 
 /// Runs `test-send` to an unknown handle as the member of that number, which ends having recorded `process.command_failed` in the member's trace directory.
 fn send_to_nobody_as_member(machine: &ScratchMachine, number: u32) {
@@ -116,7 +129,7 @@ fn observability_decision_14_a_line_appended_while_the_wait_runs_to_an_events_fi
         .unwrap();
     let member = MemberEvents::new("member 0", &traces);
 
-    let line = member.wait_for_after(COMMAND_FAILED_EVENT, EVENT_BOUND, || {
+    let line = member.wait_for_after(COMMAND_FAILED_EVENT, EVENT_BOUND, Instant::now, || {
         events_file
             .write_all(COMMAND_FAILED_LINE.as_bytes())
             .unwrap();
@@ -166,11 +179,11 @@ fn observability_decision_14_a_wait_whose_bound_ran_out_before_a_notice_was_take
     let observer = MemberEvents::new("observer of member 0", &traces);
 
     let failure = failure_text_of(|| {
-        member.wait_for_after(COMMAND_FAILED_EVENT, Duration::ZERO, || {
+        member.wait_for_after(COMMAND_FAILED_EVENT, Duration::ZERO, Instant::now, || {
             events_file
                 .write_all(COMMAND_FAILED_LINE.as_bytes())
                 .unwrap();
-            observer.wait_for_after(HANDSHAKE_FAILED_EVENT, EVENT_BOUND, || {
+            observer.wait_for_after(HANDSHAKE_FAILED_EVENT, EVENT_BOUND, Instant::now, || {
                 events_file
                     .write_all(HANDSHAKE_FAILED_LINE.as_bytes())
                     .unwrap();
@@ -184,6 +197,48 @@ fn observability_decision_14_a_wait_whose_bound_ran_out_before_a_notice_was_take
             "member 0: no {COMMAND_FAILED_EVENT} within {:?}; its timeline so far:\n         5 ms  #0    {NETWORK_CREATED_EVENT} network=\"acme\"\n         9 ms  #1    {COMMAND_FAILED_EVENT} message=\"stopped\"\n        12 ms  #2    {HANDSHAKE_FAILED_EVENT}",
             Duration::ZERO
         )
+    );
+}
+
+#[test]
+fn observability_decision_14_a_line_a_look_finds_once_the_bound_ran_out_fails_the_wait_though_the_notice_came_inside_it()
+ {
+    let network = LocalNetwork::create("w6", &RunRecordKeeping::from_environment());
+    let machine = network.machine();
+    let traces = machine.traces_directory_of_member(FIRST_MEMBER);
+    fs::create_dir_all(&traces).unwrap();
+    let mut events_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(traces.join(EVENTS_FILE_NAME))
+        .unwrap();
+    events_file
+        .write_all(NETWORK_CREATED_LINE.as_bytes())
+        .unwrap();
+    let member = MemberEvents::new("member 0", &traces);
+    let within = TICK
+        .checked_mul(TICKS_UNTIL_THE_LOOK_AFTER_A_NOTICE_ENDS)
+        .unwrap();
+
+    let waiting_since = Instant::now();
+    let failure = failure_text_of(|| {
+        member.wait_for_after(COMMAND_FAILED_EVENT, within, clock_ticking_by(TICK), || {
+            events_file
+                .write_all(COMMAND_FAILED_LINE.as_bytes())
+                .unwrap();
+        });
+    });
+    let waited = waiting_since.elapsed();
+
+    assert_eq!(
+        failure,
+        format!(
+            "member 0: no {COMMAND_FAILED_EVENT} within {within:?}; its timeline so far:\n         5 ms  #0    {NETWORK_CREATED_EVENT} network=\"acme\"\n         9 ms  #1    {COMMAND_FAILED_EVENT} message=\"stopped\""
+        )
+    );
+    assert!(
+        waited < TICK,
+        "the wait ran out on its notice, not after its look: {waited:?}"
     );
 }
 

@@ -33,38 +33,35 @@ impl MemberEvents {
         }
     }
 
-    /// The first line of the member's events files that names the event, found already written or awaited until an events file grows, failing with the event's name and the member's timeline so far when the bound runs out.
+    /// The first line of the member's events files that names the event, found already written or by a look that an events file's growth wakes and that ends inside the bound, failing with the event's name and the member's timeline so far otherwise.
     #[track_caller]
     pub fn wait_for(&self, event: &str, within: Duration) -> TraceLine {
-        self.wait_for_after(event, within, || {})
+        self.wait_for_after(event, within, Instant::now, || {})
     }
 
-    /// As `wait_for`, running `once_waiting` once the first look found no such line, so a test can write the line the wait must then be woken for.
+    /// As `wait_for`, reading the time from `clock` and running `once_waiting` once the first look found no such line, so a test can write the line the wait must then be woken for.
     #[track_caller]
     pub fn wait_for_after(
         &self,
         event: &str,
         within: Duration,
+        mut clock: impl FnMut() -> Instant,
         once_waiting: impl FnOnce(),
     ) -> TraceLine {
-        let deadline = Instant::now().checked_add(within).unwrap();
+        let deadline = clock().checked_add(within).unwrap();
         let mut watch = self.watch_directory();
-        let mut once_waiting = Some(once_waiting);
+        if let Some(line) = self.look_for(event, &mut watch) {
+            return line;
+        }
+        once_waiting();
         loop {
-            self.watch_new_events_files(&mut watch);
-            if let Some(line) = self.lines().into_iter().find(|line| line.event == event) {
-                return line;
-            }
-            if let Some(write_while_waiting) = once_waiting.take() {
-                write_while_waiting();
-            }
-            let remaining = deadline.saturating_duration_since(Instant::now());
+            let remaining = deadline.saturating_duration_since(clock());
             match watch.notices.recv_timeout(remaining) {
                 Ok(notice) => {
                     let notice = notice.unwrap_or_else(|failure| {
                         panic!("{}: the file watcher failed: {failure}", self.label)
                     });
-                    assert!(Instant::now() < deadline, "{}", self.ran_out(event, within));
+                    assert!(clock() < deadline, "{}", self.ran_out(event, within));
                     forget_files_renamed_or_removed(&mut watch.watched_files, &notice);
                 }
                 Err(RecvTimeoutError::Timeout) => panic!("{}", self.ran_out(event, within)),
@@ -72,7 +69,18 @@ impl MemberEvents {
                     panic!("{}: the file watcher ended", self.label)
                 }
             }
+            if let Some(line) = self.look_for(event, &mut watch) {
+                assert!(clock() < deadline, "{}", self.ran_out(event, within));
+                return line;
+            }
         }
+    }
+
+    /// The first line of the member's events files that names the event, after watching each events file not yet watched.
+    #[track_caller]
+    fn look_for(&self, event: &str, watch: &mut EventsWatch) -> Option<TraceLine> {
+        self.watch_new_events_files(watch);
+        self.lines().into_iter().find(|line| line.event == event)
     }
 
     /// What a wait says when its bound ran out: the event awaited and the member's timeline so far.
