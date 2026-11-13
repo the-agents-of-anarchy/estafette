@@ -295,10 +295,7 @@ mod tests {
             handle: handle.to_owned(),
             public: b"{}".to_vec(),
             attached: true,
-            addr: Addr::from_endpoint_report(
-                ["https://relay.example/".to_owned()],
-                std::iter::empty(),
-            ),
+            addr: Addr::from_endpoint_report([HOST_RELAY.to_owned()], std::iter::empty()),
             seq,
             mac: [0; 32],
             sig: SignatureBytes([0; 64]),
