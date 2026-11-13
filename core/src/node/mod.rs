@@ -16,7 +16,7 @@ pub use lifecycle::{
 };
 pub(crate) use presence::{
     DirectAnswer, DirectRequest, DirectRequester, PeerRows, acknowledgement_of,
-    observer_wait_over_at, send_in_background, serve, sleep_until_deadline,
+    observer_wait_over_at, presence_request, send_in_background, serve, sleep_until_deadline,
 };
 pub use presence::{Identity, Network, Node, NodeEffects, NodeError};
 pub use rebind::{RelayProbe, relay_answers};

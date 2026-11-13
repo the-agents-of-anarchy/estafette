@@ -35,15 +35,14 @@ use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
     DEPARTURE_WAIT, Delivery, DirectAnswer, DirectRequest, DirectRequester, Identity,
     KnownHostAddress, Network, Node, NodeEffects, NodeError, PeerRows, RelayProbe, Session,
-    acknowledgement_of, known_host_addresses, observer_wait_over_at, replace_lookup_entry,
-    seed_lookup_with_known_hosts, send_in_background, serve, sleep_until_deadline, wire_addr,
+    acknowledgement_of, known_host_addresses, observer_wait_over_at, presence_request,
+    replace_lookup_entry, seed_lookup_with_known_hosts, send_in_background, serve,
+    sleep_until_deadline, wire_addr,
 };
-use crate::payload::{OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
+use crate::payload::{OpenedPayload, ZERO_MAC};
 use crate::peers::{Effect, Peer, PeerTable};
 use crate::sidecar::{HeldSidecar, Pause, SEED_BYTES, SidecarError, claim, create_card};
-use crate::wire::{
-    self, Introduce, IntroduceAck, Message, Nonce, Payload, PresenceRequest, Version,
-};
+use crate::wire::{self, Introduce, IntroduceAck, Message, Nonce, Version};
 
 const OBSERVER_PUBLIC: &[u8] = b"{}";
 const OPERATOR_CARD: &str = "operator";
@@ -859,14 +858,10 @@ async fn request_presence(
     key: &SecretKey,
     now_ms: u64,
 ) -> Result<(), Failure> {
-    let request = Payload::PresenceRequest(PresenceRequest {
-        v: Version::CURRENT,
-        requester: *key.public().as_bytes(),
-        seq: now_ms,
-        mac: ZERO_MAC,
-        sig: ZERO_SIGNATURE,
-    });
-    topic.broadcast(key, request).await.map_err(Failure::Topic)
+    topic
+        .broadcast(key, presence_request(*key.public().as_bytes(), now_ms))
+        .await
+        .map_err(Failure::Topic)
 }
 
 /// The result line of a peer: handle, status, attached and public fields.
@@ -976,8 +971,9 @@ mod tests {
     use crate::keys::render_public_key;
     use crate::net::direct::DirectServer;
     use crate::node::{Identity, Network, Node, NodeEffects};
+    use crate::payload::ZERO_SIGNATURE;
     use crate::stream_items::StreamExt;
-    use crate::wire::Addr;
+    use crate::wire::{Addr, Payload};
 
     const NETWORK_NAME: &str = "lab";
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];

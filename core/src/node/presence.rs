@@ -926,14 +926,8 @@ impl PresenceLoop {
 
     /// Broadcasts a request that every member announce itself at once, signed by this node's card and dated now.
     async fn request_presence(&self) {
-        self.broadcast(Payload::PresenceRequest(PresenceRequest {
-            v: Version::CURRENT,
-            requester: self.state.own_card,
-            seq: self.state.now_ms(),
-            mac: ZERO_MAC,
-            sig: ZERO_SIGNATURE,
-        }))
-        .await;
+        self.broadcast(presence_request(self.state.own_card, self.state.now_ms()))
+            .await;
     }
 
     /// Assigns the handle against the table as it stands when the first join gains no neighbor, and has a join that gains none end in a rebind when this member may rebind then.
@@ -1152,6 +1146,17 @@ impl PresenceLoop {
             self.endpoint.remove_relay(&relay).await;
         }
     }
+}
+
+/// A request from the requester's card that every member announce itself at once, carrying the seq; the broadcast signs and macs it.
+pub const fn presence_request(requester: wire::PublicKey, seq: u64) -> Payload {
+    Payload::PresenceRequest(PresenceRequest {
+        v: Version::CURRENT,
+        requester,
+        seq,
+        mac: ZERO_MAC,
+        sig: ZERO_SIGNATURE,
+    })
 }
 
 /// When the observer wait that starts at `joined` is over.
