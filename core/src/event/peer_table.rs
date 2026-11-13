@@ -3,7 +3,7 @@ use serde_json::Value;
 use super::gossip::ShortId;
 use super::{AreaEvent, EventFields};
 use crate::handle::{AnnouncedHandle, LocalHandle};
-use crate::peers::{Status, TableCause, TableChange};
+use crate::peers::{ContactFailed, ContactSucceeded, Status, TableCause, TableChange};
 use crate::wire;
 
 const PEER_FIELD: &str = "peer";
@@ -153,12 +153,12 @@ const fn cause_name(cause: TableCause) -> &'static str {
         TableCause::Unreachable => "unreachable",
         TableCause::Introduce => "introduce",
         TableCause::IntroduceAck => "introduce_ack",
-        TableCause::IntroduceFailed => "introduce_failed",
+        TableCause::ContactFailed(ContactFailed::Introduce) => "introduce_failed",
         TableCause::Message => "message",
-        TableCause::ProbeAnswered => "probe_answered",
-        TableCause::ProbeFailed => "probe_failed",
-        TableCause::SendAcknowledged => "send_acknowledged",
-        TableCause::SendFailed => "send_failed",
+        TableCause::ContactSucceeded(ContactSucceeded::Probe) => "probe_answered",
+        TableCause::ContactFailed(ContactFailed::Probe) => "probe_failed",
+        TableCause::ContactSucceeded(ContactSucceeded::Send) => "send_acknowledged",
+        TableCause::ContactFailed(ContactFailed::Send) => "send_failed",
     }
 }
 
@@ -275,7 +275,7 @@ mod tests {
                 handle: handle.clone(),
                 from: Status::Online,
                 to: Status::Unreachable,
-                cause: TableCause::SendFailed,
+                cause: TableCause::ContactFailed(ContactFailed::Send),
             })
             .into(),
             PeerTableEvent::of_change(TableChange::Removed {
@@ -310,12 +310,27 @@ mod tests {
         (TableCause::Unreachable, "unreachable"),
         (TableCause::Introduce, "introduce"),
         (TableCause::IntroduceAck, "introduce_ack"),
-        (TableCause::IntroduceFailed, "introduce_failed"),
+        (
+            TableCause::ContactFailed(ContactFailed::Introduce),
+            "introduce_failed",
+        ),
         (TableCause::Message, "message"),
-        (TableCause::ProbeAnswered, "probe_answered"),
-        (TableCause::ProbeFailed, "probe_failed"),
-        (TableCause::SendAcknowledged, "send_acknowledged"),
-        (TableCause::SendFailed, "send_failed"),
+        (
+            TableCause::ContactSucceeded(ContactSucceeded::Probe),
+            "probe_answered",
+        ),
+        (
+            TableCause::ContactFailed(ContactFailed::Probe),
+            "probe_failed",
+        ),
+        (
+            TableCause::ContactSucceeded(ContactSucceeded::Send),
+            "send_acknowledged",
+        ),
+        (
+            TableCause::ContactFailed(ContactFailed::Send),
+            "send_failed",
+        ),
     ];
     const OBSERVABILITY_DECISION_9_REMOVAL_CAUSE_WORD: &str = "expiry";
 

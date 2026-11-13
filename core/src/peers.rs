@@ -132,7 +132,7 @@ struct Tombstone {
     recorded_ms: u64,
 }
 
-/// The input that created or moved an entry: a payload, a request or its answer, or the outcome of a send or a probe.
+/// The input that created or moved an entry: a payload, a request or its answer, or the outcome of a direct contact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TableCause {
     Presence,
@@ -140,12 +140,24 @@ pub enum TableCause {
     Unreachable,
     Introduce,
     IntroduceAck,
-    IntroduceFailed,
     Message,
-    ProbeAnswered,
-    ProbeFailed,
-    SendAcknowledged,
-    SendFailed,
+    ContactFailed(ContactFailed),
+    ContactSucceeded(ContactSucceeded),
+}
+
+/// A direct contact with a card that failed: an Introduce, a Probe or the send of a Message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContactFailed {
+    Introduce,
+    Probe,
+    Send,
+}
+
+/// A direct contact with a card that succeeded: an answered Probe or an acknowledged send of a Message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContactSucceeded {
+    Probe,
+    Send,
 }
 
 /// One change a table operation made, for its caller to record.
@@ -345,33 +357,45 @@ impl PeerTable {
         })
     }
 
-    /// Takes a request to `card` that failed at connect or at ack, named by `cause`, setting it Unreachable and asking to announce that, unless it is Gone.
+    /// Takes a request to `card` that failed at connect or at ack, setting it Unreachable and asking to announce that, unless it is Gone.
     pub fn direct_contact_failed(
         &mut self,
         card: PublicKey,
         now_ms: u64,
-        cause: TableCause,
+        failed: ContactFailed,
     ) -> Operated<Vec<Effect>> {
         self.operate(now_ms, |table, changes| {
             table
-                .change_present_entry(changes, card, now_ms, cause, |peer| {
-                    peer.status = Status::Unreachable;
-                })
+                .change_present_entry(
+                    changes,
+                    card,
+                    now_ms,
+                    TableCause::ContactFailed(failed),
+                    |peer| {
+                        peer.status = Status::Unreachable;
+                    },
+                )
                 .map_or_else(Vec::new, |()| vec![Effect::BroadcastUnreachable(card)])
         })
     }
 
-    /// Takes a direct contact with `card` that succeeded, named by `cause`, setting it Online unless it is Gone.
+    /// Takes a direct contact with `card` that succeeded, setting it Online unless it is Gone.
     pub fn direct_contact_succeeded(
         &mut self,
         card: PublicKey,
         now_ms: u64,
-        cause: TableCause,
+        succeeded: ContactSucceeded,
     ) -> Operated<()> {
         self.operate(now_ms, |table, changes| {
-            table.change_present_entry(changes, card, now_ms, cause, |peer| {
-                peer.take_direct_contact(now_ms);
-            });
+            table.change_present_entry(
+                changes,
+                card,
+                now_ms,
+                TableCause::ContactSucceeded(succeeded),
+                |peer| {
+                    peer.take_direct_contact(now_ms);
+                },
+            );
         })
     }
 
@@ -1973,14 +1997,14 @@ mod tests {
         );
         assert_eq!(
             table
-                .direct_contact_failed(PEER_CARD, LATER_MS, TableCause::ProbeFailed)
+                .direct_contact_failed(PEER_CARD, LATER_MS, ContactFailed::Probe)
                 .value,
             vec![Effect::BroadcastUnreachable(PEER_CARD)]
         );
         assert_eq!(only_peer(&table, LATER_MS).status, Status::Unreachable);
         assert_eq!(
             table
-                .direct_contact_failed(THIRD_NODE_CARD, LATER_MS, TableCause::SendFailed)
+                .direct_contact_failed(THIRD_NODE_CARD, LATER_MS, ContactFailed::Send)
                 .value,
             vec![]
         );
@@ -1997,22 +2021,18 @@ mod tests {
         );
         assert_eq!(
             table
-                .direct_contact_failed(PEER_CARD, NOW_MS, TableCause::SendFailed)
+                .direct_contact_failed(PEER_CARD, NOW_MS, ContactFailed::Send)
                 .value,
             vec![Effect::BroadcastUnreachable(PEER_CARD)]
         );
-        drop(table.direct_contact_succeeded(PEER_CARD, OBSERVED_TS + 1, TableCause::ProbeAnswered));
+        drop(table.direct_contact_succeeded(PEER_CARD, OBSERVED_TS + 1, ContactSucceeded::Probe));
         assert_eq!(only_peer(&table, OBSERVED_TS + 1).status, Status::Online);
         table
             .admit_unreachable(&unreachable_report(PEER_CARD, OBSERVED_TS), LATER_MS)
             .value
             .unwrap_or_default();
         assert_eq!(only_peer(&table, LATER_MS).status, Status::Online);
-        drop(table.direct_contact_succeeded(
-            THIRD_NODE_CARD,
-            LATER_MS,
-            TableCause::SendAcknowledged,
-        ));
+        drop(table.direct_contact_succeeded(THIRD_NODE_CARD, LATER_MS, ContactSucceeded::Send));
         assert_eq!(only_peer(&table, LATER_MS).card, PEER_CARD);
     }
 
@@ -2025,11 +2045,7 @@ mod tests {
             &presence(PEER_CARD, PEER_HANDLE, FIRST_SEQ),
             NOW_MS,
         );
-        drop(table.direct_contact_succeeded(
-            PEER_CARD,
-            OBSERVED_TS + 1,
-            TableCause::SendAcknowledged,
-        ));
+        drop(table.direct_contact_succeeded(PEER_CARD, OBSERVED_TS + 1, ContactSucceeded::Send));
 
         assert_eq!(
             table
@@ -2118,7 +2134,7 @@ mod tests {
         let mut table = table_with_peer_gone_since_now();
         assert_eq!(
             table
-                .direct_contact_failed(PEER_CARD, LATER_MS, TableCause::ProbeFailed)
+                .direct_contact_failed(PEER_CARD, LATER_MS, ContactFailed::Probe)
                 .value,
             vec![]
         );
@@ -2138,7 +2154,7 @@ mod tests {
     #[test]
     fn a_successful_contact_leaves_a_gone_entry_gone_until_its_removal_spec_3_8() {
         let mut table = table_with_peer_gone_since_now();
-        drop(table.direct_contact_succeeded(PEER_CARD, LATER_MS, TableCause::ProbeAnswered));
+        drop(table.direct_contact_succeeded(PEER_CARD, LATER_MS, ContactSucceeded::Probe));
         assert_still_gone_then_removed(&table);
     }
 
@@ -2210,8 +2226,8 @@ mod tests {
         let handle: LocalHandle = PEER_HANDLE.parse().unwrap();
 
         let created = table.admit_presence(&presence(PEER_CARD, PEER_HANDLE, FIRST_SEQ), NOW_MS);
-        let moved = table.direct_contact_failed(PEER_CARD, NOW_MS, TableCause::ProbeFailed);
-        let unmoved = table.direct_contact_failed(PEER_CARD, NOW_MS, TableCause::ProbeFailed);
+        let moved = table.direct_contact_failed(PEER_CARD, NOW_MS, ContactFailed::Probe);
+        let unmoved = table.direct_contact_failed(PEER_CARD, NOW_MS, ContactFailed::Probe);
         let departed = table.admit_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS);
         let removed = table.neighbor_down(THIRD_NODE_CARD, GONE_REMOVED_MS);
 
@@ -2232,7 +2248,7 @@ mod tests {
                 handle: handle.clone(),
                 from: Status::Online,
                 to: Status::Unreachable,
-                cause: TableCause::ProbeFailed,
+                cause: TableCause::ContactFailed(ContactFailed::Probe),
             }]
         );
         assert_eq!(unmoved.changes, []);

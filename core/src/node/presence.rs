@@ -42,8 +42,8 @@ use crate::payload::{
     ZERO_SIGNATURE,
 };
 use crate::peers::{
-    Effect, Operated, Peer, PeerTable, TableCause, TableChange, announced_sender_handle,
-    is_within_announcement_max_age, is_within_announcement_max_age_ahead,
+    ContactFailed, ContactSucceeded, Effect, Operated, Peer, PeerTable, TableChange,
+    announced_sender_handle, is_within_announcement_max_age, is_within_announcement_max_age_ahead,
 };
 use crate::wire::{
     self, Addr, Departure, Introduce, IntroduceAck, Message, Nonce, Payload, Presence,
@@ -452,19 +452,20 @@ impl PeerRows {
                 card,
                 answer: Err(_),
             } => self.change(|table| {
-                table.direct_contact_failed(card, now_ms, TableCause::IntroduceFailed)
+                table.direct_contact_failed(card, now_ms, ContactFailed::Introduce)
             }),
             DirectAnswer::Probe {
                 card,
                 answer: Err(_),
-            } => self
-                .change(|table| table.direct_contact_failed(card, now_ms, TableCause::ProbeFailed)),
+            } => {
+                self.change(|table| table.direct_contact_failed(card, now_ms, ContactFailed::Probe))
+            }
             DirectAnswer::Probe {
                 card,
                 answer: Ok(()),
             } => {
                 self.change(|table| {
-                    table.direct_contact_succeeded(card, now_ms, TableCause::ProbeAnswered)
+                    table.direct_contact_succeeded(card, now_ms, ContactSucceeded::Probe)
                 });
                 Vec::new()
             }
@@ -506,16 +507,15 @@ impl NodeState {
         let now_ms = self.now_ms();
         let effects = self
             .rows
-            .change(|table| table.direct_contact_failed(card, now_ms, TableCause::SendFailed));
+            .change(|table| table.direct_contact_failed(card, now_ms, ContactFailed::Send));
         self.hand_to_loop(LoopEvent::Effects(effects));
     }
 
     /// Sets the peer Online after a send to it was acknowledged, and wakes the presence loop, since an Online peer lets this member rebind.
     pub(super) fn contact_succeeded(&self, card: wire::PublicKey) {
         let now_ms = self.now_ms();
-        self.rows.change(|table| {
-            table.direct_contact_succeeded(card, now_ms, TableCause::SendAcknowledged)
-        });
+        self.rows
+            .change(|table| table.direct_contact_succeeded(card, now_ms, ContactSucceeded::Send));
         self.hand_to_loop(LoopEvent::PeerReached);
     }
 
