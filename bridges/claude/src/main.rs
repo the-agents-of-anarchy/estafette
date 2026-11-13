@@ -564,11 +564,11 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
     /// Records a frame's arrival from a socket, delivers it, and remembers its seq as the point to follow that socket from again.
     fn deliver_from_socket(&self, socket: &BinarySocket, frame: &InboxFrame) {
         (self.record)(BridgeEvent::FrameReceived {
-            binary_pid: socket.pid,
+            binary_pid: socket.pid(),
             frame: FrameIds::of(frame),
         });
         self.deliver(frame);
-        lock(&self.handled_seqs).insert(socket.path.clone(), frame.seq);
+        lock(&self.handled_seqs).insert(socket.path().to_owned(), frame.seq);
     }
 
     /// Forgets the handled seqs of every socket whose process no longer runs, so a socket path that returns is followed from the start.
@@ -576,7 +576,7 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
         lock(&self.handled_seqs).retain(|socket_path, _| {
             running_sockets
                 .iter()
-                .any(|running| &running.path == socket_path)
+                .any(|running| running.path() == socket_path)
         });
     }
 
@@ -605,8 +605,8 @@ fn follow_binary_socket<S, B, F>(
     let spawn = Arc::clone(&session.spawn);
     spawn(Box::new(move || {
         let wait = Arc::clone(&session.wait);
-        let since = session.last_handled_seq(&socket.path);
-        let binary_pid = socket.pid;
+        let since = session.last_handled_seq(socket.path());
+        let binary_pid = socket.pid();
         let outcome = follow_inbox(
             &mut connector,
             since,
@@ -626,7 +626,7 @@ fn follow_binary_socket<S, B, F>(
             socket: socket.clone(),
             error,
         });
-        lock(&session.followed_sockets).remove(&socket.path);
+        lock(&session.followed_sockets).remove(socket.path());
     }));
 }
 
@@ -744,8 +744,8 @@ where
         &mut |sockets| {
             session.forget_handled_seqs_except(sockets);
             for socket in sockets {
-                if lock(&session.followed_sockets).insert(socket.path.clone()) {
-                    let connector = (effects.connect_binary_socket)(socket.path.clone());
+                if lock(&session.followed_sockets).insert(socket.path().to_owned()) {
+                    let connector = (effects.connect_binary_socket)(socket.path().to_owned());
                     follow_binary_socket(&session, socket.clone(), connector);
                 }
             }
@@ -1031,7 +1031,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use estafette_bridge_claude::discover::ProcessEntry;
+    use estafette_bridge_claude::discover::{ProcessEntry, binary_sockets_under};
     use std::cell::RefCell;
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
     use std::os::unix::fs::PermissionsExt;
@@ -1822,14 +1822,12 @@ mod tests {
     fn spec_3_12_frames_of_two_followed_sockets_share_one_rate_limit_per_sender() {
         let wiring = wiring();
         let session = bridge_session(&wiring);
-        let first_socket = BinarySocket {
-            pid: Pid(101),
-            path: PathBuf::from("/run/user/1000/estafette-1000/101.sock"),
-        };
-        let second_socket = BinarySocket {
-            pid: Pid(102),
-            path: PathBuf::from("/run/user/1000/estafette-1000/102.sock"),
-        };
+        let [first_socket, second_socket] = <[BinarySocket; 2]>::try_from(binary_sockets_under(
+            HARNESS_PID,
+            &wiring.effects.runtime_inputs,
+            &[mcp_binary(101), mcp_binary(102)],
+        ))
+        .expect("two binaries under the harness");
         let mut delivered_from_first_socket = 0_usize;
         while written_counts(&session.files.writes).is_empty()
             && delivered_from_first_socket < MOST_FRAMES_BEFORE_A_DROP

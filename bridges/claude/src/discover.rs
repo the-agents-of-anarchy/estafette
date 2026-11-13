@@ -207,8 +207,22 @@ pub struct RuntimeDirectoryInputs {
 /// The inbox socket of one MCP-mode process of the binary: the process's pid and the socket path it serves.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BinarySocket {
-    pub pid: Pid,
-    pub path: PathBuf,
+    pid: Pid,
+    path: PathBuf,
+}
+
+impl BinarySocket {
+    /// The pid of the binary process that serves this socket.
+    #[must_use]
+    pub const fn pid(&self) -> Pid {
+        self.pid
+    }
+
+    /// The path of the inbox socket, named for the process's pid.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 /// Reports the inbox sockets of the binary's MCP-mode processes under the harness at every poll, until the harness exits.

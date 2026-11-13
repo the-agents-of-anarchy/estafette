@@ -215,7 +215,7 @@ impl BridgeEvent {
                 vec![binary_pid_field(*binary_pid)]
             }
             Self::InboxLost { socket, error } => vec![
-                binary_pid_field(socket.pid),
+                binary_pid_field(socket.pid()),
                 (REASON_FIELD, Value::from(inbox_loss_reason(error))),
             ],
             Self::FrameReceived { binary_pid, frame } => {
@@ -276,7 +276,7 @@ impl BridgeEvent {
                 "the debug trace could not cut its events file back to its last line at the stop, so the file ends in zero bytes: {error}"
             )),
             Self::InboxLost { socket, error } => {
-                Some(format!("{}: {error}", socket.path.display()))
+                Some(format!("{}: {error}", socket.path().display()))
             }
             Self::PermissionClassUnreadable(error) => Some(format!(
                 "cannot read the session's permission mode, keeping the class attested before: {error}"
