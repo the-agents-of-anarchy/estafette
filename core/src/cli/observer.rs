@@ -952,7 +952,7 @@ fn public_text(public: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::peers::Status;
+    use crate::peers::{Status, TableCause};
     use std::ffi::OsString;
     use std::fs;
     use std::path::PathBuf;
@@ -2918,7 +2918,7 @@ mod tests {
                 LINE_CLOCK_MS,
             ));
         }
-        drop(table.direct_contact_failed(card_of(2), LINE_CLOCK_MS));
+        drop(table.direct_contact_failed(card_of(2), LINE_CLOCK_MS, TableCause::SendFailed));
         table.receive_departure(
             &wire::Departure {
                 v: Version::CURRENT,

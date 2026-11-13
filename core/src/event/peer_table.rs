@@ -15,6 +15,7 @@ const TO_FIELD: &str = "to";
 const CAUSE_FIELD: &str = "cause";
 const DIRECT_ADDRESSES_FIELD: &str = "direct_addresses";
 const RELAY_FIELD: &str = "relay";
+const EXPIRY_CAUSE_WORD: &str = "expiry";
 
 super::event_names! {
     /// The names of the peer table events.
@@ -60,12 +61,8 @@ pub enum PeerTableEvent {
         to: Status,
         cause: TableCause,
     },
-    /// An entry was removed by the cause named.
-    EntryRemoved {
-        entry: NamedEntry,
-        status: Status,
-        cause: TableCause,
-    },
+    /// An entry was removed once its time ran out.
+    EntryRemoved { entry: NamedEntry, status: Status },
     /// This node's own handle was assigned for the one it requested.
     OwnHandleAssigned {
         requested: AnnouncedHandle,
@@ -81,15 +78,16 @@ pub enum PeerTableEvent {
 }
 
 impl PeerTableEvent {
-    /// The event of one change the table made, caused by the input named, a removal always by expiry.
+    /// The event of one change the table made.
     #[must_use]
-    pub fn of_change(change: TableChange, cause: TableCause) -> Self {
+    pub fn of_change(change: TableChange) -> Self {
         match change {
             TableChange::Created {
                 card,
                 requested,
                 handle,
                 status,
+                cause,
             } => Self::EntryCreated {
                 entry: named(&card, handle),
                 requested,
@@ -101,6 +99,7 @@ impl PeerTableEvent {
                 handle,
                 from,
                 to,
+                cause,
             } => Self::EntryChanged {
                 entry: named(&card, handle),
                 from,
@@ -114,7 +113,6 @@ impl PeerTableEvent {
             } => Self::EntryRemoved {
                 entry: named(&card, handle),
                 status,
-                cause: TableCause::Expiry,
             },
             TableChange::OwnHandleAssigned { requested, handle } => {
                 Self::OwnHandleAssigned { requested, handle }
@@ -161,7 +159,6 @@ const fn cause_name(cause: TableCause) -> &'static str {
         TableCause::ProbeFailed => "probe_failed",
         TableCause::SendAcknowledged => "send_acknowledged",
         TableCause::SendFailed => "send_failed",
-        TableCause::Expiry => "expiry",
     }
 }
 
@@ -218,15 +215,11 @@ impl AreaEvent for PeerTableEvent {
                 ]);
                 fields
             }
-            Self::EntryRemoved {
-                entry,
-                status,
-                cause,
-            } => {
+            Self::EntryRemoved { entry, status } => {
                 let mut fields = entry.fields();
                 fields.extend([
                     (STATUS_FIELD, Value::from(status.wire_word())),
-                    (CAUSE_FIELD, Value::from(cause_name(*cause))),
+                    (CAUSE_FIELD, Value::from(EXPIRY_CAUSE_WORD)),
                 ]);
                 fields
             }
@@ -269,42 +262,32 @@ mod tests {
         let handle: LocalHandle = HANDLE.parse().unwrap();
         let requested: AnnouncedHandle = HANDLE.parse().unwrap();
         let events: [Event; 5] = [
-            PeerTableEvent::of_change(
-                TableChange::Created {
-                    card: PEER_ID,
-                    requested: requested.clone(),
-                    handle: handle.clone(),
-                    status: Status::Online,
-                },
-                TableCause::Presence,
-            )
+            PeerTableEvent::of_change(TableChange::Created {
+                card: PEER_ID,
+                requested: requested.clone(),
+                handle: handle.clone(),
+                status: Status::Online,
+                cause: TableCause::Presence,
+            })
             .into(),
-            PeerTableEvent::of_change(
-                TableChange::Moved {
-                    card: PEER_ID,
-                    handle: handle.clone(),
-                    from: Status::Online,
-                    to: Status::Unreachable,
-                },
-                TableCause::SendFailed,
-            )
+            PeerTableEvent::of_change(TableChange::Moved {
+                card: PEER_ID,
+                handle: handle.clone(),
+                from: Status::Online,
+                to: Status::Unreachable,
+                cause: TableCause::SendFailed,
+            })
             .into(),
-            PeerTableEvent::of_change(
-                TableChange::Removed {
-                    card: PEER_ID,
-                    handle: handle.clone(),
-                    status: Status::Unreachable,
-                },
-                TableCause::Message,
-            )
+            PeerTableEvent::of_change(TableChange::Removed {
+                card: PEER_ID,
+                handle: handle.clone(),
+                status: Status::Unreachable,
+            })
             .into(),
-            PeerTableEvent::of_change(
-                TableChange::OwnHandleAssigned {
-                    requested,
-                    handle: handle.clone(),
-                },
-                TableCause::Expiry,
-            )
+            PeerTableEvent::of_change(TableChange::OwnHandleAssigned {
+                requested,
+                handle: handle.clone(),
+            })
             .into(),
             PeerTableEvent::lookup_replaced(&PEER_ID, Some(handle), 0, true).into(),
         ];
@@ -321,7 +304,7 @@ mod tests {
         }
     }
 
-    const OBSERVABILITY_DECISION_9_CAUSE_WORDS: [(TableCause, &str); 12] = [
+    const OBSERVABILITY_DECISION_9_CAUSE_WORDS: [(TableCause, &str); 11] = [
         (TableCause::Presence, "presence"),
         (TableCause::Departure, "departure"),
         (TableCause::Unreachable, "unreachable"),
@@ -333,22 +316,20 @@ mod tests {
         (TableCause::ProbeFailed, "probe_failed"),
         (TableCause::SendAcknowledged, "send_acknowledged"),
         (TableCause::SendFailed, "send_failed"),
-        (TableCause::Expiry, "expiry"),
     ];
+    const OBSERVABILITY_DECISION_9_REMOVAL_CAUSE_WORD: &str = "expiry";
 
     #[test]
     fn observability_decision_9_a_changed_entry_writes_the_word_of_its_own_cause_and_of_no_other() {
         let handle: LocalHandle = HANDLE.parse().unwrap();
         for (cause, word) in OBSERVABILITY_DECISION_9_CAUSE_WORDS {
-            let event: Event = PeerTableEvent::of_change(
-                TableChange::Moved {
-                    card: PEER_ID,
-                    handle: handle.clone(),
-                    from: Status::Online,
-                    to: Status::Unreachable,
-                },
+            let event: Event = PeerTableEvent::of_change(TableChange::Moved {
+                card: PEER_ID,
+                handle: handle.clone(),
+                from: Status::Online,
+                to: Status::Unreachable,
                 cause,
-            )
+            })
             .into();
 
             assert_eq!(
@@ -357,7 +338,24 @@ mod tests {
                 "{cause:?}"
             );
         }
-        let mut words = OBSERVABILITY_DECISION_9_CAUSE_WORDS.map(|(_cause, word)| word);
+        let removed: Event = PeerTableEvent::of_change(TableChange::Removed {
+            card: PEER_ID,
+            handle,
+            status: Status::Gone { since_ms: 0 },
+        })
+        .into();
+        assert_eq!(
+            removed.fields().last(),
+            Some(&(
+                CAUSE_FIELD,
+                Value::from(OBSERVABILITY_DECISION_9_REMOVAL_CAUSE_WORD)
+            ))
+        );
+        let mut words: Vec<&str> = OBSERVABILITY_DECISION_9_CAUSE_WORDS
+            .map(|(_cause, word)| word)
+            .into_iter()
+            .chain([OBSERVABILITY_DECISION_9_REMOVAL_CAUSE_WORD])
+            .collect();
         words.sort_unstable();
         assert!(
             words.windows(2).all(|pair| pair.first() != pair.last()),
