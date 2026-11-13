@@ -1285,6 +1285,17 @@ mod tests {
         );
     }
 
+    /// The error iroh returns when an endpoint's required bind meets a socket already taken.
+    async fn bind_failure_on_a_taken_socket() -> BindError {
+        let taken_socket = std::net::UdpSocket::bind(LOOPBACK_ANY_PORT).unwrap();
+        Endpoint::builder(presets::Minimal)
+            .bind_addr(taken_socket.local_addr().unwrap())
+            .unwrap()
+            .bind()
+            .await
+            .unwrap_err()
+    }
+
     #[tokio::test]
     async fn observability_decision_11_each_transport_event_is_written_under_its_own_name() {
         let salt = crate::net::direct::tests::test_salt();
@@ -1302,6 +1313,7 @@ mod tests {
         let cancelled = tokio::spawn(std::future::pending::<()>());
         cancelled.abort();
         let join_error = cancelled.await.unwrap_err();
+        let bind_failure = bind_failure_on_a_taken_socket().await;
         let cases: Vec<(crate::event::Event, &str)> = vec![
             (
                 TransportEvent::Rebinding(RebindCause::Deaf).into(),
@@ -1374,6 +1386,10 @@ mod tests {
             (
                 TransportEvent::RouterShutdownFailed(join_error).into(),
                 "transport.router_shutdown_failed",
+            ),
+            (
+                TransportEvent::RebindFailed(bind_failure).into(),
+                "transport.rebind_failed",
             ),
             (
                 TransportEvent::GateClosed(GateFailure::WrongProof).into(),
