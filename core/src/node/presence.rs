@@ -366,12 +366,21 @@ impl PeerRows {
     /// Applies a Departure to the table, returning the drop of the held connection it calls for once it is taken (spec 3.8).
     #[must_use]
     pub(crate) fn take_departure(&self, departure: &Departure, now_ms: u64) -> Vec<Effect> {
-        self.table().receive_departure(departure, now_ms)
+        let mut table = self.table();
+        let admitted = table.admit_departure(departure, now_ms);
+        let handle = table.handle_of(departure.card, now_ms);
+        drop(table);
+        (self.report)(admission_record(departure.facts(), handle, &admitted));
+        admitted.unwrap_or_default()
     }
 
-    /// Applies an Unreachable report about another card to the table (spec 3.8).
+    /// Applies an Unreachable report about another card to the table, recording whether it was taken (spec 3.8).
     pub(crate) fn take_unreachable(&self, report: &Unreachable, now_ms: u64) {
-        self.table().receive_unreachable(report, now_ms);
+        let mut table = self.table();
+        let admitted = table.admit_unreachable(report, now_ms);
+        let handle = table.handle_of(report.reporter, now_ms);
+        drop(table);
+        (self.report)(admission_record(report.facts(), handle, &admitted));
     }
 
     /// Applies a gossip report of a new neighbor, returning the Introduce it calls for (spec 3.8).
@@ -1023,7 +1032,9 @@ impl PresenceLoop {
                 self.perform(effects).await;
             }
             OpenedPayload::Unreachable(report) if report.card == self.state.own_card => {
-                if is_rumor_to_answer(report.ts, self.announcer.last_seq(), now_ms) {
+                let admitted = rumor_admission(report.ts, self.announcer.last_seq(), now_ms);
+                self.record_admission(report.facts(), admitted, now_ms);
+                if admitted.is_ok() {
                     self.announce_presence().await;
                 }
             }
@@ -1047,11 +1058,24 @@ impl PresenceLoop {
         }
     }
 
-    /// Sends Presence at once for a request within the announcement max age and above its requester's last seq.
+    /// Sends Presence at once for a request within the announcement max age and above its requester's last seq, recording whether the request was taken.
     async fn answer_presence_request(&mut self, request: &PresenceRequest, now_ms: u64) {
-        if self.heard_requests.admit(request, now_ms) {
+        let admitted = self.heard_requests.admit(request, now_ms);
+        self.record_admission(request.facts(), admitted, now_ms);
+        if admitted.is_ok() {
             self.announce_presence().await;
         }
+    }
+
+    /// Records whether a received payload was taken or dropped by the rule named, naming its signer by the handle the table holds for it, if any.
+    fn record_admission(
+        &self,
+        facts: PayloadFacts,
+        admission: Result<(), PayloadDropRule>,
+        now_ms: u64,
+    ) {
+        let handle = self.state.table().handle_of(facts.signer, now_ms);
+        (self.report)(admission_record(facts, handle, &admission));
     }
 
     /// Applies the effects the direct server handed over and the answer of each request this node sent.
@@ -1208,7 +1232,7 @@ pub async fn sleep_until_deadline(deadline: Option<Instant>) {
 }
 
 /// The record of a received payload the node took, or dropped by the rule the admission named, naming its signer by the handle the table holds for it, if any.
-fn admission_record<Taken>(
+pub(super) fn admission_record<Taken>(
     facts: PayloadFacts,
     signer_handle: Option<LocalHandle>,
     admission: &Result<Taken, PayloadDropRule>,
@@ -1237,10 +1261,19 @@ fn next_seq_after(last: Option<u64>, now_ms: u64) -> u64 {
     last.map_or(now_ms, |last| now_ms.max(last.saturating_add(1)))
 }
 
-/// Whether an Unreachable report about this node calls for a new Presence: within the announcement max age and not below the last Presence's seq.
-fn is_rumor_to_answer(report_ts: u64, last_presence_seq: Option<u64>, now_ms: u64) -> bool {
-    is_within_announcement_max_age(report_ts, now_ms)
-        && last_presence_seq.is_none_or(|seq| report_ts >= seq)
+/// Takes an Unreachable report about this node as calling for a new Presence when it is within the announcement max age and not below the last Presence's seq, or names the rule that drops it.
+fn rumor_admission(
+    report_ts: u64,
+    last_presence_seq: Option<u64>,
+    now_ms: u64,
+) -> Result<(), PayloadDropRule> {
+    if !is_within_announcement_max_age(report_ts, now_ms) {
+        return Err(PayloadDropRule::OlderThanMaxAge);
+    }
+    if last_presence_seq.is_some_and(|seq| report_ts < seq) {
+        return Err(PayloadDropRule::ReportOlderThanLastPresence);
+    }
+    Ok(())
 }
 
 /// The last Presence this node sent: its seq, its address, and when it went out.
@@ -1319,20 +1352,25 @@ struct HeardPresenceRequests {
 }
 
 impl HeardPresenceRequests {
-    /// Admits and remembers a request dated within the announcement max age of the clock, behind or ahead, whose seq is above the last heard from its requester.
-    fn admit(&mut self, request: &PresenceRequest, now_ms: u64) -> bool {
+    /// Admits and remembers a request dated within the announcement max age of the clock, behind or ahead, whose seq is above the last heard from its requester, or names the rule that drops it.
+    fn admit(&mut self, request: &PresenceRequest, now_ms: u64) -> Result<(), PayloadDropRule> {
         self.highest_seq
             .retain(|_requester, seq| is_within_announcement_max_age(*seq, now_ms));
-        let is_fresh = is_within_announcement_max_age(request.seq, now_ms)
-            && is_within_announcement_max_age_ahead(request.seq, now_ms)
-            && self
-                .highest_seq
-                .get(&request.requester)
-                .is_none_or(|heard| request.seq > *heard);
-        if is_fresh {
-            self.highest_seq.insert(request.requester, request.seq);
+        if !is_within_announcement_max_age(request.seq, now_ms) {
+            return Err(PayloadDropRule::OlderThanMaxAge);
         }
-        is_fresh
+        if !is_within_announcement_max_age_ahead(request.seq, now_ms) {
+            return Err(PayloadDropRule::AheadOfMaxAge);
+        }
+        if self
+            .highest_seq
+            .get(&request.requester)
+            .is_some_and(|heard| request.seq <= *heard)
+        {
+            return Err(PayloadDropRule::NotAboveRequesterSeq);
+        }
+        self.highest_seq.insert(request.requester, request.seq);
+        Ok(())
     }
 }
 

@@ -5,12 +5,12 @@ use std::path::PathBuf;
 use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 
 use super::addresses::replace_lookup_entry;
-use super::presence::NodeError;
+use super::presence::{NodeError, admission_record};
 use crate::config::{ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
 use crate::event::{Event, GossipEvent};
 use crate::keys::parse_public_key;
 use crate::net::endpoint::NodeEndpoint;
-use crate::payload::ValidInfrastructure;
+use crate::payload::{DescribedPayload, PayloadDropRule, ValidInfrastructure};
 
 /// How far ahead of this node's clock a host record's ts may be and still be held (spec:779, spec:1013).
 const INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS: u64 = 300;
@@ -50,10 +50,9 @@ pub fn seed_lookup_with_known_hosts(endpoint: &NodeEndpoint, hosts: &[KnownHostA
     }
 }
 
-/// What a valid Infrastructure record does to the known hosts.
+/// What a valid Infrastructure record the node holds does to the known hosts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordVerdict {
-    Dropped,
     FromKnownHost,
     FromNewHost,
 }
@@ -96,7 +95,7 @@ impl KnownHosts {
             .collect()
     }
 
-    /// Applies the Infrastructure rows of spec 3.8: holds a record newer than its host's last, points the lookup at its address, adds its relay as `relay` says, and saves a host not known before, recording a save that failed.
+    /// Applies the Infrastructure rows of spec 3.8, recording whether the record was taken: holds a record newer than its host's last, points the lookup at its address, adds its relay as `relay` says, and saves a host not known before, recording a save that failed.
     pub(crate) async fn take_infrastructure(
         &mut self,
         valid: &ValidInfrastructure,
@@ -105,10 +104,11 @@ impl KnownHosts {
         relay: RelayOfRecord,
         report: &(dyn Fn(Event) + Send + Sync),
     ) {
-        let verdict = self.take_record(valid, now_ms);
-        if verdict == RecordVerdict::Dropped {
+        let admitted = self.take_record(valid, now_ms);
+        report(admission_record(valid.record().facts(), None, &admitted));
+        let Ok(verdict) = admitted else {
             return;
-        }
+        };
         replace_lookup_entry(endpoint, &valid.record().host, &valid.record().addr);
         match relay {
             RelayOfRecord::AddToRelayMap => endpoint.add_relay(valid.relay().clone()).await,
@@ -121,13 +121,17 @@ impl KnownHosts {
         }
     }
 
-    /// Holds the relay and `ts` of a record newer than the newest held for its host and within the future bound, adding a host never known before.
-    fn take_record(&mut self, valid: &ValidInfrastructure, now_ms: u64) -> RecordVerdict {
+    /// Holds the relay and `ts` of a record newer than the newest held for its host and within the future bound, adding a host never known before, or names the rule that drops the record.
+    fn take_record(
+        &mut self,
+        valid: &ValidInfrastructure,
+        now_ms: u64,
+    ) -> Result<RecordVerdict, PayloadDropRule> {
         let record = valid.record();
         let latest_accepted_ts =
             seconds_of(now_ms).saturating_add(INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS);
         if record.ts > latest_accepted_ts {
-            return RecordVerdict::Dropped;
+            return Err(PayloadDropRule::RecordPastFutureBound);
         }
         let id = data_encoding::HEXLOWER.encode(&record.host);
         let Some(host) = self.config.hosts.iter_mut().find(|host| host.id == id) else {
@@ -140,10 +144,10 @@ impl KnownHosts {
                 },
             });
             self.newer_than_file = true;
-            return RecordVerdict::FromNewHost;
+            return Ok(RecordVerdict::FromNewHost);
         };
         if host.ts.is_some_and(|held| record.ts <= held) {
-            return RecordVerdict::Dropped;
+            return Err(PayloadDropRule::RecordNotNewerThanHeld);
         }
         host.ts = Some(record.ts);
         record.relay.as_str().clone_into(&mut host.relay);
@@ -151,7 +155,7 @@ impl KnownHosts {
             *heard = UnixMillis(now_ms);
         }
         self.newer_than_file = true;
-        RecordVerdict::FromKnownHost
+        Ok(RecordVerdict::FromKnownHost)
     }
 
     /// Rewrites the network configuration with the known hosts (spec 3.3).

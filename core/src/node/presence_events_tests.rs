@@ -6,13 +6,13 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::tests::{
-    FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, MARKER_SEED, MemberPlan,
-    SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, Scratch, card, start_members, start_witnessed,
-    wall_clock_ms,
+    FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_SEED,
+    MemberPlan, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, Scratch, WITNESS_SEED, card,
+    infrastructure_of, start_members, start_witnessed, wall_clock_ms,
 };
 use crate::event::{Event, EventFields, RunRecord};
 use crate::payload::{ZERO_MAC, ZERO_SIGNATURE};
-use crate::wire::{Addr, Payload, Presence, Version};
+use crate::wire::{Addr, Departure, Payload, Presence, PresenceRequest, Unreachable, Version};
 
 const EVENT_WAIT: Duration = Duration::from_secs(10);
 const SPEC_SHORT_ID_BYTES: usize = 5;
@@ -34,16 +34,21 @@ struct RecordedEvents(mpsc::UnboundedReceiver<(&'static str, EventFields)>);
 impl RecordedEvents {
     /// The fields of the next event of that name, failing with the name when none is recorded within the wait.
     async fn next_named(&mut self, name: &str) -> EventFields {
+        self.next_of(&[name]).await.1
+    }
+
+    /// The name and fields of the next event of one of those names, failing with the names when none is recorded within the wait.
+    async fn next_of(&mut self, names: &[&str]) -> (&'static str, EventFields) {
         tokio::time::timeout(EVENT_WAIT, async {
             loop {
                 let (recorded, fields) = self.0.recv().await.unwrap();
-                if recorded == name {
-                    return fields;
+                if names.contains(&recorded) {
+                    return (recorded, fields);
                 }
             }
         })
         .await
-        .unwrap_or_else(|_elapsed| panic!("no {name} event within {EVENT_WAIT:?}"))
+        .unwrap_or_else(|_elapsed| panic!("no event of {names:?} within {EVENT_WAIT:?}"))
     }
 }
 
@@ -224,4 +229,305 @@ fn replayed(presence: Payload) -> Payload {
         public: REPLAYED_PUBLIC.to_vec(),
         ..presence
     })
+}
+
+/// A Departure of the seed's card carrying the seq.
+fn departure_of(seed: u8, seq: u64) -> Payload {
+    Payload::Departure(Departure {
+        v: Version::CURRENT,
+        card: card(seed),
+        seq,
+        mac: ZERO_MAC,
+        sig: ZERO_SIGNATURE,
+    })
+}
+
+/// An Unreachable report by the reporter's card about the absent card, observed at `ts`.
+fn unreachable_of(reporter: u8, absent: u8, ts: u64) -> Payload {
+    Payload::Unreachable(Unreachable {
+        v: Version::CURRENT,
+        card: card(absent),
+        reporter: card(reporter),
+        ts,
+        mac: ZERO_MAC,
+        sig: ZERO_SIGNATURE,
+    })
+}
+
+/// A Presence request by the requester's card carrying the seq.
+fn presence_request_of(requester: u8, seq: u64) -> Payload {
+    Payload::PresenceRequest(PresenceRequest {
+        v: Version::CURRENT,
+        requester: card(requester),
+        seq,
+        mac: ZERO_MAC,
+        sig: ZERO_SIGNATURE,
+    })
+}
+
+/// The fields of a received payload as the events file writes them, the rule last when it was dropped.
+fn admission_fields(
+    kind: &str,
+    signer: u8,
+    handle: Option<&str>,
+    (stamp_key, stamp): (&'static str, u64),
+    rule: Option<&str>,
+) -> EventFields {
+    let mut fields = vec![("kind", Value::from(kind)), ("peer", short_id(signer))];
+    fields.extend(handle.map(|handle| ("handle", Value::from(handle))));
+    fields.push((stamp_key, Value::from(stamp)));
+    fields.extend(rule.map(|rule| ("rule", Value::from(rule))));
+    fields
+}
+
+const ACCEPTED: &str = "gossip.payload_accepted";
+const DROPPED: &str = "gossip.payload_dropped";
+const MILLIS_PER_SECOND: u64 = 1000;
+const SPEC_INFRASTRUCTURE_FUTURE_BOUND_SECONDS: u64 = 300;
+const PIN_SEED: u8 = 84;
+const UNKNOWN_SEED: u8 = 83;
+const PIN_HANDLE: &str = "pin";
+const NOT_AN_ANNOUNCED_HANDLE: &str = "Bob";
+const OLDER_THAN_MAX_AGE: u64 = FROZEN_CLOCK_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1;
+const AHEAD_OF_MAX_AGE: u64 = FROZEN_CLOCK_MS + SPEC_ANNOUNCEMENT_MAX_AGE_MS + 1;
+const NOW_SECONDS: u64 = FROZEN_CLOCK_MS / MILLIS_PER_SECOND;
+const PAST_FUTURE_BOUND_SECONDS: u64 = NOW_SECONDS + SPEC_INFRASTRUCTURE_FUTURE_BOUND_SECONDS + 1;
+
+/// One step of an admission script: the signer's seed, the payload it broadcasts, and the event the member records for it.
+type AdmissionStep = (u8, Payload, &'static str, EventFields);
+
+/// A step whose payload the member takes, recorded with its kind, signer, the signer's handle if held, and its stamp.
+fn accepted(
+    (signer, payload): (u8, Payload),
+    kind: &str,
+    handle: Option<&str>,
+    stamp: (&'static str, u64),
+) -> AdmissionStep {
+    (
+        signer,
+        payload,
+        ACCEPTED,
+        admission_fields(kind, signer, handle, stamp, None),
+    )
+}
+
+/// A step whose payload the member drops, recorded as an accepted one is and with the rule last.
+fn dropped(
+    (signer, payload): (u8, Payload),
+    kind: &str,
+    handle: Option<&str>,
+    stamp: (&'static str, u64),
+    rule: &str,
+) -> AdmissionStep {
+    (
+        signer,
+        payload,
+        DROPPED,
+        admission_fields(kind, signer, handle, stamp, Some(rule)),
+    )
+}
+
+/// Presence and Departure steps reaching the announcement rules: taken, own card, a handle outside the grammar, a Departure, a Presence no newer than it.
+fn announcement_steps() -> Vec<AdmissionStep> {
+    let now = FROZEN_CLOCK_MS;
+    vec![
+        accepted(
+            (MARKER_SEED, presence_of(MARKER_SEED, MARKER_HANDLE, now)),
+            "presence",
+            Some(MARKER_HANDLE),
+            ("seq", now),
+        ),
+        dropped(
+            (FIRST_SEED, presence_of(FIRST_SEED, FIRST_HANDLE, now)),
+            "presence",
+            None,
+            ("seq", now),
+            "from_own_card",
+        ),
+        dropped(
+            (
+                MARKER_SEED,
+                presence_of(MARKER_SEED, NOT_AN_ANNOUNCED_HANDLE, now + 1),
+            ),
+            "presence",
+            Some(MARKER_HANDLE),
+            ("seq", now + 1),
+            "handle_outside_grammar",
+        ),
+        accepted(
+            (SECOND_MARKER_SEED, departure_of(SECOND_MARKER_SEED, now)),
+            "departure",
+            None,
+            ("seq", now),
+        ),
+        dropped(
+            (
+                SECOND_MARKER_SEED,
+                presence_of(SECOND_MARKER_SEED, MARKER_HANDLE, now),
+            ),
+            "presence",
+            None,
+            ("seq", now),
+            "not_newer_than_departure",
+        ),
+    ]
+}
+
+/// Unreachable steps about other cards: older than held, unknown, gone, too old, then taken.
+fn unreachable_steps() -> Vec<AdmissionStep> {
+    let now = FROZEN_CLOCK_MS;
+    let report = |absent: u8, ts: u64| (WITNESS_SEED, unreachable_of(WITNESS_SEED, absent, ts));
+    vec![
+        dropped(
+            report(MARKER_SEED, now - 1),
+            "unreachable",
+            None,
+            ("ts", now - 1),
+            "report_older_than_held_seq",
+        ),
+        dropped(
+            report(UNKNOWN_SEED, now),
+            "unreachable",
+            None,
+            ("ts", now),
+            "reported_card_unknown",
+        ),
+        accepted(
+            (MARKER_SEED, departure_of(MARKER_SEED, now + 2)),
+            "departure",
+            Some(MARKER_HANDLE),
+            ("seq", now + 2),
+        ),
+        dropped(
+            report(MARKER_SEED, now + 2),
+            "unreachable",
+            None,
+            ("ts", now + 2),
+            "reported_card_gone",
+        ),
+        dropped(
+            report(MARKER_SEED, OLDER_THAN_MAX_AGE),
+            "unreachable",
+            None,
+            ("ts", OLDER_THAN_MAX_AGE),
+            "older_than_max_age",
+        ),
+        accepted(
+            (PIN_SEED, presence_of(PIN_SEED, PIN_HANDLE, now)),
+            "presence",
+            Some(PIN_HANDLE),
+            ("seq", now),
+        ),
+        accepted(report(PIN_SEED, now), "unreachable", None, ("ts", now)),
+    ]
+}
+
+/// Unreachable steps about this member's own card, which it answers by the rumor rules.
+fn rumor_steps() -> Vec<AdmissionStep> {
+    let rumor = |ts: u64| (WITNESS_SEED, unreachable_of(WITNESS_SEED, FIRST_SEED, ts));
+    vec![
+        dropped(
+            rumor(OLDER_THAN_MAX_AGE),
+            "unreachable",
+            None,
+            ("ts", OLDER_THAN_MAX_AGE),
+            "older_than_max_age",
+        ),
+        dropped(
+            rumor(FROZEN_CLOCK_MS - 1),
+            "unreachable",
+            None,
+            ("ts", FROZEN_CLOCK_MS - 1),
+            "report_older_than_last_presence",
+        ),
+        accepted(
+            rumor(AHEAD_OF_MAX_AGE),
+            "unreachable",
+            None,
+            ("ts", AHEAD_OF_MAX_AGE),
+        ),
+    ]
+}
+
+/// Presence request and Infrastructure steps reaching each of their rules.
+fn request_and_record_steps() -> Vec<AdmissionStep> {
+    let now = FROZEN_CLOCK_MS;
+    let request = |seq: u64| (WITNESS_SEED, presence_request_of(WITNESS_SEED, seq));
+    let record = |ts: u64| (HOST_SEED, infrastructure_of(HOST_SEED, HOST_RELAY, ts));
+    vec![
+        accepted(request(now), "presence_request", None, ("seq", now)),
+        dropped(
+            request(now - 1),
+            "presence_request",
+            None,
+            ("seq", now - 1),
+            "not_above_requester_seq",
+        ),
+        dropped(
+            request(AHEAD_OF_MAX_AGE),
+            "presence_request",
+            None,
+            ("seq", AHEAD_OF_MAX_AGE),
+            "ahead_of_max_age",
+        ),
+        dropped(
+            request(OLDER_THAN_MAX_AGE),
+            "presence_request",
+            None,
+            ("seq", OLDER_THAN_MAX_AGE),
+            "older_than_max_age",
+        ),
+        accepted(
+            record(NOW_SECONDS),
+            "infrastructure",
+            None,
+            ("ts", NOW_SECONDS),
+        ),
+        dropped(
+            record(NOW_SECONDS - 1),
+            "infrastructure",
+            None,
+            ("ts", NOW_SECONDS - 1),
+            "record_not_newer_than_held",
+        ),
+        dropped(
+            record(PAST_FUTURE_BOUND_SECONDS),
+            "infrastructure",
+            None,
+            ("ts", PAST_FUTURE_BOUND_SECONDS),
+            "record_past_future_bound",
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn observability_decision_9_a_member_records_the_admission_of_every_payload_kind_with_the_rule_of_each_drop()
+ {
+    let scratch = Scratch::new("events-admission").await;
+    let (report, mut recorded) = recording();
+    let (_member, witness) = start_witnessed(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+            .with_clock(Arc::new(|| FROZEN_CLOCK_MS))
+            .with_report(report),
+        None,
+    )
+    .await;
+    let script = [
+        announcement_steps(),
+        unreachable_steps(),
+        rumor_steps(),
+        request_and_record_steps(),
+    ]
+    .concat();
+
+    for (step, (signer, payload, name, fields)) in script.into_iter().enumerate() {
+        witness.broadcast_as(signer, payload).await;
+        assert_eq!(
+            recorded.next_of(&[ACCEPTED, DROPPED]).await,
+            (name, fields),
+            "step {step}"
+        );
+    }
+    drop(scratch);
 }

@@ -181,6 +181,24 @@ pub enum PayloadDropRule {
     NotNewerThanDeparture,
     /// A Presence whose handle is outside the announced-handle grammar.
     HandleOutsideGrammar,
+    /// An Unreachable report observed before the seq held for the card it reports.
+    ReportOlderThanHeldSeq,
+    /// An Unreachable report observed before this node last contacted the card it reports directly.
+    ReportBeforeDirectContact,
+    /// An Unreachable report about a card the table does not hold.
+    ReportedCardUnknown,
+    /// An Unreachable report about a card that departed.
+    ReportedCardGone,
+    /// An Unreachable report about this node observed before its last Presence.
+    ReportOlderThanLastPresence,
+    /// A `PresenceRequest` whose seq is not above the last one heard from its requester.
+    NotAboveRequesterSeq,
+    /// A `PresenceRequest` dated further ahead of this node's clock than the announcement max age.
+    AheadOfMaxAge,
+    /// An Infrastructure record whose ts is not above the one held for its host.
+    RecordNotNewerThanHeld,
+    /// An Infrastructure record whose ts is past the future bound of this node's clock.
+    RecordPastFutureBound,
 }
 
 const fn signature_of(payload: &Payload) -> SignatureBytes {

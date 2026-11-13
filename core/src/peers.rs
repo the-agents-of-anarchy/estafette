@@ -195,12 +195,16 @@ impl PeerTable {
 
     /// Takes a Departure whose signature verified, setting its card Gone and asking to drop the held connection to it, when it is newer than all this node holds for the card.
     pub fn receive_departure(&mut self, departure: &Departure, now_ms: u64) -> Vec<Effect> {
-        if self
-            .admit_announcement(departure.card, departure.seq, now_ms)
-            .is_err()
-        {
-            return Vec::new();
-        }
+        self.admit_departure(departure, now_ms).unwrap_or_default()
+    }
+
+    /// Takes a Departure whose signature verified when it is newer than all this node holds for its card, setting the card Gone and returning the drop of the held connection to it, or the rule that drops it.
+    pub(crate) fn admit_departure(
+        &mut self,
+        departure: &Departure,
+        now_ms: u64,
+    ) -> Result<Vec<Effect>, PayloadDropRule> {
+        self.admit_announcement(departure.card, departure.seq, now_ms)?;
         self.tombstones.insert(
             departure.card,
             Tombstone {
@@ -212,17 +216,30 @@ impl PeerTable {
         if let Some(peer) = self.peers.get_mut(&departure.card, now_ms) {
             peer.take_departure(departure.seq, now_ms);
         }
-        vec![Effect::DropHeldConnection(departure.card)]
+        Ok(vec![Effect::DropHeldConnection(departure.card)])
     }
 
     /// Takes an Unreachable report whose signature verified, setting the peer it names Unreachable unless it is Gone, the report is stale, or a direct contact came after it.
     pub fn receive_unreachable(&mut self, report: &Unreachable, now_ms: u64) {
+        self.admit_unreachable(report, now_ms).unwrap_or_default();
+    }
+
+    /// Takes an Unreachable report whose signature verified, setting the peer it names Unreachable, or returns the rule that drops it: stale, about a card absent or Gone, or older than the card's seq or its last direct contact.
+    pub(crate) fn admit_unreachable(
+        &mut self,
+        report: &Unreachable,
+        now_ms: u64,
+    ) -> Result<(), PayloadDropRule> {
         if !is_within_announcement_max_age(report.ts, now_ms) {
-            return;
+            return Err(PayloadDropRule::OlderThanMaxAge);
         }
-        if let Some(peer) = self.present_entry(report.card, now_ms) {
-            peer.take_unreachable_report(report.ts);
+        let Some(peer) = self.peers.get_mut(&report.card, now_ms) else {
+            return Err(PayloadDropRule::ReportedCardUnknown);
+        };
+        if peer.is_gone() {
+            return Err(PayloadDropRule::ReportedCardGone);
         }
+        peer.take_unreachable_report(report.ts)
     }
 
     /// Takes a gossip report of `node` as a new neighbor, asking to introduce this node to it unless it is an Online entry.
@@ -562,16 +579,19 @@ impl Peer {
         self.take_direct_contact(now_ms);
     }
 
-    /// Records an Unreachable report observed at `ts`: Unreachable, unless the held seq is above `ts` or a direct contact came after it.
-    fn take_unreachable_report(&mut self, ts: u64) {
-        if self.seq.is_some_and(|held| ts < held)
-            || self
-                .last_direct_contact_ms
-                .is_some_and(|contact_ms| contact_ms > ts)
+    /// Records an Unreachable report observed at `ts`: Unreachable, unless the held seq is above `ts` or a direct contact came after it, each named as the rule that drops the report.
+    fn take_unreachable_report(&mut self, ts: u64) -> Result<(), PayloadDropRule> {
+        if self.seq.is_some_and(|held| ts < held) {
+            return Err(PayloadDropRule::ReportOlderThanHeldSeq);
+        }
+        if self
+            .last_direct_contact_ms
+            .is_some_and(|contact_ms| contact_ms > ts)
         {
-            return;
+            return Err(PayloadDropRule::ReportBeforeDirectContact);
         }
         self.status = Status::Unreachable;
+        Ok(())
     }
 
     /// Records a direct contact now: Online.
@@ -1621,6 +1641,27 @@ mod tests {
         assert_eq!(only_peer(&table, LATER_MS).status, Status::Online);
         table.direct_contact_succeeded(THIRD_NODE_CARD, LATER_MS);
         assert_eq!(only_peer(&table, LATER_MS).card, PEER_CARD);
+    }
+
+    #[test]
+    fn observability_decision_9_a_report_observed_before_the_last_direct_contact_is_dropped_by_that_rule_spec_3_8()
+     {
+        let mut table = PeerTable::new(OWN_CARD);
+        accept_presence(
+            &mut table,
+            &presence(PEER_CARD, PEER_HANDLE, FIRST_SEQ),
+            NOW_MS,
+        );
+        table.direct_contact_succeeded(PEER_CARD, OBSERVED_TS + 1);
+
+        assert_eq!(
+            table.admit_unreachable(&unreachable_report(PEER_CARD, OBSERVED_TS), LATER_MS),
+            Err(PayloadDropRule::ReportBeforeDirectContact)
+        );
+        assert_eq!(
+            table.admit_unreachable(&unreachable_report(PEER_CARD, OBSERVED_TS + 1), LATER_MS),
+            Ok(())
+        );
     }
 
     #[test]

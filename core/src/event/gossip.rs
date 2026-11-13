@@ -112,6 +112,15 @@ const fn rule_name(rule: PayloadDropRule) -> &'static str {
         PayloadDropRule::NotNewerThanHeld => "not_newer_than_held",
         PayloadDropRule::NotNewerThanDeparture => "not_newer_than_departure",
         PayloadDropRule::HandleOutsideGrammar => "handle_outside_grammar",
+        PayloadDropRule::ReportOlderThanHeldSeq => "report_older_than_held_seq",
+        PayloadDropRule::ReportBeforeDirectContact => "report_before_direct_contact",
+        PayloadDropRule::ReportedCardUnknown => "reported_card_unknown",
+        PayloadDropRule::ReportedCardGone => "reported_card_gone",
+        PayloadDropRule::ReportOlderThanLastPresence => "report_older_than_last_presence",
+        PayloadDropRule::NotAboveRequesterSeq => "not_above_requester_seq",
+        PayloadDropRule::AheadOfMaxAge => "ahead_of_max_age",
+        PayloadDropRule::RecordNotNewerThanHeld => "record_not_newer_than_held",
+        PayloadDropRule::RecordPastFutureBound => "record_past_future_bound",
     }
 }
 
