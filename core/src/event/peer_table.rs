@@ -320,4 +320,48 @@ mod tests {
             );
         }
     }
+
+    const OBSERVABILITY_DECISION_9_CAUSE_WORDS: [(TableCause, &str); 12] = [
+        (TableCause::Presence, "presence"),
+        (TableCause::Departure, "departure"),
+        (TableCause::Unreachable, "unreachable"),
+        (TableCause::Introduce, "introduce"),
+        (TableCause::IntroduceAck, "introduce_ack"),
+        (TableCause::IntroduceFailed, "introduce_failed"),
+        (TableCause::Message, "message"),
+        (TableCause::ProbeAnswered, "probe_answered"),
+        (TableCause::ProbeFailed, "probe_failed"),
+        (TableCause::SendAcknowledged, "send_acknowledged"),
+        (TableCause::SendFailed, "send_failed"),
+        (TableCause::Expiry, "expiry"),
+    ];
+
+    #[test]
+    fn observability_decision_9_a_changed_entry_writes_the_word_of_its_own_cause_and_of_no_other() {
+        let handle: LocalHandle = HANDLE.parse().unwrap();
+        for (cause, word) in OBSERVABILITY_DECISION_9_CAUSE_WORDS {
+            let event: Event = PeerTableEvent::of_change(
+                TableChange::Moved {
+                    card: PEER_ID,
+                    handle: handle.clone(),
+                    from: Status::Online,
+                    to: Status::Unreachable,
+                },
+                cause,
+            )
+            .into();
+
+            assert_eq!(
+                event.fields().last(),
+                Some(&(CAUSE_FIELD, Value::from(word))),
+                "{cause:?}"
+            );
+        }
+        let mut words = OBSERVABILITY_DECISION_9_CAUSE_WORDS.map(|(_cause, word)| word);
+        words.sort_unstable();
+        assert!(
+            words.windows(2).all(|pair| pair.first() != pair.last()),
+            "{words:?}"
+        );
+    }
 }
