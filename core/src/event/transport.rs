@@ -220,12 +220,12 @@ const fn cause_text(cause: RebindCause) -> &'static str {
 }
 
 /// The connection's identifier as a field.
-fn connection_field(connection: ConnectionId) -> (&'static str, Value) {
+pub(super) fn connection_field(connection: ConnectionId) -> (&'static str, Value) {
     (CONNECTION_FIELD, Value::from(connection.0))
 }
 
 /// The node's five-byte id as a field.
-fn peer_field(peer: PeerId) -> (&'static str, Value) {
+pub(super) fn peer_field(peer: PeerId) -> (&'static str, Value) {
     (PEER_FIELD, Value::from(peer.hex()))
 }
 

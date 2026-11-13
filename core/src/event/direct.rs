@@ -1,17 +1,15 @@
 use iroh::EndpointId;
 use serde_json::Value;
 
+use super::transport::{connection_field, peer_field};
 use super::{AreaEvent, EventFields};
 use crate::net::direct::{
     AckRefusal, ConnectionSource, DirectError, RequestSummary, SentOutcome, SentRequest,
     ServedOutcome, ServedRequest, StreamEnd,
 };
-use crate::net::endpoint::{ConnectionId, PeerId};
 
 const KIND_FIELD: &str = "kind";
 const MESSAGE_FIELD: &str = "message";
-const PEER_FIELD: &str = "peer";
-const CONNECTION_FIELD: &str = "connection";
 const CONNECTION_SOURCE_FIELD: &str = "connection_source";
 const OUTCOME_FIELD: &str = "outcome";
 const CODE_FIELD: &str = "code";
@@ -99,16 +97,6 @@ fn request_fields(request: RequestSummary) -> EventFields {
         RequestSummary::Probe => vec![(KIND_FIELD, Value::from("probe"))],
         RequestSummary::Introduce => vec![(KIND_FIELD, Value::from("introduce"))],
     }
-}
-
-/// The node's five-byte id as a field.
-fn peer_field(peer: PeerId) -> (&'static str, Value) {
-    (PEER_FIELD, Value::from(peer.hex()))
-}
-
-/// The connection's identifier as a field.
-fn connection_field(connection: ConnectionId) -> (&'static str, Value) {
-    (CONNECTION_FIELD, Value::from(connection.0))
 }
 
 /// Whether a request rode a held or a dialed connection, as the events file writes it.
