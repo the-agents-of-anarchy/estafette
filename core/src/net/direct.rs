@@ -3847,4 +3847,136 @@ pub(crate) mod tests {
         );
         assert_eq!(rig.host.received().len(), 0);
     }
+
+    const SPEC_TOO_LARGE_CODE: &str = "too_large";
+    const SPEC_REFUSED_CODE: &str = "refused";
+    const UNLISTED_REFUSAL_REASON: &str = "a reason estafette never writes";
+    const ACK_REFUSALS_APART: usize = 3;
+    const SERVED_OUTCOMES_APART: usize = 2;
+    const ACK_READ_FAILURES_APART: usize = 3;
+    const UNANSWERED_RESET_CODE: u32 = 3;
+
+    fn message_ack(accepted: bool, reason: Option<&str>) -> MessageAck {
+        MessageAck {
+            v: Version::CURRENT,
+            id: MESSAGE_ID,
+            accepted,
+            attached: false,
+            reason: reason.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn observability_decision_9_an_acknowledgements_reason_is_read_as_a_code_estafette_writes_or_as_unlisted()
+     {
+        let cases = [
+            (Some(SPEC_TOO_LARGE_CODE), AckRefusal::TooLarge),
+            (Some(SPEC_REFUSED_CODE), AckRefusal::Refused),
+            (Some(UNLISTED_REFUSAL_REASON), AckRefusal::Unlisted),
+            (None, AckRefusal::Unlisted),
+        ];
+
+        assert_each_arm(&cases, |reason| AckRefusal::of(*reason), ACK_REFUSALS_APART);
+    }
+
+    #[test]
+    fn observability_decision_9_a_message_acknowledgement_is_read_as_acknowledged_or_refused_with_its_code()
+     {
+        let cases = [
+            (message_ack(true, None), SentOutcome::Acknowledged),
+            (
+                message_ack(false, Some(SPEC_TOO_LARGE_CODE)),
+                SentOutcome::Refused(AckRefusal::TooLarge),
+            ),
+            (
+                message_ack(false, None),
+                SentOutcome::Refused(AckRefusal::Unlisted),
+            ),
+        ];
+
+        assert_each_arm(&cases, SentOutcome::of_message_ack, cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_each_response_served_is_read_as_answered_or_as_a_refused_message() {
+        let cases = [
+            (
+                Response::MessageAck(message_ack(true, None)),
+                ServedOutcome::Answered,
+            ),
+            (
+                Response::MessageAck(message_ack(false, Some(SPEC_REFUSED_CODE))),
+                ServedOutcome::Refused(AckRefusal::Refused),
+            ),
+            (
+                Response::ProbeAck(ProbeAck {
+                    v: Version::CURRENT,
+                    nonce: PROBE_NONCE,
+                    attached: false,
+                    mac: ZERO_MAC,
+                }),
+                ServedOutcome::Answered,
+            ),
+            (
+                Response::IntroduceAck(own_introduction(false)),
+                ServedOutcome::Answered,
+            ),
+        ];
+
+        assert_each_arm(&cases, ServedOutcome::of, SERVED_OUTCOMES_APART);
+    }
+
+    #[test]
+    fn observability_decision_9_each_request_is_read_as_its_kind_and_a_message_with_its_id() {
+        let cases = [
+            (
+                Request::Message(message_to(card_of(SERVER_SEED), BODY)),
+                RequestSummary::Message(MESSAGE_ID),
+            ),
+            (
+                Request::Probe(Probe {
+                    v: Version::CURRENT,
+                    nonce: PROBE_NONCE,
+                    mac: ZERO_MAC,
+                }),
+                RequestSummary::Probe,
+            ),
+            (
+                Request::Introduce(introduction_from_client()),
+                RequestSummary::Introduce,
+            ),
+        ];
+
+        assert_each_arm(&cases, RequestSummary::of, cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_each_way_reading_an_acknowledgement_fails_is_read_as_the_failure_it_is()
+     {
+        let cases = [
+            (ReadToEndError::TooLong, DirectError::OversizedAck),
+            (
+                ReadToEndError::Read(ReadError::Reset(VarInt::from_u32(UNANSWERED_RESET_CODE))),
+                DirectError::Refused,
+            ),
+            (
+                ReadToEndError::Read(ReadError::ConnectionLost(ConnectionError::Reset)),
+                DirectError::Unreachable,
+            ),
+            (
+                ReadToEndError::Read(ReadError::ClosedStream),
+                DirectError::Unreachable,
+            ),
+            (
+                ReadToEndError::Read(ReadError::ZeroRttRejected),
+                DirectError::Unreachable,
+            ),
+        ];
+
+        assert_each_arm(
+            &cases,
+            |failure| DirectError::from(failure.clone()),
+            ACK_READ_FAILURES_APART,
+        );
+    }
 }
