@@ -266,6 +266,32 @@ trace-files-on-server card directory:
     umask 077 && mkdir -p "{{ directory }}"
     ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) 'cd {{ remote_tree }} && just remote::member-trace-files {{ card }}' | tar -x -C "{{ directory }}"
 
+[doc("Print every events file under the directory, at any depth and rolled-over files included, as one timeline: each whole line as written, ordered by wall_ms, then run, then n; refuses, naming the file, the line and both versions, a line of a format version it does not know")]
+[group('lab')]
+[positional-arguments]
+merge-events directory:
+    #!/usr/bin/env -S python3 -I
+    import json
+    import pathlib
+    import sys
+
+    KNOWN_FORMAT_VERSION = 1
+    EVENTS_FILE_ENDINGS = (".events.jsonl", ".events.jsonl.1")
+
+    def whole_lines(events_file):
+        return events_file.read_bytes().split(b"\n")[:-1]
+
+    def timeline_entry(events_file, number, text):
+        line = json.loads(text)
+        if line["v"] != KNOWN_FORMAT_VERSION:
+            sys.exit(f"{events_file} line {number} has format version {line['v']}; this merge knows version {KNOWN_FORMAT_VERSION}")
+        return (line["wall_ms"], line["run"], line["n"]), text.decode()
+
+    events_files = sorted(path for path in pathlib.Path(sys.argv[1]).rglob("*") if path.name.endswith(EVENTS_FILE_ENDINGS))
+    entries = [timeline_entry(events_file, number, text) for events_file in events_files for number, text in enumerate(whole_lines(events_file), start=1)]
+    for _order, text in sorted(entries):
+        print(text)
+
 relay_only_mark := "estafette-relay-only"
 
 [doc("Drop UDP between the server and this machine, IPv4 to and from this machine's address as the server sees it and every IPv6 datagram but DNS, so members on the two reach each other through a relay alone; relay-paths-restored undoes it")]
