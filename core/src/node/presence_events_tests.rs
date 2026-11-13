@@ -34,6 +34,10 @@ const MARKER_DIRECT_ADDRESS: SocketAddr = SocketAddr::new(
     std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 7)),
     4433,
 );
+const SECOND_MARKER_DIRECT_ADDRESS: SocketAddr = SocketAddr::new(
+    std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 8)),
+    4433,
+);
 
 /// The events a member records, each as its name and the fields the events file writes for it, in the order recorded.
 struct RecordedEvents(mpsc::UnboundedReceiver<(&'static str, EventFields)>);
@@ -56,6 +60,16 @@ impl RecordedEvents {
         })
         .await
         .unwrap_or_else(|_elapsed| panic!("no event of {names:?} within {EVENT_WAIT:?}"))
+    }
+
+    /// The fields of the next lookup replaced for the seed's card, failing with the name when none is recorded within the wait.
+    async fn lookup_replaced_of(&mut self, seed: u8) -> EventFields {
+        loop {
+            let fields = self.next_named("peers.lookup_replaced").await;
+            if fields.first() == Some(&("peer", short_id(seed))) {
+                return fields;
+            }
+        }
     }
 }
 
@@ -127,13 +141,23 @@ async fn observability_decision_9_a_member_records_a_neighbor_down_by_its_five_b
 
 /// A Presence of the seed's card under the handle, carrying the seq.
 fn presence_of(seed: u8, handle: &str, seq: u64) -> Payload {
+    presence_carrying(
+        seed,
+        handle,
+        seq,
+        Addr::from_endpoint_report([MARKER_RELAY.to_owned()], [MARKER_DIRECT_ADDRESS]),
+    )
+}
+
+/// A Presence of the seed's card under the handle, carrying the seq and the address.
+fn presence_carrying(seed: u8, handle: &str, seq: u64, addr: Addr) -> Payload {
     Payload::Presence(Presence {
         v: Version::CURRENT,
         card: card(seed),
         handle: handle.to_owned(),
         public: MARKER_PUBLIC.to_vec(),
         attached: false,
-        addr: Addr::from_endpoint_report([MARKER_RELAY.to_owned()], [MARKER_DIRECT_ADDRESS]),
+        addr,
         seq,
         mac: ZERO_MAC,
         sig: ZERO_SIGNATURE,
@@ -859,23 +883,47 @@ async fn observability_decision_9_a_member_records_a_lookup_replaced_by_its_coun
     witness
         .broadcast_as(
             MARKER_SEED,
-            presence_of(MARKER_SEED, MARKER_HANDLE, FROZEN_CLOCK_MS),
+            presence_carrying(
+                MARKER_SEED,
+                MARKER_HANDLE,
+                FROZEN_CLOCK_MS,
+                Addr::from_endpoint_report(
+                    [MARKER_RELAY.to_owned()],
+                    [MARKER_DIRECT_ADDRESS, SECOND_MARKER_DIRECT_ADDRESS],
+                ),
+            ),
         )
         .await;
+    let relayed = recorded.lookup_replaced_of(MARKER_SEED).await;
+    witness
+        .broadcast_as(
+            SECOND_MARKER_SEED,
+            presence_carrying(
+                SECOND_MARKER_SEED,
+                MARKER_HANDLE,
+                FROZEN_CLOCK_MS,
+                Addr::from_endpoint_report(std::iter::empty(), [MARKER_DIRECT_ADDRESS]),
+            ),
+        )
+        .await;
+    let unrelayed = recorded.lookup_replaced_of(SECOND_MARKER_SEED).await;
 
-    let replaced = loop {
-        let fields = recorded.next_named("peers.lookup_replaced").await;
-        if fields.first() == Some(&("peer", short_id(MARKER_SEED))) {
-            break fields;
-        }
-    };
     assert_eq!(
-        replaced,
+        relayed,
         [
             ("peer", short_id(MARKER_SEED)),
             ("handle", Value::from(MARKER_HANDLE)),
-            ("direct_addresses", Value::from(1)),
+            ("direct_addresses", Value::from(2)),
             ("relay", Value::from(true)),
+        ]
+    );
+    assert_eq!(
+        unrelayed,
+        [
+            ("peer", short_id(SECOND_MARKER_SEED)),
+            ("handle", Value::from("mark-2")),
+            ("direct_addresses", Value::from(1)),
+            ("relay", Value::from(false)),
         ]
     );
     drop(scratch);
