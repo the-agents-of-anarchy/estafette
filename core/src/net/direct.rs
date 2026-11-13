@@ -517,7 +517,7 @@ pub struct SentRequest {
 }
 
 /// A request this node served: which once it opened, from whom, on which connection, how it ended and how long it took on the register's monotonic clock.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServedRequest {
     pub request: Option<RequestSummary>,
     pub peer: PeerId,

@@ -28,7 +28,6 @@ pub const QUIC_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(
     SPEC_3_14_QUIC_IDLE_TIMEOUT_MILLIS.into_inner() / QUIC_KEEP_ALIVES_PER_IDLE_TIMEOUT,
 );
 const LOCATION_HASH_BYTES: usize = 8;
-const PEER_ID_BYTES: usize = 5;
 
 /// The node's iroh endpoint, gated on the network secret for every gossip connection, with the address lookup the node feeds and the relay map it edits, both kept across rebinds.
 pub struct NodeEndpoint {
@@ -286,25 +285,21 @@ impl ConnectionId {
     }
 }
 
-/// A node named by the first five bytes of its endpoint id, the form iroh's own trace lines use.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PeerId([u8; PEER_ID_BYTES]);
+/// A node named by iroh's short form of its endpoint id, the form iroh's own trace lines and this trace's `node` use.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerId(String);
 
 impl PeerId {
-    /// The first five bytes of the node's endpoint id.
+    /// The node's endpoint id in iroh's short form.
     #[must_use]
     pub fn of(node: EndpointId) -> Self {
-        let mut short = [0; PEER_ID_BYTES];
-        for (byte, id_byte) in short.iter_mut().zip(node.as_bytes()) {
-            *byte = *id_byte;
-        }
-        Self(short)
+        Self(node.fmt_short().to_string())
     }
 
-    /// The five bytes as lowercase hex.
+    /// The short form as text.
     #[must_use]
-    pub fn hex(self) -> String {
-        data_encoding::HEXLOWER.encode(&self.0)
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 

@@ -151,7 +151,7 @@ impl AreaEvent for TransportEvent {
                 protocol,
             } => vec![
                 connection_field(*connection),
-                peer_field(*peer),
+                peer_field(peer),
                 (DIRECTION_FIELD, Value::from(direction_text(*direction))),
                 (PROTOCOL_FIELD, Value::from(protocol_text(*protocol))),
             ],
@@ -163,7 +163,7 @@ impl AreaEvent for TransportEvent {
             } => [
                 vec![
                     connection_field(*connection),
-                    peer_field(*peer),
+                    peer_field(peer),
                     (CODE_FIELD, Value::from(*code)),
                 ],
                 reason_fields(*reason),
@@ -225,8 +225,8 @@ pub(super) fn connection_field(connection: ConnectionId) -> (&'static str, Value
 }
 
 /// The node's five-byte id as a field.
-pub(super) fn peer_field(peer: PeerId) -> (&'static str, Value) {
-    (PEER_FIELD, Value::from(peer.hex()))
+pub(super) fn peer_field(peer: &PeerId) -> (&'static str, Value) {
+    (PEER_FIELD, Value::from(peer.as_str()))
 }
 
 /// The direction of a connection as the events file writes it.
