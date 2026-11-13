@@ -192,6 +192,33 @@ impl Rebinding {
     pub(super) const fn next_ask(&self) -> Option<Instant> {
         self.member_joins.next_ask()
     }
+
+    /// Notes a rebind: the next one waits the rebind interval, the fresh topic's join is awaited, and no neighbor is held.
+    pub(super) fn rebound(&mut self, now: Instant) {
+        self.schedule.rebound(now);
+        self.member_joins = MemberJoins::AwaitingRebindJoin;
+        self.neighbors.clear();
+    }
+
+    /// Whether any of the members is a gossip neighbor.
+    pub(super) fn has_neighbor_among(&self, members: &[EndpointId]) -> bool {
+        members.iter().any(|member| self.neighbors.contains(member))
+    }
+
+    /// Stops the asks to join the members.
+    pub(super) const fn stop_asking(&mut self) {
+        self.member_joins = MemberJoins::Idle;
+    }
+
+    /// Counts an ask to join the members made at `now`.
+    pub(super) fn asked(&mut self, now: Instant) {
+        self.member_joins.asked(now);
+    }
+
+    /// Probes whether the relay answers.
+    pub(super) fn probe(&self, relay: RelayUrl) -> impl Future<Output = bool> + Send {
+        (self.probe_relay)(relay)
+    }
 }
 
 impl PresenceLoop {
@@ -204,9 +231,7 @@ impl PresenceLoop {
     /// Rebinds by spec 3.8, stopping the loop when no endpoint or topic comes of it.
     pub(super) async fn rebind(&mut self) -> ControlFlow<()> {
         (self.report)(TransportEvent::Rebinding.into());
-        self.rebinding.schedule.rebound((self.monotonic)());
-        self.rebinding.member_joins = MemberJoins::AwaitingRebindJoin;
-        self.rebinding.neighbors.clear();
+        self.rebinding.rebound((self.monotonic)());
         self.close_endpoint().await;
         let down = self.relays_found_down().await;
         self.strip_relays_from_members(&down);
@@ -222,12 +247,8 @@ impl PresenceLoop {
     pub(super) async fn ask_members_to_join(&mut self) {
         let mut members = self.peers_with_status(Status::Online);
         members.extend(self.peers_with_status(Status::Unreachable));
-        if members.is_empty()
-            || members
-                .iter()
-                .any(|member| self.rebinding.neighbors.contains(member))
-        {
-            self.rebinding.member_joins = MemberJoins::Idle;
+        if members.is_empty() || self.rebinding.has_neighbor_among(&members) {
+            self.rebinding.stop_asking();
             return;
         }
         let now = (self.monotonic)();
@@ -236,7 +257,7 @@ impl PresenceLoop {
         {
             (self.report)(GossipEvent::TopicFailed(failure).into());
         }
-        self.rebinding.member_joins.asked(now);
+        self.rebinding.asked(now);
     }
 
     /// The node ids of the peers whose status is `wanted`.
@@ -268,7 +289,7 @@ impl PresenceLoop {
         let answers = join_all(
             relays
                 .iter()
-                .map(|relay| timeout_at(deadline, (self.rebinding.probe_relay)(relay.clone()))),
+                .map(|relay| timeout_at(deadline, self.rebinding.probe(relay.clone()))),
         )
         .await;
         relays
