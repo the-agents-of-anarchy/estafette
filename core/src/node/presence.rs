@@ -35,7 +35,9 @@ use crate::net::direct::{
     ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, GONE_PROCESS_SILENCE,
     HEARING_SAMPLE_INTERVAL, HeldConnections, MonotonicClock,
 };
-use crate::net::endpoint::{CounterSnapshot, DIRECT_ALPN, NodeEndpoint, SnapshotMoment};
+use crate::net::endpoint::{
+    CounterSnapshot, DIRECT_ALPN, NodeEndpoint, RebindCause, SnapshotMoment,
+};
 use crate::net::gossip::{GossipError, GossipEvent, JOIN_TIMEOUT, NetworkTopic};
 use crate::payload::{
     DescribedPayload, OpenedPayload, PayloadDropRule, PayloadFacts, PayloadRefusal, ZERO_MAC,
@@ -865,7 +867,7 @@ enum Wake {
     ObserverWaitOver,
     ReannounceDue,
     RelayLossDue,
-    RebindDue,
+    RebindDue(RebindCause),
     MemberJoinDue,
     SnapshotDue,
 }
@@ -981,7 +983,7 @@ impl PresenceLoop {
             Init::AwaitingJoin { .. } | Init::Done => None,
         };
         let relay_loss_due = self.relay_loss.next_deadline();
-        let rebind_due = self.may_rebind().then(|| self.rebinding.due());
+        let next_rebind = self.may_rebind().then(|| self.rebinding.next_rebind());
         let member_join_due = self.rebinding.next_ask();
         let state = &self.state;
         let report = &self.report;
@@ -998,7 +1000,7 @@ impl PresenceLoop {
             () = sleep_until_deadline(observer_wait_over) => Wake::ObserverWaitOver,
             () = sleep_until_deadline(self.reannounce_due) => Wake::ReannounceDue,
             () = sleep_until_deadline(relay_loss_due) => Wake::RelayLossDue,
-            () = sleep_until_deadline(rebind_due) => Wake::RebindDue,
+            cause = sleep_until_rebind(next_rebind) => Wake::RebindDue(cause),
             () = sleep_until_deadline(member_join_due) => Wake::MemberJoinDue,
             () = sleep_until(self.snapshot_due) => Wake::SnapshotDue,
         }
@@ -1031,7 +1033,7 @@ impl PresenceLoop {
                 self.reconsider_own_address().await;
             }
             Wake::RelayLossDue => self.remove_lost_relays().await,
-            Wake::RebindDue => return self.rebind().await,
+            Wake::RebindDue(cause) => return self.rebind(cause).await,
             Wake::MemberJoinDue => self.ask_members_to_join().await,
             Wake::SnapshotDue => self.record_state(SnapshotMoment::Interval),
         }
@@ -1413,6 +1415,17 @@ fn refusal_record(state: &NodeState, refusal: PayloadRefusal) -> Event {
         .into();
     };
     signer_admission_record(&state.table(), facts, &Err::<(), _>(refusal.rule), now_ms)
+}
+
+/// Waits until the rebind is due and answers why, or forever when none is.
+async fn sleep_until_rebind(next_rebind: Option<(Instant, RebindCause)>) -> RebindCause {
+    match next_rebind {
+        Some((due, cause)) => {
+            sleep_until(due).await;
+            cause
+        }
+        None => std::future::pending().await,
+    }
 }
 
 /// The effects of an `IntroduceAck` less the drop of the held connection, since the ack came on that connection (spec 3.8).

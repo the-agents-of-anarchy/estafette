@@ -86,13 +86,9 @@ impl RebindSchedule {
     }
 
     /// When the next rebind is due, for a member that may rebind.
+    #[cfg(test)]
     fn due(&self) -> Instant {
         self.next_rebind().0
-    }
-
-    /// Why the next rebind is due: the join that gained no neighbor when it came before the deaf timeout ran out, else the silence.
-    fn cause(&self) -> RebindCause {
-        self.next_rebind().1
     }
 
     /// When the next rebind is due and why: after the deaf timeout of silence or at a join that gained no neighbor, never sooner than the rebind interval after the last rebind.
@@ -196,14 +192,9 @@ impl Rebinding {
         self.schedule.join_timed_out(now);
     }
 
-    /// When the next rebind is due, for a member that may rebind.
-    pub(super) fn due(&self) -> Instant {
-        self.schedule.due()
-    }
-
-    /// Why the next rebind is due.
-    pub(super) fn cause(&self) -> RebindCause {
-        self.schedule.cause()
+    /// When the next rebind is due and why, for a member that may rebind.
+    pub(super) fn next_rebind(&self) -> (Instant, RebindCause) {
+        self.schedule.next_rebind()
     }
 
     /// When the next ask to join the members is due, if one is.
@@ -247,8 +238,8 @@ impl PresenceLoop {
     }
 
     /// Rebinds by spec 3.8, stopping the loop when no endpoint or topic comes of it.
-    pub(super) async fn rebind(&mut self) -> ControlFlow<()> {
-        (self.report)(TransportEvent::Rebinding(self.rebinding.cause()).into());
+    pub(super) async fn rebind(&mut self, cause: RebindCause) -> ControlFlow<()> {
+        (self.report)(TransportEvent::Rebinding(cause).into());
         self.rebinding.rebound((self.monotonic)());
         self.close_endpoint().await;
         let down = self.relays_found_down().await;
@@ -1573,7 +1564,7 @@ mod tests {
             let mut draws = Draws::seeded(case);
             let started = Instant::now();
             let mut schedule = RebindSchedule::new(started);
-            assert_eq!(schedule.cause(), RebindCause::Deaf, "case {case}");
+            assert_eq!(schedule.next_rebind().1, RebindCause::Deaf, "case {case}");
             let timed_out = started + Duration::from_millis(draws.below(LONGEST_DRAWN_MS));
             schedule.join_timed_out(timed_out);
             let expected = if timed_out < started + SPEC_DEAF_TIMEOUT {
@@ -1581,7 +1572,7 @@ mod tests {
             } else {
                 RebindCause::Deaf
             };
-            assert_eq!(schedule.cause(), expected, "case {case}");
+            assert_eq!(schedule.next_rebind().1, expected, "case {case}");
         }
     }
 
