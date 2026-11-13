@@ -1003,6 +1003,7 @@ mod tests {
     const DETACH_WAIT: Duration = Duration::from_millis(300);
     const PAYLOAD_WAIT: Duration = Duration::from_secs(20);
     const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
+    const SENT_INTRODUCE_WITHIN: Duration = Duration::from_secs(10);
 
     struct EveryProcessRuns;
 
@@ -2051,22 +2052,32 @@ mod tests {
 
         let neighbor_short =
             data_encoding::HEXLOWER.encode(&secret_key(NEIGHBOR_SEED).public().as_bytes()[..5]);
-        let sent: Vec<_> = crate::net::direct::tests::recorded_so_far(&mut recorded)
-            .into_iter()
-            .filter(|(name, _)| *name == "direct.request_sent")
-            .map(|(_, fields)| {
-                (
+        let introduce_to_neighbor = (
+            Some(serde_json::Value::from("introduce")),
+            Some(serde_json::Value::from(neighbor_short)),
+        );
+        let mut other_requests_sent = Vec::new();
+        let introduce_recorded = tokio::time::timeout(SENT_INTRODUCE_WITHIN, async {
+            while let Some((name, fields)) = recorded.recv().await {
+                if name != "direct.request_sent" {
+                    continue;
+                }
+                let request = (
                     crate::net::direct::tests::field(&fields, "kind").cloned(),
                     crate::net::direct::tests::field(&fields, "peer").cloned(),
-                )
-            })
-            .collect();
+                );
+                if request == introduce_to_neighbor {
+                    return true;
+                }
+                other_requests_sent.push(request);
+            }
+            false
+        })
+        .await
+        .unwrap_or(false);
         assert!(
-            sent.contains(&(
-                Some(serde_json::Value::from("introduce")),
-                Some(serde_json::Value::from(neighbor_short))
-            )),
-            "requests recorded as sent: {sent:?}"
+            introduce_recorded,
+            "no direct.request_sent of kind introduce to the neighbor within {SENT_INTRODUCE_WITHIN:?}; other requests sent: {other_requests_sent:?}"
         );
         drop(lab);
     }
