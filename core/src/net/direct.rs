@@ -297,14 +297,8 @@ impl HeldConnections {
                 location: transport.locate(&remote_addr),
                 round_trip_ms: Some(milliseconds_of(last_stats.rtt)),
             },
-            PathEvent::Lagged { missed, .. } => TransportEvent::PathEventsMissed {
-                connection: connection_id,
-                missed,
-            },
-            _ => TransportEvent::PathEventsMissed {
-                connection: connection_id,
-                missed: 1,
-            },
+            PathEvent::Lagged { missed, .. } => path_events_missed(connection_id, missed),
+            _ => path_events_missed(connection_id, 1),
         });
     }
 
@@ -530,6 +524,11 @@ pub struct ServedRequest {
     pub connection: ConnectionId,
     pub outcome: ServedOutcome,
     pub elapsed_ms: u64,
+}
+
+/// The record of the connection's path events lost before they were read, as many as iroh counted.
+const fn path_events_missed(connection: ConnectionId, missed: u64) -> TransportEvent {
+    TransportEvent::PathEventsMissed { connection, missed }
 }
 
 /// The whole milliseconds of a span, saturating past `u64::MAX`.
@@ -1912,6 +1911,8 @@ pub(crate) mod tests {
         assert_eq!(dialed.close_reason(), Some(ConnectionError::LocallyClosed));
     }
 
+    const MISSED_COUNT_CASES: u64 = 500;
+    const MISSED_COUNT_SPREAD: u64 = 0x9E37_79B9_7F4A_7C15;
     const RECORDED_EVENT_WITHIN: Duration = Duration::from_secs(10);
     const SALT_BYTE: u8 = 0x5a;
     const SPEC_SUPERSEDED_CLOSE_CODE: u64 = 410;
@@ -2310,6 +2311,31 @@ pub(crate) mod tests {
             assert_eq!(field(&closed, name), Some(value), "{closed:?}");
         }
         drop(router);
+    }
+
+    #[test]
+    fn observability_decision_9_a_connections_lost_path_events_are_recorded_with_the_count_iroh_reports()
+     {
+        for case in 0..MISSED_COUNT_CASES {
+            let missed = match case {
+                0 => 0,
+                1 => 1,
+                2 => u64::MAX,
+                _ => case.wrapping_mul(MISSED_COUNT_SPREAD),
+            };
+            let connection = ConnectionId(usize::try_from(case).unwrap());
+            let event = crate::event::Event::from(path_events_missed(connection, missed));
+
+            assert_eq!(event.name(), "transport.path_events_missed", "case {case}");
+            assert_eq!(
+                event.fields(),
+                vec![
+                    ("connection", serde_json::Value::from(connection.0)),
+                    ("missed", serde_json::Value::from(missed)),
+                ],
+                "case {case}"
+            );
+        }
     }
 
     #[tokio::test]
