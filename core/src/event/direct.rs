@@ -3,6 +3,7 @@ use serde_json::Value;
 
 use super::transport::{connection_field, peer_field};
 use super::{AreaEvent, EventFields};
+use crate::errors::ErrorCode;
 use crate::net::direct::{
     AckRefusal, ConnectionSource, DirectError, RequestSummary, SentOutcome, SentRequest,
     ServedOutcome, ServedRequest, StreamEnd, message_id_text,
@@ -107,8 +108,8 @@ const fn source_text(source: ConnectionSource) -> &'static str {
 /// The error code a Message acknowledgement refused with, as the events file writes it.
 const fn refusal_text(refusal: AckRefusal) -> &'static str {
     match refusal {
-        AckRefusal::TooLarge => "too_large",
-        AckRefusal::Refused => "refused",
+        AckRefusal::TooLarge => ErrorCode::TooLarge.code(),
+        AckRefusal::Refused => ErrorCode::Refused.code(),
         AckRefusal::Unlisted => "unlisted",
     }
 }
