@@ -1129,10 +1129,9 @@ mod tests {
                 .as_millis(),
         )
         .unwrap();
-        let just_fresh_ms = written_ms
+        let just_before_the_next_snapshot_ms = written_ms
             + u64::try_from(
-                TraceBounds::SPEC
-                    .freshness
+                (interval - started)
                     .checked_sub(ONE_MILLISECOND)
                     .unwrap()
                     .as_millis(),
@@ -1143,7 +1142,9 @@ mod tests {
             &directory,
             &crate::dirs::OperatingSystemFilesystem,
             RunId::from_random_bytes(PRUNING_RUN_BYTES),
-            &TraceEffects::of_the_operating_system(machine_trace_clocks(move || just_fresh_ms)),
+            &TraceEffects::of_the_operating_system(machine_trace_clocks(move || {
+                just_before_the_next_snapshot_ms
+            })),
             TraceBounds {
                 directory_bytes: 1,
                 ..TraceBounds::SPEC
