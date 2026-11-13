@@ -11,9 +11,11 @@ mod awake 'just/awake.just'
 mod usage 'just/usage.just'
 
 # `just records` runs records::check, the [default] recipe of that module.
-# `just check` is the one gate that CI, pre-commit and every commit call.
+# `just check` is the whole gate that CI calls; the commit hook calls `just check-light`; `just check-heavy` runs once at a head.
 
 alias check := gate::check
+alias check-light := gate::check-light
+alias check-heavy := gate::check-heavy
 
 [doc('List every recipe of every module')]
 [private]

@@ -1,17 +1,27 @@
-# The gate: what must pass before every commit. CI, pre-commit and `just check` run this one definition.
+# The gate, in a light half (every commit) and a heavy half (once per head). CI, pre-commit and `just check` run this one definition.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set working-directory := '..'
 
+heavy_evidence_script := source_directory() + '/heavy-evidence.py'
 audit_pin := "0.22.2"
 killable_server := "estafette-lab-2"
 built_binary := "target/debug/estafette"
 claude_session_variables := "ESTAFETTE_ACCEPTANCE_CLAUDE_SOCKET ESTAFETTE_ACCEPTANCE_CLAUDE_TOKEN ESTAFETTE_ACCEPTANCE_CLAUDE_EXPECTED_PERMISSION_MODE ESTAFETTE_ACCEPTANCE_CLAUDE_DEBUG_LOG ESTAFETTE_ACCEPTANCE_CLAUDE_TRANSCRIPT"
 
 [default]
-[doc("The whole gate: format check, clippy with and without relay, tests, advisory audit; run before every commit")]
+[doc("The whole gate: the light gate, then the heavy gate; CI runs it")]
 [group('verify')]
-check: fmt-check clippy clippy-relay test audit
+check: check-light check-heavy
+
+[doc("The light gate, run by the commit hook on every source commit: format check, then clippy over every target with and without relay, warnings denied; stops at the first failure")]
+[group('verify')]
+check-light: fmt-check clippy clippy-relay
+
+[doc("The heavy gate, run once at a head: every test of the workspace, then the pinned advisory audit, both always run; writes one evidence file (commit, tree, worktree status, times, each exit code, every test result line with its binary, ignored tests, the full log's path) under target/heavy-evidence/ or at evidence_path, whatever the outcome, prints its absolute path as the last line of standard output and exits nonzero when either command failed")]
+[group('verify')]
+check-heavy evidence_path="":
+    python3 -I {{ quote(heavy_evidence_script) }} {{ quote(evidence_path) }}
 
 [doc("Fail when any file is not formatted")]
 [group('verify')]
