@@ -234,7 +234,7 @@ impl HeldConnection {
         }
     }
 
-    /// Whether the peer has been silent on the connection for as long as a process that no longer runs is, which a live peer answering keep-alives never is.
+    /// Whether the peer has been silent on the connection for the gone-process silence.
     fn is_from_a_gone_process(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.last_heard) >= GONE_PROCESS_SILENCE
     }
