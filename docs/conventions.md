@@ -18,10 +18,10 @@ ground  owner ruling 2026-10-23
 
 ### commits
 when    committing or configuring pre-commit
-do      bump the version in the same commit as the change it describes; commit a delivery milestone unprompted; commit a spec or reference change before any agent transcribes from it; let every pre-commit hook run; configure pre-commit with `trailing-whitespace`, `end-of-file-fixer`, `check-yaml`, `check-added-large-files` and `records` (`just records`) beside `just check`
+do      bump the version in the same commit as the change it describes; commit a delivery milestone unprompted; commit a spec or reference change before any agent transcribes from it; let every pre-commit hook run; configure pre-commit with `trailing-whitespace`, `end-of-file-fixer`, `check-yaml`, `check-added-large-files`, `just check` on commits that change the Cargo workspace and `records` (`just records`) on commits that change records, each by its hook's `files` pattern
 never   a version bump in a commit of its own; wait to be asked to commit; dispatch against uncommitted edits; `--no-verify` or any other skipped hook
 why     A version points at its content; uncommitted edits are invisible in every worktree; owner-mandated hooks bind.
-ground  owner ruling 2026-10-23
+ground  owner rulings 2026-10-23 and 2026-11-13 ("there's no need to run source work on 0 source changes")
 
 ## code
 
@@ -221,6 +221,13 @@ why     Sessions open with no memory; scratch is disposable and binds nothing.
 ground  owner ruling 2026-10-23
 except  credentials, which live outside the repository (docs/ground-truth.md:31)
 
+### stable-commitments
+when    compiling or editing the commitments of any stack
+do      state each demand in terms that hold for a whole session and across sessions (the reading taken, the count made, the act done); keep the name of a recipe, a job id, a scratch path or a figure in the records, where it can change with what it names
+never   a recipe name, a command line of the project tooling, a figure, an id or any other content likely to change within a session, in a commitments file
+why     Commitments load once when a session starts and cannot follow a recipe renamed or a figure corrected while it runs.
+ground  owner ruling 2026-11-13 ("make sure you don't reference the content that is likely to change throughout a given session in the commitments - e.g. recipes.")
+
 ## delegating agents
 
 ### agent-call
@@ -321,13 +328,6 @@ never   order a strong agent to run loops, builds or bulk reads a cheap agent ca
 why     A strong agent's context, like the lead's, is the scarcest resource; grunt work fills it with what a cheap agent could have condensed.
 ground  owner ruling 2026-11-12
 
-### orchestration-economics
-when    planning a unit, launching, continuing, resuming or stopping an agent, choosing its model and effort, deciding how many run at once, reading bulk into a context, or waking after a usage-limit stop, a login change or a gap past the cache's life
-do      decide inside the project skill orchestration-economics (.claude/skills/orchestration-economics/SKILL.md), loaded before the first such decision of a session; read the clock, `just usage::limits` and `just usage::inflight <minutes>` at every wake; set model and effort on every Agent call and journal the pair with the count that chose it; keep every agent's state in files so that a fresh start stays possible; take `just usage::checkpoint <label>` before and after a stretch of work and correct `just/usage-params.json` by what moved
-never   a launch, continuation or stop whose cost was not counted; a model or an effort by habit, by role or from a table; a figure from memory or from the skill's examples; a question to the owner about model or effort
-why     The owner ruled one mental model inside which the lead makes every such decision without his word; the skill holds it and the usage recipes compute it.
-ground  owner rulings 2026-11-12 ("we're setting up a single mental model within which you operate and make EVERY decision"; "the goal is EXACTLY for me to not weigh in on this ever again"; "resumption must be cache-and-token-spend-aware")
-
 ### work-in-progress
 when    choosing the next act while any unit is open, a unit being open from its first implementer launch until its merge reaches main
 do      take startable steps in order of distance to merge: integrate a passed unit; route a verdict or report that has arrived; continue a fix round; launch the reviews of a reported unit; only then start a new unit; start a new unit only when every open unit has an agent working on it or waits on a wake the lead set, and the usage window carries the new unit's first attempt and its check to their reports; route each open unit's next step inside its agents' cache life; start an integrator's or an acceptance gate pair when no other gate is due beside it, or name to it the gate that may overlap and order a test that fails on a time bound rerun alone; journal at each launch the number of open units and the cold-start dollars the launch causes
@@ -343,13 +343,6 @@ never   tell an agent which round, cycle or attempt this is, how many came befor
 why     An agent told it works in round n of m can slacken and leave the remainder to the rounds it was told will follow; the count then fulfils itself.
 ground  owner ruling 2026-11-13T01:03 ("i don't think you should narrate the 'n round of m' to agents themselves, as it could become a weakening factor, a self-fulfilling prophecy of not applying oneself and the slack getting picked up by next rounds.")
 except  an agent whose task is the pattern of earlier rounds itself, a debugging or diagnosis agent, reads their history
-
-### economics-kept-current
-when    a compaction has just condensed the lead's context, or a reading, a price, a recipe, a measurement or a decision of the orchestration economics changes
-do      after every compaction load the skill orchestration-economics again and read the clock, `just usage::limits` and `just usage::inflight <minutes>` before the first launch, continuation or stop; keep the skill's text, its resources (the usage recipes, `just/usage-params.json`, `just/usage-prices.json`, the derivation reports and scripts) and the handover bundle for upstream in step with what the readings show, each brought up to date in the stretch that changed it
-never   a launch, continuation or stop after a compaction decided from the summary's memory of the skill; a figure, mechanic or tool changed here and left stale in the skill, its resources or the bundle; the bundle in a public repository
-why     A compaction keeps the build's state and loses the working grasp of the model that prices every act; upstream receives the bundle, not this session, so what the bundle lacks is lost to it.
-ground  owner ruling 2026-11-13T01:07 ("mind orchestration economics after every compaction. keep the skill and their resources and the upstream handoff relevant, always."), with owner ruling 2026-11-13 ("anything and everything related to economics of orchestration and tooling for that must land into the portable zip prepared for upstream.")
 
 ## owner
 
