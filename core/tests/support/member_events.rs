@@ -179,8 +179,64 @@ mod tests {
 
     use super::{forget_files_renamed_or_removed, wakes_the_wait};
 
-    /// How many kinds of notice the pinned notify-types names, counted from its enums.
-    const EVERY_KIND_COUNT: usize = 41;
+    /// Where the kind stands in `every_event_kind`, naming every kind notify-types has, so a kind it adds breaks the build.
+    fn position_among_every_kind(kind: EventKind) -> usize {
+        match kind {
+            EventKind::Any => 0,
+            EventKind::Other => 1,
+            EventKind::Access(AccessKind::Any) => 2,
+            EventKind::Access(AccessKind::Read) => 3,
+            EventKind::Access(AccessKind::Other) => 4,
+            EventKind::Access(AccessKind::Open(AccessMode::Any)) => 5,
+            EventKind::Access(AccessKind::Open(AccessMode::Execute)) => 6,
+            EventKind::Access(AccessKind::Open(AccessMode::Read)) => 7,
+            EventKind::Access(AccessKind::Open(AccessMode::Write)) => 8,
+            EventKind::Access(AccessKind::Open(AccessMode::Other)) => 9,
+            EventKind::Access(AccessKind::Close(AccessMode::Any)) => 10,
+            EventKind::Access(AccessKind::Close(AccessMode::Execute)) => 11,
+            EventKind::Access(AccessKind::Close(AccessMode::Read)) => 12,
+            EventKind::Access(AccessKind::Close(AccessMode::Write)) => 13,
+            EventKind::Access(AccessKind::Close(AccessMode::Other)) => 14,
+            EventKind::Create(CreateKind::Any) => 15,
+            EventKind::Create(CreateKind::File) => 16,
+            EventKind::Create(CreateKind::Folder) => 17,
+            EventKind::Create(CreateKind::Other) => 18,
+            EventKind::Modify(ModifyKind::Any) => 19,
+            EventKind::Modify(ModifyKind::Other) => 20,
+            EventKind::Modify(ModifyKind::Data(DataChange::Any)) => 21,
+            EventKind::Modify(ModifyKind::Data(DataChange::Size)) => 22,
+            EventKind::Modify(ModifyKind::Data(DataChange::Content)) => 23,
+            EventKind::Modify(ModifyKind::Data(DataChange::Other)) => 24,
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)) => 25,
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime)) => 26,
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::WriteTime)) => 27,
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Permissions)) => 28,
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Ownership)) => 29,
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Extended)) => 30,
+            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Other)) => 31,
+            EventKind::Modify(ModifyKind::Name(RenameMode::Any)) => 32,
+            EventKind::Modify(ModifyKind::Name(RenameMode::To)) => 33,
+            EventKind::Modify(ModifyKind::Name(RenameMode::From)) => 34,
+            EventKind::Modify(ModifyKind::Name(RenameMode::Both)) => 35,
+            EventKind::Modify(ModifyKind::Name(RenameMode::Other)) => 36,
+            EventKind::Remove(RemoveKind::Any) => 37,
+            EventKind::Remove(RemoveKind::File) => 38,
+            EventKind::Remove(RemoveKind::Folder) => 39,
+            EventKind::Remove(RemoveKind::Other) => 40,
+        }
+    }
+
+    /// Where the failure kind stands among the failures the filter test feeds, naming every kind notify has, so a kind it adds breaks the build.
+    fn position_among_every_failure(failure: &ErrorKind) -> usize {
+        match failure {
+            ErrorKind::Generic(_) => 0,
+            ErrorKind::Io(_) => 1,
+            ErrorKind::PathNotFound => 2,
+            ErrorKind::WatchNotFound => 3,
+            ErrorKind::InvalidConfig(_) => 4,
+            ErrorKind::MaxFilesWatch => 5,
+        }
+    }
 
     /// Every kind of notice notify-types can name, each once: the cross product of its kinds and their sub-kinds.
     fn every_event_kind() -> Vec<EventKind> {
@@ -263,13 +319,20 @@ mod tests {
             ErrorKind::MaxFilesWatch,
         ];
 
-        assert_eq!(kinds.len(), EVERY_KIND_COUNT);
+        assert!(
+            kinds
+                .iter()
+                .copied()
+                .map(position_among_every_kind)
+                .eq(0..kinds.len())
+        );
+        assert!(
+            failures
+                .iter()
+                .map(position_among_every_failure)
+                .eq(0..failures.len())
+        );
         for kind in &kinds {
-            assert_eq!(
-                kinds.iter().filter(|other| *other == kind).count(),
-                1,
-                "{kind:?}"
-            );
             let is_read_open_or_close = matches!(kind, EventKind::Access(_));
             assert_eq!(
                 wakes_the_wait(&Ok(Event::new(*kind))),
