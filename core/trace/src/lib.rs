@@ -116,7 +116,7 @@ pub struct StoredFile {
     pub written_ms: u64,
 }
 
-/// Every side effect a trace performs, built at the composition root and handed in.
+/// Every side effect a trace performs but creating its directories, which each run's `begin` takes beside it; built at the composition root and handed in.
 pub struct TraceEffects {
     /// The two clocks every line reads.
     pub clocks: TraceClocks,
