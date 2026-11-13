@@ -336,6 +336,21 @@ why     A unit took about 2.6 implementer attempts and 2.6 review pairs to merge
 ground  owner word 2026-11-13 ("refine the WIP directive."; "figure things out, will you?"); text by the lead; for this project it replaces the dev-cycle rule to launch in one turn every unit whose dependencies are integrated
 except  a unit blocked on what no agent can do now (a window reset, a lab run, an act only the owner can perform) does not hold back a new unit
 
+### no-round-counts-to-agents
+when    writing anything an agent reads, whether a brief, a later order in a brief, a review note or a message
+do      state the work, the findings to answer and the gates as for the one attempt that must land; head a later order in a brief by its time; keep the count of rounds, cycles and attempts in the status file and the journal alone
+never   tell an agent which round, cycle or attempt this is, how many came before or how many remain; number an order's heading; name a later round or review as what will catch the rest
+why     An agent told it works in round n of m can slacken and leave the remainder to the rounds it was told will follow; the count then fulfils itself.
+ground  owner ruling 2026-11-13T01:03 ("i don't think you should narrate the 'n round of m' to agents themselves, as it could become a weakening factor, a self-fulfilling prophecy of not applying oneself and the slack getting picked up by next rounds.")
+except  an agent whose task is the pattern of earlier rounds itself, a debugging or diagnosis agent, reads their history
+
+### economics-kept-current
+when    a compaction has just condensed the lead's context, or a reading, a price, a recipe, a measurement or a decision of the orchestration economics changes
+do      after every compaction load the skill orchestration-economics again and read the clock, `just usage::limits` and `just usage::inflight <minutes>` before the first launch, continuation or stop; keep the skill's text, its resources (the usage recipes, `just/usage-params.json`, `just/usage-prices.json`, the derivation reports and scripts) and the handover bundle for upstream in step with what the readings show, each brought up to date in the stretch that changed it
+never   a launch, continuation or stop after a compaction decided from the summary's memory of the skill; a figure, mechanic or tool changed here and left stale in the skill, its resources or the bundle; the bundle in a public repository
+why     A compaction keeps the build's state and loses the working grasp of the model that prices every act; upstream receives the bundle, not this session, so what the bundle lacks is lost to it.
+ground  owner ruling 2026-11-13T01:07 ("mind orchestration economics after every compaction. keep the skill and their resources and the upstream handoff relevant, always."), with owner ruling 2026-11-13 ("anything and everything related to economics of orchestration and tooling for that must land into the portable zip prepared for upstream.")
+
 ## owner
 
 ### owner-away
