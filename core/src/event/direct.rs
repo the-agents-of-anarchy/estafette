@@ -1,7 +1,6 @@
 use iroh::EndpointId;
 
 use super::{AreaEvent, EventFields};
-use crate::keys::render_public_key;
 use crate::net::direct::DirectError;
 
 super::event_names! {
@@ -30,15 +29,39 @@ impl AreaEvent for DirectEvent {
     }
 
     fn run_record_line(&self) -> Option<String> {
-        Some(match self {
-            Self::ContactFailed { peer, reason } => format!(
-                "a direct request to {} got no valid acknowledgement: {reason}",
-                render_public_key(peer)
-            ),
-        })
+        match self {
+            Self::ContactFailed { .. } => None,
+        }
     }
 
     fn fields(&self) -> EventFields {
         Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use iroh::SecretKey;
+
+    use super::*;
+    use crate::event::{Event, write_run_record};
+
+    const PEER_KEY_BYTE: u8 = 7;
+    const PEER_KEY_LEN: usize = 32;
+
+    #[test]
+    fn observability_decision_3_a_failed_contact_adds_no_line_to_standard_error_and_keeps_its_event_name()
+     {
+        let event: Event = DirectEvent::ContactFailed {
+            peer: SecretKey::from_bytes(&[PEER_KEY_BYTE; PEER_KEY_LEN]).public(),
+            reason: DirectError::Unreachable,
+        }
+        .into();
+        let mut standard_error = Vec::new();
+
+        write_run_record(&mut standard_error, &event).unwrap();
+
+        assert_eq!(String::from_utf8(standard_error).unwrap(), "");
+        assert_eq!(event.name(), "direct.contact_failed");
     }
 }

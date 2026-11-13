@@ -538,7 +538,7 @@ pub enum DirectAnswer {
 }
 
 impl DirectAnswer {
-    /// The run record of a request that got no valid acknowledgement, naming the node it went to and why.
+    /// The event of a request that got no valid acknowledgement, naming the node it went to and why.
     fn failure_record(&self) -> Option<Event> {
         match self {
             Self::Introduce {
