@@ -62,6 +62,14 @@ const HANGUP_SIGNAL: &str = "SIGHUP";
 /// Sends iroh's own lines into a trace's raw file, done once per process by the composition root.
 type InstallIrohLines = fn(Arc<Trace>) -> Result<(), IrohLinesRefused>;
 
+/// What the trace of a process that starts an endpoint runs on: its effects, its bounds, and the install that sends iroh's own lines to it.
+#[derive(Clone, Copy)]
+struct TraceSetup<'effects> {
+    effects: &'effects TraceEffects,
+    bounds: TraceBounds,
+    install_iroh_lines: InstallIrohLines,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "estafette", about = PROGRAM_PURPOSE, long_about = PROGRAM_PURPOSE)]
 struct EstafetteArguments {
@@ -150,20 +158,20 @@ fn main() -> ExitCode {
     let status = run_command(
         EstafetteArguments::parse().command,
         |name| std::env::var_os(name),
-        &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
-        TraceBounds::SPEC,
-        iroh_lines::install,
+        TraceSetup {
+            effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
+            bounds: TraceBounds::SPEC,
+            install_iroh_lines: iroh_lines::install,
+        },
     );
     ExitCode::from(u8::from(status))
 }
 
-/// Runs the command on the process's streams, reading the environment through the given lookup and tracing through the given effects within the given bounds, iroh's own lines sent to the trace by the given install, and says how the process ends.
+/// Runs the command on the process's streams, reading the environment through the given lookup and tracing on the given setup, and says how the process ends.
 fn run_command(
     command: Command,
     environment: impl Fn(&str) -> Option<OsString>,
-    trace_effects: &TraceEffects,
-    trace_bounds: TraceBounds,
-    install_iroh_lines: InstallIrohLines,
+    trace_setup: TraceSetup<'_>,
 ) -> ExitStatus {
     match command {
         Command::Cards(command) => cards::run(
@@ -180,9 +188,7 @@ fn run_command(
             &environment,
             &mut io::stdout(),
             io::stderr(),
-            trace_effects,
-            trace_bounds,
-            install_iroh_lines,
+            trace_setup,
         ),
         Command::Network { command } => exit_status_after(
             run_network_command(&command, &environment, &mut io::stdout(), &mut io::stderr())
@@ -194,34 +200,29 @@ fn run_command(
             &environment,
             command.cards_dir(),
             io::stderr(),
-            trace_effects,
-            trace_bounds,
-            with_iroh_lines(install_iroh_lines, |directories, process| {
+            trace_setup,
+            |directories, process| {
                 run_observer_command(&command, directories, process, &mut io::stdout())
                     .map(|()| ExitStatus::Success)
-            }),
+            },
         ),
         Command::Mcp { registry, debug } => run_traced(
             debug.tracing(),
             &environment,
             registry.cards_dir.clone(),
             io::stderr(),
-            trace_effects,
-            trace_bounds,
-            with_iroh_lines(install_iroh_lines, |directories, process| {
-                serve_mcp(registry, directories, process)
-            }),
+            trace_setup,
+            |directories, process| serve_mcp(registry, directories, process),
         ),
         Command::Doctor { arguments, debug } => run_traced(
             debug.tracing(),
             &environment,
             arguments.registry.cards_dir.clone(),
             io::stderr(),
-            trace_effects,
-            trace_bounds,
-            with_iroh_lines(install_iroh_lines, |directories, process| {
+            trace_setup,
+            |directories, process| {
                 run_doctor_command(&arguments, directories, process, &mut io::stdout())
-            }),
+            },
         ),
     }
 }
@@ -232,18 +233,22 @@ struct ProcessRecord {
     trace: Option<Arc<Trace>>,
 }
 
-/// Runs a command that starts an endpoint: resolves the directories, starts the trace on the given effects within the given bounds unless `--no-debug` and names its files first on standard error, runs the command, records how it ended, then empties the trace's queues within their bound before the process exits, saying on standard error, file by file, when a queue did not empty or its file could not be cut back to its last line.
+/// Runs a command that starts an endpoint: resolves the directories, starts the trace on the given setup unless `--no-debug` and names its files first on standard error, sends iroh's own lines to it through the setup's install, runs the command, records how it ended, then empties the trace's queues within their bound before the process exits, saying on standard error, file by file, when a queue did not empty or its file could not be cut back to its last line.
 fn run_traced<StandardError: Write + Send + 'static>(
     tracing: Tracing,
     environment: impl Fn(&str) -> Option<OsString>,
     cards_dir: Option<PathBuf>,
     stderr: StandardError,
-    trace_effects: &TraceEffects,
-    trace_bounds: TraceBounds,
+    trace_setup: TraceSetup<'_>,
     command: impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure>,
 ) -> ExitStatus {
     let stderr = Arc::new(Mutex::new(stderr));
-    let trace = match start_trace(tracing, &environment, trace_effects, trace_bounds) {
+    let trace = match start_trace(
+        tracing,
+        &environment,
+        trace_setup.effects,
+        trace_setup.bounds,
+    ) {
         Ok(trace) => trace,
         Err(failure) => {
             return exit_status_after(Err(failure), run_record_on(&stderr, None).as_ref());
@@ -262,7 +267,13 @@ fn run_traced<StandardError: Write + Send + 'static>(
     };
     let outcome = Directories::establish(environment, &OperatingSystemFilesystem, cards_dir)
         .map_err(CommandLineFailure::Directories)
-        .and_then(|directories| command(directories, &process));
+        .and_then(|directories| {
+            if let Some(trace) = &process.trace {
+                (trace_setup.install_iroh_lines)(Arc::clone(trace))
+                    .map_err(CommandLineFailure::IrohLines)?;
+            }
+            command(directories, &process)
+        });
     let status = exit_status_after(outcome, process.record.as_ref());
     if let Some(trace) = &process.trace {
         for stop in trace.finish() {
@@ -270,7 +281,7 @@ fn run_traced<StandardError: Write + Send + 'static>(
                 TraceStop::Drained => None,
                 TraceStop::NotDrained { file } => Some(ProcessEvent::TraceNotDrained {
                     file,
-                    drain: trace_bounds.drain,
+                    drain: trace_setup.bounds.drain,
                 }),
                 TraceStop::NotCut { file, source } => {
                     Some(ProcessEvent::TraceNotCut { file, source })
@@ -308,19 +319,6 @@ fn start_trace(
             .map(|trace| Some(Arc::new(trace)))
             .map_err(CommandLineFailure::Trace)
         }
-    }
-}
-
-/// The command, run once the given install sends iroh's own lines to the process's trace, when the process has one.
-fn with_iroh_lines(
-    install_iroh_lines: InstallIrohLines,
-    command: impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure>,
-) -> impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure> {
-    move |directories, process| {
-        if let Some(trace) = &process.trace {
-            install_iroh_lines(Arc::clone(trace)).map_err(CommandLineFailure::IrohLines)?;
-        }
-        command(directories, process)
     }
 }
 
@@ -728,28 +726,25 @@ fn unix_seconds_of(instant: SystemTime) -> Result<u64, CommandLineFailure> {
     unix_milliseconds_of(instant).map(|milliseconds| milliseconds / MILLISECONDS_PER_SECOND)
 }
 
-/// Runs the infrastructure command on a runtime of its own, its run record on `stderr` and its trace on the given effects within the given bounds with iroh's own lines sent to it by the given install, and says how the process ends.
+/// Runs the infrastructure command on a runtime of its own, its run record on `stderr` and its trace on the given setup, and says how the process ends.
 #[cfg(feature = "relay")]
 fn run_infrastructure_command(
     command: InfrastructureCommand,
     environment: impl Fn(&str) -> Option<OsString>,
     result: &mut (impl Write + Send),
     stderr: impl Write + Send + 'static,
-    trace_effects: &TraceEffects,
-    trace_bounds: TraceBounds,
-    install_iroh_lines: InstallIrohLines,
+    trace_setup: TraceSetup<'_>,
 ) -> ExitStatus {
     run_traced(
         command.debug().tracing(),
         environment,
         None,
         stderr,
-        trace_effects,
-        trace_bounds,
-        with_iroh_lines(install_iroh_lines, |directories, process| {
+        trace_setup,
+        |directories, process| {
             serve_infrastructure(command, &directories, process, result)
                 .map(|()| ExitStatus::Success)
-        }),
+        },
     )
 }
 
@@ -1231,9 +1226,11 @@ mod tests {
         let status = run_command(
             Command::Observer(observer),
             environment,
-            &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
-            TraceBounds::SPEC,
-            IROH_LINES_LEFT_OUT,
+            TraceSetup {
+                effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
+                bounds: TraceBounds::SPEC,
+                install_iroh_lines: IROH_LINES_LEFT_OUT,
+            },
         );
 
         assert_eq!(status, ExitStatus::Failure);
@@ -1349,8 +1346,11 @@ mod tests {
             environment,
             None,
             io::sink(),
-            &trace_effects,
-            TraceBounds::SPEC,
+            TraceSetup {
+                effects: &trace_effects,
+                bounds: TraceBounds::SPEC,
+                install_iroh_lines: IROH_LINES_LEFT_OUT,
+            },
             move |_directories, process| {
                 for _ in 0..EVENTS_RECORDED {
                     (process.record)(ProcessEvent::ClockBeforeUnixEpoch.into());
@@ -1397,10 +1397,13 @@ mod tests {
             environment,
             None,
             standard_error.clone(),
-            &trace_effects,
-            TraceBounds {
-                drain: Duration::ZERO,
-                ..TraceBounds::SPEC
+            TraceSetup {
+                effects: &trace_effects,
+                bounds: TraceBounds {
+                    drain: Duration::ZERO,
+                    ..TraceBounds::SPEC
+                },
+                install_iroh_lines: IROH_LINES_LEFT_OUT,
             },
             |_directories, process| {
                 record_in_the_events_file_alone(process);
@@ -1533,10 +1536,13 @@ mod tests {
             environment,
             None,
             standard_error.clone(),
-            &trace_effects,
-            TraceBounds {
-                drain: STOP_REPORTED_WITHIN,
-                ..TraceBounds::SPEC
+            TraceSetup {
+                effects: &trace_effects,
+                bounds: TraceBounds {
+                    drain: STOP_REPORTED_WITHIN,
+                    ..TraceBounds::SPEC
+                },
+                install_iroh_lines: IROH_LINES_LEFT_OUT,
             },
             |_directories, process| {
                 record_in_the_events_file_alone(process);
@@ -1571,10 +1577,13 @@ mod tests {
             environment,
             None,
             standard_error.clone(),
-            &trace_effects,
-            TraceBounds {
-                drain: STOP_REPORTED_WITHIN,
-                ..TraceBounds::SPEC
+            TraceSetup {
+                effects: &trace_effects,
+                bounds: TraceBounds {
+                    drain: STOP_REPORTED_WITHIN,
+                    ..TraceBounds::SPEC
+                },
+                install_iroh_lines: IROH_LINES_LEFT_OUT,
             },
             |_directories, process| {
                 record_in_the_events_file_alone(process);
@@ -1606,10 +1615,13 @@ mod tests {
             environment,
             None,
             standard_error.clone(),
-            &trace_effects,
-            TraceBounds {
-                drain: STOP_REPORTED_WITHIN,
-                ..TraceBounds::SPEC
+            TraceSetup {
+                effects: &trace_effects,
+                bounds: TraceBounds {
+                    drain: STOP_REPORTED_WITHIN,
+                    ..TraceBounds::SPEC
+                },
+                install_iroh_lines: IROH_LINES_LEFT_OUT,
             },
             |_directories, _process| Ok(ExitStatus::Success),
         );
@@ -1639,10 +1651,13 @@ mod tests {
             environment,
             None,
             standard_error.clone(),
-            &trace_effects,
-            TraceBounds {
-                drain: STOP_REPORTED_WITHIN,
-                ..TraceBounds::SPEC
+            TraceSetup {
+                effects: &trace_effects,
+                bounds: TraceBounds {
+                    drain: STOP_REPORTED_WITHIN,
+                    ..TraceBounds::SPEC
+                },
+                install_iroh_lines: IROH_LINES_LEFT_OUT,
             },
             |_directories, _process| Ok(ExitStatus::Success),
         );
@@ -1725,9 +1740,11 @@ mod tests {
             &environment,
             &mut printed,
             recorded.clone(),
-            &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
-            TraceBounds::SPEC,
-            IROH_LINES_LEFT_OUT,
+            TraceSetup {
+                effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
+                bounds: TraceBounds::SPEC,
+                install_iroh_lines: IROH_LINES_LEFT_OUT,
+            },
         );
 
         let recorded = recorded.0.lock().unwrap().clone();
