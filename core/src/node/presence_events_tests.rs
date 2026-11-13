@@ -691,6 +691,7 @@ async fn observability_decision_9_a_member_records_each_payload_it_broadcast_wit
     )
     .await;
 
+    let requested = recorded.next_named("gossip.payload_broadcast").await;
     let broadcast = recorded.next_named("gossip.payload_broadcast").await;
     let heard = witness
         .payload_where(EVENT_WAIT, |payload| {
@@ -698,6 +699,13 @@ async fn observability_decision_9_a_member_records_each_payload_it_broadcast_wit
         })
         .await;
 
+    assert_eq!(
+        requested,
+        [
+            ("kind", Value::from("presence_request")),
+            ("seq", Value::from(FROZEN_CLOCK_MS)),
+        ]
+    );
     assert_eq!(
         broadcast,
         [
