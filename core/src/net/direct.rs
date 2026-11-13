@@ -1915,6 +1915,13 @@ pub(crate) mod tests {
         (record, receiver)
     }
 
+    /// Every event the run record has handed the receiver so far, in order.
+    pub fn recorded_so_far(
+        receiver: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+    ) -> Vec<RecordedEvent> {
+        std::iter::from_fn(|| receiver.try_recv().ok()).collect()
+    }
+
     /// The salt every test register hashes locations under.
     pub fn test_salt() -> crate::trace::LocationSalt {
         crate::trace::LocationSalt::from_random_bytes(

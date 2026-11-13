@@ -1060,6 +1060,7 @@ mod tests {
         reachable: Vec<iroh::EndpointAddr>,
         stopped: StopRequested,
         relay_shutdown_failure: Option<&'static str>,
+        transport: crate::net::endpoint::TransportRecord,
     }
 
     impl Plan {
@@ -1071,6 +1072,7 @@ mod tests {
                 reachable: Vec::new(),
                 stopped: Box::pin(std::future::ready(())),
                 relay_shutdown_failure: None,
+                transport: crate::net::direct::tests::dropping_transport(),
             }
         }
 
@@ -1082,6 +1084,7 @@ mod tests {
                 reachable,
                 stopped,
                 relay_shutdown_failure,
+                transport,
             } = self;
             let relay_sites = Arc::clone(&seen.relay_sites);
             let bound = Arc::clone(&seen.bound);
@@ -1099,10 +1102,7 @@ mod tests {
                             [relay.clone()],
                             move |nonce: &mut [u8; KEY_LEN]| *nonce = [seed; KEY_LEN],
                             |_ignored| {},
-                            crate::net::direct::HeldConnections::new(
-                                monotonic,
-                                crate::net::direct::tests::dropping_transport(),
-                            ),
+                            crate::net::direct::HeldConnections::new(monotonic, transport),
                         )
                         .await?;
                         for address in reachable {
@@ -1642,6 +1642,56 @@ mod tests {
         let (first, second, spacing) = records;
         assert_eq!(Some(second.ts), first.ts.checked_add(1));
         assert!(SPEC_RECORD_INTERVAL_EARLIEST <= spacing && spacing < SPEC_RECORD_INTERVAL_LATEST);
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_the_host_records_a_members_gossip_connection_as_accepted() {
+        let scratch = Scratch::new("connection-accepted");
+        scratch.configure_network();
+        scratch.certify(HOST_SEED);
+        let seen = Seen::default();
+        let (stop, stopped) = stopped_on_signal();
+        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let plan = Plan {
+            stopped,
+            transport: crate::net::endpoint::TransportRecord::new(
+                record,
+                crate::net::direct::tests::test_salt(),
+            ),
+            ..Plan::new(HOST_SEED)
+        };
+
+        let ((_printed, outcome), ()) = tokio::join!(run_planned(&scratch, plan, &seen), async {
+            let host = bound_endpoint(&seen, 0).await;
+            let _peer = Peer::joined_through(PEER_SEED, &host).await;
+            stop.send(()).unwrap();
+        });
+
+        outcome.unwrap();
+        let member_short =
+            data_encoding::HEXLOWER.encode(&secret_key(PEER_SEED).public().as_bytes()[..5]);
+        let opened_with_the_member: Vec<_> =
+            crate::net::direct::tests::recorded_so_far(&mut recorded)
+                .into_iter()
+                .filter(|(name, fields)| {
+                    *name == "transport.connection_opened"
+                        && crate::net::direct::tests::field(fields, "peer")
+                            == Some(&serde_json::Value::from(member_short.as_str()))
+                })
+                .map(|(_, fields)| {
+                    (
+                        crate::net::direct::tests::field(&fields, "direction").cloned(),
+                        crate::net::direct::tests::field(&fields, "protocol").cloned(),
+                    )
+                })
+                .collect();
+        assert!(
+            opened_with_the_member.contains(&(
+                Some(serde_json::Value::from("accepted")),
+                Some(serde_json::Value::from("gossip"))
+            )),
+            "connections recorded as opened with the member: {opened_with_the_member:?}"
+        );
     }
 
     #[tokio::test]

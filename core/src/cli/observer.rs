@@ -1167,6 +1167,19 @@ mod tests {
             member_addresses: Vec<EndpointAddr>,
             interrupted: Interrupted,
         ) -> (ObserverEffects, OperatorEffects) {
+            self.effects_recording_to(
+                member_addresses,
+                interrupted,
+                crate::net::direct::tests::dropping_transport(),
+            )
+        }
+
+        fn effects_recording_to(
+            &self,
+            member_addresses: Vec<EndpointAddr>,
+            interrupted: Interrupted,
+            transport: crate::net::endpoint::TransportRecord,
+        ) -> (ObserverEffects, OperatorEffects) {
             let directories = Arc::clone(&self.directories);
             let effects = ObserverEffects {
                 clock: Arc::new(wall_clock_ms),
@@ -1180,10 +1193,7 @@ mod tests {
                             relays,
                             |nonce: &mut [u8; KEY_LEN]| *nonce = [OBSERVER_SEED; KEY_LEN],
                             |_ignored| {},
-                            crate::net::direct::HeldConnections::new(
-                                monotonic,
-                                crate::net::direct::tests::dropping_transport(),
-                            ),
+                            crate::net::direct::HeldConnections::new(monotonic, transport),
                         )
                         .await?;
                         for address in member_addresses {
@@ -2004,6 +2014,59 @@ mod tests {
                 "{NEIGHBOR_HANDLE}\tonline\ttrue\t{}\n",
                 String::from_utf8_lossy(NEIGHBOR_PUBLIC)
             )
+        );
+        drop(lab);
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_show_peers_records_each_introduce_it_sends_to_a_member_by_kind_and_peer()
+     {
+        let lab = Lab::new("introduce-recorded").await;
+        let neighbor = start_silent_neighbor().await;
+        lab.write_network_config(&[NEIGHBOR_SEED]);
+        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let show_peers = ObserverCommand::ShowPeers {
+            network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
+            debug: DebugArgs::default(),
+        };
+
+        run(
+            &show_peers,
+            &lab.directories,
+            &OperatingSystemFilesystem,
+            &NoPause,
+            lab.effects_recording_to(
+                vec![neighbor.address.clone()],
+                never_interrupted(),
+                crate::net::endpoint::TransportRecord::new(
+                    record,
+                    crate::net::direct::tests::test_salt(),
+                ),
+            ),
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap();
+
+        let neighbor_short =
+            data_encoding::HEXLOWER.encode(&secret_key(NEIGHBOR_SEED).public().as_bytes()[..5]);
+        let sent: Vec<_> = crate::net::direct::tests::recorded_so_far(&mut recorded)
+            .into_iter()
+            .filter(|(name, _)| *name == "direct.request_sent")
+            .map(|(_, fields)| {
+                (
+                    crate::net::direct::tests::field(&fields, "kind").cloned(),
+                    crate::net::direct::tests::field(&fields, "peer").cloned(),
+                )
+            })
+            .collect();
+        assert!(
+            sent.contains(&(
+                Some(serde_json::Value::from("introduce")),
+                Some(serde_json::Value::from(neighbor_short))
+            )),
+            "requests recorded as sent: {sent:?}"
         );
         drop(lab);
     }
