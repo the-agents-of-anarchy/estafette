@@ -389,9 +389,9 @@ mod tests {
     use crate::node::presence::acknowledgement_of;
     use crate::node::presence::tests::{
         FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, MARKER_SEED, Member, MemberPlan,
-        OWNER_SEED, PAYLOAD_WAIT, Scratch, WITNESS_SEED, Witness, bind, card, frozen_clock, keys,
-        secret_key, spawn_member, start_members, start_members_reaching, status_within,
-        unreachable_about, wall_clock_ms,
+        OWNER_SEED, PAYLOAD_WAIT, Scratch, WITNESS_SEED, Witness, bind, card, entry_meeting_within,
+        frozen_clock, keys, secret_key, spawn_member, start_members, start_members_reaching,
+        status_within, unreachable_about, wall_clock_ms,
     };
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
@@ -1042,18 +1042,6 @@ mod tests {
         drop(scratch);
     }
 
-    async fn member_applied_the_peers_ack_within(member: &Member, within: Duration) -> bool {
-        tokio::time::timeout(within, async {
-            while !member.node.peers().iter().any(|listed| {
-                listed.card == card(PEER_SEED) && listed.attached == ATTACHED_ONLY_IN_THE_PEERS_ACK
-            }) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .is_ok()
-    }
-
     #[tokio::test]
     async fn spec_3_8_a_send_that_turns_its_unreachable_peer_online_lets_a_long_deaf_member_rebind_at_once()
      {
@@ -1071,7 +1059,14 @@ mod tests {
         let peer = QuietNode::answering(PEER_SEED, &[]).await;
         peer.introduce_to(&member.endpoint).await;
         assert!(
-            member_applied_the_peers_ack_within(&member, PAYLOAD_WAIT).await,
+            entry_meeting_within(
+                &member,
+                PEER_SEED,
+                |listed| listed.attached == ATTACHED_ONLY_IN_THE_PEERS_ACK,
+                PAYLOAD_WAIT
+            )
+            .await
+            .is_some(),
             "the member never applied the ack of its own Introduce to the peer"
         );
         let witness = Witness::joined_through(WITNESS_SEED, None, &member.endpoint).await;

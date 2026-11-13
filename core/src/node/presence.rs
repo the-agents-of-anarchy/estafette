@@ -3566,7 +3566,7 @@ pub(super) mod tests {
     }
 
     /// The member's entry for the card of the seed once it meets the condition, waited for without a sleep, or none when it does not within the wait.
-    async fn entry_meeting_within(
+    pub(in crate::node) async fn entry_meeting_within(
         member: &Member,
         seed: u8,
         condition: impl Fn(&Peer) -> bool + Send + Sync,
