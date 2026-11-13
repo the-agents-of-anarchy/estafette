@@ -993,6 +993,10 @@ mod tests {
     const SECOND_HANDLE: &str = "bob";
     const FIRST_PUBLIC: &[u8] = br#"{"role":"first"}"#;
     const SECOND_PUBLIC: &[u8] = br#"{"role":"second"}"#;
+    const THIRD_SEED: u8 = 63;
+    const THIRD_HANDLE: &str = "cal";
+    const THIRD_PUBLIC: &[u8] = br#"{"role":"third"}"#;
+    const PRESENCE_REQUEST_LINE_START: &str = "presence-request\t1\t";
     const UNREACHABLE_RELAY: &str = "https://relay.estafette.invalid/";
     const PROBE_NONCE: Nonce = [7; 16];
     const OPERATOR_CARD: &str = "operator";
@@ -1116,6 +1120,15 @@ mod tests {
         }
 
         async fn start_members(&self, plans: Vec<MemberPlan>) -> Vec<Member> {
+            self.start_members_reaching(plans, &[]).await
+        }
+
+        /// Starts the members, each reaching the others and the running members at their addresses.
+        async fn start_members_reaching(
+            &self,
+            plans: Vec<MemberPlan>,
+            running: &[EndpointAddr],
+        ) -> Vec<Member> {
             let mut endpoints = Vec::new();
             for plan in &plans {
                 endpoints.push(bind_endpoint(secret_key(plan.seed)).await);
@@ -1123,6 +1136,7 @@ mod tests {
             let addresses: Vec<EndpointAddr> = endpoints
                 .iter()
                 .map(|endpoint| endpoint.endpoint().addr())
+                .chain(running.iter().cloned())
                 .collect();
             for endpoint in &endpoints {
                 for address in &addresses {
@@ -1487,6 +1501,100 @@ mod tests {
 
         tail_result.unwrap();
         assert!(output.text().contains(&first_presence_line_start));
+        drop(lab);
+    }
+
+    /// The card of the seed as a payload line prints it.
+    fn card_text(seed: u8) -> String {
+        render_public_key(&secret_key(seed).public())
+    }
+
+    /// The start of the line tail prints for a Presence of the seed's card under the handle.
+    fn presence_line_start(seed: u8, handle: &str) -> String {
+        format!("presence\t1\t{}\t{handle}\t", card_text(seed))
+    }
+
+    /// Waits until the tail has printed a line starting with each of the starts, requiring that within the payload wait.
+    async fn printed_within_payload_wait(output: &SharedOutput, starts: &[String]) {
+        tokio::time::timeout(
+            PAYLOAD_WAIT,
+            output.holds(|text| starts.iter().all(|start| text.contains(start.as_str()))),
+        )
+        .await
+        .unwrap_or_else(|_elapsed| {
+            panic!("tail printed no line starting {starts:?} within {PAYLOAD_WAIT:?}")
+        });
+    }
+
+    #[tokio::test]
+    async fn spec_3_13_tail_prints_one_presence_request_per_member_join_and_none_from_the_members_that_answer()
+     {
+        let lab = Lab::new("tail-joins").await;
+        let members = lab.start_members(two_members()).await;
+        lab.write_network_config(&[FIRST_SEED, SECOND_SEED]);
+        let member_addresses: Vec<EndpointAddr> = members
+            .iter()
+            .map(|member| member.address.clone())
+            .collect();
+        let output = SharedOutput::default();
+        let mut tail_output = output.clone();
+        let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
+        let tail = ObserverCommand::Tail {
+            network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
+            debug: DebugArgs::default(),
+        };
+
+        let (tail_result, _third) = tokio::join!(
+            run(
+                &tail,
+                &lab.directories,
+                &OperatingSystemFilesystem,
+                &NoPause,
+                lab.effects(
+                    member_addresses.clone(),
+                    Box::pin(async move { drop(interrupted.await) }),
+                ),
+                &mut tail_output,
+            ),
+            async {
+                printed_within_payload_wait(
+                    &output,
+                    &[
+                        presence_line_start(FIRST_SEED, FIRST_HANDLE),
+                        presence_line_start(SECOND_SEED, SECOND_HANDLE),
+                    ],
+                )
+                .await;
+                let third = lab
+                    .start_members_reaching(
+                        vec![MemberPlan {
+                            seed: THIRD_SEED,
+                            handle: THIRD_HANDLE,
+                            public: THIRD_PUBLIC,
+                        }],
+                        &member_addresses,
+                    )
+                    .await;
+                printed_within_payload_wait(
+                    &output,
+                    &[presence_line_start(THIRD_SEED, THIRD_HANDLE)],
+                )
+                .await;
+                interrupt.send(()).unwrap_or_default();
+                third
+            }
+        );
+
+        tail_result.unwrap();
+        let requesters: Vec<String> = output
+            .text()
+            .lines()
+            .filter_map(|line| line.strip_prefix(PRESENCE_REQUEST_LINE_START))
+            .filter_map(|fields| fields.split('\t').next())
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(requesters, vec![card_text(THIRD_SEED)]);
         drop(lab);
     }
 
