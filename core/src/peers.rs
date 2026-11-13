@@ -142,12 +142,10 @@ pub enum TableCause {
     IntroduceAck,
     IntroduceFailed,
     Message,
-    NeighborDown,
     ProbeAnswered,
     ProbeFailed,
     SendAcknowledged,
     SendFailed,
-    OwnHandleRequested,
     Expiry,
 }
 

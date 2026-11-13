@@ -157,12 +157,10 @@ const fn cause_name(cause: TableCause) -> &'static str {
         TableCause::IntroduceAck => "introduce_ack",
         TableCause::IntroduceFailed => "introduce_failed",
         TableCause::Message => "message",
-        TableCause::NeighborDown => "neighbor_down",
         TableCause::ProbeAnswered => "probe_answered",
         TableCause::ProbeFailed => "probe_failed",
         TableCause::SendAcknowledged => "send_acknowledged",
         TableCause::SendFailed => "send_failed",
-        TableCause::OwnHandleRequested => "own_handle_requested",
         TableCause::Expiry => "expiry",
     }
 }
@@ -305,7 +303,7 @@ mod tests {
                     requested,
                     handle: handle.clone(),
                 },
-                TableCause::OwnHandleRequested,
+                TableCause::Expiry,
             )
             .into(),
             PeerTableEvent::lookup_replaced(&PEER_ID, Some(handle), 0, true).into(),

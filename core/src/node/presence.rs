@@ -424,7 +424,7 @@ impl PeerRows {
     /// Applies a gossip report of a lost neighbor, returning the Probe it calls for (spec 3.8).
     #[must_use]
     pub(crate) fn take_neighbor_down(&self, node: EndpointId, now_ms: u64) -> Vec<Effect> {
-        self.change(TableCause::NeighborDown, |table| {
+        self.change(TableCause::Expiry, |table| {
             table.neighbor_down(*node.as_bytes(), now_ms)
         })
     }
@@ -1064,12 +1064,9 @@ impl PresenceLoop {
     /// Assigns this node's effective handle against the table and hands it to init.
     fn assign_own_handle(&self, assigned: oneshot::Sender<LocalHandle>) {
         let now_ms = self.state.now_ms();
-        let own_handle = self
-            .state
-            .rows
-            .change(TableCause::OwnHandleRequested, |table| {
-                table.assign_own_handle(&self.requested_handle, now_ms)
-            });
+        let own_handle = self.state.rows.change(TableCause::Expiry, |table| {
+            table.assign_own_handle(&self.requested_handle, now_ms)
+        });
         drop(self.state.own_handle.set(own_handle.clone()));
         drop(assigned.send(own_handle));
     }
