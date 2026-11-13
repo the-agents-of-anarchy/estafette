@@ -32,6 +32,7 @@ const FORCED_FAILURE_VARIABLE: &str = "ESTAFETTE_FORCED_FAILURE";
 const FORCED_FAILURE_TEST: &str =
     "trace_events::forced_failure_after_two_members_for_the_timeline_print";
 const FORCED_FAILURE_MESSAGE: &str = "the failure the timeline print follows";
+const TIMELINE_PRINT_TEST: &str = "trace_events::observability_decision_15_a_failing_test_prints_the_timeline_of_each_member_it_started";
 /// How far a stand-in clock moves at each reading, longer than any notice takes to arrive.
 const TICK: Duration = Duration::from_secs(10);
 /// The bound, in ticks, that holds a member wait's readings of its clock up to the end of the look its first notice wakes.
@@ -392,13 +393,14 @@ fn observability_decision_15_a_failing_test_prints_the_timeline_of_each_member_i
     assert!(!second.contains(HANDSHAKE_FAILED_EVENT), "{printed}");
 }
 
-/// Starts two members, the second killed before it records anything, and fails when the variable is set, which the test of the timeline print sets in the child process it runs this fixture in; ignored in the suite, and passing at once when run without the variable.
+/// Starts two members, the second killed before it records anything, then fails: with the forced failure under the variable the test of the timeline print sets in the child process it runs this fixture in, and naming that test without it; ignored in the suite.
 #[test]
 #[ignore = "a fixture: the child process of observability_decision_15_a_failing_test_prints_the_timeline_of_each_member_it_started"]
 fn forced_failure_after_two_members_for_the_timeline_print() {
-    if std::env::var_os(FORCED_FAILURE_VARIABLE).is_none() {
-        return;
-    }
+    assert!(
+        std::env::var_os(FORCED_FAILURE_VARIABLE).is_some(),
+        "{FORCED_FAILURE_TEST} is a fixture of {TIMELINE_PRINT_TEST}, which runs it with {FORCED_FAILURE_VARIABLE} set"
+    );
     let network = LocalNetwork::create("f1", &RunRecordKeeping::from_environment());
     let machine = network.machine();
     let mut first = machine.spawn_mcp_server();
