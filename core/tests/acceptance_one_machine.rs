@@ -1962,6 +1962,7 @@ mod observability_decision_6_on_one_machine {
             amy.bound_udp_ports()
                 .into_iter()
                 .chain(bob.bound_udp_ports())
+                .chain(host_ports.iter().copied())
                 .map(|port| SocketAddr::from(([127, 0, 0, 1], port))),
         ));
         for claim in [&amy_claim, &bob_claim] {
