@@ -16,6 +16,27 @@ pub mod iroh_lines;
 
 const SAFE_TO_POST_FIELD: &str = "safe_to_post";
 
+/// The bytes of the salt every network location in one events file is hashed under.
+pub const LOCATION_SALT_BYTES: usize = blake3::KEY_LEN;
+
+/// The secret a process draws once from the secure random source to hash each network location it records; it is never written.
+#[derive(Clone, Copy)]
+pub struct LocationSalt([u8; LOCATION_SALT_BYTES]);
+
+impl LocationSalt {
+    /// The salt of these random bytes.
+    #[must_use]
+    pub const fn from_random_bytes(bytes: [u8; LOCATION_SALT_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    /// The hash of the bytes keyed by the salt.
+    #[must_use]
+    pub fn keyed_hash(&self, bytes: &[u8]) -> blake3::Hash {
+        blake3::keyed_hash(&self.0, bytes)
+    }
+}
+
 /// The form of every run's name as the help states it: `<start>-<run>-estafette`.
 #[must_use]
 pub fn run_name_pattern() -> String {

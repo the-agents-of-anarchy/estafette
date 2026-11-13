@@ -30,14 +30,15 @@ use estafette::event::{
 };
 use estafette::inbox::socket::{InboxSocket, InboxSocketError, OperatingSystemProcessTable};
 use estafette::mcp::{self, ServedNetwork, ServerEffects};
-use estafette::net::endpoint::{GateFailure, NodeEndpoint};
+use estafette::net::endpoint::{GateFailure, NodeEndpoint, TransportRecord};
 use estafette::node::{
     Exit, Network, NodeEffects, NodeError, RuntimeShutdown, ShutdownSignal, relay_answers,
 };
 use estafette::sidecar::{self, ThreadSleep};
 use estafette::trace::iroh_lines::{self, IrohLinesRefused};
 use estafette::trace::{
-    RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceEffects, TraceRefused, TraceStop,
+    LOCATION_SALT_BYTES, LocationSalt, RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks,
+    TraceEffects, TraceRefused, TraceStop,
 };
 use estafette::wire::Nonce;
 use iroh::SecretKey;
@@ -227,10 +228,11 @@ fn run_command(
     }
 }
 
-/// The run record of one process that starts an endpoint, and its debug trace unless `--no-debug` was given.
+/// The run record of one process that starts an endpoint, its debug trace unless `--no-debug` was given, and the salt its events file hashes every network location under.
 struct ProcessRecord {
     record: RunRecord,
     trace: Option<Arc<Trace>>,
+    salt: LocationSalt,
 }
 
 /// Runs a command that starts an endpoint: resolves the directories, starts the trace on the given setup unless `--no-debug` and names its files first on standard error, sends iroh's own lines to it through the setup's install, runs the command, records how it ended, then empties the trace's queues within their bound before the process exits, saying on standard error, file by file, when a queue did not empty or its file could not be cut back to its last line.
@@ -264,6 +266,7 @@ fn run_traced<StandardError: Write + Send + 'static>(
     let process = ProcessRecord {
         record: run_record_on(&stderr, trace.clone()),
         trace,
+        salt: location_salt_drawn_now(),
     };
     let outcome = Directories::establish(environment, &OperatingSystemFilesystem, cards_dir)
         .map_err(CommandLineFailure::Directories)
@@ -320,6 +323,13 @@ fn start_trace(
             .map_err(CommandLineFailure::Trace)
         }
     }
+}
+
+/// The salt of this process's events file, drawn once from the secure random source.
+fn location_salt_drawn_now() -> LocationSalt {
+    let mut salt = [0; LOCATION_SALT_BYTES];
+    fill_with_secure_random_bytes(&mut salt);
+    LocationSalt::from_random_bytes(salt)
 }
 
 /// The trace's clocks started now: milliseconds since this call, and the latest wall-clock reading at or after the Unix epoch.
@@ -396,6 +406,7 @@ fn serve_mcp(
     let process_id = std::process::id();
     let record = Arc::clone(&process.record);
     let trace = process.trace.clone();
+    let salt = process.salt;
     let exit = runtime.block_on(async move {
         let inbox = InboxSocket::start(
             &directories,
@@ -417,7 +428,7 @@ fn serve_mcp(
             tokio::io::stdout(),
             signals,
             served,
-            server_effects(Arc::new(inbox), record, trace),
+            server_effects(Arc::new(inbox), record, trace, salt),
         )
         .await)
     })?;
@@ -448,11 +459,12 @@ fn forward_shutdown_signals() -> Result<mpsc::UnboundedReceiver<ShutdownSignal>,
     Ok(received)
 }
 
-/// The side effects of the MCP server and its node: the clocks, a secure random source, the endpoint binding, the run record, and the filesystem.
+/// The side effects of the MCP server and its node: the clocks, a secure random source, the endpoint binding recording its transport under the salt, the run record, and the filesystem.
 fn server_effects(
     inbox: Arc<InboxSocket>,
     record: RunRecord,
     trace: Option<Arc<Trace>>,
+    salt: LocationSalt,
 ) -> ServerEffects {
     let gate_record = Arc::clone(&record);
     ServerEffects {
@@ -472,7 +484,7 @@ fn server_effects(
                     relays,
                     fill_with_secure_random_bytes,
                     gate_closing_recorder(Arc::clone(&gate_record)),
-                    connections,
+                    connections.recording_to(TransportRecord::new(Arc::clone(&gate_record), salt)),
                 ),
                 trace.clone(),
             ))
@@ -673,6 +685,7 @@ fn observer_effects(
 ) -> (ObserverEffects, OperatorEffects) {
     let record = Arc::clone(&process.record);
     let trace = process.trace.clone();
+    let salt = process.salt;
     let gate_record = Arc::clone(&record);
     let accept_record = Arc::clone(&record);
     let effects = ObserverEffects {
@@ -689,7 +702,7 @@ fn observer_effects(
                     relays,
                     fill_with_secure_random_bytes,
                     gate_closing_recorder(Arc::clone(&gate_record)),
-                    connections,
+                    connections.recording_to(TransportRecord::new(Arc::clone(&gate_record), salt)),
                 ),
                 trace.clone(),
             ))
@@ -784,6 +797,7 @@ fn infrastructure_effects(
 ) -> InfrastructureEffects {
     let record = Arc::clone(&process.record);
     let trace = process.trace.clone();
+    let salt = process.salt;
     let gate_record = Arc::clone(&record);
     InfrastructureEffects {
         fill_from_secure_source: Box::new(|seed: &mut [u8; RANDOM_BYTES_PER_SECRET_KEY]| {
@@ -798,7 +812,7 @@ fn infrastructure_effects(
                     [relay],
                     fill_with_secure_random_bytes,
                     gate_closing_recorder(Arc::clone(&gate_record)),
-                    connections,
+                    connections.recording_to(TransportRecord::new(Arc::clone(&gate_record), salt)),
                 ),
                 trace.clone(),
             ))

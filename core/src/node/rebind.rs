@@ -14,6 +14,7 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::event::{GossipEvent, TransportEvent};
 use crate::net::direct::DirectHost;
+use crate::net::endpoint::RebindCause;
 use crate::net::gossip::NetworkTopic;
 use crate::node::addresses::endpoint_id;
 use crate::node::known_hosts::seed_lookup_with_known_hosts;
@@ -86,13 +87,25 @@ impl RebindSchedule {
 
     /// When the next rebind is due, for a member that may rebind.
     fn due(&self) -> Instant {
+        self.next_rebind().0
+    }
+
+    /// Why the next rebind is due: the join that gained no neighbor when it came before the deaf timeout ran out, else the silence.
+    fn cause(&self) -> RebindCause {
+        self.next_rebind().1
+    }
+
+    /// When the next rebind is due and why: after the deaf timeout of silence or at a join that gained no neighbor, never sooner than the rebind interval after the last rebind.
+    fn next_rebind(&self) -> (Instant, RebindCause) {
         let deaf_at = later_by(self.silent_since, DEAF_TIMEOUT);
-        let triggered_at = self
-            .unjoined_since
-            .map_or(deaf_at, |unjoined| unjoined.min(deaf_at));
-        self.last_rebind.map_or(triggered_at, |last| {
+        let (triggered_at, cause) = match self.unjoined_since {
+            Some(unjoined) if unjoined < deaf_at => (unjoined, RebindCause::JoinGainedNoNeighbor),
+            Some(_) | None => (deaf_at, RebindCause::Deaf),
+        };
+        let due = self.last_rebind.map_or(triggered_at, |last| {
             triggered_at.max(later_by(last, REBIND_INTERVAL))
-        })
+        });
+        (due, cause)
     }
 }
 
@@ -188,6 +201,11 @@ impl Rebinding {
         self.schedule.due()
     }
 
+    /// Why the next rebind is due.
+    pub(super) fn cause(&self) -> RebindCause {
+        self.schedule.cause()
+    }
+
     /// When the next ask to join the members is due, if one is.
     pub(super) const fn next_ask(&self) -> Option<Instant> {
         self.member_joins.next_ask()
@@ -230,7 +248,7 @@ impl PresenceLoop {
 
     /// Rebinds by spec 3.8, stopping the loop when no endpoint or topic comes of it.
     pub(super) async fn rebind(&mut self) -> ControlFlow<()> {
-        (self.report)(TransportEvent::Rebinding.into());
+        (self.report)(TransportEvent::Rebinding(self.rebinding.cause()).into());
         self.rebinding.rebound((self.monotonic)());
         self.close_endpoint().await;
         let down = self.relays_found_down().await;
@@ -386,7 +404,7 @@ mod tests {
     use crate::net::direct::{
         ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock,
     };
-    use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
+    use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint, RebindCause};
     use crate::net::gossip::{GossipEvent, NetworkTopic};
     use crate::node::presence::acknowledgement_of;
     use crate::node::presence::tests::{
@@ -493,7 +511,7 @@ mod tests {
         fn sink(&self) -> RunRecord {
             let started = self.started.clone();
             Arc::new(move |event| {
-                if matches!(event, Event::Transport(TransportEvent::Rebinding)) {
+                if matches!(event, Event::Transport(TransportEvent::Rebinding(_))) {
                     started.push(Instant::now());
                 }
             })
@@ -1249,6 +1267,25 @@ mod tests {
                 timed_out + SPEC_REBIND_INTERVAL,
                 "case {case}"
             );
+        }
+    }
+
+    #[test]
+    fn observability_decision_9_a_rebind_is_caused_by_the_join_without_a_neighbor_only_when_it_came_before_the_deaf_timeout_ran_out()
+     {
+        for case in 0..PROPERTY_CASES {
+            let mut draws = Draws::seeded(case);
+            let started = Instant::now();
+            let mut schedule = RebindSchedule::new(started);
+            assert_eq!(schedule.cause(), RebindCause::Deaf, "case {case}");
+            let timed_out = started + Duration::from_millis(draws.below(LONGEST_DRAWN_MS));
+            schedule.join_timed_out(timed_out);
+            let expected = if timed_out < started + SPEC_DEAF_TIMEOUT {
+                RebindCause::JoinGainedNoNeighbor
+            } else {
+                RebindCause::Deaf
+            };
+            assert_eq!(schedule.cause(), expected, "case {case}");
         }
     }
 

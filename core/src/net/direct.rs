@@ -4,21 +4,26 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use iroh::endpoint::{
-    Closed, ClosedStream, Connection, ConnectionError, ReadError, ReadToEndError, RecvStream,
-    SendStream, VarInt, WeakConnectionHandle, WriteError,
+    Closed, ClosedStream, Connection, ConnectionError, PathEvent, PathEventStream, ReadError,
+    ReadToEndError, RecvStream, SendStream, VarInt, WeakConnectionHandle, WriteError,
 };
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointId};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::{Instant, sleep, timeout};
 
-use super::endpoint::{DIRECT_ALPN, NodeEndpoint, QUIC_KEEP_ALIVE_INTERVAL};
+use super::endpoint::{
+    Close, CloseReason, ConnectionId, DIRECT_ALPN, Direction, NodeEndpoint, PathChange, PeerId,
+    Protocol, QUIC_KEEP_ALIVE_INTERVAL, TransportRecord,
+};
 use crate::crypto::NetworkKeys;
 use crate::errors::ErrorCode;
+use crate::event::TransportEvent;
 use crate::payload::{
     PayloadError, ZERO_MAC, open_request, open_response, seal_request, seal_response,
 };
 use crate::peers::{admissible_introduction_handle, announced_sender_handle};
+use crate::stream_items::StreamExt;
 use crate::wire::{
     self, IntroduceAck, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, Nonce, Probe, ProbeAck,
     Request, Response, Version, WIRE_LIMIT_BYTES,
@@ -32,7 +37,7 @@ const RESET_CODE_OVER_WIRE_LIMIT: u32 = 1;
 const RESET_CODE_READ_TIMEOUT: u32 = 2;
 const RESET_CODE_UNANSWERED: u32 = 3;
 pub(crate) const SUPERSEDED_CONNECTION_CLOSE_CODE: u32 = 410;
-const SUPERSEDED_CONNECTION_CLOSE_REASON: &[u8] = b"superseded";
+pub(crate) const SUPERSEDED_CONNECTION_CLOSE_REASON: &[u8] = b"superseded";
 const HEARING_SAMPLES_PER_KEEP_ALIVE: u32 = 2;
 const UNANSWERED_KEEP_ALIVES_OF_A_GONE_PROCESS: u32 = 3;
 /// How often the register reads what each held connection has heard.
@@ -76,6 +81,7 @@ pub struct HeldConnections {
     held: Arc<Mutex<HashMap<wire::PublicKey, Vec<HeldConnection>>>>,
     left_on_a_gone_path: Arc<Mutex<HashSet<wire::PublicKey>>>,
     monotonic: MonotonicClock,
+    transport: Option<TransportRecord>,
 }
 
 impl fmt::Debug for HeldConnections {
@@ -94,6 +100,16 @@ impl HeldConnections {
             held: Arc::default(),
             left_on_a_gone_path: Arc::default(),
             monotonic,
+            transport: None,
+        }
+    }
+
+    /// The register recording every connection it holds, each of their paths and each close to the transport record.
+    #[must_use]
+    pub fn recording_to(self, transport: TransportRecord) -> Self {
+        Self {
+            transport: Some(transport),
+            ..self
         }
     }
 
@@ -127,7 +143,30 @@ impl HeldConnections {
         }
         drop(left_on_a_gone_path);
         drop(held);
-        close_superseded(superseded.connections);
+        self.close_superseded(superseded.connections);
+    }
+
+    /// Closes each connection as superseded by a newer one of its card, recording each close it writes.
+    fn close_superseded(&self, connections: Vec<Connection>) {
+        for connection in connections {
+            self.record(|_transport| TransportEvent::ConnectionClosing {
+                connection: ConnectionId(connection.stable_id()),
+                peer: PeerId::of(connection.remote_id()),
+                code: SUPERSEDED_CONNECTION_CLOSE_CODE,
+                reason: CloseReason::Superseded,
+            });
+            connection.close(
+                VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE),
+                SUPERSEDED_CONNECTION_CLOSE_REASON,
+            );
+        }
+    }
+
+    /// Hands the transport event, built against the transport record, to that record, when the register records.
+    pub(crate) fn record(&self, event: impl FnOnce(&TransportRecord) -> TransportEvent) {
+        if let Some(transport) = &self.transport {
+            transport.record(event(transport));
+        }
     }
 
     /// Holds a connection the gate just let through and follows what it hears until it closes, keeping it no more alive than its users do.
@@ -135,14 +174,25 @@ impl HeldConnections {
         let card = *connection.remote_id().as_bytes();
         let weak = connection.weak_handle();
         let closed = weak.closed();
+        let paths = connection.path_events();
+        self.record(|_transport| TransportEvent::ConnectionOpened {
+            connection: ConnectionId(connection.stable_id()),
+            peer: PeerId::of(connection.remote_id()),
+            direction: Direction::of(connection.side()),
+            protocol: Protocol::of(connection.alpn()),
+        });
+        self.record_paths_open_at_hold(connection);
         self.add(
             card,
             HeldConnection::heard_at(connection, (self.monotonic)()),
         );
-        tokio::spawn(
-            self.clone()
-                .follow_hearing(card, connection.stable_id(), weak, closed),
-        );
+        tokio::spawn(self.clone().follow_hearing(
+            card,
+            connection.stable_id(),
+            weak,
+            closed,
+            paths,
+        ));
     }
 
     /// Adds the connection under its card, forgetting every card left with no connection.
@@ -152,22 +202,106 @@ impl HeldConnections {
         held.entry(card).or_default().push(held_connection);
     }
 
-    /// Reads what the connection to or from the card has heard every hearing sample interval until it closes, then forgets it.
+    /// Reads what the connection to or from the card has heard every hearing sample interval and records each change of its paths until it closes, then records the close and forgets it.
     async fn follow_hearing(
         self,
         card: wire::PublicKey,
         stable_id: usize,
         connection: WeakConnectionHandle,
         closed: impl Future<Output = Option<Closed>>,
+        mut paths: PathEventStream,
     ) {
         tokio::pin!(closed);
-        loop {
+        let ended = loop {
             tokio::select! {
-                _closed = &mut closed => break,
+                ended = &mut closed => break ended,
+                Some(change) = paths.next() => self.record_path_change(stable_id, &connection, change),
                 () = sleep(HEARING_SAMPLE_INTERVAL) => self.note_hearing(card, stable_id, &connection),
             }
+        };
+        if let Some(ended) = ended {
+            self.record(|_transport| TransportEvent::ConnectionClosed {
+                connection: ConnectionId(stable_id),
+                close: Close::of(&ended.reason),
+            });
         }
         self.forget(card, stable_id);
+    }
+
+    /// Records each path the connection opened before the register held it, and the one selected among them, since the path events it follows from then on omit them.
+    fn record_paths_open_at_hold(&self, connection: &Connection) {
+        for path in connection.paths().iter() {
+            let changes: &[PathChange] = if path.is_selected() {
+                &[PathChange::Opened, PathChange::Selected]
+            } else {
+                &[PathChange::Opened]
+            };
+            for change in changes {
+                self.record(|transport| TransportEvent::PathChanged {
+                    connection: ConnectionId(connection.stable_id()),
+                    change: *change,
+                    path: path.id().to_string(),
+                    location: transport.locate(path.remote_addr()),
+                    round_trip_ms: Some(milliseconds_of(path.rtt())),
+                });
+            }
+        }
+    }
+
+    /// Records a change of one of the connection's paths with where the path leads and its round-trip time, counting a path event this build cannot read as one missed.
+    fn record_path_change(
+        &self,
+        stable_id: usize,
+        connection: &WeakConnectionHandle,
+        change: PathEvent,
+    ) {
+        let connection_id = ConnectionId(stable_id);
+        let live_round_trip = |path| {
+            connection
+                .upgrade()
+                .and_then(|live| live.rtt(path))
+                .map(milliseconds_of)
+        };
+        self.record(|transport| match change {
+            PathEvent::Opened {
+                id, remote_addr, ..
+            } => TransportEvent::PathChanged {
+                connection: connection_id,
+                change: PathChange::Opened,
+                path: id.to_string(),
+                location: transport.locate(&remote_addr),
+                round_trip_ms: live_round_trip(id),
+            },
+            PathEvent::Selected {
+                id, remote_addr, ..
+            } => TransportEvent::PathChanged {
+                connection: connection_id,
+                change: PathChange::Selected,
+                path: id.to_string(),
+                location: transport.locate(&remote_addr),
+                round_trip_ms: live_round_trip(id),
+            },
+            PathEvent::Closed {
+                id,
+                remote_addr,
+                last_stats,
+                ..
+            } => TransportEvent::PathChanged {
+                connection: connection_id,
+                change: PathChange::Closed,
+                path: id.to_string(),
+                location: transport.locate(&remote_addr),
+                round_trip_ms: Some(milliseconds_of(last_stats.rtt)),
+            },
+            PathEvent::Lagged { missed, .. } => TransportEvent::PathEventsMissed {
+                connection: connection_id,
+                missed,
+            },
+            _ => TransportEvent::PathEventsMissed {
+                connection: connection_id,
+                missed: 1,
+            },
+        });
     }
 
     /// Takes now as the last time the connection to or from the card heard from its peer, when it received a datagram since its last reading.
@@ -284,14 +418,9 @@ fn take_superseded(
     }
 }
 
-/// Closes each connection as superseded by a newer one of its card.
-fn close_superseded(connections: Vec<Connection>) {
-    for connection in connections {
-        connection.close(
-            VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE),
-            SUPERSEDED_CONNECTION_CLOSE_REASON,
-        );
-    }
+/// The whole milliseconds of a span, saturating past `u64::MAX`.
+fn milliseconds_of(span: Duration) -> u64 {
+    u64::try_from(span.as_millis()).unwrap_or(u64::MAX)
 }
 
 /// The timeouts of the direct client, in the units of spec 3.14.
@@ -1586,6 +1715,230 @@ mod tests {
         register.close_silent_of(card_of(CLIENT_SEED));
 
         assert_eq!(dialed.close_reason(), Some(ConnectionError::LocallyClosed));
+    }
+
+    const RECORDED_EVENT_WITHIN: Duration = Duration::from_secs(10);
+    const SALT_BYTE: u8 = 0x5a;
+    const SPEC_SUPERSEDED_CLOSE_CODE: u64 = 410;
+
+    /// The name and fields of one recorded event.
+    type RecordedEvent = (&'static str, crate::event::EventFields);
+
+    /// A run record that hands the name and fields of each event to the receiver.
+    fn recorded_events() -> (
+        crate::event::RunRecord,
+        tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+    ) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let record: crate::event::RunRecord = Arc::new(move |event: crate::event::Event| {
+            drop(sender.send((event.name(), event.fields())));
+        });
+        (record, receiver)
+    }
+
+    /// The salt every test register hashes locations under.
+    fn test_salt() -> crate::trace::LocationSalt {
+        crate::trace::LocationSalt::from_random_bytes(
+            [SALT_BYTE; crate::trace::LOCATION_SALT_BYTES],
+        )
+    }
+
+    /// Waits for the next recorded event of the name, within the bound, failing with the name and the events seen.
+    async fn next_recorded(
+        receiver: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+        name: &str,
+    ) -> crate::event::EventFields {
+        let mut seen = Vec::new();
+        let found = timeout(RECORDED_EVENT_WITHIN, async {
+            loop {
+                let (recorded_name, fields) = receiver.recv().await.unwrap();
+                if recorded_name == name {
+                    return fields;
+                }
+                seen.push(recorded_name);
+            }
+        })
+        .await;
+        found.unwrap_or_else(|_elapsed| panic!("no {name} within the bound; seen {seen:?}"))
+    }
+
+    /// The value of the field of the name among the fields.
+    fn field<'a>(
+        fields: &'a crate::event::EventFields,
+        name: &str,
+    ) -> Option<&'a serde_json::Value> {
+        fields
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value)
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_connection_is_recorded_opened_by_direction_and_protocol_closing_with_estafettes_code_and_reason_and_closed_on_both_sides()
+     {
+        let (this_record, mut this_side) = recorded_events();
+        let (peer_record, mut peer_side) = recorded_events();
+        let register = HeldConnections::new(clock_reading_every_connection_as_gone()).recording_to(
+            super::super::endpoint::TransportRecord::new(this_record, test_salt()),
+        );
+        let this_node = bind_node_holding(SERVER_SEED, register.clone()).await;
+        let peer_node = bind_node_holding(
+            CLIENT_SEED,
+            HeldConnections::new(Arc::new(tokio::time::Instant::now)).recording_to(
+                super::super::endpoint::TransportRecord::new(peer_record, test_salt()),
+            ),
+        )
+        .await;
+        this_node.replace_address(peer_node.endpoint().addr());
+        let router = Router::builder(peer_node.endpoint().clone())
+            .accept(
+                DIRECT_ALPN,
+                DirectServer::new(
+                    keys(),
+                    RecordingHost::with_card(card_of(CLIENT_SEED)),
+                    &peer_node,
+                ),
+            )
+            .spawn();
+        let dialed = this_node
+            .endpoint()
+            .connect(peer_node.endpoint().id(), DIRECT_ALPN)
+            .await
+            .unwrap();
+        let peer_short = data_encoding::HEXLOWER.encode(&card_of(CLIENT_SEED)[..5]);
+        let this_short = data_encoding::HEXLOWER.encode(&card_of(SERVER_SEED)[..5]);
+
+        let opened = next_recorded(&mut this_side, "transport.connection_opened").await;
+        let accepted = next_recorded(&mut peer_side, "transport.connection_opened").await;
+        register.close_silent_of(card_of(CLIENT_SEED));
+        let closing = next_recorded(&mut this_side, "transport.connection_closing").await;
+        let closed_on_this_side =
+            next_recorded(&mut this_side, "transport.connection_closed").await;
+        let closed_on_the_peer = next_recorded(&mut peer_side, "transport.connection_closed").await;
+
+        let connection = serde_json::Value::from(dialed.stable_id());
+        assert_eq!(
+            opened,
+            vec![
+                ("connection", connection.clone()),
+                ("peer", serde_json::Value::from(peer_short.clone())),
+                ("direction", serde_json::Value::from("dialed")),
+                ("protocol", serde_json::Value::from("direct")),
+            ]
+        );
+        assert_eq!(
+            field(&accepted, "peer"),
+            Some(&serde_json::Value::from(this_short))
+        );
+        assert_eq!(
+            field(&accepted, "direction"),
+            Some(&serde_json::Value::from("accepted"))
+        );
+        assert_eq!(
+            closing,
+            vec![
+                ("connection", connection.clone()),
+                ("peer", serde_json::Value::from(peer_short)),
+                ("code", serde_json::Value::from(SPEC_SUPERSEDED_CLOSE_CODE)),
+                ("reason", serde_json::Value::from("superseded")),
+            ]
+        );
+        assert_eq!(
+            closed_on_this_side,
+            vec![
+                ("connection", connection),
+                ("side", serde_json::Value::from("this_side"))
+            ]
+        );
+        assert_eq!(
+            field(&closed_on_the_peer, "side"),
+            Some(&serde_json::Value::from("peer"))
+        );
+        assert_eq!(
+            field(&closed_on_the_peer, "code"),
+            Some(&serde_json::Value::from(SPEC_SUPERSEDED_CLOSE_CODE))
+        );
+        assert_eq!(
+            field(&closed_on_the_peer, "reason"),
+            Some(&serde_json::Value::from("superseded"))
+        );
+        drop(router);
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_and_6_a_paths_opening_and_selection_carry_its_kind_port_salted_hash_and_round_trip_never_its_address()
+     {
+        let (this_record, mut this_side) = recorded_events();
+        let this_node = bind_node_holding(
+            SERVER_SEED,
+            HeldConnections::new(Arc::new(tokio::time::Instant::now)).recording_to(
+                super::super::endpoint::TransportRecord::new(this_record, test_salt()),
+            ),
+        )
+        .await;
+        let peer_node = bind_node(CLIENT_SEED).await;
+        this_node.replace_address(peer_node.endpoint().addr());
+        let router = Router::builder(peer_node.endpoint().clone())
+            .accept(
+                DIRECT_ALPN,
+                DirectServer::new(
+                    keys(),
+                    RecordingHost::with_card(card_of(CLIENT_SEED)),
+                    &peer_node,
+                ),
+            )
+            .spawn();
+        let dialed = this_node
+            .endpoint()
+            .connect(peer_node.endpoint().id(), DIRECT_ALPN)
+            .await
+            .unwrap();
+
+        let opened = next_recorded(&mut this_side, "transport.path_opened").await;
+        let selected = next_recorded(&mut this_side, "transport.path_selected").await;
+
+        let selected_path = dialed
+            .paths()
+            .iter()
+            .find(iroh::endpoint::Path::is_selected)
+            .map(|path| path.remote_addr().clone())
+            .unwrap();
+        let iroh::TransportAddr::Ip(address) = selected_path else {
+            panic!("a path between two local endpoints is direct: {selected_path:?}");
+        };
+        let expected_hash =
+            super::super::endpoint::LocationHash::of(&test_salt(), &address.to_string()).hex();
+        for fields in [&opened, &selected] {
+            assert_eq!(
+                field(fields, "connection"),
+                Some(&serde_json::Value::from(dialed.stable_id()))
+            );
+            assert_eq!(
+                field(fields, "kind"),
+                Some(&serde_json::Value::from("direct"))
+            );
+            assert_eq!(
+                field(fields, "port"),
+                Some(&serde_json::Value::from(address.port()))
+            );
+            assert!(
+                field(fields, "rtt_ms").is_some_and(serde_json::Value::is_u64),
+                "{fields:?}"
+            );
+            let rendered = serde_json::Value::Object(
+                fields
+                    .iter()
+                    .map(|(key, value)| ((*key).to_owned(), value.clone()))
+                    .collect(),
+            )
+            .to_string();
+            assert!(!rendered.contains(&address.ip().to_string()), "{rendered}");
+        }
+        assert_eq!(
+            field(&selected, "location"),
+            Some(&serde_json::Value::from(expected_hash))
+        );
+        drop(router);
     }
 
     const SILENCE_OF_A_GONE_PROCESS: Duration = Duration::from_millis(1500);

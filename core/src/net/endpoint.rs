@@ -2,15 +2,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use iroh::address_lookup::MemoryLookup;
-use iroh::endpoint::{BindError, QuicTransportConfig, VarInt, presets};
+use iroh::endpoint::{BindError, ConnectionError, QuicTransportConfig, Side, VarInt, presets};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey,
+    TransportAddr,
 };
 use iroh_gossip::ALPN as GOSSIP_ALPN;
 
-use super::direct::HeldConnections;
+use super::direct::{HeldConnections, SUPERSEDED_CONNECTION_CLOSE_REASON};
 use super::gate::{FillGateNonce, GateNonce, NetworkSecretGate, ReportGateClosing};
 use crate::crypto::GateKey;
+use crate::event::{RunRecord, TransportEvent};
+use crate::trace::LocationSalt;
 
 pub use super::gate::GateFailure;
 
@@ -20,6 +23,9 @@ const QUIC_KEEP_ALIVES_PER_IDLE_TIMEOUT: u64 = 20;
 pub const QUIC_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(
     SPEC_3_14_QUIC_IDLE_TIMEOUT_MILLIS.into_inner() / QUIC_KEEP_ALIVES_PER_IDLE_TIMEOUT,
 );
+const LOCATION_HASH_BYTES: usize = 8;
+const PEER_ID_BYTES: usize = 5;
+const GATE_CLOSE_REASON: &[u8] = b"gate";
 
 /// The node's iroh endpoint, gated on the network secret for every gossip connection, with the address lookup the node feeds and the relay map it edits, both kept across rebinds.
 pub struct NodeEndpoint {
@@ -148,6 +154,233 @@ fn quic_transport_config() -> QuicTransportConfig {
         .keep_alive_interval(QUIC_KEEP_ALIVE_INTERVAL)
         .max_idle_timeout(Some(SPEC_3_14_QUIC_IDLE_TIMEOUT_MILLIS.into()))
         .build()
+}
+
+/// The run record a process hands its transport, with the salt that hides every network location it records.
+#[derive(Clone)]
+pub struct TransportRecord {
+    record: RunRecord,
+    salt: LocationSalt,
+}
+
+impl TransportRecord {
+    /// The record that writes to the run record and hashes each location under the salt.
+    #[must_use]
+    pub fn new(record: RunRecord, salt: LocationSalt) -> Self {
+        Self { record, salt }
+    }
+
+    /// Hands the event to the run record.
+    pub fn record(&self, event: TransportEvent) {
+        (self.record)(event.into());
+    }
+
+    /// The location of the address as this process's events file carries it.
+    #[must_use]
+    pub fn locate(&self, address: &TransportAddr) -> Location {
+        Location::of(address, &self.salt)
+    }
+}
+
+/// The salted hash of a network location: alike for one location under one salt, and never the location itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LocationHash([u8; LOCATION_HASH_BYTES]);
+
+impl LocationHash {
+    /// The first bytes of the keyed hash of the location's text under the salt.
+    #[must_use]
+    pub fn of(salt: &LocationSalt, location_text: &str) -> Self {
+        let mut hash = [0; LOCATION_HASH_BYTES];
+        for (byte, hashed) in hash
+            .iter_mut()
+            .zip(salt.keyed_hash(location_text.as_bytes()).as_bytes())
+        {
+            *byte = *hashed;
+        }
+        Self(hash)
+    }
+
+    /// The hash as lowercase hex.
+    #[must_use]
+    pub fn hex(self) -> String {
+        data_encoding::HEXLOWER.encode(&self.0)
+    }
+}
+
+/// How a path reaches its peer: straight over IP, through a relay, or over any other transport.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocationKind {
+    Direct,
+    Relay,
+    Other,
+}
+
+/// A network location as an events file may carry it: its kind, its port, and its salted hash.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Location {
+    pub kind: LocationKind,
+    pub port: Option<u16>,
+    pub hash: LocationHash,
+}
+
+impl Location {
+    /// The location of a transport address, hashed under the salt.
+    #[must_use]
+    pub fn of(address: &TransportAddr, salt: &LocationSalt) -> Self {
+        match address {
+            TransportAddr::Ip(socket) => Self {
+                kind: LocationKind::Direct,
+                port: Some(socket.port()),
+                hash: LocationHash::of(salt, &socket.to_string()),
+            },
+            TransportAddr::Relay(relay) => Self {
+                kind: LocationKind::Relay,
+                port: relay.port_or_known_default(),
+                hash: LocationHash::of(salt, relay.as_str()),
+            },
+            other => Self {
+                kind: LocationKind::Other,
+                port: None,
+                hash: LocationHash::of(salt, &format!("{other:?}")),
+            },
+        }
+    }
+}
+
+/// The identifier iroh gives a connection for its whole life, the `conn_id` of iroh's own trace lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConnectionId(pub usize);
+
+/// A node named by the first five bytes of its endpoint id, the form iroh's own trace lines use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerId([u8; PEER_ID_BYTES]);
+
+impl PeerId {
+    /// The first five bytes of the node's endpoint id.
+    #[must_use]
+    pub fn of(node: EndpointId) -> Self {
+        let mut short = [0; PEER_ID_BYTES];
+        for (byte, id_byte) in short.iter_mut().zip(node.as_bytes()) {
+            *byte = *id_byte;
+        }
+        Self(short)
+    }
+
+    /// The five bytes as lowercase hex.
+    #[must_use]
+    pub fn hex(self) -> String {
+        data_encoding::HEXLOWER.encode(&self.0)
+    }
+}
+
+/// Whether this side dialed a connection or accepted it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Dialed,
+    Accepted,
+}
+
+impl Direction {
+    /// The direction of a connection this process is the given side of.
+    #[must_use]
+    pub const fn of(side: Side) -> Self {
+        match side {
+            Side::Client => Self::Dialed,
+            Side::Server => Self::Accepted,
+        }
+    }
+}
+
+/// The protocol a connection carries: the direct protocol, gossip, or any other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Protocol {
+    Direct,
+    Gossip,
+    Other,
+}
+
+impl Protocol {
+    /// The protocol a connection negotiated under the ALPN.
+    #[must_use]
+    pub fn of(alpn: &[u8]) -> Self {
+        if alpn == DIRECT_ALPN {
+            Self::Direct
+        } else if alpn == GOSSIP_ALPN {
+            Self::Gossip
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// A close reason estafette itself writes, or any other reason by its length alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloseReason {
+    Superseded,
+    Gate,
+    Unlisted { bytes: usize },
+}
+
+impl CloseReason {
+    /// The reason of these close reason bytes.
+    #[must_use]
+    pub fn of(bytes: &[u8]) -> Self {
+        if bytes == SUPERSEDED_CONNECTION_CLOSE_REASON {
+            Self::Superseded
+        } else if bytes == GATE_CLOSE_REASON {
+            Self::Gate
+        } else {
+            Self::Unlisted { bytes: bytes.len() }
+        }
+    }
+}
+
+/// How a connection closed: by this side, by the peer with a code and reason, by a reset, at the idle timeout, or by a transport failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Close {
+    ThisSide,
+    Peer { code: u64, reason: CloseReason },
+    PeerReset,
+    IdleTimeout,
+    TransportFailure,
+}
+
+impl Close {
+    /// The close iroh reports for a connection.
+    #[must_use]
+    pub fn of(error: &ConnectionError) -> Self {
+        match error {
+            ConnectionError::LocallyClosed => Self::ThisSide,
+            ConnectionError::ApplicationClosed(close) => Self::Peer {
+                code: close.error_code.into_inner(),
+                reason: CloseReason::of(&close.reason),
+            },
+            ConnectionError::ConnectionClosed(close) => Self::Peer {
+                code: u64::from(close.error_code),
+                reason: CloseReason::of(&close.reason),
+            },
+            ConnectionError::Reset => Self::PeerReset,
+            ConnectionError::TimedOut => Self::IdleTimeout,
+            ConnectionError::VersionMismatch
+            | ConnectionError::TransportError(_)
+            | ConnectionError::CidsExhausted => Self::TransportFailure,
+        }
+    }
+}
+
+/// What happened to a path of a connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathChange {
+    Opened,
+    Closed,
+    Selected,
+}
+
+/// Why the node rebinds: it heard no gossip payload for the deaf timeout, or its join gained no neighbor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebindCause {
+    Deaf,
+    JoinGainedNoNeighbor,
 }
 
 #[cfg(test)]
