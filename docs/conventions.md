@@ -18,7 +18,7 @@ ground  owner ruling 2026-10-23
 
 ### commits
 when    committing or configuring pre-commit
-do      bump the version in the same commit as the change it describes; commit a delivery milestone unprompted; commit a spec or reference change before any agent transcribes from it; let every pre-commit hook run; configure pre-commit with `trailing-whitespace`, `end-of-file-fixer`, `check-yaml`, `check-added-large-files`, `just check` on commits that change the Cargo workspace and `records` (`just records`) on commits that change records, each by its hook's `files` pattern
+do      bump the version in the same commit as the change it describes; commit a delivery milestone unprompted; commit a spec or reference change before any agent transcribes from it; let every pre-commit hook run; configure pre-commit with `trailing-whitespace`, `end-of-file-fixer`, `check-yaml`, `check-added-large-files`, `check-light` (`just check-light`) on commits that change the Cargo workspace and `records` (`just records`) on commits that change records, each by its hook's `files` pattern
 never   a version bump in a commit of its own; wait to be asked to commit; dispatch against uncommitted edits; `--no-verify` or any other skipped hook
 why     A version points at its content; uncommitted edits are invisible in every worktree; owner-mandated hooks bind.
 ground  owner rulings 2026-10-23 and 2026-11-13 ("there's no need to run source work on 0 source changes")
@@ -129,11 +129,11 @@ ground  owner ruling 2026-10-23
 ## reviewing & tests
 
 ### gate-discipline
-when    running the gate, calling a suite green, integrating, or claiming a unit done
-do      run a suite twice in succession before calling it green; after every integration run `just check` on main, the same commands, recording the SHA and reading the ignored-test list; record a failing gate or lint with its output and fix the code; run the gate first for a baseline when starting a unit; claim done only with runnable code, passing tests and committed files, showing the full test output; treat a failing test as a bug until shown otherwise; run clippy once without and once with the `relay` feature (spec D47)
-never   a subset; one passing run; a worktree result as proof; weaken an assertion, narrow a grep, delete a test, silence a lint, edit lint configuration or widen an ignore list to pass a gate; claim done without that evidence; blame the machine; a single pass over one feature set
-why     Leftover state passes once; a gate passed by suppression measures nothing; the relay compiles only under its feature; with the owner away, completion evidence is the contract.
-ground  owner ruling 2026-10-23
+when    running a gate, calling a suite green, integrating, or claiming a unit done
+do      run the light gate (format, and clippy without and with the `relay` feature, spec D47) at every commit, by hook; run the heavy gate (the whole test suite and the audit) once at a unit's final head, through its recipe, which holds a machine-wide lock and writes an evidence file; have the spec reviewer read that evidence and run single tests, the quality reviewer run the light gate, and the integrator run light and heavy once each on the rebased head, one unit per integration, recording the SHA and reading the ignored-test list; record a failing gate or lint with its output and fix the code; claim done only with runnable code, passing tests and committed files, showing the full test output; treat a failing test as a bug until shown otherwise
+never   a second whole run at one sha; a whole test run outside the heavy recipe; a subset in place of the heavy gate; a worktree result as proof of the integrated head; weaken an assertion, narrow a grep, delete a test, silence a lint, edit lint configuration or widen an ignore list to pass a gate; claim done without that evidence; blame the machine; a single pass over one feature set
+why     A gate passed by suppression measures nothing; the relay compiles only under its feature; whole runs side by side failed tests on time bounds; with the owner away, completion evidence is the contract.
+ground  owner rulings 2026-10-23 and 2026-11-13 ("i accept your decisions on heavy-vs-light gates."; "track the gate through some sort of a lock then"; round answers of 13:05 to 13:35, journal of that day)
 
 ### tests-that-discriminate
 when    writing a test or pinning a fix
@@ -189,6 +189,20 @@ never   a separate agent launched to classify the concerns; a concern left uncla
 why     The classifier and the spec reviewer read the same report and the same diff; a classifier cost about 150 thousand tokens a round on 2026-11-11 and 2026-11-12.
 ground  owner ruling 2026-11-12T00:11 ("great idea", to the lead's "Folding the classifier's job into the spec reviewer drops one agent per cycle")
 
+### re-reviews-on-the-delta
+when    a unit comes back from a fix round, or goes to its first reviews
+do      run the first reviews in order, spec then quality; after a fix that changes product behaviour or a requirement's evidence, launch both reviewers at the same time on the changed lines alone, each confirming that what the change touches still holds; after a fix of structure alone, launch the quality reviewer alone on the changed lines
+never   a re-review of the whole range after a fix; a first quality review before the spec verdict passes; a spec rerun after a fix of structure alone
+why     A whole-range re-review rereads code no fix touched; two delta reviews side by side cost the wall time of one.
+ground  owner rulings 2026-11-13 ("RE-reviews go on delta only, faster, and in parallel"; round answers of 13:05 to 13:35, journal of that day)
+
+### ambiguity-passes-to-the-lead
+when    a reviewer meets a requirement that admits two readings, or the lead reads a verdict
+do      have the reviewer pass the requirement and list it, with both readings and what each would change, in a section of risks for the lead; the lead judges every listed risk and records the judgement
+never   a failed verdict on a reading the requirement does not force; a listed risk left unjudged
+why     A strict reading of an ambiguous requirement cost whole fix cycles on work that met the other reading.
+ground  owner ruling 2026-11-13 ("reviewers pass on ambiguity and let the lead-space judge the highlighted risks")
+
 ## writing craft
 
 ### prose
@@ -232,7 +246,7 @@ ground  owner ruling 2026-11-13 ("make sure you don't reference the content that
 
 ### agent-call
 when    calling `Agent`
-do      name `model`; opus for a high-risk or uncertain unit whatever its size; pass `isolation: "worktree"` on the Agent call
+do      name `model` and `effort`, each chosen for that launch as `no-default-variant` states; pass `isolation: "worktree"` on the Agent call
 never   `inherit`; rely on the agent's frontmatter alone
 why     `inherit` bills the lead's tier; four implementers landed on main despite frontmatter.
 ground  owner ruling 2026-10-23
@@ -285,6 +299,7 @@ do      address an agent by its name from `ListAgents`, read in the sending turn
 never   address an agent by a six-hex ref or a name read earlier
 why     Names change on rename; a bare ref is refused.
 ground  owner ruling 2026-10-23
+except  an agent launched without a name, addressed by the id its launch returned
 
 ### subagent-binding
 when    dispatching any agent, or receiving its first message
@@ -344,6 +359,27 @@ why     An agent told it works in round n of m can slacken and leave the remaind
 ground  owner ruling 2026-11-13T01:03 ("i don't think you should narrate the 'n round of m' to agents themselves, as it could become a weakening factor, a self-fulfilling prophecy of not applying oneself and the slack getting picked up by next rounds.")
 except  an agent whose task is the pattern of earlier rounds itself, a debugging or diagnosis agent, reads their history
 
+### no-default-variant
+when    launching or continuing any agent
+do      choose the model and the effort for that one launch from the work's complexity, judged from this project's own counted history, and journal the pair with the count; after the launch read the effort the harness recorded for the agent, and stop and relaunch on a mismatch
+never   a default model or effort for a role or a kind of unit; `name` on an `Agent` call that does not also pass `isolation`
+why     A launch that passes `name` without `isolation` becomes an in-process teammate whose asked effort the harness drops: sonnet and haiku then ran at medium whatever was asked (88 of 88 such calls on 2026-11-12 and 2026-11-13).
+ground  owner ruling 2026-11-13 ("we must have exactly 0 defaults!"; "we need to be able to judge work complexity instantly, based on our pre-processing of the experience we have.")
+
+### unit-size-is-a-choice
+when    cutting work into units
+do      choose each unit's size for its case and write the consequences beside it in the plan: a larger unit risks a variant too weak for it and a context that overflows near its end; a smaller unit pays a review pair, a merge and a wait each
+never   a fixed size by a count of functions, files or minutes; a size rule kept in name and broken in practice
+why     Units ran to 47 commits under a rule of one function and three files; a rule exceeded in silence hides the choice it replaced.
+ground  owner ruling 2026-11-13 ("unit size is a parameter to choose. larger units have consequences, smaller units have consequences. not a default, not a bulshit prescription, a tradeoff!")
+
+### caller-after-callee-spec-pass
+when    a unit calls code of a unit that is not yet on main
+do      start the caller once its callee has passed spec review, on the callee's reviewed head; rebase the caller when the callee merges
+never   hold a caller for its callee's quality review or merge; start a caller on a callee whose spec verdict has not passed
+why     A caller that waited for its callee's merge idled through the callee's quality review, fix round and integration.
+ground  owner ruling 2026-11-13 (round answer "After callee's spec pass", journal of that day)
+
 ## owner
 
 ### owner-away
@@ -366,3 +402,10 @@ do      look at every wake for critical-path work that can start now on code no 
 never   skip, narrow or merge away a check to save time; count an early pass for code that changed since; leave a wait on the critical path while startable work exists
 why     The owner pays for wall time; a check dropped for speed covers an integrity flaw, the one thing the ruling forbids.
 ground  owner ruling 2026-11-10T11:2x ("continually find ways to reduce completion wall time while introducing or covering zero project integrity flaws")
+
+### wall-time-before-tokens
+when    two shapes of the same work are reasonably close in cost
+do      take the shape that finishes sooner; keep the five-hour and the weekly usage window both in view, since an exhausted weekly window stops the work for days; cut independent work loose to run beside the rest
+never   save tokens at the cost of wall time on a close call; spend a five-hour window so that work in flight is cut at its limit
+why     The owner pays for wall time first; a stop at a limit delivers nothing from the attempts it cuts.
+ground  owner rulings 2026-11-13 ("wrong priority. wall-time beats token spend on any reasonably close tradeoffs."; "keep both weekly and 5h in mind here"; "we need to squeeze every ounce of independence we can.")
