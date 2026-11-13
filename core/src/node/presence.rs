@@ -627,14 +627,18 @@ async fn run_requests<R: DirectRequester>(
 
 /// Where init stands: awaiting the join, waiting the observer wait after it, or done.
 enum Init {
-    AwaitingJoin {
-        assigned: oneshot::Sender<LocalHandle>,
-    },
+    AwaitingJoin(PendingHandle),
     ObserverWait {
         until: Instant,
-        assigned: oneshot::Sender<LocalHandle>,
+        pending: PendingHandle,
     },
     Done,
+}
+
+/// What init holds until it assigns the handle: where the handle goes, and the cards this node would have introduced itself to meanwhile, in their order.
+struct PendingHandle {
+    assigned: oneshot::Sender<LocalHandle>,
+    held_introduces: Vec<wire::PublicKey>,
 }
 
 /// What moves init on: a join of the topic at a monotonic instant, a join that gained no neighbor, or the end of the observer wait.
@@ -647,30 +651,30 @@ enum InitEvent {
 /// What a step of init asks the presence loop to do.
 enum InitAction {
     Announce,
-    AssignHandle(oneshot::Sender<LocalHandle>),
-    AssignHandleThenAnnounce(oneshot::Sender<LocalHandle>),
+    AssignHandle(PendingHandle),
+    AssignHandleThenAnnounce(PendingHandle),
 }
 
 impl Init {
     /// The state init moves to on the event, with what the loop does for the step: a first join starts the observer wait, a later one announces, and the handle is assigned at a first join that gained no neighbor or at the end of the observer wait.
     fn after(self, event: InitEvent) -> (Self, Option<InitAction>) {
         match (self, event) {
-            (Self::AwaitingJoin { assigned }, InitEvent::Joined { at }) => (
+            (Self::AwaitingJoin(pending), InitEvent::Joined { at }) => (
                 Self::ObserverWait {
                     until: observer_wait_over_at(at),
-                    assigned,
+                    pending,
                 },
                 None,
             ),
-            (Self::AwaitingJoin { assigned }, InitEvent::JoinTimedOut) => {
-                (Self::Done, Some(InitAction::AssignHandle(assigned)))
+            (Self::AwaitingJoin(pending), InitEvent::JoinTimedOut) => {
+                (Self::Done, Some(InitAction::AssignHandle(pending)))
             }
-            (Self::ObserverWait { assigned, .. }, InitEvent::ObserverWaitOver) => (
+            (Self::ObserverWait { pending, .. }, InitEvent::ObserverWaitOver) => (
                 Self::Done,
-                Some(InitAction::AssignHandleThenAnnounce(assigned)),
+                Some(InitAction::AssignHandleThenAnnounce(pending)),
             ),
             (Self::Done, InitEvent::Joined { .. }) => (Self::Done, Some(InitAction::Announce)),
-            (unchanged @ Self::AwaitingJoin { .. }, InitEvent::ObserverWaitOver)
+            (unchanged @ Self::AwaitingJoin(_), InitEvent::ObserverWaitOver)
             | (
                 unchanged @ Self::ObserverWait { .. },
                 InitEvent::Joined { .. } | InitEvent::JoinTimedOut,
@@ -678,6 +682,17 @@ impl Init {
             | (unchanged @ Self::Done, InitEvent::JoinTimedOut | InitEvent::ObserverWaitOver) => {
                 (unchanged, None)
             }
+        }
+    }
+
+    /// Holds an Introduce to the card while the handle is unassigned, returning the card to introduce this node to now once it is assigned.
+    fn introduce_now_or_hold(&mut self, card: wire::PublicKey) -> Option<wire::PublicKey> {
+        match self {
+            Self::AwaitingJoin(pending) | Self::ObserverWait { pending, .. } => {
+                pending.held_introduces.push(card);
+                None
+            }
+            Self::Done => Some(card),
         }
     }
 }
@@ -776,7 +791,10 @@ impl PresenceLoop {
             own_addresses,
             relay_statuses,
             requested_handle: identity.requested_handle,
-            init: Init::AwaitingJoin { assigned },
+            init: Init::AwaitingJoin(PendingHandle {
+                assigned,
+                held_introduces: Vec::new(),
+            }),
             announcer: Announcer::default(),
             reannounce_due: None,
             heard_requests: HeardPresenceRequests::default(),
@@ -881,12 +899,25 @@ impl PresenceLoop {
         }
     }
 
-    /// Starts the observer wait at the first join, announces at every later join, and starts the member join wait after a rebind's.
+    /// Asks every member to announce itself at every join, then starts the observer wait at the first join, announces at every later join, and starts the member join wait after a rebind's.
     async fn take_joined(&mut self) {
         self.rebinding.joined((self.monotonic)());
+        self.request_presence().await;
         self.advance_init(InitEvent::Joined {
             at: (self.monotonic)(),
         })
+        .await;
+    }
+
+    /// Broadcasts a request that every member announce itself at once, signed by this node's card and dated now.
+    async fn request_presence(&self) {
+        self.broadcast(Payload::PresenceRequest(PresenceRequest {
+            v: Version::CURRENT,
+            requester: self.state.own_card,
+            seq: self.state.now_ms(),
+            mac: ZERO_MAC,
+            sig: ZERO_SIGNATURE,
+        }))
         .await;
     }
 
@@ -898,19 +929,32 @@ impl PresenceLoop {
         self.advance_init(InitEvent::JoinTimedOut).await;
     }
 
-    /// Moves init on by the event and does what that step asks: assigns the handle, announces, or both in that order.
+    /// Moves init on by the event and does what that step asks: assigns the handle, announces, or both in that order, then sends the Introduces init held.
     async fn advance_init(&mut self, event: InitEvent) {
         let (init, action) = std::mem::replace(&mut self.init, Init::Done).after(event);
         self.init = init;
         match action {
             None => {}
             Some(InitAction::Announce) => self.announce_presence().await,
-            Some(InitAction::AssignHandle(assigned)) => self.assign_own_handle(assigned),
-            Some(InitAction::AssignHandleThenAnnounce(assigned)) => {
-                self.assign_own_handle(assigned);
+            Some(InitAction::AssignHandle(pending)) => {
+                self.assign_own_handle(pending.assigned);
+                self.introduce_to(pending.held_introduces);
+            }
+            Some(InitAction::AssignHandleThenAnnounce(pending)) => {
+                self.assign_own_handle(pending.assigned);
                 self.announce_presence().await;
+                self.introduce_to(pending.held_introduces);
             }
         }
+    }
+
+    /// Introduces this node to the cards in their order, in one task.
+    fn introduce_to(&self, cards: Vec<wire::PublicKey>) {
+        let introduces = cards
+            .into_iter()
+            .map(DirectRequest::SendIntroduce)
+            .collect();
+        send_in_background(Arc::clone(&self.state), &self.client, introduces);
     }
 
     /// Assigns this node's effective handle against the table and hands it to init.
@@ -983,8 +1027,8 @@ impl PresenceLoop {
         }
     }
 
-    /// Performs the effects: lookup and broadcast here, direct requests in one task in their order.
-    async fn perform(&self, effects: Vec<Effect>) {
+    /// Performs the effects: lookup and broadcast here, direct requests in one task in their order, each Introduce held while init has not assigned the handle.
+    async fn perform(&mut self, effects: Vec<Effect>) {
         let mut requests = Vec::new();
         for effect in effects {
             match effect {
@@ -995,7 +1039,11 @@ impl PresenceLoop {
                 Effect::DropHeldConnection(card) => {
                     requests.push(DirectRequest::DropHeldConnection(card));
                 }
-                Effect::SendIntroduce(card) => requests.push(DirectRequest::SendIntroduce(card)),
+                Effect::SendIntroduce(card) => requests.extend(
+                    self.init
+                        .introduce_now_or_hold(card)
+                        .map(DirectRequest::SendIntroduce),
+                ),
                 Effect::SendProbe(card) => {
                     let mut nonce = Nonce::default();
                     (self.fill_probe_nonce)(&mut nonce);
@@ -1775,7 +1823,10 @@ pub(super) mod tests {
         addr: Addr,
         probes_answered: Arc<std::sync::atomic::AtomicUsize>,
         introducers: Arc<std::sync::Mutex<Vec<crate::wire::PublicKey>>>,
+        introductions: Introductions,
     }
+
+    type Introductions = Arc<tokio::sync::watch::Sender<Vec<(crate::wire::PublicKey, Introduce)>>>;
 
     #[derive(Debug)]
     struct CountingConnections {
@@ -1816,9 +1867,11 @@ pub(super) mod tests {
         fn receive_introduce(
             &self,
             sender: crate::wire::PublicKey,
-            _introduce: Introduce,
+            introduce: Introduce,
         ) -> IntroduceAck {
             self.introducers.lock().unwrap().push(sender);
+            self.introductions
+                .send_modify(|taken| taken.push((sender, introduce)));
             IntroduceAck {
                 v: Version::CURRENT,
                 handle: self.handle.map(str::to_owned),
@@ -1835,6 +1888,7 @@ pub(super) mod tests {
         topic: NetworkTopic,
         probes_answered: Arc<std::sync::atomic::AtomicUsize>,
         pub(in crate::node) introducers: Arc<std::sync::Mutex<Vec<crate::wire::PublicKey>>>,
+        introductions: Introductions,
         direct_connections: Arc<std::sync::atomic::AtomicUsize>,
         pub(in crate::node) accepted: Arc<std::sync::Mutex<Vec<iroh::endpoint::Connection>>>,
         router: Router,
@@ -1851,12 +1905,14 @@ pub(super) mod tests {
             let gossip = Gossip::builder().spawn(node_endpoint.endpoint().clone());
             let probes_answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let introducers = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let introductions = Introductions::default();
             let host = WitnessHost {
                 own_card: card(seed),
                 handle,
                 addr: wire_addr(&node_endpoint.endpoint().addr()),
                 probes_answered: Arc::clone(&probes_answered),
                 introducers: Arc::clone(&introducers),
+                introductions: Arc::clone(&introductions),
             };
             let direct_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let accepted = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1888,10 +1944,38 @@ pub(super) mod tests {
                 topic,
                 probes_answered,
                 introducers,
+                introductions,
                 direct_connections,
                 accepted,
                 router,
             }
+        }
+
+        /// The address the witness's endpoint is reached at.
+        pub(in crate::node) fn address(&self) -> iroh::EndpointAddr {
+            self.router.endpoint().addr()
+        }
+
+        /// The first Introduce the witness took from the card of the seed, waiting for one within the wait.
+        pub(in crate::node) async fn first_introduce_from(
+            &self,
+            seed: u8,
+            within: Duration,
+        ) -> Option<Introduce> {
+            let from_the_card =
+                |(sender, _introduce): &(crate::wire::PublicKey, Introduce)| *sender == card(seed);
+            let mut taken = self.introductions.subscribe();
+            let taken = tokio::time::timeout(
+                within,
+                taken.wait_for(|taken| taken.iter().any(from_the_card)),
+            )
+            .await
+            .ok()?
+            .ok()?;
+            taken
+                .iter()
+                .find(|entry| from_the_card(entry))
+                .map(|(_sender, introduce)| introduce.clone())
         }
 
         /// Closes the witness's endpoint, so it leaves the topic and answers no direct request.
@@ -2400,6 +2484,10 @@ pub(super) mod tests {
 
     fn presence_from(seed: u8) -> impl FnMut(&Payload) -> bool {
         move |payload| matches!(payload, Payload::Presence(presence) if presence.card == card(seed))
+    }
+
+    fn presence_request_by(seed: u8) -> impl FnMut(&Payload) -> bool {
+        move |payload| matches!(payload, Payload::PresenceRequest(request) if request.requester == card(seed))
     }
 
     fn presence_fields(payload: Option<Payload>) -> (u64, bool) {
@@ -2958,6 +3046,69 @@ pub(super) mod tests {
         assert!(init_took < SPEC_JOIN_TIMEOUT + SPEC_OBSERVER_WAIT);
         assert_eq!(lonely.node.own_handle().as_str(), FIRST_HANDLE);
         assert!(announced.is_some());
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_member_whose_first_join_gained_no_neighbor_asks_every_member_to_announce_itself_at_its_later_join()
+     {
+        let scratch = Scratch::new("late-ask").await;
+        let lonely = start_members(
+            &scratch,
+            vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)],
+        )
+        .await
+        .pop()
+        .unwrap();
+
+        let mut witness = Witness::joined_through(WITNESS_SEED, None, &lonely.endpoint).await;
+        let asked = witness
+            .payload_where(PAYLOAD_WAIT, presence_request_by(FIRST_SEED))
+            .await;
+
+        assert!(asked.is_some());
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_joining_member_introduces_itself_to_its_gossip_neighbor_only_after_its_presence_and_under_its_assigned_handle()
+     {
+        let scratch = Scratch::new("held-introduce").await;
+        let first = start_members(
+            &scratch,
+            vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)],
+        )
+        .await
+        .pop()
+        .unwrap();
+        let mut witness =
+            Witness::joined_through(WITNESS_SEED, Some(WITNESS_HANDLE), &first.endpoint).await;
+
+        let _joining = start_members_reaching(
+            &scratch,
+            vec![
+                MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
+                    .with_hosts(&[WITNESS_SEED]),
+            ],
+            &[(WITNESS_SEED, witness.address())],
+        )
+        .await;
+        let asked = witness
+            .payload_where(PAYLOAD_WAIT, presence_request_by(SECOND_SEED))
+            .await;
+        let announced = witness
+            .payload_where(PAYLOAD_WAIT, presence_from(SECOND_SEED))
+            .await;
+        let first_introduce = witness
+            .first_introduce_from(SECOND_SEED, PAYLOAD_WAIT)
+            .await;
+
+        assert!(asked.is_some());
+        assert!(announced.is_some());
+        assert_eq!(
+            first_introduce.and_then(|introduce| introduce.handle),
+            Some(SECOND_HANDLE.to_owned())
+        );
         drop(scratch);
     }
 

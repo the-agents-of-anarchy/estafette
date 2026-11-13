@@ -780,6 +780,180 @@ mod spec_3_15_test_19_on_one_machine {
 }
 
 #[cfg(test)]
+mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
+    use std::time::Instant;
+
+    use serde_json::json;
+
+    use crate::SPEC_OBSERVER_WAIT;
+    use crate::local_network::{LocalNetwork, MetPair};
+    use crate::mcp_server::{PRESENCE_WAIT, gone, online};
+    use crate::member::{Member, loopback_address};
+    use crate::payload_placeholders::wall_clock_ms;
+    use crate::scratch_machine::{Card, RunRecordKeeping};
+    use crate::timed_step::timed;
+
+    const TAKEN: &str = "amy";
+    const SECOND_EFFECTIVE: &str = "amy-2";
+
+    #[test]
+    fn spec_3_15_test_7_a_second_member_joining_through_a_host_without_a_card_after_the_first_spread_is_h_2_at_every_node_and_keeps_it_after_the_first_restarts()
+     {
+        let network = LocalNetwork::create("t7c", &RunRecordKeeping::from_environment());
+        let host = network.stand_in_host();
+        let amy_card = network.create_card("amy-card", TAKEN);
+        let bob_card = network.create_card("bob-card", "bob");
+        let ann_card = network.create_card("ann-card", TAKEN);
+        let mut amy = timed("amy joins and claims its card", || {
+            let mut amy = network.start_member();
+            amy.init_through(&amy_card, &host);
+            amy
+        });
+        let mut bob = timed("bob joins and claims its card", || {
+            let mut bob = network.start_member();
+            bob.init_through(&bob_card, &host);
+            bob
+        });
+        timed("amy and bob list each other online", || {
+            amy.peer_within("bob", PRESENCE_WAIT, online);
+            bob.peer_within(TAKEN, PRESENCE_WAIT, online);
+        });
+
+        let mut ann = network.start_member();
+        let ann_claim = timed(
+            "ann joins through the host without a card and claims a card requesting amy's handle",
+            || ann.init_through(&ann_card, &host),
+        );
+        let at_amy = timed("amy lists ann online as <h>-2", || {
+            amy.peer_within(SECOND_EFFECTIVE, PRESENCE_WAIT, online)
+        });
+        let at_bob = timed("bob lists ann online as <h>-2", || {
+            bob.peer_within(SECOND_EFFECTIVE, PRESENCE_WAIT, online)
+        });
+        amy.close_standard_input();
+        assert!(timed("amy exits after the end of input", || amy.wait_for_exit()).success());
+        let second_host = network.stand_in_host();
+        timed("a second host links ann and bob", || {
+            second_host.admit(loopback_address(ann_card.id, &ann.bound_udp_ports()));
+            second_host.admit(loopback_address(bob_card.id, &bob.bound_udp_ports()));
+            second_host.wait_for_neighbor_up(ann_card.id);
+            second_host.wait_for_neighbor_up(bob_card.id);
+        });
+        let mut restarted = network.start_member();
+        let restarted_claim = timed("the restarted amy claims its card", || {
+            restarted.init_through(&amy_card, &second_host)
+        });
+        let restarted_at_ann = timed("ann lists the restarted amy online as <h>", || {
+            ann.peer_within(TAKEN, PRESENCE_WAIT, online)
+        });
+        let own_after_restart = timed("ann's peers tool answers", || ann.call("peers", &json!({})));
+        let restarted_at_bob = timed("bob lists the restarted amy online as <h>", || {
+            bob.peer_within(TAKEN, PRESENCE_WAIT, online)
+        });
+        let ann_at_restarted = timed("the restarted amy lists ann online as <h>-2", || {
+            restarted.peer_within(SECOND_EFFECTIVE, PRESENCE_WAIT, online)
+        });
+
+        assert_eq!(ann_claim["result"]["handle"], json!(SECOND_EFFECTIVE));
+        assert_eq!(at_amy["handle"], json!(SECOND_EFFECTIVE));
+        assert_eq!(at_bob["handle"], json!(SECOND_EFFECTIVE));
+        assert_eq!(restarted_claim["result"]["handle"], json!(TAKEN));
+        assert_eq!(restarted_at_ann["handle"], json!(TAKEN));
+        assert_eq!(restarted_at_bob["handle"], json!(TAKEN));
+        assert_eq!(ann_at_restarted["handle"], json!(SECOND_EFFECTIVE));
+        assert_eq!(own_after_restart["you"]["handle"], json!(SECOND_EFFECTIVE));
+    }
+
+    /// Restarts bob's card through a second host that links amy alone, bob's first process gone since `gone_ms`, and requires the restarted bob to list amy online within the observer wait of its init returning (spec 3.15 test 26).
+    #[track_caller]
+    fn restarted_bob_lists_amy_within_the_observer_wait_of_its_init(
+        network: &LocalNetwork,
+        amy: &mut Member,
+        amy_card: &Card,
+        bob_card: &Card,
+        gone_ms: u64,
+    ) {
+        let second_host = network.stand_in_host();
+        timed("a second host links amy", || {
+            second_host.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
+            second_host.wait_for_neighbor_up(amy_card.id);
+        });
+        let mut restarted = network.start_member();
+        timed("the restarted bob claims its card", || {
+            restarted.init_through(bob_card, &second_host)
+        });
+        let init_returned = Instant::now();
+        timed(
+            "amy lists the restarted bob online, seen after it went",
+            || {
+                amy.peer_within("bob", PRESENCE_WAIT, |bob| {
+                    online(bob) && bob["last_seen"].as_u64().unwrap() > gone_ms
+                })
+            },
+        );
+        timed(
+            "the restarted bob lists amy online within the observer wait of its init",
+            || {
+                restarted.peer_within(
+                    "amy",
+                    SPEC_OBSERVER_WAIT.saturating_sub(init_returned.elapsed()),
+                    online,
+                )
+            },
+        );
+        let listed_after = init_returned.elapsed();
+
+        assert!(listed_after <= SPEC_OBSERVER_WAIT, "{listed_after:?}");
+    }
+
+    #[test]
+    fn spec_3_15_test_26_a_member_killed_and_restarted_through_another_host_lists_every_present_member_within_the_observer_wait_of_its_init()
+     {
+        let network = LocalNetwork::create("t26k", &RunRecordKeeping::from_environment());
+        let first_host = network.stand_in_host();
+        let MetPair {
+            mut amy,
+            amy_card,
+            mut bob,
+            bob_card,
+        } = timed("amy and bob list each other online", || {
+            network.amy_and_bob_met(&first_host)
+        });
+
+        bob.kill();
+        let killed_ms = wall_clock_ms();
+        restarted_bob_lists_amy_within_the_observer_wait_of_its_init(
+            &network, &mut amy, &amy_card, &bob_card, killed_ms,
+        );
+    }
+
+    #[test]
+    fn spec_3_15_test_26_a_member_stopped_cleanly_and_restarted_through_another_host_lists_every_present_member_within_the_observer_wait_of_its_init()
+     {
+        let network = LocalNetwork::create("t26s", &RunRecordKeeping::from_environment());
+        let first_host = network.stand_in_host();
+        let MetPair {
+            mut amy,
+            amy_card,
+            mut bob,
+            bob_card,
+        } = timed("amy and bob list each other online", || {
+            network.amy_and_bob_met(&first_host)
+        });
+
+        bob.close_standard_input();
+        assert!(timed("bob exits after the end of input", || bob.wait_for_exit()).success());
+        let stopped_ms = wall_clock_ms();
+        timed("amy lists bob gone", || {
+            amy.peer_within("bob", PRESENCE_WAIT, gone)
+        });
+        restarted_bob_lists_amy_within_the_observer_wait_of_its_init(
+            &network, &mut amy, &amy_card, &bob_card, stopped_ms,
+        );
+    }
+}
+
+#[cfg(test)]
 mod spec_3_15_with_one_member {
     use std::time::{Duration, Instant};
 
