@@ -2,6 +2,7 @@
 
 use crate::card::is_card_public;
 use crate::handle::{AnnouncedHandle, LocalHandle};
+use crate::payload::PayloadDropRule;
 use crate::wire::{
     Addr, Departure, Introduce, IntroduceAck, Message, Presence, PublicKey, Unreachable,
 };
@@ -163,23 +164,41 @@ impl PeerTable {
     /// Takes a Presence whose signature verified, accepting it only when it is newer than all this node holds for its card.
     #[must_use]
     pub fn receive_presence(&mut self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
-        if !self.accepts_announcement(presence.card, presence.seq, now_ms) {
-            return Vec::new();
-        }
-        let Ok(handle) = presence.handle.parse::<AnnouncedHandle>() else {
-            return Vec::new();
-        };
+        self.admit_presence(presence, now_ms).unwrap_or_default()
+    }
+
+    /// Takes a Presence whose signature verified when it is newer than all this node holds for its card and names an announced handle, returning its effects, or the rule that drops it.
+    pub(crate) fn admit_presence(
+        &mut self,
+        presence: &Presence,
+        now_ms: u64,
+    ) -> Result<Vec<Effect>, PayloadDropRule> {
+        self.admit_announcement(presence.card, presence.seq, now_ms)?;
+        let handle = presence
+            .handle
+            .parse::<AnnouncedHandle>()
+            .map_err(|_outside_the_grammar| PayloadDropRule::HandleOutsideGrammar)?;
         let mut effects = lookup_refresh_effects(presence.card, &presence.addr);
         effects.extend(self.insert_if_unseen(presence.card, &handle, now_ms));
         if let Some(peer) = self.peers.get_mut(&presence.card, now_ms) {
             peer.take_presence(presence, now_ms);
         }
-        effects
+        Ok(effects)
+    }
+
+    /// The effective handle this node names `card` by, when the table holds the card.
+    pub(crate) fn handle_of(&self, card: PublicKey, now_ms: u64) -> Option<LocalHandle> {
+        self.peers
+            .get(&card, now_ms)
+            .map(|peer| peer.effective_handle.clone())
     }
 
     /// Takes a Departure whose signature verified, setting its card Gone and asking to drop the held connection to it, when it is newer than all this node holds for the card.
     pub fn receive_departure(&mut self, departure: &Departure, now_ms: u64) -> Vec<Effect> {
-        if !self.accepts_announcement(departure.card, departure.seq, now_ms) {
+        if self
+            .admit_announcement(departure.card, departure.seq, now_ms)
+            .is_err()
+        {
             return Vec::new();
         }
         self.tombstones.insert(
@@ -342,19 +361,35 @@ impl PeerTable {
             .filter(|peer| !peer.is_gone())
     }
 
-    /// Whether a Presence or Departure for `card` carrying `seq` is accepted at `now_ms`.
-    fn accepts_announcement(&self, card: PublicKey, seq: u64, now_ms: u64) -> bool {
-        card != self.own_card
-            && is_within_announcement_max_age(seq, now_ms)
-            && self
-                .peers
-                .get(&card, now_ms)
-                .and_then(|peer| peer.seq)
-                .is_none_or(|held| seq > held)
-            && self
-                .tombstones
-                .get(&card, now_ms)
-                .is_none_or(|tombstone| seq > tombstone.seq)
+    /// Accepts a Presence or Departure for `card` carrying `seq` at `now_ms`, or names the rule that drops it.
+    fn admit_announcement(
+        &self,
+        card: PublicKey,
+        seq: u64,
+        now_ms: u64,
+    ) -> Result<(), PayloadDropRule> {
+        if card == self.own_card {
+            return Err(PayloadDropRule::FromOwnCard);
+        }
+        if !is_within_announcement_max_age(seq, now_ms) {
+            return Err(PayloadDropRule::OlderThanMaxAge);
+        }
+        if self
+            .peers
+            .get(&card, now_ms)
+            .and_then(|peer| peer.seq)
+            .is_some_and(|held| seq <= held)
+        {
+            return Err(PayloadDropRule::NotNewerThanHeld);
+        }
+        if self
+            .tombstones
+            .get(&card, now_ms)
+            .is_some_and(|tombstone| seq <= tombstone.seq)
+        {
+            return Err(PayloadDropRule::NotNewerThanDeparture);
+        }
+        Ok(())
     }
 
     /// Whether this node holds a Departure of `card` and no entry newer than it, so an Introduce or `IntroduceAck`, which carry no seq, cannot show the card back.

@@ -86,18 +86,101 @@ macro_rules! on_each_payload_variant {
     };
 }
 
-const fn signer_of(payload: &Payload) -> (SignedPayloadKind, wire::PublicKey) {
-    match payload {
-        Payload::Presence(presence) => (SignedPayloadKind::Presence, presence.card),
-        Payload::Departure(departure) => (SignedPayloadKind::Departure, departure.card),
-        Payload::Unreachable(unreachable) => (SignedPayloadKind::Unreachable, unreachable.reporter),
-        Payload::Infrastructure(infrastructure) => {
-            (SignedPayloadKind::Infrastructure, infrastructure.host)
-        }
-        Payload::PresenceRequest(request) => {
-            (SignedPayloadKind::PresenceRequest, request.requester)
+fn signer_of(payload: &Payload) -> (SignedPayloadKind, wire::PublicKey) {
+    let facts = payload.facts();
+    (facts.kind, facts.signer)
+}
+
+/// The number a payload is ordered by: the seq of a Presence, Departure or `PresenceRequest`, the ts of an Unreachable or Infrastructure record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadStamp {
+    Seq(u64),
+    Ts(u64),
+}
+
+/// What a gossip payload says of itself, whether or not it verified: its kind, the key it names as its signer, and its stamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadFacts {
+    pub kind: SignedPayloadKind,
+    pub signer: wire::PublicKey,
+    pub stamp: PayloadStamp,
+}
+
+/// A gossip payload that tells what it says of itself.
+pub trait DescribedPayload {
+    /// The payload's kind, the key it names as its signer, and its stamp.
+    fn facts(&self) -> PayloadFacts;
+}
+
+impl DescribedPayload for Presence {
+    fn facts(&self) -> PayloadFacts {
+        PayloadFacts {
+            kind: SignedPayloadKind::Presence,
+            signer: self.card,
+            stamp: PayloadStamp::Seq(self.seq),
         }
     }
+}
+
+impl DescribedPayload for Departure {
+    fn facts(&self) -> PayloadFacts {
+        PayloadFacts {
+            kind: SignedPayloadKind::Departure,
+            signer: self.card,
+            stamp: PayloadStamp::Seq(self.seq),
+        }
+    }
+}
+
+impl DescribedPayload for Unreachable {
+    fn facts(&self) -> PayloadFacts {
+        PayloadFacts {
+            kind: SignedPayloadKind::Unreachable,
+            signer: self.reporter,
+            stamp: PayloadStamp::Ts(self.ts),
+        }
+    }
+}
+
+impl DescribedPayload for Infrastructure {
+    fn facts(&self) -> PayloadFacts {
+        PayloadFacts {
+            kind: SignedPayloadKind::Infrastructure,
+            signer: self.host,
+            stamp: PayloadStamp::Ts(self.ts),
+        }
+    }
+}
+
+impl DescribedPayload for PresenceRequest {
+    fn facts(&self) -> PayloadFacts {
+        PayloadFacts {
+            kind: SignedPayloadKind::PresenceRequest,
+            signer: self.requester,
+            stamp: PayloadStamp::Seq(self.seq),
+        }
+    }
+}
+
+impl DescribedPayload for Payload {
+    fn facts(&self) -> PayloadFacts {
+        on_each_payload_variant!(self, inner => inner.facts())
+    }
+}
+
+/// Each rule a node drops a received gossip payload by, at the payload layer or at its admission (spec 3.4, 3.7, 3.8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadDropRule {
+    /// A Presence or Departure signed by this node's own card.
+    FromOwnCard,
+    /// A stamp older than the announcement max age by this node's clock.
+    OlderThanMaxAge,
+    /// A Presence or Departure whose seq is not above the seq held for its card.
+    NotNewerThanHeld,
+    /// A Presence or Departure whose seq is not above the Departure held for its card.
+    NotNewerThanDeparture,
+    /// A Presence whose handle is outside the announced-handle grammar.
+    HandleOutsideGrammar,
 }
 
 const fn signature_of(payload: &Payload) -> SignatureBytes {

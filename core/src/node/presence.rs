@@ -37,7 +37,7 @@ use crate::net::direct::{
 };
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, JOIN_TIMEOUT, NetworkTopic};
-use crate::payload::{OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
+use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
 use crate::peers::{
     Effect, Peer, PeerTable, announced_sender_handle, is_within_announcement_max_age,
     is_within_announcement_max_age_ahead,
@@ -310,18 +310,33 @@ pub(super) struct NodeState {
     rows: PeerRows,
 }
 
-/// The peer table of a node of any kind and the register of every connection its endpoint holds, changed together by the rows of spec 3.8 every such node applies.
+/// The peer table of a node of any kind and the register of every connection its endpoint holds, changed together by the rows of spec 3.8 every such node applies, recording what each row decided.
 pub struct PeerRows {
     table: Mutex<PeerTable>,
     held_connections: HeldConnections,
+    report: RunRecord,
 }
 
 impl PeerRows {
-    /// An empty table for the node of `own_card`, closing connections through the register of the endpoint it runs on.
-    pub(crate) const fn new(own_card: wire::PublicKey, held_connections: HeldConnections) -> Self {
+    /// An empty table for the node of `own_card`, closing connections through the register of the endpoint it runs on and recording nothing.
+    pub(crate) fn new(own_card: wire::PublicKey, held_connections: HeldConnections) -> Self {
+        Self::recording(
+            own_card,
+            held_connections,
+            Arc::new(|_unrecorded: Event| {}),
+        )
+    }
+
+    /// An empty table for the node of `own_card`, closing connections through the register of the endpoint it runs on and recording each row's decision to `report`.
+    fn recording(
+        own_card: wire::PublicKey,
+        held_connections: HeldConnections,
+        report: RunRecord,
+    ) -> Self {
         Self {
             table: Mutex::new(PeerTable::new(own_card)),
             held_connections,
+            report,
         }
     }
 
@@ -330,9 +345,22 @@ impl PeerRows {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Applies a Presence to the table and, when it is taken, closes every connection to or from its card, of any protocol, whose process no longer runs, and every other while iroh stays on that process's path (spec 3.8, address lookup).
+    /// Applies a Presence to the table, recording whether it was taken, and when it is taken closes every connection to or from its card, of any protocol, whose process no longer runs, and every other while iroh stays on that process's path (spec 3.8, address lookup).
     pub(crate) fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
-        let effects = self.table().receive_presence(presence, now_ms);
+        let mut table = self.table();
+        let admitted = table.admit_presence(presence, now_ms);
+        let handle = table.handle_of(presence.card, now_ms);
+        drop(table);
+        let Ok(effects) = admitted else {
+            return Vec::new();
+        };
+        (self.report)(
+            crate::event::GossipEvent::PayloadAccepted {
+                payload: presence.facts().into(),
+                handle,
+            }
+            .into(),
+        );
         if effects.contains(&Effect::DropHeldConnection(presence.card)) {
             self.held_connections.close_silent_of(presence.card);
         }
@@ -410,7 +438,7 @@ impl NodeState {
             clock: Arc::clone(&effects.clock),
             to_loop,
             stopping: AtomicBool::new(false),
-            rows: PeerRows::new(own_card, held_connections),
+            rows: PeerRows::recording(own_card, held_connections, Arc::clone(&effects.report)),
         }
     }
 
