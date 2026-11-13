@@ -1669,6 +1669,47 @@ mod tests {
         );
     }
 
+    #[test]
+    fn observability_decision_7_a_traced_command_whose_iroh_lines_cannot_be_installed_fails_before_it_runs_saying_why_after_the_announcement()
+     {
+        const SCRATCH_PREFIX: &str = "estafette-iroh-lines-refused";
+        const SPEC_REFUSAL_OPENING: &str =
+            "cannot write iroh's own lines into the raw trace file: ";
+        const SPEC_REFUSAL_CLOSING: &str = "; run with --no-debug to write no trace";
+        let (_scratch_removed_when_the_test_ends, environment) =
+            scratch_environment(SCRATCH_PREFIX);
+        drop(tracing::subscriber::set_global_default(
+            tracing::subscriber::NoSubscriber::default(),
+        ));
+        let standard_error = SharedRecord::default();
+        let command_ran = AtomicBool::new(false);
+
+        let status = run_traced(
+            Tracing::Debug,
+            environment,
+            None,
+            standard_error.clone(),
+            TraceSetup {
+                effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
+                bounds: TraceBounds::SPEC,
+                install_iroh_lines: iroh_lines::install,
+            },
+            |_directories, _process| {
+                command_ran.store(true, Ordering::SeqCst);
+                Ok(ExitStatus::Success)
+            },
+        );
+
+        assert_eq!(status, ExitStatus::Failure);
+        assert!(!command_ran.load(Ordering::SeqCst));
+        let after_the_announcement = lines_after_the_announcement(&standard_error);
+        let [refusal] = after_the_announcement.as_slice() else {
+            panic!("one line after the announcement: {after_the_announcement:?}");
+        };
+        assert!(refusal.starts_with(SPEC_REFUSAL_OPENING), "{refusal}");
+        assert!(refusal.ends_with(SPEC_REFUSAL_CLOSING), "{refusal}");
+    }
+
     #[derive(Clone, Default)]
     struct SharedRecord(Arc<Mutex<Vec<u8>>>);
 
