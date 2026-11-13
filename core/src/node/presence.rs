@@ -1837,7 +1837,7 @@ pub(super) mod tests {
         pub(in crate::node) introducers: Arc<std::sync::Mutex<Vec<crate::wire::PublicKey>>>,
         direct_connections: Arc<std::sync::atomic::AtomicUsize>,
         pub(in crate::node) accepted: Arc<std::sync::Mutex<Vec<iroh::endpoint::Connection>>>,
-        _router: Router,
+        router: Router,
     }
 
     impl Witness {
@@ -1890,8 +1890,13 @@ pub(super) mod tests {
                 introducers,
                 direct_connections,
                 accepted,
-                _router: router,
+                router,
             }
+        }
+
+        /// Closes the witness's endpoint, so it leaves the topic and answers no direct request.
+        async fn close(&self) {
+            self.router.shutdown().await.unwrap();
         }
 
         pub(in crate::node) async fn broadcast_as(&self, signer_seed: u8, payload: Payload) {
@@ -2900,25 +2905,23 @@ pub(super) mod tests {
     async fn observability_decision_9_a_probe_that_fails_is_recorded_naming_the_node() {
         let scratch = Scratch::new("probe-fail-record").await;
         let (report, mut failures) = recorded_contact_failures();
-        let mut members = start_members(
+        let (member, witness) = start_witnessed(
             &scratch,
-            vec![
-                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
-                    .with_hosts(&[SECOND_SEED])
-                    .with_report(report),
-                MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
-                    .with_hosts(&[FIRST_SEED]),
-            ],
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
+            Some(WITNESS_HANDLE),
         )
         .await;
-        let second = members.pop().unwrap();
-        let first = members.pop().unwrap();
-        listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
-            .await
-            .unwrap();
+        status_within(
+            &member,
+            WITNESS_SEED,
+            |status| status == Status::Online,
+            PAYLOAD_WAIT,
+        )
+        .await
+        .unwrap();
+        while failures.try_recv().is_ok() {}
 
-        drop(second.node);
-        second.endpoint.close().await;
+        witness.close().await;
         let recorded = tokio::time::timeout(
             SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT + PAYLOAD_WAIT,
             failures.recv(),
@@ -2928,7 +2931,7 @@ pub(super) mod tests {
         .flatten()
         .map(|(peer, _reason)| peer);
 
-        assert_eq!(recorded, Some(secret_key(SECOND_SEED).public()));
+        assert_eq!(recorded, Some(secret_key(WITNESS_SEED).public()));
         drop(scratch);
     }
 
