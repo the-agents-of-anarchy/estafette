@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use notify::event::ModifyKind;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 
-use crate::trace_reader::{TraceLine, events_files_in, events_lines_in, timeline_in};
+use crate::trace_reader::{TraceLine, events_files_in, lines_of_files_still_present, timeline_in};
 
 /// What the operating system reports about a change under a watched path.
 type Notice = notify::Result<notify::Event>;
@@ -137,10 +137,11 @@ impl MemberEvents {
         }
     }
 
-    /// Every line of the member's events files written so far.
+    /// Every line of the member's events files written so far, passing over a file removed since the listing named it, so the wait looks again on the next notice.
     #[track_caller]
     fn lines(&self) -> Vec<TraceLine> {
-        events_lines_in(&self.traces_directory)
+        events_files_in(&self.traces_directory)
+            .and_then(|files| lines_of_files_still_present(&files))
             .unwrap_or_else(|failure| panic!("{}: {failure}", self.label))
     }
 }

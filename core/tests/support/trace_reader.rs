@@ -307,6 +307,29 @@ pub fn events_lines_in(traces_directory: &Path) -> Result<Vec<TraceLine>, TraceR
     Ok(lines)
 }
 
+/// Every whole line of the listed trace files, passing over a file removed since the listing named it, as an events file a wait listed may be when its run rolls over.
+///
+/// # Errors
+///
+/// Fails as `read_trace_file` does for the first listed file it cannot read for any reason but its absence.
+pub fn lines_of_files_still_present(files: &[PathBuf]) -> Result<Vec<TraceLine>, TraceReadError> {
+    let mut lines = Vec::new();
+    for file in files {
+        match read_trace_file(file) {
+            Ok(read) => lines.extend(read),
+            Err(TraceReadError::Unreadable {
+                kind: std::io::ErrorKind::NotFound,
+                ..
+            }) => {}
+            Err(
+                failure @ (TraceReadError::Unreadable { .. }
+                | TraceReadError::UnreadableLine { .. }),
+            ) => return Err(failure),
+        }
+    }
+    Ok(lines)
+}
+
 /// The events lines of the trace directory one to a row, or the reason they cannot be read, for a test that prints a member's timeline as it fails.
 pub fn timeline_in(traces_directory: &Path) -> String {
     match events_lines_in(traces_directory) {
@@ -552,6 +575,76 @@ mod tests {
             .collect();
 
         assert_eq!(numbers, [4, 7]);
+        drop(fs::remove_dir_all(&directory));
+    }
+
+    #[test]
+    fn observability_decision_14_a_listed_events_file_removed_before_its_read_is_passed_over_and_every_other_read_failure_still_fails()
+     {
+        const FILES: u32 = 4;
+        const REMOVED_SETS: u32 = 1 << FILES;
+        let directory =
+            std::env::temp_dir().join(format!("trace-reader-{}-removed", std::process::id()));
+        let is_removed = |removed_set: u32, index: u32| removed_set & (1 << index) != 0;
+
+        for removed_set in 0..REMOVED_SETS {
+            drop(fs::remove_dir_all(&directory));
+            fs::create_dir_all(&directory).unwrap();
+            for index in 0..FILES {
+                fs::write(
+                    directory.join(format!(
+                        "20261112T22591{index}Z-aaaaaaaaaaaaaaaa-estafette.events.jsonl"
+                    )),
+                    MEMBER_LINE.replace("\"n\":4", &format!("\"n\":{index}")),
+                )
+                .unwrap();
+            }
+            let listed = events_files_in(&directory).unwrap();
+            for (index, file) in (0..FILES).zip(&listed) {
+                if is_removed(removed_set, index) {
+                    fs::remove_file(file).unwrap();
+                }
+            }
+
+            let numbers: Vec<u64> = lines_of_files_still_present(&listed)
+                .unwrap()
+                .iter()
+                .map(|line| line.n)
+                .collect();
+
+            let kept: Vec<u64> = (0..FILES)
+                .filter(|index| !is_removed(removed_set, *index))
+                .map(u64::from)
+                .collect();
+            assert_eq!(numbers, kept, "removed set {removed_set:#06b}");
+        }
+        let not_a_file = directory.join("20261112T225919Z-cccccccccccccccc-estafette.events.jsonl");
+        fs::create_dir(&not_a_file).unwrap();
+        let headerless = directory.join("20261112T225918Z-dddddddddddddddd-estafette.events.jsonl");
+        fs::write(&headerless, MEMBER_LINE.replace("\"n\":4,", "")).unwrap();
+
+        let directory_read = lines_of_files_still_present(std::slice::from_ref(&not_a_file))
+            .map(|lines| lines.len());
+        let headerless_read = lines_of_files_still_present(std::slice::from_ref(&headerless))
+            .map(|lines| lines.len());
+
+        assert_eq!(
+            directory_read,
+            Err(TraceReadError::Unreadable {
+                path: not_a_file,
+                kind: std::io::ErrorKind::IsADirectory
+            })
+        );
+        assert_eq!(
+            headerless_read,
+            Err(TraceReadError::UnreadableLine {
+                path: headerless,
+                failure: TraceLineError::NotATraceLine {
+                    line: 1,
+                    cause: "n is missing or not a number".to_owned()
+                }
+            })
+        );
         drop(fs::remove_dir_all(&directory));
     }
 }
