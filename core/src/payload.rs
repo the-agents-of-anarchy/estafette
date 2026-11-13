@@ -744,9 +744,10 @@ mod tests {
         assert_eq!(opened(&sealed), Ok(same_relay_spelled_differently));
     }
 
-    const GOSSIP_FRAME_BYTES: usize = 4096;
-    const GOSSIP_LAYER_OVERHEAD_BYTES: usize = 38;
-    const LARGEST_GOSSIP_PAYLOAD_BYTES: usize = GOSSIP_FRAME_BYTES - GOSSIP_LAYER_OVERHEAD_BYTES;
+    const SPEC_GOSSIP_FRAME_BYTES: usize = 4096;
+    const SPEC_GOSSIP_LAYER_OVERHEAD_BYTES: usize = 38;
+    const SPEC_LARGEST_GOSSIP_PAYLOAD_BYTES: usize =
+        SPEC_GOSSIP_FRAME_BYTES - SPEC_GOSSIP_LAYER_OVERHEAD_BYTES;
     const TWO_BYTE_LENGTH_PREFIX_EXTRA_BYTES: usize = 1;
 
     fn public_bytes_to_reach(encoded_bytes: usize, without_public: usize) -> usize {
@@ -775,16 +776,16 @@ mod tests {
 
     #[test]
     fn spec_3_7_payload_past_the_gossip_frame_less_its_overhead_is_refused_before_send() {
-        let at_the_limit = presence_encoding_to_bytes(LARGEST_GOSSIP_PAYLOAD_BYTES);
-        let one_past = presence_encoding_to_bytes(LARGEST_GOSSIP_PAYLOAD_BYTES + 1);
+        let at_the_limit = presence_encoding_to_bytes(SPEC_LARGEST_GOSSIP_PAYLOAD_BYTES);
+        let one_past = presence_encoding_to_bytes(SPEC_LARGEST_GOSSIP_PAYLOAD_BYTES + 1);
 
         let sealed = seal_payload(&keys(), &secret_key(REPORTED_CARD_SEED), at_the_limit).unwrap();
 
-        assert_eq!(sealed.len(), LARGEST_GOSSIP_PAYLOAD_BYTES);
+        assert_eq!(sealed.len(), SPEC_LARGEST_GOSSIP_PAYLOAD_BYTES);
         assert_eq!(
             seal_payload(&keys(), &secret_key(REPORTED_CARD_SEED), one_past),
             Err(PayloadError::OverGossipFrame {
-                bytes: LARGEST_GOSSIP_PAYLOAD_BYTES + 1
+                bytes: SPEC_LARGEST_GOSSIP_PAYLOAD_BYTES + 1
             })
         );
     }
