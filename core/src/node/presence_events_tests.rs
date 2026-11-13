@@ -7,9 +7,10 @@ use tokio::sync::mpsc;
 
 use super::tests::{
     FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_SEED,
-    MemberPlan, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, Scratch, WITNESS_SEED, card,
-    infrastructure_of, keys, secret_key, settable_clock, start_members, start_witnessed,
-    wall_clock_ms,
+    MemberPlan, SECOND_EFFECTIVE_FIRST_HANDLE, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED,
+    SPEC_OBSERVER_WAIT, Scratch, THIRD_PUBLIC, THIRD_SEED, WITNESS_SEED, card, infrastructure_of,
+    keys, listed_within, secret_key, settable_clock, start_members, start_members_reaching,
+    start_pair, start_witnessed, wall_clock_ms,
 };
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{Event, EventFields, RunRecord};
@@ -809,11 +810,19 @@ async fn observability_decision_9_a_member_records_each_entry_its_payloads_creat
 async fn observability_decision_9_a_member_records_its_own_handle_requested_and_assigned() {
     let scratch = Scratch::new("events-own-handle").await;
     let (report, mut recorded) = recording();
+    let (first, second) = start_pair(&scratch).await;
+    listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
+        .await
+        .unwrap();
 
-    let (_member, _witness) = start_witnessed(
+    let _third = start_members_reaching(
         &scratch,
-        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
-        None,
+        vec![
+            MemberPlan::new(THIRD_SEED, FIRST_HANDLE, THIRD_PUBLIC)
+                .with_hosts(&[SECOND_SEED])
+                .with_report(report),
+        ],
+        &[(SECOND_SEED, second.endpoint.addr())],
     )
     .await;
 
@@ -821,7 +830,7 @@ async fn observability_decision_9_a_member_records_its_own_handle_requested_and_
         recorded.next_named("peers.own_handle_assigned").await,
         [
             ("requested", Value::from(FIRST_HANDLE)),
-            ("handle", Value::from(FIRST_HANDLE)),
+            ("handle", Value::from(SECOND_EFFECTIVE_FIRST_HANDLE)),
         ]
     );
     drop(scratch);

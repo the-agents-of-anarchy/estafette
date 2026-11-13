@@ -1529,7 +1529,7 @@ pub(super) mod tests {
     pub(in crate::node) const THIRD_SEED: u8 = 63;
     pub(in crate::node) const THIRD_HANDLE: &str = "cal";
     pub(in crate::node) const THIRD_PUBLIC: &[u8] = br#"{"role":"third"}"#;
-    const SECOND_EFFECTIVE_FIRST_HANDLE: &str = "amy-2";
+    pub(in crate::node) const SECOND_EFFECTIVE_FIRST_HANDLE: &str = "amy-2";
     pub(in crate::node) const WITNESS_SEED: u8 = 70;
     pub(in crate::node) const WITNESS_PUBLIC: &[u8] = br#"{"role":"witness"}"#;
     const WITNESS_JOIN_WAIT: Duration = Duration::from_secs(8);
