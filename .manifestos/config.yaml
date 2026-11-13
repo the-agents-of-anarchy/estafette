@@ -8,6 +8,9 @@ you:
   - name: agentic-delegation
     purpose: orchestration operating model
     source: skill orchestration:agentic-delegation
+  - name: orchestration-economics
+    purpose: cost of every launch, continuation and stop in usage limit and wall time
+    source: file .claude/skills/orchestration-economics/SKILL.md
   - name: dev-cycle
     purpose: development loop of specify, plan, implement, review, integrate
     source: skill dev-cycle:dev-cycle
