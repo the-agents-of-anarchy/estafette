@@ -204,7 +204,14 @@ pub struct RuntimeDirectoryInputs {
     pub user_id: u32,
 }
 
-/// Reports the inbox socket paths of the binary's MCP-mode processes under the harness at every poll, until the harness exits.
+/// The inbox socket of one MCP-mode process of the binary: the process's pid and the socket path it serves.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BinarySocket {
+    pub pid: Pid,
+    pub path: PathBuf,
+}
+
+/// Reports the inbox sockets of the binary's MCP-mode processes under the harness at every poll, until the harness exits.
 /// # Errors
 /// Returns the `ProcessTableError` of the listing failure that ended the following.
 pub fn follow_binary_sockets(
@@ -212,7 +219,7 @@ pub fn follow_binary_sockets(
     runtime_inputs: &RuntimeDirectoryInputs,
     processes: &impl ProcessTable,
     wait_for_next_poll: &mut impl FnMut(Duration),
-    report_sockets: &mut impl FnMut(&[PathBuf]),
+    report_sockets: &mut impl FnMut(&[BinarySocket]),
 ) -> Result<(), ProcessTableError> {
     loop {
         let entries = processes.list()?;
@@ -224,17 +231,20 @@ pub fn follow_binary_sockets(
     }
 }
 
-/// Lists the inbox socket paths of the binary's MCP-mode processes among the descendants of the harness process.
+/// Lists the inbox sockets of the binary's MCP-mode processes among the descendants of the harness process.
 #[must_use]
 pub fn binary_sockets_under(
     harness_pid: Pid,
     runtime_inputs: &RuntimeDirectoryInputs,
     entries: &[ProcessEntry],
-) -> Vec<PathBuf> {
+) -> Vec<BinarySocket> {
     let runtime_dir = runtime_directory(runtime_inputs);
     binary_pids_under(harness_pid, entries)
         .into_iter()
-        .map(|pid| socket_path(&runtime_dir, pid))
+        .map(|pid| BinarySocket {
+            pid,
+            path: socket_path(&runtime_dir, pid),
+        })
         .collect()
 }
 
@@ -248,17 +258,6 @@ fn runtime_directory(inputs: &RuntimeDirectoryInputs) -> PathBuf {
 
 fn socket_path(runtime_dir: &Path, pid: Pid) -> PathBuf {
     runtime_dir.join(format!("{pid}{SOCKET_FILE_SUFFIX}"))
-}
-
-/// The pid of the binary process whose inbox socket this is, read from the socket's file name.
-#[must_use]
-pub fn binary_pid_of_socket(socket_path: &Path) -> Option<Pid> {
-    socket_path
-        .file_name()?
-        .to_str()?
-        .strip_suffix(SOCKET_FILE_SUFFIX)?
-        .parse()
-        .ok()
 }
 
 fn is_running(pid: Pid, entries: &[ProcessEntry]) -> bool {
@@ -385,11 +384,20 @@ mod tests {
         }
     }
 
+    fn binary_socket(runtime_dir: &str, pid: u32) -> BinarySocket {
+        BinarySocket {
+            pid: Pid(pid),
+            path: PathBuf::from(format!("{runtime_dir}/{pid}.sock")),
+        }
+    }
+
+    const XDG_RUNTIME_DIRECTORY: &str = "/run/user/1000/estafette-1000";
+
     fn collect_reports(
         harness_pid: u32,
         inputs: &RuntimeDirectoryInputs,
         snapshots: Vec<Vec<ProcessEntry>>,
-    ) -> Vec<Vec<PathBuf>> {
+    ) -> Vec<Vec<BinarySocket>> {
         let table = SnapshotSequence(RefCell::new(snapshots));
         let mut reports = Vec::new();
         follow_binary_sockets(
@@ -406,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_12_steps_1_2_reports_sockets_of_mcp_binaries_among_all_descendants() {
+    fn spec_3_12_steps_1_2_reports_each_mcp_binary_among_all_descendants_with_its_pid_and_socket() {
         let tree = vec![
             entry(1, 0, "/sbin/init", &[]),
             entry(100, 1, "/usr/bin/claude", &[]),
@@ -422,9 +430,9 @@ mod tests {
         assert_eq!(
             reports,
             vec![vec![
-                PathBuf::from("/run/user/1000/estafette-1000/101.sock"),
-                PathBuf::from("/run/user/1000/estafette-1000/103.sock"),
-                PathBuf::from("/run/user/1000/estafette-1000/106.sock"),
+                binary_socket(XDG_RUNTIME_DIRECTORY, 101),
+                binary_socket(XDG_RUNTIME_DIRECTORY, 103),
+                binary_socket(XDG_RUNTIME_DIRECTORY, 106),
             ]]
         );
     }
@@ -445,7 +453,7 @@ mod tests {
         let reports = collect_reports(100, &inputs, vec![single_binary_under_harness(), vec![]]);
         assert_eq!(
             reports,
-            vec![vec![PathBuf::from("/var/tmp/estafette-1000/101.sock")]]
+            vec![vec![binary_socket("/var/tmp/estafette-1000", 101)]]
         );
     }
 
@@ -473,7 +481,7 @@ mod tests {
             reports,
             vec![
                 vec![],
-                vec![PathBuf::from("/run/user/1000/estafette-1000/101.sock")],
+                vec![binary_socket(XDG_RUNTIME_DIRECTORY, 101)],
                 vec![],
             ]
         );
@@ -827,9 +835,9 @@ mod tests {
         let mut tree = FakeProcessTree::start(directory_label);
         let mut expected_pids = tree.mcp_pids.clone();
         expected_pids.sort_unstable();
-        let expected: Vec<PathBuf> = expected_pids
+        let expected: Vec<BinarySocket> = expected_pids
             .iter()
-            .map(|pid| PathBuf::from(format!("/run/user/1000/estafette-1000/{pid}.sock")))
+            .map(|pid| binary_socket(XDG_RUNTIME_DIRECTORY, *pid))
             .collect();
         let mut polls = 0_u32;
         let matched = Cell::new(false);

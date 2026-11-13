@@ -1,8 +1,7 @@
 use std::io;
-use std::path::PathBuf;
 use std::time::Duration;
 
-use estafette_bridge_claude::discover::{Pid, binary_pid_of_socket};
+use estafette_bridge_claude::discover::{BinarySocket, Pid};
 use estafette_bridge_claude::inbox_client::{InboxClientError, InboxFrame};
 use estafette_bridge_claude::inject::{InjectError, NoticeOutcome};
 use estafette_bridge_claude::permission_class::PermissionClass;
@@ -112,19 +111,16 @@ pub enum BridgeEvent {
     /// The events file could not be cut back to its last line at the stop.
     TraceNotCut(io::Error),
     /// The inbox socket took the bridge's connection.
-    InboxConnected { socket_path: PathBuf },
+    InboxConnected { binary_pid: Pid },
     /// The inbox socket closed the bridge's connection, which the bridge opens again.
-    InboxClosed { socket_path: PathBuf },
+    InboxClosed { binary_pid: Pid },
     /// The following of one inbox socket ended on an error; the next poll that finds its process follows it again.
     InboxLost {
-        socket_path: PathBuf,
+        socket: BinarySocket,
         error: InboxClientError,
     },
-    /// A frame arrived from an inbox socket.
-    FrameReceived {
-        socket_path: PathBuf,
-        frame: FrameIds,
-    },
+    /// A frame arrived from the inbox socket of the binary process named.
+    FrameReceived { binary_pid: Pid, frame: FrameIds },
     /// The rate limit dropped the frame, so no notice was written.
     FrameDroppedByRateLimit { frame: FrameIds },
     /// The session's permission class was read from the source named.
@@ -208,16 +204,15 @@ impl BridgeEvent {
                 (BRIDGE_PID_FIELD, Value::from(bridge_pid.0)),
                 (HARNESS_PID_FIELD, Value::from(harness_pid.0)),
             ],
-            Self::InboxConnected { socket_path } | Self::InboxClosed { socket_path } => {
-                binary_pid_field(socket_path)
+            Self::InboxConnected { binary_pid } | Self::InboxClosed { binary_pid } => {
+                vec![binary_pid_field(*binary_pid)]
             }
-            Self::InboxLost { socket_path, error } => {
-                let mut fields = binary_pid_field(socket_path);
-                fields.push((REASON_FIELD, Value::from(inbox_loss_reason(error))));
-                fields
-            }
-            Self::FrameReceived { socket_path, frame } => {
-                let mut fields = binary_pid_field(socket_path);
+            Self::InboxLost { socket, error } => vec![
+                binary_pid_field(socket.pid),
+                (REASON_FIELD, Value::from(inbox_loss_reason(error))),
+            ],
+            Self::FrameReceived { binary_pid, frame } => {
+                let mut fields = vec![binary_pid_field(*binary_pid)];
                 fields.extend(frame.fields());
                 fields
             }
@@ -273,8 +268,8 @@ impl BridgeEvent {
             Self::TraceNotCut(error) => Some(format!(
                 "the debug trace could not cut its events file back to its last line at the stop, so the file ends in zero bytes: {error}"
             )),
-            Self::InboxLost { socket_path, error } => {
-                Some(format!("{}: {error}", socket_path.display()))
+            Self::InboxLost { socket, error } => {
+                Some(format!("{}: {error}", socket.path.display()))
             }
             Self::PermissionClassUnreadable(error) => Some(format!(
                 "cannot read the session's permission mode, keeping the class attested before: {error}"
@@ -293,12 +288,9 @@ impl BridgeEvent {
     }
 }
 
-/// The pid of the binary process whose inbox socket this is, as a field of the events file, none for a socket not named for a pid.
-fn binary_pid_field(socket_path: &std::path::Path) -> EventFields {
-    binary_pid_of_socket(socket_path)
-        .map(|pid| (BINARY_PID_FIELD, Value::from(pid.0)))
-        .into_iter()
-        .collect()
+/// The pid of the binary process an inbox socket belongs to, as a field of the events file.
+fn binary_pid_field(binary_pid: Pid) -> (&'static str, Value) {
+    (BINARY_PID_FIELD, Value::from(binary_pid.0))
 }
 
 /// The word the events file names an inbox socket's loss by.
