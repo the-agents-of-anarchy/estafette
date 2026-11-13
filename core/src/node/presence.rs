@@ -897,14 +897,19 @@ impl PresenceLoop {
     async fn take_gossip_event(&mut self, event: GossipEvent) {
         let now_ms = self.state.now_ms();
         match event {
-            GossipEvent::Joined => self.take_joined().await,
+            GossipEvent::Joined => {
+                (self.report)(crate::event::GossipEvent::TopicJoined.into());
+                self.take_joined().await;
+            }
             GossipEvent::JoinTimedOut => self.take_join_timeout().await,
             GossipEvent::NeighborUp(node) => {
+                (self.report)(crate::event::GossipEvent::NeighborUp(node.into()).into());
                 self.rebinding.neighbor_up(node);
                 let effects = self.state.rows.take_neighbor_up(node, now_ms);
                 self.perform(effects).await;
             }
             GossipEvent::NeighborDown(node) => {
+                (self.report)(crate::event::GossipEvent::NeighborDown(node.into()).into());
                 self.rebinding.neighbor_down(node);
                 let effects = self.state.rows.take_neighbor_down(node, now_ms);
                 self.perform(effects).await;
@@ -1294,6 +1299,10 @@ impl HeardPresenceRequests {
 pub(super) fn message_id_text(id: wire::MessageId) -> String {
     uuid::Uuid::from_bytes(id).to_string()
 }
+
+#[cfg(test)]
+#[path = "presence_events_tests.rs"]
+mod events_tests;
 
 #[cfg(test)]
 pub(super) mod tests {

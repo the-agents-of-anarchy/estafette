@@ -231,7 +231,7 @@ mod tests {
     use super::*;
 
     const SPEC_FORMAT_VERSION: u64 = 1;
-    const PINNED_EVENT_NAMES: [&str; 27] = [
+    const PINNED_EVENT_NAMES: [&str; 30] = [
         "process.command_failed",
         "process.network_created",
         "process.clock_before_unix_epoch",
@@ -245,6 +245,9 @@ mod tests {
         "gossip.topic_failed",
         "gossip.topic_closed",
         "gossip.known_hosts_not_saved",
+        "gossip.topic_joined",
+        "gossip.neighbor_up",
+        "gossip.neighbor_down",
         "direct.contact_failed",
         "transport.rebinding",
         "transport.router_shutdown_failed",
