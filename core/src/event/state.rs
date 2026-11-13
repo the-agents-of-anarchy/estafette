@@ -36,7 +36,7 @@ impl AreaEvent for StateEvent {
     fn fields(&self) -> EventFields {
         match self {
             Self::Counters(snapshot) => {
-                let moment = match snapshot.moment {
+                let moment = match snapshot.moment() {
                     SnapshotMoment::Start => "start",
                     SnapshotMoment::Rebind => "rebind",
                     SnapshotMoment::Interval => "interval",
@@ -45,7 +45,7 @@ impl AreaEvent for StateEvent {
                 std::iter::once((MOMENT_FIELD, Value::from(moment)))
                     .chain(
                         snapshot
-                            .counters
+                            .counters()
                             .iter()
                             .map(|(name, count)| (*name, Value::from(*count))),
                     )
@@ -183,11 +183,15 @@ mod tests {
         crate::net::direct::tests::assert_each_arm(
             &cases,
             |moment| {
-                StateEvent::Counters(CounterSnapshot {
-                    moment: *moment,
-                    counters: Vec::new(),
-                })
+                StateEvent::Counters(CounterSnapshot::read(
+                    *moment,
+                    &iroh::metrics::SocketMetrics::default(),
+                    &iroh_gossip::metrics::Metrics::default(),
+                ))
                 .fields()
+                .into_iter()
+                .filter(|(name, _)| *name == "moment")
+                .collect::<EventFields>()
             },
             cases.len(),
         );

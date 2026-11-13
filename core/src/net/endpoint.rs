@@ -425,8 +425,8 @@ pub enum SnapshotMoment {
 /// The counters iroh keeps for the socket and for gossip, each named for its group and field, read at one moment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CounterSnapshot {
-    pub moment: SnapshotMoment,
-    pub counters: Vec<(&'static str, u64)>,
+    moment: SnapshotMoment,
+    counters: Vec<(&'static str, u64)>,
 }
 
 /// Reads each named counter field of a metrics group under its group's name.
@@ -439,7 +439,7 @@ macro_rules! counters_of {
 impl CounterSnapshot {
     /// Every counter iroh keeps for an endpoint's socket and for a gossip instance, read now.
     #[must_use]
-    pub fn read(
+    pub(crate) fn read(
         moment: SnapshotMoment,
         socket: &iroh::metrics::SocketMetrics,
         gossip: &iroh_gossip::metrics::Metrics,
@@ -511,6 +511,18 @@ impl CounterSnapshot {
             ]
         ));
         Self { moment, counters }
+    }
+
+    /// When the counters were read.
+    #[must_use]
+    pub(crate) const fn moment(&self) -> SnapshotMoment {
+        self.moment
+    }
+
+    /// Each counter's name under its group, with the count read, socket counters first.
+    #[must_use]
+    pub(crate) fn counters(&self) -> &[(&'static str, u64)] {
+        &self.counters
     }
 }
 
