@@ -320,6 +320,55 @@ pub struct PeerRows {
     report: RunRecord,
 }
 
+/// A received payload the peer table admits by the operation of its own kind.
+trait AdmittedByTheTable: DescribedPayload {
+    /// What the table gives when it takes the payload.
+    type Taken;
+
+    /// Admits this payload to `table` at `now_ms`, or names the rule that drops it.
+    fn admit_to(
+        &self,
+        table: &mut PeerTable,
+        now_ms: u64,
+    ) -> Operated<Result<Self::Taken, PayloadDropRule>>;
+}
+
+impl AdmittedByTheTable for Presence {
+    type Taken = Vec<Effect>;
+
+    fn admit_to(
+        &self,
+        table: &mut PeerTable,
+        now_ms: u64,
+    ) -> Operated<Result<Vec<Effect>, PayloadDropRule>> {
+        table.admit_presence(self, now_ms)
+    }
+}
+
+impl AdmittedByTheTable for Departure {
+    type Taken = Vec<Effect>;
+
+    fn admit_to(
+        &self,
+        table: &mut PeerTable,
+        now_ms: u64,
+    ) -> Operated<Result<Vec<Effect>, PayloadDropRule>> {
+        table.admit_departure(self, now_ms)
+    }
+}
+
+impl AdmittedByTheTable for Unreachable {
+    type Taken = ();
+
+    fn admit_to(
+        &self,
+        table: &mut PeerTable,
+        now_ms: u64,
+    ) -> Operated<Result<(), PayloadDropRule>> {
+        table.admit_unreachable(self, now_ms)
+    }
+}
+
 impl PeerRows {
     /// An empty table for the node of `own_card`, closing connections through the register of the endpoint it runs on and recording nothing.
     pub(crate) fn new(own_card: wire::PublicKey, held_connections: HeldConnections) -> Self {
@@ -371,12 +420,12 @@ impl PeerRows {
     }
 
     /// Runs the admission of a received payload on the locked table, records whether it was taken under its signer's handle, then each change it made, and returns what it gave.
-    fn admit<Taken>(
+    fn admit<Received: AdmittedByTheTable>(
         &self,
-        facts: PayloadFacts,
+        payload: &Received,
         now_ms: u64,
-        admission: impl FnOnce(&mut PeerTable) -> Operated<Result<Taken, PayloadDropRule>>,
-    ) -> Result<Taken, PayloadDropRule> {
+    ) -> Result<Received::Taken, PayloadDropRule> {
+        let facts = payload.facts();
         let (
             Operated {
                 value: admitted,
@@ -384,7 +433,7 @@ impl PeerRows {
             },
             handle,
         ) = self.operate(|table| {
-            let admitted = admission(table);
+            let admitted = payload.admit_to(table, now_ms);
             (admitted, table.handle_of(facts.signer, now_ms))
         });
         (self.report)(admission_record(facts, handle, &admitted));
@@ -394,9 +443,7 @@ impl PeerRows {
 
     /// Applies a Presence to the table, recording whether it was taken, and when it is taken closes every connection to or from its card, of any protocol, whose process no longer runs, and every other while iroh stays on that process's path (spec 3.8, address lookup).
     pub(crate) fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
-        let admitted = self.admit(presence.facts(), now_ms, |table| {
-            table.admit_presence(presence, now_ms)
-        });
+        let admitted = self.admit(presence, now_ms);
         let Ok(effects) = admitted else {
             return Vec::new();
         };
@@ -409,17 +456,12 @@ impl PeerRows {
     /// Applies a Departure to the table, returning the drop of the held connection it calls for once it is taken (spec 3.8).
     #[must_use]
     pub(crate) fn take_departure(&self, departure: &Departure, now_ms: u64) -> Vec<Effect> {
-        self.admit(departure.facts(), now_ms, |table| {
-            table.admit_departure(departure, now_ms)
-        })
-        .unwrap_or_default()
+        self.admit(departure, now_ms).unwrap_or_default()
     }
 
     /// Applies an Unreachable report about another card to the table, recording whether it was taken (spec 3.8).
     pub(crate) fn take_unreachable(&self, report: &Unreachable, now_ms: u64) {
-        let _admission = self.admit(report.facts(), now_ms, |table| {
-            table.admit_unreachable(report, now_ms)
-        });
+        let _admission = self.admit(report, now_ms);
     }
 
     /// Applies a gossip report of a new neighbor, returning the Introduce it calls for (spec 3.8).
