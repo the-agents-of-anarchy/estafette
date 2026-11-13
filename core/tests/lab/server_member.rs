@@ -8,7 +8,8 @@ use crate::lab_machine::LabMachine;
 use crate::lab_server::LabServer;
 use crate::live_network::LiveNetwork;
 use crate::mcp_server::{HANDLE_KEY, PEERS_KEY, PEERS_TOOL, RESULT_KEY, SEND_TOOL, send_arguments};
-use crate::scratch_machine::{fail_unless_panicking, keep_run_record};
+use crate::scratch_machine::trace_reader::timeline_in;
+use crate::scratch_machine::{TIMELINE_HEADING, fail_unless_panicking, keep_run_record};
 
 /// The recipe that writes the lab network's configuration on a server from its standard input.
 const NETWORK_ON_SERVER_RECIPE: &str = "remote::network-on-server";
@@ -26,6 +27,8 @@ const RUN_RECORD_ON_SERVER_RECIPE: &str = "remote::run-record-on-server";
 const TRACE_FILES_ON_SERVER_RECIPE: &str = "remote::trace-files-on-server";
 /// What ends the name of the directory a member's fetched trace files are kept in, after its server and card.
 const KEPT_TRACE_FILES_SUFFIX: &str = "traces";
+/// What begins the name of the scratch directory a failing test fetches a member's trace files into for its timeline alone.
+const FETCHED_FOR_THE_PRINT_PREFIX: &str = "ea-timeline";
 /// How long a member on a server may take to claim its card and answer a tool call, each call crossing SSH and the cloud API.
 const SERVING_WAIT: Duration = Duration::from_secs(60);
 /// How long to wait before asking a member on a server again, since each ask crosses SSH and the cloud API.
@@ -33,7 +36,7 @@ const REMOTE_POLL: Duration = Duration::from_millis(1000);
 /// What separates the server's clock stamp from the envelope a remote tool call prints.
 const STAMP_SEPARATOR: char = '\t';
 
-/// A lab member serving a card on a lab server, configured as the live network's invitation describes, stopped when dropped with its run record and trace files kept when the test asks.
+/// A lab member serving a card on a lab server, configured as the live network's invitation describes, stopped when dropped with its run record and trace files kept when the test asks and its timeline printed when the test fails.
 pub struct ServerMember<'server> {
     server: &'server LabServer,
     card: String,
@@ -160,21 +163,23 @@ impl<'server> ServerMember<'server> {
         }
     }
 
-    /// Keeps both trace files of each of the member's runs in a directory of their own beside its run record, unredacted, so its raw files are not safe to post, failing the test when they cannot be fetched.
-    fn keep_trace_files(&self, directory: &Path) {
-        let kept_in = directory.join(format!(
+    /// The directory beside the member's run record that its trace files are kept in.
+    fn kept_trace_files_directory(&self, directory: &Path) -> PathBuf {
+        directory.join(format!(
             "{}-{}-{KEPT_TRACE_FILES_SUFFIX}",
             self.server.label(),
             self.card
-        ));
+        ))
+    }
+
+    /// Fetches both trace files of each of the member's runs into the directory, unredacted, so its raw files are not safe to post, and answers whether they were fetched, failing the test when they were not.
+    fn fetch_trace_files(&self, into: &Path) -> bool {
         let fetched = self.server.attempt(
             TRACE_FILES_ON_SERVER_RECIPE,
-            &[&self.card, &kept_in.to_string_lossy()],
+            &[&self.card, &into.to_string_lossy()],
             &[],
         );
-        if fetched.status.success() {
-            eprintln!("trace files of {} kept at {}", self.card, kept_in.display());
-        } else {
+        if !fetched.status.success() {
             fail_unless_panicking(&format!(
                 "trace files of {} on {} not fetched: {}",
                 self.card,
@@ -182,6 +187,34 @@ impl<'server> ServerMember<'server> {
                 String::from_utf8_lossy(&fetched.stderr)
             ));
         }
+        fetched.status.success()
+    }
+
+    /// Prints the member's timeline for a failing test, read from its kept trace files or, when the test keeps none, from a copy fetched for the print alone.
+    fn print_timeline(&self) {
+        let timeline = self.kept_in.as_ref().map_or_else(
+            || self.timeline_fetched_for_the_print(),
+            |directory| timeline_in(&self.kept_trace_files_directory(directory)),
+        );
+        eprintln!(
+            "{TIMELINE_HEADING} {} on {}:\n{timeline}",
+            self.card,
+            self.server.label()
+        );
+    }
+
+    /// The member's timeline read from a copy of its trace files fetched into a scratch directory, which is removed once read.
+    fn timeline_fetched_for_the_print(&self) -> String {
+        let fetched_for_the_print = std::env::temp_dir().join(format!(
+            "{FETCHED_FOR_THE_PRINT_PREFIX}-{}-{}-{}",
+            std::process::id(),
+            self.server.label(),
+            self.card
+        ));
+        self.fetch_trace_files(&fetched_for_the_print);
+        let timeline = timeline_in(&fetched_for_the_print);
+        drop(fs::remove_dir_all(&fetched_for_the_print));
+        timeline
     }
 }
 
@@ -200,7 +233,17 @@ impl Drop for ServerMember<'_> {
         }
         if let Some(directory) = &self.kept_in {
             self.keep_run_record(directory);
-            self.keep_trace_files(directory);
+            let kept_trace_files = self.kept_trace_files_directory(directory);
+            if self.fetch_trace_files(&kept_trace_files) {
+                eprintln!(
+                    "trace files of {} kept at {}",
+                    self.card,
+                    kept_trace_files.display()
+                );
+            }
+        }
+        if std::thread::panicking() {
+            self.print_timeline();
         }
     }
 }
