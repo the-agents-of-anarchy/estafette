@@ -383,3 +383,35 @@ What happened: The lead ended two more turns with status text in the conversatio
 Mechanism: Each time the lead composed a closing summary out of habit after a batch of tool calls and let it stand as the final message; the earlier entries changed what it wrote about the habit and not the habit.
 
 Correction: After the last tool call of a turn the owner did not type, the lead writes nothing at all: no summary, no note, no remark.
+
+## The lead answered an inert no-output notice with a status report during silence
+
+What happened: At 05:47 on 2026-11-13, on a backstop wake the owner did not type, the lead ended its turn with a status report of some 200 words after the harness repeated its no-visible-output line three times.
+
+Mechanism: The lead counted the repeated notice as a reason to speak; the notice is inert and silence ends on the owner's word alone.
+
+Correction: After the last tool call of a turn the owner did not type the lead writes nothing, however often the notice repeats; state for the owner lives in dev-status.md and the journal.
+
+## An order to an implementer changed two requirements and the plan was not amended
+
+What happened: At 04:30 on 2026-11-13 the lead ordered the extract-trace-writer-into-shared-package implementer to fix quality findings that change the package surface and a moved file, while requirements 2 and 4 of the plan still fixed the earlier surface and forbade such edits; the spec review of the fixed head failed on exactly those two requirements at 06:31, with sound code.
+
+Mechanism: The lead put a ruling that amends requirements into an order of the implementer's brief alone; the review brief is generated from the plan section, which kept the old text. The same mechanism had failed three reviews of all-node and been diagnosed at 04:25, five minutes before this order.
+
+Correction: Whenever an order or a ruling changes what a requirement or a gate demands, the lead amends the plan section in the same turn, dated, before the order is sent; before each review launch the lead reads the unit's orders against the plan section for an unamended requirement.
+
+## The lead ended a unit's closing gate on an unchecked reading of its state
+
+What happened: At 07:00 on 2026-11-13 the lead stopped the all-net-wire implementer and killed its detached gate script by pid, writing in the journal, the brief and a wake prompt that the branch held 20 commits and that the run proved an intermediate head. The branch held 24 commits, every item was committed, and the script was the unit's closing gate at its final head.
+
+Mechanism: The count came from a git log listing cut by head -n 20, and the purpose of the process from the agent's last message ('Now A123') instead of from the script and the branch; both went into records as facts.
+
+Correction: Before pausing or stopping a run the lead counts its commits with git rev-list --count and reads what a process is from its script and its parent chain; a figure read from a cut listing is never written down. The closing gates of all-net-wire are owed again at 1e45536.
+
+## The lead ended a turn the owner did not type with a status report, a second time this morning
+
+What happened: At 07:03 on 2026-11-13, on a task notification, the lead closed its turn with a report of some 250 words on its own error and the build's state.
+
+Mechanism: The lead judged that a correction of its own error was reason enough to speak; the correction was already in the journal, the brief, the status row and a failure entry, and silence ends on the owner's word alone.
+
+Correction: No exception by subject: after the last tool call of a turn the owner did not type the lead writes nothing; what the owner should read first goes to the top pending line of dev-status.md.
