@@ -755,7 +755,7 @@ pub(super) struct PresenceLoop {
     announcer: Announcer,
     reannounce_due: Option<Instant>,
     heard_requests: HeardPresenceRequests,
-    last_request_seq: Option<u64>,
+    request_seqs: RequestSeqs,
     pub(super) relay_loss: RelayLossWatch,
     pub(super) known_hosts: KnownHosts,
     pub(super) rebinding: Rebinding,
@@ -814,7 +814,7 @@ impl PresenceLoop {
             announcer: Announcer::default(),
             reannounce_due: None,
             heard_requests: HeardPresenceRequests::default(),
-            last_request_seq: None,
+            request_seqs: RequestSeqs::default(),
             relay_loss: RelayLossWatch::default(),
             known_hosts: KnownHosts::new(network.config, network.config_path),
             rebinding: Rebinding::new(subscribed, effects.probe_relay),
@@ -931,8 +931,7 @@ impl PresenceLoop {
         if self.state.is_stopping() {
             return;
         }
-        let seq = next_seq_after(self.last_request_seq, self.state.now_ms());
-        self.last_request_seq = Some(seq);
+        let seq = self.request_seqs.advance(self.state.now_ms());
         self.broadcast(presence_request(self.state.own_card, seq))
             .await;
     }
@@ -1249,6 +1248,21 @@ impl Announcer {
         } else {
             ReannounceStep::AnnounceAt(earliest)
         }
+    }
+}
+
+/// The seq of the last presence request this node sent.
+#[derive(Default)]
+struct RequestSeqs {
+    last: Option<u64>,
+}
+
+impl RequestSeqs {
+    /// The seq of the next request, above the last one sent, recorded as sent.
+    fn advance(&mut self, now_ms: u64) -> u64 {
+        let seq = next_seq_after(self.last, now_ms);
+        self.last = Some(seq);
+        seq
     }
 }
 
