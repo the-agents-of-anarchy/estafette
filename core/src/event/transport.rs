@@ -1,4 +1,4 @@
-use iroh::endpoint::BindError;
+use iroh::endpoint::{BindError, PathId};
 use serde_json::Value;
 use tokio::task::JoinError;
 
@@ -68,11 +68,11 @@ pub enum TransportEvent {
         connection: ConnectionId,
         close: Close,
     },
-    /// A path of a connection opened, closed or was selected, named by the id iroh prints for it, with where it leads and its round-trip time.
+    /// A path of a connection opened, closed or was selected, named by its iroh path id, with where it leads and its round-trip time.
     PathChanged {
         connection: ConnectionId,
         change: PathChange,
-        path: String,
+        path: PathId,
         location: Location,
         round_trip_ms: Option<u64>,
     },
@@ -181,7 +181,7 @@ impl AreaEvent for TransportEvent {
             } => [
                 vec![
                     connection_field(*connection),
-                    (PATH_FIELD, Value::from(path.as_str())),
+                    (PATH_FIELD, Value::from(path.to_string())),
                 ],
                 location_fields(*location),
                 round_trip_ms

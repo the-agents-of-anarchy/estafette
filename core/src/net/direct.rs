@@ -244,7 +244,7 @@ impl HeldConnections {
                 self.record(|transport| TransportEvent::PathChanged {
                     connection: ConnectionId(connection.stable_id()),
                     change: *change,
-                    path: path.id().to_string(),
+                    path: path.id(),
                     location: transport.locate(path.remote_addr()),
                     round_trip_ms: Some(milliseconds_of(path.rtt())),
                 });
@@ -272,7 +272,7 @@ impl HeldConnections {
             } => TransportEvent::PathChanged {
                 connection: connection_id,
                 change: PathChange::Opened,
-                path: id.to_string(),
+                path: id,
                 location: transport.locate(&remote_addr),
                 round_trip_ms: live_round_trip(id),
             },
@@ -281,7 +281,7 @@ impl HeldConnections {
             } => TransportEvent::PathChanged {
                 connection: connection_id,
                 change: PathChange::Selected,
-                path: id.to_string(),
+                path: id,
                 location: transport.locate(&remote_addr),
                 round_trip_ms: live_round_trip(id),
             },
@@ -293,7 +293,7 @@ impl HeldConnections {
             } => TransportEvent::PathChanged {
                 connection: connection_id,
                 change: PathChange::Closed,
-                path: id.to_string(),
+                path: id,
                 location: transport.locate(&remote_addr),
                 round_trip_ms: Some(milliseconds_of(last_stats.rtt)),
             },
