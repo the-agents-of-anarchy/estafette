@@ -287,7 +287,7 @@ fn observability_decision_14_a_gate_closing_an_earlier_wait_counted_is_not_taken
 #[test]
 fn observability_decision_15_a_failing_test_prints_the_timeline_of_each_member_it_started() {
     let forced = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", FORCED_FAILURE_TEST, "--nocapture"])
+        .args(["--exact", FORCED_FAILURE_TEST, "--ignored", "--nocapture"])
         .env(FORCED_FAILURE_VARIABLE, "1")
         .output()
         .unwrap();
@@ -304,8 +304,9 @@ fn observability_decision_15_a_failing_test_prints_the_timeline_of_each_member_i
     assert!(!second.contains(HANDSHAKE_FAILED_EVENT), "{printed}");
 }
 
-/// Starts two members, the second killed before it records anything, and fails when the variable is set, which the test of the timeline print sets in a child process, and passes at once otherwise.
+/// Starts two members, the second killed before it records anything, and fails when the variable is set, which the test of the timeline print sets in the child process it runs this fixture in; ignored in the suite, and passing at once when run without the variable.
 #[test]
+#[ignore = "a fixture: the child process of observability_decision_15_a_failing_test_prints_the_timeline_of_each_member_it_started"]
 fn forced_failure_after_two_members_for_the_timeline_print() {
     if std::env::var_os(FORCED_FAILURE_VARIABLE).is_none() {
         return;
