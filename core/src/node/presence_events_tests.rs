@@ -71,6 +71,12 @@ impl RecordedEvents {
             }
         }
     }
+
+    /// Waits until the member took the witness's `IntroduceAck` to its held Introduce and to the Introduce the entry that ack created called for, each replacing the witness's lookup entry.
+    async fn both_introduce_acks_of_the_witness(&mut self) {
+        self.lookup_replaced_of(WITNESS_SEED).await;
+        self.lookup_replaced_of(WITNESS_SEED).await;
+    }
 }
 
 /// A run record that hands every event to the test, and the test's end of it.
@@ -943,6 +949,7 @@ async fn observability_decision_9_a_member_records_entries_its_direct_answers_an
     )
     .await;
     let introduced = recorded.next_named(ENTRY_CREATED).await;
+    recorded.both_introduce_acks_of_the_witness().await;
     witness
         .broadcast_as(
             MARKER_SEED,
@@ -1009,6 +1016,7 @@ async fn observability_decision_9_a_member_records_an_entry_a_probe_answer_and_a
     )
     .await;
     recorded.next_named(ENTRY_CREATED).await;
+    recorded.both_introduce_acks_of_the_witness().await;
     witness
         .broadcast_as(
             MARKER_SEED,
