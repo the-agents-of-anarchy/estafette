@@ -103,7 +103,7 @@ impl NodeEndpoint {
         }
     }
 
-    /// Hands the transport event, built against the transport record, to the record the endpoint's register holds, when it records.
+    /// Hands the transport event, built against the transport record, to the record the endpoint's register holds.
     pub(crate) fn record<Recorded: Into<crate::event::Event>>(
         &self,
         event: impl FnOnce(&TransportRecord) -> Recorded,
