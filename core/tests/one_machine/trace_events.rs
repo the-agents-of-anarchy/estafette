@@ -36,6 +36,8 @@ const FORCED_FAILURE_MESSAGE: &str = "the failure the timeline print follows";
 const TICK: Duration = Duration::from_secs(10);
 /// The bound, in ticks, that holds a member wait's readings of its clock up to the end of the look its first notice wakes.
 const TICKS_UNTIL_THE_LOOK_AFTER_A_NOTICE_ENDS: u32 = 3;
+/// The bound, in ticks, that holds a gate wait's readings of its clock up to its waking on a report.
+const TICKS_UNTIL_A_GATE_WAIT_WAKES: u32 = 2;
 
 /// A stand-in clock whose every reading is one tick later than the last, so where a wait's bound runs out follows from how often it reads the time.
 fn clock_ticking_by(tick: Duration) -> impl FnMut() -> Instant {
@@ -290,7 +292,7 @@ fn observability_decision_14_a_gate_closing_reported_while_the_wait_runs_is_coun
     });
 
     let waiting_since = Instant::now();
-    let counted = closings.wait_beyond_after(0, EVENT_BOUND, || {
+    let counted = closings.wait_beyond_after(0, EVENT_BOUND, Instant::now, || {
         release_reporter.send(()).unwrap();
     });
     let waited = waiting_since.elapsed();
@@ -301,6 +303,37 @@ fn observability_decision_14_a_gate_closing_reported_while_the_wait_runs_is_coun
         "the wait ran to its bound: {waited:?}"
     );
     reporter.join().unwrap();
+}
+
+#[test]
+fn observability_decision_14_a_gate_closing_counted_once_the_bound_ran_out_fails_the_wait_though_it_was_reported()
+ {
+    let closings = GateClosings::default();
+    let report_gate_closing = closings.sink();
+    let (release_reporter, reporter_released) = mpsc::channel::<()>();
+    let reporter = thread::spawn(move || {
+        reporter_released.recv().unwrap();
+        report_gate_closing(GateFailure::Timeout);
+    });
+    let within = TICK.checked_mul(TICKS_UNTIL_A_GATE_WAIT_WAKES).unwrap();
+
+    let waiting_since = Instant::now();
+    let failure = failure_text_of(|| {
+        closings.wait_beyond_after(0, within, clock_ticking_by(TICK), || {
+            release_reporter.send(()).unwrap();
+        });
+    });
+    let waited = waiting_since.elapsed();
+    reporter.join().unwrap();
+
+    assert_eq!(
+        failure,
+        format!("no gate closing beyond 0 within {within:?}; 1 reported so far")
+    );
+    assert!(
+        waited < TICK,
+        "the wait ran out on its timeout, not on waking: {waited:?}"
+    );
 }
 
 #[test]
