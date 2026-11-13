@@ -28,6 +28,10 @@ use estafette_bridge_claude::session_files::{
     latest_permission_mode, session_id_of_registry_entry, transcript_file_name,
 };
 
+use crate::event::BridgeEvent;
+
+mod event;
+
 const DOCTOR_SUBCOMMAND: &str = "doctor";
 const USAGE: &str = "usage: estafette-bridge-claude run <harness-pid> | doctor";
 const EXIT_FAILURE: u8 = 1;
@@ -292,7 +296,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-type ErrorSink = Arc<dyn Fn(&str) + Send + Sync>;
+/// Where every event goes, built at the composition root: the run record on standard error; it must not block.
+type RunRecord = Arc<dyn Fn(BridgeEvent) + Send + Sync>;
 type Elapsed = Arc<dyn Fn() -> Duration + Send + Sync>;
 type Task = Box<dyn FnOnce() + Send>;
 type Spawner = Arc<dyn Fn(Task) + Send + Sync>;
@@ -341,7 +346,7 @@ struct BridgeSession<S: InboxConnector, F: Files> {
     dropped_frames_file: PathBuf,
     files: F,
     elapsed: Elapsed,
-    report_error: ErrorSink,
+    record: RunRecord,
     spawn: Spawner,
     wait: Pause,
 }
@@ -418,9 +423,7 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
                 Some(class)
             }
             Err(error) => {
-                (self.report_error)(&format!(
-                    "cannot read the session's permission mode, keeping the class attested before: {error}"
-                ));
+                (self.record)(BridgeEvent::PermissionClassUnreadable(error));
                 None
             }
         }
@@ -434,12 +437,12 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
         }
         *attested = Some(class);
         drop(attested);
-        (self.report_error)(&format!("attested permission class: {class}"));
+        (self.record)(BridgeEvent::PermissionClassAttested(class));
         if let Err(error) = self
             .files
             .write_text_atomically(&self.permission_class_file, &class.to_string())
         {
-            (self.report_error)(&format!("cannot write the permission class: {error}"));
+            (self.record)(BridgeEvent::PermissionClassNotWritten(error));
         }
     }
 
@@ -452,7 +455,7 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
         }
         let dropped_before = notifier.dropped_frames();
         if let Err(error) = notifier.notify(frame, (self.elapsed)()) {
-            (self.report_error)(&error.to_string());
+            (self.record)(BridgeEvent::NoticeNotWritten(error));
         }
         let dropped_after = notifier.dropped_frames();
         drop(notifier);
@@ -486,7 +489,7 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
             .files
             .write_text_atomically(&self.dropped_frames_file, &count.to_string())
         {
-            (self.report_error)(&format!("cannot write the dropped-frame count: {error}"));
+            (self.record)(BridgeEvent::DroppedFramesNotWritten(error));
         }
     }
 }
@@ -515,7 +518,10 @@ fn follow_binary_socket<S, B, F>(
             },
         );
         let Err(error) = outcome;
-        (session.report_error)(&format!("{}: {error}", socket_path.display()));
+        (session.record)(BridgeEvent::InboxLost {
+            socket_path: socket_path.clone(),
+            error,
+        });
         lock(&session.followed_sockets).remove(&socket_path);
     }));
 }
@@ -535,7 +541,7 @@ struct BridgeEffects<S, C, F> {
     connect_binary_socket: C,
     files: F,
     elapsed: Elapsed,
-    report_error: ErrorSink,
+    record: RunRecord,
     spawn: Spawner,
     wait: Pause,
 }
@@ -543,10 +549,11 @@ struct BridgeEffects<S, C, F> {
 type ProductionBridgeEffects<F> =
     BridgeEffects<UnixSocketConnector, fn(PathBuf) -> UnixSocketConnector, F>;
 
-/// Builds the production sockets, clock, error sink, spawner and pauses the bridge runs on from the environment.
+/// Builds the production sockets, clock, spawner and pauses the bridge runs on from the environment, beside the run record handed in.
 fn bridge_effects<F: Files>(
     environment: &Environment,
     files: F,
+    record: RunRecord,
 ) -> Result<ProductionBridgeEffects<F>, CommandError> {
     let socket = environment
         .messaging_socket
@@ -568,7 +575,7 @@ fn bridge_effects<F: Files>(
         connect_binary_socket: UnixSocketConnector::new,
         files,
         elapsed: Arc::new(move || started.elapsed()),
-        report_error: Arc::new(|message| eprintln!("{message}")),
+        record,
         spawn: Arc::new(|task| {
             thread::spawn(task);
         }),
@@ -617,7 +624,7 @@ where
         ),
         files: effects.files,
         elapsed: effects.elapsed,
-        report_error: effects.report_error,
+        record: effects.record,
         spawn: effects.spawn,
         wait: Arc::clone(&wait),
     });
@@ -772,42 +779,45 @@ fn run_doctor_command(
     Ok(report.all_passed())
 }
 
-/// Writes an error's message to the error output, dropping a failed write because nothing remains to report it to.
-fn write_to_the_error_output(errors: &mut impl Write, error: &CommandError) {
-    drop(writeln!(errors, "{error}"));
-}
-
-/// Maps a command outcome to its exit status, writing an error's message alone to the error output.
-fn exit_code_of(outcome: Result<bool, CommandError>, errors: &mut impl Write) -> ExitCode {
+/// Maps a command outcome to its exit status, recording a failure's message alone.
+fn exit_code_of(outcome: Result<bool, CommandError>, record: &RunRecord) -> ExitCode {
     match outcome {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::from(EXIT_CHECK_FAILED),
         Err(error) => {
-            write_to_the_error_output(errors, &error);
+            record(BridgeEvent::CommandFailed(error));
             ExitCode::from(EXIT_FAILURE)
         }
     }
 }
 
+/// The run record written to the error output, a failed write dropped because nothing remains to report it to.
+fn run_record_on<Errors: Write + Send + 'static>(errors: Arc<Mutex<Errors>>) -> RunRecord {
+    Arc::new(move |event| drop(writeln!(lock(&errors), "{}", event.run_record_line())))
+}
+
 /// Runs the subcommand named on the command line and exits with its status.
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let mut errors = std::io::stderr();
+    let record = run_record_on(Arc::new(Mutex::new(std::io::stderr())));
     let environment = match read_environment() {
         Ok(environment) => environment,
-        Err(error) => return exit_code_of(Err(error), &mut errors),
+        Err(error) => return exit_code_of(Err(error), &record),
     };
     match parse_command(&arguments) {
         Some(Command::Run { harness_pid }) => {
-            let outcome = bridge_effects(&environment, OperatingSystemFiles)
+            let outcome = bridge_effects(&environment, OperatingSystemFiles, Arc::clone(&record))
                 .and_then(|effects| run_bridge(harness_pid, effects, &PsProcessTable))
                 .map(|outcome| {
                     if let BridgeOutcome::AlreadyServed { bridge_pid } = outcome {
-                        eprintln!("bridge {bridge_pid} already serves process {harness_pid}");
+                        record(BridgeEvent::AlreadyServed {
+                            bridge_pid,
+                            harness_pid,
+                        });
                     }
                     true
                 });
-            exit_code_of(outcome, &mut errors)
+            exit_code_of(outcome, &record)
         }
         Some(Command::Doctor) => {
             let outcome = run_doctor_command(
@@ -816,10 +826,10 @@ fn main() -> ExitCode {
                 &PsProcessTable,
                 &mut std::io::stdout(),
             );
-            exit_code_of(outcome, &mut errors)
+            exit_code_of(outcome, &record)
         }
         None => {
-            eprintln!("{USAGE}");
+            record(BridgeEvent::UsageRefused);
             ExitCode::from(EXIT_USAGE)
         }
     }
@@ -833,6 +843,10 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixStream;
+
+    fn silent_record() -> RunRecord {
+        Arc::new(|_event| {})
+    }
 
     fn arguments(words: &[&str]) -> Vec<String> {
         words.iter().map(|word| (*word).to_owned()).collect()
@@ -955,8 +969,8 @@ mod tests {
                 }),
                 files,
                 elapsed: Arc::new(move || Duration::from_secs(*lock(&clock))),
-                report_error: Arc::new(move |message| {
-                    lock(&recorded_errors).push(message.to_owned());
+                record: Arc::new(move |event| {
+                    lock(&recorded_errors).push(event.run_record_line());
                 }),
                 spawn: Arc::new(move |task| {
                     lock(&recorded_tasks).push(task);
@@ -1025,9 +1039,13 @@ mod tests {
             claude_config_dir: Some(PathBuf::from(CLAUDE_CONFIG_DIRECTORY)),
             ..environment
         };
-        bridge_effects(&environment, files_owned_as_core_reads_them())
-            .map(|effects| effects.runtime_inputs.user_id)
-            .map_err(|error| error.to_string())
+        bridge_effects(
+            &environment,
+            files_owned_as_core_reads_them(),
+            silent_record(),
+        )
+        .map(|effects| effects.runtime_inputs.user_id)
+        .map_err(|error| error.to_string())
     }
 
     #[test]
@@ -1083,7 +1101,7 @@ mod tests {
             xdg_config_home: Some(scratch.join("missing-base")),
             ..bare_environment()
         };
-        let effects = bridge_effects(&environment, OperatingSystemFiles)
+        let effects = bridge_effects(&environment, OperatingSystemFiles, silent_record())
             .unwrap_or_else(|error| panic!("the bridge refused to start: {error}"));
         let metadata = fs::metadata(&config_directory).expect("config directory created");
         assert_eq!(
@@ -1110,7 +1128,7 @@ mod tests {
             io::ErrorKind::PermissionDenied,
         );
         assert_eq!(
-            bridge_effects(&environment, files)
+            bridge_effects(&environment, files, silent_record())
                 .err()
                 .map(|error| error.to_string()),
             Some("cannot create /cfg/estafette: permission denied".to_owned())
@@ -1131,7 +1149,7 @@ mod tests {
             PathBuf::from("/cfg/estafette"),
             Err(io::ErrorKind::PermissionDenied),
         );
-        let outcome = bridge_effects(&environment, files);
+        let outcome = bridge_effects(&environment, files, silent_record());
         assert_eq!(
             outcome.err().map(|error| error.to_string()),
             Some("cannot read the owner of /cfg/estafette: permission denied".to_owned())
@@ -1145,7 +1163,7 @@ mod tests {
             ..bare_environment()
         };
         assert!(matches!(
-            bridge_effects(&environment, StandInFiles::default()),
+            bridge_effects(&environment, StandInFiles::default(), silent_record()),
             Err(CommandError::MissingVariable(MESSAGING_TOKEN_VARIABLE))
         ));
     }
@@ -1153,7 +1171,7 @@ mod tests {
     #[test]
     fn spec_3_12_the_bridge_needs_the_session_socket_and_token_before_it_starts() {
         assert!(matches!(
-            bridge_effects(&bare_environment(), OperatingSystemFiles),
+            bridge_effects(&bare_environment(), OperatingSystemFiles, silent_record()),
             Err(CommandError::MissingVariable(MESSAGING_SOCKET_VARIABLE))
         ));
     }
@@ -1337,7 +1355,7 @@ mod tests {
             },
             files: wiring.effects.files,
             elapsed: wiring.effects.elapsed,
-            report_error: wiring.effects.report_error,
+            record: wiring.effects.record,
             spawn: Arc::new(|task| task()),
             wait: Arc::new(|_| {}),
         };
@@ -1480,7 +1498,7 @@ mod tests {
             dropped_frames_file: PathBuf::from(DROPPED_FRAMES_FILE),
             files,
             elapsed: Arc::clone(&wiring.effects.elapsed),
-            report_error: Arc::clone(&wiring.effects.report_error),
+            record: Arc::clone(&wiring.effects.record),
             spawn: Arc::clone(&wiring.effects.spawn),
             wait: Arc::new(|_| {}),
         }
@@ -1850,18 +1868,16 @@ mod tests {
 
     #[test]
     fn spec_3_12_a_failed_check_ends_the_doctor_with_exit_3_and_other_outcomes_with_0_and_1() {
-        let mut errors = Vec::new();
-        assert_eq!(exit_code_of(Ok(true), &mut errors), ExitCode::SUCCESS);
-        assert_eq!(exit_code_of(Ok(false), &mut errors), ExitCode::from(3));
-        assert_eq!(errors, b"");
+        let errors: Arc<Mutex<Vec<u8>>> = Arc::default();
+        let record = run_record_on(Arc::clone(&errors));
+        assert_eq!(exit_code_of(Ok(true), &record), ExitCode::SUCCESS);
+        assert_eq!(exit_code_of(Ok(false), &record), ExitCode::from(3));
+        assert_eq!(*lock(&errors), b"");
         assert_eq!(
-            exit_code_of(
-                Err(CommandError::MissingVariable(HOME_VARIABLE)),
-                &mut errors
-            ),
+            exit_code_of(Err(CommandError::MissingVariable(HOME_VARIABLE)), &record),
             ExitCode::from(1)
         );
-        assert_eq!(errors, b"HOME is not set\n");
+        assert_eq!(*lock(&errors), b"HOME is not set\n");
     }
 
     #[derive(Default)]
