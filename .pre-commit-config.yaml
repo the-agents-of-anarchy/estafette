@@ -17,14 +17,14 @@ repos:
             name: just check
             entry: just check
             language: system
-            always_run: true
+            files: '^(core|bridges|vendor)/|\.(rs|toml)$|(^|/)Cargo\.lock$'
             pass_filenames: false
           - id: records
             name: just records
             entry: just records
             language: system
             stages: [pre-commit]
-            always_run: true
+            files: '^(CLAUDE\.md$|docs/|spec/|\.manifestos/|\.claude/memento)'
             pass_filenames: false
           - id: commit-message
             name: just dev::check-message
