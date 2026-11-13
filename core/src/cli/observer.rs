@@ -2919,16 +2919,18 @@ mod tests {
             ));
         }
         drop(table.direct_contact_failed(card_of(2), LINE_CLOCK_MS, TableCause::SendFailed));
-        table.receive_departure(
-            &wire::Departure {
-                v: Version::CURRENT,
-                card: card_of(3),
-                seq: LINE_CLOCK_MS,
-                mac: ZERO_MAC,
-                sig: ZERO_SIGNATURE,
-            },
-            LINE_CLOCK_MS,
-        );
+        table
+            .admit_departure(
+                &wire::Departure {
+                    v: Version::CURRENT,
+                    card: card_of(3),
+                    seq: LINE_CLOCK_MS,
+                    mac: ZERO_MAC,
+                    sig: ZERO_SIGNATURE,
+                },
+                LINE_CLOCK_MS,
+            )
+            .unwrap_or_default();
 
         let lines: Vec<String> = table.peers(LINE_CLOCK_MS).map(peer_line).collect();
 
@@ -2950,7 +2952,11 @@ mod tests {
             let presence = presence_of(1, &handle, hostile.clone());
             let presence_line = payload_line(&OpenedPayload::Presence(presence.clone())).unwrap();
             let mut table = PeerTable::new(card_of(0));
-            drop(table.receive_presence(&presence_of(1, "amy", hostile), LINE_CLOCK_MS));
+            drop(
+                table
+                    .admit_presence(&presence_of(1, "amy", hostile), LINE_CLOCK_MS)
+                    .unwrap_or_default(),
+            );
             let peer_lines: Vec<String> = table.peers(LINE_CLOCK_MS).map(peer_line).collect();
 
             assert_eq!(

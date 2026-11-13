@@ -3,7 +3,7 @@ use std::fmt;
 use iroh::{PublicKey, RelayUrl, SecretKey, Signature};
 
 use crate::card::is_card_public;
-use crate::config::{AcceptedValue, host_relay_url};
+use crate::config::host_relay_url;
 use crate::crypto::{
     CryptoError, MAC_LEN, Mac, NetworkKeys, SignedPayloadKind, sign_payload,
     verify_host_certificate, verify_payload_signature,
@@ -24,10 +24,6 @@ pub enum PayloadError {
     Codec(CodecError),
     Crypto(CryptoError),
     SignerIsNotThePayloadSigner,
-    HostNotCertified,
-    HostRelayRefused,
-    AddrRelaysNotTheHostRelay,
-    PublicNotAdmitted,
     OverGossipFrame { bytes: usize },
 }
 
@@ -38,20 +34,6 @@ impl fmt::Display for PayloadError {
             Self::Crypto(source) => source.fmt(formatter),
             Self::SignerIsNotThePayloadSigner => formatter
                 .write_str("the signing key is not the key the payload names as its signer"),
-            Self::HostNotCertified => {
-                formatter.write_str("the owner key did not certify the infrastructure host")
-            }
-            Self::HostRelayRefused => write!(
-                formatter,
-                "the infrastructure relay is not {}",
-                AcceptedValue::RelayUrl
-            ),
-            Self::AddrRelaysNotTheHostRelay => {
-                formatter.write_str("the infrastructure address must list exactly the host relay")
-            }
-            Self::PublicNotAdmitted => formatter.write_str(
-                "the presence public is not what a card sends: a JSON mapping within the serialized cap and the deepest nesting, naming each key once, with integers that fit 64 bits",
-            ),
             Self::OverGossipFrame { bytes } => write!(
                 formatter,
                 "a payload of {bytes} bytes is past the {LARGEST_GOSSIP_PAYLOAD_BYTES} bytes the gossip frame of {GOSSIP_FRAME_BYTES} bytes leaves after {GOSSIP_LAYER_OVERHEAD_BYTES} bytes of gossip layer overhead"
@@ -250,19 +232,6 @@ impl From<CryptoError> for OpeningFailure {
     }
 }
 
-impl From<OpeningFailure> for PayloadError {
-    fn from(failure: OpeningFailure) -> Self {
-        match failure {
-            OpeningFailure::Codec(source) => Self::Codec(source),
-            OpeningFailure::Crypto(source) => Self::Crypto(source),
-            OpeningFailure::HostNotCertified => Self::HostNotCertified,
-            OpeningFailure::HostRelayRefused => Self::HostRelayRefused,
-            OpeningFailure::AddrRelaysNotTheHostRelay => Self::AddrRelaysNotTheHostRelay,
-            OpeningFailure::PublicNotAdmitted => Self::PublicNotAdmitted,
-        }
-    }
-}
-
 impl OpeningFailure {
     /// The drop rule the failure applies.
     const fn drop_rule(&self) -> PayloadDropRule {
@@ -366,7 +335,11 @@ fn with_computed_mac<T: MacCarrying>(keys: &NetworkKeys, structure: T) -> Result
     Ok(structure.with_mac(*mac.as_bytes()))
 }
 
-fn verify_mac<T: MacCarrying>(keys: &NetworkKeys, structure: &T) -> Result<(), OpeningFailure> {
+/// Checks the mac a structure carries against the network key, failing as the caller's error type with the codec or crypto error that refused it.
+fn verify_mac<T: MacCarrying, Refusal: From<CodecError> + From<CryptoError>>(
+    keys: &NetworkKeys,
+    structure: &T,
+) -> Result<(), Refusal> {
     match structure.mac() {
         Some(mac) => Ok(keys.verify_mac(&mac_zeroed_encoding(structure)?, &Mac::from_bytes(mac))?),
         None => Ok(()),
@@ -382,7 +355,7 @@ fn seal_with_mac<T: MacCarrying>(
 
 fn open_with_mac<T: MacCarrying>(keys: &NetworkKeys, bytes: &[u8]) -> Result<T, PayloadError> {
     let structure: T = decode(bytes)?;
-    verify_mac(keys, &structure)?;
+    verify_mac::<T, PayloadError>(keys, &structure)?;
     Ok(structure)
 }
 
@@ -454,7 +427,7 @@ fn sign_then_mac(
     Ok(encoded)
 }
 
-/// An Infrastructure record whose certificate, relay and address rules hold, carrying its relay parsed; only `open_payload` hands one out.
+/// An Infrastructure record whose certificate, relay and address rules hold, carrying its relay parsed; only `open_described_payload` hands one out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidInfrastructure {
     record: Infrastructure,
@@ -537,22 +510,10 @@ fn verify_presence_rules(presence: &Presence) -> Result<(), OpeningFailure> {
     }
 }
 
-/// Decodes a gossip payload and accepts it only when its mac, its signature, and its kind's rules hold: certificate and relay for infrastructure, the card's `public` rule for presence.
+/// Opens a gossip payload when its mac, signature and kind's rules hold, or names the rule that dropped it and what the payload said of itself.
 ///
 /// # Errors
-/// `PayloadError` for bytes that do not decode, a wrong mac, a wrong signature, or a failed infrastructure or presence rule, checked in that order.
-pub fn open_payload(
-    keys: &NetworkKeys,
-    owner: &PublicKey,
-    bytes: &[u8],
-) -> Result<OpenedPayload, PayloadError> {
-    opened_or_failure(keys, owner, bytes).map_err(|(_facts, failure)| failure.into())
-}
-
-/// Opens a gossip payload as `open_payload` does, naming for a refusal the rule that dropped it and what the payload said of itself when it decoded.
-///
-/// # Errors
-/// `PayloadRefusal` for bytes `open_payload` refuses, with the rule its error applies.
+/// `PayloadRefusal` for bytes that do not decode, a wrong mac, a wrong signature, or a failed infrastructure or presence rule, checked in that order.
 pub fn open_described_payload(
     keys: &NetworkKeys,
     owner: &PublicKey,
@@ -664,7 +625,7 @@ mod tests {
     fn spec_3_4_sealed_departure_opens_with_the_cards_signature_and_a_mac() {
         let sealed = seal_payload(&keys(), &secret_key(1), unsealed_departure(1)).unwrap();
 
-        let opened = open_payload(&keys(), &owner_public(), &sealed).unwrap();
+        let opened = open_described_payload(&keys(), &owner_public(), &sealed).unwrap();
 
         let Payload::Departure(departure) = Payload::from(opened) else {
             panic!("a departure was sealed");
@@ -766,24 +727,16 @@ mod tests {
             forged_by(FOREIGN_SEED, unsealed_presence_request());
 
         assert_eq!(
-            open_payload(&keys(), &owner_public(), &departure_signed_by_foreign_key),
-            Err(PayloadError::Crypto(CryptoError::SignatureMismatch))
+            opened_or_rule(&departure_signed_by_foreign_key),
+            Err(PayloadDropRule::SignatureMismatch)
         );
         assert_eq!(
-            open_payload(
-                &keys(),
-                &owner_public(),
-                &unreachable_signed_by_the_reported_card
-            ),
-            Err(PayloadError::Crypto(CryptoError::SignatureMismatch))
+            opened_or_rule(&unreachable_signed_by_the_reported_card),
+            Err(PayloadDropRule::SignatureMismatch)
         );
         assert_eq!(
-            open_payload(
-                &keys(),
-                &owner_public(),
-                &presence_request_signed_by_foreign_key
-            ),
-            Err(PayloadError::Crypto(CryptoError::SignatureMismatch))
+            opened_or_rule(&presence_request_signed_by_foreign_key),
+            Err(PayloadDropRule::SignatureMismatch)
         );
     }
 
@@ -798,24 +751,21 @@ mod tests {
         for position in 0..sealed.len() {
             let mut tampered = sealed.clone();
             tampered[position] ^= 1;
-            assert!(
-                open_payload(&keys(), &owner_public(), &tampered).is_err(),
-                "byte {position}"
-            );
+            assert!(opened_or_rule(&tampered).is_err(), "byte {position}");
         }
         let mut seq_tampered = sealed.clone();
         seq_tampered[sealed.len() - SEQ_BYTE_FROM_END_OF_DEPARTURE] ^= 1;
         assert_eq!(
-            open_payload(&keys(), &owner_public(), &seq_tampered),
-            Err(PayloadError::Crypto(CryptoError::MacMismatch))
+            opened_or_rule(&seq_tampered),
+            Err(PayloadDropRule::MacMismatch)
         );
         let mut forged_with_broken_mac =
             forged_by(FOREIGN_SEED, unsealed_departure(REPORTED_CARD_SEED));
         let last_mac_byte = forged_with_broken_mac.len() - SIGNATURE_BYTES_AT_END - 1;
         forged_with_broken_mac[last_mac_byte] ^= 1;
         assert_eq!(
-            open_payload(&keys(), &owner_public(), &forged_with_broken_mac),
-            Err(PayloadError::Crypto(CryptoError::MacMismatch))
+            opened_or_rule(&forged_with_broken_mac),
+            Err(PayloadDropRule::MacMismatch)
         );
     }
 
@@ -830,8 +780,8 @@ mod tests {
         let remacked = with_computed_mac(&keys(), edited).unwrap();
 
         assert_eq!(
-            open_payload(&keys(), &owner_public(), &encode(&remacked).unwrap()),
-            Err(PayloadError::Crypto(CryptoError::SignatureMismatch))
+            opened_or_rule(&encode(&remacked).unwrap()),
+            Err(PayloadDropRule::SignatureMismatch)
         );
     }
 
@@ -839,10 +789,7 @@ mod tests {
     fn spec_3_4_payload_macked_under_another_network_is_dropped() {
         let sealed = seal_payload(&other_network(), &secret_key(1), unsealed_departure(1)).unwrap();
 
-        assert_eq!(
-            open_payload(&keys(), &owner_public(), &sealed),
-            Err(PayloadError::Crypto(CryptoError::MacMismatch))
-        );
+        assert_eq!(opened_or_rule(&sealed), Err(PayloadDropRule::MacMismatch));
     }
 
     const OWNER_SEED: u8 = 4;
@@ -899,8 +846,8 @@ mod tests {
         let sealed = forged_by(FOREIGN_SEED, payload);
 
         assert_eq!(
-            open_payload(&keys(), &owner_public(), &sealed),
-            Err(PayloadError::Crypto(CryptoError::SignatureMismatch))
+            opened_or_rule(&sealed),
+            Err(PayloadDropRule::SignatureMismatch)
         );
     }
 
@@ -917,8 +864,8 @@ mod tests {
             let sealed = seal_payload(&keys(), &secret_key(HOST_SEED), payload).unwrap();
 
             assert_eq!(
-                open_payload(&keys(), &owner_public(), &sealed),
-                Err(PayloadError::HostNotCertified)
+                opened_or_rule(&sealed),
+                Err(PayloadDropRule::HostNotCertified)
             );
         }
     }
@@ -929,8 +876,8 @@ mod tests {
         let sealed = seal_payload(&keys(), &secret_key(HOST_SEED), payload).unwrap();
 
         assert_eq!(
-            open_payload(&keys(), &owner_public(), &sealed),
-            Err(PayloadError::HostRelayRefused)
+            opened_or_rule(&sealed),
+            Err(PayloadDropRule::HostRelayRefused)
         );
     }
 
@@ -942,8 +889,8 @@ mod tests {
         let sealed = seal_payload(&keys(), &secret_key(HOST_SEED), payload).unwrap();
 
         assert_eq!(
-            open_payload(&keys(), &owner_public(), &sealed),
-            Err(PayloadError::HostRelayRefused)
+            opened_or_rule(&sealed),
+            Err(PayloadDropRule::HostRelayRefused)
         );
     }
 
@@ -961,8 +908,8 @@ mod tests {
             let sealed = seal_payload(&keys(), &secret_key(HOST_SEED), payload).unwrap();
 
             assert_eq!(
-                open_payload(&keys(), &owner_public(), &sealed),
-                Err(PayloadError::AddrRelaysNotTheHostRelay),
+                opened_or_rule(&sealed),
+                Err(PayloadDropRule::AddrRelaysNotTheHostRelay),
                 "{addr_relays:?}"
             );
         }
@@ -1036,10 +983,15 @@ mod tests {
         seal_payload(&keys(), &secret_key(REPORTED_CARD_SEED), payload).unwrap()
     }
 
-    fn opened(sealed: &[u8]) -> Result<Payload, PayloadError> {
-        open_payload(&keys(), &owner_public(), sealed)
+    fn opened(sealed: &[u8]) -> Result<Payload, PayloadDropRule> {
+        opened_or_rule(sealed)
             .map(Payload::from)
             .map(without_authentication)
+    }
+
+    /// What the payload layer makes of received bytes: the opened payload, or the rule that dropped them.
+    fn opened_or_rule(bytes: &[u8]) -> Result<OpenedPayload, PayloadDropRule> {
+        open_described_payload(&keys(), &owner_public(), bytes).map_err(|refusal| refusal.rule)
     }
 
     /// Spec 3.5 and 3.7: a Presence whose `public` mapping is past 3072 bytes is dropped, one at 3072 bytes is accepted.
@@ -1054,7 +1006,7 @@ mod tests {
         );
         assert_eq!(
             opened(&sealed_presence_with_public(one_past)),
-            Err(PayloadError::PublicNotAdmitted)
+            Err(PayloadDropRule::PublicNotAdmitted)
         );
     }
 
@@ -1073,7 +1025,7 @@ mod tests {
         for public in not_a_mapping {
             assert_eq!(
                 opened(&sealed_presence_with_public(public.to_vec())),
-                Err(PayloadError::PublicNotAdmitted),
+                Err(PayloadDropRule::PublicNotAdmitted),
                 "{}",
                 String::from_utf8_lossy(public)
             );
@@ -1094,7 +1046,7 @@ mod tests {
         for public in no_card_sends {
             assert_eq!(
                 opened(&sealed_presence_with_public(public.to_vec())),
-                Err(PayloadError::PublicNotAdmitted),
+                Err(PayloadDropRule::PublicNotAdmitted),
                 "{}",
                 String::from_utf8_lossy(public)
             );

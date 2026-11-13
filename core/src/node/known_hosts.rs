@@ -214,8 +214,8 @@ mod tests {
         host_seed: u8,
         relay: &str,
         ts: u64,
-    ) -> Result<OpenedPayload, crate::payload::PayloadError> {
-        crate::payload::open_payload(
+    ) -> Result<OpenedPayload, crate::payload::PayloadRefusal> {
+        crate::payload::open_described_payload(
             &keys(),
             &secret_key(OWNER_SEED).public(),
             &sealed_record(host_seed, relay, ts),
