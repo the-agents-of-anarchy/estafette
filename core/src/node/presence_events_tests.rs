@@ -486,13 +486,19 @@ fn rumor_steps() -> Vec<AdmissionStep> {
     ]
 }
 
-/// Presence request and Infrastructure steps reaching each of their rules.
+/// Presence request and Infrastructure steps reaching each of their rules, and a request from a card the table holds, named by its handle.
 fn request_and_record_steps() -> Vec<AdmissionStep> {
     let now = FROZEN_CLOCK_MS;
     let request = |seq: u64| (WITNESS_SEED, presence_request_of(WITNESS_SEED, seq));
     let record = |ts: u64| (HOST_SEED, infrastructure_of(HOST_SEED, HOST_RELAY, ts));
     vec![
         accepted(request(now), "presence_request", None, ("seq", now)),
+        accepted(
+            (MARKER_SEED, presence_request_of(MARKER_SEED, now)),
+            "presence_request",
+            Some(MARKER_HANDLE),
+            ("seq", now),
+        ),
         dropped(
             request(now - 1),
             "presence_request",
