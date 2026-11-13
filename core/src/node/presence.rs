@@ -1272,7 +1272,11 @@ impl PresenceLoop {
 
     /// Records the socket and gossip counters at the moment, and takes the next snapshot the state snapshot interval later.
     pub(super) fn record_state(&mut self, moment: SnapshotMoment) {
-        let snapshot = CounterSnapshot::read(moment, self.endpoint.endpoint(), &self.gossip);
+        let snapshot = CounterSnapshot::read(
+            moment,
+            &self.endpoint.endpoint().metrics().socket,
+            self.gossip.metrics(),
+        );
         (self.report)(crate::event::StateEvent::Counters(snapshot).into());
         let now = (self.monotonic)();
         self.snapshot_due = now.checked_add(STATE_SNAPSHOT_INTERVAL).unwrap_or(now);

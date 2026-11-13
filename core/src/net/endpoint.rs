@@ -437,11 +437,13 @@ macro_rules! counters_of {
 }
 
 impl CounterSnapshot {
-    /// Every counter iroh keeps for the endpoint's socket and for the gossip instance, read now.
+    /// Every counter iroh keeps for an endpoint's socket and for a gossip instance, read now.
     #[must_use]
-    pub fn read(moment: SnapshotMoment, endpoint: &Endpoint, gossip: &iroh_gossip::Gossip) -> Self {
-        let socket = &endpoint.metrics().socket;
-        let gossip = gossip.metrics();
+    pub fn read(
+        moment: SnapshotMoment,
+        socket: &iroh::metrics::SocketMetrics,
+        gossip: &iroh_gossip::metrics::Metrics,
+    ) -> Self {
         let mut counters = counters_of!(
             "socket",
             socket,
