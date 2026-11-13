@@ -1233,4 +1233,192 @@ mod tests {
 
         crate::net::direct::tests::assert_each_arm(&cases, Close::of, CLOSES_APART);
     }
+
+    const SPEC_RELAY_PORT: u16 = 443;
+    const CUSTOM_TRANSPORT_ID: u64 = 7;
+    const CUSTOM_TRANSPORT_DATA: &[u8] = b"custom transport data";
+    const TESTED_CONNECTION: usize = 7;
+    const PEER_KEY_BYTE: u8 = 9;
+    const MISSED_PATH_EVENTS: u64 = 5;
+    const ELAPSED_MS: u64 = 12;
+
+    fn tested_peer() -> EndpointId {
+        SecretKey::from_bytes(&[PEER_KEY_BYTE; crate::crypto::KEY_LEN]).public()
+    }
+
+    #[test]
+    fn observability_decision_6_each_kind_of_address_is_located_by_its_kind_its_port_and_the_salted_hash_of_its_text()
+     {
+        let salt = crate::net::direct::tests::test_salt();
+        let custom = TransportAddr::Custom((CUSTOM_TRANSPORT_ID, CUSTOM_TRANSPORT_DATA).into());
+        let cases = [
+            (
+                TransportAddr::Ip("192.0.2.7:7842".parse().unwrap()),
+                Location {
+                    kind: LocationKind::Direct,
+                    port: Some(7842),
+                    hash: LocationHash::of(&salt, "192.0.2.7:7842"),
+                },
+            ),
+            (
+                TransportAddr::Relay("https://relay.example/".parse().unwrap()),
+                Location {
+                    kind: LocationKind::Relay,
+                    port: Some(SPEC_RELAY_PORT),
+                    hash: LocationHash::of(&salt, "https://relay.example/"),
+                },
+            ),
+            (
+                custom.clone(),
+                Location {
+                    kind: LocationKind::Other,
+                    port: None,
+                    hash: LocationHash::of(&salt, &format!("{custom:?}")),
+                },
+            ),
+        ];
+
+        crate::net::direct::tests::assert_each_arm(
+            &cases,
+            |address| Location::of(address, &salt),
+            cases.len(),
+        );
+    }
+
+    #[tokio::test]
+    async fn observability_decision_11_each_transport_event_is_written_under_its_own_name() {
+        let salt = crate::net::direct::tests::test_salt();
+        let location = Location::of(
+            &TransportAddr::Relay("https://relay.example/".parse().unwrap()),
+            &salt,
+        );
+        let path_change = |change| TransportEvent::PathChanged {
+            connection: ConnectionId(TESTED_CONNECTION),
+            change,
+            path: iroh::endpoint::PathId::ZERO,
+            location,
+            round_trip_ms: None,
+        };
+        let cancelled = tokio::spawn(std::future::pending::<()>());
+        cancelled.abort();
+        let join_error = cancelled.await.unwrap_err();
+        let cases: Vec<(crate::event::Event, &str)> = vec![
+            (
+                TransportEvent::Rebinding(RebindCause::Deaf).into(),
+                "transport.rebinding",
+            ),
+            (
+                TransportEvent::ConnectionOpened {
+                    connection: ConnectionId(TESTED_CONNECTION),
+                    peer: PeerId::of(tested_peer()),
+                    direction: Direction::Dialed,
+                    protocol: Protocol::Direct,
+                }
+                .into(),
+                "transport.connection_opened",
+            ),
+            (
+                TransportEvent::ConnectionClosing {
+                    connection: ConnectionId(TESTED_CONNECTION),
+                    peer: PeerId::of(tested_peer()),
+                    code: SPEC_SUPERSEDED_CLOSE_CODE,
+                    reason: CloseReason::Superseded,
+                }
+                .into(),
+                "transport.connection_closing",
+            ),
+            (
+                TransportEvent::ConnectionClosed {
+                    connection: ConnectionId(TESTED_CONNECTION),
+                    close: Close::ThisSide,
+                }
+                .into(),
+                "transport.connection_closed",
+            ),
+            (
+                path_change(PathChange::Opened).into(),
+                "transport.path_opened",
+            ),
+            (
+                path_change(PathChange::Closed).into(),
+                "transport.path_closed",
+            ),
+            (
+                path_change(PathChange::Selected).into(),
+                "transport.path_selected",
+            ),
+            (
+                TransportEvent::PathEventsMissed {
+                    connection: ConnectionId(TESTED_CONNECTION),
+                    missed: MISSED_PATH_EVENTS,
+                }
+                .into(),
+                "transport.path_events_missed",
+            ),
+            (
+                TransportEvent::HomeRelay {
+                    location,
+                    connected: true,
+                }
+                .into(),
+                "transport.home_relay",
+            ),
+            (
+                TransportEvent::RelayProbed {
+                    location,
+                    answered: false,
+                }
+                .into(),
+                "transport.relay_probed",
+            ),
+            (
+                TransportEvent::RouterShutdownFailed(join_error).into(),
+                "transport.router_shutdown_failed",
+            ),
+            (
+                TransportEvent::GateClosed(GateFailure::WrongProof).into(),
+                "transport.gate_closed",
+            ),
+        ];
+
+        crate::net::direct::tests::assert_each_arm(&cases, |event| event.name(), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_11_each_direct_event_is_written_under_its_own_name() {
+        let cases: Vec<(crate::event::Event, &str)> = vec![
+            (
+                crate::event::DirectEvent::ContactFailed {
+                    peer: tested_peer(),
+                    reason: crate::net::direct::DirectError::Timeout,
+                }
+                .into(),
+                "direct.contact_failed",
+            ),
+            (
+                crate::event::DirectEvent::RequestSent(crate::net::direct::SentRequest {
+                    request: crate::net::direct::RequestSummary::Probe,
+                    peer: PeerId::of(tested_peer()),
+                    connection: None,
+                    outcome: crate::net::direct::SentOutcome::Acknowledged,
+                    elapsed_ms: ELAPSED_MS,
+                })
+                .into(),
+                "direct.request_sent",
+            ),
+            (
+                crate::event::DirectEvent::RequestServed(crate::net::direct::ServedRequest {
+                    request: None,
+                    peer: PeerId::of(tested_peer()),
+                    connection: ConnectionId(TESTED_CONNECTION),
+                    outcome: crate::net::direct::ServedOutcome::Answered,
+                    elapsed_ms: ELAPSED_MS,
+                })
+                .into(),
+                "direct.request_served",
+            ),
+        ];
+
+        crate::net::direct::tests::assert_each_arm(&cases, |event| event.name(), cases.len());
+    }
 }
