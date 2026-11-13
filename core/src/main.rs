@@ -35,6 +35,7 @@ use estafette::node::{
     Exit, Network, NodeEffects, NodeError, RuntimeShutdown, ShutdownSignal, relay_answers,
 };
 use estafette::sidecar::{self, ThreadSleep};
+use estafette::trace::iroh_lines::{self, IrohLinesRefused};
 use estafette::trace::{
     RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceEffects, TraceRefused, TraceStop,
 };
@@ -113,6 +114,7 @@ enum CommandLineFailure {
     Infrastructure(InfrastructureCommandError),
     Doctor(DoctorError),
     Trace(TraceRefused),
+    IrohLines(IrohLinesRefused),
 }
 
 impl fmt::Display for CommandLineFailure {
@@ -134,6 +136,7 @@ impl fmt::Display for CommandLineFailure {
             Self::Infrastructure(source) => write!(formatter, "{source}"),
             Self::Doctor(source) => write!(formatter, "{source}"),
             Self::Trace(source) => write!(formatter, "{source}"),
+            Self::IrohLines(source) => write!(formatter, "{source}"),
         }
     }
 }
@@ -287,15 +290,17 @@ fn start_trace(
                 .map_err(|failure| CommandLineFailure::Directories(failure.into()))?;
             let mut run_id = [0; RUN_ID_BYTES];
             fill_with_secure_random_bytes(&mut run_id);
-            Trace::start(
+            let trace = Trace::start(
                 &directory,
                 &OperatingSystemFilesystem,
                 RunId::from_random_bytes(run_id),
                 trace_effects,
                 trace_bounds,
             )
-            .map(|trace| Some(Arc::new(trace)))
-            .map_err(CommandLineFailure::Trace)
+            .map(Arc::new)
+            .map_err(CommandLineFailure::Trace)?;
+            iroh_lines::install(Arc::clone(&trace)).map_err(CommandLineFailure::IrohLines)?;
+            Ok(Some(trace))
         }
     }
 }
