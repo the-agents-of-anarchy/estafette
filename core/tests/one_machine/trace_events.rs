@@ -1,11 +1,12 @@
 use std::fs;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::process::Command;
 use std::time::Duration;
 
 use crate::local_network::{LocalNetwork, NETWORK};
 use crate::member_events::MemberEvents;
-use crate::scratch_machine::{RunRecordKeeping, ScratchMachine};
-use crate::trace_reader::events_lines_in;
+use crate::scratch_machine::{RunRecordKeeping, ScratchMachine, TIMELINE_HEADING};
+use crate::trace_reader::{NO_EVENT_RECORDED, events_lines_in};
 
 const MEMBERS_STARTED: u32 = 2;
 const HANDSHAKE_FAILED_EVENT: &str = "tool.handshake_failed";
@@ -18,6 +19,10 @@ const SECOND_MEMBER: u32 = 1;
 const UNKNOWN_HANDLE: &str = "bob";
 const BODY: &str = "hello";
 const NETWORK_CREATED_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":0,\"mono_ms\":5,\"wall_ms\":1794524353720,\"event\":\"process.network_created\",\"network\":\"acme\"}\n";
+const FORCED_FAILURE_VARIABLE: &str = "ESTAFETTE_FORCED_FAILURE";
+const FORCED_FAILURE_TEST: &str =
+    "trace_events::forced_failure_after_two_members_for_the_timeline_print";
+const FORCED_FAILURE_MESSAGE: &str = "the failure the timeline print follows";
 
 /// Runs `test-send` to an unknown handle as the member of that number, which ends having recorded `process.command_failed` in the member's trace directory.
 fn send_to_nobody_as_member(machine: &ScratchMachine, number: u32) {
@@ -157,4 +162,41 @@ fn observability_decision_14_a_second_members_event_of_the_same_name_is_not_take
 
     assert!(first_failure.starts_with("member 0: no process.command_failed"));
     assert_eq!(second_line.event, COMMAND_FAILED_EVENT);
+}
+
+#[test]
+fn observability_decision_15_a_failing_test_prints_the_timeline_of_each_member_it_started() {
+    let forced = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", FORCED_FAILURE_TEST, "--nocapture"])
+        .env(FORCED_FAILURE_VARIABLE, "1")
+        .output()
+        .unwrap();
+
+    let printed = String::from_utf8_lossy(&forced.stderr);
+    assert!(!forced.status.success(), "{printed}");
+    let [_before, first, second] = printed.split(TIMELINE_HEADING).collect::<Vec<_>>()[..] else {
+        panic!("one timeline for each of the two members: {printed}");
+    };
+    assert!(first.starts_with(" 0 on "), "{printed}");
+    assert!(first.contains(HANDSHAKE_FAILED_EVENT), "{printed}");
+    assert!(second.starts_with(" 1 on "), "{printed}");
+    assert!(second.contains(NO_EVENT_RECORDED), "{printed}");
+    assert!(!second.contains(HANDSHAKE_FAILED_EVENT), "{printed}");
+}
+
+/// Starts two members, the second killed before it records anything, and fails when the variable is set, which the test of the timeline print sets in a child process, and passes at once otherwise.
+#[test]
+fn forced_failure_after_two_members_for_the_timeline_print() {
+    if std::env::var_os(FORCED_FAILURE_VARIABLE).is_none() {
+        return;
+    }
+    let network = LocalNetwork::create("f1", &RunRecordKeeping::from_environment());
+    let machine = network.machine();
+    let mut first = machine.spawn_mcp_server();
+    drop(first.stdin.take());
+    assert!(first.wait().unwrap().success());
+    let mut second = machine.spawn_mcp_server();
+    second.kill().unwrap();
+    second.wait().unwrap();
+    panic!("{FORCED_FAILURE_MESSAGE}");
 }

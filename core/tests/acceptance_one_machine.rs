@@ -38,8 +38,7 @@ mod timed_step;
 #[path = "one_machine/trace_events.rs"]
 mod trace_events;
 #[cfg(test)]
-#[path = "support/trace_reader.rs"]
-mod trace_reader;
+use scratch_machine::trace_reader;
 
 /// The id of every Message a test builds by hand, which no check of these tests reads.
 #[cfg(test)]

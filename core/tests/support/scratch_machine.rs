@@ -12,8 +12,15 @@ use estafette::dirs::{
 use estafette::keys::parse_public_key;
 use iroh::EndpointId;
 
+#[path = "trace_reader.rs"]
+pub mod trace_reader;
+
+use trace_reader::timeline_in;
+
 /// The binary under test.
 pub const BINARY: &str = env!("CARGO_BIN_EXE_estafette");
+/// What the print of a failing test's timelines says before each member's.
+pub const TIMELINE_HEADING: &str = "timeline of member";
 /// Where scratch roots go, short enough for an inbox socket path beneath them.
 const SHORT_SCRATCH_PARENT: &str = "/tmp";
 /// The start of every scratch root's name.
@@ -174,6 +181,19 @@ impl ScratchMachine {
         self.servers_started.get()
     }
 
+    /// The timeline of each member this machine started, headed by the member's number and this machine's root, for a failing test to print.
+    fn member_timelines(&self) -> Vec<String> {
+        (0..self.members_started())
+            .map(|number| {
+                format!(
+                    "{TIMELINE_HEADING} {number} on {}:\n{}",
+                    self.root.display(),
+                    timeline_in(&self.traces_directory_of_member(number))
+                )
+            })
+            .collect()
+    }
+
     /// The trace directory of the member of that number, which no other member writes in.
     pub fn traces_directory_of_member(&self, number: u32) -> PathBuf {
         let environment = self.member_environment(number);
@@ -293,6 +313,11 @@ impl ScratchMachine {
 
 impl Drop for ScratchMachine {
     fn drop(&mut self) {
+        if std::thread::panicking() {
+            for timeline in self.member_timelines() {
+                eprintln!("{timeline}");
+            }
+        }
         let kept = self
             .run_records
             .kept_in()

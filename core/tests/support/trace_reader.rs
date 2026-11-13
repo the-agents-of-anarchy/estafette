@@ -22,6 +22,8 @@ const WALL_KEY: &str = "wall_ms";
 const NODE_KEY: &str = "node";
 /// The key holding the event's name.
 const EVENT_KEY: &str = "event";
+/// What a timeline says of a trace directory that holds no event.
+pub const NO_EVENT_RECORDED: &str = "no event recorded";
 
 /// One line of a trace file: the header every line begins with, the event's name and the event's own fields, in the order they were written.
 #[derive(Debug)]
@@ -249,7 +251,7 @@ pub fn events_lines_in(traces_directory: &Path) -> Result<Vec<TraceLine>, TraceR
 /// The events lines of the trace directory one to a row, or the reason they cannot be read, for a test that prints a member's timeline as it fails.
 pub fn timeline_in(traces_directory: &Path) -> String {
     match events_lines_in(traces_directory) {
-        Ok(lines) if lines.is_empty() => "no event recorded".to_owned(),
+        Ok(lines) if lines.is_empty() => NO_EVENT_RECORDED.to_owned(),
         Ok(lines) => lines
             .iter()
             .map(ToString::to_string)
@@ -374,7 +376,7 @@ mod tests {
             timeline_in(&directory),
             "        17 ms  #4    process.command_failed code=\"unreachable\" handle=\"bob\"\n        17 ms  #9    process.command_failed code=\"unreachable\" handle=\"bob\""
         );
-        assert_eq!(timeline_in(&directory.join("absent")), "no event recorded");
+        assert_eq!(timeline_in(&directory.join("absent")), NO_EVENT_RECORDED);
         drop(fs::remove_dir_all(&directory));
     }
 }
