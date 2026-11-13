@@ -161,4 +161,35 @@ mod tests {
             .collect();
         assert_eq!(fields, expected);
     }
+
+    #[test]
+    fn observability_decision_9_each_moment_of_a_snapshot_is_written_as_a_word_of_its_own() {
+        let cases = [
+            (
+                SnapshotMoment::Start,
+                vec![("moment", Value::from("start"))],
+            ),
+            (
+                SnapshotMoment::Rebind,
+                vec![("moment", Value::from("rebind"))],
+            ),
+            (
+                SnapshotMoment::Interval,
+                vec![("moment", Value::from("interval"))],
+            ),
+            (SnapshotMoment::Stop, vec![("moment", Value::from("stop"))]),
+        ];
+
+        crate::net::direct::tests::assert_each_arm(
+            &cases,
+            |moment| {
+                StateEvent::Counters(CounterSnapshot {
+                    moment: *moment,
+                    counters: Vec::new(),
+                })
+                .fields()
+            },
+            cases.len(),
+        );
+    }
 }
