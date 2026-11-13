@@ -92,7 +92,6 @@ fn write_line(stream: &mut impl Write, line: &impl Serialize) -> io::Result<()> 
 pub enum InjectError {
     ConnectFailed(io::Error),
     WriteFailed(io::Error),
-    SenderNameRefused(String),
 }
 
 impl fmt::Display for InjectError {
@@ -107,23 +106,35 @@ impl fmt::Display for InjectError {
             Self::WriteFailed(source) => {
                 write!(formatter, "cannot write to the messaging socket: {source}")
             }
-            Self::SenderNameRefused(name) => write!(
-                formatter,
-                "frame from {name:?} dropped: the harness's envelope rebuild alters a sender name that is empty or holds anything but visible ASCII without \" < >"
-            ),
         }
     }
 }
 
 impl std::error::Error for InjectError {}
 
-/// What became of a frame whose sender name the harness takes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A sender name the harness's envelope rebuild would alter, which drops its frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefusedSenderName(String);
+
+impl fmt::Display for RefusedSenderName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "frame from {:?} dropped: the harness's envelope rebuild alters a sender name that is empty or holds anything but visible ASCII without \" < >",
+            self.0
+        )
+    }
+}
+
+/// What became of a frame the bridge was handed.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NoticeOutcome {
     /// The notice was written into the session, attesting this class.
     Written { class: PermissionClass },
     /// The rate limit dropped the frame, so no notice was written.
     DroppedByRateLimit,
+    /// The sender name would not survive the harness's envelope rebuild, so the frame was dropped and counted.
+    DroppedSenderNameRefused(RefusedSenderName),
 }
 
 pub struct SessionNotifier<C: InboxConnector> {
@@ -153,7 +164,7 @@ impl<C: InboxConnector> SessionNotifier<C> {
 
     /// Injects one frame as the harness's peer line unless its sender name is refused or the rate limit drops it, saying which.
     /// # Errors
-    /// Returns the `InjectError` of the refused name or of the failed connection or write.
+    /// Returns the `InjectError` of the failed connection or write.
     pub fn notify(
         &mut self,
         frame: &InboxFrame,
@@ -161,7 +172,9 @@ impl<C: InboxConnector> SessionNotifier<C> {
     ) -> Result<NoticeOutcome, InjectError> {
         let Some(name) = envelope_name(&frame.from) else {
             self.refused_frames = self.refused_frames.saturating_add(1);
-            return Err(InjectError::SenderNameRefused(frame.from.clone()));
+            return Ok(NoticeOutcome::DroppedSenderNameRefused(RefusedSenderName(
+                frame.from.clone(),
+            )));
         };
         match self.rate_limit.admit(&frame.from, &frame.body, now) {
             Admission::Dropped => Ok(NoticeOutcome::DroppedByRateLimit),
@@ -369,13 +382,16 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_12_harness_2_1_319_a_sender_name_the_rebuild_would_alter_is_refused_and_counted_as_dropped()
+    fn spec_3_12_harness_2_1_319_a_sender_name_the_rebuild_would_alter_drops_its_frame_and_counts_it()
      {
         for name in ["an\"a", "an<a", "an>a", "an\na", "an a", "ana\u{2014}", ""] {
             let (mut notifier, connections) = notifier_of_class(PermissionClass::Bypass);
             let outcome = notifier.notify(&frame_from(name, "x"), Duration::ZERO);
-            assert!(
-                matches!(outcome, Err(InjectError::SenderNameRefused(_))),
+            assert_eq!(
+                outcome.map_err(|error| error.to_string()),
+                Ok(NoticeOutcome::DroppedSenderNameRefused(RefusedSenderName(
+                    name.to_owned()
+                ))),
                 "{name:?}"
             );
             assert!(connections.borrow().is_empty(), "{name:?}");

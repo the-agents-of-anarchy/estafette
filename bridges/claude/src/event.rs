@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use estafette_bridge_claude::discover::{BinarySocket, Pid};
 use estafette_bridge_claude::inbox_client::{InboxClientError, InboxFrame};
-use estafette_bridge_claude::inject::{InjectError, NoticeOutcome};
+use estafette_bridge_claude::inject::{InjectError, NoticeOutcome, RefusedSenderName};
 use estafette_bridge_claude::permission_class::PermissionClass;
 use serde_json::Value;
 
@@ -123,6 +123,11 @@ pub enum BridgeEvent {
     FrameReceived { binary_pid: Pid, frame: FrameIds },
     /// The rate limit dropped the frame, so no notice was written.
     FrameDroppedByRateLimit { frame: FrameIds },
+    /// The frame's sender name would not survive the harness's envelope rebuild, so the frame was dropped and no notice was written.
+    FrameDroppedSenderNameRefused {
+        frame: FrameIds,
+        sender: RefusedSenderName,
+    },
     /// The session's permission class was read from the source named.
     PermissionClassRead {
         class: PermissionClass,
@@ -151,6 +156,9 @@ impl BridgeEvent {
         match outcome {
             Ok(NoticeOutcome::Written { class }) => Self::NoticeWritten { frame, class },
             Ok(NoticeOutcome::DroppedByRateLimit) => Self::FrameDroppedByRateLimit { frame },
+            Ok(NoticeOutcome::DroppedSenderNameRefused(sender)) => {
+                Self::FrameDroppedSenderNameRefused { frame, sender }
+            }
             Err(error) => Self::NoticeNotWritten { frame, error },
         }
     }
@@ -169,6 +177,9 @@ impl BridgeEvent {
             Self::InboxLost { .. } => BridgeEventName::InboxLost,
             Self::FrameReceived { .. } => BridgeEventName::FrameReceived,
             Self::FrameDroppedByRateLimit { .. } => BridgeEventName::FrameDroppedByRateLimit,
+            Self::FrameDroppedSenderNameRefused { .. } => {
+                BridgeEventName::FrameDroppedSenderNameRefused
+            }
             Self::PermissionClassRead { .. } => BridgeEventName::PermissionClassRead,
             Self::PermissionClassUnreadable(_) => BridgeEventName::PermissionClassUnreadable,
             Self::PermissionClassAttested(_) => BridgeEventName::PermissionClassAttested,
@@ -182,10 +193,6 @@ impl BridgeEvent {
                 error: InjectError::WriteFailed(_),
                 ..
             } => BridgeEventName::NoticeWriteFailed,
-            Self::NoticeNotWritten {
-                error: InjectError::SenderNameRefused(_),
-                ..
-            } => BridgeEventName::FrameDroppedSenderNameRefused,
             Self::DroppedFramesNotWritten(_) => BridgeEventName::DroppedFramesNotWritten,
         }
     }
@@ -216,9 +223,9 @@ impl BridgeEvent {
                 fields.extend(frame.fields());
                 fields
             }
-            Self::FrameDroppedByRateLimit { frame } | Self::NoticeNotWritten { frame, .. } => {
-                frame.fields()
-            }
+            Self::FrameDroppedByRateLimit { frame }
+            | Self::FrameDroppedSenderNameRefused { frame, .. }
+            | Self::NoticeNotWritten { frame, .. } => frame.fields(),
             Self::PermissionClassRead { class, source } => vec![
                 (CLASS_FIELD, Value::from(class.to_string())),
                 (SOURCE_FIELD, Value::from(class_source_word(*source))),
@@ -280,6 +287,7 @@ impl BridgeEvent {
             Self::PermissionClassNotWritten(error) => {
                 Some(format!("cannot write the permission class: {error}"))
             }
+            Self::FrameDroppedSenderNameRefused { sender, .. } => Some(sender.to_string()),
             Self::NoticeNotWritten { error, .. } => Some(error.to_string()),
             Self::DroppedFramesNotWritten(error) => {
                 Some(format!("cannot write the dropped-frame count: {error}"))
