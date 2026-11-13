@@ -217,7 +217,10 @@ impl fmt::Display for CommandError {
                 write!(formatter, "cannot write the help: {source}")
             }
             Self::ProcessTable(source) => source.fmt(formatter),
-            Self::DataDirectoryUnresolvable(source) => source.fmt(formatter),
+            Self::DataDirectoryUnresolvable(source) => write!(
+                formatter,
+                "cannot place the debug trace: {source}; run with --no-debug to write no trace"
+            ),
             Self::RunIdUnreadable(source) => write!(
                 formatter,
                 "cannot read the secure random source for the run id of the debug trace: {source}; run with --no-debug to write no trace"
@@ -2687,7 +2690,7 @@ mod tests {
         for (probe, refusal) in [
             (
                 &without_a_data_directory,
-                "XDG_DATA_HOME and HOME are both unset or empty: set one of them\n",
+                "cannot place the debug trace: XDG_DATA_HOME and HOME are both unset or empty: set one of them; run with --no-debug to write no trace\n",
             ),
             (
                 &without_a_run_id,
