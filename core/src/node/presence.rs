@@ -924,8 +924,11 @@ impl PresenceLoop {
         .await;
     }
 
-    /// Broadcasts a request that every member announce itself at once, signed by this node's card and dated now.
+    /// Broadcasts a request that every member announce itself at once, signed by this node's card and dated now, unless this node is stopping.
     async fn request_presence(&self) {
+        if self.state.is_stopping() {
+            return;
+        }
         self.broadcast(presence_request(self.state.own_card, self.state.now_ms()))
             .await;
     }
@@ -3096,6 +3099,27 @@ pub(super) mod tests {
             .await;
 
         assert!(asked.is_some());
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_stopping_member_whose_topic_joins_asks_no_member_to_announce_itself() {
+        let scratch = Scratch::new("stopping-ask").await;
+        let lonely = start_members(
+            &scratch,
+            vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)],
+        )
+        .await
+        .pop()
+        .unwrap();
+        lonely.node.start_stopping();
+
+        let mut witness = Witness::joined_through(WITNESS_SEED, None, &lonely.endpoint).await;
+        let asked = witness
+            .payload_where(PAYLOAD_WAIT, presence_request_by(FIRST_SEED))
+            .await;
+
+        assert!(asked.is_none());
         drop(scratch);
     }
 
