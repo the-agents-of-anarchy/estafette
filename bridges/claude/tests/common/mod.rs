@@ -2,6 +2,7 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -32,6 +33,8 @@ const MISSING_PIPE: &str = "the spawned member has no piped standard stream";
 type Outcome<T> = Result<T, Box<dyn std::error::Error>>;
 type MemberLine = Result<Value, String>;
 
+static FIXTURES_MADE: AtomicU64 = AtomicU64::new(0);
+
 pub struct Fixture {
     pub root: PathBuf,
     pub messaging_socket: PathBuf,
@@ -41,8 +44,11 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new() -> io::Result<Self> {
-        let root = PathBuf::from(SHORT_SCRATCH_PARENT)
-            .join(format!("{SCRATCH_PREFIX}-{}", std::process::id()));
+        let fixture_number = FIXTURES_MADE.fetch_add(1, Ordering::Relaxed);
+        let root = PathBuf::from(SHORT_SCRATCH_PARENT).join(format!(
+            "{SCRATCH_PREFIX}-{}-{fixture_number}",
+            std::process::id()
+        ));
         if let Err(failure) = fs::remove_dir_all(&root)
             && failure.kind() != io::ErrorKind::NotFound
         {
@@ -77,9 +83,13 @@ impl Fixture {
         command
             .env_clear()
             .env("XDG_CONFIG_HOME", self.root.join(CONFIG_HOME))
-            .env("XDG_DATA_HOME", self.root.join(DATA_HOME))
+            .env("XDG_DATA_HOME", self.data_home())
             .env("XDG_RUNTIME_DIR", self.root.join(RUNTIME_DIRECTORY));
         command
+    }
+
+    pub fn data_home(&self) -> PathBuf {
+        self.root.join(DATA_HOME)
     }
 
     pub fn temporary_directory(&self) -> PathBuf {
@@ -93,6 +103,7 @@ impl Fixture {
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.root.join(HOME_DIRECTORY))
             .env("XDG_CONFIG_HOME", self.root.join(CONFIG_HOME))
+            .env("XDG_DATA_HOME", self.data_home())
             .env("TMPDIR", self.temporary_directory())
             .env("XDG_RUNTIME_DIR", self.root.join(RUNTIME_DIRECTORY))
             .env("CLAUDE_CODE_MESSAGING_SOCKET", &self.messaging_socket)

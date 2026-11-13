@@ -8,7 +8,7 @@ use estafette_bridge_claude::inject::{InjectError, NoticeOutcome};
 use estafette_bridge_claude::permission_class::PermissionClass;
 use serde_json::Value;
 
-use crate::{ClassSource, CommandError, LiveClassError, USAGE};
+use crate::{ClassSource, CommandError, LiveClassError, usage};
 
 const BRIDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 const VERSION_FIELD: &str = "version";
@@ -258,7 +258,7 @@ impl BridgeEvent {
             | Self::FrameDroppedByRateLimit { .. }
             | Self::PermissionClassRead { .. }
             | Self::NoticeWritten { .. } => None,
-            Self::UsageRefused => Some(USAGE.to_owned()),
+            Self::UsageRefused => Some(usage()),
             Self::AlreadyServed {
                 bridge_pid,
                 harness_pid,

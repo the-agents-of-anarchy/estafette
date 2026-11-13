@@ -29,7 +29,10 @@ use estafette_bridge_claude::session_files::{
 };
 
 use estafette_trace::{
-    BaseDirectoryUnresolvable, RUN_ID_BYTES, TraceBounds, TraceClocks, TraceEffects, TraceRefused,
+    BaseDirectoryUnresolvable, Program, ROLLED_OVER_TRACE_SUFFIX, RUN_ID_BYTES,
+    TRACE_DIRECTORY_MAX_BYTES, TRACE_FILE_ROLLOVER_BYTES, TRACE_FRESHNESS,
+    TRACE_RUN_FILE_MAX_BYTES, TraceBounds, TraceClocks, TraceDirectory, TraceEffects, TraceRefused,
+    events_trace_file_name, run_name_pattern,
 };
 
 use crate::debug_trace::{DebugTrace, TraceInputs, Tracing};
@@ -39,10 +42,14 @@ mod debug_trace;
 mod event;
 
 const DOCTOR_SUBCOMMAND: &str = "doctor";
-const USAGE: &str =
-    "usage: estafette-bridge-claude run <harness-pid> [--debug | --no-debug] | doctor";
+const BRIDGE_PROGRAM: &str = "estafette-bridge-claude";
+const RUN_FORM: &str = "run <harness-pid> [--debug | --no-debug]";
 const DEBUG_FLAG: &str = "--debug";
 const NO_DEBUG_FLAG: &str = "--no-debug";
+const HELP_FLAG: &str = "--help";
+const BYTES_PER_MEBIBYTE: u64 = 1_048_576;
+const MEBIBYTES_PER_GIBIBYTE: u64 = 1024;
+const SECONDS_PER_MINUTE: u64 = 60;
 const SECURE_RANDOM_DEVICE: &str = "/dev/urandom";
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
@@ -78,12 +85,36 @@ const STAGING_SUFFIX: &str = ".staging";
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
     Run { harness_pid: Pid, tracing: Tracing },
+    RunHelp,
     Doctor,
+}
+
+/// The one line naming every form the command line takes.
+fn usage() -> String {
+    format!(
+        "usage: {BRIDGE_PROGRAM} {RUN_FORM} | {RUN_SUBCOMMAND} {HELP_FLAG} | {DOCTOR_SUBCOMMAND}"
+    )
+}
+
+/// The help of `run`: what it does, reads, writes and refuses, and what its debug trace writes, where, that it is safe to post, and its bounds.
+fn run_help() -> String {
+    let events = events_trace_file_name(&run_name_pattern(Program::Bridge));
+    format!(
+        "usage: {BRIDGE_PROGRAM} {RUN_FORM}\n\nServes the Claude Code session whose process is <harness-pid> until that process exits: follows the inbox socket of every estafette mcp process under it and writes one notice per frame into the session's messaging socket. Reads {MESSAGING_SOCKET_VARIABLE} and {MESSAGING_TOKEN_VARIABLE} from the environment and refuses to start without them. Exits 0 at once when another bridge already serves the session.\n\n{DEBUG_FLAG}     Write the debug trace of this run, the default until v1.0.0. Writes one file per run, readable by you alone, in {directory}: {events}, the run's typed events, which is safe to post: it holds no message body, token or socket path. The first line on standard error names the file. Bounds: the file rolls over once at {rollover_mib} MiB into a {ROLLED_OVER_TRACE_SUFFIX} file that replaces any earlier one, so a run keeps at most {run_file_mib} MiB; at each start the oldest runs of the bridge and of estafette are removed, every file of a run together, until the directory holds at most {directory_gib} GiB, keeping every run whose events file was written in the last {freshness_minutes} minutes. A trace that cannot start refuses the run.\n{NO_DEBUG_FLAG}  Write no debug trace for this run: create no trace file and start no trace writer.",
+        directory = TraceDirectory::described(),
+        rollover_mib = TRACE_FILE_ROLLOVER_BYTES / BYTES_PER_MEBIBYTE,
+        run_file_mib = TRACE_RUN_FILE_MAX_BYTES / BYTES_PER_MEBIBYTE,
+        directory_gib = TRACE_DIRECTORY_MAX_BYTES / BYTES_PER_MEBIBYTE / MEBIBYTES_PER_GIBIBYTE,
+        freshness_minutes = TRACE_FRESHNESS.as_secs() / SECONDS_PER_MINUTE,
+    )
 }
 
 /// Reads the subcommand and its arguments from the command line, refusing any other form.
 fn parse_command(arguments: &[String]) -> Option<Command> {
     match arguments {
+        [subcommand, flag] if subcommand == RUN_SUBCOMMAND && flag == HELP_FLAG => {
+            Some(Command::RunHelp)
+        }
         [subcommand, harness_pid, tracing_flags @ ..] if subcommand == RUN_SUBCOMMAND => {
             Some(Command::Run {
                 harness_pid: harness_pid.parse().ok()?,
@@ -150,6 +181,7 @@ enum CommandError {
     SettingsUnreadable { path: PathBuf, source: io::Error },
     WorkingDirectoryUnreadable(io::Error),
     ReportUnwritable(io::Error),
+    HelpUnwritable(io::Error),
     ProcessTable(ProcessTableError),
     DataDirectoryUnresolvable(BaseDirectoryUnresolvable),
     RunIdUnreadable(io::Error),
@@ -180,6 +212,9 @@ impl fmt::Display for CommandError {
             }
             Self::ReportUnwritable(source) => {
                 write!(formatter, "cannot write the report: {source}")
+            }
+            Self::HelpUnwritable(source) => {
+                write!(formatter, "cannot write the help: {source}")
             }
             Self::ProcessTable(source) => source.fmt(formatter),
             Self::DataDirectoryUnresolvable(source) => source.fmt(formatter),
@@ -964,6 +999,12 @@ fn main() -> ExitCode {
             |record| bridge_effects(&environment, OperatingSystemFiles, record),
             &PsProcessTable,
         ),
+        Some(Command::RunHelp) => {
+            let outcome = writeln!(std::io::stdout(), "{}", run_help())
+                .map(|()| true)
+                .map_err(CommandError::HelpUnwritable);
+            exit_code_of(outcome, &record)
+        }
         Some(Command::Doctor) => {
             let outcome = run_doctor_command(
                 &environment,
@@ -1033,6 +1074,33 @@ mod tests {
             parse_command(&arguments(&["doctor"])),
             Some(Command::Doctor)
         );
+    }
+
+    #[test]
+    fn observability_decision_3_the_help_of_run_states_what_the_trace_writes_where_that_it_is_safe_to_post_and_its_bounds()
+     {
+        assert_eq!(
+            parse_command(&arguments(&["run", "--help"])),
+            Some(Command::RunHelp)
+        );
+        let help = run_help();
+        for stated in [
+            "usage: estafette-bridge-claude run <harness-pid> [--debug | --no-debug]",
+            "--debug ",
+            "--no-debug ",
+            &estafette_trace::TraceDirectory::described(),
+            "<start>-<run>-bridge.events.jsonl",
+            "safe to post",
+            "64 MiB",
+            ".1 file",
+            "128 MiB",
+            "1 GiB",
+            "10 minutes",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+        ] {
+            assert!(help.contains(stated), "{stated:?} missing from:\n{help}");
+        }
     }
 
     #[test]
