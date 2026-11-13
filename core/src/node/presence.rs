@@ -1663,6 +1663,12 @@ pub(super) mod tests {
     const FAR_FUTURE_REQUEST_SEQ: u64 = FROZEN_CLOCK_MS + SPEC_ANNOUNCEMENT_MAX_AGE_MS + 1;
     const ANSWERED_AT_ONCE_WITHIN: Duration = Duration::from_millis(100);
     const SPEC_REANNOUNCE_INTERVAL_AND_NOTHING_MORE_WAIT: Duration = Duration::from_millis(3000);
+    const HELD_INTRODUCE_SENT_WITHIN: Duration =
+        SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT.saturating_add(INTRODUCE_ROUND_TRIP);
+    const OWN_HANDLE_ASSIGNED: &str = "peers.own_handle_assigned";
+    const REQUEST_SENT: &str = "direct.request_sent";
+    const INTRODUCE_KIND: &str = "introduce";
+    const SPEC_SHORT_PEER_ID_BYTES: usize = 5;
 
     fn network_secret() -> NetworkSecret {
         NetworkSecret::from_bytes(NETWORK_SECRET)
@@ -3552,6 +3558,90 @@ pub(super) mod tests {
         assert!(last_held_introduce_failed);
         assert_eq!(witness.introduces_taken_from(SECOND_SEED), 1);
         drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_joining_member_records_the_introduce_it_held_as_sent_after_its_handle_is_assigned()
+     {
+        let scratch = Scratch::new("held-introduce-sent").await;
+        let first = start_members(
+            &scratch,
+            vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)],
+        )
+        .await
+        .pop()
+        .unwrap();
+        let witness =
+            Witness::joined_through(WITNESS_SEED, Some(WITNESS_HANDLE), &first.endpoint).await;
+        let (record, mut events) = crate::net::direct::tests::recorded_events();
+
+        let _joining = start_members_reaching(
+            &scratch,
+            vec![
+                MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
+                    .with_hosts(&[WITNESS_SEED])
+                    .with_report(Arc::clone(&record))
+                    .with_register(HeldConnections::new(
+                        Arc::new(Instant::now),
+                        crate::net::endpoint::TransportRecord::new(
+                            record,
+                            crate::net::direct::tests::test_salt(),
+                        ),
+                    )),
+            ],
+            &[(WITNESS_SEED, witness.address())],
+        )
+        .await;
+        let (recorded_before, sent) =
+            recorded_until_introduce_sent_to(&mut events, WITNESS_SEED).await;
+
+        assert!(
+            recorded_before.contains(&OWN_HANDLE_ASSIGNED),
+            "the held introduce is sent after {OWN_HANDLE_ASSIGNED}: {recorded_before:?}"
+        );
+        assert_eq!(
+            crate::net::direct::tests::field(&sent, "outcome"),
+            Some(&serde_json::Value::from("acknowledged"))
+        );
+        assert_eq!(
+            crate::net::direct::tests::field(&sent, "connection_source"),
+            Some(&serde_json::Value::from("dialed"))
+        );
+        drop(scratch);
+    }
+
+    /// The names of the events recorded before this node's next sent Introduce to the card of the seed, within the bound, and that event's fields.
+    async fn recorded_until_introduce_sent_to(
+        events: &mut tokio::sync::mpsc::UnboundedReceiver<crate::net::direct::tests::RecordedEvent>,
+        seed: u8,
+    ) -> (Vec<&'static str>, crate::event::EventFields) {
+        let introduce_to_the_card = (
+            Some(serde_json::Value::from(INTRODUCE_KIND)),
+            Some(serde_json::Value::from(data_encoding::HEXLOWER.encode(
+                &secret_key(seed).public().as_bytes()[..SPEC_SHORT_PEER_ID_BYTES],
+            ))),
+        );
+        let mut before = Vec::new();
+        let found = tokio::time::timeout(HELD_INTRODUCE_SENT_WITHIN, async {
+            while let Some((name, fields)) = events.recv().await {
+                let request = (
+                    crate::net::direct::tests::field(&fields, "kind").cloned(),
+                    crate::net::direct::tests::field(&fields, "peer").cloned(),
+                );
+                if name == REQUEST_SENT && request == introduce_to_the_card {
+                    return Some(fields);
+                }
+                before.push(name);
+            }
+            None
+        })
+        .await;
+        match found {
+            Ok(Some(fields)) => (before, fields),
+            Ok(None) | Err(_) => panic!(
+                "no {REQUEST_SENT} of kind {INTRODUCE_KIND} to the card of seed {seed} within {HELD_INTRODUCE_SENT_WITHIN:?}; seen {before:?}"
+            ),
+        }
     }
 
     #[tokio::test]
