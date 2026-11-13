@@ -6,8 +6,9 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::tests::{
-    FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, MARKER_SEED, MemberPlan, SECOND_HANDLE, SECOND_PUBLIC,
-    SECOND_SEED, Scratch, card, start_members, start_witnessed, wall_clock_ms,
+    FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, MARKER_SEED, MemberPlan,
+    SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, Scratch, card, start_members, start_witnessed,
+    wall_clock_ms,
 };
 use crate::event::{Event, EventFields, RunRecord};
 use crate::payload::{ZERO_MAC, ZERO_SIGNATURE};
@@ -15,8 +16,12 @@ use crate::wire::{Addr, Payload, Presence, Version};
 
 const EVENT_WAIT: Duration = Duration::from_secs(10);
 const SPEC_SHORT_ID_BYTES: usize = 5;
+const SPEC_ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
+const STALE_SEQ: u64 = FROZEN_CLOCK_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1;
+const SECOND_MARKER_SEED: u8 = 82;
 const MARKER_HANDLE: &str = "mark";
 const MARKER_PUBLIC: &[u8] = br#"{"role":"marker"}"#;
+const REPLAYED_PUBLIC: &[u8] = br#"{"role":"replayed"}"#;
 const MARKER_RELAY: &str = "https://relay.marker.invalid/";
 const MARKER_DIRECT_ADDRESS: SocketAddr = SocketAddr::new(
     std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 7)),
@@ -150,4 +155,73 @@ async fn observability_decision_9_a_member_records_a_payload_it_accepted_with_it
         ]
     );
     drop(scratch);
+}
+
+#[tokio::test]
+async fn observability_decision_9_a_member_records_a_payload_its_admission_dropped_with_the_rule_that_dropped_it()
+ {
+    let scratch = Scratch::new("events-dropped").await;
+    let (report, mut recorded) = recording();
+    let (_member, witness) = start_witnessed(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+            .with_clock(Arc::new(|| FROZEN_CLOCK_MS))
+            .with_report(report),
+        None,
+    )
+    .await;
+    witness
+        .broadcast_as(
+            MARKER_SEED,
+            presence_of(MARKER_SEED, MARKER_HANDLE, FROZEN_CLOCK_MS),
+        )
+        .await;
+    recorded.next_named("gossip.payload_accepted").await;
+
+    witness
+        .broadcast_as(
+            MARKER_SEED,
+            replayed(presence_of(MARKER_SEED, MARKER_HANDLE, FROZEN_CLOCK_MS)),
+        )
+        .await;
+    let replay = recorded.next_named("gossip.payload_dropped").await;
+    witness
+        .broadcast_as(
+            SECOND_MARKER_SEED,
+            presence_of(SECOND_MARKER_SEED, MARKER_HANDLE, STALE_SEQ),
+        )
+        .await;
+    let stale = recorded.next_named("gossip.payload_dropped").await;
+
+    assert_eq!(
+        replay,
+        [
+            ("kind", Value::from("presence")),
+            ("peer", short_id(MARKER_SEED)),
+            ("handle", Value::from(MARKER_HANDLE)),
+            ("seq", Value::from(FROZEN_CLOCK_MS)),
+            ("rule", Value::from("not_newer_than_held")),
+        ]
+    );
+    assert_eq!(
+        stale,
+        [
+            ("kind", Value::from("presence")),
+            ("peer", short_id(SECOND_MARKER_SEED)),
+            ("seq", Value::from(STALE_SEQ)),
+            ("rule", Value::from("older_than_max_age")),
+        ]
+    );
+    drop(scratch);
+}
+
+/// The Presence carrying another public mapping, so its bytes differ from the one first sent and gossip delivers it again.
+fn replayed(presence: Payload) -> Payload {
+    let Payload::Presence(presence) = presence else {
+        panic!("a Presence is replayed");
+    };
+    Payload::Presence(Presence {
+        public: REPLAYED_PUBLIC.to_vec(),
+        ..presence
+    })
 }

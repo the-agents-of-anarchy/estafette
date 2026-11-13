@@ -6,7 +6,7 @@ use crate::config::ConfigError;
 use crate::crypto::SignedPayloadKind;
 use crate::handle::LocalHandle;
 use crate::net::gossip::GossipError;
-use crate::payload::{PayloadFacts, PayloadStamp};
+use crate::payload::{PayloadDropRule, PayloadFacts, PayloadStamp};
 use crate::wire;
 
 const SHORT_ID_BYTES: usize = 5;
@@ -15,6 +15,7 @@ const KIND_FIELD: &str = "kind";
 const HANDLE_FIELD: &str = "handle";
 const SEQ_FIELD: &str = "seq";
 const TS_FIELD: &str = "ts";
+const RULE_FIELD: &str = "rule";
 
 super::event_names! {
     /// The names of the gossip events.
@@ -27,6 +28,7 @@ super::event_names! {
         NeighborUp => "gossip.neighbor_up",
         NeighborDown => "gossip.neighbor_down",
         PayloadAccepted => "gossip.payload_accepted",
+        PayloadDropped => "gossip.payload_dropped",
     }
 }
 
@@ -54,32 +56,38 @@ impl ShortId {
     }
 }
 
-/// A received payload as the events file names it: its kind, its signer's five-byte id and its stamp.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A received payload as the events file names it: its kind, its signer's five-byte id, the handle the table holds for the signer if any, and its stamp.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceivedPayload {
     kind: SignedPayloadKind,
     signer: ShortId,
+    signer_handle: Option<LocalHandle>,
     stamp: PayloadStamp,
 }
 
-impl From<PayloadFacts> for ReceivedPayload {
-    fn from(facts: PayloadFacts) -> Self {
+impl From<(PayloadFacts, Option<LocalHandle>)> for ReceivedPayload {
+    fn from((facts, signer_handle): (PayloadFacts, Option<LocalHandle>)) -> Self {
         Self {
             kind: facts.kind,
             signer: ShortId::from(&facts.signer),
+            signer_handle,
             stamp: facts.stamp,
         }
     }
 }
 
 impl ReceivedPayload {
-    /// The payload's fields in the events file: its kind, its signer, the handle the table names the signer by when it holds one, and its stamp.
-    fn fields(self, handle: Option<&LocalHandle>) -> EventFields {
+    /// The payload's fields in the events file: its kind, its signer, the signer's handle when the table holds one, and its stamp.
+    fn fields(&self) -> EventFields {
         let mut fields = vec![
             (KIND_FIELD, Value::from(kind_name(self.kind))),
             (PEER_FIELD, self.signer.field()),
         ];
-        fields.extend(handle.map(|handle| (HANDLE_FIELD, Value::from(handle.as_str()))));
+        fields.extend(
+            self.signer_handle
+                .as_ref()
+                .map(|handle| (HANDLE_FIELD, Value::from(handle.as_str()))),
+        );
         fields.push(stamp_field(self.stamp));
         fields
     }
@@ -93,6 +101,17 @@ const fn kind_name(kind: SignedPayloadKind) -> &'static str {
         SignedPayloadKind::Unreachable => "unreachable",
         SignedPayloadKind::Infrastructure => "infrastructure",
         SignedPayloadKind::PresenceRequest => "presence_request",
+    }
+}
+
+/// The name the events file gives a drop rule.
+const fn rule_name(rule: PayloadDropRule) -> &'static str {
+    match rule {
+        PayloadDropRule::FromOwnCard => "from_own_card",
+        PayloadDropRule::OlderThanMaxAge => "older_than_max_age",
+        PayloadDropRule::NotNewerThanHeld => "not_newer_than_held",
+        PayloadDropRule::NotNewerThanDeparture => "not_newer_than_departure",
+        PayloadDropRule::HandleOutsideGrammar => "handle_outside_grammar",
     }
 }
 
@@ -120,10 +139,12 @@ pub enum GossipEvent {
     NeighborUp(ShortId),
     /// The topic took a neighbor away.
     NeighborDown(ShortId),
-    /// The node took a payload it received, naming its signer by the handle the table holds for it, if any.
-    PayloadAccepted {
-        payload: ReceivedPayload,
-        handle: Option<LocalHandle>,
+    /// The node took a payload it received.
+    PayloadAccepted(ReceivedPayload),
+    /// The node dropped a payload it received by the rule named, telling what the payload said of itself when it decoded.
+    PayloadDropped {
+        payload: Option<ReceivedPayload>,
+        rule: PayloadDropRule,
     },
 }
 
@@ -139,7 +160,8 @@ impl AreaEvent for GossipEvent {
             Self::TopicJoined => GossipEventName::TopicJoined,
             Self::NeighborUp(_) => GossipEventName::NeighborUp,
             Self::NeighborDown(_) => GossipEventName::NeighborDown,
-            Self::PayloadAccepted { .. } => GossipEventName::PayloadAccepted,
+            Self::PayloadAccepted(_) => GossipEventName::PayloadAccepted,
+            Self::PayloadDropped { .. } => GossipEventName::PayloadDropped,
         }
     }
 
@@ -156,7 +178,8 @@ impl AreaEvent for GossipEvent {
             Self::TopicJoined
             | Self::NeighborUp(_)
             | Self::NeighborDown(_)
-            | Self::PayloadAccepted { .. } => None,
+            | Self::PayloadAccepted(_)
+            | Self::PayloadDropped { .. } => None,
         }
     }
 
@@ -168,7 +191,14 @@ impl AreaEvent for GossipEvent {
             | Self::KnownHostsNotSaved(_)
             | Self::TopicJoined => Vec::new(),
             Self::NeighborUp(peer) | Self::NeighborDown(peer) => vec![(PEER_FIELD, peer.field())],
-            Self::PayloadAccepted { payload, handle } => payload.fields(handle.as_ref()),
+            Self::PayloadAccepted(payload) => payload.fields(),
+            Self::PayloadDropped { payload, rule } => {
+                let mut fields = payload
+                    .as_ref()
+                    .map_or_else(Vec::new, ReceivedPayload::fields);
+                fields.push((RULE_FIELD, Value::from(rule_name(*rule))));
+                fields
+            }
         }
     }
 }

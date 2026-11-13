@@ -37,7 +37,9 @@ use crate::net::direct::{
 };
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, JOIN_TIMEOUT, NetworkTopic};
-use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
+use crate::payload::{
+    DescribedPayload, OpenedPayload, PayloadDropRule, PayloadFacts, ZERO_MAC, ZERO_SIGNATURE,
+};
 use crate::peers::{
     Effect, Peer, PeerTable, announced_sender_handle, is_within_announcement_max_age,
     is_within_announcement_max_age_ahead,
@@ -351,16 +353,10 @@ impl PeerRows {
         let admitted = table.admit_presence(presence, now_ms);
         let handle = table.handle_of(presence.card, now_ms);
         drop(table);
+        (self.report)(admission_record(presence.facts(), handle, &admitted));
         let Ok(effects) = admitted else {
             return Vec::new();
         };
-        (self.report)(
-            crate::event::GossipEvent::PayloadAccepted {
-                payload: presence.facts().into(),
-                handle,
-            }
-            .into(),
-        );
         if effects.contains(&Effect::DropHeldConnection(presence.card)) {
             self.held_connections.close_silent_of(presence.card);
         }
@@ -1209,6 +1205,23 @@ pub async fn sleep_until_deadline(deadline: Option<Instant>) {
         Some(deadline) => sleep_until(deadline).await,
         None => std::future::pending().await,
     }
+}
+
+/// The record of a received payload the node took, or dropped by the rule the admission named, naming its signer by the handle the table holds for it, if any.
+fn admission_record<Taken>(
+    facts: PayloadFacts,
+    signer_handle: Option<LocalHandle>,
+    admission: &Result<Taken, PayloadDropRule>,
+) -> Event {
+    let payload = (facts, signer_handle).into();
+    match admission {
+        Ok(_taken) => crate::event::GossipEvent::PayloadAccepted(payload),
+        Err(rule) => crate::event::GossipEvent::PayloadDropped {
+            payload: Some(payload),
+            rule: *rule,
+        },
+    }
+    .into()
 }
 
 /// The effects of an `IntroduceAck` less the drop of the held connection, since the ack came on that connection (spec 3.8).
