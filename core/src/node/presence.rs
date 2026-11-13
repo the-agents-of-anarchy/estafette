@@ -42,7 +42,7 @@ use crate::payload::{
     ZERO_SIGNATURE,
 };
 use crate::peers::{
-    Effect, Peer, PeerTable, TableCause, TableChange, announced_sender_handle,
+    Effect, Operated, Peer, PeerTable, TableCause, TableChange, announced_sender_handle,
     is_within_announcement_max_age, is_within_announcement_max_age_ahead,
 };
 use crate::wire::{
@@ -348,14 +348,9 @@ impl PeerRows {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Runs one operation on the locked table, returning what it gave and the changes it made.
-    fn operate<Operated>(
-        &self,
-        operation: impl FnOnce(&mut PeerTable) -> Operated,
-    ) -> (Operated, Vec<TableChange>) {
-        let mut table = self.table();
-        let operated = operation(&mut table);
-        (operated, table.take_changes())
+    /// Runs one operation on the locked table, returning what it gave once the lock is released.
+    fn operate<Given>(&self, operation: impl FnOnce(&mut PeerTable) -> Given) -> Given {
+        operation(&mut self.table())
     }
 
     /// Records each change of the table.
@@ -365,19 +360,25 @@ impl PeerRows {
         }
     }
 
-    /// Runs one operation on the locked table and records each change it made.
-    pub(crate) fn change<Changed>(
+    /// Runs one operation on the locked table, records each change it made, and returns what it gave.
+    pub(crate) fn change<Given>(
         &self,
-        operation: impl FnOnce(&mut PeerTable) -> Changed,
-    ) -> Changed {
-        let (operated, table_changes) = self.operate(operation);
-        self.record_changes(table_changes);
-        operated
+        operation: impl FnOnce(&mut PeerTable) -> Operated<Given>,
+    ) -> Given {
+        let operated = self.operate(operation);
+        self.record_changes(operated.changes);
+        operated.value
     }
 
     /// Applies a Presence to the table, recording whether it was taken, and when it is taken closes every connection to or from its card, of any protocol, whose process no longer runs, and every other while iroh stays on that process's path (spec 3.8, address lookup).
     pub(crate) fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
-        let ((admitted, handle), changes) = self.operate(|table| {
+        let (
+            Operated {
+                value: admitted,
+                changes,
+            },
+            handle,
+        ) = self.operate(|table| {
             let admitted = table.admit_presence(presence, now_ms);
             (admitted, table.handle_of(presence.card, now_ms))
         });
@@ -395,7 +396,13 @@ impl PeerRows {
     /// Applies a Departure to the table, returning the drop of the held connection it calls for once it is taken (spec 3.8).
     #[must_use]
     pub(crate) fn take_departure(&self, departure: &Departure, now_ms: u64) -> Vec<Effect> {
-        let ((admitted, handle), changes) = self.operate(|table| {
+        let (
+            Operated {
+                value: admitted,
+                changes,
+            },
+            handle,
+        ) = self.operate(|table| {
             let admitted = table.admit_departure(departure, now_ms);
             (admitted, table.handle_of(departure.card, now_ms))
         });
@@ -406,7 +413,13 @@ impl PeerRows {
 
     /// Applies an Unreachable report about another card to the table, recording whether it was taken (spec 3.8).
     pub(crate) fn take_unreachable(&self, report: &Unreachable, now_ms: u64) {
-        let ((admitted, handle), changes) = self.operate(|table| {
+        let (
+            Operated {
+                value: admitted,
+                changes,
+            },
+            handle,
+        ) = self.operate(|table| {
             let admitted = table.admit_unreachable(report, now_ms);
             (admitted, table.handle_of(report.reporter, now_ms))
         });
@@ -451,7 +464,7 @@ impl PeerRows {
                 answer: Ok(()),
             } => {
                 self.change(|table| {
-                    table.direct_contact_succeeded(card, now_ms, TableCause::ProbeAnswered);
+                    table.direct_contact_succeeded(card, now_ms, TableCause::ProbeAnswered)
                 });
                 Vec::new()
             }
@@ -501,7 +514,7 @@ impl NodeState {
     pub(super) fn contact_succeeded(&self, card: wire::PublicKey) {
         let now_ms = self.now_ms();
         self.rows.change(|table| {
-            table.direct_contact_succeeded(card, now_ms, TableCause::SendAcknowledged);
+            table.direct_contact_succeeded(card, now_ms, TableCause::SendAcknowledged)
         });
         self.hand_to_loop(LoopEvent::PeerReached);
     }
@@ -530,12 +543,15 @@ impl NodeState {
     ) -> Option<LocalHandle> {
         announced_sender_handle(message)?;
         let (effects, from) = self.rows.change(|table| {
-            let effects = table.receive_message(sender, message, now_ms);
+            let Operated { value, changes } = table.receive_message(sender, message, now_ms);
             let from = table
                 .peers(now_ms)
                 .find(|peer| peer.card == sender)
                 .map(|peer| peer.effective_handle.clone());
-            (effects, from)
+            Operated {
+                value: (value, from),
+                changes,
+            }
         });
         self.hand_to_loop(LoopEvent::Effects(effects));
         from

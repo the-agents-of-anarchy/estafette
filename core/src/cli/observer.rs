@@ -653,9 +653,10 @@ impl DirectHost for Arc<ObserverHost> {
     fn receive_message(&self, _sender: wire::PublicKey, _message: Message) {}
 
     fn receive_introduce(&self, sender: wire::PublicKey, introduce: Introduce) -> IntroduceAck {
+        let now_ms = self.now_ms();
         let effects = self
-            .table()
-            .receive_introduce(sender, &introduce, self.now_ms());
+            .rows
+            .change(|table| table.receive_introduce(sender, &introduce, now_ms));
         self.hand_to_loop(ObserverEvent::Effects(effects));
         acknowledgement_of(self.introduction())
     }
@@ -2930,6 +2931,7 @@ mod tests {
                 },
                 LINE_CLOCK_MS,
             )
+            .value
             .unwrap_or_default();
 
         let lines: Vec<String> = table.peers(LINE_CLOCK_MS).map(peer_line).collect();
@@ -2955,6 +2957,7 @@ mod tests {
             drop(
                 table
                     .admit_presence(&presence_of(1, "amy", hostile), LINE_CLOCK_MS)
+                    .value
                     .unwrap_or_default(),
             );
             let peer_lines: Vec<String> = table.peers(LINE_CLOCK_MS).map(peer_line).collect();

@@ -148,7 +148,7 @@ pub enum TableCause {
     SendFailed,
 }
 
-/// One change the table's last operation made, for its caller to record.
+/// One change a table operation made, for its caller to record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TableChange {
     /// An entry was created by the input named, under the handle assigned for the handle its card requested.
@@ -180,6 +180,14 @@ pub enum TableChange {
     },
 }
 
+/// What a table operation gave, with every change it made to the table, oldest first.
+#[must_use]
+#[derive(Debug)]
+pub struct Operated<Given> {
+    pub value: Given,
+    pub changes: Vec<TableChange>,
+}
+
 /// Every other member this node knows, with the effects each event on them calls for.
 #[derive(Debug)]
 pub struct PeerTable {
@@ -187,7 +195,6 @@ pub struct PeerTable {
     own_handle: Option<LocalHandle>,
     peers: Kept<Peer>,
     tombstones: Kept<Tombstone>,
-    changes: Vec<TableChange>,
 }
 
 impl PeerTable {
@@ -199,29 +206,27 @@ impl PeerTable {
             own_handle: None,
             peers: Kept::new(),
             tombstones: Kept::new(),
-            changes: Vec::new(),
         }
-    }
-
-    /// The changes the last operation made, oldest first, each handed out once.
-    pub(crate) fn take_changes(&mut self) -> Vec<TableChange> {
-        std::mem::take(&mut self.changes)
     }
 
     /// This node's own effective handle, assigned against the table at the first call and never changed afterward.
-    #[must_use]
-    pub fn assign_own_handle(&mut self, requested: &AnnouncedHandle, now_ms: u64) -> LocalHandle {
-        self.begin_operation(now_ms);
-        if let Some(own) = &self.own_handle {
-            return own.clone();
-        }
-        let own = self.free_handle_for(requested, now_ms);
-        self.own_handle = Some(own.clone());
-        self.changes.push(TableChange::OwnHandleAssigned {
-            requested: requested.clone(),
-            handle: own.clone(),
-        });
-        own
+    pub fn assign_own_handle(
+        &mut self,
+        requested: &AnnouncedHandle,
+        now_ms: u64,
+    ) -> Operated<LocalHandle> {
+        self.operate(now_ms, |table, changes| {
+            if let Some(own) = &table.own_handle {
+                return own.clone();
+            }
+            let own = table.free_handle_for(requested, now_ms);
+            table.own_handle = Some(own.clone());
+            changes.push(TableChange::OwnHandleAssigned {
+                requested: requested.clone(),
+                handle: own.clone(),
+            });
+            own
+        })
     }
 
     /// Takes a Presence whose signature verified when it is newer than all this node holds for its card and names an announced handle, returning its effects, or the rule that drops it.
@@ -229,19 +234,30 @@ impl PeerTable {
         &mut self,
         presence: &Presence,
         now_ms: u64,
-    ) -> Result<Vec<Effect>, PayloadDropRule> {
-        self.begin_operation(now_ms);
-        self.admit_announcement(presence.card, presence.seq, now_ms)?;
-        let handle = presence
-            .handle
-            .parse::<AnnouncedHandle>()
-            .map_err(|_outside_the_grammar| PayloadDropRule::HandleOutsideGrammar)?;
-        let mut effects = lookup_refresh_effects(presence.card, &presence.addr);
-        effects.extend(self.insert_if_unseen(presence.card, &handle, now_ms, TableCause::Presence));
-        self.change_entry(presence.card, now_ms, TableCause::Presence, |peer| {
-            peer.take_presence(presence, now_ms);
-        });
-        Ok(effects)
+    ) -> Operated<Result<Vec<Effect>, PayloadDropRule>> {
+        self.operate(now_ms, |table, changes| {
+            table.admit_announcement(presence.card, presence.seq, now_ms)?;
+            let handle = presence
+                .handle
+                .parse::<AnnouncedHandle>()
+                .map_err(|_outside_the_grammar| PayloadDropRule::HandleOutsideGrammar)?;
+            let mut effects = lookup_refresh_effects(presence.card, &presence.addr);
+            effects.extend(table.insert_if_unseen(
+                changes,
+                presence.card,
+                &handle,
+                now_ms,
+                TableCause::Presence,
+            ));
+            table.change_entry(
+                changes,
+                presence.card,
+                now_ms,
+                TableCause::Presence,
+                |peer| peer.take_presence(presence, now_ms),
+            );
+            Ok(effects)
+        })
     }
 
     /// The effective handle this node names `card` by, when the table holds the card.
@@ -256,21 +272,26 @@ impl PeerTable {
         &mut self,
         departure: &Departure,
         now_ms: u64,
-    ) -> Result<Vec<Effect>, PayloadDropRule> {
-        self.begin_operation(now_ms);
-        self.admit_announcement(departure.card, departure.seq, now_ms)?;
-        self.tombstones.insert(
-            departure.card,
-            Tombstone {
-                seq: departure.seq,
-                recorded_ms: now_ms,
-            },
-            now_ms,
-        );
-        self.change_entry(departure.card, now_ms, TableCause::Departure, |peer| {
-            peer.take_departure(departure.seq, now_ms);
-        });
-        Ok(vec![Effect::DropHeldConnection(departure.card)])
+    ) -> Operated<Result<Vec<Effect>, PayloadDropRule>> {
+        self.operate(now_ms, |table, changes| {
+            table.admit_announcement(departure.card, departure.seq, now_ms)?;
+            table.tombstones.insert(
+                departure.card,
+                Tombstone {
+                    seq: departure.seq,
+                    recorded_ms: now_ms,
+                },
+                now_ms,
+            );
+            table.change_entry(
+                changes,
+                departure.card,
+                now_ms,
+                TableCause::Departure,
+                |peer| peer.take_departure(departure.seq, now_ms),
+            );
+            Ok(vec![Effect::DropHeldConnection(departure.card)])
+        })
     }
 
     /// Takes an Unreachable report whose signature verified, setting the peer it names Unreachable, or returns the rule that drops it: stale, about a card absent or Gone, or older than the card's seq or its last direct contact.
@@ -278,19 +299,27 @@ impl PeerTable {
         &mut self,
         report: &Unreachable,
         now_ms: u64,
-    ) -> Result<(), PayloadDropRule> {
-        self.begin_operation(now_ms);
-        if !is_within_announcement_max_age(report.ts, now_ms) {
-            return Err(PayloadDropRule::OlderThanMaxAge);
-        }
-        self.change_entry(report.card, now_ms, TableCause::Unreachable, |peer| {
-            if peer.is_gone() {
-                Err(PayloadDropRule::ReportedCardGone)
-            } else {
-                peer.take_unreachable_report(report.ts)
+    ) -> Operated<Result<(), PayloadDropRule>> {
+        self.operate(now_ms, |table, changes| {
+            if !is_within_announcement_max_age(report.ts, now_ms) {
+                return Err(PayloadDropRule::OlderThanMaxAge);
             }
+            table
+                .change_entry(
+                    changes,
+                    report.card,
+                    now_ms,
+                    TableCause::Unreachable,
+                    |peer| {
+                        if peer.is_gone() {
+                            Err(PayloadDropRule::ReportedCardGone)
+                        } else {
+                            peer.take_unreachable_report(report.ts)
+                        }
+                    },
+                )
+                .unwrap_or(Err(PayloadDropRule::ReportedCardUnknown))
         })
-        .unwrap_or(Err(PayloadDropRule::ReportedCardUnknown))
     }
 
     /// Takes a gossip report of `node` as a new neighbor, asking to introduce this node to it unless it is an Online entry.
@@ -307,46 +336,52 @@ impl PeerTable {
     }
 
     /// Takes a gossip report that `node` is no longer a neighbor, asking to probe it when it is in the table and not Gone.
-    #[must_use]
-    pub fn neighbor_down(&mut self, node: PublicKey, now_ms: u64) -> Vec<Effect> {
-        self.begin_operation(now_ms);
-        if self.present_entry(node, now_ms).is_none() {
-            return Vec::new();
-        }
-        vec![Effect::SendProbe(node)]
+    pub fn neighbor_down(&mut self, node: PublicKey, now_ms: u64) -> Operated<Vec<Effect>> {
+        self.operate(now_ms, |table, _changes| {
+            if table.present_entry(node, now_ms).is_none() {
+                return Vec::new();
+            }
+            vec![Effect::SendProbe(node)]
+        })
     }
 
     /// Takes a request to `card` that failed at connect or at ack, named by `cause`, setting it Unreachable and asking to announce that, unless it is Gone.
-    #[must_use]
     pub fn direct_contact_failed(
         &mut self,
         card: PublicKey,
         now_ms: u64,
         cause: TableCause,
-    ) -> Vec<Effect> {
-        self.begin_operation(now_ms);
-        self.change_present_entry(card, now_ms, cause, |peer| {
-            peer.status = Status::Unreachable;
+    ) -> Operated<Vec<Effect>> {
+        self.operate(now_ms, |table, changes| {
+            table
+                .change_present_entry(changes, card, now_ms, cause, |peer| {
+                    peer.status = Status::Unreachable;
+                })
+                .map_or_else(Vec::new, |()| vec![Effect::BroadcastUnreachable(card)])
         })
-        .map_or_else(Vec::new, |()| vec![Effect::BroadcastUnreachable(card)])
     }
 
     /// Takes a direct contact with `card` that succeeded, named by `cause`, setting it Online unless it is Gone.
-    pub fn direct_contact_succeeded(&mut self, card: PublicKey, now_ms: u64, cause: TableCause) {
-        self.begin_operation(now_ms);
-        self.change_present_entry(card, now_ms, cause, |peer| {
-            peer.take_direct_contact(now_ms);
-        });
+    pub fn direct_contact_succeeded(
+        &mut self,
+        card: PublicKey,
+        now_ms: u64,
+        cause: TableCause,
+    ) -> Operated<()> {
+        self.operate(now_ms, |table, changes| {
+            table.change_present_entry(changes, card, now_ms, cause, |peer| {
+                peer.take_direct_contact(now_ms);
+            });
+        })
     }
 
     /// Takes an Introduce that arrived on a connection from `card`, as an accepted Presence without the seq check, or as a lookup refresh alone while the card stands departed.
-    #[must_use]
     pub fn receive_introduce(
         &mut self,
         card: PublicKey,
         introduce: &Introduce,
         now_ms: u64,
-    ) -> Vec<Effect> {
+    ) -> Operated<Vec<Effect>> {
         self.receive_introduction(
             card,
             &Introduction {
@@ -361,13 +396,12 @@ impl PeerTable {
     }
 
     /// Takes an `IntroduceAck` that arrived on a connection to `card`, as an accepted Presence without the seq check, or as a lookup refresh alone while the card stands departed.
-    #[must_use]
     pub fn receive_introduce_ack(
         &mut self,
         card: PublicKey,
         ack: &IntroduceAck,
         now_ms: u64,
-    ) -> Vec<Effect> {
+    ) -> Operated<Vec<Effect>> {
         self.receive_introduction(
             card,
             &Introduction {
@@ -382,26 +416,27 @@ impl PeerTable {
     }
 
     /// Takes a validated Message from `card`, inserting an unseen sender Online and asking to introduce this node to it, unless a Departure held for the card was sent at or after the Message.
-    #[must_use]
     pub fn receive_message(
         &mut self,
         card: PublicKey,
         message: &Message,
         now_ms: u64,
-    ) -> Vec<Effect> {
-        self.begin_operation(now_ms);
-        let Some(handle) = announced_sender_handle(message) else {
-            return Vec::new();
-        };
-        if let Some(departure_seq) = self.departure_sent_since(card, message.sent_at, now_ms) {
-            self.insert_departed_if_unseen(card, &handle, departure_seq, now_ms);
-            return Vec::new();
-        }
-        let effects = self.insert_if_unseen(card, &handle, now_ms, TableCause::Message);
-        self.change_entry(card, now_ms, TableCause::Message, |peer| {
-            peer.take_message(message.attached, now_ms);
-        });
-        effects
+    ) -> Operated<Vec<Effect>> {
+        self.operate(now_ms, |table, changes| {
+            let Some(handle) = announced_sender_handle(message) else {
+                return Vec::new();
+            };
+            if let Some(departure_seq) = table.departure_sent_since(card, message.sent_at, now_ms) {
+                table.insert_departed_if_unseen(changes, card, &handle, departure_seq, now_ms);
+                return Vec::new();
+            }
+            let effects =
+                table.insert_if_unseen(changes, card, &handle, now_ms, TableCause::Message);
+            table.change_entry(changes, card, now_ms, TableCause::Message, |peer| {
+                peer.take_message(message.attached, now_ms);
+            });
+            effects
+        })
     }
 
     /// Every entry still kept at `now_ms`, in card order.
@@ -415,34 +450,46 @@ impl PeerTable {
         card: PublicKey,
         introduction: &Introduction<'_>,
         now_ms: u64,
-    ) -> Vec<Effect> {
-        self.begin_operation(now_ms);
-        let Ok(handle) = admissible_introduction_handle(introduction.handle, introduction.public)
-        else {
-            return Vec::new();
-        };
-        if self.stands_departed(card, now_ms) {
-            return lookup_refresh_effects(card, introduction.addr);
-        }
-        let Some(handle) = handle else {
-            return lookup_refresh_effects(card, introduction.addr);
-        };
-        let mut effects = lookup_refresh_effects(card, introduction.addr);
-        effects.extend(self.insert_if_unseen(card, &handle, now_ms, introduction.cause));
-        self.change_entry(card, now_ms, introduction.cause, |peer| {
-            peer.take_introduction(
-                introduction.public,
-                introduction.attached,
-                introduction.addr,
+    ) -> Operated<Vec<Effect>> {
+        self.operate(now_ms, |table, changes| {
+            let Ok(handle) =
+                admissible_introduction_handle(introduction.handle, introduction.public)
+            else {
+                return Vec::new();
+            };
+            if table.stands_departed(card, now_ms) {
+                return lookup_refresh_effects(card, introduction.addr);
+            }
+            let Some(handle) = handle else {
+                return lookup_refresh_effects(card, introduction.addr);
+            };
+            let mut effects = lookup_refresh_effects(card, introduction.addr);
+            effects.extend(table.insert_if_unseen(
+                changes,
+                card,
+                &handle,
                 now_ms,
-            );
-        });
-        effects
+                introduction.cause,
+            ));
+            table.change_entry(changes, card, now_ms, introduction.cause, |peer| {
+                peer.take_introduction(
+                    introduction.public,
+                    introduction.attached,
+                    introduction.addr,
+                    now_ms,
+                );
+            });
+            effects
+        })
     }
 
-    /// Starts an operation at `now_ms`: forgets the changes of the last one and records the removal of every entry whose time ran out.
-    fn begin_operation(&mut self, now_ms: u64) {
-        self.changes = self
+    /// Runs one operation at `now_ms` once every entry whose time ran out is removed, handing back what it gave with those removals and every change it made.
+    fn operate<Given>(
+        &mut self,
+        now_ms: u64,
+        operation: impl FnOnce(&mut Self, &mut Vec<TableChange>) -> Given,
+    ) -> Operated<Given> {
+        let mut changes: Vec<TableChange> = self
             .peers
             .forget_expired(now_ms)
             .into_iter()
@@ -452,11 +499,14 @@ impl PeerTable {
                 status: removed.status,
             })
             .collect();
+        let value = operation(self, &mut changes);
+        Operated { value, changes }
     }
 
-    /// Changes the entry of `card` and records its status move as made by `cause`, when the table holds the card.
+    /// Changes the entry of `card` and adds its status move, made by `cause`, to `changes`, when the table holds the card.
     fn change_entry<Changed>(
         &mut self,
+        changes: &mut Vec<TableChange>,
         card: PublicKey,
         now_ms: u64,
         cause: TableCause,
@@ -464,9 +514,9 @@ impl PeerTable {
     ) -> Option<Changed> {
         let peer = self.peers.get_mut(&card, now_ms)?;
         let from = peer.status;
-        let changed = change(peer);
+        let outcome = change(peer);
         if from.wire_word() != peer.status.wire_word() {
-            self.changes.push(TableChange::Moved {
+            changes.push(TableChange::Moved {
                 card,
                 handle: peer.effective_handle.clone(),
                 from,
@@ -474,18 +524,19 @@ impl PeerTable {
                 cause,
             });
         }
-        Some(changed)
+        Some(outcome)
     }
 
     /// Changes the entry of `card` as `change_entry` does, unless it is Gone.
     fn change_present_entry<Changed>(
         &mut self,
+        changes: &mut Vec<TableChange>,
         card: PublicKey,
         now_ms: u64,
         cause: TableCause,
         change: impl FnOnce(&mut Peer) -> Changed,
     ) -> Option<Changed> {
-        self.change_entry(card, now_ms, cause, |peer| {
+        self.change_entry(changes, card, now_ms, cause, |peer| {
             (!peer.is_gone()).then(|| change(peer))
         })
         .flatten()
@@ -543,9 +594,10 @@ impl PeerTable {
             .filter(|departure_seq| *departure_seq >= sent_at)
     }
 
-    /// Inserts `card` Gone since now under a free effective handle when unseen, so a Message of its departed session is named without listing the card Online.
+    /// Inserts `card` Gone since now under a free effective handle when unseen, adding its creation to `changes`, so a Message of its departed session is named without listing the card Online.
     fn insert_departed_if_unseen(
         &mut self,
+        changes: &mut Vec<TableChange>,
         card: PublicKey,
         handle: &AnnouncedHandle,
         departure_seq: u64,
@@ -556,13 +608,14 @@ impl PeerTable {
         }
         let mut departed = Peer::first_seen(card, self.free_handle_for(handle, now_ms), now_ms);
         departed.take_departure(departure_seq, now_ms);
-        self.record_creation(&departed, handle, TableCause::Message);
+        changes.push(creation_of(&departed, handle, TableCause::Message));
         self.peers.insert(card, departed, now_ms);
     }
 
-    /// Inserts `card` Online under a free effective handle when unseen, recording its creation by `cause`, and returns the Introduce that a newcomer calls for.
+    /// Inserts `card` Online under a free effective handle when unseen, adding its creation by `cause` to `changes`, and returns the Introduce that a newcomer calls for.
     fn insert_if_unseen(
         &mut self,
+        changes: &mut Vec<TableChange>,
         card: PublicKey,
         handle: &AnnouncedHandle,
         now_ms: u64,
@@ -573,20 +626,9 @@ impl PeerTable {
         }
         let effective_handle = self.free_handle_for(handle, now_ms);
         let seen = Peer::first_seen(card, effective_handle, now_ms);
-        self.record_creation(&seen, handle, cause);
+        changes.push(creation_of(&seen, handle, cause));
         self.peers.insert(card, seen, now_ms);
         vec![Effect::SendIntroduce(card)]
-    }
-
-    /// Records the creation of `created` by `cause`, the entry assigned for the `requested` handle.
-    fn record_creation(&mut self, created: &Peer, requested: &AnnouncedHandle, cause: TableCause) {
-        self.changes.push(TableChange::Created {
-            card: created.card,
-            requested: requested.clone(),
-            handle: created.effective_handle.clone(),
-            status: created.status,
-            cause,
-        });
     }
 
     /// The handle a new entry announcing `announced` takes at `now_ms`: free beside every entry seen before it.
@@ -599,6 +641,17 @@ impl PeerTable {
             .cloned()
             .collect();
         LocalHandle::assign(announced, &taken)
+    }
+}
+
+/// The creation of `created` by `cause`, the entry assigned for the `requested` handle.
+fn creation_of(created: &Peer, requested: &AnnouncedHandle, cause: TableCause) -> TableChange {
+    TableChange::Created {
+        card: created.card,
+        requested: requested.clone(),
+        handle: created.effective_handle.clone(),
+        status: created.status,
+        cause,
     }
 }
 
@@ -924,7 +977,10 @@ mod tests {
 
     fn accept_presence(table: &mut PeerTable, presence: &Presence, now_ms: u64) {
         assert_ne!(
-            table.admit_presence(presence, now_ms).unwrap_or_default(),
+            table
+                .admit_presence(presence, now_ms)
+                .value
+                .unwrap_or_default(),
             vec![],
             "the table refused a setup Presence"
         );
@@ -961,7 +1017,9 @@ mod tests {
     #[test]
     fn a_message_from_an_unseen_card_lists_its_sender_online_and_asks_for_an_introduce_test_8() {
         let mut table = PeerTable::new(OWN_CARD);
-        let effects = table.receive_message(PEER_CARD, &message_from(PEER_HANDLE, true), NOW_MS);
+        let effects = table
+            .receive_message(PEER_CARD, &message_from(PEER_HANDLE, true), NOW_MS)
+            .value;
         assert_eq!(effects, vec![Effect::SendIntroduce(PEER_CARD)]);
         assert_eq!(
             listed(&table, NOW_MS),
@@ -985,6 +1043,7 @@ mod tests {
         let mut table = PeerTable::new(OWN_CARD);
         let effects = table
             .admit_presence(&presence(PEER_CARD, PEER_HANDLE, FIRST_SEQ), NOW_MS)
+            .value
             .unwrap_or_default();
         assert_eq!(
             effects,
@@ -1021,7 +1080,10 @@ mod tests {
         for replayed_seq in [FIRST_SEQ, SECOND_SEQ] {
             let replay = presence(PEER_CARD, PEER_HANDLE, replayed_seq);
             assert_eq!(
-                table.admit_presence(&replay, LATER_MS).unwrap_or_default(),
+                table
+                    .admit_presence(&replay, LATER_MS)
+                    .value
+                    .unwrap_or_default(),
                 vec![]
             );
             assert_eq!(snapshot(&table, LATER_MS), before);
@@ -1038,6 +1100,7 @@ mod tests {
         );
         let effects = table
             .admit_presence(&second_session_presence(PEER_CARD), LATER_MS)
+            .value
             .unwrap_or_default();
         assert_eq!(
             effects,
@@ -1068,7 +1131,10 @@ mod tests {
         let mut table = PeerTable::new(OWN_CARD);
         let too_old = presence(PEER_CARD, PEER_HANDLE, OLDEST_ACCEPTED_SEQ - 1);
         assert_eq!(
-            table.admit_presence(&too_old, NOW_MS).unwrap_or_default(),
+            table
+                .admit_presence(&too_old, NOW_MS)
+                .value
+                .unwrap_or_default(),
             vec![]
         );
         assert_eq!(snapshot(&table, NOW_MS), vec![]);
@@ -1076,6 +1142,7 @@ mod tests {
         assert_ne!(
             table
                 .admit_presence(&oldest_accepted, NOW_MS)
+                .value
                 .unwrap_or_default(),
             vec![]
         );
@@ -1094,7 +1161,7 @@ mod tests {
         let mut table = PeerTable::new(OWN_CARD);
         let own = presence(OWN_CARD, PEER_HANDLE, FIRST_SEQ);
         assert_eq!(
-            table.admit_presence(&own, NOW_MS).unwrap_or_default(),
+            table.admit_presence(&own, NOW_MS).value.unwrap_or_default(),
             vec![]
         );
         assert_eq!(snapshot(&table, NOW_MS), vec![]);
@@ -1110,6 +1177,7 @@ mod tests {
         );
         table
             .admit_departure(&departure(PEER_CARD, DEPARTURE_SEQ), LATER_MS)
+            .value
             .unwrap_or_default();
         let departed = snapshot(&table, LATER_MS);
         assert_eq!(
@@ -1119,7 +1187,10 @@ mod tests {
         for replayed_seq in [FIRST_SEQ, SECOND_SEQ, DEPARTURE_SEQ] {
             let replay = presence(PEER_CARD, PEER_HANDLE, replayed_seq);
             assert_eq!(
-                table.admit_presence(&replay, LATER_MS).unwrap_or_default(),
+                table
+                    .admit_presence(&replay, LATER_MS)
+                    .value
+                    .unwrap_or_default(),
                 vec![]
             );
             assert_eq!(snapshot(&table, LATER_MS), departed);
@@ -1138,18 +1209,21 @@ mod tests {
         assert_eq!(
             table
                 .admit_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS)
+                .value
                 .unwrap_or_default(),
             vec![Effect::DropHeldConnection(PEER_CARD)]
         );
         assert_eq!(
             table
                 .admit_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS)
+                .value
                 .unwrap_or_default(),
             vec![]
         );
         assert_eq!(
             table
                 .admit_departure(&departure(SECOND_MEMBER_CARD, FIRST_SEQ), NOW_MS)
+                .value
                 .unwrap_or_default(),
             vec![Effect::DropHeldConnection(SECOND_MEMBER_CARD)]
         );
@@ -1160,19 +1234,26 @@ mod tests {
         let mut table = PeerTable::new(OWN_CARD);
         table
             .admit_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS)
+            .value
             .unwrap_or_default();
         assert_eq!(snapshot(&table, NOW_MS), vec![]);
         for blocked_seq in [SECOND_SEQ, DEPARTURE_SEQ] {
             let blocked = presence(PEER_CARD, PEER_HANDLE, blocked_seq);
             assert_eq!(
-                table.admit_presence(&blocked, NOW_MS).unwrap_or_default(),
+                table
+                    .admit_presence(&blocked, NOW_MS)
+                    .value
+                    .unwrap_or_default(),
                 vec![]
             );
             assert_eq!(snapshot(&table, NOW_MS), vec![]);
         }
         let newer = presence(PEER_CARD, PEER_HANDLE, DEPARTURE_SEQ + 1);
         assert_ne!(
-            table.admit_presence(&newer, NOW_MS).unwrap_or_default(),
+            table
+                .admit_presence(&newer, NOW_MS)
+                .value
+                .unwrap_or_default(),
             vec![]
         );
         assert_eq!(only_peer(&table, NOW_MS).status, Status::Online);
@@ -1186,17 +1267,20 @@ mod tests {
                 &departure(PEER_CARD, DEPARTURE_SEQ_FROM_A_CLOCK_AHEAD),
                 NOW_MS,
             )
+            .value
             .unwrap_or_default();
         let below_tombstone = presence(PEER_CARD, PEER_HANDLE, PRESENCE_SEQ_FROM_A_CLOCK_AHEAD);
         assert_eq!(
             table
                 .admit_presence(&below_tombstone, TOMBSTONE_LAST_KEPT_MS)
+                .value
                 .unwrap_or_default(),
             vec![]
         );
         assert_ne!(
             table
                 .admit_presence(&below_tombstone, TOMBSTONE_FORGOTTEN_MS)
+                .value
                 .unwrap_or_default(),
             vec![]
         );
@@ -1212,6 +1296,7 @@ mod tests {
         );
         table
             .admit_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS)
+            .value
             .unwrap_or_default();
         assert_eq!(
             only_peer(&table, GONE_LAST_KEPT_MS).status,
@@ -1251,19 +1336,24 @@ mod tests {
 
         let mut at_second = PeerTable::new(SECOND_MEMBER_CARD);
         accept_presence(&mut at_second, &first_member, NOW_MS);
-        let own = at_second.assign_own_handle(&announced(REQUESTED_HANDLE), NOW_MS);
+        let own = at_second
+            .assign_own_handle(&announced(REQUESTED_HANDLE), NOW_MS)
+            .value;
         assert_eq!(own.as_str(), SECOND_MEMBER_EFFECTIVE_HANDLE);
         accept_presence(&mut at_second, &first_member_restarted, LATER_MS);
         assert_eq!(
             at_second
                 .assign_own_handle(&announced(REQUESTED_HANDLE), LATER_MS)
+                .value
                 .as_str(),
             SECOND_MEMBER_EFFECTIVE_HANDLE
         );
         assert_eq!(handles_at(&at_second, LATER_MS), expected[..1]);
 
         let mut at_first = PeerTable::new(FIRST_MEMBER_CARD);
-        let own = at_first.assign_own_handle(&announced(REQUESTED_HANDLE), NOW_MS);
+        let own = at_first
+            .assign_own_handle(&announced(REQUESTED_HANDLE), NOW_MS)
+            .value;
         assert_eq!(own.as_str(), REQUESTED_HANDLE);
         accept_presence(&mut at_first, &second_member, NOW_MS);
         assert_eq!(handles_at(&at_first, NOW_MS), expected[1..]);
@@ -1281,6 +1371,7 @@ mod tests {
         assert_eq!(
             table
                 .assign_own_handle(&announced(REQUESTED_HANDLE), NOW_MS)
+                .value
                 .as_str(),
             REQUESTED_HANDLE
         );
@@ -1305,6 +1396,7 @@ mod tests {
         );
         table
             .admit_departure(&departure(FIRST_MEMBER_CARD, DEPARTURE_SEQ), NOW_MS)
+            .value
             .unwrap_or_default();
         let newcomer_while_gone = presence(SECOND_MEMBER_CARD, REQUESTED_HANDLE, GONE_LAST_KEPT_MS);
         accept_presence(&mut table, &newcomer_while_gone, GONE_LAST_KEPT_MS);
@@ -1338,18 +1430,27 @@ mod tests {
         let mut table = PeerTable::new(OWN_CARD);
         let presence = presence(PEER_CARD, NOT_AN_ANNOUNCED_HANDLE, FIRST_SEQ);
         assert_eq!(
-            table.admit_presence(&presence, NOW_MS).unwrap_or_default(),
+            table
+                .admit_presence(&presence, NOW_MS)
+                .value
+                .unwrap_or_default(),
             vec![]
         );
         let introduce = introduce(Some(NOT_AN_ANNOUNCED_HANDLE));
         assert_eq!(
-            table.receive_introduce(PEER_CARD, &introduce, NOW_MS),
+            table.receive_introduce(PEER_CARD, &introduce, NOW_MS).value,
             vec![]
         );
         let ack = introduce_ack(Some(NOT_AN_ANNOUNCED_HANDLE));
-        assert_eq!(table.receive_introduce_ack(PEER_CARD, &ack, NOW_MS), vec![]);
+        assert_eq!(
+            table.receive_introduce_ack(PEER_CARD, &ack, NOW_MS).value,
+            vec![]
+        );
         let message = message_from(NOT_AN_ANNOUNCED_HANDLE, true);
-        assert_eq!(table.receive_message(PEER_CARD, &message, NOW_MS), vec![]);
+        assert_eq!(
+            table.receive_message(PEER_CARD, &message, NOW_MS).value,
+            vec![]
+        );
         assert_eq!(snapshot(&table, NOW_MS), vec![]);
     }
 
@@ -1363,12 +1464,16 @@ mod tests {
         );
         table
             .admit_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS)
+            .value
             .unwrap_or_default();
         let message = Message {
             sent_at: SENT_AFTER_DEPARTURE,
             ..message_from(SECOND_HANDLE, false)
         };
-        assert_eq!(table.receive_message(PEER_CARD, &message, LATER_MS), vec![]);
+        assert_eq!(
+            table.receive_message(PEER_CARD, &message, LATER_MS).value,
+            vec![]
+        );
         assert_eq!(
             carried(&only_peer(&table, LATER_MS)),
             Carried {
@@ -1392,7 +1497,9 @@ mod tests {
             ..message_from(PEER_HANDLE, false)
         };
         assert_eq!(
-            table.receive_message(PEER_CARD, &sent_at_departure, LATER_MS),
+            table
+                .receive_message(PEER_CARD, &sent_at_departure, LATER_MS)
+                .value,
             vec![]
         );
         assert_eq!(snapshot(&table, LATER_MS), departed);
@@ -1401,7 +1508,9 @@ mod tests {
             ..message_from(PEER_HANDLE, false)
         };
         assert_eq!(
-            table.receive_message(PEER_CARD, &sent_after, LATER_MS),
+            table
+                .receive_message(PEER_CARD, &sent_after, LATER_MS)
+                .value,
             vec![]
         );
         assert_eq!(only_peer(&table, LATER_MS).status, Status::Online);
@@ -1413,10 +1522,13 @@ mod tests {
         let mut table = PeerTable::new(OWN_CARD);
         table
             .admit_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS)
+            .value
             .unwrap_or_default();
         let sent_before = message_from(PEER_HANDLE, true);
         assert_eq!(
-            table.receive_message(PEER_CARD, &sent_before, LATER_MS),
+            table
+                .receive_message(PEER_CARD, &sent_before, LATER_MS)
+                .value,
             vec![]
         );
         assert_eq!(
@@ -1449,22 +1561,26 @@ mod tests {
     fn an_introduce_or_ack_whose_public_is_over_the_cap_or_no_mapping_changes_nothing_spec_3_5() {
         for public in publics_no_card_sends() {
             let mut table = PeerTable::new(OWN_CARD);
-            let introduced = table.receive_introduce(
-                FIRST_MEMBER_CARD,
-                &Introduce {
-                    public: public.clone(),
-                    ..introduce(Some(PEER_HANDLE))
-                },
-                NOW_MS,
-            );
-            let acknowledged = table.receive_introduce_ack(
-                SECOND_MEMBER_CARD,
-                &IntroduceAck {
-                    public: public.clone(),
-                    ..introduce_ack(Some(SECOND_HANDLE))
-                },
-                NOW_MS,
-            );
+            let introduced = table
+                .receive_introduce(
+                    FIRST_MEMBER_CARD,
+                    &Introduce {
+                        public: public.clone(),
+                        ..introduce(Some(PEER_HANDLE))
+                    },
+                    NOW_MS,
+                )
+                .value;
+            let acknowledged = table
+                .receive_introduce_ack(
+                    SECOND_MEMBER_CARD,
+                    &IntroduceAck {
+                        public: public.clone(),
+                        ..introduce_ack(Some(SECOND_HANDLE))
+                    },
+                    NOW_MS,
+                )
+                .value;
 
             assert_eq!(introduced, vec![], "{} bytes", public.len());
             assert_eq!(acknowledged, vec![], "{} bytes", public.len());
@@ -1477,22 +1593,26 @@ mod tests {
         let at_cap = public_mapping_of_bytes(SPEC_PUBLIC_CAP_BYTES);
         let mut table = PeerTable::new(OWN_CARD);
 
-        let introduced = table.receive_introduce(
-            FIRST_MEMBER_CARD,
-            &Introduce {
-                public: at_cap.clone(),
-                ..introduce(Some(PEER_HANDLE))
-            },
-            NOW_MS,
-        );
-        let acknowledged = table.receive_introduce_ack(
-            SECOND_MEMBER_CARD,
-            &IntroduceAck {
-                public: at_cap.clone(),
-                ..introduce_ack(Some(SECOND_HANDLE))
-            },
-            NOW_MS,
-        );
+        let introduced = table
+            .receive_introduce(
+                FIRST_MEMBER_CARD,
+                &Introduce {
+                    public: at_cap.clone(),
+                    ..introduce(Some(PEER_HANDLE))
+                },
+                NOW_MS,
+            )
+            .value;
+        let acknowledged = table
+            .receive_introduce_ack(
+                SECOND_MEMBER_CARD,
+                &IntroduceAck {
+                    public: at_cap.clone(),
+                    ..introduce_ack(Some(SECOND_HANDLE))
+                },
+                NOW_MS,
+            )
+            .value;
 
         assert_eq!(introduced, introduction_effects(FIRST_MEMBER_CARD));
         assert_eq!(acknowledged, introduction_effects(SECOND_MEMBER_CARD));
@@ -1508,15 +1628,19 @@ mod tests {
      {
         let mut table = PeerTable::new(OWN_CARD);
         assert_eq!(
-            table.receive_introduce(FIRST_MEMBER_CARD, &introduce(Some(PEER_HANDLE)), NOW_MS),
+            table
+                .receive_introduce(FIRST_MEMBER_CARD, &introduce(Some(PEER_HANDLE)), NOW_MS)
+                .value,
             introduction_effects(FIRST_MEMBER_CARD)
         );
         assert_eq!(
-            table.receive_introduce_ack(
-                SECOND_MEMBER_CARD,
-                &introduce_ack(Some(SECOND_HANDLE)),
-                NOW_MS
-            ),
+            table
+                .receive_introduce_ack(
+                    SECOND_MEMBER_CARD,
+                    &introduce_ack(Some(SECOND_HANDLE)),
+                    NOW_MS
+                )
+                .value,
             introduction_effects(SECOND_MEMBER_CARD)
         );
         let introduced_addr = second_addr();
@@ -1551,11 +1675,15 @@ mod tests {
             ]
         };
         assert_eq!(
-            table.receive_introduce(THIRD_NODE_CARD, &introduce(None), NOW_MS),
+            table
+                .receive_introduce(THIRD_NODE_CARD, &introduce(None), NOW_MS)
+                .value,
             lookup_only(THIRD_NODE_CARD)
         );
         assert_eq!(
-            table.receive_introduce_ack(PEER_CARD, &introduce_ack(None), NOW_MS),
+            table
+                .receive_introduce_ack(PEER_CARD, &introduce_ack(None), NOW_MS)
+                .value,
             lookup_only(PEER_CARD)
         );
         assert_eq!(snapshot(&table, NOW_MS), vec![]);
@@ -1572,15 +1700,18 @@ mod tests {
         );
         table
             .admit_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS)
+            .value
             .unwrap_or_default();
         let mut lookup_only = introduction_effects(PEER_CARD);
         lookup_only.pop();
         assert_eq!(
-            table.receive_introduce(
-                PEER_CARD,
-                &introduce(Some(SECOND_HANDLE)),
-                TOMBSTONE_FORGOTTEN_MS
-            ),
+            table
+                .receive_introduce(
+                    PEER_CARD,
+                    &introduce(Some(SECOND_HANDLE)),
+                    TOMBSTONE_FORGOTTEN_MS
+                )
+                .value,
             lookup_only
         );
         assert_eq!(
@@ -1602,18 +1733,23 @@ mod tests {
         let mut table = table_with_peer_gone_since_now();
         table
             .admit_departure(&departure(SECOND_MEMBER_CARD, DEPARTURE_SEQ), NOW_MS)
+            .value
             .unwrap_or_default();
         let departed = snapshot(&table, LATER_MS);
         assert_eq!(
-            table.receive_introduce(PEER_CARD, &introduce(Some(PEER_HANDLE)), LATER_MS),
+            table
+                .receive_introduce(PEER_CARD, &introduce(Some(PEER_HANDLE)), LATER_MS)
+                .value,
             lookup_only(PEER_CARD)
         );
         assert_eq!(
-            table.receive_introduce(
-                SECOND_MEMBER_CARD,
-                &introduce(Some(SECOND_HANDLE)),
-                LATER_MS
-            ),
+            table
+                .receive_introduce(
+                    SECOND_MEMBER_CARD,
+                    &introduce(Some(SECOND_HANDLE)),
+                    LATER_MS
+                )
+                .value,
             lookup_only(SECOND_MEMBER_CARD)
         );
         assert_eq!(snapshot(&table, LATER_MS), departed);
@@ -1625,18 +1761,23 @@ mod tests {
         let mut table = table_with_peer_gone_since_now();
         table
             .admit_departure(&departure(SECOND_MEMBER_CARD, DEPARTURE_SEQ), NOW_MS)
+            .value
             .unwrap_or_default();
         let departed = snapshot(&table, LATER_MS);
         assert_eq!(
-            table.receive_introduce_ack(PEER_CARD, &introduce_ack(Some(PEER_HANDLE)), LATER_MS),
+            table
+                .receive_introduce_ack(PEER_CARD, &introduce_ack(Some(PEER_HANDLE)), LATER_MS)
+                .value,
             lookup_only(PEER_CARD)
         );
         assert_eq!(
-            table.receive_introduce_ack(
-                SECOND_MEMBER_CARD,
-                &introduce_ack(Some(SECOND_HANDLE)),
-                LATER_MS
-            ),
+            table
+                .receive_introduce_ack(
+                    SECOND_MEMBER_CARD,
+                    &introduce_ack(Some(SECOND_HANDLE)),
+                    LATER_MS
+                )
+                .value,
             lookup_only(SECOND_MEMBER_CARD)
         );
         assert_eq!(snapshot(&table, LATER_MS), departed);
@@ -1652,6 +1793,7 @@ mod tests {
         );
         table
             .admit_unreachable(&unreachable_report(PEER_CARD, OBSERVED_TS), LATER_MS)
+            .value
             .unwrap_or_default();
         assert_eq!(only_peer(&table, LATER_MS).status, Status::Unreachable);
     }
@@ -1668,6 +1810,7 @@ mod tests {
                 &unreachable_report(PEER_CARD, report_ts),
                 report_received_ms,
             )
+            .value
             .unwrap_or_default();
         only_peer(&table, report_received_ms).status
     }
@@ -1717,6 +1860,7 @@ mod tests {
         contact(&mut table, contact_ms);
         table
             .admit_unreachable(&unreachable_report(PEER_CARD, OBSERVED_TS), LATER_MS)
+            .value
             .unwrap_or_default();
         only_peer(&table, LATER_MS).status
     }
@@ -1726,13 +1870,17 @@ mod tests {
      {
         let by_message = |table: &mut PeerTable, at_ms| {
             assert_eq!(
-                table.receive_message(PEER_CARD, &message_from(PEER_HANDLE, true), at_ms),
+                table
+                    .receive_message(PEER_CARD, &message_from(PEER_HANDLE, true), at_ms)
+                    .value,
                 vec![]
             );
         };
         let by_introduce = |table: &mut PeerTable, at_ms| {
             assert_ne!(
-                table.receive_introduce(PEER_CARD, &introduce(Some(PEER_HANDLE)), at_ms),
+                table
+                    .receive_introduce(PEER_CARD, &introduce(Some(PEER_HANDLE)), at_ms)
+                    .value,
                 vec![]
             );
         };
@@ -1784,9 +1932,11 @@ mod tests {
                 &unreachable_report(FIRST_MEMBER_CARD, OBSERVED_TS),
                 LATER_MS,
             )
+            .value
             .unwrap_or_default();
         table
             .admit_departure(&departure(SECOND_MEMBER_CARD, DEPARTURE_SEQ), LATER_MS)
+            .value
             .unwrap_or_default();
         assert_eq!(table.neighbor_up(PEER_CARD, LATER_MS), vec![]);
         for not_online in [FIRST_MEMBER_CARD, SECOND_MEMBER_CARD, THIRD_NODE_CARD] {
@@ -1806,10 +1956,10 @@ mod tests {
             NOW_MS,
         );
         assert_eq!(
-            table.neighbor_down(PEER_CARD, LATER_MS),
+            table.neighbor_down(PEER_CARD, LATER_MS).value,
             vec![Effect::SendProbe(PEER_CARD)]
         );
-        assert_eq!(table.neighbor_down(THIRD_NODE_CARD, LATER_MS), vec![]);
+        assert_eq!(table.neighbor_down(THIRD_NODE_CARD, LATER_MS).value, vec![]);
     }
 
     #[test]
@@ -1822,12 +1972,16 @@ mod tests {
             NOW_MS,
         );
         assert_eq!(
-            table.direct_contact_failed(PEER_CARD, LATER_MS, TableCause::ProbeFailed),
+            table
+                .direct_contact_failed(PEER_CARD, LATER_MS, TableCause::ProbeFailed)
+                .value,
             vec![Effect::BroadcastUnreachable(PEER_CARD)]
         );
         assert_eq!(only_peer(&table, LATER_MS).status, Status::Unreachable);
         assert_eq!(
-            table.direct_contact_failed(THIRD_NODE_CARD, LATER_MS, TableCause::SendFailed),
+            table
+                .direct_contact_failed(THIRD_NODE_CARD, LATER_MS, TableCause::SendFailed)
+                .value,
             vec![]
         );
         assert_eq!(only_peer(&table, LATER_MS).card, PEER_CARD);
@@ -1842,16 +1996,23 @@ mod tests {
             NOW_MS,
         );
         assert_eq!(
-            table.direct_contact_failed(PEER_CARD, NOW_MS, TableCause::SendFailed),
+            table
+                .direct_contact_failed(PEER_CARD, NOW_MS, TableCause::SendFailed)
+                .value,
             vec![Effect::BroadcastUnreachable(PEER_CARD)]
         );
-        table.direct_contact_succeeded(PEER_CARD, OBSERVED_TS + 1, TableCause::ProbeAnswered);
+        drop(table.direct_contact_succeeded(PEER_CARD, OBSERVED_TS + 1, TableCause::ProbeAnswered));
         assert_eq!(only_peer(&table, OBSERVED_TS + 1).status, Status::Online);
         table
             .admit_unreachable(&unreachable_report(PEER_CARD, OBSERVED_TS), LATER_MS)
+            .value
             .unwrap_or_default();
         assert_eq!(only_peer(&table, LATER_MS).status, Status::Online);
-        table.direct_contact_succeeded(THIRD_NODE_CARD, LATER_MS, TableCause::SendAcknowledged);
+        drop(table.direct_contact_succeeded(
+            THIRD_NODE_CARD,
+            LATER_MS,
+            TableCause::SendAcknowledged,
+        ));
         assert_eq!(only_peer(&table, LATER_MS).card, PEER_CARD);
     }
 
@@ -1864,14 +2025,22 @@ mod tests {
             &presence(PEER_CARD, PEER_HANDLE, FIRST_SEQ),
             NOW_MS,
         );
-        table.direct_contact_succeeded(PEER_CARD, OBSERVED_TS + 1, TableCause::SendAcknowledged);
+        drop(table.direct_contact_succeeded(
+            PEER_CARD,
+            OBSERVED_TS + 1,
+            TableCause::SendAcknowledged,
+        ));
 
         assert_eq!(
-            table.admit_unreachable(&unreachable_report(PEER_CARD, OBSERVED_TS), LATER_MS),
+            table
+                .admit_unreachable(&unreachable_report(PEER_CARD, OBSERVED_TS), LATER_MS)
+                .value,
             Err(PayloadDropRule::ReportBeforeDirectContact)
         );
         assert_eq!(
-            table.admit_unreachable(&unreachable_report(PEER_CARD, OBSERVED_TS + 1), LATER_MS),
+            table
+                .admit_unreachable(&unreachable_report(PEER_CARD, OBSERVED_TS + 1), LATER_MS)
+                .value,
             Ok(())
         );
     }
@@ -1886,13 +2055,12 @@ mod tests {
         let mut while_held = table_with_peer_gone_since_now();
         let mut once_aged_out = table_with_peer_gone_since_now();
 
-        let while_held_effects =
-            while_held.receive_message(PEER_CARD, &sent_with_the_departure, TOMBSTONE_LAST_KEPT_MS);
-        let once_aged_out_effects = once_aged_out.receive_message(
-            PEER_CARD,
-            &sent_with_the_departure,
-            TOMBSTONE_FORGOTTEN_MS,
-        );
+        let while_held_effects = while_held
+            .receive_message(PEER_CARD, &sent_with_the_departure, TOMBSTONE_LAST_KEPT_MS)
+            .value;
+        let once_aged_out_effects = once_aged_out
+            .receive_message(PEER_CARD, &sent_with_the_departure, TOMBSTONE_FORGOTTEN_MS)
+            .value;
 
         assert_eq!(while_held_effects, vec![]);
         assert_eq!(once_aged_out_effects, vec![]);
@@ -1915,6 +2083,7 @@ mod tests {
         );
         table
             .admit_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS)
+            .value
             .unwrap_or_default();
         table
     }
@@ -1923,12 +2092,15 @@ mod tests {
     fn a_message_or_departure_after_the_gone_entry_retention_meets_the_entry_removed_spec_3_8() {
         let mut table = table_with_peer_gone_since_now();
         assert_eq!(
-            table.receive_message(PEER_CARD, &message_from(PEER_HANDLE, true), GONE_REMOVED_MS),
+            table
+                .receive_message(PEER_CARD, &message_from(PEER_HANDLE, true), GONE_REMOVED_MS)
+                .value,
             vec![Effect::SendIntroduce(PEER_CARD)]
         );
         let mut table = table_with_peer_gone_since_now();
         table
             .admit_departure(&departure(PEER_CARD, GONE_REMOVED_MS), GONE_REMOVED_MS)
+            .value
             .unwrap_or_default();
         assert_eq!(snapshot(&table, GONE_REMOVED_MS), vec![]);
     }
@@ -1945,7 +2117,9 @@ mod tests {
     fn a_failed_contact_leaves_a_gone_entry_gone_without_a_broadcast_until_its_removal_spec_3_8() {
         let mut table = table_with_peer_gone_since_now();
         assert_eq!(
-            table.direct_contact_failed(PEER_CARD, LATER_MS, TableCause::ProbeFailed),
+            table
+                .direct_contact_failed(PEER_CARD, LATER_MS, TableCause::ProbeFailed)
+                .value,
             vec![]
         );
         assert_still_gone_then_removed(&table);
@@ -1956,6 +2130,7 @@ mod tests {
         let mut table = table_with_peer_gone_since_now();
         table
             .admit_unreachable(&unreachable_report(PEER_CARD, LATER_MS), LATER_MS)
+            .value
             .unwrap_or_default();
         assert_still_gone_then_removed(&table);
     }
@@ -1963,14 +2138,14 @@ mod tests {
     #[test]
     fn a_successful_contact_leaves_a_gone_entry_gone_until_its_removal_spec_3_8() {
         let mut table = table_with_peer_gone_since_now();
-        table.direct_contact_succeeded(PEER_CARD, LATER_MS, TableCause::ProbeAnswered);
+        drop(table.direct_contact_succeeded(PEER_CARD, LATER_MS, TableCause::ProbeAnswered));
         assert_still_gone_then_removed(&table);
     }
 
     #[test]
     fn a_neighbor_down_calls_for_no_probe_of_a_gone_entry_until_its_removal_spec_3_8() {
         let mut table = table_with_peer_gone_since_now();
-        assert_eq!(table.neighbor_down(PEER_CARD, LATER_MS), vec![]);
+        assert_eq!(table.neighbor_down(PEER_CARD, LATER_MS).value, vec![]);
         assert_still_gone_then_removed(&table);
     }
 
@@ -2004,6 +2179,7 @@ mod tests {
                 if draws.below(DEPARTURE_ODDS_AGAINST) == 0 {
                     table
                         .admit_departure(&departure(PEER_CARD, seq), now_ms)
+                        .value
                         .unwrap_or_default();
                     if acceptable {
                         expected_status =
@@ -2012,6 +2188,7 @@ mod tests {
                 } else {
                     let effects = table
                         .admit_presence(&presence(PEER_CARD, PEER_HANDLE, seq), now_ms)
+                        .value
                         .unwrap_or_default();
                     assert_eq!(!effects.is_empty(), acceptable, "case {case} seq {seq}");
                     if acceptable {
@@ -2025,5 +2202,57 @@ mod tests {
                 assert_eq!(statuses, Vec::from_iter(expected_status), "case {case}");
             }
         }
+    }
+
+    #[test]
+    fn observability_decision_9_each_operation_hands_its_caller_the_changes_it_made_and_no_other() {
+        let mut table = PeerTable::new(OWN_CARD);
+        let handle: LocalHandle = PEER_HANDLE.parse().unwrap();
+
+        let created = table.admit_presence(&presence(PEER_CARD, PEER_HANDLE, FIRST_SEQ), NOW_MS);
+        let moved = table.direct_contact_failed(PEER_CARD, NOW_MS, TableCause::ProbeFailed);
+        let unmoved = table.direct_contact_failed(PEER_CARD, NOW_MS, TableCause::ProbeFailed);
+        let departed = table.admit_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS);
+        let removed = table.neighbor_down(THIRD_NODE_CARD, GONE_REMOVED_MS);
+
+        assert_eq!(
+            created.changes,
+            [TableChange::Created {
+                card: PEER_CARD,
+                requested: announced(PEER_HANDLE),
+                handle: handle.clone(),
+                status: Status::Online,
+                cause: TableCause::Presence,
+            }]
+        );
+        assert_eq!(
+            moved.changes,
+            [TableChange::Moved {
+                card: PEER_CARD,
+                handle: handle.clone(),
+                from: Status::Online,
+                to: Status::Unreachable,
+                cause: TableCause::ProbeFailed,
+            }]
+        );
+        assert_eq!(unmoved.changes, []);
+        assert_eq!(
+            departed.changes,
+            [TableChange::Moved {
+                card: PEER_CARD,
+                handle: handle.clone(),
+                from: Status::Unreachable,
+                to: Status::Gone { since_ms: NOW_MS },
+                cause: TableCause::Departure,
+            }]
+        );
+        assert_eq!(
+            removed.changes,
+            [TableChange::Removed {
+                card: PEER_CARD,
+                handle,
+                status: Status::Gone { since_ms: NOW_MS },
+            }]
+        );
     }
 }
