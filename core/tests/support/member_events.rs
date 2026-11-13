@@ -145,43 +145,117 @@ fn wakes_the_wait(notice: &Notice) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
     use notify::event::{
         AccessKind, AccessMode, CreateKind, DataChange, MetadataKind, ModifyKind, RemoveKind,
         RenameMode,
     };
-    use notify::{Event, EventKind};
+    use notify::{Config, Error, ErrorKind, Event, EventKind};
 
     use super::wakes_the_wait;
+
+    /// How many kinds of notice the pinned notify-types names, counted from its enums.
+    const EVERY_KIND_COUNT: usize = 41;
+
+    /// Every kind of notice notify-types can name, each once: the cross product of its kinds and their sub-kinds.
+    fn every_event_kind() -> Vec<EventKind> {
+        let access_modes = [
+            AccessMode::Any,
+            AccessMode::Execute,
+            AccessMode::Read,
+            AccessMode::Write,
+            AccessMode::Other,
+        ];
+        let accesses = [AccessKind::Any, AccessKind::Read, AccessKind::Other]
+            .into_iter()
+            .chain(access_modes.map(AccessKind::Open))
+            .chain(access_modes.map(AccessKind::Close))
+            .map(EventKind::Access);
+        let creations = [
+            CreateKind::Any,
+            CreateKind::File,
+            CreateKind::Folder,
+            CreateKind::Other,
+        ]
+        .map(EventKind::Create);
+        let data_changes = [
+            DataChange::Any,
+            DataChange::Size,
+            DataChange::Content,
+            DataChange::Other,
+        ]
+        .map(ModifyKind::Data);
+        let metadata_changes = [
+            MetadataKind::Any,
+            MetadataKind::AccessTime,
+            MetadataKind::WriteTime,
+            MetadataKind::Permissions,
+            MetadataKind::Ownership,
+            MetadataKind::Extended,
+            MetadataKind::Other,
+        ]
+        .map(ModifyKind::Metadata);
+        let renames = [
+            RenameMode::Any,
+            RenameMode::To,
+            RenameMode::From,
+            RenameMode::Both,
+            RenameMode::Other,
+        ]
+        .map(ModifyKind::Name);
+        let modifications = [ModifyKind::Any, ModifyKind::Other]
+            .into_iter()
+            .chain(data_changes)
+            .chain(metadata_changes)
+            .chain(renames)
+            .map(EventKind::Modify);
+        let removals = [
+            RemoveKind::Any,
+            RemoveKind::File,
+            RemoveKind::Folder,
+            RemoveKind::Other,
+        ]
+        .map(EventKind::Remove);
+        [EventKind::Any, EventKind::Other]
+            .into_iter()
+            .chain(accesses)
+            .chain(creations)
+            .chain(modifications)
+            .chain(removals)
+            .collect()
+    }
 
     #[test]
     fn observability_decision_14_a_read_open_or_close_of_the_events_file_does_not_wake_the_wait_and_every_other_notice_does()
      {
-        let reads_opens_and_closes = [
-            EventKind::Access(AccessKind::Any),
-            EventKind::Access(AccessKind::Read),
-            EventKind::Access(AccessKind::Open(AccessMode::Any)),
-            EventKind::Access(AccessKind::Open(AccessMode::Read)),
-            EventKind::Access(AccessKind::Close(AccessMode::Write)),
-            EventKind::Access(AccessKind::Other),
-        ];
-        let writes_and_everything_else = [
-            EventKind::Any,
-            EventKind::Create(CreateKind::File),
-            EventKind::Modify(ModifyKind::Data(DataChange::Content)),
-            EventKind::Modify(ModifyKind::Metadata(MetadataKind::Any)),
-            EventKind::Modify(ModifyKind::Name(RenameMode::Any)),
-            EventKind::Remove(RemoveKind::File),
-            EventKind::Other,
+        let kinds = every_event_kind();
+        let failures = [
+            ErrorKind::Generic("the watch failed".to_owned()),
+            ErrorKind::Io(io::Error::other("the watch failed")),
+            ErrorKind::PathNotFound,
+            ErrorKind::WatchNotFound,
+            ErrorKind::InvalidConfig(Config::default()),
+            ErrorKind::MaxFilesWatch,
         ];
 
-        for kind in reads_opens_and_closes {
-            assert!(!wakes_the_wait(&Ok(Event::new(kind))), "{kind:?}");
+        assert_eq!(kinds.len(), EVERY_KIND_COUNT);
+        for kind in &kinds {
+            assert_eq!(
+                kinds.iter().filter(|other| *other == kind).count(),
+                1,
+                "{kind:?}"
+            );
+            let is_read_open_or_close = matches!(kind, EventKind::Access(_));
+            assert_eq!(
+                wakes_the_wait(&Ok(Event::new(*kind))),
+                !is_read_open_or_close,
+                "{kind:?}"
+            );
         }
-        for kind in writes_and_everything_else {
-            assert!(wakes_the_wait(&Ok(Event::new(kind))), "{kind:?}");
+        for failure in failures {
+            let notice = Err(Error::new(failure));
+            assert!(wakes_the_wait(&notice), "{notice:?}");
         }
-        assert!(wakes_the_wait(&Err(notify::Error::generic(
-            "the watch failed"
-        ))));
     }
 }
