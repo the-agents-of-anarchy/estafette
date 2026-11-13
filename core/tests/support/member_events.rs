@@ -63,17 +63,23 @@ impl MemberEvents {
                     notice.unwrap_or_else(|failure| {
                         panic!("{}: the file watcher failed: {failure}", self.label)
                     });
+                    assert!(Instant::now() < deadline, "{}", self.ran_out(event, within));
                 }
-                Err(RecvTimeoutError::Timeout) => panic!(
-                    "{}: no {event} within {within:?}; its timeline so far:\n{}",
-                    self.label,
-                    timeline_in(&self.traces_directory)
-                ),
+                Err(RecvTimeoutError::Timeout) => panic!("{}", self.ran_out(event, within)),
                 Err(RecvTimeoutError::Disconnected) => {
                     panic!("{}: the file watcher ended", self.label)
                 }
             }
         }
+    }
+
+    /// What a wait says when its bound ran out: the event awaited and the member's timeline so far.
+    fn ran_out(&self, event: &str, within: Duration) -> String {
+        format!(
+            "{}: no {event} within {within:?}; its timeline so far:\n{}",
+            self.label,
+            timeline_in(&self.traces_directory)
+        )
     }
 
     /// Starts watching the trace directory for the files that appear in it.

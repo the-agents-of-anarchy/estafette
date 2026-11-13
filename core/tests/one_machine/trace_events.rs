@@ -26,6 +26,7 @@ const UNKNOWN_HANDLE: &str = "bob";
 const BODY: &str = "hello";
 const NETWORK_CREATED_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":0,\"mono_ms\":5,\"wall_ms\":1794524353720,\"event\":\"process.network_created\",\"network\":\"acme\"}\n";
 const COMMAND_FAILED_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":1,\"mono_ms\":9,\"wall_ms\":1794524353724,\"event\":\"process.command_failed\",\"message\":\"stopped\"}\n";
+const HANDSHAKE_FAILED_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":2,\"mono_ms\":12,\"wall_ms\":1794524353727,\"event\":\"tool.handshake_failed\"}\n";
 const EVENTS_FILE_NAME: &str = "20261112T225913Z-6c935f82c118f7b3-estafette.events.jsonl";
 const FORCED_FAILURE_VARIABLE: &str = "ESTAFETTE_FORCED_FAILURE";
 const FORCED_FAILURE_TEST: &str =
@@ -142,6 +143,46 @@ fn observability_decision_14_a_wait_whose_bound_runs_out_fails_naming_the_event_
         failure,
         format!(
             "member 0: no {COMMAND_FAILED_EVENT} within {EXHAUSTED_BOUND:?}; its timeline so far:\n         5 ms  #0    {NETWORK_CREATED_EVENT} network=\"acme\""
+        )
+    );
+}
+
+#[test]
+fn observability_decision_14_a_wait_whose_bound_ran_out_before_a_notice_was_taken_fails_though_the_line_announced_is_there()
+ {
+    let network = LocalNetwork::create("w5", &RunRecordKeeping::from_environment());
+    let machine = network.machine();
+    let traces = machine.traces_directory_of_member(FIRST_MEMBER);
+    fs::create_dir_all(&traces).unwrap();
+    let mut events_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(traces.join(EVENTS_FILE_NAME))
+        .unwrap();
+    events_file
+        .write_all(NETWORK_CREATED_LINE.as_bytes())
+        .unwrap();
+    let member = MemberEvents::new("member 0", &traces);
+    let observer = MemberEvents::new("observer of member 0", &traces);
+
+    let failure = failure_text_of(|| {
+        member.wait_for_after(COMMAND_FAILED_EVENT, Duration::ZERO, || {
+            events_file
+                .write_all(COMMAND_FAILED_LINE.as_bytes())
+                .unwrap();
+            observer.wait_for_after(HANDSHAKE_FAILED_EVENT, EVENT_BOUND, || {
+                events_file
+                    .write_all(HANDSHAKE_FAILED_LINE.as_bytes())
+                    .unwrap();
+            });
+        });
+    });
+
+    assert_eq!(
+        failure,
+        format!(
+            "member 0: no {COMMAND_FAILED_EVENT} within {:?}; its timeline so far:\n         5 ms  #0    {NETWORK_CREATED_EVENT} network=\"acme\"\n         9 ms  #1    {COMMAND_FAILED_EVENT} message=\"stopped\"\n        12 ms  #2    {HANDSHAKE_FAILED_EVENT}",
+            Duration::ZERO
         )
     );
 }
