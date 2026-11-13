@@ -613,6 +613,22 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_data_variable_with_no_home_is_refused_naming_the_data_variable_spec_3_3() {
+        let filesystem = RecordingFilesystem::new();
+        let failure = Directories::establish(
+            environment_of(&[(CONFIG_HOME_VARIABLE, "/xc"), (DATA_HOME_VARIABLE, "")]),
+            &filesystem,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            failure.to_string(),
+            "XDG_DATA_HOME and HOME are both unset or empty: set one of them"
+        );
+        assert!(filesystem.created.borrow().is_empty());
+    }
+
+    #[test]
     fn every_file_path_of_spec_3_3_derives_from_the_bases() {
         let (directories, _) = established(&[
             (CONFIG_HOME_VARIABLE, "/c"),
