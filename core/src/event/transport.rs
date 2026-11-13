@@ -288,10 +288,13 @@ fn location_fields(location: Location) -> EventFields {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::direct::tests::assert_each_arm;
+    use crate::net::direct::tests::{assert_each_arm, test_salt};
+    use crate::net::endpoint::LocationHash;
 
     const SPEC_SUPERSEDED_CLOSE_CODE: u64 = 410;
     const UNLISTED_REASON_BYTES: usize = 37;
+    const DIRECT_PORT: u16 = 7842;
+    const RELAY_PORT: u16 = 443;
 
     #[test]
     fn observability_decision_9_each_protocol_a_connection_carries_is_written_as_a_word_of_its_own()
@@ -353,5 +356,62 @@ mod tests {
         ];
 
         assert_each_arm(&cases, |close| close_fields(*close), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_each_cause_of_a_rebind_is_written_as_a_word_of_its_own() {
+        let cases = [
+            (RebindCause::Deaf, "deaf"),
+            (RebindCause::JoinGainedNoNeighbor, "join_gained_no_neighbor"),
+        ];
+
+        assert_each_arm(&cases, |cause| cause_text(*cause), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_6_each_location_is_written_as_its_kind_its_port_when_it_has_one_and_its_salted_hash()
+     {
+        let direct = LocationHash::of(&test_salt(), "192.0.2.7:7842");
+        let relay = LocationHash::of(&test_salt(), "https://relay.example/");
+        let other = LocationHash::of(&test_salt(), "a custom transport address");
+        let cases = [
+            (
+                Location {
+                    kind: LocationKind::Direct,
+                    port: Some(DIRECT_PORT),
+                    hash: direct,
+                },
+                vec![
+                    ("kind", Value::from("direct")),
+                    ("port", Value::from(DIRECT_PORT)),
+                    ("location", Value::from(direct.hex())),
+                ],
+            ),
+            (
+                Location {
+                    kind: LocationKind::Relay,
+                    port: Some(RELAY_PORT),
+                    hash: relay,
+                },
+                vec![
+                    ("kind", Value::from("relay")),
+                    ("port", Value::from(RELAY_PORT)),
+                    ("location", Value::from(relay.hex())),
+                ],
+            ),
+            (
+                Location {
+                    kind: LocationKind::Other,
+                    port: None,
+                    hash: other,
+                },
+                vec![
+                    ("kind", Value::from("other")),
+                    ("location", Value::from(other.hex())),
+                ],
+            ),
+        ];
+
+        assert_each_arm(&cases, |location| location_fields(*location), cases.len());
     }
 }
