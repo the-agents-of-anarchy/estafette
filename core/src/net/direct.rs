@@ -111,11 +111,11 @@ impl HeldConnections {
 
     /// Closes every connection to or from the card whose process no longer runs, and every other while iroh stays on that process's path, but the one an Introduce arrived on (spec 3.8, address lookup).
     fn close_silent_others_of(&self, card: wire::PublicKey, arrived_on: &Connection) {
-        self.close_silent_of_sparing(card, Some(arrived_on.stable_id()));
+        self.close_silent_of_sparing(card, Some(ConnectionId::of(arrived_on)));
     }
 
     /// Closes every connection to or from the card that has heard nothing from its peer for as long as a gone process is silent, but the spared one, and then, when this pass or an earlier one found a gone process and none left reports a path iroh selected, every other but the spared one too.
-    fn close_silent_of_sparing(&self, card: wire::PublicKey, spared: Option<usize>) {
+    fn close_silent_of_sparing(&self, card: wire::PublicKey, spared: Option<ConnectionId>) {
         let now = (self.monotonic)();
         let mut held = self.held();
         let mut left_on_a_gone_path = self
@@ -209,7 +209,7 @@ impl HeldConnections {
                 biased;
                 Some(change) = paths.next() => self.record_path_change(connection_id, &connection, change),
                 ended = &mut closed => break ended,
-                () = sleep(HEARING_SAMPLE_INTERVAL) => self.note_hearing(card, connection_id.value(), &connection),
+                () = sleep(HEARING_SAMPLE_INTERVAL) => self.note_hearing(card, connection_id, &connection),
             }
         };
         if let Some(ended) = ended {
@@ -218,7 +218,7 @@ impl HeldConnections {
                 close: Close::of(&ended.reason),
             });
         }
-        self.forget(card, connection_id.value());
+        self.forget(card, connection_id);
     }
 
     /// Records each path the connection opened before the register held it, and the one selected among them, since the path events it follows from then on omit them.
@@ -290,7 +290,7 @@ impl HeldConnections {
     fn note_hearing(
         &self,
         card: wire::PublicKey,
-        stable_id: usize,
+        connection_id: ConnectionId,
         connection: &WeakConnectionHandle,
     ) {
         let Some(datagrams) = connection
@@ -303,16 +303,16 @@ impl HeldConnections {
         if let Some(held_connection) = self.held().get_mut(&card).and_then(|of_card| {
             of_card
                 .iter_mut()
-                .find(|held_connection| held_connection.stable_id == stable_id)
+                .find(|held_connection| held_connection.id == connection_id)
         }) {
             held_connection.note_hearing(datagrams, now);
         }
     }
 
     /// Forgets a connection to or from the card that has closed.
-    fn forget(&self, card: wire::PublicKey, stable_id: usize) {
+    fn forget(&self, card: wire::PublicKey, connection_id: ConnectionId) {
         if let Some(of_card) = self.held().get_mut(&card) {
-            of_card.retain(|held_connection| held_connection.stable_id != stable_id);
+            of_card.retain(|held_connection| held_connection.id != connection_id);
         }
     }
 
@@ -326,7 +326,7 @@ impl HeldConnections {
 #[derive(Debug)]
 struct HeldConnection {
     connection: WeakConnectionHandle,
-    stable_id: usize,
+    id: ConnectionId,
     datagrams_heard: u64,
     last_heard: Instant,
 }
@@ -336,7 +336,7 @@ impl HeldConnection {
     fn heard_at(connection: &Connection, now: Instant) -> Self {
         Self {
             connection: connection.weak_handle(),
-            stable_id: connection.stable_id(),
+            id: ConnectionId::of(connection),
             datagrams_heard: connection.stats().udp_rx.datagrams,
             last_heard: now,
         }
@@ -373,13 +373,13 @@ struct Superseded {
 /// Takes out the card's connections from a gone process but the spared one, and with them every other but the spared one when this pass found a gone process, or an earlier one left the card on its path, and none left reports a path iroh selected, since iroh keeps the gone process's path selected until the card's last connection closes.
 fn take_superseded(
     of_card: &mut Vec<HeldConnection>,
-    spared: Option<usize>,
+    spared: Option<ConnectionId>,
     now: Instant,
     left_on_a_gone_path: bool,
 ) -> Superseded {
     let mut connections: Vec<Connection> = of_card
         .extract_if(.., |held_connection| {
-            Some(held_connection.stable_id) != spared && held_connection.is_from_a_gone_process(now)
+            Some(held_connection.id) != spared && held_connection.is_from_a_gone_process(now)
         })
         .filter_map(|held_connection| held_connection.connection.upgrade())
         .collect();
@@ -388,9 +388,7 @@ fn take_superseded(
     if on_a_gone_path {
         connections.extend(
             of_card
-                .extract_if(.., |held_connection| {
-                    Some(held_connection.stable_id) != spared
-                })
+                .extract_if(.., |held_connection| Some(held_connection.id) != spared)
                 .filter_map(|held_connection| held_connection.connection.upgrade()),
         );
     }
@@ -1101,7 +1099,7 @@ impl DirectClient {
         let mut held = slot.lock().await;
         if held
             .as_ref()
-            .is_some_and(|connection| connection.stable_id() == failed.stable_id())
+            .is_some_and(|connection| ConnectionId::of(connection) == ConnectionId::of(failed))
         {
             *held = None;
         }
@@ -2887,7 +2885,7 @@ pub(crate) mod tests {
     ) -> bool {
         register.held().get(&card).is_some_and(|of_card| {
             of_card.iter().any(|held_connection| {
-                held_connection.stable_id == connection.stable_id()
+                held_connection.id == ConnectionId::of(connection)
                     && held_connection.reports_a_selected_path()
             })
         })
@@ -2899,7 +2897,7 @@ pub(crate) mod tests {
             .checked_sub(SILENCE_OF_A_GONE_PROCESS)
             .unwrap();
         for held_connection in register.held().get_mut(&card).unwrap() {
-            if held_connection.stable_id == connection.stable_id() {
+            if held_connection.id == ConnectionId::of(connection) {
                 held_connection.last_heard = stalled_since;
             }
         }

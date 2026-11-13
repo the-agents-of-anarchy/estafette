@@ -280,7 +280,7 @@ impl ConnectionId {
 
     /// The identifier as the number iroh's trace lines print.
     #[must_use]
-    pub const fn value(self) -> usize {
+    pub(crate) const fn value(self) -> usize {
         self.0
     }
 }
