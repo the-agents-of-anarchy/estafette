@@ -1156,6 +1156,7 @@ pub(crate) mod tests {
     use crate::card::tests::{SPEC_PUBLIC_CAP_BYTES, public_mapping_of_bytes};
     use crate::crypto::{KEY_LEN, NetworkSecret};
     use crate::net::endpoint::NodeEndpoint;
+    use crate::seeded_draws::Draws;
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [7; KEY_LEN];
     const SERVER_SEED: u8 = 1;
@@ -1987,6 +1988,40 @@ pub(crate) mod tests {
             .iter()
             .find(|(key, _)| *key == name)
             .map(|(_, value)| value)
+    }
+
+    const DRAWN_TEXT_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz_/0123456789";
+    const LONGEST_DRAWN_TEXT: u64 = 24;
+    const WAYS_TO_DRAW_BESIDE: u64 = 4;
+    pub const CATCH_ALL_CASES: u64 = 2000;
+
+    /// An index below the length, drawn from the sequence.
+    fn drawn_index(draws: &mut Draws, length: usize) -> usize {
+        usize::try_from(draws.below(u64::try_from(length).unwrap())).unwrap()
+    }
+
+    /// A byte of the drawn-text alphabet, drawn from the sequence.
+    fn drawn_letter(draws: &mut Draws) -> u8 {
+        DRAWN_TEXT_ALPHABET[drawn_index(draws, DRAWN_TEXT_ALPHABET.len())]
+    }
+
+    /// Bytes drawn beside the named byte strings: one of them lengthened, shortened or with one byte changed, or any text of the alphabet.
+    pub fn bytes_beside(named: &[&[u8]], draws: &mut Draws) -> Vec<u8> {
+        let mut beside = named[drawn_index(draws, named.len())].to_vec();
+        match draws.below(WAYS_TO_DRAW_BESIDE) {
+            0 => beside.push(drawn_letter(draws)),
+            1 => drop(beside.pop()),
+            2 => {
+                let position = drawn_index(draws, beside.len());
+                beside[position] = drawn_letter(draws);
+            }
+            _ => {
+                beside = (0..draws.below(LONGEST_DRAWN_TEXT))
+                    .map(|_| drawn_letter(draws))
+                    .collect();
+            }
+        }
+        beside
     }
 
     #[tokio::test]
@@ -3877,6 +3912,23 @@ pub(crate) mod tests {
         ];
 
         assert_each_arm(&cases, |reason| AckRefusal::of(*reason), ACK_REFUSALS_APART);
+    }
+
+    #[test]
+    fn observability_decision_9_every_reason_but_the_two_codes_estafette_writes_reads_as_unlisted()
+    {
+        let named = [SPEC_TOO_LARGE_CODE.as_bytes(), SPEC_REFUSED_CODE.as_bytes()];
+        for case in 0..CATCH_ALL_CASES {
+            let reason = String::from_utf8(bytes_beside(&named, &mut Draws::seeded(case))).unwrap();
+            if named.contains(&reason.as_bytes()) {
+                continue;
+            }
+            assert_eq!(
+                AckRefusal::of(Some(&reason)),
+                AckRefusal::Unlisted,
+                "reason {reason:?}"
+            );
+        }
     }
 
     #[test]
