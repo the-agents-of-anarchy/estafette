@@ -167,7 +167,7 @@ mod tests {
     use iroh::Signature;
     use iroh_gossip::ALPN as GOSSIP_ALPN;
     use tokio::task::JoinHandle;
-    use tokio::time::{sleep, timeout};
+    use tokio::time::timeout;
 
     const NETWORK_SECRET: NetworkSecret = NetworkSecret::from_bytes([9; KEY_LEN]);
     const OWNER_SEED: u8 = 40;
@@ -182,7 +182,6 @@ mod tests {
     const EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY: u64 = 4000;
     const LAG_WAIT: Duration = Duration::from_secs(30);
     const DELIVERY_WAIT: Duration = Duration::from_secs(60);
-    const DELIVERY_POLL: Duration = Duration::from_millis(10);
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     const JOIN_TIMEOUT_SLACK: Duration = Duration::from_millis(1000);
     const JOIN_HANDED_THIS_LONG_AGO: Duration = Duration::from_millis(3000);
@@ -363,9 +362,9 @@ mod tests {
         }
     }
 
-    async fn every_broadcast_reaches(member: &Member, broadcasts: u64) {
-        while member.gossip.metrics().msgs_data_recv.get() < broadcasts {
-            sleep(DELIVERY_POLL).await;
+    async fn at_least_received_data_messages(member: &Member, data_messages: u64) {
+        while member.gossip.metrics().msgs_data_recv.get() < data_messages {
+            tokio::task::yield_now().await;
         }
     }
 
@@ -592,7 +591,7 @@ mod tests {
 
         timeout(
             DELIVERY_WAIT,
-            every_broadcast_reaches(&first, EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY),
+            at_least_received_data_messages(&first, EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY),
         )
         .await
         .expect("every broadcast reaches the node that falls behind");
