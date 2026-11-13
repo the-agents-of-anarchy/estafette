@@ -2,17 +2,24 @@
 #[cfg(test)]
 mod observability {
     use std::ffi::OsString;
-    use std::fs::{self, File};
+    use std::fs::{self, File, Permissions};
+    use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::thread;
     use std::time::{Duration, UNIX_EPOCH};
 
     use estafette_trace::{
-        BridgeRun, RUN_ID_BYTES, RunId, TraceBounds, TraceClocks, TraceDirectory, TraceEffects,
-        TraceStop,
+        BridgeRun, RUN_ID_BYTES, RunId, TraceAction, TraceBounds, TraceClocks, TraceDirectory,
+        TraceEffects, TraceStop,
     };
 
     const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
+    const READ_WITHOUT_SEARCH_MODE: u32 = 0o400;
+    const OWNER_ONLY_DIRECTORY_MODE: u32 = 0o700;
+    const LISTING_RACE_STARTS: u32 = 20_000;
+    const RACING_ENTRY_NAMES: u64 = 64;
     const RUN_BYTES: [u8; RUN_ID_BYTES] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
     const RUN_HEX: &str = "a1b2c3d4e5f60718";
     const FROZEN_MONOTONIC_MS: u64 = 7;
@@ -258,6 +265,72 @@ mod observability {
 
         let events = run.open_events().unwrap();
         assert!(matches!(events.finish(), TraceStop::Drained));
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn observability_decision_13_a_start_listing_a_directory_whose_entries_a_concurrent_start_keeps_removing_goes_on()
+     {
+        let (root, directory) = scratch_trace_directory("concurrent-listing");
+        let traces = directory.path();
+        fs::create_dir_all(&traces).unwrap();
+        let removing_stop = Arc::new(AtomicBool::new(false));
+        let concurrent_start = thread::spawn({
+            let removing_stop = Arc::clone(&removing_stop);
+            move || {
+                let mut round: u64 = 0;
+                while !removing_stop.load(Ordering::Relaxed) {
+                    let entry = traces.join(format!("racing-{}", round % RACING_ENTRY_NAMES));
+                    drop(fs::write(&entry, b"x"));
+                    drop(fs::remove_file(&entry));
+                    round += 1;
+                }
+            }
+        });
+        let effects = TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS));
+
+        let refusal = (0..LISTING_RACE_STARTS).find_map(|_| {
+            BridgeRun::begin(
+                &directory,
+                &|path: &Path| fs::create_dir_all(path),
+                RunId::from_random_bytes(RUN_BYTES),
+                &effects,
+                TraceBounds::SPEC,
+            )
+            .err()
+        });
+        removing_stop.store(true, Ordering::Relaxed);
+        concurrent_start.join().unwrap();
+
+        assert!(
+            refusal.is_none(),
+            "a listing that met a removed entry refused the start: {refusal:?}"
+        );
+        drop(fs::remove_dir_all(&root));
+    }
+
+    #[test]
+    fn observability_decision_13_a_start_whose_listing_cannot_read_an_entry_for_another_reason_refuses_naming_the_directory()
+     {
+        let (root, directory) = scratch_trace_directory("unreadable-entry");
+        let traces = directory.path();
+        fs::create_dir_all(&traces).unwrap();
+        stored_run_file(&traces, "unreadable-entry", OLD_FILE_BYTES, NOW_MS);
+        fs::set_permissions(&traces, Permissions::from_mode(READ_WITHOUT_SEARCH_MODE)).unwrap();
+
+        let refusal = BridgeRun::begin(
+            &directory,
+            &|path: &Path| fs::create_dir_all(path),
+            RunId::from_random_bytes(RUN_BYTES),
+            &TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS)),
+            TraceBounds::SPEC,
+        )
+        .err();
+        fs::set_permissions(&traces, Permissions::from_mode(OWNER_ONLY_DIRECTORY_MODE)).unwrap();
+
+        let refusal = refusal.expect("an entry that cannot be read refuses the start");
+        assert_eq!(refusal.action(), TraceAction::ListDirectory);
+        assert_eq!(refusal.path(), traces);
         drop(fs::remove_dir_all(&root));
     }
 }

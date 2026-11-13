@@ -42,24 +42,28 @@ fn create_private_file(path: &Path) -> io::Result<Box<dyn TraceFile>> {
     Ok(Box::new(file))
 }
 
-/// Every entry of the directory with its size and when it was last written, a time before the Unix epoch read as the epoch.
+/// Every entry of the directory with its size and when it was last written, a time before the Unix epoch read as the epoch, and an entry removed while the directory is read left out.
 fn stored_files_in(directory: &Path) -> io::Result<Vec<StoredFile>> {
     fs::read_dir(directory)?
-        .map(|entry| {
+        .map(|entry| -> io::Result<Option<StoredFile>> {
             let entry = entry?;
-            let metadata = entry.metadata()?;
+            let metadata = match entry.metadata() {
+                Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+                read => read?,
+            };
             let written_ms = metadata
                 .modified()?
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |since| {
                     u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
                 });
-            Ok(StoredFile {
+            Ok(Some(StoredFile {
                 name: entry.file_name(),
                 bytes: metadata.len(),
                 written_ms,
-            })
+            }))
         })
+        .filter_map(Result::transpose)
         .collect()
 }
 
