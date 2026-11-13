@@ -37,36 +37,48 @@ pub struct TraceLine {
     members: Vec<(String, Value)>,
 }
 
+/// Why a whole line of trace text could not be read.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TraceLineError {
+    UnknownFormatVersion { line: usize, found: u64, known: u64 },
+    NotATraceLine { line: usize, cause: String },
+}
+
 /// Why a trace file could not be read into lines.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TraceReadError {
-    UnknownFormatVersion {
-        line: usize,
-        found: u64,
-        known: u64,
-    },
-    NotATraceLine {
-        line: usize,
-    },
     Unreadable {
         path: PathBuf,
         kind: std::io::ErrorKind,
     },
+    UnreadableLine {
+        path: PathBuf,
+        failure: TraceLineError,
+    },
 }
 
-impl fmt::Display for TraceReadError {
+impl fmt::Display for TraceLineError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownFormatVersion { line, found, known } => write!(
                 formatter,
                 "line {line} has format version {found}; this reader knows version {known}"
             ),
-            Self::NotATraceLine { line } => write!(
-                formatter,
-                "line {line} is not a trace line: a JSON object with the header and an event name"
-            ),
+            Self::NotATraceLine { line, cause } => {
+                write!(formatter, "line {line} is not a trace line: {cause}")
+            }
+        }
+    }
+}
+
+impl fmt::Display for TraceReadError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
             Self::Unreadable { path, kind } => {
                 write!(formatter, "{} cannot be read: {kind}", path.display())
+            }
+            Self::UnreadableLine { path, failure } => {
+                write!(formatter, "{}: {failure}", path.display())
             }
         }
     }
@@ -138,34 +150,38 @@ impl<'de> Deserialize<'de> for OrderedMembers {
 }
 
 /// The line read from the members of a JSON object, refusing a format version it does not know and any header it lacks.
-fn trace_line_of(members: Vec<(String, Value)>, line: usize) -> Result<TraceLine, TraceReadError> {
+fn trace_line_of(members: Vec<(String, Value)>, line: usize) -> Result<TraceLine, TraceLineError> {
     let member = |key: &str| {
         members
             .iter()
             .find(|(name, _)| name == key)
             .map(|(_, value)| value)
     };
-    let found = member(VERSION_KEY)
-        .and_then(Value::as_u64)
-        .ok_or(TraceReadError::NotATraceLine { line })?;
-    if found != KNOWN_FORMAT_VERSION {
-        return Err(TraceReadError::UnknownFormatVersion {
-            line,
-            found,
-            known: KNOWN_FORMAT_VERSION,
-        });
-    }
     let number = |key: &str| {
         member(key)
             .and_then(Value::as_u64)
-            .ok_or(TraceReadError::NotATraceLine { line })
+            .ok_or_else(|| TraceLineError::NotATraceLine {
+                line,
+                cause: format!("{key} is missing or not a number"),
+            })
     };
     let text = |key: &str| {
         member(key)
             .and_then(Value::as_str)
             .map(str::to_owned)
-            .ok_or(TraceReadError::NotATraceLine { line })
+            .ok_or_else(|| TraceLineError::NotATraceLine {
+                line,
+                cause: format!("{key} is missing or not a string"),
+            })
     };
+    let found = number(VERSION_KEY)?;
+    if found != KNOWN_FORMAT_VERSION {
+        return Err(TraceLineError::UnknownFormatVersion {
+            line,
+            found,
+            known: KNOWN_FORMAT_VERSION,
+        });
+    }
     Ok(TraceLine {
         run: text(RUN_KEY)?,
         n: number(NUMBER_KEY)?,
@@ -181,8 +197,8 @@ fn trace_line_of(members: Vec<(String, Value)>, line: usize) -> Result<TraceLine
 ///
 /// # Errors
 ///
-/// Fails on a whole line that is no trace line, and on one with a format version this reader does not know, naming it and the version it knows.
-pub fn parse_trace_lines(bytes: &[u8]) -> Result<Vec<TraceLine>, TraceReadError> {
+/// Fails on a whole line that is no trace line, naming why, and on one with a format version this reader does not know, naming it and the version it knows.
+pub fn parse_trace_lines(bytes: &[u8]) -> Result<Vec<TraceLine>, TraceLineError> {
     let mut segments: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
     segments.pop();
     segments
@@ -190,8 +206,12 @@ pub fn parse_trace_lines(bytes: &[u8]) -> Result<Vec<TraceLine>, TraceReadError>
         .enumerate()
         .map(|(index, segment)| {
             let line = index.saturating_add(1);
-            let OrderedMembers(members) = serde_json::from_slice(segment)
-                .map_err(|_failure| TraceReadError::NotATraceLine { line })?;
+            let OrderedMembers(members) = serde_json::from_slice(segment).map_err(|failure| {
+                TraceLineError::NotATraceLine {
+                    line,
+                    cause: failure.to_string(),
+                }
+            })?;
             trace_line_of(members, line)
         })
         .collect()
@@ -201,19 +221,22 @@ pub fn parse_trace_lines(bytes: &[u8]) -> Result<Vec<TraceLine>, TraceReadError>
 ///
 /// # Errors
 ///
-/// Fails when the file cannot be read, and as `parse_trace_lines` does.
+/// Fails when the file cannot be read, and as `parse_trace_lines` does, naming the file.
 pub fn read_trace_file(path: &Path) -> Result<Vec<TraceLine>, TraceReadError> {
     let bytes = fs::read(path).map_err(|failure| TraceReadError::Unreadable {
         path: path.to_path_buf(),
         kind: failure.kind(),
     })?;
-    parse_trace_lines(&bytes)
+    parse_trace_lines(&bytes).map_err(|failure| TraceReadError::UnreadableLine {
+        path: path.to_path_buf(),
+        failure,
+    })
 }
 
 /// Every whole line of the trace file, failing the test that reads a file it cannot read.
 #[track_caller]
 pub fn trace_lines_of(path: &Path) -> Vec<TraceLine> {
-    read_trace_file(path).unwrap_or_else(|failure| panic!("{}: {failure}", path.display()))
+    read_trace_file(path).unwrap_or_else(|failure| panic!("{failure}"))
 }
 
 /// The events files in the trace directory, oldest run first and each run's earlier lines first; none when the directory does not exist.
@@ -322,7 +345,7 @@ mod tests {
 
         assert_eq!(
             refusal,
-            TraceReadError::UnknownFormatVersion {
+            TraceLineError::UnknownFormatVersion {
                 line: 2,
                 found: 2,
                 known: 1
@@ -331,6 +354,48 @@ mod tests {
         assert_eq!(
             refusal.to_string(),
             "line 2 has format version 2; this reader knows version 1"
+        );
+    }
+
+    #[test]
+    fn observability_decision_11_a_line_lacking_a_header_is_refused_naming_its_file_its_line_and_the_header()
+     {
+        let directory =
+            std::env::temp_dir().join(format!("trace-reader-{}-headerless", std::process::id()));
+        drop(fs::remove_dir_all(&directory));
+        fs::create_dir_all(&directory).unwrap();
+        let headerless = MEMBER_LINE.replace("\"n\":4,", "");
+        let bad_file = directory.join("20261112T225914Z-aaaaaaaaaaaaaaaa-estafette.events.jsonl");
+        fs::write(&bad_file, format!("{MEMBER_LINE}{headerless}")).unwrap();
+        fs::write(
+            directory.join("20261112T225913Z-bbbbbbbbbbbbbbbb-estafette.events.jsonl"),
+            MEMBER_LINE,
+        )
+        .unwrap();
+
+        let refusal = events_lines_in(&directory).unwrap_err();
+
+        assert_eq!(
+            refusal.to_string(),
+            format!(
+                "{}: line 2 is not a trace line: n is missing or not a number",
+                bad_file.display()
+            )
+        );
+        drop(fs::remove_dir_all(&directory));
+    }
+
+    #[test]
+    fn observability_decision_11_a_line_that_is_no_json_object_is_refused_with_the_parsers_reason()
+    {
+        let unended_object = "{\"v\":1,\"run\":\n";
+
+        let refusal =
+            parse_trace_lines(format!("{MEMBER_LINE}{unended_object}").as_bytes()).unwrap_err();
+
+        assert_eq!(
+            refusal.to_string(),
+            "line 2 is not a trace line: EOF while parsing a value at line 1 column 13"
         );
     }
 
