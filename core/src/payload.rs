@@ -1234,4 +1234,190 @@ mod tests {
         assert_eq!(sealed, encode(&message_ack()).unwrap());
         assert_eq!(open_response(&keys(), &sealed), Ok(message_ack()));
     }
+
+    const SPEC_WIRE_LIMIT_BYTES: usize = 1_114_112;
+    const SPEC_RELAY_URLS_PER_ADDR_CAP: u8 = 4;
+    const RELAY_URLS_PAST_THE_COUNT_CAP: u8 = 5;
+    const SPEC_RELAY_URL_CAP_BYTES: usize = 128;
+    const VERSION_BYTE_INDEX: usize = 1;
+    const UNSUPPORTED_VERSION: u8 = 2;
+    const PRESENCE_RELAY: &str = "https://relay.example/";
+    const RELAY_PADDING: u8 = b'a';
+    const LENGTH_128_VARINT: [u8; 2] = [0x80, 0x01];
+    const LENGTH_129_VARINT: [u8; 2] = [0x81, 0x01];
+    const TRAILING_BYTE: u8 = 0;
+    const PLAIN_HTTP_RELAY: &str = "http://relay.example/";
+    const OTHER_RELAY: &str = "https://other-relay.example";
+    const NOT_A_JSON_MAPPING: &[u8] = b"[]";
+
+    fn sealed_presence_with_relays(relays: &[String]) -> Vec<u8> {
+        let Payload::Presence(presence) = unsealed_presence() else {
+            panic!("a presence was built");
+        };
+        let payload = Payload::Presence(Presence {
+            addr: Addr::from_endpoint_report(relays.iter().cloned(), std::iter::empty()),
+            ..presence
+        });
+        seal_payload(&keys(), &secret_key(REPORTED_CARD_SEED), payload).unwrap()
+    }
+
+    fn position_of(bytes: &[u8], wanted: &[u8]) -> usize {
+        bytes
+            .windows(wanted.len())
+            .position(|window| window == wanted)
+            .unwrap()
+    }
+
+    fn sealed_presence() -> Vec<u8> {
+        seal_payload(
+            &keys(),
+            &secret_key(REPORTED_CARD_SEED),
+            unsealed_presence(),
+        )
+        .unwrap()
+    }
+
+    /// A sealed Presence whose one relay URL is spliced one byte past the cap, its length prefix with it.
+    fn presence_with_a_relay_url_past_the_cap() -> Vec<u8> {
+        let mut at_the_cap = PRESENCE_RELAY.as_bytes().to_vec();
+        at_the_cap.resize(SPEC_RELAY_URL_CAP_BYTES, RELAY_PADDING);
+        let url = String::from_utf8(at_the_cap).unwrap();
+        let sealed = sealed_presence_with_relays(std::slice::from_ref(&url));
+        let prefixed = [LENGTH_128_VARINT.as_slice(), url.as_bytes()].concat();
+        let (before, from_the_url) = sealed.split_at(position_of(&sealed, &prefixed));
+        let after = from_the_url.strip_prefix(prefixed.as_slice()).unwrap();
+        [
+            before,
+            &LENGTH_129_VARINT,
+            url.as_bytes(),
+            &[RELAY_PADDING],
+            after,
+        ]
+        .concat()
+    }
+
+    /// A sealed Presence at the relay URL count cap, spliced to hold one relay URL more, its count with it.
+    fn presence_with_one_relay_url_past_the_count_cap() -> Vec<u8> {
+        let relays = vec![PRESENCE_RELAY.to_owned(); usize::from(SPEC_RELAY_URLS_PER_ADDR_CAP)];
+        let sealed = sealed_presence_with_relays(&relays);
+        let one_relay = [
+            [u8::try_from(PRESENCE_RELAY.len()).unwrap()].as_slice(),
+            PRESENCE_RELAY.as_bytes(),
+        ]
+        .concat();
+        let counted = [[SPEC_RELAY_URLS_PER_ADDR_CAP].as_slice(), &one_relay].concat();
+        let (before, from_the_count) = sealed.split_at(position_of(&sealed, &counted));
+        let after = from_the_count.strip_prefix(counted.as_slice()).unwrap();
+        [
+            before,
+            &[RELAY_URLS_PAST_THE_COUNT_CAP],
+            &one_relay,
+            &one_relay,
+            after,
+        ]
+        .concat()
+    }
+
+    fn refused_by_the_payload_layer(bytes: &[u8]) -> PayloadRefusal {
+        open_described_payload(&keys(), &owner_public(), bytes).unwrap_err()
+    }
+
+    /// Observability decision 9: each input meets one payload-layer rule alone, and the refusal names that rule.
+    #[test]
+    fn observability_decision_9_a_payload_the_payload_layer_refuses_is_named_by_the_one_rule_it_meets()
+     {
+        let presence_facts = Some(unsealed_presence().facts());
+        let infrastructure = |relay: &str, addr_relays: &[&str], certificate| {
+            let payload = unsealed_infrastructure(relay, addr_relays, certificate);
+            let facts = Some(payload.facts());
+            let sealed = seal_payload(&keys(), &secret_key(HOST_SEED), payload).unwrap();
+            (sealed, facts)
+        };
+        let certified = host_certificate(OWNER_SEED, HOST_SEED);
+        let mut with_another_version = sealed_presence();
+        with_another_version[VERSION_BYTE_INDEX] = UNSUPPORTED_VERSION;
+        let whole = sealed_presence();
+        let (_last_byte, truncated) = whole.split_last().unwrap();
+        let mut with_a_trailing_byte = sealed_presence();
+        with_a_trailing_byte.push(TRAILING_BYTE);
+        let cases = [
+            (
+                (vec![0; SPEC_WIRE_LIMIT_BYTES + 1], None),
+                PayloadDropRule::PastWireLimit,
+            ),
+            ((with_a_trailing_byte, None), PayloadDropRule::TrailingBytes),
+            ((truncated.to_vec(), None), PayloadDropRule::Malformed),
+            (
+                (with_another_version, None),
+                PayloadDropRule::UnsupportedVersion,
+            ),
+            (
+                (presence_with_a_relay_url_past_the_cap(), None),
+                PayloadDropRule::RelayUrlTooLong,
+            ),
+            (
+                (presence_with_one_relay_url_past_the_count_cap(), None),
+                PayloadDropRule::AddrOverCap,
+            ),
+            (
+                (
+                    seal_payload(
+                        &other_network(),
+                        &secret_key(REPORTED_CARD_SEED),
+                        unsealed_presence(),
+                    )
+                    .unwrap(),
+                    presence_facts,
+                ),
+                PayloadDropRule::MacMismatch,
+            ),
+            (
+                (forged_by(FOREIGN_SEED, unsealed_presence()), presence_facts),
+                PayloadDropRule::SignatureMismatch,
+            ),
+            (
+                infrastructure(
+                    HOST_RELAY,
+                    &[HOST_RELAY],
+                    host_certificate(IMPOSTOR_OWNER_SEED, HOST_SEED),
+                ),
+                PayloadDropRule::HostNotCertified,
+            ),
+            (
+                infrastructure(PLAIN_HTTP_RELAY, &[PLAIN_HTTP_RELAY], certified),
+                PayloadDropRule::HostRelayRefused,
+            ),
+            (
+                infrastructure(HOST_RELAY, &[OTHER_RELAY], certified),
+                PayloadDropRule::AddrRelaysNotTheHostRelay,
+            ),
+            (
+                (
+                    sealed_presence_with_public(NOT_A_JSON_MAPPING.to_vec()),
+                    Some(presence_with_public(NOT_A_JSON_MAPPING.to_vec()).facts()),
+                ),
+                PayloadDropRule::PublicNotAdmitted,
+            ),
+        ];
+
+        for ((bytes, facts), rule) in cases {
+            assert_eq!(
+                refused_by_the_payload_layer(&bytes),
+                PayloadRefusal { facts, rule },
+                "{rule:?}"
+            );
+        }
+    }
+
+    /// Observability decision 9: a re-encoding that fails is named unencodable, a failure no received bytes reach, since every structure that decodes encodes again.
+    #[test]
+    fn observability_decision_9_a_failed_re_encoding_is_named_unencodable() {
+        assert_eq!(
+            OpeningFailure::Codec(CodecError::Unencodable(
+                postcard::Error::SerializeBufferFull
+            ))
+            .drop_rule(),
+            PayloadDropRule::Unencodable
+        );
+    }
 }
