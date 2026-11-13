@@ -21,6 +21,9 @@ const WRITER_THREAD_NAME_SUFFIX: &str = "trace-writer";
 
 /// Where a trace writer's thread puts each line.
 pub trait TraceOutput {
+    /// Which of its run's trace files this output is.
+    fn kind(&self) -> TraceFileKind;
+
     /// Writes the line, newline included, whole in one write.
     fn write_line(&mut self, line: &[u8]) -> io::Result<()>;
 
@@ -133,6 +136,10 @@ impl RollingFile {
 }
 
 impl TraceOutput for RollingFile {
+    fn kind(&self) -> TraceFileKind {
+        self.kind
+    }
+
     fn write_line(&mut self, line: &[u8]) -> io::Result<()> {
         if self.is_due_to_roll_over(line) {
             self.cut_to_written()?;
@@ -209,15 +216,15 @@ struct QueuedLine {
 }
 
 impl FileTrace {
-    /// Starts the writer thread of the file of `kind`, through `spawn_thread`, on the output behind a queue of at most `queue_lines` lines, to be stopped within `drain`.
+    /// Starts the writer thread of the output's file, through `spawn_thread`, on the output behind a queue of at most `queue_lines` lines, to be stopped within `drain`.
     pub(super) fn start(
         output: impl TraceOutput + Send + 'static,
-        kind: TraceFileKind,
         drain: Duration,
         header: Arc<HeaderSource>,
         queue_lines: usize,
         spawn_thread: &SpawnThread,
     ) -> io::Result<Self> {
+        let kind = output.kind();
         let (queue, lines) = mpsc::sync_channel(queue_lines);
         let (ended_sender, ended) = mpsc::channel::<io::Result<()>>();
         let lost_at_close = Arc::new(Mutex::new(0));

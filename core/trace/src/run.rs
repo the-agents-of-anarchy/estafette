@@ -77,7 +77,6 @@ impl TraceRun {
                 Arc::clone(&self.create_file),
                 Arc::clone(&self.rename_file),
             ),
-            kind,
             self.drain,
             Arc::clone(&self.header),
             self.queue_lines,
