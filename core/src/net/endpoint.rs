@@ -9,7 +9,7 @@ use iroh::{
 use iroh_gossip::ALPN as GOSSIP_ALPN;
 
 use super::direct::HeldConnections;
-use super::gate::{NONCE_BYTES, NetworkSecretGate};
+use super::gate::{FillGateNonce, GateNonce, NetworkSecretGate, ReportGateClosing};
 use crate::crypto::GateKey;
 
 pub use super::gate::GateFailure;
@@ -17,9 +17,6 @@ pub use super::gate::GateFailure;
 pub const DIRECT_ALPN: &[u8] = b"estafette/direct/1";
 const QUIC_IDLE_TIMEOUT_MILLIS: u32 = 10_000;
 pub const QUIC_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(500);
-
-type FillNonce = Arc<dyn Fn(&mut [u8; NONCE_BYTES]) + Send + Sync>;
-type ReportGateClosing = Arc<dyn Fn(GateFailure) + Send + Sync>;
 
 /// The node's iroh endpoint, gated on the network secret for every gossip connection, with the address lookup the node feeds and the relay map it edits, both kept across rebinds.
 pub struct NodeEndpoint {
@@ -29,11 +26,11 @@ pub struct NodeEndpoint {
     binding: Binding,
 }
 
-/// What every endpoint of the node is bound with: the card key and the gate's key, nonce source, closing sink and connection register, the two callbacks shared as `Arc`s that each gate calls through a closure since an `Arc` is no `Fn`.
+/// What every endpoint of the node is bound with: the card key and the gate's key, nonce source, closing sink and connection register, the source and the sink shared with each gate a rebind builds.
 struct Binding {
     secret_key: SecretKey,
     gate_key: GateKey,
-    fill_nonce: FillNonce,
+    fill_nonce: FillGateNonce,
     report_gate_closing: ReportGateClosing,
     connections: HeldConnections,
 }
@@ -47,7 +44,7 @@ impl NodeEndpoint {
         secret_key: SecretKey,
         gate_key: GateKey,
         relays: impl IntoIterator<Item = RelayUrl>,
-        fill_nonce: impl Fn(&mut [u8; NONCE_BYTES]) + Send + Sync + 'static,
+        fill_nonce: impl Fn(&mut GateNonce) + Send + Sync + 'static,
         report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
         connections: HeldConnections,
     ) -> Result<Self, BindError> {
@@ -124,13 +121,11 @@ async fn bind_endpoint(
     relay_map: &RelayMap,
     address_lookup: &MemoryLookup,
 ) -> Result<Endpoint, BindError> {
-    let fill_nonce = Arc::clone(&binding.fill_nonce);
-    let report_gate_closing = Arc::clone(&binding.report_gate_closing);
     let gate = NetworkSecretGate::new(
         binding.gate_key,
         binding.secret_key.public(),
-        move |nonce: &mut [u8; NONCE_BYTES]| fill_nonce(nonce),
-        move |reason| report_gate_closing(reason),
+        Arc::clone(&binding.fill_nonce),
+        Arc::clone(&binding.report_gate_closing),
         binding.connections.clone(),
     );
     Endpoint::builder(presets::Minimal)

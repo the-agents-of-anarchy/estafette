@@ -15,13 +15,13 @@ const MAX_DIRECT_ADDRS_PER_ADDR: usize = 8;
 pub const MAX_RELAY_URL_BYTES: usize = 128;
 const SIGNATURE_BYTES: usize = 64;
 const MAC_BYTES: usize = 32;
-const NONCE_BYTES: usize = 16;
+const PROBE_NONCE_BYTES: usize = 16;
 const MESSAGE_ID_BYTES: usize = 16;
 const PUBLIC_KEY_BYTES: usize = 32;
 const SECRET_BYTES: usize = 32;
 
 pub type Mac = [u8; MAC_BYTES];
-pub type Nonce = [u8; NONCE_BYTES];
+pub type Nonce = [u8; PROBE_NONCE_BYTES];
 pub type MessageId = [u8; MESSAGE_ID_BYTES];
 pub type PublicKey = [u8; PUBLIC_KEY_BYTES];
 pub type Secret = [u8; SECRET_BYTES];
@@ -634,7 +634,7 @@ mod tests {
     fn probe_request() -> Request {
         Request::Probe(Probe {
             v: Version::CURRENT,
-            nonce: [7; NONCE_BYTES],
+            nonce: [7; PROBE_NONCE_BYTES],
             mac: [9; MAC_BYTES],
         })
     }
