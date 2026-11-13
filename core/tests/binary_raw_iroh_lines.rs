@@ -15,7 +15,7 @@ mod raw_iroh_lines {
     use std::fs;
     use std::io::{BufRead, BufReader};
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Stdio};
+    use std::process::{Child, Command, Stdio};
 
     use serde_json::Value;
 
@@ -72,6 +72,16 @@ mod raw_iroh_lines {
             .env("XDG_DATA_HOME", root.join(DATA_HOME))
             .env("XDG_RUNTIME_DIR", root.join(RUNTIME_DIRECTORY));
         command
+    }
+
+    /// A child process killed and reaped when this value drops, whether the test passed or failed.
+    struct KilledOnDrop(Child);
+
+    impl Drop for KilledOnDrop {
+        fn drop(&mut self) {
+            drop(self.0.kill());
+            drop(self.0.wait());
+        }
     }
 
     /// Each line of a trace file as JSON.
@@ -144,21 +154,22 @@ mod raw_iroh_lines {
     fn observability_decision_7_a_process_killed_after_it_bound_an_endpoint_and_wrote_lines_of_iroh_leaves_in_its_raw_file_only_whole_numbered_lines_its_own_unended_line_and_zero_bytes()
      {
         let root = machine_with_network("killed");
-        let mut child = binary(&root)
-            .args(["tail", NETWORK])
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
+        let mut child = KilledOnDrop(
+            binary(&root)
+                .args(["tail", NETWORK])
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
         let mut announcement = String::new();
-        BufReader::new(child.stderr.take().unwrap())
+        BufReader::new(child.0.stderr.take().unwrap())
             .read_line(&mut announcement)
             .unwrap();
         let (_events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
         let wrote_lines_of_iroh = holds_within_the_wait(&raw, hold_a_line_of_iroh);
 
-        child.kill().unwrap();
-        child.wait().unwrap();
+        drop(child);
 
         assert!(
             wrote_lines_of_iroh,
