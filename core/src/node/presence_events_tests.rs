@@ -8,14 +8,18 @@ use tokio::sync::mpsc;
 use super::tests::{
     FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_SEED,
     MemberPlan, SECOND_EFFECTIVE_FIRST_HANDLE, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED,
-    SPEC_OBSERVER_WAIT, Scratch, THIRD_PUBLIC, THIRD_SEED, WITNESS_SEED, card, infrastructure_of,
-    keys, listed_within, secret_key, settable_clock, start_members, start_members_reaching,
-    start_pair, start_witnessed, wall_clock_ms,
+    SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_PUBLIC, THIRD_SEED, WITNESS_SEED, bind, card,
+    infrastructure_of, keys, listed_within, message_to, secret_key, settable_clock, start_members,
+    start_members_reaching, start_pair, start_witnessed, wall_clock_ms,
 };
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{Event, EventFields, RunRecord};
+use crate::net::direct::{ClientTimeouts, DirectClient};
+use crate::node::addresses::wire_addr;
 use crate::payload::{ZERO_MAC, ZERO_SIGNATURE, seal_payload, sealed_by_any_key};
-use crate::wire::{Addr, Departure, Payload, Presence, PresenceRequest, Unreachable, Version};
+use crate::wire::{
+    Addr, Departure, Introduce, Payload, Presence, PresenceRequest, Unreachable, Version,
+};
 
 const EVENT_WAIT: Duration = Duration::from_secs(10);
 const SPEC_SHORT_ID_BYTES: usize = 5;
@@ -937,6 +941,146 @@ async fn observability_decision_9_a_member_records_entries_its_direct_answers_an
             ("online", "unreachable"),
             "probe_failed"
         )
+    );
+    drop(scratch);
+}
+
+#[tokio::test]
+async fn observability_decision_9_a_member_records_an_entry_a_probe_answer_and_a_failed_send_move_with_the_cause()
+ {
+    let scratch = Scratch::new("ev-probe-send").await;
+    let (report, mut recorded) = recording();
+    let (member, witness) = start_witnessed(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+            .with_clock(Arc::new(|| FROZEN_CLOCK_MS))
+            .with_report(report),
+        Some(WITNESS_HANDLE),
+    )
+    .await;
+    recorded.next_named(ENTRY_CREATED).await;
+    witness
+        .broadcast_as(
+            MARKER_SEED,
+            unreachable_of(MARKER_SEED, WITNESS_SEED, FROZEN_CLOCK_MS),
+        )
+        .await;
+    recorded.next_named(ENTRY_CHANGED).await;
+
+    let answering = witness.leave_topic();
+    let answered = recorded.next_named(ENTRY_CHANGED).await;
+    answering.shutdown().await.unwrap();
+    member
+        .node
+        .send(WITNESS_HANDLE, SENT_BODY)
+        .await
+        .unwrap_err();
+    let failed = recorded.next_named(ENTRY_CHANGED).await;
+
+    assert_eq!(
+        answered,
+        changed_fields(
+            WITNESS_SEED,
+            WITNESS_HANDLE,
+            ("unreachable", "online"),
+            "probe_answered"
+        )
+    );
+    assert_eq!(
+        failed,
+        changed_fields(
+            WITNESS_SEED,
+            WITNESS_HANDLE,
+            ("online", "unreachable"),
+            "send_failed"
+        )
+    );
+    drop(scratch);
+}
+
+#[tokio::test]
+async fn observability_decision_9_a_member_records_an_entry_its_failed_introduce_moves_with_the_cause()
+ {
+    let scratch = Scratch::new("ev-intro-fail").await;
+    let (report, mut recorded) = recording();
+    let (_member, witness) = start_witnessed(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+            .with_clock(Arc::new(|| FROZEN_CLOCK_MS))
+            .with_report(report),
+        None,
+    )
+    .await;
+
+    witness
+        .broadcast_as(
+            MARKER_SEED,
+            presence_of(MARKER_SEED, MARKER_HANDLE, FROZEN_CLOCK_MS),
+        )
+        .await;
+    recorded.next_named(ENTRY_CREATED).await;
+
+    assert_eq!(
+        recorded.next_named(ENTRY_CHANGED).await,
+        changed_fields(
+            MARKER_SEED,
+            MARKER_HANDLE,
+            ("online", "unreachable"),
+            "introduce_failed"
+        )
+    );
+    drop(scratch);
+}
+
+#[tokio::test]
+async fn observability_decision_9_a_member_records_entries_an_introduce_and_a_message_from_unseen_cards_create_with_the_cause()
+ {
+    let scratch = Scratch::new("ev-requests").await;
+    let (report, mut recorded) = recording();
+    let (member, _witness) = start_witnessed(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
+        None,
+    )
+    .await;
+    let introducer = bind(THIRD_SEED).await;
+    introducer.replace_address(member.endpoint.addr());
+    let sender = bind(PIN_SEED).await;
+    sender.replace_address(member.endpoint.addr());
+
+    DirectClient::new(introducer.endpoint().clone(), keys(), ClientTimeouts::SPEC)
+        .introduce(
+            member.endpoint.id(),
+            Introduce {
+                v: Version::CURRENT,
+                handle: Some(THIRD_HANDLE.to_owned()),
+                public: THIRD_PUBLIC.to_vec(),
+                attached: true,
+                addr: wire_addr(&introducer.endpoint().addr()),
+                mac: ZERO_MAC,
+            },
+        )
+        .await
+        .unwrap();
+    let created_by_introduce = recorded.next_named(ENTRY_CREATED).await;
+    DirectClient::new(sender.endpoint().clone(), keys(), ClientTimeouts::SPEC)
+        .send_message(member.endpoint.id(), message_to(FIRST_SEED, PIN_HANDLE))
+        .await
+        .unwrap();
+    let created_by_message = recorded.next_named(ENTRY_CREATED).await;
+
+    assert_eq!(
+        created_by_introduce,
+        created_fields(
+            THIRD_SEED,
+            (THIRD_HANDLE, THIRD_HANDLE),
+            "online",
+            "introduce"
+        )
+    );
+    assert_eq!(
+        created_by_message,
+        created_fields(PIN_SEED, (PIN_HANDLE, PIN_HANDLE), "online", "message")
     );
     drop(scratch);
 }

@@ -2213,6 +2213,11 @@ pub(super) mod tests {
             self.router.shutdown().await.unwrap();
         }
 
+        /// Leaves the topic while the returned router still answers direct requests.
+        pub(in crate::node) fn leave_topic(self) -> Router {
+            self.router
+        }
+
         pub(in crate::node) async fn broadcast_as(&self, signer_seed: u8, payload: Payload) {
             self.topic
                 .broadcast(&secret_key(signer_seed), payload)
