@@ -2,6 +2,9 @@
 #[path = "support/driven_runtime.rs"]
 mod driven_runtime;
 #[cfg(test)]
+#[path = "one_machine/gate_closings.rs"]
+mod gate_closings;
+#[cfg(test)]
 #[path = "one_machine/local_network.rs"]
 mod local_network;
 #[cfg(test)]
