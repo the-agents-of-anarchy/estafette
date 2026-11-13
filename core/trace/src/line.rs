@@ -4,6 +4,14 @@ use serde_json::Value;
 
 use super::{FORMAT_VERSION, RunId, TraceClocks};
 
+const FORMAT_VERSION_KEY: &str = "v";
+const RUN_KEY: &str = "run";
+const LINE_NUMBER_KEY: &str = "n";
+const MONOTONIC_MS_KEY: &str = "mono_ms";
+const WALL_MS_KEY: &str = "wall_ms";
+const NODE_KEY: &str = "node";
+const EVENT_KEY: &str = "event";
+
 /// What begins every line of both trace files, in the order decision 5 fixes: the format version, the run, the line number, the two clock readings and the node once there is one.
 pub struct HeaderSource {
     run: String,
@@ -45,16 +53,16 @@ impl HeaderSource {
             .unwrap_or_else(PoisonError::into_inner)
             .clone();
         let mut after_n: Vec<(&str, Value)> = vec![
-            ("mono_ms", Value::from((self.clocks.monotonic_ms)())),
-            ("wall_ms", Value::from((self.clocks.wall_ms)())),
+            (MONOTONIC_MS_KEY, Value::from((self.clocks.monotonic_ms)())),
+            (WALL_MS_KEY, Value::from((self.clocks.wall_ms)())),
         ];
-        after_n.extend(node.map(|node| ("node", Value::from(node))));
-        after_n.push(("event", Value::from(name)));
+        after_n.extend(node.map(|node| (NODE_KEY, Value::from(node))));
+        after_n.push((EVENT_KEY, Value::from(name)));
         after_n.extend(fields.iter().map(|(key, value)| (*key, value.clone())));
         StampedLine {
             before_n: joined_members(&[
-                ("v", Value::from(FORMAT_VERSION)),
-                ("run", Value::from(self.run.as_str())),
+                (FORMAT_VERSION_KEY, Value::from(FORMAT_VERSION)),
+                (RUN_KEY, Value::from(self.run.as_str())),
             ]),
             after_n: joined_members(&after_n),
         }
@@ -67,7 +75,7 @@ impl StampedLine {
         format!(
             "{{{},{},{}}}\n",
             self.before_n,
-            member("n", &Value::from(n)),
+            member(LINE_NUMBER_KEY, &Value::from(n)),
             self.after_n
         )
     }
