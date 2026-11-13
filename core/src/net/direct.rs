@@ -252,7 +252,7 @@ impl HeldConnections {
         }
     }
 
-    /// Records a change of one of the connection's paths with where the path leads and its round-trip time, counting a path event this build cannot read as one missed.
+    /// Records a change of one of the connection's paths with where the path leads and its round-trip time, or the count iroh lost, and nothing for a path event this build cannot read.
     fn record_path_change(
         &self,
         stable_id: usize,
@@ -266,39 +266,35 @@ impl HeldConnections {
                 .and_then(|live| live.rtt(path))
                 .map(milliseconds_of)
         };
-        self.record(|transport| match change {
+        let (change, path, remote_addr, round_trip_ms) = match change {
             PathEvent::Opened {
                 id, remote_addr, ..
-            } => TransportEvent::PathChanged {
-                connection: connection_id,
-                change: PathChange::Opened,
-                path: id,
-                location: transport.locate(&remote_addr),
-                round_trip_ms: live_round_trip(id),
-            },
+            } => (PathChange::Opened, id, remote_addr, live_round_trip(id)),
             PathEvent::Selected {
                 id, remote_addr, ..
-            } => TransportEvent::PathChanged {
-                connection: connection_id,
-                change: PathChange::Selected,
-                path: id,
-                location: transport.locate(&remote_addr),
-                round_trip_ms: live_round_trip(id),
-            },
+            } => (PathChange::Selected, id, remote_addr, live_round_trip(id)),
             PathEvent::Closed {
                 id,
                 remote_addr,
                 last_stats,
                 ..
-            } => TransportEvent::PathChanged {
-                connection: connection_id,
-                change: PathChange::Closed,
-                path: id,
-                location: transport.locate(&remote_addr),
-                round_trip_ms: Some(milliseconds_of(last_stats.rtt)),
-            },
-            PathEvent::Lagged { missed, .. } => path_events_missed(connection_id, missed),
-            _ => path_events_missed(connection_id, 1),
+            } => (
+                PathChange::Closed,
+                id,
+                remote_addr,
+                Some(milliseconds_of(last_stats.rtt)),
+            ),
+            PathEvent::Lagged { missed, .. } => {
+                return self.record(|_transport| path_events_missed(connection_id, missed));
+            }
+            _ => return,
+        };
+        self.record(|transport| TransportEvent::PathChanged {
+            connection: connection_id,
+            change,
+            path,
+            location: transport.locate(&remote_addr),
+            round_trip_ms,
         });
     }
 
