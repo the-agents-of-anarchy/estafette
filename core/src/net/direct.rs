@@ -18,7 +18,7 @@ use super::endpoint::{
 };
 use crate::crypto::NetworkKeys;
 use crate::errors::ErrorCode;
-use crate::event::TransportEvent;
+use crate::event::{DirectEvent, Event, TransportEvent};
 use crate::payload::{
     PayloadError, ZERO_MAC, open_request, open_response, seal_request, seal_response,
 };
@@ -162,8 +162,11 @@ impl HeldConnections {
         }
     }
 
-    /// Hands the transport event, built against the transport record, to that record, when the register records.
-    pub(crate) fn record(&self, event: impl FnOnce(&TransportRecord) -> TransportEvent) {
+    /// Hands the event, built against the transport record, to that record, when the register records.
+    pub(crate) fn record<Recorded: Into<Event>>(
+        &self,
+        event: impl FnOnce(&TransportRecord) -> Recorded,
+    ) {
         if let Some(transport) = &self.transport {
             transport.record(event(transport));
         }
@@ -418,6 +421,116 @@ fn take_superseded(
     }
 }
 
+/// The kind of a direct request and, for a Message, its id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestSummary {
+    Message(wire::MessageId),
+    Probe,
+    Introduce,
+}
+
+impl RequestSummary {
+    /// The kind and message id of the request.
+    #[must_use]
+    pub const fn of(request: &Request) -> Self {
+        match request {
+            Request::Message(message) => Self::Message(message.id),
+            Request::Probe(_) => Self::Probe,
+            Request::Introduce(_) => Self::Introduce,
+        }
+    }
+}
+
+/// Whether a request rode the connection the client held or one it dialed for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionSource {
+    Held,
+    Dialed,
+}
+
+/// The error code a Message acknowledgement refuses with, as one of the codes estafette writes or another by none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AckRefusal {
+    TooLarge,
+    Refused,
+    Unlisted,
+}
+
+impl AckRefusal {
+    /// The refusal named by the reason of a Message acknowledgement.
+    #[must_use]
+    pub fn of(reason: Option<&str>) -> Self {
+        match reason {
+            Some(code) if code == ErrorCode::TooLarge.code() => Self::TooLarge,
+            Some(code) if code == ErrorCode::Refused.code() => Self::Refused,
+            Some(_) | None => Self::Unlisted,
+        }
+    }
+}
+
+/// How a request this node sent ended: acknowledged, acknowledged as a refused Message, or failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SentOutcome {
+    Acknowledged,
+    Refused(AckRefusal),
+    Failed(DirectError),
+}
+
+impl SentOutcome {
+    /// The outcome a Message acknowledgement reports.
+    #[must_use]
+    pub fn of_message_ack(ack: &MessageAck) -> Self {
+        if ack.accepted {
+            Self::Acknowledged
+        } else {
+            Self::Refused(AckRefusal::of(ack.reason.as_deref()))
+        }
+    }
+}
+
+/// How a request this node served ended: answered, answered as a refused Message, or left unanswered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServedOutcome {
+    Answered,
+    Refused(AckRefusal),
+    Unanswered(StreamEnd),
+}
+
+impl ServedOutcome {
+    /// The outcome of answering with the response.
+    #[must_use]
+    pub fn of(response: &Response) -> Self {
+        match response {
+            Response::MessageAck(ack) if !ack.accepted => {
+                Self::Refused(AckRefusal::of(ack.reason.as_deref()))
+            }
+            Response::MessageAck(_) | Response::ProbeAck(_) | Response::IntroduceAck(_) => {
+                Self::Answered
+            }
+        }
+    }
+}
+
+/// A request this node sent: which, to whom, over which connection, how it ended and how long it took on the register's monotonic clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SentRequest {
+    pub request: RequestSummary,
+    pub peer: PeerId,
+    pub connection: Option<(ConnectionId, ConnectionSource)>,
+    pub outcome: SentOutcome,
+    pub elapsed_ms: u64,
+}
+
+/// A request this node served: which once it opened, from whom, on which connection, how it ended and how long it took on the register's monotonic clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServedRequest {
+    pub request: Option<RequestSummary>,
+    pub peer: PeerId,
+    pub connection: ConnectionId,
+    pub outcome: ServedOutcome,
+    pub elapsed_ms: u64,
+}
+
 /// The whole milliseconds of a span, saturating past `u64::MAX`.
 fn milliseconds_of(span: Duration) -> u64 {
     u64::try_from(span.as_millis()).unwrap_or(u64::MAX)
@@ -560,8 +673,8 @@ impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
 }
 
 /// Why the server ended a stream without its response: a reset with its code, or a peer already gone.
-#[derive(Debug, Clone, Copy)]
-enum StreamEnd {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEnd {
     OverWireLimit,
     ReadTimeout,
     Unanswered,
@@ -599,7 +712,7 @@ impl From<ClosedStream> for StreamEnd {
 }
 
 impl<H: DirectHost> ServerState<H> {
-    /// Answers the one request on the stream, or resets the stream when no answer is due.
+    /// Answers the one request on the stream, or resets the stream when no answer is due, and records the request served with how it ended.
     async fn serve_stream(
         &self,
         sender: wire::PublicKey,
@@ -607,29 +720,58 @@ impl<H: DirectHost> ServerState<H> {
         mut send: SendStream,
         recv: RecvStream,
     ) {
-        if let Err(end) = self
+        let started = (self.held.monotonic)();
+        let (request, outcome) = self
             .answer_stream(sender, arrived_on, &mut send, recv)
-            .await
+            .await;
+        if let Err(end) = outcome
             && let Some(code) = end.reset_code()
         {
             match send.reset(code) {
                 Ok(()) | Err(ClosedStream { .. }) => {}
             }
         }
+        let elapsed = (self.held.monotonic)().saturating_duration_since(started);
+        self.held.record(|_transport| {
+            DirectEvent::RequestServed(ServedRequest {
+                request,
+                peer: PeerId::of(arrived_on.remote_id()),
+                connection: ConnectionId(arrived_on.stable_id()),
+                outcome: outcome.unwrap_or_else(ServedOutcome::Unanswered),
+                elapsed_ms: milliseconds_of(elapsed),
+            })
+        });
     }
 
-    /// Reads the request, writes the response and finishes the send side.
+    /// Reads and opens the request, writes the response and finishes the send side, saying which request it was once it opened and how the stream ended.
     async fn answer_stream(
         &self,
         sender: wire::PublicKey,
         arrived_on: &Connection,
         send: &mut SendStream,
         mut recv: RecvStream,
-    ) -> Result<(), StreamEnd> {
-        let request_bytes = self.read_request(&mut recv).await?;
-        let response_bytes = self.respond(sender, arrived_on, &request_bytes)?;
-        send.write_all(&response_bytes).await?;
-        Ok(send.finish()?)
+    ) -> (Option<RequestSummary>, Result<ServedOutcome, StreamEnd>) {
+        let request = match self
+            .read_request(&mut recv)
+            .await
+            .and_then(|request_bytes| {
+                open_request(&self.keys, &request_bytes).map_err(|_failure| StreamEnd::Unanswered)
+            }) {
+            Ok(request) => request,
+            Err(end) => return (None, Err(end)),
+        };
+        let summary = RequestSummary::of(&request);
+        let outcome = async {
+            let response = self.answer(sender, arrived_on, request)?;
+            let outcome = ServedOutcome::of(&response);
+            let response_bytes =
+                seal_response(&self.keys, response).map_err(|_failure| StreamEnd::Unanswered)?;
+            send.write_all(&response_bytes).await?;
+            send.finish()?;
+            Ok::<_, StreamEnd>(outcome)
+        }
+        .await;
+        (Some(summary), outcome)
     }
 
     /// Reads the whole request within the wire limit and the read timeout.
@@ -640,19 +782,6 @@ impl<H: DirectHost> ServerState<H> {
             Ok(Err(ReadToEndError::Read(failure))) => Err(failure.into()),
             Ok(Ok(bytes)) => Ok(bytes),
         }
-    }
-
-    /// Opens the request, answers it, and seals the answer, or reports that none is due.
-    fn respond(
-        &self,
-        sender: wire::PublicKey,
-        arrived_on: &Connection,
-        request_bytes: &[u8],
-    ) -> Result<Vec<u8>, StreamEnd> {
-        let request =
-            open_request(&self.keys, request_bytes).map_err(|_failure| StreamEnd::Unanswered)?;
-        let response = self.answer(sender, arrived_on, request)?;
-        seal_response(&self.keys, response).map_err(|_failure| StreamEnd::Unanswered)
     }
 
     /// The response to a validated request, or none while the process is stopping and the request is a Probe or an Introduce, or for an Introduce the node would drop, before any connection of its sender is closed.
@@ -740,6 +869,7 @@ pub struct DirectClient {
     keys: NetworkKeys,
     timeouts: ClientTimeouts,
     slots: Mutex<HashMap<EndpointId, PeerSlot>>,
+    register: Option<HeldConnections>,
 }
 
 impl DirectClient {
@@ -751,6 +881,16 @@ impl DirectClient {
             keys,
             timeouts,
             slots: Mutex::new(HashMap::new()),
+            register: None,
+        }
+    }
+
+    /// The client recording each request it sends to the endpoint's register, on that register's monotonic clock.
+    #[must_use]
+    pub fn recording_through(self, register: HeldConnections) -> Self {
+        Self {
+            register: Some(register),
+            ..self
         }
     }
 
@@ -779,18 +919,21 @@ impl DirectClient {
         message: Message,
     ) -> Result<MessageAck, DirectError> {
         let id = message.id;
-        match self
-            .exchange(
-                to,
-                Request::Message(message),
-                AckDue::FromTheConnection(self.timeouts.ack),
-            )
-            .await?
-        {
-            Response::MessageAck(ack) if ack.id == id => Ok(ack),
-            Response::MessageAck(_) => Err(DirectError::MessageAckIdMismatch),
-            Response::ProbeAck(_) | Response::IntroduceAck(_) => Err(DirectError::UnexpectedAck),
-        }
+        self.exchange(
+            to,
+            Request::Message(message),
+            AckDue::FromTheConnection(self.timeouts.ack),
+            |response| match response {
+                Response::MessageAck(ack) if ack.id == id => {
+                    Ok((SentOutcome::of_message_ack(&ack), ack))
+                }
+                Response::MessageAck(_) => Err(DirectError::MessageAckIdMismatch),
+                Response::ProbeAck(_) | Response::IntroduceAck(_) => {
+                    Err(DirectError::UnexpectedAck)
+                }
+            },
+        )
+        .await
     }
 
     /// Probes the peer and returns its acknowledgement when it is valid for the nonce.
@@ -803,18 +946,21 @@ impl DirectClient {
             nonce,
             mac: ZERO_MAC,
         };
-        match self
-            .exchange(
-                to,
-                Request::Probe(probe),
-                AckDue::FromTheCall(self.timeouts.probe),
-            )
-            .await?
-        {
-            Response::ProbeAck(ack) if ack.nonce == nonce => Ok(ack),
-            Response::ProbeAck(_) => Err(DirectError::ProbeNonceMismatch),
-            Response::MessageAck(_) | Response::IntroduceAck(_) => Err(DirectError::UnexpectedAck),
-        }
+        self.exchange(
+            to,
+            Request::Probe(probe),
+            AckDue::FromTheCall(self.timeouts.probe),
+            |response| match response {
+                Response::ProbeAck(ack) if ack.nonce == nonce => {
+                    Ok((SentOutcome::Acknowledged, ack))
+                }
+                Response::ProbeAck(_) => Err(DirectError::ProbeNonceMismatch),
+                Response::MessageAck(_) | Response::IntroduceAck(_) => {
+                    Err(DirectError::UnexpectedAck)
+                }
+            },
+        )
+        .await
     }
 
     /// Introduces this node to the peer and returns the peer's introduction.
@@ -826,38 +972,83 @@ impl DirectClient {
         to: EndpointId,
         introduce: wire::Introduce,
     ) -> Result<IntroduceAck, DirectError> {
-        match self
-            .exchange(
-                to,
-                Request::Introduce(introduce),
-                AckDue::FromTheConnection(self.timeouts.ack),
-            )
-            .await?
-        {
-            Response::IntroduceAck(ack) => Ok(ack),
-            Response::MessageAck(_) | Response::ProbeAck(_) => Err(DirectError::UnexpectedAck),
-        }
+        self.exchange(
+            to,
+            Request::Introduce(introduce),
+            AckDue::FromTheConnection(self.timeouts.ack),
+            |response| match response {
+                Response::IntroduceAck(ack) => Ok((SentOutcome::Acknowledged, ack)),
+                Response::MessageAck(_) | Response::ProbeAck(_) => Err(DirectError::UnexpectedAck),
+            },
+        )
+        .await
     }
 
-    /// Sends the request over the held or a freshly dialed connection and returns the valid response when it is due, dropping that connection from its slot on any failure.
-    async fn exchange(
+    /// Sends the request, takes its acknowledgement from the response, and records the request sent with its outcome, its connection and how long it took.
+    async fn exchange<Acknowledgement>(
         &self,
         to: EndpointId,
         request: Request,
         due: AckDue,
-    ) -> Result<Response, DirectError> {
-        let sealed = seal_request(&self.keys, request).map_err(DirectError::UnsealableRequest)?;
+        acknowledgement_of: impl FnOnce(Response) -> Result<(SentOutcome, Acknowledgement), DirectError>,
+    ) -> Result<Acknowledgement, DirectError> {
+        let summary = RequestSummary::of(&request);
+        let started = self
+            .register
+            .as_ref()
+            .map(|register| (register.monotonic)());
+        let (connection, response) = self.exchange_over_a_connection(to, request, due).await;
+        let acknowledged = response.and_then(acknowledgement_of);
+        if let (Some(register), Some(started)) = (&self.register, started) {
+            let elapsed = (register.monotonic)().saturating_duration_since(started);
+            register.record(|_transport| {
+                DirectEvent::RequestSent(SentRequest {
+                    request: summary,
+                    peer: PeerId::of(to),
+                    connection,
+                    outcome: acknowledged.as_ref().map_or_else(
+                        |failure| SentOutcome::Failed(failure.clone()),
+                        |(outcome, _)| outcome.clone(),
+                    ),
+                    elapsed_ms: milliseconds_of(elapsed),
+                })
+            });
+        }
+        acknowledged.map(|(_outcome, acknowledgement)| acknowledgement)
+    }
+
+    /// Sends the request over the held or a freshly dialed connection and returns the valid response when it is due, dropping that connection from its slot on any failure, and says which connection carried it.
+    async fn exchange_over_a_connection(
+        &self,
+        to: EndpointId,
+        request: Request,
+        due: AckDue,
+    ) -> (
+        Option<(ConnectionId, ConnectionSource)>,
+        Result<Response, DirectError>,
+    ) {
+        let sealed = match seal_request(&self.keys, request) {
+            Ok(sealed) => sealed,
+            Err(failure) => return (None, Err(DirectError::UnsealableRequest(failure))),
+        };
         let called = Instant::now();
-        let connection = self
+        let (connection, source) = match self
             .connection_to(to, due.connection_timeout(self.timeouts.connect))
-            .await?;
+            .await
+        {
+            Ok(held_or_dialed) => held_or_dialed,
+            Err(failure) => return (None, Err(failure)),
+        };
         let response = self
             .round_trip(&connection, &sealed, due.ack_timeout_left(called.elapsed()))
             .await;
         if response.is_err() {
             self.forget_connection(to, &connection).await;
         }
-        response
+        (
+            Some((ConnectionId(connection.stable_id()), source)),
+            response,
+        )
     }
 
     /// Writes the sealed request on a new stream and reads the response, all within the ack timeout.
@@ -878,31 +1069,34 @@ impl DirectClient {
         open_response(&self.keys, &response_bytes).map_err(DirectError::InvalidAck)
     }
 
-    /// The held connection to the peer, or a new one dialed by card id and held, unreachable when neither is in hand within the connection timeout.
+    /// The held connection to the peer, or a new one dialed by card id and held, saying which, unreachable when neither is in hand within the connection timeout.
     async fn connection_to(
         &self,
         to: EndpointId,
         connection_timeout: Duration,
-    ) -> Result<Connection, DirectError> {
+    ) -> Result<(Connection, ConnectionSource), DirectError> {
         timeout(connection_timeout, self.held_or_dialed_connection(to))
             .await
             .map_err(|_elapsed| DirectError::Unreachable)?
     }
 
     /// The connection held for the peer, one the client knows closed counting as none and leaving the slot, or else a new one dialed by card id under the slot's lock and held, so concurrent callers share one dial.
-    async fn held_or_dialed_connection(&self, to: EndpointId) -> Result<Connection, DirectError> {
+    async fn held_or_dialed_connection(
+        &self,
+        to: EndpointId,
+    ) -> Result<(Connection, ConnectionSource), DirectError> {
         let slot = self.slot_of(to);
         let mut held = slot.lock().await;
         held.take_if(|connection| connection.close_reason().is_some());
         if let Some(connection) = held.as_ref() {
-            return Ok(connection.clone());
+            return Ok((connection.clone(), ConnectionSource::Held));
         }
         let dialed = self
             .endpoint()
             .connect(to, DIRECT_ALPN)
             .await
             .map_err(|_failure| DirectError::Unreachable)?;
-        Ok(held.insert(dialed).clone())
+        Ok((held.insert(dialed).clone(), ConnectionSource::Dialed))
     }
 
     /// Empties the peer's slot, so the next request to the peer dials afresh.
@@ -1939,6 +2133,220 @@ pub(crate) mod tests {
             Some(&serde_json::Value::from(expected_hash))
         );
         drop(router);
+    }
+
+    const SERVER_HANDLING_MS: u64 = 1234;
+    const MESSAGE_ID_TEXT: &str = "10213243-5465-7687-98a9-bacbdcedfe0f";
+
+    /// A host that holds its card and takes `SERVER_HANDLING_MS` on the shared clock to receive each message.
+    #[derive(Clone)]
+    struct SlowHost {
+        card: wire::PublicKey,
+        clock: Arc<Mutex<tokio::time::Instant>>,
+    }
+
+    impl DirectHost for SlowHost {
+        fn is_stopping(&self) -> bool {
+            false
+        }
+
+        fn own_card(&self) -> Option<wire::PublicKey> {
+            Some(self.card)
+        }
+
+        fn is_attached(&self) -> bool {
+            false
+        }
+
+        fn receive_message(&self, _sender: wire::PublicKey, _message: Message) {
+            let mut now = self.clock.lock().unwrap();
+            *now = now
+                .checked_add(Duration::from_millis(SERVER_HANDLING_MS))
+                .unwrap();
+        }
+
+        fn receive_introduce(
+            &self,
+            _sender: wire::PublicKey,
+            _introduce: wire::Introduce,
+        ) -> IntroduceAck {
+            own_introduction(false)
+        }
+    }
+
+    /// A recording client linked to a recording server over a slow host, both registers on one clock the host moves.
+    struct RecordingLink {
+        client: DirectClient,
+        server_id: EndpointId,
+        sent: tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+        served: tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+        _router: Router,
+    }
+
+    async fn recording_link_over_a_slow_host() -> RecordingLink {
+        let shared_clock = Arc::new(Mutex::new(tokio::time::Instant::now()));
+        let reading = Arc::clone(&shared_clock);
+        let clock: MonotonicClock = Arc::new(move || *reading.lock().unwrap());
+        let (client_record, sent) = recorded_events();
+        let (server_record, served) = recorded_events();
+        let server_node = bind_node_holding(
+            SERVER_SEED,
+            HeldConnections::new(Arc::clone(&clock)).recording_to(
+                super::super::endpoint::TransportRecord::new(server_record, test_salt()),
+            ),
+        )
+        .await;
+        let client_register = HeldConnections::new(clock).recording_to(
+            super::super::endpoint::TransportRecord::new(client_record, test_salt()),
+        );
+        let client_node = bind_node_holding(CLIENT_SEED, client_register.clone()).await;
+        let router = Router::builder(server_node.endpoint().clone())
+            .accept(
+                DIRECT_ALPN,
+                DirectServer::new(
+                    keys(),
+                    SlowHost {
+                        card: card_of(SERVER_SEED),
+                        clock: shared_clock,
+                    },
+                    &server_node,
+                ),
+            )
+            .spawn();
+        client_node.replace_address(server_node.endpoint().addr());
+        let client =
+            DirectClient::new(client_node.endpoint().clone(), keys(), ClientTimeouts::SPEC)
+                .recording_through(client_register);
+        RecordingLink {
+            client,
+            server_id: server_node.endpoint().id(),
+            sent,
+            served,
+            _router: router,
+        }
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_message_is_recorded_sent_and_served_with_its_id_connection_outcome_and_elapsed_time_on_both_ends()
+     {
+        let RecordingLink {
+            client,
+            server_id,
+            mut sent,
+            mut served,
+            _router: router,
+        } = recording_link_over_a_slow_host().await;
+
+        client
+            .send_message(server_id, message_to(card_of(SERVER_SEED), BODY))
+            .await
+            .unwrap();
+        let first_sent = next_recorded(&mut sent, "direct.request_sent").await;
+        let first_served = next_recorded(&mut served, "direct.request_served").await;
+        client
+            .send_message(server_id, message_to(card_of(CLIENT_SEED), BODY))
+            .await
+            .unwrap();
+        let refused_sent = next_recorded(&mut sent, "direct.request_sent").await;
+        let refused_served = next_recorded(&mut served, "direct.request_served").await;
+
+        let connection = field(&first_sent, "connection").cloned().unwrap();
+        let server_short = data_encoding::HEXLOWER.encode(&card_of(SERVER_SEED)[..5]);
+        let client_short = data_encoding::HEXLOWER.encode(&card_of(CLIENT_SEED)[..5]);
+        assert_eq!(
+            first_sent,
+            vec![
+                ("kind", serde_json::Value::from("message")),
+                ("message", serde_json::Value::from(MESSAGE_ID_TEXT)),
+                ("peer", serde_json::Value::from(server_short.clone())),
+                ("connection", connection.clone()),
+                ("connection_source", serde_json::Value::from("dialed")),
+                ("outcome", serde_json::Value::from("acknowledged")),
+                ("elapsed_ms", serde_json::Value::from(SERVER_HANDLING_MS)),
+            ]
+        );
+        assert_eq!(
+            field(&first_served, "kind"),
+            Some(&serde_json::Value::from("message"))
+        );
+        assert_eq!(
+            field(&first_served, "message"),
+            Some(&serde_json::Value::from(MESSAGE_ID_TEXT))
+        );
+        assert_eq!(
+            field(&first_served, "peer"),
+            Some(&serde_json::Value::from(client_short))
+        );
+        assert_eq!(
+            field(&first_served, "outcome"),
+            Some(&serde_json::Value::from("answered"))
+        );
+        assert_eq!(
+            field(&first_served, "elapsed_ms"),
+            Some(&serde_json::Value::from(SERVER_HANDLING_MS))
+        );
+        assert_eq!(
+            refused_sent,
+            vec![
+                ("kind", serde_json::Value::from("message")),
+                ("message", serde_json::Value::from(MESSAGE_ID_TEXT)),
+                ("peer", serde_json::Value::from(server_short)),
+                ("connection", connection),
+                ("connection_source", serde_json::Value::from("held")),
+                ("outcome", serde_json::Value::from("refused")),
+                ("code", serde_json::Value::from("refused")),
+                ("elapsed_ms", serde_json::Value::from(0)),
+            ]
+        );
+        assert_eq!(
+            field(&refused_served, "outcome"),
+            Some(&serde_json::Value::from("refused"))
+        );
+        assert_eq!(
+            field(&refused_served, "code"),
+            Some(&serde_json::Value::from("refused"))
+        );
+        assert_eq!(
+            field(&refused_served, "connection"),
+            field(&first_served, "connection")
+        );
+        drop(router);
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_probe_to_an_unreachable_peer_is_recorded_failed_with_no_connection()
+     {
+        let (client_record, mut sent) = recorded_events();
+        let client_register =
+            HeldConnections::new(Arc::new(tokio::time::Instant::now)).recording_to(
+                super::super::endpoint::TransportRecord::new(client_record, test_salt()),
+            );
+        let client_node = bind_node_holding(CLIENT_SEED, client_register.clone()).await;
+        let client =
+            DirectClient::new(client_node.endpoint().clone(), keys(), ClientTimeouts::SPEC)
+                .recording_through(client_register);
+        let unknown = SecretKey::from_bytes(&[SERVER_SEED; KEY_LEN]).public();
+
+        let probed = client.probe(unknown, Nonce::default()).await;
+        let recorded = next_recorded(&mut sent, "direct.request_sent").await;
+
+        assert_eq!(probed.unwrap_err(), DirectError::Unreachable);
+        assert_eq!(
+            recorded.iter().map(|(key, _)| *key).collect::<Vec<_>>(),
+            ["kind", "peer", "outcome", "error", "elapsed_ms"]
+        );
+        assert_eq!(
+            field(&recorded, "kind"),
+            Some(&serde_json::Value::from("probe"))
+        );
+        assert_eq!(
+            field(&recorded, "outcome"),
+            Some(&serde_json::Value::from("failed"))
+        );
+        assert_eq!(
+            field(&recorded, "error"),
+            Some(&serde_json::Value::from("unreachable"))
+        );
     }
 
     const SILENCE_OF_A_GONE_PROCESS: Duration = Duration::from_millis(1500);

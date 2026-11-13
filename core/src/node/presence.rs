@@ -204,11 +204,14 @@ impl Node {
         network: Network,
         effects: NodeEffects,
     ) -> Result<Self, NodeError> {
-        let client = Arc::new(DirectClient::new(
-            endpoint.endpoint().clone(),
-            network.keys.clone(),
-            ClientTimeouts::SPEC,
-        ));
+        let client = Arc::new(
+            DirectClient::new(
+                endpoint.endpoint().clone(),
+                network.keys.clone(),
+                ClientTimeouts::SPEC,
+            )
+            .recording_through(endpoint.held_connections()),
+        );
         let (to_loop, from_hosts) = mpsc::unbounded_channel();
         let state = Arc::new(NodeState::new(
             &identity,

@@ -104,7 +104,10 @@ impl NodeEndpoint {
     }
 
     /// Hands the transport event, built against the transport record, to the record the endpoint's register holds, when it records.
-    pub(crate) fn record(&self, event: impl FnOnce(&TransportRecord) -> TransportEvent) {
+    pub(crate) fn record<Recorded: Into<crate::event::Event>>(
+        &self,
+        event: impl FnOnce(&TransportRecord) -> Recorded,
+    ) {
         self.binding.connections.record(event);
     }
 
@@ -188,7 +191,7 @@ impl TransportRecord {
     }
 
     /// Hands the event to the run record.
-    pub fn record(&self, event: TransportEvent) {
+    pub fn record(&self, event: impl Into<crate::event::Event>) {
         (self.record)(event.into());
     }
 

@@ -584,11 +584,14 @@ async fn start_observation(
     .await;
     match topic {
         Ok(topic) => Ok(Observation {
-            client: Arc::new(DirectClient::new(
-                endpoint.endpoint().clone(),
-                keys.clone(),
-                ClientTimeouts::SPEC,
-            )),
+            client: Arc::new(
+                DirectClient::new(
+                    endpoint.endpoint().clone(),
+                    keys.clone(),
+                    ClientTimeouts::SPEC,
+                )
+                .recording_through(endpoint.held_connections()),
+            ),
             host,
             endpoint,
             router,

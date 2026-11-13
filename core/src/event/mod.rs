@@ -231,7 +231,7 @@ mod tests {
     use super::*;
 
     const SPEC_FORMAT_VERSION: u64 = 1;
-    const PINNED_EVENT_NAMES: [&str; 47] = [
+    const PINNED_EVENT_NAMES: [&str; 49] = [
         "process.command_failed",
         "process.network_created",
         "process.clock_before_unix_epoch",
@@ -257,6 +257,8 @@ mod tests {
         "peers.own_handle_assigned",
         "peers.lookup_replaced",
         "direct.contact_failed",
+        "direct.request_sent",
+        "direct.request_served",
         "transport.rebinding",
         "transport.router_shutdown_failed",
         "transport.rebind_failed",
