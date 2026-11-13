@@ -250,6 +250,17 @@ fn socket_path(runtime_dir: &Path, pid: Pid) -> PathBuf {
     runtime_dir.join(format!("{pid}{SOCKET_FILE_SUFFIX}"))
 }
 
+/// The pid of the binary process whose inbox socket this is, read from the socket's file name.
+#[must_use]
+pub fn binary_pid_of_socket(socket_path: &Path) -> Option<Pid> {
+    socket_path
+        .file_name()?
+        .to_str()?
+        .strip_suffix(SOCKET_FILE_SUFFIX)?
+        .parse()
+        .ok()
+}
+
 fn is_running(pid: Pid, entries: &[ProcessEntry]) -> bool {
     entries.iter().any(|entry| entry.pid == pid)
 }

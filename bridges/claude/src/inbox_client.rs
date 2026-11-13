@@ -24,6 +24,15 @@ pub struct InboxFrame {
     pub body: String,
 }
 
+/// A change of one connection to an inbox socket while it is followed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InboxConnection {
+    /// The socket took the connection.
+    Opened,
+    /// The socket closed the connection; the following reconnects.
+    Closed,
+}
+
 #[derive(Serialize)]
 struct ResumeRequest {
     since: u64,
@@ -102,13 +111,14 @@ impl InboxConnector for UnixSocketConnector {
     }
 }
 
-/// Delivers each inbox frame above `since` once, in order, reconnecting with the last seq seen whenever the socket closes.
+/// Delivers each inbox frame above `since` once, in order, reconnecting with the last seq seen whenever the socket closes, and reports each connection opened and closed.
 /// # Errors
 /// Returns the `InboxClientError` that ended the following; a closed socket alone never ends it.
 pub fn follow_inbox<C: InboxConnector>(
     connector: &mut C,
     since: u64,
     wait_before_reconnect: &mut impl FnMut(Duration),
+    report_connection: &mut impl FnMut(InboxConnection),
     deliver_frame: &mut impl FnMut(&InboxFrame),
 ) -> Result<Infallible, InboxClientError> {
     let mut last_seq = since;
@@ -116,7 +126,9 @@ pub fn follow_inbox<C: InboxConnector>(
         let stream = connector
             .connect()
             .map_err(InboxClientError::ConnectFailed)?;
+        report_connection(InboxConnection::Opened);
         last_seq = deliver_until_close(stream, last_seq, deliver_frame)?;
+        report_connection(InboxConnection::Closed);
         wait_before_reconnect(RECONNECT_PAUSE);
     }
 }
@@ -291,6 +303,7 @@ mod tests {
             connector,
             NO_FRAME_HANDLED_YET,
             &mut |pause| pauses.push(pause),
+            &mut |_| {},
             &mut |received| delivered.push(received.clone()),
         )
         .expect_err("a followed inbox never returns Ok");
@@ -689,6 +702,7 @@ mod tests {
         let ended_with = follow_inbox(
             &mut connector,
             NO_FRAME_HANDLED_YET,
+            &mut |_| {},
             &mut |_| {},
             &mut |received| {
                 delivered.push(received.clone());

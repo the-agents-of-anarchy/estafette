@@ -117,6 +117,15 @@ impl fmt::Display for InjectError {
 
 impl std::error::Error for InjectError {}
 
+/// What became of a frame whose sender name the harness takes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NoticeOutcome {
+    /// The notice was written into the session, attesting this class.
+    Written { class: PermissionClass },
+    /// The rate limit dropped the frame, so no notice was written.
+    DroppedByRateLimit,
+}
+
 pub struct SessionNotifier<C: InboxConnector> {
     connector: C,
     session_token: String,
@@ -142,17 +151,23 @@ impl<C: InboxConnector> SessionNotifier<C> {
         self.class = class;
     }
 
-    /// Injects one frame as the harness's peer line unless its sender name is refused or the rate limit drops it.
+    /// Injects one frame as the harness's peer line unless its sender name is refused or the rate limit drops it, saying which.
     /// # Errors
     /// Returns the `InjectError` of the refused name or of the failed connection or write.
-    pub fn notify(&mut self, frame: &InboxFrame, now: Duration) -> Result<(), InjectError> {
+    pub fn notify(
+        &mut self,
+        frame: &InboxFrame,
+        now: Duration,
+    ) -> Result<NoticeOutcome, InjectError> {
         let Some(name) = envelope_name(&frame.from) else {
             self.refused_frames = self.refused_frames.saturating_add(1);
             return Err(InjectError::SenderNameRefused(frame.from.clone()));
         };
         match self.rate_limit.admit(&frame.from, &frame.body, now) {
-            Admission::Dropped => Ok(()),
-            Admission::Admitted => self.write_peer_line(frame, &name),
+            Admission::Dropped => Ok(NoticeOutcome::DroppedByRateLimit),
+            Admission::Admitted => self
+                .write_peer_line(frame, &name)
+                .map(|()| NoticeOutcome::Written { class: self.class }),
         }
     }
 

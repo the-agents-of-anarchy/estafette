@@ -20,7 +20,7 @@ use estafette_bridge_claude::doctor::{
     dropped_frames_path, permission_class_path, run_doctor, running_bridge_for,
 };
 use estafette_bridge_claude::inbox_client::{
-    InboxConnector, InboxFrame, UnixSocketConnector, follow_inbox,
+    InboxConnection, InboxConnector, InboxFrame, UnixSocketConnector, follow_inbox,
 };
 use estafette_bridge_claude::inject::SessionNotifier;
 use estafette_bridge_claude::permission_class::PermissionClass;
@@ -33,7 +33,7 @@ use estafette_trace::{
 };
 
 use crate::debug_trace::{DebugTrace, TraceInputs, Tracing};
-use crate::event::BridgeEvent;
+use crate::event::{BridgeEvent, FrameIds};
 
 mod debug_trace;
 mod event;
@@ -328,12 +328,23 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Where every event goes, built at the composition root: the run record on standard error; it must not block.
+/// Where every event goes, built at the composition root: the run record on standard error and, under `--debug`, the events file; it must not block.
 type RunRecord = Arc<dyn Fn(BridgeEvent) + Send + Sync>;
 type Elapsed = Arc<dyn Fn() -> Duration + Send + Sync>;
 type Task = Box<dyn FnOnce() + Send>;
 type Spawner = Arc<dyn Fn(Task) + Send + Sync>;
 type Pause = Arc<dyn Fn(Duration) + Send + Sync>;
+
+/// Where the bridge read the session's permission class from.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClassSource {
+    /// The latest permission-mode entry in the end of the transcript.
+    TranscriptTail,
+    /// The latest permission-mode entry in the whole transcript, read while no class had been read.
+    WholeTranscript,
+    /// The class read before, kept because the end of the transcript holds no permission-mode entry.
+    KeptFromBefore,
+}
 
 #[derive(Debug)]
 enum LiveClassError {
@@ -408,11 +419,11 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
             .ok_or(LiveClassError::TranscriptMissing(file_name))
     }
 
-    /// Reads the latest permission mode from the end of the transcript, keeping the class read before when that end holds none, and reads the whole file only while no class has been read.
+    /// Reads the latest permission mode from the end of the transcript, keeping the class read before when that end holds none, and reads the whole file only while no class has been read, saying where the class came from.
     fn class_from_transcript(
         &self,
         transcript_file: &Path,
-    ) -> Result<PermissionClass, LiveClassError> {
+    ) -> Result<(PermissionClass, ClassSource), LiveClassError> {
         let unreadable = |source| LiveClassError::TranscriptUnreadable {
             path: transcript_file.to_owned(),
             source,
@@ -422,19 +433,27 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
             .read_tail_text(transcript_file, TRANSCRIPT_TAIL_WINDOW_BYTES)
             .map_err(unreadable)?;
         if let Some(mode) = latest_permission_mode(&tail) {
-            return Ok(PermissionClass::from_permission_mode(&mode));
+            return Ok((
+                PermissionClass::from_permission_mode(&mode),
+                ClassSource::TranscriptTail,
+            ));
         }
         let class_read_before = *lock(&self.attested_class);
         if let Some(class_read_before) = class_read_before {
-            return Ok(class_read_before);
+            return Ok((class_read_before, ClassSource::KeptFromBefore));
         }
         latest_permission_mode(&self.files.read_text(transcript_file).map_err(unreadable)?)
-            .map(|mode| PermissionClass::from_permission_mode(&mode))
+            .map(|mode| {
+                (
+                    PermissionClass::from_permission_mode(&mode),
+                    ClassSource::WholeTranscript,
+                )
+            })
             .ok_or_else(|| LiveClassError::NoModeEntry(transcript_file.to_owned()))
     }
 
-    /// Reads the permission class of the served session, resolving its transcript once and again only when the known one cannot be opened.
-    fn live_permission_class(&self) -> Result<PermissionClass, LiveClassError> {
+    /// Reads the permission class of the served session and where it came from, resolving its transcript once and again only when the known one cannot be opened.
+    fn live_permission_class(&self) -> Result<(PermissionClass, ClassSource), LiveClassError> {
         let known = lock(&self.transcript_file).clone();
         if let Some(transcript_file) = known {
             let class = self.class_from_transcript(&transcript_file);
@@ -450,7 +469,8 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
     /// Reads, records and reports the live permission class without holding the notifier, reporting why it cannot be read.
     fn read_live_permission_class(&self) -> Option<PermissionClass> {
         match self.live_permission_class() {
-            Ok(class) => {
+            Ok((class, source)) => {
+                (self.record)(BridgeEvent::PermissionClassRead { class, source });
                 self.record_permission_class(class);
                 Some(class)
             }
@@ -486,11 +506,10 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
             notifier.attest(class);
         }
         let dropped_before = notifier.dropped_frames();
-        if let Err(error) = notifier.notify(frame, (self.elapsed)()) {
-            (self.record)(BridgeEvent::NoticeNotWritten(error));
-        }
+        let notice = notifier.notify(frame, (self.elapsed)());
         let dropped_after = notifier.dropped_frames();
         drop(notifier);
+        (self.record)(BridgeEvent::of_notice(FrameIds::of(frame), notice));
         if dropped_after != dropped_before {
             self.record_dropped_frames(dropped_after);
         }
@@ -504,8 +523,12 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
             .unwrap_or_default()
     }
 
-    /// Delivers a frame from a socket and remembers its seq as the point to follow that socket from again.
+    /// Records a frame's arrival from a socket, delivers it, and remembers its seq as the point to follow that socket from again.
     fn deliver_from_socket(&self, socket_path: &Path, frame: &InboxFrame) {
+        (self.record)(BridgeEvent::FrameReceived {
+            socket_path: socket_path.to_owned(),
+            frame: FrameIds::of(frame),
+        });
         self.deliver(frame);
         lock(&self.handled_seqs).insert(socket_path.to_owned(), frame.seq);
     }
@@ -545,6 +568,13 @@ fn follow_binary_socket<S, B, F>(
             &mut connector,
             since,
             &mut |pause| wait(pause),
+            &mut |connection| {
+                let socket_path = socket_path.clone();
+                (session.record)(match connection {
+                    InboxConnection::Opened => BridgeEvent::InboxConnected { socket_path },
+                    InboxConnection::Closed => BridgeEvent::InboxClosed { socket_path },
+                });
+            },
             &mut |frame| {
                 session.deliver_from_socket(&socket_path, frame);
             },
@@ -829,7 +859,9 @@ fn run_record_on<Errors: Write + Send + 'static>(
     trace: Option<Arc<DebugTrace>>,
 ) -> RunRecord {
     Arc::new(move |event| {
-        drop(writeln!(lock(&errors), "{}", event.run_record_line()));
+        if let Some(line) = event.run_record_line() {
+            drop(writeln!(lock(&errors), "{line}"));
+        }
         if let Some(trace) = &trace {
             trace.record(&event);
         }
@@ -859,6 +891,7 @@ where
         drop(writeln!(lock(&errors), "{}", trace.announcement()));
     }
     let record = run_record_on(Arc::clone(&errors), trace.clone());
+    record(BridgeEvent::Started { harness_pid });
     let outcome = bridge_effects(Arc::clone(&record))
         .and_then(|effects| run_bridge(harness_pid, effects, processes))
         .map(|outcome| {
@@ -1107,7 +1140,7 @@ mod tests {
                 files,
                 elapsed: Arc::new(move || Duration::from_secs(*lock(&clock))),
                 record: Arc::new(move |event| {
-                    lock(&recorded_errors).push(event.run_record_line());
+                    lock(&recorded_errors).extend(event.run_record_line());
                 }),
                 spawn: Arc::new(move |task| {
                     lock(&recorded_tasks).push(task);
@@ -2476,10 +2509,20 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(probe.events_file()).expect("events file"),
-            trace_line(
-                0,
-                "\"event\":\"permission_class.unreadable\",\"reason\":\"registry_unreadable\""
-            )
+            [
+                trace_line(
+                    0,
+                    &format!(
+                        "\"event\":\"process.started\",\"version\":\"{}\",\"harness_pid\":100",
+                        env!("CARGO_PKG_VERSION")
+                    )
+                ),
+                trace_line(
+                    1,
+                    "\"event\":\"permission_class.unreadable\",\"reason\":\"registry_unreadable\""
+                ),
+            ]
+            .concat()
         );
         assert_eq!(
             fs::read_dir(probe.traces()).expect("traces").count(),
@@ -2641,6 +2684,254 @@ mod tests {
                 "the debug trace could not cut its events file back to its last line at the stop, so the file ends in zero bytes: a stand-in failure"
             ),
             "{written}"
+        );
+    }
+
+    struct WritableSessionSocket;
+
+    impl InboxConnector for WritableSessionSocket {
+        type Stream = io::Cursor<Vec<u8>>;
+
+        fn connect(&mut self) -> io::Result<io::Cursor<Vec<u8>>> {
+            Ok(io::Cursor::new(Vec::new()))
+        }
+    }
+
+    fn scripted_frame_line(seq: u64, from: &str, body: &str) -> String {
+        format!(
+            "{}\n",
+            serde_json::json!({"seq": seq, "id": format!("id-{seq}"), "from": from, "body": body})
+        )
+    }
+
+    struct ScriptedSession<S> {
+        session_connector: S,
+        session_token: String,
+        runtime_directory: PathBuf,
+        session_files: StandInFiles,
+        frames: String,
+    }
+
+    fn run_scripted_session<S: InboxConnector + Send + 'static>(
+        probe: &TraceProbe,
+        session: ScriptedSession<S>,
+    ) -> (ExitCode, String, String) {
+        let data_home = probe.data_home.clone();
+        let environment =
+            move |name: &str| (name == DATA_HOME_VARIABLE).then(|| OsString::from(&data_home));
+        let errors: Arc<Mutex<Vec<u8>>> = Arc::default();
+        let wiring = wiring();
+        let connections = Arc::new(Mutex::new(VecDeque::from([ScriptedInboxConnection {
+            replies: session.frames,
+            fails_after_replies: false,
+        }])));
+        let status = run_command(
+            HARNESS_PID,
+            Tracing::Debug,
+            &TraceInputs {
+                environment: &environment,
+                draw_run_id: &|| Ok(RUN_BYTES),
+                create_private_directory: &|path: &Path| fs::create_dir_all(path),
+                effects: TraceEffects::of_the_operating_system(frozen_trace_clocks()),
+                bounds: TraceBounds::SPEC,
+            },
+            Arc::clone(&errors),
+            move |record| {
+                Ok(BridgeEffects {
+                    own_pid: wiring.effects.own_pid,
+                    runtime_inputs: RuntimeDirectoryInputs {
+                        xdg_runtime_dir: Some(session.runtime_directory),
+                        ..wiring.effects.runtime_inputs
+                    },
+                    session_connector: session.session_connector,
+                    session_token: session.session_token,
+                    claude_config_directory: wiring.effects.claude_config_directory,
+                    connect_binary_socket: move |_socket_path| ScriptedInboxSocket {
+                        connections: Arc::clone(&connections),
+                        since_lines: SinceLines::default(),
+                    },
+                    files: session.session_files,
+                    elapsed: wiring.effects.elapsed,
+                    record,
+                    spawn: Arc::new(|task| task()),
+                    wait: Arc::new(|_| {}),
+                })
+            },
+            &SnapshotSequence(RefCell::new(vec![
+                harness_with_one_binary(),
+                harness_with_one_binary(),
+                Vec::new(),
+            ])),
+        );
+        let written = String::from_utf8(lock(&errors).clone()).expect("utf8 standard error");
+        let events = fs::read_to_string(probe.events_file()).expect("events file");
+        (status, written, events)
+    }
+
+    #[test]
+    fn observability_decision_10_the_bridge_records_its_start_each_inbox_connection_and_loss_each_frame_the_class_it_read_and_each_notice_or_drop()
+     {
+        let probe = TraceProbe::new("decision-10");
+        let frames = [
+            scripted_frame_line(1, "ana", "one"),
+            scripted_frame_line(2, "ana", "one"),
+            scripted_frame_line(3, "an\"a", "three"),
+        ]
+        .concat();
+
+        let (status, written, events) = run_scripted_session(
+            &probe,
+            ScriptedSession {
+                session_connector: WritableSessionSocket,
+                session_token: "token".to_owned(),
+                runtime_directory: PathBuf::from("/run/user/1000"),
+                session_files: files_of_live_session("bypassPermissions"),
+                frames,
+            },
+        );
+
+        let version = env!("CARGO_PKG_VERSION");
+        let class_read = "\"event\":\"permission_class.read\",\"class\":\"bypass\",\"source\":\"transcript_tail\"";
+        let expected_events = [
+            format!("\"event\":\"process.started\",\"version\":\"{version}\",\"harness_pid\":100"),
+            class_read.to_owned(),
+            "\"event\":\"permission_class.attested\",\"class\":\"bypass\"".to_owned(),
+            "\"event\":\"inbox.connected\",\"binary_pid\":101".to_owned(),
+            "\"event\":\"frame.received\",\"binary_pid\":101,\"message_id\":\"id-1\",\"frame\":1"
+                .to_owned(),
+            class_read.to_owned(),
+            "\"event\":\"notice.written\",\"message_id\":\"id-1\",\"frame\":1,\"class\":\"bypass\""
+                .to_owned(),
+            "\"event\":\"frame.received\",\"binary_pid\":101,\"message_id\":\"id-2\",\"frame\":2"
+                .to_owned(),
+            class_read.to_owned(),
+            "\"event\":\"frame.dropped_by_rate_limit\",\"message_id\":\"id-2\",\"frame\":2"
+                .to_owned(),
+            "\"event\":\"frame.received\",\"binary_pid\":101,\"message_id\":\"id-3\",\"frame\":3"
+                .to_owned(),
+            class_read.to_owned(),
+            "\"event\":\"frame.dropped_sender_name_refused\",\"message_id\":\"id-3\",\"frame\":3"
+                .to_owned(),
+            "\"event\":\"inbox.closed\",\"binary_pid\":101".to_owned(),
+            "\"event\":\"inbox.lost\",\"binary_pid\":101,\"reason\":\"connect_failed\"".to_owned(),
+        ];
+        assert_eq!(status, ExitCode::SUCCESS);
+        assert_eq!(
+            events,
+            expected_events
+                .iter()
+                .zip(0_u64..)
+                .map(|(rest, n)| trace_line(n, rest))
+                .collect::<String>()
+        );
+        assert_eq!(
+            written.lines().skip(1).collect::<Vec<&str>>(),
+            [
+                "attested permission class: bypass",
+                "frame from \"an\\\"a\" dropped: the harness's envelope rebuild alters a sender name that is empty or holds anything but visible ASCII without \" < >",
+                "/run/user/1000/estafette-1000/101.sock: cannot connect to the inbox socket: connection refused",
+            ]
+        );
+    }
+
+    const MARKER: &str = "PLANTED-MARKER-7f3a";
+
+    struct CapturedSessionStream(Arc<Mutex<Vec<u8>>>);
+
+    impl Read for CapturedSessionStream {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for CapturedSessionStream {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            lock(&self.0).extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct CapturingSessionSocket(Arc<Mutex<Vec<u8>>>);
+
+    impl InboxConnector for CapturingSessionSocket {
+        type Stream = CapturedSessionStream;
+
+        fn connect(&mut self) -> io::Result<CapturedSessionStream> {
+            Ok(CapturedSessionStream(Arc::clone(&self.0)))
+        }
+    }
+
+    #[test]
+    fn observability_decision_6_a_marker_planted_in_a_frame_body_the_session_token_and_the_inbox_socket_path_never_reaches_the_events_file()
+     {
+        let probe = TraceProbe::new("markers");
+        let session_lines: Arc<Mutex<Vec<u8>>> = Arc::default();
+
+        let (status, written, events) = run_scripted_session(
+            &probe,
+            ScriptedSession {
+                session_connector: CapturingSessionSocket(Arc::clone(&session_lines)),
+                session_token: format!("{MARKER}-token"),
+                runtime_directory: PathBuf::from(format!("/run/{MARKER}-runtime")),
+                session_files: files_of_live_session("bypassPermissions"),
+                frames: scripted_frame_line(1, "ana", &format!("{MARKER}-body")),
+            },
+        );
+
+        let session_text = String::from_utf8(lock(&session_lines).clone()).expect("utf8 lines");
+        assert_eq!(status, ExitCode::SUCCESS);
+        assert!(
+            session_text.contains(&format!("{MARKER}-token")),
+            "{session_text}"
+        );
+        assert!(
+            session_text.contains(&format!("{MARKER}-body")),
+            "{session_text}"
+        );
+        assert!(written.contains(&format!("{MARKER}-runtime")), "{written}");
+        assert!(events.contains("\"event\":\"notice.written\""), "{events}");
+        assert!(events.contains("\"event\":\"inbox.lost\""), "{events}");
+        assert!(!events.contains(MARKER), "{events}");
+    }
+
+    #[test]
+    fn observability_decision_10_each_class_read_names_whether_it_came_from_the_transcript_end_the_whole_transcript_or_the_class_kept_from_before()
+     {
+        let probe = TraceProbe::new("class-source");
+        let mut session_files = files_of_live_session("bypassPermissions");
+        session_files.tails.insert(
+            PathBuf::from(TRANSCRIPT_FILE),
+            "{\"type\":\"user\"}\n".to_owned(),
+        );
+
+        let (_status, _written, events) = run_scripted_session(
+            &probe,
+            ScriptedSession {
+                session_connector: WritableSessionSocket,
+                session_token: "token".to_owned(),
+                runtime_directory: PathBuf::from("/run/user/1000"),
+                session_files,
+                frames: [
+                    scripted_frame_line(1, "ana", "one"),
+                    scripted_frame_line(2, "ana", "two"),
+                ]
+                .concat(),
+            },
+        );
+
+        let sources: Vec<&str> = events
+            .lines()
+            .filter(|line| line.contains("\"event\":\"permission_class.read\""))
+            .filter_map(|line| line.split("\"source\":\"").nth(1))
+            .filter_map(|rest| rest.split('"').next())
+            .collect();
+        assert_eq!(
+            sources,
+            ["whole_transcript", "kept_from_before", "kept_from_before"]
         );
     }
 }
