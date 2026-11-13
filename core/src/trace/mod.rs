@@ -12,7 +12,10 @@ pub use estafette_trace::{
     TraceBounds, TraceClocks, TraceEffects, TraceFile, TraceRefused, TraceStop,
 };
 
+pub mod iroh_lines;
+
 const SAFE_TO_POST_FIELD: &str = "safe_to_post";
+const IROH_LINE_NAME: &str = "iroh_line";
 
 /// The form of every run's name as the help states it: `<start>-<run>-estafette`.
 #[must_use]
@@ -74,6 +77,11 @@ impl Trace {
     /// Queues the event's line on the events file, never waiting for the writer.
     pub fn record(&self, event: &Event) {
         self.events.write(event.name(), &event.fields());
+    }
+
+    /// Queues a line iroh wrote on the raw file, never waiting for the writer.
+    fn record_iroh_line(&self, line: &[(&str, Value)]) {
+        self.raw.write(IROH_LINE_NAME, line);
     }
 
     /// Names the endpoint this process now runs on in every later line.
