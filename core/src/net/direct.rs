@@ -205,7 +205,7 @@ impl HeldConnections {
         held.entry(card).or_default().push(held_connection);
     }
 
-    /// Reads what the connection to or from the card has heard every hearing sample interval and records each change of its paths until it closes, then records the close and forgets it.
+    /// Reads what the connection to or from the card has heard every hearing sample interval and records each change of its paths, a change already reported before the close included, until it closes, then records the close and forgets it.
     async fn follow_hearing(
         self,
         card: wire::PublicKey,
@@ -217,8 +217,9 @@ impl HeldConnections {
         tokio::pin!(closed);
         let ended = loop {
             tokio::select! {
-                ended = &mut closed => break ended,
+                biased;
                 Some(change) = paths.next() => self.record_path_change(stable_id, &connection, change),
+                ended = &mut closed => break ended,
                 () = sleep(HEARING_SAMPLE_INTERVAL) => self.note_hearing(card, stable_id, &connection),
             }
         };
@@ -2224,6 +2225,91 @@ pub(crate) mod tests {
             served,
             _router: router,
         }
+    }
+
+    #[cfg(feature = "relay")]
+    #[tokio::test]
+    async fn observability_decision_9_and_6_a_relay_path_that_iroh_closes_is_recorded_closed_with_its_kind_port_and_salted_hash()
+     {
+        use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+
+        let mut relay_config = ServerConfig::default();
+        relay_config.relay = Some(RelayConfig::new(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            0,
+        ))));
+        let relay = Server::spawn(relay_config).await.unwrap();
+        let relay_address: iroh::RelayUrl = format!("http://{}/", relay.http_addr().unwrap())
+            .parse()
+            .unwrap();
+        let (this_record, mut this_side) = recorded_events();
+        let this_node = NodeEndpoint::bind(
+            SecretKey::from_bytes(&[SERVER_SEED; KEY_LEN]),
+            *keys().gate_key(),
+            vec![relay_address.clone()],
+            |nonce: &mut [u8; KEY_LEN]| *nonce = [0; KEY_LEN],
+            |_reason| {},
+            HeldConnections::new(Arc::new(tokio::time::Instant::now)).recording_to(
+                super::super::endpoint::TransportRecord::new(this_record, test_salt()),
+            ),
+        )
+        .await
+        .unwrap();
+        let peer_node = NodeEndpoint::bind(
+            SecretKey::from_bytes(&[CLIENT_SEED; KEY_LEN]),
+            *keys().gate_key(),
+            vec![relay_address.clone()],
+            |nonce: &mut [u8; KEY_LEN]| *nonce = [0; KEY_LEN],
+            |_reason| {},
+            HeldConnections::new(Arc::new(tokio::time::Instant::now)),
+        )
+        .await
+        .unwrap();
+        this_node.replace_address(iroh::EndpointAddr::from_parts(
+            peer_node.endpoint().id(),
+            [iroh::TransportAddr::Relay(relay_address.clone())],
+        ));
+        let router = Router::builder(peer_node.endpoint().clone())
+            .accept(
+                DIRECT_ALPN,
+                DirectServer::new(
+                    keys(),
+                    RecordingHost::with_card(card_of(CLIENT_SEED)),
+                    &peer_node,
+                ),
+            )
+            .spawn();
+        let dialed = this_node
+            .endpoint()
+            .connect(peer_node.endpoint().id(), DIRECT_ALPN)
+            .await
+            .unwrap();
+        let relay_location = vec![
+            ("kind", serde_json::Value::from("relay")),
+            (
+                "port",
+                serde_json::Value::from(relay_address.port().unwrap()),
+            ),
+            (
+                "location",
+                serde_json::Value::from(
+                    super::super::endpoint::LocationHash::of(&test_salt(), relay_address.as_str())
+                        .hex(),
+                ),
+            ),
+        ];
+
+        relay.shutdown().await.unwrap();
+        let closed = next_recorded(&mut this_side, "transport.path_closed").await;
+
+        assert_eq!(
+            field(&closed, "connection"),
+            Some(&serde_json::Value::from(dialed.stable_id()))
+        );
+        for (name, value) in &relay_location {
+            assert_eq!(field(&closed, name), Some(value), "{closed:?}");
+        }
+        drop(router);
     }
 
     #[tokio::test]
