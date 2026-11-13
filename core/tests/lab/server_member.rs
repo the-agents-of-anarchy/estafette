@@ -22,6 +22,10 @@ const CALL_ON_SERVER_RECIPE: &str = "remote::call-on-server";
 const STOP_MEMBER_ON_SERVER_RECIPE: &str = "remote::stop-member-on-server";
 /// The recipe that prints the run record of a member on a server.
 const RUN_RECORD_ON_SERVER_RECIPE: &str = "remote::run-record-on-server";
+/// The recipe that fetches both trace files of each run of a member on a server into a directory.
+const TRACE_FILES_ON_SERVER_RECIPE: &str = "remote::trace-files-on-server";
+/// What ends the name of the directory a member's fetched trace files are kept in, after its server and card.
+const KEPT_TRACE_FILES_SUFFIX: &str = "traces";
 /// How long a member on a server may take to claim its card and answer a tool call, each call crossing SSH and the cloud API.
 const SERVING_WAIT: Duration = Duration::from_secs(60);
 /// How long to wait before asking a member on a server again, since each ask crosses SSH and the cloud API.
@@ -29,7 +33,7 @@ const REMOTE_POLL: Duration = Duration::from_millis(1000);
 /// What separates the server's clock stamp from the envelope a remote tool call prints.
 const STAMP_SEPARATOR: char = '\t';
 
-/// A lab member serving a card on a lab server, configured as the live network's invitation describes, stopped when dropped with its run record kept when the test asks.
+/// A lab member serving a card on a lab server, configured as the live network's invitation describes, stopped when dropped with its run record and trace files kept when the test asks.
 pub struct ServerMember<'server> {
     server: &'server LabServer,
     card: String,
@@ -155,6 +159,30 @@ impl<'server> ServerMember<'server> {
             fail_unless_panicking(&format!("run record of {} not kept: {failure}", self.card));
         }
     }
+
+    /// Keeps both trace files of each of the member's runs in a directory of their own beside its run record, unredacted, so its raw files are not safe to post, failing the test when they cannot be fetched.
+    fn keep_trace_files(&self, directory: &Path) {
+        let kept_in = directory.join(format!(
+            "{}-{}-{KEPT_TRACE_FILES_SUFFIX}",
+            self.server.label(),
+            self.card
+        ));
+        let fetched = self.server.attempt(
+            TRACE_FILES_ON_SERVER_RECIPE,
+            &[&self.card, &kept_in.to_string_lossy()],
+            &[],
+        );
+        if fetched.status.success() {
+            eprintln!("trace files of {} kept at {}", self.card, kept_in.display());
+        } else {
+            fail_unless_panicking(&format!(
+                "trace files of {} on {} not fetched: {}",
+                self.card,
+                self.server.label(),
+                String::from_utf8_lossy(&fetched.stderr)
+            ));
+        }
+    }
 }
 
 impl Drop for ServerMember<'_> {
@@ -172,6 +200,7 @@ impl Drop for ServerMember<'_> {
         }
         if let Some(directory) = &self.kept_in {
             self.keep_run_record(directory);
+            self.keep_trace_files(directory);
         }
     }
 }
