@@ -2,7 +2,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use estafette::dirs::{TraceFileKind, trace_file_of};
+use estafette::dirs::{TraceFileKind, events_trace_file_name, trace_file_of};
 use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
 use serde_json::Value;
 
@@ -216,7 +216,7 @@ pub fn trace_lines_of(path: &Path) -> Vec<TraceLine> {
     read_trace_file(path).unwrap_or_else(|failure| panic!("{}: {failure}", path.display()))
 }
 
-/// The events files in the trace directory, oldest run first; none when the directory does not exist.
+/// The events files in the trace directory, oldest run first and each run's earlier lines first; none when the directory does not exist.
 pub fn events_files_in(traces_directory: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(traces_directory) else {
         return Vec::new();
@@ -231,8 +231,21 @@ pub fn events_files_in(traces_directory: &Path) -> Vec<PathBuf> {
                 .is_some_and(|(_run, kind)| kind == TraceFileKind::Events)
         })
         .collect();
-    files.sort();
+    files.sort_by_key(|file| reading_order(file));
     files
+}
+
+/// Where an events file is read among the others: by its run, and within its run the file it rolled over into before the file written after the rollover.
+fn reading_order(events_file: &Path) -> (String, bool) {
+    let name = events_file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let run_name = trace_file_of(name).map_or(name, |(run_name, _kind)| run_name);
+    (
+        run_name.to_owned(),
+        name == events_trace_file_name(run_name),
+    )
 }
 
 /// Every whole line of every events file in the trace directory, oldest run first.
@@ -377,6 +390,28 @@ mod tests {
             "        17 ms  #4    process.command_failed code=\"unreachable\" handle=\"bob\"\n        17 ms  #9    process.command_failed code=\"unreachable\" handle=\"bob\""
         );
         assert_eq!(timeline_in(&directory.join("absent")), NO_EVENT_RECORDED);
+        drop(fs::remove_dir_all(&directory));
+    }
+
+    #[test]
+    fn observability_decision_13_the_lines_a_run_rolled_over_are_read_before_the_lines_written_after_the_rollover()
+     {
+        let directory =
+            std::env::temp_dir().join(format!("trace-reader-{}-rolled-over", std::process::id()));
+        drop(fs::remove_dir_all(&directory));
+        fs::create_dir_all(&directory).unwrap();
+        let run = "20261112T225913Z-bbbbbbbbbbbbbbbb-estafette.events.jsonl";
+        let after_rollover = MEMBER_LINE.replace("\"n\":4", "\"n\":7");
+        fs::write(directory.join(format!("{run}.1")), MEMBER_LINE).unwrap();
+        fs::write(directory.join(run), &after_rollover).unwrap();
+
+        let numbers: Vec<u64> = events_lines_in(&directory)
+            .unwrap()
+            .iter()
+            .map(|line| line.n)
+            .collect();
+
+        assert_eq!(numbers, [4, 7]);
         drop(fs::remove_dir_all(&directory));
     }
 }
