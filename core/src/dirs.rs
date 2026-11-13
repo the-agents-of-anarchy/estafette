@@ -6,14 +6,15 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub(crate) use estafette_trace::ROLLED_OVER_TRACE_SUFFIX;
-use estafette_trace::{DataDirectoryUnresolvable, PRODUCT_NAME};
+use estafette_trace::{
+    BaseDirectoryUnresolvable, PRODUCT_NAME, non_empty_variable, xdg_base_directory,
+};
 pub use estafette_trace::{
     TraceDirectory, TraceFileKind, TraceFiles, events_trace_file_name, raw_trace_file_name,
     rolled_over_trace_file, trace_file_of,
 };
 
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
-const HOME_VARIABLE: &str = "HOME";
 const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
 const CONFIG_HOME_UNDER_HOME: &str = ".config";
 const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
@@ -80,7 +81,7 @@ impl DirectoryFilesystem for OperatingSystemFilesystem {
 /// A directory could not be resolved or created.
 #[derive(Debug)]
 pub enum DirectoriesError {
-    BaseUnresolvable { variable: &'static str },
+    BaseUnresolvable(BaseDirectoryUnresolvable),
     CreationFailed { path: PathBuf, source: io::Error },
     OwnerUnreadable { path: PathBuf, source: io::Error },
     NameNotSinglePathComponent { name: String },
@@ -89,10 +90,7 @@ pub enum DirectoriesError {
 impl fmt::Display for DirectoriesError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BaseUnresolvable { variable } => write!(
-                formatter,
-                "{variable} and {HOME_VARIABLE} are both unset or empty: set one of them"
-            ),
+            Self::BaseUnresolvable(unresolvable) => write!(formatter, "{unresolvable}"),
             Self::CreationFailed { path, source } => {
                 write!(formatter, "cannot create {}: {source}", path.display())
             }
@@ -113,11 +111,9 @@ impl fmt::Display for DirectoriesError {
 
 impl std::error::Error for DirectoriesError {}
 
-impl From<DataDirectoryUnresolvable> for DirectoriesError {
-    fn from(failure: DataDirectoryUnresolvable) -> Self {
-        Self::BaseUnresolvable {
-            variable: failure.variable,
-        }
+impl From<BaseDirectoryUnresolvable> for DirectoriesError {
+    fn from(unresolvable: BaseDirectoryUnresolvable) -> Self {
+        Self::BaseUnresolvable(unresolvable)
     }
 }
 
@@ -142,7 +138,7 @@ impl Directories {
         cards_directory_flag: Option<PathBuf>,
     ) -> Result<Self, DirectoriesError> {
         let config =
-            home_based_directory(&environment, CONFIG_HOME_VARIABLE, CONFIG_HOME_UNDER_HOME)?
+            xdg_base_directory(&environment, CONFIG_HOME_VARIABLE, CONFIG_HOME_UNDER_HOME)?
                 .join(PRODUCT_NAME);
         let data = data_base_directory(&environment)?;
         create_base_directory(filesystem, &config)?;
@@ -320,27 +316,6 @@ fn single_path_component(name: &str) -> Result<&str, DirectoriesError> {
     }
 }
 
-fn non_empty_variable(
-    environment: &impl Fn(&str) -> Option<OsString>,
-    name: &str,
-) -> Option<PathBuf> {
-    environment(name)
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-}
-
-fn home_based_directory(
-    environment: &impl Fn(&str) -> Option<OsString>,
-    variable: &'static str,
-    under_home: &str,
-) -> Result<PathBuf, DirectoriesError> {
-    non_empty_variable(environment, variable)
-        .or_else(|| {
-            non_empty_variable(environment, HOME_VARIABLE).map(|home| home.join(under_home))
-        })
-        .ok_or(DirectoriesError::BaseUnresolvable { variable })
-}
-
 /// The data base directory the environment names, creating nothing.
 fn data_base_directory(
     environment: &impl Fn(&str) -> Option<OsString>,
@@ -425,6 +400,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
+    const HOME_VARIABLE: &str = "HOME";
     const FAKE_USER_ID: u32 = 4242;
     const SPEC_PRIVATE_DIRECTORY_MODE: u32 = 0o700;
     const EXISTING_DIRECTORY_MODE: u32 = 0o755;

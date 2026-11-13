@@ -13,14 +13,13 @@ const RAW_TRACE_SUFFIX: &str = ".raw.jsonl";
 /// The suffix of the file a trace file rolls over into.
 pub const ROLLED_OVER_TRACE_SUFFIX: &str = ".1";
 
-/// Neither the data home variable nor the home directory variable names a directory.
+/// Neither the variable a base directory is read from nor the home directory variable names a directory.
 #[derive(Debug)]
-pub struct DataDirectoryUnresolvable {
-    /// The variable the data base directory is read from first.
-    pub variable: &'static str,
+pub struct BaseDirectoryUnresolvable {
+    variable: &'static str,
 }
 
-impl fmt::Display for DataDirectoryUnresolvable {
+impl fmt::Display for BaseDirectoryUnresolvable {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
@@ -30,34 +29,46 @@ impl fmt::Display for DataDirectoryUnresolvable {
     }
 }
 
-impl std::error::Error for DataDirectoryUnresolvable {}
+impl std::error::Error for BaseDirectoryUnresolvable {}
 
-/// The data base directory the environment names, creating nothing.
-///
-/// # Errors
-///
-/// `DataDirectoryUnresolvable` when neither the data home variable nor the home directory variable is set and not empty.
-pub fn data_base_directory(
-    environment: &impl Fn(&str) -> Option<OsString>,
-) -> Result<PathBuf, DataDirectoryUnresolvable> {
-    non_empty_variable(environment, DATA_HOME_VARIABLE)
-        .or_else(|| {
-            non_empty_variable(environment, HOME_VARIABLE)
-                .map(|home| home.join(DATA_HOME_UNDER_HOME))
-        })
-        .map(|data_home| data_home.join(PRODUCT_NAME))
-        .ok_or(DataDirectoryUnresolvable {
-            variable: DATA_HOME_VARIABLE,
-        })
-}
-
-fn non_empty_variable(
+/// The value of the environment variable as a path, an empty value counting as unset.
+#[must_use]
+pub fn non_empty_variable(
     environment: &impl Fn(&str) -> Option<OsString>,
     name: &str,
 ) -> Option<PathBuf> {
     environment(name)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
+}
+
+/// The directory the variable names, else the directory under the home directory, creating nothing.
+///
+/// # Errors
+///
+/// `BaseDirectoryUnresolvable` when neither the variable nor the home directory variable is set and not empty.
+pub fn xdg_base_directory(
+    environment: &impl Fn(&str) -> Option<OsString>,
+    variable: &'static str,
+    default_under_home: &str,
+) -> Result<PathBuf, BaseDirectoryUnresolvable> {
+    non_empty_variable(environment, variable)
+        .or_else(|| {
+            non_empty_variable(environment, HOME_VARIABLE).map(|home| home.join(default_under_home))
+        })
+        .ok_or(BaseDirectoryUnresolvable { variable })
+}
+
+/// The data base directory the environment names, creating nothing.
+///
+/// # Errors
+///
+/// `BaseDirectoryUnresolvable` when neither the data home variable nor the home directory variable is set and not empty.
+pub fn data_base_directory(
+    environment: &impl Fn(&str) -> Option<OsString>,
+) -> Result<PathBuf, BaseDirectoryUnresolvable> {
+    xdg_base_directory(environment, DATA_HOME_VARIABLE, DATA_HOME_UNDER_HOME)
+        .map(|data_home| data_home.join(PRODUCT_NAME))
 }
 
 /// The two trace files of one run.
@@ -83,7 +94,7 @@ impl TraceDirectory {
     /// Fails when the data base directory cannot be resolved.
     pub fn resolve(
         environment: &impl Fn(&str) -> Option<OsString>,
-    ) -> Result<Self, DataDirectoryUnresolvable> {
+    ) -> Result<Self, BaseDirectoryUnresolvable> {
         Ok(Self {
             data: data_base_directory(environment)?,
         })
