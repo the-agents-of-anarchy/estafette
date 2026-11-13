@@ -160,6 +160,60 @@ pub enum ContactSucceeded {
     Send,
 }
 
+/// An input that moves the table, naming the cause every change it makes carries.
+trait MovesTheTable {
+    /// The cause each change this input makes carries.
+    fn cause(&self) -> TableCause;
+}
+
+impl MovesTheTable for Presence {
+    fn cause(&self) -> TableCause {
+        TableCause::Presence
+    }
+}
+
+impl MovesTheTable for Departure {
+    fn cause(&self) -> TableCause {
+        TableCause::Departure
+    }
+}
+
+impl MovesTheTable for Unreachable {
+    fn cause(&self) -> TableCause {
+        TableCause::Unreachable
+    }
+}
+
+impl MovesTheTable for Introduce {
+    fn cause(&self) -> TableCause {
+        TableCause::Introduce
+    }
+}
+
+impl MovesTheTable for IntroduceAck {
+    fn cause(&self) -> TableCause {
+        TableCause::IntroduceAck
+    }
+}
+
+impl MovesTheTable for Message {
+    fn cause(&self) -> TableCause {
+        TableCause::Message
+    }
+}
+
+impl MovesTheTable for ContactFailed {
+    fn cause(&self) -> TableCause {
+        TableCause::ContactFailed(*self)
+    }
+}
+
+impl MovesTheTable for ContactSucceeded {
+    fn cause(&self) -> TableCause {
+        TableCause::ContactSucceeded(*self)
+    }
+}
+
 /// One change a table operation made, for its caller to record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TableChange {
@@ -259,15 +313,11 @@ impl PeerTable {
                 presence.card,
                 &handle,
                 now_ms,
-                TableCause::Presence,
+                presence,
             ));
-            table.change_entry(
-                changes,
-                presence.card,
-                now_ms,
-                TableCause::Presence,
-                |peer| peer.take_presence(presence, now_ms),
-            );
+            table.change_entry(changes, presence.card, now_ms, presence, |peer| {
+                peer.take_presence(presence, now_ms);
+            });
             Ok(effects)
         })
     }
@@ -295,13 +345,9 @@ impl PeerTable {
                 },
                 now_ms,
             );
-            table.change_entry(
-                changes,
-                departure.card,
-                now_ms,
-                TableCause::Departure,
-                |peer| peer.take_departure(departure.seq, now_ms),
-            );
+            table.change_entry(changes, departure.card, now_ms, departure, |peer| {
+                peer.take_departure(departure.seq, now_ms);
+            });
             Ok(vec![Effect::DropHeldConnection(departure.card)])
         })
     }
@@ -317,19 +363,13 @@ impl PeerTable {
                 return Err(PayloadDropRule::OlderThanMaxAge);
             }
             table
-                .change_entry(
-                    changes,
-                    report.card,
-                    now_ms,
-                    TableCause::Unreachable,
-                    |peer| {
-                        if peer.is_gone() {
-                            Err(PayloadDropRule::ReportedCardGone)
-                        } else {
-                            peer.take_unreachable_report(report.ts)
-                        }
-                    },
-                )
+                .change_entry(changes, report.card, now_ms, report, |peer| {
+                    if peer.is_gone() {
+                        Err(PayloadDropRule::ReportedCardGone)
+                    } else {
+                        peer.take_unreachable_report(report.ts)
+                    }
+                })
                 .unwrap_or(Err(PayloadDropRule::ReportedCardUnknown))
         })
     }
@@ -366,15 +406,9 @@ impl PeerTable {
     ) -> Operated<Vec<Effect>> {
         self.operate(now_ms, |table, changes| {
             table
-                .change_present_entry(
-                    changes,
-                    card,
-                    now_ms,
-                    TableCause::ContactFailed(failed),
-                    |peer| {
-                        peer.status = Status::Unreachable;
-                    },
-                )
+                .change_present_entry(changes, card, now_ms, &failed, |peer| {
+                    peer.status = Status::Unreachable;
+                })
                 .map_or_else(Vec::new, |()| vec![Effect::BroadcastUnreachable(card)])
         })
     }
@@ -387,15 +421,9 @@ impl PeerTable {
         succeeded: ContactSucceeded,
     ) -> Operated<()> {
         self.operate(now_ms, |table, changes| {
-            table.change_present_entry(
-                changes,
-                card,
-                now_ms,
-                TableCause::ContactSucceeded(succeeded),
-                |peer| {
-                    peer.take_direct_contact(now_ms);
-                },
-            );
+            table.change_present_entry(changes, card, now_ms, &succeeded, |peer| {
+                peer.take_direct_contact(now_ms);
+            });
         })
     }
 
@@ -408,12 +436,12 @@ impl PeerTable {
     ) -> Operated<Vec<Effect>> {
         self.receive_introduction(
             card,
+            introduce,
             &Introduction {
                 handle: introduce.handle.as_deref(),
                 public: &introduce.public,
                 attached: introduce.attached,
                 addr: &introduce.addr,
-                cause: TableCause::Introduce,
             },
             now_ms,
         )
@@ -428,12 +456,12 @@ impl PeerTable {
     ) -> Operated<Vec<Effect>> {
         self.receive_introduction(
             card,
+            ack,
             &Introduction {
                 handle: ack.handle.as_deref(),
                 public: &ack.public,
                 attached: ack.attached,
                 addr: &ack.addr,
-                cause: TableCause::IntroduceAck,
             },
             now_ms,
         )
@@ -451,12 +479,18 @@ impl PeerTable {
                 return Vec::new();
             };
             if let Some(departure_seq) = table.departure_sent_since(card, message.sent_at, now_ms) {
-                table.insert_departed_if_unseen(changes, card, &handle, departure_seq, now_ms);
+                table.insert_departed_if_unseen(
+                    changes,
+                    card,
+                    &handle,
+                    message,
+                    departure_seq,
+                    now_ms,
+                );
                 return Vec::new();
             }
-            let effects =
-                table.insert_if_unseen(changes, card, &handle, now_ms, TableCause::Message);
-            table.change_entry(changes, card, now_ms, TableCause::Message, |peer| {
+            let effects = table.insert_if_unseen(changes, card, &handle, now_ms, message);
+            table.change_entry(changes, card, now_ms, message, |peer| {
                 peer.take_message(message.attached, now_ms);
             });
             effects
@@ -472,6 +506,7 @@ impl PeerTable {
     fn receive_introduction(
         &mut self,
         card: PublicKey,
+        request: &impl MovesTheTable,
         introduction: &Introduction<'_>,
         now_ms: u64,
     ) -> Operated<Vec<Effect>> {
@@ -488,14 +523,8 @@ impl PeerTable {
                 return lookup_refresh_effects(card, introduction.addr);
             };
             let mut effects = lookup_refresh_effects(card, introduction.addr);
-            effects.extend(table.insert_if_unseen(
-                changes,
-                card,
-                &handle,
-                now_ms,
-                introduction.cause,
-            ));
-            table.change_entry(changes, card, now_ms, introduction.cause, |peer| {
+            effects.extend(table.insert_if_unseen(changes, card, &handle, now_ms, request));
+            table.change_entry(changes, card, now_ms, request, |peer| {
                 peer.take_introduction(
                     introduction.public,
                     introduction.attached,
@@ -527,13 +556,13 @@ impl PeerTable {
         Operated { value, changes }
     }
 
-    /// Changes the entry of `card` and adds its status move, made by `cause`, to `changes`, when the table holds the card.
+    /// Changes the entry of `card` and adds its status move, made by `input`, to `changes`, when the table holds the card.
     fn change_entry<Changed>(
         &mut self,
         changes: &mut Vec<TableChange>,
         card: PublicKey,
         now_ms: u64,
-        cause: TableCause,
+        input: &impl MovesTheTable,
         change: impl FnOnce(&mut Peer) -> Changed,
     ) -> Option<Changed> {
         let peer = self.peers.get_mut(&card, now_ms)?;
@@ -545,7 +574,7 @@ impl PeerTable {
                 handle: peer.effective_handle.clone(),
                 from,
                 to: peer.status,
-                cause,
+                cause: input.cause(),
             });
         }
         Some(outcome)
@@ -557,10 +586,10 @@ impl PeerTable {
         changes: &mut Vec<TableChange>,
         card: PublicKey,
         now_ms: u64,
-        cause: TableCause,
+        input: &impl MovesTheTable,
         change: impl FnOnce(&mut Peer) -> Changed,
     ) -> Option<Changed> {
-        self.change_entry(changes, card, now_ms, cause, |peer| {
+        self.change_entry(changes, card, now_ms, input, |peer| {
             (!peer.is_gone()).then(|| change(peer))
         })
         .flatten()
@@ -618,12 +647,13 @@ impl PeerTable {
             .filter(|departure_seq| *departure_seq >= sent_at)
     }
 
-    /// Inserts `card` Gone since now under a free effective handle when unseen, adding its creation to `changes`, so a Message of its departed session is named without listing the card Online.
+    /// Inserts `card` Gone since now under a free effective handle when unseen, adding its creation by the Message to `changes`, so a Message of its departed session is named without listing the card Online.
     fn insert_departed_if_unseen(
         &mut self,
         changes: &mut Vec<TableChange>,
         card: PublicKey,
         handle: &AnnouncedHandle,
+        message: &Message,
         departure_seq: u64,
         now_ms: u64,
     ) {
@@ -632,25 +662,25 @@ impl PeerTable {
         }
         let mut departed = Peer::first_seen(card, self.free_handle_for(handle, now_ms), now_ms);
         departed.take_departure(departure_seq, now_ms);
-        changes.push(creation_of(&departed, handle, TableCause::Message));
+        changes.push(creation_of(&departed, handle, message));
         self.peers.insert(card, departed, now_ms);
     }
 
-    /// Inserts `card` Online under a free effective handle when unseen, adding its creation by `cause` to `changes`, and returns the Introduce that a newcomer calls for.
+    /// Inserts `card` Online under a free effective handle when unseen, adding its creation by `input` to `changes`, and returns the Introduce that a newcomer calls for.
     fn insert_if_unseen(
         &mut self,
         changes: &mut Vec<TableChange>,
         card: PublicKey,
         handle: &AnnouncedHandle,
         now_ms: u64,
-        cause: TableCause,
+        input: &impl MovesTheTable,
     ) -> Vec<Effect> {
         if self.peers.get(&card, now_ms).is_some() {
             return Vec::new();
         }
         let effective_handle = self.free_handle_for(handle, now_ms);
         let seen = Peer::first_seen(card, effective_handle, now_ms);
-        changes.push(creation_of(&seen, handle, cause));
+        changes.push(creation_of(&seen, handle, input));
         self.peers.insert(card, seen, now_ms);
         vec![Effect::SendIntroduce(card)]
     }
@@ -668,14 +698,18 @@ impl PeerTable {
     }
 }
 
-/// The creation of `created` by `cause`, the entry assigned for the `requested` handle.
-fn creation_of(created: &Peer, requested: &AnnouncedHandle, cause: TableCause) -> TableChange {
+/// The creation of `created` by `input`, the entry assigned for the `requested` handle.
+fn creation_of(
+    created: &Peer,
+    requested: &AnnouncedHandle,
+    input: &impl MovesTheTable,
+) -> TableChange {
     TableChange::Created {
         card: created.card,
         requested: requested.clone(),
         handle: created.effective_handle.clone(),
         status: created.status,
-        cause,
+        cause: input.cause(),
     }
 }
 
@@ -684,13 +718,12 @@ pub(crate) fn announced_sender_handle(message: &Message) -> Option<AnnouncedHand
     message.handle.parse().ok()
 }
 
-/// What an Introduce or `IntroduceAck` carries, and which of the two it is as the input that moves the table.
+/// What an Introduce or `IntroduceAck` carries.
 struct Introduction<'request> {
     handle: Option<&'request str>,
     public: &'request [u8],
     attached: bool,
     addr: &'request Addr,
-    cause: TableCause,
 }
 
 /// An Introduce or `IntroduceAck` the node drops: its handle is outside the announced-handle grammar, or its `public` is one no card sends (spec 3.1, 3.5).
