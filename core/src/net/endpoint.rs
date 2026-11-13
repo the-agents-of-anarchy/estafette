@@ -12,7 +12,9 @@ use iroh::{
 use iroh_gossip::ALPN as GOSSIP_ALPN;
 
 use super::direct::{HeldConnections, SUPERSEDED_CONNECTION_CLOSE_REASON};
-use super::gate::{FillGateNonce, GateNonce, NetworkSecretGate, ReportGateClosing};
+use super::gate::{
+    FillGateNonce, GATE_REFUSAL_REASON, GateNonce, NetworkSecretGate, ReportGateClosing,
+};
 use crate::crypto::GateKey;
 use crate::event::{RunRecord, TransportEvent};
 use crate::trace::LocationSalt;
@@ -27,7 +29,6 @@ pub const QUIC_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(
 );
 const LOCATION_HASH_BYTES: usize = 8;
 const PEER_ID_BYTES: usize = 5;
-const GATE_CLOSE_REASON: &[u8] = b"gate";
 
 /// The node's iroh endpoint, gated on the network secret for every gossip connection, with the address lookup the node feeds and the relay map it edits, both kept across rebinds.
 pub struct NodeEndpoint {
@@ -347,7 +348,7 @@ impl CloseReason {
     pub fn of(bytes: &[u8]) -> Self {
         if bytes == SUPERSEDED_CONNECTION_CLOSE_REASON {
             Self::Superseded
-        } else if bytes == GATE_CLOSE_REASON {
+        } else if bytes == GATE_REFUSAL_REASON {
             Self::Gate
         } else {
             Self::Unlisted { bytes: bytes.len() }

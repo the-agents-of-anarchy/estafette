@@ -17,7 +17,7 @@ const GATE_NONCE_BYTES: usize = 32;
 const PROOF_BYTES: usize = blake3::OUT_LEN;
 const GATE_TIMEOUT: Duration = Duration::from_millis(3000);
 const GATE_REFUSAL_ERROR_CODE: u32 = 403;
-const GATE_REFUSAL_REASON: &[u8] = b"gate";
+pub(super) const GATE_REFUSAL_REASON: &[u8] = b"gate";
 
 /// The 32-byte nonce each side of the gate challenges the other with (spec 3.6).
 pub type GateNonce = [u8; GATE_NONCE_BYTES];
