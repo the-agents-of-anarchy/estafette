@@ -240,6 +240,7 @@ impl PresenceLoop {
     /// Rebinds by spec 3.8, stopping the loop when no endpoint or topic comes of it.
     pub(super) async fn rebind(&mut self, cause: RebindCause) -> ControlFlow<()> {
         (self.report)(TransportEvent::Rebinding(cause).into());
+        self.record_state(SnapshotMoment::Rebind);
         self.rebinding.rebound((self.monotonic)());
         self.close_endpoint().await;
         let down = self.relays_found_down().await;
@@ -249,9 +250,7 @@ impl PresenceLoop {
             return ControlFlow::Break(());
         }
         self.client.follow(self.endpoint.endpoint().clone()).await;
-        let subscribed = self.subscribe_through_known_nodes().await;
-        self.record_state(SnapshotMoment::Rebind);
-        subscribed
+        self.subscribe_through_known_nodes().await
     }
 
     /// Asks the gossip layer to join the Online and Unreachable members, stopping the asks when there are none or one of them is a gossip neighbor already.
@@ -863,7 +862,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn observability_decision_9_a_rebind_records_its_cause_and_each_relay_probes_answer_by_port_and_salted_hash()
+    async fn observability_decision_9_a_rebind_records_its_cause_the_old_endpoints_counters_before_it_closes_and_each_relay_probes_answer_by_port_and_salted_hash()
      {
         let scratch = Scratch::new("probe-record").await;
         let (record, mut events) = recorded_events();
@@ -890,9 +889,14 @@ mod tests {
         let _member = starting.await.unwrap();
 
         let rebinding = next_recorded(&mut events, "transport.rebinding").await;
+        let (before_the_snapshot, at_the_rebind) =
+            recorded_until(&mut events, "state.counters").await;
+        assert!(
+            !before_the_snapshot.contains(&"transport.relay_probed"),
+            "the counters are read before the old endpoint closes: {before_the_snapshot:?}"
+        );
         let first_probe = next_recorded(&mut events, "transport.relay_probed").await;
         let second_probe = next_recorded(&mut events, "transport.relay_probed").await;
-        let after_the_rebind = next_recorded(&mut events, "state.counters").await;
 
         assert_eq!(
             rebinding,
@@ -914,8 +918,15 @@ mod tests {
             ]
         };
         assert_eq!(
-            after_the_rebind.first(),
+            at_the_rebind.first(),
             Some(&("moment", serde_json::Value::from("rebind")))
+        );
+        assert!(
+            at_the_rebind
+                .iter()
+                .any(|(name, count)| *name == "socket.recv_datagrams"
+                    && count.as_u64().is_some_and(|count| count > 0)),
+            "the old endpoint's datagrams are counted: {at_the_rebind:?}"
         );
         let mut probes = vec![first_probe, second_probe];
         probes.sort_by_key(|fields| fields.last().map(|(_, answered)| answered.to_string()));
@@ -926,6 +937,31 @@ mod tests {
         drop(scratch);
     }
 
+    /// The names of the events recorded before the next one of the name, within the bound, and that event's fields.
+    async fn recorded_until(
+        events: &mut tokio::sync::mpsc::UnboundedReceiver<crate::net::direct::tests::RecordedEvent>,
+        name: &str,
+    ) -> (Vec<&'static str>, crate::event::EventFields) {
+        let mut before = Vec::new();
+        let found = tokio::time::timeout(RECORDED_UNTIL_WITHIN, async {
+            while let Some((recorded, fields)) = events.recv().await {
+                if recorded == name {
+                    return Some(fields);
+                }
+                before.push(recorded);
+            }
+            None
+        })
+        .await;
+        match found {
+            Ok(Some(fields)) => (before, fields),
+            Ok(None) | Err(_) => {
+                panic!("no {name} within {RECORDED_UNTIL_WITHIN:?}; seen {before:?}")
+            }
+        }
+    }
+
+    const RECORDED_UNTIL_WITHIN: Duration = Duration::from_secs(10);
     const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
     const SNAPSHOT_WAIT: Duration = Duration::from_secs(61);
 
