@@ -837,6 +837,7 @@ dependencies = [
 name = "estafette-bridge-claude"
 version = "0.1.0"
 dependencies = [
+ "estafette-trace",
  "serde",
  "serde_json",
 ]

@@ -9,7 +9,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use estafette_bridge_claude::discover::{
     Pid, ProcessTable, ProcessTableError, PsProcessTable, RuntimeDirectoryInputs,
@@ -28,12 +28,22 @@ use estafette_bridge_claude::session_files::{
     latest_permission_mode, session_id_of_registry_entry, transcript_file_name,
 };
 
+use estafette_trace::{
+    BaseDirectoryUnresolvable, RUN_ID_BYTES, TraceBounds, TraceClocks, TraceEffects, TraceRefused,
+};
+
+use crate::debug_trace::{DebugTrace, TraceInputs, Tracing};
 use crate::event::BridgeEvent;
 
+mod debug_trace;
 mod event;
 
 const DOCTOR_SUBCOMMAND: &str = "doctor";
-const USAGE: &str = "usage: estafette-bridge-claude run <harness-pid> | doctor";
+const USAGE: &str =
+    "usage: estafette-bridge-claude run <harness-pid> [--debug | --no-debug] | doctor";
+const DEBUG_FLAG: &str = "--debug";
+const NO_DEBUG_FLAG: &str = "--no-debug";
+const SECURE_RANDOM_DEVICE: &str = "/dev/urandom";
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 const EXIT_CHECK_FAILED: u8 = 3;
@@ -67,17 +77,30 @@ const STAGING_SUFFIX: &str = ".staging";
 
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
-    Run { harness_pid: Pid },
+    Run { harness_pid: Pid, tracing: Tracing },
     Doctor,
 }
 
 /// Reads the subcommand and its arguments from the command line, refusing any other form.
 fn parse_command(arguments: &[String]) -> Option<Command> {
     match arguments {
-        [subcommand, harness_pid] if subcommand == RUN_SUBCOMMAND => Some(Command::Run {
-            harness_pid: harness_pid.parse().ok()?,
-        }),
+        [subcommand, harness_pid, tracing_flags @ ..] if subcommand == RUN_SUBCOMMAND => {
+            Some(Command::Run {
+                harness_pid: harness_pid.parse().ok()?,
+                tracing: tracing_of_flags(tracing_flags)?,
+            })
+        }
         [subcommand] if subcommand == DOCTOR_SUBCOMMAND => Some(Command::Doctor),
+        _ => None,
+    }
+}
+
+/// Reads the tracing `run` asks for from the words after the harness pid: none or one of the flag pair, `--debug` when none.
+fn tracing_of_flags(flags: &[String]) -> Option<Tracing> {
+    match flags {
+        [] => Some(Tracing::Debug),
+        [flag] if flag == DEBUG_FLAG => Some(Tracing::Debug),
+        [flag] if flag == NO_DEBUG_FLAG => Some(Tracing::NoDebug),
         _ => None,
     }
 }
@@ -128,6 +151,9 @@ enum CommandError {
     WorkingDirectoryUnreadable(io::Error),
     ReportUnwritable(io::Error),
     ProcessTable(ProcessTableError),
+    DataDirectoryUnresolvable(BaseDirectoryUnresolvable),
+    RunIdUnreadable(io::Error),
+    TraceRefused(TraceRefused),
 }
 
 impl fmt::Display for CommandError {
@@ -156,6 +182,12 @@ impl fmt::Display for CommandError {
                 write!(formatter, "cannot write the report: {source}")
             }
             Self::ProcessTable(source) => source.fmt(formatter),
+            Self::DataDirectoryUnresolvable(source) => source.fmt(formatter),
+            Self::RunIdUnreadable(source) => write!(
+                formatter,
+                "cannot read the secure random source for the run id of the debug trace: {source}; run with --no-debug to write no trace"
+            ),
+            Self::TraceRefused(source) => source.fmt(formatter),
         }
     }
 }
@@ -791,34 +823,114 @@ fn exit_code_of(outcome: Result<bool, CommandError>, record: &RunRecord) -> Exit
     }
 }
 
-/// The run record written to the error output, a failed write dropped because nothing remains to report it to.
-fn run_record_on<Errors: Write + Send + 'static>(errors: Arc<Mutex<Errors>>) -> RunRecord {
-    Arc::new(move |event| drop(writeln!(lock(&errors), "{}", event.run_record_line())))
+/// The run record written to the error output and, when there is one, into the debug trace, a failed write to the error output dropped because nothing remains to report it to.
+fn run_record_on<Errors: Write + Send + 'static>(
+    errors: Arc<Mutex<Errors>>,
+    trace: Option<Arc<DebugTrace>>,
+) -> RunRecord {
+    Arc::new(move |event| {
+        drop(writeln!(lock(&errors), "{}", event.run_record_line()));
+        if let Some(trace) = &trace {
+            trace.record(&event);
+        }
+    })
+}
+
+/// Serves the harness process under the tracing asked for, recording every event on the error output and, under `--debug`, in the events file it names first, and gives the exit status.
+fn run_command<S, B, C, F>(
+    harness_pid: Pid,
+    tracing: Tracing,
+    trace_inputs: &TraceInputs<'_>,
+    errors: Arc<Mutex<impl Write + Send + 'static>>,
+    bridge_effects: impl FnOnce(RunRecord) -> Result<BridgeEffects<S, C, F>, CommandError>,
+    processes: &impl ProcessTable,
+) -> ExitCode
+where
+    S: InboxConnector + Send + 'static,
+    B: InboxConnector + Send + 'static,
+    C: Fn(PathBuf) -> B,
+    F: Files + Send + Sync + 'static,
+{
+    let trace = match DebugTrace::start(tracing, trace_inputs) {
+        Ok(trace) => trace.map(Arc::new),
+        Err(error) => return exit_code_of(Err(error), &run_record_on(errors, None)),
+    };
+    if let Some(trace) = &trace {
+        drop(writeln!(lock(&errors), "{}", trace.announcement()));
+    }
+    let record = run_record_on(Arc::clone(&errors), trace.clone());
+    let outcome = bridge_effects(Arc::clone(&record))
+        .and_then(|effects| run_bridge(harness_pid, effects, processes))
+        .map(|outcome| {
+            if let BridgeOutcome::AlreadyServed { bridge_pid } = outcome {
+                record(BridgeEvent::AlreadyServed {
+                    bridge_pid,
+                    harness_pid,
+                });
+            }
+            true
+        });
+    let status = exit_code_of(outcome, &record);
+    if let Some(unfinished) = trace.and_then(|trace| trace.finish()) {
+        run_record_on(errors, None)(unfinished);
+    }
+    status
+}
+
+/// Draws a run id's bytes from the operating system's secure random source.
+fn secure_random_run_id() -> io::Result<[u8; RUN_ID_BYTES]> {
+    let mut run_id = [0; RUN_ID_BYTES];
+    fs::File::open(SECURE_RANDOM_DEVICE)?.read_exact(&mut run_id)?;
+    Ok(run_id)
+}
+
+/// The trace's clocks, both read on each line: milliseconds since `started`, and milliseconds since the Unix epoch, a reading before it taken as the epoch.
+fn trace_clocks_since(started: Instant) -> TraceClocks {
+    TraceClocks {
+        monotonic_ms: Arc::new(move || {
+            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
+        }),
+        wall_ms: Arc::new(|| {
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |since| {
+                    u64::try_from(since.as_millis()).unwrap_or(u64::MAX)
+                })
+        }),
+    }
 }
 
 /// Runs the subcommand named on the command line and exits with its status.
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let record = run_record_on(Arc::new(Mutex::new(std::io::stderr())));
+    let errors = Arc::new(Mutex::new(std::io::stderr()));
+    let record = run_record_on(Arc::clone(&errors), None);
     let environment = match read_environment() {
         Ok(environment) => environment,
         Err(error) => return exit_code_of(Err(error), &record),
     };
     match parse_command(&arguments) {
-        Some(Command::Run { harness_pid }) => {
-            let outcome = bridge_effects(&environment, OperatingSystemFiles, Arc::clone(&record))
-                .and_then(|effects| run_bridge(harness_pid, effects, &PsProcessTable))
-                .map(|outcome| {
-                    if let BridgeOutcome::AlreadyServed { bridge_pid } = outcome {
-                        record(BridgeEvent::AlreadyServed {
-                            bridge_pid,
-                            harness_pid,
-                        });
-                    }
-                    true
-                });
-            exit_code_of(outcome, &record)
-        }
+        Some(Command::Run {
+            harness_pid,
+            tracing,
+        }) => run_command(
+            harness_pid,
+            tracing,
+            &TraceInputs {
+                environment: &non_empty_variable,
+                draw_run_id: &secure_random_run_id,
+                create_private_directory: &|path| {
+                    OperatingSystemFiles.create_private_directory(path)
+                },
+                effects: TraceEffects::of_the_operating_system(trace_clocks_since(
+                    environment.started,
+                )),
+                bounds: TraceBounds::SPEC,
+            },
+            errors,
+            |record| bridge_effects(&environment, OperatingSystemFiles, record),
+            &PsProcessTable,
+        ),
         Some(Command::Doctor) => {
             let outcome = run_doctor_command(
                 &environment,
@@ -857,9 +969,29 @@ mod tests {
         assert_eq!(
             parse_command(&arguments(&["run", "4242"])),
             Some(Command::Run {
-                harness_pid: Pid(4242)
+                harness_pid: Pid(4242),
+                tracing: Tracing::Debug,
             })
         );
+    }
+
+    #[test]
+    fn observability_decision_1_run_takes_the_debug_flag_pair_after_the_pid_and_writes_the_trace_unless_told_not_to()
+     {
+        for (words, tracing) in [
+            (&["run", "4242"][..], Tracing::Debug),
+            (&["run", "4242", "--debug"], Tracing::Debug),
+            (&["run", "4242", "--no-debug"], Tracing::NoDebug),
+        ] {
+            assert_eq!(
+                parse_command(&arguments(words)),
+                Some(Command::Run {
+                    harness_pid: Pid(4242),
+                    tracing,
+                }),
+                "{words:?}"
+            );
+        }
     }
 
     #[test]
@@ -877,6 +1009,11 @@ mod tests {
             &["run"],
             &["run", "not-a-pid"],
             &["run", "-5"],
+            &["run", "--no-debug", "4242"],
+            &["run", "4242", "--debug", "--no-debug"],
+            &["run", "4242", "--no-debug", "--no-debug"],
+            &["run", "4242", "--verbose"],
+            &["doctor", "--no-debug"],
             &["doctor", "--project-dir", "/work"],
             &["doctor", "extra"],
             &["serve"],
@@ -1010,6 +1147,32 @@ mod tests {
             }
         );
         assert_eq!(lock(&wiring.spawned).len(), 0);
+    }
+
+    #[test]
+    fn observability_decision_1_a_bridge_started_with_either_debug_flag_still_guards_its_harness_against_a_second_start()
+     {
+        for flag in ["--debug", "--no-debug"] {
+            let mut flagged_bridge = bridge_process(700, &HARNESS_PID.to_string());
+            flagged_bridge.arguments.push(flag.to_owned());
+            let running = FixedProcessTable(vec![bridge_process(900, "100"), flagged_bridge]);
+            let wiring = wiring();
+            assert_eq!(
+                run_bridge(HARNESS_PID, wiring.effects, &running).expect("guarded start"),
+                BridgeOutcome::AlreadyServed {
+                    bridge_pid: Pid(700)
+                },
+                "{flag}"
+            );
+        }
+    }
+
+    #[test]
+    fn observability_decision_5_each_run_id_is_drawn_afresh_from_the_secure_random_source() {
+        let first = secure_random_run_id().expect("first draw");
+        let second = secure_random_run_id().expect("second draw");
+        assert_ne!(first, second);
+        assert_ne!(first, [0; RUN_ID_BYTES]);
     }
 
     const CORE_OWNER_OF_CONFIG_BASE: u32 = 4242;
@@ -1869,7 +2032,7 @@ mod tests {
     #[test]
     fn spec_3_12_a_failed_check_ends_the_doctor_with_exit_3_and_other_outcomes_with_0_and_1() {
         let errors: Arc<Mutex<Vec<u8>>> = Arc::default();
-        let record = run_record_on(Arc::clone(&errors));
+        let record = run_record_on(Arc::clone(&errors), None);
         assert_eq!(exit_code_of(Ok(true), &record), ExitCode::SUCCESS);
         assert_eq!(exit_code_of(Ok(false), &record), ExitCode::from(3));
         assert_eq!(*lock(&errors), b"");
@@ -2155,5 +2318,329 @@ mod tests {
                     .ends_with(STAGING_SUFFIX))
         );
         fs::remove_dir_all(&directory).expect("cleanup");
+    }
+
+    const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
+    const RUN_BYTES: [u8; RUN_ID_BYTES] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
+    const UNREADABLE_CLASS_LINE: &str = "cannot read the session's permission mode, keeping the class attested before: cannot read /home/ana/.claude/sessions/100.json: entity not found\n";
+
+    struct TraceProbe {
+        data_home: PathBuf,
+        data_home_variable: &'static str,
+        run_id_source_fails: bool,
+        directory_creation_fails: bool,
+        drawn_run_ids: Arc<Mutex<usize>>,
+        created_directories: Arc<Mutex<Vec<PathBuf>>>,
+    }
+
+    impl TraceProbe {
+        fn new(label: &str) -> Self {
+            let data_home = std::env::temp_dir().join(format!(
+                "estafette-bridge-claude-trace-{label}-{}",
+                std::process::id()
+            ));
+            drop(fs::remove_dir_all(&data_home));
+            Self {
+                data_home,
+                data_home_variable: DATA_HOME_VARIABLE,
+                run_id_source_fails: false,
+                directory_creation_fails: false,
+                drawn_run_ids: Arc::default(),
+                created_directories: Arc::default(),
+            }
+        }
+
+        fn run(
+            &self,
+            tracing: Tracing,
+            effects: TraceEffects,
+            bounds: TraceBounds,
+        ) -> (ExitCode, String) {
+            let data_home = self.data_home.clone();
+            let data_home_variable = self.data_home_variable;
+            let environment =
+                move |name: &str| (name == data_home_variable).then(|| OsString::from(&data_home));
+            let drawn_run_ids = Arc::clone(&self.drawn_run_ids);
+            let run_id_source_fails = self.run_id_source_fails;
+            let draw_run_id = move || {
+                {
+                    let mut drawn = lock(&drawn_run_ids);
+                    *drawn = drawn.saturating_add(1);
+                }
+                if run_id_source_fails {
+                    return Err(io::Error::other(STAND_IN_FAILURE));
+                }
+                Ok(RUN_BYTES)
+            };
+            let created_directories = Arc::clone(&self.created_directories);
+            let directory_creation_fails = self.directory_creation_fails;
+            let create_private_directory = move |path: &Path| {
+                lock(&created_directories).push(path.to_owned());
+                if directory_creation_fails {
+                    return Err(io::Error::from(io::ErrorKind::PermissionDenied));
+                }
+                fs::create_dir_all(path)
+            };
+            let errors: Arc<Mutex<Vec<u8>>> = Arc::default();
+            let wiring = wiring();
+            let status = run_command(
+                HARNESS_PID,
+                tracing,
+                &TraceInputs {
+                    environment: &environment,
+                    draw_run_id: &draw_run_id,
+                    create_private_directory: &create_private_directory,
+                    effects,
+                    bounds,
+                },
+                Arc::clone(&errors),
+                move |record| {
+                    Ok(BridgeEffects {
+                        record,
+                        ..wiring.effects
+                    })
+                },
+                &FixedProcessTable(Vec::new()),
+            );
+            let written = String::from_utf8(lock(&errors).clone()).expect("utf8 standard error");
+            (status, written)
+        }
+    }
+
+    impl Drop for TraceProbe {
+        fn drop(&mut self) {
+            drop(fs::remove_dir_all(&self.data_home));
+        }
+    }
+
+    #[test]
+    fn observability_decision_3_a_run_with_no_debug_writes_standard_error_as_without_a_trace_and_touches_nothing_of_it()
+     {
+        let probe = TraceProbe::new("no-debug");
+
+        let (status, written) = probe.run(
+            Tracing::NoDebug,
+            TraceEffects::of_the_operating_system(frozen_trace_clocks()),
+            TraceBounds::SPEC,
+        );
+
+        assert_eq!(status, ExitCode::SUCCESS);
+        assert_eq!(written, UNREADABLE_CLASS_LINE);
+        assert_eq!(*lock(&probe.drawn_run_ids), 0);
+        assert_eq!(*lock(&probe.created_directories), Vec::<PathBuf>::new());
+        assert!(!probe.data_home.exists());
+    }
+
+    const FROZEN_MONOTONIC_MS: u64 = 7;
+    const START_WALL_MS: u64 = 951_868_799_123;
+    const EVENTS_FILE_NAME: &str = "20000229T235959Z-a1b2c3d4e5f60718-bridge.events.jsonl";
+    fn trace_line(n: u64, rest: &str) -> String {
+        format!(
+            "{{\"v\":1,\"run\":\"a1b2c3d4e5f60718\",\"n\":{n},\"mono_ms\":7,\"wall_ms\":951868799123,{rest}}}\n"
+        )
+    }
+
+    impl TraceProbe {
+        fn traces(&self) -> PathBuf {
+            self.data_home.join("estafette").join("traces")
+        }
+
+        fn events_file(&self) -> PathBuf {
+            self.traces().join(EVENTS_FILE_NAME)
+        }
+    }
+
+    #[test]
+    fn observability_decision_4_a_run_with_debug_names_its_events_file_first_on_standard_error_and_writes_its_events_there()
+     {
+        let probe = TraceProbe::new("debug");
+
+        let (status, written) = probe.run(
+            Tracing::Debug,
+            TraceEffects::of_the_operating_system(frozen_trace_clocks()),
+            TraceBounds::SPEC,
+        );
+
+        assert_eq!(status, ExitCode::SUCCESS);
+        assert_eq!(
+            written,
+            format!(
+                "writing the debug trace: {} (safe to post)\n{UNREADABLE_CLASS_LINE}",
+                probe.events_file().display()
+            )
+        );
+        assert_eq!(*lock(&probe.drawn_run_ids), 1);
+        assert_eq!(
+            *lock(&probe.created_directories),
+            [probe.data_home.join("estafette"), probe.traces()]
+        );
+        assert_eq!(
+            fs::read_to_string(probe.events_file()).expect("events file"),
+            trace_line(
+                0,
+                "\"event\":\"permission_class.unreadable\",\"reason\":\"registry_unreadable\""
+            )
+        );
+        assert_eq!(
+            fs::read_dir(probe.traces()).expect("traces").count(),
+            1,
+            "the bridge writes the events file alone"
+        );
+    }
+
+    fn frozen_trace_clocks() -> TraceClocks {
+        TraceClocks {
+            monotonic_ms: Arc::new(|| FROZEN_MONOTONIC_MS),
+            wall_ms: Arc::new(|| START_WALL_MS),
+        }
+    }
+
+    const SHORT_DRAIN: Duration = Duration::from_millis(20);
+
+    struct StuckFile {
+        until_unstuck: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl Write for StuckFile {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.until_unstuck.recv().map_err(io::Error::other)?;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl estafette_trace::TraceFile for StuckFile {
+        fn set_length(&mut self, _length: u64) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn observability_decision_12_a_stop_whose_writer_still_holds_lines_at_the_drain_bound_is_recorded_on_standard_error()
+     {
+        let probe = TraceProbe::new("not-drained");
+        let (to_the_test, held_unsticks) = std::sync::mpsc::channel();
+        let effects = TraceEffects {
+            create_file: Arc::new(move |_path: &Path| {
+                let (unstick, until_unstuck) = std::sync::mpsc::channel();
+                to_the_test.send(unstick).map_err(io::Error::other)?;
+                let stuck: Box<dyn estafette_trace::TraceFile> =
+                    Box::new(StuckFile { until_unstuck });
+                Ok(stuck)
+            }),
+            ..TraceEffects::of_the_operating_system(frozen_trace_clocks())
+        };
+
+        let (status, written) = probe.run(
+            Tracing::Debug,
+            effects,
+            TraceBounds {
+                drain: SHORT_DRAIN,
+                ..TraceBounds::SPEC
+            },
+        );
+
+        assert_eq!(status, ExitCode::SUCCESS);
+        assert_eq!(
+            written.lines().last(),
+            Some(
+                "the debug trace did not finish writing its events file within 20 ms of the stop: the file's last lines may be missing"
+            ),
+            "{written}"
+        );
+        drop(held_unsticks);
+    }
+
+    const STAND_IN_FAILURE: &str = "a stand-in failure";
+
+    #[test]
+    fn observability_decision_4_a_debug_trace_that_cannot_start_refuses_the_run_before_it_serves_naming_why_and_the_flag_that_skips_it()
+     {
+        let mut without_a_data_directory = TraceProbe::new("refused-data-directory");
+        without_a_data_directory.data_home_variable = "VARIABLE_UNSET_IN_THIS_TEST";
+        let mut without_a_run_id = TraceProbe::new("refused-run-id");
+        without_a_run_id.run_id_source_fails = true;
+        let mut without_a_trace_directory = TraceProbe::new("refused-directory");
+        without_a_trace_directory.directory_creation_fails = true;
+        let refused_trace_directory = format!(
+            "cannot create the trace directory {}: permission denied; run with --no-debug to write no trace\n",
+            without_a_trace_directory
+                .data_home
+                .join("estafette")
+                .display()
+        );
+
+        for (probe, refusal) in [
+            (
+                &without_a_data_directory,
+                "XDG_DATA_HOME and HOME are both unset or empty: set one of them\n",
+            ),
+            (
+                &without_a_run_id,
+                "cannot read the secure random source for the run id of the debug trace: a stand-in failure; run with --no-debug to write no trace\n",
+            ),
+            (&without_a_trace_directory, refused_trace_directory.as_str()),
+        ] {
+            let (status, written) = probe.run(
+                Tracing::Debug,
+                TraceEffects::of_the_operating_system(frozen_trace_clocks()),
+                TraceBounds::SPEC,
+            );
+
+            assert_eq!(status, ExitCode::from(EXIT_FAILURE), "{written}");
+            assert_eq!(written, refusal);
+        }
+    }
+
+    struct UncuttableFile {
+        sized_bytes: u64,
+    }
+
+    impl Write for UncuttableFile {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl estafette_trace::TraceFile for UncuttableFile {
+        fn set_length(&mut self, length: u64) -> io::Result<()> {
+            if length < self.sized_bytes {
+                return Err(io::Error::other(STAND_IN_FAILURE));
+            }
+            self.sized_bytes = length;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn observability_decision_12_a_stop_that_cannot_cut_the_events_file_back_is_recorded_on_standard_error()
+     {
+        let probe = TraceProbe::new("not-cut");
+        let effects = TraceEffects {
+            create_file: Arc::new(|_path: &Path| {
+                let uncuttable: Box<dyn estafette_trace::TraceFile> =
+                    Box::new(UncuttableFile { sized_bytes: 0 });
+                Ok(uncuttable)
+            }),
+            ..TraceEffects::of_the_operating_system(frozen_trace_clocks())
+        };
+
+        let (status, written) = probe.run(Tracing::Debug, effects, TraceBounds::SPEC);
+
+        assert_eq!(status, ExitCode::SUCCESS);
+        assert_eq!(
+            written.lines().last(),
+            Some(
+                "the debug trace could not cut its events file back to its last line at the stop, so the file ends in zero bytes: a stand-in failure"
+            ),
+            "{written}"
+        );
     }
 }
