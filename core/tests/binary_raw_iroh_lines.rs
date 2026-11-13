@@ -169,6 +169,11 @@ mod raw_iroh_lines {
         let (_events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
         let wrote_lines_of_iroh = holds_within_the_wait(&raw, hold_a_line_of_iroh);
 
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "{}: tail ended by itself before the kill",
+            raw.display()
+        );
         drop(child);
 
         assert!(
