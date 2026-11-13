@@ -1,10 +1,8 @@
-use std::time::Duration;
-
-use estafette_trace::{FileTrace, Program, RolloverOpening, TraceRun};
+use estafette_trace::{EstafetteRun, FileTrace, Program};
 use iroh::EndpointId;
 use serde_json::Value;
 
-use crate::dirs::{DirectoryFilesystem, TraceDirectory, TraceFileKind, TraceFiles};
+use crate::dirs::{DirectoryFilesystem, TraceDirectory, TraceFiles};
 use crate::event::{Event, EventName, TraceLineName};
 
 pub use estafette_trace::{
@@ -24,10 +22,9 @@ pub fn run_name_pattern() -> String {
 
 /// The debug trace of one process: its events file and its raw file, each written by a thread of its own.
 pub struct Trace {
-    run: TraceRun,
+    run: EstafetteRun,
     events: FileTrace,
     raw: FileTrace,
-    drain: Duration,
 }
 
 impl Trace {
@@ -42,26 +39,20 @@ impl Trace {
         effects: &TraceEffects,
         bounds: TraceBounds,
     ) -> Result<Self, TraceRefused> {
-        let run = TraceRun::begin(
+        let run = EstafetteRun::begin(
             directory,
             &|path| filesystem.create_private_directory(path),
-            Program::Estafette,
             run,
             effects,
             bounds,
         )?;
-        let events = run.open(TraceFileKind::Events, RolloverOpening::Nothing)?;
-        let raw = run.open(TraceFileKind::Raw, RolloverOpening::FirstLineAgain)?;
+        let events = run.open_events()?;
+        let raw = run.open_raw()?;
         raw.write(
             TraceLineName::RawFileOpened.as_str(),
             &[(SAFE_TO_POST_FIELD, Value::Bool(false))],
         );
-        Ok(Self {
-            run,
-            events,
-            raw,
-            drain: bounds.drain,
-        })
+        Ok(Self { run, events, raw })
     }
 
     /// The two files this trace writes.
@@ -92,10 +83,7 @@ impl Trace {
 
     /// Closes both queues and waits, within the drain bound for each, until their writers took every queued line and cut each file back to its last line, saying how the stop left the events file, then the raw file.
     pub fn finish(&self) -> [TraceStop; 2] {
-        [
-            self.events.finish(self.drain, TraceFileKind::Events),
-            self.raw.finish(self.drain, TraceFileKind::Raw),
-        ]
+        [self.events.finish(), self.raw.finish()]
     }
 }
 
@@ -115,7 +103,7 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
-    use crate::dirs::OperatingSystemFilesystem;
+    use crate::dirs::{OperatingSystemFilesystem, TraceFileKind};
     use crate::event::{ClaimFailure, InboxEvent, ProcessEvent};
     use crate::node::NodeError;
     use crate::seeded_draws::Draws;

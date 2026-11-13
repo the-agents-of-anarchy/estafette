@@ -8,8 +8,8 @@ mod observability {
     use std::time::{Duration, UNIX_EPOCH};
 
     use estafette_trace::{
-        Program, RUN_ID_BYTES, RolloverOpening, RunId, TraceBounds, TraceClocks, TraceDirectory,
-        TraceEffects, TraceFileKind, TraceRun, TraceStop,
+        BridgeRun, RUN_ID_BYTES, RunId, TraceBounds, TraceClocks, TraceDirectory, TraceEffects,
+        TraceStop,
     };
     use serde_json::Value;
 
@@ -24,7 +24,6 @@ mod observability {
     const SMALL_DIRECTORY_BYTES: u64 = 250;
     const OLD_FILE_BYTES: u64 = 100;
     const ONE_EVENT: &str = "process.clock_before_unix_epoch";
-    const DRAIN_BOUND: Duration = Duration::from_secs(10);
 
     /// A fresh scratch root for the test and the trace directory under its data home.
     fn scratch_trace_directory(test_name: &str) -> (PathBuf, TraceDirectory) {
@@ -51,11 +50,14 @@ mod observability {
     }
 
     /// A bridge run begun on the operating system's files with its wall clock frozen at `wall_ms`.
-    fn begun_bridge_run(directory: &TraceDirectory, wall_ms: u64, bounds: TraceBounds) -> TraceRun {
-        TraceRun::begin(
+    fn begun_bridge_run(
+        directory: &TraceDirectory,
+        wall_ms: u64,
+        bounds: TraceBounds,
+    ) -> BridgeRun {
+        BridgeRun::begin(
             directory,
             &|path: &Path| fs::create_dir_all(path),
-            Program::Bridge,
             RunId::from_random_bytes(RUN_BYTES),
             &TraceEffects::of_the_operating_system(frozen_clocks(wall_ms)),
             bounds,
@@ -91,21 +93,18 @@ mod observability {
         let (root, directory) = scratch_trace_directory("bridge-events-alone");
         let run = begun_bridge_run(&directory, START_WALL_MS, TraceBounds::SPEC);
 
-        let events = run
-            .open(TraceFileKind::Events, RolloverOpening::Nothing)
-            .unwrap();
-        assert!(matches!(
-            events.finish(DRAIN_BOUND, TraceFileKind::Events),
-            TraceStop::Drained
-        ));
+        let events = run.open_events().unwrap();
+        assert!(matches!(events.finish(), TraceStop::Drained));
 
         assert_eq!(
             names_in(&directory.path()),
             [format!("{START_STAMP}-{RUN_HEX}-bridge.events.jsonl")]
         );
         assert_eq!(
-            run.files(),
-            &directory.files_of(&format!("{START_STAMP}-{RUN_HEX}-bridge"))
+            run.events_file(),
+            directory
+                .files_of(&format!("{START_STAMP}-{RUN_HEX}-bridge"))
+                .events
         );
         drop(fs::remove_dir_all(&root));
     }
@@ -115,18 +114,13 @@ mod observability {
     {
         let (root, directory) = scratch_trace_directory("bridge-no-node");
         let run = begun_bridge_run(&directory, START_WALL_MS, TraceBounds::SPEC);
-        let events = run
-            .open(TraceFileKind::Events, RolloverOpening::Nothing)
-            .unwrap();
+        let events = run.open_events().unwrap();
 
         events.write(ONE_EVENT, &[]);
         events.write(ONE_EVENT, &[]);
-        assert!(matches!(
-            events.finish(DRAIN_BOUND, TraceFileKind::Events),
-            TraceStop::Drained
-        ));
+        assert!(matches!(events.finish(), TraceStop::Drained));
 
-        let written = fs::read_to_string(&run.files().events).unwrap();
+        let written = fs::read_to_string(run.events_file()).unwrap();
         let lines: Vec<Value> = written
             .lines()
             .map(|line| serde_json::from_str(line).unwrap())
@@ -213,13 +207,8 @@ mod observability {
                 ..TraceBounds::SPEC
             },
         );
-        let events = run
-            .open(TraceFileKind::Events, RolloverOpening::Nothing)
-            .unwrap();
-        assert!(matches!(
-            events.finish(DRAIN_BOUND, TraceFileKind::Events),
-            TraceStop::Drained
-        ));
+        let events = run.open_events().unwrap();
+        assert!(matches!(events.finish(), TraceStop::Drained));
 
         let kept: Vec<String> = names_in(&traces)
             .into_iter()

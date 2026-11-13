@@ -28,14 +28,6 @@ pub trait TraceOutput {
     fn close(&mut self) -> io::Result<()>;
 }
 
-/// What each file a rollover starts holds before the line that rolled the file over.
-pub enum RolloverOpening {
-    /// Nothing.
-    Nothing,
-    /// The first line the trace file held.
-    FirstLineAgain,
-}
-
 /// A trace file, sized ahead of its lines, that rolls over into its `.1` file, replacing any earlier one, before a line would take it past its size bound.
 pub struct RollingFile {
     path: PathBuf,
@@ -44,19 +36,19 @@ pub struct RollingFile {
     sized_bytes: u64,
     ends_mid_line: bool,
     rollover_bytes: u64,
-    opening: RolloverOpening,
+    kind: TraceFileKind,
     first_line: Option<Vec<u8>>,
     create_file: CreateTraceFile,
     rename_file: RenameFile,
 }
 
 impl RollingFile {
-    /// The newly created, empty file at `path`, rolled over at `rollover_bytes` by `rename_file` into a file `create_file` starts that holds `opening`.
+    /// The newly created, empty trace file of `kind` at `path`, rolled over at `rollover_bytes` by `rename_file` into a file `create_file` starts.
     pub(super) fn new(
         path: PathBuf,
         file: Box<dyn TraceFile>,
         rollover_bytes: u64,
-        opening: RolloverOpening,
+        kind: TraceFileKind,
         create_file: CreateTraceFile,
         rename_file: RenameFile,
     ) -> Self {
@@ -67,7 +59,7 @@ impl RollingFile {
             sized_bytes: 0,
             ends_mid_line: false,
             rollover_bytes,
-            opening,
+            kind,
             first_line: None,
             create_file,
             rename_file,
@@ -131,13 +123,11 @@ impl RollingFile {
         Ok(())
     }
 
-    /// What goes before a line in a file that holds nothing yet: the opening, once the trace file held a first line.
+    /// What goes before a line in a file that holds nothing yet: for a raw file, the first line it held, once it held one; for an events file, nothing.
     fn opening_of_an_empty_file(&self) -> &[u8] {
-        match (&self.opening, &self.first_line) {
-            (RolloverOpening::FirstLineAgain, Some(first_line)) if self.written_bytes == 0 => {
-                first_line
-            }
-            (RolloverOpening::FirstLineAgain | RolloverOpening::Nothing, _) => &[],
+        match (self.kind, &self.first_line) {
+            (TraceFileKind::Raw, Some(first_line)) if self.written_bytes == 0 => first_line,
+            (TraceFileKind::Raw | TraceFileKind::Events, _) => &[],
         }
     }
 }
@@ -198,6 +188,8 @@ fn byte_count(line: &[u8]) -> u64 {
 
 /// One trace file's writer: a bounded queue to a thread of its own, so a caller never waits for the disk.
 pub struct FileTrace {
+    kind: TraceFileKind,
+    drain: Duration,
     header: Arc<HeaderSource>,
     queue: Mutex<Queue>,
     lost_at_close: Arc<Mutex<u64>>,
@@ -217,9 +209,11 @@ struct QueuedLine {
 }
 
 impl FileTrace {
-    /// Starts the writer thread, through `spawn_thread`, on the output behind a queue of at most `queue_lines` lines.
+    /// Starts the writer thread of the file of `kind`, through `spawn_thread`, on the output behind a queue of at most `queue_lines` lines, to be stopped within `drain`.
     pub(super) fn start(
         output: impl TraceOutput + Send + 'static,
+        kind: TraceFileKind,
+        drain: Duration,
         header: Arc<HeaderSource>,
         queue_lines: usize,
         spawn_thread: &SpawnThread,
@@ -238,6 +232,8 @@ impl FileTrace {
             }),
         )?;
         Ok(Self {
+            kind,
+            drain,
             header,
             queue: Mutex::new(Queue {
                 lines: Some(queue),
@@ -266,8 +262,8 @@ impl FileTrace {
         };
     }
 
-    /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most `within` for it to take every line it holds, report that loss and cut the file back to its last line, saying how the stop left `file`.
-    pub fn finish(&self, within: Duration, file: TraceFileKind) -> TraceStop {
+    /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most the drain bound for it to take every line it holds, report that loss and cut the file back to its last line, saying how the stop left this file.
+    pub fn finish(&self) -> TraceStop {
         let mut queue = locked(&self.queue);
         *locked(&self.lost_at_close) = queue.lost;
         drop(queue.lines.take());
@@ -275,11 +271,14 @@ impl FileTrace {
         let Some(ended) = locked(&self.ended).take() else {
             return TraceStop::Drained;
         };
-        match ended.recv_timeout(within) {
+        match ended.recv_timeout(self.drain) {
             Ok(Ok(())) => TraceStop::Drained,
-            Ok(Err(source)) => TraceStop::NotCut { file, source },
+            Ok(Err(source)) => TraceStop::NotCut {
+                file: self.kind,
+                source,
+            },
             Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
-                TraceStop::NotDrained { file }
+                TraceStop::NotDrained { file: self.kind }
             }
         }
     }
