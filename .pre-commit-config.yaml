@@ -13,9 +13,9 @@ repos:
           - id: check-added-large-files
     - repo: local
       hooks:
-          - id: check
-            name: just check
-            entry: just check
+          - id: check-light
+            name: just check-light
+            entry: just check-light
             language: system
             files: '^(core|bridges|vendor)/|\.(rs|toml)$|(^|/)Cargo\.lock$'
             pass_filenames: false
