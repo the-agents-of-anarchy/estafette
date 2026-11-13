@@ -14,3 +14,12 @@ next    When the owner lifts the parking: memento events open; read dev-status.m
 ## After the 13:32 close
 
 Ordering defect, owner question 14:33: the 28 acceptance tests of spec 3.15 were planned as the last units (U34, U35, U36) because they need the whole binary and a host; written red on day one they would have exposed on day one that every two-member test needs a real HTTPS host, which surfaced only today. Unit tests were test-first from spec sentences throughout. Mitigation: the acceptance spec reviews judge each test against its spec sentence with the code out of scope (prompts/_note-acceptance-reviews.txt); a blind rewrite from the spec alone is the fallback. Next plan: acceptance tests first, kept red.
+
+## Close — 2026-11-13T11:44
+
+HEAD    7298c16 (dirty: docs/orchestration_log/history/2026-11-09/events.md, just/__pycache__/)
+state   Goal 1 open; all-node merged to main at 69221d8, CI there unread; extract-trace-writer-into-shared-package fixed at bca3f0a, both re-reviews owed on the delta fce539f..bca3f0a
+        all-net-wire fix implementer stopped mid-replay (worktree agent-a13e7c59df34d30dc); tests-on-events at 907efc4 awaits its spec review
+        owner rulings of 2026-11-13 stand unbuilt: the light and heavy gate, the container for findings of form, delta re-reviews in parallel, reviewers passing on ambiguity
+open    no agent in flight; a relaunch ends every agent id and every wake (one heartbeat, two one-shots); the five-hour window of the first login stands at 96% until about 13:10
+next    memento events open; read docs/orchestration_log/recon/2026-10-24/dev-status.md from line 173 down (lines stamped 11:38, 11:32, 11:15); read the limits; launch the two delta re-reviews of the extract unit, then the reset wave in that line's order; build the gate from recon plans/light-heavy-gate.md on the owner's word
