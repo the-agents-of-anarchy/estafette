@@ -118,10 +118,11 @@ impl std::error::Error for IrohLinesRefused {}
 mod tests {
     use std::ffi::OsString;
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
     use iroh::SecretKey;
+    use serde_json::Value;
     use tracing::subscriber::with_default;
 
     use super::raw_file_subscriber;
@@ -139,6 +140,13 @@ mod tests {
     const SPEC_NODE_HEX_CHARS: usize = 10;
     const SPEC_RAW_FILE_OPENED: &str = "raw_file_opened";
     const SPEC_IROH_LINE: &str = "iroh_line";
+    const SPEC_LEVELS_COARSEST_FIRST: [&str; 5] = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
+    const SPEC_TARGETS_AND_FINEST_LEVELS: [(&str, &str); 4] = [
+        ("iroh::_events", "DEBUG"),
+        ("iroh::socket::remote_map", "TRACE"),
+        ("iroh_gossip::proto::hyparview", "DEBUG"),
+        ("iroh_gossip::net", "DEBUG"),
+    ];
 
     /// How iroh's `Side` reads in its lines.
     #[derive(Debug)]
@@ -250,6 +258,102 @@ mod tests {
             )
         );
         assert_eq!(fs::read_to_string(&trace.files().events).unwrap(), "");
+        drop(fs::remove_dir_all(&root));
+    }
+
+    /// Writes one line at each of the five levels to each target given, saying which targets it wrote to.
+    macro_rules! one_line_at_every_level_of_each {
+        ($($target:literal),+ $(,)?) => {
+            [$({
+                tracing::error!(target: $target, "a line");
+                tracing::warn!(target: $target, "a line");
+                tracing::info!(target: $target, "a line");
+                tracing::debug!(target: $target, "a line");
+                tracing::trace!(target: $target, "a line");
+                $target
+            }),+]
+        };
+    }
+
+    /// The position of the finest level the spec lets reach the raw file from the target, by the most specific spec target it falls under, or none when it falls under none.
+    fn finest_spec_level(target: &str) -> Option<usize> {
+        SPEC_TARGETS_AND_FINEST_LEVELS
+            .iter()
+            .filter(|(spec_target, _)| {
+                target == *spec_target || target.starts_with(&format!("{spec_target}::"))
+            })
+            .max_by_key(|(spec_target, _)| spec_target.len())
+            .and_then(|(_, finest)| {
+                SPEC_LEVELS_COARSEST_FIRST
+                    .iter()
+                    .position(|level| level == finest)
+            })
+    }
+
+    /// The target and the level of each line of the raw file after its first line.
+    fn targets_and_levels_after_the_first_line(raw: &Path) -> Vec<(String, String)> {
+        fs::read_to_string(raw)
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|line| {
+                let line: Value = serde_json::from_str(line).unwrap();
+                (
+                    line["target"].as_str().unwrap().to_owned(),
+                    line["level"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn observability_decision_7_only_the_four_targets_reach_the_raw_file_each_up_to_its_own_level()
+    {
+        let (root, directory) = scratch_trace_directory("targets");
+        let trace = started(
+            &directory,
+            &TraceEffects::of_the_operating_system(frozen_clocks()),
+            TraceBounds::SPEC,
+        );
+
+        let emitted = with_default(raw_file_subscriber(Arc::clone(&trace)), || {
+            one_line_at_every_level_of_each!(
+                "iroh::_events",
+                "iroh::_events::path::selected",
+                "iroh::socket::remote_map",
+                "iroh::socket::remote_map::remote_state",
+                "iroh_gossip::proto::hyparview",
+                "iroh_gossip::net",
+                "iroh_gossip::net::util",
+                "iroh::endpoint",
+                "iroh::socket",
+                "iroh_gossip::proto::plumtree",
+                "iroh_gossip::proto::state",
+                "iroh_relay::client",
+                "estafette::node",
+            )
+        });
+        assert!(matches!(
+            trace.finish(),
+            [TraceStop::Drained, TraceStop::Drained]
+        ));
+
+        let expected: Vec<(String, String)> = emitted
+            .iter()
+            .flat_map(|target| {
+                SPEC_LEVELS_COARSEST_FIRST
+                    .iter()
+                    .enumerate()
+                    .filter(|(position, _)| {
+                        finest_spec_level(target).is_some_and(|finest| *position <= finest)
+                    })
+                    .map(|(_, level)| ((*target).to_owned(), (*level).to_owned()))
+            })
+            .collect();
+        assert_eq!(
+            targets_and_levels_after_the_first_line(&trace.files().raw),
+            expected
+        );
         drop(fs::remove_dir_all(&root));
     }
 }
