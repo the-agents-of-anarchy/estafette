@@ -19,7 +19,7 @@ pub use directory::{
     data_base_directory, events_trace_file_name, non_empty_variable, raw_trace_file_name,
     rolled_over_trace_file, trace_file_of, xdg_base_directory,
 };
-pub use files::{PRODUCT_NAME, Program, run_name, run_name_pattern};
+pub use files::{PRODUCT_NAME, Program, run_name_pattern};
 pub use run::{BridgeRun, EstafetteRun};
 pub use writer::{DROPPED_LINE_NAME, FileTrace};
 

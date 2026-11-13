@@ -98,7 +98,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, UNIX_EPOCH};
 
-    use estafette_trace::{Program, TRACE_FILE_SIZED_AHEAD_BYTES, TraceAction, run_name};
+    use estafette_trace::{TRACE_FILE_SIZED_AHEAD_BYTES, TraceAction};
     use iroh::SecretKey;
     use serde_json::Value;
 
@@ -127,6 +127,7 @@ mod tests {
     const LINES_WRITTEN: u64 = 5;
     const LINES_PER_FILE: u64 = 2;
     const NOW_MS: u64 = 2_000_000_000_000;
+    const NOW_RUN_NAME: &str = "20330518T033320Z-a1b2c3d4e5f60718-estafette";
     const SMALL_FRESHNESS_MS: u64 = 10_000;
     const SMALL_DIRECTORY_BYTES: u64 = 1000;
     const RAW_EVENT: &str = "iroh_line";
@@ -463,9 +464,7 @@ mod tests {
     fn observability_decision_3_a_trace_file_that_cannot_be_created_refuses_the_start_naming_its_path_and_no_debug()
      {
         let (root, directory) = scratch_trace_directory("refused-file");
-        let events = directory
-            .files_of(&run_name(Program::Estafette, NOW_MS, RUN_HEX))
-            .events;
+        let events = directory.files_of(NOW_RUN_NAME).events;
 
         let refusal = refusal_of(
             &directory,
@@ -493,9 +492,7 @@ mod tests {
     fn observability_decision_3_a_writer_thread_that_cannot_start_refuses_the_start_naming_its_file()
      {
         let (root, directory) = scratch_trace_directory("refused-thread");
-        let events = directory
-            .files_of(&run_name(Program::Estafette, NOW_MS, RUN_HEX))
-            .events;
+        let events = directory.files_of(NOW_RUN_NAME).events;
 
         let refusal = refusal_of(
             &directory,
