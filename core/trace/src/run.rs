@@ -86,7 +86,7 @@ impl TraceRun {
     }
 }
 
-/// One start of the estafette binary: its events file and its raw file named, and the header every line of both begins with.
+/// One start of the endpoint program: its events file and its raw file named, and the header every line of both begins with.
 pub struct EstafetteRun {
     run: TraceRun,
 }
