@@ -518,6 +518,8 @@ impl CounterSnapshot {
 mod tests {
     use super::*;
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
+    use crate::net::direct::tests::{CATCH_ALL_CASES, bytes_beside};
+    use crate::seeded_draws::Draws;
     use iroh::endpoint::{
         ConnectError, ConnectWithOptsError, ConnectingError, Connection, ConnectionError,
         ReadExactError, WriteError,
@@ -1158,6 +1160,8 @@ mod tests {
     const SPEC_SUPERSEDED_CLOSE_CODE: u32 = 410;
     const PEER_TRANSPORT_CLOSE_CODE: u32 = 0x0a;
     const CLOSES_APART: usize = 6;
+    const LONGEST_DRAWN_CUSTOM_DATA: u64 = 32;
+    const BYTE_VALUES: u64 = 256;
 
     #[test]
     fn observability_decision_9_each_protocol_is_read_from_the_alpn_it_negotiated() {
@@ -1168,6 +1172,38 @@ mod tests {
         ];
 
         crate::net::direct::tests::assert_each_arm(&cases, |alpn| Protocol::of(alpn), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_every_alpn_but_the_direct_and_the_gossip_one_reads_as_another_protocol()
+     {
+        let named = [SPEC_DIRECT_ALPN, VENDORED_GOSSIP_ALPN];
+        for case in 0..CATCH_ALL_CASES {
+            let alpn = bytes_beside(&named, &mut Draws::seeded(case));
+            if named.contains(&alpn.as_slice()) {
+                continue;
+            }
+            assert_eq!(Protocol::of(&alpn), Protocol::Other, "alpn {alpn:?}");
+        }
+    }
+
+    #[test]
+    fn observability_decision_9_every_close_reason_estafette_does_not_write_reads_as_unlisted_by_its_length()
+     {
+        let named = [SPEC_SUPERSEDED_CLOSE_REASON, SPEC_GATE_CLOSE_REASON];
+        for case in 0..CATCH_ALL_CASES {
+            let reason = bytes_beside(&named, &mut Draws::seeded(case));
+            if named.contains(&reason.as_slice()) {
+                continue;
+            }
+            assert_eq!(
+                CloseReason::of(&reason),
+                CloseReason::Unlisted {
+                    bytes: reason.len()
+                },
+                "reason {reason:?}"
+            );
+        }
     }
 
     #[test]
@@ -1283,6 +1319,29 @@ mod tests {
             |address| Location::of(address, &salt),
             cases.len(),
         );
+    }
+
+    #[test]
+    fn observability_decision_6_every_address_neither_ip_nor_relay_is_located_as_another_kind_with_no_port_by_the_salted_hash_of_its_text()
+     {
+        let salt = crate::net::direct::tests::test_salt();
+        for case in 0..CATCH_ALL_CASES {
+            let mut draws = Draws::seeded(case);
+            let transport = draws.below(u64::MAX);
+            let data: Vec<u8> = (0..draws.below(LONGEST_DRAWN_CUSTOM_DATA))
+                .map(|_| u8::try_from(draws.below(BYTE_VALUES)).unwrap())
+                .collect();
+            let address = TransportAddr::Custom((transport, data.as_slice()).into());
+            assert_eq!(
+                Location::of(&address, &salt),
+                Location {
+                    kind: LocationKind::Other,
+                    port: None,
+                    hash: LocationHash::of(&salt, &format!("{address:?}")),
+                },
+                "address {address:?}"
+            );
+        }
     }
 
     /// The error iroh returns when an endpoint's required bind meets a socket already taken.
