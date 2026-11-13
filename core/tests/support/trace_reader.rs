@@ -240,22 +240,34 @@ pub fn trace_lines_of(path: &Path) -> Vec<TraceLine> {
 }
 
 /// The events files in the trace directory, oldest run first and each run's earlier lines first; none when the directory does not exist.
-pub fn events_files_in(traces_directory: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(traces_directory) else {
-        return Vec::new();
+///
+/// # Errors
+///
+/// Fails with `TraceReadError::Unreadable` when the directory exists but cannot be listed.
+pub fn events_files_in(traces_directory: &Path) -> Result<Vec<PathBuf>, TraceReadError> {
+    let unreadable = |failure: std::io::Error| TraceReadError::Unreadable {
+        path: traces_directory.to_path_buf(),
+        kind: failure.kind(),
     };
-    let mut files: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.file_name()
-                .and_then(|name| name.to_str())
-                .and_then(trace_file_of)
-                .is_some_and(|(_run, kind)| kind == TraceFileKind::Events)
-        })
-        .collect();
+    let entries = match fs::read_dir(traces_directory) {
+        Ok(entries) => entries,
+        Err(failure) if failure.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(failure) => return Err(unreadable(failure)),
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        let path = entry.map_err(unreadable)?.path();
+        let is_events_file = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(trace_file_of)
+            .is_some_and(|(_run, kind)| kind == TraceFileKind::Events);
+        if is_events_file {
+            files.push(path);
+        }
+    }
     files.sort_by_key(|file| reading_order(file));
-    files
+    Ok(files)
 }
 
 /// Where an events file is read among the others: by its run, and within its run the file it rolled over into before the file written after the rollover.
@@ -275,10 +287,10 @@ fn reading_order(events_file: &Path) -> (String, bool) {
 ///
 /// # Errors
 ///
-/// Fails as `read_trace_file` does for the first file it cannot read.
+/// Fails as `events_files_in` does, and as `read_trace_file` does for the first file it cannot read.
 pub fn events_lines_in(traces_directory: &Path) -> Result<Vec<TraceLine>, TraceReadError> {
     let mut lines = Vec::new();
-    for file in events_files_in(traces_directory) {
+    for file in events_files_in(traces_directory)? {
         lines.extend(read_trace_file(&file)?);
     }
     Ok(lines)
@@ -456,6 +468,35 @@ mod tests {
         );
         assert_eq!(timeline_in(&directory.join("absent")), NO_EVENT_RECORDED);
         drop(fs::remove_dir_all(&directory));
+    }
+
+    #[test]
+    fn observability_decision_15_a_trace_directory_that_cannot_be_listed_is_reported_not_read_as_holding_no_event()
+     {
+        let not_a_directory = std::env::temp_dir().join(format!(
+            "trace-reader-{}-not-a-directory",
+            std::process::id()
+        ));
+        fs::write(&not_a_directory, MEMBER_LINE).unwrap();
+
+        let read = events_lines_in(&not_a_directory).map(|lines| lines.len());
+        let timeline = timeline_in(&not_a_directory);
+
+        assert_eq!(
+            read,
+            Err(TraceReadError::Unreadable {
+                path: not_a_directory.clone(),
+                kind: std::io::ErrorKind::NotADirectory
+            })
+        );
+        assert_eq!(
+            timeline,
+            format!(
+                "the timeline cannot be read: {} cannot be read: not a directory",
+                not_a_directory.display()
+            )
+        );
+        drop(fs::remove_file(&not_a_directory));
     }
 
     #[test]

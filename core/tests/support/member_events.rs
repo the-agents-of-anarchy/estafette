@@ -107,7 +107,9 @@ impl MemberEvents {
     /// Starts watching each events file of the directory not yet watched, because a kqueue reports a file's growth to a watch on the file alone.
     #[track_caller]
     fn watch_new_events_files(&self, watch: &mut EventsWatch) {
-        for file in events_files_in(&self.traces_directory) {
+        let events_files = events_files_in(&self.traces_directory)
+            .unwrap_or_else(|failure| panic!("{}: {failure}", self.label));
+        for file in events_files {
             if watch.watched_files.insert(file.clone()) {
                 watch
                     .watcher
