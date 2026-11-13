@@ -781,12 +781,9 @@ mod spec_3_15_test_19_on_one_machine {
 
 #[cfg(test)]
 mod spec_3_15_with_one_member {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     use estafette::crypto::{NetworkKeys, NetworkSecret};
-    use estafette::net::endpoint::GateFailure;
     use estafette::payload::{open_response, seal_request};
     use estafette::wire::{self, Message, Payload, Request, Response, Version};
     use iroh::{EndpointAddr, EndpointId, SecretKey};
@@ -794,6 +791,7 @@ mod spec_3_15_with_one_member {
     use serde_json::{Value, json};
 
     use crate::MESSAGE_ID;
+    use crate::gate_closings::GateClosings;
     use crate::local_network::LocalNetwork;
     use crate::mcp_server::PRESENCE_WAIT;
     use crate::member::{Member, loopback_address};
@@ -809,13 +807,13 @@ mod spec_3_15_with_one_member {
     const SPEC_GATE_TIMEOUT_WITH_SLACK: Duration = Duration::from_secs(5);
     const SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK: Duration = Duration::from_secs(30);
     const SPEC_MEMBER_JOIN_WAIT_WITH_SLACK: Duration = Duration::from_secs(10);
+    const REBINDING_EVENT: &str = "transport.rebinding";
     const LOOSE_SIDECAR_MODE: u32 = 0o644;
     const FORGED_BODY: &str = "a message under a wrong mac";
     const HONEST_BODY: &str = "a message under the network mac";
     const ATTACKER_HANDLE: &str = "mallory";
     const OUTSIDER_SECRET_BYTE: u8 = 77;
     const NOTHING_FURTHER_WAIT: Duration = Duration::from_millis(1000);
-    const POLL: Duration = Duration::from_millis(100);
     const TRANSIENT_SOCKET_LIFETIME: Duration = Duration::from_millis(1000);
 
     /// The `you` of spec 3.10 for a session that has claimed no card.
@@ -873,19 +871,11 @@ mod spec_3_15_with_one_member {
         wire::encode(&Payload::Presence(presence)).unwrap()
     }
 
-    /// The count once it rises above what it already was, or as it stands when the wait runs out.
-    fn count_beyond(count: &AtomicUsize, already: usize, within: Duration) -> usize {
-        let started = Instant::now();
-        while count.load(Ordering::SeqCst) <= already && started.elapsed() < within {
-            std::thread::sleep(POLL);
-        }
-        count.load(Ordering::SeqCst)
-    }
-
-    /// The UDP ports the member holds that it did not hold before and that outlive a transient socket, requiring some within the wait.
+    /// The UDP ports the member holds that it did not hold before and that outlive a transient socket, once it has recorded that it began rebinding, requiring both within the wait.
     #[track_caller]
     fn rebound_ports(member: &Member, before: &[u16], within: Duration) -> Vec<u16> {
         let started = Instant::now();
+        member.wait_for_event(REBINDING_EVENT, within);
         loop {
             let fresh = member.ipv4_udp_ports();
             std::thread::sleep(TRANSIENT_SOCKET_LIFETIME);
@@ -1067,19 +1057,16 @@ mod spec_3_15_with_one_member {
         let outsider_key = SecretKey::generate();
         let outsider_keys =
             NetworkKeys::derive(&NetworkSecret::from_bytes([OUTSIDER_SECRET_BYTE; 32]));
-        let closings = Arc::new(AtomicUsize::new(0));
-        let counted = Arc::clone(&closings);
+        let closings = GateClosings::default();
         let outsider = ScriptedNode::start(
             outsider_key.clone(),
             *outsider_keys.gate_key(),
             network.topic(),
-            move |_closing: GateFailure| {
-                counted.fetch_add(1, Ordering::SeqCst);
-            },
+            closings.sink(),
         );
 
         outsider.admit(loopback_address(card.id, &ports_before_rebind));
-        let closed_when_dialing = count_beyond(&closings, 0, SPEC_GATE_TIMEOUT_WITH_SLACK);
+        let closed_when_dialing = closings.wait_beyond(0, SPEC_GATE_TIMEOUT_WITH_SLACK);
         host.broadcast(presence_signed_by(
             network.keys(),
             &outsider_key,
@@ -1093,11 +1080,8 @@ mod spec_3_15_with_one_member {
             SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK,
         );
         host.admit(loopback_address(card.id, &rebound));
-        let closed_when_dialed = count_beyond(
-            &closings,
-            closed_when_dialing,
-            SPEC_MEMBER_JOIN_WAIT_WITH_SLACK,
-        );
+        let closed_when_dialed =
+            closings.wait_beyond(closed_when_dialing, SPEC_MEMBER_JOIN_WAIT_WITH_SLACK);
 
         assert!(closed_when_dialing >= 1);
         assert!(closed_when_dialed > closed_when_dialing);

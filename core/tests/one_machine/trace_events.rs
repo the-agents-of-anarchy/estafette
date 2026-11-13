@@ -1,4 +1,5 @@
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::Command;
 use std::sync::mpsc;
@@ -24,6 +25,8 @@ const SECOND_MEMBER: u32 = 1;
 const UNKNOWN_HANDLE: &str = "bob";
 const BODY: &str = "hello";
 const NETWORK_CREATED_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":0,\"mono_ms\":5,\"wall_ms\":1794524353720,\"event\":\"process.network_created\",\"network\":\"acme\"}\n";
+const COMMAND_FAILED_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":1,\"mono_ms\":9,\"wall_ms\":1794524353724,\"event\":\"process.command_failed\",\"message\":\"stopped\"}\n";
+const EVENTS_FILE_NAME: &str = "20261112T225913Z-6c935f82c118f7b3-estafette.events.jsonl";
 const FORCED_FAILURE_VARIABLE: &str = "ESTAFETTE_FORCED_FAILURE";
 const FORCED_FAILURE_TEST: &str =
     "trace_events::forced_failure_after_two_members_for_the_timeline_print";
@@ -86,7 +89,7 @@ fn observability_decision_14_an_event_already_in_the_file_is_found_without_a_fur
     let machine = network.machine();
     send_to_nobody_as_member(machine, FIRST_MEMBER);
 
-    let member = MemberEvents::watch(
+    let member = MemberEvents::new(
         "member 0",
         &machine.traces_directory_of_member(FIRST_MEMBER),
     );
@@ -96,28 +99,29 @@ fn observability_decision_14_an_event_already_in_the_file_is_found_without_a_fur
 }
 
 #[test]
-fn observability_decision_14_an_event_the_file_gains_while_the_wait_runs_is_found_when_it_is_written()
+fn observability_decision_14_a_line_appended_while_the_wait_runs_to_an_events_file_its_writer_keeps_open_is_found_when_it_is_written()
  {
     let network = LocalNetwork::create("w2", &RunRecordKeeping::from_environment());
     let machine = network.machine();
     let traces = machine.traces_directory_of_member(FIRST_MEMBER);
     fs::create_dir_all(&traces).unwrap();
-    let member = MemberEvents::watch("member 0", &traces);
-    let mut server = machine.spawn_mcp_server();
-    let events_so_far = || {
-        events_lines_in(&machine.traces_directory_of_member(FIRST_MEMBER))
-            .unwrap()
-            .into_iter()
-            .map(|line| line.event)
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(events_so_far(), Vec::<String>::new());
+    let mut events_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(traces.join(EVENTS_FILE_NAME))
+        .unwrap();
+    events_file
+        .write_all(NETWORK_CREATED_LINE.as_bytes())
+        .unwrap();
+    let member = MemberEvents::new("member 0", &traces);
 
-    drop(server.stdin.take());
-    let line = member.wait_for(HANDSHAKE_FAILED_EVENT, EVENT_BOUND);
+    let line = member.wait_for_after(COMMAND_FAILED_EVENT, EVENT_BOUND, || {
+        events_file
+            .write_all(COMMAND_FAILED_LINE.as_bytes())
+            .unwrap();
+    });
 
-    assert_eq!(line.event, HANDSHAKE_FAILED_EVENT);
-    assert!(server.wait().unwrap().success());
+    assert_eq!(line.event, COMMAND_FAILED_EVENT);
 }
 
 #[test]
@@ -127,12 +131,8 @@ fn observability_decision_14_a_wait_whose_bound_runs_out_fails_naming_the_event_
     let machine = network.machine();
     let traces = machine.traces_directory_of_member(FIRST_MEMBER);
     fs::create_dir_all(&traces).unwrap();
-    fs::write(
-        traces.join("20261112T225913Z-6c935f82c118f7b3-estafette.events.jsonl"),
-        NETWORK_CREATED_LINE,
-    )
-    .unwrap();
-    let member = MemberEvents::watch("member 0", &traces);
+    fs::write(traces.join(EVENTS_FILE_NAME), NETWORK_CREATED_LINE).unwrap();
+    let member = MemberEvents::new("member 0", &traces);
 
     let failure = failure_text_of(|| {
         member.wait_for(COMMAND_FAILED_EVENT, EXHAUSTED_BOUND);
@@ -154,8 +154,8 @@ fn observability_decision_14_a_second_members_event_of_the_same_name_is_not_take
     send_to_nobody_as_member(machine, SECOND_MEMBER);
     let traces_of_first = machine.traces_directory_of_member(FIRST_MEMBER);
     fs::create_dir_all(&traces_of_first).unwrap();
-    let first = MemberEvents::watch("member 0", &traces_of_first);
-    let second = MemberEvents::watch(
+    let first = MemberEvents::new("member 0", &traces_of_first);
+    let second = MemberEvents::new(
         "member 1",
         &machine.traces_directory_of_member(SECOND_MEMBER),
     );

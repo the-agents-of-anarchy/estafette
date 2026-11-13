@@ -35,4 +35,4 @@ yaml-rust2 = "*"
 libc = "0.2"
 
 [dev-dependencies]
-notify = "=8.2.2"
+notify = { version = "=8.2.2", default-features = false, features = ["macos_kqueue"] }

@@ -6,8 +6,10 @@ use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use serde_json::{Value, json};
 
 use crate::mcp_server::{INIT_TOOL, McpServer, PendingCall, call_succeeded, init_arguments};
+use crate::member_events::MemberEvents;
 use crate::scratch_machine::Card;
 use crate::scripted_node::ScriptedNode;
+use crate::trace_reader::TraceLine;
 
 const ENDPOINT_BIND_WAIT: Duration = Duration::from_secs(10);
 const ENDPOINT_BIND_POLL: Duration = Duration::from_millis(20);
@@ -18,20 +20,22 @@ const LSOF_NAME_FIELD: char = 'n';
 const PORT_SEPARATOR: char = ':';
 const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
-/// A running `estafette mcp` process driven as an MCP client, with the process id its UDP sockets are listed by.
+/// A running `estafette mcp` process driven as an MCP client, with the process id its UDP sockets are listed by and the events it records awaited in its trace directory.
 pub struct Member {
     server: McpServer,
     process_id: u32,
+    events: MemberEvents,
 }
 
 impl Member {
-    /// Takes the spawned MCP server over and completes the MCP handshake.
+    /// Takes the spawned MCP server over, completes the MCP handshake, and answers for its events through the reader handed in.
     #[track_caller]
-    pub fn start(process: Child) -> Self {
+    pub fn start(process: Child, events: MemberEvents) -> Self {
         let process_id = process.id();
         Self {
             server: McpServer::handshaken(process),
             process_id,
+            events,
         }
     }
 
@@ -94,6 +98,12 @@ impl Member {
         condition: impl Fn(&Value) -> bool,
     ) -> Value {
         self.server.peer_within(handle, within, condition)
+    }
+
+    /// The first line of the member's events files that names the event, found already written or awaited until it is written, failing with the member's timeline so far when the bound runs out.
+    #[track_caller]
+    pub fn wait_for_event(&self, event: &str, within: Duration) -> TraceLine {
+        self.events.wait_for(event, within)
     }
 
     /// The loopback-reachable UDP ports this process's endpoint bound, waiting for the bind.
