@@ -635,7 +635,12 @@ mod tests {
         let second = claimed_second(&scratch).await;
         let caller = bind(WITNESS_SEED).await;
         caller.replace_address(second.endpoint.addr());
-        let client = DirectClient::new(caller.endpoint().clone(), keys(), ClientTimeouts::SPEC);
+        let client = DirectClient::new(
+            caller.endpoint().clone(),
+            keys(),
+            ClientTimeouts::SPEC,
+            crate::net::direct::tests::unrecorded_register(),
+        );
         let introduction = Introduce {
             v: Version::CURRENT,
             handle: None,

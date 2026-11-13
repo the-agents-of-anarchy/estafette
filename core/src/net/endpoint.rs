@@ -597,7 +597,7 @@ mod tests {
                 *nonce = drawn_nonce(draws.fetch_add(1, Ordering::SeqCst));
             },
             report_gate_closing,
-            HeldConnections::new(Arc::new(tokio::time::Instant::now)),
+            crate::net::direct::tests::unrecorded_register(),
         )
         .await
         .unwrap()

@@ -31,7 +31,7 @@ use crate::errors::{Envelope, ErrorCode, You};
 use crate::event::{AnsweredFailure, ClaimFailure, InboxEvent, ListCardsFailure, RunRecord};
 use crate::handle::{AnnouncedHandle, Handle, MAX_LOCAL_LENGTH};
 use crate::inbox::buffer::InboxFrame;
-use crate::net::direct::HeldConnections;
+use crate::net::direct::MonotonicClock;
 use crate::net::endpoint::NodeEndpoint;
 use crate::node::{
     BroadcastResult, DEPARTURE_WAIT, Delivery, Exit, Identity, Network, Node, NodeEffects, Session,
@@ -74,7 +74,7 @@ pub type BindEndpoint = Arc<
             SecretKey,
             GateKey,
             Vec<RelayUrl>,
-            HeldConnections,
+            MonotonicClock,
         ) -> Pin<Box<dyn Future<Output = Result<NodeEndpoint, BindError>> + Send>>
         + Send
         + Sync,
@@ -323,7 +323,7 @@ impl Server {
             lock.secret_key().clone(),
             *network.keys().gate_key(),
             known_host_relays(&self.served.config),
-            HeldConnections::new(Arc::clone(&self.effects.node.monotonic)),
+            Arc::clone(&self.effects.node.monotonic),
         )
         .await
         .map_err(|unbound| self.recorded(ClaimFailure::EndpointUnbound(unbound)))?;
@@ -1063,21 +1063,24 @@ mod tests {
     fn bind_counted(binds: &Arc<AtomicUsize>) -> BindEndpoint {
         let binds = Arc::clone(binds);
         let bind = bind_alone();
-        Arc::new(move |card_key, gate_key, relays, connections| {
+        Arc::new(move |card_key, gate_key, relays, monotonic| {
             binds.fetch_add(1, Ordering::SeqCst);
-            bind(card_key, gate_key, relays, connections)
+            bind(card_key, gate_key, relays, monotonic)
         })
     }
 
     fn bind_alone() -> BindEndpoint {
-        Arc::new(|card_key, gate_key, _relays, connections| {
+        Arc::new(|card_key, gate_key, _relays, monotonic| {
             Box::pin(NodeEndpoint::bind(
                 card_key,
                 gate_key,
                 Vec::new(),
                 |nonce: &mut [u8; KEY_BYTES]| *nonce = [GATE_NONCE_BYTE; KEY_BYTES],
                 |_closing| {},
-                connections,
+                crate::net::direct::HeldConnections::new(
+                    monotonic,
+                    crate::net::direct::tests::dropping_transport(),
+                ),
             ))
         })
     }
@@ -1139,7 +1142,7 @@ mod tests {
 
     fn bind_meeting(meeting: &Arc<Meeting>) -> BindEndpoint {
         let meeting = Arc::clone(meeting);
-        Arc::new(move |card_key, gate_key, _relays, connections| {
+        Arc::new(move |card_key, gate_key, _relays, monotonic| {
             let meeting = Arc::clone(&meeting);
             Box::pin(async move {
                 let endpoint = NodeEndpoint::bind(
@@ -1148,7 +1151,10 @@ mod tests {
                     Vec::new(),
                     |nonce: &mut [u8; KEY_BYTES]| *nonce = [GATE_NONCE_BYTE; KEY_BYTES],
                     |_closing| {},
-                    connections,
+                    crate::net::direct::HeldConnections::new(
+                        monotonic,
+                        crate::net::direct::tests::dropping_transport(),
+                    ),
                 )
                 .await?;
                 meeting

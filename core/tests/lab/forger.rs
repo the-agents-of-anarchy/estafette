@@ -38,9 +38,15 @@ impl Forger {
                 host.relay_urls().cloned(),
                 |nonce| *nonce = SecretKey::generate().to_bytes(),
                 |_closing| {},
-                estafette::net::direct::HeldConnections::new(std::sync::Arc::new(
-                    tokio::time::Instant::now,
-                )),
+                estafette::net::direct::HeldConnections::new(
+                    std::sync::Arc::new(tokio::time::Instant::now),
+                    estafette::net::endpoint::TransportRecord::new(
+                        std::sync::Arc::new(|_event| {}),
+                        estafette::trace::LocationSalt::from_random_bytes(
+                            [0; estafette::trace::LOCATION_SALT_BYTES],
+                        ),
+                    ),
+                ),
             ))
             .unwrap();
         let host_id = host.id;

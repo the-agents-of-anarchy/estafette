@@ -243,9 +243,7 @@ mod tests {
             Vec::new(),
             move |nonce: &mut [u8; KEY_LEN]| *nonce = [seed; KEY_LEN],
             |_ignored| {},
-            crate::net::direct::HeldConnections::new(std::sync::Arc::new(
-                tokio::time::Instant::now,
-            )),
+            crate::net::direct::tests::unrecorded_register(),
         )
         .await
         .unwrap();

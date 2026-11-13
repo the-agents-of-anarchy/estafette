@@ -30,6 +30,7 @@ use estafette::event::{
 };
 use estafette::inbox::socket::{InboxSocket, InboxSocketError, OperatingSystemProcessTable};
 use estafette::mcp::{self, ServedNetwork, ServerEffects};
+use estafette::net::direct::HeldConnections;
 use estafette::net::endpoint::{GateFailure, NodeEndpoint, TransportRecord};
 use estafette::node::{
     Exit, Network, NodeEffects, NodeError, RuntimeShutdown, ShutdownSignal, relay_answers,
@@ -476,7 +477,7 @@ fn server_effects(
             inbox,
             probe_relay: Arc::new(|relay| Box::pin(relay_answers(relay))),
         },
-        bind_endpoint: Arc::new(move |card_key, gate_key, relays, connections| {
+        bind_endpoint: Arc::new(move |card_key, gate_key, relays, monotonic| {
             Box::pin(bound_in_trace(
                 NodeEndpoint::bind(
                     card_key,
@@ -484,7 +485,10 @@ fn server_effects(
                     relays,
                     fill_with_secure_random_bytes,
                     gate_closing_recorder(Arc::clone(&gate_record)),
-                    connections.recording_to(TransportRecord::new(Arc::clone(&gate_record), salt)),
+                    HeldConnections::new(
+                        monotonic,
+                        TransportRecord::new(Arc::clone(&gate_record), salt),
+                    ),
                 ),
                 trace.clone(),
             ))
@@ -694,7 +698,7 @@ fn observer_effects(
         fill_seed: Arc::new(|seed: &mut [u8; RANDOM_BYTES_PER_SECRET_KEY]| {
             fill_with_secure_random_bytes(seed);
         }),
-        bind_endpoint: Box::new(move |key, gate_key, relays, connections| {
+        bind_endpoint: Box::new(move |key, gate_key, relays, monotonic| {
             Box::pin(bound_in_trace(
                 NodeEndpoint::bind(
                     key,
@@ -702,7 +706,10 @@ fn observer_effects(
                     relays,
                     fill_with_secure_random_bytes,
                     gate_closing_recorder(Arc::clone(&gate_record)),
-                    connections.recording_to(TransportRecord::new(Arc::clone(&gate_record), salt)),
+                    HeldConnections::new(
+                        monotonic,
+                        TransportRecord::new(Arc::clone(&gate_record), salt),
+                    ),
                 ),
                 trace.clone(),
             ))
@@ -804,7 +811,7 @@ fn infrastructure_effects(
             fill_with_secure_random_bytes(seed);
         }),
         clock: Arc::new(recording_wall_clock(Arc::clone(&record))),
-        bind_endpoint: Box::new(move |key, gate_key, relay, connections| {
+        bind_endpoint: Box::new(move |key, gate_key, relay, monotonic| {
             Box::pin(bound_in_trace(
                 NodeEndpoint::bind(
                     key,
@@ -812,7 +819,10 @@ fn infrastructure_effects(
                     [relay],
                     fill_with_secure_random_bytes,
                     gate_closing_recorder(Arc::clone(&gate_record)),
-                    connections.recording_to(TransportRecord::new(Arc::clone(&gate_record), salt)),
+                    HeldConnections::new(
+                        monotonic,
+                        TransportRecord::new(Arc::clone(&gate_record), salt),
+                    ),
                 ),
                 trace.clone(),
             ))

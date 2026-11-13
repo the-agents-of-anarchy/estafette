@@ -330,8 +330,12 @@ mod tests {
                 },
             )
             .spawn();
-        let introducing =
-            DirectClient::new(endpoint.endpoint().clone(), keys(), ClientTimeouts::SPEC);
+        let introducing = DirectClient::new(
+            endpoint.endpoint().clone(),
+            keys(),
+            ClientTimeouts::SPEC,
+            crate::net::direct::tests::unrecorded_register(),
+        );
         let introduction = message_to(FIRST_SEED, WITNESS_HANDLE);
         assert!(
             introducing

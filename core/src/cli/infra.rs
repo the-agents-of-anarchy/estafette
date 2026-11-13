@@ -31,7 +31,7 @@ use crate::event::{RunRecord, TransportEvent};
 use crate::handle::Handle;
 use crate::invite::{InviteError, render_host_line};
 use crate::keys::{KeyError, generate_secret_key, parse_secret_key, render_secret_key};
-use crate::net::direct::{DirectHost, HeldConnections, MonotonicClock};
+use crate::net::direct::{DirectHost, MonotonicClock};
 use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
@@ -81,7 +81,7 @@ pub type BindHostEndpoint = Box<
             SecretKey,
             GateKey,
             RelayUrl,
-            HeldConnections,
+            MonotonicClock,
         ) -> Pin<Box<dyn Future<Output = Result<NodeEndpoint, BindError>> + Send>>
         + Send,
 >;
@@ -366,7 +366,7 @@ async fn serve_host(
         files.key.clone(),
         files.gate_key(),
         domain.url.clone(),
-        HeldConnections::new(effects.monotonic),
+        effects.monotonic,
     )
     .await
     .map_err(Failure::EndpointNotBound)?;
@@ -1090,7 +1090,7 @@ mod tests {
             InfrastructureEffects {
                 fill_from_secure_source: Box::new(move |bytes| *bytes = [seed; KEY_LEN]),
                 clock,
-                bind_endpoint: Box::new(move |key, gate_key, relay, connections| {
+                bind_endpoint: Box::new(move |key, gate_key, relay, monotonic| {
                     Box::pin(async move {
                         let host = key.public();
                         let endpoint = NodeEndpoint::bind(
@@ -1099,7 +1099,10 @@ mod tests {
                             [relay.clone()],
                             move |nonce: &mut [u8; KEY_LEN]| *nonce = [seed; KEY_LEN],
                             |_ignored| {},
-                            connections,
+                            crate::net::direct::HeldConnections::new(
+                                monotonic,
+                                crate::net::direct::tests::dropping_transport(),
+                            ),
                         )
                         .await?;
                         for address in reachable {
@@ -1225,9 +1228,7 @@ mod tests {
                 Vec::new(),
                 move |nonce: &mut [u8; KEY_LEN]| *nonce = [seed; KEY_LEN],
                 |_ignored| {},
-                crate::net::direct::HeldConnections::new(std::sync::Arc::new(
-                    tokio::time::Instant::now,
-                )),
+                crate::net::direct::tests::unrecorded_register(),
             )
             .await
             .unwrap();
@@ -1719,6 +1720,7 @@ mod tests {
                     peer.endpoint.endpoint().clone(),
                     network_keys(),
                     ClientTimeouts::SPEC,
+                    crate::net::direct::tests::unrecorded_register(),
                 );
                 let to_host = client
                     .send_message(host.id(), message_to(*host.id().as_bytes()))
@@ -1886,9 +1888,7 @@ mod tests {
             Vec::new(),
             |nonce: &mut [u8; KEY_LEN]| *nonce = [MEMBER_SEED; KEY_LEN],
             |_ignored| {},
-            crate::net::direct::HeldConnections::new(std::sync::Arc::new(
-                tokio::time::Instant::now,
-            )),
+            crate::net::direct::tests::unrecorded_register(),
         )
         .await
         .unwrap();

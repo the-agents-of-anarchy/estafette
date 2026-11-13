@@ -644,6 +644,7 @@ mod tests {
                 self.endpoint.endpoint().clone(),
                 keys(),
                 ClientTimeouts::SPEC,
+                crate::net::direct::tests::unrecorded_register(),
             )
             .introduce(member.id(), peer_introduction(self.introduction.clone()))
             .await
@@ -879,10 +880,10 @@ mod tests {
                     (STRIPPED_RELAY, ANSWER_AFTER_THE_PROBE_TIMEOUT),
                 ]))
                 .with_report(Arc::clone(&record))
-                .with_register(
-                    crate::net::direct::HeldConnections::new(Arc::new(Instant::now))
-                        .recording_to(TransportRecord::new(record, test_salt())),
-                ),
+                .with_register(crate::net::direct::HeldConnections::new(
+                    Arc::new(Instant::now),
+                    TransportRecord::new(record, test_salt()),
+                )),
         )
         .await;
         peer.introduce_to(&member_endpoint).await;

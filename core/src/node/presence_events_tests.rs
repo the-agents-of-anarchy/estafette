@@ -14,6 +14,7 @@ use super::tests::{
 };
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{Event, EventFields, RunRecord};
+use crate::net::direct::tests::unrecorded_register;
 use crate::net::direct::{ClientTimeouts, DirectClient};
 use crate::node::addresses::wire_addr;
 use crate::payload::{ZERO_MAC, ZERO_SIGNATURE, seal_payload, sealed_by_any_key};
@@ -1120,25 +1121,35 @@ async fn observability_decision_9_a_member_records_entries_an_introduce_and_a_me
     let sender = bind(PIN_SEED).await;
     sender.replace_address(member.endpoint.addr());
 
-    DirectClient::new(introducer.endpoint().clone(), keys(), ClientTimeouts::SPEC)
-        .introduce(
-            member.endpoint.id(),
-            Introduce {
-                v: Version::CURRENT,
-                handle: Some(THIRD_HANDLE.to_owned()),
-                public: THIRD_PUBLIC.to_vec(),
-                attached: true,
-                addr: wire_addr(&introducer.endpoint().addr()),
-                mac: ZERO_MAC,
-            },
-        )
-        .await
-        .unwrap();
+    DirectClient::new(
+        introducer.endpoint().clone(),
+        keys(),
+        ClientTimeouts::SPEC,
+        unrecorded_register(),
+    )
+    .introduce(
+        member.endpoint.id(),
+        Introduce {
+            v: Version::CURRENT,
+            handle: Some(THIRD_HANDLE.to_owned()),
+            public: THIRD_PUBLIC.to_vec(),
+            attached: true,
+            addr: wire_addr(&introducer.endpoint().addr()),
+            mac: ZERO_MAC,
+        },
+    )
+    .await
+    .unwrap();
     let created_by_introduce = recorded.next_named(ENTRY_CREATED).await;
-    DirectClient::new(sender.endpoint().clone(), keys(), ClientTimeouts::SPEC)
-        .send_message(member.endpoint.id(), message_to(FIRST_SEED, PIN_HANDLE))
-        .await
-        .unwrap();
+    DirectClient::new(
+        sender.endpoint().clone(),
+        keys(),
+        ClientTimeouts::SPEC,
+        unrecorded_register(),
+    )
+    .send_message(member.endpoint.id(), message_to(FIRST_SEED, PIN_HANDLE))
+    .await
+    .unwrap();
     let created_by_message = recorded.next_named(ENTRY_CREATED).await;
 
     assert_eq!(

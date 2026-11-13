@@ -27,9 +27,7 @@ use crate::event::RunRecord;
 use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
 use crate::inbox::socket::{InboxSocket, InboxSocketError};
 use crate::keys::parse_public_key;
-use crate::net::direct::{
-    ClientTimeouts, DirectClient, DirectHost, HeldConnections, MonotonicClock,
-};
+use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, MonotonicClock};
 use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
@@ -60,7 +58,7 @@ type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
 type SeedSource = Arc<dyn Fn(&mut [u8; SEED_BYTES]) + Send + Sync>;
 type EndpointBinding = Pin<Box<dyn Future<Output = Result<NodeEndpoint, BindError>> + Send>>;
 type BindEndpoint = Box<
-    dyn FnOnce(SecretKey, GateKey, Vec<iroh::RelayUrl>, HeldConnections) -> EndpointBinding + Send,
+    dyn FnOnce(SecretKey, GateKey, Vec<iroh::RelayUrl>, MonotonicClock) -> EndpointBinding + Send,
 >;
 type StartInbox = Box<dyn FnOnce() -> Result<Arc<InboxSocket>, InboxSocketError> + Send>;
 type Interrupted = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -371,7 +369,7 @@ async fn send_as_operator(
         card_key.clone(),
         *setup.network.keys().gate_key(),
         setup.hosts.iter().map(|host| host.relay.clone()).collect(),
-        HeldConnections::new(Arc::clone(&monotonic)),
+        Arc::clone(&monotonic),
     )
     .await
     .map_err(Failure::Bind)?;
@@ -560,7 +558,7 @@ async fn start_observation(
         secret_key.clone(),
         *keys.gate_key(),
         setup.hosts.iter().map(|host| host.relay.clone()).collect(),
-        HeldConnections::new(Arc::clone(&effects.monotonic)),
+        Arc::clone(&effects.monotonic),
     )
     .await
     .map_err(Failure::Bind)?;
@@ -584,14 +582,12 @@ async fn start_observation(
     .await;
     match topic {
         Ok(topic) => Ok(Observation {
-            client: Arc::new(
-                DirectClient::new(
-                    endpoint.endpoint().clone(),
-                    keys.clone(),
-                    ClientTimeouts::SPEC,
-                )
-                .recording_through(endpoint.held_connections()),
-            ),
+            client: Arc::new(DirectClient::new(
+                endpoint.endpoint().clone(),
+                keys.clone(),
+                ClientTimeouts::SPEC,
+                endpoint.held_connections(),
+            )),
             host,
             endpoint,
             router,
@@ -1069,9 +1065,7 @@ mod tests {
             Vec::new(),
             |nonce: &mut [u8; KEY_LEN]| *nonce = [OBSERVER_SEED; KEY_LEN],
             |_ignored| {},
-            crate::net::direct::HeldConnections::new(std::sync::Arc::new(
-                tokio::time::Instant::now,
-            )),
+            crate::net::direct::tests::unrecorded_register(),
         )
         .await
         .unwrap()
@@ -1178,7 +1172,7 @@ mod tests {
                 clock: Arc::new(wall_clock_ms),
                 monotonic: Arc::new(Instant::now),
                 fill_seed: Arc::new(|seed| *seed = [OBSERVER_SEED; SEED_BYTES]),
-                bind_endpoint: Box::new(move |key, gate_key, relays, connections| {
+                bind_endpoint: Box::new(move |key, gate_key, relays, monotonic| {
                     Box::pin(async move {
                         let endpoint = NodeEndpoint::bind(
                             key,
@@ -1186,7 +1180,10 @@ mod tests {
                             relays,
                             |nonce: &mut [u8; KEY_LEN]| *nonce = [OBSERVER_SEED; KEY_LEN],
                             |_ignored| {},
-                            connections,
+                            crate::net::direct::HeldConnections::new(
+                                monotonic,
+                                crate::net::direct::tests::dropping_transport(),
+                            ),
                         )
                         .await?;
                         for address in member_addresses {

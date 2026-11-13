@@ -81,7 +81,7 @@ pub struct HeldConnections {
     held: Arc<Mutex<HashMap<wire::PublicKey, Vec<HeldConnection>>>>,
     left_on_a_gone_path: Arc<Mutex<HashSet<wire::PublicKey>>>,
     monotonic: MonotonicClock,
-    transport: Option<TransportRecord>,
+    transport: TransportRecord,
 }
 
 impl fmt::Debug for HeldConnections {
@@ -93,23 +93,14 @@ impl fmt::Debug for HeldConnections {
 }
 
 impl HeldConnections {
-    /// An empty register that measures each connection's silence on the monotonic clock.
+    /// An empty register that measures each connection's silence on the monotonic clock and records every connection it holds, each of their paths and each close to the transport record.
     #[must_use]
-    pub fn new(monotonic: MonotonicClock) -> Self {
+    pub fn new(monotonic: MonotonicClock, transport: TransportRecord) -> Self {
         Self {
             held: Arc::default(),
             left_on_a_gone_path: Arc::default(),
             monotonic,
-            transport: None,
-        }
-    }
-
-    /// The register recording every connection it holds, each of their paths and each close to the transport record.
-    #[must_use]
-    pub fn recording_to(self, transport: TransportRecord) -> Self {
-        Self {
-            transport: Some(transport),
-            ..self
+            transport,
         }
     }
 
@@ -162,14 +153,12 @@ impl HeldConnections {
         }
     }
 
-    /// Hands the event, built against the transport record, to that record, when the register records.
+    /// Hands the event, built against the transport record, to that record.
     pub(crate) fn record<Recorded: Into<Event>>(
         &self,
         event: impl FnOnce(&TransportRecord) -> Recorded,
     ) {
-        if let Some(transport) = &self.transport {
-            transport.record(event(transport));
-        }
+        self.transport.record(event(&self.transport));
     }
 
     /// Holds a connection the gate just let through and follows what it hears until it closes, keeping it no more alive than its users do.
@@ -869,28 +858,24 @@ pub struct DirectClient {
     keys: NetworkKeys,
     timeouts: ClientTimeouts,
     slots: Mutex<HashMap<EndpointId, PeerSlot>>,
-    register: Option<HeldConnections>,
+    register: HeldConnections,
 }
 
 impl DirectClient {
-    /// Builds the client over the endpoint, macing requests and checking acknowledgements under the network keys.
+    /// Builds the client over the endpoint, macing requests and checking acknowledgements under the network keys, and recording each request it sends to the endpoint's register, on that register's monotonic clock.
     #[must_use]
-    pub fn new(endpoint: Endpoint, keys: NetworkKeys, timeouts: ClientTimeouts) -> Self {
+    pub fn new(
+        endpoint: Endpoint,
+        keys: NetworkKeys,
+        timeouts: ClientTimeouts,
+        register: HeldConnections,
+    ) -> Self {
         Self {
             endpoint: Mutex::new(endpoint),
             keys,
             timeouts,
             slots: Mutex::new(HashMap::new()),
-            register: None,
-        }
-    }
-
-    /// The client recording each request it sends to the endpoint's register, on that register's monotonic clock.
-    #[must_use]
-    pub fn recording_through(self, register: HeldConnections) -> Self {
-        Self {
-            register: Some(register),
-            ..self
+            register,
         }
     }
 
@@ -993,27 +978,22 @@ impl DirectClient {
         acknowledgement_of: impl FnOnce(Response) -> Result<(SentOutcome, Acknowledgement), DirectError>,
     ) -> Result<Acknowledgement, DirectError> {
         let summary = RequestSummary::of(&request);
-        let started = self
-            .register
-            .as_ref()
-            .map(|register| (register.monotonic)());
+        let started = (self.register.monotonic)();
         let (connection, response) = self.exchange_over_a_connection(to, request, due).await;
         let acknowledged = response.and_then(acknowledgement_of);
-        if let (Some(register), Some(started)) = (&self.register, started) {
-            let elapsed = (register.monotonic)().saturating_duration_since(started);
-            register.record(|_transport| {
-                DirectEvent::RequestSent(SentRequest {
-                    request: summary,
-                    peer: PeerId::of(to),
-                    connection,
-                    outcome: acknowledged.as_ref().map_or_else(
-                        |failure| SentOutcome::Failed(failure.clone()),
-                        |(outcome, _)| outcome.clone(),
-                    ),
-                    elapsed_ms: milliseconds_of(elapsed),
-                })
-            });
-        }
+        let elapsed = (self.register.monotonic)().saturating_duration_since(started);
+        self.register.record(|_transport| {
+            DirectEvent::RequestSent(SentRequest {
+                request: summary,
+                peer: PeerId::of(to),
+                connection,
+                outcome: acknowledged.as_ref().map_or_else(
+                    |failure| SentOutcome::Failed(failure.clone()),
+                    |(outcome, _)| outcome.clone(),
+                ),
+                elapsed_ms: milliseconds_of(elapsed),
+            })
+        });
         acknowledged.map(|(_outcome, acknowledgement)| acknowledgement)
     }
 
@@ -1278,11 +1258,7 @@ pub(crate) mod tests {
     }
 
     async fn bind_node(seed: u8) -> NodeEndpoint {
-        bind_node_holding(
-            seed,
-            HeldConnections::new(Arc::new(tokio::time::Instant::now)),
-        )
-        .await
+        bind_node_holding(seed, unrecorded_register()).await
     }
 
     /// Binds the node of the seed, holding every connection its endpoint lets through in the register.
@@ -1326,7 +1302,12 @@ pub(crate) mod tests {
             .accept(DIRECT_ALPN, handler)
             .spawn();
         client_node.replace_address(server_node.endpoint().addr());
-        let client = DirectClient::new(client_node.endpoint().clone(), keys(), timeouts);
+        let client = DirectClient::new(
+            client_node.endpoint().clone(),
+            keys(),
+            timeouts,
+            unrecorded_register(),
+        );
         Link {
             client,
             client_node,
@@ -1345,7 +1326,11 @@ pub(crate) mod tests {
 
     /// A server over the host on an endpoint whose register measures silence on the clock, as the node's `serve` has it, and a client linked to it.
     async fn rig_over(host: RecordingHost, monotonic: MonotonicClock) -> Rig {
-        let server_node = bind_node_holding(SERVER_SEED, HeldConnections::new(monotonic)).await;
+        let server_node = bind_node_holding(
+            SERVER_SEED,
+            HeldConnections::new(monotonic, dropping_transport()),
+        )
+        .await;
         let server = DirectServer::new(keys(), host.clone(), &server_node);
         let link = link_on(server_node, server, ClientTimeouts::SPEC).await;
         Rig { host, link }
@@ -1887,7 +1872,10 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_8_closing_the_connections_of_a_gone_card_closes_the_gossip_connection_this_endpoint_dialed_to_it()
      {
-        let register = HeldConnections::new(clock_reading_every_connection_as_gone());
+        let register = HeldConnections::new(
+            clock_reading_every_connection_as_gone(),
+            dropping_transport(),
+        );
         let this_node = bind_node_holding(SERVER_SEED, register.clone()).await;
         let gone_node = bind_node(CLIENT_SEED).await;
         this_node.replace_address(gone_node.endpoint().addr());
@@ -1936,6 +1924,16 @@ pub(crate) mod tests {
         )
     }
 
+    /// A transport record whose sink drops every event, hashing under the test salt.
+    pub fn dropping_transport() -> TransportRecord {
+        TransportRecord::new(Arc::new(|_event: Event| {}), test_salt())
+    }
+
+    /// A register on the runtime's monotonic clock whose record drops every event.
+    pub fn unrecorded_register() -> HeldConnections {
+        HeldConnections::new(Arc::new(tokio::time::Instant::now), dropping_transport())
+    }
+
     /// Waits for the next recorded event of the name, within the bound, failing with the name and the events seen.
     pub async fn next_recorded(
         receiver: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
@@ -1971,13 +1969,15 @@ pub(crate) mod tests {
      {
         let (this_record, mut this_side) = recorded_events();
         let (peer_record, mut peer_side) = recorded_events();
-        let register = HeldConnections::new(clock_reading_every_connection_as_gone()).recording_to(
+        let register = HeldConnections::new(
+            clock_reading_every_connection_as_gone(),
             super::super::endpoint::TransportRecord::new(this_record, test_salt()),
         );
         let this_node = bind_node_holding(SERVER_SEED, register.clone()).await;
         let peer_node = bind_node_holding(
             CLIENT_SEED,
-            HeldConnections::new(Arc::new(tokio::time::Instant::now)).recording_to(
+            HeldConnections::new(
+                Arc::new(tokio::time::Instant::now),
                 super::super::endpoint::TransportRecord::new(peer_record, test_salt()),
             ),
         )
@@ -2064,7 +2064,8 @@ pub(crate) mod tests {
         let (this_record, mut this_side) = recorded_events();
         let this_node = bind_node_holding(
             SERVER_SEED,
-            HeldConnections::new(Arc::new(tokio::time::Instant::now)).recording_to(
+            HeldConnections::new(
+                Arc::new(tokio::time::Instant::now),
                 super::super::endpoint::TransportRecord::new(this_record, test_salt()),
             ),
         )
@@ -2190,12 +2191,14 @@ pub(crate) mod tests {
         let (server_record, served) = recorded_events();
         let server_node = bind_node_holding(
             SERVER_SEED,
-            HeldConnections::new(Arc::clone(&clock)).recording_to(
+            HeldConnections::new(
+                Arc::clone(&clock),
                 super::super::endpoint::TransportRecord::new(server_record, test_salt()),
             ),
         )
         .await;
-        let client_register = HeldConnections::new(clock).recording_to(
+        let client_register = HeldConnections::new(
+            clock,
             super::super::endpoint::TransportRecord::new(client_record, test_salt()),
         );
         let client_node = bind_node_holding(CLIENT_SEED, client_register.clone()).await;
@@ -2213,9 +2216,12 @@ pub(crate) mod tests {
             )
             .spawn();
         client_node.replace_address(server_node.endpoint().addr());
-        let client =
-            DirectClient::new(client_node.endpoint().clone(), keys(), ClientTimeouts::SPEC)
-                .recording_through(client_register);
+        let client = DirectClient::new(
+            client_node.endpoint().clone(),
+            keys(),
+            ClientTimeouts::SPEC,
+            client_register,
+        );
         RecordingLink {
             client,
             server_id: server_node.endpoint().id(),
@@ -2247,7 +2253,8 @@ pub(crate) mod tests {
             vec![relay_address.clone()],
             |nonce: &mut [u8; KEY_LEN]| *nonce = [0; KEY_LEN],
             |_reason| {},
-            HeldConnections::new(Arc::new(tokio::time::Instant::now)).recording_to(
+            HeldConnections::new(
+                Arc::new(tokio::time::Instant::now),
                 super::super::endpoint::TransportRecord::new(this_record, test_salt()),
             ),
         )
@@ -2259,7 +2266,7 @@ pub(crate) mod tests {
             vec![relay_address.clone()],
             |nonce: &mut [u8; KEY_LEN]| *nonce = [0; KEY_LEN],
             |_reason| {},
-            HeldConnections::new(Arc::new(tokio::time::Instant::now)),
+            unrecorded_register(),
         )
         .await
         .unwrap();
@@ -2434,14 +2441,17 @@ pub(crate) mod tests {
     async fn observability_decision_9_a_probe_to_an_unreachable_peer_is_recorded_failed_with_no_connection()
      {
         let (client_record, mut sent) = recorded_events();
-        let client_register =
-            HeldConnections::new(Arc::new(tokio::time::Instant::now)).recording_to(
-                super::super::endpoint::TransportRecord::new(client_record, test_salt()),
-            );
+        let client_register = HeldConnections::new(
+            Arc::new(tokio::time::Instant::now),
+            super::super::endpoint::TransportRecord::new(client_record, test_salt()),
+        );
         let client_node = bind_node_holding(CLIENT_SEED, client_register.clone()).await;
-        let client =
-            DirectClient::new(client_node.endpoint().clone(), keys(), ClientTimeouts::SPEC)
-                .recording_through(client_register);
+        let client = DirectClient::new(
+            client_node.endpoint().clone(),
+            keys(),
+            ClientTimeouts::SPEC,
+            client_register,
+        );
         let unknown = SecretKey::from_bytes(&[SERVER_SEED; KEY_LEN]).public();
 
         let probed = client.probe(unknown, Nonce::default()).await;
@@ -2476,10 +2486,13 @@ pub(crate) mod tests {
      {
         let held_at = tokio::time::Instant::now();
         let reading = Arc::new(Mutex::new(held_at));
-        let register = HeldConnections::new({
-            let reading = Arc::clone(&reading);
-            Arc::new(move || *reading.lock().unwrap())
-        });
+        let register = HeldConnections::new(
+            {
+                let reading = Arc::clone(&reading);
+                Arc::new(move || *reading.lock().unwrap())
+            },
+            dropping_transport(),
+        );
         let this_node = bind_node_holding(SERVER_SEED, register.clone()).await;
         let peer_node = bind_node(CLIENT_SEED).await;
         this_node.replace_address(peer_node.endpoint().addr());
@@ -2558,8 +2571,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_8_a_healthy_connection_of_each_protocol_reports_a_selected_path_at_both_ends_when_it_opens_and_three_keep_alive_intervals_later()
      {
-        let this_register = HeldConnections::new(Arc::new(tokio::time::Instant::now));
-        let peer_register = HeldConnections::new(Arc::new(tokio::time::Instant::now));
+        let this_register = unrecorded_register();
+        let peer_register = unrecorded_register();
         let this_node = bind_node_holding(SERVER_SEED, this_register.clone()).await;
         let peer_node = bind_node_holding(CLIENT_SEED, peer_register.clone()).await;
         this_node.replace_address(peer_node.endpoint().addr());
@@ -2805,7 +2818,7 @@ pub(crate) mod tests {
 
     /// A live card whose connections this node dialed on loopback and accepted from the network at once, each heard for as long as a gone process is silent after they opened.
     async fn live_card_dialed_on_loopback_and_accepted_from_the_network() -> LiveCard {
-        let register = HeldConnections::new(Arc::new(tokio::time::Instant::now));
+        let register = unrecorded_register();
         let this_node = bind_node_holding(SERVER_SEED, register.clone()).await;
         let peer_node = bind_node(CLIENT_SEED).await;
         this_node.replace_address(address_on_loopback(&peer_node));
@@ -2915,6 +2928,7 @@ pub(crate) mod tests {
             live_card.this_node.endpoint().clone(),
             keys(),
             ClientTimeouts::SPEC,
+            unrecorded_register(),
         )
         .probe(peer, PROBE_NONCE)
         .await;
@@ -2922,6 +2936,7 @@ pub(crate) mod tests {
             live_card.peer_node.endpoint().clone(),
             keys(),
             ClientTimeouts::SPEC,
+            unrecorded_register(),
         )
         .probe(this_node, PROBE_NONCE)
         .await;
@@ -3228,6 +3243,7 @@ pub(crate) mod tests {
             rig.link.client_node.endpoint().clone(),
             other_keys,
             ClientTimeouts::SPEC,
+            unrecorded_register(),
         );
 
         let outcome = client_under_another_secret
@@ -3523,8 +3539,12 @@ pub(crate) mod tests {
         let server_node = bind_node(SERVER_SEED).await;
         let client_node = bind_node(CLIENT_SEED).await;
         client_node.replace_address(server_node.endpoint().addr());
-        let client =
-            DirectClient::new(client_node.endpoint().clone(), keys(), ClientTimeouts::SPEC);
+        let client = DirectClient::new(
+            client_node.endpoint().clone(),
+            keys(),
+            ClientTimeouts::SPEC,
+            unrecorded_register(),
+        );
         let _answering = tokio::spawn(answer_one_probe_late(server_node.endpoint().clone()));
 
         let started = Instant::now();
@@ -3617,7 +3637,10 @@ pub(crate) mod tests {
         let server = ScriptedServer::replying(Some(sealed_probe_ack(PROBE_NONCE)));
         let server_node = bind_node_holding(
             SERVER_SEED,
-            HeldConnections::new(clock_reading_every_connection_as_gone()),
+            HeldConnections::new(
+                clock_reading_every_connection_as_gone(),
+                dropping_transport(),
+            ),
         )
         .await;
         let link = link_on(server_node, server.clone(), ClientTimeouts::SPEC).await;

@@ -208,14 +208,12 @@ impl Node {
         network: Network,
         effects: NodeEffects,
     ) -> Result<Self, NodeError> {
-        let client = Arc::new(
-            DirectClient::new(
-                endpoint.endpoint().clone(),
-                network.keys.clone(),
-                ClientTimeouts::SPEC,
-            )
-            .recording_through(endpoint.held_connections()),
-        );
+        let client = Arc::new(DirectClient::new(
+            endpoint.endpoint().clone(),
+            network.keys.clone(),
+            ClientTimeouts::SPEC,
+            endpoint.held_connections(),
+        ));
         let (to_loop, from_hosts) = mpsc::unbounded_channel();
         let state = Arc::new(NodeState::new(
             &identity,
@@ -1769,13 +1767,7 @@ pub(super) mod tests {
     }
 
     pub(in crate::node) async fn bind(seed: u8) -> NodeEndpoint {
-        bind_holding(
-            seed,
-            crate::net::direct::HeldConnections::new(std::sync::Arc::new(
-                tokio::time::Instant::now,
-            )),
-        )
-        .await
+        bind_holding(seed, crate::net::direct::tests::unrecorded_register()).await
     }
 
     /// Binds the endpoint of the seed, holding every connection its gate lets through in the register.
@@ -1839,7 +1831,10 @@ pub(super) mod tests {
                 monotonic: Arc::new(Instant::now),
                 report: Arc::new(|_event: Event| {}),
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
-                register: HeldConnections::new(Arc::new(Instant::now)),
+                register: HeldConnections::new(
+                    Arc::new(Instant::now),
+                    crate::net::direct::tests::dropping_transport(),
+                ),
             }
         }
 
@@ -2105,7 +2100,12 @@ pub(super) mod tests {
         let second = members.pop().unwrap();
         let first = members.pop().unwrap();
         assert_eq!(first.node.peers(), Vec::<Peer>::new());
-        let sender = DirectClient::new(second.endpoint.clone(), keys(), ClientTimeouts::SPEC);
+        let sender = DirectClient::new(
+            second.endpoint.clone(),
+            keys(),
+            ClientTimeouts::SPEC,
+            crate::net::direct::tests::unrecorded_register(),
+        );
 
         let ack = sender
             .send_message(first.endpoint.id(), message_to(FIRST_SEED, SECOND_HANDLE))
@@ -3652,7 +3652,12 @@ pub(super) mod tests {
         .await;
         let second = members.pop().unwrap();
         let first = members.pop().unwrap();
-        let sender = DirectClient::new(second.endpoint.clone(), keys(), ClientTimeouts::SPEC);
+        let sender = DirectClient::new(
+            second.endpoint.clone(),
+            keys(),
+            ClientTimeouts::SPEC,
+            crate::net::direct::tests::unrecorded_register(),
+        );
 
         let mismatched = Message {
             body: MISMATCHED_MESSAGE_BODY.to_owned(),
@@ -3703,7 +3708,12 @@ pub(super) mod tests {
         .await;
         let second = members.pop().unwrap();
         let first = members.pop().unwrap();
-        let sender = DirectClient::new(second.endpoint.clone(), keys(), ClientTimeouts::SPEC);
+        let sender = DirectClient::new(
+            second.endpoint.clone(),
+            keys(),
+            ClientTimeouts::SPEC,
+            crate::net::direct::tests::unrecorded_register(),
+        );
 
         let ack = sender
             .send_message(
@@ -3743,7 +3753,12 @@ pub(super) mod tests {
         .await;
         let second = members.pop().unwrap();
         let first = members.pop().unwrap();
-        let introducing = DirectClient::new(second.endpoint.clone(), keys(), ClientTimeouts::SPEC);
+        let introducing = DirectClient::new(
+            second.endpoint.clone(),
+            keys(),
+            ClientTimeouts::SPEC,
+            crate::net::direct::tests::unrecorded_register(),
+        );
 
         for public in [DUPLICATE_KEY_PUBLIC, INTEGER_PAST_64_BITS_PUBLIC] {
             let introduced = introducing
@@ -3789,7 +3804,12 @@ pub(super) mod tests {
         .await;
         let second = members.pop().unwrap();
         let first = members.pop().unwrap();
-        let introducing = DirectClient::new(second.endpoint.clone(), keys(), ClientTimeouts::SPEC);
+        let introducing = DirectClient::new(
+            second.endpoint.clone(),
+            keys(),
+            ClientTimeouts::SPEC,
+            crate::net::direct::tests::unrecorded_register(),
+        );
         let introduction_carrying = |public: Vec<u8>| Introduce {
             v: Version::CURRENT,
             handle: Some(SECOND_HANDLE.to_owned()),
@@ -4054,9 +4074,7 @@ pub(super) mod tests {
             vec![relay_address.clone()],
             move |nonce: &mut [u8; KEY_LEN]| *nonce = [FIRST_SEED; KEY_LEN],
             |_ignored| {},
-            crate::net::direct::HeldConnections::new(std::sync::Arc::new(
-                tokio::time::Instant::now,
-            )),
+            crate::net::direct::tests::unrecorded_register(),
         )
         .await
         .unwrap();
@@ -4103,8 +4121,10 @@ pub(super) mod tests {
             vec![relay_address.clone()],
             move |nonce: &mut [u8; KEY_LEN]| *nonce = [FIRST_SEED; KEY_LEN],
             |_ignored| {},
-            HeldConnections::new(Arc::new(Instant::now))
-                .recording_to(TransportRecord::new(record, test_salt())),
+            HeldConnections::new(
+                Arc::new(Instant::now),
+                TransportRecord::new(record, test_salt()),
+            ),
         )
         .await
         .unwrap();
@@ -4325,9 +4345,12 @@ pub(super) mod tests {
         let introductions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let endpoint = bind_holding(
             WITNESS_SEED,
-            HeldConnections::new(clock_reading_every_connection_as_gone_while(Arc::clone(
-                &reads_every_connection_as_gone,
-            ))),
+            HeldConnections::new(
+                clock_reading_every_connection_as_gone_while(Arc::clone(
+                    &reads_every_connection_as_gone,
+                )),
+                crate::net::direct::tests::dropping_transport(),
+            ),
         )
         .await;
         let first = start_members_reaching(
@@ -4356,10 +4379,15 @@ pub(super) mod tests {
                 ),
             )
             .spawn();
-        DirectClient::new(endpoint.endpoint().clone(), keys(), ClientTimeouts::SPEC)
-            .send_message(first.endpoint.id(), message_to(FIRST_SEED, WITNESS_HANDLE))
-            .await
-            .unwrap();
+        DirectClient::new(
+            endpoint.endpoint().clone(),
+            keys(),
+            ClientTimeouts::SPEC,
+            crate::net::direct::tests::unrecorded_register(),
+        )
+        .send_message(first.endpoint.id(), message_to(FIRST_SEED, WITNESS_HANDLE))
+        .await
+        .unwrap();
         let introduced = tokio::time::timeout(INTRODUCED_WAIT, async {
             while introductions.load(Ordering::SeqCst) == 0 {
                 tokio::task::yield_now().await;
