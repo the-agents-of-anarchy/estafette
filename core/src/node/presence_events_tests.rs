@@ -8,10 +8,11 @@ use tokio::sync::mpsc;
 use super::tests::{
     FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_SEED,
     MemberPlan, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, Scratch, WITNESS_SEED, card,
-    infrastructure_of, start_members, start_witnessed, wall_clock_ms,
+    infrastructure_of, keys, secret_key, start_members, start_witnessed, wall_clock_ms,
 };
+use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{Event, EventFields, RunRecord};
-use crate::payload::{ZERO_MAC, ZERO_SIGNATURE};
+use crate::payload::{ZERO_MAC, ZERO_SIGNATURE, seal_payload, sealed_by_any_key};
 use crate::wire::{Addr, Departure, Payload, Presence, PresenceRequest, Unreachable, Version};
 
 const EVENT_WAIT: Duration = Duration::from_secs(10);
@@ -528,6 +529,114 @@ async fn observability_decision_9_a_member_records_the_admission_of_every_payloa
             (name, fields),
             "step {step}"
         );
+    }
+    drop(scratch);
+}
+
+const OTHER_NETWORK_SECRET: [u8; KEY_LEN] = [34; KEY_LEN];
+const NOT_A_JSON_MAPPING: &[u8] = b"[]";
+const PLAIN_HTTP_RELAY: &str = "http://relay.marker.invalid/";
+const TRAILING_BYTE: u8 = 0;
+
+/// A Presence of the seed's card under the marker handle whose `public` is the bytes given.
+fn presence_with_public(seed: u8, seq: u64, public: &[u8]) -> Payload {
+    let Payload::Presence(presence) = presence_of(seed, MARKER_HANDLE, seq) else {
+        panic!("a Presence is built");
+    };
+    Payload::Presence(Presence {
+        public: public.to_vec(),
+        ..presence
+    })
+}
+
+/// The payload signed and macked under the node tests' network by the signer the payload names.
+fn sealed(signer: u8, payload: Payload) -> Vec<u8> {
+    seal_payload(&keys(), &secret_key(signer), payload).unwrap()
+}
+
+#[tokio::test]
+async fn observability_decision_9_a_member_records_a_payload_the_payload_layer_dropped_with_its_rule_and_what_it_said_of_itself()
+ {
+    let now = FROZEN_CLOCK_MS;
+    let other_network = NetworkKeys::derive(&NetworkSecret::from_bytes(OTHER_NETWORK_SECRET));
+    let scratch = Scratch::new("events-refused").await;
+    let (report, mut recorded) = recording();
+    let (_member, witness) = start_witnessed(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+            .with_clock(Arc::new(|| FROZEN_CLOCK_MS))
+            .with_report(report),
+        None,
+    )
+    .await;
+    witness
+        .broadcast_as(MARKER_SEED, presence_of(MARKER_SEED, MARKER_HANDLE, now))
+        .await;
+    recorded.next_named(ACCEPTED).await;
+    let marker = |seq: u64, rule: &str| {
+        admission_fields(
+            "presence",
+            MARKER_SEED,
+            Some(MARKER_HANDLE),
+            ("seq", seq),
+            Some(rule),
+        )
+    };
+    let script = [
+        (
+            [
+                sealed(
+                    MARKER_SEED,
+                    presence_of(MARKER_SEED, MARKER_HANDLE, now + 1),
+                ),
+                vec![TRAILING_BYTE],
+            ]
+            .concat(),
+            vec![("rule", Value::from("trailing_bytes"))],
+        ),
+        (
+            seal_payload(
+                &other_network,
+                &secret_key(MARKER_SEED),
+                presence_of(MARKER_SEED, MARKER_HANDLE, now + 2),
+            )
+            .unwrap(),
+            marker(now + 2, "mac_mismatch"),
+        ),
+        (
+            sealed_by_any_key(
+                &keys(),
+                &secret_key(SECOND_MARKER_SEED),
+                presence_of(MARKER_SEED, MARKER_HANDLE, now + 3),
+            )
+            .unwrap(),
+            marker(now + 3, "signature_mismatch"),
+        ),
+        (
+            sealed(
+                MARKER_SEED,
+                presence_with_public(MARKER_SEED, now + 4, NOT_A_JSON_MAPPING),
+            ),
+            marker(now + 4, "public_not_admitted"),
+        ),
+        (
+            sealed(
+                HOST_SEED,
+                infrastructure_of(HOST_SEED, PLAIN_HTTP_RELAY, NOW_SECONDS),
+            ),
+            admission_fields(
+                "infrastructure",
+                HOST_SEED,
+                None,
+                ("ts", NOW_SECONDS),
+                Some("host_relay_refused"),
+            ),
+        ),
+    ];
+
+    for (step, (bytes, fields)) in script.into_iter().enumerate() {
+        witness.broadcast_bytes(bytes).await;
+        assert_eq!(recorded.next_named(DROPPED).await, fields, "step {step}");
     }
     drop(scratch);
 }

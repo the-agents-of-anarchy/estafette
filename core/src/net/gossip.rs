@@ -7,7 +7,9 @@ use iroh_gossip::{Gossip, TopicId};
 use tokio::time::{Instant, sleep};
 
 use crate::crypto::NetworkKeys;
-use crate::payload::{OpenedPayload, PayloadError, open_payload, seal_payload};
+use crate::payload::{
+    OpenedPayload, PayloadError, PayloadRefusal, open_described_payload, seal_payload,
+};
 use crate::stream_items::StreamExt;
 use crate::wire::Payload;
 
@@ -100,8 +102,28 @@ impl NetworkTopic {
             .map_err(GossipError::Topic)
     }
 
+    /// Broadcasts the bytes as they are, so a test can send what no sealing would produce.
+    ///
+    /// # Errors
+    /// `GossipError::Topic` when the gossip actor is gone.
+    #[cfg(test)]
+    pub(crate) async fn broadcast_bytes(&self, bytes: Vec<u8>) -> Result<(), GossipError> {
+        self.sender
+            .broadcast(bytes.into())
+            .await
+            .map_err(GossipError::Topic)
+    }
+
     /// The next event of the topic, an error naming why the topic failed, or none once the topic has closed cleanly.
     pub async fn next_event(&mut self) -> Option<Result<GossipEvent, GossipError>> {
+        self.next_event_recording_drops(&|_dropped| {}).await
+    }
+
+    /// The next event of the topic as `next_event` gives it, handing each payload the payload layer drops on the way to `record_drop`.
+    pub async fn next_event_recording_drops(
+        &mut self,
+        record_drop: &(dyn Fn(PayloadRefusal) + Send + Sync),
+    ) -> Option<Result<GossipEvent, GossipError>> {
         loop {
             let incoming = match self.join_progress {
                 JoinProgress::JoinedWithNeighborUpToReport(neighbor) => {
@@ -123,18 +145,29 @@ impl NetworkTopic {
                 Ok(event) => event,
                 Err(source) => return Some(Err(GossipError::Topic(source))),
             };
-            if let Some(surfaced) = self.surface(event) {
+            if let Some(surfaced) = self.surface(event, record_drop) {
                 return Some(surfaced);
             }
         }
     }
 
-    fn surface(&mut self, event: Event) -> Option<Result<GossipEvent, GossipError>> {
+    fn surface(
+        &mut self,
+        event: Event,
+        record_drop: &(dyn Fn(PayloadRefusal) + Send + Sync),
+    ) -> Option<Result<GossipEvent, GossipError>> {
         match event {
             Event::NeighborUp(neighbor) => Some(Ok(self.announce_neighbor_up(neighbor))),
             Event::NeighborDown(neighbor) => Some(Ok(GossipEvent::NeighborDown(neighbor))),
-            Event::Received(message) => verified_payload(&self.keys, &self.owner, &message.content)
-                .map(|payload| Ok(GossipEvent::Payload(Box::new(payload)))),
+            Event::Received(message) => {
+                match open_described_payload(&self.keys, &self.owner, &message.content) {
+                    Ok(payload) => Some(Ok(GossipEvent::Payload(Box::new(payload)))),
+                    Err(refusal) => {
+                        record_drop(refusal);
+                        None
+                    }
+                }
+            }
             Event::Lagged => Some(Err(GossipError::Lagged)),
         }
     }
@@ -150,10 +183,6 @@ impl NetworkTopic {
             }
         }
     }
-}
-
-fn verified_payload(keys: &NetworkKeys, owner: &PublicKey, bytes: &[u8]) -> Option<OpenedPayload> {
-    open_payload(keys, owner, bytes).ok()
 }
 
 #[cfg(test)]

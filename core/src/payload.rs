@@ -199,6 +199,98 @@ pub enum PayloadDropRule {
     RecordNotNewerThanHeld,
     /// An Infrastructure record whose ts is past the future bound of this node's clock.
     RecordPastFutureBound,
+    /// Bytes longer than the wire limit.
+    PastWireLimit,
+    /// Bytes left over after a whole payload decoded.
+    TrailingBytes,
+    /// A payload whose zeroed encoding, which its mac or signature covers, does not encode.
+    Unencodable,
+    /// Bytes that do not decode as a payload.
+    Malformed,
+    /// A payload of a wire version this node does not speak.
+    UnsupportedVersion,
+    /// A relay URL longer than the wire allows.
+    RelayUrlTooLong,
+    /// An address listing more entries than the wire allows.
+    AddrOverCap,
+    /// A mac that the network key did not produce.
+    MacMismatch,
+    /// A signature its named signer did not make for its kind.
+    SignatureMismatch,
+    /// An Infrastructure record whose host the owner key did not certify.
+    HostNotCertified,
+    /// An Infrastructure record whose relay is no host relay.
+    HostRelayRefused,
+    /// An Infrastructure record whose address lists anything but exactly its relay.
+    AddrRelaysNotTheHostRelay,
+    /// A Presence whose `public` is not what a card sends.
+    PublicNotAdmitted,
+}
+
+/// Why the payload layer refused bytes received on the topic, each cause one the opening checks apply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OpeningFailure {
+    Codec(CodecError),
+    Crypto(CryptoError),
+    HostNotCertified,
+    HostRelayRefused,
+    AddrRelaysNotTheHostRelay,
+    PublicNotAdmitted,
+}
+
+impl From<CodecError> for OpeningFailure {
+    fn from(source: CodecError) -> Self {
+        Self::Codec(source)
+    }
+}
+
+impl From<CryptoError> for OpeningFailure {
+    fn from(source: CryptoError) -> Self {
+        Self::Crypto(source)
+    }
+}
+
+impl From<OpeningFailure> for PayloadError {
+    fn from(failure: OpeningFailure) -> Self {
+        match failure {
+            OpeningFailure::Codec(source) => Self::Codec(source),
+            OpeningFailure::Crypto(source) => Self::Crypto(source),
+            OpeningFailure::HostNotCertified => Self::HostNotCertified,
+            OpeningFailure::HostRelayRefused => Self::HostRelayRefused,
+            OpeningFailure::AddrRelaysNotTheHostRelay => Self::AddrRelaysNotTheHostRelay,
+            OpeningFailure::PublicNotAdmitted => Self::PublicNotAdmitted,
+        }
+    }
+}
+
+impl OpeningFailure {
+    /// The drop rule the failure applies.
+    const fn drop_rule(&self) -> PayloadDropRule {
+        match self {
+            Self::Codec(CodecError::PastWireLimit { .. }) => PayloadDropRule::PastWireLimit,
+            Self::Codec(CodecError::TrailingBytes) => PayloadDropRule::TrailingBytes,
+            Self::Codec(CodecError::Unencodable(_)) => PayloadDropRule::Unencodable,
+            Self::Codec(CodecError::Malformed(_)) => PayloadDropRule::Malformed,
+            Self::Codec(CodecError::UnsupportedVersion { .. }) => {
+                PayloadDropRule::UnsupportedVersion
+            }
+            Self::Codec(CodecError::RelayUrlTooLong { .. }) => PayloadDropRule::RelayUrlTooLong,
+            Self::Codec(CodecError::AddrOverCap) => PayloadDropRule::AddrOverCap,
+            Self::Crypto(CryptoError::MacMismatch) => PayloadDropRule::MacMismatch,
+            Self::Crypto(CryptoError::SignatureMismatch) => PayloadDropRule::SignatureMismatch,
+            Self::HostNotCertified => PayloadDropRule::HostNotCertified,
+            Self::HostRelayRefused => PayloadDropRule::HostRelayRefused,
+            Self::AddrRelaysNotTheHostRelay => PayloadDropRule::AddrRelaysNotTheHostRelay,
+            Self::PublicNotAdmitted => PayloadDropRule::PublicNotAdmitted,
+        }
+    }
+}
+
+/// Bytes received on the topic that the payload layer dropped: what they said of themselves when they decoded, and the rule that dropped them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadRefusal {
+    pub facts: Option<PayloadFacts>,
+    pub rule: PayloadDropRule,
 }
 
 const fn signature_of(payload: &Payload) -> SignatureBytes {
@@ -274,7 +366,7 @@ fn with_computed_mac<T: MacCarrying>(keys: &NetworkKeys, structure: T) -> Result
     Ok(structure.with_mac(*mac.as_bytes()))
 }
 
-fn verify_mac<T: MacCarrying>(keys: &NetworkKeys, structure: &T) -> Result<(), PayloadError> {
+fn verify_mac<T: MacCarrying>(keys: &NetworkKeys, structure: &T) -> Result<(), OpeningFailure> {
     match structure.mac() {
         Some(mac) => Ok(keys.verify_mac(&mac_zeroed_encoding(structure)?, &Mac::from_bytes(mac))?),
         None => Ok(()),
@@ -301,7 +393,7 @@ fn signature_zeroed_encoding(payload: &Payload) -> Result<Vec<u8>, CodecError> {
     ))
 }
 
-fn verify_signature(payload: &Payload) -> Result<(), PayloadError> {
+fn verify_signature(payload: &Payload) -> Result<(), OpeningFailure> {
     let (kind, signer_bytes) = signer_of(payload);
     let Ok(signer) = PublicKey::from_bytes(&signer_bytes) else {
         return Err(CryptoError::SignatureMismatch.into());
@@ -328,6 +420,20 @@ pub fn seal_payload(
     if signer.public().as_bytes() != &signer_bytes {
         return Err(PayloadError::SignerIsNotThePayloadSigner);
     }
+    sign_then_mac(keys, kind, signer, payload)
+}
+
+/// Signs, macs and encodes a gossip payload with any key, so a test can forge a payload its named signer never signed.
+///
+/// # Errors
+/// `PayloadError` for an encoding past the gossip frame limit.
+#[cfg(test)]
+pub(crate) fn sealed_by_any_key(
+    keys: &NetworkKeys,
+    signer: &SecretKey,
+    payload: Payload,
+) -> Result<Vec<u8>, PayloadError> {
+    let (kind, _named_signer) = signer_of(&payload);
     sign_then_mac(keys, kind, signer, payload)
 }
 
@@ -397,16 +503,16 @@ impl From<OpenedPayload> for Payload {
 fn validated_infrastructure(
     owner: &PublicKey,
     infrastructure: Infrastructure,
-) -> Result<ValidInfrastructure, PayloadError> {
+) -> Result<ValidInfrastructure, OpeningFailure> {
     let certified = PublicKey::from_bytes(&infrastructure.host).is_ok_and(|host| {
         verify_host_certificate(owner, &host, &Signature::from_bytes(&infrastructure.cert.0))
             .is_ok()
     });
     if !certified {
-        return Err(PayloadError::HostNotCertified);
+        return Err(OpeningFailure::HostNotCertified);
     }
     let Some(relay) = host_relay_url(infrastructure.relay.as_str()) else {
-        return Err(PayloadError::HostRelayRefused);
+        return Err(OpeningFailure::HostRelayRefused);
     };
     let addr_relays: Vec<Option<RelayUrl>> = infrastructure
         .addr
@@ -415,7 +521,7 @@ fn validated_infrastructure(
         .map(|url| url.as_str().parse().ok())
         .collect();
     if addr_relays != [Some(relay.clone())] {
-        return Err(PayloadError::AddrRelaysNotTheHostRelay);
+        return Err(OpeningFailure::AddrRelaysNotTheHostRelay);
     }
     Ok(ValidInfrastructure {
         record: infrastructure,
@@ -423,11 +529,11 @@ fn validated_infrastructure(
     })
 }
 
-fn verify_presence_rules(presence: &Presence) -> Result<(), PayloadError> {
+fn verify_presence_rules(presence: &Presence) -> Result<(), OpeningFailure> {
     if is_card_public(&presence.public) {
         Ok(())
     } else {
-        Err(PayloadError::PublicNotAdmitted)
+        Err(OpeningFailure::PublicNotAdmitted)
     }
 }
 
@@ -440,18 +546,45 @@ pub fn open_payload(
     owner: &PublicKey,
     bytes: &[u8],
 ) -> Result<OpenedPayload, PayloadError> {
-    let payload: Payload = open_with_mac(keys, bytes)?;
-    verify_signature(&payload)?;
+    opened_or_failure(keys, owner, bytes).map_err(|(_facts, failure)| failure.into())
+}
+
+/// Opens a gossip payload as `open_payload` does, naming for a refusal the rule that dropped it and what the payload said of itself when it decoded.
+///
+/// # Errors
+/// `PayloadRefusal` for bytes `open_payload` refuses, with the rule its error applies.
+pub fn open_described_payload(
+    keys: &NetworkKeys,
+    owner: &PublicKey,
+    bytes: &[u8],
+) -> Result<OpenedPayload, PayloadRefusal> {
+    opened_or_failure(keys, owner, bytes).map_err(|(facts, failure)| PayloadRefusal {
+        facts,
+        rule: failure.drop_rule(),
+    })
+}
+
+/// Decodes, then checks mac, signature and the kind's rules in that order, giving for a failure what the payload said of itself when it decoded.
+fn opened_or_failure(
+    keys: &NetworkKeys,
+    owner: &PublicKey,
+    bytes: &[u8],
+) -> Result<OpenedPayload, (Option<PayloadFacts>, OpeningFailure)> {
+    let payload: Payload = decode(bytes).map_err(|undecoded| (None, undecoded.into()))?;
+    let facts = payload.facts();
+    let refused = |failure: OpeningFailure| (Some(facts), failure);
+    verify_mac(keys, &payload).map_err(refused)?;
+    verify_signature(&payload).map_err(refused)?;
     Ok(match payload {
         Payload::Presence(presence) => {
-            verify_presence_rules(&presence)?;
+            verify_presence_rules(&presence).map_err(refused)?;
             OpenedPayload::Presence(presence)
         }
         Payload::Departure(departure) => OpenedPayload::Departure(departure),
         Payload::Unreachable(report) => OpenedPayload::Unreachable(report),
-        Payload::Infrastructure(infrastructure) => {
-            OpenedPayload::Infrastructure(validated_infrastructure(owner, infrastructure)?)
-        }
+        Payload::Infrastructure(infrastructure) => OpenedPayload::Infrastructure(
+            validated_infrastructure(owner, infrastructure).map_err(refused)?,
+        ),
         Payload::PresenceRequest(request) => OpenedPayload::PresenceRequest(request),
     })
 }

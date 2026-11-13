@@ -38,7 +38,8 @@ use crate::net::direct::{
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use crate::net::gossip::{GossipError, GossipEvent, JOIN_TIMEOUT, NetworkTopic};
 use crate::payload::{
-    DescribedPayload, OpenedPayload, PayloadDropRule, PayloadFacts, ZERO_MAC, ZERO_SIGNATURE,
+    DescribedPayload, OpenedPayload, PayloadDropRule, PayloadFacts, PayloadRefusal, ZERO_MAC,
+    ZERO_SIGNATURE,
 };
 use crate::peers::{
     Effect, Peer, PeerTable, announced_sender_handle, is_within_announcement_max_age,
@@ -877,8 +878,11 @@ impl PresenceLoop {
         let relay_loss_due = self.relay_loss.next_deadline();
         let rebind_due = self.may_rebind().then(|| self.rebinding.due());
         let member_join_due = self.rebinding.next_ask();
+        let state = &self.state;
+        let report = &self.report;
+        let record_drop = |refusal: PayloadRefusal| report(refusal_record(state, refusal));
         tokio::select! {
-            event = self.topic.next_event() => Wake::Topic(event),
+            event = self.topic.next_event_recording_drops(&record_drop) => Wake::Topic(event),
             Some(event) = self.from_hosts.recv() => Wake::Loop(event),
             changed = self.attached.changed(), if self.inbox == InboxWatch::Watching => match changed {
                 Ok(_) => Wake::AttachedChanged,
@@ -1244,6 +1248,20 @@ pub(super) fn admission_record<Taken>(
             payload: Some(payload),
             rule: *rule,
         },
+    }
+    .into()
+}
+
+/// The record of bytes the payload layer dropped, naming the signer they named by the handle the table holds for it, if any.
+fn refusal_record(state: &NodeState, refusal: PayloadRefusal) -> Event {
+    let now_ms = state.now_ms();
+    let payload = refusal.facts.map(|facts| {
+        let handle = state.table().handle_of(facts.signer, now_ms);
+        (facts, handle).into()
+    });
+    crate::event::GossipEvent::PayloadDropped {
+        payload,
+        rule: refusal.rule,
     }
     .into()
 }
@@ -2132,6 +2150,11 @@ pub(super) mod tests {
                 .broadcast(&secret_key(signer_seed), payload)
                 .await
                 .unwrap();
+        }
+
+        /// Broadcasts the bytes on the topic as they are, sealed or not.
+        pub(in crate::node) async fn broadcast_bytes(&self, bytes: Vec<u8>) {
+            self.topic.broadcast_bytes(bytes).await.unwrap();
         }
 
         pub(in crate::node) async fn payload_where(

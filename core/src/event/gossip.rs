@@ -121,6 +121,19 @@ const fn rule_name(rule: PayloadDropRule) -> &'static str {
         PayloadDropRule::AheadOfMaxAge => "ahead_of_max_age",
         PayloadDropRule::RecordNotNewerThanHeld => "record_not_newer_than_held",
         PayloadDropRule::RecordPastFutureBound => "record_past_future_bound",
+        PayloadDropRule::PastWireLimit => "past_wire_limit",
+        PayloadDropRule::TrailingBytes => "trailing_bytes",
+        PayloadDropRule::Unencodable => "unencodable",
+        PayloadDropRule::Malformed => "malformed",
+        PayloadDropRule::UnsupportedVersion => "unsupported_version",
+        PayloadDropRule::RelayUrlTooLong => "relay_url_too_long",
+        PayloadDropRule::AddrOverCap => "addr_over_cap",
+        PayloadDropRule::MacMismatch => "mac_mismatch",
+        PayloadDropRule::SignatureMismatch => "signature_mismatch",
+        PayloadDropRule::HostNotCertified => "host_not_certified",
+        PayloadDropRule::HostRelayRefused => "host_relay_refused",
+        PayloadDropRule::AddrRelaysNotTheHostRelay => "addr_relays_not_the_host_relay",
+        PayloadDropRule::PublicNotAdmitted => "public_not_admitted",
     }
 }
 
