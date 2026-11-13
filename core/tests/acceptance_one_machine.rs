@@ -1700,18 +1700,25 @@ mod kept_run_records {
 
 #[cfg(test)]
 mod observability_decision_6_on_one_machine {
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
+    use std::net::SocketAddr;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
-    use serde_json::Value;
+    use serde_json::{Value, json};
 
     use crate::local_network::{LocalNetwork, MetPair};
-    use crate::mcp_server::call_succeeded;
+    use crate::mcp_server::{PRESENCE_WAIT, call_succeeded, online};
     use crate::member::Member;
     use crate::scratch_machine::RunRecordKeeping;
 
     const BODY_MARKER: &str = "body-marker-q7x2v9";
+    /// A body no other text of the run holds, so finding it anywhere means the body was written.
+    const MARKER_BODY: &str = "marker body 7c1e quartz lantern 93fd";
+    /// The members whose runs write an events file: amy and bob.
+    const MEMBER_RUNS: usize = 2;
+    const PATH_EVENT_PREFIX: &str = "transport.path_";
     const SPEC_EVENTS_SUFFIX: &str = ".events.jsonl";
     const SPEC_TRACES_UNDER_DATA_HOME: &str = "estafette/traces";
     const SPEC_KEY_HEX_CHARS: usize = 64;
@@ -1847,6 +1854,187 @@ mod observability_decision_6_on_one_machine {
         assert!(
             !holds_a_dotted_quad(&recorded),
             "an events file holds an IPv4 address"
+        );
+    }
+
+    /// Every events file the machine's runs wrote, with its parsed lines.
+    fn events_files(network: &LocalNetwork) -> BTreeMap<PathBuf, Vec<Value>> {
+        network
+            .base_directory_files()
+            .into_iter()
+            .filter(|file| is_trace_file(file) && is_events_file(file))
+            .map(|file| {
+                let lines = fs::read_to_string(&file)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                (file, lines)
+            })
+            .collect()
+    }
+
+    /// The long runs of letters and digits in every readable base directory file outside the traces, with every such file's path: the secrets, the sidecar paths and the inbox sockets the run holds.
+    fn secrets_and_paths_of(network: &LocalNetwork) -> BTreeSet<String> {
+        let mut markers = BTreeSet::new();
+        for file in network.base_directory_files() {
+            if is_trace_file(&file) {
+                continue;
+            }
+            let content = fs::read(&file).unwrap_or_default();
+            markers.extend(
+                long_alphanumeric_runs(&String::from_utf8_lossy(&content)).map(str::to_owned),
+            );
+            markers.insert(file.to_string_lossy().into_owned());
+        }
+        markers
+    }
+
+    /// The text of every socket address and its address alone.
+    fn address_markers(addresses: impl IntoIterator<Item = SocketAddr>) -> BTreeSet<String> {
+        addresses
+            .into_iter()
+            .flat_map(|address| [address.to_string(), address.ip().to_string()])
+            .collect()
+    }
+
+    /// The lines of the file whose event is the name.
+    fn named<'lines>(lines: &'lines [Value], name: &str) -> Vec<&'lines Value> {
+        lines.iter().filter(|line| line["event"] == name).collect()
+    }
+
+    /// The salted location hashes the file's path events give the port.
+    fn location_hashes_at_port(lines: &[Value], port: u16) -> BTreeSet<String> {
+        lines
+            .iter()
+            .filter(|line| {
+                line["event"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with(PATH_EVENT_PREFIX))
+                    && line["port"] == json!(port)
+            })
+            .map(|line| line["location"].as_str().unwrap().to_owned())
+            .collect()
+    }
+
+    /// The salted location hashes the file's path events give each path of each connection.
+    fn location_hashes_by_path(lines: &[Value]) -> BTreeMap<(u64, String), BTreeSet<String>> {
+        let mut by_path: BTreeMap<(u64, String), BTreeSet<String>> = BTreeMap::new();
+        for line in lines.iter().filter(|line| {
+            line["event"]
+                .as_str()
+                .is_some_and(|name| name.starts_with(PATH_EVENT_PREFIX))
+        }) {
+            by_path
+                .entry((
+                    line["connection"].as_u64().unwrap(),
+                    line["path"].as_str().unwrap().to_owned(),
+                ))
+                .or_default()
+                .insert(line["location"].as_str().unwrap().to_owned());
+        }
+        by_path
+    }
+
+    /// The text the file holds, with its path for the failure message.
+    fn file_text(path: &Path) -> String {
+        fs::read_to_string(path).unwrap()
+    }
+
+    #[test]
+    fn observability_decision_6_no_body_secret_socket_path_or_address_reaches_an_events_file_and_an_address_hashes_alike_within_a_run_and_apart_across_runs()
+     {
+        let network = LocalNetwork::create("o6", &RunRecordKeeping::from_environment());
+        let host = network.stand_in_host();
+        let amy_card = network.create_card("amy-card", "amy");
+        let bob_card = network.create_card("bob-card", "bob");
+        let mut amy = network.start_member();
+        let amy_claim = amy.init_through(&amy_card, &host);
+        let mut bob = network.start_member();
+        let bob_claim = bob.init_through(&bob_card, &host);
+        amy.peer_within("bob", PRESENCE_WAIT, online);
+        bob.peer_within("amy", PRESENCE_WAIT, online);
+        let host_address = host.endpoint().endpoint().addr();
+        let host_ports: BTreeSet<u16> = host_address.ip_addrs().map(SocketAddr::port).collect();
+        let mut markers = secrets_and_paths_of(&network);
+        markers.extend(address_markers(host_address.ip_addrs().copied()));
+        markers.extend(address_markers(
+            amy.bound_udp_ports()
+                .into_iter()
+                .chain(bob.bound_udp_ports())
+                .map(|port| SocketAddr::from(([127, 0, 0, 1], port))),
+        ));
+        for claim in [&amy_claim, &bob_claim] {
+            markers.insert(claim["result"]["inbox_path"].as_str().unwrap().to_owned());
+        }
+        markers.insert(MARKER_BODY.to_owned());
+
+        let sent = amy.send("bob", MARKER_BODY);
+        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
+        assert!(
+            bob.inbox_bodies().contains(&json!(MARKER_BODY)),
+            "the body reached bob"
+        );
+        for member in [&mut amy, &mut bob] {
+            member.close_standard_input();
+            assert!(member.wait_for_exit().success());
+        }
+
+        let files = events_files(&network);
+        assert_eq!(files.len(), MEMBER_RUNS, "{:?}", files.keys());
+        let all_lines: Vec<Value> = files.values().flatten().cloned().collect();
+        for name in [
+            "transport.path_opened",
+            "direct.request_sent",
+            "direct.request_served",
+        ] {
+            assert!(
+                !named(&all_lines, name).is_empty(),
+                "the run recorded {name}, so its fields were written"
+            );
+        }
+        for path in files.keys() {
+            let text = file_text(path);
+            let found: Vec<&String> = markers
+                .iter()
+                .filter(|marker| text.contains(marker.as_str()))
+                .collect();
+            assert!(found.is_empty(), "{} holds {found:?}", path.display());
+            assert!(
+                !holds_a_key_length_hex_run(&text),
+                "{} holds a run of {SPEC_KEY_HEX_CHARS} hex characters",
+                path.display()
+            );
+        }
+        for (path, lines) in &files {
+            for (path_of_a_connection, hashes) in location_hashes_by_path(lines) {
+                assert_eq!(
+                    hashes.len(),
+                    1,
+                    "{}: path {path_of_a_connection:?} hashes its one address alike",
+                    path.display()
+                );
+            }
+        }
+        let host_hashes: Vec<BTreeSet<String>> = files
+            .values()
+            .map(|lines| {
+                host_ports
+                    .iter()
+                    .flat_map(|port| location_hashes_at_port(lines, *port))
+                    .collect()
+            })
+            .collect();
+        let [amy_or_bob, the_other] = host_hashes.as_slice() else {
+            panic!("two runs: {host_hashes:?}");
+        };
+        assert!(
+            !amy_or_bob.is_empty() && !the_other.is_empty(),
+            "both runs record a path to the host: {host_hashes:?}"
+        );
+        assert!(
+            amy_or_bob.is_disjoint(the_other),
+            "the host's address hashes apart in two runs: {host_hashes:?}"
         );
     }
 }
