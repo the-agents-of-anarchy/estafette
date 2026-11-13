@@ -156,9 +156,11 @@ mod tests {
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
     use iroh::endpoint::{
         ConnectError, ConnectWithOptsError, ConnectingError, Connection, ConnectionError,
+        ReadExactError, WriteError,
     };
     use iroh::{EndpointId, TransportAddr};
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU8, Ordering};
     use std::time::{Duration, Instant};
     use tokio::time::timeout;
 
@@ -177,6 +179,14 @@ mod tests {
     const STRANGER_SEED: u8 = 6;
     const VANISHING_PEER_SEED: u8 = 7;
     const SPEC_PEER_NONCE: [u8; KEY_LEN] = [44; KEY_LEN];
+    const NONCE_DRAW_SPREAD: u8 = 0x9D;
+    const CONNECTIONS_EACH_DRAWING_A_NONCE: u8 = 2;
+    const GATE_CLOSE_CODE_ON_THE_WIRE: u32 = 403;
+    const GATE_CLOSE_REASON_ON_THE_WIRE: &[u8] = b"gate";
+    const NONCE_CUT_SHORT: &[u8] = b"short";
+    const NO_STREAMS_GRANTED: VarInt = VarInt::from_u32(0);
+    const PEER_CLOSE_CODE: VarInt = VarInt::from_u32(77);
+    const PEER_CLOSE_REASON: &[u8] = b"gone before the challenge";
     const MEMBER_SECRET: [u8; KEY_LEN] = [21; KEY_LEN];
     const OUTSIDER_SECRET: [u8; KEY_LEN] = [12; KEY_LEN];
     const FIRST_STREAM_BYTES: &[u8] = b"the first stream after the gate";
@@ -185,6 +195,14 @@ mod tests {
     const UNKNOWN_HOST_RELAY: &str = "https://relay-unknown.estafette.invalid/";
     const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
     const LOCAL_DIAL_WAIT: Duration = Duration::from_millis(2000);
+    const PEER_STOP_CODE: VarInt = VarInt::from_u32(59);
+
+    /// The nonce a node's source fills at its `draw`-th gate challenge: no two bytes alike, and no two draws alike.
+    fn drawn_nonce(draw: u8) -> [u8; KEY_LEN] {
+        std::array::from_fn(|index| {
+            u8::try_from(index).unwrap() ^ draw.wrapping_mul(NONCE_DRAW_SPREAD)
+        })
+    }
 
     fn gate_key_of(secret: [u8; KEY_LEN]) -> GateKey {
         *NetworkKeys::derive(&NetworkSecret::from_bytes(secret)).gate_key()
@@ -208,11 +226,14 @@ mod tests {
         relays: Vec<RelayUrl>,
         report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
     ) -> NodeEndpoint {
+        let draws = AtomicU8::new(0);
         NodeEndpoint::bind(
             SecretKey::from_bytes(&[seed; KEY_LEN]),
             gate_key_of(secret),
             relays,
-            move |nonce: &mut [u8; KEY_LEN]| *nonce = [seed; KEY_LEN],
+            move |nonce: &mut [u8; KEY_LEN]| {
+                *nonce = drawn_nonce(draws.fetch_add(1, Ordering::SeqCst));
+            },
             report_gate_closing,
             HeldConnections::new(Arc::new(tokio::time::Instant::now)),
         )
@@ -325,10 +346,24 @@ mod tests {
         }
     }
 
-    async fn bind_plain_endpoint(seed: u8) -> Endpoint {
+    fn plain_endpoint_builder(seed: u8) -> iroh::endpoint::Builder {
         Endpoint::builder(presets::Minimal)
             .secret_key(SecretKey::from_bytes(&[seed; KEY_LEN]))
             .alpns(vec![GOSSIP_ALPN.to_vec(), DIRECT_ALPN.to_vec()])
+    }
+
+    async fn bind_plain_endpoint(seed: u8) -> Endpoint {
+        plain_endpoint_builder(seed).bind().await.unwrap()
+    }
+
+    /// A plain endpoint whose peers can open no bidirectional stream to it, so the gate's own challenge waits on the connection.
+    async fn bind_plain_endpoint_granting_no_streams(seed: u8) -> Endpoint {
+        plain_endpoint_builder(seed)
+            .transport_config(
+                QuicTransportConfig::builder()
+                    .max_concurrent_bidi_streams(NO_STREAMS_GRANTED)
+                    .build(),
+            )
             .bind()
             .await
             .unwrap()
@@ -346,39 +381,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_6_peer_speaking_the_spec_challenge_is_admitted_and_gets_the_spec_proof() {
+    async fn spec_3_6_peer_speaking_the_spec_challenge_is_admitted_and_gets_the_spec_proof_under_a_fresh_nonce_each_connection()
+     {
         let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
         let peer = bind_plain_endpoint(SPEC_PEER_SEED).await;
         let (member_id, peer_id) = (member.endpoint().id(), peer.id());
 
-        let speak_the_spec_gate = async {
-            let connection = peer
-                .connect(member.endpoint().addr(), GOSSIP_ALPN)
-                .await
-                .unwrap();
-            let (mut challenge_send, mut proof_recv) = connection.open_bi().await.unwrap();
-            challenge_send.write_all(&SPEC_PEER_NONCE).await.unwrap();
-            challenge_send.finish().unwrap();
-            let mut proof_received = [0; KEY_LEN];
-            proof_recv.read_exact(&mut proof_received).await.unwrap();
+        for draw in 0..CONNECTIONS_EACH_DRAWING_A_NONCE {
+            let speak_the_spec_gate = async {
+                let connection = peer
+                    .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                    .await
+                    .unwrap();
+                let (mut challenge_send, mut proof_recv) = connection.open_bi().await.unwrap();
+                challenge_send.write_all(&SPEC_PEER_NONCE).await.unwrap();
+                challenge_send.finish().unwrap();
+                let mut proof_received = [0; KEY_LEN];
+                proof_recv.read_exact(&mut proof_received).await.unwrap();
 
-            let (mut answer_send, mut nonce_recv) = connection.accept_bi().await.unwrap();
-            let mut member_nonce = [0; KEY_LEN];
-            nonce_recv.read_exact(&mut member_nonce).await.unwrap();
-            let answer = spec_gate_proof(MEMBER_SECRET, &member_nonce, member_id, peer_id);
-            answer_send.write_all(&answer).await.unwrap();
-            answer_send.finish().unwrap();
-            (connection, proof_received, member_nonce)
-        };
-        let ((_open_connection, proof_received, member_nonce), accepted) =
-            tokio::join!(speak_the_spec_gate, accept_next(member.endpoint()));
+                let (mut answer_send, mut nonce_recv) = connection.accept_bi().await.unwrap();
+                let mut member_nonce = [0; KEY_LEN];
+                nonce_recv.read_exact(&mut member_nonce).await.unwrap();
+                let answer = spec_gate_proof(MEMBER_SECRET, &member_nonce, member_id, peer_id);
+                answer_send.write_all(&answer).await.unwrap();
+                answer_send.finish().unwrap();
+                (connection, proof_received, member_nonce)
+            };
+            let ((_open_connection, proof_received, member_nonce), accepted) =
+                tokio::join!(speak_the_spec_gate, accept_next(member.endpoint()));
 
-        assert_eq!(
-            proof_received,
-            spec_gate_proof(MEMBER_SECRET, &SPEC_PEER_NONCE, peer_id, member_id)
-        );
-        assert_eq!(member_nonce, [MEMBER_SEED; KEY_LEN]);
-        assert_eq!(accepted.unwrap().remote_id(), peer_id);
+            assert_eq!(
+                proof_received,
+                spec_gate_proof(MEMBER_SECRET, &SPEC_PEER_NONCE, peer_id, member_id)
+            );
+            assert_eq!(member_nonce, drawn_nonce(draw));
+            assert_eq!(accepted.unwrap().remote_id(), peer_id);
+        }
     }
 
     #[tokio::test]
@@ -407,10 +445,15 @@ mod tests {
         );
         assert!(is_the_gate_timeout(started.elapsed()));
         assert!(accept_is_locally_rejected(&accepted));
-        assert!(matches!(
-            closed_by_member,
-            ConnectionError::ApplicationClosed(_)
-        ));
+        assert!(
+            matches!(
+                &closed_by_member,
+                ConnectionError::ApplicationClosed(close)
+                    if close.error_code == VarInt::from_u32(GATE_CLOSE_CODE_ON_THE_WIRE)
+                        && close.reason.as_ref() == GATE_CLOSE_REASON_ON_THE_WIRE
+            ),
+            "{closed_by_member:?}"
+        );
     }
 
     #[tokio::test]
@@ -642,6 +685,64 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spec_3_6_gate_reports_a_nonce_cut_short_as_the_stream_read_failure_it_closed_on() {
+        let (member, recorded) =
+            bind_node_recording_gate_closings(MEMBER_SEED, MEMBER_SECRET).await;
+        let peer = bind_plain_endpoint(SPEC_PEER_SEED).await;
+
+        let challenge_with_a_nonce_cut_short = async {
+            let connection = peer
+                .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                .await
+                .unwrap();
+            let (mut challenge_send, _proof_recv) = connection.open_bi().await.unwrap();
+            challenge_send.write_all(NONCE_CUT_SHORT).await.unwrap();
+            challenge_send.finish().unwrap();
+            connection
+        };
+        let (_closed_connection, accepted) = tokio::join!(
+            challenge_with_a_nonce_cut_short,
+            accept_next(member.endpoint())
+        );
+
+        assert!(accept_is_locally_rejected(&accepted));
+        assert!(recorded_reasons_match(&recorded, |reason| matches!(
+            reason,
+            GateFailure::StreamRead(ReadExactError::FinishedEarly(read)) if *read == NONCE_CUT_SHORT.len()
+        )));
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_gate_reports_a_proof_the_peer_stopped_reading_as_the_stream_write_failure_it_closed_on()
+     {
+        let (member, recorded) =
+            bind_node_recording_gate_closings(MEMBER_SEED, MEMBER_SECRET).await;
+        let peer = bind_plain_endpoint(SPEC_PEER_SEED).await;
+
+        let challenge_then_stop_reading_the_proof = async {
+            let connection = peer
+                .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                .await
+                .unwrap();
+            let (mut challenge_send, mut proof_recv) = connection.open_bi().await.unwrap();
+            proof_recv.stop(PEER_STOP_CODE).unwrap();
+            challenge_send.write_all(&SPEC_PEER_NONCE).await.unwrap();
+            challenge_send.finish().unwrap();
+            connection
+        };
+        let (_closed_connection, accepted) = tokio::join!(
+            challenge_then_stop_reading_the_proof,
+            accept_next(member.endpoint())
+        );
+
+        assert!(accept_is_locally_rejected(&accepted));
+        assert!(recorded_reasons_match(&recorded, |reason| matches!(
+            reason,
+            GateFailure::StreamWrite(WriteError::Stopped(code)) if *code == PEER_STOP_CODE
+        )));
+    }
+
+    #[tokio::test]
     async fn spec_3_14_gate_reports_the_timeout_as_the_reason_it_closed_on_a_silent_peer() {
         let (member, recorded) =
             bind_node_recording_gate_closings(MEMBER_SEED, MEMBER_SECRET).await;
@@ -656,6 +757,32 @@ mod tests {
         assert!(recorded_reasons_match(&recorded, |reason| matches!(
             reason,
             GateFailure::Timeout
+        )));
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_gate_reports_a_peer_that_closes_before_the_challenge_as_the_transport_failure_it_closed_on()
+     {
+        let (member, recorded) =
+            bind_node_recording_gate_closings(MEMBER_SEED, MEMBER_SECRET).await;
+        let peer = bind_plain_endpoint_granting_no_streams(SPEC_PEER_SEED).await;
+
+        let close_before_the_challenge = async {
+            let connection = peer
+                .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                .await
+                .unwrap();
+            connection.close(PEER_CLOSE_CODE, PEER_CLOSE_REASON);
+            connection
+        };
+        let (_closed_connection, accepted) =
+            tokio::join!(close_before_the_challenge, accept_next(member.endpoint()));
+
+        assert!(accept_is_locally_rejected(&accepted));
+        assert!(recorded_reasons_match(&recorded, |reason| matches!(
+            reason,
+            GateFailure::Transport(ConnectionError::ApplicationClosed(close))
+                if close.error_code == PEER_CLOSE_CODE && close.reason == PEER_CLOSE_REASON
         )));
     }
 }
