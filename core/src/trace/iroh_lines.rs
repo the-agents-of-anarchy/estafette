@@ -3,11 +3,13 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value};
 use tracing::field::{Field, Visit};
+use tracing::span::{Attributes, Id};
 use tracing::subscriber::SetGlobalDefaultError;
 use tracing::{Event, Subscriber};
 use tracing_subscriber::Registry;
 use tracing_subscriber::filter::{LevelFilter, Targets};
 use tracing_subscriber::layer::{Context, Layer, SubscriberExt};
+use tracing_subscriber::registry::{LookupSpan, Scope};
 
 use super::Trace;
 
@@ -24,6 +26,8 @@ const TARGET_KEY: &str = "target";
 const LEVEL_KEY: &str = "level";
 const MESSAGE_KEY: &str = "message";
 const FIELDS_KEY: &str = "fields";
+const SPANS_KEY: &str = "spans";
+const SPAN_NAME_KEY: &str = "name";
 
 /// Sends every line iroh writes to the four targets of decision 7 into the trace's raw file for the rest of the process.
 ///
@@ -45,56 +49,85 @@ struct RawFileLines {
     trace: Arc<Trace>,
 }
 
-impl<S: Subscriber> Layer<S> for RawFileLines {
-    fn on_event(&self, event: &Event<'_>, _context: Context<'_, S>) {
-        self.trace.record_iroh_line(&iroh_line(event));
+impl<S> Layer<S> for RawFileLines
+where
+    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+    fn on_new_span(&self, attributes: &Attributes<'_>, id: &Id, context: Context<'_, S>) {
+        if let Some(span) = context.span(id) {
+            let mut worded = WordedFields::default();
+            attributes.record(&mut worded);
+            span.extensions_mut()
+                .insert(WordedSpan::named(span.name(), worded));
+        }
+    }
+
+    fn on_event(&self, event: &Event<'_>, context: Context<'_, S>) {
+        self.trace
+            .record_iroh_line(&iroh_line(event, spans_in_scope(event, &context)));
     }
 }
 
-/// What a raw line holds after its header: the line's target, its level, its message when it has one, and its other fields, each as iroh words it.
-fn iroh_line(event: &Event<'_>) -> Vec<(&'static str, Value)> {
+/// Each span in scope at the event, outermost first, as the raw line names it.
+fn spans_in_scope<S>(event: &Event<'_>, context: &Context<'_, S>) -> Vec<Value>
+where
+    S: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+    context
+        .event_scope(event)
+        .into_iter()
+        .flat_map(Scope::from_root)
+        .filter_map(|span| {
+            span.extensions()
+                .get::<WordedSpan>()
+                .map(|worded| worded.0.clone())
+        })
+        .collect()
+}
+
+/// What a raw line holds after its header: the line's target, its level, its message when it has one, its other fields, each as iroh words it, and the given spans in scope when there are any.
+fn iroh_line(event: &Event<'_>, spans: Vec<Value>) -> Vec<(&'static str, Value)> {
     let metadata = event.metadata();
     let mut worded = WordedFields::default();
     event.record(&mut worded);
+    let message = worded.0.remove(TRACING_MESSAGE_FIELD);
     let mut line = vec![
         (TARGET_KEY, Value::from(metadata.target())),
         (LEVEL_KEY, Value::from(metadata.level().as_str())),
     ];
-    line.extend(
-        worded
-            .message
-            .map(|message| (MESSAGE_KEY, Value::from(message))),
-    );
-    line.push((FIELDS_KEY, Value::Object(worded.fields)));
+    line.extend(message.map(|message| (MESSAGE_KEY, message)));
+    line.push((FIELDS_KEY, Value::Object(worded.0)));
+    if !spans.is_empty() {
+        line.push((SPANS_KEY, Value::Array(spans)));
+    }
     line
 }
 
-/// A line's message and its other fields, each as iroh words it.
+/// The fields of a line or a span, each as iroh words it.
 #[derive(Default)]
-struct WordedFields {
-    message: Option<String>,
-    fields: Map<String, Value>,
-}
-
-impl WordedFields {
-    /// Keeps the field's text as the message when it is the message, among the other fields when it is not.
-    fn keep(&mut self, field: &Field, text: String) {
-        if field.name() == TRACING_MESSAGE_FIELD {
-            self.message = Some(text);
-        } else {
-            self.fields
-                .insert(field.name().to_owned(), Value::from(text));
-        }
-    }
-}
+struct WordedFields(Map<String, Value>);
 
 impl Visit for WordedFields {
     fn record_str(&mut self, field: &Field, value: &str) {
-        self.keep(field, value.to_owned());
+        self.0.insert(field.name().to_owned(), Value::from(value));
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
-        self.keep(field, format!("{value:?}"));
+        self.0
+            .insert(field.name().to_owned(), Value::from(format!("{value:?}")));
+    }
+}
+
+/// A span as a raw line names it: its name and its fields, each as iroh words it, kept with the span from its start.
+struct WordedSpan(Value);
+
+impl WordedSpan {
+    /// The span of the given name holding the given fields.
+    fn named(name: &str, fields: WordedFields) -> Self {
+        Self(Value::Object(Map::from_iter([
+            (SPAN_NAME_KEY.to_owned(), Value::from(name)),
+            (FIELDS_KEY.to_owned(), Value::Object(fields.0)),
+        ])))
     }
 }
 
