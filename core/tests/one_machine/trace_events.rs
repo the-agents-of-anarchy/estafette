@@ -241,7 +241,7 @@ fn observability_decision_14_a_line_a_look_finds_once_the_bound_ran_out_fails_th
     );
     assert!(
         waited < TICK,
-        "the wait ran out on its notice, not after its look: {waited:?}"
+        "the wait ran out on its timeout, not after its look: {waited:?}"
     );
 }
 
