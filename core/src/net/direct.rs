@@ -430,30 +430,26 @@ impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
     }
 }
 
+/// Why the server ended a stream without its response: a reset with its code, or a peer already gone.
 #[derive(Debug, Clone, Copy)]
-enum StreamReset {
+enum StreamEnd {
     OverWireLimit,
     ReadTimeout,
     Unanswered,
-}
-
-impl StreamReset {
-    const fn code(self) -> VarInt {
-        VarInt::from_u32(match self {
-            Self::OverWireLimit => RESET_CODE_OVER_WIRE_LIMIT,
-            Self::ReadTimeout => RESET_CODE_READ_TIMEOUT,
-            Self::Unanswered => RESET_CODE_UNANSWERED,
-        })
-    }
-}
-
-#[derive(Debug)]
-enum StreamEnd {
-    Reset(StreamReset),
     PeerGone,
 }
 
-const UNANSWERED: StreamEnd = StreamEnd::Reset(StreamReset::Unanswered);
+impl StreamEnd {
+    /// The code the stream is reset with, or none when the peer is gone.
+    const fn reset_code(self) -> Option<VarInt> {
+        match self {
+            Self::OverWireLimit => Some(VarInt::from_u32(RESET_CODE_OVER_WIRE_LIMIT)),
+            Self::ReadTimeout => Some(VarInt::from_u32(RESET_CODE_READ_TIMEOUT)),
+            Self::Unanswered => Some(VarInt::from_u32(RESET_CODE_UNANSWERED)),
+            Self::PeerGone => None,
+        }
+    }
+}
 
 impl From<ReadError> for StreamEnd {
     fn from(_failure: ReadError) -> Self {
@@ -482,14 +478,14 @@ impl<H: DirectHost> ServerState<H> {
         mut send: SendStream,
         recv: RecvStream,
     ) {
-        match self
+        if let Err(end) = self
             .answer_stream(sender, arrived_on, &mut send, recv)
             .await
+            && let Some(code) = end.reset_code()
         {
-            Ok(()) | Err(StreamEnd::PeerGone) => {}
-            Err(StreamEnd::Reset(reset)) => match send.reset(reset.code()) {
+            match send.reset(code) {
                 Ok(()) | Err(ClosedStream { .. }) => {}
-            },
+            }
         }
     }
 
@@ -510,8 +506,8 @@ impl<H: DirectHost> ServerState<H> {
     /// Reads the whole request within the wire limit and the read timeout.
     async fn read_request(&self, recv: &mut RecvStream) -> Result<Vec<u8>, StreamEnd> {
         match timeout(SERVER_READ_TIMEOUT, recv.read_to_end(WIRE_LIMIT_BYTES)).await {
-            Err(_elapsed) => Err(StreamEnd::Reset(StreamReset::ReadTimeout)),
-            Ok(Err(ReadToEndError::TooLong)) => Err(StreamEnd::Reset(StreamReset::OverWireLimit)),
+            Err(_elapsed) => Err(StreamEnd::ReadTimeout),
+            Ok(Err(ReadToEndError::TooLong)) => Err(StreamEnd::OverWireLimit),
             Ok(Err(ReadToEndError::Read(failure))) => Err(failure.into()),
             Ok(Ok(bytes)) => Ok(bytes),
         }
@@ -524,9 +520,10 @@ impl<H: DirectHost> ServerState<H> {
         arrived_on: &Connection,
         request_bytes: &[u8],
     ) -> Result<Vec<u8>, StreamEnd> {
-        let request = open_request(&self.keys, request_bytes).map_err(|_failure| UNANSWERED)?;
+        let request =
+            open_request(&self.keys, request_bytes).map_err(|_failure| StreamEnd::Unanswered)?;
         let response = self.answer(sender, arrived_on, request)?;
-        seal_response(&self.keys, response).map_err(|_failure| UNANSWERED)
+        seal_response(&self.keys, response).map_err(|_failure| StreamEnd::Unanswered)
     }
 
     /// The response to a validated request, or none while the process is stopping and the request is a Probe or an Introduce, or for an Introduce the node would drop, before any connection of its sender is closed.
@@ -540,7 +537,9 @@ impl<H: DirectHost> ServerState<H> {
             Request::Message(message) => {
                 Ok(Response::MessageAck(self.answer_message(sender, message)))
             }
-            Request::Probe(_) | Request::Introduce(_) if self.host.is_stopping() => Err(UNANSWERED),
+            Request::Probe(_) | Request::Introduce(_) if self.host.is_stopping() => {
+                Err(StreamEnd::Unanswered)
+            }
             Request::Introduce(introduce)
                 if admissible_introduction_handle(
                     introduce.handle.as_deref(),
@@ -548,7 +547,7 @@ impl<H: DirectHost> ServerState<H> {
                 )
                 .is_err() =>
             {
-                Err(UNANSWERED)
+                Err(StreamEnd::Unanswered)
             }
             Request::Probe(probe) => Ok(Response::ProbeAck(self.answer_probe(&probe))),
             Request::Introduce(introduce) => {
@@ -863,7 +862,10 @@ mod tests {
     const NETWORK_SECRET: [u8; KEY_LEN] = [7; KEY_LEN];
     const SERVER_SEED: u8 = 1;
     const CLIENT_SEED: u8 = 2;
-    const MESSAGE_ID: [u8; 16] = [9; 16];
+    const MESSAGE_ID: [u8; 16] = [
+        0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87, 0x98, 0xA9, 0xBA, 0xCB, 0xDC, 0xED, 0xFE,
+        0x0F,
+    ];
     const SENDER_HANDLE: &str = "alice";
     const SENT_AT: u64 = 1_700_000_000;
     const BODY: &str = "hello over the direct protocol";
@@ -1185,6 +1187,8 @@ mod tests {
     const VERSION_BYTE_INDEX: usize = 1;
     const UNSUPPORTED_VERSION: u8 = 2;
     const SPEC_RESET_CODE_OVER_WIRE_LIMIT: u32 = 1;
+    const READ_TIMEOUT_RESET_CODE_ON_THE_WIRE: u32 = 2;
+    const UNANSWERED_RESET_CODE_ON_THE_WIRE: u32 = 3;
     const SPEC_SERVER_READ_TIMEOUT_EARLIEST: Duration = Duration::from_secs(10);
     const SPEC_SERVER_READ_TIMEOUT_LATEST: Duration = Duration::from_secs(11);
 
@@ -1240,7 +1244,7 @@ mod tests {
 
         assert_eq!(
             reset_code_of(&outcome),
-            Some(StreamReset::Unanswered.code())
+            Some(VarInt::from_u32(UNANSWERED_RESET_CODE_ON_THE_WIRE))
         );
         assert_eq!(rig.host.received().len(), 0);
     }
@@ -1256,9 +1260,48 @@ mod tests {
 
         assert_eq!(
             reset_code_of(&outcome),
-            Some(StreamReset::Unanswered.code())
+            Some(VarInt::from_u32(UNANSWERED_RESET_CODE_ON_THE_WIRE))
         );
         assert_eq!(rig.host.received().len(), 0);
+    }
+
+    fn sealed_probe_and_introduce(keys: &NetworkKeys) -> [Vec<u8>; 2] {
+        [
+            Request::Probe(Probe {
+                v: Version::CURRENT,
+                nonce: PROBE_NONCE,
+                mac: ZERO_MAC,
+            }),
+            Request::Introduce(introduction_from_client()),
+        ]
+        .map(|request| seal_request(keys, request).unwrap())
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_probe_or_introduce_with_a_wrong_mac_or_an_unsupported_version_gets_no_response()
+     {
+        let rig = rig().await;
+        let connection = raw_connection(&rig).await;
+        let other_keys = NetworkKeys::derive(&NetworkSecret::from_bytes(OTHER_NETWORK_SECRET));
+        let under_another_secret = sealed_probe_and_introduce(&other_keys);
+        let of_an_unsupported_version =
+            sealed_probe_and_introduce(&keys()).map(|mut request_bytes| {
+                request_bytes[VERSION_BYTE_INDEX] = UNSUPPORTED_VERSION;
+                request_bytes
+            });
+
+        for request_bytes in under_another_secret
+            .into_iter()
+            .chain(of_an_unsupported_version)
+        {
+            let outcome = raw_exchange(&connection, &request_bytes).await;
+
+            assert_eq!(
+                reset_code_of(&outcome),
+                Some(VarInt::from_u32(UNANSWERED_RESET_CODE_ON_THE_WIRE))
+            );
+        }
+        assert_eq!(rig.host.introduced.lock().unwrap().len(), 0);
     }
 
     #[tokio::test]
@@ -1288,7 +1331,7 @@ mod tests {
 
         assert_eq!(
             reset_code_of(&Err(outcome.unwrap_err())),
-            Some(StreamReset::ReadTimeout.code())
+            Some(VarInt::from_u32(READ_TIMEOUT_RESET_CODE_ON_THE_WIRE))
         );
         assert!(
             SPEC_SERVER_READ_TIMEOUT_EARLIEST <= waited && waited < SPEC_SERVER_READ_TIMEOUT_LATEST
@@ -1303,7 +1346,14 @@ mod tests {
         ));
     }
 
-    const PROBE_NONCE: Nonce = [5; 16];
+    const PROBE_NONCE: Nonce = [
+        0x51, 0x62, 0x73, 0x84, 0x95, 0xA6, 0xB7, 0xC8, 0xD9, 0xEA, 0xFB, 0x0C, 0x1D, 0x2E, 0x3F,
+        0x40,
+    ];
+    const PROBE_NONCE_REVERSED: Nonce = [
+        0x40, 0x3F, 0x2E, 0x1D, 0x0C, 0xFB, 0xEA, 0xD9, 0xC8, 0xB7, 0xA6, 0x95, 0x84, 0x73, 0x62,
+        0x51,
+    ];
     const SENDER_DIRECT_ADDRESS: &str = "127.0.0.1:4000";
     const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
     const SPEC_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -2368,7 +2418,8 @@ mod tests {
                             send.finish().unwrap();
                         }
                         StreamScript::Reset => {
-                            send.reset(StreamReset::Unanswered.code()).unwrap();
+                            send.reset(VarInt::from_u32(UNANSWERED_RESET_CODE_ON_THE_WIRE))
+                                .unwrap();
                         }
                         StreamScript::Silent => std::future::pending().await,
                     }
@@ -2391,7 +2442,10 @@ mod tests {
         .unwrap()
     }
 
-    const ANOTHER_MESSAGE_ID: [u8; 16] = [10; 16];
+    const MESSAGE_ID_REVERSED: [u8; 16] = [
+        0x0F, 0xFE, 0xED, 0xDC, 0xCB, 0xBA, 0xA9, 0x98, 0x87, 0x76, 0x65, 0x54, 0x43, 0x32, 0x21,
+        0x10,
+    ];
 
     fn sealed_accepting_message_ack(id: wire::MessageId) -> Vec<u8> {
         seal_response(
@@ -2410,7 +2464,7 @@ mod tests {
     #[tokio::test]
     async fn spec_3_6_a_message_ack_for_another_id_is_a_failed_send() {
         let server =
-            ScriptedServer::replying(Some(sealed_accepting_message_ack(ANOTHER_MESSAGE_ID)));
+            ScriptedServer::replying(Some(sealed_accepting_message_ack(MESSAGE_ID_REVERSED)));
         let link = link_to(server, ClientTimeouts::SPEC).await;
 
         let outcome = link
@@ -2426,8 +2480,7 @@ mod tests {
 
     #[tokio::test]
     async fn spec_3_6_probe_ack_with_another_nonce_is_a_failed_probe() {
-        let answer_with_other_nonce = [6; 16];
-        let server = ScriptedServer::replying(Some(sealed_probe_ack(answer_with_other_nonce)));
+        let server = ScriptedServer::replying(Some(sealed_probe_ack(PROBE_NONCE_REVERSED)));
         let link = link_to(server, ClientTimeouts::SPEC).await;
 
         let outcome = link
@@ -2864,7 +2917,7 @@ mod tests {
 
         assert_eq!(
             reset_code_of(&outcome),
-            Some(StreamReset::Unanswered.code())
+            Some(VarInt::from_u32(UNANSWERED_RESET_CODE_ON_THE_WIRE))
         );
         assert_eq!(rig.host.received().len(), 0);
     }
