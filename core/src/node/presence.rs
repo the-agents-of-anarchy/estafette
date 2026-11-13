@@ -648,7 +648,7 @@ enum Init {
     Done,
 }
 
-/// What init holds until it assigns the handle: where the handle goes, and the cards this node would have introduced itself to meanwhile, in their order.
+/// What init holds until it assigns the handle: where the handle goes, and each card this node would have introduced itself to meanwhile, once, in the order first asked.
 struct PendingHandle {
     assigned: oneshot::Sender<LocalHandle>,
     held_introduces: Vec<wire::PublicKey>,
@@ -698,11 +698,13 @@ impl Init {
         }
     }
 
-    /// Holds an Introduce to the card while the handle is unassigned, returning the card to introduce this node to now once it is assigned.
+    /// Holds an Introduce to the card while the handle is unassigned, a card already held not held again, returning the card to introduce this node to now once it is assigned.
     fn introduce_now_or_hold(&mut self, card: wire::PublicKey) -> Option<wire::PublicKey> {
         match self {
             Self::AwaitingJoin(pending) | Self::ObserverWait { pending, .. } => {
-                pending.held_introduces.push(card);
+                if !pending.held_introduces.contains(&card) {
+                    pending.held_introduces.push(card);
+                }
                 None
             }
             Self::Done => Some(card),
@@ -1991,6 +1993,15 @@ pub(super) mod tests {
                 .map(|(_sender, introduce)| introduce.clone())
         }
 
+        /// How many Introduces the witness has taken from the card of the seed.
+        fn introduces_taken_from(&self, seed: u8) -> usize {
+            self.introductions
+                .borrow()
+                .iter()
+                .filter(|(sender, _introduce)| *sender == card(seed))
+                .count()
+        }
+
         /// Closes the witness's endpoint, so it leaves the topic and answers no direct request.
         async fn close(&self) {
             self.router.shutdown().await.unwrap();
@@ -3122,6 +3133,77 @@ pub(super) mod tests {
             first_introduce.and_then(|introduce| introduce.handle),
             Some(SECOND_HANDLE.to_owned())
         );
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_joining_member_whose_gossip_neighbor_announces_itself_before_the_handle_introduces_itself_to_it_once()
+     {
+        let scratch = Scratch::new("held-once").await;
+        let first = start_members(
+            &scratch,
+            vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)],
+        )
+        .await
+        .pop()
+        .unwrap();
+        let mut witness =
+            Witness::joined_through(WITNESS_SEED, Some(WITNESS_HANDLE), &first.endpoint).await;
+        let witness_address = witness.address();
+        let witness_presence = Payload::Presence(Presence {
+            v: Version::CURRENT,
+            card: card(WITNESS_SEED),
+            handle: WITNESS_HANDLE.to_owned(),
+            public: WITNESS_PUBLIC.to_vec(),
+            attached: false,
+            addr: wire_addr(&witness_address),
+            seq: wall_clock_ms(),
+            mac: ZERO_MAC,
+            sig: ZERO_SIGNATURE,
+        });
+        let (report, mut failures) = recorded_contact_failures();
+        let running = [(WITNESS_SEED, witness_address)];
+
+        let (_joining, ()) = tokio::join!(
+            start_members_reaching(
+                &scratch,
+                vec![
+                    MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
+                        .with_hosts(&[WITNESS_SEED])
+                        .with_report(report),
+                ],
+                &running,
+            ),
+            async {
+                witness
+                    .payload_where(PAYLOAD_WAIT, presence_request_by(SECOND_SEED))
+                    .await
+                    .unwrap();
+                witness.broadcast_as(WITNESS_SEED, witness_presence).await;
+                witness
+                    .broadcast_as(
+                        MARKER_SEED,
+                        presence_of(MARKER_SEED, MARKER_HANDLE, MARKER_PUBLIC, wall_clock_ms()),
+                    )
+                    .await;
+            }
+        );
+        let marker_introduce_failed = tokio::time::timeout(
+            SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT.saturating_add(PAYLOAD_WAIT),
+            async {
+                while let Some((peer, _reason)) = failures.recv().await {
+                    if peer == secret_key(MARKER_SEED).public() {
+                        return true;
+                    }
+                }
+                false
+            },
+        )
+        .await
+        .unwrap_or(false);
+
+        assert!(marker_introduce_failed);
+        assert_eq!(witness.introduces_taken_from(SECOND_SEED), 1);
         drop(scratch);
     }
 
