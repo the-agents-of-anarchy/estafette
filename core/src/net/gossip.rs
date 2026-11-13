@@ -302,11 +302,11 @@ mod tests {
         })
     }
 
-    fn presence_card(payload: Payload) -> [u8; 32] {
+    fn presence_in(payload: Payload) -> Presence {
         let Payload::Presence(presence) = payload else {
             panic!("a presence was expected");
         };
-        presence.card
+        presence
     }
 
     fn forged_departure(signature: SignatureBytes, mac_of: impl Fn(&[u8]) -> [u8; 32]) -> Vec<u8> {
@@ -389,7 +389,7 @@ mod tests {
         let arrived = next_payload(&mut first_topic).await;
 
         assert_eq!(
-            presence_card(arrived),
+            presence_in(arrived).card,
             *secret_key(SECOND_SEED).public().as_bytes()
         );
         nothing_more_arrives(&mut first_topic).await;
@@ -445,12 +445,9 @@ mod tests {
             second_topic,
             ..
         } = joined_pair().await;
-        let Payload::Presence(presence) = presence_of(SECOND_SEED, "bob", 9) else {
-            panic!("presence_of builds a presence");
-        };
         let oversize = Payload::Presence(Presence {
             public: vec![1; OVERSIZE_PUBLIC_BYTES],
-            ..presence
+            ..presence_in(presence_of(SECOND_SEED, "bob", 9))
         });
 
         let refused = second_topic
@@ -468,9 +465,7 @@ mod tests {
             refused,
             Err(GossipError::Seal(PayloadError::OverGossipFrame { .. }))
         ));
-        let Payload::Presence(arrived) = next_payload(&mut first_topic).await else {
-            panic!("the link must carry the next presence");
-        };
+        let arrived = presence_in(next_payload(&mut first_topic).await);
         assert_eq!(arrived.seq, 10);
     }
 
@@ -627,11 +622,8 @@ mod tests {
             .broadcast(&secret_key(SECOND_SEED), presence_of(SECOND_SEED, "bob", 7))
             .await
             .unwrap();
-        let received = next_payload(&mut first_topic).await;
+        let presence = presence_in(next_payload(&mut first_topic).await);
 
-        let Payload::Presence(presence) = received else {
-            panic!("a presence was broadcast");
-        };
         assert_eq!(presence.card, *secret_key(SECOND_SEED).public().as_bytes());
         assert_eq!(presence.handle, "bob");
         assert_eq!(presence.seq, 7);
