@@ -292,4 +292,88 @@ mod tests {
             );
         }
     }
+
+    const OBSERVABILITY_DECISION_9_RULE_WORDS: [(PayloadDropRule, &str); 27] = [
+        (PayloadDropRule::FromOwnCard, "from_own_card"),
+        (PayloadDropRule::OlderThanMaxAge, "older_than_max_age"),
+        (PayloadDropRule::NotNewerThanHeld, "not_newer_than_held"),
+        (
+            PayloadDropRule::NotNewerThanDeparture,
+            "not_newer_than_departure",
+        ),
+        (
+            PayloadDropRule::HandleOutsideGrammar,
+            "handle_outside_grammar",
+        ),
+        (
+            PayloadDropRule::ReportOlderThanHeldSeq,
+            "report_older_than_held_seq",
+        ),
+        (
+            PayloadDropRule::ReportBeforeDirectContact,
+            "report_before_direct_contact",
+        ),
+        (
+            PayloadDropRule::ReportedCardUnknown,
+            "reported_card_unknown",
+        ),
+        (PayloadDropRule::ReportedCardGone, "reported_card_gone"),
+        (
+            PayloadDropRule::ReportOlderThanLastPresence,
+            "report_older_than_last_presence",
+        ),
+        (
+            PayloadDropRule::NotAboveRequesterSeq,
+            "not_above_requester_seq",
+        ),
+        (PayloadDropRule::AheadOfMaxAge, "ahead_of_max_age"),
+        (
+            PayloadDropRule::RecordNotNewerThanHeld,
+            "record_not_newer_than_held",
+        ),
+        (
+            PayloadDropRule::RecordPastFutureBound,
+            "record_past_future_bound",
+        ),
+        (PayloadDropRule::PastWireLimit, "past_wire_limit"),
+        (PayloadDropRule::TrailingBytes, "trailing_bytes"),
+        (PayloadDropRule::Unencodable, "unencodable"),
+        (PayloadDropRule::Malformed, "malformed"),
+        (PayloadDropRule::UnsupportedVersion, "unsupported_version"),
+        (PayloadDropRule::RelayUrlTooLong, "relay_url_too_long"),
+        (PayloadDropRule::AddrOverCap, "addr_over_cap"),
+        (PayloadDropRule::MacMismatch, "mac_mismatch"),
+        (PayloadDropRule::SignatureMismatch, "signature_mismatch"),
+        (PayloadDropRule::HostNotCertified, "host_not_certified"),
+        (PayloadDropRule::HostRelayRefused, "host_relay_refused"),
+        (
+            PayloadDropRule::AddrRelaysNotTheHostRelay,
+            "addr_relays_not_the_host_relay",
+        ),
+        (PayloadDropRule::PublicNotAdmitted, "public_not_admitted"),
+    ];
+
+    #[test]
+    fn observability_decision_9_a_dropped_payload_writes_the_word_of_its_own_rule_and_of_no_other()
+    {
+        for (rule, word) in OBSERVABILITY_DECISION_9_RULE_WORDS {
+            let event: Event = GossipEvent::PayloadDropped {
+                payload: None,
+                rule,
+            }
+            .into();
+
+            assert_eq!(
+                event.fields(),
+                [(RULE_FIELD, Value::from(word))],
+                "{rule:?}"
+            );
+        }
+        let mut words = OBSERVABILITY_DECISION_9_RULE_WORDS.map(|(_rule, word)| word);
+        words.sort_unstable();
+        assert!(
+            words.windows(2).all(|pair| pair.first() != pair.last()),
+            "{words:?}"
+        );
+    }
 }
