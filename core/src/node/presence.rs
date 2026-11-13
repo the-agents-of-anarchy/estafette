@@ -1180,11 +1180,14 @@ impl PresenceLoop {
         self.broadcast(report).await;
     }
 
-    /// Signs and broadcasts the payload under the card key, writing a failure to the run record.
+    /// Signs and broadcasts the payload under the card key, recording its kind and stamp once sent and a failure otherwise.
     async fn broadcast(&self, payload: Payload) {
-        if let Err(failure) = self.topic.broadcast(&self.card_key, payload).await {
-            (self.report)(crate::event::GossipEvent::BroadcastFailed(failure).into());
-        }
+        let facts = payload.facts();
+        let event = match self.topic.broadcast(&self.card_key, payload).await {
+            Ok(()) => crate::event::GossipEvent::PayloadBroadcast(facts.into()),
+            Err(failure) => crate::event::GossipEvent::BroadcastFailed(failure),
+        };
+        (self.report)(event.into());
     }
 
     /// Announces a changed address now, or once the re-announce interval since the last Presence has passed.

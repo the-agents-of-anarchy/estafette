@@ -640,3 +640,44 @@ async fn observability_decision_9_a_member_records_a_payload_the_payload_layer_d
     }
     drop(scratch);
 }
+
+#[tokio::test]
+async fn observability_decision_9_a_member_records_each_payload_it_broadcast_with_its_kind_and_seq()
+{
+    let scratch = Scratch::new("events-broadcast").await;
+    let (report, mut recorded) = recording();
+    let (_member, mut witness) = start_witnessed(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+            .with_clock(Arc::new(|| FROZEN_CLOCK_MS))
+            .with_report(report),
+        None,
+    )
+    .await;
+
+    let broadcast = recorded.next_named("gossip.payload_broadcast").await;
+    let heard = witness
+        .payload_where(EVENT_WAIT, |payload| {
+            matches!(payload, Payload::Presence(_))
+        })
+        .await;
+
+    assert_eq!(
+        broadcast,
+        [
+            ("kind", Value::from("presence")),
+            ("seq", Value::from(FROZEN_CLOCK_MS)),
+        ]
+    );
+    assert!(
+        matches!(
+            heard,
+            Some(Payload::Presence(Presence {
+                seq: FROZEN_CLOCK_MS,
+                ..
+            }))
+        ),
+        "the witness heard {heard:?}"
+    );
+    drop(scratch);
+}

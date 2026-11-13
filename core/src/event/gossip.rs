@@ -29,6 +29,7 @@ super::event_names! {
         NeighborDown => "gossip.neighbor_down",
         PayloadAccepted => "gossip.payload_accepted",
         PayloadDropped => "gossip.payload_dropped",
+        PayloadBroadcast => "gossip.payload_broadcast",
     }
 }
 
@@ -90,6 +91,22 @@ impl ReceivedPayload {
         );
         fields.push(stamp_field(self.stamp));
         fields
+    }
+}
+
+/// A payload this node broadcast as the events file names it: its kind and its stamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SentPayload {
+    kind: SignedPayloadKind,
+    stamp: PayloadStamp,
+}
+
+impl From<PayloadFacts> for SentPayload {
+    fn from(facts: PayloadFacts) -> Self {
+        Self {
+            kind: facts.kind,
+            stamp: facts.stamp,
+        }
     }
 }
 
@@ -168,6 +185,8 @@ pub enum GossipEvent {
         payload: Option<ReceivedPayload>,
         rule: PayloadDropRule,
     },
+    /// The node broadcast a payload on the topic.
+    PayloadBroadcast(SentPayload),
 }
 
 impl AreaEvent for GossipEvent {
@@ -184,6 +203,7 @@ impl AreaEvent for GossipEvent {
             Self::NeighborDown(_) => GossipEventName::NeighborDown,
             Self::PayloadAccepted(_) => GossipEventName::PayloadAccepted,
             Self::PayloadDropped { .. } => GossipEventName::PayloadDropped,
+            Self::PayloadBroadcast(_) => GossipEventName::PayloadBroadcast,
         }
     }
 
@@ -201,7 +221,8 @@ impl AreaEvent for GossipEvent {
             | Self::NeighborUp(_)
             | Self::NeighborDown(_)
             | Self::PayloadAccepted(_)
-            | Self::PayloadDropped { .. } => None,
+            | Self::PayloadDropped { .. }
+            | Self::PayloadBroadcast(_) => None,
         }
     }
 
@@ -221,6 +242,54 @@ impl AreaEvent for GossipEvent {
                 fields.push((RULE_FIELD, Value::from(rule_name(*rule))));
                 fields
             }
+            Self::PayloadBroadcast(sent) => vec![
+                (KIND_FIELD, Value::from(kind_name(sent.kind))),
+                stamp_field(sent.stamp),
+            ],
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{Event, write_run_record};
+
+    const PEER_ID: wire::PublicKey = [7; 32];
+    const STAMP: u64 = 1_800_000_000_000;
+
+    fn facts() -> PayloadFacts {
+        PayloadFacts {
+            kind: SignedPayloadKind::Presence,
+            signer: PEER_ID,
+            stamp: PayloadStamp::Seq(STAMP),
+        }
+    }
+
+    #[test]
+    fn observability_decision_3_the_topic_and_payload_events_add_no_line_to_standard_error() {
+        let events: [Event; 6] = [
+            GossipEvent::TopicJoined.into(),
+            GossipEvent::NeighborUp(ShortId::from(&PEER_ID)).into(),
+            GossipEvent::NeighborDown(ShortId::from(&PEER_ID)).into(),
+            GossipEvent::PayloadAccepted((facts(), None).into()).into(),
+            GossipEvent::PayloadDropped {
+                payload: None,
+                rule: PayloadDropRule::Malformed,
+            }
+            .into(),
+            GossipEvent::PayloadBroadcast(facts().into()).into(),
+        ];
+
+        for event in events {
+            let mut standard_error = Vec::new();
+            write_run_record(&mut standard_error, &event).unwrap();
+            assert_eq!(
+                String::from_utf8(standard_error).unwrap(),
+                "",
+                "{}",
+                event.name()
+            );
         }
     }
 }
