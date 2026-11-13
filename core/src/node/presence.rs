@@ -1386,6 +1386,9 @@ pub(super) mod tests {
     const NOTHING_MORE_WAIT: Duration = Duration::from_millis(1000);
     pub(in crate::node) const WITNESS_HANDLE: &str = "xen";
     const SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT: Duration = Duration::from_millis(5000);
+    const TWO_UNREACHABLE_INTRODUCES_FAIL_WITHIN: Duration = SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT
+        .saturating_add(SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT)
+        .saturating_add(PAYLOAD_WAIT);
     const PROBE_ANSWERED_WAIT: Duration = Duration::from_secs(5);
     const AFTER_PROBE_ACK: Duration = Duration::from_millis(300);
     const FIRST_REQUESTER_SEED: u8 = 72;
@@ -3236,23 +3239,32 @@ pub(super) mod tests {
                         presence_of(MARKER_SEED, MARKER_HANDLE, MARKER_PUBLIC, wall_clock_ms()),
                     )
                     .await;
+                witness
+                    .broadcast_as(
+                        SECOND_MARKER_SEED,
+                        presence_of(
+                            SECOND_MARKER_SEED,
+                            MARKER_HANDLE,
+                            MARKER_PUBLIC,
+                            wall_clock_ms(),
+                        ),
+                    )
+                    .await;
             }
         );
-        let marker_introduce_failed = tokio::time::timeout(
-            SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT.saturating_add(PAYLOAD_WAIT),
-            async {
+        let last_held_introduce_failed =
+            tokio::time::timeout(TWO_UNREACHABLE_INTRODUCES_FAIL_WITHIN, async {
                 while let Some((peer, _reason)) = failures.recv().await {
-                    if peer == secret_key(MARKER_SEED).public() {
+                    if peer == secret_key(SECOND_MARKER_SEED).public() {
                         return true;
                     }
                 }
                 false
-            },
-        )
-        .await
-        .unwrap_or(false);
+            })
+            .await
+            .unwrap_or(false);
 
-        assert!(marker_introduce_failed);
+        assert!(last_held_introduce_failed);
         assert_eq!(witness.introduces_taken_from(SECOND_SEED), 1);
         drop(scratch);
     }
