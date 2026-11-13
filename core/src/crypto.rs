@@ -295,31 +295,27 @@ mod tests {
     }
 
     const SIGNER_SEED: [u8; KEY_LEN] = [3; KEY_LEN];
-    const ALL_KINDS: [SignedPayloadKind; 5] = [
-        SignedPayloadKind::Presence,
-        SignedPayloadKind::Departure,
-        SignedPayloadKind::Unreachable,
-        SignedPayloadKind::Infrastructure,
-        SignedPayloadKind::PresenceRequest,
-    ];
 
-    /// The place of each kind in `ALL_KINDS`, named by a match so that a new kind breaks the build until it is listed.
-    const fn place_in_all_kinds(kind: SignedPayloadKind) -> usize {
-        match kind {
-            SignedPayloadKind::Presence => 0,
-            SignedPayloadKind::Departure => 1,
-            SignedPayloadKind::Unreachable => 2,
-            SignedPayloadKind::Infrastructure => 3,
-            SignedPayloadKind::PresenceRequest => 4,
-        }
+    macro_rules! all_signed_kinds {
+        ($($kind:ident),+) => {
+            const ALL_KINDS: [SignedPayloadKind; [$(SignedPayloadKind::$kind),+].len()] =
+                [$(SignedPayloadKind::$kind),+];
+
+            /// Matches every signed kind against the one list `ALL_KINDS` is built from, so that a kind left out of it breaks the build.
+            const _EVERY_SIGNED_KIND_IS_IN_ALL_KINDS: fn(SignedPayloadKind) =
+                |kind| match kind {
+                    $(SignedPayloadKind::$kind)|+ => {}
+                };
+        };
     }
 
-    #[test]
-    fn spec_3_4_all_kinds_lists_every_signed_payload_kind_in_its_place() {
-        for (place, kind) in ALL_KINDS.into_iter().enumerate() {
-            assert_eq!(place_in_all_kinds(kind), place);
-        }
-    }
+    all_signed_kinds!(
+        Presence,
+        Departure,
+        Unreachable,
+        Infrastructure,
+        PresenceRequest
+    );
 
     #[test]
     fn spec_3_4_payload_signature_under_one_prefix_fails_under_another() {
