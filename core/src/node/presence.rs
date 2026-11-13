@@ -370,8 +370,13 @@ impl PeerRows {
         operated.value
     }
 
-    /// Applies a Presence to the table, recording whether it was taken, and when it is taken closes every connection to or from its card, of any protocol, whose process no longer runs, and every other while iroh stays on that process's path (spec 3.8, address lookup).
-    pub(crate) fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
+    /// Runs the admission of a received payload on the locked table, records whether it was taken under its signer's handle, then each change it made, and returns what it gave.
+    fn admit<Taken>(
+        &self,
+        facts: PayloadFacts,
+        now_ms: u64,
+        admission: impl FnOnce(&mut PeerTable) -> Operated<Result<Taken, PayloadDropRule>>,
+    ) -> Result<Taken, PayloadDropRule> {
         let (
             Operated {
                 value: admitted,
@@ -379,11 +384,19 @@ impl PeerRows {
             },
             handle,
         ) = self.operate(|table| {
-            let admitted = table.admit_presence(presence, now_ms);
-            (admitted, table.handle_of(presence.card, now_ms))
+            let admitted = admission(table);
+            (admitted, table.handle_of(facts.signer, now_ms))
         });
-        (self.report)(admission_record(presence.facts(), handle, &admitted));
+        (self.report)(admission_record(facts, handle, &admitted));
         self.record_changes(changes);
+        admitted
+    }
+
+    /// Applies a Presence to the table, recording whether it was taken, and when it is taken closes every connection to or from its card, of any protocol, whose process no longer runs, and every other while iroh stays on that process's path (spec 3.8, address lookup).
+    pub(crate) fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
+        let admitted = self.admit(presence.facts(), now_ms, |table| {
+            table.admit_presence(presence, now_ms)
+        });
         let Ok(effects) = admitted else {
             return Vec::new();
         };
@@ -396,35 +409,17 @@ impl PeerRows {
     /// Applies a Departure to the table, returning the drop of the held connection it calls for once it is taken (spec 3.8).
     #[must_use]
     pub(crate) fn take_departure(&self, departure: &Departure, now_ms: u64) -> Vec<Effect> {
-        let (
-            Operated {
-                value: admitted,
-                changes,
-            },
-            handle,
-        ) = self.operate(|table| {
-            let admitted = table.admit_departure(departure, now_ms);
-            (admitted, table.handle_of(departure.card, now_ms))
-        });
-        (self.report)(admission_record(departure.facts(), handle, &admitted));
-        self.record_changes(changes);
-        admitted.unwrap_or_default()
+        self.admit(departure.facts(), now_ms, |table| {
+            table.admit_departure(departure, now_ms)
+        })
+        .unwrap_or_default()
     }
 
     /// Applies an Unreachable report about another card to the table, recording whether it was taken (spec 3.8).
     pub(crate) fn take_unreachable(&self, report: &Unreachable, now_ms: u64) {
-        let (
-            Operated {
-                value: admitted,
-                changes,
-            },
-            handle,
-        ) = self.operate(|table| {
-            let admitted = table.admit_unreachable(report, now_ms);
-            (admitted, table.handle_of(report.reporter, now_ms))
+        let _admission = self.admit(report.facts(), now_ms, |table| {
+            table.admit_unreachable(report, now_ms)
         });
-        (self.report)(admission_record(report.facts(), handle, &admitted));
-        self.record_changes(changes);
     }
 
     /// Applies a gossip report of a new neighbor, returning the Introduce it calls for (spec 3.8).
