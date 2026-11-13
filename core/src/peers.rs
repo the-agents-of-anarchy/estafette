@@ -2309,14 +2309,18 @@ mod tests {
     }
 
     const ENTRY_CHANGED_EVENT: &str = "peers.entry_changed";
+    const ENTRY_CREATED_EVENT: &str = "peers.entry_created";
     const PEER_CARD_SHORT_ID: &str = "0202020202";
     const PEER_FIELD: &str = "peer";
     const HANDLE_FIELD: &str = "handle";
+    const REQUESTED_FIELD: &str = "requested";
+    const STATUS_FIELD: &str = "status";
     const FROM_FIELD: &str = "from";
     const TO_FIELD: &str = "to";
     const CAUSE_FIELD: &str = "cause";
     const UNREACHABLE_WORD: &str = "unreachable";
     const ONLINE_WORD: &str = "online";
+    const GONE_WORD: &str = "gone";
     const PRESENCE_CAUSE_WORD: &str = "presence";
     const MESSAGE_CAUSE_WORD: &str = "message";
     const INTRODUCE_CAUSE_WORD: &str = "introduce";
@@ -2415,6 +2419,32 @@ mod tests {
             written_lines(moved.changes),
             [peer_moved_online_from_unreachable_by(
                 INTRODUCE_ACK_CAUSE_WORD
+            )]
+        );
+    }
+
+    #[test]
+    fn observability_decision_9_a_message_sent_before_the_held_departure_of_an_unseen_card_creates_it_gone_with_the_cause_message_test_4()
+     {
+        let mut table = PeerTable::new(OWN_CARD);
+        table
+            .admit_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS)
+            .value
+            .unwrap_or_default();
+
+        let created = table.receive_message(PEER_CARD, &message_from(PEER_HANDLE, true), LATER_MS);
+
+        assert_eq!(
+            written_lines(created.changes),
+            [(
+                ENTRY_CREATED_EVENT,
+                vec![
+                    (PEER_FIELD, Value::from(PEER_CARD_SHORT_ID)),
+                    (HANDLE_FIELD, Value::from(PEER_HANDLE)),
+                    (REQUESTED_FIELD, Value::from(PEER_HANDLE)),
+                    (STATUS_FIELD, Value::from(GONE_WORD)),
+                    (CAUSE_FIELD, Value::from(MESSAGE_CAUSE_WORD)),
+                ],
             )]
         );
     }
