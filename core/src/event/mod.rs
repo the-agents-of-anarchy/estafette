@@ -231,7 +231,7 @@ mod tests {
     use super::*;
 
     const SPEC_FORMAT_VERSION: u64 = 1;
-    const PINNED_EVENT_NAMES: [&str; 49] = [
+    const PINNED_EVENT_NAMES: [&str; 50] = [
         "process.command_failed",
         "process.network_created",
         "process.clock_before_unix_epoch",
@@ -272,6 +272,7 @@ mod tests {
         "transport.path_events_missed",
         "transport.home_relay",
         "transport.relay_probed",
+        "state.counters",
         "inbox.accept_failed",
         "tool.list_cards_registry_unreadable",
         "tool.list_cards_task_failed",

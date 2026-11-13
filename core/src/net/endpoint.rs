@@ -403,6 +403,105 @@ pub enum RebindCause {
     JoinGainedNoNeighbor,
 }
 
+/// When a snapshot of the counters was taken: at start, at a rebind, at an interval, or at stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotMoment {
+    Start,
+    Rebind,
+    Interval,
+    Stop,
+}
+
+/// The counters iroh keeps for the socket and for gossip, each named for its group and field, read at one moment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CounterSnapshot {
+    pub moment: SnapshotMoment,
+    pub counters: Vec<(&'static str, u64)>,
+}
+
+/// Reads each named counter field of a metrics group under its group's name.
+macro_rules! counters_of {
+    ($group:literal, $metrics:expr, [$($field:ident),* $(,)?]) => {
+        [$((concat!($group, ".", stringify!($field)), $metrics.$field.get())),*]
+    };
+}
+
+impl CounterSnapshot {
+    /// Every counter iroh keeps for the endpoint's socket and for the gossip instance, read now.
+    #[must_use]
+    pub fn read(moment: SnapshotMoment, endpoint: &Endpoint, gossip: &iroh_gossip::Gossip) -> Self {
+        let socket = &endpoint.metrics().socket;
+        let gossip = gossip.metrics();
+        let mut counters = counters_of!(
+            "socket",
+            socket,
+            [
+                update_direct_addrs,
+                send_ipv4,
+                send_ipv6,
+                send_relay,
+                recv_data_relay,
+                recv_data_custom,
+                recv_data_ipv4,
+                recv_data_ipv6,
+                recv_datagrams,
+                recv_gro_datagrams,
+                relay_home_change,
+                relay_conns_success,
+                relay_conns_failed,
+                relay_conns_closed,
+                relay_conns_ratelimited,
+                holepunch_attempts,
+                paths_direct,
+                paths_relay,
+                paths_custom,
+                num_conns_direct,
+                num_conns_opened,
+                num_conns_closed,
+                transport_ip_paths_added,
+                transport_ip_paths_removed,
+                transport_relay_paths_added,
+                transport_relay_paths_removed,
+                transport_custom_paths_added,
+                transport_custom_paths_removed,
+                actor_tick_main,
+                actor_tick_msg,
+                actor_tick_re_stun,
+                actor_tick_portmap_changed,
+                actor_tick_direct_addr_heartbeat,
+                actor_link_change,
+                actor_tick_other
+            ]
+        )
+        .to_vec();
+        counters.extend(counters_of!(
+            "gossip",
+            gossip,
+            [
+                msgs_ctrl_sent,
+                msgs_ctrl_recv,
+                msgs_data_sent,
+                msgs_data_recv,
+                msgs_data_sent_size,
+                msgs_data_recv_size,
+                msgs_ctrl_sent_size,
+                msgs_ctrl_recv_size,
+                neighbor_up,
+                neighbor_down,
+                actor_tick_main,
+                actor_tick_rx,
+                actor_tick_endpoint,
+                actor_tick_dialer,
+                actor_tick_dialer_success,
+                actor_tick_dialer_failure,
+                actor_tick_in_event_rx,
+                actor_tick_timers
+            ]
+        ));
+        Self { moment, counters }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

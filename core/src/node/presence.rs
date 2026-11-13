@@ -35,7 +35,7 @@ use crate::net::direct::{
     ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, GONE_PROCESS_SILENCE,
     HEARING_SAMPLE_INTERVAL, HeldConnections, MonotonicClock,
 };
-use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
+use crate::net::endpoint::{CounterSnapshot, DIRECT_ALPN, NodeEndpoint, SnapshotMoment};
 use crate::net::gossip::{GossipError, GossipEvent, JOIN_TIMEOUT, NetworkTopic};
 use crate::payload::{
     DescribedPayload, OpenedPayload, PayloadDropRule, PayloadFacts, PayloadRefusal, ZERO_MAC,
@@ -52,6 +52,8 @@ use crate::wire::{
 
 const OBSERVER_WAIT: Duration = Duration::from_millis(3000);
 const REANNOUNCE_INTERVAL: Duration = Duration::from_millis(2000);
+/// The longest a node goes without a snapshot of its counters, so a live process writes its events file at least this often (`spec/observability.md` decisions 9 and 13).
+const STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
 const SECRET_FIELD: &str = "secret";
 const OWNER_FIELD: &str = "owner";
 
@@ -865,6 +867,7 @@ enum Wake {
     RelayLossDue,
     RebindDue,
     MemberJoinDue,
+    SnapshotDue,
 }
 
 /// The one task that owns the topic and performs every effect of the events/actions table of spec 3.8, the rebind included.
@@ -895,6 +898,7 @@ pub(super) struct PresenceLoop {
     fill_probe_nonce: ProbeNonceSource,
     pub(super) monotonic: MonotonicClock,
     pub(super) report: RunRecord,
+    snapshot_due: Instant,
 }
 
 impl PresenceLoop {
@@ -954,12 +958,14 @@ impl PresenceLoop {
             fill_probe_nonce: effects.fill_probe_nonce,
             monotonic: effects.monotonic,
             report: effects.report,
+            snapshot_due: subscribed,
         };
         Ok((presence_loop, own_handle))
     }
 
-    /// Handles every wake until the topic closes.
+    /// Records the counters at start, then handles every wake until the topic closes.
     async fn run(mut self) {
+        self.record_state(SnapshotMoment::Start);
         loop {
             let wake = self.next_wake().await;
             if self.take(wake).await.is_break() {
@@ -994,6 +1000,7 @@ impl PresenceLoop {
             () = sleep_until_deadline(relay_loss_due) => Wake::RelayLossDue,
             () = sleep_until_deadline(rebind_due) => Wake::RebindDue,
             () = sleep_until_deadline(member_join_due) => Wake::MemberJoinDue,
+            () = sleep_until(self.snapshot_due) => Wake::SnapshotDue,
         }
     }
 
@@ -1026,6 +1033,7 @@ impl PresenceLoop {
             Wake::RelayLossDue => self.remove_lost_relays().await,
             Wake::RebindDue => return self.rebind().await,
             Wake::MemberJoinDue => self.ask_members_to_join().await,
+            Wake::SnapshotDue => self.record_state(SnapshotMoment::Interval),
         }
         ControlFlow::Continue(())
     }
@@ -1259,6 +1267,15 @@ impl PresenceLoop {
         if let Err(failure) = self.known_hosts.save_if_newer_than_file(now_ms) {
             (self.report)(crate::event::GossipEvent::KnownHostsNotSaved(failure).into());
         }
+        self.record_state(SnapshotMoment::Stop);
+    }
+
+    /// Records the socket and gossip counters at the moment, and takes the next snapshot the state snapshot interval later.
+    pub(super) fn record_state(&mut self, moment: SnapshotMoment) {
+        let snapshot = CounterSnapshot::read(moment, self.endpoint.endpoint(), &self.gossip);
+        (self.report)(crate::event::StateEvent::Counters(snapshot).into());
+        let now = (self.monotonic)();
+        self.snapshot_due = now.checked_add(STATE_SNAPSHOT_INTERVAL).unwrap_or(now);
     }
 
     /// Broadcasts this node's Presence with the next seq, once its handle is assigned and before any Departure.

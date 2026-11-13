@@ -14,7 +14,7 @@ use tokio::time::{Instant, timeout_at};
 
 use crate::event::{GossipEvent, TransportEvent};
 use crate::net::direct::DirectHost;
-use crate::net::endpoint::RebindCause;
+use crate::net::endpoint::{RebindCause, SnapshotMoment};
 use crate::net::gossip::NetworkTopic;
 use crate::node::addresses::endpoint_id;
 use crate::node::known_hosts::seed_lookup_with_known_hosts;
@@ -258,7 +258,9 @@ impl PresenceLoop {
             return ControlFlow::Break(());
         }
         self.client.follow(self.endpoint.endpoint().clone()).await;
-        self.subscribe_through_known_nodes().await
+        let subscribed = self.subscribe_through_known_nodes().await;
+        self.record_state(SnapshotMoment::Rebind);
+        subscribed
     }
 
     /// Asks the gossip layer to join the Online and Unreachable members, stopping the asks when there are none or one of them is a gossip neighbor already.
@@ -899,6 +901,7 @@ mod tests {
         let rebinding = next_recorded(&mut events, "transport.rebinding").await;
         let first_probe = next_recorded(&mut events, "transport.relay_probed").await;
         let second_probe = next_recorded(&mut events, "transport.relay_probed").await;
+        let after_the_rebind = next_recorded(&mut events, "state.counters").await;
 
         assert_eq!(
             rebinding,
@@ -919,11 +922,235 @@ mod tests {
                 ("answered", serde_json::Value::from(answered)),
             ]
         };
+        assert_eq!(
+            after_the_rebind.first(),
+            Some(&("moment", serde_json::Value::from("rebind")))
+        );
         let mut probes = vec![first_probe, second_probe];
         probes.sort_by_key(|fields| fields.last().map(|(_, answered)| answered.to_string()));
         assert_eq!(
             probes,
             vec![probe_of(STRIPPED_RELAY, false), probe_of(KEPT_RELAY, true)]
+        );
+        drop(scratch);
+    }
+
+    const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
+    const SNAPSHOT_WAIT: Duration = Duration::from_secs(61);
+
+    type StampedEvent = (Instant, &'static str, crate::event::EventFields);
+
+    /// A run record that hands each event's name and fields to the receiver, stamped with the instant it was recorded.
+    fn stamped_events() -> (
+        RunRecord,
+        tokio::sync::mpsc::UnboundedReceiver<StampedEvent>,
+    ) {
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+        let record: RunRecord = Arc::new(move |event: Event| {
+            drop(sender.send((Instant::now(), event.name(), event.fields())));
+        });
+        (record, receiver)
+    }
+
+    /// The instant, on the paused test clock, of the next counters snapshot recorded, with its fields.
+    async fn next_snapshot(
+        events: &mut tokio::sync::mpsc::UnboundedReceiver<StampedEvent>,
+    ) -> (Instant, crate::event::EventFields) {
+        let found = tokio::time::timeout(SNAPSHOT_WAIT, async {
+            loop {
+                let (at, name, fields) = events.recv().await.unwrap();
+                if name == "state.counters" {
+                    return (at, fields);
+                }
+            }
+        })
+        .await;
+        found.unwrap_or_else(|_elapsed| panic!("no state.counters within {SNAPSHOT_WAIT:?}"))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn observability_decision_9_a_quiet_member_records_its_socket_and_gossip_counters_at_start_and_every_60_s_on_the_clock_it_waits_on()
+     {
+        let scratch = Scratch::new("state-interval").await;
+        let (record, mut events) = stamped_events();
+        let _members = start_members(
+            &scratch,
+            vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(record)],
+        )
+        .await;
+
+        let (started, at_start) = next_snapshot(&mut events).await;
+        let (first_interval, at_first_interval) = next_snapshot(&mut events).await;
+        let (second_interval, _) = next_snapshot(&mut events).await;
+
+        assert_eq!(
+            at_start.first(),
+            Some(&("moment", serde_json::Value::from("start")))
+        );
+        assert_eq!(
+            at_first_interval.first(),
+            Some(&("moment", serde_json::Value::from("interval")))
+        );
+        assert_eq!(first_interval - started, SPEC_STATE_SNAPSHOT_INTERVAL);
+        assert_eq!(
+            second_interval - first_interval,
+            SPEC_STATE_SNAPSHOT_INTERVAL
+        );
+        let names: Vec<&str> = at_start.iter().map(|(name, _)| *name).collect();
+        assert!(names.contains(&"socket.recv_datagrams"), "{names:?}");
+        assert!(names.contains(&"gossip.neighbor_up"), "{names:?}");
+        assert_eq!(names.len(), 1 + 35 + 18, "{names:?}");
+        drop(scratch);
+    }
+
+    const LIVE_RUN_BYTES: [u8; crate::trace::RUN_ID_BYTES] = [0x1a; crate::trace::RUN_ID_BYTES];
+    const PRUNING_RUN_BYTES: [u8; crate::trace::RUN_ID_BYTES] = [0x2b; crate::trace::RUN_ID_BYTES];
+    const STALE_EVENTS_FILE: &str = "20000101T000000Z-0000000000000003-estafette.events.jsonl";
+    const STALE_RAW_FILE: &str = "20000101T000000Z-0000000000000003-estafette.raw.jsonl";
+    const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
+    const ONE_MILLISECOND: Duration = Duration::from_millis(1);
+    const STALE_RUN_AGE: Duration = Duration::from_hours(24);
+
+    /// The trace directory under a fresh data home for the test.
+    fn trace_directory_for(test_name: &str) -> (std::path::PathBuf, crate::dirs::TraceDirectory) {
+        let root = std::env::temp_dir().join(format!(
+            "estafette-rebind-{test_name}-{}",
+            std::process::id()
+        ));
+        drop(std::fs::remove_dir_all(&root));
+        let data_home = root.join("data");
+        let directory = crate::dirs::TraceDirectory::resolve(&move |name: &str| {
+            (name == DATA_HOME_VARIABLE).then(|| std::ffi::OsString::from(&data_home))
+        })
+        .unwrap();
+        (root, directory)
+    }
+
+    /// The trace clocks reading the milliseconds since the Unix epoch of the machine's clock.
+    fn machine_trace_clocks(
+        wall_ms: impl Fn() -> u64 + Send + Sync + 'static,
+    ) -> crate::trace::TraceClocks {
+        crate::trace::TraceClocks {
+            monotonic_ms: Arc::new(|| 0),
+            wall_ms: Arc::new(wall_ms),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn observability_decisions_9_and_13_a_quiet_live_member_writes_its_events_file_every_60_s_so_a_second_start_spares_its_run()
+     {
+        use crate::trace::{RunId, Trace, TraceBounds, TraceEffects};
+
+        let scratch = Scratch::new("state-file").await;
+        let (root, directory) = trace_directory_for("state-file");
+        let live = Arc::new(
+            Trace::start(
+                &directory,
+                &crate::dirs::OperatingSystemFilesystem,
+                RunId::from_random_bytes(LIVE_RUN_BYTES),
+                &TraceEffects::of_the_operating_system(machine_trace_clocks(wall_clock_ms)),
+                TraceBounds::SPEC,
+            )
+            .unwrap(),
+        );
+        let (stamped, mut events) = stamped_events();
+        let tracing = Arc::clone(&live);
+        let record: RunRecord = Arc::new(move |event: Event| {
+            tracing.record(&event);
+            stamped(event);
+        });
+        let _members = start_members(
+            &scratch,
+            vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(record)],
+        )
+        .await;
+        let (started, _) = next_snapshot(&mut events).await;
+        let (interval, _) = next_snapshot(&mut events).await;
+        assert!(matches!(
+            live.finish(),
+            [
+                crate::trace::TraceStop::Drained,
+                crate::trace::TraceStop::Drained
+            ]
+        ));
+        let traces = directory.path();
+        for stale in [STALE_EVENTS_FILE, STALE_RAW_FILE] {
+            std::fs::write(traces.join(stale), b"{}\n").unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(traces.join(stale))
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + STALE_RUN_AGE)
+                .unwrap();
+        }
+        let live_events = std::fs::read_to_string(&live.files().events).unwrap();
+        let written_ms = u64::try_from(
+            std::fs::metadata(&live.files().events)
+                .unwrap()
+                .modified()
+                .unwrap()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap();
+        let just_fresh_ms = written_ms
+            + u64::try_from(
+                TraceBounds::SPEC
+                    .freshness
+                    .checked_sub(ONE_MILLISECOND)
+                    .unwrap()
+                    .as_millis(),
+            )
+            .unwrap();
+
+        let pruning = Trace::start(
+            &directory,
+            &crate::dirs::OperatingSystemFilesystem,
+            RunId::from_random_bytes(PRUNING_RUN_BYTES),
+            &TraceEffects::of_the_operating_system(machine_trace_clocks(move || just_fresh_ms)),
+            TraceBounds {
+                directory_bytes: 1,
+                ..TraceBounds::SPEC
+            },
+        )
+        .unwrap();
+        drop(pruning.finish());
+
+        assert_eq!(interval - started, SPEC_STATE_SNAPSHOT_INTERVAL);
+        assert!(
+            live_events.contains("\"event\":\"state.counters\",\"moment\":\"interval\""),
+            "{live_events}"
+        );
+        assert!(live.files().events.exists());
+        assert!(live.files().raw.exists());
+        assert!(!traces.join(STALE_EVENTS_FILE).exists());
+        assert!(!traces.join(STALE_RAW_FILE).exists());
+        drop(std::fs::remove_dir_all(&root));
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_stopping_member_records_its_counters_after_its_departure() {
+        let scratch = Scratch::new("state-stop").await;
+        let (record, mut events) = recorded_events();
+        let members = start_members(
+            &scratch,
+            vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(record)],
+        )
+        .await;
+        let at_start = next_recorded(&mut events, "state.counters").await;
+
+        members.first().unwrap().node.start_stopping();
+        let at_stop = next_recorded(&mut events, "state.counters").await;
+
+        assert_eq!(
+            at_start.first(),
+            Some(&("moment", serde_json::Value::from("start")))
+        );
+        assert_eq!(
+            at_stop.first(),
+            Some(&("moment", serde_json::Value::from("stop")))
         );
         drop(scratch);
     }
