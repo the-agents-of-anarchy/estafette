@@ -1,17 +1,29 @@
 #[cfg(test)]
 #[path = "support/trace_files.rs"]
 mod trace_files;
+#[cfg(test)]
+#[path = "support/trace_reader.rs"]
+mod trace_reader;
+
+#[cfg(test)]
+#[path = "support/whole_trace_lines.rs"]
+mod whole_trace_lines;
 
 /// iroh's own lines in the raw trace file of spec/observability.md decision 7, through the shipped binary.
 #[cfg(test)]
 mod raw_iroh_lines {
     use std::fs;
+    use std::io::{BufRead, BufReader};
     use std::path::{Path, PathBuf};
-    use std::process::Command;
+    use std::process::{Command, Stdio};
 
     use serde_json::Value;
 
     use super::trace_files::{announcement_of_one_run, trace_files_of_one_run};
+    use super::trace_reader::TraceLine;
+    use super::whole_trace_lines::{
+        WHOLE_LINE_WAIT, holds_within_the_wait, whole_lines_of_a_run_file,
+    };
 
     const SHORT_SCRATCH_PARENT: &str = "/tmp";
     const SCRATCH_PREFIX: &str = "eri";
@@ -25,6 +37,7 @@ mod raw_iroh_lines {
     const BASE_TEST_SEND_FAILURE: &str =
         "the message was not delivered: No present member has that handle.\n";
     const SPEC_RAW_FILE_OPENED_EVENT: &str = "raw_file_opened";
+    const SPEC_IROH_LINE_EVENT: &str = "iroh_line";
     const SPEC_IROH_TARGETS: [&str; 4] = [
         "iroh::_events",
         "iroh::socket::remote_map",
@@ -119,6 +132,44 @@ mod raw_iroh_lines {
                 "{target} is none of the four targets"
             );
         }
+        drop(fs::remove_dir_all(&root));
+    }
+
+    /// Whether the whole lines hold at least one line of iroh.
+    fn hold_a_line_of_iroh(lines: &[TraceLine]) -> bool {
+        lines.iter().any(|line| line.event == SPEC_IROH_LINE_EVENT)
+    }
+
+    #[test]
+    fn observability_decision_7_a_process_killed_after_it_bound_an_endpoint_and_wrote_lines_of_iroh_leaves_in_its_raw_file_only_whole_numbered_lines_its_own_unended_line_and_zero_bytes()
+     {
+        let root = machine_with_network("killed");
+        let mut child = binary(&root)
+            .args(["tail", NETWORK])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut announcement = String::new();
+        BufReader::new(child.stderr.take().unwrap())
+            .read_line(&mut announcement)
+            .unwrap();
+        let (_events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
+        let wrote_lines_of_iroh = holds_within_the_wait(&raw, hold_a_line_of_iroh);
+
+        child.kill().unwrap();
+        child.wait().unwrap();
+
+        assert!(
+            wrote_lines_of_iroh,
+            "{}: the process wrote no whole line of iroh within {WHOLE_LINE_WAIT:?}",
+            raw.display()
+        );
+        let lines = whole_lines_of_a_run_file(&raw);
+        let numbers: Vec<u64> = lines.iter().map(|line| line.n).collect();
+        let consecutive: Vec<u64> = (0..).take(numbers.len()).collect();
+        assert_eq!(numbers, consecutive, "{}", raw.display());
+        assert!(hold_a_line_of_iroh(&lines), "{}", raw.display());
         drop(fs::remove_dir_all(&root));
     }
 }
