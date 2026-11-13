@@ -19,6 +19,7 @@ PRICES_PATH = SCRIPT_DIRECTORY / 'usage-prices.json'
 SCRATCH_ROOT_VARIABLE = 'ESTAFETTE_SCRATCH_ROOT'
 SCRATCH_ROOT_BELOW_CHECKOUT = Path('docs') / 'orchestration_log' / 'recon'
 CONFIG_DIRECTORY_VARIABLE = 'CLAUDE_CONFIG_DIR'
+SESSION_ID_VARIABLE = 'CLAUDE_CODE_SESSION_ID'
 DEFAULT_CONFIG_DIRECTORY_NAME = '.claude'
 LIMITS_FILE_NAME = 'usage-limits.json'
 CHECKPOINTS_FILE_NAME = 'usage-checkpoints.jsonl'
@@ -170,13 +171,16 @@ def limits(max_age_minutes, now, limits_path):
     return 1 if age_minutes > max_age_minutes else 0
 
 
-def newest_session_transcript(login, checkout):
-    """The lead's transcript of the checkout's most recently written session."""
+def own_session_transcript(login, checkout, environment):
+    """The transcript of the session this process runs in, named by its environment; refuses when the variable is unset or names no transcript, never taking the newest file instead."""
+    session_id = environment.get(SESSION_ID_VARIABLE)
+    if not session_id:
+        raise SystemExit(f'{SESSION_ID_VARIABLE} is unset: cannot tell which session transcript to read')
     project_directory = login / 'projects' / re.sub(r'[^A-Za-z0-9]', '-', str(checkout))
-    sessions = list(project_directory.glob('*.jsonl'))
-    if not sessions:
-        raise SystemExit(f'no session transcript under {project_directory}')
-    return max(sessions, key=lambda session: session.stat().st_mtime)
+    transcript = project_directory / f'{session_id}.jsonl'
+    if not transcript.is_file():
+        raise SystemExit(f'no transcript of session {session_id} under {project_directory}')
+    return transcript
 
 
 def subagents_directory_of(session_transcript):
@@ -808,14 +812,14 @@ def main(arguments, standard_input, now, environment, home_directory):
     if parsed.subcommand == 'limits':
         return limits(parsed.max_age_minutes, now, limits_path)
     if parsed.subcommand == 'checkpoint':
-        return checkpoint(parsed.label, now, limits_path, checkpoints_path, newest_session_transcript(login, root_checkout(REPOSITORY_ROOT)))
+        return checkpoint(parsed.label, now, limits_path, checkpoints_path, own_session_transcript(login, root_checkout(REPOSITORY_ROOT), environment))
     if parsed.subcommand == 'checkpoints':
         return checkpoints(checkpoints_path)
     if parsed.subcommand == 'calibrate':
         return run_refusing(calibrate, checkpoints_path, json.loads(PRICES_PATH.read_text()))
     if parsed.subcommand == 'coldturns':
-        return coldturns(newest_session_transcript(login, root_checkout(REPOSITORY_ROOT)))
-    lead_transcript = None if parsed.subagents_directory else newest_session_transcript(login, root_checkout(REPOSITORY_ROOT))
+        return coldturns(own_session_transcript(login, root_checkout(REPOSITORY_ROOT), environment))
+    lead_transcript = None if parsed.subagents_directory else own_session_transcript(login, root_checkout(REPOSITORY_ROOT), environment)
     subagents_directory = Path(parsed.subagents_directory) if parsed.subagents_directory else subagents_directory_of(lead_transcript)
     return inflight(parsed.window_minutes, subagents_directory, now, json.loads(PRICES_PATH.read_text()), lead_transcript)
 

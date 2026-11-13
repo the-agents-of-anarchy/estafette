@@ -10,12 +10,12 @@ script := source_directory() + '/usage.py'
 limits max_age_minutes="10":
     python3 -I {{ quote(script) }} limits {{ quote(max_age_minutes) }}
 
-[doc("Print one row per agent whose transcript changed within window_minutes: tokens, context size, dollars by kind at the prices of just/usage-prices.json, the dollars of one cold start at the intake price of the TTL each transcript writes at (5m or 1h, shown in the ttl column; the lead transcript's TTL is printed last), idle minutes, model, effort, name; the root checkout's newest session unless a subagents directory is given")]
+[doc("Print one row per agent whose transcript changed within window_minutes: tokens, context size, dollars by kind at the prices of just/usage-prices.json, the dollars of one cold start at the intake price of the TTL each transcript writes at (5m or 1h, shown in the ttl column; the lead transcript's TTL is printed last), idle minutes, model, effort, name; the session this shell runs in, named by CLAUDE_CODE_SESSION_ID and refused when that is unset or names no transcript, unless a subagents directory is given")]
 [group('usage')]
 inflight window_minutes="30" subagents_directory="":
     python3 -I {{ quote(script) }} inflight {{ quote(window_minutes) }} {{ quote(subagents_directory) }}
 
-[doc("Append one line to usage-checkpoints.jsonl beside the limits file: the time, the label, the limit figures last written, and the root checkout's newest session's tokens so far by model with effort and kind (fresh input, cache write, cache read, output) over the lead and every agent")]
+[doc("Append one line to usage-checkpoints.jsonl beside the limits file: the time, the label, the limit figures last written, and the tokens so far of the session this shell runs in (named by CLAUDE_CODE_SESSION_ID, refused when that is unset or names no transcript) by model with effort and kind (fresh input, cache write, cache read, output) over the lead and every agent")]
 [group('usage')]
 checkpoint label:
     python3 -I {{ quote(script) }} checkpoint {{ quote(label) }}
@@ -26,7 +26,7 @@ checkpoint label:
 checkpoints:
     python3 -I {{ quote(script) }} checkpoints
 
-[doc("Print per source (the lead apart from the agents), model with effort and TTL: the assistant turns whose gap to the model message before them exceeds the TTL (5 minutes or 1 hour), their cache-write tokens and share of all that group's cache-write tokens, and the same for turns within the TTL; the first message of a transcript has no gap and counts in neither; the root checkout's newest session")]
+[doc("Print per source (the lead apart from the agents), model with effort and TTL: the assistant turns whose gap to the model message before them exceeds the TTL (5 minutes or 1 hour), their cache-write tokens and share of all that group's cache-write tokens, and the same for turns within the TTL; the first message of a transcript has no gap and counts in neither; the session this shell runs in, named by CLAUDE_CODE_SESSION_ID and refused when that is unset or names no transcript")]
 [group('usage')]
 coldturns:
     python3 -I {{ quote(script) }} coldturns
