@@ -425,18 +425,18 @@ impl PeerRows {
         payload: &Received,
         now_ms: u64,
     ) -> Result<Received::Taken, PayloadDropRule> {
-        let facts = payload.facts();
         let (
             Operated {
                 value: admitted,
                 changes,
             },
-            handle,
+            record,
         ) = self.operate(|table| {
             let admitted = payload.admit_to(table, now_ms);
-            (admitted, table.handle_of(facts.signer, now_ms))
+            let record = signer_admission_record(table, payload.facts(), &admitted.value, now_ms);
+            (admitted, record)
         });
-        (self.report)(admission_record(facts, handle, &admitted));
+        (self.report)(record);
         self.record_changes(changes);
         admitted
     }
@@ -1192,8 +1192,8 @@ impl PresenceLoop {
         admission: Result<(), PayloadDropRule>,
         now_ms: u64,
     ) {
-        let handle = self.state.table().handle_of(facts.signer, now_ms);
-        (self.report)(admission_record(facts, handle, &admission));
+        let record = signer_admission_record(&self.state.table(), facts, &admission, now_ms);
+        (self.report)(record);
     }
 
     /// Applies the effects the direct server handed over and the answer of each request this node sent.
@@ -1370,18 +1370,28 @@ pub(super) fn admission_record<Taken>(
     .into()
 }
 
+/// The record of a received payload the node took, or dropped by the rule the admission named, naming its signer by the handle `table` holds for it at `now_ms`, if any.
+fn signer_admission_record<Taken>(
+    table: &PeerTable,
+    facts: PayloadFacts,
+    admission: &Result<Taken, PayloadDropRule>,
+    now_ms: u64,
+) -> Event {
+    let signer_handle = table.handle_of(facts.signer, now_ms);
+    admission_record(facts, signer_handle, admission)
+}
+
 /// The record of bytes the payload layer dropped, naming the signer they named by the handle the table holds for it, if any.
 fn refusal_record(state: &NodeState, refusal: PayloadRefusal) -> Event {
     let now_ms = state.now_ms();
-    let payload = refusal.facts.map(|facts| {
-        let handle = state.table().handle_of(facts.signer, now_ms);
-        (facts, handle).into()
-    });
-    crate::event::GossipEvent::PayloadDropped {
-        payload,
-        rule: refusal.rule,
-    }
-    .into()
+    let Some(facts) = refusal.facts else {
+        return crate::event::GossipEvent::PayloadDropped {
+            payload: None,
+            rule: refusal.rule,
+        }
+        .into();
+    };
+    signer_admission_record(&state.table(), facts, &Err::<(), _>(refusal.rule), now_ms)
 }
 
 /// The effects of an `IntroduceAck` less the drop of the held connection, since the ack came on that connection (spec 3.8).
