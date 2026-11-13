@@ -47,10 +47,11 @@ pub use state::{StateEvent, StateEventName};
 pub use transport::{TransportEvent, TransportEventName};
 
 event_names! {
-    /// The names of the lines a trace writer writes of its own: the count of events a full queue lost, and the raw file's warning.
+    /// The names of the lines a trace writer writes of its own: the count of events a full queue lost, the raw file's warning, and a line iroh wrote.
     TraceLineName {
         Dropped => estafette_trace::DROPPED_LINE_NAME,
         RawFileOpened => "raw_file_opened",
+        IrohLine => "iroh_line",
     }
 }
 
@@ -230,7 +231,7 @@ mod tests {
     use super::*;
 
     const SPEC_FORMAT_VERSION: u64 = 1;
-    const PINNED_EVENT_NAMES: [&str; 26] = [
+    const PINNED_EVENT_NAMES: [&str; 27] = [
         "process.command_failed",
         "process.network_created",
         "process.clock_before_unix_epoch",
@@ -257,6 +258,7 @@ mod tests {
         "tool.standard_input_failed",
         "dropped",
         "raw_file_opened",
+        "iroh_line",
     ];
 
     #[test]
