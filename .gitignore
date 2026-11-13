@@ -1,4 +1,5 @@
 /target
+just/__pycache__/
 /docs/orchestration_log/recon/
 
 # secrets and lab material (audit 2026-11-09)
