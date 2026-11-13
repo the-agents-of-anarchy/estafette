@@ -33,7 +33,7 @@ use crate::inbox::socket::{Attached, InboxSocket};
 use crate::keys::{KeyError, parse_network_secret, parse_public_key};
 use crate::net::direct::{
     ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, GONE_PROCESS_SILENCE,
-    HEARING_SAMPLE_INTERVAL, HeldConnections, MonotonicClock,
+    HEARING_SAMPLE_INTERVAL, HeldConnections, MonotonicClock, message_id_text,
 };
 use crate::net::endpoint::{
     CounterSnapshot, DIRECT_ALPN, NodeEndpoint, RebindCause, SnapshotMoment,
@@ -1552,11 +1552,6 @@ impl HeardPresenceRequests {
         self.highest_seq.insert(request.requester, request.seq);
         Ok(())
     }
-}
-
-/// The text a message id takes in the inbox and in a send result.
-pub(super) fn message_id_text(id: wire::MessageId) -> String {
-    uuid::Uuid::from_bytes(id).to_string()
 }
 
 #[cfg(test)]

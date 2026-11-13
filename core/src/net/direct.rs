@@ -436,6 +436,11 @@ impl RequestSummary {
     }
 }
 
+/// The text a message id takes in the inbox, in a send result and in the events file.
+pub(crate) fn message_id_text(id: wire::MessageId) -> String {
+    uuid::Uuid::from_bytes(id).to_string()
+}
+
 /// Whether a request rode the connection the client held or one it dialed for it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionSource {

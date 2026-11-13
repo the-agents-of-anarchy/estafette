@@ -5,7 +5,7 @@ use super::transport::{connection_field, peer_field};
 use super::{AreaEvent, EventFields};
 use crate::net::direct::{
     AckRefusal, ConnectionSource, DirectError, RequestSummary, SentOutcome, SentRequest,
-    ServedOutcome, ServedRequest, StreamEnd,
+    ServedOutcome, ServedRequest, StreamEnd, message_id_text,
 };
 
 const KIND_FIELD: &str = "kind";
@@ -89,10 +89,7 @@ fn request_fields(request: RequestSummary) -> EventFields {
     match request {
         RequestSummary::Message(id) => vec![
             (KIND_FIELD, Value::from("message")),
-            (
-                MESSAGE_FIELD,
-                Value::from(uuid::Uuid::from_bytes(id).to_string()),
-            ),
+            (MESSAGE_FIELD, Value::from(message_id_text(id))),
         ],
         RequestSummary::Probe => vec![(KIND_FIELD, Value::from("probe"))],
         RequestSummary::Introduce => vec![(KIND_FIELD, Value::from("introduce"))],

@@ -3,9 +3,9 @@ use iroh::EndpointId;
 
 use crate::errors::ErrorCode;
 use crate::keys::render_public_key;
-use crate::net::direct::{DirectError, DirectHost};
+use crate::net::direct::{DirectError, DirectHost, message_id_text};
 use crate::node::addresses::endpoint_id;
-use crate::node::presence::{Node, message_id_text};
+use crate::node::presence::Node;
 use crate::payload::ZERO_MAC;
 use crate::peers::Peer;
 use crate::wire::{self, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, MessageId, Nonce, Version};
