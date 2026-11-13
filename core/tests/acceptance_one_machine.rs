@@ -11,6 +11,9 @@ mod mcp_server;
 #[path = "one_machine/member.rs"]
 mod member;
 #[cfg(test)]
+#[path = "support/member_events.rs"]
+mod member_events;
+#[cfg(test)]
 #[path = "support/message_body.rs"]
 mod message_body;
 #[cfg(test)]
