@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use super::{ListFiles, RemoveFile, StoredFile, TraceAction, TraceBounds, TraceRefused};
@@ -144,12 +145,20 @@ pub fn remove_oldest_runs(
             continue;
         }
         for file in &run.files {
-            remove_file(file)
+            remove_file_if_present(remove_file, file)
                 .map_err(|source| TraceRefused::new(TraceAction::RemoveOldFile, file, source))?;
         }
         held_bytes = held_bytes.saturating_sub(run.bytes);
     }
     Ok(())
+}
+
+/// Removes the file, a file already gone counting as removed.
+fn remove_file_if_present(remove_file: &RemoveFile, file: &Path) -> io::Result<()> {
+    match remove_file(file) {
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+        removal => removal,
+    }
 }
 
 /// Every run among the files stored in the trace directory, oldest name first, and the bytes of every stored file.

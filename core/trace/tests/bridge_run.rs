@@ -213,4 +213,51 @@ mod observability {
         );
         drop(fs::remove_dir_all(&root));
     }
+
+    #[test]
+    fn observability_decision_13_a_start_whose_old_run_a_concurrent_start_removed_after_the_listing_goes_on()
+     {
+        let (root, directory) = scratch_trace_directory("concurrent-removal");
+        let traces = directory.path();
+        fs::create_dir_all(&traces).unwrap();
+        let stale = NOW_MS - SMALL_FRESHNESS_MS - 1;
+        let old_run = "20000101T000000Z-0000000000000001-estafette";
+        let old_files = [
+            traces.join(format!("{old_run}.events.jsonl")),
+            traces.join(format!("{old_run}.raw.jsonl")),
+        ];
+        for file in &old_files {
+            let name = file.file_name().unwrap().to_str().unwrap();
+            stored_run_file(&traces, name, OLD_FILE_BYTES, stale);
+        }
+        let effects = TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS));
+        let listed_by_the_system = Arc::clone(&effects.list_files);
+        let effects_with_a_concurrent_start_removing_after_the_listing = TraceEffects {
+            list_files: Arc::new(move |listed_directory: &Path| {
+                let listed = listed_by_the_system(listed_directory);
+                for file in &old_files {
+                    fs::remove_file(file).unwrap();
+                }
+                listed
+            }),
+            ..effects
+        };
+
+        let run = BridgeRun::begin(
+            &directory,
+            &|path: &Path| fs::create_dir_all(path),
+            RunId::from_random_bytes(RUN_BYTES),
+            &effects_with_a_concurrent_start_removing_after_the_listing,
+            TraceBounds {
+                directory_bytes: SMALL_DIRECTORY_BYTES,
+                freshness: Duration::from_millis(SMALL_FRESHNESS_MS),
+                ..TraceBounds::SPEC
+            },
+        )
+        .expect("a start whose old run is already removed goes on");
+
+        let events = run.open_events().unwrap();
+        assert!(matches!(events.finish(), TraceStop::Drained));
+        drop(fs::remove_dir_all(&root));
+    }
 }
