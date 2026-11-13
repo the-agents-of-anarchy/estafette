@@ -1,7 +1,6 @@
 use std::fmt;
 use std::time::Duration;
 
-use crate::stream_items::StreamExt;
 use iroh::{EndpointId, PublicKey, SecretKey};
 use iroh_gossip::api::{ApiError, Event, GossipReceiver, GossipSender, JoinOptions};
 use iroh_gossip::{Gossip, TopicId};
@@ -9,6 +8,7 @@ use tokio::time::{Instant, sleep_until};
 
 use crate::crypto::NetworkKeys;
 use crate::payload::{OpenedPayload, PayloadError, open_payload, seal_payload};
+use crate::stream_items::StreamExt;
 use crate::wire::Payload;
 
 const JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
