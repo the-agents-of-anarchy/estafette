@@ -36,13 +36,13 @@ const SUPERSEDED_CONNECTION_CLOSE_REASON: &[u8] = b"superseded";
 const HEARING_SAMPLES_PER_KEEP_ALIVE: u32 = 2;
 const UNANSWERED_KEEP_ALIVES_OF_A_GONE_PROCESS: u32 = 3;
 /// How often the register reads what each held connection has heard.
-const HEARING_SAMPLE_INTERVAL: Duration =
+pub(crate) const HEARING_SAMPLE_INTERVAL: Duration =
     match QUIC_KEEP_ALIVE_INTERVAL.checked_div(HEARING_SAMPLES_PER_KEEP_ALIVE) {
         Some(interval) => interval,
         None => QUIC_KEEP_ALIVE_INTERVAL,
     };
 /// How long a connection hears nothing before it is taken for one of a process that no longer runs.
-const GONE_PROCESS_SILENCE: Duration =
+pub(crate) const GONE_PROCESS_SILENCE: Duration =
     QUIC_KEEP_ALIVE_INTERVAL.saturating_mul(UNANSWERED_KEEP_ALIVES_OF_A_GONE_PROCESS);
 
 /// What the direct server needs from the node: its identity and state, and the effects of a received Message and Introduce.

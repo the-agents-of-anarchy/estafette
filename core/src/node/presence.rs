@@ -32,11 +32,11 @@ use crate::inbox::buffer::ReceivedMessage;
 use crate::inbox::socket::{Attached, InboxSocket};
 use crate::keys::{KeyError, parse_network_secret, parse_public_key};
 use crate::net::direct::{
-    ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, HeldConnections,
-    MonotonicClock,
+    ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, GONE_PROCESS_SILENCE,
+    HEARING_SAMPLE_INTERVAL, HeldConnections, MonotonicClock,
 };
 use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
-use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
+use crate::net::gossip::{GossipError, GossipEvent, JOIN_TIMEOUT, NetworkTopic};
 use crate::payload::{OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
 use crate::peers::{
     Effect, Peer, PeerTable, announced_sender_handle, is_within_announcement_max_age,
@@ -51,6 +51,19 @@ const OBSERVER_WAIT: Duration = Duration::from_millis(3000);
 const REANNOUNCE_INTERVAL: Duration = Duration::from_millis(2000);
 const SECRET_FIELD: &str = "secret";
 const OWNER_FIELD: &str = "owner";
+
+/// A restarted member sends its first Introduce and Presence only after a wait for its handle, so each wait must outlast the silence by which a peer judges the old process's connections gone.
+const _: () = assert!(
+    outlasts_gone_process_silence(OBSERVER_WAIT) && outlasts_gone_process_silence(JOIN_TIMEOUT)
+);
+
+/// Whether a wait is longer than the silence that marks a connection gone, read one hearing sample late.
+const fn outlasts_gone_process_silence(wait: Duration) -> bool {
+    GONE_PROCESS_SILENCE
+        .saturating_add(HEARING_SAMPLE_INTERVAL)
+        .as_nanos()
+        < wait.as_nanos()
+}
 
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;

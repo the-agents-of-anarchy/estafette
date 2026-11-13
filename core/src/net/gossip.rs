@@ -11,7 +11,7 @@ use crate::payload::{OpenedPayload, PayloadError, open_payload, seal_payload};
 use crate::stream_items::StreamExt;
 use crate::wire::Payload;
 
-const JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
+pub(crate) const JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
 
 /// What the node learns from the gossip topic.
 #[derive(Debug, Clone, PartialEq, Eq)]
