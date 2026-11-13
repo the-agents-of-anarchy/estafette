@@ -3084,7 +3084,7 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_8_a_joining_member_introduces_itself_to_its_gossip_neighbor_only_after_its_presence_and_under_its_assigned_handle()
+    async fn spec_3_8_a_joining_member_asks_announces_and_introduces_itself_to_its_gossip_neighbor_under_its_assigned_handle_alone()
      {
         let scratch = Scratch::new("held-introduce").await;
         let first = start_members(
