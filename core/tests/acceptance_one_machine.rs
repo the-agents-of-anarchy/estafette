@@ -1697,3 +1697,156 @@ mod kept_run_records {
         }
     }
 }
+
+#[cfg(test)]
+mod observability_decision_6_on_one_machine {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant};
+
+    use serde_json::Value;
+
+    use crate::local_network::{LocalNetwork, MetPair};
+    use crate::mcp_server::call_succeeded;
+    use crate::member::Member;
+    use crate::scratch_machine::RunRecordKeeping;
+
+    const BODY_MARKER: &str = "body-marker-q7x2v9";
+    const SPEC_EVENTS_SUFFIX: &str = ".events.jsonl";
+    const SPEC_TRACES_UNDER_DATA_HOME: &str = "estafette/traces";
+    const SPEC_KEY_HEX_CHARS: usize = 64;
+    const SHORTEST_SECRET_RUN: usize = 16;
+    const DOTTED_QUAD_GROUPS: usize = 4;
+    const LONGEST_DOTTED_QUAD_GROUP: usize = 3;
+    const SOCKET_EXTENSION: &str = "sock";
+    const URL_SCHEME_SEPARATOR: &str = "://";
+    const IPV6_LOOPBACK: &str = "::1";
+    const DELIVERY_WAIT: Duration = Duration::from_secs(20);
+    const EVENTS_THIS_EXCHANGE_RECORDS: [&str; 5] = [
+        "\"gossip.payload_accepted\"",
+        "\"gossip.payload_broadcast\"",
+        "\"peers.entry_created\"",
+        "\"peers.own_handle_assigned\"",
+        "\"peers.lookup_replaced\"",
+    ];
+
+    /// The runs of letters and digits in the text long enough to be a key, a secret, a mac or an invitation.
+    fn long_alphanumeric_runs(text: &str) -> impl Iterator<Item = &str> {
+        text.split(|character: char| !character.is_ascii_alphanumeric())
+            .filter(|run| run.len() >= SHORTEST_SECRET_RUN)
+    }
+
+    /// Whether the text holds a run of 64 hexadecimal characters, the length of a key, a secret or a whole card id written in hex.
+    fn holds_a_key_length_hex_run(text: &str) -> bool {
+        text.split(|character: char| !character.is_ascii_hexdigit())
+            .any(|run| run.len() >= SPEC_KEY_HEX_CHARS)
+    }
+
+    /// Whether the text holds four decimal groups joined by dots, the form of an IPv4 address.
+    fn holds_a_dotted_quad(text: &str) -> bool {
+        text.split(|character: char| !character.is_ascii_digit() && character != '.')
+            .any(|token| {
+                token.split('.').count() == DOTTED_QUAD_GROUPS
+                    && token
+                        .split('.')
+                        .all(|group| !group.is_empty() && group.len() <= LONGEST_DOTTED_QUAD_GROUP)
+            })
+    }
+
+    /// Whether the file is an events file of a run.
+    fn is_events_file(file: &Path) -> bool {
+        file.to_string_lossy().ends_with(SPEC_EVENTS_SUFFIX)
+    }
+
+    /// Whether the file is one of the trace files, which share a run's header.
+    fn is_trace_file(file: &Path) -> bool {
+        file.parent()
+            .is_some_and(|directory| directory.ends_with(SPEC_TRACES_UNDER_DATA_HOME))
+    }
+
+    /// Whether the file is an inbox socket.
+    fn is_inbox_socket(file: &Path) -> bool {
+        file.extension()
+            .is_some_and(|extension| extension == SOCKET_EXTENSION)
+    }
+
+    /// What no events file may hold: the body, a URL, the IPv6 loopback, and every path and every long run of letters and digits of the machine's files but the trace files.
+    fn planted_markers(files: &[PathBuf]) -> Vec<String> {
+        let mut markers = vec![
+            BODY_MARKER.to_owned(),
+            URL_SCHEME_SEPARATOR.to_owned(),
+            IPV6_LOOPBACK.to_owned(),
+        ];
+        for file in files.iter().filter(|file| !is_trace_file(file)) {
+            markers.push(file.to_string_lossy().into_owned());
+            if let Ok(content) = fs::read(file) {
+                markers.extend(
+                    long_alphanumeric_runs(&String::from_utf8_lossy(&content)).map(str::to_owned),
+                );
+            }
+        }
+        markers
+    }
+
+    /// Waits until the member's inbox holds the body, failing with the body when it does not within the wait.
+    fn wait_for_body(member: &mut Member, body: &str) {
+        let started = Instant::now();
+        while !member.inbox_bodies().contains(&Value::from(body)) {
+            assert!(
+                started.elapsed() < DELIVERY_WAIT,
+                "{body} not in the inbox within {DELIVERY_WAIT:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn observability_decision_6_the_events_files_of_a_real_exchange_hold_no_body_secret_path_or_address()
+     {
+        let network =
+            LocalNetwork::create("events-no-secret", &RunRecordKeeping::from_environment());
+        let host = network.stand_in_host();
+        let MetPair {
+            mut amy, mut bob, ..
+        } = network.amy_and_bob_met(&host);
+        assert!(call_succeeded(&amy.send("bob", BODY_MARKER)));
+        wait_for_body(&mut bob, BODY_MARKER);
+        let sockets: Vec<String> = network
+            .base_directory_files()
+            .iter()
+            .filter(|file| is_inbox_socket(file))
+            .map(|socket| socket.to_string_lossy().into_owned())
+            .collect();
+        amy.close_standard_input();
+        bob.close_standard_input();
+        amy.wait_for_exit();
+        bob.wait_for_exit();
+
+        let files = network.base_directory_files();
+        let mut markers = planted_markers(&files);
+        markers.extend(sockets.iter().cloned());
+        let recorded: String = files
+            .iter()
+            .filter(|file| is_events_file(file))
+            .map(|events| fs::read_to_string(events).unwrap())
+            .collect();
+
+        assert!(!sockets.is_empty(), "no inbox socket was found to plant");
+        for name in EVENTS_THIS_EXCHANGE_RECORDS {
+            assert!(recorded.contains(name), "no {name} event was recorded");
+        }
+        for marker in &markers {
+            assert!(
+                !recorded.contains(marker.as_str()),
+                "an events file holds {marker}"
+            );
+        }
+        assert!(
+            !holds_a_key_length_hex_run(&recorded),
+            "an events file holds a key-length hex run"
+        );
+        assert!(
+            !holds_a_dotted_quad(&recorded),
+            "an events file holds an IPv4 address"
+        );
+    }
+}
