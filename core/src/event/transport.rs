@@ -224,7 +224,7 @@ pub(super) fn connection_field(connection: ConnectionId) -> (&'static str, Value
     (CONNECTION_FIELD, Value::from(connection.value()))
 }
 
-/// The node's five-byte id as a field.
+/// The node's id in iroh's short form, as a field.
 pub(super) fn peer_field(peer: &PeerId) -> (&'static str, Value) {
     (PEER_FIELD, Value::from(peer.as_str()))
 }
