@@ -22,6 +22,7 @@ use estafette::cli::observer::{
     self, Interruption, ObserverCommand, ObserverCommandError, ObserverEffects, OperatorEffects,
 };
 use estafette::config::{ConfigError, NetworkConfig};
+use estafette::crypto::GateKey;
 use estafette::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem, TraceDirectory};
 use estafette::errors::ExitStatus;
 use estafette::event::{
@@ -30,7 +31,7 @@ use estafette::event::{
 };
 use estafette::inbox::socket::{InboxSocket, InboxSocketError, OperatingSystemProcessTable};
 use estafette::mcp::{self, ServedNetwork, ServerEffects};
-use estafette::net::direct::HeldConnections;
+use estafette::net::direct::{HeldConnections, MonotonicClock};
 use estafette::net::endpoint::{GateFailure, NodeEndpoint, TransportRecord};
 use estafette::node::{
     Exit, Network, NodeEffects, NodeError, RuntimeShutdown, ShutdownSignal, relay_answers,
@@ -42,8 +43,8 @@ use estafette::trace::{
     TraceEffects, TraceRefused, TraceStop,
 };
 use estafette::wire::Nonce;
-use iroh::SecretKey;
 use iroh::endpoint::BindError;
+use iroh::{RelayUrl, SecretKey};
 use tokio::runtime::Runtime;
 use tokio::signal::unix::{Signal, SignalKind, signal};
 use tokio::sync::mpsc;
@@ -364,6 +365,29 @@ fn run_record_on<StandardError: Write + Send + 'static>(
     })
 }
 
+/// Binds the endpoint under the key with the relays, its gate closings and its transport recorded to the run record under the salt, then names it in the trace when there is one.
+fn recorded_endpoint(
+    key: SecretKey,
+    gate_key: GateKey,
+    relays: impl IntoIterator<Item = RelayUrl> + Send + 'static,
+    monotonic: MonotonicClock,
+    record: &RunRecord,
+    salt: LocationSalt,
+    trace: Option<Arc<Trace>>,
+) -> Pin<Box<dyn Future<Output = Result<NodeEndpoint, BindError>> + Send>> {
+    Box::pin(bound_in_trace(
+        NodeEndpoint::bind(
+            key,
+            gate_key,
+            relays,
+            fill_with_secure_random_bytes,
+            gate_closing_recorder(Arc::clone(record)),
+            HeldConnections::new(monotonic, TransportRecord::new(Arc::clone(record), salt)),
+        ),
+        trace,
+    ))
+}
+
 /// Binds the endpoint, then names it in the trace when there is one.
 async fn bound_in_trace(
     binding: impl Future<Output = Result<NodeEndpoint, BindError>>,
@@ -467,7 +491,7 @@ fn server_effects(
     trace: Option<Arc<Trace>>,
     salt: LocationSalt,
 ) -> ServerEffects {
-    let gate_record = Arc::clone(&record);
+    let endpoint_record = Arc::clone(&record);
     ServerEffects {
         node: NodeEffects {
             clock: Arc::new(recording_wall_clock(Arc::clone(&record))),
@@ -478,20 +502,15 @@ fn server_effects(
             probe_relay: Arc::new(|relay| Box::pin(relay_answers(relay))),
         },
         bind_endpoint: Arc::new(move |card_key, gate_key, relays, monotonic| {
-            Box::pin(bound_in_trace(
-                NodeEndpoint::bind(
-                    card_key,
-                    gate_key,
-                    relays,
-                    fill_with_secure_random_bytes,
-                    gate_closing_recorder(Arc::clone(&gate_record)),
-                    HeldConnections::new(
-                        monotonic,
-                        TransportRecord::new(Arc::clone(&gate_record), salt),
-                    ),
-                ),
+            recorded_endpoint(
+                card_key,
+                gate_key,
+                relays,
+                monotonic,
+                &endpoint_record,
+                salt,
                 trace.clone(),
-            ))
+            )
         }),
         registry: Arc::new(OperatingSystemFilesystem),
         pause_between_lock_tries: Arc::new(std::thread::sleep),
@@ -690,7 +709,7 @@ fn observer_effects(
     let record = Arc::clone(&process.record);
     let trace = process.trace.clone();
     let salt = process.salt;
-    let gate_record = Arc::clone(&record);
+    let endpoint_record = Arc::clone(&record);
     let accept_record = Arc::clone(&record);
     let effects = ObserverEffects {
         clock: Arc::new(clock),
@@ -699,20 +718,15 @@ fn observer_effects(
             fill_with_secure_random_bytes(seed);
         }),
         bind_endpoint: Box::new(move |key, gate_key, relays, monotonic| {
-            Box::pin(bound_in_trace(
-                NodeEndpoint::bind(
-                    key,
-                    gate_key,
-                    relays,
-                    fill_with_secure_random_bytes,
-                    gate_closing_recorder(Arc::clone(&gate_record)),
-                    HeldConnections::new(
-                        monotonic,
-                        TransportRecord::new(Arc::clone(&gate_record), salt),
-                    ),
-                ),
+            recorded_endpoint(
+                key,
+                gate_key,
+                relays,
+                monotonic,
+                &endpoint_record,
+                salt,
                 trace.clone(),
-            ))
+            )
         }),
         interrupted,
     };
@@ -805,27 +819,22 @@ fn infrastructure_effects(
     let record = Arc::clone(&process.record);
     let trace = process.trace.clone();
     let salt = process.salt;
-    let gate_record = Arc::clone(&record);
+    let endpoint_record = Arc::clone(&record);
     InfrastructureEffects {
         fill_from_secure_source: Box::new(|seed: &mut [u8; RANDOM_BYTES_PER_SECRET_KEY]| {
             fill_with_secure_random_bytes(seed);
         }),
         clock: Arc::new(recording_wall_clock(Arc::clone(&record))),
         bind_endpoint: Box::new(move |key, gate_key, relay, monotonic| {
-            Box::pin(bound_in_trace(
-                NodeEndpoint::bind(
-                    key,
-                    gate_key,
-                    [relay],
-                    fill_with_secure_random_bytes,
-                    gate_closing_recorder(Arc::clone(&gate_record)),
-                    HeldConnections::new(
-                        monotonic,
-                        TransportRecord::new(Arc::clone(&gate_record), salt),
-                    ),
-                ),
+            recorded_endpoint(
+                key,
+                gate_key,
+                [relay],
+                monotonic,
+                &endpoint_record,
+                salt,
                 trace.clone(),
-            ))
+            )
         }),
         monotonic: Arc::new(Instant::now),
         start_relay: Box::new(|site| Box::pin(infra::start_embedded_relay(site))),
