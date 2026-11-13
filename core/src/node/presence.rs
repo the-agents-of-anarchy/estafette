@@ -1278,7 +1278,7 @@ pub(super) mod tests {
     const IMPOSTOR_HANDLE: &str = "imp";
     pub(in crate::node) const HOST_SEED: u8 = 90;
     const REPLAY_DIRECT_ADDRESS: &str = "203.0.113.9:4433";
-    pub(in crate::node) const SECOND_HOST_SEED: u8 = 91;
+    const SECOND_HOST_SEED: u8 = 91;
     const THIRD_HOST_SEED: u8 = 92;
     pub(in crate::node) const HOST_RELAY: &str = "https://relay-host.estafette.invalid/";
     const SECOND_HOST_RELAY: &str = "https://relay-second-host.estafette.invalid/";

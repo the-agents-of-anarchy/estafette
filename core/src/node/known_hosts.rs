@@ -182,39 +182,28 @@ mod tests {
 
     use super::*;
     use crate::node::presence::tests::{
-        FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, NETWORK_FILE_NAME, OWNER_SEED, SECOND_HOST_SEED,
-        config_with_hosts, infrastructure_of, keys, secret_key,
+        FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, NETWORK_FILE_NAME, OWNER_SEED,
+        PROPERTY_CASES, bind, config_with_hosts, infrastructure_of, keys, secret_key,
     };
     use crate::payload::OpenedPayload;
+    use crate::seeded_draws::Draws;
 
-    const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * MILLIS_PER_SECOND;
-    const DAYS_WITHIN_EXPIRY: u64 = 29;
-    const DAYS_PAST_EXPIRY: u64 = 31;
-    const PLAIN_HTTP_HOST_RELAY: &str = "http://relay-second-host.estafette.invalid/";
+    const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+    const SPEC_INFRASTRUCTURE_RECORD_EXPIRY_DAYS: u64 = 30;
+    const SPEC_INFRASTRUCTURE_RECORD_EXPIRY_SECONDS: u64 =
+        SPEC_INFRASTRUCTURE_RECORD_EXPIRY_DAYS * SECONDS_PER_DAY;
+    const WHOLE_DAYS_DRAWN: u64 = 2 * SPEC_INFRASTRUCTURE_RECORD_EXPIRY_DAYS + 1;
+    const SECONDS_DRAWN_EACH_SIDE_OF_A_WHOLE_DAY: u64 = 1;
+    const SECOND_SHIFTS_DRAWN: u64 = 2 * SECONDS_DRAWN_EACH_SIDE_OF_A_WHOLE_DAY + 1;
 
-    fn hosts_saved_days_after_a_record(tag: &str, days_after: u64) -> Vec<Host> {
-        let root = std::env::temp_dir().join(format!("u46-{tag}-{}", std::process::id()));
-        drop(fs::remove_dir_all(&root));
-        fs::create_dir_all(&root).unwrap();
-        let path = root.join(NETWORK_FILE_NAME);
-        let record = valid_record(
-            opened_record(HOST_SEED, HOST_RELAY, FROZEN_CLOCK_MS / MILLIS_PER_SECOND).unwrap(),
-        );
-        let mut known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), path.clone());
-
-        known_hosts.take_record(&record, FROZEN_CLOCK_MS);
-        known_hosts
-            .save(
-                days_after
-                    .checked_mul(MILLIS_PER_DAY)
-                    .and_then(|span| span.checked_add(FROZEN_CLOCK_MS))
-                    .unwrap(),
-            )
-            .unwrap();
-
-        let saved = NetworkConfig::load(&path).unwrap().hosts;
-        drop(fs::remove_dir_all(&root));
-        saved
+    /// Whole seconds since a host was heard: whole days up to twice the expiry, shifted by up to a second either way so the expiry's own edge is drawn.
+    fn drawn_seconds_since_heard(draws: &mut Draws) -> u64 {
+        draws
+            .below(WHOLE_DAYS_DRAWN)
+            .checked_mul(SECONDS_PER_DAY)
+            .and_then(|whole_days| whole_days.checked_add(draws.below(SECOND_SHIFTS_DRAWN)))
+            .unwrap()
+            .saturating_sub(SECONDS_DRAWN_EACH_SIDE_OF_A_WHOLE_DAY)
     }
 
     fn opened_record(
@@ -248,42 +237,58 @@ mod tests {
         }
     }
 
-    /// Spec 3.3 and 3.8: a record whose relay the configuration refuses is neither held nor saved, and a later record of another host still saves.
-    #[test]
-    fn spec_3_8_a_record_whose_relay_the_configuration_refuses_is_neither_held_nor_saved() {
-        let root = std::env::temp_dir().join(format!("u46-refused-relay-{}", std::process::id()));
+    /// Spec 3.3 and 3.8: a host learned from its record leaves the file at a later save exactly when more than 30 days have passed since it was heard.
+    #[tokio::test]
+    async fn spec_3_3_a_save_keeps_a_learned_host_exactly_while_it_was_heard_within_30_days() {
+        let root = std::env::temp_dir().join(format!("known-hosts-expiry-{}", std::process::id()));
         drop(fs::remove_dir_all(&root));
         fs::create_dir_all(&root).unwrap();
-        let path = root.join(NETWORK_FILE_NAME);
-        let record_ts = FROZEN_CLOCK_MS / MILLIS_PER_SECOND;
-        let mut known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), path.clone());
+        let endpoint = bind(FIRST_SEED).await;
+        let record = valid_record(
+            opened_record(HOST_SEED, HOST_RELAY, FROZEN_CLOCK_MS / MILLIS_PER_SECOND).unwrap(),
+        );
 
-        let refused = opened_record(SECOND_HOST_SEED, PLAIN_HTTP_HOST_RELAY, record_ts);
-        let accepted = valid_record(opened_record(HOST_SEED, HOST_RELAY, record_ts).unwrap());
-        let verdict = known_hosts.take_record(&accepted, FROZEN_CLOCK_MS);
-        let saved = known_hosts.save(FROZEN_CLOCK_MS);
+        for case in 0..PROPERTY_CASES {
+            let mut draws = Draws::seeded(case);
+            let seconds_since_heard = drawn_seconds_since_heard(&mut draws);
+            let path = root.join(format!("{case}-{NETWORK_FILE_NAME}"));
+            let mut known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), path.clone());
+            known_hosts
+                .take_infrastructure(
+                    &record,
+                    FROZEN_CLOCK_MS,
+                    &endpoint,
+                    RelayOfRecord::LeaveOutOfRelayMap,
+                    &|_event| {},
+                )
+                .await;
 
-        assert_eq!(refused, Err(crate::payload::PayloadError::HostRelayRefused));
-        assert_eq!(verdict, RecordVerdict::FromNewHost);
-        assert!(saved.is_ok(), "{saved:?}");
-        let relays: Vec<String> = NetworkConfig::load(&path)
-            .unwrap()
-            .hosts
-            .into_iter()
-            .map(|host| host.relay)
-            .collect();
-        assert_eq!(relays, [HOST_RELAY]);
+            known_hosts
+                .save(
+                    seconds_since_heard
+                        .checked_mul(MILLIS_PER_SECOND)
+                        .and_then(|span| span.checked_add(FROZEN_CLOCK_MS))
+                        .unwrap(),
+                )
+                .unwrap();
+
+            let saved: Vec<String> = NetworkConfig::load(&path)
+                .unwrap()
+                .hosts
+                .into_iter()
+                .map(|host| host.relay)
+                .collect();
+            let expected: &[&str] =
+                if seconds_since_heard <= SPEC_INFRASTRUCTURE_RECORD_EXPIRY_SECONDS {
+                    &[HOST_RELAY]
+                } else {
+                    &[]
+                };
+            assert_eq!(
+                saved, expected,
+                "case {case}: saved {seconds_since_heard} s after the host was heard"
+            );
+        }
         drop(fs::remove_dir_all(&root));
-    }
-
-    /// Spec 3.3 and 3.14: a learned host stamped on the millisecond clock leaves the file when saved 31 days later and stays at 29 days.
-    #[test]
-    fn spec_3_3_a_learned_host_not_heard_for_30_days_is_dropped_at_the_next_save() {
-        let kept = hosts_saved_days_after_a_record("kept", DAYS_WITHIN_EXPIRY);
-        let dropped = hosts_saved_days_after_a_record("dropped", DAYS_PAST_EXPIRY);
-
-        let kept_relays: Vec<&str> = kept.iter().map(|host| host.relay.as_str()).collect();
-        assert_eq!(kept_relays, [HOST_RELAY]);
-        assert_eq!(dropped, []);
     }
 }
