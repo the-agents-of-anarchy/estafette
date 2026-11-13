@@ -59,6 +59,9 @@ const INTERRUPT_SIGNAL: &str = "SIGINT";
 const TERMINATE_SIGNAL: &str = "SIGTERM";
 const HANGUP_SIGNAL: &str = "SIGHUP";
 
+/// Sends iroh's own lines into a trace's raw file, done once per process by the composition root.
+type InstallIrohLines = fn(Arc<Trace>) -> Result<(), IrohLinesRefused>;
+
 #[derive(Debug, Parser)]
 #[command(name = "estafette", about = PROGRAM_PURPOSE, long_about = PROGRAM_PURPOSE)]
 struct EstafetteArguments {
@@ -149,16 +152,18 @@ fn main() -> ExitCode {
         |name| std::env::var_os(name),
         &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
         TraceBounds::SPEC,
+        iroh_lines::install,
     );
     ExitCode::from(u8::from(status))
 }
 
-/// Runs the command on the process's streams, reading the environment through the given lookup and tracing through the given effects within the given bounds, and says how the process ends.
+/// Runs the command on the process's streams, reading the environment through the given lookup and tracing through the given effects within the given bounds, iroh's own lines sent to the trace by the given install, and says how the process ends.
 fn run_command(
     command: Command,
     environment: impl Fn(&str) -> Option<OsString>,
     trace_effects: &TraceEffects,
     trace_bounds: TraceBounds,
+    install_iroh_lines: InstallIrohLines,
 ) -> ExitStatus {
     match command {
         Command::Cards(command) => cards::run(
@@ -177,6 +182,7 @@ fn run_command(
             io::stderr(),
             trace_effects,
             trace_bounds,
+            install_iroh_lines,
         ),
         Command::Network { command } => exit_status_after(
             run_network_command(&command, &environment, &mut io::stdout(), &mut io::stderr())
@@ -190,10 +196,10 @@ fn run_command(
             io::stderr(),
             trace_effects,
             trace_bounds,
-            |directories, process| {
+            with_iroh_lines(install_iroh_lines, |directories, process| {
                 run_observer_command(&command, directories, process, &mut io::stdout())
                     .map(|()| ExitStatus::Success)
-            },
+            }),
         ),
         Command::Mcp { registry, debug } => run_traced(
             debug.tracing(),
@@ -202,7 +208,9 @@ fn run_command(
             io::stderr(),
             trace_effects,
             trace_bounds,
-            |directories, process| serve_mcp(registry, directories, process),
+            with_iroh_lines(install_iroh_lines, |directories, process| {
+                serve_mcp(registry, directories, process)
+            }),
         ),
         Command::Doctor { arguments, debug } => run_traced(
             debug.tracing(),
@@ -211,9 +219,9 @@ fn run_command(
             io::stderr(),
             trace_effects,
             trace_bounds,
-            |directories, process| {
+            with_iroh_lines(install_iroh_lines, |directories, process| {
                 run_doctor_command(&arguments, directories, process, &mut io::stdout())
-            },
+            }),
         ),
     }
 }
@@ -290,18 +298,29 @@ fn start_trace(
                 .map_err(|failure| CommandLineFailure::Directories(failure.into()))?;
             let mut run_id = [0; RUN_ID_BYTES];
             fill_with_secure_random_bytes(&mut run_id);
-            let trace = Trace::start(
+            Trace::start(
                 &directory,
                 &OperatingSystemFilesystem,
                 RunId::from_random_bytes(run_id),
                 trace_effects,
                 trace_bounds,
             )
-            .map(Arc::new)
-            .map_err(CommandLineFailure::Trace)?;
-            iroh_lines::install(Arc::clone(&trace)).map_err(CommandLineFailure::IrohLines)?;
-            Ok(Some(trace))
+            .map(|trace| Some(Arc::new(trace)))
+            .map_err(CommandLineFailure::Trace)
         }
+    }
+}
+
+/// The command, run once the given install sends iroh's own lines to the process's trace, when the process has one.
+fn with_iroh_lines(
+    install_iroh_lines: InstallIrohLines,
+    command: impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure>,
+) -> impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure> {
+    move |directories, process| {
+        if let Some(trace) = &process.trace {
+            install_iroh_lines(Arc::clone(trace)).map_err(CommandLineFailure::IrohLines)?;
+        }
+        command(directories, process)
     }
 }
 
@@ -709,7 +728,7 @@ fn unix_seconds_of(instant: SystemTime) -> Result<u64, CommandLineFailure> {
     unix_milliseconds_of(instant).map(|milliseconds| milliseconds / MILLISECONDS_PER_SECOND)
 }
 
-/// Runs the infrastructure command on a runtime of its own, its run record on `stderr` and its trace on the given effects within the given bounds, and says how the process ends.
+/// Runs the infrastructure command on a runtime of its own, its run record on `stderr` and its trace on the given effects within the given bounds with iroh's own lines sent to it by the given install, and says how the process ends.
 #[cfg(feature = "relay")]
 fn run_infrastructure_command(
     command: InfrastructureCommand,
@@ -718,6 +737,7 @@ fn run_infrastructure_command(
     stderr: impl Write + Send + 'static,
     trace_effects: &TraceEffects,
     trace_bounds: TraceBounds,
+    install_iroh_lines: InstallIrohLines,
 ) -> ExitStatus {
     run_traced(
         command.debug().tracing(),
@@ -726,10 +746,10 @@ fn run_infrastructure_command(
         stderr,
         trace_effects,
         trace_bounds,
-        |directories, process| {
+        with_iroh_lines(install_iroh_lines, |directories, process| {
             serve_infrastructure(command, &directories, process, result)
                 .map(|()| ExitStatus::Success)
-        },
+        }),
     )
 }
 
@@ -862,6 +882,8 @@ mod tests {
     const BLOCKING_READ_THAT_NEVER_RETURNS_IN_TIME: Duration = Duration::from_secs(10);
     const AWAITED_SHUTDOWN_ENDS_WITHIN: Duration = Duration::from_millis(2000);
     const SPEC_PROGRAM_PURPOSE: &str = "Messaging between agents across machines and harnesses";
+    /// Sends no iroh line anywhere: one test process runs many traced commands, and a process holds one global subscriber.
+    const IROH_LINES_LEFT_OUT: InstallIrohLines = |_trace| Ok(());
 
     /// A scratch directory tree that is removed when this value is dropped, whether the test passed or failed.
     struct ScratchRoot(PathBuf);
@@ -1211,6 +1233,7 @@ mod tests {
             environment,
             &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
             TraceBounds::SPEC,
+            IROH_LINES_LEFT_OUT,
         );
 
         assert_eq!(status, ExitStatus::Failure);
@@ -1704,6 +1727,7 @@ mod tests {
             recorded.clone(),
             &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
             TraceBounds::SPEC,
+            IROH_LINES_LEFT_OUT,
         );
 
         let recorded = recorded.0.lock().unwrap().clone();
