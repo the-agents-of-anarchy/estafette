@@ -32,6 +32,7 @@ mod raw_iroh_lines {
         "iroh_gossip::net",
     ];
     const IROH_EVENTS_TARGET: &str = "iroh::_events";
+    const TARGET_SEPARATOR: &str = "::";
 
     /// A scratch root under `/tmp` with a network created in it.
     fn machine_with_network(test_tag: &str) -> PathBuf {
@@ -69,6 +70,14 @@ mod raw_iroh_lines {
             .collect()
     }
 
+    /// Whether the target is the spec target itself or a target beneath it, never a sibling that merely shares its first characters.
+    fn falls_under(target: &str, spec_target: &str) -> bool {
+        target == spec_target
+            || target
+                .strip_prefix(spec_target)
+                .is_some_and(|beneath| beneath.starts_with(TARGET_SEPARATOR))
+    }
+
     #[test]
     fn observability_decision_7_a_process_that_starts_an_endpoint_writes_iroh_lines_of_the_four_targets_after_the_raw_file_first_line_and_nothing_more_to_standard_error()
      {
@@ -99,14 +108,14 @@ mod raw_iroh_lines {
         assert!(
             targets
                 .iter()
-                .any(|target| target.starts_with(IROH_EVENTS_TARGET)),
+                .any(|target| falls_under(target, IROH_EVENTS_TARGET)),
             "no line of {IROH_EVENTS_TARGET} among {targets:?}"
         );
         for target in &targets {
             assert!(
                 SPEC_IROH_TARGETS
                     .iter()
-                    .any(|spec_target| target.starts_with(spec_target)),
+                    .any(|spec_target| falls_under(target, spec_target)),
                 "{target} is none of the four targets"
             );
         }
