@@ -867,7 +867,10 @@ impl Peer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+
     use crate::card::tests::{SPEC_PUBLIC_CAP_BYTES, public_mapping_of_bytes};
+    use crate::event::{Event, EventFields, PeerTableEvent};
     use crate::seeded_draws::Draws;
     use crate::wire::{
         Departure, Introduce, IntroduceAck, Message, MessageId, Presence, SignatureBytes,
@@ -2302,6 +2305,72 @@ mod tests {
                 handle,
                 status: Status::Gone { since_ms: NOW_MS },
             }]
+        );
+    }
+
+    const ENTRY_CHANGED_EVENT: &str = "peers.entry_changed";
+    const PEER_CARD_SHORT_ID: &str = "0202020202";
+    const PEER_FIELD: &str = "peer";
+    const HANDLE_FIELD: &str = "handle";
+    const FROM_FIELD: &str = "from";
+    const TO_FIELD: &str = "to";
+    const CAUSE_FIELD: &str = "cause";
+    const UNREACHABLE_WORD: &str = "unreachable";
+    const ONLINE_WORD: &str = "online";
+    const PRESENCE_CAUSE_WORD: &str = "presence";
+
+    fn table_with_peer_unreachable_since_now() -> PeerTable {
+        let mut table = PeerTable::new(OWN_CARD);
+        accept_presence(
+            &mut table,
+            &presence(PEER_CARD, PEER_HANDLE, FIRST_SEQ),
+            NOW_MS,
+        );
+        assert_eq!(
+            table
+                .direct_contact_failed(PEER_CARD, NOW_MS, ContactFailed::Send)
+                .value,
+            vec![Effect::BroadcastUnreachable(PEER_CARD)],
+            "the table did not set the setup peer unreachable"
+        );
+        table
+    }
+
+    fn written_lines(changes: Vec<TableChange>) -> Vec<(&'static str, EventFields)> {
+        changes
+            .into_iter()
+            .map(|change| {
+                let event = Event::from(PeerTableEvent::of_change(change));
+                (event.name(), event.fields())
+            })
+            .collect()
+    }
+
+    fn peer_moved_online_from_unreachable_by(
+        cause_word: &'static str,
+    ) -> (&'static str, EventFields) {
+        (
+            ENTRY_CHANGED_EVENT,
+            vec![
+                (PEER_FIELD, Value::from(PEER_CARD_SHORT_ID)),
+                (HANDLE_FIELD, Value::from(PEER_HANDLE)),
+                (FROM_FIELD, Value::from(UNREACHABLE_WORD)),
+                (TO_FIELD, Value::from(ONLINE_WORD)),
+                (CAUSE_FIELD, Value::from(cause_word)),
+            ],
+        )
+    }
+
+    #[test]
+    fn observability_decision_9_a_presence_that_moves_an_unreachable_entry_online_writes_the_cause_presence_spec_3_8()
+     {
+        let mut table = table_with_peer_unreachable_since_now();
+
+        let moved = table.admit_presence(&presence(PEER_CARD, PEER_HANDLE, SECOND_SEQ), LATER_MS);
+
+        assert_eq!(
+            written_lines(moved.changes),
+            [peer_moved_online_from_unreachable_by(PRESENCE_CAUSE_WORD)]
         );
     }
 }
