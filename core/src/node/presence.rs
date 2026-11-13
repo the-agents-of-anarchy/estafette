@@ -2864,7 +2864,8 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_8_an_introduce_that_fails_is_recorded_naming_the_node_and_why() {
+    async fn observability_decision_9_an_introduce_that_fails_is_recorded_naming_the_node_and_why()
+    {
         let scratch = Scratch::new("intro-fail-record").await;
         let (report, mut failures) = recorded_contact_failures();
         let (_member, witness) = start_witnessed(
@@ -2896,7 +2897,7 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_8_a_probe_that_fails_is_recorded_naming_the_node() {
+    async fn observability_decision_9_a_probe_that_fails_is_recorded_naming_the_node() {
         let scratch = Scratch::new("probe-fail-record").await;
         let (report, mut failures) = recorded_contact_failures();
         let mut members = start_members(
