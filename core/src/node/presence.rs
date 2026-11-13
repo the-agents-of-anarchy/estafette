@@ -26,7 +26,7 @@ use super::rebind::{Rebinding, RelayProbe};
 use super::relay_loss::{RelayLossWatch, home_relays};
 use crate::config::{AcceptedValue, NetworkConfig};
 use crate::crypto::{NetworkKeys, NetworkSecret};
-use crate::event::{DirectEvent, Event, RunRecord};
+use crate::event::{DirectEvent, Event, PeerTableEvent, RunRecord};
 use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::inbox::buffer::ReceivedMessage;
 use crate::inbox::socket::{Attached, InboxSocket};
@@ -42,8 +42,8 @@ use crate::payload::{
     ZERO_SIGNATURE,
 };
 use crate::peers::{
-    Effect, Peer, PeerTable, announced_sender_handle, is_within_announcement_max_age,
-    is_within_announcement_max_age_ahead,
+    Effect, Peer, PeerTable, TableCause, TableChange, announced_sender_handle,
+    is_within_announcement_max_age, is_within_announcement_max_age_ahead,
 };
 use crate::wire::{
     self, Addr, Departure, Introduce, IntroduceAck, Message, Nonce, Payload, Presence,
@@ -348,13 +348,42 @@ impl PeerRows {
         self.table.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Runs one operation on the locked table, returning what it gave and the changes it made.
+    fn operate<Operated>(
+        &self,
+        operation: impl FnOnce(&mut PeerTable) -> Operated,
+    ) -> (Operated, Vec<TableChange>) {
+        let mut table = self.table();
+        let operated = operation(&mut table);
+        (operated, table.take_changes())
+    }
+
+    /// Records each change of the table as caused by the input named.
+    fn record_changes(&self, changes: Vec<TableChange>, cause: TableCause) {
+        for change in changes {
+            (self.report)(PeerTableEvent::of_change(change, cause).into());
+        }
+    }
+
+    /// Runs one operation on the locked table and records each change it made as caused by the input named.
+    pub(crate) fn change<Changed>(
+        &self,
+        cause: TableCause,
+        operation: impl FnOnce(&mut PeerTable) -> Changed,
+    ) -> Changed {
+        let (operated, table_changes) = self.operate(operation);
+        self.record_changes(table_changes, cause);
+        operated
+    }
+
     /// Applies a Presence to the table, recording whether it was taken, and when it is taken closes every connection to or from its card, of any protocol, whose process no longer runs, and every other while iroh stays on that process's path (spec 3.8, address lookup).
     pub(crate) fn take_presence(&self, presence: &Presence, now_ms: u64) -> Vec<Effect> {
-        let mut table = self.table();
-        let admitted = table.admit_presence(presence, now_ms);
-        let handle = table.handle_of(presence.card, now_ms);
-        drop(table);
+        let ((admitted, handle), changes) = self.operate(|table| {
+            let admitted = table.admit_presence(presence, now_ms);
+            (admitted, table.handle_of(presence.card, now_ms))
+        });
         (self.report)(admission_record(presence.facts(), handle, &admitted));
+        self.record_changes(changes, TableCause::Presence);
         let Ok(effects) = admitted else {
             return Vec::new();
         };
@@ -367,21 +396,23 @@ impl PeerRows {
     /// Applies a Departure to the table, returning the drop of the held connection it calls for once it is taken (spec 3.8).
     #[must_use]
     pub(crate) fn take_departure(&self, departure: &Departure, now_ms: u64) -> Vec<Effect> {
-        let mut table = self.table();
-        let admitted = table.admit_departure(departure, now_ms);
-        let handle = table.handle_of(departure.card, now_ms);
-        drop(table);
+        let ((admitted, handle), changes) = self.operate(|table| {
+            let admitted = table.admit_departure(departure, now_ms);
+            (admitted, table.handle_of(departure.card, now_ms))
+        });
         (self.report)(admission_record(departure.facts(), handle, &admitted));
+        self.record_changes(changes, TableCause::Departure);
         admitted.unwrap_or_default()
     }
 
     /// Applies an Unreachable report about another card to the table, recording whether it was taken (spec 3.8).
     pub(crate) fn take_unreachable(&self, report: &Unreachable, now_ms: u64) {
-        let mut table = self.table();
-        let admitted = table.admit_unreachable(report, now_ms);
-        let handle = table.handle_of(report.reporter, now_ms);
-        drop(table);
+        let ((admitted, handle), changes) = self.operate(|table| {
+            let admitted = table.admit_unreachable(report, now_ms);
+            (admitted, table.handle_of(report.reporter, now_ms))
+        });
         (self.report)(admission_record(report.facts(), handle, &admitted));
+        self.record_changes(changes, TableCause::Unreachable);
     }
 
     /// Applies a gossip report of a new neighbor, returning the Introduce it calls for (spec 3.8).
@@ -393,7 +424,9 @@ impl PeerRows {
     /// Applies a gossip report of a lost neighbor, returning the Probe it calls for (spec 3.8).
     #[must_use]
     pub(crate) fn take_neighbor_down(&self, node: EndpointId, now_ms: u64) -> Vec<Effect> {
-        self.table().neighbor_down(*node.as_bytes(), now_ms)
+        self.change(TableCause::NeighborDown, |table| {
+            table.neighbor_down(*node.as_bytes(), now_ms)
+        })
     }
 
     /// Applies the answer to a direct request this node sent: an `IntroduceAck` as an introduction that spares the connection it came on, a failure as a failed contact, an acknowledged Probe as a contact that succeeded (spec 3.8).
@@ -402,22 +435,28 @@ impl PeerRows {
             DirectAnswer::Introduce {
                 card,
                 answer: Ok(ack),
-            } => sparing_the_answering_connection(
-                self.table().receive_introduce_ack(card, &ack, now_ms),
-            ),
+            } => sparing_the_answering_connection(self.change(TableCause::IntroduceAck, |table| {
+                table.receive_introduce_ack(card, &ack, now_ms)
+            })),
             DirectAnswer::Introduce {
                 card,
                 answer: Err(_),
-            }
-            | DirectAnswer::Probe {
+            } => self.change(TableCause::IntroduceFailed, |table| {
+                table.direct_contact_failed(card, now_ms)
+            }),
+            DirectAnswer::Probe {
                 card,
                 answer: Err(_),
-            } => self.table().direct_contact_failed(card, now_ms),
+            } => self.change(TableCause::ProbeFailed, |table| {
+                table.direct_contact_failed(card, now_ms)
+            }),
             DirectAnswer::Probe {
                 card,
                 answer: Ok(()),
             } => {
-                self.table().direct_contact_succeeded(card, now_ms);
+                self.change(TableCause::ProbeAnswered, |table| {
+                    table.direct_contact_succeeded(card, now_ms);
+                });
                 Vec::new()
             }
         }
@@ -455,13 +494,19 @@ impl NodeState {
 
     /// Sets the peer Unreachable after a send to it failed, and hands the announcement of that to the presence loop.
     pub(super) fn contact_failed(&self, card: wire::PublicKey) {
-        let effects = self.table().direct_contact_failed(card, self.now_ms());
+        let now_ms = self.now_ms();
+        let effects = self.rows.change(TableCause::SendFailed, |table| {
+            table.direct_contact_failed(card, now_ms)
+        });
         self.hand_to_loop(LoopEvent::Effects(effects));
     }
 
     /// Sets the peer Online after a send to it was acknowledged, and wakes the presence loop, since an Online peer lets this member rebind.
     pub(super) fn contact_succeeded(&self, card: wire::PublicKey) {
-        self.table().direct_contact_succeeded(card, self.now_ms());
+        let now_ms = self.now_ms();
+        self.rows.change(TableCause::SendAcknowledged, |table| {
+            table.direct_contact_succeeded(card, now_ms);
+        });
         self.hand_to_loop(LoopEvent::PeerReached);
     }
 
@@ -488,13 +533,14 @@ impl NodeState {
         now_ms: u64,
     ) -> Option<LocalHandle> {
         announced_sender_handle(message)?;
-        let mut table = self.table();
-        let effects = table.receive_message(sender, message, now_ms);
-        let from = table
-            .peers(now_ms)
-            .find(|peer| peer.card == sender)
-            .map(|peer| peer.effective_handle.clone());
-        drop(table);
+        let (effects, from) = self.rows.change(TableCause::Message, |table| {
+            let effects = table.receive_message(sender, message, now_ms);
+            let from = table
+                .peers(now_ms)
+                .find(|peer| peer.card == sender)
+                .map(|peer| peer.effective_handle.clone());
+            (effects, from)
+        });
         self.hand_to_loop(LoopEvent::Effects(effects));
         from
     }
@@ -528,9 +574,10 @@ impl DirectHost for Arc<NodeState> {
     }
 
     fn receive_introduce(&self, sender: wire::PublicKey, introduce: Introduce) -> IntroduceAck {
-        let effects = self
-            .table()
-            .receive_introduce(sender, &introduce, self.now_ms());
+        let now_ms = self.now_ms();
+        let effects = self.rows.change(TableCause::Introduce, |table| {
+            table.receive_introduce(sender, &introduce, now_ms)
+        });
         self.hand_to_loop(LoopEvent::Effects(effects));
         acknowledgement_of(self.introduction())
     }
@@ -1016,10 +1063,13 @@ impl PresenceLoop {
 
     /// Assigns this node's effective handle against the table and hands it to init.
     fn assign_own_handle(&self, assigned: oneshot::Sender<LocalHandle>) {
+        let now_ms = self.state.now_ms();
         let own_handle = self
             .state
-            .table()
-            .assign_own_handle(&self.requested_handle, self.state.now_ms());
+            .rows
+            .change(TableCause::OwnHandleRequested, |table| {
+                table.assign_own_handle(&self.requested_handle, now_ms)
+            });
         drop(self.state.own_handle.set(own_handle.clone()));
         drop(assigned.send(own_handle));
     }
@@ -1071,6 +1121,23 @@ impl PresenceLoop {
         }
     }
 
+    /// Records what the lookup entry of `card` now holds, naming the card by the handle the table holds for it: how many direct addresses and whether a relay, never where.
+    fn record_lookup_of(&self, card: &wire::PublicKey) {
+        let Some(held) = endpoint_id(card).and_then(|id| self.endpoint.address_of(id)) else {
+            return;
+        };
+        let handle = self.state.table().handle_of(*card, self.state.now_ms());
+        (self.report)(
+            PeerTableEvent::lookup_replaced(
+                card,
+                handle,
+                held.ip_addrs().count(),
+                held.relay_urls().next().is_some(),
+            )
+            .into(),
+        );
+    }
+
     /// Records whether a received payload was taken or dropped by the rule named, naming its signer by the handle the table holds for it, if any.
     fn record_admission(
         &self,
@@ -1106,6 +1173,7 @@ impl PresenceLoop {
             match effect {
                 Effect::ReplaceLookupEntry { card, addr } => {
                     replace_lookup_entry(&self.endpoint, &card, &addr);
+                    self.record_lookup_of(&card);
                 }
                 Effect::BroadcastUnreachable(card) => self.broadcast_unreachable(card).await,
                 Effect::DropHeldConnection(card) => {
@@ -2144,7 +2212,7 @@ pub(super) mod tests {
         }
 
         /// Closes the witness's endpoint, so it leaves the topic and answers no direct request.
-        async fn close(&self) {
+        pub(in crate::node) async fn close(&self) {
             self.router.shutdown().await.unwrap();
         }
 
@@ -2405,7 +2473,9 @@ pub(super) mod tests {
         Arc::new(move || milliseconds)
     }
 
-    fn settable_clock(start_ms: u64) -> (Clock, Arc<std::sync::atomic::AtomicU64>) {
+    pub(in crate::node) fn settable_clock(
+        start_ms: u64,
+    ) -> (Clock, Arc<std::sync::atomic::AtomicU64>) {
         let reading = Arc::new(std::sync::atomic::AtomicU64::new(start_ms));
         let read = Arc::clone(&reading);
         (

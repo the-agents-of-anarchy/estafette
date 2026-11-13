@@ -8,7 +8,8 @@ use tokio::sync::mpsc;
 use super::tests::{
     FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_SEED,
     MemberPlan, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, Scratch, WITNESS_SEED, card,
-    infrastructure_of, keys, secret_key, start_members, start_witnessed, wall_clock_ms,
+    infrastructure_of, keys, secret_key, settable_clock, start_members, start_witnessed,
+    wall_clock_ms,
 };
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{Event, EventFields, RunRecord};
@@ -678,6 +679,255 @@ async fn observability_decision_9_a_member_records_each_payload_it_broadcast_wit
             }))
         ),
         "the witness heard {heard:?}"
+    );
+    drop(scratch);
+}
+
+const ENTRY_CREATED: &str = "peers.entry_created";
+const ENTRY_CHANGED: &str = "peers.entry_changed";
+const ENTRY_REMOVED: &str = "peers.entry_removed";
+const SPEC_GONE_ENTRY_RETENTION_MS: u64 = 3_600_000;
+const WITNESS_HANDLE: &str = "wit";
+const SENT_BODY: &str = "ping";
+
+/// The fields of an entry created at the table, as the events file writes them.
+fn created_fields(
+    seed: u8,
+    (requested, assigned): (&str, &str),
+    status: &str,
+    cause: &str,
+) -> EventFields {
+    vec![
+        ("peer", short_id(seed)),
+        ("handle", Value::from(assigned)),
+        ("requested", Value::from(requested)),
+        ("status", Value::from(status)),
+        ("cause", Value::from(cause)),
+    ]
+}
+
+/// The fields of an entry whose status moved, as the events file writes them.
+fn changed_fields(seed: u8, handle: &str, (from, to): (&str, &str), cause: &str) -> EventFields {
+    vec![
+        ("peer", short_id(seed)),
+        ("handle", Value::from(handle)),
+        ("from", Value::from(from)),
+        ("to", Value::from(to)),
+        ("cause", Value::from(cause)),
+    ]
+}
+
+#[tokio::test]
+async fn observability_decision_9_a_member_records_each_entry_its_payloads_create_change_and_expire_with_the_cause()
+ {
+    let scratch = Scratch::new("events-table").await;
+    let (report, mut recorded) = recording();
+    let (clock, reading) = settable_clock(FROZEN_CLOCK_MS);
+    let (_member, witness) = start_witnessed(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+            .with_clock(clock)
+            .with_report(report),
+        None,
+    )
+    .await;
+    let now = FROZEN_CLOCK_MS;
+    let later = now + SPEC_GONE_ENTRY_RETENTION_MS;
+
+    witness
+        .broadcast_as(MARKER_SEED, presence_of(MARKER_SEED, MARKER_HANDLE, now))
+        .await;
+    let first = recorded.next_named(ENTRY_CREATED).await;
+    witness
+        .broadcast_as(
+            SECOND_MARKER_SEED,
+            presence_of(SECOND_MARKER_SEED, MARKER_HANDLE, now),
+        )
+        .await;
+    let second = recorded.next_named(ENTRY_CREATED).await;
+    witness
+        .broadcast_as(MARKER_SEED, departure_of(MARKER_SEED, now + 1))
+        .await;
+    let departed = recorded.next_named(ENTRY_CHANGED).await;
+    witness
+        .broadcast_as(
+            WITNESS_SEED,
+            unreachable_of(WITNESS_SEED, SECOND_MARKER_SEED, now),
+        )
+        .await;
+    let reported = recorded.next_named(ENTRY_CHANGED).await;
+    reading.store(later, std::sync::atomic::Ordering::SeqCst);
+    witness
+        .broadcast_as(PIN_SEED, presence_of(PIN_SEED, PIN_HANDLE, later))
+        .await;
+    let expired = recorded.next_named(ENTRY_REMOVED).await;
+
+    assert_eq!(
+        first,
+        created_fields(
+            MARKER_SEED,
+            (MARKER_HANDLE, MARKER_HANDLE),
+            "online",
+            "presence"
+        )
+    );
+    assert_eq!(
+        second,
+        created_fields(
+            SECOND_MARKER_SEED,
+            (MARKER_HANDLE, "mark-2"),
+            "online",
+            "presence"
+        )
+    );
+    assert_eq!(
+        departed,
+        changed_fields(MARKER_SEED, MARKER_HANDLE, ("online", "gone"), "departure")
+    );
+    assert_eq!(
+        reported,
+        changed_fields(
+            SECOND_MARKER_SEED,
+            "mark-2",
+            ("online", "unreachable"),
+            "unreachable"
+        )
+    );
+    assert_eq!(
+        expired,
+        [
+            ("peer", short_id(MARKER_SEED)),
+            ("handle", Value::from(MARKER_HANDLE)),
+            ("status", Value::from("gone")),
+            ("cause", Value::from("expiry")),
+        ]
+    );
+    drop(scratch);
+}
+
+#[tokio::test]
+async fn observability_decision_9_a_member_records_its_own_handle_requested_and_assigned() {
+    let scratch = Scratch::new("events-own-handle").await;
+    let (report, mut recorded) = recording();
+
+    let (_member, _witness) = start_witnessed(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
+        None,
+    )
+    .await;
+
+    assert_eq!(
+        recorded.next_named("peers.own_handle_assigned").await,
+        [
+            ("requested", Value::from(FIRST_HANDLE)),
+            ("handle", Value::from(FIRST_HANDLE)),
+        ]
+    );
+    drop(scratch);
+}
+
+#[tokio::test]
+async fn observability_decision_9_a_member_records_a_lookup_replaced_by_its_count_of_direct_addresses_and_relay()
+ {
+    let scratch = Scratch::new("events-lookup").await;
+    let (report, mut recorded) = recording();
+    let (_member, witness) = start_witnessed(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+            .with_clock(Arc::new(|| FROZEN_CLOCK_MS))
+            .with_report(report),
+        None,
+    )
+    .await;
+
+    witness
+        .broadcast_as(
+            MARKER_SEED,
+            presence_of(MARKER_SEED, MARKER_HANDLE, FROZEN_CLOCK_MS),
+        )
+        .await;
+
+    let replaced = loop {
+        let fields = recorded.next_named("peers.lookup_replaced").await;
+        if fields.first() == Some(&("peer", short_id(MARKER_SEED))) {
+            break fields;
+        }
+    };
+    assert_eq!(
+        replaced,
+        [
+            ("peer", short_id(MARKER_SEED)),
+            ("handle", Value::from(MARKER_HANDLE)),
+            ("direct_addresses", Value::from(1)),
+            ("relay", Value::from(true)),
+        ]
+    );
+    drop(scratch);
+}
+
+#[tokio::test]
+async fn observability_decision_9_a_member_records_entries_its_direct_answers_and_send_outcomes_move_with_the_cause()
+ {
+    let scratch = Scratch::new("events-direct-table").await;
+    let (report, mut recorded) = recording();
+    let (member, witness) = start_witnessed(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+            .with_clock(Arc::new(|| FROZEN_CLOCK_MS))
+            .with_report(report),
+        Some(WITNESS_HANDLE),
+    )
+    .await;
+    let introduced = recorded.next_named(ENTRY_CREATED).await;
+    witness
+        .broadcast_as(
+            MARKER_SEED,
+            unreachable_of(MARKER_SEED, WITNESS_SEED, FROZEN_CLOCK_MS),
+        )
+        .await;
+    let reported = recorded.next_named(ENTRY_CHANGED).await;
+
+    member.node.send(WITNESS_HANDLE, SENT_BODY).await.unwrap();
+    let acknowledged = recorded.next_named(ENTRY_CHANGED).await;
+    witness.close().await;
+    let probed = recorded.next_named(ENTRY_CHANGED).await;
+
+    assert_eq!(
+        introduced,
+        created_fields(
+            WITNESS_SEED,
+            (WITNESS_HANDLE, WITNESS_HANDLE),
+            "online",
+            "introduce_ack"
+        )
+    );
+    assert_eq!(
+        reported,
+        changed_fields(
+            WITNESS_SEED,
+            WITNESS_HANDLE,
+            ("online", "unreachable"),
+            "unreachable"
+        )
+    );
+    assert_eq!(
+        acknowledged,
+        changed_fields(
+            WITNESS_SEED,
+            WITNESS_HANDLE,
+            ("unreachable", "online"),
+            "send_acknowledged"
+        )
+    );
+    assert_eq!(
+        probed,
+        changed_fields(
+            WITNESS_SEED,
+            WITNESS_HANDLE,
+            ("online", "unreachable"),
+            "probe_failed"
+        )
     );
     drop(scratch);
 }

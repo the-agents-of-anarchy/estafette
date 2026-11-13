@@ -52,7 +52,7 @@ impl From<EndpointId> for ShortId {
 
 impl ShortId {
     /// The id as the events file writes it: ten lowercase hex characters.
-    fn field(self) -> Value {
+    pub(super) fn field(self) -> Value {
         Value::from(data_encoding::HEXLOWER.encode(&self.0))
     }
 }

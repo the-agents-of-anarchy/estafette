@@ -48,19 +48,22 @@ mod kept {
 
         /// The value for `card` to change at `now_ms`, once every value whose time ran out is forgotten.
         pub fn get_mut(&mut self, card: &PublicKey, now_ms: u64) -> Option<&mut T> {
-            self.forget_expired(now_ms);
+            drop(self.forget_expired(now_ms));
             self.0.get_mut(card)
         }
 
         /// Puts `value` under `card` at `now_ms`, once every value whose time ran out is forgotten.
         pub fn insert(&mut self, card: PublicKey, value: T, now_ms: u64) {
-            self.forget_expired(now_ms);
+            drop(self.forget_expired(now_ms));
             self.0.insert(card, value);
         }
 
-        /// Forgets every value whose time ran out by `now_ms`.
-        fn forget_expired(&mut self, now_ms: u64) {
-            self.0.retain(|_, value| value.is_kept_at(now_ms));
+        /// Forgets every value whose time ran out by `now_ms`, returning them in card order.
+        pub fn forget_expired(&mut self, now_ms: u64) -> Vec<T> {
+            self.0
+                .extract_if(.., |_, value| !value.is_kept_at(now_ms))
+                .map(|(_, forgotten)| forgotten)
+                .collect()
         }
     }
 }
@@ -129,6 +132,55 @@ struct Tombstone {
     recorded_ms: u64,
 }
 
+/// The input that moved the table: a payload, a request or its answer, the outcome of a send or a probe, or the passing of an entry's time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableCause {
+    Presence,
+    Departure,
+    Unreachable,
+    Introduce,
+    IntroduceAck,
+    IntroduceFailed,
+    Message,
+    NeighborDown,
+    ProbeAnswered,
+    ProbeFailed,
+    SendAcknowledged,
+    SendFailed,
+    OwnHandleRequested,
+    Expiry,
+}
+
+/// One change the table's last operation made, for its caller to record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TableChange {
+    /// An entry was created under the handle assigned for the handle its card requested.
+    Created {
+        card: PublicKey,
+        requested: AnnouncedHandle,
+        handle: LocalHandle,
+        status: Status,
+    },
+    /// An entry's status moved from one word to another.
+    Moved {
+        card: PublicKey,
+        handle: LocalHandle,
+        from: Status,
+        to: Status,
+    },
+    /// An entry was removed once its time ran out.
+    Removed {
+        card: PublicKey,
+        handle: LocalHandle,
+        status: Status,
+    },
+    /// This node's own handle was assigned for the handle it requested.
+    OwnHandleAssigned {
+        requested: AnnouncedHandle,
+        handle: LocalHandle,
+    },
+}
+
 /// Every other member this node knows, with the effects each event on them calls for.
 #[derive(Debug)]
 pub struct PeerTable {
@@ -136,6 +188,7 @@ pub struct PeerTable {
     own_handle: Option<LocalHandle>,
     peers: Kept<Peer>,
     tombstones: Kept<Tombstone>,
+    changes: Vec<TableChange>,
 }
 
 impl PeerTable {
@@ -147,17 +200,28 @@ impl PeerTable {
             own_handle: None,
             peers: Kept::new(),
             tombstones: Kept::new(),
+            changes: Vec::new(),
         }
+    }
+
+    /// The changes the last operation made, oldest first, each handed out once.
+    pub(crate) fn take_changes(&mut self) -> Vec<TableChange> {
+        std::mem::take(&mut self.changes)
     }
 
     /// This node's own effective handle, assigned against the table at the first call and never changed afterward.
     #[must_use]
     pub fn assign_own_handle(&mut self, requested: &AnnouncedHandle, now_ms: u64) -> LocalHandle {
+        self.begin_operation(now_ms);
         if let Some(own) = &self.own_handle {
             return own.clone();
         }
         let own = self.free_handle_for(requested, now_ms);
         self.own_handle = Some(own.clone());
+        self.changes.push(TableChange::OwnHandleAssigned {
+            requested: requested.clone(),
+            handle: own.clone(),
+        });
         own
     }
 
@@ -173,6 +237,7 @@ impl PeerTable {
         presence: &Presence,
         now_ms: u64,
     ) -> Result<Vec<Effect>, PayloadDropRule> {
+        self.begin_operation(now_ms);
         self.admit_announcement(presence.card, presence.seq, now_ms)?;
         let handle = presence
             .handle
@@ -180,9 +245,9 @@ impl PeerTable {
             .map_err(|_outside_the_grammar| PayloadDropRule::HandleOutsideGrammar)?;
         let mut effects = lookup_refresh_effects(presence.card, &presence.addr);
         effects.extend(self.insert_if_unseen(presence.card, &handle, now_ms));
-        if let Some(peer) = self.peers.get_mut(&presence.card, now_ms) {
+        self.change_entry(presence.card, now_ms, |peer| {
             peer.take_presence(presence, now_ms);
-        }
+        });
         Ok(effects)
     }
 
@@ -204,6 +269,7 @@ impl PeerTable {
         departure: &Departure,
         now_ms: u64,
     ) -> Result<Vec<Effect>, PayloadDropRule> {
+        self.begin_operation(now_ms);
         self.admit_announcement(departure.card, departure.seq, now_ms)?;
         self.tombstones.insert(
             departure.card,
@@ -213,9 +279,9 @@ impl PeerTable {
             },
             now_ms,
         );
-        if let Some(peer) = self.peers.get_mut(&departure.card, now_ms) {
+        self.change_entry(departure.card, now_ms, |peer| {
             peer.take_departure(departure.seq, now_ms);
-        }
+        });
         Ok(vec![Effect::DropHeldConnection(departure.card)])
     }
 
@@ -230,16 +296,18 @@ impl PeerTable {
         report: &Unreachable,
         now_ms: u64,
     ) -> Result<(), PayloadDropRule> {
+        self.begin_operation(now_ms);
         if !is_within_announcement_max_age(report.ts, now_ms) {
             return Err(PayloadDropRule::OlderThanMaxAge);
         }
-        let Some(peer) = self.peers.get_mut(&report.card, now_ms) else {
-            return Err(PayloadDropRule::ReportedCardUnknown);
-        };
-        if peer.is_gone() {
-            return Err(PayloadDropRule::ReportedCardGone);
-        }
-        peer.take_unreachable_report(report.ts)
+        self.change_entry(report.card, now_ms, |peer| {
+            if peer.is_gone() {
+                Err(PayloadDropRule::ReportedCardGone)
+            } else {
+                peer.take_unreachable_report(report.ts)
+            }
+        })
+        .unwrap_or(Err(PayloadDropRule::ReportedCardUnknown))
     }
 
     /// Takes a gossip report of `node` as a new neighbor, asking to introduce this node to it unless it is an Online entry.
@@ -258,6 +326,7 @@ impl PeerTable {
     /// Takes a gossip report that `node` is no longer a neighbor, asking to probe it when it is in the table and not Gone.
     #[must_use]
     pub fn neighbor_down(&mut self, node: PublicKey, now_ms: u64) -> Vec<Effect> {
+        self.begin_operation(now_ms);
         if self.present_entry(node, now_ms).is_none() {
             return Vec::new();
         }
@@ -267,18 +336,15 @@ impl PeerTable {
     /// Takes a probe or send to `card` that failed at connect or at ack, setting it Unreachable and asking to announce that, unless it is Gone.
     #[must_use]
     pub fn direct_contact_failed(&mut self, card: PublicKey, now_ms: u64) -> Vec<Effect> {
-        let Some(peer) = self.present_entry(card, now_ms) else {
-            return Vec::new();
-        };
-        peer.status = Status::Unreachable;
-        vec![Effect::BroadcastUnreachable(card)]
+        self.begin_operation(now_ms);
+        self.change_present_entry(card, now_ms, |peer| peer.status = Status::Unreachable)
+            .map_or_else(Vec::new, |()| vec![Effect::BroadcastUnreachable(card)])
     }
 
     /// Takes a direct contact with `card` that succeeded, setting it Online unless it is Gone.
     pub fn direct_contact_succeeded(&mut self, card: PublicKey, now_ms: u64) {
-        if let Some(peer) = self.present_entry(card, now_ms) {
-            peer.take_direct_contact(now_ms);
-        }
+        self.begin_operation(now_ms);
+        self.change_present_entry(card, now_ms, |peer| peer.take_direct_contact(now_ms));
     }
 
     /// Takes an Introduce that arrived on a connection from `card`, as an accepted Presence without the seq check, or as a lookup refresh alone while the card stands departed.
@@ -325,6 +391,7 @@ impl PeerTable {
         message: &Message,
         now_ms: u64,
     ) -> Vec<Effect> {
+        self.begin_operation(now_ms);
         let Some(handle) = announced_sender_handle(message) else {
             return Vec::new();
         };
@@ -333,9 +400,9 @@ impl PeerTable {
             return Vec::new();
         }
         let effects = self.insert_if_unseen(card, &handle, now_ms);
-        if let Some(peer) = self.peers.get_mut(&card, now_ms) {
+        self.change_entry(card, now_ms, |peer| {
             peer.take_message(message.attached, now_ms);
-        }
+        });
         effects
     }
 
@@ -354,6 +421,7 @@ impl PeerTable {
         addr: &Addr,
         now_ms: u64,
     ) -> Vec<Effect> {
+        self.begin_operation(now_ms);
         let Ok(handle) = admissible_introduction_handle(handle, public) else {
             return Vec::new();
         };
@@ -365,10 +433,56 @@ impl PeerTable {
         };
         let mut effects = lookup_refresh_effects(card, addr);
         effects.extend(self.insert_if_unseen(card, &handle, now_ms));
-        if let Some(peer) = self.peers.get_mut(&card, now_ms) {
+        self.change_entry(card, now_ms, |peer| {
             peer.take_introduction(public, attached, addr, now_ms);
-        }
+        });
         effects
+    }
+
+    /// Starts an operation at `now_ms`: forgets the changes of the last one and records the removal of every entry whose time ran out.
+    fn begin_operation(&mut self, now_ms: u64) {
+        self.changes = self
+            .peers
+            .forget_expired(now_ms)
+            .into_iter()
+            .map(|removed| TableChange::Removed {
+                card: removed.card,
+                handle: removed.effective_handle,
+                status: removed.status,
+            })
+            .collect();
+    }
+
+    /// Changes the entry of `card` and records its status move, when the table holds the card.
+    fn change_entry<Changed>(
+        &mut self,
+        card: PublicKey,
+        now_ms: u64,
+        change: impl FnOnce(&mut Peer) -> Changed,
+    ) -> Option<Changed> {
+        let peer = self.peers.get_mut(&card, now_ms)?;
+        let from = peer.status;
+        let changed = change(peer);
+        if from.wire_word() != peer.status.wire_word() {
+            self.changes.push(TableChange::Moved {
+                card,
+                handle: peer.effective_handle.clone(),
+                from,
+                to: peer.status,
+            });
+        }
+        Some(changed)
+    }
+
+    /// Changes the entry of `card` as `change_entry` does, unless it is Gone.
+    fn change_present_entry<Changed>(
+        &mut self,
+        card: PublicKey,
+        now_ms: u64,
+        change: impl FnOnce(&mut Peer) -> Changed,
+    ) -> Option<Changed> {
+        self.change_entry(card, now_ms, |peer| (!peer.is_gone()).then(|| change(peer)))
+            .flatten()
     }
 
     /// The entry of `card` unless it is Gone, since a Gone entry leaves Gone only through an accepted Presence, Introduce, `IntroduceAck` or Message.
@@ -436,6 +550,7 @@ impl PeerTable {
         }
         let mut departed = Peer::first_seen(card, self.free_handle_for(handle, now_ms), now_ms);
         departed.take_departure(departure_seq, now_ms);
+        self.record_creation(&departed, handle);
         self.peers.insert(card, departed, now_ms);
     }
 
@@ -450,12 +565,20 @@ impl PeerTable {
             return Vec::new();
         }
         let effective_handle = self.free_handle_for(handle, now_ms);
-        self.peers.insert(
-            card,
-            Peer::first_seen(card, effective_handle, now_ms),
-            now_ms,
-        );
+        let seen = Peer::first_seen(card, effective_handle, now_ms);
+        self.record_creation(&seen, handle);
+        self.peers.insert(card, seen, now_ms);
         vec![Effect::SendIntroduce(card)]
+    }
+
+    /// Records the creation of `created`, the entry assigned for the `requested` handle.
+    fn record_creation(&mut self, created: &Peer, requested: &AnnouncedHandle) {
+        self.changes.push(TableChange::Created {
+            card: created.card,
+            requested: requested.clone(),
+            handle: created.effective_handle.clone(),
+            status: created.status,
+        });
     }
 
     /// The handle a new entry announcing `announced` takes at `now_ms`: free beside every entry seen before it.
