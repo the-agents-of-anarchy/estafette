@@ -13,17 +13,21 @@ mod scratch_run;
 mod observability {
     use std::fs;
     use std::panic::{self, AssertUnwindSafe};
+    use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::mpsc;
-    use std::sync::{Arc, Mutex, PoisonError};
+    use std::sync::mpsc::{self, Receiver, Sender};
+    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
     use std::thread;
     use std::time::Duration;
 
     use super::remove_scratch::remove_scratch;
     use super::scratch_run::{ONE_EVENT, frozen_clocks, one_event_line, scratch_run};
     use estafette_trace::{TraceBounds, TraceClocks, TraceEffects, TraceFileKind, TraceStop};
+    use serde_json::Value;
 
     const PANICKED_EVENT: &str = "process.panicked";
+    const EVENT_FIELD: &str = "event";
+    const NUMBER_FIELD: &str = "n";
     const STAND_IN_CLOCK_PANIC: &str = "the stand-in clock panics while a line is stamped";
     const PANIC_ENDS_WITHIN: Duration = Duration::from_secs(10);
     static PANIC_HOOK_HELD: Mutex<()> = Mutex::new(());
@@ -42,6 +46,47 @@ mod observability {
             }),
             ..frozen
         }
+    }
+
+    /// Frozen clocks whose monotonic reading, the first after the test armed it, tells the test and waits for its release, so the stamping thread holds the queue's lock until then.
+    fn clocks_holding_the_stamp_once_armed(
+        armed: Arc<AtomicBool>,
+        holding: Sender<()>,
+        released: Receiver<()>,
+    ) -> TraceClocks {
+        let frozen = frozen_clocks();
+        let frozen_monotonic_ms = Arc::clone(&frozen.monotonic_ms);
+        let released = Mutex::new(released);
+        TraceClocks {
+            monotonic_ms: Arc::new(move || {
+                if armed.swap(false, Ordering::SeqCst) {
+                    holding.send(()).unwrap();
+                    locked(&released).recv().unwrap();
+                }
+                frozen_monotonic_ms()
+            }),
+            ..frozen
+        }
+    }
+
+    /// The mutex's value once any other holder lets go, whether or not a holder panicked.
+    fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+        mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The event name and number of each line of a trace file, in file order.
+    fn names_and_numbers(file: &Path) -> Vec<(String, u64)> {
+        fs::read_to_string(file)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let line: Value = serde_json::from_str(line).unwrap();
+                (
+                    line[EVENT_FIELD].as_str().unwrap().to_owned(),
+                    line[NUMBER_FIELD].as_u64().unwrap(),
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -169,5 +214,86 @@ mod observability {
         );
         assert!(matches!(events.finish(), TraceStop::Drained));
         remove_scratch(&scratch.root).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_9_a_hook_on_the_thread_stamping_one_file_waits_for_another_file_whose_lock_another_thread_holds_and_records_there()
+     {
+        let _hook_held = PANIC_HOOK_HELD
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let stamp_panics = Arc::new(AtomicBool::new(false));
+        let stamp_held = Arc::new(AtomicBool::new(false));
+        let (holding, other_thread_holds_the_lock) = mpsc::channel();
+        let (release, released) = mpsc::channel();
+        let panicking = scratch_run(
+            "marker-names-its-own-trace-panicking",
+            &TraceEffects::of_the_operating_system(clocks_panicking_once_armed(Arc::clone(
+                &stamp_panics,
+            ))),
+            TraceBounds::SPEC,
+        );
+        let held = scratch_run(
+            "marker-names-its-own-trace-held",
+            &TraceEffects::of_the_operating_system(clocks_holding_the_stamp_once_armed(
+                Arc::clone(&stamp_held),
+                holding,
+                released,
+            )),
+            TraceBounds::SPEC,
+        );
+        let panicking_events = Arc::new(panicking.run.open_events().unwrap());
+        let held_events = Arc::new(held.run.open_events().unwrap());
+        let (about_to_record, hook_records) = mpsc::channel();
+        let (stop_in_the_hook, hook_stops) = mpsc::channel();
+        let hook_events = Arc::clone(&held_events);
+        let test_gave_up = Arc::new(AtomicBool::new(false));
+        let hook_sees_the_test_gave_up = Arc::clone(&test_gave_up);
+        let hook_before = panic::take_hook();
+        panic::set_hook(Box::new(move |_panic| {
+            if hook_sees_the_test_gave_up.load(Ordering::SeqCst) {
+                return;
+            }
+            about_to_record.send(()).unwrap();
+            hook_events.write(PANICKED_EVENT, &[]);
+            stop_in_the_hook.send(hook_events.flush()).unwrap();
+        }));
+        let holder_events = Arc::clone(&held_events);
+        stamp_held.store(true, Ordering::SeqCst);
+        let holder = thread::spawn(move || holder_events.write(ONE_EVENT, &[]));
+        other_thread_holds_the_lock
+            .recv_timeout(PANIC_ENDS_WITHIN)
+            .expect("the other thread holds the held file's lock within its bound");
+        let (ended, panicking_thread_ended) = mpsc::channel();
+        let recorder = Arc::clone(&panicking_events);
+        stamp_panics.store(true, Ordering::SeqCst);
+
+        thread::spawn(move || {
+            let stamped = panic::catch_unwind(AssertUnwindSafe(|| {
+                recorder.write(ONE_EVENT, &[]);
+            }));
+            ended.send(stamped.is_err()).unwrap();
+        });
+        let hook_reached_the_held_file = hook_records.recv_timeout(PANIC_ENDS_WITHIN);
+        release.send(()).unwrap();
+
+        let ended_within_the_bound = panicking_thread_ended.recv_timeout(PANIC_ENDS_WITHIN);
+        test_gave_up.store(ended_within_the_bound.is_err(), Ordering::SeqCst);
+        let panicked = ended_within_the_bound
+            .expect("the thread that panicked while stamping a line ended within its bound");
+        panic::set_hook(hook_before);
+        holder.join().unwrap();
+        hook_reached_the_held_file.expect("the hook reached the held file within its bound");
+        let stop = hook_stops.try_recv().unwrap();
+        assert!(panicked);
+        assert!(matches!(stop, TraceStop::Drained), "{stop:?}");
+        assert_eq!(
+            names_and_numbers(&held.run.files().events),
+            [(ONE_EVENT.to_owned(), 0), (PANICKED_EVENT.to_owned(), 1)]
+        );
+        assert!(matches!(held_events.finish(), TraceStop::Drained));
+        assert!(matches!(panicking_events.finish(), TraceStop::Drained));
+        remove_scratch(&panicking.root).unwrap();
+        remove_scratch(&held.root).unwrap();
     }
 }
