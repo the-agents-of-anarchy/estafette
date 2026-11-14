@@ -2450,16 +2450,18 @@ mod tests {
         count: usize,
     ) -> Vec<crate::net::direct::tests::RecordedEvent> {
         let mut gossip = Vec::new();
-        drop(
-            tokio::time::timeout(PAYLOAD_WAIT, async {
-                while gossip.len() < count {
-                    let (name, fields) = recorded.recv().await.unwrap();
-                    if name.starts_with(GOSSIP_EVENT_PREFIX) {
-                        gossip.push((name, fields));
-                    }
+        let arrived = tokio::time::timeout(PAYLOAD_WAIT, async {
+            while gossip.len() < count {
+                let (name, fields) = recorded.recv().await.unwrap();
+                if name.starts_with(GOSSIP_EVENT_PREFIX) {
+                    gossip.push((name, fields));
                 }
-            })
-            .await,
+            }
+        })
+        .await;
+        assert!(
+            arrived.is_ok(),
+            "no {count} gossip events within {PAYLOAD_WAIT:?}; recorded {gossip:?}"
         );
         gossip
     }
