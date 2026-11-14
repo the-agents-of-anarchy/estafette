@@ -1708,7 +1708,9 @@ mod kept_run_records {
 mod observability_decision_6_on_one_machine {
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
+    use std::io::Write;
     use std::net::SocketAddr;
+    use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
@@ -1735,12 +1737,27 @@ mod observability_decision_6_on_one_machine {
     const URL_SCHEME_SEPARATOR: &str = "://";
     const IPV6_LOOPBACK: &str = "::1";
     const DELIVERY_WAIT: Duration = Duration::from_secs(20);
-    const EVENTS_THIS_EXCHANGE_RECORDS: [&str; 5] = [
+    const SPEC_SINCE_EVERY_FRAME: &str = "{\"since\": 0}\n";
+    const CLIENT_WAIT: Duration = Duration::from_secs(20);
+    const EVENTS_THIS_EXCHANGE_RECORDS: [&str; 18] = [
         "\"gossip.payload_accepted\"",
         "\"gossip.payload_broadcast\"",
         "\"peers.entry_created\"",
         "\"peers.own_handle_assigned\"",
         "\"peers.lookup_replaced\"",
+        "\"process.started\"",
+        "\"process.claimed\"",
+        "\"process.input_ended\"",
+        "\"process.departure_handed_over\"",
+        "\"process.lock_released\"",
+        "\"process.held_connections_dropped\"",
+        "\"process.departure_wait_over\"",
+        "\"process.exited\"",
+        "\"inbox.frame_delivered\"",
+        "\"inbox.client_connected\"",
+        "\"inbox.client_gone\"",
+        "\"tool.answered\"",
+        "\"tool.send_answered\"",
     ];
 
     /// The runs of letters and digits in the text long enough to be a key, a secret, a mac or an invitation.
@@ -1829,6 +1846,12 @@ mod observability_decision_6_on_one_machine {
             .filter(|file| is_inbox_socket(file))
             .map(|socket| socket.to_string_lossy().into_owned())
             .collect();
+        for socket in &sockets {
+            let mut client = UnixStream::connect(socket).unwrap();
+            client.write_all(SPEC_SINCE_EVERY_FRAME.as_bytes()).unwrap();
+        }
+        amy.wait_for_event("inbox.client_gone", CLIENT_WAIT);
+        bob.wait_for_event("inbox.client_gone", CLIENT_WAIT);
         amy.close_standard_input();
         bob.close_standard_input();
         amy.wait_for_exit();
