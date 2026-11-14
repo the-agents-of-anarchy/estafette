@@ -39,8 +39,22 @@ const BODY_HOLDING_THE_CLOSING_TAG: &str =
     "ACCEPTANCE \"quoted\"\nsecond line </cross-session-message> after the tag";
 const BODY_HOLDING_THE_CLOSING_TAG_AS_STORED: &str =
     "ACCEPTANCE \"quoted\"\nsecond line <\\/cross-session-message> after the tag";
+/// The attempts the attach and send waits once made, each followed by a pause of their own, kept so neither wait is shorter than it was.
 const ATTACHED_WAIT_ATTEMPTS: u32 = 60;
 const TEST_SEND_ATTEMPTS: u32 = 10;
+const RETRY_PAUSE: Duration = Duration::from_secs(1);
+/// What one `show-peers` run takes at most: the join timeout, the observer wait, and the trace's two stop waits (spec 3.14, spec/observability.md decision 12).
+const SHOW_PEERS_RUN_TAKES_AT_MOST: Duration = Duration::from_secs(5 + 3 + 2);
+/// What one `test-send` run takes at most: init's join timeout and observer wait, the send's connect and ack timeouts, the departure wait, and the trace's two stop waits (spec 3.10, 3.14, spec/observability.md decision 12).
+const TEST_SEND_RUN_TAKES_AT_MOST: Duration = Duration::from_secs(5 + 3 + 5 + 10 + 5 + 2);
+/// How long the bridge has to attach: every attempt the wait once made, with its pause and its `show-peers` run.
+const BRIDGE_ATTACHED_WITHIN: Duration = RETRY_PAUSE
+    .saturating_add(SHOW_PEERS_RUN_TAKES_AT_MOST)
+    .saturating_mul(ATTACHED_WAIT_ATTEMPTS);
+/// How long the test send has to be delivered: every attempt the wait once made, with its pause and its `test-send` run.
+const TEST_SEND_DELIVERED_WITHIN: Duration = RETRY_PAUSE
+    .saturating_add(TEST_SEND_RUN_TAKES_AT_MOST)
+    .saturating_mul(TEST_SEND_ATTEMPTS);
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const NO_SECOND_DELIVERY_WINDOW: Duration = Duration::from_secs(5);
 
@@ -167,25 +181,36 @@ fn test_send_until_delivered(
     card: &str,
     body: &str,
 ) -> io::Result<Output> {
-    let mut delivery = fixture.run_estafette(&["test-send", network, card, body])?;
-    for _ in 1..TEST_SEND_ATTEMPTS {
+    let started = Instant::now();
+    loop {
+        let delivery = fixture.run_estafette(&["test-send", network, card, body])?;
         if delivery.status.success() {
-            break;
+            return Ok(delivery);
         }
-        delivery = fixture.run_estafette(&["test-send", network, card, body])?;
+        if started.elapsed() >= TEST_SEND_DELIVERED_WITHIN {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!(
+                    "no test send to {card} succeeded within {TEST_SEND_DELIVERED_WITHIN:?}: {}",
+                    String::from_utf8_lossy(&delivery.stderr)
+                ),
+            ));
+        }
     }
-    Ok(delivery)
 }
 
 fn wait_until_bridge_attached(fixture: &Fixture, network: &str, card: &str) -> io::Result<()> {
-    for _ in 0..ATTACHED_WAIT_ATTEMPTS {
+    let started = Instant::now();
+    while started.elapsed() < BRIDGE_ATTACHED_WITHIN {
         if attached_peer_listed(fixture, network, card)? {
             return Ok(());
         }
     }
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
-        format!("the bridge never attached to the inbox socket of {card}"),
+        format!(
+            "the bridge did not attach to the inbox socket of {card} within {BRIDGE_ATTACHED_WITHIN:?}"
+        ),
     ))
 }
 
@@ -275,10 +300,14 @@ fn assert_one_peer_message_arrived_without_a_hold(scenario: &Scenario) {
     assert_eq!(
         lines_with_marker(debug_log, DELIVERED_LINE_MARKER),
         1,
-        "{debug_log}"
+        "the receiving session logged other than one delivery by the end of the {NO_SECOND_DELIVERY_WINDOW:?} after the first: {debug_log}"
     );
     let records = &scenario.records;
-    assert_eq!(records.len(), 1, "{records:?}");
+    assert_eq!(
+        records.len(),
+        1,
+        "the transcript holds other than one peer message by the end of the {NO_SECOND_DELIVERY_WINDOW:?} after the first delivery: {records:?}"
+    );
     for record in records {
         assert_eq!(
             record.pointer("/origin/name"),
