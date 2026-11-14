@@ -1,6 +1,9 @@
 use std::collections::VecDeque;
 
-use serde::Serialize;
+use serde::{Serialize, Serializer};
+
+use crate::net::direct::message_id_text;
+use crate::wire::MessageId;
 
 const INBOX_BUFFER_CAPACITY: usize = 1000;
 const FIRST_SEQ: u64 = 1;
@@ -8,7 +11,7 @@ const FIRST_SEQ: u64 = 1;
 /// The five fields of a received message, spec D31.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceivedMessage {
-    pub id: String,
+    pub id: MessageId,
     pub from: String,
     pub body: String,
     pub sent_at: u64,
@@ -19,7 +22,8 @@ pub struct ReceivedMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InboxFrame {
     seq: u64,
-    id: String,
+    #[serde(serialize_with = "message_id_as_text")]
+    id: MessageId,
     from: String,
     body: String,
     sent_at: u64,
@@ -33,11 +37,16 @@ impl InboxFrame {
         self.seq
     }
 
-    /// The id of the message this frame carries, as the frame writes it.
+    /// The id of the message this frame carries.
     #[must_use]
-    pub fn id(&self) -> &str {
-        &self.id
+    pub const fn id(&self) -> MessageId {
+        self.id
     }
+}
+
+/// Writes the message id as the text the inbox, a send result and the events file give it.
+fn message_id_as_text<S: Serializer>(id: &MessageId, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(&message_id_text(*id))
 }
 
 /// The last 1000 received frames of one process, replayable from any `since`.
@@ -101,7 +110,7 @@ mod tests {
 
     fn message_number(n: u64) -> ReceivedMessage {
         ReceivedMessage {
-            id: format!("id-{n}"),
+            id: u128::from(n).to_be_bytes(),
             from: format!("from-{n}"),
             body: format!("body-{n}"),
             sent_at: SENT_AT_BASE.saturating_add(n),
@@ -133,10 +142,10 @@ mod tests {
         let first = buffer.push(message_number(7));
         let second = buffer.push(message_number(8));
         assert_eq!(
-            (first.seq, first.id.as_str(), first.body.as_str()),
-            (1, "id-7", "body-7")
+            (first.seq, first.id, first.body.as_str()),
+            (1, u128::from(7_u8).to_be_bytes(), "body-7")
         );
-        assert_eq!((second.seq, second.id.as_str()), (2, "id-8"));
+        assert_eq!((second.seq, second.id), (2, u128::from(8_u8).to_be_bytes()));
         assert_eq!(buffer.frames_since(0), vec![first, second]);
     }
 
@@ -175,9 +184,10 @@ mod tests {
 
     #[test]
     fn spec_3_11_frame_serializes_as_the_six_key_json_object() {
+        const MESSAGE_ID: &str = "0193a5d2-7c41-7e0a-9b3f-4d5e6f708192";
         let mut buffer = InboxBuffer::new();
         let frame = buffer.push(ReceivedMessage {
-            id: "m-1".to_owned(),
+            id: uuid::Uuid::parse_str(MESSAGE_ID).unwrap().into_bytes(),
             from: "ana".to_owned(),
             body: "hello".to_owned(),
             sent_at: 1_700_000_000_123,
@@ -187,7 +197,7 @@ mod tests {
             serde_json::to_value(&frame).unwrap(),
             serde_json::json!({
                 "seq": 1,
-                "id": "m-1",
+                "id": MESSAGE_ID,
                 "from": "ana",
                 "body": "hello",
                 "sent_at": 1_700_000_000_123_u64,

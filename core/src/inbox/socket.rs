@@ -447,7 +447,7 @@ mod tests {
 
     fn message_number(n: u64) -> ReceivedMessage {
         ReceivedMessage {
-            id: format!("id-{n}"),
+            id: u128::from(n).to_be_bytes(),
             from: format!("from-{n}"),
             body: format!("body-{n}"),
             sent_at: SENT_AT_BASE.saturating_add(n),
@@ -531,7 +531,7 @@ mod tests {
         assert_eq!(
             next_frame(&mut client).await,
             serde_json::json!({
-                "seq": 1, "id": "id-7", "from": "from-7", "body": "body-7",
+                "seq": 1, "id": "00000000-0000-0000-0000-000000000007", "from": "from-7", "body": "body-7",
                 "sent_at": 1_007, "received_at": 2_007,
             })
         );
@@ -760,7 +760,7 @@ mod tests {
 
     fn message_with_id(id: &str) -> ReceivedMessage {
         ReceivedMessage {
-            id: id.to_owned(),
+            id: uuid::Uuid::parse_str(id).unwrap().into_bytes(),
             from: "amy".to_owned(),
             body: "a body no event may carry".to_owned(),
             sent_at: SENT_AT_BASE,
@@ -847,31 +847,6 @@ mod tests {
                 ("inbox.client_gone", vec![("clients", Value::from(1))]),
                 ("inbox.client_gone", vec![("clients", Value::from(0))]),
             ]
-        );
-    }
-
-    #[tokio::test]
-    async fn observability_decision_9_a_frame_whose_id_names_no_message_id_is_recorded_without_one()
-    {
-        const NO_MESSAGE_ID: &str = "id-7";
-        let directories = scratch_directories("idless-event");
-        let (sink, mut recorded) = recording_events();
-        let socket = InboxSocket::start(
-            &directories,
-            OWN_PROCESS_ID,
-            &RunningProcesses(vec![OWN_PROCESS_ID]),
-            sink,
-        )
-        .unwrap();
-
-        let _attached = socket.publish(message_with_id(NO_MESSAGE_ID));
-
-        assert_eq!(
-            next_recorded(&mut recorded).await,
-            (
-                "inbox.frame_delivered",
-                vec![("frame", Value::from(1)), ("attached", Value::from(false))]
-            )
         );
     }
 

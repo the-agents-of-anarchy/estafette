@@ -28,7 +28,9 @@ use crate::event::{Event, RunRecord};
 use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
 use crate::inbox::socket::{InboxSocket, InboxSocketError};
 use crate::keys::parse_public_key;
-use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, MonotonicClock};
+use crate::net::direct::{
+    ClientTimeouts, DirectClient, DirectHost, MonotonicClock, message_id_text,
+};
 use crate::net::endpoint::{NodeEndpoint, SnapshotMoment};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
@@ -505,7 +507,11 @@ async fn release_card(session: &Session) {
 
 /// The result line of a delivered message.
 fn delivery_line(delivery: &Delivery) -> String {
-    tab_separated_line(&[DELIVERED_KIND, &delivery.id, &delivery.attached.to_string()])
+    tab_separated_line(&[
+        DELIVERED_KIND,
+        &message_id_text(delivery.id),
+        &delivery.attached.to_string(),
+    ])
 }
 
 /// Writes the line to the result stream and flushes it.

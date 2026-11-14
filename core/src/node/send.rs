@@ -3,7 +3,7 @@ use iroh::EndpointId;
 
 use crate::errors::ErrorCode;
 use crate::keys::render_public_key;
-use crate::net::direct::{DirectError, DirectHost, message_id_text};
+use crate::net::direct::{DirectError, DirectHost};
 use crate::node::addresses::endpoint_id;
 use crate::node::presence::Node;
 use crate::payload::ZERO_MAC;
@@ -13,9 +13,9 @@ use crate::wire::{self, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, MessageId
 const UUID_V7_RANDOM_BYTES: usize = 10;
 
 /// What a delivered message reports: its id and whether the recipient's inbox has a client attached.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Delivery {
-    pub id: String,
+    pub id: MessageId,
     pub attached: bool,
 }
 
@@ -132,7 +132,7 @@ impl Node {
     ) -> Result<Delivery, ErrorCode> {
         if ack.accepted {
             Ok(Delivery {
-                id: message_id_text(id),
+                id,
                 attached: ack.attached,
             })
         } else {
@@ -208,7 +208,7 @@ mod tests {
     use iroh::endpoint::Connection;
     use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 
-    use crate::net::direct::{ClientTimeouts, DirectClient, DirectServer};
+    use crate::net::direct::{ClientTimeouts, DirectClient, DirectServer, message_id_text};
     use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
     use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
@@ -394,7 +394,7 @@ mod tests {
         let frame = inbox_frames(&second, 1).await.remove(0);
         assert_eq!(frame["from"], FIRST_HANDLE);
         assert_eq!(frame["body"], BODY);
-        assert_eq!(frame["id"], delivery.id);
+        assert_eq!(frame["id"], message_id_text(delivery.id));
         drop(scratch);
     }
 
@@ -423,7 +423,7 @@ mod tests {
         let sent_until = wall_clock_ms();
 
         let frame = inbox_frames(&second, 1).await.remove(0);
-        assert_eq!(frame["id"], delivery.id);
+        assert_eq!(frame["id"], message_id_text(delivery.id));
         let stored = uuid::Uuid::parse_str(frame["id"].as_str().unwrap()).unwrap();
         assert_eq!(stored.get_version_num(), SPEC_UUID_VERSION);
         assert_eq!(stored.get_variant(), uuid::Variant::RFC4122);
@@ -816,8 +816,14 @@ mod tests {
         );
         let to_third = inbox_frames(&third, 1).await.remove(0);
         let to_second = inbox_frames(&second, 1).await.remove(0);
-        assert_eq!(to_third["id"], results[0].outcome.as_ref().unwrap().id);
-        assert_eq!(to_second["id"], results[2].outcome.as_ref().unwrap().id);
+        assert_eq!(
+            to_third["id"],
+            message_id_text(results[0].outcome.as_ref().unwrap().id)
+        );
+        assert_eq!(
+            to_second["id"],
+            message_id_text(results[2].outcome.as_ref().unwrap().id)
+        );
         assert_eq!(to_third["body"], BODY);
         assert_eq!(to_second["body"], BODY);
         drop(scratch);

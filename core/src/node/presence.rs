@@ -35,7 +35,7 @@ use crate::inbox::socket::{Attached, InboxSocket};
 use crate::keys::{KeyError, parse_network_secret, parse_public_key};
 use crate::net::direct::{
     ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, GONE_PROCESS_SILENCE,
-    HEARING_SAMPLE_INTERVAL, HeldConnections, MonotonicClock, message_id_text,
+    HEARING_SAMPLE_INTERVAL, HeldConnections, MonotonicClock,
 };
 use crate::net::endpoint::{
     CounterSnapshot, DIRECT_ALPN, NodeEndpoint, RebindCause, SnapshotMoment,
@@ -612,7 +612,7 @@ impl DirectHost for Arc<NodeState> {
             return self.is_attached();
         };
         self.inbox.publish(ReceivedMessage {
-            id: message_id_text(message.id),
+            id: message.id,
             from: from.as_str().to_owned(),
             body: message.body,
             sent_at: message.sent_at,

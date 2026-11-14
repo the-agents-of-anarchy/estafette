@@ -43,9 +43,9 @@ super::event_names! {
 pub enum InboxEvent {
     /// The inbox socket could not accept a client.
     AcceptFailed(io::Error),
-    /// A message entered the inbox as the numbered frame, with a client attached or none, its id absent where its text is no message id.
+    /// A message entered the inbox as the numbered frame, with a client attached or none.
     FrameDelivered {
-        message: Option<MessageId>,
+        message: MessageId,
         frame: u64,
         attached: bool,
     },
@@ -58,11 +58,10 @@ pub enum InboxEvent {
         tool: Option<&'static str>,
         code: Option<&'static str>,
     },
-    /// One send of a send or broadcast call was answered: the handle it went to, none for a `to` that is no handle, the error code it failed with, none when it was delivered, and the id of the message it minted, none before one was minted or where a delivery's id text is no message id.
+    /// One send of a send or broadcast call was answered: the handle it went to, none for a `to` that is no handle, and the id of the message it delivered or why it was not delivered.
     SendAnswered {
         to: Option<LocalHandle>,
-        code: Option<&'static str>,
-        message: Option<MessageId>,
+        outcome: Result<MessageId, Undelivered>,
     },
     /// `list_cards` answered with the failure's own code.
     ListCardsFailed(ListCardsFailure),
@@ -109,11 +108,11 @@ impl InboxEvent {
         }
     }
 
-    /// A message entered the inbox as the numbered frame, its id read from the text the frame carries it as.
+    /// A message entered the inbox as the numbered frame.
     #[must_use]
-    pub fn frame_delivered(message_id: &str, frame: u64, attached: bool) -> Self {
+    pub const fn frame_delivered(message: MessageId, frame: u64, attached: bool) -> Self {
         Self::FrameDelivered {
-            message: message_id_of(message_id),
+            message,
             frame,
             attached,
         }
@@ -122,14 +121,12 @@ impl InboxEvent {
     /// One send to `to` answered with the outcome.
     #[must_use]
     pub fn send_answered(to: &str, outcome: &Result<Delivery, Undelivered>) -> Self {
-        let (code, message) = match outcome {
-            Ok(delivery) => (None, message_id_of(&delivery.id)),
-            Err(undelivered) => (Some(undelivered.code.code()), undelivered.id),
-        };
         Self::SendAnswered {
             to: to.parse().ok(),
-            code,
-            message,
+            outcome: outcome
+                .as_ref()
+                .map(|delivery| delivery.id)
+                .map_err(Clone::clone),
         }
     }
 }
@@ -145,11 +142,6 @@ fn outcome_fields(code: Option<&'static str>) -> EventFields {
             ]
         },
     )
-}
-
-/// The message id the text names, none for a text that names none.
-fn message_id_of(text: &str) -> Option<MessageId> {
-    uuid::Uuid::try_parse(text).ok().map(uuid::Uuid::into_bytes)
 }
 
 /// The message id as the events file writes it, under the key every event of a message's send and receipt shares.
@@ -222,14 +214,11 @@ impl AreaEvent for InboxEvent {
                 message,
                 frame,
                 attached,
-            } => message
-                .map(message_field)
-                .into_iter()
-                .chain([
-                    (FRAME_FIELD, Value::from(*frame)),
-                    (ATTACHED_FIELD, Value::from(*attached)),
-                ])
-                .collect(),
+            } => vec![
+                message_field(*message),
+                (FRAME_FIELD, Value::from(*frame)),
+                (ATTACHED_FIELD, Value::from(*attached)),
+            ],
             Self::ClientConnected { clients } | Self::ClientGone { clients } => {
                 vec![(CLIENTS_FIELD, Value::from(*clients))]
             }
@@ -238,16 +227,22 @@ impl AreaEvent for InboxEvent {
                 outcome_fields(*code),
             ]
             .concat(),
-            Self::SendAnswered { to, code, message } => [
-                vec![(
-                    TO_FIELD,
-                    to.as_ref()
-                        .map_or(Value::Null, |handle| Value::from(handle.as_str())),
-                )],
-                outcome_fields(*code),
-                message.map(message_field).into_iter().collect(),
-            ]
-            .concat(),
+            Self::SendAnswered { to, outcome } => {
+                let (code, message) = match outcome {
+                    Ok(message) => (None, Some(*message)),
+                    Err(undelivered) => (Some(undelivered.code.code()), undelivered.id),
+                };
+                [
+                    vec![(
+                        TO_FIELD,
+                        to.as_ref()
+                            .map_or(Value::Null, |handle| Value::from(handle.as_str())),
+                    )],
+                    outcome_fields(code),
+                    message.map(message_field).into_iter().collect(),
+                ]
+                .concat()
+            }
             Self::AcceptFailed(_)
             | Self::HandshakeFailed(_)
             | Self::AnsweringFailed(_)
@@ -263,5 +258,50 @@ fn handshake_failure_reason(failure: &ServerInitializeError) -> String {
             "the first message was not an initialize request".to_owned()
         }
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MESSAGE_ID_TEXT: &str = "0193a5d2-7c41-7e0a-9b3f-4d5e6f708192";
+    const FRAME: u64 = 7;
+
+    fn message_id() -> MessageId {
+        uuid::Uuid::parse_str(MESSAGE_ID_TEXT).unwrap().into_bytes()
+    }
+
+    #[test]
+    fn observability_decision_9_a_delivered_frame_and_a_delivered_send_each_hold_and_write_the_id_of_the_message_they_carry()
+     {
+        let frame = InboxEvent::FrameDelivered {
+            message: message_id(),
+            frame: FRAME,
+            attached: false,
+        }
+        .fields();
+        let send = InboxEvent::SendAnswered {
+            to: None,
+            outcome: Ok(message_id()),
+        }
+        .fields();
+
+        assert_eq!(
+            frame,
+            vec![
+                (MESSAGE_FIELD, Value::from(MESSAGE_ID_TEXT)),
+                (FRAME_FIELD, Value::from(FRAME)),
+                (ATTACHED_FIELD, Value::from(false)),
+            ]
+        );
+        assert_eq!(
+            send,
+            vec![
+                (TO_FIELD, Value::Null),
+                (OUTCOME_FIELD, Value::from(OK_OUTCOME)),
+                (MESSAGE_FIELD, Value::from(MESSAGE_ID_TEXT)),
+            ]
+        );
     }
 }

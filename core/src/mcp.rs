@@ -34,7 +34,7 @@ use crate::event::{
 };
 use crate::handle::{AnnouncedHandle, Handle, MAX_LOCAL_LENGTH};
 use crate::inbox::buffer::InboxFrame;
-use crate::net::direct::MonotonicClock;
+use crate::net::direct::{MonotonicClock, message_id_text};
 use crate::net::endpoint::{CounterSnapshot, NodeEndpoint, SnapshotMoment};
 use crate::node::{
     BroadcastResult, DEPARTURE_WAIT, Delivery, Exit, Identity, Network, Node, NodeEffects, Session,
@@ -777,7 +777,7 @@ impl SentMessage {
     /// The send result of a delivered message.
     fn of(delivery: Delivery) -> Self {
         Self {
-            id: delivery.id,
+            id: message_id_text(delivery.id),
             delivered: true,
             attached: delivery.attached,
         }
