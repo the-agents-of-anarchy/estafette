@@ -3270,7 +3270,7 @@ pub(super) mod tests {
         assert_eq!(
             broadcasts_of(&after_the_request, PRESENCE_KIND),
             vec![presence_broadcast_with(FROZEN_CLOCK_MS + 1)],
-            "the member sent other than one Presence for the request before it took a later payload: {after_the_request:?}"
+            "the member sent other than one Presence for the request before its counters at the interval: {after_the_request:?}"
         );
         drop(scratch);
     }
@@ -3538,7 +3538,7 @@ pub(super) mod tests {
         assert_eq!(
             broadcasts_of(&after_the_first_presence, PRESENCE_KIND),
             vec![presence_broadcast_with(CLOCK_AFTER_MAX_AGE_MS)],
-            "the member sent other than one Presence for the three reports before it took a later payload: {after_the_first_presence:?}"
+            "the member sent other than one Presence for the three reports before its counters at the interval: {after_the_first_presence:?}"
         );
         drop(scratch);
     }
@@ -4473,7 +4473,7 @@ pub(super) mod tests {
         assert_eq!(
             broadcasts_of(&after_the_first_presence, PRESENCE_KIND),
             vec![presence_broadcast_with(FROZEN_CLOCK_MS + 1)],
-            "the member sent other than one Presence for the two reports before it took a later payload: {after_the_first_presence:?}"
+            "the member sent other than one Presence for the two reports before its counters at the interval: {after_the_first_presence:?}"
         );
         drop(scratch);
     }
