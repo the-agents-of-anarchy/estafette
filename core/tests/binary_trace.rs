@@ -286,6 +286,38 @@ mod observability {
     }
 
     #[test]
+    fn observability_decision_9_test_send_records_the_claim_of_its_operator_card_spec_3_13() {
+        const CLAIMED_EVENT: &str = "process.claimed";
+        const SPEC_OPERATOR_CARD: &str = "operator";
+        let root = machine_with_network("test-send-claim");
+
+        let sent = binary(&root)
+            .args(["test-send", NETWORK, UNKNOWN_HANDLE, BODY])
+            .output()
+            .unwrap();
+
+        assert_eq!(sent.status.code(), Some(1));
+        let runs: Vec<PathBuf> = fs::read_dir(traces_directory(&root.join(DATA_HOME)))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.to_str().unwrap().ends_with(EVENTS_SUFFIX))
+            .collect();
+        let [run] = runs.as_slice() else {
+            panic!("one test-send run: {runs:?}");
+        };
+        let lines = stopped_trace_lines_of(run);
+        let claimed: Vec<&TraceLine> = lines
+            .iter()
+            .filter(|line| line.event == CLAIMED_EVENT)
+            .collect();
+        let [claimed] = claimed.as_slice() else {
+            panic!("one claim: {lines:?}");
+        };
+        assert_eq!(claimed.value("card"), Some(&json!(SPEC_OPERATOR_CARD)));
+        remove_scratch(&root).unwrap();
+    }
+
+    #[test]
     fn observability_decision_5_every_events_line_begins_with_the_header_and_names_the_node_once_it_has_an_endpoint()
      {
         let root = machine_with_network("events-header");

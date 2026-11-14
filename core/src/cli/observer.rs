@@ -391,14 +391,14 @@ async fn send_as_operator(
             clock,
             monotonic,
             fill_probe_nonce,
-            report,
+            report: Arc::clone(&report),
             inbox,
             probe_relay,
         },
     )
     .await
     .map_err(Failure::Node)?;
-    let session = Session::new();
+    let session = Session::new(Arc::clone(&report));
     let node = session
         .claim(operator.name, node, operator.held)
         .map_err(Failure::Session)?;

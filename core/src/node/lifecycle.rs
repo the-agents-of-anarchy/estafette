@@ -9,7 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 
 use crate::errors::ErrorCode;
-use crate::event::{Event, ProcessEvent, RunRecord};
+use crate::event::{ProcessEvent, RunRecord};
 use crate::handle::{Handle, LocalHandle};
 use crate::node::presence::Node;
 use crate::sidecar::HeldSidecar;
@@ -67,15 +67,9 @@ pub struct Session {
 }
 
 impl Session {
-    /// A session in which no card is claimed, recording nothing.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::recording_to(Arc::new(|_event: Event| {}))
-    }
-
     /// A session in which no card is claimed, recording its claim and its stop to the run record.
     #[must_use]
-    pub const fn recording_to(record: RunRecord) -> Self {
+    pub const fn new(record: RunRecord) -> Self {
         Self {
             phase: Mutex::new(Phase::Unclaimed),
             record,
@@ -238,12 +232,6 @@ const fn runtime_shutdown_after(signal: ShutdownSignal) -> RuntimeShutdown {
     }
 }
 
-impl Default for Session {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Copies standard input to the MCP server's input, buffering every unread chunk in memory, and notes the end of standard input the moment it is read or fails.
 pub async fn forward_standard_input(
     input: impl AsyncRead + Unpin,
@@ -388,7 +376,7 @@ mod tests {
             .unwrap();
         tokio::time::sleep(INTRODUCE_ROUND_TRIP).await;
         let (sidecar_path, lock) = scratch.locked_card(SECOND_SEED);
-        let session = Arc::new(Session::new());
+        let session = Arc::new(Session::new(record_dropping_every_event()));
         session
             .claim(card_named(SECOND_CARD), second.node, lock)
             .unwrap();
@@ -408,7 +396,7 @@ mod tests {
             .await
             .unwrap();
         let (sidecar_path, lock) = scratch.locked_card(SECOND_SEED);
-        let session = Arc::new(Session::recording_to(record));
+        let session = Arc::new(Session::new(record));
         session
             .claim(card_named(SECOND_CARD), second.node, lock)
             .unwrap();
@@ -424,6 +412,10 @@ mod tests {
     type RecordedEvent = (&'static str, EventFields);
 
     /// A run record handing each event's name and fields to the receiver, and that receiver.
+    fn record_dropping_every_event() -> RunRecord {
+        Arc::new(|_event: Event| {})
+    }
+
     fn recording_events() -> (RunRecord, mpsc::UnboundedReceiver<RecordedEvent>) {
         let (recorded, received) = mpsc::unbounded_channel();
         let record: RunRecord = Arc::new(move |event: Event| {
@@ -503,7 +495,7 @@ mod tests {
         ];
         for (signal, name, fields) in causes {
             let (record, mut recorded) = recording_events();
-            let session = Arc::new(Session::recording_to(record));
+            let session = Arc::new(Session::new(record));
             let stopping = run(&session, LONG_DEPARTURE_WAIT);
 
             match signal {
@@ -577,7 +569,7 @@ mod tests {
         let (_, first_lock) = scratch.locked_card(FIRST_SEED);
         let (_, second_lock) = scratch.locked_card(SECOND_SEED);
         let (record, mut recorded) = recording_events();
-        let session = Session::recording_to(record);
+        let session = Session::new(record);
         let claimed_handle = first.node.own_handle().as_str().to_owned();
 
         session
@@ -621,7 +613,10 @@ mod tests {
             handle: claimed.session.node().unwrap().own_handle().clone(),
         };
         assert_eq!(claimed.session.claimed_card(), Some(expected.clone()));
-        assert_eq!(Session::new().claimed_card(), None);
+        assert_eq!(
+            Session::new(record_dropping_every_event()).claimed_card(),
+            None
+        );
 
         let run = run(&claimed.session, TEST_DEPARTURE_WAIT);
         run.input_ended.send(()).unwrap();
@@ -633,7 +628,7 @@ mod tests {
 
     #[test]
     fn spec_3_9_before_init_the_session_is_unclaimed_and_every_tool_gets_not_claimed() {
-        let session = Session::new();
+        let session = Session::new(record_dropping_every_event());
 
         assert_eq!(session.node().err(), Some(ErrorCode::NotClaimed));
     }
@@ -644,7 +639,7 @@ mod tests {
         let (first, second) = start_pair(&scratch).await;
         let (_, first_lock) = scratch.locked_card(FIRST_SEED);
         let (_, second_lock) = scratch.locked_card(SECOND_SEED);
-        let session = Session::new();
+        let session = Session::new(record_dropping_every_event());
 
         let claimed = session
             .claim(card_named(FIRST_CARD), first.node, first_lock)
@@ -816,7 +811,7 @@ mod tests {
     async fn spec_3_9_each_of_sigterm_sigint_and_sighup_starts_stopping_and_only_sigterm_shuts_down_in_the_background()
      {
         for (signal, runtime) in ALL_STOP_CAUSES {
-            let session = Arc::new(Session::new());
+            let session = Arc::new(Session::new(record_dropping_every_event()));
             let stopping = run(&session, LONG_DEPARTURE_WAIT);
 
             stopping.signals.send(signal).unwrap();
@@ -864,7 +859,7 @@ mod tests {
 
     #[tokio::test]
     async fn spec_3_8_a_session_that_claimed_no_card_has_nothing_to_wait_for() {
-        let session = Arc::new(Session::new());
+        let session = Arc::new(Session::new(record_dropping_every_event()));
         let stopping = run(&session, LONG_DEPARTURE_WAIT);
 
         stopping.input_ended.send(()).unwrap();
@@ -966,7 +961,7 @@ mod tests {
         .await;
         let record_ts = wall_clock_ms() / 1000;
         let (_, lock) = scratch.locked_card(FIRST_SEED);
-        let session = Arc::new(Session::new());
+        let session = Arc::new(Session::new(record_dropping_every_event()));
         session
             .claim(card_named(FIRST_CARD), member.node, lock)
             .unwrap();
@@ -1051,7 +1046,7 @@ mod tests {
         )
         .await;
         let (_, lock) = scratch.locked_card(FIRST_SEED);
-        let session = Arc::new(Session::new());
+        let session = Arc::new(Session::new(record_dropping_every_event()));
         session
             .claim(card_named(FIRST_CARD), member.node, lock)
             .unwrap();
@@ -1151,7 +1146,7 @@ mod tests {
         )
         .await;
         let (_, lock) = scratch.locked_card(SECOND_SEED);
-        let session = Arc::new(Session::new());
+        let session = Arc::new(Session::new(record_dropping_every_event()));
         session
             .claim(card_named(FIRST_CARD), member.node, lock)
             .unwrap();

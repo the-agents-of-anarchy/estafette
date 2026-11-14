@@ -138,7 +138,7 @@ pub async fn serve(
     served: ServedNetwork,
     effects: ServerEffects,
 ) -> Exit {
-    let session = Arc::new(Session::recording_to(Arc::clone(&effects.report)));
+    let session = Arc::new(Session::new(Arc::clone(&effects.report)));
     let (server_input, forwarded_input) = tokio::io::simplex(SERVER_INPUT_BUFFER_BYTES);
     let (input_ended, end_of_input) = oneshot::channel();
     let reporting = Arc::clone(&effects.report);
