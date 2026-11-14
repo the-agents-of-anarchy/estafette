@@ -151,19 +151,28 @@ impl ScriptedNode {
     /// Waits until the node's topic reports the neighbor up, requiring that within the gossip neighbor wait.
     #[track_caller]
     pub fn wait_for_neighbor_up(&self, neighbor: EndpointId) {
-        let mut events = self.events.subscribe();
-        let neighbor_up = self.runtime().block_on(async {
-            tokio::time::timeout(
-                GOSSIP_NEIGHBOR_WAIT,
-                events.wait_for(|events| events.contains(&Event::NeighborUp(neighbor))),
-            )
-            .await
-            .is_ok_and(|seen| seen.is_ok())
-        });
-        assert!(
-            neighbor_up,
-            "{neighbor} was no gossip neighbor within {GOSSIP_NEIGHBOR_WAIT:?}"
+        self.wait_for_events(
+            &format!("{neighbor} as a gossip neighbor"),
+            GOSSIP_NEIGHBOR_WAIT,
+            |events| events.contains(&Event::NeighborUp(neighbor)),
         );
+    }
+
+    /// Waits until the events the node's topic gave it satisfy `holds`, woken by each event, failing with what was awaited when the bound runs out first.
+    #[track_caller]
+    pub fn wait_for_events(
+        &self,
+        awaited: &str,
+        within: Duration,
+        holds: impl FnMut(&Vec<Event>) -> bool,
+    ) {
+        let mut events = self.events.subscribe();
+        let held = self.runtime().block_on(async {
+            tokio::time::timeout(within, events.wait_for(holds))
+                .await
+                .is_ok_and(|seen| seen.is_ok())
+        });
+        assert!(held, "no {awaited} within {within:?}");
     }
 
     /// Sends the bytes as one direct request to the node over a fresh connection and returns the answer, none when the connection, the stream or the wait fails.

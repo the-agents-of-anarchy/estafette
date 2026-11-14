@@ -85,21 +85,28 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use crate::scripted_node::ScriptedNode;
     use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
     use crate::timed_step::timed;
-    use crate::{MESSAGE_ID, SPEC_OBSERVER_WAIT, send};
+    use crate::{MESSAGE_ID, send};
 
-    const SPEC_GONE_KEPT_FOR: Duration = Duration::from_millis(1000);
-    const STATUS_POLL: Duration = Duration::from_millis(50);
     const DIRECT_REQUEST_WAIT: Duration = Duration::from_secs(15);
     const SENT_BEFORE_THE_DEPARTURE: &str = "sent before the departure";
     const SENT_AFTER_THE_DEPARTURE: &str = "sent after the departure";
     const SENT_BEFORE_THE_NEW_PRESENCE: &str = "sent before the new presence";
     const SENT_AFTER_THE_NEW_PRESENCE: &str = "sent after the new presence";
-    const PRESENCE_APPLIED_SETTLE: Duration = Duration::from_millis(500);
     const DOCUMENTATION_HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
     const SENT_BEFORE_THE_PRESENCE: &str = "sent before the presence";
     const SENT_AFTER_THE_PRESENCE: &str = "sent after the presence";
     const GONE_PROCESS_SILENCE: Duration = Duration::from_millis(1500);
     const HEARING_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
+    const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
+    const LOOKUP_REPLACED_EVENT: &str = "peers.lookup_replaced";
+    const ENTRY_CREATED_EVENT: &str = "peers.entry_created";
+    const ENTRY_CHANGED_EVENT: &str = "peers.entry_changed";
+    const REQUEST_SERVED_EVENT: &str = "direct.request_served";
+    const PRESENCE_KIND: &str = "presence";
+    const MESSAGE_KIND: &str = "message";
+    const INTRODUCE_KIND: &str = "introduce";
+    const DEPARTURE_CAUSE: &str = "departure";
+    const GONE_STATUS: &str = "gone";
 
     /// A member, amy, who listed a scripted bob, then took bob's Departure of that seq and lists bob gone.
     struct ScriptedBobDeparted {
@@ -212,31 +219,48 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         })
     }
 
-    /// Broadcasts bob's Presence from the scripted node until the member lists bob as last seen after the first broadcast.
+    /// Broadcasts bob's Presence from the scripted node once its topic reports the member up, and requires the member to list bob as last seen after the broadcast.
     #[track_caller]
     fn announce_until_seen(
         network: &LocalNetwork,
         node: &ScriptedNode,
         key: &SecretKey,
         address: &iroh::EndpointAddr,
-        member: &mut Member,
-    ) {
-        let started = Instant::now();
-        let first_sent_ms = wall_clock_ms();
-        loop {
-            node.broadcast(presence_signed_by(network.keys(), key, "bob", address));
-            let seen_ms = member.peer_within("bob", PRESENCE_WAIT, |_listed| true)["last_seen"]
-                .as_u64()
-                .unwrap();
-            if seen_ms > first_sent_ms {
-                return;
-            }
-            assert!(
-                started.elapsed() < PRESENCE_WAIT,
-                "the new presence never arrived"
-            );
-            std::thread::sleep(STATUS_POLL);
-        }
+        member: (&mut Member, EndpointId),
+    ) -> u64 {
+        let (member, member_card) = member;
+        node.wait_for_neighbor_up(member_card);
+        let sent_ms = wall_clock_ms();
+        node.broadcast(presence_signed_by(network.keys(), key, "bob", address));
+        member.peer_within("bob", PRESENCE_WAIT, |bob| {
+            bob["last_seen"].as_u64().unwrap() > sent_ms
+        });
+        sent_ms
+    }
+
+    /// Waits until the member has applied bob's Presence of a seq at or after `sent_ms`: it took it and then replaced bob's lookup entry, the last step of applying it (spec 3.8).
+    #[track_caller]
+    fn presence_applied(member: &Member, sent_ms: u64) {
+        member.wait_until(
+            &format!("{LOOKUP_REPLACED_EVENT} for bob after its {PRESENCE_KIND} of seq {sent_ms} or later"),
+            PRESENCE_WAIT,
+            |lines| {
+                let accepted = lines.iter().position(|line| {
+                    line.event == PAYLOAD_ACCEPTED_EVENT
+                        && line.value("kind") == Some(&json!(PRESENCE_KIND))
+                        && line.value("handle") == Some(&json!("bob"))
+                        && line.value("seq").and_then(Value::as_u64) >= Some(sent_ms)
+                })?;
+                lines
+                    .iter()
+                    .skip(accepted)
+                    .any(|line| {
+                        line.event == LOOKUP_REPLACED_EVENT
+                            && line.value("handle") == Some(&json!("bob"))
+                    })
+                    .then_some(())
+            },
+        );
     }
 
     /// Whether the response is a `MessageAck` that accepted the Message.
@@ -244,18 +268,43 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         matches!(response, Response::MessageAck(ack) if ack.accepted)
     }
 
-    /// Each distinct status the member lists the handle with, in order, polled over the span.
+    /// Each status the member's table gave the handle from its Departure on, in order, once the member has served a direct request of that kind after the Departure: the Departure's own and every later one (spec 3.8).
     #[track_caller]
-    fn statuses_throughout(member: &mut Member, handle: &str, span: Duration) -> Vec<Value> {
-        let started = Instant::now();
-        let mut statuses = Vec::new();
-        while started.elapsed() < span {
-            statuses
-                .push(member.peer_within(handle, PRESENCE_WAIT, |_listed| true)["status"].clone());
-            std::thread::sleep(STATUS_POLL);
-        }
-        statuses.dedup();
-        statuses
+    fn statuses_from_the_departure_once_served(
+        member: &Member,
+        handle: &str,
+        kind: &str,
+    ) -> Vec<Value> {
+        member.wait_until(
+            &format!("{REQUEST_SERVED_EVENT} of a {kind} after {handle}'s departure"),
+            DIRECT_REQUEST_WAIT,
+            |lines| {
+                let departed = lines.iter().position(|line| {
+                    line.event == ENTRY_CHANGED_EVENT
+                        && line.value("handle") == Some(&json!(handle))
+                        && line.value("to") == Some(&json!(GONE_STATUS))
+                        && line.value("cause") == Some(&json!(DEPARTURE_CAUSE))
+                })?;
+                let since = &lines[departed..];
+                since
+                    .iter()
+                    .any(|line| {
+                        line.event == REQUEST_SERVED_EVENT
+                            && line.value("kind") == Some(&json!(kind))
+                    })
+                    .then(|| {
+                        since
+                            .iter()
+                            .filter(|line| line.value("handle") == Some(&json!(handle)))
+                            .filter_map(|line| match line.event.as_str() {
+                                ENTRY_CHANGED_EVENT => line.value("to").cloned(),
+                                ENTRY_CREATED_EVENT => line.value("status").cloned(),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+            },
+        )
     }
 
     /// Restarts bob's card through a second host that links amy, bob's first process gone since `killed_ms`, and requires amy's send before the kill delivered and her send to the restarted bob delivered within 1 s of its new Presence reaching her (spec 3.15 test 18).
@@ -496,7 +545,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             ),
         );
         let statuses_after_the_earlier_message =
-            statuses_throughout(&mut amy, "bob", SPEC_GONE_KEPT_FOR);
+            statuses_from_the_departure_once_served(&amy, "bob", MESSAGE_KIND);
         let bodies = amy.inbox_bodies();
         let sent_after = request_directly(
             &network,
@@ -520,10 +569,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     fn spec_3_15_test_4_an_introduce_from_a_member_amy_holds_departed_leaves_it_gone() {
         let network = LocalNetwork::create("r3i", &RunRecordKeeping::from_environment());
         let ScriptedBobDeparted {
-            mut amy,
-            amy_card,
-            bob,
-            ..
+            amy, amy_card, bob, ..
         } = amy_after_scripted_bob_departed(&network);
         let bob_address = bob.endpoint().endpoint().addr();
 
@@ -543,7 +589,8 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                 mac: UNSET_MAC,
             }),
         );
-        let statuses_after_the_introduce = statuses_throughout(&mut amy, "bob", SPEC_GONE_KEPT_FOR);
+        let statuses_after_the_introduce =
+            statuses_from_the_departure_once_served(&amy, "bob", INTRODUCE_KIND);
 
         assert!(matches!(answer, Response::IntroduceAck(_)), "{answer:?}");
         assert_eq!(statuses_after_the_introduce, [json!("gone")]);
@@ -596,17 +643,17 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                 message_from_bob(amy_card.id, wall_clock_ms(), SENT_BEFORE_THE_NEW_PRESENCE),
             )
         });
-        timed("amy lists the restarted bob's new presence", || {
+        let sent_ms = timed("amy lists the restarted bob's new presence", || {
             announce_until_seen(
                 &network,
                 &restarted,
                 &bob_key,
                 &loopback_address_of(&restarted),
-                &mut amy,
-            );
+                (&mut amy, amy_card.id),
+            )
         });
         timed("amy applies the new presence", || {
-            std::thread::sleep(PRESENCE_APPLIED_SETTLE);
+            presence_applied(&amy, sent_ms);
         });
         let after_presence = timed("the restarted bob's message after its presence", || {
             exchange_on(
@@ -666,21 +713,31 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                 message_from_bob(amy_card.id, wall_clock_ms(), SENT_BEFORE_THE_PRESENCE),
             )
         });
-        timed("the observer wait after amy's join", || {
-            std::thread::sleep(SPEC_OBSERVER_WAIT);
-        });
+        let exchanged = Instant::now();
+        let witness_host = network.stand_in_host();
+        let witness_card = network.create_card("witness-card", "wit");
+        let mut witness = network.start_member();
+        timed(
+            "a witness claims through its own host, which takes the spec 3.14 observer wait, past the silence that judges a connection gone",
+            || witness.init_through(&witness_card, &witness_host),
+        );
+        let held_for = exchanged.elapsed();
+        assert!(
+            held_for >= GONE_PROCESS_SILENCE.saturating_add(HEARING_SAMPLE_INTERVAL),
+            "the held connection carried no message only {held_for:?} before bob's presence, under the {GONE_PROCESS_SILENCE:?} close bound plus the {HEARING_SAMPLE_INTERVAL:?} sample that judges it"
+        );
 
-        timed("amy lists bob's presence omitting the held path", || {
+        let sent_ms = timed("amy lists bob's presence omitting the held path", || {
             announce_until_seen(
                 &network,
                 &bob,
                 &bob_key,
                 &address_on_a_host_no_connection_runs_over(&bob),
-                &mut amy,
-            );
+                (&mut amy, amy_card.id),
+            )
         });
         timed("amy applies the presence", || {
-            std::thread::sleep(PRESENCE_APPLIED_SETTLE);
+            presence_applied(&amy, sent_ms);
         });
         let after_presence = timed("bob's message after its presence", || {
             exchange_on(
@@ -707,7 +764,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 #[cfg(test)]
 mod spec_3_15_test_19_on_one_machine {
     use std::collections::BTreeSet;
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
 
     use iroh::{EndpointId, SecretKey};
     use iroh_gossip::api::Event;
@@ -719,9 +776,6 @@ mod spec_3_15_test_19_on_one_machine {
     use crate::payloads::presence_signed_by;
     use crate::scratch_machine::RunRecordKeeping;
     use crate::scripted_node::ScriptedNode;
-
-    const GOSSIP_NEIGHBOR_WAIT: Duration = Duration::from_secs(10);
-    const EVENTS_POLL: Duration = Duration::from_millis(50);
 
     /// Every node the node's topic ever reported up as a gossip neighbor.
     fn nodes_ever_gossip_neighbors(node: &ScriptedNode) -> BTreeSet<EndpointId> {
@@ -735,19 +789,6 @@ mod spec_3_15_test_19_on_one_machine {
                 }
             })
             .collect()
-    }
-
-    /// Waits until the node's topic has reported the neighbor up, requiring that within the gossip neighbor wait.
-    #[track_caller]
-    fn wait_for_gossip_neighbor(node: &ScriptedNode, neighbor: EndpointId) {
-        let started = Instant::now();
-        while !nodes_ever_gossip_neighbors(node).contains(&neighbor) {
-            assert!(
-                started.elapsed() < GOSSIP_NEIGHBOR_WAIT,
-                "{neighbor} was no gossip neighbor within {GOSSIP_NEIGHBOR_WAIT:?}"
-            );
-            std::thread::sleep(EVENTS_POLL);
-        }
     }
 
     #[test]
@@ -764,7 +805,7 @@ mod spec_3_15_test_19_on_one_machine {
         let carol_key = SecretKey::generate();
         let carol = network.scripted_member(&carol_key, "carol");
         carol.admit(loopback_address(bob_card.id, &bob.bound_udp_ports()));
-        wait_for_gossip_neighbor(&carol, bob_card.id);
+        carol.wait_for_neighbor_up(bob_card.id);
 
         carol.broadcast(presence_signed_by(
             network.keys(),
@@ -990,7 +1031,8 @@ mod spec_3_15_with_one_member {
     const HONEST_BODY: &str = "a message under the network mac";
     const ATTACKER_HANDLE: &str = "mallory";
     const OUTSIDER_SECRET_BYTE: u8 = 77;
-    const NOTHING_FURTHER_WAIT: Duration = Duration::from_millis(1000);
+    const PAYLOAD_DROPPED_EVENT: &str = "gossip.payload_dropped";
+    const PRESENCE_KIND: &str = "presence";
     const TRANSIENT_SOCKET_LIFETIME: Duration = Duration::from_millis(1000);
 
     /// The `you` of spec 3.10 for a session that has claimed no card.
@@ -1154,7 +1196,19 @@ mod spec_3_15_with_one_member {
         ));
 
         amy.peer_within("honest", PRESENCE_WAIT, |_honest| true);
-        std::thread::sleep(NOTHING_FURTHER_WAIT);
+        amy.wait_until(
+            &format!("{PAYLOAD_DROPPED_EVENT} of the forged {PRESENCE_KIND}"),
+            PRESENCE_WAIT,
+            |lines| {
+                lines
+                    .iter()
+                    .any(|line| {
+                        line.event == PAYLOAD_DROPPED_EVENT
+                            && line.value("kind") == Some(&json!(PRESENCE_KIND))
+                    })
+                    .then_some(())
+            },
+        );
         assert_eq!(listed_handles(&mut amy), [json!("honest")]);
     }
 
@@ -1305,7 +1359,6 @@ mod spec_3_16_absences_on_one_machine {
     const SENDS_IN_A_ROW: usize = 30;
     /// Time for a message held for an absent member to reach it once it returns.
     const REDELIVERY_WATCH: Duration = Duration::from_secs(5);
-    const EVENTS_POLL: Duration = Duration::from_millis(100);
 
     /// The files under the base directories whose content holds the text.
     fn base_directory_files_holding(network: &LocalNetwork, text: &str) -> Vec<PathBuf> {
@@ -1320,8 +1373,13 @@ mod spec_3_16_absences_on_one_machine {
 
     /// How many Presences of the card the node's topic has delivered so far.
     fn presences_received_from(node: &ScriptedNode, card: wire::PublicKey) -> usize {
-        node.events()
-            .into_iter()
+        presences_of(&node.events(), card)
+    }
+
+    /// How many of the topic's events are Presences of the card.
+    fn presences_of(events: &[Event], card: wire::PublicKey) -> usize {
+        events
+            .iter()
             .filter(|event| {
                 if let Event::Received(message) = event {
                     matches!(wire::decode::<Payload>(&message.content), Ok(Payload::Presence(presence)) if presence.card == card)
@@ -1431,7 +1489,7 @@ mod spec_3_16_absences_on_one_machine {
         amy.peer_within("bob", PRESENCE_WAIT, |bob| {
             online(bob) && bob["last_seen"].as_u64().unwrap() > stopped_ms
         });
-        std::thread::sleep(REDELIVERY_WATCH);
+        restarted.wait_for_time_to_pass(wall_clock_ms(), REDELIVERY_WATCH);
 
         assert_eq!(refused["error"]["code"], json!("unreachable"), "{refused}");
         assert_eq!(restarted.inbox_bodies(), Vec::<Value>::new());
@@ -1445,18 +1503,13 @@ mod spec_3_16_absences_on_one_machine {
         let host = network.stand_in_host();
         let mut amy = network.start_member();
         amy.init_through(&card, &host);
-        let started = Instant::now();
-        while presences_received_from(&host, *card.id.as_bytes()) == 0 {
-            assert!(
-                started.elapsed() < PRESENCE_WAIT,
-                "amy announced no presence"
-            );
-            std::thread::sleep(EVENTS_POLL);
-        }
-        std::thread::sleep(ADDRESS_SETTLE);
+        host.wait_for_events("presence from amy", PRESENCE_WAIT, |events| {
+            presences_of(events, *card.id.as_bytes()) > 0
+        });
+        amy.wait_for_time_to_pass(wall_clock_ms(), ADDRESS_SETTLE);
 
         let settled = presences_received_from(&host, *card.id.as_bytes());
-        std::thread::sleep(PRESENCE_QUIET_WINDOW);
+        amy.wait_for_time_to_pass(wall_clock_ms(), PRESENCE_QUIET_WINDOW);
         let after_window = presences_received_from(&host, *card.id.as_bytes());
 
         assert_eq!(after_window, settled);
@@ -1491,7 +1544,7 @@ mod spec_3_16_absences_on_one_machine {
         let sent_at = Instant::now();
         let sent = send(&mut amy, "carol");
         let answered_after = sent_at.elapsed();
-        std::thread::sleep(RETRY_WATCH);
+        amy.wait_for_time_to_pass(wall_clock_ms(), RETRY_WATCH);
 
         assert_eq!(messages_read.load(Ordering::SeqCst), 1);
         assert_eq!(sent["ok"], json!(false), "{sent}");
@@ -1715,13 +1768,12 @@ mod observability_decision_6_on_one_machine {
     use std::net::SocketAddr;
     use std::os::unix::net::UnixStream;
     use std::path::{Path, PathBuf};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use serde_json::{Value, json};
 
     use crate::local_network::{LocalNetwork, MetPair};
     use crate::mcp_server::{PRESENCE_WAIT, call_succeeded, online};
-    use crate::member::Member;
     use crate::scratch_machine::RunRecordKeeping;
 
     const BODY_MARKER: &str = "body-marker-q7x2v9";
@@ -1822,17 +1874,6 @@ mod observability_decision_6_on_one_machine {
         markers
     }
 
-    /// Waits until the member's inbox holds the body, failing with the body when it does not within the wait.
-    fn wait_for_body(member: &mut Member, body: &str) {
-        let started = Instant::now();
-        while !member.inbox_bodies().contains(&Value::from(body)) {
-            assert!(
-                started.elapsed() < DELIVERY_WAIT,
-                "{body} not in the inbox within {DELIVERY_WAIT:?}"
-            );
-        }
-    }
-
     #[test]
     fn observability_decision_6_the_events_files_of_a_real_exchange_hold_no_body_secret_path_or_address()
      {
@@ -1843,7 +1884,7 @@ mod observability_decision_6_on_one_machine {
             mut amy, mut bob, ..
         } = network.amy_and_bob_met(&host);
         assert!(call_succeeded(&amy.send("bob", BODY_MARKER)));
-        wait_for_body(&mut bob, BODY_MARKER);
+        bob.wait_for_inbox_body(BODY_MARKER, DELIVERY_WAIT);
         let sockets: Vec<String> = network
             .base_directory_files()
             .iter()

@@ -5,7 +5,9 @@ use std::time::Duration;
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use serde_json::{Value, json};
 
-use crate::mcp_server::{INIT_TOOL, McpServer, PendingCall, call_succeeded, init_arguments};
+use crate::mcp_server::{
+    INIT_TOOL, McpServer, PendingCall, RESULT_KEY, call_succeeded, init_arguments,
+};
 use crate::member_events::MemberEvents;
 use crate::scratch_machine::Card;
 use crate::scripted_node::ScriptedNode;
@@ -15,6 +17,16 @@ use crate::trace_reader::TraceLine;
 const COUNTERS_EVENT: &str = "state.counters";
 const MOMENT_FIELD: &str = "moment";
 const NODE_START_MOMENT: &str = "start";
+/// The longest a running node goes without a counters snapshot: one every 60 s, and one at each rebind, which starts the 60 s afresh (spec/observability.md decisions 9 and 13).
+const SPEC_COUNTERS_INTERVAL: Duration = Duration::from_secs(60);
+/// What a snapshot may lag its interval by on a loaded machine.
+const SNAPSHOT_SLACK: Duration = Duration::from_secs(15);
+/// The event a member records for each frame it delivers to its inbox (spec/observability.md decision 9).
+const FRAME_DELIVERED_EVENT: &str = "inbox.frame_delivered";
+/// The tool a member reads its inbox with, the key of its result listing the messages, and the key of a message's body (spec 3.10).
+const INBOX_TOOL: &str = "inbox";
+const MESSAGES_KEY: &str = "messages";
+const BODY_KEY: &str = "body";
 
 const ENDPOINT_BIND_WAIT: Duration = Duration::from_secs(10);
 const OPEN_FILES_COMMAND: &str = "lsof";
@@ -77,12 +89,7 @@ impl Member {
     /// The bodies of the messages the inbox tool returns, in the order it returns them.
     #[track_caller]
     pub fn inbox_bodies(&mut self) -> Vec<Value> {
-        self.call("inbox", &json!({}))["result"]["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|message| message["body"].clone())
-            .collect()
+        bodies_in(&self.call(INBOX_TOOL, &json!({})))
     }
 
     /// Claims the card while the node admits this process's endpoint, requiring the claim to succeed, and returns the init envelope.
@@ -111,6 +118,56 @@ impl Member {
     pub fn wait_for_event(&self, event: &str, within: Duration) -> TraceLine {
         self.events
             .wait_until(event, within, first_line_named(event))
+    }
+
+    /// The first value `found_in` makes of every line of the member's events files, awaited as `MemberEvents::wait_until` awaits it.
+    #[track_caller]
+    pub fn wait_until<Found>(
+        &self,
+        awaited: &str,
+        within: Duration,
+        found_in: impl FnMut(Vec<TraceLine>) -> Option<Found>,
+    ) -> Found {
+        self.events.wait_until(awaited, within, found_in)
+    }
+
+    /// Waits until the member records a counters snapshot at least `span` after the wall-clock instant, the event its own time produces, proof that much of it passed.
+    #[track_caller]
+    pub fn wait_for_time_to_pass(&self, since_wall_ms: u64, span: Duration) {
+        let due_wall_ms = since_wall_ms.saturating_add(u64::try_from(span.as_millis()).unwrap());
+        let within = span
+            .saturating_add(SPEC_COUNTERS_INTERVAL)
+            .saturating_add(SNAPSHOT_SLACK);
+        self.events.wait_until(
+            &format!("{COUNTERS_EVENT} at or after {due_wall_ms} ms"),
+            within,
+            |lines| {
+                lines
+                    .iter()
+                    .any(|line| line.event == COUNTERS_EVENT && line.wall_ms >= due_wall_ms)
+                    .then_some(())
+            },
+        );
+    }
+
+    /// Waits until the inbox tool returns the body, asked at once and again each time the member records a frame delivered.
+    #[track_caller]
+    pub fn wait_for_inbox_body(&mut self, body: &str, within: Duration) {
+        let mut frames_delivered = None;
+        let server = &mut self.server;
+        self.events
+            .wait_until(&format!("{body} in the inbox"), within, |lines| {
+                let delivered = lines
+                    .iter()
+                    .filter(|line| line.event == FRAME_DELIVERED_EVENT)
+                    .count();
+                if frames_delivered.replace(delivered) == Some(delivered) {
+                    return None;
+                }
+                bodies_in(&server.call(INBOX_TOOL, &json!({})))
+                    .contains(&Value::from(body))
+                    .then_some(())
+            });
     }
 
     /// The loopback-reachable UDP ports this process's endpoint bound, once it records its node's start on the bound endpoint.
@@ -164,6 +221,16 @@ impl Member {
 /// What finds the first events line that names the event.
 pub fn first_line_named(event: &str) -> impl FnMut(Vec<TraceLine>) -> Option<TraceLine> + '_ {
     move |lines| lines.into_iter().find(|line| line.event == event)
+}
+
+/// The bodies of the messages an inbox tool envelope returns, in its order.
+fn bodies_in(envelope: &Value) -> Vec<Value> {
+    envelope[RESULT_KEY][MESSAGES_KEY]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|message| message[BODY_KEY].clone())
+        .collect()
 }
 
 /// Whether the events line is the counters snapshot a node records at its start.
