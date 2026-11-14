@@ -657,6 +657,7 @@ mod tests {
                         Ok(endpoint)
                     })
                 }),
+                report: Arc::new(|_event: Event| {}),
                 interrupted: Box::pin(std::future::pending()),
             };
             let probe_relay: RelayProbe = Arc::new(|_relay| Box::pin(async { true }));

@@ -458,6 +458,18 @@ pub enum OpenedPayload {
     PresenceRequest(PresenceRequest),
 }
 
+impl DescribedPayload for OpenedPayload {
+    fn facts(&self) -> PayloadFacts {
+        match self {
+            Self::Presence(presence) => presence.facts(),
+            Self::Departure(departure) => departure.facts(),
+            Self::Unreachable(report) => report.facts(),
+            Self::Infrastructure(valid) => valid.record.facts(),
+            Self::PresenceRequest(request) => request.facts(),
+        }
+    }
+}
+
 #[cfg(test)]
 impl From<OpenedPayload> for Payload {
     /// The wire structure an opened payload carries.

@@ -375,17 +375,8 @@ impl AdmittedByTheTable for Unreachable {
 }
 
 impl PeerRows {
-    /// An empty table for the node of `own_card`, closing connections through the register of the endpoint it runs on and recording nothing.
-    pub(crate) fn new(own_card: wire::PublicKey, held_connections: HeldConnections) -> Self {
-        Self::recording(
-            own_card,
-            held_connections,
-            Arc::new(|_unrecorded: Event| {}),
-        )
-    }
-
     /// An empty table for the node of `own_card`, closing connections through the register of the endpoint it runs on and recording each row's decision to `report`.
-    fn recording(
+    pub(crate) fn new(
         own_card: wire::PublicKey,
         held_connections: HeldConnections,
         report: RunRecord,
@@ -535,7 +526,7 @@ impl NodeState {
             clock: Arc::clone(&effects.clock),
             to_loop,
             stopping: AtomicBool::new(false),
-            rows: PeerRows::recording(own_card, held_connections, Arc::clone(&effects.report)),
+            rows: PeerRows::new(own_card, held_connections, Arc::clone(&effects.report)),
         }
     }
 
@@ -1427,6 +1418,15 @@ fn refusal_record(rows: Option<&PeerRows>, now_ms: u64, refusal: PayloadRefusal)
     named_admission_record(rows, facts, &Err::<(), _>(refusal.rule), now_ms)
 }
 
+/// The record of a verified payload a node takes without a row of spec 3.8 to apply to it, naming its signer by the handle `rows` holds for it at `now_ms` when the node keeps a peer table.
+pub fn taken_without_a_row_record(
+    facts: PayloadFacts,
+    rows: Option<&PeerRows>,
+    now_ms: u64,
+) -> Event {
+    named_admission_record(rows, facts, &Ok::<(), PayloadDropRule>(()), now_ms)
+}
+
 /// What every node records of a topic event before acting on it: the join and each neighbor up and down, a payload being recorded where it is judged.
 fn topic_record(event: &GossipEvent) -> Option<Event> {
     match event {
@@ -1442,7 +1442,7 @@ fn topic_record(event: &GossipEvent) -> Option<Event> {
 }
 
 /// The next event of the topic, recorded as every node records the gossip it receives: each payload the payload layer drops, the join, and each neighbor up and down, a signer named by the handle `rows` holds for it at the clock's reading when the node keeps a peer table.
-async fn next_recorded_gossip_event(
+pub async fn next_recorded_gossip_event(
     topic: &mut NetworkTopic,
     rows: Option<&PeerRows>,
     clock: &(dyn Fn() -> u64 + Send + Sync),
@@ -1459,7 +1459,7 @@ async fn next_recorded_gossip_event(
 }
 
 /// Signs and broadcasts the payload on the topic under the signer's key, recording its kind and stamp once sent.
-async fn broadcast_recorded(
+pub async fn broadcast_recorded(
     topic: &NetworkTopic,
     signer: &SecretKey,
     payload: Payload,

@@ -728,11 +728,11 @@ fn observer_effects(
                 trace.clone(),
             )
         }),
+        report: record,
         interrupted,
     };
     let operator_effects = OperatorEffects {
         fill_probe_nonce: Arc::new(|nonce: &mut Nonce| fill_with_secure_random_bytes(nonce)),
-        report: record,
         probe_relay: Arc::new(|relay| Box::pin(relay_answers(relay))),
         start_inbox: Box::new(move || {
             InboxSocket::start(

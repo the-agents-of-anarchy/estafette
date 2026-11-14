@@ -23,7 +23,7 @@ use crate::config::{ConfigError, NetworkConfig};
 use crate::crypto::GateKey;
 use crate::dirs::{Directories, DirectoriesError};
 use crate::errors::ErrorCode;
-use crate::event::RunRecord;
+use crate::event::{Event, RunRecord};
 use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
 use crate::inbox::socket::{InboxSocket, InboxSocketError};
 use crate::keys::parse_public_key;
@@ -33,11 +33,11 @@ use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
     DEPARTURE_WAIT, Delivery, DirectAnswer, DirectRequest, DirectRequester, Identity,
     KnownHostAddress, Network, Node, NodeEffects, NodeError, PeerRows, RelayProbe, Session,
-    acknowledgement_of, known_host_addresses, observer_wait_over_at, presence_request,
-    replace_lookup_entry, seed_lookup_with_known_hosts, send_in_background, serve,
-    sleep_until_deadline, wire_addr,
+    acknowledgement_of, broadcast_recorded, known_host_addresses, next_recorded_gossip_event,
+    observer_wait_over_at, presence_request, replace_lookup_entry, seed_lookup_with_known_hosts,
+    send_in_background, serve, sleep_until_deadline, taken_without_a_row_record, wire_addr,
 };
-use crate::payload::{OpenedPayload, ZERO_MAC};
+use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC};
 use crate::peers::{Effect, Peer, PeerTable};
 use crate::sidecar::{HeldSidecar, Pause, SEED_BYTES, SidecarError, claim, create_card};
 use crate::wire::{self, Introduce, IntroduceAck, Message, Nonce, Version};
@@ -147,13 +147,13 @@ pub struct ObserverEffects {
     pub monotonic: MonotonicClock,
     pub fill_seed: SeedSource,
     pub bind_endpoint: BindEndpoint,
+    pub report: RunRecord,
     pub interrupted: Interrupted,
 }
 
-/// The side effects only a node that announces itself needs; `test-send` alone reads the nonce source, the run record and the inbox start, and the doctor reads the relay probe.
+/// The side effects only a node that announces itself needs; `test-send` alone reads the nonce source and the inbox start, and the doctor reads the relay probe.
 pub struct OperatorEffects {
     pub fill_probe_nonce: ProbeNonceSource,
-    pub report: RunRecord,
     pub probe_relay: RelayProbe,
     pub start_inbox: StartInbox,
 }
@@ -356,11 +356,11 @@ async fn send_as_operator(
         clock,
         monotonic,
         bind_endpoint,
+        report,
         ..
     } = effects;
     let OperatorEffects {
         fill_probe_nonce,
-        report,
         probe_relay,
         start_inbox,
     } = operator_effects;
@@ -567,7 +567,11 @@ async fn start_observation(
     let (to_loop, from_loop) = mpsc::unbounded_channel();
     let host = Arc::new(ObserverHost {
         endpoint: endpoint.endpoint().clone(),
-        rows: PeerRows::new(own_card, endpoint.held_connections()),
+        rows: PeerRows::new(
+            own_card,
+            endpoint.held_connections(),
+            Arc::clone(&effects.report),
+        ),
         clock: effects.clock,
         to_loop,
     });
@@ -594,6 +598,7 @@ async fn start_observation(
             topic,
             from_loop,
             monotonic: effects.monotonic,
+            report: effects.report,
             interrupted: effects.interrupted,
             wait_over: None,
             key: secret_key,
@@ -689,6 +694,7 @@ struct Observation {
     router: Router,
     from_loop: mpsc::UnboundedReceiver<ObserverEvent>,
     monotonic: MonotonicClock,
+    report: RunRecord,
     interrupted: Interrupted,
     wait_over: Option<Instant>,
     key: SecretKey,
@@ -763,7 +769,7 @@ impl Observation {
 
     /// Asks the members to announce themselves, once, at the join the topic reports.
     fn request_presence_at_join(&self) -> impl Future<Output = Result<(), Failure>> + Send + '_ {
-        request_presence(&self.topic, &self.key, self.host.now_ms())
+        request_presence(&self.topic, &self.key, self.host.now_ms(), &*self.report)
     }
 
     /// Starts the observer wait at the first join or join timeout and keeps one already started.
@@ -776,7 +782,12 @@ impl Observation {
     /// Waits for the next topic event, loop event, observer wait deadline or interrupt.
     async fn next_step(&mut self) -> Step {
         tokio::select! {
-            event = self.topic.next_event() => Step::Topic(event),
+            event = next_recorded_gossip_event(
+                &mut self.topic,
+                Some(&self.host.rows),
+                &*self.host.clock,
+                &*self.report,
+            ) => Step::Topic(event),
             Some(event) = self.from_loop.recv() => Step::Loop(event),
             () = sleep_until_deadline(self.wait_over) => Step::WaitOver,
             () = &mut self.interrupted => Step::Interrupted,
@@ -800,7 +811,7 @@ impl Observation {
         }
     }
 
-    /// Applies a verified payload to the peer table.
+    /// Applies a verified payload to the peer table, recording a host record or a presence request as taken without a row, since an observer holds no host and answers no request.
     fn take_payload(&self, payload: OpenedPayload, now_ms: u64) {
         match payload {
             OpenedPayload::Presence(presence) => {
@@ -814,8 +825,13 @@ impl Observation {
             OpenedPayload::Unreachable(report) => {
                 self.host.rows.take_unreachable(&report, now_ms);
             }
-            OpenedPayload::Infrastructure(_record) => {}
-            OpenedPayload::PresenceRequest(_request) => {}
+            unapplied @ (OpenedPayload::Infrastructure(_) | OpenedPayload::PresenceRequest(_)) => {
+                (self.report)(taken_without_a_row_record(
+                    unapplied.facts(),
+                    Some(&self.host.rows),
+                    now_ms,
+                ));
+            }
         }
     }
 
@@ -852,16 +868,21 @@ impl Observation {
     }
 }
 
-/// Broadcasts the one payload an observation sends, a Presence request signed by the observer's key, at the one join its topic reports.
+/// Broadcasts the one payload an observation sends, a Presence request signed by the observer's key, at the one join its topic reports, recording it once sent.
 async fn request_presence(
     topic: &NetworkTopic,
     key: &SecretKey,
     now_ms: u64,
+    report: &(dyn Fn(Event) + Send + Sync),
 ) -> Result<(), Failure> {
-    topic
-        .broadcast(key, presence_request(*key.public().as_bytes(), now_ms))
-        .await
-        .map_err(Failure::Topic)
+    broadcast_recorded(
+        topic,
+        key,
+        presence_request(*key.public().as_bytes(), now_ms),
+        report,
+    )
+    .await
+    .map_err(Failure::Topic)
 }
 
 /// The result line of a peer: handle, status, attached and public fields.
@@ -1203,11 +1224,11 @@ mod tests {
                         Ok(endpoint)
                     })
                 }),
+                report: Arc::new(|_event: Event| {}),
                 interrupted,
             };
             let operator_effects = OperatorEffects {
                 fill_probe_nonce: Arc::new(|nonce: &mut Nonce| *nonce = PROBE_NONCE),
-                report: Arc::new(|_event: Event| {}),
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
                 start_inbox: Box::new(move || {
                     InboxSocket::start(
@@ -2340,6 +2361,174 @@ mod tests {
 
         tail_result.unwrap();
         assert_eq!(output.text(), wanted_lines.concat());
+        drop(lab);
+    }
+
+    /// The wall clock of the observer in the tests that read its gossip events, in milliseconds since the Unix epoch.
+    const OBSERVER_CLOCK_MS: u64 = 1_800_000_000_000;
+    const SPEC_ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
+    const SPEC_SHORT_ID_BYTES: usize = 5;
+    /// Bytes no payload decodes from.
+    const NOT_A_PAYLOAD: &[u8] = b"not a payload";
+    const GOSSIP_EVENT_PREFIX: &str = "gossip.";
+
+    /// The five-byte id of the neighbor's card as the events file writes it.
+    fn neighbor_short_id() -> serde_json::Value {
+        serde_json::Value::from(
+            HEXLOWER.encode(&secret_key(NEIGHBOR_SEED).public().as_bytes()[..SPEC_SHORT_ID_BYTES]),
+        )
+    }
+
+    /// The fields of a payload the neighbor signed, named by its handle, with its stamp.
+    fn neighbor_payload_fields(
+        kind: &str,
+        stamp: (&'static str, u64),
+    ) -> crate::event::EventFields {
+        vec![
+            ("kind", serde_json::Value::from(kind)),
+            ("peer", neighbor_short_id()),
+            ("handle", serde_json::Value::from(NEIGHBOR_HANDLE)),
+            (stamp.0, serde_json::Value::from(stamp.1)),
+        ]
+    }
+
+    /// The neighbor's payloads the observer judges by its clock: a fresh Presence, a Departure past the announcement max age, its host record and a presence request.
+    fn payloads_judged_at_the_observer_clock() -> [Payload; 4] {
+        let [_, _, _, record, request] = neighbor_payloads();
+        let card = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        [
+            Payload::Presence(wire::Presence {
+                v: Version::CURRENT,
+                card,
+                handle: NEIGHBOR_HANDLE.to_owned(),
+                public: NEIGHBOR_PUBLIC.to_vec(),
+                attached: true,
+                addr: neighbor_address(),
+                seq: OBSERVER_CLOCK_MS - 1,
+                mac: ZERO_MAC,
+                sig: ZERO_SIGNATURE,
+            }),
+            Payload::Departure(wire::Departure {
+                v: Version::CURRENT,
+                card,
+                seq: OBSERVER_CLOCK_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1,
+                mac: ZERO_MAC,
+                sig: ZERO_SIGNATURE,
+            }),
+            record,
+            request,
+        ]
+    }
+
+    /// The gossip events an observer records over the run, in order, once it has recorded that many, failing with what it recorded when they do not come within the payload wait.
+    async fn gossip_events_recorded(
+        recorded: &mut tokio::sync::mpsc::UnboundedReceiver<
+            crate::net::direct::tests::RecordedEvent,
+        >,
+        count: usize,
+    ) -> Vec<crate::net::direct::tests::RecordedEvent> {
+        let mut gossip = Vec::new();
+        drop(
+            tokio::time::timeout(PAYLOAD_WAIT, async {
+                while gossip.len() < count {
+                    let (name, fields) = recorded.recv().await.unwrap();
+                    if name.starts_with(GOSSIP_EVENT_PREFIX) {
+                        gossip.push((name, fields));
+                    }
+                }
+            })
+            .await,
+        );
+        gossip
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_tail_records_its_join_its_request_its_neighbor_and_each_payload_taken_or_dropped_by_rule()
+     {
+        let lab = Lab::new("tail-recorded").await;
+        let mut neighbor = start_silent_neighbor().await;
+        lab.write_network_config(&[NEIGHBOR_SEED]);
+        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
+        let (mut effects, operator_effects) = lab.effects(
+            vec![neighbor.address.clone()],
+            Box::pin(async move { drop(interrupted.await) }),
+        );
+        effects.clock = Arc::new(|| OBSERVER_CLOCK_MS);
+        effects.report = record;
+        let tail = ObserverCommand::Tail {
+            network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
+            debug: DebugArgs::default(),
+        };
+        let expected = vec![
+            ("gossip.topic_joined", Vec::new()),
+            (
+                "gossip.payload_broadcast",
+                vec![
+                    ("kind", serde_json::Value::from("presence_request")),
+                    ("seq", serde_json::Value::from(OBSERVER_CLOCK_MS)),
+                ],
+            ),
+            ("gossip.neighbor_up", vec![("peer", neighbor_short_id())]),
+            (
+                "gossip.payload_accepted",
+                neighbor_payload_fields("presence", ("seq", OBSERVER_CLOCK_MS - 1)),
+            ),
+            ("gossip.payload_dropped", {
+                let mut fields = neighbor_payload_fields(
+                    "departure",
+                    ("seq", OBSERVER_CLOCK_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1),
+                );
+                fields.push(("rule", serde_json::Value::from("older_than_max_age")));
+                fields
+            }),
+            (
+                "gossip.payload_accepted",
+                neighbor_payload_fields("infrastructure", ("ts", NEIGHBOR_RECORD_TS)),
+            ),
+            (
+                "gossip.payload_accepted",
+                neighbor_payload_fields("presence_request", ("seq", NEIGHBOR_REQUEST_SEQ)),
+            ),
+            (
+                "gossip.payload_dropped",
+                vec![("rule", serde_json::Value::from("malformed"))],
+            ),
+        ];
+        let mut printed = Vec::new();
+
+        let (tail_result, gossip) = tokio::join!(
+            run(
+                &tail,
+                &lab.directories,
+                &OperatingSystemFilesystem,
+                &NoPause,
+                (effects, operator_effects),
+                &mut printed,
+            ),
+            async {
+                next_presence_request(&mut neighbor.topic, PAYLOAD_WAIT).await;
+                for payload in payloads_judged_at_the_observer_clock() {
+                    neighbor
+                        .topic
+                        .broadcast(&secret_key(NEIGHBOR_SEED), payload)
+                        .await
+                        .unwrap();
+                }
+                neighbor
+                    .topic
+                    .broadcast_bytes(NOT_A_PAYLOAD.to_vec())
+                    .await
+                    .unwrap();
+                let gossip = gossip_events_recorded(&mut recorded, expected.len()).await;
+                interrupt.send(()).unwrap_or_default();
+                gossip
+            }
+        );
+
+        tail_result.unwrap();
+        assert_eq!(gossip, expected);
         drop(lab);
     }
 
