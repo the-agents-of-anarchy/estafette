@@ -40,6 +40,12 @@ use crate::event::{BridgeEvent, FrameIds};
 
 mod debug_trace;
 mod event;
+#[cfg(test)]
+#[path = "../tests/common/fresh_directory.rs"]
+mod fresh_directory;
+#[cfg(test)]
+#[path = "../tests/common/remove_scratch.rs"]
+mod remove_scratch;
 
 const DOCTOR_SUBCOMMAND: &str = "doctor";
 const BRIDGE_PROGRAM: &str = "estafette-bridge-claude";
@@ -1387,7 +1393,7 @@ mod tests {
             CORE_PRIVATE_DIRECTORY_MODE
         );
         assert_eq!(effects.runtime_inputs.user_id, metadata.uid());
-        fs::remove_dir_all(&scratch).expect("cleanup");
+        crate::remove_scratch::remove_scratch(&scratch).expect("cleanup");
     }
 
     #[test]
@@ -1977,7 +1983,7 @@ mod tests {
             .read_tail_text(&file, 12)
             .expect("read tail");
         assert_eq!(window, "\nthird line\n");
-        fs::remove_dir_all(&directory).expect("cleanup");
+        crate::remove_scratch::remove_scratch(&directory).expect("cleanup");
     }
 
     #[test]
@@ -2017,8 +2023,13 @@ mod tests {
 
     #[test]
     fn spec_3_12_harness_2_1_319_the_class_read_live_is_the_class_written_to_the_session_socket() {
-        let socket_path =
-            std::env::temp_dir().join(format!("estf-u43-{}.sock", std::process::id()));
+        const SOCKET_FILE: &str = "session.sock";
+        let socket_directory = crate::fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estf-u43-{}", std::process::id()),
+        )
+        .expect("scratch directory");
+        let socket_path = socket_directory.join(SOCKET_FILE);
         let listener = std::os::unix::net::UnixListener::bind(&socket_path).expect("bind");
         let server = thread::spawn(move || {
             let (mut connection, _) = listener.accept().expect("accept");
@@ -2035,6 +2046,8 @@ mod tests {
         session.deliver(&frame_from("ana", "x"));
         let received = server.join().expect("server thread");
         fs::remove_file(&socket_path).expect("unlink socket");
+        crate::remove_scratch::remove_scratch(&socket_directory)
+            .expect("remove the socket directory");
         assert!(received.contains("from-mode=\\\"bypass\\\""), "{received}");
     }
 
@@ -2065,13 +2078,14 @@ mod tests {
     }
 
     fn scratch_directory(label: &str) -> PathBuf {
-        let directory = std::env::temp_dir().join(format!(
-            "estafette-bridge-claude-managed-{label}-{}",
-            std::process::id()
-        ));
-        if directory.exists() {
-            fs::remove_dir_all(&directory).expect("stale scratch");
-        }
+        let directory = crate::fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-bridge-claude-managed-{label}-{}",
+                std::process::id()
+            ),
+        )
+        .expect("scratch directory");
         fs::create_dir_all(directory.join(MANAGED_DROP_IN_DIRECTORY)).expect("scratch directory");
         directory
     }
@@ -2413,7 +2427,7 @@ mod tests {
         });
         assert!(failures.is_empty(), "{failures:?}");
         assert!(texts.contains(&fs::read_to_string(&target).expect("final file")));
-        fs::remove_dir_all(&directory).expect("cleanup");
+        crate::remove_scratch::remove_scratch(&directory).expect("cleanup");
     }
 
     #[test]
@@ -2436,14 +2450,16 @@ mod tests {
                     .to_string_lossy()
                     .ends_with(STAGING_SUFFIX))
         );
-        fs::remove_dir_all(&directory).expect("cleanup");
+        crate::remove_scratch::remove_scratch(&directory).expect("cleanup");
     }
 
     const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
+    const DATA_HOME_UNDER_ROOT: &str = "data";
     const RUN_BYTES: [u8; RUN_ID_BYTES] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
     const UNREADABLE_CLASS_LINE: &str = "cannot read the session's permission mode, keeping the class attested before: cannot read /home/ana/.claude/sessions/100.json: entity not found\n";
 
     struct TraceProbe {
+        root: PathBuf,
         data_home: PathBuf,
         data_home_variable: &'static str,
         run_id_source_fails: bool,
@@ -2454,13 +2470,17 @@ mod tests {
 
     impl TraceProbe {
         fn new(label: &str) -> Self {
-            let data_home = std::env::temp_dir().join(format!(
-                "estafette-bridge-claude-trace-{label}-{}",
-                std::process::id()
-            ));
-            drop(fs::remove_dir_all(&data_home));
+            let root = crate::fresh_directory::fresh_directory_in(
+                &std::env::temp_dir(),
+                &format!(
+                    "estafette-bridge-claude-trace-{label}-{}",
+                    std::process::id()
+                ),
+            )
+            .expect("scratch directory");
             Self {
-                data_home,
+                data_home: root.join(DATA_HOME_UNDER_ROOT),
+                root,
                 data_home_variable: DATA_HOME_VARIABLE,
                 run_id_source_fails: false,
                 directory_creation_fails: false,
@@ -2528,7 +2548,10 @@ mod tests {
 
     impl Drop for TraceProbe {
         fn drop(&mut self) {
-            drop(fs::remove_dir_all(&self.data_home));
+            if let Err(failure) = crate::remove_scratch::remove_scratch(&self.root) {
+                assert!(thread::panicking(), "{failure}");
+                eprintln!("{failure}");
+            }
         }
     }
 

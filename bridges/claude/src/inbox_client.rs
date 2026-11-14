@@ -680,11 +680,13 @@ mod tests {
     #[test]
     fn spec_3_11_a_real_unix_socket_replays_then_resumes_after_the_server_closes() {
         use std::os::unix::net::UnixListener;
-        let socket_path =
-            std::env::temp_dir().join(format!("estf-u31-{}.sock", std::process::id()));
-        if let Err(failure) = std::fs::remove_file(&socket_path) {
-            assert_eq!(failure.kind(), io::ErrorKind::NotFound, "stale socket file");
-        }
+        const SOCKET_FILE: &str = "session.sock";
+        let socket_directory = crate::fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estf-u31-{}", std::process::id()),
+        )
+        .expect("scratch directory");
+        let socket_path = socket_directory.join(SOCKET_FILE);
         let listener = UnixListener::bind(&socket_path).expect("bind");
         let socket_path_to_unlink = socket_path.clone();
         let server = std::thread::spawn(move || {
@@ -713,5 +715,7 @@ mod tests {
         assert_eq!(since_lines, vec!["{\"since\":0}\n", "{\"since\":6}\n"]);
         assert_eq!(delivered, vec![frame(5), frame(6), frame(11)]);
         assert!(matches!(ended_with, InboxClientError::ConnectFailed(_)));
+        crate::remove_scratch::remove_scratch(&socket_directory)
+            .expect("remove the socket directory");
     }
 }

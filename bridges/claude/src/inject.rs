@@ -700,8 +700,13 @@ mod tests {
     fn spec_3_12_a_real_unix_socket_receives_both_lines_and_is_closed_after_them() {
         use crate::inbox_client::UnixSocketConnector;
         use std::os::unix::net::UnixListener;
-        let socket_path =
-            std::env::temp_dir().join(format!("estf-u32-{}.sock", std::process::id()));
+        const SOCKET_FILE: &str = "session.sock";
+        let socket_directory = crate::fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estf-u32-{}", std::process::id()),
+        )
+        .expect("scratch directory");
+        let socket_path = socket_directory.join(SOCKET_FILE);
         let listener = UnixListener::bind(&socket_path).expect("bind");
         let server = std::thread::spawn(move || {
             let (mut connection, _) = listener.accept().expect("accept");
@@ -721,6 +726,8 @@ mod tests {
             .expect("notify");
         let received = server.join().expect("server thread");
         std::fs::remove_file(&socket_path).expect("unlink socket");
+        crate::remove_scratch::remove_scratch(&socket_directory)
+            .expect("remove the socket directory");
         let lines: Vec<&str> = received.lines().collect();
         assert_eq!(lines.len(), 2);
         assert_eq!(

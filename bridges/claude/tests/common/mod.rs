@@ -2,7 +2,6 @@ use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -33,7 +32,8 @@ const MISSING_PIPE: &str = "the spawned member has no piped standard stream";
 type Outcome<T> = Result<T, Box<dyn std::error::Error>>;
 type MemberLine = Result<Value, String>;
 
-static FIXTURES_MADE: AtomicU64 = AtomicU64::new(0);
+mod fresh_directory;
+mod remove_scratch;
 
 pub struct Fixture {
     pub root: PathBuf,
@@ -44,19 +44,13 @@ pub struct Fixture {
 
 impl Fixture {
     pub fn new() -> io::Result<Self> {
-        let fixture_number = FIXTURES_MADE.fetch_add(1, Ordering::Relaxed);
-        let root = PathBuf::from(SHORT_SCRATCH_PARENT).join(format!(
-            "{SCRATCH_PREFIX}-{}-{fixture_number}",
-            std::process::id()
-        ));
-        if let Err(failure) = fs::remove_dir_all(&root)
-            && failure.kind() != io::ErrorKind::NotFound
-        {
-            return Err(failure);
-        }
         if !Self::binary_path().exists() {
             return Err(io::Error::new(io::ErrorKind::NotFound, BINARY_NOT_BUILT));
         }
+        let root = fresh_directory::fresh_directory_in(
+            Path::new(SHORT_SCRATCH_PARENT),
+            &format!("{SCRATCH_PREFIX}-{}", std::process::id()),
+        )?;
         let claude_directory = root.join(HOME_DIRECTORY).join(CLAUDE_DIRECTORY);
         for directory in [
             claude_directory.clone(),
@@ -163,7 +157,10 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        drop(fs::remove_dir_all(&self.root));
+        if let Err(failure) = remove_scratch::remove_scratch(&self.root) {
+            assert!(thread::panicking(), "{failure}");
+            eprintln!("{failure}");
+        }
     }
 }
 

@@ -757,9 +757,11 @@ mod tests {
 
     impl FakeProcessTree {
         fn start(directory_label: &str) -> Self {
-            let directory =
-                std::env::temp_dir().join(format!("{directory_label}-{}", std::process::id()));
-            std::fs::create_dir_all(&directory).expect("create fake binary directory");
+            let directory = crate::fresh_directory::fresh_directory_in(
+                &std::env::temp_dir(),
+                &format!("{directory_label}-{}", std::process::id()),
+            )
+            .expect("create fake binary directory");
             let fake_binary = directory.join(BINARY_EXECUTABLE_NAME);
             let perl_path = Command::new(WHICH_PROGRAM)
                 .arg(PERL_PROGRAM)
