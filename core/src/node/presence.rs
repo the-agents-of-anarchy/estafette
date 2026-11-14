@@ -1845,7 +1845,6 @@ pub(super) mod tests {
     const CLOCK_AFTER_MAX_AGE_MS: u64 = FROZEN_CLOCK_MS + 400_000;
     const STALE_RUMOR_TS: u64 = CLOCK_AFTER_MAX_AGE_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1;
     const FRESH_RUMOR_TS: u64 = CLOCK_AFTER_MAX_AGE_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS;
-    const NOTHING_MORE_WAIT: Duration = Duration::from_millis(1000);
     pub(in crate::node) const WITNESS_HANDLE: &str = "xen";
     const SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT: Duration = Duration::from_millis(5000);
     const TWO_UNREACHABLE_INTRODUCES_FAIL_WITHIN: Duration = SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT
@@ -1861,6 +1860,13 @@ pub(super) mod tests {
     const RULE: &str = "rule";
     const NOT_ABOVE_REQUESTER_SEQ_RULE: &str = "not_above_requester_seq";
     const OLDER_THAN_MAX_AGE_RULE: &str = "older_than_max_age";
+    const AHEAD_OF_MAX_AGE_RULE: &str = "ahead_of_max_age";
+    const PAYLOAD_BROADCAST: &str = "gossip.payload_broadcast";
+    const TOPIC_JOINED: &str = "gossip.topic_joined";
+    const UNREACHABLE_KIND: &str = "unreachable";
+    const PEER: &str = "peer";
+    const SEQ: &str = "seq";
+    const TS: &str = "ts";
 
     const FIRST_REQUESTER_SEED: u8 = 72;
     const SECOND_REQUESTER_SEED: u8 = 73;
@@ -1868,7 +1874,6 @@ pub(super) mod tests {
     const STALE_REQUEST_SEQ: u64 = FROZEN_CLOCK_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1;
     const FAR_FUTURE_REQUEST_SEQ: u64 = FROZEN_CLOCK_MS + SPEC_ANNOUNCEMENT_MAX_AGE_MS + 1;
     const ANSWERED_AT_ONCE_WITHIN: Duration = Duration::from_millis(100);
-    const SPEC_REANNOUNCE_INTERVAL_AND_NOTHING_MORE_WAIT: Duration = Duration::from_millis(3000);
     const HELD_INTRODUCE_SENT_WITHIN: Duration =
         SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT.saturating_add(INTRODUCE_ROUND_TRIP);
     const OWN_HANDLE_ASSIGNED: &str = "peers.own_handle_assigned";
@@ -3090,9 +3095,12 @@ pub(super) mod tests {
         })
     }
 
-    /// Waits until the member recorded a presence request dropped by the rule, within the wait for a payload.
-    async fn request_dropped_by(recorded: &mut UnboundedReceiver<RecordedEvent>, rule: &str) {
-        next_recorded_meeting(
+    /// Every event the member recorded before it dropped a presence request by the rule, failing when it drops none within the wait for a payload.
+    async fn recorded_until_request_dropped_by(
+        recorded: &mut UnboundedReceiver<RecordedEvent>,
+        rule: &str,
+    ) -> Vec<RecordedEvent> {
+        recorded_until(
             recorded,
             PAYLOAD_DROPPED,
             |fields| {
@@ -3101,7 +3109,113 @@ pub(super) mod tests {
             },
             PAYLOAD_WAIT,
         )
-        .await;
+        .await
+        .0
+    }
+
+    /// Every event the member recorded before it took a presence request of the requester, failing when it takes none within the wait for a payload.
+    async fn recorded_until_request_taken_from(
+        recorded: &mut UnboundedReceiver<RecordedEvent>,
+        requester_seed: u8,
+    ) -> Vec<RecordedEvent> {
+        recorded_until(
+            recorded,
+            PAYLOAD_ACCEPTED,
+            |fields| {
+                fields.contains(&(KIND, serde_json::Value::from(PRESENCE_REQUEST_KIND)))
+                    && fields.contains(&(PEER, short_peer_id(requester_seed)))
+            },
+            PAYLOAD_WAIT,
+        )
+        .await
+        .0
+    }
+
+    /// Every event the member recorded before it judged an Unreachable report about itself stamped `ts`, under the record's name, failing when it judges none so within the wait for a payload.
+    async fn recorded_until_report_judged(
+        recorded: &mut UnboundedReceiver<RecordedEvent>,
+        record_name: &str,
+        ts: u64,
+    ) -> Vec<RecordedEvent> {
+        recorded_until(
+            recorded,
+            record_name,
+            |fields| {
+                fields.contains(&(KIND, serde_json::Value::from(UNREACHABLE_KIND)))
+                    && fields.contains(&(TS, serde_json::Value::from(ts)))
+            },
+            PAYLOAD_WAIT,
+        )
+        .await
+        .0
+    }
+
+    /// Every event the member recorded before its broadcast of the Presence carrying the seq, failing when it records none within the wait for a payload.
+    async fn recorded_until_presence_broadcast(
+        recorded: &mut UnboundedReceiver<RecordedEvent>,
+        seq: u64,
+    ) -> Vec<RecordedEvent> {
+        recorded_until(
+            recorded,
+            PAYLOAD_BROADCAST,
+            |fields| *fields == presence_broadcast_with(seq),
+            PAYLOAD_WAIT,
+        )
+        .await
+        .0
+    }
+
+    /// Every event the member recorded until it took the marker's Presence, stamped with the member's clock reading, which the witness broadcasts only now, so the member takes it in a later step than every payload before it and records any answer to those first.
+    async fn recorded_until_marker_taken(
+        witness: &Witness,
+        recorded: &mut UnboundedReceiver<RecordedEvent>,
+        member_clock_ms: u64,
+    ) -> Vec<RecordedEvent> {
+        witness
+            .broadcast_as(
+                MARKER_SEED,
+                presence_of(MARKER_SEED, MARKER_HANDLE, MARKER_PUBLIC, member_clock_ms),
+            )
+            .await;
+        recorded_until(
+            recorded,
+            PAYLOAD_ACCEPTED,
+            |fields| {
+                fields.contains(&(KIND, serde_json::Value::from(PRESENCE_KIND)))
+                    && fields.contains(&(PEER, short_peer_id(MARKER_SEED)))
+            },
+            PAYLOAD_WAIT,
+        )
+        .await
+        .0
+    }
+
+    /// The fields of each broadcast of a payload of the kind among the events, in order.
+    fn broadcasts_of(events: &[RecordedEvent], kind: &str) -> Vec<crate::event::EventFields> {
+        events
+            .iter()
+            .filter(|(name, fields)| {
+                *name == PAYLOAD_BROADCAST
+                    && fields.contains(&(KIND, serde_json::Value::from(kind)))
+            })
+            .map(|(_name, fields)| fields.clone())
+            .collect()
+    }
+
+    /// The fields the member records for its broadcast of a Presence carrying the seq.
+    fn presence_broadcast_with(seq: u64) -> crate::event::EventFields {
+        vec![
+            (KIND, serde_json::Value::from(PRESENCE_KIND)),
+            (SEQ, serde_json::Value::from(seq)),
+        ]
+    }
+
+    /// The field the events name the seed's card by: the first bytes of its key in lowercase hex.
+    fn short_peer_id(seed: u8) -> serde_json::Value {
+        serde_json::Value::from(
+            data_encoding::HEXLOWER
+                .encode(&secret_key(seed).public().as_bytes()[..SPEC_SHORT_PEER_ID_BYTES]),
+        )
     }
 
     /// Waits until the member's own address is the one the Presence announced, so no re-announce of a changed address is pending, failing with both addresses when it is not within the wait for a payload.
@@ -3131,10 +3245,12 @@ pub(super) mod tests {
     #[tokio::test]
     async fn spec_3_15_test_15_a_member_answers_a_presence_request_with_one_presence() {
         let scratch = Scratch::new("asked").await;
-        let (_member, mut witness) = start_witnessed(
+        let (record, mut recorded) = recorded_events();
+        let (member, mut witness) = start_witnessed(
             &scratch,
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
-                .with_clock(frozen_clock(FROZEN_CLOCK_MS)),
+                .with_clock(frozen_clock(FROZEN_CLOCK_MS))
+                .with_report(record),
             None,
         )
         .await;
@@ -3146,18 +3262,18 @@ pub(super) mod tests {
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
         let answer = witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
-            .await;
-        let nothing_more = witness
-            .payload_where(
-                SPEC_REANNOUNCE_INTERVAL_AND_NOTHING_MORE_WAIT,
-                presence_from(FIRST_SEED),
-            )
-            .await;
+            .await
+            .unwrap();
+        announced_address_still_held(&member, &answer).await;
+        recorded_until_request_taken_from(&mut recorded, FIRST_REQUESTER_SEED).await;
+        let after_the_request =
+            recorded_until_marker_taken(&witness, &mut recorded, FROZEN_CLOCK_MS).await;
 
-        assert_eq!(presence_fields(answer), (FROZEN_CLOCK_MS + 1, false));
-        assert!(
-            nothing_more.is_none(),
-            "the member sent a second Presence within {SPEC_REANNOUNCE_INTERVAL_AND_NOTHING_MORE_WAIT:?}: {nothing_more:?}"
+        assert_eq!(presence_fields(Some(answer)), (FROZEN_CLOCK_MS + 1, false));
+        assert_eq!(
+            broadcasts_of(&after_the_request, PRESENCE_KIND),
+            vec![presence_broadcast_with(FROZEN_CLOCK_MS + 1)],
+            "the member sent other than one Presence for the request before it took a later payload: {after_the_request:?}"
         );
         drop(scratch);
     }
@@ -3217,27 +3333,26 @@ pub(super) mod tests {
         announced_address_still_held(&member, &answered).await;
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, REPLAYED_REQUEST_SEQ).await;
-        request_dropped_by(&mut recorded, NOT_ABOVE_REQUESTER_SEQ_RULE).await;
-        let after_replay = witness
-            .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
-            .await;
+        recorded_until_request_dropped_by(&mut recorded, NOT_ABOVE_REQUESTER_SEQ_RULE).await;
         announced_address_still_held(&member, &answered).await;
         ask_for_presence(&witness, SECOND_REQUESTER_SEED, STALE_REQUEST_SEQ).await;
-        request_dropped_by(&mut recorded, OLDER_THAN_MAX_AGE_RULE).await;
-        let after_stale = witness
-            .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
-            .await;
+        let after_replay =
+            recorded_until_request_dropped_by(&mut recorded, OLDER_THAN_MAX_AGE_RULE).await;
         ask_for_presence(&witness, SECOND_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
+        let after_stale =
+            recorded_until_request_taken_from(&mut recorded, SECOND_REQUESTER_SEED).await;
         let after_fresh = witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await;
 
-        assert!(
-            after_replay.is_none(),
+        assert_eq!(
+            broadcasts_of(&after_replay, PRESENCE_KIND),
+            Vec::<crate::event::EventFields>::new(),
             "the member answered the replayed request: {after_replay:?}"
         );
-        assert!(
-            after_stale.is_none(),
+        assert_eq!(
+            broadcasts_of(&after_stale, PRESENCE_KIND),
+            Vec::<crate::event::EventFields>::new(),
             "the member answered the stale request: {after_stale:?}"
         );
         assert_eq!(presence_fields(after_fresh), (FROZEN_CLOCK_MS + 2, false));
@@ -3248,10 +3363,12 @@ pub(super) mod tests {
     async fn spec_3_8_a_presence_request_dated_past_the_max_age_ahead_is_dropped_and_blocks_no_later_request()
      {
         let scratch = Scratch::new("asked-future").await;
+        let (record, mut recorded) = recorded_events();
         let (_member, mut witness) = start_witnessed(
             &scratch,
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
-                .with_clock(frozen_clock(FROZEN_CLOCK_MS)),
+                .with_clock(frozen_clock(FROZEN_CLOCK_MS))
+                .with_report(record),
             None,
         )
         .await;
@@ -3261,17 +3378,18 @@ pub(super) mod tests {
             .unwrap();
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FAR_FUTURE_REQUEST_SEQ).await;
-        let after_far_future = witness
-            .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
-            .await;
+        recorded_until_request_dropped_by(&mut recorded, AHEAD_OF_MAX_AGE_RULE).await;
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
+        let after_far_future =
+            recorded_until_request_taken_from(&mut recorded, FIRST_REQUESTER_SEED).await;
         let after_fresh = witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await;
 
-        assert!(
-            after_far_future.is_none(),
-            "the member answered a far-future request with a Presence within {NOTHING_MORE_WAIT:?}: {after_far_future:?}"
+        assert_eq!(
+            broadcasts_of(&after_far_future, PRESENCE_KIND),
+            Vec::<crate::event::EventFields>::new(),
+            "the member answered a far-future request with a Presence before it took the next request: {after_far_future:?}"
         );
         assert_eq!(presence_fields(after_fresh), (FROZEN_CLOCK_MS + 1, false));
         drop(scratch);
@@ -3302,20 +3420,14 @@ pub(super) mod tests {
             .unwrap();
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
-        next_recorded_meeting(
-            &mut recorded,
-            PAYLOAD_ACCEPTED,
-            |fields| fields.contains(&(KIND, serde_json::Value::from(PRESENCE_REQUEST_KIND))),
-            PAYLOAD_WAIT,
-        )
-        .await;
-        let answer = witness
-            .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
-            .await;
+        recorded_until_request_taken_from(&mut recorded, FIRST_REQUESTER_SEED).await;
+        let after_the_request =
+            recorded_until_marker_taken(&witness, &mut recorded, FROZEN_CLOCK_MS).await;
 
-        assert!(
-            answer.is_none(),
-            "the stopping member answered the request: {answer:?}"
+        assert_eq!(
+            broadcasts_of(&after_the_request, PRESENCE_KIND),
+            Vec::<crate::event::EventFields>::new(),
+            "the stopping member answered the request: {after_the_request:?}"
         );
         drop(scratch);
     }
@@ -3367,10 +3479,13 @@ pub(super) mod tests {
     async fn spec_3_8_an_unreachable_report_about_this_node_is_answered_with_presence_unless_stale_or_below_its_last_seq()
      {
         let scratch = Scratch::new("rumor").await;
+        let (record, mut recorded) = recorded_events();
         let (clock, reading) = settable_clock(FROZEN_CLOCK_MS);
         let (_member, mut witness) = start_witnessed(
             &scratch,
-            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_clock(clock),
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                .with_clock(clock)
+                .with_report(record),
             None,
         )
         .await;
@@ -3378,6 +3493,7 @@ pub(super) mod tests {
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
             .unwrap();
+        recorded_until_presence_broadcast(&mut recorded, FROZEN_CLOCK_MS).await;
 
         witness
             .broadcast_as(
@@ -3385,6 +3501,8 @@ pub(super) mod tests {
                 unreachable_about(FIRST_SEED, WITNESS_SEED, FROZEN_CLOCK_MS - 1),
             )
             .await;
+        let mut after_the_first_presence =
+            recorded_until_report_judged(&mut recorded, PAYLOAD_DROPPED, FROZEN_CLOCK_MS - 1).await;
         reading.store(CLOCK_AFTER_MAX_AGE_MS, std::sync::atomic::Ordering::SeqCst);
         witness
             .broadcast_as(
@@ -3392,23 +3510,30 @@ pub(super) mod tests {
                 unreachable_about(FIRST_SEED, WITNESS_SEED, STALE_RUMOR_TS),
             )
             .await;
+        after_the_first_presence.extend(
+            recorded_until_report_judged(&mut recorded, PAYLOAD_DROPPED, STALE_RUMOR_TS).await,
+        );
         witness
             .broadcast_as(
                 WITNESS_SEED,
                 unreachable_about(FIRST_SEED, WITNESS_SEED, FRESH_RUMOR_TS),
             )
             .await;
+        after_the_first_presence.extend(
+            recorded_until_report_judged(&mut recorded, PAYLOAD_ACCEPTED, FRESH_RUMOR_TS).await,
+        );
         let answer = witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await;
-        let nothing_more = witness
-            .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
-            .await;
+        after_the_first_presence.extend(
+            recorded_until_marker_taken(&witness, &mut recorded, CLOCK_AFTER_MAX_AGE_MS).await,
+        );
 
         assert_eq!(presence_fields(answer), (CLOCK_AFTER_MAX_AGE_MS, false));
-        assert!(
-            nothing_more.is_none(),
-            "the member sent a second Presence within {NOTHING_MORE_WAIT:?}: {nothing_more:?}"
+        assert_eq!(
+            broadcasts_of(&after_the_first_presence, PRESENCE_KIND),
+            vec![presence_broadcast_with(CLOCK_AFTER_MAX_AGE_MS)],
+            "the member sent other than one Presence for the three reports before it took a later payload: {after_the_first_presence:?}"
         );
         drop(scratch);
     }
@@ -3737,23 +3862,25 @@ pub(super) mod tests {
     #[tokio::test]
     async fn spec_3_8_a_stopping_member_whose_topic_joins_asks_no_member_to_announce_itself() {
         let scratch = Scratch::new("stopping-ask").await;
+        let (record, mut recorded) = recorded_events();
         let lonely = start_members(
             &scratch,
-            vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)],
+            vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(record)],
         )
         .await
         .pop()
         .unwrap();
         lonely.node.start_stopping();
 
-        let mut witness = Witness::joined_through(WITNESS_SEED, None, &lonely.endpoint).await;
-        let asked = witness
-            .payload_where(PAYLOAD_WAIT, presence_request_by(FIRST_SEED))
-            .await;
+        let witness = Witness::joined_through(WITNESS_SEED, None, &lonely.endpoint).await;
+        recorded_until(&mut recorded, TOPIC_JOINED, |_fields| true, PAYLOAD_WAIT).await;
+        let after_the_join =
+            recorded_until_marker_taken(&witness, &mut recorded, wall_clock_ms()).await;
 
-        assert!(
-            asked.is_none(),
-            "the stopping member sent a presence request within {PAYLOAD_WAIT:?}: {asked:?}"
+        assert_eq!(
+            broadcasts_of(&after_the_join, PRESENCE_REQUEST_KIND),
+            Vec::<crate::event::EventFields>::new(),
+            "the stopping member sent a presence request once its topic joined: {after_the_join:?}"
         );
         drop(scratch);
     }
@@ -3937,9 +4064,7 @@ pub(super) mod tests {
     ) -> (Vec<&'static str>, crate::event::EventFields) {
         let introduce_to_the_card = (
             Some(serde_json::Value::from(INTRODUCE_KIND)),
-            Some(serde_json::Value::from(data_encoding::HEXLOWER.encode(
-                &secret_key(seed).public().as_bytes()[..SPEC_SHORT_PEER_ID_BYTES],
-            ))),
+            Some(short_peer_id(seed)),
         );
         let (before, sent) = recorded_until(
             events,
@@ -4299,10 +4424,12 @@ pub(super) mod tests {
     async fn spec_3_8_an_unreachable_report_about_this_node_below_its_last_presence_seq_is_dropped()
     {
         let scratch = Scratch::new("rumor-seq").await;
+        let (record, mut recorded) = recorded_events();
         let (_member, mut witness) = start_witnessed(
             &scratch,
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
-                .with_clock(frozen_clock(FROZEN_CLOCK_MS)),
+                .with_clock(frozen_clock(FROZEN_CLOCK_MS))
+                .with_report(record),
             None,
         )
         .await;
@@ -4310,6 +4437,7 @@ pub(super) mod tests {
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
             .unwrap();
+        recorded_until_presence_broadcast(&mut recorded, FROZEN_CLOCK_MS).await;
 
         witness
             .broadcast_as(
@@ -4317,23 +4445,28 @@ pub(super) mod tests {
                 unreachable_about(FIRST_SEED, WITNESS_SEED, FROZEN_CLOCK_MS - 1),
             )
             .await;
+        let mut after_the_first_presence =
+            recorded_until_report_judged(&mut recorded, PAYLOAD_DROPPED, FROZEN_CLOCK_MS - 1).await;
         witness
             .broadcast_as(
                 WITNESS_SEED,
                 unreachable_about(FIRST_SEED, WITNESS_SEED, FROZEN_CLOCK_MS),
             )
             .await;
+        after_the_first_presence.extend(
+            recorded_until_report_judged(&mut recorded, PAYLOAD_ACCEPTED, FROZEN_CLOCK_MS).await,
+        );
         let answer = witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await;
-        let nothing_more = witness
-            .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
-            .await;
+        after_the_first_presence
+            .extend(recorded_until_marker_taken(&witness, &mut recorded, FROZEN_CLOCK_MS).await);
 
         assert_eq!(presence_fields(answer), (FROZEN_CLOCK_MS + 1, false));
-        assert!(
-            nothing_more.is_none(),
-            "the member sent a second Presence within {NOTHING_MORE_WAIT:?}: {nothing_more:?}"
+        assert_eq!(
+            broadcasts_of(&after_the_first_presence, PRESENCE_KIND),
+            vec![presence_broadcast_with(FROZEN_CLOCK_MS + 1)],
+            "the member sent other than one Presence for the two reports before it took a later payload: {after_the_first_presence:?}"
         );
         drop(scratch);
     }
