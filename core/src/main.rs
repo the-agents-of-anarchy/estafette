@@ -69,8 +69,8 @@ const DOCTOR_COMMAND: &str = "doctor";
 /// Sends iroh's own lines into a trace's raw file, done once per process by the composition root.
 type InstallIrohLines = fn(Arc<Trace>) -> Result<(), IrohLinesRefused>;
 
-/// Sets the panic hook that writes each panic's source location into a trace's events file, done once per process by the composition root.
-type RecordPanics = fn(Arc<Trace>);
+/// Sets the panic hook that writes each panic's source location into a trace's events file and reports through a standard error record a flush that left a file unfinished, done once per process by the composition root.
+type RecordPanics = fn(Arc<Trace>, Duration, RunRecord);
 
 /// What the trace of a process that starts an endpoint runs on: its effects, its bounds, the install that sends iroh's own lines to it, and the panic hook that records into it.
 #[derive(Clone, Copy)]
@@ -279,7 +279,11 @@ fn run_traced<StandardError: Write + Send + 'static>(
             "{}",
             trace.announcement()
         ));
-        (trace_setup.record_panics)(Arc::clone(trace));
+        (trace_setup.record_panics)(
+            Arc::clone(trace),
+            trace_setup.bounds.drain,
+            run_record_on(&stderr, None),
+        );
     }
     let process = ProcessRecord {
         record: run_record_on(&stderr, trace.clone()),
@@ -358,14 +362,14 @@ fn start_trace(
     }
 }
 
-/// Sets the panic hook that writes the source location of each panic, never its message, into the trace's events file and waits until the trace's writers wrote it, leaving both queues open, before the panic goes on to the hook it replaced, so the line is on disk whether the process ends or survives.
-fn record_panic_locations(trace: Arc<Trace>) {
+/// Sets the panic hook that writes the source location of each panic, never its message, into the trace's events file and waits until the trace's writers wrote it, leaving both queues open, writing through the standard error record each file that flush left unfinished within `drain`, before the panic goes on to the hook it replaced, so the line is on disk whether the process ends or survives.
+fn record_panic_locations(trace: Arc<Trace>, drain: Duration, standard_error: RunRecord) {
     let replaced = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic| {
         if let Some(location) = panic.location() {
             trace.record(&ProcessEvent::Panicked(PanicLocation::of(location)).into());
         }
-        trace.flush();
+        report_unfinished_trace_stops(trace.flush(), drain, &standard_error);
         replaced(panic);
     }));
 }
@@ -969,7 +973,7 @@ mod tests {
     /// Sends no iroh line anywhere: one test process runs many traced commands, and a process holds one global subscriber.
     const IROH_LINES_LEFT_OUT: InstallIrohLines = |_trace| Ok(());
     /// Sets no panic hook: one test process runs many traced commands, and a process holds one panic hook.
-    const PANICS_LEFT_UNRECORDED: RecordPanics = |_trace| {};
+    const PANICS_LEFT_UNRECORDED: RecordPanics = |_trace, _drain, _standard_error| {};
     /// The command name the traced commands of these tests run under.
     const TRACED_COMMAND: &str = "mcp";
 
@@ -1896,6 +1900,11 @@ mod tests {
 
     static PANIC_HOOK_HELD: Mutex<()> = Mutex::new(());
 
+    /// The panic hook's report of a flush that left a trace file unfinished, by spec/observability.md decisions 3 and 12, through `run_traced`.
+    mod panic_hook_reports_its_flush {
+        include!("../tests/panic_hook/reports_its_flush.rs");
+    }
+
     #[test]
     fn observability_decision_9_a_panic_writes_its_source_location_and_never_its_message_to_the_events_file_before_it_goes_on()
      {
@@ -1920,7 +1929,11 @@ mod tests {
         std::panic::set_hook(Box::new(move |_panic| {
             drop(read_when_the_panic_went_on.send(std::fs::read_to_string(&events_file).unwrap()));
         }));
-        record_panic_locations(Arc::clone(&trace));
+        record_panic_locations(
+            Arc::clone(&trace),
+            TraceBounds::SPEC.drain,
+            Arc::new(|_event| {}),
+        );
 
         let panic_line = line!() + 1;
         let panicked = std::thread::spawn(|| panic!("{PANIC_MESSAGE}")).join();
@@ -1958,7 +1971,11 @@ mod tests {
         .unwrap();
         let hook_before = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_panic| {}));
-        record_panic_locations(Arc::clone(&trace));
+        record_panic_locations(
+            Arc::clone(&trace),
+            TraceBounds::SPEC.drain,
+            Arc::new(|_event| {}),
+        );
 
         let panicked = std::thread::spawn(|| panic!("a panic the process survives")).join();
         std::panic::set_hook(hook_before);
@@ -2042,7 +2059,9 @@ mod tests {
                     effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
                     bounds: TraceBounds::SPEC,
                     install_iroh_lines: IROH_LINES_LEFT_OUT,
-                    record_panics: |_trace| PANIC_HOOK_SET.store(true, Ordering::SeqCst),
+                    record_panics: |_trace, _drain, _standard_error| {
+                        PANIC_HOOK_SET.store(true, Ordering::SeqCst);
+                    },
                 },
                 |_directories, _process| Ok(ExitStatus::Success),
             );

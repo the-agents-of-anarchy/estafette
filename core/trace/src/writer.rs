@@ -1,6 +1,6 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -275,16 +275,18 @@ impl FileTrace {
         };
     }
 
-    /// Waits at most the drain bound for the thread to write every line queued before this call and cut the file back to its last line, leaving the queue open; returns at once when the queue is full or closed.
-    pub fn flush(&self) {
+    /// Waits at most the drain bound for the thread to write every line queued before this call and cut the file back to its last line, leaving the queue open, saying how that left this file; a queue the stop already closed is drained, and a full one is not.
+    pub fn flush(&self) -> TraceStop {
         let (written, flushed) = mpsc::channel();
-        let is_queued = locked(&self.queue)
-            .lines
-            .as_ref()
-            .is_some_and(|lines| lines.try_send(Queued::Flush(written)).is_ok());
-        if is_queued {
-            drop(flushed.recv_timeout(self.drain));
-        }
+        let queued = match locked(&self.queue).lines.as_ref() {
+            Some(lines) => lines.try_send(Queued::Flush(written)),
+            None => return TraceStop::Drained,
+        };
+        self.stop_answered(
+            queued
+                .ok()
+                .and_then(|()| flushed.recv_timeout(self.drain).ok()),
+        )
     }
 
     /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most the drain bound for it to take every line it holds, report that loss and cut the file back to its last line, saying how the stop left this file.
@@ -296,15 +298,18 @@ impl FileTrace {
         let Some(ended) = locked(&self.ended).take() else {
             return TraceStop::Drained;
         };
-        match ended.recv_timeout(self.drain) {
-            Ok(Ok(())) => TraceStop::Drained,
-            Ok(Err(source)) => TraceStop::NotCut {
+        self.stop_answered(ended.recv_timeout(self.drain).ok())
+    }
+
+    /// How the writer's answer left this file: drained when it ended at its last line, not cut when it could not, and not drained when no answer came.
+    fn stop_answered(&self, answer: Option<io::Result<()>>) -> TraceStop {
+        match answer {
+            Some(Ok(())) => TraceStop::Drained,
+            Some(Err(source)) => TraceStop::NotCut {
                 file: self.kind,
                 source,
             },
-            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => {
-                TraceStop::NotDrained { file: self.kind }
-            }
+            None => TraceStop::NotDrained { file: self.kind },
         }
     }
 }
