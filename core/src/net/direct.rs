@@ -1735,55 +1735,74 @@ pub(crate) mod tests {
     const SILENCE_OF_A_GONE_PROCESS_JUDGED: Duration =
         GONE_PROCESS_SILENCE.saturating_add(HEARING_SAMPLE_INTERVAL);
 
-    /// A register clock reading the runtime's now plus however far the test has moved it forward.
+    /// A register clock reading the runtime's now plus however far the test has moved it forward, counting its readings.
     #[derive(Clone, Default)]
     struct ClockMovedByTheTest {
         moved_millis: Arc<AtomicU64>,
+        readings: Arc<AtomicU64>,
     }
 
     impl ClockMovedByTheTest {
         fn monotonic(&self) -> MonotonicClock {
-            let moved_millis = Arc::clone(&self.moved_millis);
+            let clock = self.clone();
             Arc::new(move || {
-                tokio::time::Instant::now()
-                    .checked_add(Duration::from_millis(moved_millis.load(Ordering::SeqCst)))
-                    .unwrap()
+                clock.readings.fetch_add(1, Ordering::SeqCst);
+                clock.now()
             })
         }
 
-        /// Moves every later reading forward by the duration and answers the first reading after the move.
-        fn move_forward(&self, by: Duration) -> tokio::time::Instant {
+        /// The runtime's now plus how far the test has moved the clock, read without counting a reading.
+        fn now(&self) -> tokio::time::Instant {
+            tokio::time::Instant::now()
+                .checked_add(Duration::from_millis(
+                    self.moved_millis.load(Ordering::SeqCst),
+                ))
+                .unwrap()
+        }
+
+        /// Moves every later reading forward by the duration.
+        fn move_forward(&self, by: Duration) {
             self.moved_millis
                 .fetch_add(u64::try_from(by.as_millis()).unwrap(), Ordering::SeqCst);
-            (self.monotonic())()
+        }
+
+        /// Waits until the register reads the clock again, which, while no connection opens or closes, is a hearing sample of a held connection, failing by name when none comes within the wait.
+        async fn hearing_sampled(&self) {
+            let readings_before = self.readings.load(Ordering::SeqCst);
+            let sampled = found_within(HEARING_SAMPLED_WAIT, async || {
+                (self.readings.load(Ordering::SeqCst) > readings_before).then_some(())
+            })
+            .await
+            .is_some();
+            assert!(
+                sampled,
+                "the register sampled no hearing within {HEARING_SAMPLED_WAIT:?}"
+            );
         }
     }
+
+    const HEARING_SAMPLED_WAIT: Duration = SILENCE_OF_A_GONE_PROCESS_JUDGED;
 
     #[tokio::test]
     async fn spec_3_8_an_introduce_keeps_every_live_connection_accepted_from_its_sender_whatever_address_it_carries()
      {
-        let clock = ClockMovedByTheTest::default();
-        let rig = rig_over(
-            RecordingHost::with_card(card_of(SERVER_SEED)),
-            clock.monotonic(),
-        )
-        .await;
+        let rig = rig().await;
         let server = rig.link.server_node.endpoint().id();
         let earlier = raw_connection(&rig).await;
         raw_exchange(&earlier, &sealed_message_to_server(&keys()))
             .await
             .unwrap();
         let register = rig.link.server_node.held_connections();
-        let moved_past_the_silence = clock.move_forward(SILENCE_OF_A_GONE_PROCESS_JUDGED);
-        let heard_after_the_move = found_within(SILENCE_OF_A_GONE_PROCESS_JUDGED, async || {
-            every_held_of_heard_since(&register, card_of(CLIENT_SEED), moved_past_the_silence)
+        let past_the_silence = tokio::time::Instant::now() + SILENCE_OF_A_GONE_PROCESS_JUDGED;
+        let heard_past_the_silence = found_within(SETTLED_WAIT, async || {
+            every_held_of_heard_since(&register, card_of(CLIENT_SEED), past_the_silence)
                 .then_some(())
         })
         .await
         .is_some();
         assert!(
-            heard_after_the_move,
-            "the earlier connection was not heard after the register's clock moved {SILENCE_OF_A_GONE_PROCESS_JUDGED:?} forward, within {SILENCE_OF_A_GONE_PROCESS_JUDGED:?}"
+            heard_past_the_silence,
+            "the earlier connection was not heard {SILENCE_OF_A_GONE_PROCESS_JUDGED:?} after its exchange, within {SETTLED_WAIT:?}"
         );
 
         rig.link
@@ -1859,14 +1878,18 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_8_an_introduce_closes_the_connection_accepted_from_its_senders_process_that_is_gone()
      {
+        let clock = ClockMovedByTheTest::default();
         let rig = rig_over(
             RecordingHost::with_card(card_of(SERVER_SEED)),
-            clock_reading_every_connection_as_gone(),
+            clock.monotonic(),
         )
         .await;
         let server = rig.link.server_node.endpoint().id();
         connection_from_a_process_that_vanished(rig.link.server_node.endpoint().addr()).await;
         let vanished = connections_held_open_from(&rig.link.server_node, card_of(CLIENT_SEED));
+        clock.hearing_sampled().await;
+        clock.move_forward(SILENCE_OF_A_GONE_PROCESS_JUDGED);
+        clock.hearing_sampled().await;
 
         rig.link
             .client
