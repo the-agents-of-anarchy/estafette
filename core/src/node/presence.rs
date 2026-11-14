@@ -3455,6 +3455,8 @@ pub(super) mod tests {
         let probes_before = witness
             .probes_answered
             .load(std::sync::atomic::Ordering::SeqCst);
+        let probe_answers_before =
+            direct_answers_so_far(&member, WITNESS_SEED, RequestSummary::Probe);
 
         witness.gossip.shutdown().await.unwrap();
         found_within(PROBE_ANSWERED_WAIT, async || {
@@ -3470,7 +3472,7 @@ pub(super) mod tests {
             &member,
             WITNESS_SEED,
             RequestSummary::Probe,
-            probes_before.saturating_add(1),
+            probe_answers_before.saturating_add(1),
             AFTER_PROBE_ACK,
         )
         .await;
@@ -4615,6 +4617,29 @@ pub(super) mod tests {
         entry
     }
 
+    /// How many answers of the kind from the seed's card the list of applied answers holds.
+    fn answers_from(
+        taken: &[(crate::wire::PublicKey, RequestSummary)],
+        seed: u8,
+        kind: RequestSummary,
+    ) -> usize {
+        let answering = (card(seed), kind);
+        taken.iter().filter(|answer| **answer == answering).count()
+    }
+
+    /// How many answers of the kind to its direct requests to the seed's card the member has applied so far.
+    pub(in crate::node) fn direct_answers_so_far(
+        member: &Member,
+        seed: u8,
+        kind: RequestSummary,
+    ) -> usize {
+        answers_from(
+            &member.node.state.rows.direct_answers_taken.borrow(),
+            seed,
+            kind,
+        )
+    }
+
     /// Waits until the member has applied that many answers to its direct requests of the kind to the seed's card, failing with that count and kind when the bound runs out first.
     pub(in crate::node) async fn direct_answers_taken(
         member: &Member,
@@ -4623,14 +4648,11 @@ pub(super) mod tests {
         count: usize,
         within: Duration,
     ) {
-        let answering = (card(seed), kind);
         let mut taken = member.node.state.rows.direct_answers_taken.subscribe();
         let taken_in_time = matches!(
             tokio::time::timeout(
                 within,
-                taken.wait_for(|taken| {
-                    taken.iter().filter(|answer| **answer == answering).count() >= count
-                }),
+                taken.wait_for(|taken| answers_from(taken, seed, kind) >= count),
             )
             .await,
             Ok(Ok(_))
