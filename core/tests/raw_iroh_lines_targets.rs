@@ -1,4 +1,8 @@
 #[cfg(test)]
+#[path = "common/remove_scratch.rs"]
+mod remove_scratch;
+
+#[cfg(test)]
 #[path = "support/raw_iroh_lines_trace.rs"]
 mod raw_iroh_lines_trace;
 
@@ -14,6 +18,7 @@ mod raw_iroh_lines_targets {
     use serde_json::Value;
 
     use super::raw_iroh_lines_trace::{frozen_clocks, scratch_trace_directory, started};
+    use super::remove_scratch::remove_scratch;
 
     const SPEC_LEVELS_COARSEST_FIRST: [&str; 5] = ["ERROR", "WARN", "INFO", "DEBUG", "TRACE"];
     const SPEC_TARGETS_AND_FINEST_LEVELS: [(&str, &str); 4] = [
@@ -115,6 +120,6 @@ mod raw_iroh_lines_targets {
             targets_and_levels_after_the_first_line(&trace.files().raw),
             expected
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 }

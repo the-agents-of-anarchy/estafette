@@ -1,4 +1,8 @@
 #[cfg(test)]
+#[path = "common/remove_scratch.rs"]
+mod remove_scratch;
+
+#[cfg(test)]
 #[path = "support/raw_iroh_lines_trace.rs"]
 mod raw_iroh_lines_trace;
 
@@ -17,6 +21,7 @@ mod raw_iroh_lines_spans {
 
     use super::raw_iroh_lines_header::{header, raw_file_opened_line};
     use super::raw_iroh_lines_trace::{frozen_clocks, scratch_trace_directory, started};
+    use super::remove_scratch::remove_scratch;
 
     const SPEC_IROH_LINE: &str = "iroh_line";
 
@@ -69,6 +74,6 @@ mod raw_iroh_lines_spans {
                 header(2, None, SPEC_IROH_LINE),
             )
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 }

@@ -1,11 +1,14 @@
 #[cfg(test)]
+#[path = "common/remove_scratch.rs"]
+mod remove_scratch;
+
+#[cfg(test)]
 #[path = "support/raw_iroh_lines_trace.rs"]
 mod raw_iroh_lines_trace;
 
 /// The queue bound and the `dropped` line of `spec/observability.md` decision 12 under iroh's lines, through the install the composition root calls, in a process of its own.
 #[cfg(test)]
 mod raw_iroh_lines_full_queue {
-    use std::fs;
     use std::io::{self, Write};
     use std::path::Path;
     use std::sync::mpsc::{self, Receiver, Sender};
@@ -18,6 +21,7 @@ mod raw_iroh_lines_full_queue {
     use serde_json::Value;
 
     use super::raw_iroh_lines_trace::{frozen_clocks, scratch_trace_directory, started};
+    use super::remove_scratch::remove_scratch;
 
     const SPEC_RAW_FILE_OPENED: &str = "raw_file_opened";
     const SPEC_IROH_LINE: &str = "iroh_line";
@@ -180,6 +184,6 @@ mod raw_iroh_lines_full_queue {
             trace.finish(),
             [TraceStop::Drained, TraceStop::Drained]
         ));
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 }

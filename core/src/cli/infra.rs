@@ -1454,7 +1454,9 @@ mod tests {
         ];
 
         for (certificate, refusal_names) in invalid_certificates {
-            drop(fs::remove_file(scratch.certificate_file()));
+            if scratch.certificate_file().exists() {
+                crate::remove_scratch::remove_scratch(&scratch.certificate_file()).unwrap();
+            }
             if let Some(certificate) = certificate {
                 fs::create_dir_all(scratch.certificate_file().parent().unwrap()).unwrap();
                 fs::write(scratch.certificate_file(), certificate).unwrap();
