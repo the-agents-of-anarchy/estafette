@@ -26,7 +26,8 @@ mod observability {
     };
 
     const QUEUE_LINES: usize = 3;
-    const HELD_WRITER_DRAIN: Duration = Duration::from_millis(300);
+    const HELD_WRITER_DRAIN: Duration = Duration::from_secs(3);
+    const ONE_DRAIN_BOUND_OVERRUN_ADMITTED: Duration = Duration::from_millis(1500);
     const FLUSH_ANSWERS_WITHIN: Duration = Duration::from_secs(10);
     const TEST_GONE: &str = "the test that takes the writer is gone";
 
@@ -111,7 +112,7 @@ mod observability {
     }
 
     #[test]
-    fn observability_decision_12_a_flush_meeting_a_full_queue_whose_writer_never_takes_a_line_reports_not_drained_once_its_whole_drain_bound_passed()
+    fn observability_decision_12_a_flush_meeting_a_full_queue_whose_writer_never_takes_a_line_reports_not_drained_once_its_one_drain_bound_passed_and_no_second()
      {
         let trace = held_writer_trace("flush-slot-held", HELD_WRITER_DRAIN);
         fill_the_queue(&trace.events);
@@ -137,6 +138,10 @@ mod observability {
             "{stop:?}"
         );
         assert!(waited >= HELD_WRITER_DRAIN, "{waited:?}");
+        assert!(
+            waited < HELD_WRITER_DRAIN + ONE_DRAIN_BOUND_OVERRUN_ADMITTED,
+            "{waited:?}"
+        );
         drop(trace.writer);
         remove_scratch(&trace.root).unwrap();
     }
