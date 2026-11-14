@@ -3121,25 +3121,22 @@ pub(crate) mod tests {
     /// The live card once the connection this node dialed is on the path iroh selected and the one it accepted is not, set up afresh while iroh selects one path at both ends, failing by name when the wait for a divergent selection runs out first.
     async fn live_card_whose_accepted_connection_is_off_the_selected_path() -> LiveCard {
         let mut setups = 0_u32;
-        timeout(DIVERGENT_SELECTION_WAIT, async {
-            loop {
-                setups = setups.saturating_add(1);
-                let live_card = live_card_dialed_on_loopback_and_accepted_from_the_network().await;
-                if held_on_a_selected_path(
-                    &live_card.register,
-                    card_of(CLIENT_SEED),
-                    &live_card.dialed.0,
-                ) && !held_on_a_selected_path(
-                    &live_card.register,
-                    card_of(CLIENT_SEED),
-                    &live_card.accepted.0,
-                ) {
-                    return live_card;
-                }
-            }
+        found_within(DIVERGENT_SELECTION_WAIT, async || {
+            setups = setups.saturating_add(1);
+            let live_card = live_card_dialed_on_loopback_and_accepted_from_the_network().await;
+            (held_on_a_selected_path(
+                &live_card.register,
+                card_of(CLIENT_SEED),
+                &live_card.dialed.0,
+            ) && !held_on_a_selected_path(
+                &live_card.register,
+                card_of(CLIENT_SEED),
+                &live_card.accepted.0,
+            ))
+            .then_some(live_card)
         })
         .await
-        .unwrap_or_else(|_elapsed| {
+        .unwrap_or_else(|| {
             panic!(
                 "iroh selected one path at both ends in each of {setups} setups within {DIVERGENT_SELECTION_WAIT:?}"
             )
