@@ -1,4 +1,7 @@
 #[cfg(test)]
+#[path = "support/file_growth.rs"]
+mod file_growth;
+#[cfg(test)]
 #[path = "common/fresh_directory.rs"]
 mod fresh_directory;
 #[cfg(test)]

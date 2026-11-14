@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use super::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use super::trace_reader::{TraceLine, parse_trace_lines};
 
 /// How long a test waits for a running process's trace file to come to hold what it waits for.
@@ -48,14 +49,22 @@ pub fn whole_lines_of_a_run_file(path: &Path) -> Vec<TraceLine> {
     lines
 }
 
-/// Whether the whole lines of a running process's trace file come to satisfy `holds` within `WHOLE_LINE_WAIT`.
+/// Whether the whole lines of a running process's trace file come to satisfy `holds` within `WHOLE_LINE_WAIT`, looking at once and again each time the file may have grown.
 pub fn holds_within_the_wait(path: &Path, holds: impl Fn(&[TraceLine]) -> bool) -> bool {
-    let deadline = Instant::now().checked_add(WHOLE_LINE_WAIT).unwrap();
-    while !holds(&whole_lines_of_a_run_file(path)) {
-        if Instant::now() >= deadline {
-            return false;
+    let mut watch = GrowthWatch::of_path(path).unwrap_or_else(|failure| panic!("{failure}"));
+    let held = first_found_as_files_grow(
+        &mut watch,
+        WHOLE_LINE_WAIT,
+        Instant::now,
+        || {},
+        |_watch| holds(&whole_lines_of_a_run_file(path)).then_some(()),
+    );
+    match held {
+        Ok(()) => true,
+        Err(WaitEnded::RanOut) => false,
+        Err(WaitEnded::WatcherFailed(failure)) => {
+            panic!("{}: the file watcher failed: {failure}", path.display())
         }
-        std::thread::yield_now();
+        Err(WaitEnded::WatcherEnded) => panic!("{}: the file watcher ended", path.display()),
     }
-    true
 }

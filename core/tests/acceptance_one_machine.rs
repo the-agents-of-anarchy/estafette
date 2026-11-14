@@ -2,6 +2,9 @@
 #[path = "support/driven_runtime.rs"]
 mod driven_runtime;
 #[cfg(test)]
+#[path = "support/file_growth.rs"]
+mod file_growth;
+#[cfg(test)]
 #[path = "one_machine/gate_closings.rs"]
 mod gate_closings;
 #[cfg(test)]
