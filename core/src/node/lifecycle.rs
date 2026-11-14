@@ -9,6 +9,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 
 use crate::errors::ErrorCode;
+use crate::event::{Event, ProcessEvent, RunRecord};
 use crate::handle::{Handle, LocalHandle};
 use crate::node::presence::Node;
 use crate::sidecar::HeldSidecar;
@@ -62,18 +63,26 @@ enum Phase {
 /// The one card this process claims for its life, and the end of that life.
 pub struct Session {
     phase: Mutex<Phase>,
+    record: RunRecord,
 }
 
 impl Session {
-    /// A session in which no card is claimed.
+    /// A session in which no card is claimed, recording nothing.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
+        Self::recording_to(Arc::new(|_event: Event| {}))
+    }
+
+    /// A session in which no card is claimed, recording its claim and its stop to the run record.
+    #[must_use]
+    pub const fn recording_to(record: RunRecord) -> Self {
         Self {
             phase: Mutex::new(Phase::Unclaimed),
+            record,
         }
     }
 
-    /// Claims the card for the node, refusing a second claim with `bad_request` and a claim while Stopping with `refused`.
+    /// Claims the card for the node, refusing a second claim with `bad_request` and a claim while Stopping with `refused`, and records the outcome.
     ///
     /// # Errors
     /// `ErrorCode::BadRequest` when a card is claimed, `ErrorCode::Refused` when the session is stopping.
@@ -83,6 +92,27 @@ impl Session {
         node: Node,
         lock: HeldSidecar,
     ) -> Result<Arc<Node>, ErrorCode> {
+        match self.claimed_by(card, node, lock) {
+            Ok((node, identity)) => {
+                self.record(ProcessEvent::Claimed(identity));
+                Ok(node)
+            }
+            Err(refusal) => {
+                self.record(ProcessEvent::ClaimRefused {
+                    code: refusal.code(),
+                });
+                Err(refusal)
+            }
+        }
+    }
+
+    /// Takes the claim into the session while it is Unclaimed, returning the node and what the claim names.
+    fn claimed_by(
+        &self,
+        card: Handle,
+        node: Node,
+        lock: HeldSidecar,
+    ) -> Result<(Arc<Node>, ClaimedCard), ErrorCode> {
         let mut phase = self.phase();
         match &*phase {
             Phase::Unclaimed => {
@@ -94,10 +124,10 @@ impl Session {
                 *phase = Phase::Claimed(Box::new(Claimed {
                     node: Arc::clone(&node),
                     lock,
-                    identity,
+                    identity: identity.clone(),
                 }));
                 drop(phase);
-                Ok(node)
+                Ok((node, identity))
             }
             Phase::Claimed(_) => Err(ErrorCode::BadRequest),
             Phase::Stopping(_) => Err(ErrorCode::Refused),
@@ -135,6 +165,11 @@ impl Session {
         self.phase.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// Hands the event to the run record.
+    fn record(&self, event: ProcessEvent) {
+        (self.record)(event.into());
+    }
+
     /// Waits for the end of standard input or a signal, runs the stopping sequence of spec 3.8, and says how the process is to end.
     pub async fn run_until_exit(
         &self,
@@ -142,22 +177,49 @@ impl Session {
         mut signals: mpsc::UnboundedReceiver<ShutdownSignal>,
         departure_wait: Duration,
     ) -> Exit {
-        let runtime = first_stop(end_of_input, &mut signals).await;
+        let runtime = self.first_stop(end_of_input, &mut signals).await;
         tokio::select! {
             () = self.stop(departure_wait) => Exit::Stopped(runtime),
-            Some(_second_signal) = signals.recv() => Exit::AtOnce,
+            Some(signal) = signals.recv() => {
+                self.record(ProcessEvent::SignalReceived { signal });
+                Exit::AtOnce
+            }
         }
     }
 
-    /// Enters Stopping, handing the Departure over, releasing the lock, dropping held connections, then waits the departure wait.
+    /// Waits for the end of standard input or the first signal, records which came, and says how the runtime is to shut down after it.
+    async fn first_stop(
+        &self,
+        end_of_input: oneshot::Receiver<()>,
+        signals: &mut mpsc::UnboundedReceiver<ShutdownSignal>,
+    ) -> RuntimeShutdown {
+        tokio::select! {
+            _ended = end_of_input => {
+                self.record(ProcessEvent::InputEnded);
+                RuntimeShutdown::Awaited
+            }
+            Some(signal) = signals.recv() => {
+                self.record(ProcessEvent::SignalReceived { signal });
+                runtime_shutdown_after(signal)
+            }
+        }
+    }
+
+    /// Enters Stopping, handing the Departure over, releasing the lock, dropping held connections, then waits the departure wait, recording each step as it ends.
     async fn stop(&self, departure_wait: Duration) {
         let Some(claimed) = self.enter_stopping() else {
             return;
         };
         claimed.node.start_stopping();
+        self.record(ProcessEvent::DepartureHandedOver);
         drop(claimed.lock);
+        self.record(ProcessEvent::LockReleased);
         claimed.node.drop_held_connections().await;
+        self.record(ProcessEvent::HeldConnectionsDropped);
         sleep(departure_wait).await;
+        self.record(ProcessEvent::DepartureWaitOver {
+            waited: departure_wait,
+        });
     }
 
     /// Takes the claim out of the session and leaves it Stopping.
@@ -174,17 +236,6 @@ impl Session {
                 None
             }
         }
-    }
-}
-
-/// Waits for the end of standard input or the first signal, and says how the runtime is to shut down after it.
-async fn first_stop(
-    end_of_input: oneshot::Receiver<()>,
-    signals: &mut mpsc::UnboundedReceiver<ShutdownSignal>,
-) -> RuntimeShutdown {
-    tokio::select! {
-        _ended = end_of_input => RuntimeShutdown::Awaited,
-        Some(signal) = signals.recv() => runtime_shutdown_after(signal),
     }
 }
 
@@ -264,6 +315,7 @@ mod tests {
 
     use super::*;
     use crate::config::HostOrigin;
+    use crate::event::{Event, EventFields, RunRecord};
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
@@ -339,13 +391,17 @@ mod tests {
     }
 
     async fn claimed_second(scratch: &Scratch) -> ClaimedSecond {
+        claimed_second_recording_to(scratch, Arc::new(|_event: Event| {})).await
+    }
+
+    async fn claimed_second_recording_to(scratch: &Scratch, record: RunRecord) -> ClaimedSecond {
         let (first, second) = start_pair(scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
             .unwrap();
         tokio::time::sleep(INTRODUCE_ROUND_TRIP).await;
         let (sidecar_path, lock) = scratch.locked_card(SECOND_SEED);
-        let session = Arc::new(Session::new());
+        let session = Arc::new(Session::recording_to(record));
         session
             .claim(card_named(SECOND_CARD), second.node, lock)
             .unwrap();
@@ -356,6 +412,191 @@ mod tests {
             inbox_path: second.inbox_path,
             sidecar_path,
         }
+    }
+
+    type RecordedEvent = (&'static str, EventFields);
+
+    /// A run record handing each event's name and fields to the receiver, and that receiver.
+    fn recording_events() -> (RunRecord, mpsc::UnboundedReceiver<RecordedEvent>) {
+        let (recorded, received) = mpsc::unbounded_channel();
+        let record: RunRecord = Arc::new(move |event: Event| {
+            drop(recorded.send((event.name(), event.fields())));
+        });
+        (record, received)
+    }
+
+    /// Every event recorded so far that the receiver has not handed out yet.
+    fn recorded_so_far(
+        received: &mut mpsc::UnboundedReceiver<RecordedEvent>,
+    ) -> Vec<RecordedEvent> {
+        std::iter::from_fn(|| received.try_recv().ok()).collect()
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_each_step_of_the_stopping_sequence_is_recorded_once_in_the_order_of_spec_3_8()
+     {
+        let scratch = Scratch::new("stop-steps").await;
+        let (record, mut recorded) = recording_events();
+        let second = claimed_second_recording_to(&scratch, record).await;
+        recorded_so_far(&mut recorded);
+        let stopping = run(&second.session, SHORT_DEPARTURE_WAIT);
+
+        stopping.input_ended.send(()).unwrap();
+        stopping.exit.await.unwrap();
+
+        assert_eq!(
+            recorded_so_far(&mut recorded),
+            vec![
+                ("process.input_ended", vec![]),
+                ("process.departure_handed_over", vec![]),
+                ("process.lock_released", vec![]),
+                ("process.held_connections_dropped", vec![]),
+                (
+                    "process.departure_wait_over",
+                    vec![("wait_ms", serde_json::Value::from(800))]
+                ),
+            ]
+        );
+        drop(scratch);
+    }
+
+    /// The next event recorded, failing with its name when none is recorded within the wait.
+    async fn next_recorded(
+        received: &mut mpsc::UnboundedReceiver<RecordedEvent>,
+        awaited: &str,
+    ) -> RecordedEvent {
+        tokio::time::timeout(EXITS_AT_ONCE_WITHIN, received.recv())
+            .await
+            .unwrap_or_else(|_elapsed| {
+                panic!("{awaited} not recorded within {EXITS_AT_ONCE_WITHIN:?}")
+            })
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_the_input_that_starts_stopping_is_recorded_as_the_end_of_input_or_the_signal_by_name_spec_3_9()
+     {
+        let causes = [
+            (
+                Some(ShutdownSignal::Terminate),
+                "process.signal_received",
+                vec![("signal", serde_json::Value::from("SIGTERM"))],
+            ),
+            (
+                Some(ShutdownSignal::Interrupt),
+                "process.signal_received",
+                vec![("signal", serde_json::Value::from("SIGINT"))],
+            ),
+            (
+                Some(ShutdownSignal::Hangup),
+                "process.signal_received",
+                vec![("signal", serde_json::Value::from("SIGHUP"))],
+            ),
+            (None, "process.input_ended", vec![]),
+        ];
+        for (signal, name, fields) in causes {
+            let (record, mut recorded) = recording_events();
+            let session = Arc::new(Session::recording_to(record));
+            let stopping = run(&session, LONG_DEPARTURE_WAIT);
+
+            match signal {
+                Some(signal) => stopping.signals.send(signal).unwrap(),
+                None => stopping.input_ended.send(()).unwrap(),
+            }
+            tokio::time::timeout(EXITS_AT_ONCE_WITHIN, stopping.exit)
+                .await
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(
+                recorded_so_far(&mut recorded),
+                vec![(name, fields)],
+                "{signal:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_second_signal_that_ends_the_stop_at_once_is_recorded_after_the_steps_already_taken_spec_3_9()
+     {
+        let scratch = Scratch::new("second-signal-event").await;
+        let (record, mut recorded) = recording_events();
+        let second = claimed_second_recording_to(&scratch, record).await;
+        recorded_so_far(&mut recorded);
+        let stopping = run(&second.session, LONG_DEPARTURE_WAIT);
+
+        stopping.signals.send(ShutdownSignal::Interrupt).unwrap();
+        let mut steps = Vec::new();
+        for awaited in [
+            "process.signal_received",
+            "process.departure_handed_over",
+            "process.lock_released",
+            "process.held_connections_dropped",
+        ] {
+            steps.push(next_recorded(&mut recorded, awaited).await);
+        }
+        stopping.signals.send(ShutdownSignal::Hangup).unwrap();
+        let exit = tokio::time::timeout(EXITS_AT_ONCE_WITHIN, stopping.exit)
+            .await
+            .unwrap()
+            .unwrap();
+        steps.extend(recorded_so_far(&mut recorded));
+
+        assert_eq!(exit, Exit::AtOnce);
+        assert_eq!(
+            steps,
+            vec![
+                (
+                    "process.signal_received",
+                    vec![("signal", serde_json::Value::from("SIGINT"))]
+                ),
+                ("process.departure_handed_over", vec![]),
+                ("process.lock_released", vec![]),
+                ("process.held_connections_dropped", vec![]),
+                (
+                    "process.signal_received",
+                    vec![("signal", serde_json::Value::from("SIGHUP"))]
+                ),
+            ]
+        );
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_claim_is_recorded_with_the_card_and_the_handle_it_assigned_and_a_refused_claim_with_its_code_spec_3_9()
+     {
+        let scratch = Scratch::new("claim-events").await;
+        let (first, second) = start_pair(&scratch).await;
+        let (_, first_lock) = scratch.locked_card(FIRST_SEED);
+        let (_, second_lock) = scratch.locked_card(SECOND_SEED);
+        let (record, mut recorded) = recording_events();
+        let session = Session::recording_to(record);
+        let claimed_handle = first.node.own_handle().as_str().to_owned();
+
+        session
+            .claim(card_named(FIRST_CARD), first.node, first_lock)
+            .unwrap();
+        let refused = session.claim(card_named(SECOND_CARD), second.node, second_lock);
+
+        assert_eq!(refused.err(), Some(ErrorCode::BadRequest));
+
+        assert_eq!(
+            recorded_so_far(&mut recorded),
+            vec![
+                (
+                    "process.claimed",
+                    vec![
+                        ("card", serde_json::Value::from(FIRST_CARD)),
+                        ("handle", serde_json::Value::from(claimed_handle)),
+                    ]
+                ),
+                (
+                    "process.claim_refused",
+                    vec![("code", serde_json::Value::from("bad_request"))]
+                ),
+            ]
+        );
+        drop(scratch);
     }
 
     async fn second_gone_at_first_within(first: &Member, within: Duration) -> bool {
