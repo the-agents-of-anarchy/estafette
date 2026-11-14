@@ -260,8 +260,12 @@ mod observability {
                 .unwrap();
         });
 
-        let first = heard.recv_timeout(FLUSH_ANSWERS_WITHIN).unwrap();
-        let then = heard.recv_timeout(FLUSH_ANSWERS_WITHIN).unwrap();
+        let first = heard.recv_timeout(FLUSH_ANSWERS_WITHIN).expect(
+            "the writer told the test it panics as it cuts the file back, within its bound",
+        );
+        let then = heard
+            .recv_timeout(FLUSH_ANSWERS_WITHIN)
+            .expect("the flush answered within its bound once its writer died");
         assert!(matches!(first, Heard::WriterPanicking), "{first:?}");
         assert!(
             matches!(

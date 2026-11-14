@@ -65,7 +65,7 @@ mod observability {
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
                         .recv()
-                        .unwrap();
+                        .expect("the test released the held stamp");
                 }
                 frozen_monotonic_ms()
             }),
@@ -281,7 +281,9 @@ mod observability {
         let panicked = ended_within_the_bound
             .expect("the thread that panicked while stamping a line ended within its bound");
         panic::set_hook(hook_before);
-        holder.join().unwrap();
+        holder
+            .join()
+            .expect("the thread holding the held file's lock ended once released");
         hook_reached_the_held_file.expect("the hook reached the held file within its bound");
         let stop = hook_stops.try_recv().unwrap();
         assert!(panicked);

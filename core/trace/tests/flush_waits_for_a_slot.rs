@@ -94,7 +94,12 @@ mod observability {
             .recv_timeout(FLUSH_ANSWERS_WITHIN)
             .expect("the flushing thread started within its bound");
 
-        thread::spawn(trace.writer.recv().unwrap());
+        thread::spawn(
+            trace
+                .writer
+                .recv()
+                .expect("the trace handed its writer's work to the test when it opened"),
+        );
 
         let stop = flush_answered
             .recv_timeout(FLUSH_ANSWERS_WITHIN)
