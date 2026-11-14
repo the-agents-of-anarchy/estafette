@@ -176,7 +176,7 @@ async fn record_while_unclaimed(
 ) {
     loop {
         tokio::time::sleep_until(snapshot_due_after(monotonic())).await;
-        if !matches!(session.node(), Err(ErrorCode::NotClaimed)) {
+        if !session.is_unclaimed() {
             return;
         }
         report(

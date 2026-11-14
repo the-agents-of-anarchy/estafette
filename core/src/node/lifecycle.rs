@@ -126,6 +126,11 @@ impl Session {
         }
     }
 
+    /// Whether no card is claimed yet.
+    pub fn is_unclaimed(&self) -> bool {
+        matches!(*self.phase(), Phase::Unclaimed)
+    }
+
     fn phase(&self) -> MutexGuard<'_, Phase> {
         self.phase.lock().unwrap_or_else(PoisonError::into_inner)
     }
