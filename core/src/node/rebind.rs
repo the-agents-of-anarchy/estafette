@@ -752,12 +752,19 @@ mod tests {
         wanted: impl Fn(&EndpointAddr) -> bool + Send + Sync,
         within: Duration,
     ) -> Option<EndpointAddr> {
-        found_within(within, async || {
+        let entry = found_within(within, async || {
             lookup_entry(&member.node.client.endpoint(), seed)
                 .await
                 .filter(|entry| wanted(entry))
         })
-        .await
+        .await;
+        if entry.is_none() {
+            eprintln!(
+                "the member's lookup held no entry for the card of seed {seed} meeting the condition within {within:?}; it holds {:?}",
+                lookup_entry(&member.node.client.endpoint(), seed).await
+            );
+        }
+        entry
     }
 
     fn answering_only(live: &'static str) -> RelayProbe {

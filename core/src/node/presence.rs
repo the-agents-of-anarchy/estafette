@@ -2780,7 +2780,13 @@ pub(super) mod tests {
         host_seed: u8,
         within: Duration,
     ) -> Option<Host> {
-        found_within(within, async || saved_host(config_path, host_seed)).await
+        let saved = found_within(within, async || saved_host(config_path, host_seed)).await;
+        if saved.is_none() {
+            eprintln!(
+                "the network file did not hold the host of seed {host_seed} within {within:?}"
+            );
+        }
+        saved
     }
 
     async fn lookup_entry(member: &Member, seed: u8) -> Option<iroh::EndpointAddr> {
@@ -4519,21 +4525,28 @@ pub(super) mod tests {
         }
     }
 
-    /// The member's entry for the card of the seed once it meets the condition, waited for without a sleep, or none when it does not within the wait.
+    /// The member's entry for the card of the seed once it meets the condition, waited for without a sleep, or none, named on standard error, when it does not within the wait.
     pub(in crate::node) async fn entry_meeting_within(
         member: &Member,
         seed: u8,
         condition: impl Fn(&Peer) -> bool + Send + Sync,
         within: Duration,
     ) -> Option<Peer> {
-        found_within(within, async || {
+        let entry = found_within(within, async || {
             member
                 .node
                 .peers()
                 .into_iter()
                 .find(|peer| peer.card == card(seed) && condition(peer))
         })
-        .await
+        .await;
+        if entry.is_none() {
+            eprintln!(
+                "the member held no entry for the card of seed {seed} meeting the condition within {within:?}; it holds {:?}",
+                member.node.peers()
+            );
+        }
+        entry
     }
 
     /// Waits until the member has taken the answers to that many of its direct requests to the seed's card, failing with that count when the bound runs out first.
