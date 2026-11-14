@@ -323,6 +323,9 @@ mod tests {
     const DEPARTURE_HANDED_OVER: &str = "process.departure_handed_over";
     const LOCK_RELEASED: &str = "process.lock_released";
     const HELD_CONNECTIONS_DROPPED: &str = "process.held_connections_dropped";
+    const DEPARTURE_WAIT_OVER: &str = "process.departure_wait_over";
+    /// A departure wait that outlasts the joins and attaches a test makes while stopping by more than `NOTHING_MORE_WITHIN`, so the time a stopping node is watched to send nothing ends at an event of its own.
+    const WITNESSED_DEPARTURE_WAIT: Duration = Duration::from_secs(5);
     const PAYLOAD_ACCEPTED: &str = "gossip.payload_accepted";
     const TS_FIELD: &str = "ts";
     const SENT_AFTER_EXIT: &str = "a message to a stopped member";
@@ -1214,7 +1217,7 @@ mod tests {
         let scratch = Scratch::new("no-introduce").await;
         let (record, mut recorded) = recording_events();
         let second = claimed_second_recording_to(&scratch, record).await;
-        let stopping = run(&second.session, TEST_DEPARTURE_WAIT);
+        let stopping = run(&second.session, WITNESSED_DEPARTURE_WAIT);
         stopping.input_ended.send(()).unwrap();
         recorded_named(
             &mut recorded,
@@ -1226,10 +1229,19 @@ mod tests {
 
         let witness =
             Witness::joined_through(WITNESS_SEED, Some(WITNESS_HANDLE), &second.endpoint).await;
+        let witness_joined = Instant::now();
+        recorded_named(
+            &mut recorded,
+            DEPARTURE_WAIT_OVER,
+            |_fields| true,
+            WITNESSED_DEPARTURE_WAIT.saturating_add(EXITS_AT_ONCE_WITHIN),
+        )
+        .await;
 
-        witness
-            .first_introduce_from(SECOND_SEED, NOTHING_MORE_WITHIN)
-            .await;
+        assert!(
+            witness_joined.elapsed() >= NOTHING_MORE_WITHIN,
+            "the departure wait left the witness less than {NOTHING_MORE_WITHIN:?} to be introduced to"
+        );
         assert!(
             !witness
                 .introducers
@@ -1264,25 +1276,31 @@ mod tests {
     #[tokio::test]
     async fn spec_3_8_a_stopping_node_announces_no_presence_after_its_departure() {
         let scratch = Scratch::new("no-presence-after").await;
-        let second = claimed_second(&scratch).await;
-        let stopping = run(&second.session, TEST_DEPARTURE_WAIT);
+        let (record, mut recorded) = recording_events();
+        let second = claimed_second_recording_to(&scratch, record).await;
+        let stopping = run(&second.session, WITNESSED_DEPARTURE_WAIT);
         stopping.input_ended.send(()).unwrap();
         assert!(second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN).await);
 
         let _attaching_client = tokio::net::UnixStream::connect(&second.inbox_path)
             .await
             .unwrap();
+        let attached = Instant::now();
+        recorded_named(
+            &mut recorded,
+            DEPARTURE_WAIT_OVER,
+            |_fields| true,
+            WITNESSED_DEPARTURE_WAIT.saturating_add(EXITS_AT_ONCE_WITHIN),
+        )
+        .await;
 
         assert!(
-            status_within(
-                &second.first,
-                SECOND_SEED,
-                |status| !matches!(status, Status::Gone { .. }),
-                NOTHING_MORE_WITHIN,
-            )
-            .await
-            .is_none(),
-            "the first listed the departed second as other than gone"
+            attached.elapsed() >= NOTHING_MORE_WITHIN,
+            "the departure wait left less than {NOTHING_MORE_WITHIN:?} for a presence after the attach"
+        );
+        assert!(
+            second_gone_at_first_within(&second.first, Duration::ZERO).await,
+            "the first lists the departed second as other than gone after the departure wait"
         );
         drop(scratch);
     }
