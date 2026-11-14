@@ -983,11 +983,13 @@ impl PresenceLoop {
         let relay_loss_due = self.relay_loss.next_deadline();
         let next_rebind = self.may_rebind().then(|| self.rebinding.next_rebind());
         let member_join_due = self.rebinding.next_ask();
-        let state = &self.state;
-        let report = &self.report;
-        let record_drop = |refusal: PayloadRefusal| report(refusal_record(state, refusal));
         tokio::select! {
-            event = self.topic.next_event_recording_drops(&record_drop) => Wake::Topic(event),
+            event = next_recorded_gossip_event(
+                &mut self.topic,
+                Some(&self.state.rows),
+                &*self.state.clock,
+                &*self.report,
+            ) => Wake::Topic(event),
             Some(event) = self.from_hosts.recv() => Wake::Loop(event),
             changed = self.attached.changed(), if self.inbox == InboxWatch::Watching => match changed {
                 Ok(_) => Wake::AttachedChanged,
@@ -1042,19 +1044,14 @@ impl PresenceLoop {
     async fn take_gossip_event(&mut self, event: GossipEvent) {
         let now_ms = self.state.now_ms();
         match event {
-            GossipEvent::Joined => {
-                (self.report)(crate::event::GossipEvent::TopicJoined.into());
-                self.take_joined().await;
-            }
+            GossipEvent::Joined => self.take_joined().await,
             GossipEvent::JoinTimedOut => self.take_join_timeout().await,
             GossipEvent::NeighborUp(node) => {
-                (self.report)(crate::event::GossipEvent::NeighborUp(node.into()).into());
                 self.rebinding.neighbor_up(node);
                 let effects = self.state.rows.take_neighbor_up(node, now_ms);
                 self.perform(effects).await;
             }
             GossipEvent::NeighborDown(node) => {
-                (self.report)(crate::event::GossipEvent::NeighborDown(node.into()).into());
                 self.rebinding.neighbor_down(node);
                 let effects = self.state.rows.take_neighbor_down(node, now_ms);
                 self.perform(effects).await;
@@ -1322,12 +1319,11 @@ impl PresenceLoop {
 
     /// Signs and broadcasts the payload under the card key, recording its kind and stamp once sent and a failure otherwise.
     async fn broadcast(&self, payload: Payload) {
-        let facts = payload.facts();
-        let event = match self.topic.broadcast(&self.card_key, payload).await {
-            Ok(()) => crate::event::GossipEvent::PayloadBroadcast(facts.into()),
-            Err(failure) => crate::event::GossipEvent::BroadcastFailed(failure),
-        };
-        (self.report)(event.into());
+        if let Err(failure) =
+            broadcast_recorded(&self.topic, &self.card_key, payload, &*self.report).await
+        {
+            (self.report)(crate::event::GossipEvent::BroadcastFailed(failure).into());
+        }
     }
 
     /// Announces a changed address now, or once the re-announce interval since the last Presence has passed.
@@ -1406,9 +1402,21 @@ fn signer_admission_record<Taken>(
     admission_record(facts, signer_handle, admission)
 }
 
-/// The record of bytes the payload layer dropped, naming the signer they named by the handle the table holds for it, if any.
-fn refusal_record(state: &NodeState, refusal: PayloadRefusal) -> Event {
-    let now_ms = state.now_ms();
+/// The record of a received payload the node took, or dropped by the rule the admission named, naming its signer by the handle `rows` holds for it at `now_ms` when the node keeps a peer table.
+fn named_admission_record<Taken>(
+    rows: Option<&PeerRows>,
+    facts: PayloadFacts,
+    admission: &Result<Taken, PayloadDropRule>,
+    now_ms: u64,
+) -> Event {
+    rows.map_or_else(
+        || admission_record(facts, None, admission),
+        |rows| signer_admission_record(&rows.table(), facts, admission, now_ms),
+    )
+}
+
+/// The record of bytes the payload layer dropped, naming the signer they named by the handle `rows` holds for it at `now_ms` when the node keeps a peer table.
+fn refusal_record(rows: Option<&PeerRows>, now_ms: u64, refusal: PayloadRefusal) -> Event {
     let Some(facts) = refusal.facts else {
         return crate::event::GossipEvent::PayloadDropped {
             payload: None,
@@ -1416,7 +1424,51 @@ fn refusal_record(state: &NodeState, refusal: PayloadRefusal) -> Event {
         }
         .into();
     };
-    signer_admission_record(&state.table(), facts, &Err::<(), _>(refusal.rule), now_ms)
+    named_admission_record(rows, facts, &Err::<(), _>(refusal.rule), now_ms)
+}
+
+/// What every node records of a topic event before acting on it: the join and each neighbor up and down, a payload being recorded where it is judged.
+fn topic_record(event: &GossipEvent) -> Option<Event> {
+    match event {
+        GossipEvent::Joined => Some(crate::event::GossipEvent::TopicJoined.into()),
+        GossipEvent::NeighborUp(node) => {
+            Some(crate::event::GossipEvent::NeighborUp((*node).into()).into())
+        }
+        GossipEvent::NeighborDown(node) => {
+            Some(crate::event::GossipEvent::NeighborDown((*node).into()).into())
+        }
+        GossipEvent::JoinTimedOut | GossipEvent::Payload(_) => None,
+    }
+}
+
+/// The next event of the topic, recorded as every node records the gossip it receives: each payload the payload layer drops, the join, and each neighbor up and down, a signer named by the handle `rows` holds for it at the clock's reading when the node keeps a peer table.
+async fn next_recorded_gossip_event(
+    topic: &mut NetworkTopic,
+    rows: Option<&PeerRows>,
+    clock: &(dyn Fn() -> u64 + Send + Sync),
+    report: &(dyn Fn(Event) + Send + Sync),
+) -> Option<Result<GossipEvent, GossipError>> {
+    let record_drop = |refusal: PayloadRefusal| report(refusal_record(rows, clock(), refusal));
+    let event = topic.next_event_recording_drops(&record_drop).await;
+    if let Some(Ok(received)) = &event
+        && let Some(record) = topic_record(received)
+    {
+        report(record);
+    }
+    event
+}
+
+/// Signs and broadcasts the payload on the topic under the signer's key, recording its kind and stamp once sent.
+async fn broadcast_recorded(
+    topic: &NetworkTopic,
+    signer: &SecretKey,
+    payload: Payload,
+    report: &(dyn Fn(Event) + Send + Sync),
+) -> Result<(), GossipError> {
+    let facts = payload.facts();
+    topic.broadcast(signer, payload).await?;
+    report(crate::event::GossipEvent::PayloadBroadcast(facts.into()).into());
+    Ok(())
 }
 
 /// Waits until the rebind is due and answers why, or forever when none is.
