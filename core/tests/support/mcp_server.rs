@@ -1,9 +1,12 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ExitStatus};
 use std::sync::mpsc::{self, Receiver};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::{Value, json};
+
+use crate::member_events::MemberEvents;
+use crate::trace_reader::TraceLine;
 
 /// The JSON-RPC version MCP speaks.
 const JSON_RPC_VERSION: &str = "2.0";
@@ -37,8 +40,8 @@ pub const PEERS_KEY: &str = "peers";
 pub const HANDLE_KEY: &str = "handle";
 /// The key of a peers entry holding the peer's status (spec 3.10).
 const STATUS_KEY: &str = "status";
-/// How often the peers tool is called while waiting for a peer.
-const PEERS_POLL: Duration = Duration::from_millis(50);
+/// The field of an events line naming a peer by the handle this member holds for it (spec/observability.md decision 6).
+const HANDLE_FIELD: &str = "handle";
 /// How long a member may take to list a peer as a test wants it, through gossip or the direct protocol.
 pub const PRESENCE_WAIT: Duration = Duration::from_secs(20);
 /// The status the peers tool and `show-peers` give a peer whose Presence arrived (spec 3.1).
@@ -46,11 +49,12 @@ pub const ONLINE: &str = "online";
 /// The status the peers tool gives a peer whose Departure arrived (spec 3.1).
 const GONE: &str = "gone";
 
-/// A running `estafette mcp` process driven as an MCP client over its standard streams, stopped when dropped.
+/// A running `estafette mcp` process driven as an MCP client over its standard streams, with the events it records, stopped when dropped.
 pub struct McpServer {
     process: Child,
     messages: Receiver<Value>,
     next_request_id: u64,
+    events: MemberEvents,
 }
 
 /// A tool call written to the server whose answer has not been read yet.
@@ -59,9 +63,9 @@ pub struct PendingCall {
 }
 
 impl McpServer {
-    /// Takes the spawned server over its piped standard streams and completes the MCP handshake.
+    /// Takes the spawned server over its piped standard streams and completes the MCP handshake, its events read through the reader handed in.
     #[track_caller]
-    pub fn handshaken(mut process: Child) -> Self {
+    pub fn handshaken(mut process: Child, events: MemberEvents) -> Self {
         let output = BufReader::new(process.stdout.take().unwrap());
         let (forward, messages) = mpsc::channel();
         std::thread::spawn(move || {
@@ -77,6 +81,7 @@ impl McpServer {
             process,
             messages,
             next_request_id: 1,
+            events,
         };
         server.request(
             "initialize",
@@ -111,7 +116,7 @@ impl McpServer {
         self.call(SEND_TOOL, &send_arguments(to, body))
     }
 
-    /// The peer of that handle as the peers tool lists it once the peer meets the condition, requiring that within the wait.
+    /// The peer of that handle as the peers tool lists it once the peer meets the condition, asked at once and again each time the server records a line naming the handle, requiring that within the wait.
     #[track_caller]
     pub fn peer_within(
         &mut self,
@@ -119,23 +124,30 @@ impl McpServer {
         within: Duration,
         condition: impl Fn(&Value) -> bool,
     ) -> Value {
-        let started = Instant::now();
-        loop {
-            let listed = self.call(PEERS_TOOL, &json!({}));
-            let entry = listed[RESULT_KEY][PEERS_KEY]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .find(|peer| peer[HANDLE_KEY] == handle);
-            if let Some(peer) = entry.filter(|peer| condition(peer)) {
-                return peer.clone();
+        let events = self.events.clone();
+        let mut lines_naming_the_peer = None;
+        events.wait_until(&format!("{handle} listed as wanted"), within, |lines| {
+            let naming = lines
+                .iter()
+                .filter(|line| names_the_peer(line, handle))
+                .count();
+            if lines_naming_the_peer.replace(naming) == Some(naming) {
+                return None;
             }
-            assert!(
-                started.elapsed() < within,
-                "{handle} was not listed as wanted within {within:?}; its entry: {entry:?}"
-            );
-            std::thread::sleep(PEERS_POLL);
-        }
+            self.listed_peer(handle).filter(|peer| condition(peer))
+        })
+    }
+
+    /// The peer of that handle as the peers tool lists it now, none when it lists no such peer.
+    #[track_caller]
+    pub fn listed_peer(&mut self, handle: &str) -> Option<Value> {
+        let listed = self.call(PEERS_TOOL, &json!({}));
+        listed[RESULT_KEY][PEERS_KEY]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|peer| peer[HANDLE_KEY] == handle)
+            .cloned()
     }
 
     /// Writes the tool call without waiting for its answer.
@@ -207,6 +219,11 @@ impl Drop for McpServer {
         self.kill();
         self.wait_for_exit();
     }
+}
+
+/// Whether the events line names the peer of that handle.
+fn names_the_peer(line: &TraceLine, handle: &str) -> bool {
+    line.value(HANDLE_FIELD) == Some(&json!(handle))
 }
 
 /// The init tool's arguments claiming the card of that name (spec 3.10).

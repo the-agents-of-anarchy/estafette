@@ -21,6 +21,8 @@ pub mod trace_reader;
 
 use trace_reader::timeline_in;
 
+use crate::member_events::MemberEvents;
+
 /// The binary under test.
 pub const BINARY: &str = env!("CARGO_BIN_EXE_estafette");
 /// What the print of a failing test's timelines says before each member's.
@@ -51,6 +53,8 @@ const RUNTIME_DIRECTORY: &str = "r";
 const RUN_RECORD_EXTENSION: &str = "stderr";
 /// The start of a member's run record file name, before the member's number on its machine.
 const RUN_RECORD_PREFIX: &str = "member";
+/// How a test names a member it started, before its number.
+const MEMBER_LABEL: &str = "member";
 /// The variable naming a directory where every member's run record is kept, redacted, when its scratch root is removed; unset, nothing is kept.
 pub const KEPT_RUN_RECORDS_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_RUN_RECORDS";
 /// The variable the acceptance gate exports the live host's invitation in.
@@ -203,6 +207,17 @@ impl ScratchMachine {
         TraceDirectory::resolve(&|name: &str| variable_of(&environment, name))
             .unwrap()
             .path()
+    }
+
+    /// Starts the binary's MCP server for this machine's network as the next member, with the reader of the events it records in its own trace directory.
+    pub fn spawn_recorded_mcp_server(&self) -> (Child, MemberEvents) {
+        let number = self.members_started();
+        let process = self.spawn_mcp_server();
+        let events = MemberEvents::new(
+            &format!("{MEMBER_LABEL} {number}"),
+            &self.traces_directory_of_member(number),
+        );
+        (process, events)
     }
 
     /// The binary with the environment of the member of that number: the machine's, but a data directory of its own and the machine's cards.

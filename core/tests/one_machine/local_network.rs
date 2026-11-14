@@ -14,7 +14,6 @@ use iroh_gossip::TopicId;
 
 use crate::mcp_server::{PRESENCE_WAIT, online};
 use crate::member::Member;
-use crate::member_events::MemberEvents;
 use crate::payload_placeholders::UNSET_MAC;
 use crate::scratch_machine::{Card, RunRecordKeeping, ScratchMachine};
 use crate::scripted_node::ScriptedNode;
@@ -60,12 +59,7 @@ impl LocalNetwork {
     /// Starts the binary's MCP server for this network, handshaken and with no card claimed, its events awaited in the trace directory it writes in.
     #[track_caller]
     pub fn start_member(&self) -> Member {
-        let number = self.machine.members_started();
-        let process = self.machine.spawn_mcp_server();
-        let events = MemberEvents::new(
-            &format!("member {number}"),
-            &self.machine.traces_directory_of_member(number),
-        );
+        let (process, events) = self.machine.spawn_recorded_mcp_server();
         Member::start(process, events)
     }
 

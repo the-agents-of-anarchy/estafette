@@ -5,6 +5,7 @@ use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use crate::trace_reader::{TraceLine, events_files_in, lines_of_files_still_present, timeline_in};
 
 /// The events one member of a test records in the trace directory of its own, awaited on the operating system's notice that an events file grew.
+#[derive(Clone)]
 pub struct MemberEvents {
     label: String,
     traces_directory: PathBuf,
@@ -19,29 +20,20 @@ impl MemberEvents {
         }
     }
 
-    /// The first line of the member's events files that names the event, found already written or by a look that an events file's growth wakes and that ends inside the bound, failing with the event's name and the member's timeline so far otherwise.
+    /// The first value `found_in` makes of every line of the member's events files, looking at once and again each time an events file may have grown, failing with what was awaited and the member's timeline so far when the bound runs out first.
     #[track_caller]
-    pub fn wait_for(&self, event: &str, within: Duration) -> TraceLine {
-        self.wait_for_after(event, within, Instant::now, || {})
-    }
-
-    /// As `wait_for`, reading the time from `clock` and running `once_waiting` once the first look found no such line, so a test can write the line the wait must then be woken for.
-    #[track_caller]
-    pub fn wait_for_after(
+    pub fn wait_until<Found>(
         &self,
-        event: &str,
+        awaited: &str,
         within: Duration,
-        clock: impl FnMut() -> Instant,
-        once_waiting: impl FnOnce(),
-    ) -> TraceLine {
-        self.wait_until_after(event, within, clock, once_waiting, |lines| {
-            lines.into_iter().find(|line| line.event == event)
-        })
+        found_in: impl FnMut(Vec<TraceLine>) -> Option<Found>,
+    ) -> Found {
+        self.wait_until_after(awaited, within, Instant::now, || {}, found_in)
     }
 
-    /// As `wait_for`, reading the time from `clock` and running `once_waiting` once the first look found nothing.
+    /// As `wait_until`, reading the time from `clock` and running `once_waiting` once the first look found nothing, so a test can write the line the wait must then be woken for.
     #[track_caller]
-    fn wait_until_after<Found>(
+    pub fn wait_until_after<Found>(
         &self,
         awaited: &str,
         within: Duration,

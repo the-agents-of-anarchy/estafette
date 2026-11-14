@@ -54,7 +54,8 @@ impl LabMachine {
     /// Starts the binary's MCP server for the network, handshaken and with no card claimed.
     #[track_caller]
     pub fn start_server(&self) -> McpServer {
-        McpServer::handshaken(self.scratch.spawn_mcp_server())
+        let (process, events) = self.scratch.spawn_recorded_mcp_server();
+        McpServer::handshaken(process, events)
     }
 
     /// Starts the binary's MCP server for the network and claims the card through its init tool, requiring the claim to succeed.

@@ -10,6 +10,7 @@ use estafette::net::endpoint::GateFailure;
 
 use crate::gate_closings::GateClosings;
 use crate::local_network::{LocalNetwork, NETWORK};
+use crate::member::first_line_named;
 use crate::member_events::MemberEvents;
 use crate::scratch_machine::{RunRecordKeeping, ScratchMachine, TIMELINE_HEADING};
 use crate::trace_reader::{NO_EVENT_RECORDED, events_lines_in};
@@ -117,7 +118,11 @@ fn observability_decision_14_an_event_already_in_the_file_is_found_without_a_fur
         "member 0",
         &machine.traces_directory_of_member(FIRST_MEMBER),
     );
-    let line = member.wait_for(COMMAND_FAILED_EVENT, EVENT_BOUND);
+    let line = member.wait_until(
+        COMMAND_FAILED_EVENT,
+        EVENT_BOUND,
+        first_line_named(COMMAND_FAILED_EVENT),
+    );
 
     assert_eq!(line.event, COMMAND_FAILED_EVENT);
 }
@@ -139,11 +144,17 @@ fn observability_decision_14_a_line_appended_while_the_wait_runs_to_an_events_fi
         .unwrap();
     let member = MemberEvents::new("member 0", &traces);
 
-    let line = member.wait_for_after(COMMAND_FAILED_EVENT, EVENT_BOUND, Instant::now, || {
-        events_file
-            .write_all(COMMAND_FAILED_LINE.as_bytes())
-            .unwrap();
-    });
+    let line = member.wait_until_after(
+        COMMAND_FAILED_EVENT,
+        EVENT_BOUND,
+        Instant::now,
+        || {
+            events_file
+                .write_all(COMMAND_FAILED_LINE.as_bytes())
+                .unwrap();
+        },
+        first_line_named(COMMAND_FAILED_EVENT),
+    );
 
     assert_eq!(line.event, COMMAND_FAILED_EVENT);
 }
@@ -159,7 +170,11 @@ fn observability_decision_14_a_wait_whose_bound_runs_out_fails_naming_the_event_
     let member = MemberEvents::new("member 0", &traces);
 
     let failure = failure_text_of(|| {
-        member.wait_for(COMMAND_FAILED_EVENT, EXHAUSTED_BOUND);
+        member.wait_until(
+            COMMAND_FAILED_EVENT,
+            EXHAUSTED_BOUND,
+            first_line_named(COMMAND_FAILED_EVENT),
+        );
     });
 
     assert_eq!(
@@ -189,16 +204,28 @@ fn observability_decision_14_a_wait_whose_bound_ran_out_before_a_notice_was_take
     let observer = MemberEvents::new("observer of member 0", &traces);
 
     let failure = failure_text_of(|| {
-        member.wait_for_after(COMMAND_FAILED_EVENT, Duration::ZERO, Instant::now, || {
-            events_file
-                .write_all(COMMAND_FAILED_LINE.as_bytes())
-                .unwrap();
-            observer.wait_for_after(HANDSHAKE_FAILED_EVENT, EVENT_BOUND, Instant::now, || {
+        member.wait_until_after(
+            COMMAND_FAILED_EVENT,
+            Duration::ZERO,
+            Instant::now,
+            || {
                 events_file
-                    .write_all(HANDSHAKE_FAILED_LINE.as_bytes())
+                    .write_all(COMMAND_FAILED_LINE.as_bytes())
                     .unwrap();
-            });
-        });
+                observer.wait_until_after(
+                    HANDSHAKE_FAILED_EVENT,
+                    EVENT_BOUND,
+                    Instant::now,
+                    || {
+                        events_file
+                            .write_all(HANDSHAKE_FAILED_LINE.as_bytes())
+                            .unwrap();
+                    },
+                    first_line_named(HANDSHAKE_FAILED_EVENT),
+                );
+            },
+            first_line_named(COMMAND_FAILED_EVENT),
+        );
     });
 
     assert_eq!(
@@ -232,11 +259,17 @@ fn observability_decision_14_a_line_a_look_finds_once_the_bound_ran_out_fails_th
 
     let waiting_since = Instant::now();
     let failure = failure_text_of(|| {
-        member.wait_for_after(COMMAND_FAILED_EVENT, within, clock_ticking_by(TICK), || {
-            events_file
-                .write_all(COMMAND_FAILED_LINE.as_bytes())
-                .unwrap();
-        });
+        member.wait_until_after(
+            COMMAND_FAILED_EVENT,
+            within,
+            clock_ticking_by(TICK),
+            || {
+                events_file
+                    .write_all(COMMAND_FAILED_LINE.as_bytes())
+                    .unwrap();
+            },
+            first_line_named(COMMAND_FAILED_EVENT),
+        );
     });
     let waited = waiting_since.elapsed();
 
@@ -267,9 +300,17 @@ fn observability_decision_14_a_second_members_event_of_the_same_name_is_not_take
     );
 
     let first_failure = failure_text_of(|| {
-        first.wait_for(COMMAND_FAILED_EVENT, EXHAUSTED_BOUND);
+        first.wait_until(
+            COMMAND_FAILED_EVENT,
+            EXHAUSTED_BOUND,
+            first_line_named(COMMAND_FAILED_EVENT),
+        );
     });
-    let second_line = second.wait_for(COMMAND_FAILED_EVENT, EVENT_BOUND);
+    let second_line = second.wait_until(
+        COMMAND_FAILED_EVENT,
+        EVENT_BOUND,
+        first_line_named(COMMAND_FAILED_EVENT),
+    );
 
     assert!(first_failure.starts_with("member 0: no process.command_failed"));
     assert_eq!(second_line.event, COMMAND_FAILED_EVENT);

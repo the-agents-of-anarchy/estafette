@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::{Child, Command, ExitStatus};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use serde_json::{Value, json};
@@ -11,8 +11,12 @@ use crate::scratch_machine::Card;
 use crate::scripted_node::ScriptedNode;
 use crate::trace_reader::TraceLine;
 
+/// The event a member records once its node runs on a bound endpoint, and the moment that marks it (spec/observability.md decision 9).
+const COUNTERS_EVENT: &str = "state.counters";
+const MOMENT_FIELD: &str = "moment";
+const NODE_START_MOMENT: &str = "start";
+
 const ENDPOINT_BIND_WAIT: Duration = Duration::from_secs(10);
-const ENDPOINT_BIND_POLL: Duration = Duration::from_millis(20);
 const OPEN_FILES_COMMAND: &str = "lsof";
 const SIGNAL_COMMAND: &str = "kill";
 const TERMINATE_SIGNAL_FLAG: &str = "-TERM";
@@ -35,7 +39,7 @@ impl Member {
     pub fn start(process: Child, events: MemberEvents) -> Self {
         let process_id = process.id();
         Self {
-            server: McpServer::handshaken(process),
+            server: McpServer::handshaken(process, events.clone()),
             process_id,
             events,
         }
@@ -105,21 +109,21 @@ impl Member {
     /// The first line of the member's events files that names the event, found already written or awaited until it is written, failing with the member's timeline so far when the bound runs out.
     #[track_caller]
     pub fn wait_for_event(&self, event: &str, within: Duration) -> TraceLine {
-        self.events.wait_for(event, within)
+        self.events
+            .wait_until(event, within, first_line_named(event))
     }
 
-    /// The loopback-reachable UDP ports this process's endpoint bound, waiting for the bind.
+    /// The loopback-reachable UDP ports this process's endpoint bound, once it records its node's start on the bound endpoint.
     #[track_caller]
     pub fn bound_udp_ports(&self) -> Vec<u16> {
-        let deadline = Instant::now().checked_add(ENDPOINT_BIND_WAIT).unwrap();
-        loop {
-            let ports = self.ipv4_udp_ports();
-            if !ports.is_empty() {
-                return ports;
-            }
-            assert!(Instant::now() < deadline, "no UDP socket bound");
-            std::thread::sleep(ENDPOINT_BIND_POLL);
-        }
+        self.events.wait_until(
+            &format!("{COUNTERS_EVENT} of its node's {NODE_START_MOMENT}"),
+            ENDPOINT_BIND_WAIT,
+            |lines| lines.iter().any(is_node_start_snapshot).then_some(()),
+        );
+        let ports = self.ipv4_udp_ports();
+        assert!(!ports.is_empty(), "no UDP socket bound");
+        ports
     }
 
     /// The ports of the IPv4 UDP sockets this process holds now.
@@ -155,6 +159,16 @@ impl Member {
     pub fn wait_for_exit(&mut self) -> ExitStatus {
         self.server.wait_for_exit()
     }
+}
+
+/// What finds the first events line that names the event.
+pub fn first_line_named(event: &str) -> impl FnMut(Vec<TraceLine>) -> Option<TraceLine> + '_ {
+    move |lines| lines.into_iter().find(|line| line.event == event)
+}
+
+/// Whether the events line is the counters snapshot a node records at its start.
+fn is_node_start_snapshot(line: &TraceLine) -> bool {
+    line.event == COUNTERS_EVENT && line.value(MOMENT_FIELD) == Some(&json!(NODE_START_MOMENT))
 }
 
 /// The address that reaches the node at the UDP ports on this machine's loopback alone.

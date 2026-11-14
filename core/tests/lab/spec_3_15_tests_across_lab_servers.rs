@@ -233,7 +233,8 @@ impl Member {
     /// Serves the card on the machine and claims it, requiring the claim to succeed.
     #[track_caller]
     fn serving(machine: ScratchMachine, card: Card, handle: String) -> Self {
-        let mut server = McpServer::handshaken(machine.spawn_mcp_server());
+        let (process, events) = machine.spawn_recorded_mcp_server();
+        let mut server = McpServer::handshaken(process, events);
         let claim = server.call(INIT_TOOL, &init_arguments(&card.name));
         assert!(call_succeeded(&claim), "{claim}");
         Self {

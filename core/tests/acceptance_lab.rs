@@ -2,6 +2,9 @@
 #[path = "support/driven_runtime.rs"]
 mod driven_runtime;
 #[cfg(test)]
+#[path = "support/file_growth.rs"]
+mod file_growth;
+#[cfg(test)]
 #[path = "lab/forger.rs"]
 mod forger;
 #[cfg(test)]
@@ -29,6 +32,9 @@ mod live_network;
 #[path = "support/mcp_server.rs"]
 mod mcp_server;
 #[cfg(test)]
+#[path = "support/member_events.rs"]
+mod member_events;
+#[cfg(test)]
 #[path = "support/message_body.rs"]
 mod message_body;
 #[cfg(test)]
@@ -55,6 +61,8 @@ mod tail;
 #[cfg(test)]
 #[path = "support/timed_step.rs"]
 mod timed_step;
+#[cfg(test)]
+use scratch_machine::trace_reader;
 
 #[cfg(test)]
 mod live_host {
