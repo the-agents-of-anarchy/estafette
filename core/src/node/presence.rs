@@ -1758,6 +1758,11 @@ pub(super) mod tests {
     const PAYLOAD_ACCEPTED: &str = "gossip.payload_accepted";
     const KIND: &str = "kind";
     const PRESENCE_KIND: &str = "presence";
+    const PRESENCE_REQUEST_KIND: &str = "presence_request";
+    const PAYLOAD_DROPPED: &str = "gossip.payload_dropped";
+    const RULE: &str = "rule";
+    const NOT_ABOVE_REQUESTER_SEQ_RULE: &str = "not_above_requester_seq";
+    const OLDER_THAN_MAX_AGE_RULE: &str = "older_than_max_age";
 
     const FIRST_REQUESTER_SEED: u8 = 72;
     const SECOND_REQUESTER_SEED: u8 = 73;
@@ -2966,6 +2971,21 @@ pub(super) mod tests {
         })
     }
 
+    /// Waits until the member recorded a presence request dropped by the rule, within the wait for a payload.
+    async fn request_dropped_by(recorded: &RecordedHistory, rule: &str) {
+        recorded
+            .recorded_within(
+                PAYLOAD_DROPPED,
+                |fields| {
+                    fields.contains(&(KIND, serde_json::Value::from(PRESENCE_REQUEST_KIND)))
+                        && fields.contains(&(RULE, serde_json::Value::from(rule)))
+                },
+                1,
+                PAYLOAD_WAIT,
+            )
+            .await;
+    }
+
     async fn ask_for_presence(witness: &Witness, requester_seed: u8, seq: u64) {
         witness
             .broadcast_as(requester_seed, presence_request_from(requester_seed, seq))
@@ -3037,10 +3057,12 @@ pub(super) mod tests {
     async fn spec_3_8_a_presence_request_replayed_below_its_requesters_last_seq_or_older_than_the_max_age_is_dropped()
      {
         let scratch = Scratch::new("asked-stale").await;
+        let recorded = RecordedHistory::new();
         let (_member, mut witness) = start_witnessed(
             &scratch,
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
-                .with_clock(frozen_clock(FROZEN_CLOCK_MS)),
+                .with_clock(frozen_clock(FROZEN_CLOCK_MS))
+                .with_report(recorded.sink()),
             None,
         )
         .await;
@@ -3053,13 +3075,14 @@ pub(super) mod tests {
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
             .unwrap();
-        tokio::time::sleep(SPEC_REANNOUNCE_INTERVAL).await;
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, REPLAYED_REQUEST_SEQ).await;
+        request_dropped_by(&recorded, NOT_ABOVE_REQUESTER_SEQ_RULE).await;
         let after_replay = witness
             .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
             .await;
         ask_for_presence(&witness, SECOND_REQUESTER_SEED, STALE_REQUEST_SEQ).await;
+        request_dropped_by(&recorded, OLDER_THAN_MAX_AGE_RULE).await;
         let after_stale = witness
             .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
             .await;
@@ -3107,10 +3130,12 @@ pub(super) mod tests {
     #[tokio::test]
     async fn spec_3_8_a_stopping_member_answers_a_presence_request_with_nothing() {
         let scratch = Scratch::new("asked-stopping").await;
+        let recorded = RecordedHistory::new();
         let (member, mut witness) = start_witnessed(
             &scratch,
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
-                .with_clock(frozen_clock(FROZEN_CLOCK_MS)),
+                .with_clock(frozen_clock(FROZEN_CLOCK_MS))
+                .with_report(recorded.sink()),
             None,
         )
         .await;
@@ -3118,7 +3143,6 @@ pub(super) mod tests {
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
             .unwrap();
-        tokio::time::sleep(SPEC_REANNOUNCE_INTERVAL).await;
         member.node.start_stopping();
         witness
             .payload_where(PAYLOAD_WAIT, |payload| {
@@ -3128,6 +3152,14 @@ pub(super) mod tests {
             .unwrap();
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
+        recorded
+            .recorded_within(
+                PAYLOAD_ACCEPTED,
+                |fields| fields.contains(&(KIND, serde_json::Value::from(PRESENCE_REQUEST_KIND))),
+                1,
+                PAYLOAD_WAIT,
+            )
+            .await;
         let answer = witness
             .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
             .await;
