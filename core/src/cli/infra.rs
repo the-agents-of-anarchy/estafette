@@ -919,10 +919,11 @@ mod tests {
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::invite::render_host_line;
     use crate::keys::{render_public_key, render_secret_key};
+    use crate::net::direct::MonotonicClock;
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::net::endpoint::NodeEndpoint;
     use crate::node::{Identity, Node, NodeEffects};
-    use crate::test_waits::found_within;
+    use crate::test_waits::{RecordedHistory, found_within};
 
     use crate::wire::{HostAddr, Version};
 
@@ -951,7 +952,12 @@ mod tests {
     const PEER_SEED: u8 = 125;
     const SECOND_PEER_SEED: u8 = 126;
     const BIND_WAIT: Duration = Duration::from_secs(5);
-    const POLL: Duration = Duration::from_millis(20);
+    const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
+    const KIND_FIELD: &str = "kind";
+    const PEER_FIELD: &str = "peer";
+    const INFRASTRUCTURE_KIND: &str = "infrastructure";
+    /// The second record a host takes from another: the one its record interval brings after the one it learned the host from.
+    const SECOND_RECORD: usize = 2;
     const PEER_JOIN_WAIT: Duration = Duration::from_secs(8);
     const RECORD_AT_JOIN_WAIT: Duration = Duration::from_millis(4000);
     const SPEC_RECORD_INTERVAL_EARLIEST: Duration = Duration::from_millis(4500);
@@ -1106,6 +1112,7 @@ mod tests {
         relay_shutdown_failure: Option<&'static str>,
         transport: crate::net::endpoint::TransportRecord,
         report: RunRecord,
+        monotonic: MonotonicClock,
     }
 
     impl Plan {
@@ -1119,6 +1126,7 @@ mod tests {
                 relay_shutdown_failure: None,
                 transport: crate::net::direct::tests::dropping_transport(),
                 report: Arc::new(|_record| {}),
+                monotonic: Arc::new(Instant::now),
             }
         }
 
@@ -1132,6 +1140,7 @@ mod tests {
                 relay_shutdown_failure,
                 transport,
                 report,
+                monotonic,
             } = self;
             let relay_sites = Arc::clone(&seen.relay_sites);
             let bound = Arc::clone(&seen.bound);
@@ -1168,7 +1177,7 @@ mod tests {
                         Ok(endpoint)
                     })
                 }),
-                monotonic: Arc::new(Instant::now),
+                monotonic,
                 start_relay: Box::new(move |site| {
                     Box::pin(async move {
                         let mode = mode_of(&site.certificate_cache);
@@ -1760,14 +1769,28 @@ mod tests {
         scratch.certify(HOST_SEED);
         let seen = Seen::default();
         let (stop, stopped) = stopped_on_signal();
+        let (clock_read, mut clock_reads) = tokio::sync::watch::channel(false);
         let plan = Plan {
             stopped,
+            monotonic: Arc::new(move || {
+                clock_read.send_replace(true);
+                Instant::now()
+            }),
             ..Plan::new(HOST_SEED)
         };
 
-        let ((_printed, outcome), (joined_through_the_first_endpoint, record)) =
-            tokio::join!(run_planned(&scratch, plan, &seen), async {
+        let ((_printed, outcome), (joined_through_the_first_endpoint, record)) = tokio::join!(
+            run_planned(&scratch, plan, &seen),
+            async {
                 let host = bound_endpoint(&seen, 0).await;
+                let join_started = matches!(
+                    tokio::time::timeout(BIND_WAIT, clock_reads.wait_for(|read| *read)).await,
+                    Ok(Ok(_))
+                );
+                assert!(
+                    join_started,
+                    "the host did not read its monotonic clock after starting its join within {BIND_WAIT:?}"
+                );
                 tokio::time::pause();
                 tokio::time::advance(SPEC_JOIN_TIMEOUT_PAST).await;
                 tokio::time::resume();
@@ -1776,7 +1799,8 @@ mod tests {
                 let record = peer.next_host_record(RECORD_AT_JOIN_WAIT).await;
                 stop.send(()).unwrap_or_default();
                 (joined_through_the_first_endpoint, record)
-            });
+            }
+        );
 
         assert!(joined_through_the_first_endpoint);
         assert_eq!(record.map(|record| record.ts), Some(FROZEN_CLOCK_SECONDS));
@@ -1900,16 +1924,7 @@ mod tests {
     }
 
     async fn saved_within(scratch: &Scratch, host_seed: u8, within: Duration) -> Option<Host> {
-        tokio::time::timeout(within, async {
-            loop {
-                if let Some(host) = scratch.saved_host(host_seed) {
-                    return host;
-                }
-                tokio::time::sleep(POLL).await;
-            }
-        })
-        .await
-        .ok()
+        found_within(within, async || scratch.saved_host(host_seed)).await
     }
 
     #[tokio::test]
@@ -1923,8 +1938,10 @@ mod tests {
         second_scratch.certify(SECOND_HOST_SEED);
         let (first_seen, second_seen) = (Seen::default(), Seen::default());
         let (stop_first, first_stopped) = stopped_on_signal();
+        let first_recorded = RecordedHistory::new();
         let first_plan = Plan {
             stopped: first_stopped,
+            report: first_recorded.sink(),
             ..Plan::new(HOST_SEED)
         };
 
@@ -1944,7 +1961,19 @@ mod tests {
                     async {
                         let learned =
                             saved_within(&first_scratch, SECOND_HOST_SEED, HOST_LEARNED_WAIT).await;
-                        tokio::time::sleep(SPEC_RECORD_INTERVAL_LATEST).await;
+                        first_recorded
+                            .recorded_within(
+                                PAYLOAD_ACCEPTED_EVENT,
+                                |fields| {
+                                    fields.contains(&(
+                                        KIND_FIELD,
+                                        serde_json::Value::from(INFRASTRUCTURE_KIND),
+                                    )) && fields.contains(&(PEER_FIELD, short_id(SECOND_HOST_SEED)))
+                                },
+                                SECOND_RECORD,
+                                SPEC_RECORD_INTERVAL_LATEST,
+                            )
+                            .await;
                         let first_holds_own = relay_map_holds(&first, SPEC_RELAY_URL).await;
                         let first_holds_second =
                             relay_map_holds(&first, SPEC_SECOND_RELAY_URL).await;
