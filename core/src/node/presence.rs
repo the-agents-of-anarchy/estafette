@@ -2161,6 +2161,7 @@ pub(super) mod tests {
         (first, second)
     }
 
+    #[must_use]
     pub(in crate::node) async fn listed_within(
         member: &Member,
         seed: u8,
@@ -2422,6 +2423,7 @@ pub(super) mod tests {
         }
 
         /// The first Introduce the witness took from the card of the seed, waiting for one within the wait.
+        #[must_use]
         pub(in crate::node) async fn first_introduce_from(
             &self,
             seed: u8,
@@ -2474,6 +2476,7 @@ pub(super) mod tests {
             self.topic.broadcast_bytes(bytes).await.unwrap();
         }
 
+        #[must_use]
         pub(in crate::node) async fn payload_where(
             &mut self,
             within: Duration,
@@ -2593,6 +2596,7 @@ pub(super) mod tests {
         drop(scratch);
     }
 
+    #[must_use]
     pub(in crate::node) async fn status_within(
         member: &Member,
         seed: u8,
@@ -2777,6 +2781,7 @@ pub(super) mod tests {
             .find(|host| host.id == id)
     }
 
+    #[must_use]
     pub(in crate::node) async fn host_saved_within(
         config_path: &std::path::Path,
         host_seed: u8,
@@ -3044,7 +3049,10 @@ pub(super) mod tests {
             .await;
 
         assert_eq!(presence_fields(answer), (FROZEN_CLOCK_MS + 1, false));
-        assert!(nothing_more.is_none());
+        assert!(
+            nothing_more.is_none(),
+            "the member sent a second Presence within {SPEC_REANNOUNCE_INTERVAL_AND_NOTHING_MORE_WAIT:?}: {nothing_more:?}"
+        );
         drop(scratch);
     }
 
@@ -3155,7 +3163,10 @@ pub(super) mod tests {
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await;
 
-        assert!(after_far_future.is_none());
+        assert!(
+            after_far_future.is_none(),
+            "the member answered a far-future request with a Presence within {NOTHING_MORE_WAIT:?}: {after_far_future:?}"
+        );
         assert_eq!(presence_fields(after_fresh), (FROZEN_CLOCK_MS + 1, false));
         drop(scratch);
     }
@@ -3289,7 +3300,10 @@ pub(super) mod tests {
             .await;
 
         assert_eq!(presence_fields(answer), (CLOCK_AFTER_MAX_AGE_MS, false));
-        assert!(nothing_more.is_none());
+        assert!(
+            nothing_more.is_none(),
+            "the member sent a second Presence within {NOTHING_MORE_WAIT:?}: {nothing_more:?}"
+        );
         drop(scratch);
     }
 
@@ -3637,7 +3651,10 @@ pub(super) mod tests {
             .payload_where(PAYLOAD_WAIT, presence_request_by(FIRST_SEED))
             .await;
 
-        assert!(asked.is_none());
+        assert!(
+            asked.is_none(),
+            "the stopping member sent a presence request within {PAYLOAD_WAIT:?}: {asked:?}"
+        );
         drop(scratch);
     }
 
@@ -4219,7 +4236,10 @@ pub(super) mod tests {
             .await;
 
         assert_eq!(presence_fields(answer), (FROZEN_CLOCK_MS + 1, false));
-        assert!(nothing_more.is_none());
+        assert!(
+            nothing_more.is_none(),
+            "the member sent a second Presence within {NOTHING_MORE_WAIT:?}: {nothing_more:?}"
+        );
         drop(scratch);
     }
 
@@ -4555,6 +4575,7 @@ pub(super) mod tests {
     }
 
     /// The member's entry for the card of the seed once it meets the condition, waited for without a sleep, or none, named on standard error, when it does not within the wait.
+    #[must_use]
     pub(in crate::node) async fn entry_meeting_within(
         member: &Member,
         seed: u8,

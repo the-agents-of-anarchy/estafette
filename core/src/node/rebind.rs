@@ -489,6 +489,7 @@ mod tests {
         }
 
         /// What `found` first finds in the entries heard within `within`, none when it finds nothing by then.
+        #[must_use]
         async fn first_within<Found: Send>(
             &self,
             within: Duration,
@@ -520,6 +521,7 @@ mod tests {
             })
         }
 
+        #[must_use]
         async fn nth_within(&self, index: usize, within: Duration) -> Option<Instant> {
             self.started
                 .first_within(within, |started| started.get(index).copied())
@@ -652,6 +654,7 @@ mod tests {
             .unwrap();
         }
 
+        #[must_use]
         async fn first_neighbor_up_of(&self, seed: u8, within: Duration) -> Option<Instant> {
             let neighbor = secret_key(seed).public();
             self.neighbors_up
@@ -671,6 +674,7 @@ mod tests {
                 .map(|(_, seq)| *seq)
         }
 
+        #[must_use]
         async fn first_seq_after(&self, at: Instant, within: Duration) -> Option<u64> {
             self.presences
                 .first_within(within, |presences| {
@@ -746,6 +750,7 @@ mod tests {
         address.relay_urls().map(ToString::to_string).collect()
     }
 
+    #[must_use]
     async fn entry_within(
         member: &Member,
         seed: u8,
@@ -1509,7 +1514,12 @@ mod tests {
         let reached = Instant::now();
         let rebound = rebinds.nth_within(0, REBIND_SLACK).await;
 
-        assert_eq!(rebound_while_no_peer_was_online, None);
+        assert_eq!(
+            rebound_while_no_peer_was_online,
+            None,
+            "the member rebound while no peer was online, within {:?}",
+            SPEC_DEAF_TIMEOUT + REBIND_SLACK
+        );
         assert!(rebound.unwrap().duration_since(reached) < REBIND_SLACK);
         drop(scratch);
     }
