@@ -3078,8 +3078,9 @@ pub(crate) mod tests {
         );
     }
 
-    const DIVERGENT_SELECTION_ATTEMPTS: usize = 10;
     const LIVE_CARD_HEARD_WAIT: Duration = Duration::from_secs(10);
+    /// No shorter than the ten setups a divergent selection was once given, each waited on until the live card is heard.
+    const DIVERGENT_SELECTION_WAIT: Duration = Duration::from_secs(100);
 
     /// The node's address on the loopback interface, at the port its endpoint bound.
     fn address_on_loopback(node: &NodeEndpoint) -> iroh::EndpointAddr {
@@ -3136,25 +3137,32 @@ pub(crate) mod tests {
         }
     }
 
-    /// The live card once the connection this node dialed is on the path iroh selected and the one it accepted is not, retried while iroh selects one path at both ends.
+    /// The live card once the connection this node dialed is on the path iroh selected and the one it accepted is not, set up afresh while iroh selects one path at both ends, failing by name when the wait for a divergent selection runs out first.
     async fn live_card_whose_accepted_connection_is_off_the_selected_path() -> LiveCard {
-        for _ in 0..DIVERGENT_SELECTION_ATTEMPTS {
-            let live_card = live_card_dialed_on_loopback_and_accepted_from_the_network().await;
-            if held_on_a_selected_path(
-                &live_card.register,
-                card_of(CLIENT_SEED),
-                &live_card.dialed.0,
-            ) && !held_on_a_selected_path(
-                &live_card.register,
-                card_of(CLIENT_SEED),
-                &live_card.accepted.0,
-            ) {
-                return live_card;
+        let mut setups = 0_u32;
+        timeout(DIVERGENT_SELECTION_WAIT, async {
+            loop {
+                setups = setups.saturating_add(1);
+                let live_card = live_card_dialed_on_loopback_and_accepted_from_the_network().await;
+                if held_on_a_selected_path(
+                    &live_card.register,
+                    card_of(CLIENT_SEED),
+                    &live_card.dialed.0,
+                ) && !held_on_a_selected_path(
+                    &live_card.register,
+                    card_of(CLIENT_SEED),
+                    &live_card.accepted.0,
+                ) {
+                    return live_card;
+                }
             }
-        }
-        panic!(
-            "iroh selected one path at both ends in each of {DIVERGENT_SELECTION_ATTEMPTS} attempts"
-        )
+        })
+        .await
+        .unwrap_or_else(|_elapsed| {
+            panic!(
+                "iroh selected one path at both ends in each of {setups} setups within {DIVERGENT_SELECTION_WAIT:?}"
+            )
+        })
     }
 
     /// A router serving the direct protocol on the node for a host holding the card of the seed.
