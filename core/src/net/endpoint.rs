@@ -903,6 +903,7 @@ mod tests {
         );
     }
 
+    #[must_use]
     async fn dial_by_card_id(
         dialer: &NodeEndpoint,
         acceptor: &NodeEndpoint,
@@ -963,7 +964,10 @@ mod tests {
 
         member.replace_address(peer.endpoint().addr());
         member.replace_address(unanswered_address);
-        assert!(dial_by_card_id(&member, &peer).await.is_none());
+        assert!(
+            dial_by_card_id(&member, &peer).await.is_none(),
+            "a dial by card id reached the peer through an unanswered address within {LOCAL_DIAL_WAIT:?}"
+        );
 
         member.replace_address(peer.endpoint().addr());
         assert!(dial_by_card_id(&member, &peer).await.is_some());

@@ -3361,6 +3361,7 @@ pub(crate) mod tests {
     }
 
     /// Whether a Message sent on the connection after the server's last answer is acknowledged, within the wait for a direct answer: any close the server made before that answer reaches the connection first.
+    #[must_use]
     async fn still_answers(connection: &Connection) -> bool {
         timeout(DIRECT_ANSWER_WAIT, async {
             let (mut send, mut recv) = connection.open_bi().await.ok()?;
@@ -3902,6 +3903,7 @@ pub(crate) mod tests {
     const CONNECT_TIMEOUT_SLACK: Duration = Duration::from_millis(500);
 
     /// Whether the client's held connection to the peer reads closed within the wait, waited for without a sleep.
+    #[must_use]
     async fn held_connection_known_closed_within(
         client: &DirectClient,
         peer: EndpointId,
