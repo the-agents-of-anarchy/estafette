@@ -222,9 +222,13 @@ impl Server {
         }
     }
 
-    /// The result of the named tool called with the arguments, or the error code it fails with.
-    async fn answer(&self, tool: &str, arguments: JsonObject) -> Result<ToolResult, ErrorCode> {
-        match ToolName::named(tool).ok_or(ErrorCode::BadRequest)? {
+    /// The result of the tool called with the arguments, or the error code it fails with, `bad_request` for a name no tool has.
+    async fn answer(
+        &self,
+        tool: Option<ToolName>,
+        arguments: JsonObject,
+    ) -> Result<ToolResult, ErrorCode> {
+        match tool.ok_or(ErrorCode::BadRequest)? {
             ToolName::ListCards => {
                 input_of::<NoInput>(arguments)?;
                 self.list_cards().await
@@ -243,8 +247,9 @@ impl Server {
     /// Sends the body to the one member the input names, by the send algorithm of spec 3.10.
     async fn send(&self, input: SendInput) -> Result<ToolResult, ErrorCode> {
         let node = self.session.node()?;
-        let delivery = node.send(&input.to.0, &input.body).await?;
-        Ok(ToolResult::Sent(SentMessage::of(delivery)))
+        let delivery = node.send(&input.to.0, &input.body).await;
+        (self.effects.report)(InboxEvent::send_answered(&input.to.0, &delivery).into());
+        Ok(ToolResult::Sent(SentMessage::of(delivery?)))
     }
 
     /// Sends the body to each member the input names, one result per member.
@@ -252,6 +257,9 @@ impl Server {
         let node = self.session.node()?;
         let handles: Vec<String> = input.to.into_iter().map(|recipient| recipient.0).collect();
         let results = node.broadcast(&handles, &input.body).await;
+        for result in &results {
+            (self.effects.report)(InboxEvent::send_answered(&result.to, &result.outcome).into());
+        }
         Ok(ToolResult::Broadcast {
             results: results.into_iter().map(BroadcastOutcome::of).collect(),
         })
@@ -455,9 +463,11 @@ impl ServerHandler for Server {
         request: CallToolRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        let tool = ToolName::named(&request.name);
         let outcome = self
-            .answer(&request.name, request.arguments.unwrap_or_default())
+            .answer(tool, request.arguments.unwrap_or_default())
             .await;
+        (self.effects.report)(InboxEvent::tool_answered(tool.map(ToolName::name), &outcome).into());
         let envelope = self
             .envelope_of(outcome)
             .map_err(|error| unserializable(&error))?;
@@ -1206,12 +1216,22 @@ mod tests {
     }
 
     async fn claimed_pair(machine: &Machine) -> (Client, Client) {
+        claimed_pair_with_amy_recording_to(machine, Arc::new(|_event: Event| {})).await
+    }
+
+    async fn claimed_pair_with_amy_recording_to(
+        machine: &Machine,
+        amy_record: RunRecord,
+    ) -> (Client, Client) {
         machine.create_card("amy-card", "amy", AMY_SEED);
         machine.create_card("bob-card", "bob", BOB_SEED);
         let meeting = Meeting::of(2);
         let mut amy = start_server(
             machine,
-            ServerPlan::meeting(FIRST_PROCESS_ID, BOB_SEED, &meeting),
+            ServerPlan {
+                report: amy_record,
+                ..ServerPlan::meeting(FIRST_PROCESS_ID, BOB_SEED, &meeting)
+            },
         );
         let mut bob = start_server(
             machine,
@@ -1406,6 +1426,82 @@ mod tests {
 
     fn unclaimed() -> Value {
         json!({ "card": null, "handle": null, "status": "unclaimed" })
+    }
+
+    type RecordedEvent = (&'static str, crate::event::EventFields);
+
+    /// A run record handing the name and fields of each event of the name to the receiver, and that receiver.
+    fn recording_events_named(
+        name: &'static str,
+    ) -> (RunRecord, mpsc::UnboundedReceiver<RecordedEvent>) {
+        let (recorded, received) = mpsc::unbounded_channel();
+        let record: RunRecord = Arc::new(move |event: Event| {
+            if event.name() == name {
+                drop(recorded.send((event.name(), event.fields())));
+            }
+        });
+        (record, received)
+    }
+
+    /// Every event recorded so far that the receiver has not handed out yet.
+    fn recorded_so_far(
+        received: &mut mpsc::UnboundedReceiver<RecordedEvent>,
+    ) -> Vec<RecordedEvent> {
+        std::iter::from_fn(|| received.try_recv().ok()).collect()
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_each_tool_call_is_recorded_by_the_tools_name_with_its_outcome_or_its_error_code()
+     {
+        let machine = Machine::new("tool-answered");
+        let (record, mut recorded) = recording_events_named("tool.answered");
+        let mut client = start_server(
+            &machine,
+            ServerPlan {
+                report: record,
+                ..ServerPlan::alone(FIRST_PROCESS_ID)
+            },
+        );
+        client.initialize().await;
+
+        client.envelope("list_cards", json!({})).await;
+        client.envelope("peers", json!({})).await;
+        client.envelope("inbox", json!({ "since": -1 })).await;
+        client.envelope("rename_card", json!({})).await;
+
+        assert_eq!(
+            recorded_so_far(&mut recorded),
+            vec![
+                (
+                    "tool.answered",
+                    vec![("tool", json!("list_cards")), ("outcome", json!("ok"))]
+                ),
+                (
+                    "tool.answered",
+                    vec![
+                        ("tool", json!("peers")),
+                        ("outcome", json!("error")),
+                        ("code", json!("not_claimed"))
+                    ]
+                ),
+                (
+                    "tool.answered",
+                    vec![
+                        ("tool", json!("inbox")),
+                        ("outcome", json!("error")),
+                        ("code", json!("bad_request"))
+                    ]
+                ),
+                (
+                    "tool.answered",
+                    vec![
+                        ("tool", Value::Null),
+                        ("outcome", json!("error")),
+                        ("code", json!("bad_request"))
+                    ]
+                ),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -2238,6 +2334,69 @@ mod tests {
             ] })
         );
         assert_eq!(read["result"]["messages"][0]["id"], json!(id));
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_each_send_of_a_send_or_broadcast_is_recorded_with_its_to_handle_and_the_message_id_it_was_delivered_under_or_its_code()
+     {
+        const NOT_A_HANDLE: &str = "Bob!";
+        let _slot = node_slot().await;
+        let machine = Machine::new("send-answered");
+        let (record, mut recorded) = recording_events_named("tool.send_answered");
+        let (mut amy, _bob) = claimed_pair_with_amy_recording_to(&machine, record).await;
+
+        let sent = amy
+            .envelope("send", json!({ "to": "bob", "body": MESSAGE_BODY }))
+            .await;
+        amy.envelope("send", json!({ "to": NOT_A_HANDLE, "body": MESSAGE_BODY }))
+            .await;
+        let broadcast = amy
+            .envelope(
+                "broadcast",
+                json!({ "to": ["nobody", "bob"], "body": MESSAGE_BODY }),
+            )
+            .await;
+
+        let sent_id = sent["result"]["id"].as_str().unwrap();
+        let broadcast_id = broadcast["result"]["results"][1]["id"].as_str().unwrap();
+        assert_ne!(sent_id, broadcast_id);
+        assert_eq!(
+            recorded_so_far(&mut recorded),
+            vec![
+                (
+                    "tool.send_answered",
+                    vec![
+                        ("to", json!("bob")),
+                        ("outcome", json!("ok")),
+                        ("message", json!(sent_id))
+                    ]
+                ),
+                (
+                    "tool.send_answered",
+                    vec![
+                        ("to", Value::Null),
+                        ("outcome", json!("error")),
+                        ("code", json!("unknown_handle"))
+                    ]
+                ),
+                (
+                    "tool.send_answered",
+                    vec![
+                        ("to", json!("nobody")),
+                        ("outcome", json!("error")),
+                        ("code", json!("unknown_handle"))
+                    ]
+                ),
+                (
+                    "tool.send_answered",
+                    vec![
+                        ("to", json!("bob")),
+                        ("outcome", json!("ok")),
+                        ("message", json!(broadcast_id))
+                    ]
+                ),
+            ]
+        );
     }
 
     #[tokio::test]

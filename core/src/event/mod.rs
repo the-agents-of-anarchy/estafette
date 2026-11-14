@@ -233,7 +233,7 @@ mod tests {
     use super::*;
 
     const SPEC_FORMAT_VERSION: u64 = 1;
-    const PINNED_EVENT_NAMES: [&str; 61] = [
+    const PINNED_EVENT_NAMES: [&str; 63] = [
         "process.command_failed",
         "process.network_created",
         "process.clock_before_unix_epoch",
@@ -292,6 +292,8 @@ mod tests {
         "tool.handshake_failed",
         "tool.answering_failed",
         "tool.standard_input_failed",
+        "tool.answered",
+        "tool.send_answered",
         "dropped",
         "raw_file_opened",
         "iroh_line",

@@ -4,16 +4,23 @@ use rmcp::service::ServerInitializeError;
 use serde_json::Value;
 use tokio::task::JoinError;
 
-use super::{AnsweredFailure, AreaEvent, Event, EventFields, answered};
+use super::{AnsweredFailure, AreaEvent, CODE_FIELD, Event, EventFields, answered};
 use crate::errors::ErrorCode;
+use crate::handle::LocalHandle;
 use crate::mcp::RegistryFailure;
 use crate::net::direct::message_id_text;
+use crate::node::Delivery;
 use crate::wire::MessageId;
 
 const MESSAGE_FIELD: &str = "message";
 const FRAME_FIELD: &str = "frame";
 const ATTACHED_FIELD: &str = "attached";
 const CLIENTS_FIELD: &str = "clients";
+const TOOL_FIELD: &str = "tool";
+const TO_FIELD: &str = "to";
+const OUTCOME_FIELD: &str = "outcome";
+const OK_OUTCOME: &str = "ok";
+const ERROR_OUTCOME: &str = "error";
 
 super::event_names! {
     /// The names of the inbox and tool events.
@@ -22,6 +29,8 @@ super::event_names! {
         FrameDelivered => "inbox.frame_delivered",
         ClientConnected => "inbox.client_connected",
         ClientGone => "inbox.client_gone",
+        ToolAnswered => "tool.answered",
+        SendAnswered => "tool.send_answered",
         ListCardsRegistryUnreadable => "tool.list_cards_registry_unreadable",
         ListCardsTaskFailed => "tool.list_cards_task_failed",
         HandshakeFailed => "tool.handshake_failed",
@@ -44,6 +53,16 @@ pub enum InboxEvent {
     ClientConnected { clients: usize },
     /// A client of the inbox socket went, leaving this many connected.
     ClientGone { clients: usize },
+    /// A tool call was answered: the tool by name, none for a name no tool has, and the error code it failed with, none when it answered ok.
+    ToolAnswered {
+        tool: Option<&'static str>,
+        code: Option<&'static str>,
+    },
+    /// One send of a send or broadcast call was answered: the handle it went to, none for a `to` that is no handle, and the message id it was delivered under, absent where its text is no message id, or the error code it failed with.
+    SendAnswered {
+        to: Option<LocalHandle>,
+        outcome: Result<Option<MessageId>, &'static str>,
+    },
     /// `list_cards` answered with the failure's own code.
     ListCardsFailed(ListCardsFailure),
     /// The MCP handshake failed.
@@ -77,6 +96,18 @@ impl From<ListCardsFailure> for Event {
 }
 
 impl InboxEvent {
+    /// A tool call answered with the outcome, the tool named by the name a client calls it by.
+    #[must_use]
+    pub fn tool_answered<Answer>(
+        tool: Option<&'static str>,
+        outcome: &Result<Answer, ErrorCode>,
+    ) -> Self {
+        Self::ToolAnswered {
+            tool,
+            code: outcome.as_ref().err().map(ErrorCode::code),
+        }
+    }
+
     /// A message entered the inbox as the numbered frame, its id read from the text the frame carries it as.
     #[must_use]
     pub fn frame_delivered(message_id: &str, frame: u64, attached: bool) -> Self {
@@ -86,6 +117,31 @@ impl InboxEvent {
             attached,
         }
     }
+
+    /// One send to `to` answered with the outcome.
+    #[must_use]
+    pub fn send_answered(to: &str, outcome: &Result<Delivery, ErrorCode>) -> Self {
+        Self::SendAnswered {
+            to: to.parse().ok(),
+            outcome: outcome
+                .as_ref()
+                .map(|delivery| message_id_of(&delivery.id))
+                .map_err(ErrorCode::code),
+        }
+    }
+}
+
+/// Whether a tool or a send answered ok or failed, and with which code.
+fn outcome_fields(code: Option<&'static str>) -> EventFields {
+    code.map_or_else(
+        || vec![(OUTCOME_FIELD, Value::from(OK_OUTCOME))],
+        |code| {
+            vec![
+                (OUTCOME_FIELD, Value::from(ERROR_OUTCOME)),
+                (CODE_FIELD, Value::from(code)),
+            ]
+        },
+    )
 }
 
 /// The message id the text names, none for a text that names none.
@@ -107,6 +163,8 @@ impl AreaEvent for InboxEvent {
             Self::FrameDelivered { .. } => InboxEventName::FrameDelivered,
             Self::ClientConnected { .. } => InboxEventName::ClientConnected,
             Self::ClientGone { .. } => InboxEventName::ClientGone,
+            Self::ToolAnswered { .. } => InboxEventName::ToolAnswered,
+            Self::SendAnswered { .. } => InboxEventName::SendAnswered,
             Self::ListCardsFailed(ListCardsFailure::RegistryUnreadable(_)) => {
                 InboxEventName::ListCardsRegistryUnreadable
             }
@@ -123,7 +181,9 @@ impl AreaEvent for InboxEvent {
         match self {
             Self::FrameDelivered { .. }
             | Self::ClientConnected { .. }
-            | Self::ClientGone { .. } => None,
+            | Self::ClientGone { .. }
+            | Self::ToolAnswered { .. }
+            | Self::SendAnswered { .. } => None,
             Self::AcceptFailed(source) => Some(format!(
                 "the inbox socket could not accept a client: {source}"
             )),
@@ -170,6 +230,26 @@ impl AreaEvent for InboxEvent {
             Self::ClientConnected { clients } | Self::ClientGone { clients } => {
                 vec![(CLIENTS_FIELD, Value::from(*clients))]
             }
+            Self::ToolAnswered { tool, code } => [
+                vec![(TOOL_FIELD, tool.map_or(Value::Null, Value::from))],
+                outcome_fields(*code),
+            ]
+            .concat(),
+            Self::SendAnswered { to, outcome } => [
+                vec![(
+                    TO_FIELD,
+                    to.as_ref()
+                        .map_or(Value::Null, |handle| Value::from(handle.as_str())),
+                )],
+                outcome_fields(outcome.err()),
+                outcome
+                    .ok()
+                    .flatten()
+                    .map(message_field)
+                    .into_iter()
+                    .collect(),
+            ]
+            .concat(),
             Self::AcceptFailed(_)
             | Self::HandshakeFailed(_)
             | Self::AnsweringFailed(_)
