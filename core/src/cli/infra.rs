@@ -16,11 +16,12 @@ use data_encoding::HEXLOWER;
 use iroh::endpoint::BindError;
 use iroh::protocol::Router;
 use iroh::{RelayUrl, SecretKey, Signature};
+use iroh_gossip::Gossip;
 #[cfg(feature = "relay")]
 use iroh_relay::server::{
     AcmeConfig, CertConfig, QuicConfig, RelayConfig, Server, ServerConfig, TlsConfig,
 };
-use tokio::time::{Instant, Interval, MissedTickBehavior, interval};
+use tokio::time::{Instant, Interval, MissedTickBehavior, interval, sleep_until};
 
 use super::debug::DebugArgs;
 use super::network::NetworkFilesystem;
@@ -32,12 +33,12 @@ use crate::handle::Handle;
 use crate::invite::{InviteError, render_host_line};
 use crate::keys::{KeyError, generate_secret_key, parse_secret_key, render_secret_key};
 use crate::net::direct::{DirectHost, MonotonicClock};
-use crate::net::endpoint::NodeEndpoint;
+use crate::net::endpoint::{NodeEndpoint, SnapshotMoment};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
     KnownHostAddress, KnownHosts, Network, NodeError, RelayOfRecord, broadcast_recorded,
-    known_host_addresses, next_recorded_gossip_event, seed_lookup_with_known_hosts, serve,
-    taken_without_a_row_record,
+    known_host_addresses, next_recorded_gossip_event, record_counters,
+    seed_lookup_with_known_hosts, serve, snapshot_due_after, taken_without_a_row_record,
 };
 use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
 use crate::wire::{
@@ -367,12 +368,19 @@ async fn serve_host(
         files.key.clone(),
         files.gate_key(),
         domain.url.clone(),
-        effects.monotonic,
+        Arc::clone(&effects.monotonic),
     )
     .await
     .map_err(Failure::EndpointNotBound)?;
-    let mut node =
-        BootstrapNode::start(files, endpoint, domain, effects.clock, effects.report).await?;
+    let mut node = BootstrapNode::start(
+        files,
+        endpoint,
+        domain,
+        effects.clock,
+        effects.monotonic,
+        effects.report,
+    )
+    .await?;
     let outcome = node.serve_until(effects.stopped, filesystem).await;
     node.stop().await;
     let relay_stopped = relay().await.map_err(Failure::RelayNotShutDown);
@@ -651,6 +659,7 @@ enum Wake {
     Stopped,
     Topic(Option<Result<GossipEvent, GossipError>>),
     RecordDue,
+    SnapshotDue,
 }
 
 /// The bootstrap node of spec 3.14: joined to the topic, broadcasting this host's record, learning other hosts, never rebinding.
@@ -660,11 +669,14 @@ struct BootstrapNode {
     answers: HostAnswers,
     endpoint: NodeEndpoint,
     router: Router,
+    gossip: Gossip,
     topic: NetworkTopic,
     known_hosts: KnownHosts,
     last_record: LastRecord,
     records_due: Option<Interval>,
+    snapshot_due: Instant,
     clock: Clock,
+    monotonic: MonotonicClock,
     report: RunRecord,
 }
 
@@ -675,6 +687,7 @@ impl BootstrapNode {
         endpoint: NodeEndpoint,
         domain: &RelayDomain,
         clock: Clock,
+        monotonic: MonotonicClock,
         report: RunRecord,
     ) -> Result<Self, Failure> {
         let keys = files.network.keys().clone();
@@ -695,11 +708,14 @@ impl BootstrapNode {
             answers,
             endpoint,
             router,
+            gossip,
             topic,
             known_hosts: files.network.into_known_hosts(),
             last_record: files.last_record,
             records_due: None,
+            snapshot_due: snapshot_due_after(monotonic()),
             clock,
+            monotonic,
             report,
         })
     }
@@ -715,16 +731,18 @@ impl BootstrapNode {
                 Wake::Stopped => return Ok(()),
                 Wake::Topic(event) => self.take_topic_event(event).await?,
                 Wake::RecordDue => self.broadcast_record(filesystem).await?,
+                Wake::SnapshotDue => self.record_counters(),
             }
         }
     }
 
-    /// Waits for the stop, the next record due, or the next topic event, in that order of precedence so a busy topic never delays a record.
+    /// Waits for the stop, the next record due, the next counters snapshot, or the next topic event, in that order of precedence so a busy topic never delays a record or a snapshot.
     async fn next_wake(&mut self, stopped: &mut StopRequested) -> Wake {
         tokio::select! {
             biased;
             () = stopped => Wake::Stopped,
             () = next_tick(self.records_due.as_mut()) => Wake::RecordDue,
+            () = sleep_until(self.snapshot_due) => Wake::SnapshotDue,
             event = next_recorded_gossip_event(
                 &mut self.topic,
                 None,
@@ -780,6 +798,17 @@ impl BootstrapNode {
                 (self.report)(taken_without_a_row_record(unapplied.facts(), None, now_ms));
             }
         }
+    }
+
+    /// Records the socket and gossip counters at an interval, so the events file is written at least that often while the host serves.
+    fn record_counters(&mut self) {
+        self.snapshot_due = record_counters(
+            SnapshotMoment::Interval,
+            self.endpoint.endpoint(),
+            &self.gossip,
+            &*self.report,
+            (self.monotonic)(),
+        );
     }
 
     /// Writes the next record counter, then broadcasts this host's record carrying it.
@@ -2265,6 +2294,47 @@ mod tests {
                 ]
             ))
         );
+    }
+
+    const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
+
+    #[tokio::test(start_paused = true)]
+    async fn observability_decisions_9_and_13_the_host_records_its_socket_and_gossip_counters_every_60_s_while_it_serves()
+     {
+        let scratch = Scratch::new("counters");
+        scratch.configure_network();
+        scratch.certify(HOST_SEED);
+        let seen = Seen::default();
+        let (stop, stopped) = stopped_on_signal();
+        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let plan = Plan {
+            stopped,
+            report: record,
+            ..Plan::new(HOST_SEED)
+        };
+
+        let ((_printed, outcome), (first, second)) =
+            tokio::join!(run_planned(&scratch, plan, &seen), async {
+                let first = crate::net::direct::tests::next_counters_snapshot(&mut recorded).await;
+                let second = crate::net::direct::tests::next_counters_snapshot(&mut recorded).await;
+                stop.send(()).unwrap();
+                (first, second)
+            });
+
+        outcome.unwrap();
+        assert_eq!(
+            second.0.duration_since(first.0),
+            SPEC_STATE_SNAPSHOT_INTERVAL
+        );
+        for (_at, fields) in [&first, &second] {
+            assert_eq!(
+                fields.first(),
+                Some(&("moment", serde_json::Value::from("interval")))
+            );
+            let names: Vec<&str> = fields.iter().map(|(name, _)| *name).collect();
+            assert!(names.contains(&"socket.recv_datagrams"), "{names:?}");
+            assert!(names.contains(&"gossip.neighbor_up"), "{names:?}");
+        }
     }
 
     #[tokio::test]
