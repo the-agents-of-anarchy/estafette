@@ -29,6 +29,18 @@ fn run_binary_under_umask(root: &Path, umask: &str, arguments: &[&str]) -> io::R
         .output()
 }
 
+fn stderr_text(output: &Output) -> String {
+    String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+fn require_success(output: &Output) -> io::Result<()> {
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(stderr_text(output)))
+    }
+}
+
 fn mode_of(path: &Path) -> io::Result<u32> {
     Ok(std::fs::metadata(path)?.permissions().mode() & PERMISSION_BITS)
 }
@@ -47,13 +59,13 @@ fn run_binary(root: &std::path::Path, arguments: &[&str]) -> io::Result<Output> 
 fn binary_create_card_then_list_cards_round_trips_of_spec_3_13() {
     let root = common::scratch_root(SCRATCH_PREFIX, "round_trip").unwrap();
     let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
-    assert_eq!(created.status.code(), Some(0));
+    assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
     let printed_key = String::from_utf8(created.stdout).unwrap();
     assert_eq!(printed_key.len(), PUBLIC_KEY_HEX_LINE_LENGTH);
     assert_eq!(created.stderr, Vec::<u8>::new());
 
     let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
-    assert_eq!(listed.status.code(), Some(0));
+    assert_eq!(listed.status.code(), Some(0), "{}", stderr_text(&listed));
     assert_eq!(
         String::from_utf8(listed.stdout).unwrap(),
         format!("ana-card\tana\t{printed_key}")
@@ -65,7 +77,7 @@ fn binary_create_card_twice_exits_one_with_the_message_alone_of_spec_3_13() {
     let root = common::scratch_root(SCRATCH_PREFIX, "twice").unwrap();
     run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
     let second = run_binary(&root, &["create-card", "acme", "ana-card", "bob"]).unwrap();
-    assert_eq!(second.status.code(), Some(1));
+    assert_eq!(second.status.code(), Some(1), "{}", stderr_text(&second));
     assert_eq!(second.stdout, Vec::<u8>::new());
     assert_eq!(
         String::from_utf8(second.stderr).unwrap(),
@@ -89,7 +101,7 @@ fn binary_cards_dir_flag_places_the_card_there_of_spec_3_3() {
         ],
     )
     .unwrap();
-    assert_eq!(created.status.code(), Some(0));
+    assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
     assert!(flagged.join("acme/ana-card.yaml").is_file());
 }
 
@@ -97,10 +109,20 @@ fn binary_cards_dir_flag_places_the_card_there_of_spec_3_3() {
 fn binary_usage_error_exits_two_of_spec_3_13() {
     let root = common::scratch_root(SCRATCH_PREFIX, "usage").unwrap();
     let missing_arguments = run_binary(&root, &["create-card", "acme"]).unwrap();
-    assert_eq!(missing_arguments.status.code(), Some(USAGE_ERROR_CODE));
+    assert_eq!(
+        missing_arguments.status.code(),
+        Some(USAGE_ERROR_CODE),
+        "{}",
+        stderr_text(&missing_arguments)
+    );
     assert_eq!(missing_arguments.stdout, Vec::<u8>::new());
     let unknown_command = run_binary(&root, &["no-such-command"]).unwrap();
-    assert_eq!(unknown_command.status.code(), Some(USAGE_ERROR_CODE));
+    assert_eq!(
+        unknown_command.status.code(),
+        Some(USAGE_ERROR_CODE),
+        "{}",
+        stderr_text(&unknown_command)
+    );
 }
 
 #[test]
@@ -118,7 +140,8 @@ fn binary_names_outside_the_handle_grammar_are_usage_errors_before_any_write_of_
         assert_eq!(
             refused.status.code(),
             Some(USAGE_ERROR_CODE),
-            "{arguments:?}"
+            "{arguments:?}: {}",
+            stderr_text(&refused)
         );
         assert_eq!(refused.stdout, Vec::<u8>::new());
     }
@@ -166,7 +189,7 @@ fn binary_create_card_creates_the_program_directories_and_two_files_with_the_mod
 {
     let root = common::scratch_root(SCRATCH_PREFIX, "created").unwrap();
     let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
-    assert_eq!(created.status.code(), Some(0));
+    assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
     assert_eq!(
         mode_of(&root.join("config/estafette")).unwrap(),
         PRIVATE_DIRECTORY_MODE
@@ -196,7 +219,7 @@ fn binary_create_card_creates_the_program_directories_and_two_files_with_the_mod
 fn binary_list_cards_creates_the_program_directories_as_its_help_states() {
     let root = common::scratch_root(SCRATCH_PREFIX, "list_creates_directories").unwrap();
     let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
-    assert_eq!(listed.status.code(), Some(0));
+    assert_eq!(listed.status.code(), Some(0), "{}", stderr_text(&listed));
     assert_eq!(listed.stdout, Vec::<u8>::new());
     for created in ["config/estafette", "data/estafette"] {
         assert_eq!(
@@ -213,7 +236,7 @@ fn binary_create_card_sets_exact_file_modes_under_a_restrictive_umask_of_spec_3_
     let root = common::scratch_root(SCRATCH_PREFIX, "restrictive_umask").unwrap();
     let created =
         run_binary_under_umask(&root, "077", &["create-card", "acme", "ana-card", "ana"]).unwrap();
-    assert_eq!(created.status.code(), Some(0));
+    assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
     let cards = root.join("data/estafette/cards/acme");
     assert_eq!(
         mode_of(&cards.join("ana-card.yaml")).unwrap(),
@@ -227,7 +250,12 @@ fn binary_owner_key_is_owner_read_write_under_any_umask_of_spec_3_3() {
     for umask in UMASKS {
         let root = common::scratch_root(SCRATCH_PREFIX, &format!("key_modes_{umask}")).unwrap();
         let network = run_binary_under_umask(&root, umask, &["network", "create", "acme"]).unwrap();
-        assert_eq!(network.status.code(), Some(0), "umask {umask}");
+        assert_eq!(
+            network.status.code(),
+            Some(0),
+            "umask {umask}: {}",
+            stderr_text(&network)
+        );
         assert_eq!(
             mode_of(&root.join("config/estafette/networks/acme.owner.key")).unwrap(),
             KEY_FILE_MODE,
@@ -329,7 +357,12 @@ fn binary_program_directories_are_owner_only_under_any_umask_of_spec_3_3() {
             std::fs::create_dir(root.join(base)).unwrap();
         }
         let listed = run_binary_under_umask(&root, umask, &["list-cards", "acme"]).unwrap();
-        assert_eq!(listed.status.code(), Some(0), "umask {umask}");
+        assert_eq!(
+            listed.status.code(),
+            Some(0),
+            "umask {umask}: {}",
+            stderr_text(&listed)
+        );
         for created in ["config/estafette", "data/estafette"] {
             assert_eq!(
                 mode_of(&root.join(created)).unwrap(),
@@ -353,8 +386,9 @@ fn binary_program_directories_are_owner_only_under_any_umask_of_spec_3_3() {
 const CARDS_DIRECTORY_VARIABLE: &str = "ESTAFETTE_CARDS_DIR";
 const CARDS_CHECK_LINE: &str = "cards\tpass\tcards valid: 1";
 
-fn create_network_and_card_in(root: &Path, cards_directory: &str) -> io::Result<bool> {
+fn create_network_and_card_in(root: &Path, cards_directory: &str) -> io::Result<()> {
     let network = run_binary(root, &["network", "create", "acme"])?;
+    require_success(&network)?;
     let card = run_binary(
         root,
         &[
@@ -366,14 +400,14 @@ fn create_network_and_card_in(root: &Path, cards_directory: &str) -> io::Result<
             cards_directory,
         ],
     )?;
-    Ok(network.status.success() && card.status.success())
+    require_success(&card)
 }
 
 #[test]
 fn binary_doctor_reads_the_cards_of_the_cards_dir_flag_of_spec_3_3() {
     let root = common::scratch_root(SCRATCH_PREFIX, "doctor_flag").unwrap();
     let flagged = root.join("flagged");
-    assert!(create_network_and_card_in(&root, flagged.to_str().unwrap()).unwrap());
+    create_network_and_card_in(&root, flagged.to_str().unwrap()).unwrap();
 
     let diagnosed = run_binary(
         &root,
@@ -390,7 +424,7 @@ fn binary_doctor_reads_the_cards_of_the_cards_dir_flag_over_the_variable_of_spec
     let root = common::scratch_root(SCRATCH_PREFIX, "doctor_flag_over_variable").unwrap();
     let flagged = root.join("flagged");
     let cardless = root.join("cardless");
-    assert!(create_network_and_card_in(&root, flagged.to_str().unwrap()).unwrap());
+    create_network_and_card_in(&root, flagged.to_str().unwrap()).unwrap();
 
     let diagnosed = Command::new(BINARY)
         .args(["doctor", "acme", "--cards-dir", flagged.to_str().unwrap()])
@@ -410,7 +444,7 @@ fn binary_doctor_reads_the_cards_of_the_cards_dir_flag_over_the_variable_of_spec
 fn binary_test_send_creates_its_operator_card_in_the_cards_dir_of_spec_3_3() {
     let root = common::scratch_root(SCRATCH_PREFIX, "test_send_flag").unwrap();
     let flagged = root.join("flagged");
-    assert!(create_network_and_card_in(&root, flagged.to_str().unwrap()).unwrap());
+    create_network_and_card_in(&root, flagged.to_str().unwrap()).unwrap();
 
     run_binary(
         &root,
@@ -491,7 +525,7 @@ fn binary_list_cards_refuses_a_public_nested_too_deep_for_the_parser_as_an_inval
             )
             .unwrap();
             let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
-            assert_eq!(created.status.code(), Some(0));
+            assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
             let card_file = root.join("data/estafette/cards/acme").join(CARD_FILE_NAME);
             let mut text = std::fs::read_to_string(&card_file).unwrap();
             text.push_str(&public_at(depth));
@@ -524,7 +558,7 @@ fn binary_list_cards_lists_a_card_whose_ignored_key_nests_beyond_the_parser_boun
     for depth in IGNORED_KEY_DEPTHS {
         let root = common::scratch_root(SCRATCH_PREFIX, &format!("ignored_{depth}")).unwrap();
         let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
-        assert_eq!(created.status.code(), Some(0));
+        assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
         let card_file = root.join("data/estafette/cards/acme").join(CARD_FILE_NAME);
         let mut text = std::fs::read_to_string(&card_file).unwrap();
         text.push_str("ignored:\n");
@@ -534,7 +568,12 @@ fn binary_list_cards_lists_a_card_whose_ignored_key_nests_beyond_the_parser_boun
 
         let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
 
-        assert_eq!(listed.status.code(), Some(0), "depth {depth}");
+        assert_eq!(
+            listed.status.code(),
+            Some(0),
+            "depth {depth}: {}",
+            stderr_text(&listed)
+        );
         assert!(
             String::from_utf8_lossy(&listed.stdout).starts_with("ana-card\tana\t"),
             "depth {depth}"
@@ -547,7 +586,7 @@ fn binary_list_cards_lists_a_card_whose_public_aliases_a_container_anchored_beyo
  {
     let root = common::scratch_root(SCRATCH_PREFIX, "alias_beyond_bound").unwrap();
     let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
-    assert_eq!(created.status.code(), Some(0));
+    assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
     let card_file = root.join("data/estafette/cards/acme").join(CARD_FILE_NAME);
     let mut text = std::fs::read_to_string(&card_file).unwrap();
     text.push_str("ignored:\n");
@@ -557,11 +596,6 @@ fn binary_list_cards_lists_a_card_whose_public_aliases_a_container_anchored_beyo
 
     let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
 
-    assert_eq!(
-        listed.status.code(),
-        Some(0),
-        "{}",
-        String::from_utf8_lossy(&listed.stderr)
-    );
+    assert_eq!(listed.status.code(), Some(0), "{}", stderr_text(&listed));
     assert!(String::from_utf8_lossy(&listed.stdout).starts_with("ana-card\tana\t"));
 }
