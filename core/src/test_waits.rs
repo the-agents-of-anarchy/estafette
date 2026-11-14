@@ -37,20 +37,34 @@ pub async fn next_recorded_meeting(
     meets: impl Fn(&EventFields) -> bool + Send + Sync,
     within: Duration,
 ) -> EventFields {
-    let mut seen = Vec::new();
+    recorded_until(receiver, name, meets, within).await.1
+}
+
+/// Every event recorded before the next one of the name whose fields meet the condition, in order, and that one's fields, failing with the name and the events seen when none comes within the bound.
+pub async fn recorded_until(
+    receiver: &mut UnboundedReceiver<RecordedEvent>,
+    name: &str,
+    meets: impl Fn(&EventFields) -> bool + Send + Sync,
+    within: Duration,
+) -> (Vec<RecordedEvent>, EventFields) {
+    let mut before = Vec::new();
     let found = tokio::time::timeout(within, async {
         loop {
             let (recorded_name, fields) = receiver.recv().await.unwrap();
             if recorded_name == name && meets(&fields) {
                 return fields;
             }
-            seen.push(recorded_name);
+            before.push((recorded_name, fields));
         }
     })
     .await;
-    found.unwrap_or_else(|_elapsed| {
-        panic!("no {name} meeting the condition within {within:?}; seen {seen:?}")
-    })
+    match found {
+        Ok(fields) => (before, fields),
+        Err(_elapsed) => {
+            let seen: Vec<&str> = before.iter().map(|(seen, _fields)| *seen).collect();
+            panic!("no {name} meeting the condition within {within:?}; seen {seen:?}")
+        }
+    }
 }
 
 /// What the look finds, looked for again each time the runtime has run its other tasks, or none when the bound runs out first.

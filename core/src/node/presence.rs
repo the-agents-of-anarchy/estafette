@@ -1684,7 +1684,9 @@ pub(super) mod tests {
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
-    use crate::test_waits::{RecordedEvent, found_within, next_recorded_meeting, recorded_events};
+    use crate::test_waits::{
+        RecordedEvent, found_within, next_recorded_meeting, recorded_events, recorded_until,
+    };
     use tokio::sync::mpsc::UnboundedReceiver;
 
     use crate::wire::{Infrastructure, SignatureBytes};
@@ -3861,27 +3863,22 @@ pub(super) mod tests {
                 &secret_key(seed).public().as_bytes()[..SPEC_SHORT_PEER_ID_BYTES],
             ))),
         );
-        let mut before = Vec::new();
-        let found = tokio::time::timeout(HELD_INTRODUCE_SENT_WITHIN, async {
-            while let Some((name, fields)) = events.recv().await {
-                let request = (
-                    crate::net::direct::tests::field(&fields, "kind").cloned(),
-                    crate::net::direct::tests::field(&fields, "peer").cloned(),
-                );
-                if name == REQUEST_SENT && request == introduce_to_the_card {
-                    return Some(fields);
-                }
-                before.push(name);
-            }
-            None
-        })
+        let (before, sent) = recorded_until(
+            events,
+            REQUEST_SENT,
+            |fields| {
+                (
+                    crate::net::direct::tests::field(fields, "kind").cloned(),
+                    crate::net::direct::tests::field(fields, "peer").cloned(),
+                ) == introduce_to_the_card
+            },
+            HELD_INTRODUCE_SENT_WITHIN,
+        )
         .await;
-        match found {
-            Ok(Some(fields)) => (before, fields),
-            Ok(None) | Err(_) => panic!(
-                "no {REQUEST_SENT} of kind {INTRODUCE_KIND} to the card of seed {seed} within {HELD_INTRODUCE_SENT_WITHIN:?}; seen {before:?}"
-            ),
-        }
+        (
+            before.into_iter().map(|(name, _fields)| name).collect(),
+            sent,
+        )
     }
 
     #[tokio::test]

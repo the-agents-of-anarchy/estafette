@@ -419,7 +419,7 @@ mod tests {
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
-    use crate::test_waits::{RecordedEvent, found_within, next_recorded, recorded_events};
+    use crate::test_waits::{found_within, next_recorded, recorded_events, recorded_until};
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
 
     const SPEC_DEAF_TIMEOUT: Duration = Duration::from_secs(15);
@@ -899,12 +899,17 @@ mod tests {
         let _member = starting.await.unwrap();
 
         let rebinding = next_recorded(&mut events, "transport.rebinding").await;
-        let (before_the_snapshot, at_the_rebind) =
-            recorded_until(&mut events, "state.counters").await;
+        let (before_the_snapshot, at_the_rebind) = recorded_until(
+            &mut events,
+            "state.counters",
+            |_fields| true,
+            SNAPSHOT_AT_THE_REBIND_WITHIN,
+        )
+        .await;
         assert!(
             !before_the_snapshot
                 .iter()
-                .any(|name| SHOWS_THE_OLD_ENDPOINT_CLOSED.contains(name)),
+                .any(|(name, _fields)| SHOWS_THE_OLD_ENDPOINT_CLOSED.contains(name)),
             "the counters are read before the old endpoint closes: {before_the_snapshot:?}"
         );
         let first_probe = next_recorded(&mut events, "transport.relay_probed").await;
@@ -949,31 +954,7 @@ mod tests {
         drop(scratch);
     }
 
-    /// The names of the events recorded before the next one of the name, within the bound, and that event's fields.
-    async fn recorded_until(
-        events: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
-        name: &str,
-    ) -> (Vec<&'static str>, crate::event::EventFields) {
-        let mut before = Vec::new();
-        let found = tokio::time::timeout(RECORDED_UNTIL_WITHIN, async {
-            while let Some((recorded, fields)) = events.recv().await {
-                if recorded == name {
-                    return Some(fields);
-                }
-                before.push(recorded);
-            }
-            None
-        })
-        .await;
-        match found {
-            Ok(Some(fields)) => (before, fields),
-            Ok(None) | Err(_) => {
-                panic!("no {name} within {RECORDED_UNTIL_WITHIN:?}; seen {before:?}")
-            }
-        }
-    }
-
-    const RECORDED_UNTIL_WITHIN: Duration = Duration::from_secs(10);
+    const SNAPSHOT_AT_THE_REBIND_WITHIN: Duration = Duration::from_secs(10);
     /// The events a rebind records only once its old endpoint has closed: that endpoint's connections and paths ending, then the relay probes.
     const SHOWS_THE_OLD_ENDPOINT_CLOSED: [&str; 3] = [
         "transport.connection_closed",
