@@ -8,19 +8,14 @@ use serde_json::{Value, json};
 use crate::mcp_server::{
     INIT_TOOL, McpServer, PendingCall, RESULT_KEY, call_succeeded, init_arguments,
 };
-use crate::member_events::MemberEvents;
+use crate::member_events::{COUNTERS_EVENT, MemberEvents};
 use crate::scratch_machine::Card;
 use crate::scripted_node::ScriptedNode;
 use crate::trace_reader::TraceLine;
 
-/// The event a member records once its node runs on a bound endpoint, and the moment that marks it (spec/observability.md decision 9).
-const COUNTERS_EVENT: &str = "state.counters";
+/// The moment of the counters snapshot a member records once its node runs on a bound endpoint (spec/observability.md decision 9).
 const MOMENT_FIELD: &str = "moment";
 const NODE_START_MOMENT: &str = "start";
-/// The longest a running node goes without a counters snapshot: one every 60 s, and one at each rebind, which starts the 60 s afresh (spec/observability.md decisions 9 and 13).
-const SPEC_COUNTERS_INTERVAL: Duration = Duration::from_secs(60);
-/// What a snapshot may lag its interval by on a loaded machine.
-const SNAPSHOT_SLACK: Duration = Duration::from_secs(15);
 /// The event a member records for each frame it delivers to its inbox (spec/observability.md decision 9).
 const FRAME_DELIVERED_EVENT: &str = "inbox.frame_delivered";
 /// The tool a member reads its inbox with, the key of its result listing the messages, and the key of a message's body (spec 3.10).
@@ -42,7 +37,6 @@ const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 pub struct Member {
     server: McpServer,
     process_id: u32,
-    events: MemberEvents,
 }
 
 impl Member {
@@ -51,9 +45,8 @@ impl Member {
     pub fn start(process: Child, events: MemberEvents) -> Self {
         let process_id = process.id();
         Self {
-            server: McpServer::handshaken(process, events.clone()),
+            server: McpServer::handshaken(process, events),
             process_id,
-            events,
         }
     }
 
@@ -116,7 +109,8 @@ impl Member {
     /// The first line of the member's events files that names the event, found already written or awaited until it is written, failing with the member's timeline so far when the bound runs out.
     #[track_caller]
     pub fn wait_for_event(&self, event: &str, within: Duration) -> TraceLine {
-        self.events
+        self.server
+            .events()
             .wait_until(event, within, first_line_named(event))
     }
 
@@ -128,52 +122,40 @@ impl Member {
         within: Duration,
         found_in: impl FnMut(Vec<TraceLine>) -> Option<Found>,
     ) -> Found {
-        self.events.wait_until(awaited, within, found_in)
+        self.server.events().wait_until(awaited, within, found_in)
     }
 
-    /// Waits until the member records a counters snapshot at least `span` after the wall-clock instant, the event its own time produces, proof that much of it passed.
+    /// Waits until the member records a counters snapshot at least `span` after the wall-clock instant, as `MemberEvents::wait_for_time_to_pass` waits.
     #[track_caller]
     pub fn wait_for_time_to_pass(&self, since_wall_ms: u64, span: Duration) {
-        let due_wall_ms = since_wall_ms.saturating_add(u64::try_from(span.as_millis()).unwrap());
-        let within = span
-            .saturating_add(SPEC_COUNTERS_INTERVAL)
-            .saturating_add(SNAPSHOT_SLACK);
-        self.events.wait_until(
-            &format!("{COUNTERS_EVENT} at or after {due_wall_ms} ms"),
-            within,
-            |lines| {
-                lines
-                    .iter()
-                    .any(|line| line.event == COUNTERS_EVENT && line.wall_ms >= due_wall_ms)
-                    .then_some(())
-            },
-        );
+        self.server
+            .events()
+            .wait_for_time_to_pass(since_wall_ms, span);
     }
 
     /// Waits until the inbox tool returns the body, asked at once and again each time the member records a frame delivered.
     #[track_caller]
     pub fn wait_for_inbox_body(&mut self, body: &str, within: Duration) {
         let mut frames_delivered = None;
-        let server = &mut self.server;
-        self.events
-            .wait_until(&format!("{body} in the inbox"), within, |lines| {
-                let delivered = lines
-                    .iter()
-                    .filter(|line| line.event == FRAME_DELIVERED_EVENT)
-                    .count();
-                if frames_delivered.replace(delivered) == Some(delivered) {
-                    return None;
-                }
-                bodies_in(&server.call(INBOX_TOOL, &json!({})))
-                    .contains(&Value::from(body))
-                    .then_some(())
-            });
+        let events = self.server.events().clone();
+        events.wait_until(&format!("{body} in the inbox"), within, |lines| {
+            let delivered = lines
+                .iter()
+                .filter(|line| line.event == FRAME_DELIVERED_EVENT)
+                .count();
+            if frames_delivered.replace(delivered) == Some(delivered) {
+                return None;
+            }
+            bodies_in(&self.server.call(INBOX_TOOL, &json!({})))
+                .contains(&Value::from(body))
+                .then_some(())
+        });
     }
 
     /// The loopback-reachable UDP ports this process's endpoint bound, once it records its node's start on the bound endpoint.
     #[track_caller]
     pub fn bound_udp_ports(&self) -> Vec<u16> {
-        self.events.wait_until(
+        self.server.events().wait_until(
             &format!("{COUNTERS_EVENT} of its node's {NODE_START_MOMENT}"),
             ENDPOINT_BIND_WAIT,
             |lines| lines.iter().any(is_node_start_snapshot).then_some(()),

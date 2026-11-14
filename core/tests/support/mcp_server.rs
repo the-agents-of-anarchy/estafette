@@ -116,6 +116,11 @@ impl McpServer {
         self.call(SEND_TOOL, &send_arguments(to, body))
     }
 
+    /// The events the server records, awaited in its trace directory.
+    pub const fn events(&self) -> &MemberEvents {
+        &self.events
+    }
+
     /// The peer of that handle as the peers tool lists it once the peer meets the condition, asked at once and again each time the server records a line naming the handle, requiring that within the wait.
     #[track_caller]
     pub fn peer_within(

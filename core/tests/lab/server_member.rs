@@ -38,8 +38,6 @@ const TRACE_FILES_NOT_FETCHED: &str =
     "its trace files were not fetched, so what it recorded is unknown";
 /// How long a member on a server may take to claim its card and answer a tool call, each call crossing SSH and the cloud API.
 const SERVING_WAIT: Duration = Duration::from_secs(60);
-/// How long to wait before asking a member on a server again, since each ask crosses SSH and the cloud API.
-const REMOTE_POLL: Duration = Duration::from_millis(1000);
 /// What separates the server's clock stamp from the envelope a remote tool call prints.
 const STAMP_SEPARATOR: char = '\t';
 
@@ -118,7 +116,6 @@ impl<'server> ServerMember<'server> {
                 self.card,
                 self.server.label()
             );
-            std::thread::sleep(REMOTE_POLL);
         }
     }
 
@@ -140,7 +137,6 @@ impl<'server> ServerMember<'server> {
                 self.server.label(),
                 String::from_utf8_lossy(&answered.stderr)
             );
-            std::thread::sleep(REMOTE_POLL);
         }
     }
 

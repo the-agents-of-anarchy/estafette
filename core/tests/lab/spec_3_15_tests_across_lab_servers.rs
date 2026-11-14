@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use estafette::config::{Host, HostOrigin, NetworkConfig};
@@ -8,6 +9,7 @@ use estafette::wire::HostAddr;
 use iroh::PublicKey;
 use serde_json::{Value, json};
 
+use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use crate::handles::unique_handle;
 use crate::inbox_client::InboxClient;
 use crate::killable_host::KillableHost;
@@ -67,8 +69,6 @@ const RECORD_HOST_COLUMN: usize = 2;
 const RECORD_TS_COLUMN: usize = 5;
 /// How soon after the added host's first record every member's configuration must name it (spec 3.15 test 22).
 const SPEC_HOST_ADDED_WITHIN: Duration = Duration::from_millis(1000);
-/// How often the members' network configurations are read while waiting for a host.
-const CONFIG_POLL: Duration = Duration::from_millis(100);
 /// How `tail` begins the line of a presence (spec 3.13).
 const PRESENCE_KIND: &str = "presence";
 /// The column of a presence line holding the card's id.
@@ -313,11 +313,15 @@ impl StoppedMember {
 
 /// The hosts the machine's network configuration names now.
 fn hosts_configured_on(machine: &ScratchMachine) -> Vec<Host> {
-    let config_file = machine
+    NetworkConfig::load(&config_file_of(machine)).unwrap().hosts
+}
+
+/// The machine's network configuration file.
+fn config_file_of(machine: &ScratchMachine) -> PathBuf {
+    machine
         .directories()
         .network_config_file(machine.network())
-        .unwrap();
-    NetworkConfig::load(&config_file).unwrap().hosts
+        .unwrap()
 }
 
 /// A `tail` of the network on the observer's machine, returned once it printed its first payload.
@@ -373,8 +377,12 @@ fn spec_3_15_test_24_three_members_running_180_s_with_no_host_killed_never_rebin
             .collect()
     });
 
+    let quiet_run_began_ms = wall_clock_ms();
     timed("three members run for 180 s with no host killed", || {
-        std::thread::sleep(SPEC_QUIET_RUN);
+        trio[0]
+            .server
+            .events()
+            .wait_for_time_to_pass(quiet_run_began_ms, SPEC_QUIET_RUN);
     });
     let handles: Vec<String> = trio.iter().map(|member| member.handle.clone()).collect();
     for member in &mut trio {
@@ -395,27 +403,47 @@ fn spec_3_15_test_24_three_members_running_180_s_with_no_host_killed_never_rebin
     );
 }
 
-/// Each member's saved entry for the host with the instant it was first read, every configuration read at each poll until each names the host or the deadline passed; a member that did not name it by then has none.
+/// Each member's saved entry for the host with the instant it was first read, every configuration read at once and again on each change in a member's configuration directory until each names the host or the deadline passed; a member that did not name it by then has none.
 fn hosts_first_read(
     members: &[Member],
     id: &str,
     deadline: Instant,
 ) -> Vec<Option<(Host, Instant)>> {
     let mut first_read: Vec<Option<(Host, Instant)>> = members.iter().map(|_| None).collect();
-    loop {
-        for (member, read) in members.iter().zip(first_read.iter_mut()) {
-            if read.is_none() {
-                *read = member
-                    .configured_hosts()
-                    .into_iter()
-                    .find(|host| host.id == id)
-                    .map(|host| (host, Instant::now()));
+    let directories: Vec<PathBuf> = members
+        .iter()
+        .map(|member| config_file_of(&member.machine).parent().unwrap().to_owned())
+        .collect();
+    let mut watch =
+        GrowthWatch::of_path(&directories[0]).unwrap_or_else(|failure| panic!("{failure}"));
+    for directory in &directories {
+        watch
+            .watch_file(directory)
+            .unwrap_or_else(|failure| panic!("{failure}"));
+    }
+    let within = deadline.saturating_duration_since(Instant::now());
+    let every_member_read = first_found_as_files_grow(
+        &mut watch,
+        within,
+        Instant::now,
+        || {},
+        |_watch| {
+            for (member, read) in members.iter().zip(first_read.iter_mut()) {
+                if read.is_none() {
+                    *read = member
+                        .configured_hosts()
+                        .into_iter()
+                        .find(|host| host.id == id)
+                        .map(|host| (host, Instant::now()));
+                }
             }
-        }
-        if first_read.iter().all(Option::is_some) || Instant::now() > deadline {
-            return first_read;
-        }
-        std::thread::sleep(CONFIG_POLL);
+            first_read.iter().all(Option::is_some).then_some(())
+        },
+    );
+    match every_member_read {
+        Ok(()) | Err(WaitEnded::RanOut) => first_read,
+        Err(WaitEnded::WatcherFailed(failure)) => panic!("the file watcher failed: {failure}"),
+        Err(WaitEnded::WatcherEnded) => panic!("the file watcher ended"),
     }
 }
 
@@ -624,9 +652,16 @@ fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_othe
             break None;
         }
     };
-    timed("the 60 s after the kill run out", || {
-        std::thread::sleep(window_ends.saturating_duration_since(Instant::now()));
-    });
+    let window_left_ms = wall_clock_ms();
+    let window_left = window_ends.saturating_duration_since(Instant::now());
+    if !window_left.is_zero() {
+        timed("the 60 s after the kill run out", || {
+            trio[0]
+                .server
+                .events()
+                .wait_for_time_to_pass(window_left_ms, window_left);
+        });
+    }
     let rebinds: Vec<(String, usize)> = trio
         .iter()
         .map(|member| (member.handle.clone(), member.rebinds_recorded()))

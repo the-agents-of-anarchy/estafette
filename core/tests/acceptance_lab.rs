@@ -65,6 +65,34 @@ mod timed_step;
 use scratch_machine::trace_reader;
 
 #[cfg(test)]
+mod dropped_payloads {
+    use data_encoding::HEXLOWER;
+    use iroh::SecretKey;
+    use serde_json::Value;
+
+    use crate::trace_reader::TraceLine;
+
+    /// The event a member records for each gossip payload it drops, and the fields naming the payload's kind and signer (spec/observability.md decisions 6 and 9).
+    pub const PAYLOAD_DROPPED_EVENT: &str = "gossip.payload_dropped";
+    const KIND_FIELD: &str = "kind";
+    const PEER_FIELD: &str = "peer";
+    /// How many leading bytes of its node id name a peer in an events line (spec/observability.md decision 6).
+    const SPEC_SHORT_ID_BYTES: usize = 5;
+
+    /// The key's node id as an events line names a peer.
+    pub fn short_id_text(key: &SecretKey) -> String {
+        HEXLOWER.encode(&key.public().as_bytes()[..SPEC_SHORT_ID_BYTES])
+    }
+
+    /// Whether the events line records a payload of the kind whose signer is the peer dropped.
+    pub fn is_dropped_payload_of(line: &TraceLine, kind: &str, peer: &str) -> bool {
+        line.event == PAYLOAD_DROPPED_EVENT
+            && line.value(KIND_FIELD) == Some(&Value::from(kind))
+            && line.value(PEER_FIELD) == Some(&Value::from(peer))
+    }
+}
+
+#[cfg(test)]
 mod live_host {
     use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -90,6 +118,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
     use estafette::wire::{Payload, SignatureBytes};
     use iroh::SecretKey;
 
+    use crate::dropped_payloads::{PAYLOAD_DROPPED_EVENT, is_dropped_payload_of, short_id_text};
     use crate::forger::Forger;
     use crate::forgeries::{
         infrastructure_record, presence_request, remacked, sealed, unsealed, wall_clock_seconds,
@@ -106,6 +135,8 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
     const TAMPERING_STEP: u64 = 7;
     /// How long a forgery broadcast before its marker may still be on its way after the marker arrived, since gossip orders no delivery across neighbors; chosen, not measured.
     const FORGERY_SETTLE: Duration = Duration::from_secs(5);
+    /// The kind of payload an infrastructure record is, as an events line names it.
+    const INFRASTRUCTURE_KIND: &str = "infrastructure";
     /// The relay a replayed host record names, which the host's later record replaced.
     const RELAY_THE_HOST_LEFT: &str = "https://earlier-relay.estafette.invalid/";
     /// Key seed of the forger that sends the record signed by a foreign key.
@@ -136,6 +167,8 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
     const REPLAYED_HOST_SEED: u8 = 142;
     /// Key seed of the host whose valid record follows the replay.
     const REPLAY_MARKER_SEED: u8 = 143;
+    /// How many earlier records of that host the replay test broadcasts: one below the accepted ts and one at it.
+    const REPLAYS: usize = 2;
     /// Key seed of the forger that sends the valid record.
     const VALID_FORGER_SEED: u8 = 151;
     /// Key seed of the certified host that record names.
@@ -159,7 +192,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
     struct Scene {
         network: LiveNetwork,
         machine: LabMachine,
-        _member: ClaimedMember,
+        member: ClaimedMember,
         forger: Forger,
         _live_host: MutexGuard<'static, ()>,
     }
@@ -182,7 +215,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             Self {
                 network,
                 machine,
-                _member: member,
+                member,
                 forger,
                 _live_host: live_host,
             }
@@ -198,15 +231,33 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             )
         }
 
-        /// Broadcasts a valid record of the marker host after whatever went before, waits until the member saved the marker and then the forgery settle, and returns the hosts its configuration names then, so a forgery delivered after the marker by another gossip path is read too.
+        /// Broadcasts a valid record of the marker host after whatever went before, waits until the member saved the marker and recorded that many records naming the forged host dropped, and returns the hosts its configuration names then, so a forgery delivered after the marker by another gossip path is read too.
         #[track_caller]
-        fn hosts_after_marker(&self, marker: &SecretKey) -> Vec<Host> {
+        fn hosts_after_marker(
+            &self,
+            marker: &SecretKey,
+            forged_host: &SecretKey,
+            forgeries: usize,
+        ) -> Vec<Host> {
             let record = self.certified_record(marker, wall_clock_seconds());
             self.forger
                 .broadcast(sealed(self.network.keys(), marker, record));
             self.machine
                 .hosts_once_named(&id_text(marker), ACCEPTANCE_WAIT);
-            std::thread::sleep(FORGERY_SETTLE);
+            let forged_peer = short_id_text(forged_host);
+            self.member.events().wait_until(
+                &format!("{forgeries} {PAYLOAD_DROPPED_EVENT} of {INFRASTRUCTURE_KIND} records naming {forged_peer}"),
+                ACCEPTANCE_WAIT,
+                |lines| {
+                    let dropped = lines
+                        .iter()
+                        .filter(|line| {
+                            is_dropped_payload_of(line, INFRASTRUCTURE_KIND, &forged_peer)
+                        })
+                        .count();
+                    (dropped >= forgeries).then_some(())
+                },
+            );
             self.machine
                 .hosts_once_named(&id_text(marker), ACCEPTANCE_WAIT)
         }
@@ -247,7 +298,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             scene.network.keys(),
             Payload::Infrastructure(record),
         ));
-        let hosts = scene.hosts_after_marker(&key(FOREIGN_SIGNER_MARKER_SEED));
+        let hosts = scene.hosts_after_marker(&key(FOREIGN_SIGNER_MARKER_SEED), &host, 1);
         drop(scene);
 
         assert!(!names(&hosts, &host), "{hosts:?}");
@@ -272,7 +323,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
         scene
             .forger
             .broadcast(sealed(scene.network.keys(), &member, record));
-        let hosts = scene.hosts_after_marker(&key(UNCERTIFIED_MARKER_SEED));
+        let hosts = scene.hosts_after_marker(&key(UNCERTIFIED_MARKER_SEED), &member, 1);
         drop(scene);
 
         assert!(!names(&hosts, &member), "{hosts:?}");
@@ -295,7 +346,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             scene.network.keys(),
             Payload::Infrastructure(tampered),
         ));
-        let hosts = scene.hosts_after_marker(&key(TAMPERED_MARKER_SEED));
+        let hosts = scene.hosts_after_marker(&key(TAMPERED_MARKER_SEED), &host, 1);
         drop(scene);
 
         assert!(!names(&hosts, &host), "{hosts:?}");
@@ -395,7 +446,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
 
         scene.forger.broadcast(replayed_below);
         scene.forger.broadcast(replayed_at_the_accepted_ts);
-        let hosts = scene.hosts_after_marker(&key(REPLAY_MARKER_SEED));
+        let hosts = scene.hosts_after_marker(&key(REPLAY_MARKER_SEED), &host, REPLAYS);
 
         let saved = hosts.iter().find(|saved| saved.id == id_text(&host));
         assert_eq!(
@@ -634,6 +685,7 @@ mod spec_3_15_two_members_through_the_live_host {
     use iroh::{EndpointAddr, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
+    use crate::dropped_payloads::{PAYLOAD_DROPPED_EVENT, is_dropped_payload_of, short_id_text};
     use crate::forger::Forger;
     use crate::handles::{HANDLE_TAG_LETTERS, unique_handle};
     use crate::inbox_client::InboxClient;
@@ -668,7 +720,8 @@ mod spec_3_15_two_members_through_the_live_host {
     const COMPACT_JSON_MAPPING_FRAME_BYTES: usize = r#"{"":""}"#.len();
     const FRAME_WAIT: Duration = Duration::from_secs(10);
     const NO_FURTHER_FRAME_WAIT: Duration = Duration::from_millis(1000);
-    const REPLAY_SETTLE_WAIT: Duration = Duration::from_millis(2000);
+    /// The kind of payload a presence is, as an events line names it.
+    const PRESENCE_KIND: &str = "presence";
     const FIRST_SESSION: &str = "first session";
     const SECOND_SESSION: &str = "second session";
     const MESSAGES_BEFORE_RECONNECT: u64 = 3;
@@ -681,6 +734,23 @@ mod spec_3_15_two_members_through_the_live_host {
         handle: String,
         claim: Value,
         machine: LabMachine,
+    }
+
+    /// Waits until the member has recorded that many presences signed by the key dropped, the replays broadcast so far.
+    #[track_caller]
+    fn replay_dropped_by(member: &LabMember, signer: &SecretKey, replays: usize) {
+        let signer_peer = short_id_text(signer);
+        member.member.events().wait_until(
+            &format!("{replays} {PAYLOAD_DROPPED_EVENT} of {PRESENCE_KIND} payloads signed by {signer_peer}"),
+            PRESENCE_WAIT,
+            |lines| {
+                let dropped = lines
+                    .iter()
+                    .filter(|line| is_dropped_payload_of(line, PRESENCE_KIND, &signer_peer))
+                    .count();
+                (dropped >= replays).then_some(())
+            },
+        );
     }
 
     /// Claims a fresh card requesting the handle, with the description, on a fresh machine joined to the live network.
@@ -1251,14 +1321,14 @@ mod spec_3_15_two_members_through_the_live_host {
         ));
         amy.member
             .peer_within(&marker_handle, PRESENCE_WAIT, |_marker| true);
-        std::thread::sleep(REPLAY_SETTLE_WAIT);
+        replay_dropped_by(&amy, &bob_key, 1);
         let after_replay = amy
             .member
             .peer_within(&bob_handle, PRESENCE_WAIT, |_bob| true);
         bob.close_standard_input();
         amy.member.peer_within(&bob_handle, PRESENCE_WAIT, gone);
         replayer.broadcast(earlier_through_the_host);
-        std::thread::sleep(REPLAY_SETTLE_WAIT);
+        replay_dropped_by(&amy, &bob_key, 2);
         let after_departure_replay = amy
             .member
             .peer_within(&bob_handle, PRESENCE_WAIT, |_bob| true);

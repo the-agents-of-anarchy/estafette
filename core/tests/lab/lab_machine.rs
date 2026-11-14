@@ -4,12 +4,11 @@ use std::time::{Duration, Instant};
 use estafette::config::{Host, NetworkConfig};
 use estafette::dirs::Directories;
 
+use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use crate::live_network::LiveNetwork;
 use crate::mcp_server::{INIT_TOOL, McpServer, call_succeeded, init_arguments};
+use crate::member_events::MemberEvents;
 use crate::scratch_machine::{Card, ScratchMachine};
-
-/// How often the network configuration is read while waiting for a host.
-const CONFIG_POLL: Duration = Duration::from_millis(100);
 
 /// One machine's worth of estafette state under a scratch root of its own, joined to the live lab network.
 pub struct LabMachine {
@@ -18,7 +17,14 @@ pub struct LabMachine {
 
 /// A running `estafette mcp` process that has claimed its card, kept alive until dropped.
 pub struct ClaimedMember {
-    _server: McpServer,
+    server: McpServer,
+}
+
+impl ClaimedMember {
+    /// The events the member records, awaited in its trace directory.
+    pub const fn events(&self) -> &MemberEvents {
+        self.server.events()
+    }
 }
 
 impl LabMachine {
@@ -64,27 +70,37 @@ impl LabMachine {
         let mut server = self.start_server();
         let claim = server.call(INIT_TOOL, &init_arguments(card));
         assert!(call_succeeded(&claim), "{claim}");
-        ClaimedMember { _server: server }
+        ClaimedMember { server }
     }
 
-    /// The hosts the network configuration names once one of them has the id, requiring that within the wait.
+    /// The hosts the network configuration names once one of them has the id, looked at once and again on each change in the configuration's directory, requiring that within the wait.
     #[track_caller]
     pub fn hosts_once_named(&self, id: &str, within: Duration) -> Vec<Host> {
         let config_file = self
             .directories()
             .network_config_file(self.scratch.network())
             .unwrap();
-        let started = Instant::now();
-        loop {
-            let hosts = NetworkConfig::load(&config_file).unwrap().hosts;
-            if hosts.iter().any(|host| host.id == id) {
-                return hosts;
+        let mut watch = GrowthWatch::of_path(config_file.parent().unwrap())
+            .unwrap_or_else(|failure| panic!("{failure}"));
+        let named = first_found_as_files_grow(
+            &mut watch,
+            within,
+            Instant::now,
+            || {},
+            |_watch| {
+                let hosts = NetworkConfig::load(&config_file).unwrap().hosts;
+                hosts.iter().any(|host| host.id == id).then_some(hosts)
+            },
+        );
+        match named {
+            Ok(hosts) => hosts,
+            Err(WaitEnded::RanOut) => {
+                panic!("the network configuration did not name host {id} within {within:?}")
             }
-            assert!(
-                started.elapsed() < within,
-                "the network configuration did not name host {id} within {within:?}"
-            );
-            std::thread::sleep(CONFIG_POLL);
+            Err(WaitEnded::WatcherFailed(failure)) => {
+                panic!("the file watcher failed: {failure}")
+            }
+            Err(WaitEnded::WatcherEnded) => panic!("the file watcher ended"),
         }
     }
 }
