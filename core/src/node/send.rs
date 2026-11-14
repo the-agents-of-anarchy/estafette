@@ -233,9 +233,9 @@ mod tests {
         DUPLICATE_KEY_PUBLIC, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTEGER_PAST_64_BITS_PUBLIC,
         INTRODUCE_ROUND_TRIP, Member, MemberPlan, PROBE_NONCE, SECOND_HANDLE, SECOND_PUBLIC,
         SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_SEED, WITNESS_HANDLE,
-        WITNESS_SEED, bind, card, direct_answers_taken, inbox_frames, keys, listed_within,
-        message_to, start_members, start_members_reaching, start_pair, start_third_through_second,
-        wall_clock_ms,
+        WITNESS_SEED, bind, card, direct_answers_so_far, direct_answers_taken, inbox_frames, keys,
+        listed_within, message_to, start_members, start_members_reaching, start_pair,
+        start_third_through_second, wall_clock_ms,
     };
     use crate::payload::{PayloadError, open_request, seal_response};
     use crate::peers::Status;
@@ -382,6 +382,8 @@ mod tests {
             crate::net::direct::tests::unrecorded_register(),
         );
         let introduction = message_to(FIRST_SEED, WITNESS_HANDLE);
+        let introduce_answers_before =
+            direct_answers_so_far(&member, WITNESS_SEED, RequestSummary::Introduce);
         assert!(
             introducing
                 .send_message(member.endpoint.id(), introduction)
@@ -399,7 +401,7 @@ mod tests {
             &member,
             WITNESS_SEED,
             RequestSummary::Introduce,
-            1,
+            introduce_answers_before.saturating_add(1),
             INTRODUCE_ROUND_TRIP,
         )
         .await;

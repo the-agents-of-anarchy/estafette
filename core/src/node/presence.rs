@@ -2261,6 +2261,8 @@ pub(super) mod tests {
             crate::net::direct::tests::unrecorded_register(),
         );
 
+        let introduce_answers_before =
+            direct_answers_so_far(&first, SECOND_SEED, RequestSummary::Introduce);
         let ack = sender
             .send_message(first.endpoint.id(), message_to(FIRST_SEED, SECOND_HANDLE))
             .await
@@ -2282,7 +2284,7 @@ pub(super) mod tests {
             &first,
             SECOND_SEED,
             RequestSummary::Introduce,
-            1,
+            introduce_answers_before.saturating_add(1),
             INTRODUCE_ROUND_TRIP,
         )
         .await;
