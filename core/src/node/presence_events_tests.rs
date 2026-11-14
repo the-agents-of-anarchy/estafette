@@ -74,21 +74,16 @@ impl RecordedEvents {
         }
     }
 
-    /// The fields of the next event of that name naming the seed's card as its peer, failing with the name and the seed when none is recorded within the wait.
+    /// The fields of the next event of that name naming the seed's card as its peer, failing with the name and the events seen when none is recorded within the wait.
     async fn next_named_from(&mut self, name: &str, seed: u8) -> EventFields {
         let peer = ("peer", short_id(seed));
-        tokio::time::timeout(EVENT_WAIT, async {
-            loop {
-                let (recorded, fields) = self.0.recv().await.unwrap();
-                if recorded == name && fields.contains(&peer) {
-                    return fields;
-                }
-            }
-        })
+        crate::test_waits::next_recorded_meeting(
+            &mut self.0,
+            name,
+            |fields| fields.contains(&peer),
+            EVENT_WAIT,
+        )
         .await
-        .unwrap_or_else(|_elapsed| {
-            panic!("no {name} naming the card of seed {seed} within {EVENT_WAIT:?}")
-        })
     }
 }
 
