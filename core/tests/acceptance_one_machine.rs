@@ -23,6 +23,9 @@ mod member_events;
 #[path = "support/message_body.rs"]
 mod message_body;
 #[cfg(test)]
+#[path = "support/node_start.rs"]
+mod node_start;
+#[cfg(test)]
 #[path = "support/payload_placeholders.rs"]
 mod payload_placeholders;
 #[cfg(test)]
@@ -37,6 +40,9 @@ mod scripted_node;
 #[cfg(test)]
 #[path = "support/spec_bounds.rs"]
 mod spec_bounds;
+#[cfg(test)]
+#[path = "support/time_passing.rs"]
+mod time_passing;
 #[cfg(test)]
 #[path = "support/timed_step.rs"]
 mod timed_step;

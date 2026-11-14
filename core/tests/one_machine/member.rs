@@ -9,13 +9,11 @@ use crate::mcp_server::{
     INIT_TOOL, McpServer, PendingCall, RESULT_KEY, call_succeeded, init_arguments,
 };
 use crate::member_events::{COUNTERS_EVENT, MemberEvents};
+use crate::node_start::{NODE_START_MOMENT, is_node_start_snapshot};
 use crate::scratch_machine::Card;
 use crate::scripted_node::ScriptedNode;
+use crate::time_passing::wait_for_time_to_pass;
 use crate::trace_reader::TraceLine;
-
-/// The moment of the counters snapshot a member records once its node runs on a bound endpoint (spec/observability.md decision 9).
-const MOMENT_FIELD: &str = "moment";
-const NODE_START_MOMENT: &str = "start";
 /// The event a member records for each frame it delivers to its inbox (spec/observability.md decision 9).
 const FRAME_DELIVERED_EVENT: &str = "inbox.frame_delivered";
 /// The tool a member reads its inbox with, the key of its result listing the messages, and the key of a message's body (spec 3.10).
@@ -125,12 +123,10 @@ impl Member {
         self.server.events().wait_until(awaited, within, found_in)
     }
 
-    /// Waits until the member records a counters snapshot at least `span` after the wall-clock instant, as `MemberEvents::wait_for_time_to_pass` waits.
+    /// Waits until the member records a counters snapshot at least `span` after the wall-clock instant, as `time_passing::wait_for_time_to_pass` waits.
     #[track_caller]
     pub fn wait_for_time_to_pass(&self, since_wall_ms: u64, span: Duration) {
-        self.server
-            .events()
-            .wait_for_time_to_pass(since_wall_ms, span);
+        wait_for_time_to_pass(self.server.events(), since_wall_ms, span);
     }
 
     /// Waits until the inbox tool returns the body, asked at once and again each time the member records a frame delivered.
@@ -213,11 +209,6 @@ fn bodies_in(envelope: &Value) -> Vec<Value> {
         .iter()
         .map(|message| message[BODY_KEY].clone())
         .collect()
-}
-
-/// Whether the events line is the counters snapshot a node records at its start.
-fn is_node_start_snapshot(line: &TraceLine) -> bool {
-    line.event == COUNTERS_EVENT && line.value(MOMENT_FIELD) == Some(&json!(NODE_START_MOMENT))
 }
 
 /// The address that reaches the node at the UDP ports on this machine's loopback alone.

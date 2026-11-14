@@ -25,6 +25,7 @@ use crate::payload_placeholders::wall_clock_ms;
 use crate::scratch_machine::{Card, ScratchMachine};
 use crate::server_member::ServerMember;
 use crate::tail::Tail;
+use crate::time_passing::wait_for_time_to_pass;
 use crate::timed_step::timed;
 
 /// How long a member may take to list a peer that just started as online.
@@ -379,10 +380,7 @@ fn spec_3_15_test_24_three_members_running_180_s_with_no_host_killed_never_rebin
 
     let quiet_run_began_ms = wall_clock_ms();
     timed("three members run for 180 s with no host killed", || {
-        trio[0]
-            .server
-            .events()
-            .wait_for_time_to_pass(quiet_run_began_ms, SPEC_QUIET_RUN);
+        wait_for_time_to_pass(trio[0].server.events(), quiet_run_began_ms, SPEC_QUIET_RUN);
     });
     let handles: Vec<String> = trio.iter().map(|member| member.handle.clone()).collect();
     for member in &mut trio {
@@ -656,10 +654,7 @@ fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_othe
     let window_left = window_ends.saturating_duration_since(Instant::now());
     if !window_left.is_zero() {
         timed("the 60 s after the kill run out", || {
-            trio[0]
-                .server
-                .events()
-                .wait_for_time_to_pass(window_left_ms, window_left);
+            wait_for_time_to_pass(trio[0].server.events(), window_left_ms, window_left);
         });
     }
     let rebinds: Vec<(String, usize)> = trio

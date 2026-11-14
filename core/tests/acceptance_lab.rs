@@ -59,6 +59,9 @@ mod spec_bounds;
 #[path = "lab/tail.rs"]
 mod tail;
 #[cfg(test)]
+#[path = "support/time_passing.rs"]
+mod time_passing;
+#[cfg(test)]
 #[path = "support/timed_step.rs"]
 mod timed_step;
 #[cfg(test)]
