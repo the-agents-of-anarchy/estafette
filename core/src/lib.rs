@@ -26,5 +26,7 @@ mod scratch_removal;
 mod seeded_draws;
 pub mod sidecar;
 pub mod stream_items;
+#[cfg(test)]
+mod test_waits;
 pub mod trace;
 pub mod wire;

@@ -1667,6 +1667,7 @@ pub(super) mod tests {
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
+    use crate::test_waits::found_within;
     use crate::wire::{Infrastructure, SignatureBytes};
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];
@@ -1684,7 +1685,6 @@ pub(super) mod tests {
     const MONOTONIC_LAG: Duration = Duration::from_millis(2000);
     const INIT_ON_A_LAGGING_CLOCK_LATEST: Duration = Duration::from_millis(2000);
     pub(in crate::node) const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
-    const LISTING_POLL: Duration = Duration::from_millis(20);
     #[cfg(feature = "relay")]
     const HOME_RELAY_STATUS_WITHIN: Duration = Duration::from_secs(10);
     #[cfg(feature = "relay")]
@@ -2142,21 +2142,7 @@ pub(super) mod tests {
         seed: u8,
         within: Duration,
     ) -> Option<Peer> {
-        tokio::time::timeout(within, async {
-            loop {
-                if let Some(peer) = member
-                    .node
-                    .peers()
-                    .into_iter()
-                    .find(|peer| peer.card == card(seed))
-                {
-                    return peer;
-                }
-                tokio::time::sleep(LISTING_POLL).await;
-            }
-        })
-        .await
-        .ok()
+        entry_meeting_within(member, seed, |_listed| true, within).await
     }
 
     #[tokio::test]
@@ -2589,21 +2575,7 @@ pub(super) mod tests {
         wanted: impl Fn(Status) -> bool + Send + Sync,
         within: Duration,
     ) -> Option<Peer> {
-        tokio::time::timeout(within, async {
-            loop {
-                if let Some(peer) = member
-                    .node
-                    .peers()
-                    .into_iter()
-                    .find(|peer| peer.card == card(seed) && wanted(peer.status))
-                {
-                    return peer;
-                }
-                tokio::time::sleep(LISTING_POLL).await;
-            }
-        })
-        .await
-        .ok()
+        entry_meeting_within(member, seed, |peer| wanted(peer.status), within).await
     }
 
     fn departure_of(seed: u8, seq: u64) -> Payload {
@@ -2786,16 +2758,7 @@ pub(super) mod tests {
         host_seed: u8,
         within: Duration,
     ) -> Option<Host> {
-        tokio::time::timeout(within, async {
-            loop {
-                if let Some(host) = saved_host(config_path, host_seed) {
-                    return host;
-                }
-                tokio::time::sleep(LISTING_POLL).await;
-            }
-        })
-        .await
-        .ok()
+        found_within(within, async || saved_host(config_path, host_seed)).await
     }
 
     async fn lookup_entry(member: &Member, seed: u8) -> Option<iroh::EndpointAddr> {
@@ -3361,19 +3324,17 @@ pub(super) mod tests {
             .load(std::sync::atomic::Ordering::SeqCst);
 
         witness.gossip.shutdown().await.unwrap();
-        let probed = tokio::time::timeout(PROBE_ANSWERED_WAIT, async {
-            while witness
+        found_within(PROBE_ANSWERED_WAIT, async || {
+            (witness
                 .probes_answered
                 .load(std::sync::atomic::Ordering::SeqCst)
-                == probes_before
-            {
-                tokio::time::sleep(LISTING_POLL).await;
-            }
+                != probes_before)
+                .then_some(())
         })
-        .await;
+        .await
+        .unwrap_or_else(|| panic!("the witness answered no probe within {PROBE_ANSWERED_WAIT:?}"));
         tokio::time::sleep(AFTER_PROBE_ACK).await;
 
-        probed.unwrap();
         let after = listed_within(&member, WITNESS_SEED, Duration::ZERO)
             .await
             .unwrap();
@@ -4479,21 +4440,14 @@ pub(super) mod tests {
         condition: impl Fn(&Peer) -> bool + Send + Sync,
         within: Duration,
     ) -> Option<Peer> {
-        tokio::time::timeout(within, async {
-            loop {
-                if let Some(peer) = member
-                    .node
-                    .peers()
-                    .into_iter()
-                    .find(|peer| peer.card == card(seed) && condition(peer))
-                {
-                    return peer;
-                }
-                tokio::task::yield_now().await;
-            }
+        found_within(within, async || {
+            member
+                .node
+                .peers()
+                .into_iter()
+                .find(|peer| peer.card == card(seed) && condition(peer))
         })
         .await
-        .ok()
     }
 
     const LONGER_THAN_ANY_SILENCE: Duration = Duration::from_secs(3600);
