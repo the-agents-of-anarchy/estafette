@@ -304,23 +304,31 @@ fn run_traced<StandardError: Write + Send + 'static>(
     let status = exit_status_after(outcome, process.record.as_ref());
     (process.record)(ProcessEvent::Exited { status }.into());
     if let Some(trace) = &process.trace {
-        for stop in trace.finish() {
-            let unfinished = match stop {
-                TraceStop::Drained => None,
-                TraceStop::NotDrained { file } => Some(ProcessEvent::TraceNotDrained {
-                    file,
-                    drain: trace_setup.bounds.drain,
-                }),
-                TraceStop::NotCut { file, source } => {
-                    Some(ProcessEvent::TraceNotCut { file, source })
-                }
-            };
-            if let Some(unfinished) = unfinished {
-                run_record_on(&stderr, None)(unfinished.into());
-            }
-        }
+        report_unfinished_trace_stops(
+            trace.finish(),
+            trace_setup.bounds.drain,
+            &run_record_on(&stderr, None),
+        );
     }
     status
+}
+
+/// Writes through the standard error record each stop that left its trace file unfinished, in the order given, naming the drain bound a writer did not report within.
+fn report_unfinished_trace_stops(
+    stops: [TraceStop; 2],
+    drain: Duration,
+    standard_error: &RunRecord,
+) {
+    for stop in stops {
+        let unfinished = match stop {
+            TraceStop::Drained => None,
+            TraceStop::NotDrained { file } => Some(ProcessEvent::TraceNotDrained { file, drain }),
+            TraceStop::NotCut { file, source } => Some(ProcessEvent::TraceNotCut { file, source }),
+        };
+        if let Some(unfinished) = unfinished {
+            standard_error(unfinished.into());
+        }
+    }
 }
 
 /// The debug trace of this process under `--debug`, its run id from the secure random source and its files written through the given effects within the given bounds; none under `--no-debug`.
