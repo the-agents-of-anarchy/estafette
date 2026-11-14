@@ -704,31 +704,30 @@ mod tests {
         const FAILURES_SEEN: usize = 3;
         let directories = scratch_directories("accept-failure");
         let socket_path = directories.inbox_socket_file(OWN_PROCESS_ID);
-        let recorded = Arc::new(Mutex::new(Vec::new()));
-        let sink = Arc::clone(&recorded);
+        let (recorded, mut received) = mpsc::unbounded_channel();
         let _socket = InboxSocket::serving(
             socket_path,
             FailingAcceptor(io::ErrorKind::OutOfMemory),
             Box::new(move |event| {
                 if let InboxEvent::AcceptFailed(failure) = event {
-                    locked(&sink).push(failure.kind());
+                    recorded.send(failure.kind()).unwrap_or_default();
                 }
             }),
         );
 
-        tokio::time::timeout(READ_DEADLINE, async {
-            while locked(&recorded).len() < FAILURES_SEEN {
-                tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
+        let kinds = tokio::time::timeout(READ_DEADLINE, async {
+            let mut kinds = Vec::new();
+            while kinds.len() < FAILURES_SEEN {
+                kinds.push(received.recv().await.unwrap());
             }
+            kinds
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_elapsed| {
+            panic!("{FAILURES_SEEN} accept failures not recorded within {READ_DEADLINE:?}")
+        });
 
-        assert!(
-            locked(&recorded)
-                .iter()
-                .all(|kind| *kind == io::ErrorKind::OutOfMemory)
-        );
+        assert_eq!(kinds, [io::ErrorKind::OutOfMemory; FAILURES_SEEN]);
     }
 
     type RecordedEvent = (&'static str, EventFields);
