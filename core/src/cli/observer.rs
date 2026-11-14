@@ -423,7 +423,7 @@ async fn send_as_operator(
         .map_err(Failure::Session)?;
     let delivery = node.send(to.as_str(), body).await;
     release_card(&session).await;
-    delivery.map_err(|undelivered| Failure::NotDelivered(undelivered.code))
+    delivery.map_err(|undelivered| Failure::NotDelivered(undelivered.into()))
 }
 
 /// Claims the reserved operator card from the registry, creating it first when absent.

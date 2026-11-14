@@ -234,7 +234,7 @@ impl AreaEvent for InboxEvent {
             Self::SendAnswered { to, outcome } => {
                 let (code, message) = match outcome {
                     Ok(message) => (None, Some(*message)),
-                    Err(undelivered) => (Some(&undelivered.code), undelivered.id),
+                    Err(undelivered) => (Some(undelivered.code()), undelivered.id()),
                 };
                 [
                     vec![(
@@ -306,6 +306,42 @@ mod tests {
                 (TO_FIELD, Value::Null),
                 (OUTCOME_FIELD, Value::from(OK_OUTCOME)),
                 (MESSAGE_FIELD, Value::from(MESSAGE_ID_TEXT)),
+            ]
+        );
+    }
+
+    #[test]
+    fn observability_decision_9_a_send_that_failed_after_minting_writes_its_message_id_and_one_that_failed_before_writes_none()
+     {
+        let after_mint = InboxEvent::SendAnswered {
+            to: None,
+            outcome: Err(Undelivered::AfterMint {
+                code: ErrorCode::Timeout,
+                id: message_id(),
+            }),
+        }
+        .fields();
+        let before_mint = InboxEvent::SendAnswered {
+            to: None,
+            outcome: Err(Undelivered::BeforeMint(ErrorCode::TooLarge)),
+        }
+        .fields();
+
+        assert_eq!(
+            after_mint,
+            vec![
+                (TO_FIELD, Value::Null),
+                (OUTCOME_FIELD, Value::from(ERROR_OUTCOME)),
+                (CODE_FIELD, Value::from("timeout")),
+                (MESSAGE_FIELD, Value::from(MESSAGE_ID_TEXT)),
+            ]
+        );
+        assert_eq!(
+            before_mint,
+            vec![
+                (TO_FIELD, Value::Null),
+                (OUTCOME_FIELD, Value::from(ERROR_OUTCOME)),
+                (CODE_FIELD, Value::from("too_large")),
             ]
         );
     }

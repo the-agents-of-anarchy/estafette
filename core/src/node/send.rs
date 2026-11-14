@@ -19,23 +19,39 @@ pub struct Delivery {
     pub attached: bool,
 }
 
-/// What a send that was not delivered reports: the code it failed with, and the id of its message once one was minted.
+/// What a send that was not delivered reports: the code it failed with, and the id of its message when it failed after minting one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Undelivered {
-    pub code: ErrorCode,
-    pub id: Option<MessageId>,
+pub enum Undelivered {
+    /// The send failed with the code before any message was minted.
+    BeforeMint(ErrorCode),
+    /// The send failed with the code once the message of the id was minted.
+    AfterMint { code: ErrorCode, id: MessageId },
 }
 
 impl Undelivered {
-    /// A send that failed with the code before any message was minted.
-    const fn unminted(code: ErrorCode) -> Self {
-        Self { code, id: None }
+    /// The code the send failed with.
+    #[must_use]
+    pub const fn code(&self) -> &ErrorCode {
+        match self {
+            Self::BeforeMint(code) | Self::AfterMint { code, .. } => code,
+        }
+    }
+
+    /// The id of the message the send minted before it failed, none for a send that failed before minting one.
+    #[must_use]
+    pub const fn id(&self) -> Option<MessageId> {
+        match self {
+            Self::BeforeMint(_) => None,
+            Self::AfterMint { id, .. } => Some(*id),
+        }
     }
 }
 
 impl From<Undelivered> for ErrorCode {
     fn from(undelivered: Undelivered) -> Self {
-        undelivered.code
+        match undelivered {
+            Undelivered::BeforeMint(code) | Undelivered::AfterMint { code, .. } => code,
+        }
     }
 }
 
@@ -53,13 +69,13 @@ impl Node {
     /// `Undelivered` naming why the message was not delivered, one of the codes of spec 3.10, with the message's id once one was minted.
     pub async fn send(&self, to: &str, body: &str) -> Result<Delivery, Undelivered> {
         let recipient =
-            only_card(&cards_named(&self.peers(), to)).map_err(Undelivered::unminted)?;
-        refuse_oversized(body).map_err(Undelivered::unminted)?;
+            only_card(&cards_named(&self.peers(), to)).map_err(Undelivered::BeforeMint)?;
+        refuse_oversized(body).map_err(Undelivered::BeforeMint)?;
         let message = self.message_for(recipient, body);
         let id = message.id;
         self.deliver(recipient, message)
             .await
-            .map_err(|code| Undelivered { code, id: Some(id) })
+            .map_err(|code| Undelivered::AfterMint { code, id })
     }
 
     /// Sends the body to each handle concurrently and returns one result per handle, in the order given.
@@ -809,10 +825,7 @@ mod tests {
         );
         assert_eq!(
             results[1].outcome,
-            Err(Undelivered {
-                code: ErrorCode::UnknownHandle,
-                id: None
-            })
+            Err(Undelivered::BeforeMint(ErrorCode::UnknownHandle))
         );
         let to_third = inbox_frames(&third, 1).await.remove(0);
         let to_second = inbox_frames(&second, 1).await.remove(0);

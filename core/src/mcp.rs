@@ -844,7 +844,7 @@ impl BroadcastOutcome {
             Err(undelivered) => Self::Failed {
                 to: result.to,
                 delivered: false,
-                error: undelivered.code,
+                error: undelivered.into(),
             },
         }
     }
