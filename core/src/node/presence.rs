@@ -4341,6 +4341,7 @@ pub(super) mod tests {
         )
         .await
         .unwrap();
+        let relay_map = endpoint.relay_map();
         let member = start_member(
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC),
             endpoint,
@@ -4355,7 +4356,16 @@ pub(super) mod tests {
 
         relay.shutdown().await.unwrap();
         wait_until_home_relay_disconnected(&member.endpoint).await;
-        tokio::time::sleep(SPEC_RELAY_LOSS_WAIT + RELAY_LOSS_REMOVAL_SLACK).await;
+        found_within(
+            SPEC_RELAY_LOSS_WAIT + RELAY_LOSS_REMOVAL_SLACK,
+            async || (!relay_map.contains(&relay_address)).then_some(()),
+        )
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the relay map still holds the lost home relay {SPEC_RELAY_LOSS_WAIT:?} and {RELAY_LOSS_REMOVAL_SLACK:?} after it was lost"
+            )
+        });
 
         assert!(member.endpoint.remove_relay(&relay_address).await.is_none());
         drop(scratch);

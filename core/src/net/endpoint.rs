@@ -142,6 +142,12 @@ impl NodeEndpoint {
     pub async fn remove_relay(&self, relay: &RelayUrl) {
         self.endpoint.remove_relay(relay).await;
     }
+
+    /// The relay map the endpoint dials through, shared, so a test reads each relay it gains or loses without editing it.
+    #[cfg(test)]
+    pub(crate) fn relay_map(&self) -> RelayMap {
+        self.relay_map.clone()
+    }
 }
 
 /// Binds an endpoint with the binding's key and gate, the relay map, and the lookup as its only address source.

@@ -922,6 +922,8 @@ mod tests {
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::net::endpoint::NodeEndpoint;
     use crate::node::{Identity, Node, NodeEffects};
+    use crate::test_waits::found_within;
+
     use crate::wire::{HostAddr, Version};
 
     const NETWORK: &str = "lab";
@@ -1987,7 +1989,7 @@ mod tests {
     async fn member_joined_through(
         scratch: &Scratch,
         host: &iroh::Endpoint,
-    ) -> (Node, iroh::Endpoint) {
+    ) -> (Node, iroh::Endpoint, iroh::RelayMap) {
         let endpoint = NodeEndpoint::bind(
             secret_key(MEMBER_SEED),
             *network_keys().gate_key(),
@@ -2000,6 +2002,7 @@ mod tests {
         .unwrap();
         endpoint.replace_address(host.addr());
         let member_endpoint = endpoint.endpoint().clone();
+        let member_relay_map = endpoint.relay_map();
         let config = NetworkConfig {
             secret: data_encoding::HEXLOWER.encode(&NETWORK_SECRET),
             owner: render_public_key(&secret_key(OWNER_SEED).public()),
@@ -2031,21 +2034,18 @@ mod tests {
         )
         .await
         .unwrap();
-        (node, member_endpoint)
+        (node, member_endpoint, member_relay_map)
     }
 
     async fn relay_map_holds_within(
-        endpoint: &iroh::Endpoint,
+        relay_map: &iroh::RelayMap,
         relay: &str,
         within: Duration,
     ) -> bool {
-        tokio::time::timeout(within, async {
-            while !relay_map_holds(endpoint, relay).await {
-                tokio::time::sleep(POLL).await;
-            }
-        })
-        .await
-        .is_ok()
+        let relay: RelayUrl = relay.parse().unwrap();
+        found_within(within, async || relay_map.contains(&relay).then_some(()))
+            .await
+            .is_some()
     }
 
     #[tokio::test]
@@ -2064,9 +2064,10 @@ mod tests {
         let ((_printed, outcome), observed) =
             tokio::join!(run_planned(&scratch, plan, &seen), async {
                 let host = bound_endpoint(&seen, 0).await;
-                let (member, member_endpoint) = member_joined_through(&scratch, &host).await;
+                let (member, member_endpoint, member_relay_map) =
+                    member_joined_through(&scratch, &host).await;
                 let learned =
-                    relay_map_holds_within(&member_endpoint, SPEC_RELAY_URL, HOST_LEARNED_WAIT)
+                    relay_map_holds_within(&member_relay_map, SPEC_RELAY_URL, HOST_LEARNED_WAIT)
                         .await;
                 let looked_up = lookup_relays(&member_endpoint, HOST_SEED).await;
                 let listed = member.peers().len();
