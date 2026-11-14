@@ -520,7 +520,10 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     use crate::lab_machine::{ClaimedMember, LabMachine};
     use crate::live_host::live_host_to_itself;
     use crate::live_network::LiveNetwork;
+    use crate::member_events::COUNTERS_EVENT;
     use crate::tail::Tail;
+    use crate::time_passing::SNAPSHOT_PROVING_A_SPAN_WITHIN;
+    use crate::trace_reader::TraceLine;
 
     /// How long the member may take to announce an address naming the doomed host's relay, and to announce after the kill at all.
     const ANNOUNCEMENT_WAIT: Duration = Duration::from_secs(60);
@@ -550,6 +553,31 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     const RELAYS_KEY: &str = "relays";
     /// The column separator of a `tail` line.
     const COLUMN_SEPARATOR: char = '\t';
+    /// The event a member records for each payload it broadcasts, and its field naming the payload's kind (spec/observability.md decision 9).
+    const PAYLOAD_BROADCAST_EVENT: &str = "gossip.payload_broadcast";
+    const KIND_FIELD: &str = "kind";
+    /// The kind word of a broadcast Presence in an events line.
+    const PRESENCE_BROADCAST_KIND: &str = "presence";
+
+    /// The wall-clock stamps of the member's last Presence broadcast and of a counters snapshot it recorded at least a re-announce interval after it, once its timeline holds both.
+    fn quiet_for_a_reannounce_interval_since_the_last_presence(
+        lines: &[TraceLine],
+    ) -> Option<(u64, u64)> {
+        let last_presence_ms = lines
+            .iter()
+            .filter(|line| {
+                line.event == PAYLOAD_BROADCAST_EVENT
+                    && line.value(KIND_FIELD) == Some(&Value::from(PRESENCE_BROADCAST_KIND))
+            })
+            .map(|line| line.wall_ms)
+            .max()?;
+        let quiet_ends_ms = last_presence_ms
+            .saturating_add(u64::try_from(SPEC_REANNOUNCE_INTERVAL.as_millis()).unwrap());
+        lines
+            .iter()
+            .find(|line| line.event == COUNTERS_EVENT && line.wall_ms >= quiet_ends_ms)
+            .map(|line| (last_presence_ms, line.wall_ms))
+    }
 
     /// The relay URLs a `tail` line announces for the card, when it is a presence of that card.
     fn relays_announced_by(line: &str, card: &str) -> Option<Vec<String>> {
@@ -589,7 +617,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     struct HomedMember {
         card: String,
         tail: Tail,
-        _member: ClaimedMember,
+        member: ClaimedMember,
         _observer: LabMachine,
         _machine: LabMachine,
     }
@@ -634,7 +662,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
         Some(HomedMember {
             card,
             tail,
-            _member: member,
+            member,
             _observer: observer,
             _machine: machine,
         })
@@ -651,11 +679,13 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
             .unwrap_or_else(|| {
                 panic!("iroh homed the member on another relay than {} in each of {HOMING_ATTEMPTS} starts", doomed.relay())
             });
-        homed.tail.quiet_for(
-            &format!("presence of {}", homed.card),
-            SPEC_REANNOUNCE_INTERVAL,
-            PRESENCE_QUIET_WAIT,
-            |line| relays_announced_by(line, &homed.card).is_some(),
+        let (last_presence_ms, quiet_proved_ms) = homed.member.events().wait_until(
+            &format!(
+                "{COUNTERS_EVENT} at least {SPEC_REANNOUNCE_INTERVAL:?} after the last presence {} broadcast",
+                homed.card
+            ),
+            PRESENCE_QUIET_WAIT.saturating_add(SNAPSHOT_PROVING_A_SPAN_WITHIN),
+            |lines| quiet_for_a_reannounce_interval_since_the_last_presence(&lines),
         );
 
         let kill = doomed.kill();
@@ -682,7 +712,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
 
         assert!(
             after_the_kill <= SPEC_LIVE_RELAYS_WITHIN,
-            "no presence listing only live relays within {SPEC_LIVE_RELAYS_WITHIN:?} of the kill sent at {:?}, whose command returned at {:?}, {:?} later; presences after the send: {announced_after_the_kill:#?}",
+            "no presence listing only live relays within {SPEC_LIVE_RELAYS_WITHIN:?} of the kill sent at {:?}, whose command returned at {:?}, {:?} later; the last presence broadcast the member recorded before the kill's wait ended was stamped {last_presence_ms} ms, and its snapshot at {quiet_proved_ms} ms proved a re-announce interval had passed; presences after the send: {announced_after_the_kill:#?}",
             kill.sent,
             kill.returned,
             kill.returned.duration_since(kill.sent)

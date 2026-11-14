@@ -73,34 +73,6 @@ impl Tail {
         self.lines.try_iter().map(|(_arrived, line)| line).collect()
     }
 
-    /// Waits until no line meeting the condition, the awaited kind of line, has been printed for the quiet span, the span restarting at each such line, requiring the quiet within the wait.
-    #[track_caller]
-    pub fn quiet_for(
-        &self,
-        awaited: &str,
-        quiet: Duration,
-        within: Duration,
-        condition: impl Fn(&str) -> bool,
-    ) {
-        let deadline = Instant::now().checked_add(within).unwrap();
-        let mut quiet_from = Instant::now();
-        loop {
-            let quiet_ends = quiet_from.checked_add(quiet).unwrap();
-            assert!(
-                quiet_ends <= deadline,
-                "no span of {quiet:?} without a {awaited} within {within:?}"
-            );
-            match self
-                .lines
-                .recv_timeout(quiet_ends.saturating_duration_since(Instant::now()))
-            {
-                Ok((arrived, line)) if condition(&line) => quiet_from = arrived,
-                Ok(_) => {}
-                Err(_) => return,
-            }
-        }
-    }
-
     /// The first line printed at or after the instant that meets the condition, with how long after the instant it arrived, requiring it within the wait and naming what was awaited when it does not come.
     #[track_caller]
     pub fn first_line_after(

@@ -6,14 +6,15 @@ use crate::member_events::{COUNTERS_EVENT, MemberEvents};
 const SPEC_COUNTERS_INTERVAL: Duration = Duration::from_secs(60);
 /// What a snapshot may lag its interval by on a loaded machine.
 const SNAPSHOT_SLACK: Duration = Duration::from_secs(15);
+/// The longest a running node takes, once a span of its time has passed, to record the counters snapshot that proves it.
+pub const SNAPSHOT_PROVING_A_SPAN_WITHIN: Duration =
+    SPEC_COUNTERS_INTERVAL.saturating_add(SNAPSHOT_SLACK);
 
 /// Waits until the member records a counters snapshot at least `span` after the wall-clock instant, the event its own time produces, proof that much of it passed.
 #[track_caller]
 pub fn wait_for_time_to_pass(events: &MemberEvents, since_wall_ms: u64, span: Duration) {
     let due_wall_ms = since_wall_ms.saturating_add(u64::try_from(span.as_millis()).unwrap());
-    let within = span
-        .saturating_add(SPEC_COUNTERS_INTERVAL)
-        .saturating_add(SNAPSHOT_SLACK);
+    let within = span.saturating_add(SNAPSHOT_PROVING_A_SPAN_WITHIN);
     events.wait_until(
         &format!("{COUNTERS_EVENT} at or after {due_wall_ms} ms"),
         within,
