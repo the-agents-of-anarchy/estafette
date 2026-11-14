@@ -2113,7 +2113,10 @@ mod tests {
 
         outcome.unwrap();
         let (learned, looked_up, listed) = observed;
-        assert!(learned);
+        assert!(
+            learned,
+            "the member's relay map did not hold the host's relay {SPEC_RELAY_URL} within {HOST_LEARNED_WAIT:?}"
+        );
         assert_eq!(looked_up, vec![SPEC_RELAY_URL]);
         assert_eq!(listed, 0);
     }
