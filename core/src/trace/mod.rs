@@ -3,7 +3,7 @@ use iroh::EndpointId;
 use serde_json::Value;
 
 use crate::dirs::{DirectoryFilesystem, TraceDirectory, TraceFiles};
-use crate::event::{Event, EventName, TraceLineName};
+use crate::event::{Event, EventName, ShortId, TraceLineName};
 
 pub use estafette_trace::{
     Clock, CreateTraceFile, FORMAT_VERSION, ListFiles, RUN_ID_BYTES, RemoveFile, RenameFile, RunId,
@@ -106,7 +106,7 @@ impl Trace {
 
     /// Names the endpoint this process now runs on in every later line.
     pub fn note_endpoint(&self, id: EndpointId) {
-        self.run.note_node(id.fmt_short().to_string());
+        self.run.note_node(ShortId::from(id).text());
     }
 
     /// Closes both queues and waits, within the drain bound for each, until their writers took every queued line and cut each file back to its last line, saying how the stop left the events file, then the raw file.

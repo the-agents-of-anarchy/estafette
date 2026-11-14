@@ -24,11 +24,13 @@ impl From<EndpointId> for ShortId {
 }
 
 impl ShortId {
-    /// The id as the events file's `peer` field: ten lowercase hex characters.
+    /// The id as the events file writes it, in a `peer` field and in the header's `node`: ten lowercase hex characters.
+    pub(crate) fn text(self) -> String {
+        data_encoding::HEXLOWER.encode(&self.0)
+    }
+
+    /// The id as the events file's `peer` field.
     pub(super) fn field(self) -> (&'static str, Value) {
-        (
-            PEER_FIELD,
-            Value::from(data_encoding::HEXLOWER.encode(&self.0)),
-        )
+        (PEER_FIELD, Value::from(self.text()))
     }
 }
