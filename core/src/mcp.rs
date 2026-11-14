@@ -1024,6 +1024,7 @@ mod tests {
     use crate::keys::render_public_key;
     use crate::node::RuntimeShutdown;
     use crate::sidecar;
+    use crate::test_waits::found_within;
 
     const NETWORK: &str = "acme";
     const NETWORK_SECRET_BYTE: u8 = 44;
@@ -1043,7 +1044,6 @@ mod tests {
     const BOB_DESCRIPTION: &str = "reviews the parser";
     const MESSAGE_BODY: &str = "the parser review is ready";
     const PEER_LISTED_WITHIN: Duration = Duration::from_millis(3000);
-    const PEER_POLL: Duration = Duration::from_millis(50);
     const AMY_SEED: u8 = 51;
     const BOB_SEED: u8 = 52;
     const ZED_SEED: u8 = 53;
@@ -1462,21 +1462,20 @@ mod tests {
         }
 
         async fn peer_listed_within(&mut self, handle: &str, within: Duration) -> Value {
-            let deadline = Instant::now().checked_add(within).unwrap();
-            loop {
-                let listed = self.envelope("peers", json!({})).await;
-                let found = listed["result"]["peers"]
+            let mut listed = Value::Null;
+            let found = found_within(within, async || {
+                listed = self.envelope("peers", json!({})).await;
+                listed["result"]["peers"]
                     .as_array()
                     .unwrap()
                     .iter()
                     .find(|peer| peer["handle"] == handle)
-                    .cloned();
-                if let Some(peer) = found {
-                    return peer;
-                }
-                assert!(Instant::now() < deadline, "{handle} not listed: {listed}");
-                tokio::time::sleep(PEER_POLL).await;
-            }
+                    .cloned()
+            })
+            .await;
+            found.unwrap_or_else(|| {
+                panic!("{handle} not listed as a peer within {within:?}; last listed: {listed}")
+            })
         }
     }
 
