@@ -830,8 +830,9 @@ mod tests {
                     eprintln!("could not stop the fake process {pid}: {error}");
                 }
             }
-            if let Err(error) = std::fs::remove_dir_all(&self.directory) {
-                eprintln!("could not remove {}: {error}", self.directory.display());
+            if let Err(failure) = crate::remove_scratch::remove_scratch(&self.directory) {
+                assert!(std::thread::panicking(), "{failure}");
+                eprintln!("{failure}");
             }
         }
     }
