@@ -837,7 +837,11 @@ mod tests {
 
         let exit = tokio::time::timeout(EXITS_AT_ONCE_WITHIN, stopping.exit)
             .await
-            .unwrap()
+            .unwrap_or_else(|_elapsed| {
+                panic!(
+                    "the process did not exit within {EXITS_AT_ONCE_WITHIN:?} of the second signal"
+                )
+            })
             .unwrap();
         assert_eq!(exit, Exit::AtOnce);
         drop(scratch);
@@ -1004,7 +1008,9 @@ mod tests {
             host_saved_within(&member.config_path, HOST_SEED, CONFIG_SAVED_WITHIN).await;
 
         assert_eq!(before_stop.and_then(|host| host.ts), None);
-        let saved = after_stop.unwrap();
+        let saved = after_stop.unwrap_or_else(|| {
+            panic!("the configuration named no host {HOST_SEED} within {CONFIG_SAVED_WITHIN:?} of the stop")
+        });
         assert_eq!(saved.ts, Some(moved_record_ts));
         assert!(matches!(saved.origin, HostOrigin::Configured));
         drop(witness);
@@ -1285,7 +1291,10 @@ mod tests {
         let second = claimed_second_recording_to(&scratch, record).await;
         let stopping = run(&second.session, WITNESSED_DEPARTURE_WAIT);
         stopping.input_ended.send(()).unwrap();
-        assert!(second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN).await);
+        assert!(
+            second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN).await,
+            "the first did not list the stopping second gone within {SPEC_GONE_WITHIN:?}"
+        );
 
         let _attaching_client = tokio::net::UnixStream::connect(&second.inbox_path)
             .await
