@@ -4592,7 +4592,10 @@ pub(super) mod tests {
                 .map(|peer| peer.status);
         let queued = queued.lock().unwrap().clone();
 
-        assert_eq!(failed, Ok(Err(crate::errors::ErrorCode::Unreachable)));
+        assert_eq!(
+            failed.map(|sent| sent.map_err(crate::errors::ErrorCode::from)),
+            Ok(Err(crate::errors::ErrorCode::Unreachable))
+        );
         assert_eq!(status_after_the_failure, Some(Status::Unreachable));
         assert!(
             matches!(resent, Ok(crate::node::Delivery { .. })),

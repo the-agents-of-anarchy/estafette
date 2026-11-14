@@ -774,7 +774,8 @@ mod tests {
                 .node
                 .send(SECOND_HANDLE, SENT_AFTER_EXIT)
                 .await
-                .err(),
+                .err()
+                .map(ErrorCode::from),
             Some(ErrorCode::Unreachable)
         );
         drop(scratch);
@@ -926,7 +927,8 @@ mod tests {
                 .node
                 .send(SECOND_HANDLE, SENT_WHILE_STOPPING)
                 .await
-                .err(),
+                .err()
+                .map(ErrorCode::from),
             Some(ErrorCode::Refused)
         );
         client

@@ -9,7 +9,7 @@ use crate::errors::ErrorCode;
 use crate::handle::LocalHandle;
 use crate::mcp::RegistryFailure;
 use crate::net::direct::message_id_text;
-use crate::node::Delivery;
+use crate::node::{Delivery, Undelivered};
 use crate::wire::MessageId;
 
 const MESSAGE_FIELD: &str = "message";
@@ -58,10 +58,11 @@ pub enum InboxEvent {
         tool: Option<&'static str>,
         code: Option<&'static str>,
     },
-    /// One send of a send or broadcast call was answered: the handle it went to, none for a `to` that is no handle, and the message id it was delivered under, absent where its text is no message id, or the error code it failed with.
+    /// One send of a send or broadcast call was answered: the handle it went to, none for a `to` that is no handle, the error code it failed with, none when it was delivered, and the id of the message it minted, none before one was minted or where a delivery's id text is no message id.
     SendAnswered {
         to: Option<LocalHandle>,
-        outcome: Result<Option<MessageId>, &'static str>,
+        code: Option<&'static str>,
+        message: Option<MessageId>,
     },
     /// `list_cards` answered with the failure's own code.
     ListCardsFailed(ListCardsFailure),
@@ -120,13 +121,15 @@ impl InboxEvent {
 
     /// One send to `to` answered with the outcome.
     #[must_use]
-    pub fn send_answered(to: &str, outcome: &Result<Delivery, ErrorCode>) -> Self {
+    pub fn send_answered(to: &str, outcome: &Result<Delivery, Undelivered>) -> Self {
+        let (code, message) = match outcome {
+            Ok(delivery) => (None, message_id_of(&delivery.id)),
+            Err(undelivered) => (Some(undelivered.code.code()), undelivered.id),
+        };
         Self::SendAnswered {
             to: to.parse().ok(),
-            outcome: outcome
-                .as_ref()
-                .map(|delivery| message_id_of(&delivery.id))
-                .map_err(ErrorCode::code),
+            code,
+            message,
         }
     }
 }
@@ -235,19 +238,14 @@ impl AreaEvent for InboxEvent {
                 outcome_fields(*code),
             ]
             .concat(),
-            Self::SendAnswered { to, outcome } => [
+            Self::SendAnswered { to, code, message } => [
                 vec![(
                     TO_FIELD,
                     to.as_ref()
                         .map_or(Value::Null, |handle| Value::from(handle.as_str())),
                 )],
-                outcome_fields(outcome.err()),
-                outcome
-                    .ok()
-                    .flatten()
-                    .map(message_field)
-                    .into_iter()
-                    .collect(),
+                outcome_fields(*code),
+                message.map(message_field).into_iter().collect(),
             ]
             .concat(),
             Self::AcceptFailed(_)

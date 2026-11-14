@@ -19,23 +19,47 @@ pub struct Delivery {
     pub attached: bool,
 }
 
+/// What a send that was not delivered reports: the code it failed with, and the id of its message once one was minted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Undelivered {
+    pub code: ErrorCode,
+    pub id: Option<MessageId>,
+}
+
+impl Undelivered {
+    /// A send that failed with the code before any message was minted.
+    const fn unminted(code: ErrorCode) -> Self {
+        Self { code, id: None }
+    }
+}
+
+impl From<Undelivered> for ErrorCode {
+    fn from(undelivered: Undelivered) -> Self {
+        undelivered.code
+    }
+}
+
 /// The outcome of one send of a broadcast, with the handle it was sent to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BroadcastResult {
     pub to: String,
-    pub outcome: Result<Delivery, ErrorCode>,
+    pub outcome: Result<Delivery, Undelivered>,
 }
 
 impl Node {
     /// Sends the body to the one peer whose effective handle is `to`, by the send algorithm of spec 3.10.
     ///
     /// # Errors
-    /// `ErrorCode` naming why the message was not delivered, one of the codes of spec 3.10.
-    pub async fn send(&self, to: &str, body: &str) -> Result<Delivery, ErrorCode> {
-        let recipient = only_card(&cards_named(&self.peers(), to))?;
-        refuse_oversized(body)?;
-        self.deliver(recipient, self.message_for(recipient, body))
+    /// `Undelivered` naming why the message was not delivered, one of the codes of spec 3.10, with the message's id once one was minted.
+    pub async fn send(&self, to: &str, body: &str) -> Result<Delivery, Undelivered> {
+        let recipient =
+            only_card(&cards_named(&self.peers(), to)).map_err(Undelivered::unminted)?;
+        refuse_oversized(body).map_err(Undelivered::unminted)?;
+        let message = self.message_for(recipient, body);
+        let id = message.id;
+        self.deliver(recipient, message)
             .await
+            .map_err(|code| Undelivered { code, id: Some(id) })
     }
 
     /// Sends the body to each handle concurrently and returns one result per handle, in the order given.
@@ -445,7 +469,10 @@ mod tests {
 
         let refused = first.node.send(NO_ONE, BODY).await;
 
-        assert_eq!(refused, Err(ErrorCode::UnknownHandle));
+        assert_eq!(
+            refused.map_err(ErrorCode::from),
+            Err(ErrorCode::UnknownHandle)
+        );
         drop(scratch);
     }
 
@@ -461,7 +488,7 @@ mod tests {
 
         let refused = first.node.send(SECOND_HANDLE, &oversized).await;
 
-        assert_eq!(refused, Err(ErrorCode::TooLarge));
+        assert_eq!(refused.map_err(ErrorCode::from), Err(ErrorCode::TooLarge));
         drop(scratch);
     }
 
@@ -495,7 +522,7 @@ mod tests {
 
         let failed = first.node.send(WITNESS_HANDLE, BODY).await;
 
-        assert_eq!(failed, Err(ErrorCode::Unreachable));
+        assert_eq!(failed.map_err(ErrorCode::from), Err(ErrorCode::Unreachable));
         let status = listed_within(&first, WITNESS_SEED, Duration::ZERO)
             .await
             .unwrap()
@@ -514,8 +541,11 @@ mod tests {
         let connections_after_refusal = peer.connections.load(Ordering::SeqCst);
         let refused_again = first.node.send(WITNESS_HANDLE, BODY).await;
 
-        assert_eq!(refused, Err(ErrorCode::Refused));
-        assert_eq!(refused_again, Err(ErrorCode::Refused));
+        assert_eq!(refused.map_err(ErrorCode::from), Err(ErrorCode::Refused));
+        assert_eq!(
+            refused_again.map_err(ErrorCode::from),
+            Err(ErrorCode::Refused)
+        );
         assert_eq!(
             peer.connections.load(Ordering::SeqCst),
             connections_after_refusal + 1
@@ -584,8 +614,11 @@ mod tests {
         let connections_after_failure = peer.connections.load(Ordering::SeqCst);
         let failed_again = first.node.send(WITNESS_HANDLE, BODY).await;
 
-        assert_eq!(failed, Err(ErrorCode::Refused));
-        assert_eq!(failed_again, Err(ErrorCode::Refused));
+        assert_eq!(failed.map_err(ErrorCode::from), Err(ErrorCode::Refused));
+        assert_eq!(
+            failed_again.map_err(ErrorCode::from),
+            Err(ErrorCode::Refused)
+        );
         assert_eq!(
             peer.connections.load(Ordering::SeqCst),
             connections_after_failure + 1
@@ -640,7 +673,7 @@ mod tests {
         let refused = first.node.send(WITNESS_HANDLE, BODY).await;
 
         assert_eq!(before, Status::Unreachable);
-        assert_eq!(refused, Err(ErrorCode::Refused));
+        assert_eq!(refused.map_err(ErrorCode::from), Err(ErrorCode::Refused));
         let after = listed_within(&first, WITNESS_SEED, Duration::ZERO)
             .await
             .unwrap()
@@ -676,7 +709,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             [THIRD_HANDLE, NO_ONE, SECOND_HANDLE]
         );
-        assert_eq!(results[1].outcome, Err(ErrorCode::UnknownHandle));
+        assert_eq!(
+            results[1].outcome,
+            Err(Undelivered {
+                code: ErrorCode::UnknownHandle,
+                id: None
+            })
+        );
         let to_third = inbox_frames(&third, 1).await.remove(0);
         let to_second = inbox_frames(&second, 1).await.remove(0);
         assert_eq!(to_third["id"], results[0].outcome.as_ref().unwrap().id);

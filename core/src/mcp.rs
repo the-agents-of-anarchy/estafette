@@ -808,10 +808,10 @@ impl BroadcastOutcome {
                 to: result.to,
                 sent: SentMessage::of(delivery),
             },
-            Err(error) => Self::Failed {
+            Err(undelivered) => Self::Failed {
                 to: result.to,
                 delivered: false,
-                error,
+                error: undelivered.code,
             },
         }
     }
@@ -2413,6 +2413,64 @@ mod tests {
                     ]
                 ),
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_send_that_fails_after_its_message_was_minted_is_recorded_with_that_message_id()
+     {
+        const UUID_V7_RANDOM_BYTES: usize = 10;
+        let _slot = node_slot().await;
+        let machine = Machine::new("send-failed-answered");
+        let (record, mut recorded) = recording_events_named("tool.send_answered");
+        let (mut amy, mut bob) = claimed_pair_with_amy_recording_to(&machine, record).await;
+        bob.to_server.shutdown().await.unwrap();
+        tokio::time::timeout(RESPONSE_WAIT, &mut bob.exit)
+            .await
+            .unwrap()
+            .unwrap();
+        let amy_random_byte = u8::try_from(FIRST_PROCESS_ID).unwrap();
+
+        let sent_after_ms = wall_clock_ms();
+        let failed = amy
+            .envelope("send", json!({ "to": "bob", "body": MESSAGE_BODY }))
+            .await;
+        let answered_by_ms = wall_clock_ms();
+
+        let answered = recorded_so_far(&mut recorded);
+        let message = answered
+            .iter()
+            .flat_map(|(_name, fields)| fields)
+            .find(|(field, _value)| *field == "message")
+            .and_then(|(_field, value)| value.as_str())
+            .map_or_else(
+                || panic!("no message id in {answered:?}"),
+                |text| uuid::Uuid::try_parse(text).unwrap(),
+            );
+        let (stamp_seconds, stamp_nanos) = message.get_timestamp().unwrap().to_unix();
+        let stamp_ms =
+            u64::try_from(Duration::new(stamp_seconds, stamp_nanos).as_millis()).unwrap();
+        let minted_by_amy = uuid::Builder::from_unix_timestamp_millis(
+            stamp_ms,
+            &[amy_random_byte; UUID_V7_RANDOM_BYTES],
+        )
+        .into_uuid();
+        assert_eq!(failed["ok"], json!(false), "{failed}");
+        assert_eq!(
+            answered,
+            vec![(
+                "tool.send_answered",
+                vec![
+                    ("to", json!("bob")),
+                    ("outcome", json!("error")),
+                    ("code", failed["error"]["code"].clone()),
+                    ("message", json!(minted_by_amy.to_string())),
+                ]
+            )]
+        );
+        assert!(
+            (sent_after_ms..=answered_by_ms).contains(&stamp_ms),
+            "{stamp_ms} outside {sent_after_ms}..={answered_by_ms}"
         );
     }
 

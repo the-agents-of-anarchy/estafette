@@ -22,4 +22,4 @@ pub(crate) use presence::{
 };
 pub use presence::{Identity, Network, Node, NodeEffects, NodeError};
 pub use rebind::{RelayProbe, relay_answers};
-pub use send::{BroadcastResult, Delivery};
+pub use send::{BroadcastResult, Delivery, Undelivered};
