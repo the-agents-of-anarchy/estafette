@@ -1106,7 +1106,10 @@ mod spec_3_15_with_one_member {
             if !held.is_empty() {
                 return held;
             }
-            assert!(started.elapsed() < within, "the endpoint was not rebound");
+            assert!(
+                started.elapsed() < within,
+                "no UDP port of the rebound endpoint outlived a transient socket within {within:?}"
+            );
         }
     }
 
