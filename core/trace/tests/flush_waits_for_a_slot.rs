@@ -145,4 +145,27 @@ mod observability {
         drop(trace.writer);
         remove_scratch(&trace.root).unwrap();
     }
+
+    #[test]
+    fn observability_decision_12_a_flush_whose_writer_work_was_dropped_unrun_reports_not_drained_at_once()
+     {
+        let trace = held_writer_trace("flush-writer-gone", HELD_WRITER_DRAIN);
+        drop(trace.writer);
+        let started = Instant::now();
+
+        let stop = trace.events.flush();
+
+        let waited = started.elapsed();
+        assert!(
+            matches!(
+                stop,
+                TraceStop::NotDrained {
+                    file: TraceFileKind::Events
+                }
+            ),
+            "{stop:?}"
+        );
+        assert!(waited < HELD_WRITER_DRAIN, "{waited:?}");
+        remove_scratch(&trace.root).unwrap();
+    }
 }

@@ -16,6 +16,7 @@ mod observability {
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::mpsc::{self, Receiver, Sender};
+    use std::thread;
     use std::time::Duration;
 
     use super::remove_scratch::remove_scratch;
@@ -25,6 +26,7 @@ mod observability {
     };
 
     const SHORT_DRAIN: Duration = Duration::from_millis(20);
+    const FLUSH_ANSWERS_WITHIN: Duration = Duration::from_secs(10);
     const STAND_IN_SHRINK_REFUSAL: &str = "the file refuses to shrink";
 
     /// Effects on the frozen clocks that create every trace file through `create_file`.
@@ -181,6 +183,95 @@ mod observability {
             "{stop:?}"
         );
         drop(held_unsticks);
+        remove_scratch(&scratch.root).unwrap();
+    }
+
+    const DRAIN_A_DYING_WRITER_DIES_WITHIN: Duration = Duration::from_secs(3);
+    const STAND_IN_SHRINK_PANIC: &str = "the file panics when cut back";
+
+    /// What the test hears, in the order it happens: the writer about to panic as it cuts the file back, or the flush's stop.
+    #[derive(Debug)]
+    enum Heard {
+        WriterPanicking,
+        FlushAnswered(TraceStop),
+    }
+
+    /// A trace file that takes every write and panics when cut back below the length it was sized to, telling the test first.
+    struct PanickingWhenCutFile {
+        sized: u64,
+        to_the_test: Sender<Heard>,
+    }
+
+    impl Write for PanickingWhenCutFile {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl PanickingWhenCutFile {
+        /// Tells the test, then panics, when asked to shrink below the sized length.
+        fn panic_when_shrunk_to(&self, length: u64) {
+            if length < self.sized {
+                self.to_the_test.send(Heard::WriterPanicking).unwrap();
+                panic!("{STAND_IN_SHRINK_PANIC}");
+            }
+        }
+    }
+
+    impl TraceFile for PanickingWhenCutFile {
+        fn set_length(&mut self, length: u64) -> io::Result<()> {
+            self.panic_when_shrunk_to(length);
+            self.sized = length;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn observability_decision_12_a_flush_whose_writer_dies_holding_its_marker_reports_not_drained_for_its_file()
+     {
+        let (to_the_test, heard) = mpsc::channel();
+        let file_tells_the_test = to_the_test.clone();
+        let scratch = scratch_run(
+            "flush-writer-dies",
+            &effects_creating(Arc::new(
+                move |_path: &Path| -> io::Result<Box<dyn TraceFile>> {
+                    Ok(Box::new(PanickingWhenCutFile {
+                        sized: 0,
+                        to_the_test: file_tells_the_test.clone(),
+                    }))
+                },
+            )),
+            TraceBounds {
+                drain: DRAIN_A_DYING_WRITER_DIES_WITHIN,
+                ..TraceBounds::SPEC
+            },
+        );
+        let events = Arc::new(scratch.run.open_events().unwrap());
+        events.write(ONE_EVENT, &[]);
+        let flushing = Arc::clone(&events);
+
+        thread::spawn(move || {
+            to_the_test
+                .send(Heard::FlushAnswered(flushing.flush()))
+                .unwrap();
+        });
+
+        let first = heard.recv_timeout(FLUSH_ANSWERS_WITHIN).unwrap();
+        let then = heard.recv_timeout(FLUSH_ANSWERS_WITHIN).unwrap();
+        assert!(matches!(first, Heard::WriterPanicking), "{first:?}");
+        assert!(
+            matches!(
+                then,
+                Heard::FlushAnswered(TraceStop::NotDrained {
+                    file: TraceFileKind::Events
+                })
+            ),
+            "{then:?}"
+        );
         remove_scratch(&scratch.root).unwrap();
     }
 }
