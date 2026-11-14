@@ -1862,6 +1862,13 @@ pub(super) mod tests {
     const OLDER_THAN_MAX_AGE_RULE: &str = "older_than_max_age";
     const AHEAD_OF_MAX_AGE_RULE: &str = "ahead_of_max_age";
     const PAYLOAD_BROADCAST: &str = "gossip.payload_broadcast";
+    const STATE_COUNTERS: &str = "state.counters";
+    const MOMENT: &str = "moment";
+    const INTERVAL_MOMENT: &str = "interval";
+    /// The longest a member's counters snapshot at the interval takes: the snapshot interval since its start, then a second.
+    const INTERVAL_SNAPSHOT_WITHIN: Duration = Duration::from_secs(61);
+    /// The span after a request or report in which the base's tests looked for an answer that must not come.
+    const ANSWER_WINDOW: Duration = Duration::from_millis(1000);
     const TOPIC_JOINED: &str = "gossip.topic_joined";
     const UNREACHABLE_KIND: &str = "unreachable";
     pub(in crate::node) const PEER: &str = "peer";
@@ -3165,26 +3172,15 @@ pub(super) mod tests {
         .0
     }
 
-    /// Every event the member recorded until it took the marker's Presence, stamped with the member's clock reading, which the witness broadcasts only now, so the member takes it in a later step than every payload before it and records any answer to those first.
-    async fn recorded_until_marker_taken(
-        witness: &Witness,
+    /// Every event the member recorded until its counters snapshot at the interval, which only the passing of the snapshot interval since its start produces, failing when none comes within the wait for it.
+    async fn recorded_until_the_interval_snapshot(
         recorded: &mut UnboundedReceiver<RecordedEvent>,
-        member_clock_ms: u64,
     ) -> Vec<RecordedEvent> {
-        witness
-            .broadcast_as(
-                MARKER_SEED,
-                presence_of(MARKER_SEED, MARKER_HANDLE, MARKER_PUBLIC, member_clock_ms),
-            )
-            .await;
         recorded_until(
             recorded,
-            PAYLOAD_ACCEPTED,
-            |fields| {
-                fields.contains(&(KIND, serde_json::Value::from(PRESENCE_KIND)))
-                    && fields.contains(&(PEER, short_peer_id(MARKER_SEED)))
-            },
-            PAYLOAD_WAIT,
+            STATE_COUNTERS,
+            |fields| fields.first() == Some(&(MOMENT, serde_json::Value::from(INTERVAL_MOMENT))),
+            INTERVAL_SNAPSHOT_WITHIN,
         )
         .await
         .0
@@ -3266,9 +3262,10 @@ pub(super) mod tests {
             .unwrap();
         announced_address_still_held(&member, &answer).await;
         recorded_until_request_taken_from(&mut recorded, FIRST_REQUESTER_SEED).await;
-        let after_the_request =
-            recorded_until_marker_taken(&witness, &mut recorded, FROZEN_CLOCK_MS).await;
+        let asked = Instant::now();
+        let after_the_request = recorded_until_the_interval_snapshot(&mut recorded).await;
 
+        assert!(asked.elapsed() >= SPEC_REANNOUNCE_INTERVAL + ANSWER_WINDOW);
         assert_eq!(presence_fields(Some(answer)), (FROZEN_CLOCK_MS + 1, false));
         assert_eq!(
             broadcasts_of(&after_the_request, PRESENCE_KIND),
@@ -3336,15 +3333,19 @@ pub(super) mod tests {
         recorded_until_request_dropped_by(&mut recorded, NOT_ABOVE_REQUESTER_SEQ_RULE).await;
         announced_address_still_held(&member, &answered).await;
         ask_for_presence(&witness, SECOND_REQUESTER_SEED, STALE_REQUEST_SEQ).await;
-        let after_replay =
+        let mut after_replay =
             recorded_until_request_dropped_by(&mut recorded, OLDER_THAN_MAX_AGE_RULE).await;
+        let stale_dropped = Instant::now();
+        let after_stale = recorded_until_the_interval_snapshot(&mut recorded).await;
+        let stale_window = stale_dropped.elapsed();
+        after_replay.extend(after_stale.iter().cloned());
         ask_for_presence(&witness, SECOND_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
-        let after_stale =
-            recorded_until_request_taken_from(&mut recorded, SECOND_REQUESTER_SEED).await;
+        recorded_until_request_taken_from(&mut recorded, SECOND_REQUESTER_SEED).await;
         let after_fresh = witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await;
 
+        assert!(stale_window >= ANSWER_WINDOW);
         assert_eq!(
             broadcasts_of(&after_replay, PRESENCE_KIND),
             Vec::<crate::event::EventFields>::new(),
@@ -3379,17 +3380,20 @@ pub(super) mod tests {
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FAR_FUTURE_REQUEST_SEQ).await;
         recorded_until_request_dropped_by(&mut recorded, AHEAD_OF_MAX_AGE_RULE).await;
+        let dropped = Instant::now();
+        let after_far_future = recorded_until_the_interval_snapshot(&mut recorded).await;
+        let far_future_window = dropped.elapsed();
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
-        let after_far_future =
-            recorded_until_request_taken_from(&mut recorded, FIRST_REQUESTER_SEED).await;
+        recorded_until_request_taken_from(&mut recorded, FIRST_REQUESTER_SEED).await;
         let after_fresh = witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await;
 
+        assert!(far_future_window >= ANSWER_WINDOW);
         assert_eq!(
             broadcasts_of(&after_far_future, PRESENCE_KIND),
             Vec::<crate::event::EventFields>::new(),
-            "the member answered a far-future request with a Presence before it took the next request: {after_far_future:?}"
+            "the member answered a far-future request with a Presence before its counters at the interval: {after_far_future:?}"
         );
         assert_eq!(presence_fields(after_fresh), (FROZEN_CLOCK_MS + 1, false));
         drop(scratch);
@@ -3421,9 +3425,10 @@ pub(super) mod tests {
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
         recorded_until_request_taken_from(&mut recorded, FIRST_REQUESTER_SEED).await;
-        let after_the_request =
-            recorded_until_marker_taken(&witness, &mut recorded, FROZEN_CLOCK_MS).await;
+        let asked = Instant::now();
+        let after_the_request = recorded_until_the_interval_snapshot(&mut recorded).await;
 
+        assert!(asked.elapsed() >= ANSWER_WINDOW);
         assert_eq!(
             broadcasts_of(&after_the_request, PRESENCE_KIND),
             Vec::<crate::event::EventFields>::new(),
@@ -3522,13 +3527,13 @@ pub(super) mod tests {
         after_the_first_presence.extend(
             recorded_until_report_judged(&mut recorded, PAYLOAD_ACCEPTED, FRESH_RUMOR_TS).await,
         );
+        let answered = Instant::now();
         let answer = witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await;
-        after_the_first_presence.extend(
-            recorded_until_marker_taken(&witness, &mut recorded, CLOCK_AFTER_MAX_AGE_MS).await,
-        );
+        after_the_first_presence.extend(recorded_until_the_interval_snapshot(&mut recorded).await);
 
+        assert!(answered.elapsed() >= ANSWER_WINDOW);
         assert_eq!(presence_fields(answer), (CLOCK_AFTER_MAX_AGE_MS, false));
         assert_eq!(
             broadcasts_of(&after_the_first_presence, PRESENCE_KIND),
@@ -3872,11 +3877,12 @@ pub(super) mod tests {
         .unwrap();
         lonely.node.start_stopping();
 
-        let witness = Witness::joined_through(WITNESS_SEED, None, &lonely.endpoint).await;
+        let _witness = Witness::joined_through(WITNESS_SEED, None, &lonely.endpoint).await;
         recorded_until(&mut recorded, TOPIC_JOINED, |_fields| true, PAYLOAD_WAIT).await;
-        let after_the_join =
-            recorded_until_marker_taken(&witness, &mut recorded, wall_clock_ms()).await;
+        let joined = Instant::now();
+        let after_the_join = recorded_until_the_interval_snapshot(&mut recorded).await;
 
+        assert!(joined.elapsed() >= PAYLOAD_WAIT);
         assert_eq!(
             broadcasts_of(&after_the_join, PRESENCE_REQUEST_KIND),
             Vec::<crate::event::EventFields>::new(),
@@ -4456,12 +4462,13 @@ pub(super) mod tests {
         after_the_first_presence.extend(
             recorded_until_report_judged(&mut recorded, PAYLOAD_ACCEPTED, FROZEN_CLOCK_MS).await,
         );
+        let answered = Instant::now();
         let answer = witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await;
-        after_the_first_presence
-            .extend(recorded_until_marker_taken(&witness, &mut recorded, FROZEN_CLOCK_MS).await);
+        after_the_first_presence.extend(recorded_until_the_interval_snapshot(&mut recorded).await);
 
+        assert!(answered.elapsed() >= ANSWER_WINDOW);
         assert_eq!(presence_fields(answer), (FROZEN_CLOCK_MS + 1, false));
         assert_eq!(
             broadcasts_of(&after_the_first_presence, PRESENCE_KIND),
