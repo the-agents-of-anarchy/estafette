@@ -82,7 +82,7 @@ pub enum ProcessEvent {
     Panicked(PanicLocation),
     /// The session claimed the card, and the node assigned itself the handle.
     Claimed(ClaimedCard),
-    /// The session refused a claim with the code, holding a card already or stopping.
+    /// Init refused the claim with the code, whether its checks or the session refused it.
     ClaimRefused { code: &'static str },
     /// Standard input ended, which starts Stopping.
     InputEnded,

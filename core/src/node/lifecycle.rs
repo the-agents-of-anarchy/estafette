@@ -82,7 +82,7 @@ impl Session {
         }
     }
 
-    /// Claims the card for the node, refusing a second claim with `bad_request` and a claim while Stopping with `refused`, and records the outcome.
+    /// Claims the card for the node, refusing a second claim with `bad_request` and a claim while Stopping with `refused`, and records the claim, leaving a refusal to the caller that answers it.
     ///
     /// # Errors
     /// `ErrorCode::BadRequest` when a card is claimed, `ErrorCode::Refused` when the session is stopping.
@@ -92,18 +92,9 @@ impl Session {
         node: Node,
         lock: HeldSidecar,
     ) -> Result<Arc<Node>, ErrorCode> {
-        match self.claimed_by(card, node, lock) {
-            Ok((node, identity)) => {
-                self.record(ProcessEvent::Claimed(identity));
-                Ok(node)
-            }
-            Err(refusal) => {
-                self.record(ProcessEvent::ClaimRefused {
-                    code: refusal.code(),
-                });
-                Err(refusal)
-            }
-        }
+        let (node, identity) = self.claimed_by(card, node, lock)?;
+        self.record(ProcessEvent::Claimed(identity));
+        Ok(node)
     }
 
     /// Takes the claim into the session while it is Unclaimed, returning the node and what the claim names.
@@ -579,7 +570,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn observability_decision_9_a_claim_is_recorded_with_the_card_and_the_handle_it_assigned_and_a_refused_claim_with_its_code_spec_3_9()
+    async fn observability_decision_9_a_claim_is_recorded_with_the_card_and_the_handle_it_assigned_and_a_refused_claim_is_left_to_the_caller_to_record_spec_3_9()
      {
         let scratch = Scratch::new("claim-events").await;
         let (first, second) = start_pair(&scratch).await;
@@ -598,19 +589,13 @@ mod tests {
 
         assert_eq!(
             recorded_so_far(&mut recorded),
-            vec![
-                (
-                    "process.claimed",
-                    vec![
-                        ("card", serde_json::Value::from(FIRST_CARD)),
-                        ("handle", serde_json::Value::from(claimed_handle)),
-                    ]
-                ),
-                (
-                    "process.claim_refused",
-                    vec![("code", serde_json::Value::from("bad_request"))]
-                ),
-            ]
+            vec![(
+                "process.claimed",
+                vec![
+                    ("card", serde_json::Value::from(FIRST_CARD)),
+                    ("handle", serde_json::Value::from(claimed_handle)),
+                ]
+            )]
         );
         drop(scratch);
     }

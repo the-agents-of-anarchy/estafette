@@ -29,7 +29,7 @@ use crate::crypto::GateKey;
 use crate::dirs::{CARD_EXTENSION, Directories, DirectoriesError};
 use crate::errors::{Envelope, ErrorCode, You};
 use crate::event::{
-    AnsweredFailure, ClaimFailure, InboxEvent, ListCardsFailure, ProcessEvent, RunRecord,
+    AnsweredFailure, ClaimFailure, Event, InboxEvent, ListCardsFailure, ProcessEvent, RunRecord,
     StateEvent,
 };
 use crate::handle::{AnnouncedHandle, Handle, MAX_LOCAL_LENGTH};
@@ -273,25 +273,22 @@ impl Server {
         Ok(ToolResult::Inbox { messages, last_seq })
     }
 
-    /// Claims the input's card for this session by the init sequence of spec 3.10 and returns its effective handle and inbox path, recording a refusal decided before the session's own.
+    /// Claims the input's card for this session by the init sequence of spec 3.10 and returns its effective handle and inbox path, recording once why it did not, whether its checks, a failure or the session stopped it.
     async fn init(&self, input: InitInput) -> Result<ToolResult, ErrorCode> {
         let _one_init_at_a_time = self.init_gate.lock().await;
-        let (name, node, lock) = self.claim_prepared(input).await.inspect_err(|refusal| {
-            (self.effects.report)(
-                ProcessEvent::ClaimRefused {
-                    code: refusal.code(),
-                }
-                .into(),
-            );
-        })?;
-        self.claim(name, node, lock)
+        self.claim_prepared(input)
+            .await
+            .and_then(|(name, node, lock)| {
+                self.claim(name, node, lock).map_err(InitRefusal::Refused)
+            })
+            .map_err(|refusal| self.recorded(refusal))
     }
 
     /// The card name, the started node and the held sidecar lock the session is to claim, by the init sequence of spec 3.10 up to the claim itself.
     async fn claim_prepared(
         &self,
         input: InitInput,
-    ) -> Result<(Handle, Node, HeldSidecar), ErrorCode> {
+    ) -> Result<(Handle, Node, HeldSidecar), InitRefusal> {
         self.refuse_a_second_claim()?;
         let name = card_name(&input.card)?;
         let card = self.registry_card(&name)?;
@@ -346,7 +343,7 @@ impl Server {
         &self,
         name: &Handle,
         public_key: PublicKey,
-    ) -> Result<HeldSidecar, ErrorCode> {
+    ) -> Result<HeldSidecar, InitRefusal> {
         let sidecar_path = self
             .served
             .directories
@@ -357,8 +354,8 @@ impl Server {
             sidecar::claim(&sidecar_path, public_key.as_bytes(), &pause)
         })
         .await
-        .map_err(|failure| self.recorded(ClaimFailure::LockTaskFailed(failure)))?
-        .map_err(|refusal| claim_refusal(&refusal))
+        .map_err(ClaimFailure::LockTaskFailed)?
+        .map_err(|refusal| InitRefusal::Refused(claim_refusal(&refusal)))
     }
 
     /// Builds the endpoint under the card key, starts the node on it, and returns once its effective handle is assigned.
@@ -367,9 +364,9 @@ impl Server {
         lock: &HeldSidecar,
         requested_handle: AnnouncedHandle,
         public: Vec<u8>,
-    ) -> Result<Node, ErrorCode> {
+    ) -> Result<Node, InitRefusal> {
         let network = Network::new(self.served.config.clone(), self.served.config_path.clone())
-            .map_err(|refused| self.recorded(ClaimFailure::NetworkRefused(refused)))?;
+            .map_err(ClaimFailure::NetworkRefused)?;
         let endpoint = (self.effects.bind_endpoint)(
             lock.secret_key().clone(),
             *network.keys().gate_key(),
@@ -377,7 +374,7 @@ impl Server {
             Arc::clone(&self.effects.node.monotonic),
         )
         .await
-        .map_err(|unbound| self.recorded(ClaimFailure::EndpointUnbound(unbound)))?;
+        .map_err(ClaimFailure::EndpointUnbound)?;
         let identity = Identity {
             card_key: lock.secret_key().clone(),
             requested_handle,
@@ -390,7 +387,7 @@ impl Server {
             node_effects_of(&self.effects.node),
         )
         .await
-        .map_err(|not_started| self.recorded(ClaimFailure::NodeNotStarted(not_started)))
+        .map_err(|not_started| InitRefusal::Failed(ClaimFailure::NodeNotStarted(not_started)))
     }
 
     /// Writes the failure to the run record and returns the error code the tool answers with.
@@ -780,6 +777,42 @@ impl SentMessage {
             id: message_id_text(delivery.id),
             delivered: true,
             attached: delivery.attached,
+        }
+    }
+}
+
+/// Why init claimed no card: a refusal answered with its code, or a failure recorded under its own event.
+enum InitRefusal {
+    Refused(ErrorCode),
+    Failed(ClaimFailure),
+}
+
+impl From<ErrorCode> for InitRefusal {
+    fn from(code: ErrorCode) -> Self {
+        Self::Refused(code)
+    }
+}
+
+impl From<ClaimFailure> for InitRefusal {
+    fn from(failure: ClaimFailure) -> Self {
+        Self::Failed(failure)
+    }
+}
+
+impl AnsweredFailure for InitRefusal {
+    fn answered_code(&self) -> ErrorCode {
+        match self {
+            Self::Refused(code) => code.clone(),
+            Self::Failed(failure) => failure.answered_code(),
+        }
+    }
+}
+
+impl From<InitRefusal> for Event {
+    fn from(refusal: InitRefusal) -> Self {
+        match refusal {
+            InitRefusal::Refused(code) => ProcessEvent::ClaimRefused { code: code.code() }.into(),
+            InitRefusal::Failed(failure) => failure.into(),
         }
     }
 }
@@ -2423,6 +2456,57 @@ mod tests {
     }
 
     /// The text of the field of the name, none when the fields hold no such field or it is no text.
+    const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
+
+    /// Binds no endpoint: the address it asks for is a UDP socket already taken.
+    fn bind_on_a_taken_socket() -> BindEndpoint {
+        Arc::new(|_card_key, _gate_key, _relays, _monotonic| {
+            Box::pin(async {
+                let taken_socket = std::net::UdpSocket::bind(LOOPBACK_ANY_PORT).unwrap();
+                Err(iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                    .bind_addr(taken_socket.local_addr().unwrap())
+                    .unwrap()
+                    .bind()
+                    .await
+                    .unwrap_err())
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_claim_that_fails_once_its_card_passed_its_checks_is_recorded_once_under_its_failure_spec_3_10()
+     {
+        const CLAIM_EVENTS: &str = "process.claim";
+        let machine = Machine::new("claim-failed-once");
+        machine.create_card("amy-card", "amy", AMY_SEED);
+        let (recorded, mut received) = mpsc::unbounded_channel();
+        let record: RunRecord = Arc::new(move |event: Event| {
+            if event.name().starts_with(CLAIM_EVENTS) {
+                drop(recorded.send((event.name(), event.fields())));
+            }
+        });
+        let mut client = start_server(
+            &machine,
+            ServerPlan {
+                report: record,
+                bind_endpoint: bind_on_a_taken_socket(),
+                ..ServerPlan::alone(FIRST_PROCESS_ID)
+            },
+        );
+        client.initialize().await;
+
+        let answer = client.envelope("init", json!({ "card": "amy-card" })).await;
+
+        assert_eq!(answer["error"]["code"], "unreachable", "{answer}");
+        assert_eq!(
+            recorded_so_far(&mut received),
+            vec![(
+                "process.claim_endpoint_unbound",
+                vec![("code", Value::from("unreachable"))]
+            )]
+        );
+    }
+
     fn field_text<'fields>(
         fields: &'fields crate::event::EventFields,
         name: &str,
