@@ -1245,6 +1245,30 @@ mod tests {
             )
         }
 
+        /// The effects of an observer run that hands every event it records, its transport's included, to the record.
+        fn effects_recording_every_event_to(
+            &self,
+            member_addresses: Vec<EndpointAddr>,
+            interrupted: Interrupted,
+            record: RunRecord,
+        ) -> (ObserverEffects, OperatorEffects) {
+            let (effects, operator_effects) = self.effects_recording_to(
+                member_addresses,
+                interrupted,
+                crate::net::endpoint::TransportRecord::new(
+                    Arc::clone(&record),
+                    crate::net::direct::tests::test_salt(),
+                ),
+            );
+            (
+                ObserverEffects {
+                    report: record,
+                    ..effects
+                },
+                operator_effects,
+            )
+        }
+
         fn effects_recording_to(
             &self,
             member_addresses: Vec<EndpointAddr>,
@@ -2179,6 +2203,23 @@ mod tests {
             })
     }
 
+    /// The `kind` and `peer` fields of each recorded event of the name, in the order recorded.
+    fn kinds_and_peers_recorded_as(
+        recorded: &[RecordedEvent],
+        name: &str,
+    ) -> Vec<(Option<serde_json::Value>, Option<serde_json::Value>)> {
+        recorded
+            .iter()
+            .filter(|(recorded_name, _)| *recorded_name == name)
+            .map(|(_, fields)| {
+                (
+                    crate::net::direct::tests::field(fields, "kind").cloned(),
+                    crate::net::direct::tests::field(fields, "peer").cloned(),
+                )
+            })
+            .collect()
+    }
+
     #[tokio::test]
     async fn spec_3_15_test_15_show_peers_sends_one_presence_request_after_joining_and_answers_none()
      {
@@ -2190,10 +2231,15 @@ mod tests {
             cards_dir: None,
             debug: DebugArgs::default(),
         };
-        let effects = lab.effects(vec![neighbor.address.clone()], never_interrupted());
+        let (record, mut recorded) = recorded_events();
+        let effects = lab.effects_recording_every_event_to(
+            vec![neighbor.address.clone()],
+            never_interrupted(),
+            record,
+        );
         let mut output = Vec::new();
 
-        let (outcome, (sent, sent_after_asked)) = tokio::join!(
+        let (outcome, sent) = tokio::join!(
             run(
                 &show_peers,
                 &lab.directories,
@@ -2218,20 +2264,26 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                let sent_after_asked =
-                    next_presence_request(&mut neighbor.topic, SPEC_OBSERVER_WAIT).await;
-                (sent, sent_after_asked)
+                sent
             }
         );
 
         outcome.unwrap();
+        let recorded_through_the_end = crate::net::direct::tests::recorded_so_far(&mut recorded);
+        let presence_request = Some(serde_json::Value::from("presence_request"));
         assert_eq!(
             sent.map(|request| request.requester),
             Some(*secret_key(OBSERVER_SEED).public().as_bytes())
         );
+        assert!(
+            kinds_and_peers_recorded_as(&recorded_through_the_end, "gossip.payload_accepted")
+                .contains(&(presence_request.clone(), Some(neighbor_short_id()))),
+            "show-peers ended before it took the neighbor's presence request: {recorded_through_the_end:?}"
+        );
         assert_eq!(
-            sent_after_asked, None,
-            "show-peers sent a second presence request within {SPEC_OBSERVER_WAIT:?}"
+            kinds_and_peers_recorded_as(&recorded_through_the_end, "gossip.payload_broadcast"),
+            vec![(presence_request, None)],
+            "show-peers broadcast other than one presence request by the time it ended"
         );
         drop(lab);
     }
