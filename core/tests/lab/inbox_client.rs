@@ -34,20 +34,21 @@ impl InboxClient {
         }
     }
 
-    /// The next frame the socket emits within the wait, none when it emits nothing.
-    pub fn next_frame(&mut self, within: Duration) -> Option<Value> {
+    /// The next frame the socket emits, requiring it within the wait.
+    #[track_caller]
+    pub fn next_frame(&mut self, within: Duration) -> Value {
         self.frames
             .get_ref()
             .set_read_timeout(Some(within))
             .unwrap();
         let mut line = String::new();
         match self.frames.read_line(&mut line) {
-            Ok(0) => None,
-            Ok(_) => Some(serde_json::from_str(&line).unwrap()),
+            Ok(0) => panic!("the inbox socket closed with no frame within {within:?}"),
+            Ok(_) => serde_json::from_str(&line).unwrap(),
             Err(failure)
                 if matches!(failure.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
             {
-                None
+                panic!("the inbox socket emitted no frame within {within:?}")
             }
             Err(failure) => panic!("the inbox socket failed: {failure}"),
         }

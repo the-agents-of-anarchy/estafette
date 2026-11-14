@@ -371,8 +371,11 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             &requester,
             presence_request(&requester.public(), valid_seq),
         ));
-        let mut printed =
-            tail.lines_until(ACCEPTANCE_WAIT, |line| line.starts_with(&valid_line_start));
+        let mut printed = tail.lines_until(
+            &format!("line of the valid presence request of seq {valid_seq}"),
+            ACCEPTANCE_WAIT,
+            |line| line.starts_with(&valid_line_start),
+        );
         let requester_peer = short_id_text(&requester);
         observer.observer_events(TAIL_LABEL).wait_until(
             &format!("{PAYLOAD_DROPPED_EVENT} of the tampered {PRESENCE_REQUEST_KIND} signed by {requester_peer} with seq {tampered_seq}"),
@@ -610,15 +613,24 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
         let mut tail_command = observer.command();
         tail_command.args(["tail", network.name()]);
         let tail = Tail::start(tail_command);
-        let (first_homed, _) = tail.first_line_after(started, ANNOUNCEMENT_WAIT, |line| {
-            relays_announced_by(line, &card).is_some_and(|relays| !relays.is_empty())
-        });
+        let (first_homed, _) = tail.first_line_after(
+            &format!("presence of {card} naming a relay"),
+            started,
+            ANNOUNCEMENT_WAIT,
+            |line| relays_announced_by(line, &card).is_some_and(|relays| !relays.is_empty()),
+        );
         if relays_announced_by(&first_homed, &card) != Some(vec![doomed.relay().to_owned()]) {
             return None;
         }
-        tail.first_line_after(Instant::now(), ANNOUNCEMENT_WAIT, |line| {
-            is_a_record_of_the_host_relaying_through(line, network.host_relay())
-        });
+        tail.first_line_after(
+            &format!(
+                "record of the host relaying through {}",
+                network.host_relay()
+            ),
+            Instant::now(),
+            ANNOUNCEMENT_WAIT,
+            |line| is_a_record_of_the_host_relaying_through(line, network.host_relay()),
+        );
         Some(HomedMember {
             card,
             tail,
@@ -639,20 +651,25 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
             .unwrap_or_else(|| {
                 panic!("iroh homed the member on another relay than {} in each of {HOMING_ATTEMPTS} starts", doomed.relay())
             });
-        homed
-            .tail
-            .quiet_for(SPEC_REANNOUNCE_INTERVAL, PRESENCE_QUIET_WAIT, |line| {
-                relays_announced_by(line, &homed.card).is_some()
-            });
+        homed.tail.quiet_for(
+            &format!("presence of {}", homed.card),
+            SPEC_REANNOUNCE_INTERVAL,
+            PRESENCE_QUIET_WAIT,
+            |line| relays_announced_by(line, &homed.card).is_some(),
+        );
 
         let kill = doomed.kill();
         let mut announced_after_the_kill = Vec::new();
         let after_the_kill = loop {
-            let (line, after) = homed
-                .tail
-                .first_line_after(kill.sent, ANNOUNCEMENT_WAIT, |line| {
-                    relays_announced_by(line, &homed.card).is_some()
-                });
+            let (line, after) = homed.tail.first_line_after(
+                &format!(
+                    "presence of {} after the kill of its home relay",
+                    homed.card
+                ),
+                kill.sent,
+                ANNOUNCEMENT_WAIT,
+                |line| relays_announced_by(line, &homed.card).is_some(),
+            );
             let lists_only_the_live_relay =
                 relays_announced_by(&line, &homed.card).is_some_and(|relays| {
                     !relays.is_empty() && relays.iter().all(|relay| relay == network.host_relay())
@@ -889,7 +906,7 @@ mod spec_3_15_two_members_through_the_live_host {
             sent["result"],
             json!({ "id": id, "delivered": true, "attached": true })
         );
-        let frame = inbox.next_frame(FRAME_WAIT).unwrap();
+        let frame = inbox.next_frame(FRAME_WAIT);
         wait_for_time_to_pass(
             bob.member.events(),
             wall_clock_ms(),
@@ -1136,7 +1153,7 @@ mod spec_3_15_two_members_through_the_live_host {
         let mut first_client = InboxClient::connect(&bob.claim["result"]["inbox_path"], 0);
         for seq in 1..=MESSAGES_BEFORE_RECONNECT {
             send(&mut amy, &bob_handle, &body_of(seq));
-            first_client.next_frame(FRAME_WAIT).unwrap();
+            first_client.next_frame(FRAME_WAIT);
         }
         drop(first_client);
         for seq in MESSAGES_BEFORE_RECONNECT.checked_add(1).unwrap()..=MESSAGES_IN_ALL {
@@ -1147,8 +1164,8 @@ mod spec_3_15_two_members_through_the_live_host {
             MESSAGES_BEFORE_RECONNECT,
         );
         let replayed = [
-            reconnected.next_frame(FRAME_WAIT).unwrap(),
-            reconnected.next_frame(FRAME_WAIT).unwrap(),
+            reconnected.next_frame(FRAME_WAIT),
+            reconnected.next_frame(FRAME_WAIT),
         ];
         wait_for_time_to_pass(
             bob.member.events(),

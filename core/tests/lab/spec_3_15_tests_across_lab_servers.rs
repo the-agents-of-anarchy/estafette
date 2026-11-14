@@ -188,7 +188,6 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
         json!({ (ID_KEY): id, (DELIVERED_KEY): true, (ATTACHED_KEY): true }),
         "{sent}"
     );
-    let frame = frame.unwrap();
     assert_eq!(frame["seq"], json!(1), "{frame}");
     assert_eq!(frame["id"], json!(id), "{frame}");
     assert_eq!(frame["from"], json!(amy.handle()), "{frame}");
@@ -353,9 +352,15 @@ fn record_ts_of(line: &str, host: &str) -> Option<u64> {
 fn killable_host_serving(killable: &KillableHost, tail: &Tail) {
     let starting = Instant::now();
     killable.start();
-    tail.first_line_after(starting, HOST_START_WAIT, |line| {
-        record_ts_of(line, &host_id(killable.address())).is_some()
-    });
+    tail.first_line_after(
+        &format!(
+            "record of the killable host {} sent after its start began",
+            host_id(killable.address())
+        ),
+        starting,
+        HOST_START_WAIT,
+        |line| record_ts_of(line, &host_id(killable.address())).is_some(),
+    );
 }
 
 /// Spec 3.15 test 24: three members joined by the invitation run 180 s with both hosts serving and none killed; by the end each still lists the other two online and no member's run record names a rebind.
@@ -482,9 +487,12 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
         killable.start();
     });
     let (first_record, after) = timed("tail prints the added host's first record", || {
-        tail.first_line_after(starting, HOST_START_WAIT, |line| {
-            record_ts_of(line, &added_id).is_some()
-        })
+        tail.first_line_after(
+            &format!("first record of the added host {added_id}"),
+            starting,
+            HOST_START_WAIT,
+            |line| record_ts_of(line, &added_id).is_some(),
+        )
     });
     let first_record_ts = record_ts_of(&first_record, &added_id).unwrap();
     let deadline = starting
@@ -558,7 +566,15 @@ fn relays_announced_now(
                 cards.contains(&card) && !announced.contains_key(&card)
             })
         };
+        let unheard: Vec<&String> = cards
+            .iter()
+            .filter(|card| !announced.contains_key(*card))
+            .collect();
+        let awaited = format!(
+            "answer to the tail's presence request from the members still unheard {unheard:?} (of {cards:?}, all due within {ANNOUNCEMENT_WAIT:?}; heard: {announced:?}) in the time left,"
+        );
         let printed = tail.lines_until(
+            &awaited,
             deadline.saturating_duration_since(Instant::now()),
             unseen_answer,
         );
@@ -721,9 +737,12 @@ fn spec_3_15_test_25_with_one_host_dead_a_member_invited_through_the_live_host_l
     });
     let newcomer_card = newcomer.card_key();
     let (first_presence, _after) = timed("tail prints cid's first presence", || {
-        tail.first_line_after(joining, ANNOUNCEMENT_WAIT, |line| {
-            presence_seq_of(line, &newcomer_card).is_some()
-        })
+        tail.first_line_after(
+            &format!("first presence of cid {newcomer_card}"),
+            joining,
+            ANNOUNCEMENT_WAIT,
+            |line| presence_seq_of(line, &newcomer_card).is_some(),
+        )
     });
     let first_presence_sent_ms = presence_seq_of(&first_presence, &newcomer_card).unwrap();
     let deadline_ms = first_presence_sent_ms
