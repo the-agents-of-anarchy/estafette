@@ -1320,21 +1320,29 @@ mod tests {
             }
         }
 
-        async fn payloads_within(&mut self, within: Duration) -> Vec<Payload> {
-            let mut heard = Vec::new();
-            drop(
-                tokio::time::timeout(within, async {
-                    loop {
-                        if let Some(Ok(GossipEvent::Payload(payload))) =
-                            self.topic.next_event().await
-                        {
-                            heard.push(Payload::from(*payload));
-                        }
+        /// The payloads the peer hears before the next host record, with that record, failing by name when no host record comes within the wait.
+        async fn payloads_before_the_next_host_record(
+            &mut self,
+            within: Duration,
+        ) -> (Vec<Payload>, Infrastructure) {
+            let mut heard_before = Vec::new();
+            let next_record = found_within(within, async || {
+                let Some(Ok(GossipEvent::Payload(payload))) = self.topic.next_event().await else {
+                    return None;
+                };
+                match Payload::from(*payload) {
+                    Payload::Infrastructure(record) => Some(record),
+                    other => {
+                        heard_before.push(other);
+                        None
                     }
-                })
-                .await,
-            );
-            heard
+                }
+            })
+            .await;
+            let Some(next_record) = next_record else {
+                panic!("the peer heard no host record within {within:?}; heard {heard_before:?}")
+            };
+            (heard_before, next_record)
         }
 
         #[must_use]
@@ -1637,48 +1645,75 @@ mod tests {
         scratch.certify(HOST_SEED);
         let seen = Seen::default();
         let (stop, stopped) = stopped_on_signal();
+        let (record, mut recorded) = recorded_events();
         let plan = Plan {
             stopped,
+            report: record,
             ..Plan::new(HOST_SEED)
         };
 
-        let ((_printed, outcome), (last_record, heard_before_the_next_is_due, next_record)) =
-            tokio::join!(run_planned(&scratch, plan, &seen), async {
-                let host = bound_endpoint(&seen, 0).await;
-                let mut peer = Peer::joined_through(PEER_SEED, &host).await;
-                let last_record = peer
-                    .next_host_record(SPEC_RECORD_INTERVAL_LATEST)
-                    .await
-                    .unwrap();
-                let last_record_heard = Instant::now();
-                peer.topic
-                    .broadcast(
-                        &secret_key(PEER_SEED),
-                        Payload::PresenceRequest(wire::PresenceRequest {
-                            v: Version::CURRENT,
-                            requester: *secret_key(PEER_SEED).public().as_bytes(),
-                            seq: FROZEN_CLOCK_MS,
-                            mac: ZERO_MAC,
-                            sig: ZERO_SIGNATURE,
-                        }),
-                    )
-                    .await
-                    .unwrap();
-                let heard_before_the_next_is_due = peer
-                    .payloads_within(
-                        SPEC_RECORD_INTERVAL_EARLIEST.saturating_sub(last_record_heard.elapsed()),
-                    )
-                    .await;
-                let next_record = peer.next_host_record(SPEC_RECORD_INTERVAL_LATEST).await;
-                drop(stop);
-                (last_record, heard_before_the_next_is_due, next_record)
-            });
+        let (
+            (_printed, outcome),
+            (last_record, (heard_before_the_next_record, next_record), spacing),
+        ) = tokio::join!(run_planned(&scratch, plan, &seen), async {
+            let host = bound_endpoint(&seen, 0).await;
+            let mut peer = Peer::joined_through(PEER_SEED, &host).await;
+            let last_record = peer
+                .next_host_record(SPEC_RECORD_INTERVAL_LATEST)
+                .await
+                .unwrap();
+            let last_record_heard = Instant::now();
+            peer.topic
+                .broadcast(
+                    &secret_key(PEER_SEED),
+                    Payload::PresenceRequest(wire::PresenceRequest {
+                        v: Version::CURRENT,
+                        requester: *secret_key(PEER_SEED).public().as_bytes(),
+                        seq: FROZEN_CLOCK_MS,
+                        mac: ZERO_MAC,
+                        sig: ZERO_SIGNATURE,
+                    }),
+                )
+                .await
+                .unwrap();
+            let heard_through_the_next_record = peer
+                .payloads_before_the_next_host_record(SPEC_RECORD_INTERVAL_LATEST)
+                .await;
+            let spacing = last_record_heard.elapsed();
+            drop(stop);
+            (last_record, heard_through_the_next_record, spacing)
+        });
 
         outcome.unwrap();
-        assert_eq!(heard_before_the_next_is_due, Vec::new());
+        let recorded_through_the_end = crate::net::direct::tests::recorded_so_far(&mut recorded);
+        let request_taken_at = recorded_through_the_end.iter().position(|(name, fields)| {
+            *name == PAYLOAD_ACCEPTED_EVENT
+                && crate::net::direct::tests::field(fields, KIND_FIELD)
+                    == Some(&serde_json::Value::from("presence_request"))
+                && crate::net::direct::tests::field(fields, PEER_FIELD)
+                    == Some(&short_id(PEER_SEED))
+        });
+        let next_record_sent_at = recorded_through_the_end.iter().position(|(name, fields)| {
+            *name == BROADCAST_EVENT
+                && crate::net::direct::tests::field(fields, "ts")
+                    == Some(&serde_json::Value::from(next_record.ts))
+        });
+        assert!(
+            request_taken_at.is_some() && request_taken_at < next_record_sent_at,
+            "the host had not taken the peer's presence request when it sent its next record: request at {request_taken_at:?}, record at {next_record_sent_at:?} in {recorded_through_the_end:?}"
+        );
+        assert!(
+            SPEC_RECORD_INTERVAL_EARLIEST <= spacing,
+            "the record after the presence request came {spacing:?} after the last, inside the record interval: an answer, not the next record"
+        );
         assert_eq!(
-            next_record.map(|record| (record.host, record.ts)),
-            Some((last_record.host, last_record.ts.saturating_add(1)))
+            heard_before_the_next_record,
+            Vec::new(),
+            "the host answered the presence request with these payloads before its next record"
+        );
+        assert_eq!(
+            (next_record.host, next_record.ts),
+            (last_record.host, last_record.ts.saturating_add(1))
         );
     }
 
