@@ -305,6 +305,16 @@ fn scratch_root_hands_out_an_empty_root_though_an_earlier_run_left_an_unremovabl
 
     let root = common::scratch_root(LEFTOVER_PREFIX, LEFTOVER_TEST_NAME).unwrap();
 
+    assert_eq!(root.parent(), leftover.parent());
+    assert!(
+        root.file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(&*leftover.file_name().unwrap().to_string_lossy()),
+        "{} was not handed out under the leftover's name {}",
+        root.display(),
+        leftover.display()
+    );
     assert_ne!(root, leftover);
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
     remove_scratch::remove_scratch(&root).unwrap();
