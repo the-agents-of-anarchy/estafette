@@ -32,6 +32,12 @@ impl InboxFrame {
     pub const fn seq(&self) -> u64 {
         self.seq
     }
+
+    /// The id of the message this frame carries, as the frame writes it.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
 }
 
 /// The last 1000 received frames of one process, replayable from any `since`.

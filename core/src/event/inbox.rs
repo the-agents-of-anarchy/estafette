@@ -1,16 +1,27 @@
 use std::io;
 
 use rmcp::service::ServerInitializeError;
+use serde_json::Value;
 use tokio::task::JoinError;
 
 use super::{AnsweredFailure, AreaEvent, Event, EventFields, answered};
 use crate::errors::ErrorCode;
 use crate::mcp::RegistryFailure;
+use crate::net::direct::message_id_text;
+use crate::wire::MessageId;
+
+const MESSAGE_FIELD: &str = "message";
+const FRAME_FIELD: &str = "frame";
+const ATTACHED_FIELD: &str = "attached";
+const CLIENTS_FIELD: &str = "clients";
 
 super::event_names! {
     /// The names of the inbox and tool events.
     InboxEventName {
         AcceptFailed => "inbox.accept_failed",
+        FrameDelivered => "inbox.frame_delivered",
+        ClientConnected => "inbox.client_connected",
+        ClientGone => "inbox.client_gone",
         ListCardsRegistryUnreadable => "tool.list_cards_registry_unreadable",
         ListCardsTaskFailed => "tool.list_cards_task_failed",
         HandshakeFailed => "tool.handshake_failed",
@@ -23,6 +34,16 @@ super::event_names! {
 pub enum InboxEvent {
     /// The inbox socket could not accept a client.
     AcceptFailed(io::Error),
+    /// A message entered the inbox as the numbered frame, with a client attached or none, its id absent where its text is no message id.
+    FrameDelivered {
+        message: Option<MessageId>,
+        frame: u64,
+        attached: bool,
+    },
+    /// A client connected to the inbox socket, leaving this many connected.
+    ClientConnected { clients: usize },
+    /// A client of the inbox socket went, leaving this many connected.
+    ClientGone { clients: usize },
     /// `list_cards` answered with the failure's own code.
     ListCardsFailed(ListCardsFailure),
     /// The MCP handshake failed.
@@ -55,12 +76,37 @@ impl From<ListCardsFailure> for Event {
     }
 }
 
+impl InboxEvent {
+    /// A message entered the inbox as the numbered frame, its id read from the text the frame carries it as.
+    #[must_use]
+    pub fn frame_delivered(message_id: &str, frame: u64, attached: bool) -> Self {
+        Self::FrameDelivered {
+            message: message_id_of(message_id),
+            frame,
+            attached,
+        }
+    }
+}
+
+/// The message id the text names, none for a text that names none.
+fn message_id_of(text: &str) -> Option<MessageId> {
+    uuid::Uuid::try_parse(text).ok().map(uuid::Uuid::into_bytes)
+}
+
+/// The message id as the events file writes it, under the key every event of a message's send and receipt shares.
+fn message_field(message: MessageId) -> (&'static str, Value) {
+    (MESSAGE_FIELD, Value::from(message_id_text(message)))
+}
+
 impl AreaEvent for InboxEvent {
     type Name = InboxEventName;
 
     fn name(&self) -> InboxEventName {
         match self {
             Self::AcceptFailed(_) => InboxEventName::AcceptFailed,
+            Self::FrameDelivered { .. } => InboxEventName::FrameDelivered,
+            Self::ClientConnected { .. } => InboxEventName::ClientConnected,
+            Self::ClientGone { .. } => InboxEventName::ClientGone,
             Self::ListCardsFailed(ListCardsFailure::RegistryUnreadable(_)) => {
                 InboxEventName::ListCardsRegistryUnreadable
             }
@@ -74,13 +120,16 @@ impl AreaEvent for InboxEvent {
     }
 
     fn run_record_line(&self) -> Option<String> {
-        Some(match self {
-            Self::AcceptFailed(source) => {
-                format!("the inbox socket could not accept a client: {source}")
-            }
+        match self {
+            Self::FrameDelivered { .. }
+            | Self::ClientConnected { .. }
+            | Self::ClientGone { .. } => None,
+            Self::AcceptFailed(source) => Some(format!(
+                "the inbox socket could not accept a client: {source}"
+            )),
             Self::ListCardsFailed(failure) => {
                 let code = failure.answered_code();
-                match failure {
+                Some(match failure {
                     ListCardsFailure::RegistryUnreadable(source) => {
                         format!("list_cards answered {}: {source}", code.code())
                     }
@@ -88,24 +137,39 @@ impl AreaEvent for InboxEvent {
                         "list_cards answered {}: the listing task did not finish: {source}",
                         code.code()
                     ),
-                }
+                })
             }
-            Self::HandshakeFailed(source) => format!(
+            Self::HandshakeFailed(source) => Some(format!(
                 "the MCP handshake failed: {}",
                 handshake_failure_reason(source)
-            ),
+            )),
             Self::AnsweringFailed(source) => {
-                format!("the MCP server stopped answering: {source}")
+                Some(format!("the MCP server stopped answering: {source}"))
             }
-            Self::StandardInputFailed(source) => {
-                format!("reading standard input failed and is treated as its end: {source}")
-            }
-        })
+            Self::StandardInputFailed(source) => Some(format!(
+                "reading standard input failed and is treated as its end: {source}"
+            )),
+        }
     }
 
     fn fields(&self) -> EventFields {
         match self {
             Self::ListCardsFailed(failure) => answered(&failure.answered_code()),
+            Self::FrameDelivered {
+                message,
+                frame,
+                attached,
+            } => message
+                .map(message_field)
+                .into_iter()
+                .chain([
+                    (FRAME_FIELD, Value::from(*frame)),
+                    (ATTACHED_FIELD, Value::from(*attached)),
+                ])
+                .collect(),
+            Self::ClientConnected { clients } | Self::ClientGone { clients } => {
+                vec![(CLIENTS_FIELD, Value::from(*clients))]
+            }
             Self::AcceptFailed(_)
             | Self::HandshakeFailed(_)
             | Self::AnsweringFailed(_)

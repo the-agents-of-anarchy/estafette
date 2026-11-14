@@ -437,7 +437,7 @@ fn serve_mcp(
             &directories,
             process_id,
             &OperatingSystemProcessTable,
-            accept_failure_recorder(Arc::clone(&record)),
+            inbox_recorder(Arc::clone(&record)),
         )
         .map_err(CommandLineFailure::InboxSocket)?;
         let signals = forward_shutdown_signals()?;
@@ -560,9 +560,9 @@ fn gate_closing_recorder(record: RunRecord) -> impl Fn(GateFailure) + Send + Syn
     move |failure| record(TransportEvent::GateClosed(failure).into())
 }
 
-/// Hands the failure to accept a client of the inbox socket to the run record.
-fn accept_failure_recorder(record: RunRecord) -> impl Fn(io::Error) + Send + Sync + 'static {
-    move |failure| record(InboxEvent::AcceptFailed(failure).into())
+/// Hands what the inbox socket records to the run record.
+fn inbox_recorder(record: RunRecord) -> impl Fn(InboxEvent) + Send + Sync + 'static {
+    move |event| record(event.into())
 }
 
 /// The run record written to standard error alone.
@@ -739,7 +739,7 @@ fn observer_effects(
                 &directories,
                 std::process::id(),
                 &OperatingSystemProcessTable,
-                accept_failure_recorder(accept_record),
+                inbox_recorder(accept_record),
             )
             .map(Arc::new)
         }),

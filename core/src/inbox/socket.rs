@@ -15,6 +15,7 @@ use tokio::task::{JoinHandle, JoinSet};
 
 use crate::config::{remove_file_if_present, with_cleanup_outcome};
 use crate::dirs::Directories;
+use crate::event::InboxEvent;
 use crate::inbox::buffer::{InboxBuffer, InboxFrame, ReceivedMessage};
 
 const SOCKET_MODE: u32 = 0o600;
@@ -114,10 +115,14 @@ impl ClientAcceptor for UnixListener {
     }
 }
 
+/// Where the socket records what it does: each frame delivered, each client connected and gone, and each failure to accept one.
+type InboxRecord = Box<dyn Fn(InboxEvent) + Send + Sync>;
+
 struct Shared {
     buffer: Mutex<InboxBuffer>,
     newest_seq: watch::Sender<u64>,
     clients: watch::Sender<usize>,
+    record: InboxRecord,
 }
 
 fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -130,19 +135,32 @@ struct Attachment {
 
 impl Attachment {
     fn begin(shared: Arc<Shared>) -> Self {
-        shared
-            .clients
-            .send_modify(|clients| *clients = clients.saturating_add(1));
+        let clients = clients_after(&shared.clients, |clients| clients.saturating_add(1));
+        (shared.record)(InboxEvent::ClientConnected { clients });
         Self { shared }
     }
 }
 
 impl Drop for Attachment {
     fn drop(&mut self) {
-        self.shared
-            .clients
-            .send_modify(|clients| *clients = clients.saturating_sub(1));
+        let clients = clients_after(&self.shared.clients, |clients| clients.saturating_sub(1));
+        (self.shared.record)(InboxEvent::ClientGone { clients });
     }
+}
+
+/// Whether a count of connected clients is attached: at least one client (spec 3.11).
+const fn is_any_client(clients: usize) -> bool {
+    clients > 0
+}
+
+/// Changes the count of connected clients and returns the count it left.
+fn clients_after(clients: &watch::Sender<usize>, change: impl FnOnce(usize) -> usize) -> usize {
+    let mut changed = 0;
+    clients.send_modify(|clients| {
+        *clients = change(*clients);
+        changed = *clients;
+    });
+    changed
 }
 
 /// Whether at least one client is connected, and the moments that changes.
@@ -153,14 +171,14 @@ pub struct Attached {
 
 impl Attached {
     fn watching(clients: watch::Receiver<usize>) -> Self {
-        let observed = *clients.borrow() > 0;
+        let observed = is_any_client(*clients.borrow());
         Self { clients, observed }
     }
 
     /// Whether at least one client is connected now.
     #[must_use]
     pub fn is_attached(&self) -> bool {
-        *self.clients.borrow() > 0
+        is_any_client(*self.clients.borrow())
     }
 
     /// Waits for the first connect or the last disconnect and returns the new state.
@@ -188,7 +206,7 @@ pub struct InboxSocket {
 }
 
 impl InboxSocket {
-    /// Removes stale sockets, listens on this process's socket, and serves clients; must run inside a tokio runtime.
+    /// Removes stale sockets, listens on this process's socket, and serves clients, recording what it does; must run inside a tokio runtime.
     ///
     /// # Errors
     ///
@@ -197,29 +215,22 @@ impl InboxSocket {
         directories: &Directories,
         process_id: u32,
         processes: &impl ProcessTable,
-        report_accept_failure: impl Fn(io::Error) + Send + Sync + 'static,
+        record: impl Fn(InboxEvent) + Send + Sync + 'static,
     ) -> Result<Self, InboxSocketError> {
         let socket_path = directories.inbox_socket_file(process_id);
         remove_stale_sockets(directories, process_id, processes)?;
         let listener = bind_owner_only(&socket_path)?;
-        Ok(Self::serving(socket_path, listener, report_accept_failure))
+        Ok(Self::serving(socket_path, listener, Box::new(record)))
     }
 
-    fn serving(
-        socket_path: PathBuf,
-        acceptor: impl ClientAcceptor,
-        report_accept_failure: impl Fn(io::Error) + Send + 'static,
-    ) -> Self {
+    fn serving(socket_path: PathBuf, acceptor: impl ClientAcceptor, record: InboxRecord) -> Self {
         let shared = Arc::new(Shared {
             buffer: Mutex::new(InboxBuffer::new()),
             newest_seq: watch::Sender::new(0),
             clients: watch::Sender::new(0),
+            record,
         });
-        let accept_task = tokio::spawn(accept_clients(
-            acceptor,
-            Arc::clone(&shared),
-            report_accept_failure,
-        ));
+        let accept_task = tokio::spawn(accept_clients(acceptor, Arc::clone(&shared)));
         Self {
             socket_path,
             shared,
@@ -227,10 +238,16 @@ impl InboxSocket {
         }
     }
 
-    /// Numbers the message, buffers it, and streams it to every attached client.
+    /// Numbers the message, buffers it, streams it to every attached client, and records its delivery.
     pub fn publish(&self, message: ReceivedMessage) {
         let frame = locked(&self.shared.buffer).push(message);
+        let attached = is_any_client(*self.shared.clients.borrow());
         self.shared.newest_seq.send_replace(frame.seq());
+        (self.shared.record)(InboxEvent::frame_delivered(
+            frame.id(),
+            frame.seq(),
+            attached,
+        ));
     }
 
     /// Whether at least one client is connected, updated on the first connect and the last disconnect.
@@ -307,11 +324,7 @@ fn bind_owner_only(socket_path: &Path) -> Result<UnixListener, InboxSocketError>
     Ok(listener)
 }
 
-async fn accept_clients(
-    acceptor: impl ClientAcceptor,
-    shared: Arc<Shared>,
-    report_accept_failure: impl Fn(io::Error),
-) {
+async fn accept_clients(acceptor: impl ClientAcceptor, shared: Arc<Shared>) {
     let mut clients = JoinSet::new();
     loop {
         tokio::select! {
@@ -321,7 +334,7 @@ async fn accept_clients(
                     clients.spawn(serve_client(stream, Arc::clone(&shared), attachment));
                 }
                 Err(failure) => {
-                    report_accept_failure(failure);
+                    (shared.record)(InboxEvent::AcceptFailed(failure));
                     tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
                 }
             },
@@ -379,7 +392,10 @@ async fn wait_for_disconnect(reader: &mut BufReader<impl AsyncRead + Unpin>) {
 mod tests {
     use super::*;
     use crate::dirs::OperatingSystemFilesystem;
+    use crate::event::{Event, EventFields};
+    use serde_json::Value;
     use std::ffi::OsString;
+    use tokio::sync::mpsc;
 
     const OWN_PROCESS_ID: u32 = 4_242;
     const READ_DEADLINE: Duration = Duration::from_secs(5);
@@ -693,7 +709,11 @@ mod tests {
         let _socket = InboxSocket::serving(
             socket_path,
             FailingAcceptor(io::ErrorKind::OutOfMemory),
-            move |failure| locked(&sink).push(failure.kind()),
+            Box::new(move |event| {
+                if let InboxEvent::AcceptFailed(failure) = event {
+                    locked(&sink).push(failure.kind());
+                }
+            }),
         );
 
         tokio::time::timeout(READ_DEADLINE, async {
@@ -708,6 +728,145 @@ mod tests {
             locked(&recorded)
                 .iter()
                 .all(|kind| *kind == io::ErrorKind::OutOfMemory)
+        );
+    }
+
+    type RecordedEvent = (&'static str, EventFields);
+
+    /// A sink handing each inbox event's name and fields to the receiver, and that receiver.
+    fn recording_events() -> (
+        impl Fn(InboxEvent) + Send + Sync + 'static,
+        mpsc::UnboundedReceiver<RecordedEvent>,
+    ) {
+        let (recorded, received) = mpsc::unbounded_channel();
+        let sink = move |event: InboxEvent| {
+            let event = Event::from(event);
+            drop(recorded.send((event.name(), event.fields())));
+        };
+        (sink, received)
+    }
+
+    /// The next inbox event recorded, failing when none is recorded within the read deadline.
+    async fn next_recorded(received: &mut mpsc::UnboundedReceiver<RecordedEvent>) -> RecordedEvent {
+        tokio::time::timeout(READ_DEADLINE, received.recv())
+            .await
+            .unwrap_or_else(|_elapsed| panic!("no inbox event within {READ_DEADLINE:?}"))
+            .unwrap()
+    }
+
+    const FIRST_MESSAGE_ID: &str = "0193a5d2-7c41-7e0a-9b3f-4d5e6f708192";
+    const SECOND_MESSAGE_ID: &str = "0193a5d2-7c41-7e0a-8c2d-1e2f3a4b5c6d";
+
+    fn message_with_id(id: &str) -> ReceivedMessage {
+        ReceivedMessage {
+            id: id.to_owned(),
+            from: "amy".to_owned(),
+            body: "a body no event may carry".to_owned(),
+            sent_at: SENT_AT_BASE,
+            received_at: RECEIVED_AT_BASE,
+        }
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_delivered_frame_is_recorded_with_its_message_id_its_frame_number_and_whether_a_client_was_attached()
+     {
+        let directories = scratch_directories("frame-event");
+        let (sink, mut recorded) = recording_events();
+        let socket = InboxSocket::start(
+            &directories,
+            OWN_PROCESS_ID,
+            &RunningProcesses(vec![OWN_PROCESS_ID]),
+            sink,
+        )
+        .unwrap();
+
+        socket.publish(message_with_id(FIRST_MESSAGE_ID));
+        let unattached = next_recorded(&mut recorded).await;
+        let _client = connect_with_since(&directories.inbox_socket_file(OWN_PROCESS_ID), 0).await;
+        let connected = next_recorded(&mut recorded).await;
+        socket.publish(message_with_id(SECOND_MESSAGE_ID));
+        let attached = next_recorded(&mut recorded).await;
+
+        assert_eq!(
+            [unattached, connected, attached],
+            [
+                (
+                    "inbox.frame_delivered",
+                    vec![
+                        ("message", Value::from(FIRST_MESSAGE_ID)),
+                        ("frame", Value::from(1)),
+                        ("attached", Value::from(false)),
+                    ]
+                ),
+                ("inbox.client_connected", vec![("clients", Value::from(1))]),
+                (
+                    "inbox.frame_delivered",
+                    vec![
+                        ("message", Value::from(SECOND_MESSAGE_ID)),
+                        ("frame", Value::from(2)),
+                        ("attached", Value::from(true)),
+                    ]
+                ),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_each_inbox_client_connected_and_gone_is_recorded_with_the_clients_it_leaves()
+     {
+        let directories = scratch_directories("client-events");
+        let (sink, mut recorded) = recording_events();
+        let _socket = InboxSocket::start(
+            &directories,
+            OWN_PROCESS_ID,
+            &RunningProcesses(vec![OWN_PROCESS_ID]),
+            sink,
+        )
+        .unwrap();
+        let path = directories.inbox_socket_file(OWN_PROCESS_ID);
+
+        let first = connect_with_since(&path, 0).await;
+        let first_connected = next_recorded(&mut recorded).await;
+        let second = connect_with_since(&path, 0).await;
+        let second_connected = next_recorded(&mut recorded).await;
+        drop(first);
+        let first_gone = next_recorded(&mut recorded).await;
+        drop(second);
+        let second_gone = next_recorded(&mut recorded).await;
+
+        assert_eq!(
+            [first_connected, second_connected, first_gone, second_gone],
+            [
+                ("inbox.client_connected", vec![("clients", Value::from(1))]),
+                ("inbox.client_connected", vec![("clients", Value::from(2))]),
+                ("inbox.client_gone", vec![("clients", Value::from(1))]),
+                ("inbox.client_gone", vec![("clients", Value::from(0))]),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_frame_whose_id_names_no_message_id_is_recorded_without_one()
+    {
+        const NO_MESSAGE_ID: &str = "id-7";
+        let directories = scratch_directories("idless-event");
+        let (sink, mut recorded) = recording_events();
+        let socket = InboxSocket::start(
+            &directories,
+            OWN_PROCESS_ID,
+            &RunningProcesses(vec![OWN_PROCESS_ID]),
+            sink,
+        )
+        .unwrap();
+
+        socket.publish(message_with_id(NO_MESSAGE_ID));
+
+        assert_eq!(
+            next_recorded(&mut recorded).await,
+            (
+                "inbox.frame_delivered",
+                vec![("frame", Value::from(1)), ("attached", Value::from(false))]
+            )
         );
     }
 
