@@ -1167,3 +1167,37 @@ async fn observability_decision_9_a_member_records_entries_an_introduce_and_a_me
     );
     drop(scratch);
 }
+
+#[tokio::test]
+async fn observability_decision_9_a_broadcast_the_topic_refuses_is_recorded_as_failed_and_never_as_broadcast()
+ {
+    let node = bind(FIRST_SEED).await;
+    let gossip = iroh_gossip::Gossip::builder().spawn(node.endpoint().clone());
+    let topic = crate::net::gossip::NetworkTopic::join(
+        &gossip,
+        keys(),
+        secret_key(HOST_SEED).public(),
+        Vec::new(),
+        tokio::time::Instant::now(),
+    )
+    .await
+    .unwrap();
+    let (report, mut recorded) = recording();
+    let request_named_for_another_card =
+        super::presence_request(card(SECOND_SEED), FROZEN_CLOCK_MS);
+
+    super::broadcast_recording_outcome(
+        &topic,
+        &secret_key(FIRST_SEED),
+        request_named_for_another_card,
+        &*report,
+    )
+    .await;
+    drop(report);
+
+    let mut names = Vec::new();
+    while let Some((name, _fields)) = recorded.0.recv().await {
+        names.push(name);
+    }
+    assert_eq!(names, ["gossip.broadcast_failed"]);
+}

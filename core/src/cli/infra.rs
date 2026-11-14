@@ -36,7 +36,7 @@ use crate::net::direct::{DirectHost, MonotonicClock};
 use crate::net::endpoint::{NodeEndpoint, SnapshotMoment};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
-    KnownHostAddress, KnownHosts, Network, NodeError, RelayOfRecord, broadcast_recorded,
+    KnownHostAddress, KnownHosts, Network, NodeError, RelayOfRecord, broadcast_recording_outcome,
     known_host_addresses, next_recorded_gossip_event, record_counters,
     seed_lookup_with_known_hosts, serve, snapshot_due_after, taken_without_a_row_record,
 };
@@ -828,11 +828,7 @@ impl BootstrapNode {
             mac: ZERO_MAC,
             sig: ZERO_SIGNATURE,
         });
-        if let Err(failure) =
-            broadcast_recorded(&self.topic, &self.key, record, &*self.report).await
-        {
-            (self.report)(crate::event::GossipEvent::BroadcastFailed(failure).into());
-        }
+        broadcast_recording_outcome(&self.topic, &self.key, record, &*self.report).await;
         Ok(())
     }
 

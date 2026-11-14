@@ -1309,11 +1309,7 @@ impl PresenceLoop {
 
     /// Signs and broadcasts the payload under the card key, recording its kind and stamp once sent and a failure otherwise.
     async fn broadcast(&self, payload: Payload) {
-        if let Err(failure) =
-            broadcast_recorded(&self.topic, &self.card_key, payload, &*self.report).await
-        {
-            (self.report)(crate::event::GossipEvent::BroadcastFailed(failure).into());
-        }
+        broadcast_recording_outcome(&self.topic, &self.card_key, payload, &*self.report).await;
     }
 
     /// Announces a changed address now, or once the re-announce interval since the last Presence has passed.
@@ -1486,6 +1482,18 @@ pub async fn broadcast_recorded(
     topic.broadcast(signer, payload).await?;
     report(crate::event::GossipEvent::PayloadBroadcast(facts.into()).into());
     Ok(())
+}
+
+/// Signs and broadcasts the payload on the topic under the signer's key, recording its kind and stamp once sent and the failure when it is not, for a node whose failed broadcast ends nothing.
+pub async fn broadcast_recording_outcome(
+    topic: &NetworkTopic,
+    signer: &SecretKey,
+    payload: Payload,
+    report: &(dyn Fn(Event) + Send + Sync),
+) {
+    if let Err(failure) = broadcast_recorded(topic, signer, payload, report).await {
+        report(crate::event::GossipEvent::BroadcastFailed(failure).into());
+    }
 }
 
 /// Waits until the rebind is due and answers why, or forever when none is.
