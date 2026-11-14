@@ -437,7 +437,7 @@ mod tests {
         .await
         .unwrap_or_else(|_elapsed| {
             panic!(
-                "no payload and no drop both within {EVENT_WAIT:?}: payloads {payloads:?}, drops {rules:?}"
+                "a payload and a drop did not both come within {EVENT_WAIT:?}: payloads {payloads:?}, drops {rules:?}"
             )
         });
         (payloads, rules)
