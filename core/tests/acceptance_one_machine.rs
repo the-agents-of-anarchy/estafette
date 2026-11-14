@@ -1533,6 +1533,8 @@ mod kept_run_records {
     use serde_json::json;
 
     use crate::local_network::{LocalNetwork, MetPair, NETWORK};
+    use crate::scratch_machine::fresh_directory::fresh_directory_in;
+    use crate::scratch_machine::remove_scratch::remove_scratch;
     use crate::scratch_machine::{REDACTED, RunRecordKeeping, ScratchMachine};
     use crate::send;
 
@@ -1594,7 +1596,7 @@ mod kept_run_records {
             .iter()
             .map(|record| fs::read_to_string(record).unwrap())
             .collect();
-        drop(fs::remove_dir_all(directory));
+        remove_scratch(directory).unwrap();
         contents
     }
 
@@ -1616,10 +1618,11 @@ mod kept_run_records {
         let config_file = machine.directories().network_config_file(NETWORK).unwrap();
         keep_only_the_secret_and_owner_lines(&config_file);
         start_refused(machine);
-        let kept_in = std::env::temp_dir().join(format!(
-            "estafette-kept-real-record-test-{}",
-            std::process::id()
-        ));
+        let kept_in = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-real-record-test-{}", std::process::id()),
+        )
+        .unwrap();
 
         let written: Vec<(PathBuf, String)> = machine
             .run_records()
@@ -1674,8 +1677,11 @@ mod kept_run_records {
             &machine,
             &[CHOSEN_SHORT_LINE, &secret_line, &owner_quoted_apart],
         );
-        let kept_in =
-            std::env::temp_dir().join(format!("estafette-kept-record-test-{}", std::process::id()));
+        let kept_in = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-record-test-{}", std::process::id()),
+        )
+        .unwrap();
 
         let records = kept_contents(&machine, &kept_in);
 

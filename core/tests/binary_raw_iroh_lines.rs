@@ -1,4 +1,10 @@
 #[cfg(test)]
+#[path = "common/fresh_directory.rs"]
+mod fresh_directory;
+#[cfg(test)]
+#[path = "common/remove_scratch.rs"]
+mod remove_scratch;
+#[cfg(test)]
 #[path = "support/trace_files.rs"]
 mod trace_files;
 #[cfg(test)]
@@ -19,6 +25,8 @@ mod raw_iroh_lines {
 
     use serde_json::Value;
 
+    use super::fresh_directory::fresh_directory_in;
+    use super::remove_scratch::remove_scratch;
     use super::trace_files::{announcement_of_one_run, trace_files_of_one_run};
     use super::trace_reader::TraceLine;
     use super::whole_trace_lines::{
@@ -49,12 +57,11 @@ mod raw_iroh_lines {
 
     /// A scratch root under `/tmp` with a network created in it.
     fn machine_with_network(test_tag: &str) -> PathBuf {
-        let root = PathBuf::from(SHORT_SCRATCH_PARENT).join(format!(
-            "{SCRATCH_PREFIX}-{}-{test_tag}",
-            std::process::id()
-        ));
-        drop(fs::remove_dir_all(&root));
-        fs::create_dir_all(&root).unwrap();
+        let root = fresh_directory_in(
+            Path::new(SHORT_SCRATCH_PARENT),
+            &format!("{SCRATCH_PREFIX}-{}-{test_tag}", std::process::id()),
+        )
+        .unwrap();
         let created = binary(&root)
             .args(["network", "create", NETWORK])
             .output()
@@ -142,7 +149,7 @@ mod raw_iroh_lines {
                 "{target} is none of the four targets"
             );
         }
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     /// Whether the whole lines hold at least one line of iroh.
@@ -186,6 +193,6 @@ mod raw_iroh_lines {
         let consecutive: Vec<u64> = (0..).take(numbers.len()).collect();
         assert_eq!(numbers, consecutive, "{}", raw.display());
         assert!(hold_a_line_of_iroh(&lines), "{}", raw.display());
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 }

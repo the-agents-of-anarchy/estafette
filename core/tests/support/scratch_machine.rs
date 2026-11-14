@@ -12,6 +12,10 @@ use estafette::dirs::{
 use estafette::keys::parse_public_key;
 use iroh::EndpointId;
 
+#[path = "../common/fresh_directory.rs"]
+pub mod fresh_directory;
+#[path = "../common/remove_scratch.rs"]
+pub mod remove_scratch;
 #[path = "trace_reader.rs"]
 pub mod trace_reader;
 
@@ -123,12 +127,11 @@ impl RunRecordKeeping {
 impl ScratchMachine {
     /// An empty scratch root named for the test and the machine, for the network of that name, its members' run records kept as the test asks.
     pub fn fresh(test_tag: &str, network: &str, run_records: &RunRecordKeeping) -> Self {
-        let root = PathBuf::from(SHORT_SCRATCH_PARENT).join(format!(
-            "{SCRATCH_PREFIX}-{}-{test_tag}",
-            std::process::id()
-        ));
-        drop(fs::remove_dir_all(&root));
-        fs::create_dir_all(&root).unwrap();
+        let root = fresh_directory::fresh_directory_in(
+            Path::new(SHORT_SCRATCH_PARENT),
+            &format!("{SCRATCH_PREFIX}-{}-{test_tag}", std::process::id()),
+        )
+        .unwrap();
         Self {
             root,
             network: network.to_owned(),
@@ -322,12 +325,15 @@ impl Drop for ScratchMachine {
             .run_records
             .kept_in()
             .map(|directory| self.keep_run_records(directory));
-        drop(fs::remove_dir_all(&self.root));
+        let removed = remove_scratch::remove_scratch(&self.root);
         if let Some(Err(failure)) = kept {
             fail_unless_panicking(&format!(
                 "run records of {} not kept: {failure}",
                 self.root.display()
             ));
+        }
+        if let Err(failure) = removed {
+            fail_unless_panicking(&failure.to_string());
         }
     }
 }

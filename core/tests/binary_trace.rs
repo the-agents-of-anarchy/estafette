@@ -1,4 +1,10 @@
 #[cfg(test)]
+#[path = "common/fresh_directory.rs"]
+mod fresh_directory;
+#[cfg(test)]
+#[path = "common/remove_scratch.rs"]
+mod remove_scratch;
+#[cfg(test)]
 #[path = "support/trace_files.rs"]
 mod trace_files;
 #[cfg(test)]
@@ -19,6 +25,8 @@ mod observability {
     use std::path::{Path, PathBuf};
     use std::process::{Command, Output, Stdio};
 
+    use super::fresh_directory::fresh_directory_in;
+    use super::remove_scratch::remove_scratch;
     use super::trace_files::{
         EVENTS_SUFFIX, RAW_SUFFIX, announcement_of_one_run, trace_files_of_one_run,
         traces_directory,
@@ -85,12 +93,11 @@ mod observability {
 
     /// A scratch root under `/tmp`, short enough for an inbox socket path beneath it, with a network created in it.
     fn machine_with_network(test_tag: &str) -> PathBuf {
-        let root = PathBuf::from(SHORT_SCRATCH_PARENT).join(format!(
-            "{SCRATCH_PREFIX}-{}-{test_tag}",
-            std::process::id()
-        ));
-        drop(fs::remove_dir_all(&root));
-        fs::create_dir_all(&root).unwrap();
+        let root = fresh_directory_in(
+            Path::new(SHORT_SCRATCH_PARENT),
+            &format!("{SCRATCH_PREFIX}-{}-{test_tag}", std::process::id()),
+        )
+        .unwrap();
         let created = binary(&root)
             .args(["network", "create", NETWORK])
             .output()
@@ -143,7 +150,7 @@ mod observability {
                 announcement_of_one_run(&root.join(DATA_HOME))
             )
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -174,7 +181,7 @@ mod observability {
         );
         assert_eq!(mode_of(&events), SPEC_FILE_MODE);
         assert_eq!(mode_of(&raw), SPEC_FILE_MODE);
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -228,7 +235,7 @@ mod observability {
             .map(|entry| entry.unwrap().file_name())
             .collect();
         assert_eq!(runtime_entries, Vec::<std::ffi::OsString>::new());
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -264,7 +271,7 @@ mod observability {
             events.to_str().unwrap().contains(&format!("-{run}-")),
             "{events:?} {run}"
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -331,7 +338,7 @@ mod observability {
             );
             assert_eq!(line.value("v"), Some(&json!(SPEC_FORMAT_VERSION)));
         }
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -367,7 +374,7 @@ mod observability {
         assert_eq!(initialized.stdout, Vec::<u8>::new());
         assert_eq!(initialized.stderr, Vec::<u8>::new());
         assert!(!traces_directory(&root.join(DATA_HOME)).exists());
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -387,7 +394,7 @@ mod observability {
             BASE_TEST_SEND_FAILURE
         );
         assert!(!traces_directory(&root.join(DATA_HOME)).exists());
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -411,17 +418,17 @@ mod observability {
             !root.join(RUNTIME_DIRECTORY).exists(),
             "the runtime base directory exists after the refusal"
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
     fn observability_decision_3_a_trace_that_cannot_start_refuses_before_any_base_directory_the_trace_does_not_need()
      {
-        let root = PathBuf::from(SHORT_SCRATCH_PARENT).join(format!(
-            "{SCRATCH_PREFIX}-{}-refused-first",
-            std::process::id()
-        ));
-        drop(fs::remove_dir_all(&root));
+        let root = fresh_directory_in(
+            Path::new(SHORT_SCRATCH_PARENT),
+            &format!("{SCRATCH_PREFIX}-{}-refused-first", std::process::id()),
+        )
+        .unwrap();
         let traces = traces_directory(&root.join(DATA_HOME));
         fs::create_dir_all(traces.parent().unwrap()).unwrap();
         fs::write(&traces, "a file where the trace directory belongs").unwrap();
@@ -439,7 +446,7 @@ mod observability {
             !root.join(RUNTIME_DIRECTORY).exists(),
             "the runtime base directory exists after the refusal"
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -467,8 +474,8 @@ mod observability {
         assert!(events.exists() && raw.exists());
         assert!(untraced.status.success(), "{untraced:?}");
         assert!(!traces_directory(&untraced_root.join(DATA_HOME)).exists());
-        drop(fs::remove_dir_all(&traced_root));
-        drop(fs::remove_dir_all(&untraced_root));
+        remove_scratch(&traced_root).unwrap();
+        remove_scratch(&untraced_root).unwrap();
     }
 
     #[test]
@@ -496,7 +503,7 @@ mod observability {
             message.contains("at line 1, column 1: a key it does not know"),
             "{message}"
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -526,7 +533,7 @@ mod observability {
             String::from_utf8(initialized.stderr).unwrap(),
             announcement_of_one_run(&root.join(DATA_HOME))
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -545,7 +552,7 @@ mod observability {
         }
 
         assert!(!traces_directory(&root.join(DATA_HOME)).exists());
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -576,7 +583,7 @@ mod observability {
         assert_eq!(first.node, second.node);
         assert!(first.node.is_some(), "{first:?}");
         assert_ne!(first.run, second.run);
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     /// Whether the trace file of a running process comes to hold a whole line within `WHOLE_LINE_WAIT`.
@@ -644,7 +651,7 @@ mod observability {
             .map(|line| line.event)
             .collect();
         assert_eq!(raw_events, [RAW_FILE_OPENED_EVENT]);
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -668,6 +675,6 @@ mod observability {
             Some(COMMAND_FAILED_EVENT),
             "the last event of the stopped process is not the last line of its events file: {lines:?}"
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 }

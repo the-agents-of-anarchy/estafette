@@ -347,7 +347,17 @@ pub fn timeline_in(traces_directory: &Path) -> String {
 mod tests {
     use serde_json::json;
 
+    use super::super::fresh_directory::fresh_directory_in;
+    use super::super::remove_scratch::remove_scratch;
     use super::*;
+
+    fn fresh_scratch_directory(label: &str) -> PathBuf {
+        fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("trace-reader-{}-{label}", std::process::id()),
+        )
+        .unwrap()
+    }
 
     const MEMBER_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":4,\"mono_ms\":17,\"wall_ms\":1794524353720,\"node\":\"8f43abc249\",\"event\":\"process.command_failed\",\"code\":\"unreachable\",\"handle\":\"bob\"}\n";
 
@@ -406,10 +416,7 @@ mod tests {
     #[test]
     fn observability_decision_11_a_line_lacking_a_header_is_refused_naming_its_file_its_line_and_the_header()
      {
-        let directory =
-            std::env::temp_dir().join(format!("trace-reader-{}-headerless", std::process::id()));
-        drop(fs::remove_dir_all(&directory));
-        fs::create_dir_all(&directory).unwrap();
+        let directory = fresh_scratch_directory("headerless");
         let headerless = MEMBER_LINE.replace("\"n\":4,", "");
         let bad_file = directory.join("20261112T225914Z-aaaaaaaaaaaaaaaa-estafette.events.jsonl");
         fs::write(&bad_file, format!("{MEMBER_LINE}{headerless}")).unwrap();
@@ -428,7 +435,7 @@ mod tests {
                 bad_file.display()
             )
         );
-        drop(fs::remove_dir_all(&directory));
+        remove_scratch(&directory).unwrap();
     }
 
     #[test]
@@ -462,8 +469,9 @@ mod tests {
     fn observability_decision_12_a_stopped_process_file_keeping_bytes_after_its_last_line_fails_the_test_reading_it()
      {
         const UNENDED_BYTES: usize = 40;
-        let stopped_file =
-            std::env::temp_dir().join(format!("trace-reader-{}-stopped", std::process::id()));
+        const STOPPED_FILE_NAME: &str = "stopped.events.jsonl";
+        let stopped_directory = fresh_scratch_directory("stopped");
+        let stopped_file = stopped_directory.join(STOPPED_FILE_NAME);
         let mut bytes = MEMBER_LINE.as_bytes().to_vec();
         bytes.extend_from_slice(&MEMBER_LINE.as_bytes()[..UNENDED_BYTES]);
         fs::write(&stopped_file, bytes).unwrap();
@@ -478,16 +486,13 @@ mod tests {
                 stopped_file.display()
             )))
         );
-        drop(fs::remove_file(&stopped_file));
+        remove_scratch(&stopped_directory).unwrap();
     }
 
     #[test]
     fn observability_decision_4_a_trace_directory_reads_as_its_events_files_in_run_order_leaving_out_raw_files()
      {
-        let directory =
-            std::env::temp_dir().join(format!("trace-reader-{}-directory", std::process::id()));
-        drop(fs::remove_dir_all(&directory));
-        fs::create_dir_all(&directory).unwrap();
+        let directory = fresh_scratch_directory("directory");
         let later = MEMBER_LINE.replace("\"n\":4", "\"n\":9");
         fs::write(
             directory.join("20261112T225914Z-aaaaaaaaaaaaaaaa-estafette.events.jsonl"),
@@ -524,16 +529,15 @@ mod tests {
             "        17 ms  #4    process.command_failed code=\"unreachable\" handle=\"bob\"\n        17 ms  #9    process.command_failed code=\"unreachable\" handle=\"bob\""
         );
         assert_eq!(timeline_in(&directory.join("absent")), NO_EVENT_RECORDED);
-        drop(fs::remove_dir_all(&directory));
+        remove_scratch(&directory).unwrap();
     }
 
     #[test]
     fn observability_decision_15_a_trace_directory_that_cannot_be_listed_is_reported_not_read_as_holding_no_event()
      {
-        let not_a_directory = std::env::temp_dir().join(format!(
-            "trace-reader-{}-not-a-directory",
-            std::process::id()
-        ));
+        const NOT_A_DIRECTORY_NAME: &str = "not-a-directory";
+        let holder = fresh_scratch_directory("not-a-directory");
+        let not_a_directory = holder.join(NOT_A_DIRECTORY_NAME);
         fs::write(&not_a_directory, MEMBER_LINE).unwrap();
 
         let read = events_lines_in(&not_a_directory).map(|lines| lines.len());
@@ -553,16 +557,13 @@ mod tests {
                 not_a_directory.display()
             )
         );
-        drop(fs::remove_file(&not_a_directory));
+        remove_scratch(&holder).unwrap();
     }
 
     #[test]
     fn observability_decision_13_the_lines_a_run_rolled_over_are_read_before_the_lines_written_after_the_rollover()
      {
-        let directory =
-            std::env::temp_dir().join(format!("trace-reader-{}-rolled-over", std::process::id()));
-        drop(fs::remove_dir_all(&directory));
-        fs::create_dir_all(&directory).unwrap();
+        let directory = fresh_scratch_directory("rolled-over");
         let run = "20261112T225913Z-bbbbbbbbbbbbbbbb-estafette.events.jsonl";
         let after_rollover = MEMBER_LINE.replace("\"n\":4", "\"n\":7");
         fs::write(directory.join(format!("{run}.1")), MEMBER_LINE).unwrap();
@@ -575,7 +576,7 @@ mod tests {
             .collect();
 
         assert_eq!(numbers, [4, 7]);
-        drop(fs::remove_dir_all(&directory));
+        remove_scratch(&directory).unwrap();
     }
 
     #[test]
@@ -583,13 +584,12 @@ mod tests {
      {
         const FILES: u32 = 4;
         const REMOVED_SETS: u32 = 1 << FILES;
-        let directory =
-            std::env::temp_dir().join(format!("trace-reader-{}-removed", std::process::id()));
+        let root = fresh_scratch_directory("removed");
         let is_removed = |removed_set: u32, index: u32| removed_set & (1 << index) != 0;
 
         for removed_set in 0..REMOVED_SETS {
-            drop(fs::remove_dir_all(&directory));
-            fs::create_dir_all(&directory).unwrap();
+            let directory = root.join(format!("removed-set-{removed_set}"));
+            fs::create_dir(&directory).unwrap();
             for index in 0..FILES {
                 fs::write(
                     directory.join(format!(
@@ -618,9 +618,9 @@ mod tests {
                 .collect();
             assert_eq!(numbers, kept, "removed set {removed_set:#06b}");
         }
-        let not_a_file = directory.join("20261112T225919Z-cccccccccccccccc-estafette.events.jsonl");
+        let not_a_file = root.join("20261112T225919Z-cccccccccccccccc-estafette.events.jsonl");
         fs::create_dir(&not_a_file).unwrap();
-        let headerless = directory.join("20261112T225918Z-dddddddddddddddd-estafette.events.jsonl");
+        let headerless = root.join("20261112T225918Z-dddddddddddddddd-estafette.events.jsonl");
         fs::write(&headerless, MEMBER_LINE.replace("\"n\":4,", "")).unwrap();
 
         let directory_read = lines_of_files_still_present(std::slice::from_ref(&not_a_file))
@@ -645,6 +645,6 @@ mod tests {
                 }
             })
         );
-        drop(fs::remove_dir_all(&directory));
+        remove_scratch(&root).unwrap();
     }
 }
