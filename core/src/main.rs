@@ -1762,8 +1762,10 @@ mod tests {
         const SCRATCH_PREFIX: &str = "estafette-trace-nothing-past-the-last-line";
         let (_scratch_removed_when_the_test_ends, environment) =
             scratch_environment(SCRATCH_PREFIX);
-        let trace_effects =
-            trace_effects_creating(uncuttable_trace_files(), uncuttable_trace_files());
+        let trace_effects = trace_effects_creating(
+            TraceEffects::of_the_operating_system(trace_clocks_started_now()).create_file,
+            uncuttable_trace_files(),
+        );
         let standard_error = SharedRecord::default();
 
         let status = run_traced(
