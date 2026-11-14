@@ -326,7 +326,8 @@ pub struct PeerRows {
     held_connections: HeldConnections,
     report: RunRecord,
     #[cfg(test)]
-    direct_answers_taken: tokio::sync::watch::Sender<Vec<wire::PublicKey>>,
+    direct_answers_taken:
+        tokio::sync::watch::Sender<Vec<(wire::PublicKey, crate::net::direct::RequestSummary)>>,
 }
 
 /// A received payload the peer table admits by the operation of its own kind.
@@ -481,8 +482,12 @@ impl PeerRows {
     /// Applies the answer to a direct request this node sent: an `IntroduceAck` as an introduction that spares the connection it came on, a failure as a failed contact, an acknowledged Probe as a contact that succeeded (spec 3.8).
     pub(crate) fn take_direct_answer(&self, answer: DirectAnswer, now_ms: u64) -> Vec<Effect> {
         #[cfg(test)]
-        let (DirectAnswer::Introduce { card: answered, .. }
-        | DirectAnswer::Probe { card: answered, .. }) = answer;
+        let answered = match answer {
+            DirectAnswer::Introduce { card, .. } => {
+                (card, crate::net::direct::RequestSummary::Introduce)
+            }
+            DirectAnswer::Probe { card, .. } => (card, crate::net::direct::RequestSummary::Probe),
+        };
         let effects = match answer {
             DirectAnswer::Introduce {
                 card,
@@ -1675,6 +1680,7 @@ pub(super) mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
+    use crate::net::direct::RequestSummary;
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
@@ -2272,7 +2278,14 @@ pub(super) mod tests {
         assert_eq!(frame["body"], MESSAGE_BODY);
         assert_eq!(frame["id"], MESSAGE_ID_TEXT);
         assert_eq!(frame["sent_at"], MESSAGE_SENT_AT);
-        direct_answers_taken(&first, SECOND_SEED, 1, INTRODUCE_ROUND_TRIP).await;
+        direct_answers_taken(
+            &first,
+            SECOND_SEED,
+            RequestSummary::Introduce,
+            1,
+            INTRODUCE_ROUND_TRIP,
+        )
+        .await;
         let after_introduce = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
             .unwrap();
@@ -3339,6 +3352,7 @@ pub(super) mod tests {
         direct_answers_taken(
             &member,
             WITNESS_SEED,
+            RequestSummary::Introduce,
             INTRODUCES_TO_A_JOINING_WITNESS,
             INTRODUCE_ROUND_TRIP,
         )
@@ -3433,6 +3447,7 @@ pub(super) mod tests {
         direct_answers_taken(
             &member,
             WITNESS_SEED,
+            RequestSummary::Introduce,
             INTRODUCES_TO_A_JOINING_WITNESS,
             INTRODUCE_ROUND_TRIP,
         )
@@ -3454,7 +3469,8 @@ pub(super) mod tests {
         direct_answers_taken(
             &member,
             WITNESS_SEED,
-            INTRODUCES_TO_A_JOINING_WITNESS.saturating_add(1),
+            RequestSummary::Probe,
+            probes_before.saturating_add(1),
             AFTER_PROBE_ACK,
         )
         .await;
@@ -4599,20 +4615,21 @@ pub(super) mod tests {
         entry
     }
 
-    /// Waits until the member has taken the answers to that many of its direct requests to the seed's card, failing with that count when the bound runs out first.
+    /// Waits until the member has applied that many answers to its direct requests of the kind to the seed's card, failing with that count and kind when the bound runs out first.
     pub(in crate::node) async fn direct_answers_taken(
         member: &Member,
         seed: u8,
+        kind: RequestSummary,
         count: usize,
         within: Duration,
     ) {
-        let answering = card(seed);
+        let answering = (card(seed), kind);
         let mut taken = member.node.state.rows.direct_answers_taken.subscribe();
         let taken_in_time = matches!(
             tokio::time::timeout(
                 within,
                 taken.wait_for(|taken| {
-                    taken.iter().filter(|card| **card == answering).count() >= count
+                    taken.iter().filter(|answer| **answer == answering).count() >= count
                 }),
             )
             .await,
@@ -4620,7 +4637,7 @@ pub(super) mod tests {
         );
         assert!(
             taken_in_time,
-            "the member did not take {count} direct answer(s) from the card of seed {seed} within {within:?}"
+            "the member did not take {count} {kind:?} answer(s) from the card of seed {seed} within {within:?}"
         );
     }
 

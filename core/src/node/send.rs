@@ -224,7 +224,9 @@ mod tests {
     use iroh::endpoint::Connection;
     use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 
-    use crate::net::direct::{ClientTimeouts, DirectClient, DirectServer, message_id_text};
+    use crate::net::direct::{
+        ClientTimeouts, DirectClient, DirectServer, RequestSummary, message_id_text,
+    };
     use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
     use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
@@ -393,7 +395,14 @@ mod tests {
             _router: router,
         };
         peer.connections_after_first().await;
-        direct_answers_taken(&member, WITNESS_SEED, 1, INTRODUCE_ROUND_TRIP).await;
+        direct_answers_taken(
+            &member,
+            WITNESS_SEED,
+            RequestSummary::Introduce,
+            1,
+            INTRODUCE_ROUND_TRIP,
+        )
+        .await;
         (member, peer)
     }
 
