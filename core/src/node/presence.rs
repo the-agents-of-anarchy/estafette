@@ -1260,14 +1260,13 @@ impl PresenceLoop {
 
     /// Records the socket and gossip counters at the moment, and takes the next snapshot the state snapshot interval later.
     pub(super) fn record_state(&mut self, moment: SnapshotMoment) {
-        let snapshot = CounterSnapshot::read(
+        self.snapshot_due = record_counters(
             moment,
-            &self.endpoint.endpoint().metrics().socket,
-            self.gossip.metrics(),
+            self.endpoint.endpoint(),
+            &self.gossip,
+            &*self.report,
+            (self.monotonic)(),
         );
-        (self.report)(crate::event::StateEvent::Counters(snapshot).into());
-        let now = (self.monotonic)();
-        self.snapshot_due = now.checked_add(STATE_SNAPSHOT_INTERVAL).unwrap_or(now);
     }
 
     /// Broadcasts this node's Presence with the next seq, once its handle is assigned and before any Departure.
@@ -1350,6 +1349,24 @@ pub const fn presence_request(requester: wire::PublicKey, seq: u64) -> Payload {
         mac: ZERO_MAC,
         sig: ZERO_SIGNATURE,
     })
+}
+
+/// When a node of any kind next records its counters after `now`, so its events file is written at least every state snapshot interval.
+pub fn snapshot_due_after(now: Instant) -> Instant {
+    now.checked_add(STATE_SNAPSHOT_INTERVAL).unwrap_or(now)
+}
+
+/// Records the counters iroh keeps for the endpoint's socket and for the gossip at the moment, read at `now`, and returns when the next snapshot is due.
+pub fn record_counters(
+    moment: SnapshotMoment,
+    endpoint: &iroh::Endpoint,
+    gossip: &Gossip,
+    report: &(dyn Fn(Event) + Send + Sync),
+    now: Instant,
+) -> Instant {
+    let snapshot = CounterSnapshot::read(moment, &endpoint.metrics().socket, gossip.metrics());
+    report(crate::event::StateEvent::Counters(snapshot).into());
+    snapshot_due_after(now)
 }
 
 /// When the observer wait that starts at `joined` is over.

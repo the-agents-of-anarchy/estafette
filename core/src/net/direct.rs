@@ -1923,6 +1923,25 @@ pub(crate) mod tests {
         std::iter::from_fn(|| receiver.try_recv().ok()).collect()
     }
 
+    /// The longest a test waits for a counters snapshot: two of the 60 s between snapshots of `spec/observability.md` decision 9, so a start that moved the paused clock still meets the first.
+    const COUNTERS_SNAPSHOT_WITHIN: Duration = Duration::from_secs(120);
+
+    /// The instant on the test's clock at which the next `state.counters` event reached the receiver, with its fields, failing by name when none comes within the wait.
+    pub async fn next_counters_snapshot(
+        receiver: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+    ) -> (tokio::time::Instant, crate::event::EventFields) {
+        tokio::time::timeout(COUNTERS_SNAPSHOT_WITHIN, async {
+            loop {
+                let (name, fields) = receiver.recv().await.unwrap();
+                if name == "state.counters" {
+                    return (tokio::time::Instant::now(), fields);
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_elapsed| panic!("no state.counters within {COUNTERS_SNAPSHOT_WITHIN:?}"))
+    }
+
     /// The salt every test register hashes locations under.
     pub fn test_salt() -> crate::trace::LocationSalt {
         crate::trace::LocationSalt::from_random_bytes(

@@ -11,9 +11,10 @@ use data_encoding::HEXLOWER;
 use iroh::SecretKey;
 use iroh::endpoint::BindError;
 use iroh::protocol::Router;
+use iroh_gossip::Gossip;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinError;
-use tokio::time::Instant;
+use tokio::time::{Instant, sleep_until};
 
 use crate::card::{Card, CardInvalid, CardUnusable};
 use crate::cli::debug::DebugArgs;
@@ -28,14 +29,15 @@ use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
 use crate::inbox::socket::{InboxSocket, InboxSocketError};
 use crate::keys::parse_public_key;
 use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, MonotonicClock};
-use crate::net::endpoint::NodeEndpoint;
+use crate::net::endpoint::{NodeEndpoint, SnapshotMoment};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
     DEPARTURE_WAIT, Delivery, DirectAnswer, DirectRequest, DirectRequester, Identity,
     KnownHostAddress, Network, Node, NodeEffects, NodeError, PeerRows, RelayProbe, Session,
     acknowledgement_of, broadcast_recorded, known_host_addresses, next_recorded_gossip_event,
-    observer_wait_over_at, presence_request, replace_lookup_entry, seed_lookup_with_known_hosts,
-    send_in_background, serve, sleep_until_deadline, taken_without_a_row_record, wire_addr,
+    observer_wait_over_at, presence_request, record_counters, replace_lookup_entry,
+    seed_lookup_with_known_hosts, send_in_background, serve, sleep_until_deadline,
+    snapshot_due_after, taken_without_a_row_record, wire_addr,
 };
 use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC};
 use crate::peers::{Effect, Peer, PeerTable};
@@ -576,6 +578,7 @@ async fn start_observation(
         to_loop,
     });
     let (router, gossip) = serve(&endpoint, keys, &host);
+    let snapshot_due = snapshot_due_after((effects.monotonic)());
     let topic = NetworkTopic::join(
         &gossip,
         keys.clone(),
@@ -595,12 +598,14 @@ async fn start_observation(
             host,
             endpoint,
             router,
+            gossip,
             topic,
             from_loop,
             monotonic: effects.monotonic,
             report: effects.report,
             interrupted: effects.interrupted,
             wait_over: None,
+            snapshot_due,
             key: secret_key,
         }),
         Err(failure) => {
@@ -692,11 +697,13 @@ struct Observation {
     client: Arc<DirectClient>,
     topic: NetworkTopic,
     router: Router,
+    gossip: Gossip,
     from_loop: mpsc::UnboundedReceiver<ObserverEvent>,
     monotonic: MonotonicClock,
     report: RunRecord,
     interrupted: Interrupted,
     wait_over: Option<Instant>,
+    snapshot_due: Instant,
     key: SecretKey,
 }
 
@@ -705,6 +712,7 @@ enum Step {
     Topic(Option<Result<GossipEvent, GossipError>>),
     Loop(ObserverEvent),
     WaitOver,
+    SnapshotDue,
     Interrupted,
 }
 
@@ -731,6 +739,7 @@ impl Observation {
                 Step::Topic(Some(Ok(GossipEvent::JoinTimedOut))) => self.start_observer_wait(),
                 Step::Topic(Some(Ok(event))) => self.take_gossip_event(event),
                 Step::Loop(event) => self.take_loop_event(event),
+                Step::SnapshotDue => self.record_counters(),
             }
         }
         let now_ms = self.host.now_ms();
@@ -763,6 +772,7 @@ impl Observation {
                     self.take_gossip_event(event);
                 }
                 Step::Loop(event) => self.take_loop_event(event),
+                Step::SnapshotDue => self.record_counters(),
             }
         }
     }
@@ -779,7 +789,18 @@ impl Observation {
             .get_or_insert_with(|| observer_wait_over_at(joined_at));
     }
 
-    /// Waits for the next topic event, loop event, observer wait deadline or interrupt.
+    /// Records the socket and gossip counters at an interval, so the events file is written at least that often while the observer runs.
+    fn record_counters(&mut self) {
+        self.snapshot_due = record_counters(
+            SnapshotMoment::Interval,
+            self.endpoint.endpoint(),
+            &self.gossip,
+            &*self.report,
+            (self.monotonic)(),
+        );
+    }
+
+    /// Waits for the next topic event, loop event, observer wait deadline, counters snapshot or interrupt.
     async fn next_step(&mut self) -> Step {
         tokio::select! {
             event = next_recorded_gossip_event(
@@ -790,6 +811,7 @@ impl Observation {
             ) => Step::Topic(event),
             Some(event) = self.from_loop.recv() => Step::Loop(event),
             () = sleep_until_deadline(self.wait_over) => Step::WaitOver,
+            () = sleep_until(self.snapshot_due) => Step::SnapshotDue,
             () = &mut self.interrupted => Step::Interrupted,
         }
     }
@@ -2529,6 +2551,59 @@ mod tests {
 
         tail_result.unwrap();
         assert_eq!(gossip, expected);
+        drop(lab);
+    }
+
+    const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
+
+    #[tokio::test(start_paused = true)]
+    async fn observability_decisions_9_and_13_tail_records_its_socket_and_gossip_counters_every_60_s_while_it_runs()
+     {
+        let lab = Lab::new("tail-counters").await;
+        lab.write_network_config(&[NEIGHBOR_SEED]);
+        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
+        let (mut effects, operator_effects) =
+            lab.effects(Vec::new(), Box::pin(async move { drop(interrupted.await) }));
+        effects.report = record;
+        let tail = ObserverCommand::Tail {
+            network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
+            debug: DebugArgs::default(),
+        };
+        let mut printed = Vec::new();
+
+        let (tail_result, (first, second)) = tokio::join!(
+            run(
+                &tail,
+                &lab.directories,
+                &OperatingSystemFilesystem,
+                &NoPause,
+                (effects, operator_effects),
+                &mut printed,
+            ),
+            async {
+                let first = crate::net::direct::tests::next_counters_snapshot(&mut recorded).await;
+                let second = crate::net::direct::tests::next_counters_snapshot(&mut recorded).await;
+                interrupt.send(()).unwrap_or_default();
+                (first, second)
+            }
+        );
+
+        tail_result.unwrap();
+        assert_eq!(
+            second.0.duration_since(first.0),
+            SPEC_STATE_SNAPSHOT_INTERVAL
+        );
+        for (_at, fields) in [&first, &second] {
+            assert_eq!(
+                fields.first(),
+                Some(&("moment", serde_json::Value::from("interval")))
+            );
+            let names: Vec<&str> = fields.iter().map(|(name, _)| *name).collect();
+            assert!(names.contains(&"socket.recv_datagrams"), "{names:?}");
+            assert!(names.contains(&"gossip.neighbor_up"), "{names:?}");
+        }
         drop(lab);
     }
 
