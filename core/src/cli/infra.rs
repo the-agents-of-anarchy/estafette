@@ -960,6 +960,8 @@ mod tests {
     const SECOND_RECORD: usize = 2;
     const PEER_JOIN_WAIT: Duration = Duration::from_secs(8);
     const RECORD_AT_JOIN_WAIT: Duration = Duration::from_millis(4000);
+    /// Past the QUIC idle timeout, by which a peer's topic reports a host gone however its run ended.
+    const HOST_GONE_WAIT: Duration = Duration::from_secs(20);
     const SPEC_RECORD_INTERVAL_EARLIEST: Duration = Duration::from_millis(4500);
     const SPEC_RECORD_INTERVAL_LATEST: Duration = Duration::from_millis(6500);
     const SPEC_JOIN_TIMEOUT_PAST: Duration = Duration::from_millis(6000);
@@ -1320,6 +1322,34 @@ mod tests {
             }
         }
 
+        /// The payloads the peer hears until its topic reports the node gone, failing by name when it does not within the wait.
+        async fn payloads_until_gone(
+            &mut self,
+            node: iroh::EndpointId,
+            within: Duration,
+        ) -> Vec<Payload> {
+            let mut heard = Vec::new();
+            tokio::time::timeout(within, async {
+                loop {
+                    match self.topic.next_event().await.unwrap().unwrap() {
+                        GossipEvent::Payload(payload) => heard.push(Payload::from(*payload)),
+                        GossipEvent::NeighborDown(gone) if gone == node => return,
+                        GossipEvent::Joined
+                        | GossipEvent::JoinTimedOut
+                        | GossipEvent::NeighborUp(_)
+                        | GossipEvent::NeighborDown(_) => {}
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_elapsed| {
+                panic!(
+                    "the peer's topic did not report {node} gone within {within:?}; heard {heard:?}"
+                )
+            });
+            heard
+        }
+
         async fn payloads_within(&mut self, within: Duration) -> Vec<Payload> {
             let mut heard = Vec::new();
             drop(
@@ -1598,8 +1628,10 @@ mod tests {
         .unwrap();
         let seen = Seen::default();
         let (stop, stopped) = stopped_on_signal();
+        let (record, mut recorded) = recorded_events();
         let plan = Plan {
             stopped,
+            report: record,
             ..Plan::new(HOST_SEED)
         };
 
@@ -1607,7 +1639,7 @@ mod tests {
             tokio::join!(run_planned(&scratch, plan, &seen), async {
                 let host = bound_endpoint(&seen, 0).await;
                 let mut peer = Peer::subscribed_through(PEER_SEED, &host).await;
-                let heard = peer.next_host_record(RECORD_AT_JOIN_WAIT).await;
+                let heard = peer.payloads_until_gone(host.id(), HOST_GONE_WAIT).await;
                 drop(stop);
                 heard
             });
@@ -1617,9 +1649,23 @@ mod tests {
             fs::Permissions::from_mode(SPEC_PRIVATE_DIRECTORY_MODE),
         )
         .unwrap();
+        let recorded_through_the_end = crate::net::direct::tests::recorded_so_far(&mut recorded);
+        let names_recorded: Vec<&str> = recorded_through_the_end
+            .iter()
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(
+            names_recorded.contains(&"gossip.topic_joined"),
+            "the host ended before its topic reported the join its record is broadcast at: {names_recorded:?}"
+        );
+        assert!(
+            !names_recorded.contains(&BROADCAST_EVENT),
+            "the host broadcast a payload before it ended: {recorded_through_the_end:?}"
+        );
         assert_eq!(
-            heard, None,
-            "the peer heard a host record within {RECORD_AT_JOIN_WAIT:?}"
+            heard,
+            Vec::new(),
+            "the peer heard a payload before the host was gone"
         );
         assert!(
             outcome
