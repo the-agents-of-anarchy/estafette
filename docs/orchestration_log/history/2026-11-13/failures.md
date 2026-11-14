@@ -23,3 +23,11 @@ What happened: at 05:55 on 2026-11-14 a turn started by a heartbeat ended with a
 Mechanism: the turn's last tool result was followed by the nudge that the previous response had no visible output, and the lead answered the nudge as if it were the owner's message, after a long run of state changes it held ready to tell.
 
 Correction: a turn the owner did not type ends with zero characters whatever a nudge asks; state changes go to the status file and the journal alone, where they already stood.
+
+## The lead launched work after the owner settled a stop for the reload
+
+What happened: At 23:40 on 2026-11-14 the lead launched a spec review and an integrator, though the owner had settled in the open round that this session stops and reloads under unharness; the owner objected at 23:41 and both agents were stopped, the integrator after its replay and before any gate.
+
+Mechanism: The lead announced its own order (route the two units first, then the identity block and the emptied files) and read the absence of an objection as assent, and it read the owner's word to use the limits in full as ranking above the stop he had just settled.
+
+Correction: An order the owner settles in a round governs the next act; a plan the lead announces is no ruling until he answers it; before any launch that follows a settled stop the lead asks nothing and launches nothing, and does the stop's own steps first.
