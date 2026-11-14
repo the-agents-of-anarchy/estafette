@@ -331,7 +331,13 @@ products:
   - path: .manifestos/commitments.min.md
     purpose: the commitments condensed to one line per element, for the frugal load
 
-retired: []
+retired:
+  - path: docs/orchestration_log/archive/architecture_log-2026-10-24--2026-10-28.md
+    superseded_by: docs/architecture_log.md (current entries)
+  - path: docs/orchestration_log/archive/architecture_log-2026-11-09--2026-11-09.md
+    superseded_by: docs/architecture_log.md (current entries)
+  - path: docs/orchestration_log/archive/architecture_log-2026-11-10--2026-11-10.md
+    superseded_by: docs/architecture_log.md (current entries)
 
 project:
   ratified_on: '2026-10-22'
