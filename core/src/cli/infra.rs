@@ -46,6 +46,8 @@ use crate::wire::{
     SignatureBytes, Version,
 };
 
+/// The name the command line parses the infrastructure command by and its trace writes.
+pub const RUN_INFRASTRUCTURE_COMMAND: &str = "run-infrastructure";
 const HTTPS_PORT: u16 = 443;
 const QUIC_ADDRESS_DISCOVERY_PORT: u16 = 7842;
 const INFRASTRUCTURE_RECORD_INTERVAL: Duration = Duration::from_secs(5);
@@ -108,7 +110,7 @@ pub type StartRelay = Box<
 /// The infrastructure command of spec 3.13.
 #[derive(Debug, Clone, Subcommand)]
 pub enum InfrastructureCommand {
-    #[command(about = RUN_ABOUT, long_about = run_long_about())]
+    #[command(name = RUN_INFRASTRUCTURE_COMMAND, about = RUN_ABOUT, long_about = run_long_about())]
     RunInfrastructure {
         /// The network whose configuration file this host reads and joins
         network: Handle,

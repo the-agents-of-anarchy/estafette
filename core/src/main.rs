@@ -61,13 +61,10 @@ const PROGRAM_PURPOSE: &str = "Messaging between agents across machines and harn
 const INTERRUPT_SIGNAL: &str = "SIGINT";
 const TERMINATE_SIGNAL: &str = "SIGTERM";
 const HANGUP_SIGNAL: &str = "SIGHUP";
+/// The name the command line parses the MCP server by and its trace writes.
 const MCP_COMMAND: &str = "mcp";
+/// The name the command line parses the doctor by and its trace writes.
 const DOCTOR_COMMAND: &str = "doctor";
-const SHOW_PEERS_COMMAND: &str = "show-peers";
-const TAIL_COMMAND: &str = "tail";
-const TEST_SEND_COMMAND: &str = "test-send";
-#[cfg(feature = "relay")]
-const RUN_INFRASTRUCTURE_COMMAND: &str = "run-infrastructure";
 
 /// Sends iroh's own lines into a trace's raw file, done once per process by the composition root.
 type InstallIrohLines = fn(Arc<Trace>) -> Result<(), IrohLinesRefused>;
@@ -106,6 +103,7 @@ enum Command {
     #[command(flatten)]
     Observer(ObserverCommand),
     /// Serve the six MCP tools of one network on standard input and output, reading its configuration and cards; refuses a network whose configuration is missing or invalid
+    #[command(name = MCP_COMMAND)]
     Mcp {
         #[command(flatten)]
         registry: RegistryArgs,
@@ -113,6 +111,7 @@ enum Command {
         debug: DebugArgs,
     },
     /// Check the configuration file permissions, each card, each sidecar, each known relay and the visibility of a peer, print one line per check, and exit 3 when any check fails
+    #[command(name = DOCTOR_COMMAND)]
     Doctor {
         #[command(flatten)]
         arguments: DoctorArgs,
@@ -211,7 +210,7 @@ fn run_command(
             standard_error_record().as_ref(),
         ),
         Command::Observer(command) => run_traced(
-            observer_command_name(&command),
+            command.name(),
             command.debug().tracing(),
             &environment,
             command.cards_dir(),
@@ -361,15 +360,6 @@ fn record_panic_locations(trace: Arc<Trace>) {
         trace.flush();
         replaced(panic);
     }));
-}
-
-/// The name a client gives the observer command on the command line.
-const fn observer_command_name(command: &ObserverCommand) -> &'static str {
-    match command {
-        ObserverCommand::ShowPeers { .. } => SHOW_PEERS_COMMAND,
-        ObserverCommand::Tail { .. } => TAIL_COMMAND,
-        ObserverCommand::TestSend { .. } => TEST_SEND_COMMAND,
-    }
 }
 
 /// The salt of this process's events file, drawn once from the secure random source.
@@ -815,7 +805,7 @@ fn run_infrastructure_command(
     trace_setup: TraceSetup<'_>,
 ) -> ExitStatus {
     run_traced(
-        RUN_INFRASTRUCTURE_COMMAND,
+        infra::RUN_INFRASTRUCTURE_COMMAND,
         command.debug().tracing(),
         environment,
         None,
@@ -1978,6 +1968,50 @@ mod tests {
             matches!(stops, [TraceStop::Drained, TraceStop::Drained]),
             "{stops:?}"
         );
+    }
+
+    #[test]
+    fn observability_decision_9_each_command_name_process_started_writes_is_the_one_the_command_line_parses_it_by()
+     {
+        const NETWORK: &str = "lab";
+        const HANDLE: &str = "bob";
+        const BODY: &str = "hello";
+        let command_line = EstafetteArguments::command();
+        let traced = [
+            MCP_COMMAND,
+            DOCTOR_COMMAND,
+            observer::SHOW_PEERS_COMMAND,
+            observer::TAIL_COMMAND,
+            observer::TEST_SEND_COMMAND,
+            #[cfg(feature = "relay")]
+            infra::RUN_INFRASTRUCTURE_COMMAND,
+        ];
+        let observer_lines = [
+            vec![observer::SHOW_PEERS_COMMAND, NETWORK],
+            vec![observer::TAIL_COMMAND, NETWORK],
+            vec![observer::TEST_SEND_COMMAND, NETWORK, HANDLE, BODY],
+        ];
+
+        let unparsed: Vec<&str> = traced
+            .into_iter()
+            .filter(|name| command_line.find_subcommand(name).is_none())
+            .collect();
+        let observer_names: Vec<&str> = observer_lines
+            .iter()
+            .map(|line| {
+                let arguments = std::iter::once("estafette").chain(line.iter().copied());
+                let Command::Observer(command) = EstafetteArguments::try_parse_from(arguments)
+                    .unwrap()
+                    .command
+                else {
+                    panic!("{line:?} parses as an observer command");
+                };
+                command.name()
+            })
+            .collect();
+
+        assert_eq!(unparsed, Vec::<&str>::new());
+        assert_eq!(observer_names, observer_lines.map(|line| line[0]).to_vec());
     }
 
     static PANIC_HOOK_SET: AtomicBool = AtomicBool::new(false);

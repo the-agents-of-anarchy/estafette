@@ -46,6 +46,12 @@ use crate::peers::{Effect, Peer, PeerTable};
 use crate::sidecar::{HeldSidecar, Pause, SEED_BYTES, SidecarError, claim, create_card};
 use crate::wire::{self, Introduce, IntroduceAck, Message, Nonce, Version};
 
+/// The name the command line parses the show-peers command by and its trace writes.
+pub const SHOW_PEERS_COMMAND: &str = "show-peers";
+/// The name the command line parses the tail command by and its trace writes.
+pub const TAIL_COMMAND: &str = "tail";
+/// The name the command line parses the test-send command by and its trace writes.
+pub const TEST_SEND_COMMAND: &str = "test-send";
 const OBSERVER_PUBLIC: &[u8] = b"{}";
 const OPERATOR_CARD: &str = "operator";
 const DELIVERED_KIND: &str = "delivered";
@@ -79,6 +85,7 @@ pub enum Interruption {
 #[derive(Debug, Clone, Subcommand)]
 pub enum ObserverCommand {
     /// Join the network without a card, wait out the observer wait, and print each peer as handle, status, attached and public, refusing a network without a configuration file
+    #[command(name = SHOW_PEERS_COMMAND)]
     ShowPeers {
         /// The network whose members to list
         network: Handle,
@@ -89,6 +96,7 @@ pub enum ObserverCommand {
         debug: DebugArgs,
     },
     /// Join the network without a card and print each gossip payload as it arrives until interrupted, refusing a network without a configuration file
+    #[command(name = TAIL_COMMAND)]
     Tail {
         /// The network whose gossip to print
         network: Handle,
@@ -99,6 +107,7 @@ pub enum ObserverCommand {
         debug: DebugArgs,
     },
     /// Send one message as the reserved operator card, creating the card when absent, and print the delivery, refusing a network without a configuration file or a card another process holds
+    #[command(name = TEST_SEND_COMMAND)]
     TestSend {
         /// The network to send on
         network: Handle,
@@ -115,6 +124,16 @@ pub enum ObserverCommand {
 }
 
 impl ObserverCommand {
+    /// The name the command line parses this command by.
+    #[must_use]
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::ShowPeers { .. } => SHOW_PEERS_COMMAND,
+            Self::Tail { .. } => TAIL_COMMAND,
+            Self::TestSend { .. } => TEST_SEND_COMMAND,
+        }
+    }
+
     /// How the command takes SIGINT: show peers and tail end their observation, test send leaves SIGINT to end the process.
     #[must_use]
     pub const fn interruption(&self) -> Interruption {
