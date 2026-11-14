@@ -2,6 +2,9 @@
 #[path = "support/driven_runtime.rs"]
 mod driven_runtime;
 #[cfg(test)]
+#[path = "support/dropped_payloads.rs"]
+mod dropped_payloads;
+#[cfg(test)]
 #[path = "support/file_growth.rs"]
 mod file_growth;
 #[cfg(test)]
@@ -1015,15 +1018,18 @@ mod spec_3_15_with_one_member {
     use serde_json::{Value, json};
 
     use crate::MESSAGE_ID;
+    use crate::dropped_payloads::{
+        PAYLOAD_DROPPED_EVENT, is_dropped_payload_of_seq, short_id_text,
+    };
     use crate::gate_closings::GateClosings;
     use crate::local_network::LocalNetwork;
     use crate::mcp_server::PRESENCE_WAIT;
     use crate::member::{Member, loopback_address};
     use crate::message_body::BODY;
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
-    use crate::payloads::presence_signed_by;
+    use crate::payloads::{presence_signed_by, presence_signed_by_at};
     use crate::scratch_machine::RunRecordKeeping;
-    use crate::scripted_node::ScriptedNode;
+    use crate::scripted_node::{DIRECT_ANSWER_WAIT, ScriptedNode};
 
     const SPEC_SIMULTANEOUS_INIT_WINDOW: Duration = Duration::from_millis(100);
     const SPEC_TOOL_NAMES: [&str; 6] =
@@ -1037,7 +1043,6 @@ mod spec_3_15_with_one_member {
     const HONEST_BODY: &str = "a message under the network mac";
     const ATTACKER_HANDLE: &str = "mallory";
     const OUTSIDER_SECRET_BYTE: u8 = 77;
-    const PAYLOAD_DROPPED_EVENT: &str = "gossip.payload_dropped";
     const PRESENCE_KIND: &str = "presence";
     const TRANSIENT_SOCKET_LIFETIME: Duration = Duration::from_millis(1000);
 
@@ -1159,10 +1164,12 @@ mod spec_3_15_with_one_member {
         let outsider_keys =
             NetworkKeys::derive(&NetworkSecret::from_bytes([OUTSIDER_SECRET_BYTE; 32]));
 
+        let forged_sent = Instant::now();
         let forged_answer = attacker.request_directly(
             card.id,
             &seal_request(&outsider_keys, message_to(&card.id, FORGED_BODY)).unwrap(),
         );
+        let forged_ended_after = forged_sent.elapsed();
         let honest_answer = attacker
             .request_directly(
                 card.id,
@@ -1172,6 +1179,10 @@ mod spec_3_15_with_one_member {
         let bodies = amy.inbox_bodies();
 
         assert_eq!(forged_answer, None);
+        assert!(
+            forged_ended_after < DIRECT_ANSWER_WAIT,
+            "the forged message's stream ended when its wait of {DIRECT_ANSWER_WAIT:?} ran out, not when the member ended it"
+        );
         let Response::MessageAck(ack) = open_response(network.keys(), &honest_answer).unwrap()
         else {
             panic!("a Message is answered by a MessageAck");
@@ -1189,12 +1200,14 @@ mod spec_3_15_with_one_member {
         let mut amy = network.start_member();
         amy.init_through(&card, &host);
         let forger = SecretKey::generate();
+        let forger_peer = short_id_text(&forger);
+        let forged_seq = wall_clock_ms();
         let honest = SecretKey::generate();
         let nowhere = EndpointAddr::from_parts(forger.public(), []);
 
         host.broadcast(renamed_after_signing(
             network.keys(),
-            &presence_signed_by(network.keys(), &forger, "genuine", &nowhere),
+            &presence_signed_by_at(network.keys(), &forger, "genuine", &nowhere, forged_seq),
             "forged",
         ));
         host.broadcast(presence_signed_by(
@@ -1206,15 +1219,12 @@ mod spec_3_15_with_one_member {
 
         amy.peer_within("honest", PRESENCE_WAIT, |_honest| true);
         amy.wait_until(
-            &format!("{PAYLOAD_DROPPED_EVENT} of the forged {PRESENCE_KIND}"),
+            &format!("{PAYLOAD_DROPPED_EVENT} of the forged {PRESENCE_KIND} signed by {forger_peer} with seq {forged_seq}"),
             PRESENCE_WAIT,
             |lines| {
                 lines
                     .iter()
-                    .any(|line| {
-                        line.event == PAYLOAD_DROPPED_EVENT
-                            && line.value("kind") == Some(&json!(PRESENCE_KIND))
-                    })
+                    .any(|line| is_dropped_payload_of_seq(line, PRESENCE_KIND, &forger_peer, forged_seq))
                     .then_some(())
             },
         );

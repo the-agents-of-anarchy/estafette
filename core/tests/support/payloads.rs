@@ -14,6 +14,17 @@ pub fn presence_signed_by(
     handle: &str,
     address: &EndpointAddr,
 ) -> Vec<u8> {
+    presence_signed_by_at(keys, signer, handle, address, wall_clock_ms())
+}
+
+/// A Presence as `presence_signed_by` makes it, carrying the given seq, so a test can name it among the events.
+pub fn presence_signed_by_at(
+    keys: &NetworkKeys,
+    signer: &SecretKey,
+    handle: &str,
+    address: &EndpointAddr,
+    seq: u64,
+) -> Vec<u8> {
     let presence = Payload::Presence(Presence {
         v: Version::CURRENT,
         card: *signer.public().as_bytes(),
@@ -24,7 +35,7 @@ pub fn presence_signed_by(
             address.relay_urls().map(ToString::to_string),
             address.ip_addrs().copied(),
         ),
-        seq: wall_clock_ms(),
+        seq,
         mac: UNSET_MAC,
         sig: UNSIGNED,
     });

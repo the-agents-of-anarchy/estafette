@@ -21,7 +21,7 @@ type Admitted = Arc<Mutex<BTreeSet<EndpointId>>>;
 type Events = Arc<watch::Sender<Vec<Event>>>;
 
 /// How long a direct request may take to be answered: the server read timeout of spec 3.14 (10000 ms) with slack.
-const DIRECT_ANSWER_WAIT: Duration = Duration::from_secs(15);
+pub const DIRECT_ANSWER_WAIT: Duration = Duration::from_secs(15);
 /// How long a node joined to another may take to report it up as a gossip neighbor.
 const GOSSIP_NEIGHBOR_WAIT: Duration = Duration::from_secs(10);
 
