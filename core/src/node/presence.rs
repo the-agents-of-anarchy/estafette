@@ -325,6 +325,8 @@ pub struct PeerRows {
     table: Mutex<PeerTable>,
     held_connections: HeldConnections,
     report: RunRecord,
+    #[cfg(test)]
+    direct_answers_taken: tokio::sync::watch::Sender<Vec<wire::PublicKey>>,
 }
 
 /// A received payload the peer table admits by the operation of its own kind.
@@ -387,6 +389,8 @@ impl PeerRows {
             table: Mutex::new(PeerTable::new(own_card)),
             held_connections,
             report,
+            #[cfg(test)]
+            direct_answers_taken: tokio::sync::watch::Sender::new(Vec::new()),
         }
     }
 
@@ -476,7 +480,10 @@ impl PeerRows {
 
     /// Applies the answer to a direct request this node sent: an `IntroduceAck` as an introduction that spares the connection it came on, a failure as a failed contact, an acknowledged Probe as a contact that succeeded (spec 3.8).
     pub(crate) fn take_direct_answer(&self, answer: DirectAnswer, now_ms: u64) -> Vec<Effect> {
-        match answer {
+        #[cfg(test)]
+        let (DirectAnswer::Introduce { card: answered, .. }
+        | DirectAnswer::Probe { card: answered, .. }) = answer;
+        let effects = match answer {
             DirectAnswer::Introduce {
                 card,
                 answer: Ok(ack),
@@ -504,7 +511,11 @@ impl PeerRows {
                 });
                 Vec::new()
             }
-        }
+        };
+        #[cfg(test)]
+        self.direct_answers_taken
+            .send_modify(|taken| taken.push(answered));
+        effects
     }
 }
 
@@ -1667,7 +1678,7 @@ pub(super) mod tests {
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
-    use crate::test_waits::found_within;
+    use crate::test_waits::{RecordedHistory, found_within};
     use crate::wire::{Infrastructure, SignatureBytes};
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];
@@ -1742,6 +1753,12 @@ pub(super) mod tests {
         .saturating_add(PAYLOAD_WAIT);
     const PROBE_ANSWERED_WAIT: Duration = Duration::from_secs(5);
     const AFTER_PROBE_ACK: Duration = Duration::from_millis(300);
+    /// How many Introduces a member sends a witness that joins with a handle: the one held until its own handle is assigned, then the one the entry that answer created calls for.
+    const INTRODUCES_TO_A_JOINING_WITNESS: usize = 2;
+    const PAYLOAD_ACCEPTED: &str = "gossip.payload_accepted";
+    const KIND: &str = "kind";
+    const PRESENCE_KIND: &str = "presence";
+
     const FIRST_REQUESTER_SEED: u8 = 72;
     const SECOND_REQUESTER_SEED: u8 = 73;
     const REPLAYED_REQUEST_SEQ: u64 = FROZEN_CLOCK_MS - 1;
@@ -2247,7 +2264,7 @@ pub(super) mod tests {
         assert_eq!(frame["body"], MESSAGE_BODY);
         assert_eq!(frame["id"], MESSAGE_ID_TEXT);
         assert_eq!(frame["sent_at"], MESSAGE_SENT_AT);
-        tokio::time::sleep(INTRODUCE_ROUND_TRIP).await;
+        direct_answers_taken(&first, SECOND_SEED, 1, INTRODUCE_ROUND_TRIP).await;
         let after_introduce = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
             .unwrap();
@@ -3212,9 +3229,10 @@ pub(super) mod tests {
     #[tokio::test]
     async fn spec_3_8_an_unreachable_report_about_a_peer_sets_it_unreachable() {
         let scratch = Scratch::new("peer-rumor").await;
+        let recorded = RecordedHistory::new();
         let (member, witness) = start_witnessed(
             &scratch,
-            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC),
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(recorded.sink()),
             Some(WITNESS_HANDLE),
         )
         .await;
@@ -3237,7 +3255,21 @@ pub(super) mod tests {
         )
         .await
         .unwrap();
-        tokio::time::sleep(INTRODUCE_ROUND_TRIP).await;
+        direct_answers_taken(
+            &member,
+            WITNESS_SEED,
+            INTRODUCES_TO_A_JOINING_WITNESS,
+            INTRODUCE_ROUND_TRIP,
+        )
+        .await;
+        recorded
+            .recorded_within(
+                PAYLOAD_ACCEPTED,
+                |fields| fields.contains(&(KIND, serde_json::Value::from(PRESENCE_KIND))),
+                1,
+                INTRODUCE_ROUND_TRIP,
+            )
+            .await;
 
         witness
             .broadcast_as(
@@ -3318,7 +3350,13 @@ pub(super) mod tests {
         )
         .await
         .unwrap();
-        tokio::time::sleep(INTRODUCE_ROUND_TRIP).await;
+        direct_answers_taken(
+            &member,
+            WITNESS_SEED,
+            INTRODUCES_TO_A_JOINING_WITNESS,
+            INTRODUCE_ROUND_TRIP,
+        )
+        .await;
         let probes_before = witness
             .probes_answered
             .load(std::sync::atomic::Ordering::SeqCst);
@@ -3333,7 +3371,13 @@ pub(super) mod tests {
         })
         .await
         .unwrap_or_else(|| panic!("the witness answered no probe within {PROBE_ANSWERED_WAIT:?}"));
-        tokio::time::sleep(AFTER_PROBE_ACK).await;
+        direct_answers_taken(
+            &member,
+            WITNESS_SEED,
+            INTRODUCES_TO_A_JOINING_WITNESS.saturating_add(1),
+            AFTER_PROBE_ACK,
+        )
+        .await;
 
         let after = listed_within(&member, WITNESS_SEED, Duration::ZERO)
             .await
@@ -4448,6 +4492,31 @@ pub(super) mod tests {
                 .find(|peer| peer.card == card(seed) && condition(peer))
         })
         .await
+    }
+
+    /// Waits until the member has taken the answers to that many of its direct requests to the seed's card, failing with that count when the bound runs out first.
+    pub(in crate::node) async fn direct_answers_taken(
+        member: &Member,
+        seed: u8,
+        count: usize,
+        within: Duration,
+    ) {
+        let answering = card(seed);
+        let mut taken = member.node.state.rows.direct_answers_taken.subscribe();
+        let taken_in_time = matches!(
+            tokio::time::timeout(
+                within,
+                taken.wait_for(|taken| {
+                    taken.iter().filter(|card| **card == answering).count() >= count
+                }),
+            )
+            .await,
+            Ok(Ok(_))
+        );
+        assert!(
+            taken_in_time,
+            "the member did not take {count} direct answer(s) from the card of seed {seed} within {within:?}"
+        );
     }
 
     const LONGER_THAN_ANY_SILENCE: Duration = Duration::from_secs(3600);

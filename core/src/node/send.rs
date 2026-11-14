@@ -231,11 +231,13 @@ mod tests {
         DUPLICATE_KEY_PUBLIC, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTEGER_PAST_64_BITS_PUBLIC,
         INTRODUCE_ROUND_TRIP, Member, MemberPlan, PROBE_NONCE, SECOND_HANDLE, SECOND_PUBLIC,
         SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_SEED, WITNESS_HANDLE,
-        WITNESS_SEED, bind, card, inbox_frames, keys, listed_within, message_to, start_members,
-        start_members_reaching, start_pair, start_third_through_second, wall_clock_ms,
+        WITNESS_SEED, bind, card, direct_answers_taken, inbox_frames, keys, listed_within,
+        message_to, start_members, start_members_reaching, start_pair, start_third_through_second,
+        wall_clock_ms,
     };
     use crate::payload::{PayloadError, open_request, seal_response};
     use crate::peers::Status;
+    use crate::test_waits::found_within;
     use crate::wire::{
         Addr, Introduce, IntroduceAck, ProbeAck, Request, Response, WIRE_LIMIT_BYTES,
     };
@@ -245,7 +247,6 @@ mod tests {
     const BODY: &str = "a body sent by the send tool";
     const NO_ONE: &str = "nobody";
     const FIRST_CONNECTION_WAIT: Duration = Duration::from_secs(3);
-    const CONNECTION_POLL: Duration = Duration::from_millis(20);
     const FIRST_MATCH_SEED: u8 = 11;
     const MOST_MATCHES: usize = 8;
 
@@ -317,14 +318,14 @@ mod tests {
 
     impl ScriptedPeer {
         async fn connections_after_first(&self) -> usize {
-            tokio::time::timeout(FIRST_CONNECTION_WAIT, async {
-                while self.connections.load(Ordering::SeqCst) == 0 {
-                    tokio::time::sleep(CONNECTION_POLL).await;
-                }
+            found_within(FIRST_CONNECTION_WAIT, async || {
+                let connections = self.connections.load(Ordering::SeqCst);
+                (connections > 0).then_some(connections)
             })
             .await
-            .unwrap();
-            self.connections.load(Ordering::SeqCst)
+            .unwrap_or_else(|| {
+                panic!("the scripted peer accepted no connection within {FIRST_CONNECTION_WAIT:?}")
+            })
         }
     }
 
@@ -392,7 +393,7 @@ mod tests {
             _router: router,
         };
         peer.connections_after_first().await;
-        tokio::time::sleep(INTRODUCE_ROUND_TRIP).await;
+        direct_answers_taken(&member, WITNESS_SEED, 1, INTRODUCE_ROUND_TRIP).await;
         (member, peer)
     }
 
