@@ -63,17 +63,9 @@ impl Tail {
         }
     }
 
-    /// Every line printed from now until the span ends.
-    pub fn lines_during(&self, span: Duration) -> Vec<String> {
-        let deadline = Instant::now().checked_add(span).unwrap();
-        let mut printed = Vec::new();
-        while let Ok((_arrived, line)) = self
-            .lines
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        {
-            printed.push(line);
-        }
-        printed
+    /// Every line printed so far and not yet read, waiting for nothing.
+    pub fn lines_printed_so_far(&self) -> Vec<String> {
+        self.lines.try_iter().map(|(_arrived, line)| line).collect()
     }
 
     /// Waits until no line meeting the condition has been printed for the quiet span, the span restarting at each such line, requiring the quiet within the wait.

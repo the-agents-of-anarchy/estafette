@@ -1,8 +1,9 @@
+use std::ffi::OsStr;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
 use estafette::config::{Host, NetworkConfig};
-use estafette::dirs::Directories;
+use estafette::dirs::{Directories, TraceDirectory};
 
 use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use crate::live_network::LiveNetwork;
@@ -50,6 +51,20 @@ impl LabMachine {
     /// The binary with this machine's environment alone.
     pub fn command(&self) -> Command {
         self.scratch.command()
+    }
+
+    /// The events an observer command run on this machine records, in the trace directory the binary derives from the machine's own environment.
+    pub fn observer_events(&self, label: &str) -> MemberEvents {
+        let command = self.command();
+        let traces = TraceDirectory::resolve(&|name: &str| {
+            command
+                .get_envs()
+                .find(|(variable, _value)| *variable == name)
+                .and_then(|(_variable, value)| value.map(OsStr::to_os_string))
+        })
+        .unwrap()
+        .path();
+        MemberEvents::new(label, &traces)
     }
 
     /// Creates a card requesting the handle by the binary's own command.

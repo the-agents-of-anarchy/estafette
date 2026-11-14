@@ -36,8 +36,8 @@ const COLUMN_SEPARATOR: char = '\t';
 const PEER_STATUS_COLUMN: usize = 1;
 /// How long an inbox socket may take to emit the frame of a delivered message.
 const FRAME_WAIT: Duration = Duration::from_secs(10);
-/// How long an inbox socket is watched for a frame that must not come.
-const NO_FURTHER_FRAME_WAIT: Duration = Duration::from_millis(1000);
+/// How long after a frame an inbox socket is watched for one that must not come, ended by the member's own counters snapshot past it.
+const NO_FURTHER_FRAME_WINDOW: Duration = Duration::from_millis(1000);
 /// The handle base of the first member a test starts.
 const AMY: &str = "amy";
 /// The handle base of the second member a test starts.
@@ -80,8 +80,6 @@ const PRESENCE_ADDR_COLUMN: usize = 6;
 const RELAYS_KEY: &str = "relays";
 /// How long every member may take to answer a fresh `tail`'s presence request, its join included.
 const ANNOUNCEMENT_WAIT: Duration = Duration::from_secs(60);
-/// How long the `tail` is read at a time while answers are collected.
-const TAIL_READ_SPAN: Duration = Duration::from_millis(1000);
 /// How many times three fresh members are started to have each homed on the doomed host's relay alone.
 const HOMING_ATTEMPTS: usize = 3;
 /// How soon after the kill every member's send to every other must be delivered (spec 3.15 test 23).
@@ -179,7 +177,8 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
         inbox.next_frame(FRAME_WAIT)
     });
     let further = timed("bob's inbox socket emits nothing more", || {
-        inbox.next_frame(NO_FURTHER_FRAME_WAIT)
+        wait_for_time_to_pass(bob.events(), wall_clock_ms(), NO_FURTHER_FRAME_WINDOW);
+        inbox.frame_already_emitted()
     });
 
     let id = sent[RESULT_KEY][ID_KEY].as_str().unwrap();
@@ -554,11 +553,16 @@ fn relays_announced_now(
     let deadline = Instant::now().checked_add(ANNOUNCEMENT_WAIT).unwrap();
     let mut announced = BTreeMap::new();
     while !cards.iter().all(|card| announced.contains_key(card)) {
-        assert!(
-            Instant::now() < deadline,
-            "not every member answered the tail's presence request within {ANNOUNCEMENT_WAIT:?}: {announced:?}"
+        let unseen_answer = |line: &str| {
+            presence_of(line).is_some_and(|(card, _relays)| {
+                cards.contains(&card) && !announced.contains_key(&card)
+            })
+        };
+        let printed = tail.lines_until(
+            deadline.saturating_duration_since(Instant::now()),
+            unseen_answer,
         );
-        for line in tail.lines_during(TAIL_READ_SPAN) {
+        for line in printed {
             if let Some((card, relays)) = presence_of(&line)
                 && cards.contains(&card)
             {

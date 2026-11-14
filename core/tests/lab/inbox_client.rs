@@ -19,6 +19,21 @@ impl InboxClient {
         }
     }
 
+    /// The frame the socket has already emitted and the client not yet read, none when there is none, waiting for nothing.
+    pub fn frame_already_emitted(&mut self) -> Option<Value> {
+        self.frames.get_ref().set_nonblocking(true).unwrap();
+        let mut line = String::new();
+        let read = self.frames.read_line(&mut line);
+        self.frames.get_ref().set_nonblocking(false).unwrap();
+        match read {
+            Ok(0) => None,
+            Ok(_) => Some(serde_json::from_str(&line).unwrap()),
+            Err(failure) if failure.kind() == ErrorKind::WouldBlock && line.is_empty() => None,
+            Err(failure) if failure.kind() == ErrorKind::WouldBlock => Some(Value::from(line)),
+            Err(failure) => panic!("the inbox socket failed: {failure}"),
+        }
+    }
+
     /// The next frame the socket emits within the wait, none when it emits nothing.
     pub fn next_frame(&mut self, within: Duration) -> Option<Value> {
         self.frames

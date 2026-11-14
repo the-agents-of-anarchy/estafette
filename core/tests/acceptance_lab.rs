@@ -2,6 +2,9 @@
 #[path = "support/driven_runtime.rs"]
 mod driven_runtime;
 #[cfg(test)]
+#[path = "support/dropped_payloads.rs"]
+mod dropped_payloads;
+#[cfg(test)]
 #[path = "support/file_growth.rs"]
 mod file_growth;
 #[cfg(test)]
@@ -68,34 +71,6 @@ mod timed_step;
 use scratch_machine::trace_reader;
 
 #[cfg(test)]
-mod dropped_payloads {
-    use data_encoding::HEXLOWER;
-    use iroh::SecretKey;
-    use serde_json::Value;
-
-    use crate::trace_reader::TraceLine;
-
-    /// The event a member records for each gossip payload it drops, and the fields naming the payload's kind and signer (spec/observability.md decisions 6 and 9).
-    pub const PAYLOAD_DROPPED_EVENT: &str = "gossip.payload_dropped";
-    const KIND_FIELD: &str = "kind";
-    const PEER_FIELD: &str = "peer";
-    /// How many leading bytes of its node id name a peer in an events line (spec/observability.md decision 6).
-    const SPEC_SHORT_ID_BYTES: usize = 5;
-
-    /// The key's node id as an events line names a peer.
-    pub fn short_id_text(key: &SecretKey) -> String {
-        HEXLOWER.encode(&key.public().as_bytes()[..SPEC_SHORT_ID_BYTES])
-    }
-
-    /// Whether the events line records a payload of the kind whose signer is the peer dropped.
-    pub fn is_dropped_payload_of(line: &TraceLine, kind: &str, peer: &str) -> bool {
-        line.event == PAYLOAD_DROPPED_EVENT
-            && line.value(KIND_FIELD) == Some(&Value::from(kind))
-            && line.value(PEER_FIELD) == Some(&Value::from(peer))
-    }
-}
-
-#[cfg(test)]
 mod live_host {
     use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -121,7 +96,9 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
     use estafette::wire::{Payload, SignatureBytes};
     use iroh::SecretKey;
 
-    use crate::dropped_payloads::{PAYLOAD_DROPPED_EVENT, is_dropped_payload_of, short_id_text};
+    use crate::dropped_payloads::{
+        PAYLOAD_DROPPED_EVENT, is_dropped_payload_of, is_dropped_payload_of_seq, short_id_text,
+    };
     use crate::forger::Forger;
     use crate::forgeries::{
         infrastructure_record, presence_request, remacked, sealed, unsealed, wall_clock_seconds,
@@ -136,8 +113,10 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
     const ACCEPTANCE_WAIT: Duration = Duration::from_secs(60);
     /// How far a forger moves a counter after the payload was signed.
     const TAMPERING_STEP: u64 = 7;
-    /// How long a forgery broadcast before its marker may still be on its way after the marker arrived, since gossip orders no delivery across neighbors; chosen, not measured.
-    const FORGERY_SETTLE: Duration = Duration::from_secs(5);
+    /// The kind of payload a presence request is, as an events line names it.
+    const PRESENCE_REQUEST_KIND: &str = "presence_request";
+    /// The label of the `tail` observer whose events a test reads.
+    const TAIL_LABEL: &str = "tail";
     /// The kind of payload an infrastructure record is, as an events line names it.
     const INFRASTRUCTURE_KIND: &str = "infrastructure";
     /// The relay a replayed host record names, which the host's later record replaced.
@@ -394,7 +373,25 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
         ));
         let mut printed =
             tail.lines_until(ACCEPTANCE_WAIT, |line| line.starts_with(&valid_line_start));
-        printed.extend(tail.lines_during(FORGERY_SETTLE));
+        let requester_peer = short_id_text(&requester);
+        observer.observer_events(TAIL_LABEL).wait_until(
+            &format!("{PAYLOAD_DROPPED_EVENT} of the tampered {PRESENCE_REQUEST_KIND} signed by {requester_peer} with seq {tampered_seq}"),
+            ACCEPTANCE_WAIT,
+            |lines| {
+                lines
+                    .iter()
+                    .any(|line| {
+                        is_dropped_payload_of_seq(
+                            line,
+                            PRESENCE_REQUEST_KIND,
+                            &requester_peer,
+                            tampered_seq,
+                        )
+                    })
+                    .then_some(())
+            },
+        );
+        printed.extend(tail.lines_printed_so_far());
 
         assert!(
             !printed
@@ -688,7 +685,9 @@ mod spec_3_15_two_members_through_the_live_host {
     use iroh::{EndpointAddr, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
-    use crate::dropped_payloads::{PAYLOAD_DROPPED_EVENT, is_dropped_payload_of, short_id_text};
+    use crate::dropped_payloads::{
+        PAYLOAD_DROPPED_EVENT, is_dropped_payload_of_seq, short_id_text,
+    };
     use crate::forger::Forger;
     use crate::handles::{HANDLE_TAG_LETTERS, unique_handle};
     use crate::inbox_client::InboxClient;
@@ -698,9 +697,10 @@ mod spec_3_15_two_members_through_the_live_host {
     use crate::mcp_server::{McpServer, PRESENCE_WAIT, SEND_TOOL, gone, online, send_arguments};
     use crate::message_body::BODY;
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
-    use crate::payloads::presence_signed_by;
+    use crate::payloads::{presence_signed_by, presence_signed_by_at};
     use crate::scratch_machine::Card;
     use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
+    use crate::time_passing::wait_for_time_to_pass;
     use crate::timed_step::timed;
 
     const SPEC_GONE_WITHIN: Duration = Duration::from_millis(1000);
@@ -722,7 +722,8 @@ mod spec_3_15_two_members_through_the_live_host {
     const PUBLIC_NOTES_KEY: &str = "notes";
     const COMPACT_JSON_MAPPING_FRAME_BYTES: usize = r#"{"":""}"#.len();
     const FRAME_WAIT: Duration = Duration::from_secs(10);
-    const NO_FURTHER_FRAME_WAIT: Duration = Duration::from_millis(1000);
+    /// How long after a frame a client is watched for a further one, ended by the member's own counters snapshot past it.
+    const NO_FURTHER_FRAME_WINDOW: Duration = Duration::from_millis(1000);
     /// The kind of payload a presence is, as an events line names it.
     const PRESENCE_KIND: &str = "presence";
     const FIRST_SESSION: &str = "first session";
@@ -739,19 +740,18 @@ mod spec_3_15_two_members_through_the_live_host {
         machine: LabMachine,
     }
 
-    /// Waits until the member has recorded that many presences signed by the key dropped, the replays broadcast so far.
+    /// Waits until the member has recorded the replayed presence, the one signed by the key with that seq, dropped.
     #[track_caller]
-    fn replay_dropped_by(member: &LabMember, signer: &SecretKey, replays: usize) {
+    fn replay_dropped_by(member: &LabMember, signer: &SecretKey, seq: u64) {
         let signer_peer = short_id_text(signer);
         member.member.events().wait_until(
-            &format!("{replays} {PAYLOAD_DROPPED_EVENT} of {PRESENCE_KIND} payloads signed by {signer_peer}"),
+            &format!("{PAYLOAD_DROPPED_EVENT} of the {PRESENCE_KIND} signed by {signer_peer} with seq {seq}"),
             PRESENCE_WAIT,
             |lines| {
-                let dropped = lines
+                lines
                     .iter()
-                    .filter(|line| is_dropped_payload_of(line, PRESENCE_KIND, &signer_peer))
-                    .count();
-                (dropped >= replays).then_some(())
+                    .any(|line| is_dropped_payload_of_seq(line, PRESENCE_KIND, &signer_peer, seq))
+                    .then_some(())
             },
         );
     }
@@ -890,11 +890,16 @@ mod spec_3_15_two_members_through_the_live_host {
             json!({ "id": id, "delivered": true, "attached": true })
         );
         let frame = inbox.next_frame(FRAME_WAIT).unwrap();
+        wait_for_time_to_pass(
+            bob.member.events(),
+            wall_clock_ms(),
+            NO_FURTHER_FRAME_WINDOW,
+        );
         assert_eq!(frame["seq"], json!(1));
         assert_eq!(frame["id"], json!(id));
         assert_eq!(frame["from"], json!(amy.handle));
         assert_eq!(frame["body"], json!(BODY));
-        assert_eq!(inbox.next_frame(NO_FURTHER_FRAME_WAIT), None);
+        assert_eq!(inbox.frame_already_emitted(), None);
     }
 
     #[test]
@@ -1145,12 +1150,17 @@ mod spec_3_15_two_members_through_the_live_host {
             reconnected.next_frame(FRAME_WAIT).unwrap(),
             reconnected.next_frame(FRAME_WAIT).unwrap(),
         ];
+        wait_for_time_to_pass(
+            bob.member.events(),
+            wall_clock_ms(),
+            NO_FURTHER_FRAME_WINDOW,
+        );
 
         assert_eq!(replayed[0]["seq"], json!(4));
         assert_eq!(replayed[0]["body"], json!(body_of(4)));
         assert_eq!(replayed[1]["seq"], json!(5));
         assert_eq!(replayed[1]["body"], json!(body_of(5)));
-        assert_eq!(reconnected.next_frame(NO_FURTHER_FRAME_WAIT), None);
+        assert_eq!(reconnected.frame_already_emitted(), None);
     }
 
     #[test]
@@ -1285,13 +1295,16 @@ mod spec_3_15_two_members_through_the_live_host {
         let bob_machine = LabMachine::joined("t20-bob", &network);
         let bob_card = bob_machine.create_card("t20-bob-card", &bob_handle);
         let bob_key = card_key(&network, &bob_machine, &bob_card);
-        let earlier = presence_signed_by(
+        let earlier_seq = wall_clock_ms();
+        let earlier_through_the_host_seq = earlier_seq + 1;
+        let earlier = presence_signed_by_at(
             network.keys(),
             &bob_key,
             &bob_handle,
             &EndpointAddr::from_parts(bob_card.id, []),
+            earlier_seq,
         );
-        let earlier_through_the_host = presence_signed_by(
+        let earlier_through_the_host = presence_signed_by_at(
             network.keys(),
             &bob_key,
             &bob_handle,
@@ -1299,6 +1312,7 @@ mod spec_3_15_two_members_through_the_live_host {
                 bob_card.id,
                 [TransportAddr::Relay(network.host_relay().parse().unwrap())],
             ),
+            earlier_through_the_host_seq,
         );
         let mut bob = bob_machine.start_server();
         let claim = bob.call(
@@ -1324,14 +1338,14 @@ mod spec_3_15_two_members_through_the_live_host {
         ));
         amy.member
             .peer_within(&marker_handle, PRESENCE_WAIT, |_marker| true);
-        replay_dropped_by(&amy, &bob_key, 1);
+        replay_dropped_by(&amy, &bob_key, earlier_seq);
         let after_replay = amy
             .member
             .peer_within(&bob_handle, PRESENCE_WAIT, |_bob| true);
         bob.close_standard_input();
         amy.member.peer_within(&bob_handle, PRESENCE_WAIT, gone);
         replayer.broadcast(earlier_through_the_host);
-        replay_dropped_by(&amy, &bob_key, 2);
+        replay_dropped_by(&amy, &bob_key, earlier_through_the_host_seq);
         let after_departure_replay = amy
             .member
             .peer_within(&bob_handle, PRESENCE_WAIT, |_bob| true);
