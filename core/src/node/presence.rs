@@ -604,10 +604,10 @@ impl DirectHost for Arc<NodeState> {
         self.attached.is_attached()
     }
 
-    fn receive_message(&self, sender: wire::PublicKey, message: Message) {
+    fn receive_message(&self, sender: wire::PublicKey, message: Message) -> bool {
         let now_ms = self.now_ms();
         let Some(from) = self.take_message(sender, &message, now_ms) else {
-            return;
+            return self.is_attached();
         };
         self.inbox.publish(ReceivedMessage {
             id: message_id_text(message.id),
@@ -615,7 +615,7 @@ impl DirectHost for Arc<NodeState> {
             body: message.body,
             sent_at: message.sent_at,
             received_at: now_ms,
-        });
+        })
     }
 
     fn receive_introduce(&self, sender: wire::PublicKey, introduce: Introduce) -> IntroduceAck {
@@ -2268,7 +2268,9 @@ pub(super) mod tests {
             false
         }
 
-        fn receive_message(&self, _sender: crate::wire::PublicKey, _message: Message) {}
+        fn receive_message(&self, _sender: crate::wire::PublicKey, _message: Message) -> bool {
+            false
+        }
 
         fn receive_introduce(
             &self,
@@ -4482,7 +4484,7 @@ pub(super) mod tests {
             false
         }
 
-        fn receive_message(&self, sender: crate::wire::PublicKey, message: Message) {
+        fn receive_message(&self, sender: crate::wire::PublicKey, message: Message) -> bool {
             self.queued.lock().unwrap().push(message);
             if !self.closed_once.swap(true, Ordering::SeqCst) {
                 self.reads_every_connection_as_gone
@@ -4491,6 +4493,7 @@ pub(super) mod tests {
                 self.reads_every_connection_as_gone
                     .store(false, Ordering::SeqCst);
             }
+            false
         }
 
         fn receive_introduce(

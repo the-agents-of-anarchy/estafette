@@ -238,8 +238,9 @@ impl InboxSocket {
         }
     }
 
-    /// Numbers the message, buffers it, streams it to every attached client, and records its delivery.
-    pub fn publish(&self, message: ReceivedMessage) {
+    /// Numbers the message, buffers it, streams it to every attached client, records its delivery, and returns whether a client was attached, the value the record carries.
+    #[must_use]
+    pub fn publish(&self, message: ReceivedMessage) -> bool {
         let frame = locked(&self.shared.buffer).push(message);
         let attached = is_any_client(*self.shared.clients.borrow());
         self.shared.newest_seq.send_replace(frame.seq());
@@ -248,6 +249,7 @@ impl InboxSocket {
             frame.seq(),
             attached,
         ));
+        attached
     }
 
     /// Whether at least one client is connected, updated on the first connect and the last disconnect.
@@ -490,13 +492,13 @@ mod tests {
         let directories = scratch_directories("test11");
         let socket = started(&directories);
         for n in 1..=5 {
-            socket.publish(message_number(n));
+            let _attached = socket.publish(message_number(n));
         }
         let mut client =
             connect_with_since(&directories.inbox_socket_file(OWN_PROCESS_ID), 3).await;
         assert_eq!(next_seq(&mut client).await, 4);
         assert_eq!(next_seq(&mut client).await, 5);
-        socket.publish(message_number(6));
+        let _attached = socket.publish(message_number(6));
         assert_eq!(next_seq(&mut client).await, 6);
     }
 
@@ -505,7 +507,7 @@ mod tests {
         let directories = scratch_directories("two-clients");
         let socket = started(&directories);
         for n in 1..=5 {
-            socket.publish(message_number(n));
+            let _attached = socket.publish(message_number(n));
         }
         let path = directories.inbox_socket_file(OWN_PROCESS_ID);
         let mut from_start = connect_with_since(&path, 0).await;
@@ -514,7 +516,7 @@ mod tests {
         for expected in 1..=5 {
             assert_eq!(next_seq(&mut from_start).await, expected);
         }
-        socket.publish(message_number(6));
+        let _attached = socket.publish(message_number(6));
         assert_eq!(next_seq(&mut from_four).await, 6);
         assert_eq!(next_seq(&mut from_start).await, 6);
     }
@@ -523,7 +525,7 @@ mod tests {
     async fn spec_3_11_a_frame_carries_the_six_spec_keys() {
         let directories = scratch_directories("frame-keys");
         let socket = started(&directories);
-        socket.publish(message_number(7));
+        let _attached = socket.publish(message_number(7));
         let mut client =
             connect_with_since(&directories.inbox_socket_file(OWN_PROCESS_ID), 0).await;
         assert_eq!(
@@ -551,7 +553,7 @@ mod tests {
         );
         let mut second = connect_with_since(&path, 0).await;
         drop(first);
-        socket.publish(message_number(1));
+        let _attached = socket.publish(message_number(1));
         assert_eq!(next_seq(&mut second).await, 1);
         assert!(attached.is_attached());
         drop(second);
@@ -568,7 +570,7 @@ mod tests {
         directories: &Directories,
         socket: &InboxSocket,
     ) -> Vec<u8> {
-        socket.publish(message_number(1));
+        let _attached = socket.publish(message_number(1));
         let mut stream = UnixStream::connect(directories.inbox_socket_file(OWN_PROCESS_ID))
             .await
             .unwrap();
@@ -620,11 +622,11 @@ mod tests {
         let directories = scratch_directories("since-newest");
         let socket = started(&directories);
         for n in 1..=5 {
-            socket.publish(message_number(n));
+            let _attached = socket.publish(message_number(n));
         }
         let mut client =
             connect_with_since(&directories.inbox_socket_file(OWN_PROCESS_ID), 5).await;
-        socket.publish(message_number(6));
+        let _attached = socket.publish(message_number(6));
         assert_eq!(next_seq(&mut client).await, 6);
     }
 
@@ -779,13 +781,17 @@ mod tests {
         )
         .unwrap();
 
-        socket.publish(message_with_id(FIRST_MESSAGE_ID));
+        let first_answered_attached = socket.publish(message_with_id(FIRST_MESSAGE_ID));
         let unattached = next_recorded(&mut recorded).await;
         let _client = connect_with_since(&directories.inbox_socket_file(OWN_PROCESS_ID), 0).await;
         let connected = next_recorded(&mut recorded).await;
-        socket.publish(message_with_id(SECOND_MESSAGE_ID));
+        let second_answered_attached = socket.publish(message_with_id(SECOND_MESSAGE_ID));
         let attached = next_recorded(&mut recorded).await;
 
+        assert_eq!(
+            [first_answered_attached, second_answered_attached],
+            [false, true]
+        );
         assert_eq!(
             [unattached, connected, attached],
             [
@@ -858,7 +864,7 @@ mod tests {
         )
         .unwrap();
 
-        socket.publish(message_with_id(NO_MESSAGE_ID));
+        let _attached = socket.publish(message_with_id(NO_MESSAGE_ID));
 
         assert_eq!(
             next_recorded(&mut recorded).await,

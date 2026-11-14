@@ -659,7 +659,9 @@ impl DirectHost for Arc<ObserverHost> {
         false
     }
 
-    fn receive_message(&self, _sender: wire::PublicKey, _message: Message) {}
+    fn receive_message(&self, _sender: wire::PublicKey, _message: Message) -> bool {
+        false
+    }
 
     fn receive_introduce(&self, sender: wire::PublicKey, introduce: Introduce) -> IntroduceAck {
         let now_ms = self.now_ms();
@@ -1876,7 +1878,9 @@ mod tests {
             false
         }
 
-        fn receive_message(&self, _sender: wire::PublicKey, _message: Message) {}
+        fn receive_message(&self, _sender: wire::PublicKey, _message: Message) -> bool {
+            false
+        }
 
         fn receive_introduce(
             &self,

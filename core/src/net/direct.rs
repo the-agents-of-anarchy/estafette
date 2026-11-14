@@ -61,8 +61,8 @@ pub trait DirectHost: Send + Sync + 'static {
     /// Whether an inbox client is attached to this process.
     fn is_attached(&self) -> bool;
 
-    /// Applies the Message rows of spec 3.8 to the sender and enqueues the validated message in the inbox.
-    fn receive_message(&self, sender: wire::PublicKey, message: Message);
+    /// Applies the Message rows of spec 3.8 to the sender, enqueues the validated message in the inbox, and returns whether an inbox client was attached as it was enqueued.
+    fn receive_message(&self, sender: wire::PublicKey, message: Message) -> bool;
 
     /// Applies the Introduce rows of spec 3.8 to the sender and answers with this node's own introduction.
     fn receive_introduce(
@@ -814,18 +814,19 @@ impl<H: DirectHost> ServerState<H> {
         }
     }
 
-    /// Queues the message when it is acceptable and acknowledges it, accepted or with the reason it was not.
+    /// Queues the message when it is acceptable and acknowledges it, accepted or with the reason it was not, carrying the attached state the queueing read.
     fn answer_message(&self, sender: wire::PublicKey, message: Message) -> MessageAck {
         let id = message.id;
         let rejection = judge_message(self.host.own_card(), self.host.is_stopping(), &message);
-        if rejection.is_none() {
-            self.host.receive_message(sender, message);
-        }
+        let attached = match rejection {
+            None => self.host.receive_message(sender, message),
+            Some(_) => self.host.is_attached(),
+        };
         MessageAck {
             v: Version::CURRENT,
             id,
             accepted: rejection.is_none(),
-            attached: self.host.is_attached(),
+            attached,
             reason: rejection.map(|code| code.code().to_owned()),
         }
     }
@@ -1181,6 +1182,7 @@ pub(crate) mod tests {
     struct RecordingHost {
         own_card: Option<wire::PublicKey>,
         attached: Arc<AtomicBool>,
+        detaches_on_delivery: bool,
         stopping: Arc<AtomicBool>,
         received: Arc<Mutex<Vec<(wire::PublicKey, Message)>>>,
         introduced: Arc<Mutex<Vec<(wire::PublicKey, wire::Introduce)>>>,
@@ -1199,6 +1201,7 @@ pub(crate) mod tests {
             Self {
                 own_card,
                 attached: Arc::new(AtomicBool::new(false)),
+                detaches_on_delivery: false,
                 stopping: Arc::new(AtomicBool::new(false)),
                 received: Arc::new(Mutex::new(Vec::new())),
                 introduced: Arc::new(Mutex::new(Vec::new())),
@@ -1223,8 +1226,13 @@ pub(crate) mod tests {
             self.attached.load(Ordering::SeqCst)
         }
 
-        fn receive_message(&self, sender: wire::PublicKey, message: Message) {
+        fn receive_message(&self, sender: wire::PublicKey, message: Message) -> bool {
             self.received.lock().unwrap().push((sender, message));
+            let attached_at_delivery = self.is_attached();
+            if self.detaches_on_delivery {
+                self.attached.store(false, Ordering::SeqCst);
+            }
+            attached_at_delivery
         }
 
         fn receive_introduce(
@@ -1665,6 +1673,34 @@ pub(crate) mod tests {
     const SPEC_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
     const TIMEOUT_SLACK: Duration = Duration::from_secs(1);
     const SHORT_TIMEOUT: Duration = Duration::from_millis(300);
+
+    #[tokio::test]
+    async fn observability_decision_9_a_message_ack_carries_the_attached_state_its_delivery_read_though_the_client_left_after()
+     {
+        let rig = rig_over(
+            RecordingHost {
+                detaches_on_delivery: true,
+                ..RecordingHost::with_card(card_of(SERVER_SEED))
+            },
+            Arc::new(tokio::time::Instant::now),
+        )
+        .await;
+        rig.host.attached.store(true, Ordering::SeqCst);
+
+        let ack = rig
+            .link
+            .client
+            .send_message(
+                rig.link.server_node.endpoint().id(),
+                message_to(card_of(SERVER_SEED), BODY),
+            )
+            .await
+            .unwrap();
+
+        assert!(ack.accepted);
+        assert!(ack.attached);
+        assert!(!rig.host.is_attached());
+    }
 
     #[tokio::test]
     async fn spec_3_6_probe_is_answered_with_its_nonce_and_the_attached_state() {
@@ -2357,11 +2393,12 @@ pub(crate) mod tests {
             false
         }
 
-        fn receive_message(&self, _sender: wire::PublicKey, _message: Message) {
+        fn receive_message(&self, _sender: wire::PublicKey, _message: Message) -> bool {
             let mut now = self.clock.lock().unwrap();
             *now = now
                 .checked_add(Duration::from_millis(SERVER_HANDLING_MS))
                 .unwrap();
+            false
         }
 
         fn receive_introduce(

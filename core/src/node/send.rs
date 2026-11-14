@@ -236,7 +236,9 @@ mod tests {
             false
         }
 
-        fn receive_message(&self, _sender: wire::PublicKey, _message: Message) {}
+        fn receive_message(&self, _sender: wire::PublicKey, _message: Message) -> bool {
+            false
+        }
 
         fn receive_introduce(
             &self,
