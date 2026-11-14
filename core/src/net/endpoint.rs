@@ -530,6 +530,8 @@ mod tests {
     use crate::event::ShortId;
     use crate::net::direct::tests::{CATCH_ALL_CASES, DrawnUnit, bytes_beside};
     use crate::seeded_draws::Draws;
+    use crate::test_waits::found_within;
+
     use iroh::endpoint::{
         ConnectError, ConnectWithOptsError, ConnectingError, Connection, ConnectionError,
         ReadExactError, WriteError,
@@ -544,7 +546,10 @@ mod tests {
     const SPEC_GATE_KEY_CONTEXT: &str = "messaging gate v1";
     const SPEC_GATE_TIMEOUT: Duration = Duration::from_millis(3000);
     const SPEC_GATE_TIMEOUT_WITH_SLACK: Duration = Duration::from_millis(4000);
-    const PEER_LIVES_PAST_ITS_FIRST_KEEP_ALIVE: Duration = Duration::from_secs(6);
+    const KEEP_ALIVES_SENT_WHILE_THE_PEER_LIVES: u32 = 12;
+    const PEER_LIFE_WAIT: Duration =
+        QUIC_KEEP_ALIVE_INTERVAL.saturating_mul(KEEP_ALIVES_SENT_WHILE_THE_PEER_LIVES * 2);
+
     const SPEC_QUIC_IDLE_TIMEOUT_EARLIEST: Duration = Duration::from_secs(9);
     const SPEC_QUIC_IDLE_TIMEOUT_LATEST: Duration = Duration::from_secs(11);
     const MEMBER_SEED: u8 = 1;
@@ -854,6 +859,7 @@ mod tests {
     async fn spec_3_14_quic_idle_timeout_closes_a_connection_whose_peer_vanished() {
         let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
         let member_addr = member.endpoint().addr();
+        let (vanish, vanish_order) = tokio::sync::oneshot::channel::<()>();
         let vanishing_peer = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -862,7 +868,7 @@ mod tests {
             let peer_and_connection = runtime.block_on(async move {
                 let peer = bind_plain_endpoint(VANISHING_PEER_SEED).await;
                 let connection = peer.connect(member_addr, DIRECT_ALPN).await.unwrap();
-                tokio::time::sleep(PEER_LIVES_PAST_ITS_FIRST_KEEP_ALIVE).await;
+                let _ordered_or_dropped = vanish_order.await;
                 (peer, connection)
             });
             runtime.shutdown_background();
@@ -870,6 +876,19 @@ mod tests {
         });
 
         let accepted = accept_next(member.endpoint()).await.unwrap();
+        let keep_alives_before = accepted.stats().frame_tx.ping;
+        let keep_alives_answered = found_within(PEER_LIFE_WAIT, async || {
+            (accepted.stats().frame_tx.ping
+                >= keep_alives_before + u64::from(KEEP_ALIVES_SENT_WHILE_THE_PEER_LIVES))
+            .then_some(())
+        })
+        .await
+        .is_some();
+        assert!(
+            keep_alives_answered,
+            "the member did not send {KEEP_ALIVES_SENT_WHILE_THE_PEER_LIVES} keep-alives to the live peer within {PEER_LIFE_WAIT:?}"
+        );
+        vanish.send(()).unwrap();
         let _silenced_peer = tokio::task::spawn_blocking(move || vanishing_peer.join())
             .await
             .unwrap()
