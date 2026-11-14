@@ -73,6 +73,16 @@ impl RecordedEvents {
             }
         }
     }
+
+    /// The fields of the next event of that name naming the seed's card as its peer, failing with the name when none is recorded within the wait.
+    async fn next_named_from(&mut self, name: &str, seed: u8) -> EventFields {
+        loop {
+            let fields = self.next_named(name).await;
+            if fields.contains(&("peer", short_id(seed))) {
+                return fields;
+            }
+        }
+    }
 }
 
 /// A run record that hands every event to the test, and the test's end of it.
@@ -214,7 +224,9 @@ async fn observability_decision_9_a_member_records_a_payload_its_admission_dropp
             presence_of(MARKER_SEED, MARKER_HANDLE, FROZEN_CLOCK_MS),
         )
         .await;
-    recorded.next_named("gossip.payload_accepted").await;
+    recorded
+        .next_named_from("gossip.payload_accepted", MARKER_SEED)
+        .await;
 
     witness
         .broadcast_as(
@@ -222,14 +234,18 @@ async fn observability_decision_9_a_member_records_a_payload_its_admission_dropp
             replayed(presence_of(MARKER_SEED, MARKER_HANDLE, FROZEN_CLOCK_MS)),
         )
         .await;
-    let replay = recorded.next_named("gossip.payload_dropped").await;
+    let replay = recorded
+        .next_named_from("gossip.payload_dropped", MARKER_SEED)
+        .await;
     witness
         .broadcast_as(
             SECOND_MARKER_SEED,
             presence_of(SECOND_MARKER_SEED, MARKER_HANDLE, STALE_SEQ),
         )
         .await;
-    let stale = recorded.next_named("gossip.payload_dropped").await;
+    let stale = recorded
+        .next_named_from("gossip.payload_dropped", SECOND_MARKER_SEED)
+        .await;
 
     assert_eq!(
         replay,
