@@ -977,8 +977,7 @@ impl PresenceLoop {
         tokio::select! {
             event = next_recorded_gossip_event(
                 &mut self.topic,
-                Some(&self.state.rows),
-                &*self.state.clock,
+                Some((&self.state.rows, &*self.state.clock)),
                 &*self.report,
             ) => Wake::Topic(event),
             Some(event) = self.from_hosts.recv() => Wake::Loop(event),
@@ -1406,21 +1405,20 @@ fn signer_admission_record<Taken>(
     admission_record(facts, signer_handle, admission)
 }
 
-/// The record of a received payload the node took, or dropped by the rule the admission named, naming its signer by the handle `rows` holds for it at `now_ms` when the node keeps a peer table.
+/// The record of a received payload the node took, or dropped by the rule the admission named, naming its signer by the handle its peer table holds for it at that instant in milliseconds when the node keeps one.
 fn named_admission_record<Taken>(
-    rows: Option<&PeerRows>,
+    table_at: Option<(&PeerRows, u64)>,
     facts: PayloadFacts,
     admission: &Result<Taken, PayloadDropRule>,
-    now_ms: u64,
 ) -> Event {
-    rows.map_or_else(
+    table_at.map_or_else(
         || admission_record(facts, None, admission),
-        |rows| signer_admission_record(&rows.table(), facts, admission, now_ms),
+        |(rows, now_ms)| signer_admission_record(&rows.table(), facts, admission, now_ms),
     )
 }
 
-/// The record of bytes the payload layer dropped, naming the signer they named by the handle `rows` holds for it at `now_ms` when the node keeps a peer table.
-fn refusal_record(rows: Option<&PeerRows>, now_ms: u64, refusal: PayloadRefusal) -> Event {
+/// The record of bytes the payload layer dropped, naming the signer they named by the handle its peer table holds for it at that instant in milliseconds when the node keeps one.
+fn refusal_record(table_at: Option<(&PeerRows, u64)>, refusal: PayloadRefusal) -> Event {
     let Some(facts) = refusal.facts else {
         return crate::event::GossipEvent::PayloadDropped {
             payload: None,
@@ -1428,16 +1426,15 @@ fn refusal_record(rows: Option<&PeerRows>, now_ms: u64, refusal: PayloadRefusal)
         }
         .into();
     };
-    named_admission_record(rows, facts, &Err::<(), _>(refusal.rule), now_ms)
+    named_admission_record(table_at, facts, &Err::<(), _>(refusal.rule))
 }
 
-/// The record of a verified payload a node takes without a row of spec 3.8 to apply to it, naming its signer by the handle `rows` holds for it at `now_ms` when the node keeps a peer table.
+/// The record of a verified payload a node takes without a row of spec 3.8 to apply to it, naming its signer by the handle its peer table holds for it at that instant in milliseconds when the node keeps one.
 pub fn taken_without_a_row_record(
     facts: PayloadFacts,
-    rows: Option<&PeerRows>,
-    now_ms: u64,
+    table_at: Option<(&PeerRows, u64)>,
 ) -> Event {
-    named_admission_record(rows, facts, &Ok::<(), PayloadDropRule>(()), now_ms)
+    named_admission_record(table_at, facts, &Ok::<(), PayloadDropRule>(()))
 }
 
 /// What every node records of a topic event before acting on it: the join and each neighbor up and down, a payload being recorded where it is judged.
@@ -1454,14 +1451,16 @@ fn topic_record(event: &GossipEvent) -> Option<Event> {
     }
 }
 
-/// The next event of the topic, recorded as every node records the gossip it receives: each payload the payload layer drops, the join, and each neighbor up and down, a signer named by the handle `rows` holds for it at the clock's reading when the node keeps a peer table.
+/// The next event of the topic, recorded as every node records the gossip it receives: each payload the payload layer drops, the join, and each neighbor up and down, a signer named by the handle the node's peer table holds for it at the clock's reading when it keeps one.
 pub async fn next_recorded_gossip_event(
     topic: &mut NetworkTopic,
-    rows: Option<&PeerRows>,
-    clock: &(dyn Fn() -> u64 + Send + Sync),
+    table_and_clock: Option<(&PeerRows, &(dyn Fn() -> u64 + Send + Sync))>,
     report: &(dyn Fn(Event) + Send + Sync),
 ) -> Option<Result<GossipEvent, GossipError>> {
-    let record_drop = |refusal: PayloadRefusal| report(refusal_record(rows, clock(), refusal));
+    let record_drop = |refusal: PayloadRefusal| {
+        let table_at = table_and_clock.map(|(rows, clock)| (rows, clock()));
+        report(refusal_record(table_at, refusal));
+    };
     let event = topic.next_event_recording_drops(&record_drop).await;
     if let Some(Ok(received)) = &event
         && let Some(record) = topic_record(received)

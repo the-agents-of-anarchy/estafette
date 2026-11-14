@@ -805,8 +805,7 @@ impl Observation {
         tokio::select! {
             event = next_recorded_gossip_event(
                 &mut self.topic,
-                Some(&self.host.rows),
-                &*self.host.clock,
+                Some((&self.host.rows, &*self.host.clock)),
                 &*self.report,
             ) => Step::Topic(event),
             Some(event) = self.from_loop.recv() => Step::Loop(event),
@@ -850,8 +849,7 @@ impl Observation {
             unapplied @ (OpenedPayload::Infrastructure(_) | OpenedPayload::PresenceRequest(_)) => {
                 (self.report)(taken_without_a_row_record(
                     unapplied.facts(),
-                    Some(&self.host.rows),
-                    now_ms,
+                    Some((&self.host.rows, now_ms)),
                 ));
             }
         }

@@ -743,12 +743,7 @@ impl BootstrapNode {
             () = stopped => Wake::Stopped,
             () = next_tick(self.records_due.as_mut()) => Wake::RecordDue,
             () = sleep_until(self.snapshot_due) => Wake::SnapshotDue,
-            event = next_recorded_gossip_event(
-                &mut self.topic,
-                None,
-                &*self.clock,
-                &*self.report,
-            ) => Wake::Topic(event),
+            event = next_recorded_gossip_event(&mut self.topic, None, &*self.report) => Wake::Topic(event),
         }
     }
 
@@ -795,7 +790,7 @@ impl BootstrapNode {
             | OpenedPayload::Departure(_)
             | OpenedPayload::Unreachable(_)
             | OpenedPayload::PresenceRequest(_)) => {
-                (self.report)(taken_without_a_row_record(unapplied.facts(), None, now_ms));
+                (self.report)(taken_without_a_row_record(unapplied.facts(), None));
             }
         }
     }
