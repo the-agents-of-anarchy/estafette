@@ -1856,6 +1856,33 @@ pub(super) mod tests {
                 .unwrap(),
             )
         }
+
+        /// The inbox socket of the seed's member, its events handed to the record and its clients served by a runtime on a thread of its own, and the sender whose drop ends that thread.
+        pub(in crate::node) fn inbox_served_apart(
+            &self,
+            seed: u8,
+            record: impl Fn(crate::event::InboxEvent) + Send + Sync + 'static,
+        ) -> (Arc<InboxSocket>, tokio::sync::oneshot::Sender<()>) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let socket = {
+                let _entered = runtime.enter();
+                Arc::new(
+                    InboxSocket::start(
+                        &self.directories,
+                        u32::from(seed),
+                        &EveryProcessRuns,
+                        record,
+                    )
+                    .unwrap(),
+                )
+            };
+            let (serving, ends) = tokio::sync::oneshot::channel();
+            std::thread::spawn(move || runtime.block_on(ends).unwrap_or_default());
+            (socket, serving)
+        }
     }
 
     impl Drop for Scratch {
@@ -1912,6 +1939,7 @@ pub(super) mod tests {
         clock: Clock,
         monotonic: MonotonicClock,
         report: RunRecord,
+        inbox: Option<Arc<InboxSocket>>,
         probe_relay: RelayProbe,
         register: HeldConnections,
     }
@@ -1928,6 +1956,7 @@ pub(super) mod tests {
                 clock: Arc::new(wall_clock_ms),
                 monotonic: Arc::new(Instant::now),
                 report: Arc::new(|_event: Event| {}),
+                inbox: None,
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
                 register: HeldConnections::new(
                     Arc::new(Instant::now),
@@ -1957,6 +1986,13 @@ pub(super) mod tests {
 
         pub(in crate::node) fn with_report(self, report: RunRecord) -> Self {
             Self { report, ..self }
+        }
+
+        pub(in crate::node) fn with_inbox(self, inbox: Arc<InboxSocket>) -> Self {
+            Self {
+                inbox: Some(inbox),
+                ..self
+            }
         }
 
         pub(in crate::node) fn with_hosts(self, hosts: &[u8]) -> Self {
@@ -2014,7 +2050,10 @@ pub(super) mod tests {
             .into_iter()
             .zip(endpoints)
             .map(|(plan, endpoint)| {
-                let inbox = scratch.inbox(plan.seed);
+                let inbox = plan
+                    .inbox
+                    .clone()
+                    .unwrap_or_else(|| scratch.inbox(plan.seed));
                 let inbox_path = scratch.directories.inbox_socket_file(u32::from(plan.seed));
                 let config_path = scratch.network_file(plan.seed);
                 tokio::spawn(start_member(
@@ -2644,7 +2683,10 @@ pub(super) mod tests {
     ) -> (iroh::Endpoint, JoinHandle<Member>) {
         let node_endpoint = bind_holding(plan.seed, plan.register.clone()).await;
         let endpoint = node_endpoint.endpoint().clone();
-        let inbox = scratch.inbox(plan.seed);
+        let inbox = plan
+            .inbox
+            .clone()
+            .unwrap_or_else(|| scratch.inbox(plan.seed));
         let inbox_path = scratch.directories.inbox_socket_file(u32::from(plan.seed));
         let config_path = scratch.network_file(plan.seed);
         let starting = tokio::spawn(start_member(

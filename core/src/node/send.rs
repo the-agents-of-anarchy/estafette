@@ -213,10 +213,10 @@ mod tests {
     use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
         DUPLICATE_KEY_PUBLIC, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTEGER_PAST_64_BITS_PUBLIC,
-        INTRODUCE_ROUND_TRIP, Member, MemberPlan, PROBE_NONCE, SECOND_HANDLE, SECOND_SEED,
-        SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_SEED, WITNESS_HANDLE, WITNESS_SEED, bind,
-        card, inbox_frames, keys, listed_within, message_to, start_members_reaching, start_pair,
-        start_third_through_second, wall_clock_ms,
+        INTRODUCE_ROUND_TRIP, Member, MemberPlan, PROBE_NONCE, SECOND_HANDLE, SECOND_PUBLIC,
+        SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_SEED, WITNESS_HANDLE,
+        WITNESS_SEED, bind, card, inbox_frames, keys, listed_within, message_to, start_members,
+        start_members_reaching, start_pair, start_third_through_second, wall_clock_ms,
     };
     use crate::payload::{PayloadError, open_request, seal_response};
     use crate::peers::Status;
@@ -456,6 +456,104 @@ mod tests {
 
         assert!(delivery.attached);
         drop(inbox_client);
+        drop(scratch);
+    }
+
+    const CLIENT_GONE_WITHIN: Duration = Duration::from_secs(5);
+
+    /// An inbox record that drops the one inbox client when a frame is delivered and holds the delivery until the socket counts that client gone, keeping what it saw.
+    struct DetachingOnDelivery {
+        client: std::sync::Mutex<Option<tokio::net::UnixStream>>,
+        connected: tokio::sync::watch::Sender<bool>,
+        gone: std::sync::atomic::AtomicBool,
+        attached_recorded: std::sync::Mutex<Option<serde_json::Value>>,
+    }
+
+    impl DetachingOnDelivery {
+        /// Takes one inbox event: notes a client connected or gone, and on a delivered frame keeps its attached field, drops the client and waits until it is counted gone.
+        fn take(&self, event: crate::event::InboxEvent) {
+            let event = crate::event::Event::from(event);
+            match event.name() {
+                "inbox.client_connected" => {
+                    self.connected.send_replace(true);
+                }
+                "inbox.client_gone" => self.gone.store(true, Ordering::SeqCst),
+                "inbox.frame_delivered" => {
+                    *self.attached_recorded.lock().unwrap() = event
+                        .fields()
+                        .into_iter()
+                        .find_map(|(field, value)| (field == "attached").then_some(value));
+                    drop(self.client.lock().unwrap().take());
+                    self.wait_until_the_client_is_gone();
+                }
+                _other => {}
+            }
+        }
+
+        /// Returns once the socket counted the dropped client gone, failing when it does not within the bound.
+        fn wait_until_the_client_is_gone(&self) {
+            let started = std::time::Instant::now();
+            while !self.gone.load(Ordering::SeqCst) {
+                assert!(
+                    started.elapsed() < CLIENT_GONE_WITHIN,
+                    "the inbox client was not counted gone within {CLIENT_GONE_WITHIN:?}"
+                );
+                std::thread::yield_now();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_message_ack_carries_the_attached_state_its_delivery_recorded_though_the_client_left_before_the_ack()
+     {
+        let scratch = Scratch::new("send-attached-once").await;
+        let detaching = Arc::new(DetachingOnDelivery {
+            client: std::sync::Mutex::new(None),
+            connected: tokio::sync::watch::Sender::new(false),
+            gone: std::sync::atomic::AtomicBool::new(false),
+            attached_recorded: std::sync::Mutex::new(None),
+        });
+        let (inbox, _inbox_served_until_dropped) = {
+            let detaching = Arc::clone(&detaching);
+            scratch.inbox_served_apart(SECOND_SEED, move |event| detaching.take(event))
+        };
+        let mut members = start_members(
+            &scratch,
+            vec![
+                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_hosts(&[SECOND_SEED]),
+                MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
+                    .with_hosts(&[FIRST_SEED])
+                    .with_inbox(inbox),
+            ],
+        )
+        .await;
+        let second = members.pop().unwrap();
+        let first = members.pop().unwrap();
+        listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
+            .await
+            .unwrap();
+        let mut connected = detaching.connected.subscribe();
+        *detaching.client.lock().unwrap() = Some(
+            tokio::net::UnixStream::connect(&second.inbox_path)
+                .await
+                .unwrap(),
+        );
+        tokio::time::timeout(
+            CLIENT_GONE_WITHIN,
+            connected.wait_for(|connected| *connected),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let delivery = first.node.send(SECOND_HANDLE, BODY).await.unwrap();
+
+        assert!(detaching.gone.load(Ordering::SeqCst));
+        assert_eq!(
+            *detaching.attached_recorded.lock().unwrap(),
+            Some(serde_json::Value::from(true))
+        );
+        assert!(delivery.attached);
         drop(scratch);
     }
 
