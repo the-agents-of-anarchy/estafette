@@ -2152,6 +2152,7 @@ mod tests {
         drop(lab);
     }
 
+    #[must_use]
     async fn next_presence_request(
         topic: &mut NetworkTopic,
         within: Duration,
@@ -2167,6 +2168,15 @@ mod tests {
         })
         .await
         .ok()
+    }
+
+    /// The observer's presence request taken from the topic, failing by name when none comes within the payload wait.
+    async fn observers_presence_request(topic: &mut NetworkTopic) -> wire::PresenceRequest {
+        next_presence_request(topic, PAYLOAD_WAIT)
+            .await
+            .unwrap_or_else(|| {
+                panic!("the observer sent no presence request within {PAYLOAD_WAIT:?}")
+            })
     }
 
     #[tokio::test]
@@ -2219,7 +2229,10 @@ mod tests {
             sent.map(|request| request.requester),
             Some(*secret_key(OBSERVER_SEED).public().as_bytes())
         );
-        assert_eq!(sent_after_asked, None);
+        assert_eq!(
+            sent_after_asked, None,
+            "show-peers sent a second presence request within {SPEC_OBSERVER_WAIT:?}"
+        );
         drop(lab);
     }
 
@@ -2388,7 +2401,7 @@ mod tests {
                 &mut tail_output,
             ),
             async {
-                next_presence_request(&mut neighbor.topic, PAYLOAD_WAIT).await;
+                observers_presence_request(&mut neighbor.topic).await;
                 for payload in neighbor_payloads() {
                     neighbor
                         .topic
@@ -2557,7 +2570,7 @@ mod tests {
                 &mut printed,
             ),
             async {
-                next_presence_request(&mut neighbor.topic, PAYLOAD_WAIT).await;
+                observers_presence_request(&mut neighbor.topic).await;
                 for payload in payloads_judged_at_the_observer_clock() {
                     neighbor
                         .topic
@@ -2715,7 +2728,7 @@ mod tests {
                 &mut tail_output,
             ),
             async {
-                next_presence_request(&mut neighbor.topic, PAYLOAD_WAIT).await;
+                observers_presence_request(&mut neighbor.topic).await;
                 let observer = secret_key(OBSERVER_SEED).public();
                 let earlier = neighbor
                     .endpoint
@@ -2823,6 +2836,7 @@ mod tests {
         }
 
         /// Drives the process again only to read how the observer ended its connection, none when it did not end within the wait.
+        #[must_use]
         async fn connection_end_within(
             self,
             within: Duration,
@@ -2901,12 +2915,7 @@ mod tests {
 
         let (tail_result, (earlier_closed, live_direct_closed, neighbor_events)) =
             tokio::join!(observation.tail(&mut tail_output), async {
-                assert!(
-                    next_presence_request(&mut neighbor.topic, PAYLOAD_WAIT)
-                        .await
-                        .is_some(),
-                    "the observer sent no presence request within {PAYLOAD_WAIT:?}"
-                );
+                observers_presence_request(&mut neighbor.topic).await;
                 let observer = secret_key(OBSERVER_SEED).public();
                 let earlier = GoneProcess::introduced_to(observer_address).await;
                 let gone_since = Instant::now();
