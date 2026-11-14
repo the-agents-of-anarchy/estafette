@@ -1864,9 +1864,9 @@ pub(super) mod tests {
     const PAYLOAD_BROADCAST: &str = "gossip.payload_broadcast";
     const TOPIC_JOINED: &str = "gossip.topic_joined";
     const UNREACHABLE_KIND: &str = "unreachable";
-    const PEER: &str = "peer";
+    pub(in crate::node) const PEER: &str = "peer";
     const SEQ: &str = "seq";
-    const TS: &str = "ts";
+    pub(in crate::node) const TS: &str = "ts";
 
     const FIRST_REQUESTER_SEED: u8 = 72;
     const SECOND_REQUESTER_SEED: u8 = 73;
@@ -3211,7 +3211,7 @@ pub(super) mod tests {
     }
 
     /// The field the events name the seed's card by: the first bytes of its key in lowercase hex.
-    fn short_peer_id(seed: u8) -> serde_json::Value {
+    pub(in crate::node) fn short_peer_id(seed: u8) -> serde_json::Value {
         serde_json::Value::from(
             data_encoding::HEXLOWER
                 .encode(&secret_key(seed).public().as_bytes()[..SPEC_SHORT_PEER_ID_BYTES]),

@@ -399,6 +399,7 @@ mod tests {
     use tokio::time::Instant;
 
     use super::{MemberJoins, RebindSchedule, RelayProbe, relay_answers};
+    use crate::event::EventFields;
     use crate::event::{Event, RunRecord, TransportEvent};
     use crate::net::direct::tests::test_salt;
     use crate::net::direct::{
@@ -411,15 +412,17 @@ mod tests {
     use crate::node::presence::acknowledgement_of;
     use crate::node::presence::tests::{
         FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, MARKER_SEED, Member, MemberPlan,
-        OWNER_SEED, PAYLOAD_WAIT, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, Scratch, WITNESS_SEED,
-        Witness, bind, card, entry_meeting_within, frozen_clock, keys, presence_from,
-        presence_request_by, relay_url, secret_key, spawn_member, start_members,
+        OWNER_SEED, PAYLOAD_WAIT, PEER, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, Scratch, TS,
+        WITNESS_SEED, Witness, bind, card, entry_meeting_within, frozen_clock, keys, presence_from,
+        presence_request_by, relay_url, secret_key, short_peer_id, spawn_member, start_members,
         start_members_reaching, status_within, unreachable_about, wall_clock_ms,
     };
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
-    use crate::test_waits::{found_within, next_recorded, recorded_events, recorded_until};
+    use crate::test_waits::{
+        RecordedEvent, found_within, next_recorded, recorded_events, recorded_until,
+    };
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
 
     const SPEC_DEAF_TIMEOUT: Duration = Duration::from_secs(15);
@@ -807,24 +810,34 @@ mod tests {
      {
         let scratch = Scratch::new("hearing").await;
         let host = QuietNode::broadcasting(HOST_SEED, SPEC_INFRASTRUCTURE_RECORD_INTERVAL).await;
-        let rebinds = RebindLog::default();
+        let (record, mut events) = recorded_events();
+        let started = Instant::now();
+        let past_the_deaf_timeout_ms =
+            wall_clock_ms() + millis_of(SPEC_DEAF_TIMEOUT + REBIND_SLACK);
 
         let _member = start_members_reaching(
             &scratch,
             vec![
                 MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
                     .with_hosts(&[HOST_SEED])
-                    .with_report(rebinds.sink()),
+                    .with_report(record),
             ],
             &[(HOST_SEED, host.addr())],
         )
         .await;
+        let (before_the_hosts_report, _report) = recorded_until(
+            &mut events,
+            DROPPED_PAYLOAD,
+            |fields| is_report_by_dated_from(fields, HOST_SEED, past_the_deaf_timeout_ms),
+            HOST_REPORT_PAST_THE_DEAF_TIMEOUT_WITHIN,
+        )
+        .await;
 
+        assert!(started.elapsed() >= SPEC_DEAF_TIMEOUT + REBIND_SLACK);
         assert_eq!(
-            rebinds
-                .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
-                .await,
-            None
+            rebinds_among(&before_the_hosts_report),
+            0,
+            "the member rebound while hearing its host: {before_the_hosts_report:?}"
         );
         drop(scratch);
     }
@@ -963,6 +976,42 @@ mod tests {
     ];
     const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
     const SNAPSHOT_WAIT: Duration = Duration::from_secs(61);
+    const COUNTERS: &str = "state.counters";
+    const REBINDING: &str = "transport.rebinding";
+    const DROPPED_PAYLOAD: &str = "gossip.payload_dropped";
+    const MOMENT: &str = "moment";
+    const INTERVAL_MOMENT: &str = "interval";
+    /// The longest a member waits, from its start, for its host's first report dated past the deaf timeout: that span, then one broadcast interval of the host.
+    const HOST_REPORT_PAST_THE_DEAF_TIMEOUT_WITHIN: Duration = SPEC_DEAF_TIMEOUT
+        .saturating_add(REBIND_SLACK)
+        .saturating_add(SPEC_INFRASTRUCTURE_RECORD_INTERVAL)
+        .saturating_add(REBIND_SLACK);
+
+    /// The whole milliseconds of the span.
+    fn millis_of(span: Duration) -> u64 {
+        u64::try_from(span.as_millis()).unwrap()
+    }
+
+    /// Whether the recorded payload is a report signed by the seed's card dated at or after the instant in milliseconds.
+    fn is_report_by_dated_from(fields: &EventFields, seed: u8, from_ms: u64) -> bool {
+        fields.contains(&(PEER, short_peer_id(seed)))
+            && fields
+                .iter()
+                .any(|(name, ts)| *name == TS && ts.as_u64().is_some_and(|ts| ts >= from_ms))
+    }
+
+    /// Whether the counters were recorded at the interval, not at a start, a rebind or a stop.
+    fn is_interval_snapshot(fields: &EventFields) -> bool {
+        fields.first() == Some(&(MOMENT, serde_json::Value::from(INTERVAL_MOMENT)))
+    }
+
+    /// How many rebinds the events hold.
+    fn rebinds_among(events: &[RecordedEvent]) -> usize {
+        events
+            .iter()
+            .filter(|(name, _fields)| *name == REBINDING)
+            .count()
+    }
 
     type StampedEvent = (Instant, &'static str, crate::event::EventFields);
 
@@ -1298,25 +1347,26 @@ mod tests {
         request.seq
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn spec_3_8_a_member_that_knows_no_other_node_never_rebinds_on_silence_or_at_its_join_timeout()
      {
         let scratch = Scratch::new("alone").await;
-        let rebinds = RebindLog::default();
+        let (record, mut events) = recorded_events();
+        let started = Instant::now();
 
         let _member = start_members(
             &scratch,
-            vec![
-                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(rebinds.sink()),
-            ],
+            vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(record)],
         )
         .await;
+        let (before_the_interval_snapshot, _snapshot) =
+            recorded_until(&mut events, COUNTERS, is_interval_snapshot, SNAPSHOT_WAIT).await;
 
+        assert!(started.elapsed() >= SPEC_DEAF_TIMEOUT + REBIND_SLACK);
         assert_eq!(
-            rebinds
-                .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
-                .await,
-            None
+            rebinds_among(&before_the_interval_snapshot),
+            0,
+            "the member that knows no other node rebound: {before_the_interval_snapshot:?}"
         );
         drop(scratch);
     }
@@ -1449,12 +1499,10 @@ mod tests {
     async fn spec_3_8_a_send_that_turns_its_unreachable_peer_online_lets_a_long_deaf_member_rebind_at_once()
      {
         let scratch = Scratch::new("reached").await;
-        let rebinds = RebindLog::default();
+        let (record, mut events) = recorded_events();
         let member = start_members(
             &scratch,
-            vec![
-                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(rebinds.sink()),
-            ],
+            vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(record)],
         )
         .await
         .pop()
@@ -1487,21 +1535,22 @@ mod tests {
         )
         .await
         .unwrap();
-        let rebound_while_no_peer_was_online = rebinds
-            .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
-            .await;
+        let no_peer_online_since = Instant::now();
+        let (while_no_peer_was_online, _snapshot) =
+            recorded_until(&mut events, COUNTERS, is_interval_snapshot, SNAPSHOT_WAIT).await;
+        assert!(no_peer_online_since.elapsed() >= SPEC_DEAF_TIMEOUT + REBIND_SLACK);
+        assert_eq!(
+            rebinds_among(&while_no_peer_was_online),
+            0,
+            "the member rebound while no peer was online: {while_no_peer_was_online:?}"
+        );
 
         member.node.send(PEER_HANDLE, SENT_BODY).await.unwrap();
         let reached = Instant::now();
-        let rebound = rebinds.nth_within(0, REBIND_SLACK).await;
+        let (_before_the_rebind, _cause) =
+            recorded_until(&mut events, REBINDING, |_fields| true, REBIND_SLACK).await;
 
-        assert_eq!(
-            rebound_while_no_peer_was_online,
-            None,
-            "the member rebound while no peer was online, within {:?}",
-            SPEC_DEAF_TIMEOUT + REBIND_SLACK
-        );
-        assert!(rebound.unwrap().duration_since(reached) < REBIND_SLACK);
+        assert!(reached.elapsed() < REBIND_SLACK);
         drop(scratch);
     }
 
