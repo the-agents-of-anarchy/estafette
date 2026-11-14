@@ -1278,6 +1278,7 @@ mod tests {
         }
 
         /// Whether the peer's topic reports the join within the wait.
+        #[must_use]
         async fn joined_within(&mut self, within: Duration) -> bool {
             tokio::time::timeout(within, async {
                 while self.topic.next_event().await.unwrap().unwrap() != GossipEvent::Joined {}
@@ -1336,6 +1337,7 @@ mod tests {
             heard
         }
 
+        #[must_use]
         async fn next_host_record(&mut self, within: Duration) -> Option<Infrastructure> {
             tokio::time::timeout(within, async {
                 loop {
@@ -1615,7 +1617,10 @@ mod tests {
             fs::Permissions::from_mode(SPEC_PRIVATE_DIRECTORY_MODE),
         )
         .unwrap();
-        assert_eq!(heard, None);
+        assert_eq!(
+            heard, None,
+            "the peer heard a host record within {RECORD_AT_JOIN_WAIT:?}"
+        );
         assert!(
             outcome
                 .unwrap_err()
@@ -1929,6 +1934,7 @@ mod tests {
             && fields.contains(&(PEER_FIELD, short_id(SECOND_HOST_SEED)))
     }
 
+    #[must_use]
     async fn saved_within(scratch: &Scratch, host_seed: u8, within: Duration) -> Option<Host> {
         let saved = found_within(within, async || scratch.saved_host(host_seed)).await;
         if saved.is_none() {
@@ -2075,6 +2081,7 @@ mod tests {
         (node, member_endpoint, member_relay_map)
     }
 
+    #[must_use]
     async fn relay_map_holds_within(
         relay_map: &iroh::RelayMap,
         relay: &str,
