@@ -833,12 +833,12 @@ mod tests {
         )
         .await;
 
-        assert!(started.elapsed() >= SPEC_DEAF_TIMEOUT + REBIND_SLACK);
         assert_eq!(
             rebinds_among(&before_the_hosts_report),
             0,
             "the member rebound while hearing its host: {before_the_hosts_report:?}"
         );
+        assert!(started.elapsed() >= SPEC_DEAF_TIMEOUT + REBIND_SLACK);
         drop(scratch);
     }
 
@@ -980,7 +980,7 @@ mod tests {
     const REBINDING: &str = "transport.rebinding";
     const DROPPED_PAYLOAD: &str = "gossip.payload_dropped";
     const MOMENT: &str = "moment";
-    const INTERVAL_MOMENT: &str = "interval";
+    const START_MOMENT: &str = "start";
     /// The longest a member waits, from its start, for its host's first report dated past the deaf timeout: that span, then one broadcast interval of the host.
     const HOST_REPORT_PAST_THE_DEAF_TIMEOUT_WITHIN: Duration = SPEC_DEAF_TIMEOUT
         .saturating_add(REBIND_SLACK)
@@ -1000,9 +1000,9 @@ mod tests {
                 .any(|(name, ts)| *name == TS && ts.as_u64().is_some_and(|ts| ts >= from_ms))
     }
 
-    /// Whether the counters were recorded at the interval, not at a start, a rebind or a stop.
-    fn is_interval_snapshot(fields: &EventFields) -> bool {
-        fields.first() == Some(&(MOMENT, serde_json::Value::from(INTERVAL_MOMENT)))
+    /// Whether the counters were recorded after the start: at the interval, at a rebind or at a stop.
+    fn is_snapshot_after_the_start(fields: &EventFields) -> bool {
+        fields.first() != Some(&(MOMENT, serde_json::Value::from(START_MOMENT)))
     }
 
     /// How many rebinds the events hold.
@@ -1359,15 +1359,20 @@ mod tests {
             vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(record)],
         )
         .await;
-        let (before_the_interval_snapshot, _snapshot) =
-            recorded_until(&mut events, COUNTERS, is_interval_snapshot, SNAPSHOT_WAIT).await;
+        let (before_the_next_snapshot, _snapshot) = recorded_until(
+            &mut events,
+            COUNTERS,
+            is_snapshot_after_the_start,
+            SNAPSHOT_WAIT,
+        )
+        .await;
 
-        assert!(started.elapsed() >= SPEC_DEAF_TIMEOUT + REBIND_SLACK);
         assert_eq!(
-            rebinds_among(&before_the_interval_snapshot),
+            rebinds_among(&before_the_next_snapshot),
             0,
-            "the member that knows no other node rebound: {before_the_interval_snapshot:?}"
+            "the member that knows no other node rebound: {before_the_next_snapshot:?}"
         );
+        assert!(started.elapsed() >= SPEC_DEAF_TIMEOUT + REBIND_SLACK);
         drop(scratch);
     }
 
@@ -1536,14 +1541,19 @@ mod tests {
         .await
         .unwrap();
         let no_peer_online_since = Instant::now();
-        let (while_no_peer_was_online, _snapshot) =
-            recorded_until(&mut events, COUNTERS, is_interval_snapshot, SNAPSHOT_WAIT).await;
-        assert!(no_peer_online_since.elapsed() >= SPEC_DEAF_TIMEOUT + REBIND_SLACK);
+        let (while_no_peer_was_online, _snapshot) = recorded_until(
+            &mut events,
+            COUNTERS,
+            is_snapshot_after_the_start,
+            SNAPSHOT_WAIT,
+        )
+        .await;
         assert_eq!(
             rebinds_among(&while_no_peer_was_online),
             0,
             "the member rebound while no peer was online: {while_no_peer_was_online:?}"
         );
+        assert!(no_peer_online_since.elapsed() >= SPEC_DEAF_TIMEOUT + REBIND_SLACK);
 
         member.node.send(PEER_HANDLE, SENT_BODY).await.unwrap();
         let reached = Instant::now();
