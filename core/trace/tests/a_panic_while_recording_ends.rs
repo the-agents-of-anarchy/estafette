@@ -1,88 +1,54 @@
+#[cfg(test)]
+#[path = "../../tests/common/fresh_directory.rs"]
+mod fresh_directory;
+#[cfg(test)]
+#[path = "../../tests/common/remove_scratch.rs"]
+mod remove_scratch;
+#[cfg(test)]
+#[path = "support/scratch_run.rs"]
+mod scratch_run;
+
 /// A panic raised inside a trace file's record path, its queue's lock held, ends through a panic hook that records and flushes, by spec/observability.md decisions 9 and 12, through the package's public surface.
 #[cfg(test)]
 mod observability {
-    use std::ffi::OsString;
-    use std::io::{self, Write};
+    use std::fs;
     use std::panic::{self, AssertUnwindSafe};
-    use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
 
-    use estafette_trace::{
-        EstafetteRun, ListFiles, RUN_ID_BYTES, RunId, TraceBounds, TraceClocks, TraceDirectory,
-        TraceEffects, TraceFile, TraceFileKind, TraceStop,
-    };
+    use super::remove_scratch::remove_scratch;
+    use super::scratch_run::{ONE_EVENT, frozen_clocks, one_event_line, scratch_run};
+    use estafette_trace::{TraceBounds, TraceClocks, TraceEffects, TraceFileKind, TraceStop};
 
-    const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
-    const DATA_HOME_NEVER_CREATED: &str = "/estafette-trace-test-never-created";
-    const RUN_BYTES: [u8; RUN_ID_BYTES] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
-    const FROZEN_MONOTONIC_MS: u64 = 7;
-    const NOW_MS: u64 = 2_000_000_000_000;
-    const ONE_EVENT: &str = "process.clock_before_unix_epoch";
     const PANICKED_EVENT: &str = "process.panicked";
     const STAND_IN_CLOCK_PANIC: &str = "the stand-in clock panics while a line is stamped";
     const PANIC_ENDS_WITHIN: Duration = Duration::from_secs(10);
-
-    /// A trace file that takes every write and every length.
-    struct AcceptingFile;
-
-    impl Write for AcceptingFile {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl TraceFile for AcceptingFile {
-        fn set_length(&mut self, _length: u64) -> io::Result<()> {
-            Ok(())
-        }
-    }
 
     #[test]
     fn observability_decision_9_a_panic_raised_while_a_line_is_stamped_ends_through_a_hook_that_records_and_flushes_never_waiting_on_itself_nor_panicking_again()
      {
         let clock_armed = Arc::new(AtomicBool::new(false));
         let armed = Arc::clone(&clock_armed);
-        let list_nothing: ListFiles = Arc::new(|_directory| Ok(Vec::new()));
-        let effects = TraceEffects {
-            create_file: Arc::new(|_path: &Path| -> io::Result<Box<dyn TraceFile>> {
-                Ok(Box::new(AcceptingFile))
-            }),
-            list_files: list_nothing,
-            ..TraceEffects::of_the_operating_system(TraceClocks {
+        let frozen = frozen_clocks();
+        let frozen_monotonic_ms = Arc::clone(&frozen.monotonic_ms);
+        let scratch = scratch_run(
+            "panic-while-stamping",
+            &TraceEffects::of_the_operating_system(TraceClocks {
                 monotonic_ms: Arc::new(move || {
                     assert!(
                         !armed.swap(false, Ordering::SeqCst),
                         "{STAND_IN_CLOCK_PANIC}"
                     );
-                    FROZEN_MONOTONIC_MS
+                    frozen_monotonic_ms()
                 }),
-                wall_ms: Arc::new(|| NOW_MS),
-            })
-        };
-        let directory = TraceDirectory::resolve(&|name: &str| {
-            (name == DATA_HOME_VARIABLE).then(|| OsString::from(DATA_HOME_NEVER_CREATED))
-        })
-        .unwrap();
-        let events = Arc::new(
-            EstafetteRun::begin(
-                &directory,
-                &|_path: &Path| Ok(()),
-                RunId::from_random_bytes(RUN_BYTES),
-                &effects,
-                TraceBounds::SPEC,
-            )
-            .unwrap()
-            .open_events()
-            .unwrap(),
+                ..frozen
+            }),
+            TraceBounds::SPEC,
         );
+        let events = Arc::new(scratch.run.open_events().unwrap());
         let (stop_in_the_hook, hook_stops) = mpsc::channel();
         let hook_events = Arc::clone(&events);
         let test_gave_up = Arc::new(AtomicBool::new(false));
@@ -124,5 +90,10 @@ mod observability {
         );
         events.write(ONE_EVENT, &[]);
         assert!(matches!(events.finish(), TraceStop::Drained));
+        assert_eq!(
+            fs::read_to_string(&scratch.run.files().events).unwrap(),
+            one_event_line(0)
+        );
+        remove_scratch(&scratch.root).unwrap();
     }
 }
