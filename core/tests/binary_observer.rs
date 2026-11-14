@@ -1,5 +1,6 @@
 use std::io::{self, BufRead, BufReader};
 use std::os::unix::process::ExitStatusExt;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::mpsc;
@@ -9,6 +10,12 @@ mod common;
 #[cfg(test)]
 #[path = "support/file_growth.rs"]
 mod file_growth;
+#[cfg(test)]
+#[path = "support/member_events.rs"]
+mod member_events;
+#[cfg(test)]
+#[path = "support/node_start.rs"]
+mod node_start;
 #[path = "common/remove_scratch.rs"]
 mod remove_scratch;
 #[cfg(test)]
@@ -20,6 +27,8 @@ mod trace_reader;
 
 use common::fresh_directory;
 use file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
+use member_events::{COUNTERS_EVENT, MemberEvents};
+use node_start::{NODE_START_MOMENT, is_node_start_snapshot};
 use trace_reader::{TraceLine, read_trace_file};
 
 const SHORT_SCRATCH_PARENT: &str = "/tmp";
@@ -34,6 +43,7 @@ const SIGINT_NUMBER: i32 = 2;
 const DATA_HOME: &str = "data";
 const SPEC_IROH_LINE_EVENT: &str = "iroh_line";
 const NODE_RUNS_WITHIN: Duration = Duration::from_secs(10);
+const COMMAND_LABEL: &str = "the command";
 
 fn binary(root: &Path) -> Command {
     let mut command = Command::new(BINARY);
@@ -135,7 +145,10 @@ fn binary_tail_runs_until_interrupted_then_exits_zero_of_spec_3_13() {
         .unwrap();
     let mut errors = BufReader::new(tail.stderr.take().unwrap());
 
-    wait_until_the_node_runs(&root, &mut errors).unwrap();
+    ended_when_the_wait_fails(&mut tail, || {
+        wait_for_the_first_line_of_iroh(&root, &mut errors)
+    })
+    .unwrap();
     assert!(tail.try_wait().unwrap().is_none());
     let interrupt = Command::new("kill")
         .args(["-INT", &tail.id().to_string()])
@@ -173,19 +186,49 @@ fn binary_test_send_creates_the_operator_card_and_reports_an_unknown_handle_of_s
     remove_scratch::remove_scratch(&root).unwrap();
 }
 
+/// Runs the wait, and when it fails, by an error or a panic, kills and reaps the command before the failure leaves the test.
+fn ended_when_the_wait_fails(
+    command: &mut Child,
+    wait: impl FnOnce() -> io::Result<()>,
+) -> io::Result<()> {
+    let waited = panic::catch_unwind(AssertUnwindSafe(wait));
+    if !matches!(waited, Ok(Ok(()))) {
+        drop(command.kill());
+        drop(command.wait());
+    }
+    waited.unwrap_or_else(|failure| panic::resume_unwind(failure))
+}
+
 /// Whether the whole lines hold a line of iroh.
 fn hold_a_line_of_iroh(lines: &[TraceLine]) -> bool {
     lines.iter().any(|line| line.event == SPEC_IROH_LINE_EVENT)
 }
 
-/// Waits until the command's raw trace file, named in the first line it writes on standard error, holds a line of iroh: its endpoint is bound, so its node runs and its SIGINT handling is in place (spec/observability.md decision 7).
-///
-/// # Errors
-///
-/// `io::Error` when standard error, the raw file or its watch fails, or naming the raw file when it holds no line of iroh within the wait.
-fn wait_until_the_node_runs(root: &Path, errors: &mut impl BufRead) -> io::Result<()> {
+/// Reads the first line the command writes on standard error, which names its trace files once their directory exists (spec/observability.md decision 3).
+fn read_the_announcement(errors: &mut dyn BufRead) -> io::Result<()> {
     let mut announcement = String::new();
     errors.read_line(&mut announcement)?;
+    Ok(())
+}
+
+/// Waits until the command records in its events file the counters snapshot of its node's start, the event that says its node runs (spec/observability.md decision 9).
+fn wait_for_the_node_start_snapshot(root: &Path, errors: &mut dyn BufRead) -> io::Result<()> {
+    read_the_announcement(errors)?;
+    MemberEvents::new(
+        COMMAND_LABEL,
+        &trace_files::traces_directory(&root.join(DATA_HOME)),
+    )
+    .wait_until(
+        &format!("{COUNTERS_EVENT} of its node's {NODE_START_MOMENT}"),
+        NODE_RUNS_WITHIN,
+        |lines| lines.iter().any(is_node_start_snapshot).then_some(()),
+    );
+    Ok(())
+}
+
+/// Waits until the command's raw trace file holds a line of iroh, the first sign it writes that its endpoint is bound, for a command whose events file says nothing of its node before its exit (spec/observability.md decision 7).
+fn wait_for_the_first_line_of_iroh(root: &Path, errors: &mut dyn BufRead) -> io::Result<()> {
+    read_the_announcement(errors)?;
     let (_events, raw) = trace_files::trace_files_of_one_run(&root.join(DATA_HOME));
     let mut watch = GrowthWatch::of_path(&raw).map_err(io::Error::other)?;
     let held = first_found_as_files_grow(
@@ -201,7 +244,7 @@ fn wait_until_the_node_runs(root: &Path, errors: &mut impl BufRead) -> io::Resul
     match held {
         Ok(read) => read,
         Err(WaitEnded::RanOut) => Err(io::Error::other(format!(
-            "{}: the command wrote no line of iroh, the sign its node runs, within {NODE_RUNS_WITHIN:?}",
+            "{}: the command wrote no line of iroh, the sign its endpoint is bound, within {NODE_RUNS_WITHIN:?}",
             raw.display()
         ))),
         Err(WaitEnded::WatcherFailed(failure)) => Err(io::Error::other(failure.to_string())),
@@ -209,8 +252,12 @@ fn wait_until_the_node_runs(root: &Path, errors: &mut impl BufRead) -> io::Resul
     }
 }
 
-/// Starts the command on a fresh network, sends it SIGINT once its node runs, and says how it ended, its own status when it ended first, none when it outlived the bound.
-fn status_after_sigint(test_name: &str, arguments: &[&str]) -> io::Result<Option<ExitStatus>> {
+/// Starts the command on a fresh network, sends it SIGINT once `node_runs` returns, and says how it ended, its own status when it ended first, none when it outlived the bound.
+fn status_after_sigint(
+    test_name: &str,
+    arguments: &[&str],
+    node_runs: fn(&Path, &mut dyn BufRead) -> io::Result<()>,
+) -> io::Result<Option<ExitStatus>> {
     let root = short_scratch_root(test_name)?;
     let created = create_network(&root)?;
     if !created.status.success() {
@@ -229,17 +276,17 @@ fn status_after_sigint(test_name: &str, arguments: &[&str]) -> io::Result<Option
             .take()
             .ok_or_else(|| io::Error::other("the command's standard error is not piped"))?,
     );
-    wait_until_the_node_runs(&root, &mut errors)?;
+    ended_when_the_wait_fails(&mut command, || node_runs(&root, &mut errors))?;
     if let Some(ended_first) = command.try_wait()? {
         return Ok(Some(ended_first));
     }
+    let process_id = command.id();
     let interrupt = Command::new("kill")
-        .args(["-INT", &command.id().to_string()])
+        .args(["-INT", &process_id.to_string()])
         .status()?;
     if !interrupt.success() {
         return Err(io::Error::other(format!(
-            "kill -INT {}: {interrupt}",
-            command.id()
+            "kill -INT {process_id}: {interrupt}"
         )));
     }
     let ended = exit_within(command, INTERRUPTED_COMMAND_ENDS_WITHIN)?;
@@ -250,8 +297,12 @@ fn status_after_sigint(test_name: &str, arguments: &[&str]) -> io::Result<Option
 
 #[test]
 fn binary_test_send_interrupted_by_sigint_ends_at_once_by_that_signal_of_spec_3_13() {
-    let ended =
-        status_after_sigint("test_send_sigint", &["test-send", NETWORK, HANDLE, BODY]).unwrap();
+    let ended = status_after_sigint(
+        "test_send_sigint",
+        &["test-send", NETWORK, HANDLE, BODY],
+        wait_for_the_node_start_snapshot,
+    )
+    .unwrap();
 
     assert_eq!(
         ended.map(|status| status.signal()),
@@ -262,7 +313,12 @@ fn binary_test_send_interrupted_by_sigint_ends_at_once_by_that_signal_of_spec_3_
 
 #[test]
 fn binary_doctor_interrupted_by_sigint_ends_at_once_by_that_signal_of_spec_3_13() {
-    let ended = status_after_sigint("doctor_sigint", &["doctor", NETWORK]).unwrap();
+    let ended = status_after_sigint(
+        "doctor_sigint",
+        &["doctor", NETWORK],
+        wait_for_the_first_line_of_iroh,
+    )
+    .unwrap();
 
     assert_eq!(
         ended.map(|status| status.signal()),
