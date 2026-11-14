@@ -54,6 +54,7 @@ pub async fn next_recorded_meeting(
 }
 
 /// What the look finds, looked for again each time the runtime has run its other tasks, or none when the bound runs out first.
+#[must_use]
 pub async fn found_within<Found>(
     within: Duration,
     mut look: impl AsyncFnMut() -> Option<Found>,
