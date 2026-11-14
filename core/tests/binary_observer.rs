@@ -307,7 +307,7 @@ fn binary_test_send_interrupted_by_sigint_ends_at_once_by_that_signal_of_spec_3_
     assert_eq!(
         ended.map(|status| status.signal()),
         Some(Some(SIGINT_NUMBER)),
-        "{ended:?}"
+        "the command did not end by SIGINT within {INTERRUPTED_COMMAND_ENDS_WITHIN:?} of it: {ended:?}"
     );
 }
 
@@ -323,7 +323,7 @@ fn binary_doctor_interrupted_by_sigint_ends_at_once_by_that_signal_of_spec_3_13(
     assert_eq!(
         ended.map(|status| status.signal()),
         Some(Some(SIGINT_NUMBER)),
-        "{ended:?}"
+        "the command did not end by SIGINT within {INTERRUPTED_COMMAND_ENDS_WITHIN:?} of it: {ended:?}"
     );
 }
 
