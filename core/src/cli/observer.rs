@@ -1041,6 +1041,7 @@ mod tests {
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
     use crate::stream_items::StreamExt;
+    use crate::test_waits::found_within;
     use crate::wire::{Addr, Payload};
 
     const NETWORK_NAME: &str = "lab";
@@ -1066,7 +1067,6 @@ mod tests {
     const OPERATOR_CARD: &str = "operator";
     const OPERATOR_BODY: &str = "a test message from the operator";
     const FRAME_WAIT: Duration = Duration::from_secs(2);
-    const POLL_INTERVAL: Duration = Duration::from_millis(20);
     const ATTACH_WAIT: Duration = Duration::from_secs(2);
     const DETACH_WAIT: Duration = Duration::from_millis(300);
     const PAYLOAD_WAIT: Duration = Duration::from_secs(20);
@@ -2030,17 +2030,15 @@ mod tests {
     /// Waits until the observer lists the neighbor, which it does once it has applied the neighbor's answer to its Introduce, failing with what it holds when the wait ends first.
     async fn neighbor_listed_by(observer: &ObserverHost, within: Duration) {
         let neighbor = *secret_key(NEIGHBOR_SEED).public().as_bytes();
-        tokio::time::timeout(within, async {
-            while !observer
+        found_within(within, async || {
+            observer
                 .table()
                 .peers(wall_clock_ms())
                 .any(|peer| peer.card == neighbor)
-            {
-                tokio::time::sleep(POLL_INTERVAL).await;
-            }
+                .then_some(())
         })
         .await
-        .unwrap_or_else(|_elapsed| {
+        .unwrap_or_else(|| {
             let held: Vec<wire::PublicKey> = observer
                 .table()
                 .peers(wall_clock_ms())
@@ -2641,7 +2639,9 @@ mod tests {
     const CLOCK_STEP_PAST_ANY_SILENCE: Duration = Duration::from_secs(3600);
     const SUPERSEDED_CLOSE_WAIT: Duration = Duration::from_secs(5);
     const ACK_DROP_WOULD_SHOW_WITHIN: Duration = Duration::from_millis(500);
+    const ONLINE_COLUMN: &str = "\tonline\t";
     const GONE_COLUMN: &str = "\tgone\t";
+
     const UNREACHABLE_COLUMN: &str = "\tunreachable\t";
     const SAME_ROWS_WAIT: Duration = Duration::from_secs(5);
     const SPEC_GONE_PROCESS_SILENCE: Duration = Duration::from_millis(1500);
@@ -3046,30 +3046,33 @@ mod tests {
         member: &Member,
         observer: &ObserverHost,
         awaited: &str,
-        settled: impl Fn(&HeldNeighbor) -> bool,
+        settled: impl Fn(&HeldNeighbor) -> bool + Send + Sync,
     ) -> (HeldNeighbor, HeldNeighbor) {
-        let started = Instant::now();
-        loop {
+        let mut last_held = None;
+        let settled_holdings = found_within(SAME_ROWS_WAIT, async || {
             let by_member = held_neighbor(&member.node.peers(), &member.endpoint).await;
             let observer_peers: Vec<Peer> =
                 observer.table().peers(wall_clock_ms()).cloned().collect();
             let by_observer = held_neighbor(&observer_peers, &observer.endpoint).await;
             if settled(&by_member) && settled(&by_observer) {
-                return (by_member, by_observer);
+                return Some((by_member, by_observer));
             }
-            assert!(
-                started.elapsed() <= SAME_ROWS_WAIT,
-                "the member and the observer did not both hold {awaited} within {SAME_ROWS_WAIT:?}: member {by_member:?}, observer {by_observer:?}"
-            );
-            tokio::time::sleep(POLL_INTERVAL).await;
-        }
+            last_held = Some((by_member, by_observer));
+            None
+        })
+        .await;
+        settled_holdings.unwrap_or_else(|| {
+            panic!(
+                "the member and the observer did not both hold {awaited} within {SAME_ROWS_WAIT:?}: (member, observer) {last_held:?}"
+            )
+        })
     }
 
     /// Waits until the member holds the neighbor and the observer holds both, so each introduction a neighbor report started is answered, failing with what each holds when the wait ends first.
     async fn introduced_to_member_and_joined_observer(member: &Member, observer: &ObserverHost) {
         let neighbor = *secret_key(NEIGHBOR_SEED).public().as_bytes();
-        let started = Instant::now();
-        loop {
+        let mut last_held = None;
+        let introduced_in_time = found_within(SAME_ROWS_WAIT, async || {
             let member_holds_neighbor =
                 member.node.peers().iter().any(|peer| peer.card == neighbor);
             let held_by_observer: Vec<wire::PublicKey> = observer
@@ -3079,15 +3082,20 @@ mod tests {
                 .collect();
             let observer_holds_neighbor = held_by_observer.contains(&neighbor);
             let observer_holds_member = held_by_observer.contains(member.address.id.as_bytes());
-            if member_holds_neighbor && observer_holds_neighbor && observer_holds_member {
-                return;
-            }
-            assert!(
-                started.elapsed() <= SAME_ROWS_WAIT,
-                "the neighbor was not introduced to the member and the joined observer within {SAME_ROWS_WAIT:?}: member holds the neighbor {member_holds_neighbor}, observer holds the neighbor {observer_holds_neighbor}, observer holds the member {observer_holds_member}"
+            let held = (
+                member_holds_neighbor,
+                observer_holds_neighbor,
+                observer_holds_member,
             );
-            tokio::time::sleep(POLL_INTERVAL).await;
-        }
+            last_held = Some(held);
+            (held == (true, true, true)).then_some(())
+        })
+        .await
+        .is_some();
+        assert!(
+            introduced_in_time,
+            "the neighbor was not introduced to the member and the joined observer within {SAME_ROWS_WAIT:?}: (member holds the neighbor, observer holds the neighbor, observer holds the member) {last_held:?}"
+        );
     }
 
     /// The address the neighbor announces: every direct address its endpoint reports, and one more when it has moved.
@@ -3139,15 +3147,23 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                held.push(
-                    held_by_member_and_observer(
-                        &members[0],
-                        &observer_host,
-                        "the announced address",
-                        |held| held.addr.as_ref() == Some(&announced),
-                    )
-                    .await,
+                let announced_holdings = held_by_member_and_observer(
+                    &members[0],
+                    &observer_host,
+                    "the announced address",
+                    |held| held.addr.as_ref() == Some(&announced),
+                )
+                .await;
+                assert!(
+                    [&announced_holdings.0, &announced_holdings.1]
+                        .iter()
+                        .all(|holding| holding
+                            .line
+                            .as_deref()
+                            .is_some_and(|line| line.contains(ONLINE_COLUMN))),
+                    "the neighbor is not listed online after its Presence: {announced_holdings:?}"
                 );
+                held.push(announced_holdings);
             }
             neighbor
                 .topic
