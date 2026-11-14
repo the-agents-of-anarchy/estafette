@@ -4831,6 +4831,9 @@ pub(super) mod tests {
     const ANY_DIRECT_ANSWER_WITHIN: Duration = ClientTimeouts::SPEC
         .connect
         .saturating_add(ClientTimeouts::SPEC.ack);
+    /// The longest the requests to one card take to settle: one answered, then one its answer called for, no shorter than the two ten-second event waits the settle replaced.
+    const DIRECT_ANSWERS_SETTLED_WITHIN: Duration =
+        ANY_DIRECT_ANSWER_WITHIN.saturating_add(ANY_DIRECT_ANSWER_WITHIN);
 
     /// How many requests of the kind the member made to the seed's card, and the outcome of each answer to them it applied, in order.
     fn exchanges_with(
@@ -4863,20 +4866,20 @@ pub(super) mod tests {
         (made, answered)
     }
 
-    /// How many answers to its requests of the kind to the seed's card the member has applied, read once none of those requests awaits its answer, failing when one still does after the longest a direct answer takes.
+    /// How many answers to its requests of the kind to the seed's card the member has applied, read once none of those requests awaits its answer, failing when one still does after the longest those requests take to settle.
     pub(in crate::node) async fn settled_direct_answers(
         member: &Member,
         seed: u8,
         kind: RequestSummary,
     ) -> usize {
-        found_within(ANY_DIRECT_ANSWER_WITHIN, async || {
+        found_within(DIRECT_ANSWERS_SETTLED_WITHIN, async || {
             let (made, answered) = exchanges_with(member, seed, kind);
             (answered.len() == made).then_some(made)
         })
         .await
         .unwrap_or_else(|| {
             panic!(
-                "a {kind:?} to the card of seed {seed} still awaited its answer after {ANY_DIRECT_ANSWER_WITHIN:?}; made and answered: {:?}",
+                "a {kind:?} to the card of seed {seed} still awaited its answer after {DIRECT_ANSWERS_SETTLED_WITHIN:?}; made and answered: {:?}",
                 exchanges_with(member, seed, kind)
             )
         })
