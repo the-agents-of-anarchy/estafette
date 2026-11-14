@@ -576,6 +576,8 @@ mod tests {
     const UNKNOWN_HOST_RELAY: &str = "https://relay-unknown.estafette.invalid/";
     const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
     const LOCAL_DIAL_WAIT: Duration = Duration::from_millis(2000);
+    /// Past the QUIC idle timeout, which ends a dial whose handshake no packet answers.
+    const UNANSWERED_DIAL_ENDS_WITHIN: Duration = Duration::from_secs(20);
     const PEER_STOP_CODE: VarInt = VarInt::from_u32(59);
 
     /// The nonce a node's source fills at its `draw`-th gate challenge: no two bytes alike, and no two draws alike.
@@ -964,9 +966,22 @@ mod tests {
 
         member.replace_address(peer.endpoint().addr());
         member.replace_address(unanswered_address);
+        let accepting = tokio::spawn({
+            let peer = peer.endpoint().clone();
+            async move { accept_next(&peer).await }
+        });
+        let dialed_through_the_unanswered_address = timeout(
+            UNANSWERED_DIAL_ENDS_WITHIN,
+            member.endpoint().connect(peer.endpoint().id(), DIRECT_ALPN),
+        )
+        .await
+        .unwrap_or_else(|_elapsed| {
+            panic!("the dial by card id did not end within {UNANSWERED_DIAL_ENDS_WITHIN:?}")
+        });
+        accepting.abort();
         assert!(
-            dial_by_card_id(&member, &peer).await.is_none(),
-            "a dial by card id reached the peer through an unanswered address within {LOCAL_DIAL_WAIT:?}"
+            dialed_through_the_unanswered_address.is_err(),
+            "a dial by card id reached the peer though its only address is unanswered: {dialed_through_the_unanswered_address:?}"
         );
 
         member.replace_address(peer.endpoint().addr());
