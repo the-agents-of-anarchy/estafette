@@ -26,8 +26,8 @@ use estafette::crypto::GateKey;
 use estafette::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem, TraceDirectory};
 use estafette::errors::ExitStatus;
 use estafette::event::{
-    CLOCK_BEFORE_UNIX_EPOCH, Event, InboxEvent, ProcessEvent, RunRecord, TransportEvent,
-    write_run_record,
+    CLOCK_BEFORE_UNIX_EPOCH, Event, InboxEvent, PanicLocation, ProcessEvent, RunRecord,
+    TransportEvent, write_run_record,
 };
 use estafette::inbox::socket::{InboxSocket, InboxSocketError, OperatingSystemProcessTable};
 use estafette::mcp::{self, ServedNetwork, ServerEffects};
@@ -356,13 +356,7 @@ fn record_panic_locations(trace: Arc<Trace>) {
     let replaced = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic| {
         if let Some(location) = panic.location() {
-            trace.record(
-                &ProcessEvent::Panicked {
-                    file: location.file().to_owned(),
-                    line: location.line(),
-                }
-                .into(),
-            );
+            trace.record(&ProcessEvent::Panicked(PanicLocation::of(location)).into());
         }
         drop(trace.finish());
         replaced(panic);

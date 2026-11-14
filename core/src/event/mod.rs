@@ -44,7 +44,9 @@ pub use gossip::{GossipEvent, GossipEventName};
 pub use inbox::{InboxEvent, InboxEventName, ListCardsFailure};
 pub(crate) use peer::ShortId;
 pub use peer_table::{PeerTableEvent, PeerTableEventName};
-pub use process::{CLOCK_BEFORE_UNIX_EPOCH, ClaimFailure, ProcessEvent, ProcessEventName};
+pub use process::{
+    CLOCK_BEFORE_UNIX_EPOCH, ClaimFailure, PanicLocation, ProcessEvent, ProcessEventName,
+};
 pub use state::{StateEvent, StateEventName};
 pub use transport::{TransportEvent, TransportEventName};
 

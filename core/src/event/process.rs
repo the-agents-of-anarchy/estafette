@@ -1,4 +1,5 @@
 use std::io;
+use std::panic::Location;
 use std::time::Duration;
 
 use iroh::endpoint::BindError;
@@ -76,7 +77,7 @@ pub enum ProcessEvent {
     /// The process ends with the exit status.
     Exited { status: ExitStatus },
     /// A thread panicked at the source location, its message left out.
-    Panicked { file: String, line: u32 },
+    Panicked(PanicLocation),
     /// The session claimed the card, and the node assigned itself the handle.
     Claimed(ClaimedCard),
     /// The session refused a claim with the code, holding a card already or stopping.
@@ -93,6 +94,23 @@ pub enum ProcessEvent {
     HeldConnectionsDropped,
     /// The stopping session waited out the departure wait, so the process may exit.
     DepartureWaitOver { waited: Duration },
+}
+
+/// The source file and line a thread panicked at, taken from the panic's own location and from no other text.
+pub struct PanicLocation {
+    file: String,
+    line: u32,
+}
+
+impl PanicLocation {
+    /// The file and line of the location.
+    #[must_use]
+    pub fn of(location: &Location<'_>) -> Self {
+        Self {
+            file: location.file().to_owned(),
+            line: location.line(),
+        }
+    }
 }
 
 /// Why init failed once it held or tried the card's sidecar lock, each cause answering its own code.
@@ -165,7 +183,7 @@ impl AreaEvent for ProcessEvent {
             Self::TraceNotCut { .. } => ProcessEventName::TraceNotCut,
             Self::Started { .. } => ProcessEventName::Started,
             Self::Exited { .. } => ProcessEventName::Exited,
-            Self::Panicked { .. } => ProcessEventName::Panicked,
+            Self::Panicked(_) => ProcessEventName::Panicked,
             Self::Claimed(_) => ProcessEventName::Claimed,
             Self::ClaimRefused { .. } => ProcessEventName::ClaimRefused,
             Self::InputEnded => ProcessEventName::InputEnded,
@@ -181,7 +199,7 @@ impl AreaEvent for ProcessEvent {
         match self {
             Self::Started { .. }
             | Self::Exited { .. }
-            | Self::Panicked { .. }
+            | Self::Panicked(_)
             | Self::Claimed(_)
             | Self::ClaimRefused { .. }
             | Self::InputEnded
@@ -241,9 +259,9 @@ impl AreaEvent for ProcessEvent {
                 (COMMAND_FIELD, Value::from(*command)),
             ],
             Self::Exited { status } => vec![(STATUS_FIELD, Value::from(u8::from(*status)))],
-            Self::Panicked { file, line } => vec![
-                (FILE_FIELD, Value::from(file.as_str())),
-                (LINE_FIELD, Value::from(*line)),
+            Self::Panicked(location) => vec![
+                (FILE_FIELD, Value::from(location.file.as_str())),
+                (LINE_FIELD, Value::from(location.line)),
             ],
             Self::Claimed(claimed) => vec![
                 (CARD_FIELD, Value::from(claimed.card.as_str())),
@@ -258,5 +276,26 @@ impl AreaEvent for ProcessEvent {
                 Value::from(u64::try_from(waited.as_millis()).unwrap_or(u64::MAX)),
             )],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn observability_decision_6_a_panic_writes_the_file_and_line_of_the_source_location_it_was_built_from()
+     {
+        let location = Location::caller();
+
+        let fields = Event::from(ProcessEvent::Panicked(PanicLocation::of(location))).fields();
+
+        assert_eq!(
+            fields,
+            vec![
+                (FILE_FIELD, Value::from(file!())),
+                (LINE_FIELD, Value::from(location.line())),
+            ]
+        );
     }
 }
