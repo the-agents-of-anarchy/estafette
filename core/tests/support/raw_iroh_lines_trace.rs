@@ -1,10 +1,12 @@
 use std::ffi::OsString;
-use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use estafette::dirs::{OperatingSystemFilesystem, TraceDirectory};
 use estafette::trace::{RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceEffects};
+
+#[path = "../common/fresh_directory.rs"]
+mod fresh_directory;
 
 /// The run id every trace of these tests starts with.
 pub const RUN_BYTES: [u8; RUN_ID_BYTES] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
@@ -17,12 +19,14 @@ const DATA_HOME: &str = "data";
 
 /// A fresh scratch root for the test and the trace directory under its data home.
 pub fn scratch_trace_directory(test_name: &str) -> (PathBuf, TraceDirectory) {
-    let root = std::env::temp_dir().join(format!(
-        "estafette-raw-iroh-lines-{test_name}-{}",
-        std::process::id()
-    ));
-    drop(fs::remove_dir_all(&root));
-    fs::create_dir_all(&root).unwrap();
+    let root = fresh_directory::fresh_directory_in(
+        &std::env::temp_dir(),
+        &format!(
+            "estafette-raw-iroh-lines-{test_name}-{}",
+            std::process::id()
+        ),
+    )
+    .unwrap();
     let data_home = root.join(DATA_HOME);
     let directory = TraceDirectory::resolve(&move |name: &str| {
         (name == DATA_HOME_VARIABLE).then(|| OsString::from(&data_home))

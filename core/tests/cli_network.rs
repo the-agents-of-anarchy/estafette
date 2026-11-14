@@ -1,4 +1,8 @@
 #[cfg(test)]
+#[path = "common/fresh_directory.rs"]
+mod fresh_directory;
+
+#[cfg(test)]
 mod network_commands {
     use std::fs;
     use std::io::{self, Write};
@@ -35,14 +39,11 @@ mod network_commands {
 
     impl Machine {
         fn fresh(test_name: &str) -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "estafette-cli-network-{test_name}-{}",
-                std::process::id()
-            ));
-            if root.exists() {
-                fs::remove_dir_all(&root).unwrap();
-            }
-            fs::create_dir_all(&root).unwrap();
+            let root = crate::fresh_directory::fresh_directory_in(
+                &std::env::temp_dir(),
+                &format!("estafette-cli-network-{test_name}-{}", std::process::id()),
+            )
+            .unwrap();
             Self { root }
         }
 

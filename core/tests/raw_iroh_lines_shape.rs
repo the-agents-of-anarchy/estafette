@@ -1,4 +1,8 @@
 #[cfg(test)]
+#[path = "common/remove_scratch.rs"]
+mod remove_scratch;
+
+#[cfg(test)]
 #[path = "support/raw_iroh_lines_trace.rs"]
 mod raw_iroh_lines_trace;
 
@@ -18,6 +22,7 @@ mod raw_iroh_lines_shape {
 
     use super::raw_iroh_lines_header::{header, raw_file_opened_line};
     use super::raw_iroh_lines_trace::{frozen_clocks, scratch_trace_directory, started};
+    use super::remove_scratch::remove_scratch;
 
     const ENDPOINT_SEED: u8 = 3;
     const SPEC_NODE_HEX_CHARS: usize = 10;
@@ -74,6 +79,6 @@ mod raw_iroh_lines_shape {
             )
         );
         assert_eq!(fs::read_to_string(&trace.files().events).unwrap(), "");
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 }

@@ -1,4 +1,3 @@
-use std::fs;
 use std::io;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -7,6 +6,8 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 mod common;
+#[path = "common/remove_scratch.rs"]
+mod remove_scratch;
 #[cfg(test)]
 #[path = "support/trace_files.rs"]
 mod trace_files;
@@ -39,8 +40,11 @@ fn run_binary(root: &Path, arguments: &[&str]) -> io::Result<Output> {
     binary(root).args(arguments).output()
 }
 
-fn short_scratch_root(test_name: &str) -> PathBuf {
-    PathBuf::from(SHORT_SCRATCH_PARENT).join(format!("eo-{}-{test_name}", std::process::id()))
+fn short_scratch_root(test_name: &str) -> io::Result<PathBuf> {
+    common::fresh_directory::fresh_directory_in(
+        Path::new(SHORT_SCRATCH_PARENT),
+        &format!("eo-{}-{test_name}", std::process::id()),
+    )
 }
 
 fn create_network(root: &Path) -> io::Result<Output> {
@@ -136,8 +140,7 @@ fn binary_tail_runs_until_interrupted_then_exits_zero_of_spec_3_13() {
 
 #[test]
 fn binary_test_send_creates_the_operator_card_and_reports_an_unknown_handle_of_spec_3_13() {
-    let root = short_scratch_root("test_send");
-    fs::create_dir_all(&root).unwrap();
+    let root = short_scratch_root("test_send").unwrap();
     assert_eq!(create_network(&root).unwrap().status.code(), Some(0));
 
     let output = run_binary(&root, &["test-send", NETWORK, HANDLE, BODY]).unwrap();
@@ -157,13 +160,12 @@ fn binary_test_send_creates_the_operator_card_and_reports_an_unknown_handle_of_s
             .unwrap()
             .starts_with("operator\t")
     );
-    drop(fs::remove_dir_all(&root));
+    remove_scratch::remove_scratch(&root).unwrap();
 }
 
 /// Starts the command on a fresh network, sends it SIGINT once it has run a while, and says how it ended, its own status when it ended first, none when it outlived the bound.
 fn status_after_sigint(test_name: &str, arguments: &[&str]) -> io::Result<Option<ExitStatus>> {
-    let root = short_scratch_root(test_name);
-    fs::create_dir_all(&root)?;
+    let root = short_scratch_root(test_name)?;
     let created = create_network(&root)?;
     if !created.status.success() {
         return Err(io::Error::other(
@@ -200,7 +202,7 @@ fn status_after_sigint(test_name: &str, arguments: &[&str]) -> io::Result<Option
         }
         sleep(EXIT_POLL_INTERVAL);
     };
-    drop(fs::remove_dir_all(&root));
+    remove_scratch::remove_scratch(&root)?;
     Ok(ended)
 }
 

@@ -1,4 +1,8 @@
 #[cfg(test)]
+#[path = "common/remove_scratch.rs"]
+mod remove_scratch;
+
+#[cfg(test)]
 #[path = "support/raw_iroh_lines_trace.rs"]
 mod raw_iroh_lines_trace;
 
@@ -18,6 +22,7 @@ mod raw_iroh_lines_rollover {
 
     use super::raw_iroh_lines_header::{header, raw_file_opened_line};
     use super::raw_iroh_lines_trace::{frozen_clocks, scratch_trace_directory, started};
+    use super::remove_scratch::remove_scratch;
 
     const SPEC_IROH_LINE: &str = "iroh_line";
     const DIRECT_ADDRS_LINE_AFTER_HEADER: &str = ",\"target\":\"iroh::_events::direct_addrs\",\"level\":\"DEBUG\",\"message\":\"a line\",\"fields\":{}}\n";
@@ -69,6 +74,6 @@ mod raw_iroh_lines_rollover {
             fs::read_to_string(raw).unwrap(),
             format!("{}{}", raw_file_opened_line(), direct_addrs_line(3))
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 }

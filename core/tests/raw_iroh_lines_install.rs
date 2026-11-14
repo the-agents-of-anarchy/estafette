@@ -1,3 +1,10 @@
+#[cfg(test)]
+#[path = "common/fresh_directory.rs"]
+mod fresh_directory;
+#[cfg(test)]
+#[path = "common/remove_scratch.rs"]
+mod remove_scratch;
+
 /// `spec/observability.md` decision 7 through the install the composition root calls, in a process of its own.
 #[cfg(test)]
 mod raw_iroh_lines_install {
@@ -11,6 +18,9 @@ mod raw_iroh_lines_install {
     use estafette::trace::{
         RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceEffects, TraceStop,
     };
+
+    use super::fresh_directory::fresh_directory_in;
+    use super::remove_scratch::remove_scratch;
     use serde_json::Value;
 
     const RUN_BYTES: [u8; RUN_ID_BYTES] = [0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78];
@@ -20,12 +30,11 @@ mod raw_iroh_lines_install {
 
     /// A fresh scratch root for the test and the trace directory under its data home.
     fn scratch_trace_directory() -> (PathBuf, TraceDirectory) {
-        let root = std::env::temp_dir().join(format!(
-            "estafette-raw-iroh-lines-install-{}",
-            std::process::id()
-        ));
-        drop(fs::remove_dir_all(&root));
-        fs::create_dir_all(&root).unwrap();
+        let root = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-raw-iroh-lines-install-{}", std::process::id()),
+        )
+        .unwrap();
         let data_home = root.join("data");
         let directory = TraceDirectory::resolve(&move |name: &str| {
             (name == DATA_HOME_VARIABLE).then(|| OsString::from(&data_home))
@@ -72,6 +81,6 @@ mod raw_iroh_lines_install {
         assert_eq!(iroh_line["event"], SPEC_IROH_LINE);
         assert_eq!(iroh_line["target"], "iroh::_events::direct_addrs");
         assert_eq!(iroh_line["fields"]["addrs"], "a marker");
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 }
