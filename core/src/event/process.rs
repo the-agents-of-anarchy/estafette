@@ -6,7 +6,7 @@ use iroh::endpoint::BindError;
 use serde_json::Value;
 use tokio::task::JoinError;
 
-use super::{AnsweredFailure, AreaEvent, CODE_FIELD, Event, EventFields, answered};
+use super::{AnsweredFailure, AreaEvent, Event, EventFields, answered};
 use crate::dirs::TraceFileKind;
 use crate::errors::{ErrorCode, ExitStatus};
 use crate::handle::Handle;
@@ -83,7 +83,7 @@ pub enum ProcessEvent {
     /// The session claimed the card, and the node assigned itself the handle.
     Claimed(ClaimedCard),
     /// Init refused the claim with the code, whether its checks or the session refused it.
-    ClaimRefused { code: &'static str },
+    ClaimRefused { code: ErrorCode },
     /// Standard input ended, which starts Stopping.
     InputEnded,
     /// A signal arrived: the first starts Stopping, a second exits at once.
@@ -295,7 +295,7 @@ impl AreaEvent for ProcessEvent {
                 (CARD_FIELD, Value::from(claimed.card.as_str())),
                 (HANDLE_FIELD, Value::from(claimed.handle.as_str())),
             ],
-            Self::ClaimRefused { code } => vec![(CODE_FIELD, Value::from(*code))],
+            Self::ClaimRefused { code } => answered(code),
             Self::ConfigurationRewriteDecided(rewrite) => {
                 vec![(OUTCOME_FIELD, Value::from(rewrite.word()))]
             }
@@ -313,6 +313,7 @@ impl AreaEvent for ProcessEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::CODE_FIELD;
 
     #[test]
     fn observability_decision_6_a_panic_writes_the_file_and_line_of_the_source_location_it_was_built_from()
@@ -328,5 +329,15 @@ mod tests {
                 (LINE_FIELD, Value::from(location.line())),
             ]
         );
+    }
+
+    #[test]
+    fn observability_decision_9_a_refused_claim_holds_its_error_code_and_writes_it_as_its_code() {
+        let fields = Event::from(ProcessEvent::ClaimRefused {
+            code: ErrorCode::CardHeld,
+        })
+        .fields();
+
+        assert_eq!(fields, vec![(CODE_FIELD, Value::from("card_held"))]);
     }
 }

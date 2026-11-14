@@ -4,10 +4,10 @@ use rmcp::service::ServerInitializeError;
 use serde_json::Value;
 use tokio::task::JoinError;
 
-use super::{AnsweredFailure, AreaEvent, CODE_FIELD, Event, EventFields, answered};
+use super::{AnsweredFailure, AreaEvent, Event, EventFields, answered};
 use crate::errors::ErrorCode;
 use crate::handle::LocalHandle;
-use crate::mcp::RegistryFailure;
+use crate::mcp::{RegistryFailure, ToolName};
 use crate::net::direct::message_id_text;
 use crate::node::{Delivery, Undelivered};
 use crate::wire::MessageId;
@@ -55,8 +55,8 @@ pub enum InboxEvent {
     ClientGone { clients: usize },
     /// A tool call was answered: the tool by name, none for a name no tool has, and the error code it failed with, none when it answered ok.
     ToolAnswered {
-        tool: Option<&'static str>,
-        code: Option<&'static str>,
+        tool: Option<ToolName>,
+        code: Option<ErrorCode>,
     },
     /// One send of a send or broadcast call was answered: the handle it went to, none for a `to` that is no handle, and the id of the message it delivered or why it was not delivered.
     SendAnswered {
@@ -96,15 +96,15 @@ impl From<ListCardsFailure> for Event {
 }
 
 impl InboxEvent {
-    /// A tool call answered with the outcome, the tool named by the name a client calls it by.
+    /// A call of the tool, none for a name no tool has, answered with the outcome.
     #[must_use]
     pub fn tool_answered<Answer>(
-        tool: Option<&'static str>,
+        tool: Option<ToolName>,
         outcome: &Result<Answer, ErrorCode>,
     ) -> Self {
         Self::ToolAnswered {
             tool,
-            code: outcome.as_ref().err().map(ErrorCode::code),
+            code: outcome.as_ref().err().cloned(),
         }
     }
 
@@ -132,14 +132,15 @@ impl InboxEvent {
 }
 
 /// Whether a tool or a send answered ok or failed, and with which code.
-fn outcome_fields(code: Option<&'static str>) -> EventFields {
+fn outcome_fields(code: Option<&ErrorCode>) -> EventFields {
     code.map_or_else(
         || vec![(OUTCOME_FIELD, Value::from(OK_OUTCOME))],
         |code| {
-            vec![
-                (OUTCOME_FIELD, Value::from(ERROR_OUTCOME)),
-                (CODE_FIELD, Value::from(code)),
+            [
+                vec![(OUTCOME_FIELD, Value::from(ERROR_OUTCOME))],
+                answered(code),
             ]
+            .concat()
         },
     )
 }
@@ -223,14 +224,17 @@ impl AreaEvent for InboxEvent {
                 vec![(CLIENTS_FIELD, Value::from(*clients))]
             }
             Self::ToolAnswered { tool, code } => [
-                vec![(TOOL_FIELD, tool.map_or(Value::Null, Value::from))],
-                outcome_fields(*code),
+                vec![(
+                    TOOL_FIELD,
+                    tool.map_or(Value::Null, |tool| Value::from(tool.name())),
+                )],
+                outcome_fields(code.as_ref()),
             ]
             .concat(),
             Self::SendAnswered { to, outcome } => {
                 let (code, message) = match outcome {
                     Ok(message) => (None, Some(*message)),
-                    Err(undelivered) => (Some(undelivered.code.code()), undelivered.id),
+                    Err(undelivered) => (Some(&undelivered.code), undelivered.id),
                 };
                 [
                     vec![(
@@ -264,6 +268,7 @@ fn handshake_failure_reason(failure: &ServerInitializeError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::CODE_FIELD;
 
     const MESSAGE_ID_TEXT: &str = "0193a5d2-7c41-7e0a-9b3f-4d5e6f708192";
     const FRAME: u64 = 7;
@@ -301,6 +306,25 @@ mod tests {
                 (TO_FIELD, Value::Null),
                 (OUTCOME_FIELD, Value::from(OK_OUTCOME)),
                 (MESSAGE_FIELD, Value::from(MESSAGE_ID_TEXT)),
+            ]
+        );
+    }
+
+    #[test]
+    fn observability_decision_9_a_tool_call_holds_its_tool_and_its_error_code_and_writes_their_names()
+     {
+        let fields = InboxEvent::ToolAnswered {
+            tool: Some(ToolName::Broadcast),
+            code: Some(ErrorCode::NotClaimed),
+        }
+        .fields();
+
+        assert_eq!(
+            fields,
+            vec![
+                (TOOL_FIELD, Value::from("broadcast")),
+                (OUTCOME_FIELD, Value::from(ERROR_OUTCOME)),
+                (CODE_FIELD, Value::from("not_claimed")),
             ]
         );
     }

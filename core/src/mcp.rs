@@ -481,7 +481,7 @@ impl ServerHandler for Server {
         let outcome = self
             .answer(tool, request.arguments.unwrap_or_default())
             .await;
-        (self.effects.report)(InboxEvent::tool_answered(tool.map(ToolName::name), &outcome).into());
+        (self.effects.report)(InboxEvent::tool_answered(tool, &outcome).into());
         let envelope = self
             .envelope_of(outcome)
             .map_err(|error| unserializable(&error))?;
@@ -811,7 +811,7 @@ impl AnsweredFailure for InitRefusal {
 impl From<InitRefusal> for Event {
     fn from(refusal: InitRefusal) -> Self {
         match refusal {
-            InitRefusal::Refused(code) => ProcessEvent::ClaimRefused { code: code.code() }.into(),
+            InitRefusal::Refused(code) => ProcessEvent::ClaimRefused { code }.into(),
             InitRefusal::Failed(failure) => failure.into(),
         }
     }
@@ -859,7 +859,7 @@ fn present_peers(peers: &[Peer]) -> ToolResult {
 
 /// The six tools of spec 3.10, the same before and after init.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ToolName {
+pub enum ToolName {
     ListCards,
     Init,
     Peers,
@@ -884,7 +884,7 @@ impl ToolName {
     }
 
     /// The name a client calls the tool by.
-    const fn name(self) -> &'static str {
+    pub(crate) const fn name(self) -> &'static str {
         match self {
             Self::ListCards => "list_cards",
             Self::Init => "init",
