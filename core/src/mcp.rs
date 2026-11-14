@@ -1024,7 +1024,7 @@ mod tests {
     use crate::keys::render_public_key;
     use crate::node::RuntimeShutdown;
     use crate::sidecar;
-    use crate::test_waits::found_within;
+    use crate::test_waits::{RecordedEvent, found_within, recorded_events};
 
     const NETWORK: &str = "acme";
     const NETWORK_SECRET_BYTE: u8 = 44;
@@ -1483,8 +1483,6 @@ mod tests {
         json!({ "card": null, "handle": null, "status": "unclaimed" })
     }
 
-    type RecordedEvent = (&'static str, crate::event::EventFields);
-
     /// A run record handing the name and fields of each event of the name to the receiver, and that receiver.
     fn recording_events_named(
         name: &'static str,
@@ -1627,7 +1625,7 @@ mod tests {
     async fn observability_decisions_9_and_13_a_server_not_yet_claimed_records_a_snapshot_of_no_counters_every_60_s()
      {
         let machine = Machine::new("unclaimed-counters");
-        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let (record, mut recorded) = recorded_events();
         let mut client = start_server(
             &machine,
             ServerPlan {
@@ -1655,7 +1653,7 @@ mod tests {
         let _slot = node_slot().await;
         let machine = Machine::new("claimed-counters");
         machine.create_card("amy-card", "amy", AMY_SEED);
-        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let (record, mut recorded) = recorded_events();
         let mut client = start_server(
             &machine,
             ServerPlan {

@@ -2003,7 +2003,7 @@ pub(crate) mod tests {
     const SALT_BYTE: u8 = 0x5a;
     const SPEC_SUPERSEDED_CLOSE_CODE: u64 = 410;
 
-    pub use crate::test_waits::{RecordedEvent, next_recorded, recorded_events};
+    use crate::test_waits::{RecordedEvent, next_recorded, recorded_events};
 
     /// Every event the run record has handed the receiver so far, in order.
     pub fn recorded_so_far(
