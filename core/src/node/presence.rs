@@ -1191,8 +1191,11 @@ impl PresenceLoop {
         admission: Result<(), PayloadDropRule>,
         now_ms: u64,
     ) {
-        let record = signer_admission_record(&self.state.table(), facts, &admission, now_ms);
-        (self.report)(record);
+        (self.report)(named_admission_record(
+            Some((&self.state.rows, now_ms)),
+            facts,
+            &admission,
+        ));
     }
 
     /// Applies the effects the direct server handed over and the answer of each request this node sent.
