@@ -298,11 +298,11 @@ mod tests {
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
-        FIRST_SEED, HOST_RELAY, HOST_SEED, INTRODUCE_ROUND_TRIP, MARKER_SEED, MOVED_HOST_RELAY,
-        Member, MemberPlan, PAYLOAD_WAIT, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch,
-        WITNESS_HANDLE, WITNESS_SEED, Witness, bind, card, host_saved_within, infrastructure_of,
-        keys, listed_within, marker_reaches, relay_map_holds, saved_host, start_pair,
-        start_witnessed, status_within, wall_clock_ms,
+        FIRST_SEED, HOST_RELAY, HOST_SEED, MARKER_SEED, MOVED_HOST_RELAY, Member, MemberPlan,
+        PAYLOAD_WAIT, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, WITNESS_HANDLE,
+        WITNESS_SEED, Witness, bind, card, host_saved_within, infrastructure_of, keys,
+        listed_within, marker_reaches, saved_host, start_pair, start_witnessed, status_within,
+        wall_clock_ms,
     };
     use crate::peers::Status;
     use crate::sidecar;
@@ -316,10 +316,15 @@ mod tests {
     const TEST_DEPARTURE_WAIT: Duration = Duration::from_millis(2500);
     const LONG_DEPARTURE_WAIT: Duration = Duration::from_secs(60);
     const SPEC_GONE_WITHIN: Duration = Duration::from_millis(1000);
-    const STOPPING_SETTLED: Duration = Duration::from_millis(300);
+    const STOPPING_STEP_RECORDED_WITHIN: Duration = Duration::from_millis(300);
     const EXITS_AT_ONCE_WITHIN: Duration = Duration::from_millis(1000);
     const SHORT_DEPARTURE_WAIT: Duration = Duration::from_millis(800);
     const POLL: Duration = Duration::from_millis(20);
+    const DEPARTURE_HANDED_OVER: &str = "process.departure_handed_over";
+    const LOCK_RELEASED: &str = "process.lock_released";
+    const HELD_CONNECTIONS_DROPPED: &str = "process.held_connections_dropped";
+    const PAYLOAD_ACCEPTED: &str = "gossip.payload_accepted";
+    const TS_FIELD: &str = "ts";
     const SENT_AFTER_EXIT: &str = "a message to a stopped member";
     const SENT_WHILE_STOPPING: &str = "a message to a stopping member";
     const PROBE_NONCE: Nonce = [9; 16];
@@ -369,24 +374,9 @@ mod tests {
         sidecar_path: PathBuf,
     }
 
+    /// The pair started and the second member's card claimed in a session that records nothing, once the first lists the second.
     async fn claimed_second(scratch: &Scratch) -> ClaimedSecond {
-        let (first, second) = start_pair(scratch).await;
-        listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
-            .await
-            .unwrap();
-        tokio::time::sleep(INTRODUCE_ROUND_TRIP).await;
-        let (sidecar_path, lock) = scratch.locked_card(SECOND_SEED);
-        let session = Arc::new(Session::new(record_dropping_every_event()));
-        session
-            .claim(card_named(SECOND_CARD), second.node, lock)
-            .unwrap();
-        ClaimedSecond {
-            first,
-            session,
-            endpoint: second.endpoint,
-            inbox_path: second.inbox_path,
-            sidecar_path,
-        }
+        claimed_second_recording_to(scratch, record_dropping_every_event()).await
     }
 
     /// The pair started and the second member's card claimed in a session recording to the run record, once the first lists the second.
@@ -394,7 +384,7 @@ mod tests {
         let (first, second) = start_pair(scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the first lists the second within the observer wait");
         let (sidecar_path, lock) = scratch.locked_card(SECOND_SEED);
         let session = Arc::new(Session::new(record));
         session
@@ -828,11 +818,18 @@ mod tests {
     #[tokio::test]
     async fn spec_3_9_a_second_signal_exits_at_once_whatever_the_departure_wait() {
         let scratch = Scratch::new("second-signal").await;
-        let second = claimed_second(&scratch).await;
+        let (record, mut recorded) = recording_events();
+        let second = claimed_second_recording_to(&scratch, record).await;
         let stopping = run(&second.session, LONG_DEPARTURE_WAIT);
 
         stopping.signals.send(ShutdownSignal::Interrupt).unwrap();
-        tokio::time::sleep(STOPPING_SETTLED).await;
+        recorded_named(
+            &mut recorded,
+            HELD_CONNECTIONS_DROPPED,
+            |_fields| true,
+            STOPPING_STEP_RECORDED_WITHIN,
+        )
+        .await;
         stopping.signals.send(ShutdownSignal::Hangup).unwrap();
 
         let exit = tokio::time::timeout(EXITS_AT_ONCE_WITHIN, stopping.exit)
@@ -875,7 +872,8 @@ mod tests {
     async fn spec_3_8_while_stopping_a_message_is_refused_and_a_probe_and_an_introduce_go_unanswered()
      {
         let scratch = Scratch::new("stopping-answers").await;
-        let second = claimed_second(&scratch).await;
+        let (record, mut recorded) = recording_events();
+        let second = claimed_second_recording_to(&scratch, record).await;
         let caller = bind(WITNESS_SEED).await;
         caller.replace_address(second.endpoint.addr());
         let client = DirectClient::new(
@@ -899,7 +897,13 @@ mod tests {
         let stopping = run(&second.session, TEST_DEPARTURE_WAIT);
 
         stopping.input_ended.send(()).unwrap();
-        tokio::time::sleep(STOPPING_SETTLED).await;
+        recorded_named(
+            &mut recorded,
+            DEPARTURE_HANDED_OVER,
+            |_fields| true,
+            STOPPING_STEP_RECORDED_WITHIN,
+        )
+        .await;
 
         assert_eq!(
             second
@@ -925,19 +929,21 @@ mod tests {
     #[tokio::test]
     async fn spec_3_8_the_sidecar_lock_is_released_while_the_departure_wait_runs() {
         let scratch = Scratch::new("lock-released").await;
-        let second = claimed_second(&scratch).await;
+        let (record, mut recorded) = recording_events();
+        let second = claimed_second_recording_to(&scratch, record).await;
         assert!(sidecar::is_held(&second.sidecar_path).unwrap());
         let stopping = run(&second.session, TEST_DEPARTURE_WAIT);
 
         stopping.input_ended.send(()).unwrap();
-        tokio::time::timeout(STOPPING_SETTLED, async {
-            while sidecar::is_held(&second.sidecar_path).unwrap() {
-                tokio::time::sleep(POLL).await;
-            }
-        })
-        .await
-        .unwrap();
+        recorded_named(
+            &mut recorded,
+            LOCK_RELEASED,
+            |_fields| true,
+            STOPPING_STEP_RECORDED_WITHIN,
+        )
+        .await;
 
+        assert!(!sidecar::is_held(&second.sidecar_path).unwrap());
         assert!(!stopping.exit.is_finished());
         sidecar::claim(
             &second.sidecar_path,
@@ -952,10 +958,12 @@ mod tests {
     async fn spec_3_3_stopping_rewrites_the_configuration_when_a_held_record_is_newer_than_the_file()
      {
         let scratch = Scratch::new("config-on-stop").await;
+        let (node_record, mut node_events) = recording_events();
         let (member, witness) = start_witnessed(
             &scratch,
             MemberPlan::new(FIRST_SEED, SECOND_HANDLE, FIRST_MEMBER_PUBLIC)
-                .with_hosts(&[HOST_SEED]),
+                .with_hosts(&[HOST_SEED])
+                .with_report(node_record),
             None,
         )
         .await;
@@ -971,19 +979,20 @@ mod tests {
                 infrastructure_of(HOST_SEED, HOST_RELAY, record_ts),
             )
             .await;
+        let moved_record_ts = record_ts + 1;
         witness
             .broadcast_as(
                 HOST_SEED,
-                infrastructure_of(HOST_SEED, MOVED_HOST_RELAY, record_ts + 1),
+                infrastructure_of(HOST_SEED, MOVED_HOST_RELAY, moved_record_ts),
             )
             .await;
-        tokio::time::timeout(PAYLOAD_WAIT, async {
-            while !relay_map_holds(&member.endpoint, MOVED_HOST_RELAY).await {
-                tokio::time::sleep(POLL).await;
-            }
-        })
-        .await
-        .unwrap();
+        recorded_named(
+            &mut node_events,
+            PAYLOAD_ACCEPTED,
+            |fields| fields.contains(&(TS_FIELD, serde_json::Value::from(moved_record_ts))),
+            PAYLOAD_WAIT,
+        )
+        .await;
         let before_stop = saved_host(&member.config_path, HOST_SEED);
 
         let stopping = run(&session, TEST_DEPARTURE_WAIT);
@@ -993,7 +1002,7 @@ mod tests {
 
         assert_eq!(before_stop.and_then(|host| host.ts), None);
         let saved = after_stop.unwrap();
-        assert_eq!(saved.ts, Some(record_ts + 1));
+        assert_eq!(saved.ts, Some(moved_record_ts));
         assert!(matches!(saved.origin, HostOrigin::Configured));
         drop(witness);
         drop(scratch);
@@ -1059,8 +1068,8 @@ mod tests {
                 .await;
             recorded_named(
                 &mut node_events,
-                "gossip.payload_accepted",
-                |fields| fields.contains(&("ts", serde_json::Value::from(record_ts))),
+                PAYLOAD_ACCEPTED,
+                |fields| fields.contains(&(TS_FIELD, serde_json::Value::from(record_ts))),
                 PAYLOAD_WAIT,
             )
             .await;
@@ -1150,13 +1159,10 @@ mod tests {
         session
             .claim(card_named(FIRST_CARD), member.node, lock)
             .unwrap();
-        tokio::time::timeout(CONNECTION_WAIT, async {
-            while witness.accepted.lock().unwrap().is_empty() {
-                tokio::time::sleep(POLL).await;
-            }
-        })
-        .await
-        .unwrap();
+        witness
+            .first_introduce_from(SECOND_SEED, CONNECTION_WAIT)
+            .await
+            .expect("the member introduces itself to the witness over a connection it holds");
         let held: Vec<_> = witness.accepted.lock().unwrap().clone();
         assert!(
             held.iter()
@@ -1167,15 +1173,14 @@ mod tests {
         stopping.input_ended.send(()).unwrap();
 
         tokio::time::timeout(CONNECTIONS_CLOSED_WITHIN, async {
-            while held
-                .iter()
-                .any(|connection| connection.close_reason().is_none())
-            {
-                tokio::time::sleep(POLL).await;
+            for connection in &held {
+                connection.closed().await;
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_elapsed| {
+            panic!("the witness's connections not closed within {CONNECTIONS_CLOSED_WITHIN:?}")
+        });
         drop(scratch);
     }
 
@@ -1207,21 +1212,31 @@ mod tests {
     #[tokio::test]
     async fn spec_3_8_a_stopping_node_introduces_itself_to_no_one() {
         let scratch = Scratch::new("no-introduce").await;
-        let second = claimed_second(&scratch).await;
+        let (record, mut recorded) = recording_events();
+        let second = claimed_second_recording_to(&scratch, record).await;
         let stopping = run(&second.session, TEST_DEPARTURE_WAIT);
         stopping.input_ended.send(()).unwrap();
-        tokio::time::sleep(STOPPING_SETTLED).await;
+        recorded_named(
+            &mut recorded,
+            DEPARTURE_HANDED_OVER,
+            |_fields| true,
+            STOPPING_STEP_RECORDED_WITHIN,
+        )
+        .await;
 
         let witness =
             Witness::joined_through(WITNESS_SEED, Some(WITNESS_HANDLE), &second.endpoint).await;
-        tokio::time::sleep(NOTHING_MORE_WITHIN).await;
 
+        witness
+            .first_introduce_from(SECOND_SEED, NOTHING_MORE_WITHIN)
+            .await;
         assert!(
             !witness
                 .introducers
                 .lock()
                 .unwrap()
-                .contains(&card(SECOND_SEED))
+                .contains(&card(SECOND_SEED)),
+            "the stopping member introduced itself to the witness"
         );
         drop(scratch);
     }
@@ -1257,9 +1272,18 @@ mod tests {
         let _attaching_client = tokio::net::UnixStream::connect(&second.inbox_path)
             .await
             .unwrap();
-        tokio::time::sleep(NOTHING_MORE_WITHIN).await;
 
-        assert!(second_gone_at_first_within(&second.first, Duration::ZERO).await);
+        assert!(
+            status_within(
+                &second.first,
+                SECOND_SEED,
+                |status| !matches!(status, Status::Gone { .. }),
+                NOTHING_MORE_WITHIN,
+            )
+            .await
+            .is_none(),
+            "the first listed the departed second as other than gone"
+        );
         drop(scratch);
     }
 }
