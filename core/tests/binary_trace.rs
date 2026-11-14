@@ -66,6 +66,17 @@ mod observability {
     const FIRST_TOOL_CALL_ID: usize = 2;
     const UNREADABLE_CARDS_DIRECTORY: &str = "cards-is-a-file";
     const COMMAND_FAILED_EVENT: &str = "process.command_failed";
+    const HANDSHAKE_FAILED_EVENT: &str = "tool.handshake_failed";
+    const EXITED_EVENT: &str = "process.exited";
+    /// The last events of a run whose command failed: the failure, then the exit it ends with.
+    const LAST_EVENTS_OF_A_FAILED_COMMAND: [&str; 2] = [COMMAND_FAILED_EVENT, EXITED_EVENT];
+    /// The events an `mcp` run whose first input is no JSON writes, in order: its start, the handshake that failed, the end of input and its exit.
+    const EVENTS_OF_AN_MCP_RUN_WITH_NO_HANDSHAKE: [&str; 4] = [
+        "process.started",
+        HANDSHAKE_FAILED_EVENT,
+        "process.input_ended",
+        EXITED_EVENT,
+    ];
     const RAW_FILE_OPENED_EVENT: &str = "raw_file_opened";
     const INITIALIZED_NOTIFICATION: &str =
         "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
@@ -314,7 +325,18 @@ mod observability {
         let [mcp_lines] = mcp_lines.as_slice() else {
             panic!("one mcp run: {runs:?}");
         };
-        let failed = test_send_lines.last().unwrap();
+        let test_send_events: Vec<&str> = test_send_lines
+            .iter()
+            .map(|line| line.event.as_str())
+            .collect();
+        let mcp_events: Vec<&str> = mcp_lines.iter().map(|line| line.event.as_str()).collect();
+        assert!(
+            test_send_events.ends_with(&LAST_EVENTS_OF_A_FAILED_COMMAND),
+            "{test_send_events:?}"
+        );
+        assert_eq!(mcp_events, EVENTS_OF_AN_MCP_RUN_WITH_NO_HANDSHAKE);
+        let failed =
+            &test_send_lines[test_send_lines.len() - LAST_EVENTS_OF_A_FAILED_COMMAND.len()];
         assert_eq!(
             failed.keys().collect::<Vec<_>>(),
             ["v", "run", "n", "mono_ms", "wall_ms", "node", "event"]
@@ -323,12 +345,15 @@ mod observability {
             failed.node.as_deref(),
             operator_id.get(..SPEC_NODE_HEX_CHARS)
         );
-        let handshake_failed = mcp_lines.last().unwrap();
+        let handshake_failed = &mcp_lines[EVENTS_OF_AN_MCP_RUN_WITH_NO_HANDSHAKE
+            .iter()
+            .position(|event| *event == HANDSHAKE_FAILED_EVENT)
+            .unwrap()];
         assert_eq!(
             handshake_failed.keys().collect::<Vec<_>>(),
             ["v", "run", "n", "mono_ms", "wall_ms", "event"]
         );
-        assert_eq!(handshake_failed.event, "tool.handshake_failed");
+        assert_eq!(handshake_failed.event, HANDSHAKE_FAILED_EVENT);
         for line in test_send_lines.iter().chain(mcp_lines) {
             assert_eq!(
                 line.keys()
@@ -670,9 +695,9 @@ mod observability {
             "the stopped process left its events file sized ahead of the line of its last event"
         );
         let lines = stopped_trace_lines_of(&events);
-        assert_eq!(
-            lines.last().map(|line| line.event.as_str()),
-            Some(COMMAND_FAILED_EVENT),
+        let events_written: Vec<&str> = lines.iter().map(|line| line.event.as_str()).collect();
+        assert!(
+            events_written.ends_with(&LAST_EVENTS_OF_A_FAILED_COMMAND),
             "the last event of the stopped process is not the last line of its events file: {lines:?}"
         );
         remove_scratch(&root).unwrap();

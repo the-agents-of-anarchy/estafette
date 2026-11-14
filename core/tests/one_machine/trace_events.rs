@@ -16,6 +16,13 @@ use crate::trace_reader::{NO_EVENT_RECORDED, events_lines_in};
 
 const MEMBERS_STARTED: u32 = 2;
 const HANDSHAKE_FAILED_EVENT: &str = "tool.handshake_failed";
+/// The events a member whose input ends before any MCP handshake writes, in order: its start, the handshake that failed, the end of input and its exit.
+const EVENTS_OF_A_MEMBER_WITH_NO_HANDSHAKE: [&str; 4] = [
+    "process.started",
+    HANDSHAKE_FAILED_EVENT,
+    "process.input_ended",
+    "process.exited",
+];
 const COMMAND_FAILED_EVENT: &str = "process.command_failed";
 const NETWORK_CREATED_EVENT: &str = "process.network_created";
 const EVENT_BOUND: Duration = Duration::from_secs(30);
@@ -94,7 +101,7 @@ fn observability_decision_16_each_member_starts_with_the_default_and_writes_its_
     for number in 0..MEMBERS_STARTED {
         assert_eq!(
             events_of_member(number),
-            [HANDSHAKE_FAILED_EVENT],
+            EVENTS_OF_A_MEMBER_WITH_NO_HANDSHAKE,
             "member {number}"
         );
     }
