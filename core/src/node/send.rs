@@ -229,7 +229,6 @@ mod tests {
     };
     use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
     use crate::node::addresses::wire_addr;
-    use crate::node::presence::DirectOutcome;
     use crate::node::presence::tests::{
         DUPLICATE_KEY_PUBLIC, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTEGER_PAST_64_BITS_PUBLIC,
         INTRODUCE_ROUND_TRIP, Member, MemberPlan, PROBE_NONCE, SECOND_HANDLE, SECOND_PUBLIC,
@@ -238,6 +237,7 @@ mod tests {
         message_to, settled_direct_answers, start_members, start_members_reaching, start_pair,
         start_third_through_second, wall_clock_ms,
     };
+    use crate::node::presence::{DirectOutcome, RequestCause};
     use crate::payload::{PayloadError, open_request, seal_response};
     use crate::peers::Status;
     use crate::test_waits::found_within;
@@ -399,6 +399,10 @@ mod tests {
             crate::net::direct::tests::unrecorded_register(),
         );
         let introduction = message_to(FIRST_SEED, WITNESS_HANDLE);
+        let introduced_by = RequestCause::Message {
+            sender: card(WITNESS_SEED),
+            id: introduction.id,
+        };
         let introduce_answers_before =
             settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
         assert!(
@@ -419,6 +423,7 @@ mod tests {
             WITNESS_SEED,
             RequestSummary::Introduce,
             introduce_answers_before,
+            introduced_by,
             introduce_answered,
             INTRODUCE_ROUND_TRIP,
         )

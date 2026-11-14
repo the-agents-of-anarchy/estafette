@@ -329,19 +329,42 @@ pub struct PeerRows {
     direct_exchanges: Mutex<Vec<DirectExchange>>,
 }
 
-/// A direct request a node made, or the answer to one that it applied, as a test of the node reads them.
+/// A direct request a node made, or the answer to one that it applied, each with the cause of the request, as a test of the node reads them.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DirectExchange {
     Made {
         card: wire::PublicKey,
         kind: crate::net::direct::RequestSummary,
+        cause: Option<RequestCause>,
     },
     Answered {
         card: wire::PublicKey,
         kind: crate::net::direct::RequestSummary,
         outcome: DirectOutcome,
+        cause: Option<RequestCause>,
     },
+}
+
+/// What the presence loop was taking when it made a direct request.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestCause {
+    NeighborUp(wire::PublicKey),
+    NeighborDown(wire::PublicKey),
+    Presence(wire::PublicKey),
+    Departure(wire::PublicKey),
+    Message {
+        sender: wire::PublicKey,
+        id: wire::MessageId,
+    },
+    Introduce(wire::PublicKey),
+    SendFailed(wire::PublicKey),
+    Answer {
+        card: wire::PublicKey,
+        kind: crate::net::direct::RequestSummary,
+    },
+    HandleAssigned,
 }
 
 /// Whether a direct request was acknowledged or failed.
@@ -602,7 +625,11 @@ impl NodeState {
         let effects = self
             .rows
             .change(|table| table.direct_contact_failed(card, now_ms, ContactFailed::Send));
-        self.hand_to_loop(LoopEvent::Effects(effects));
+        self.hand_to_loop(LoopEvent::Effects {
+            effects,
+            #[cfg(test)]
+            cause: RequestCause::SendFailed(card),
+        });
     }
 
     /// Sets the peer Online after a send to it was acknowledged, and wakes the presence loop, since an Online peer lets this member rebind.
@@ -647,7 +674,14 @@ impl NodeState {
                 changes,
             }
         });
-        self.hand_to_loop(LoopEvent::Effects(effects));
+        self.hand_to_loop(LoopEvent::Effects {
+            effects,
+            #[cfg(test)]
+            cause: RequestCause::Message {
+                sender,
+                id: message.id,
+            },
+        });
         from
     }
 }
@@ -684,7 +718,11 @@ impl DirectHost for Arc<NodeState> {
         let effects = self
             .rows
             .change(|table| table.receive_introduce(sender, &introduce, now_ms));
-        self.hand_to_loop(LoopEvent::Effects(effects));
+        self.hand_to_loop(LoopEvent::Effects {
+            effects,
+            #[cfg(test)]
+            cause: RequestCause::Introduce(sender),
+        });
         acknowledgement_of(self.introduction())
     }
 }
@@ -706,16 +744,72 @@ impl DirectRequester for Arc<NodeState> {
     }
 
     fn hand_answer(&self, answer: DirectAnswer) {
-        self.hand_to_loop(LoopEvent::Answered(answer));
+        self.hand_to_loop(LoopEvent::Answered {
+            answer,
+            #[cfg(test)]
+            cause: None,
+        });
+    }
+}
+
+/// The node's requester for the requests of one wake of its loop, handing each answer back with the cause of its request.
+#[cfg(test)]
+struct CausedRequests {
+    state: Arc<NodeState>,
+    cause: Option<RequestCause>,
+}
+
+#[cfg(test)]
+impl DirectHost for CausedRequests {
+    fn is_stopping(&self) -> bool {
+        self.state.is_stopping()
+    }
+
+    fn own_card(&self) -> Option<wire::PublicKey> {
+        self.state.own_card()
+    }
+
+    fn is_attached(&self) -> bool {
+        self.state.is_attached()
+    }
+
+    fn receive_message(&self, sender: wire::PublicKey, message: Message) -> bool {
+        self.state.receive_message(sender, message)
+    }
+
+    fn receive_introduce(&self, sender: wire::PublicKey, introduce: Introduce) -> IntroduceAck {
+        self.state.receive_introduce(sender, introduce)
+    }
+}
+
+#[cfg(test)]
+impl DirectRequester for CausedRequests {
+    fn introduction(&self) -> Introduce {
+        self.state.introduction()
+    }
+
+    fn hand_answer(&self, answer: DirectAnswer) {
+        self.state.hand_to_loop(LoopEvent::Answered {
+            answer,
+            cause: self.cause,
+        });
     }
 }
 
 /// What reaches the presence loop from the direct server and from the requests it spawned.
 enum LoopEvent {
     Depart,
-    Effects(Vec<Effect>),
+    Effects {
+        effects: Vec<Effect>,
+        #[cfg(test)]
+        cause: RequestCause,
+    },
     PeerReached,
-    Answered(DirectAnswer),
+    Answered {
+        answer: DirectAnswer,
+        #[cfg(test)]
+        cause: Option<RequestCause>,
+    },
 }
 
 /// A direct request a loop hands to a task, so no dial holds the loop.
@@ -727,17 +821,19 @@ pub enum DirectRequest {
 
 #[cfg(test)]
 impl DirectRequest {
-    /// The request as a test reads it once made, or none for a request that sends nothing.
-    fn made(&self) -> Option<DirectExchange> {
+    /// The request made for the cause as a test reads it, or none for a request that sends nothing.
+    fn made(&self, cause: Option<RequestCause>) -> Option<DirectExchange> {
         match self {
             Self::DropHeldConnection(_) => None,
             Self::SendIntroduce(card) => Some(DirectExchange::Made {
                 card: *card,
                 kind: crate::net::direct::RequestSummary::Introduce,
+                cause,
             }),
             Self::SendProbe(card, _nonce) => Some(DirectExchange::Made {
                 card: *card,
                 kind: crate::net::direct::RequestSummary::Probe,
+                cause,
             }),
         }
     }
@@ -756,19 +852,36 @@ pub enum DirectAnswer {
 }
 
 impl DirectAnswer {
-    /// The answer as a test reads it once applied: the card, the kind of request and whether it was acknowledged.
+    /// The answer to a request made for the cause as a test reads it once applied: the card, the kind of request and whether it was acknowledged.
     #[cfg(test)]
-    fn answered(&self) -> DirectExchange {
+    fn answered(&self, cause: Option<RequestCause>) -> DirectExchange {
         match self {
             Self::Introduce { card, answer } => DirectExchange::Answered {
                 card: *card,
                 kind: crate::net::direct::RequestSummary::Introduce,
                 outcome: DirectOutcome::of(answer),
+                cause,
             },
             Self::Probe { card, answer } => DirectExchange::Answered {
                 card: *card,
                 kind: crate::net::direct::RequestSummary::Probe,
                 outcome: DirectOutcome::of(answer),
+                cause,
+            },
+        }
+    }
+
+    /// The cause of the requests this answer calls for.
+    #[cfg(test)]
+    const fn as_cause(&self) -> RequestCause {
+        match self {
+            Self::Introduce { card, .. } => RequestCause::Answer {
+                card: *card,
+                kind: crate::net::direct::RequestSummary::Introduce,
+            },
+            Self::Probe { card, .. } => RequestCause::Answer {
+                card: *card,
+                kind: crate::net::direct::RequestSummary::Probe,
             },
         }
     }
@@ -986,6 +1099,8 @@ pub(super) struct PresenceLoop {
     pub(super) monotonic: MonotonicClock,
     pub(super) report: RunRecord,
     snapshot_due: Instant,
+    #[cfg(test)]
+    cause: Option<RequestCause>,
 }
 
 impl PresenceLoop {
@@ -1046,6 +1161,8 @@ impl PresenceLoop {
             monotonic: effects.monotonic,
             report: effects.report,
             snapshot_due: subscribed,
+            #[cfg(test)]
+            cause: None,
         };
         Ok((presence_loop, own_handle))
     }
@@ -1094,6 +1211,10 @@ impl PresenceLoop {
 
     /// Acts on one wake, stopping once the topic has closed or a rebind left no endpoint or topic.
     async fn take(&mut self, wake: Wake) -> ControlFlow<()> {
+        #[cfg(test)]
+        {
+            self.cause = None;
+        }
         match wake {
             Wake::Topic(None) => {
                 (self.report)(crate::event::GossipEvent::TopicClosed.into());
@@ -1133,11 +1254,19 @@ impl PresenceLoop {
             GossipEvent::Joined => self.take_joined().await,
             GossipEvent::JoinTimedOut => self.take_join_timeout().await,
             GossipEvent::NeighborUp(node) => {
+                #[cfg(test)]
+                {
+                    self.cause = Some(RequestCause::NeighborUp(*node.as_bytes()));
+                }
                 self.rebinding.neighbor_up(node);
                 let effects = self.state.rows.take_neighbor_up(node, now_ms);
                 self.perform(effects).await;
             }
             GossipEvent::NeighborDown(node) => {
+                #[cfg(test)]
+                {
+                    self.cause = Some(RequestCause::NeighborDown(*node.as_bytes()));
+                }
                 self.rebinding.neighbor_down(node);
                 let effects = self.state.rows.take_neighbor_down(node, now_ms);
                 self.perform(effects).await;
@@ -1179,6 +1308,10 @@ impl PresenceLoop {
 
     /// Moves init on by the event and does what that step asks: assigns the handle, announces, or both in that order, then sends the Introduces init held.
     async fn advance_init(&mut self, event: InitEvent) {
+        #[cfg(test)]
+        {
+            self.cause = Some(RequestCause::HandleAssigned);
+        }
         let (init, action) = std::mem::replace(&mut self.init, Init::Done).after(event);
         self.init = init;
         match action {
@@ -1198,15 +1331,30 @@ impl PresenceLoop {
 
     /// Introduces this node to the cards in their order, in one task.
     fn introduce_to(&self, cards: Vec<wire::PublicKey>) {
-        let introduces: Vec<DirectRequest> = cards
-            .into_iter()
-            .map(DirectRequest::SendIntroduce)
-            .collect();
+        self.send_requests(
+            cards
+                .into_iter()
+                .map(DirectRequest::SendIntroduce)
+                .collect(),
+        );
+    }
+
+    /// Sends the direct requests in their order, in one task.
+    fn send_requests(&self, requests: Vec<DirectRequest>) {
         #[cfg(test)]
-        self.state
-            .rows
-            .note_direct_exchanges(introduces.iter().filter_map(DirectRequest::made));
-        send_in_background(Arc::clone(&self.state), &self.client, introduces);
+        self.state.rows.note_direct_exchanges(
+            requests
+                .iter()
+                .filter_map(|request| request.made(self.cause)),
+        );
+        #[cfg(test)]
+        let requester = CausedRequests {
+            state: Arc::clone(&self.state),
+            cause: self.cause,
+        };
+        #[cfg(not(test))]
+        let requester = Arc::clone(&self.state);
+        send_in_background(requester, &self.client, requests);
     }
 
     /// Assigns this node's effective handle against the table and hands it to init.
@@ -1224,10 +1372,18 @@ impl PresenceLoop {
     async fn take_payload(&mut self, payload: OpenedPayload, now_ms: u64) {
         match payload {
             OpenedPayload::Presence(presence) => {
+                #[cfg(test)]
+                {
+                    self.cause = Some(RequestCause::Presence(presence.card));
+                }
                 let effects = self.state.rows.take_presence(&presence, now_ms);
                 self.perform(effects).await;
             }
             OpenedPayload::Departure(departure) => {
+                #[cfg(test)]
+                {
+                    self.cause = Some(RequestCause::Departure(departure.card));
+                }
                 let effects = self.state.rows.take_departure(&departure, now_ms);
                 self.perform(effects).await;
             }
@@ -1303,11 +1459,29 @@ impl PresenceLoop {
         let now_ms = self.state.now_ms();
         match event {
             LoopEvent::Depart => self.depart(now_ms).await,
-            LoopEvent::Effects(effects) => self.perform(effects).await,
-            LoopEvent::PeerReached => {}
-            LoopEvent::Answered(answer) => {
+            LoopEvent::Effects {
+                effects,
                 #[cfg(test)]
-                let answered = answer.answered();
+                cause,
+            } => {
+                #[cfg(test)]
+                {
+                    self.cause = Some(cause);
+                }
+                self.perform(effects).await;
+            }
+            LoopEvent::PeerReached => {}
+            LoopEvent::Answered {
+                answer,
+                #[cfg(test)]
+                cause,
+            } => {
+                #[cfg(test)]
+                let answered = answer.answered(cause);
+                #[cfg(test)]
+                {
+                    self.cause = Some(answer.as_cause());
+                }
                 if let Some(record) = answer.failure_record() {
                     (self.report)(record);
                 }
@@ -1344,11 +1518,7 @@ impl PresenceLoop {
                 }
             }
         }
-        #[cfg(test)]
-        self.state
-            .rows
-            .note_direct_exchanges(requests.iter().filter_map(DirectRequest::made));
-        send_in_background(Arc::clone(&self.state), &self.client, requests);
+        self.send_requests(requests);
     }
 
     /// Broadcasts the Departure, announces nothing after it, saves the known hosts when a record is newer than the file, and records what the save did.
@@ -2365,8 +2535,13 @@ pub(super) mod tests {
 
         let introduce_answers_before =
             settled_direct_answers(&first, SECOND_SEED, RequestSummary::Introduce).await;
+        let message = message_to(FIRST_SEED, SECOND_HANDLE);
+        let introduced_by = RequestCause::Message {
+            sender: card(SECOND_SEED),
+            id: message.id,
+        };
         let ack = sender
-            .send_message(first.endpoint.id(), message_to(FIRST_SEED, SECOND_HANDLE))
+            .send_message(first.endpoint.id(), message)
             .await
             .unwrap();
 
@@ -2387,6 +2562,7 @@ pub(super) mod tests {
             SECOND_SEED,
             RequestSummary::Introduce,
             introduce_answers_before,
+            introduced_by,
             DirectOutcome::Acknowledged,
             INTRODUCE_ROUND_TRIP,
         )
@@ -3682,6 +3858,7 @@ pub(super) mod tests {
             WITNESS_SEED,
             RequestSummary::Probe,
             probe_answers_before,
+            RequestCause::NeighborDown(card(WITNESS_SEED)),
             DirectOutcome::Acknowledged,
             AFTER_PROBE_ACK,
         )
@@ -4842,21 +5019,22 @@ pub(super) mod tests {
     const DIRECT_ANSWERS_SETTLED_WITHIN: Duration =
         ANY_DIRECT_ANSWER_WITHIN.saturating_add(ANY_DIRECT_ANSWER_WITHIN);
 
-    /// How many requests of the kind the member made to the seed's card, and the outcome of each answer to them it applied, in order.
+    /// How many requests of the kind the member made to the seed's card, and the outcome and request cause of each answer to them it applied, in order.
     fn exchanges_with(
         member: &Member,
         seed: u8,
         kind: RequestSummary,
-    ) -> (usize, Vec<DirectOutcome>) {
+    ) -> (usize, Vec<(DirectOutcome, Option<RequestCause>)>) {
         let exchanges = member.node.state.rows.direct_exchanges();
         let made = exchanges
             .iter()
-            .filter(|exchange| {
-                **exchange
-                    == DirectExchange::Made {
-                        card: card(seed),
-                        kind,
-                    }
+            .filter(|exchange| match **exchange {
+                DirectExchange::Made {
+                    card: to,
+                    kind: made_kind,
+                    ..
+                } => to == card(seed) && made_kind == kind,
+                DirectExchange::Answered { .. } => false,
             })
             .count();
         let answered = exchanges
@@ -4866,7 +5044,8 @@ pub(super) mod tests {
                     card: from,
                     kind: answered_kind,
                     outcome,
-                } if from == card(seed) && answered_kind == kind => Some(outcome),
+                    cause,
+                } if from == card(seed) && answered_kind == kind => Some((outcome, cause)),
                 DirectExchange::Made { .. } | DirectExchange::Answered { .. } => None,
             })
             .collect();
@@ -4892,12 +5071,13 @@ pub(super) mod tests {
         })
     }
 
-    /// Waits until the member applies an answer of the outcome to a request of the kind to the seed's card made after its settled answers, failing with every answer it applied when none comes within the wait.
+    /// Waits until the member applies an answer of the outcome to a request of the kind to the seed's card that the cause made, after its settled answers, failing with every answer it applied when none comes within the wait.
     pub(in crate::node) async fn direct_answer_after(
         member: &Member,
         seed: u8,
         kind: RequestSummary,
         settled: usize,
+        cause: RequestCause,
         outcome: DirectOutcome,
         within: Duration,
     ) {
@@ -4906,13 +5086,13 @@ pub(super) mod tests {
                 .1
                 .iter()
                 .skip(settled)
-                .any(|answered| *answered == outcome)
+                .any(|answered| *answered == (outcome, Some(cause)))
                 .then_some(())
         })
         .await
         .unwrap_or_else(|| {
             panic!(
-                "the member applied no {outcome:?} answer to a {kind:?} to the card of seed {seed} after its {settled} settled answers within {within:?}; it applied {:?}",
+                "the member applied no {outcome:?} answer to a {kind:?} to the card of seed {seed} made by {cause:?} after its {settled} settled answers within {within:?}; it applied {:?}",
                 exchanges_with(member, seed, kind).1
             )
         });
