@@ -35,10 +35,11 @@ use crate::net::direct::{DirectHost, MonotonicClock};
 use crate::net::endpoint::NodeEndpoint;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
-    KnownHostAddress, KnownHosts, Network, NodeError, RelayOfRecord, known_host_addresses,
-    seed_lookup_with_known_hosts, serve,
+    KnownHostAddress, KnownHosts, Network, NodeError, RelayOfRecord, broadcast_recorded,
+    known_host_addresses, next_recorded_gossip_event, seed_lookup_with_known_hosts, serve,
+    taken_without_a_row_record,
 };
-use crate::payload::{OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
+use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
 use crate::wire::{
     self, Addr, HostAddr, Infrastructure, IntroduceAck, MAX_RELAY_URL_BYTES, Message, Payload,
     SignatureBytes, Version,
@@ -724,11 +725,16 @@ impl BootstrapNode {
             biased;
             () = stopped => Wake::Stopped,
             () = next_tick(self.records_due.as_mut()) => Wake::RecordDue,
-            event = self.topic.next_event() => Wake::Topic(event),
+            event = next_recorded_gossip_event(
+                &mut self.topic,
+                None,
+                &*self.clock,
+                &*self.report,
+            ) => Wake::Topic(event),
         }
     }
 
-    /// Starts the record broadcasts at the join, learns from another host's record without adding its relay (spec 3.14), and ignores every other event.
+    /// Starts the record broadcasts at the join, takes each payload, and ignores every other event.
     async fn take_topic_event(
         &mut self,
         event: Option<Result<GossipEvent, GossipError>>,
@@ -739,26 +745,7 @@ impl BootstrapNode {
                 (self.report)(crate::event::GossipEvent::TopicFailed(failure).into());
             }
             Some(Ok(GossipEvent::Joined)) => self.records_due = Some(record_interval()),
-            Some(Ok(GossipEvent::Payload(payload))) => match *payload {
-                OpenedPayload::Infrastructure(record)
-                    if record.record().host != *self.key.public().as_bytes() =>
-                {
-                    self.known_hosts
-                        .take_infrastructure(
-                            &record,
-                            (self.clock)(),
-                            &self.endpoint,
-                            RelayOfRecord::LeaveOutOfRelayMap,
-                            &*self.report,
-                        )
-                        .await;
-                }
-                OpenedPayload::Infrastructure(_)
-                | OpenedPayload::Presence(_)
-                | OpenedPayload::Departure(_)
-                | OpenedPayload::Unreachable(_)
-                | OpenedPayload::PresenceRequest(_) => {}
-            },
+            Some(Ok(GossipEvent::Payload(payload))) => self.take_payload(*payload).await,
             Some(Ok(
                 GossipEvent::JoinTimedOut
                 | GossipEvent::NeighborUp(_)
@@ -766,6 +753,33 @@ impl BootstrapNode {
             )) => {}
         }
         Ok(())
+    }
+
+    /// Learns from another host's record without adding its relay (spec 3.14), and records every other payload as taken without a row, since a host holds no peer table.
+    async fn take_payload(&mut self, payload: OpenedPayload) {
+        let now_ms = (self.clock)();
+        match payload {
+            OpenedPayload::Infrastructure(record)
+                if record.record().host != *self.key.public().as_bytes() =>
+            {
+                self.known_hosts
+                    .take_infrastructure(
+                        &record,
+                        now_ms,
+                        &self.endpoint,
+                        RelayOfRecord::LeaveOutOfRelayMap,
+                        &*self.report,
+                    )
+                    .await;
+            }
+            unapplied @ (OpenedPayload::Infrastructure(_)
+            | OpenedPayload::Presence(_)
+            | OpenedPayload::Departure(_)
+            | OpenedPayload::Unreachable(_)
+            | OpenedPayload::PresenceRequest(_)) => {
+                (self.report)(taken_without_a_row_record(unapplied.facts(), None, now_ms));
+            }
+        }
     }
 
     /// Writes the next record counter, then broadcasts this host's record carrying it.
@@ -785,7 +799,9 @@ impl BootstrapNode {
             mac: ZERO_MAC,
             sig: ZERO_SIGNATURE,
         });
-        if let Err(failure) = self.topic.broadcast(&self.key, record).await {
+        if let Err(failure) =
+            broadcast_recorded(&self.topic, &self.key, record, &*self.report).await
+        {
             (self.report)(crate::event::GossipEvent::BroadcastFailed(failure).into());
         }
         Ok(())
@@ -1062,6 +1078,7 @@ mod tests {
         stopped: StopRequested,
         relay_shutdown_failure: Option<&'static str>,
         transport: crate::net::endpoint::TransportRecord,
+        report: RunRecord,
     }
 
     impl Plan {
@@ -1074,6 +1091,7 @@ mod tests {
                 stopped: Box::pin(std::future::ready(())),
                 relay_shutdown_failure: None,
                 transport: crate::net::direct::tests::dropping_transport(),
+                report: Arc::new(|_record| {}),
             }
         }
 
@@ -1086,6 +1104,7 @@ mod tests {
                 stopped,
                 relay_shutdown_failure,
                 transport,
+                report,
             } = self;
             let relay_sites = Arc::clone(&seen.relay_sites);
             let bound = Arc::clone(&seen.bound);
@@ -1143,7 +1162,7 @@ mod tests {
                     })
                 }),
                 stopped,
-                report: Arc::new(|_record| {}),
+                report,
             }
         }
     }
@@ -2088,6 +2107,164 @@ mod tests {
         outcome.unwrap();
         assert_eq!(other_learned.unwrap().relay, OTHER_HOST_RELAY_URL);
         assert_eq!(scratch.saved_host(HOST_SEED), None);
+    }
+
+    const SPEC_SHORT_ID_BYTES: usize = 5;
+    const PEER_PRESENCE_SEQ: u64 = FROZEN_CLOCK_MS + 3;
+    /// Bytes no payload decodes from.
+    const NOT_A_PAYLOAD: &[u8] = b"not a payload";
+    const GOSSIP_EVENT_PREFIX: &str = "gossip.";
+    const BROADCAST_EVENT: &str = "gossip.payload_broadcast";
+    const RECORDED_WAIT: Duration = Duration::from_secs(20);
+
+    /// The five-byte id of the seed's key as the events file writes it.
+    fn short_id(seed: u8) -> serde_json::Value {
+        serde_json::Value::from(
+            data_encoding::HEXLOWER
+                .encode(&secret_key(seed).public().as_bytes()[..SPEC_SHORT_ID_BYTES]),
+        )
+    }
+
+    /// The fields of a received payload of the kind signed by the seed's key, named by no handle, with its stamp.
+    fn received_fields(
+        kind: &str,
+        seed: u8,
+        stamp: (&'static str, u64),
+    ) -> crate::event::EventFields {
+        vec![
+            ("kind", serde_json::Value::from(kind)),
+            ("peer", short_id(seed)),
+            (stamp.0, serde_json::Value::from(stamp.1)),
+        ]
+    }
+
+    /// The peer's own Presence, within every rule of the payload layer.
+    fn peer_presence() -> Payload {
+        Payload::Presence(wire::Presence {
+            v: Version::CURRENT,
+            card: *secret_key(PEER_SEED).public().as_bytes(),
+            handle: PEER_HANDLE.to_owned(),
+            public: PEER_PUBLIC.to_vec(),
+            attached: true,
+            addr: Addr::from_endpoint_report([], []),
+            seq: PEER_PRESENCE_SEQ,
+            mac: ZERO_MAC,
+            sig: ZERO_SIGNATURE,
+        })
+    }
+
+    /// Every gossip event recorded until one equal to `last`, in order, failing with what was recorded when it does not come within the wait.
+    async fn gossip_events_through(
+        recorded: &mut tokio::sync::mpsc::UnboundedReceiver<
+            crate::net::direct::tests::RecordedEvent,
+        >,
+        last: &crate::net::direct::tests::RecordedEvent,
+    ) -> Vec<crate::net::direct::tests::RecordedEvent> {
+        let mut gossip = Vec::new();
+        let arrived = tokio::time::timeout(RECORDED_WAIT, async {
+            while gossip.last() != Some(last) {
+                let (name, fields) = recorded.recv().await.unwrap();
+                if name.starts_with(GOSSIP_EVENT_PREFIX) {
+                    gossip.push((name, fields));
+                }
+            }
+        })
+        .await;
+        assert!(
+            arrived.is_ok(),
+            "no {last:?} within {RECORDED_WAIT:?}; recorded {gossip:?}"
+        );
+        gossip
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_the_host_records_its_join_its_neighbor_each_payload_taken_or_dropped_by_rule_and_each_record_it_broadcasts()
+     {
+        let scratch = Scratch::new("gossip-recorded");
+        scratch.configure_network();
+        scratch.certify(HOST_SEED);
+        let seen = Seen::default();
+        let (stop, stopped) = stopped_on_signal();
+        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let plan = Plan {
+            stopped,
+            report: record,
+            ..Plan::new(HOST_SEED)
+        };
+        let malformed_dropped = (
+            "gossip.payload_dropped",
+            vec![("rule", serde_json::Value::from("malformed"))],
+        );
+
+        let ((_printed, outcome), gossip) =
+            tokio::join!(run_planned(&scratch, plan, &seen), async {
+                let host = bound_endpoint(&seen, 0).await;
+                let peer = Peer::joined_through(PEER_SEED, &host).await;
+                peer.topic
+                    .broadcast(&secret_key(PEER_SEED), peer_presence())
+                    .await
+                    .unwrap();
+                peer.topic
+                    .broadcast(
+                        &secret_key(HOST_SEED),
+                        host_record(HOST_SEED, SPEC_RELAY_URL, REPLAYED_OWN_TS),
+                    )
+                    .await
+                    .unwrap();
+                peer.topic
+                    .broadcast(
+                        &secret_key(OTHER_HOST_SEED),
+                        host_record(OTHER_HOST_SEED, OTHER_HOST_RELAY_URL, FROZEN_CLOCK_SECONDS),
+                    )
+                    .await
+                    .unwrap();
+                peer.topic
+                    .broadcast_bytes(NOT_A_PAYLOAD.to_vec())
+                    .await
+                    .unwrap();
+                let gossip = gossip_events_through(&mut recorded, &malformed_dropped).await;
+                stop.send(()).unwrap();
+                gossip
+            });
+
+        outcome.unwrap();
+        let (broadcast, received): (Vec<_>, Vec<_>) = gossip
+            .into_iter()
+            .partition(|(name, _fields)| *name == BROADCAST_EVENT);
+        assert_eq!(
+            received,
+            vec![
+                ("gossip.topic_joined", Vec::new()),
+                ("gossip.neighbor_up", vec![("peer", short_id(PEER_SEED))]),
+                (
+                    "gossip.payload_accepted",
+                    received_fields("presence", PEER_SEED, ("seq", PEER_PRESENCE_SEQ)),
+                ),
+                (
+                    "gossip.payload_accepted",
+                    received_fields("infrastructure", HOST_SEED, ("ts", REPLAYED_OWN_TS)),
+                ),
+                (
+                    "gossip.payload_accepted",
+                    received_fields(
+                        "infrastructure",
+                        OTHER_HOST_SEED,
+                        ("ts", FROZEN_CLOCK_SECONDS)
+                    ),
+                ),
+                malformed_dropped,
+            ]
+        );
+        assert_eq!(
+            broadcast.first(),
+            Some(&(
+                BROADCAST_EVENT,
+                vec![
+                    ("kind", serde_json::Value::from("infrastructure")),
+                    ("ts", serde_json::Value::from(FROZEN_CLOCK_SECONDS)),
+                ]
+            ))
+        );
     }
 
     #[tokio::test]
