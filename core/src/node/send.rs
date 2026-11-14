@@ -229,12 +229,13 @@ mod tests {
     };
     use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
     use crate::node::addresses::wire_addr;
+    use crate::node::presence::DirectOutcome;
     use crate::node::presence::tests::{
         DUPLICATE_KEY_PUBLIC, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTEGER_PAST_64_BITS_PUBLIC,
         INTRODUCE_ROUND_TRIP, Member, MemberPlan, PROBE_NONCE, SECOND_HANDLE, SECOND_PUBLIC,
         SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_SEED, WITNESS_HANDLE,
-        WITNESS_SEED, bind, card, direct_answers_so_far, direct_answers_taken, inbox_frames, keys,
-        listed_within, message_to, start_members, start_members_reaching, start_pair,
+        WITNESS_SEED, bind, card, direct_answer_after, inbox_frames, keys, listed_within,
+        message_to, settled_direct_answers, start_members, start_members_reaching, start_pair,
         start_third_through_second, wall_clock_ms,
     };
     use crate::payload::{PayloadError, open_request, seal_response};
@@ -256,6 +257,16 @@ mod tests {
     enum PeerPhase {
         Serving,
         Stopping,
+    }
+
+    impl PeerPhase {
+        /// How a peer in this phase answers the Introduce a member sends it: a serving peer acknowledges it, a stopping one refuses it.
+        fn introduce_answered(self) -> DirectOutcome {
+            match self {
+                Self::Serving => DirectOutcome::Acknowledged,
+                Self::Stopping => DirectOutcome::Failed,
+            }
+        }
     }
 
     struct ScriptedHost {
@@ -335,25 +346,31 @@ mod tests {
         scratch: &Scratch,
         phase: PeerPhase,
     ) -> (Member, ScriptedPeer) {
-        first_member_listing_a_peer_served_by(scratch, |addr, endpoint| {
-            DirectServer::new(
-                keys(),
-                ScriptedHost {
-                    own_card: card(WITNESS_SEED),
-                    addr,
-                    phase,
-                    introduced_as: None,
-                    public: &[],
-                },
-                endpoint,
-            )
-        })
+        first_member_listing_a_peer_served_by(
+            scratch,
+            |addr, endpoint| {
+                DirectServer::new(
+                    keys(),
+                    ScriptedHost {
+                        own_card: card(WITNESS_SEED),
+                        addr,
+                        phase,
+                        introduced_as: None,
+                        public: &[],
+                    },
+                    endpoint,
+                )
+            },
+            phase.introduce_answered(),
+        )
         .await
     }
 
+    /// The first member, listing the peer after the peer's Message, once it has applied the answer of the outcome to the Introduce that Message called for.
     async fn first_member_listing_a_peer_served_by<H: ProtocolHandler>(
         scratch: &Scratch,
         server_at: impl FnOnce(Addr, &NodeEndpoint) -> H,
+        introduce_answered: DirectOutcome,
     ) -> (Member, ScriptedPeer) {
         let endpoint = bind(WITNESS_SEED).await;
         let peer_address = endpoint.endpoint().addr();
@@ -383,7 +400,7 @@ mod tests {
         );
         let introduction = message_to(FIRST_SEED, WITNESS_HANDLE);
         let introduce_answers_before =
-            direct_answers_so_far(&member, WITNESS_SEED, RequestSummary::Introduce);
+            settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
         assert!(
             introducing
                 .send_message(member.endpoint.id(), introduction)
@@ -397,11 +414,12 @@ mod tests {
             _router: router,
         };
         peer.connections_after_first().await;
-        direct_answers_taken(
+        direct_answer_after(
             &member,
             WITNESS_SEED,
             RequestSummary::Introduce,
-            introduce_answers_before.saturating_add(1),
+            introduce_answers_before,
+            introduce_answered,
             INTRODUCE_ROUND_TRIP,
         )
         .await;
@@ -731,9 +749,11 @@ mod tests {
     async fn spec_3_10_a_send_acknowledged_for_another_id_fails_sets_the_peer_unreachable_and_drops_the_held_connection()
      {
         let scratch = Scratch::new("send-ack-id").await;
-        let (first, peer) = first_member_listing_a_peer_served_by(&scratch, |addr, _endpoint| {
-            AckingAnotherMessageId { addr }
-        })
+        let (first, peer) = first_member_listing_a_peer_served_by(
+            &scratch,
+            |addr, _endpoint| AckingAnotherMessageId { addr },
+            DirectOutcome::Acknowledged,
+        )
         .await;
 
         let failed = first.node.send(WITNESS_HANDLE, BODY).await;
@@ -761,8 +781,9 @@ mod tests {
     async fn spec_3_5_an_introduce_ack_whose_public_no_card_sends_changes_nothing_at_the_node() {
         for public in [DUPLICATE_KEY_PUBLIC, INTEGER_PAST_64_BITS_PUBLIC] {
             let scratch = Scratch::new("introduce-ack-public").await;
-            let (first, _peer) =
-                first_member_listing_a_peer_served_by(&scratch, |addr, endpoint| {
+            let (first, _peer) = first_member_listing_a_peer_served_by(
+                &scratch,
+                |addr, endpoint| {
                     DirectServer::new(
                         keys(),
                         ScriptedHost {
@@ -774,8 +795,10 @@ mod tests {
                         },
                         endpoint,
                     )
-                })
-                .await;
+                },
+                PeerPhase::Serving.introduce_answered(),
+            )
+            .await;
 
             let listed = listed_within(&first, WITNESS_SEED, Duration::ZERO)
                 .await

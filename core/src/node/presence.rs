@@ -326,8 +326,41 @@ pub struct PeerRows {
     held_connections: HeldConnections,
     report: RunRecord,
     #[cfg(test)]
-    direct_answers_taken:
-        tokio::sync::watch::Sender<Vec<(wire::PublicKey, crate::net::direct::RequestSummary)>>,
+    direct_exchanges: Mutex<Vec<DirectExchange>>,
+}
+
+/// A direct request a node made, or the answer to one that it applied, as a test of the node reads them.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectExchange {
+    Made {
+        card: wire::PublicKey,
+        kind: crate::net::direct::RequestSummary,
+    },
+    Answered {
+        card: wire::PublicKey,
+        kind: crate::net::direct::RequestSummary,
+        outcome: DirectOutcome,
+    },
+}
+
+/// Whether a direct request was acknowledged or failed.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectOutcome {
+    Acknowledged,
+    Failed,
+}
+
+#[cfg(test)]
+impl DirectOutcome {
+    /// Acknowledged for an answer that holds a valid acknowledgement, failed otherwise.
+    fn of<Acknowledgement>(answer: &Result<Acknowledgement, DirectError>) -> Self {
+        match answer {
+            Ok(_acknowledgement) => Self::Acknowledged,
+            Err(_failure) => Self::Failed,
+        }
+    }
 }
 
 /// A received payload the peer table admits by the operation of its own kind.
@@ -391,8 +424,29 @@ impl PeerRows {
             held_connections,
             report,
             #[cfg(test)]
-            direct_answers_taken: tokio::sync::watch::Sender::new(Vec::new()),
+            direct_exchanges: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Notes the direct requests made and the answers applied, after every earlier one.
+    #[cfg(test)]
+    pub(crate) fn note_direct_exchanges(
+        &self,
+        exchanges: impl IntoIterator<Item = DirectExchange>,
+    ) {
+        self.direct_exchanges
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .extend(exchanges);
+    }
+
+    /// Every direct request made and answer applied so far, in order.
+    #[cfg(test)]
+    pub(crate) fn direct_exchanges(&self) -> Vec<DirectExchange> {
+        self.direct_exchanges
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// The peer table, locked for one operation.
@@ -481,14 +535,7 @@ impl PeerRows {
 
     /// Applies the answer to a direct request this node sent: an `IntroduceAck` as an introduction that spares the connection it came on, a failure as a failed contact, an acknowledged Probe as a contact that succeeded (spec 3.8).
     pub(crate) fn take_direct_answer(&self, answer: DirectAnswer, now_ms: u64) -> Vec<Effect> {
-        #[cfg(test)]
-        let answered = match answer {
-            DirectAnswer::Introduce { card, .. } => {
-                (card, crate::net::direct::RequestSummary::Introduce)
-            }
-            DirectAnswer::Probe { card, .. } => (card, crate::net::direct::RequestSummary::Probe),
-        };
-        let effects = match answer {
+        match answer {
             DirectAnswer::Introduce {
                 card,
                 answer: Ok(ack),
@@ -516,11 +563,7 @@ impl PeerRows {
                 });
                 Vec::new()
             }
-        };
-        #[cfg(test)]
-        self.direct_answers_taken
-            .send_modify(|taken| taken.push(answered));
-        effects
+        }
     }
 }
 
@@ -682,6 +725,24 @@ pub enum DirectRequest {
     SendProbe(wire::PublicKey, Nonce),
 }
 
+#[cfg(test)]
+impl DirectRequest {
+    /// The request as a test reads it once made, or none for a request that sends nothing.
+    fn made(&self) -> Option<DirectExchange> {
+        match self {
+            Self::DropHeldConnection(_) => None,
+            Self::SendIntroduce(card) => Some(DirectExchange::Made {
+                card: *card,
+                kind: crate::net::direct::RequestSummary::Introduce,
+            }),
+            Self::SendProbe(card, _nonce) => Some(DirectExchange::Made {
+                card: *card,
+                kind: crate::net::direct::RequestSummary::Probe,
+            }),
+        }
+    }
+}
+
 /// The answer to a direct request a node sent, for the loop that sent it to apply.
 pub enum DirectAnswer {
     Introduce {
@@ -695,6 +756,23 @@ pub enum DirectAnswer {
 }
 
 impl DirectAnswer {
+    /// The answer as a test reads it once applied: the card, the kind of request and whether it was acknowledged.
+    #[cfg(test)]
+    fn answered(&self) -> DirectExchange {
+        match self {
+            Self::Introduce { card, answer } => DirectExchange::Answered {
+                card: *card,
+                kind: crate::net::direct::RequestSummary::Introduce,
+                outcome: DirectOutcome::of(answer),
+            },
+            Self::Probe { card, answer } => DirectExchange::Answered {
+                card: *card,
+                kind: crate::net::direct::RequestSummary::Probe,
+                outcome: DirectOutcome::of(answer),
+            },
+        }
+    }
+
     /// The event of a request that got no valid acknowledgement, naming the node it went to and why.
     fn failure_record(&self) -> Option<Event> {
         match self {
@@ -1120,10 +1198,14 @@ impl PresenceLoop {
 
     /// Introduces this node to the cards in their order, in one task.
     fn introduce_to(&self, cards: Vec<wire::PublicKey>) {
-        let introduces = cards
+        let introduces: Vec<DirectRequest> = cards
             .into_iter()
             .map(DirectRequest::SendIntroduce)
             .collect();
+        #[cfg(test)]
+        self.state
+            .rows
+            .note_direct_exchanges(introduces.iter().filter_map(DirectRequest::made));
         send_in_background(Arc::clone(&self.state), &self.client, introduces);
     }
 
@@ -1224,11 +1306,15 @@ impl PresenceLoop {
             LoopEvent::Effects(effects) => self.perform(effects).await,
             LoopEvent::PeerReached => {}
             LoopEvent::Answered(answer) => {
+                #[cfg(test)]
+                let answered = answer.answered();
                 if let Some(record) = answer.failure_record() {
                     (self.report)(record);
                 }
                 let effects = self.state.rows.take_direct_answer(answer, now_ms);
                 self.perform(effects).await;
+                #[cfg(test)]
+                self.state.rows.note_direct_exchanges([answered]);
             }
         }
     }
@@ -1258,6 +1344,10 @@ impl PresenceLoop {
                 }
             }
         }
+        #[cfg(test)]
+        self.state
+            .rows
+            .note_direct_exchanges(requests.iter().filter_map(DirectRequest::made));
         send_in_background(Arc::clone(&self.state), &self.client, requests);
     }
 
@@ -1763,8 +1853,6 @@ pub(super) mod tests {
         .saturating_add(PAYLOAD_WAIT);
     const PROBE_ANSWERED_WAIT: Duration = Duration::from_secs(5);
     const AFTER_PROBE_ACK: Duration = Duration::from_millis(300);
-    /// How many Introduces a member sends a witness that joins with a handle: the one held until its own handle is assigned, then the one the entry that answer created calls for.
-    const INTRODUCES_TO_A_JOINING_WITNESS: usize = 2;
     const PAYLOAD_ACCEPTED: &str = "gossip.payload_accepted";
     const KIND: &str = "kind";
     const PRESENCE_KIND: &str = "presence";
@@ -2264,7 +2352,7 @@ pub(super) mod tests {
         );
 
         let introduce_answers_before =
-            direct_answers_so_far(&first, SECOND_SEED, RequestSummary::Introduce);
+            settled_direct_answers(&first, SECOND_SEED, RequestSummary::Introduce).await;
         let ack = sender
             .send_message(first.endpoint.id(), message_to(FIRST_SEED, SECOND_HANDLE))
             .await
@@ -2282,11 +2370,12 @@ pub(super) mod tests {
         assert_eq!(frame["body"], MESSAGE_BODY);
         assert_eq!(frame["id"], MESSAGE_ID_TEXT);
         assert_eq!(frame["sent_at"], MESSAGE_SENT_AT);
-        direct_answers_taken(
+        direct_answer_after(
             &first,
             SECOND_SEED,
             RequestSummary::Introduce,
-            introduce_answers_before.saturating_add(1),
+            introduce_answers_before,
+            DirectOutcome::Acknowledged,
             INTRODUCE_ROUND_TRIP,
         )
         .await;
@@ -3353,14 +3442,7 @@ pub(super) mod tests {
         )
         .await
         .unwrap();
-        direct_answers_taken(
-            &member,
-            WITNESS_SEED,
-            RequestSummary::Introduce,
-            INTRODUCES_TO_A_JOINING_WITNESS,
-            INTRODUCE_ROUND_TRIP,
-        )
-        .await;
+        settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
         next_recorded_meeting(
             &mut recorded,
             PAYLOAD_ACCEPTED,
@@ -3448,19 +3530,12 @@ pub(super) mod tests {
         )
         .await
         .unwrap();
-        direct_answers_taken(
-            &member,
-            WITNESS_SEED,
-            RequestSummary::Introduce,
-            INTRODUCES_TO_A_JOINING_WITNESS,
-            INTRODUCE_ROUND_TRIP,
-        )
-        .await;
+        settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
+        let probe_answers_before =
+            settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Probe).await;
         let probes_before = witness
             .probes_answered
             .load(std::sync::atomic::Ordering::SeqCst);
-        let probe_answers_before =
-            direct_answers_so_far(&member, WITNESS_SEED, RequestSummary::Probe);
 
         witness.gossip.shutdown().await.unwrap();
         found_within(PROBE_ANSWERED_WAIT, async || {
@@ -3472,11 +3547,12 @@ pub(super) mod tests {
         })
         .await
         .unwrap_or_else(|| panic!("the witness answered no probe within {PROBE_ANSWERED_WAIT:?}"));
-        direct_answers_taken(
+        direct_answer_after(
             &member,
             WITNESS_SEED,
             RequestSummary::Probe,
-            probe_answers_before.saturating_add(1),
+            probe_answers_before,
+            DirectOutcome::Acknowledged,
             AFTER_PROBE_ACK,
         )
         .await;
@@ -3593,6 +3669,8 @@ pub(super) mod tests {
         )
         .await
         .unwrap();
+        settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
+        settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Probe).await;
         while failures.try_recv().is_ok() {}
 
         witness.close().await;
@@ -4616,50 +4694,85 @@ pub(super) mod tests {
         entry
     }
 
-    /// How many answers of the kind from the seed's card the list of applied answers holds.
-    fn answers_from(
-        taken: &[(crate::wire::PublicKey, RequestSummary)],
+    /// The longest a direct request waits for its answer: a connection, then the acknowledgement.
+    const ANY_DIRECT_ANSWER_WITHIN: Duration = ClientTimeouts::SPEC
+        .connect
+        .saturating_add(ClientTimeouts::SPEC.ack);
+
+    /// How many requests of the kind the member made to the seed's card, and the outcome of each answer to them it applied, in order.
+    fn exchanges_with(
+        member: &Member,
         seed: u8,
         kind: RequestSummary,
-    ) -> usize {
-        let answering = (card(seed), kind);
-        taken.iter().filter(|answer| **answer == answering).count()
+    ) -> (usize, Vec<DirectOutcome>) {
+        let exchanges = member.node.state.rows.direct_exchanges();
+        let made = exchanges
+            .iter()
+            .filter(|exchange| {
+                **exchange
+                    == DirectExchange::Made {
+                        card: card(seed),
+                        kind,
+                    }
+            })
+            .count();
+        let answered = exchanges
+            .iter()
+            .filter_map(|exchange| match *exchange {
+                DirectExchange::Answered {
+                    card: from,
+                    kind: answered_kind,
+                    outcome,
+                } if from == card(seed) && answered_kind == kind => Some(outcome),
+                DirectExchange::Made { .. } | DirectExchange::Answered { .. } => None,
+            })
+            .collect();
+        (made, answered)
     }
 
-    /// How many answers of the kind to its direct requests to the seed's card the member has applied so far.
-    pub(in crate::node) fn direct_answers_so_far(
+    /// How many answers to its requests of the kind to the seed's card the member has applied, read once none of those requests awaits its answer, failing when one still does after the longest a direct answer takes.
+    pub(in crate::node) async fn settled_direct_answers(
         member: &Member,
         seed: u8,
         kind: RequestSummary,
     ) -> usize {
-        answers_from(
-            &member.node.state.rows.direct_answers_taken.borrow(),
-            seed,
-            kind,
-        )
+        found_within(ANY_DIRECT_ANSWER_WITHIN, async || {
+            let (made, answered) = exchanges_with(member, seed, kind);
+            (answered.len() == made).then_some(made)
+        })
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "a {kind:?} to the card of seed {seed} still awaited its answer after {ANY_DIRECT_ANSWER_WITHIN:?}; made and answered: {:?}",
+                exchanges_with(member, seed, kind)
+            )
+        })
     }
 
-    /// Waits until the member has applied that many answers to its direct requests of the kind to the seed's card, failing with that count and kind when the bound runs out first.
-    pub(in crate::node) async fn direct_answers_taken(
+    /// Waits until the member applies an answer of the outcome to a request of the kind to the seed's card made after its settled answers, failing with every answer it applied when none comes within the wait.
+    pub(in crate::node) async fn direct_answer_after(
         member: &Member,
         seed: u8,
         kind: RequestSummary,
-        count: usize,
+        settled: usize,
+        outcome: DirectOutcome,
         within: Duration,
     ) {
-        let mut taken = member.node.state.rows.direct_answers_taken.subscribe();
-        let taken_in_time = matches!(
-            tokio::time::timeout(
-                within,
-                taken.wait_for(|taken| answers_from(taken, seed, kind) >= count),
+        found_within(within, async || {
+            exchanges_with(member, seed, kind)
+                .1
+                .iter()
+                .skip(settled)
+                .any(|answered| *answered == outcome)
+                .then_some(())
+        })
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "the member applied no {outcome:?} answer to a {kind:?} to the card of seed {seed} after its {settled} settled answers within {within:?}; it applied {:?}",
+                exchanges_with(member, seed, kind).1
             )
-            .await,
-            Ok(Ok(_))
-        );
-        assert!(
-            taken_in_time,
-            "the member did not take {count} {kind:?} answer(s) from the card of seed {seed} within {within:?}"
-        );
+        });
     }
 
     const LONGER_THAN_ANY_SILENCE: Duration = Duration::from_secs(3600);

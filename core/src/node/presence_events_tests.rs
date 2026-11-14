@@ -10,12 +10,13 @@ use super::tests::{
     MemberPlan, SECOND_EFFECTIVE_FIRST_HANDLE, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED,
     SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_PUBLIC, THIRD_SEED, WITNESS_SEED, bind, card,
     entry_meeting_within, infrastructure_of, keys, message_to, secret_key, settable_clock,
-    start_members, start_members_reaching, start_pair, start_witnessed, wall_clock_ms,
+    settled_direct_answers, start_members, start_members_reaching, start_pair, start_witnessed,
+    wall_clock_ms,
 };
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{Event, EventFields, RunRecord};
 use crate::net::direct::tests::unrecorded_register;
-use crate::net::direct::{ClientTimeouts, DirectClient};
+use crate::net::direct::{ClientTimeouts, DirectClient, RequestSummary};
 use crate::node::addresses::wire_addr;
 use crate::payload::{ZERO_MAC, ZERO_SIGNATURE, seal_payload, sealed_by_any_key};
 use crate::wire::{
@@ -71,12 +72,6 @@ impl RecordedEvents {
                 return fields;
             }
         }
-    }
-
-    /// Waits until the member took the witness's `IntroduceAck` to its held Introduce and to the Introduce the entry that ack created called for, each replacing the witness's lookup entry.
-    async fn both_introduce_acks_of_the_witness(&mut self) {
-        self.lookup_replaced_of(WITNESS_SEED).await;
-        self.lookup_replaced_of(WITNESS_SEED).await;
     }
 }
 
@@ -964,7 +959,7 @@ async fn observability_decision_9_a_member_records_entries_its_direct_answers_an
     )
     .await;
     let introduced = recorded.next_named(ENTRY_CREATED).await;
-    recorded.both_introduce_acks_of_the_witness().await;
+    settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
     witness
         .broadcast_as(
             MARKER_SEED,
@@ -1031,7 +1026,7 @@ async fn observability_decision_9_a_member_records_an_entry_a_probe_answer_and_a
     )
     .await;
     recorded.next_named(ENTRY_CREATED).await;
-    recorded.both_introduce_acks_of_the_witness().await;
+    settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
     witness
         .broadcast_as(
             MARKER_SEED,
