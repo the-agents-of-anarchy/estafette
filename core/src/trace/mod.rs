@@ -109,6 +109,12 @@ impl Trace {
         self.run.note_node(ShortId::from(id).text());
     }
 
+    /// Waits, within the drain bound for each, until the writers wrote every line queued before this call and cut each file back to its last line, leaving both queues open.
+    pub fn flush(&self) {
+        self.events.flush();
+        self.raw.flush();
+    }
+
     /// Closes both queues and waits, within the drain bound for each, until their writers took every queued line and cut each file back to its last line, saying how the stop left the events file, then the raw file.
     pub fn finish(&self) -> [TraceStop; 2] {
         [self.events.finish(), self.raw.finish()]

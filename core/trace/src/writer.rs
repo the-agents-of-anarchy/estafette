@@ -205,8 +205,14 @@ pub struct FileTrace {
 
 /// The queue while it is open, and the events lost since the last line queued.
 struct Queue {
-    lines: Option<SyncSender<QueuedLine>>,
+    lines: Option<SyncSender<Queued>>,
     lost: u64,
+}
+
+/// What the writer thread takes from the queue: a line to write, or a caller waiting until every line queued before it is written and the file cut back to its last line.
+enum Queued {
+    Line(QueuedLine),
+    Flush(mpsc::Sender<io::Result<()>>),
 }
 
 /// A line its caller stamped, and the events lost since the line queued before it.
@@ -261,12 +267,24 @@ impl FileTrace {
         let is_queued = queue
             .lines
             .as_ref()
-            .is_some_and(|lines| lines.try_send(queued).is_ok());
+            .is_some_and(|lines| lines.try_send(Queued::Line(queued)).is_ok());
         queue.lost = if is_queued {
             0
         } else {
             queue.lost.saturating_add(1)
         };
+    }
+
+    /// Waits at most the drain bound for the thread to write every line queued before this call and cut the file back to its last line, leaving the queue open; returns at once when the queue is full or closed.
+    pub fn flush(&self) {
+        let (written, flushed) = mpsc::channel();
+        let is_queued = locked(&self.queue)
+            .lines
+            .as_ref()
+            .is_some_and(|lines| lines.try_send(Queued::Flush(written)).is_ok());
+        if is_queued {
+            drop(flushed.recv_timeout(self.drain));
+        }
     }
 
     /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most the drain bound for it to take every line it holds, report that loss and cut the file back to its last line, saying how the stop left this file.
@@ -291,17 +309,22 @@ impl FileTrace {
     }
 }
 
-/// Writes each queued line under the next number until the queue closes, then reports the events lost at its close and ends the output at its last line, saying whether it could.
+/// Writes each queued line under the next number, cutting the file back to its last line for each caller waiting on a flush, until the queue closes, then reports the events lost at its close and ends the output at its last line, saying whether it could.
 fn write_every_line(
     mut output: impl TraceOutput,
     header: &HeaderSource,
-    lines: &Receiver<QueuedLine>,
+    lines: &Receiver<Queued>,
     lost_at_close: &Mutex<u64>,
 ) -> io::Result<()> {
     let mut numbering = Numbering::default();
     for queued in lines {
-        numbering.count_unwritten(queued.lost_before);
-        numbering.write(&mut output, header, &queued.line);
+        match queued {
+            Queued::Line(queued) => {
+                numbering.count_unwritten(queued.lost_before);
+                numbering.write(&mut output, header, &queued.line);
+            }
+            Queued::Flush(written) => drop(written.send(output.close())),
+        }
     }
     numbering.count_unwritten(*locked(lost_at_close));
     numbering.report_unwritten(&mut output, header);

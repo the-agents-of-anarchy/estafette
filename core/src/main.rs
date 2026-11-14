@@ -351,14 +351,14 @@ fn start_trace(
     }
 }
 
-/// Sets the panic hook that writes the source location of each panic, never its message, into the trace's events file and empties the trace's queues before the panic goes on to the hook it replaced, so the line is on disk before the process ends.
+/// Sets the panic hook that writes the source location of each panic, never its message, into the trace's events file and waits until the trace's writers wrote it, leaving both queues open, before the panic goes on to the hook it replaced, so the line is on disk whether the process ends or survives.
 fn record_panic_locations(trace: Arc<Trace>) {
     let replaced = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic| {
         if let Some(location) = panic.location() {
             trace.record(&ProcessEvent::Panicked(PanicLocation::of(location)).into());
         }
-        drop(trace.finish());
+        trace.flush();
         replaced(panic);
     }));
 }
@@ -1896,11 +1896,16 @@ mod tests {
         assert_eq!(lines[2]["status"], 3);
     }
 
+    static PANIC_HOOK_HELD: Mutex<()> = Mutex::new(());
+
     #[test]
     fn observability_decision_9_a_panic_writes_its_source_location_and_never_its_message_to_the_events_file_before_it_goes_on()
      {
         const SCRATCH_PREFIX: &str = "estafette-panic-location";
         const PANIC_MESSAGE: &str = "a panic message no events file may hold";
+        let _hook_held = PANIC_HOOK_HELD
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let (_scratch_removed_when_the_test_ends, environment) =
             scratch_environment(SCRATCH_PREFIX);
         let trace = start_trace(
@@ -1934,6 +1939,45 @@ mod tests {
         assert_eq!(lines[0]["file"], file!());
         assert_eq!(lines[0]["line"], panic_line);
         assert!(!events_text.contains(PANIC_MESSAGE), "{events_text}");
+    }
+
+    #[test]
+    fn observability_decision_9_a_panic_the_process_survives_leaves_both_trace_files_open_for_its_later_events_and_its_stop()
+     {
+        const SCRATCH_PREFIX: &str = "estafette-panic-survived";
+        let _hook_held = PANIC_HOOK_HELD
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let (_scratch_removed_when_the_test_ends, environment) =
+            scratch_environment(SCRATCH_PREFIX);
+        let trace = start_trace(
+            Tracing::Debug,
+            &environment,
+            &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
+            TraceBounds::SPEC,
+        )
+        .unwrap()
+        .unwrap();
+        let hook_before = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_panic| {}));
+        record_panic_locations(Arc::clone(&trace));
+
+        let panicked = std::thread::spawn(|| panic!("a panic the process survives")).join();
+        std::panic::set_hook(hook_before);
+        trace.record(&ProcessEvent::InputEnded.into());
+        let stops = trace.finish();
+
+        let events_text = std::fs::read_to_string(&trace.files().events).unwrap();
+        let names: Vec<serde_json::Value> = events_text
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap()["event"].clone())
+            .collect();
+        assert!(panicked.is_err());
+        assert_eq!(names, ["process.panicked", "process.input_ended"]);
+        assert!(
+            matches!(stops, [TraceStop::Drained, TraceStop::Drained]),
+            "{stops:?}"
+        );
     }
 
     static PANIC_HOOK_SET: AtomicBool = AtomicBool::new(false);
