@@ -1174,7 +1174,7 @@ mod tests {
                     ts: None,
                     origin: HostOrigin::Configured,
                 }]),
-                bind_endpoint: bind_meeting(meeting),
+                bind_endpoint: bind_meeting(meeting, Arc::new(|_event: Event| {})),
                 report: Arc::new(|_event: Event| {}),
                 node_report: Arc::new(|_event: Event| {}),
                 is_card_held: Arc::new(|sidecar_path: &Path| {
@@ -1198,10 +1198,12 @@ mod tests {
         }
     }
 
-    fn bind_meeting(meeting: &Arc<Meeting>) -> BindEndpoint {
+    /// Binds each server of the meeting to the others, its transport events handed to the record.
+    fn bind_meeting(meeting: &Arc<Meeting>, transport_record: RunRecord) -> BindEndpoint {
         let meeting = Arc::clone(meeting);
         Arc::new(move |card_key, gate_key, _relays, monotonic| {
             let meeting = Arc::clone(&meeting);
+            let transport_record = Arc::clone(&transport_record);
             Box::pin(async move {
                 let endpoint = NodeEndpoint::bind(
                     card_key,
@@ -1211,7 +1213,10 @@ mod tests {
                     |_closing| {},
                     crate::net::direct::HeldConnections::new(
                         monotonic,
-                        crate::net::direct::tests::dropping_transport(),
+                        crate::net::endpoint::TransportRecord::new(
+                            transport_record,
+                            crate::net::direct::tests::test_salt(),
+                        ),
                     ),
                 )
                 .await?;
@@ -1246,7 +1251,8 @@ mod tests {
         let mut amy = start_server(
             machine,
             ServerPlan {
-                report: amy_record,
+                report: Arc::clone(&amy_record),
+                bind_endpoint: bind_meeting(&meeting, amy_record),
                 ..ServerPlan::meeting(FIRST_PROCESS_ID, BOB_SEED, &meeting)
             },
         );
@@ -2416,61 +2422,67 @@ mod tests {
         );
     }
 
+    /// The text of the field of the name, none when the fields hold no such field or it is no text.
+    fn field_text<'fields>(
+        fields: &'fields crate::event::EventFields,
+        name: &str,
+    ) -> Option<&'fields str> {
+        fields
+            .iter()
+            .find(|(field, _value)| *field == name)
+            .and_then(|(_field, value)| value.as_str())
+    }
+
     #[tokio::test]
-    async fn observability_decision_9_a_send_that_fails_after_its_message_was_minted_is_recorded_with_that_message_id()
+    async fn observability_decision_9_a_send_that_fails_after_its_message_was_minted_is_recorded_with_the_id_its_request_carried()
      {
-        const UUID_V7_RANDOM_BYTES: usize = 10;
+        const SEND_ANSWERED: &str = "tool.send_answered";
+        const REQUEST_SENT: &str = "direct.request_sent";
         let _slot = node_slot().await;
         let machine = Machine::new("send-failed-answered");
-        let (record, mut recorded) = recording_events_named("tool.send_answered");
+        let (recorded, mut received) = mpsc::unbounded_channel();
+        let record: RunRecord = Arc::new(move |event: Event| {
+            if [SEND_ANSWERED, REQUEST_SENT].contains(&event.name()) {
+                drop(recorded.send((event.name(), event.fields())));
+            }
+        });
         let (mut amy, mut bob) = claimed_pair_with_amy_recording_to(&machine, record).await;
         bob.to_server.shutdown().await.unwrap();
         tokio::time::timeout(RESPONSE_WAIT, &mut bob.exit)
             .await
             .unwrap()
             .unwrap();
-        let amy_random_byte = u8::try_from(FIRST_PROCESS_ID).unwrap();
+        recorded_so_far(&mut received);
 
-        let sent_after_ms = wall_clock_ms();
         let failed = amy
             .envelope("send", json!({ "to": "bob", "body": MESSAGE_BODY }))
             .await;
-        let answered_by_ms = wall_clock_ms();
 
-        let answered = recorded_so_far(&mut recorded);
-        let message = answered
+        let recorded = recorded_so_far(&mut received);
+        let carried: Vec<&str> = recorded
             .iter()
-            .flat_map(|(_name, fields)| fields)
-            .find(|(field, _value)| *field == "message")
-            .and_then(|(_field, value)| value.as_str())
-            .map_or_else(
-                || panic!("no message id in {answered:?}"),
-                |text| uuid::Uuid::try_parse(text).unwrap(),
-            );
-        let (stamp_seconds, stamp_nanos) = message.get_timestamp().unwrap().to_unix();
-        let stamp_ms =
-            u64::try_from(Duration::new(stamp_seconds, stamp_nanos).as_millis()).unwrap();
-        let minted_by_amy = uuid::Builder::from_unix_timestamp_millis(
-            stamp_ms,
-            &[amy_random_byte; UUID_V7_RANDOM_BYTES],
-        )
-        .into_uuid();
+            .filter(|(name, fields)| {
+                *name == REQUEST_SENT && field_text(fields, "kind") == Some("message")
+            })
+            .filter_map(|(_name, fields)| field_text(fields, "message"))
+            .collect();
+        let answered: Vec<_> = recorded
+            .iter()
+            .filter(|(name, _fields)| *name == SEND_ANSWERED)
+            .collect();
         assert_eq!(failed["ok"], json!(false), "{failed}");
+        assert_eq!(carried.len(), 1, "{recorded:?}");
         assert_eq!(
             answered,
-            vec![(
-                "tool.send_answered",
+            vec![&(
+                SEND_ANSWERED,
                 vec![
                     ("to", json!("bob")),
                     ("outcome", json!("error")),
                     ("code", failed["error"]["code"].clone()),
-                    ("message", json!(minted_by_amy.to_string())),
+                    ("message", json!(carried[0])),
                 ]
             )]
-        );
-        assert!(
-            (sent_after_ms..=answered_by_ms).contains(&stamp_ms),
-            "{stamp_ms} outside {sent_after_ms}..={answered_by_ms}"
         );
     }
 
