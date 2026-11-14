@@ -61,16 +61,27 @@ const PROGRAM_PURPOSE: &str = "Messaging between agents across machines and harn
 const INTERRUPT_SIGNAL: &str = "SIGINT";
 const TERMINATE_SIGNAL: &str = "SIGTERM";
 const HANGUP_SIGNAL: &str = "SIGHUP";
+const MCP_COMMAND: &str = "mcp";
+const DOCTOR_COMMAND: &str = "doctor";
+const SHOW_PEERS_COMMAND: &str = "show-peers";
+const TAIL_COMMAND: &str = "tail";
+const TEST_SEND_COMMAND: &str = "test-send";
+#[cfg(feature = "relay")]
+const RUN_INFRASTRUCTURE_COMMAND: &str = "run-infrastructure";
 
 /// Sends iroh's own lines into a trace's raw file, done once per process by the composition root.
 type InstallIrohLines = fn(Arc<Trace>) -> Result<(), IrohLinesRefused>;
 
-/// What the trace of a process that starts an endpoint runs on: its effects, its bounds, and the install that sends iroh's own lines to it.
+/// Sets the panic hook that writes each panic's source location into a trace's events file, done once per process by the composition root.
+type RecordPanics = fn(Arc<Trace>);
+
+/// What the trace of a process that starts an endpoint runs on: its effects, its bounds, the install that sends iroh's own lines to it, and the panic hook that records into it.
 #[derive(Clone, Copy)]
 struct TraceSetup<'effects> {
     effects: &'effects TraceEffects,
     bounds: TraceBounds,
     install_iroh_lines: InstallIrohLines,
+    record_panics: RecordPanics,
 }
 
 #[derive(Debug, Parser)]
@@ -165,6 +176,7 @@ fn main() -> ExitCode {
             effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
             bounds: TraceBounds::SPEC,
             install_iroh_lines: iroh_lines::install,
+            record_panics: record_panic_locations,
         },
     );
     ExitCode::from(u8::from(status))
@@ -199,6 +211,7 @@ fn run_command(
             standard_error_record().as_ref(),
         ),
         Command::Observer(command) => run_traced(
+            observer_command_name(&command),
             command.debug().tracing(),
             &environment,
             command.cards_dir(),
@@ -210,6 +223,7 @@ fn run_command(
             },
         ),
         Command::Mcp { registry, debug } => run_traced(
+            MCP_COMMAND,
             debug.tracing(),
             &environment,
             registry.cards_dir.clone(),
@@ -218,6 +232,7 @@ fn run_command(
             |directories, process| serve_mcp(registry, directories, process),
         ),
         Command::Doctor { arguments, debug } => run_traced(
+            DOCTOR_COMMAND,
             debug.tracing(),
             &environment,
             arguments.registry.cards_dir.clone(),
@@ -237,8 +252,9 @@ struct ProcessRecord {
     salt: LocationSalt,
 }
 
-/// Runs a command that starts an endpoint: resolves the directories, starts the trace on the given setup unless `--no-debug` and names its files first on standard error, sends iroh's own lines to it through the setup's install, runs the command, records how it ended, then empties the trace's queues within their bound before the process exits, saying on standard error, file by file, when a queue did not empty or its file could not be cut back to its last line.
+/// Runs the named command that starts an endpoint: resolves the directories, starts the trace on the given setup unless `--no-debug`, names its files first on standard error and sets the setup's panic hook on it, records the start, sends iroh's own lines to the trace through the setup's install, runs the command, records how it ended and the exit status, then empties the trace's queues within their bound before the process exits, saying on standard error, file by file, when a queue did not empty or its file could not be cut back to its last line.
 fn run_traced<StandardError: Write + Send + 'static>(
+    command_name: &'static str,
     tracing: Tracing,
     environment: impl Fn(&str) -> Option<OsString>,
     cards_dir: Option<PathBuf>,
@@ -264,12 +280,19 @@ fn run_traced<StandardError: Write + Send + 'static>(
             "{}",
             trace.announcement()
         ));
+        (trace_setup.record_panics)(Arc::clone(trace));
     }
     let process = ProcessRecord {
         record: run_record_on(&stderr, trace.clone()),
         trace,
         salt: location_salt_drawn_now(),
     };
+    (process.record)(
+        ProcessEvent::Started {
+            command: command_name,
+        }
+        .into(),
+    );
     let outcome = Directories::establish(environment, &OperatingSystemFilesystem, cards_dir)
         .map_err(CommandLineFailure::Directories)
         .and_then(|directories| {
@@ -280,6 +303,7 @@ fn run_traced<StandardError: Write + Send + 'static>(
             command(directories, &process)
         });
     let status = exit_status_after(outcome, process.record.as_ref());
+    (process.record)(ProcessEvent::Exited { status }.into());
     if let Some(trace) = &process.trace {
         for stop in trace.finish() {
             let unfinished = match stop {
@@ -324,6 +348,33 @@ fn start_trace(
             .map(|trace| Some(Arc::new(trace)))
             .map_err(CommandLineFailure::Trace)
         }
+    }
+}
+
+/// Sets the panic hook that writes the source location of each panic, never its message, into the trace's events file and empties the trace's queues before the panic goes on to the hook it replaced, so the line is on disk before the process ends.
+fn record_panic_locations(trace: Arc<Trace>) {
+    let replaced = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic| {
+        if let Some(location) = panic.location() {
+            trace.record(
+                &ProcessEvent::Panicked {
+                    file: location.file().to_owned(),
+                    line: location.line(),
+                }
+                .into(),
+            );
+        }
+        drop(trace.finish());
+        replaced(panic);
+    }));
+}
+
+/// The name a client gives the observer command on the command line.
+const fn observer_command_name(command: &ObserverCommand) -> &'static str {
+    match command {
+        ObserverCommand::ShowPeers { .. } => SHOW_PEERS_COMMAND,
+        ObserverCommand::Tail { .. } => TAIL_COMMAND,
+        ObserverCommand::TestSend { .. } => TEST_SEND_COMMAND,
     }
 }
 
@@ -770,6 +821,7 @@ fn run_infrastructure_command(
     trace_setup: TraceSetup<'_>,
 ) -> ExitStatus {
     run_traced(
+        RUN_INFRASTRUCTURE_COMMAND,
         command.debug().tracing(),
         environment,
         None,
@@ -924,6 +976,10 @@ mod tests {
     const SPEC_PROGRAM_PURPOSE: &str = "Messaging between agents across machines and harnesses";
     /// Sends no iroh line anywhere: one test process runs many traced commands, and a process holds one global subscriber.
     const IROH_LINES_LEFT_OUT: InstallIrohLines = |_trace| Ok(());
+    /// Sets no panic hook: one test process runs many traced commands, and a process holds one panic hook.
+    const PANICS_LEFT_UNRECORDED: RecordPanics = |_trace| {};
+    /// The command name the traced commands of these tests run under.
+    const TRACED_COMMAND: &str = "mcp";
 
     /// A scratch directory tree that is removed when this value is dropped, whether the test passed or failed.
     struct ScratchRoot(PathBuf);
@@ -1283,6 +1339,7 @@ mod tests {
                 effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
                 bounds: TraceBounds::SPEC,
                 install_iroh_lines: IROH_LINES_LEFT_OUT,
+                record_panics: PANICS_LEFT_UNRECORDED,
             },
         );
 
@@ -1395,6 +1452,7 @@ mod tests {
         let body_running = body_ended.lock().unwrap();
 
         let status = run_traced(
+            TRACED_COMMAND,
             Tracing::Debug,
             environment,
             None,
@@ -1403,6 +1461,7 @@ mod tests {
                 effects: &trace_effects,
                 bounds: TraceBounds::SPEC,
                 install_iroh_lines: IROH_LINES_LEFT_OUT,
+                record_panics: PANICS_LEFT_UNRECORDED,
             },
             move |_directories, process| {
                 for _ in 0..EVENTS_RECORDED {
@@ -1446,6 +1505,7 @@ mod tests {
         let run_running = run_ended.lock().unwrap();
 
         let status = run_traced(
+            TRACED_COMMAND,
             Tracing::Debug,
             environment,
             None,
@@ -1457,6 +1517,7 @@ mod tests {
                     ..TraceBounds::SPEC
                 },
                 install_iroh_lines: IROH_LINES_LEFT_OUT,
+                record_panics: PANICS_LEFT_UNRECORDED,
             },
             |_directories, process| {
                 record_in_the_events_file_alone(process);
@@ -1585,6 +1646,7 @@ mod tests {
         let standard_error = SharedRecord::default();
 
         let status = run_traced(
+            TRACED_COMMAND,
             Tracing::Debug,
             environment,
             None,
@@ -1596,6 +1658,7 @@ mod tests {
                     ..TraceBounds::SPEC
                 },
                 install_iroh_lines: IROH_LINES_LEFT_OUT,
+                record_panics: PANICS_LEFT_UNRECORDED,
             },
             |_directories, process| {
                 record_in_the_events_file_alone(process);
@@ -1626,6 +1689,7 @@ mod tests {
         let standard_error = SharedRecord::default();
 
         let status = run_traced(
+            TRACED_COMMAND,
             Tracing::Debug,
             environment,
             None,
@@ -1637,6 +1701,7 @@ mod tests {
                     ..TraceBounds::SPEC
                 },
                 install_iroh_lines: IROH_LINES_LEFT_OUT,
+                record_panics: PANICS_LEFT_UNRECORDED,
             },
             |_directories, process| {
                 record_in_the_events_file_alone(process);
@@ -1664,6 +1729,7 @@ mod tests {
         let standard_error = SharedRecord::default();
 
         let status = run_traced(
+            TRACED_COMMAND,
             Tracing::Debug,
             environment,
             None,
@@ -1675,6 +1741,7 @@ mod tests {
                     ..TraceBounds::SPEC
                 },
                 install_iroh_lines: IROH_LINES_LEFT_OUT,
+                record_panics: PANICS_LEFT_UNRECORDED,
             },
             |_directories, _process| Ok(ExitStatus::Success),
         );
@@ -1700,6 +1767,7 @@ mod tests {
         let standard_error = SharedRecord::default();
 
         let status = run_traced(
+            TRACED_COMMAND,
             Tracing::Debug,
             environment,
             None,
@@ -1711,6 +1779,7 @@ mod tests {
                     ..TraceBounds::SPEC
                 },
                 install_iroh_lines: IROH_LINES_LEFT_OUT,
+                record_panics: PANICS_LEFT_UNRECORDED,
             },
             |_directories, _process| Ok(ExitStatus::Success),
         );
@@ -1738,6 +1807,7 @@ mod tests {
         let command_ran = AtomicBool::new(false);
 
         let status = run_traced(
+            TRACED_COMMAND,
             Tracing::Debug,
             environment,
             None,
@@ -1746,6 +1816,7 @@ mod tests {
                 effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
                 bounds: TraceBounds::SPEC,
                 install_iroh_lines: iroh_lines::install,
+                record_panics: PANICS_LEFT_UNRECORDED,
             },
             |_directories, _process| {
                 command_ran.store(true, Ordering::SeqCst);
@@ -1761,6 +1832,142 @@ mod tests {
         };
         assert!(refusal.starts_with(SPEC_REFUSAL_OPENING), "{refusal}");
         assert!(refusal.ends_with(SPEC_REFUSAL_CLOSING), "{refusal}");
+    }
+
+    /// The events file lines of every run the environment's trace directory holds, each parsed.
+    fn events_lines_under(
+        environment: &impl Fn(&str) -> Option<OsString>,
+    ) -> Vec<serde_json::Value> {
+        let directory = TraceDirectory::resolve(environment).unwrap().path();
+        std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(OsStr::to_str)
+                    .and_then(trace_file_of)
+                    .is_some_and(|(_, kind)| kind == TraceFileKind::Events)
+            })
+            .flat_map(|path| {
+                std::fs::read_to_string(path)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect::<Vec<serde_json::Value>>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn observability_decision_9_a_traced_command_records_its_start_with_the_version_and_command_first_and_its_exit_status_last()
+     {
+        const SCRATCH_PREFIX: &str = "estafette-start-and-exit";
+        const SPEC_COMMAND: &str = "doctor";
+        let (_scratch_removed_when_the_test_ends, environment) =
+            scratch_environment(SCRATCH_PREFIX);
+
+        let status = run_traced(
+            SPEC_COMMAND,
+            Tracing::Debug,
+            &environment,
+            None,
+            io::sink(),
+            TraceSetup {
+                effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
+                bounds: TraceBounds::SPEC,
+                install_iroh_lines: IROH_LINES_LEFT_OUT,
+                record_panics: PANICS_LEFT_UNRECORDED,
+            },
+            |_directories, process| {
+                (process.record)(ProcessEvent::ClockBeforeUnixEpoch.into());
+                Ok(ExitStatus::DoctorFoundFailedCheck)
+            },
+        );
+
+        let lines = events_lines_under(&environment);
+        let events: Vec<&serde_json::Value> = lines.iter().map(|line| &line["event"]).collect();
+        assert_eq!(status, ExitStatus::DoctorFoundFailedCheck);
+        assert_eq!(
+            events,
+            [
+                "process.started",
+                "process.clock_before_unix_epoch",
+                "process.exited"
+            ]
+        );
+        assert_eq!(lines[0]["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(lines[0]["command"], SPEC_COMMAND);
+        assert_eq!(lines[2]["status"], 3);
+    }
+
+    #[test]
+    fn observability_decision_9_a_panic_writes_its_source_location_and_never_its_message_to_the_events_file_before_it_goes_on()
+     {
+        const SCRATCH_PREFIX: &str = "estafette-panic-location";
+        const PANIC_MESSAGE: &str = "a panic message no events file may hold";
+        let (_scratch_removed_when_the_test_ends, environment) =
+            scratch_environment(SCRATCH_PREFIX);
+        let trace = start_trace(
+            Tracing::Debug,
+            &environment,
+            &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
+            TraceBounds::SPEC,
+        )
+        .unwrap()
+        .unwrap();
+        let hook_before = std::panic::take_hook();
+        let (read_when_the_panic_went_on, events_text) = std::sync::mpsc::channel();
+        let events_file = trace.files().events.clone();
+        std::panic::set_hook(Box::new(move |_panic| {
+            drop(read_when_the_panic_went_on.send(std::fs::read_to_string(&events_file).unwrap()));
+        }));
+        record_panic_locations(Arc::clone(&trace));
+
+        let panic_line = line!() + 1;
+        let panicked = std::thread::spawn(|| panic!("{PANIC_MESSAGE}")).join();
+        std::panic::set_hook(hook_before);
+
+        let events_text = events_text.try_recv().unwrap();
+        let lines: Vec<serde_json::Value> = events_text
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert!(panicked.is_err());
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0]["event"], "process.panicked");
+        assert_eq!(lines[0]["file"], file!());
+        assert_eq!(lines[0]["line"], panic_line);
+        assert!(!events_text.contains(PANIC_MESSAGE), "{events_text}");
+    }
+
+    static PANIC_HOOK_SET: AtomicBool = AtomicBool::new(false);
+
+    #[test]
+    fn observability_decision_9_the_panic_hook_is_set_under_debug_alone() {
+        const SCRATCH_PREFIX: &str = "estafette-panic-hook-set";
+        let (_scratch_removed_when_the_test_ends, environment) =
+            scratch_environment(SCRATCH_PREFIX);
+
+        let set_under = [Tracing::NoDebug, Tracing::Debug].map(|tracing| {
+            PANIC_HOOK_SET.store(false, Ordering::SeqCst);
+            run_traced(
+                TRACED_COMMAND,
+                tracing,
+                &environment,
+                None,
+                io::sink(),
+                TraceSetup {
+                    effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
+                    bounds: TraceBounds::SPEC,
+                    install_iroh_lines: IROH_LINES_LEFT_OUT,
+                    record_panics: |_trace| PANIC_HOOK_SET.store(true, Ordering::SeqCst),
+                },
+                |_directories, _process| Ok(ExitStatus::Success),
+            );
+            PANIC_HOOK_SET.load(Ordering::SeqCst)
+        });
+
+        assert_eq!(set_under, [false, true]);
     }
 
     #[derive(Clone, Default)]
@@ -1841,6 +2048,7 @@ mod tests {
                 effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
                 bounds: TraceBounds::SPEC,
                 install_iroh_lines: IROH_LINES_LEFT_OUT,
+                record_panics: PANICS_LEFT_UNRECORDED,
             },
         );
 

@@ -7,7 +7,7 @@ use tokio::task::JoinError;
 
 use super::{AnsweredFailure, AreaEvent, CODE_FIELD, Event, EventFields, answered};
 use crate::dirs::TraceFileKind;
-use crate::errors::ErrorCode;
+use crate::errors::{ErrorCode, ExitStatus};
 use crate::handle::Handle;
 use crate::node::{ClaimedCard, NodeError, ShutdownSignal};
 
@@ -15,6 +15,11 @@ use crate::node::{ClaimedCard, NodeError, ShutdownSignal};
 pub const CLOCK_BEFORE_UNIX_EPOCH: &str =
     "the system clock reads a time before 1970-01-01: set the clock and run the command again";
 
+const VERSION_FIELD: &str = "version";
+const COMMAND_FIELD: &str = "command";
+const STATUS_FIELD: &str = "status";
+const FILE_FIELD: &str = "file";
+const LINE_FIELD: &str = "line";
 const CARD_FIELD: &str = "card";
 const HANDLE_FIELD: &str = "handle";
 const SIGNAL_FIELD: &str = "signal";
@@ -32,6 +37,9 @@ super::event_names! {
         ClaimNodeNotStarted => "process.claim_node_not_started",
         TraceNotDrained => "process.trace_not_drained",
         TraceNotCut => "process.trace_not_cut",
+        Started => "process.started",
+        Exited => "process.exited",
+        Panicked => "process.panicked",
         Claimed => "process.claimed",
         ClaimRefused => "process.claim_refused",
         InputEnded => "process.input_ended",
@@ -63,6 +71,12 @@ pub enum ProcessEvent {
         file: TraceFileKind,
         source: io::Error,
     },
+    /// The process started the command of that name, which starts an endpoint.
+    Started { command: &'static str },
+    /// The process ends with the exit status.
+    Exited { status: ExitStatus },
+    /// A thread panicked at the source location, its message left out.
+    Panicked { file: String, line: u32 },
     /// The session claimed the card, and the node assigned itself the handle.
     Claimed(ClaimedCard),
     /// The session refused a claim with the code, holding a card already or stopping.
@@ -149,6 +163,9 @@ impl AreaEvent for ProcessEvent {
             }
             Self::TraceNotDrained { .. } => ProcessEventName::TraceNotDrained,
             Self::TraceNotCut { .. } => ProcessEventName::TraceNotCut,
+            Self::Started { .. } => ProcessEventName::Started,
+            Self::Exited { .. } => ProcessEventName::Exited,
+            Self::Panicked { .. } => ProcessEventName::Panicked,
             Self::Claimed(_) => ProcessEventName::Claimed,
             Self::ClaimRefused { .. } => ProcessEventName::ClaimRefused,
             Self::InputEnded => ProcessEventName::InputEnded,
@@ -162,7 +179,10 @@ impl AreaEvent for ProcessEvent {
 
     fn run_record_line(&self) -> Option<String> {
         match self {
-            Self::Claimed(_)
+            Self::Started { .. }
+            | Self::Exited { .. }
+            | Self::Panicked { .. }
+            | Self::Claimed(_)
             | Self::ClaimRefused { .. }
             | Self::InputEnded
             | Self::SignalReceived { .. }
@@ -216,6 +236,15 @@ impl AreaEvent for ProcessEvent {
             | Self::LockReleased
             | Self::HeldConnectionsDropped => Vec::new(),
             Self::ClaimFailed(failure) => answered(&failure.answered_code()),
+            Self::Started { command } => vec![
+                (VERSION_FIELD, Value::from(env!("CARGO_PKG_VERSION"))),
+                (COMMAND_FIELD, Value::from(*command)),
+            ],
+            Self::Exited { status } => vec![(STATUS_FIELD, Value::from(u8::from(*status)))],
+            Self::Panicked { file, line } => vec![
+                (FILE_FIELD, Value::from(file.as_str())),
+                (LINE_FIELD, Value::from(*line)),
+            ],
             Self::Claimed(claimed) => vec![
                 (CARD_FIELD, Value::from(claimed.card.as_str())),
                 (HANDLE_FIELD, Value::from(claimed.handle.as_str())),
