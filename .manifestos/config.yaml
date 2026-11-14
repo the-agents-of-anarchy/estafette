@@ -1,61 +1,65 @@
 you:
-  - name: stop-yapping
-    purpose: communication protocol
-    source: manifesto stop-yapping
-  - name: first-principles
-    purpose: reasoning methodology
-    source: manifesto first-principles
-  - name: agentic-delegation
-    purpose: orchestration operating model
-    source: skill orchestration:agentic-delegation
-  - name: orchestration-economics
-    purpose: cost of every launch, continuation and stop in usage limit and wall time
-    source: file .claude/skills/orchestration-economics/SKILL.md
-  - name: dev-cycle
-    purpose: development loop of specify, plan, implement, review, integrate
-    source: skill dev-cycle:dev-cycle
-  - name: check-back
-    purpose: wakes over pending work
-    source: skill agent-conduct:check-back
-  - name: decide-while-away
-    purpose: decisions while the owner is away
-    source: skill agent-conduct:decide-while-away
-  - name: office-hours
-    purpose: rounds in which the owner answers queued questions
-    source: skill agent-conduct:office-hours
-  - name: work-silently
-    purpose: silence in the conversation while working
-    source: skill agent-conduct:work-silently
-  - name: git-etiquette
-    purpose: version-control conduct
-    source: skill agent-conduct:git-etiquette
-  - name: correct-by-construction
-    purpose: Rust correctness discipline
-    source: manifesto correct-by-construction
-  - name: only-what-it-needs
-    purpose: boundary and interface discipline
-    source: manifesto only-what-it-needs
-  - name: kiss
-    purpose: decomplecting commands
-    source: manifesto kiss
-  - name: yagni
-    purpose: scope discipline against imagined futures
-    source: manifesto yagni
-  - name: lines-spent
-    purpose: cost-of-lines ownership
-    source: manifesto lines-spent
-  - name: self-documenting-code
-    purpose: code legibility standard
-    source: manifesto self-documenting-code
-  - name: tdd
-    purpose: test-first construction
-    source: skill dev-discipline:tdd
-  - name: systematic-debugging
-    purpose: root-cause debugging
-    source: skill dev-discipline:systematic-debugging
-  - name: ontology
-    purpose: peer society terms
-    source: skill peers:ontology
+  stack:
+    - name: stop-yapping
+      purpose: communication protocol
+      source: manifesto stop-yapping
+    - name: first-principles
+      purpose: reasoning methodology
+      source: manifesto first-principles
+    - name: agentic-delegation
+      purpose: orchestration operating model
+      source: skill orchestration:agentic-delegation
+    - name: orchestration-economics
+      purpose: cost of every launch, continuation and stop in usage limit and wall time
+      source: skill orchestration:orchestration-economics
+    - name: dev-cycle
+      purpose: development loop of specify, plan, implement, review, integrate
+      source: skill dev-cycle:dev-cycle
+    - name: check-back
+      purpose: wakes over pending work
+      source: skill agent-conduct:check-back
+    - name: decide-while-away
+      purpose: decisions while the owner is away
+      source: skill agent-conduct:decide-while-away
+    - name: office-hours
+      purpose: rounds in which the owner answers queued questions
+      source: skill agent-conduct:office-hours
+    - name: work-silently
+      purpose: silence in the conversation while working
+      source: skill agent-conduct:work-silently
+    - name: git-etiquette
+      purpose: version-control conduct
+      source: skill agent-conduct:git-etiquette
+    - name: correct-by-construction
+      purpose: Rust correctness discipline
+      source: manifesto correct-by-construction
+    - name: only-what-it-needs
+      purpose: boundary and interface discipline
+      source: manifesto only-what-it-needs
+    - name: kiss
+      purpose: decomplecting commands
+      source: manifesto kiss
+    - name: yagni
+      purpose: scope discipline against imagined futures
+      source: manifesto yagni
+    - name: lines-spent
+      purpose: cost-of-lines ownership
+      source: manifesto lines-spent
+    - name: self-documenting-code
+      purpose: code legibility standard
+      source: manifesto self-documenting-code
+    - name: tdd
+      purpose: test-first construction
+      source: skill dev-discipline:tdd
+    - name: systematic-debugging
+      purpose: root-cause debugging
+      source: skill dev-discipline:systematic-debugging
+    - name: ontology
+      purpose: peer society terms
+      source: skill peers:ontology
+  blocks:
+    identity:
+      file: .manifestos/identity.md
 
 subagents:
   implementer:
