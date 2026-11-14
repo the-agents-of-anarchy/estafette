@@ -1678,7 +1678,9 @@ pub(super) mod tests {
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
-    use crate::test_waits::{RecordedHistory, found_within};
+    use crate::test_waits::{RecordedEvent, found_within, next_recorded_meeting, recorded_events};
+    use tokio::sync::mpsc::UnboundedReceiver;
+
     use crate::wire::{Infrastructure, SignatureBytes};
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];
@@ -2978,18 +2980,17 @@ pub(super) mod tests {
     }
 
     /// Waits until the member recorded a presence request dropped by the rule, within the wait for a payload.
-    async fn request_dropped_by(recorded: &RecordedHistory, rule: &str) {
-        recorded
-            .recorded_within(
-                PAYLOAD_DROPPED,
-                |fields| {
-                    fields.contains(&(KIND, serde_json::Value::from(PRESENCE_REQUEST_KIND)))
-                        && fields.contains(&(RULE, serde_json::Value::from(rule)))
-                },
-                1,
-                PAYLOAD_WAIT,
-            )
-            .await;
+    async fn request_dropped_by(recorded: &mut UnboundedReceiver<RecordedEvent>, rule: &str) {
+        next_recorded_meeting(
+            recorded,
+            PAYLOAD_DROPPED,
+            |fields| {
+                fields.contains(&(KIND, serde_json::Value::from(PRESENCE_REQUEST_KIND)))
+                    && fields.contains(&(RULE, serde_json::Value::from(rule)))
+            },
+            PAYLOAD_WAIT,
+        )
+        .await;
     }
 
     async fn ask_for_presence(witness: &Witness, requester_seed: u8, seq: u64) {
@@ -3063,12 +3064,12 @@ pub(super) mod tests {
     async fn spec_3_8_a_presence_request_replayed_below_its_requesters_last_seq_or_older_than_the_max_age_is_dropped()
      {
         let scratch = Scratch::new("asked-stale").await;
-        let recorded = RecordedHistory::new();
+        let (record, mut recorded) = recorded_events();
         let (_member, mut witness) = start_witnessed(
             &scratch,
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
                 .with_clock(frozen_clock(FROZEN_CLOCK_MS))
-                .with_report(recorded.sink()),
+                .with_report(record),
             None,
         )
         .await;
@@ -3083,12 +3084,12 @@ pub(super) mod tests {
             .unwrap();
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, REPLAYED_REQUEST_SEQ).await;
-        request_dropped_by(&recorded, NOT_ABOVE_REQUESTER_SEQ_RULE).await;
+        request_dropped_by(&mut recorded, NOT_ABOVE_REQUESTER_SEQ_RULE).await;
         let after_replay = witness
             .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
             .await;
         ask_for_presence(&witness, SECOND_REQUESTER_SEED, STALE_REQUEST_SEQ).await;
-        request_dropped_by(&recorded, OLDER_THAN_MAX_AGE_RULE).await;
+        request_dropped_by(&mut recorded, OLDER_THAN_MAX_AGE_RULE).await;
         let after_stale = witness
             .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
             .await;
@@ -3136,12 +3137,12 @@ pub(super) mod tests {
     #[tokio::test]
     async fn spec_3_8_a_stopping_member_answers_a_presence_request_with_nothing() {
         let scratch = Scratch::new("asked-stopping").await;
-        let recorded = RecordedHistory::new();
+        let (record, mut recorded) = recorded_events();
         let (member, mut witness) = start_witnessed(
             &scratch,
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
                 .with_clock(frozen_clock(FROZEN_CLOCK_MS))
-                .with_report(recorded.sink()),
+                .with_report(record),
             None,
         )
         .await;
@@ -3158,14 +3159,13 @@ pub(super) mod tests {
             .unwrap();
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
-        recorded
-            .recorded_within(
-                PAYLOAD_ACCEPTED,
-                |fields| fields.contains(&(KIND, serde_json::Value::from(PRESENCE_REQUEST_KIND))),
-                1,
-                PAYLOAD_WAIT,
-            )
-            .await;
+        next_recorded_meeting(
+            &mut recorded,
+            PAYLOAD_ACCEPTED,
+            |fields| fields.contains(&(KIND, serde_json::Value::from(PRESENCE_REQUEST_KIND))),
+            PAYLOAD_WAIT,
+        )
+        .await;
         let answer = witness
             .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
             .await;
@@ -3267,10 +3267,10 @@ pub(super) mod tests {
     #[tokio::test]
     async fn spec_3_8_an_unreachable_report_about_a_peer_sets_it_unreachable() {
         let scratch = Scratch::new("peer-rumor").await;
-        let recorded = RecordedHistory::new();
+        let (record, mut recorded) = recorded_events();
         let (member, witness) = start_witnessed(
             &scratch,
-            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(recorded.sink()),
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(record),
             Some(WITNESS_HANDLE),
         )
         .await;
@@ -3300,14 +3300,13 @@ pub(super) mod tests {
             INTRODUCE_ROUND_TRIP,
         )
         .await;
-        recorded
-            .recorded_within(
-                PAYLOAD_ACCEPTED,
-                |fields| fields.contains(&(KIND, serde_json::Value::from(PRESENCE_KIND))),
-                1,
-                INTRODUCE_ROUND_TRIP,
-            )
-            .await;
+        next_recorded_meeting(
+            &mut recorded,
+            PAYLOAD_ACCEPTED,
+            |fields| fields.contains(&(KIND, serde_json::Value::from(PRESENCE_KIND))),
+            INTRODUCE_ROUND_TRIP,
+        )
+        .await;
 
         witness
             .broadcast_as(
@@ -3748,7 +3747,7 @@ pub(super) mod tests {
         .unwrap();
         let witness =
             Witness::joined_through(WITNESS_SEED, Some(WITNESS_HANDLE), &first.endpoint).await;
-        let (record, mut events) = crate::net::direct::tests::recorded_events();
+        let (record, mut events) = recorded_events();
 
         let _joining = start_members_reaching(
             &scratch,
@@ -3787,7 +3786,7 @@ pub(super) mod tests {
 
     /// The names of the events recorded before this node's next sent Introduce to the card of the seed, within the bound, and that event's fields.
     async fn recorded_until_introduce_sent_to(
-        events: &mut tokio::sync::mpsc::UnboundedReceiver<crate::net::direct::tests::RecordedEvent>,
+        events: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
         seed: u8,
     ) -> (Vec<&'static str>, crate::event::EventFields) {
         let introduce_to_the_card = (
@@ -4381,8 +4380,9 @@ pub(super) mod tests {
     #[tokio::test]
     async fn observability_decision_9_the_home_relays_status_is_recorded_by_port_and_salted_hash_connected_then_lost()
      {
-        use crate::net::direct::tests::{next_recorded, recorded_events, test_salt};
+        use crate::net::direct::tests::test_salt;
         use crate::net::endpoint::{LocationHash, TransportRecord};
+        use crate::test_waits::next_recorded;
         use iroh_relay::server::{RelayConfig, Server, ServerConfig};
 
         let scratch = Scratch::new("home-relay-record").await;

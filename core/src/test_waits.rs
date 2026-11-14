@@ -3,61 +3,54 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::watch;
+use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::event::{Event, EventFields, RunRecord};
 
+/// The longest a test waits for an event when it names no bound of its own.
+const RECORDED_EVENT_WITHIN: Duration = Duration::from_secs(10);
+
 /// The name and fields of one event a run record was handed.
-type RecordedEvent = (&'static str, EventFields);
+pub type RecordedEvent = (&'static str, EventFields);
 
-/// Every event a run record was handed, in order, waking each wait at every new one.
-#[derive(Clone)]
-pub struct RecordedHistory(Arc<watch::Sender<Vec<RecordedEvent>>>);
+/// A run record that hands the name and fields of each event to the receiver.
+pub fn recorded_events() -> (RunRecord, UnboundedReceiver<RecordedEvent>) {
+    let (sender, receiver) = unbounded_channel();
+    let record: RunRecord = Arc::new(move |event: Event| {
+        drop(sender.send((event.name(), event.fields())));
+    });
+    (record, receiver)
+}
 
-impl RecordedHistory {
-    /// A history that holds no event yet.
-    pub fn new() -> Self {
-        Self(Arc::new(watch::Sender::new(Vec::new())))
-    }
+/// Waits for the next recorded event of the name, within the bound, failing with the name and the events seen.
+pub async fn next_recorded(
+    receiver: &mut UnboundedReceiver<RecordedEvent>,
+    name: &str,
+) -> EventFields {
+    next_recorded_meeting(receiver, name, |_fields| true, RECORDED_EVENT_WITHIN).await
+}
 
-    /// A run record that adds each event it is handed to the history.
-    pub fn sink(&self) -> RunRecord {
-        let history = Arc::clone(&self.0);
-        Arc::new(move |event: Event| {
-            history.send_modify(|recorded| recorded.push((event.name(), event.fields())));
-        })
-    }
-
-    /// The fields of the event of the name whose fields meet the condition, once that many such events are recorded within the bound, failing with the event's name and every event recorded so far.
-    pub async fn recorded_within(
-        &self,
-        name: &str,
-        meets: impl Fn(&EventFields) -> bool + Send + Sync,
-        times: usize,
-        within: Duration,
-    ) -> EventFields {
-        let nth_meeting = |recorded: &[RecordedEvent]| {
-            recorded
-                .iter()
-                .filter(|(recorded_name, fields)| *recorded_name == name && meets(fields))
-                .nth(times.saturating_sub(1))
-                .map(|(_, fields)| fields.clone())
-        };
-        let mut recorded = self.0.subscribe();
-        let found = match tokio::time::timeout(
-            within,
-            recorded.wait_for(|recorded| nth_meeting(recorded).is_some()),
-        )
-        .await
-        {
-            Ok(Ok(recorded)) => nth_meeting(&recorded),
-            Ok(Err(_)) | Err(_) => None,
-        };
-        found.unwrap_or_else(|| {
-            let names: Vec<&str> = self.0.borrow().iter().map(|(name, _)| *name).collect();
-            panic!("{name} not recorded {times} time(s) within {within:?}; recorded {names:?}")
-        })
-    }
+/// The fields of the next recorded event of the name whose fields meet the condition, consuming every event before it, failing with the name and the events seen when none comes within the bound.
+pub async fn next_recorded_meeting(
+    receiver: &mut UnboundedReceiver<RecordedEvent>,
+    name: &str,
+    meets: impl Fn(&EventFields) -> bool + Send + Sync,
+    within: Duration,
+) -> EventFields {
+    let mut seen = Vec::new();
+    let found = tokio::time::timeout(within, async {
+        loop {
+            let (recorded_name, fields) = receiver.recv().await.unwrap();
+            if recorded_name == name && meets(&fields) {
+                return fields;
+            }
+            seen.push(recorded_name);
+        }
+    })
+    .await;
+    found.unwrap_or_else(|_elapsed| {
+        panic!("no {name} meeting the condition within {within:?}; seen {seen:?}")
+    })
 }
 
 /// What the look finds, looked for again each time the runtime has run its other tasks, or none when the bound runs out first.

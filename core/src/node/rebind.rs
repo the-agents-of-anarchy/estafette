@@ -400,7 +400,7 @@ mod tests {
 
     use super::{MemberJoins, RebindSchedule, RelayProbe, relay_answers};
     use crate::event::{Event, RunRecord, TransportEvent};
-    use crate::net::direct::tests::{next_recorded, recorded_events, test_salt};
+    use crate::net::direct::tests::test_salt;
     use crate::net::direct::{
         ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock,
     };
@@ -419,7 +419,7 @@ mod tests {
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
-    use crate::test_waits::found_within;
+    use crate::test_waits::{RecordedEvent, found_within, next_recorded, recorded_events};
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
 
     const SPEC_DEAF_TIMEOUT: Duration = Duration::from_secs(15);
@@ -946,7 +946,7 @@ mod tests {
 
     /// The names of the events recorded before the next one of the name, within the bound, and that event's fields.
     async fn recorded_until(
-        events: &mut tokio::sync::mpsc::UnboundedReceiver<crate::net::direct::tests::RecordedEvent>,
+        events: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
         name: &str,
     ) -> (Vec<&'static str>, crate::event::EventFields) {
         let mut before = Vec::new();

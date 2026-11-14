@@ -923,7 +923,7 @@ mod tests {
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::net::endpoint::NodeEndpoint;
     use crate::node::{Identity, Node, NodeEffects};
-    use crate::test_waits::{RecordedHistory, found_within};
+    use crate::test_waits::{RecordedEvent, found_within, next_recorded_meeting, recorded_events};
 
     use crate::wire::{HostAddr, Version};
 
@@ -1718,7 +1718,7 @@ mod tests {
         scratch.certify(HOST_SEED);
         let seen = Seen::default();
         let (stop, stopped) = stopped_on_signal();
-        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let (record, mut recorded) = recorded_events();
         let plan = Plan {
             stopped,
             transport: crate::net::endpoint::TransportRecord::new(
@@ -1923,6 +1923,12 @@ mod tests {
         }
     }
 
+    /// Whether the event's fields are those of an Infrastructure record the second host signed.
+    fn is_the_second_hosts_record(fields: &crate::event::EventFields) -> bool {
+        fields.contains(&(KIND_FIELD, serde_json::Value::from(INFRASTRUCTURE_KIND)))
+            && fields.contains(&(PEER_FIELD, short_id(SECOND_HOST_SEED)))
+    }
+
     async fn saved_within(scratch: &Scratch, host_seed: u8, within: Duration) -> Option<Host> {
         let saved = found_within(within, async || scratch.saved_host(host_seed)).await;
         if saved.is_none() {
@@ -1944,10 +1950,10 @@ mod tests {
         second_scratch.certify(SECOND_HOST_SEED);
         let (first_seen, second_seen) = (Seen::default(), Seen::default());
         let (stop_first, first_stopped) = stopped_on_signal();
-        let first_recorded = RecordedHistory::new();
+        let (first_record, mut first_recorded) = recorded_events();
         let first_plan = Plan {
             stopped: first_stopped,
-            report: first_recorded.sink(),
+            report: first_record,
             ..Plan::new(HOST_SEED)
         };
 
@@ -1967,19 +1973,16 @@ mod tests {
                     async {
                         let learned =
                             saved_within(&first_scratch, SECOND_HOST_SEED, HOST_LEARNED_WAIT).await;
-                        first_recorded
-                            .recorded_within(
+                        let second_record_due = Instant::now() + SPEC_RECORD_INTERVAL_LATEST;
+                        for _ in 0..SECOND_RECORD {
+                            next_recorded_meeting(
+                                &mut first_recorded,
                                 PAYLOAD_ACCEPTED_EVENT,
-                                |fields| {
-                                    fields.contains(&(
-                                        KIND_FIELD,
-                                        serde_json::Value::from(INFRASTRUCTURE_KIND),
-                                    )) && fields.contains(&(PEER_FIELD, short_id(SECOND_HOST_SEED)))
-                                },
-                                SECOND_RECORD,
-                                SPEC_RECORD_INTERVAL_LATEST,
+                                is_the_second_hosts_record,
+                                second_record_due.saturating_duration_since(Instant::now()),
                             )
                             .await;
+                        }
                         let first_holds_own = relay_map_holds(&first, SPEC_RELAY_URL).await;
                         let first_holds_second =
                             relay_map_holds(&first, SPEC_SECOND_RELAY_URL).await;
@@ -2221,11 +2224,9 @@ mod tests {
 
     /// Every gossip event recorded until one equal to `last`, in order, failing with what was recorded when it does not come within the wait.
     async fn gossip_events_through(
-        recorded: &mut tokio::sync::mpsc::UnboundedReceiver<
-            crate::net::direct::tests::RecordedEvent,
-        >,
-        last: &crate::net::direct::tests::RecordedEvent,
-    ) -> Vec<crate::net::direct::tests::RecordedEvent> {
+        recorded: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+        last: &RecordedEvent,
+    ) -> Vec<RecordedEvent> {
         let mut gossip = Vec::new();
         let arrived = tokio::time::timeout(RECORDED_WAIT, async {
             while gossip.last() != Some(last) {
@@ -2251,7 +2252,7 @@ mod tests {
         scratch.certify(HOST_SEED);
         let seen = Seen::default();
         let (stop, stopped) = stopped_on_signal();
-        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let (record, mut recorded) = recorded_events();
         let plan = Plan {
             stopped,
             report: record,
@@ -2343,7 +2344,7 @@ mod tests {
         scratch.certify(HOST_SEED);
         let seen = Seen::default();
         let (stop, stopped) = stopped_on_signal();
-        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let (record, mut recorded) = recorded_events();
         let plan = Plan {
             stopped,
             report: record,

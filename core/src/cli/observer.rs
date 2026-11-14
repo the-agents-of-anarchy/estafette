@@ -1041,7 +1041,7 @@ mod tests {
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
     use crate::stream_items::StreamExt;
-    use crate::test_waits::found_within;
+    use crate::test_waits::{RecordedEvent, found_within, recorded_events};
     use crate::wire::{Addr, Payload};
 
     const NETWORK_NAME: &str = "lab";
@@ -2095,7 +2095,7 @@ mod tests {
         let lab = Lab::new("introduce-recorded").await;
         let neighbor = start_silent_neighbor().await;
         lab.write_network_config(&[NEIGHBOR_SEED]);
-        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let (record, mut recorded) = recorded_events();
         let show_peers = ObserverCommand::ShowPeers {
             network: NETWORK_NAME.parse().unwrap(),
             cards_dir: None,
@@ -2471,11 +2471,9 @@ mod tests {
 
     /// The gossip events an observer records over the run, in order, once it has recorded that many, failing with what it recorded when they do not come within the payload wait.
     async fn gossip_events_recorded(
-        recorded: &mut tokio::sync::mpsc::UnboundedReceiver<
-            crate::net::direct::tests::RecordedEvent,
-        >,
+        recorded: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
         count: usize,
-    ) -> Vec<crate::net::direct::tests::RecordedEvent> {
+    ) -> Vec<RecordedEvent> {
         let mut gossip = Vec::new();
         let arrived = tokio::time::timeout(PAYLOAD_WAIT, async {
             while gossip.len() < count {
@@ -2499,7 +2497,7 @@ mod tests {
         let lab = Lab::new("tail-recorded").await;
         let mut neighbor = start_silent_neighbor().await;
         lab.write_network_config(&[NEIGHBOR_SEED]);
-        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let (record, mut recorded) = recorded_events();
         let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
         let (mut effects, operator_effects) = lab.effects(
             vec![neighbor.address.clone()],
@@ -2590,7 +2588,7 @@ mod tests {
      {
         let lab = Lab::new("tail-counters").await;
         lab.write_network_config(&[NEIGHBOR_SEED]);
-        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let (record, mut recorded) = recorded_events();
         let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
         let (mut effects, operator_effects) =
             lab.effects(Vec::new(), Box::pin(async move { drop(interrupted.await) }));

@@ -1977,24 +1977,10 @@ pub(crate) mod tests {
 
     const MISSED_COUNT_CASES: u64 = 500;
     const MISSED_COUNT_SPREAD: u64 = 0x9E37_79B9_7F4A_7C15;
-    const RECORDED_EVENT_WITHIN: Duration = Duration::from_secs(10);
     const SALT_BYTE: u8 = 0x5a;
     const SPEC_SUPERSEDED_CLOSE_CODE: u64 = 410;
 
-    /// The name and fields of one recorded event.
-    pub type RecordedEvent = (&'static str, crate::event::EventFields);
-
-    /// A run record that hands the name and fields of each event to the receiver.
-    pub fn recorded_events() -> (
-        crate::event::RunRecord,
-        tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
-    ) {
-        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        let record: crate::event::RunRecord = Arc::new(move |event: crate::event::Event| {
-            drop(sender.send((event.name(), event.fields())));
-        });
-        (record, receiver)
-    }
+    pub use crate::test_waits::{RecordedEvent, next_recorded, recorded_events};
 
     /// Every event the run record has handed the receiver so far, in order.
     pub fn recorded_so_far(
@@ -2005,21 +1991,20 @@ pub(crate) mod tests {
 
     /// The longest a test waits for a counters snapshot: two of the 60 s between snapshots of `spec/observability.md` decision 9, so a start that moved the paused clock still meets the first.
     const COUNTERS_SNAPSHOT_WITHIN: Duration = Duration::from_secs(120);
+    const COUNTERS_SNAPSHOT_EVENT: &str = "state.counters";
 
     /// The instant on the test's clock at which the next `state.counters` event reached the receiver, with its fields, failing by name when none comes within the wait.
     pub async fn next_counters_snapshot(
         receiver: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
     ) -> (tokio::time::Instant, crate::event::EventFields) {
-        tokio::time::timeout(COUNTERS_SNAPSHOT_WITHIN, async {
-            loop {
-                let (name, fields) = receiver.recv().await.unwrap();
-                if name == "state.counters" {
-                    return (tokio::time::Instant::now(), fields);
-                }
-            }
-        })
-        .await
-        .unwrap_or_else(|_elapsed| panic!("no state.counters within {COUNTERS_SNAPSHOT_WITHIN:?}"))
+        let fields = crate::test_waits::next_recorded_meeting(
+            receiver,
+            COUNTERS_SNAPSHOT_EVENT,
+            |_fields| true,
+            COUNTERS_SNAPSHOT_WITHIN,
+        )
+        .await;
+        (tokio::time::Instant::now(), fields)
     }
 
     /// The salt every test register hashes locations under.
@@ -2037,25 +2022,6 @@ pub(crate) mod tests {
     /// A register on the runtime's monotonic clock whose record drops every event.
     pub fn unrecorded_register() -> HeldConnections {
         HeldConnections::new(Arc::new(tokio::time::Instant::now), dropping_transport())
-    }
-
-    /// Waits for the next recorded event of the name, within the bound, failing with the name and the events seen.
-    pub async fn next_recorded(
-        receiver: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
-        name: &str,
-    ) -> crate::event::EventFields {
-        let mut seen = Vec::new();
-        let found = timeout(RECORDED_EVENT_WITHIN, async {
-            loop {
-                let (recorded_name, fields) = receiver.recv().await.unwrap();
-                if recorded_name == name {
-                    return fields;
-                }
-                seen.push(recorded_name);
-            }
-        })
-        .await;
-        found.unwrap_or_else(|_elapsed| panic!("no {name} within the bound; seen {seen:?}"))
     }
 
     /// Asserts that the map gives each case's input the case's output, and that its outputs hold as many distinct values as named.
