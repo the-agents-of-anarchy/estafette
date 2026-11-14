@@ -13,9 +13,9 @@ mod scratch_run;
 mod observability {
     use std::fs;
     use std::panic::{self, AssertUnwindSafe};
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
+    use std::sync::{Arc, Mutex, PoisonError};
     use std::thread;
     use std::time::Duration;
 
@@ -26,26 +26,36 @@ mod observability {
     const PANICKED_EVENT: &str = "process.panicked";
     const STAND_IN_CLOCK_PANIC: &str = "the stand-in clock panics while a line is stamped";
     const PANIC_ENDS_WITHIN: Duration = Duration::from_secs(10);
+    static PANIC_HOOK_HELD: Mutex<()> = Mutex::new(());
+
+    /// Frozen clocks whose monotonic reading panics once, on the first reading after the test armed it, so a line's stamp panics under the queue's lock.
+    fn clocks_panicking_once_armed(armed: Arc<AtomicBool>) -> TraceClocks {
+        let frozen = frozen_clocks();
+        let frozen_monotonic_ms = Arc::clone(&frozen.monotonic_ms);
+        TraceClocks {
+            monotonic_ms: Arc::new(move || {
+                assert!(
+                    !armed.swap(false, Ordering::SeqCst),
+                    "{STAND_IN_CLOCK_PANIC}"
+                );
+                frozen_monotonic_ms()
+            }),
+            ..frozen
+        }
+    }
 
     #[test]
     fn observability_decision_9_a_panic_raised_while_a_line_is_stamped_ends_through_a_hook_that_records_and_flushes_never_waiting_on_itself_nor_panicking_again()
      {
+        let _hook_held = PANIC_HOOK_HELD
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let clock_armed = Arc::new(AtomicBool::new(false));
-        let armed = Arc::clone(&clock_armed);
-        let frozen = frozen_clocks();
-        let frozen_monotonic_ms = Arc::clone(&frozen.monotonic_ms);
         let scratch = scratch_run(
             "panic-while-stamping",
-            &TraceEffects::of_the_operating_system(TraceClocks {
-                monotonic_ms: Arc::new(move || {
-                    assert!(
-                        !armed.swap(false, Ordering::SeqCst),
-                        "{STAND_IN_CLOCK_PANIC}"
-                    );
-                    frozen_monotonic_ms()
-                }),
-                ..frozen
-            }),
+            &TraceEffects::of_the_operating_system(clocks_panicking_once_armed(Arc::clone(
+                &clock_armed,
+            ))),
             TraceBounds::SPEC,
         );
         let events = Arc::new(scratch.run.open_events().unwrap());
@@ -94,6 +104,70 @@ mod observability {
             fs::read_to_string(&scratch.run.files().events).unwrap(),
             one_event_line(0)
         );
+        remove_scratch(&scratch.root).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_9_a_panic_raised_while_a_line_is_stamped_ends_through_a_hook_that_records_in_another_file_before_it_records_and_flushes_the_first()
+     {
+        let _hook_held = PANIC_HOOK_HELD
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let clock_armed = Arc::new(AtomicBool::new(false));
+        let scratch = scratch_run(
+            "panic-while-stamping-hook-records-raw-first",
+            &TraceEffects::of_the_operating_system(clocks_panicking_once_armed(Arc::clone(
+                &clock_armed,
+            ))),
+            TraceBounds::SPEC,
+        );
+        let events = Arc::new(scratch.run.open_events().unwrap());
+        let raw = Arc::new(scratch.run.open_raw().unwrap());
+        let (stops_in_the_hook, hook_stops) = mpsc::channel();
+        let hook_events = Arc::clone(&events);
+        let test_gave_up = Arc::new(AtomicBool::new(false));
+        let hook_sees_the_test_gave_up = Arc::clone(&test_gave_up);
+        let hook_before = panic::take_hook();
+        panic::set_hook(Box::new(move |_panic| {
+            if hook_sees_the_test_gave_up.load(Ordering::SeqCst) {
+                return;
+            }
+            raw.write(PANICKED_EVENT, &[]);
+            let raw_stop = raw.flush();
+            hook_events.write(PANICKED_EVENT, &[]);
+            stops_in_the_hook
+                .send((raw_stop, hook_events.flush()))
+                .unwrap();
+        }));
+        let (ended, panicking_thread_ended) = mpsc::channel();
+        let recorder = Arc::clone(&events);
+        clock_armed.store(true, Ordering::SeqCst);
+
+        thread::spawn(move || {
+            let stamped = panic::catch_unwind(AssertUnwindSafe(|| {
+                recorder.write(ONE_EVENT, &[]);
+            }));
+            ended.send(stamped.is_err()).unwrap();
+        });
+
+        let ended_within_the_bound = panicking_thread_ended.recv_timeout(PANIC_ENDS_WITHIN);
+        test_gave_up.store(ended_within_the_bound.is_err(), Ordering::SeqCst);
+        let panicked = ended_within_the_bound
+            .expect("the thread that panicked while stamping a line ended within its bound");
+        panic::set_hook(hook_before);
+        let (raw_stop, events_stop) = hook_stops.try_recv().unwrap();
+        assert!(panicked);
+        assert!(matches!(raw_stop, TraceStop::Drained), "{raw_stop:?}");
+        assert!(
+            matches!(
+                events_stop,
+                TraceStop::NotDrained {
+                    file: TraceFileKind::Events
+                }
+            ),
+            "{events_stop:?}"
+        );
+        assert!(matches!(events.finish(), TraceStop::Drained));
         remove_scratch(&scratch.root).unwrap();
     }
 }

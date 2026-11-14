@@ -1,8 +1,9 @@
+use std::cell::Cell;
 use std::io::{self, Write};
 use std::path::PathBuf;
+use std::ptr::NonNull;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError};
-use std::thread::{self, ThreadId};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -200,28 +201,33 @@ pub struct FileTrace {
     drain: Duration,
     header: Arc<HeaderSource>,
     queue: Mutex<Queue>,
-    stamping_thread: Mutex<Option<ThreadId>>,
     lost_at_close: Arc<Mutex<u64>>,
     ended: Mutex<Option<Receiver<io::Result<()>>>>,
     writer_moved: Arc<WriterMoved>,
 }
 
-/// This thread named as the one stamping a line under the queue's lock, until the guard drops, so a panic hook the stamp sets off on this thread never waits on that lock.
-struct Stamping<'trace> {
-    stamping_thread: &'trace Mutex<Option<ThreadId>>,
+thread_local! {
+    /// The trace whose line this thread stamps under that trace's queue lock, if any.
+    static TRACE_STAMPED_ON_THIS_THREAD: Cell<Option<NonNull<FileTrace>>> = const { Cell::new(None) };
 }
 
-impl<'trace> Stamping<'trace> {
-    /// Names this thread as the one stamping a line.
-    fn by_this_thread(stamping_thread: &'trace Mutex<Option<ThreadId>>) -> Self {
-        *locked(stamping_thread) = Some(thread::current().id());
-        Self { stamping_thread }
+/// This thread named as the one stamping a line of one trace under its queue's lock, until the guard drops, so a panic hook the stamp sets off on this thread never waits on that lock.
+struct Stamping {
+    stamped_before: Option<NonNull<FileTrace>>,
+}
+
+impl Stamping {
+    /// Names this thread as the one stamping a line of `trace`.
+    fn of(trace: &FileTrace) -> Self {
+        Self {
+            stamped_before: TRACE_STAMPED_ON_THIS_THREAD.replace(Some(NonNull::from(trace))),
+        }
     }
 }
 
-impl Drop for Stamping<'_> {
+impl Drop for Stamping {
     fn drop(&mut self) {
-        *locked(self.stamping_thread) = None;
+        TRACE_STAMPED_ON_THIS_THREAD.set(self.stamped_before);
     }
 }
 
@@ -351,7 +357,6 @@ impl FileTrace {
                 lines: Some(queue),
                 lost: 0,
             }),
-            stamping_thread: Mutex::new(None),
             lost_at_close,
             ended: Mutex::new(Some(ended)),
             writer_moved,
@@ -364,7 +369,7 @@ impl FileTrace {
             return;
         };
         let line = {
-            let _stamping = Stamping::by_this_thread(&self.stamping_thread);
+            let _stamping = Stamping::of(self);
             self.header.stamp(name, fields)
         };
         let queued = QueuedLine {
@@ -427,7 +432,7 @@ impl FileTrace {
             Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
             Err(TryLockError::WouldBlock) => {
                 let is_stamped_here =
-                    *locked(&self.stamping_thread) == Some(thread::current().id());
+                    TRACE_STAMPED_ON_THIS_THREAD.get() == Some(NonNull::from(self));
                 (!is_stamped_here).then(|| locked(&self.queue))
             }
         }
