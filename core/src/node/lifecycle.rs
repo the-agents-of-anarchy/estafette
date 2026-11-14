@@ -1269,7 +1269,12 @@ mod tests {
             }
         })
         .await
-        .unwrap();
+        .unwrap_or_else(|_elapsed| {
+            panic!(
+                "the inbox socket file {} not removed within {SOCKET_REMOVED_WITHIN:?} of the exit",
+                second.inbox_path.display()
+            )
+        });
         drop(scratch);
     }
 
