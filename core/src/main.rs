@@ -990,8 +990,8 @@ mod tests {
 
     const SECONDS_AFTER_EPOCH: u64 = 1_700_000_000;
     const MILLISECONDS_AFTER_EPOCH: u64 = 1_700_000_000_123;
-    const BLOCKING_READ_THAT_NEVER_RETURNS_IN_TIME: Duration = Duration::from_secs(10);
     const AWAITED_SHUTDOWN_ENDS_WITHIN: Duration = Duration::from_millis(2000);
+    const BLOCKING_READ_THAT_NEVER_RETURNS_IN_TIME: Duration = Duration::from_secs(10);
     const SPEC_PROGRAM_PURPOSE: &str = "Messaging between agents across machines and harnesses";
     /// Sends no iroh line anywhere: one test process runs many traced commands, and a process holds one global subscriber.
     const IROH_LINES_LEFT_OUT: InstallIrohLines = |_trace| Ok(());
@@ -1042,9 +1042,12 @@ mod tests {
             .build()
             .unwrap();
         let (started, blocking_read_started) = std::sync::mpsc::channel();
+        let (input_arrives, pending_input) = std::sync::mpsc::channel::<()>();
         drop(runtime.spawn_blocking(move || {
             started.send(()).unwrap();
-            std::thread::sleep(BLOCKING_READ_THAT_NEVER_RETURNS_IN_TIME);
+            pending_input
+                .recv_timeout(BLOCKING_READ_THAT_NEVER_RETURNS_IN_TIME)
+                .unwrap_err();
         }));
         blocking_read_started.recv().unwrap();
         let shutting_down = Instant::now();
@@ -1052,6 +1055,7 @@ mod tests {
         shut_down(runtime, Exit::Stopped(RuntimeShutdown::Awaited));
 
         assert!(shutting_down.elapsed() < AWAITED_SHUTDOWN_ENDS_WITHIN);
+        drop(input_arrives);
     }
 
     #[test]
