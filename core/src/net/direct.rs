@@ -2975,9 +2975,24 @@ pub(crate) mod tests {
         let reported_before =
             selected_path_reported_by_each_held_of(&register, card_of(CLIENT_SEED));
         let paths_before = paths_of_each_held_of(&register, card_of(CLIENT_SEED));
+        let Some(restarted_as_held) = register
+            .held()
+            .get(&card_of(CLIENT_SEED))
+            .and_then(|of_card| of_card.get(1))
+            .map(|held_connection| held_connection.connection.clone())
+        else {
+            panic!("the register holds no second connection: {paths_before:?}")
+        };
 
         register.close_silent_of(card_of(CLIENT_SEED));
-        let restarted_closed = timeout(DIRECT_ANSWER_WAIT, restarted.closed()).await;
+        let closed_by_the_pass = restarted_as_held
+            .upgrade()
+            .is_none_or(|live| live.close_reason().is_some());
+        let restarted_closed = if closed_by_the_pass {
+            Some(timeout(DIRECT_ANSWER_WAIT, restarted.closed()).await)
+        } else {
+            None
+        };
         let dialed_back = timeout(DIRECT_ANSWER_WAIT, async {
             tokio::join!(
                 link.server_node
@@ -2994,13 +3009,17 @@ pub(crate) mod tests {
         let restarted_reported_a_selected_path = reported_before.get(1) == Some(&true);
         let restarted_closed_as_superseded = matches!(
             &restarted_closed,
-            Ok(ConnectionError::ApplicationClosed(close))
+            Some(Ok(ConnectionError::ApplicationClosed(close)))
                 if close.error_code == VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE)
         );
 
         assert_eq!(reported_before.len(), 2, "{paths_before:?}");
         assert_eq!(
-            restarted_closed_as_superseded, !restarted_reported_a_selected_path,
+            closed_by_the_pass, !restarted_reported_a_selected_path,
+            "the pass closed the restarted connection, among {paths_before:?}: {closed_by_the_pass}"
+        );
+        assert_eq!(
+            restarted_closed_as_superseded, closed_by_the_pass,
             "the restarted connection, among {paths_before:?}, ended {restarted_closed:?}"
         );
         assert!(
