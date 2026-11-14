@@ -29,7 +29,8 @@ use crate::crypto::GateKey;
 use crate::dirs::{CARD_EXTENSION, Directories, DirectoriesError};
 use crate::errors::{Envelope, ErrorCode, You};
 use crate::event::{
-    AnsweredFailure, ClaimFailure, InboxEvent, ListCardsFailure, RunRecord, StateEvent,
+    AnsweredFailure, ClaimFailure, InboxEvent, ListCardsFailure, ProcessEvent, RunRecord,
+    StateEvent,
 };
 use crate::handle::{AnnouncedHandle, Handle, MAX_LOCAL_LENGTH};
 use crate::inbox::buffer::InboxFrame;
@@ -272,9 +273,25 @@ impl Server {
         Ok(ToolResult::Inbox { messages, last_seq })
     }
 
-    /// Claims the input's card for this session by the init sequence of spec 3.10 and returns its effective handle and inbox path.
+    /// Claims the input's card for this session by the init sequence of spec 3.10 and returns its effective handle and inbox path, recording a refusal decided before the session's own.
     async fn init(&self, input: InitInput) -> Result<ToolResult, ErrorCode> {
         let _one_init_at_a_time = self.init_gate.lock().await;
+        let (name, node, lock) = self.claim_prepared(input).await.inspect_err(|refusal| {
+            (self.effects.report)(
+                ProcessEvent::ClaimRefused {
+                    code: refusal.code(),
+                }
+                .into(),
+            );
+        })?;
+        self.claim(name, node, lock)
+    }
+
+    /// The card name, the started node and the held sidecar lock the session is to claim, by the init sequence of spec 3.10 up to the claim itself.
+    async fn claim_prepared(
+        &self,
+        input: InitInput,
+    ) -> Result<(Handle, Node, HeldSidecar), ErrorCode> {
         self.refuse_a_second_claim()?;
         let name = card_name(&input.card)?;
         let card = self.registry_card(&name)?;
@@ -286,7 +303,7 @@ impl Server {
         let node = self
             .start_node(&lock, usable.requested_handle, public)
             .await?;
-        self.claim(name, node, lock)
+        Ok((name, node, lock))
     }
 
     /// `bad_request` once this session has claimed a card, and the session's refusal while it is stopping.

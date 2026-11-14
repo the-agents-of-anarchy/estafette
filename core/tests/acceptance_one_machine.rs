@@ -2045,3 +2045,348 @@ mod observability_decision_6_on_one_machine {
         );
     }
 }
+
+#[cfg(test)]
+mod observability_decision_9_on_one_machine {
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    use serde_json::{Value, json};
+
+    use crate::local_network::LocalNetwork;
+    use crate::mcp_server::{INIT_TOOL, PRESENCE_WAIT, call_succeeded, init_arguments, online};
+    use crate::member::Member;
+    use crate::scratch_machine::RunRecordKeeping;
+    use crate::trace_reader::{TraceLine, events_lines_in};
+
+    const UNATTACHED_BODY: &str = "sent while bob has no inbox client";
+    const ATTACHED_BODY: &str = "sent while bob has an inbox client";
+    const BROADCAST_BODY: &str = "broadcast to bob and to nobody";
+    const NO_MEMBER: &str = "nobody";
+    const SPEC_SINCE_EVERY_FRAME: &str = "{\"since\": 0}\n";
+    const SPEC_DEPARTURE_WAIT_MS: u64 = 5000;
+    const SPEC_TERMINATE_SIGNAL: &str = "SIGTERM";
+    const SPEC_BELOW_ANY_SEQ: i64 = -1;
+    const EVENT_WAIT: Duration = Duration::from_secs(20);
+    /// The frames bob's inbox client reads: the one sent before it attached, replayed, and the one sent while attached.
+    const FRAMES_THE_CLIENT_READS: usize = 2;
+    /// The process events of a member whose standard input ends, in the order spec:784 and decision 9 give them.
+    const STOPPED_BY_END_OF_INPUT: [&str; 9] = [
+        "process.started",
+        "process.claimed",
+        "process.claim_refused",
+        "process.input_ended",
+        "process.departure_handed_over",
+        "process.lock_released",
+        "process.held_connections_dropped",
+        "process.departure_wait_over",
+        "process.exited",
+    ];
+    /// The process events of a member stopped by SIGTERM, in the order spec:784 and decision 9 give them.
+    const STOPPED_BY_SIGTERM: [&str; 8] = [
+        "process.started",
+        "process.claimed",
+        "process.signal_received",
+        "process.departure_handed_over",
+        "process.lock_released",
+        "process.held_connections_dropped",
+        "process.departure_wait_over",
+        "process.exited",
+    ];
+    const PROCESS_AREA: &str = "process.";
+
+    /// The event's own fields as written, each a pair of key and value, in order.
+    fn fields_of(line: &TraceLine) -> Value {
+        line.fields()
+            .iter()
+            .map(|(key, value)| json!([key, value]))
+            .collect()
+    }
+
+    /// The fields of each line of the member's events that names the event, in the order written.
+    fn fields_named(lines: &[TraceLine], event: &str) -> Vec<Value> {
+        lines
+            .iter()
+            .filter(|line| line.event == event)
+            .map(fields_of)
+            .collect()
+    }
+
+    /// The names of the member's process events, in the order written.
+    fn process_events(lines: &[TraceLine]) -> Vec<&str> {
+        lines
+            .iter()
+            .map(|line| line.event.as_str())
+            .filter(|event| event.starts_with(PROCESS_AREA))
+            .collect()
+    }
+
+    /// Every line of the events files the member of that number wrote.
+    fn events_of_member(network: &LocalNetwork, number: u32) -> Vec<TraceLine> {
+        events_lines_in(&network.machine().traces_directory_of_member(number)).unwrap()
+    }
+
+    /// Starts a member, claims the card through the host, and returns it with its number and the inbox socket its claim names.
+    fn claimed_member(
+        network: &LocalNetwork,
+        host: &crate::scripted_node::ScriptedNode,
+        card: &crate::scratch_machine::Card,
+    ) -> (Member, u32, PathBuf) {
+        let number = network.machine().members_started();
+        let mut member = network.start_member();
+        let claim = member.init_through(card, host);
+        let socket = PathBuf::from(claim["result"]["inbox_path"].as_str().unwrap());
+        (member, number, socket)
+    }
+
+    /// The message id the send envelope names.
+    fn sent_id(envelope: &Value) -> String {
+        assert!(call_succeeded(envelope), "{envelope}");
+        envelope["result"]["id"].as_str().unwrap().to_owned()
+    }
+
+    /// What one real exchange between amy and bob left: each member's events, the ids its sends were delivered under, what bob's inbox client read, the two refused calls and each exit code.
+    struct RecordedExchange {
+        amy_lines: Vec<TraceLine>,
+        bob_lines: Vec<TraceLine>,
+        unattached_id: String,
+        attached_id: String,
+        broadcast_id: String,
+        frame_ids: Vec<Value>,
+        second_claim: Value,
+        bad_inbox: Value,
+        amy_exit_code: i32,
+        bob_exit_code: i32,
+    }
+
+    /// The ids of the first frames the inbox client reads, a replay included.
+    fn frame_ids_read(client: UnixStream, frames: usize) -> Vec<Value> {
+        let mut reader = BufReader::new(client);
+        (0..frames)
+            .map(|_| {
+                let mut frame = String::new();
+                reader.read_line(&mut frame).unwrap();
+                serde_json::from_str::<Value>(&frame).unwrap()["id"].clone()
+            })
+            .collect()
+    }
+
+    /// Runs amy and bob through a host: a send before bob's inbox client attaches and one after, the client gone, a broadcast to nobody and bob, a second init and an inbox call below any seq, then amy's input ended and bob sent SIGTERM.
+    fn recorded_exchange(network: &LocalNetwork) -> RecordedExchange {
+        let host = network.stand_in_host();
+        let amy_card = network.create_card("amy-card", "amy");
+        let bob_card = network.create_card("bob-card", "bob");
+        let (mut amy, amy_number, _amy_socket) = claimed_member(network, &host, &amy_card);
+        let (mut bob, bob_number, bob_socket) = claimed_member(network, &host, &bob_card);
+        amy.peer_within("bob", PRESENCE_WAIT, online);
+        bob.peer_within("amy", PRESENCE_WAIT, online);
+
+        let unattached_id = sent_id(&amy.send("bob", UNATTACHED_BODY));
+        let mut client = UnixStream::connect(&bob_socket).unwrap();
+        client.set_read_timeout(Some(EVENT_WAIT)).unwrap();
+        client.write_all(SPEC_SINCE_EVERY_FRAME.as_bytes()).unwrap();
+        bob.wait_for_event("inbox.client_connected", EVENT_WAIT);
+        let attached_id = sent_id(&amy.send("bob", ATTACHED_BODY));
+        let frame_ids = frame_ids_read(client, FRAMES_THE_CLIENT_READS);
+        bob.wait_for_event("inbox.client_gone", EVENT_WAIT);
+        let broadcast = amy.call(
+            "broadcast",
+            &json!({ "to": [NO_MEMBER, "bob"], "body": BROADCAST_BODY }),
+        );
+        let broadcast_id = broadcast["result"]["results"][1]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let second_claim = amy.call(INIT_TOOL, &init_arguments(&amy_card.name));
+        let bad_inbox = bob.call("inbox", &json!({ "since": SPEC_BELOW_ANY_SEQ }));
+        amy.close_standard_input();
+        bob.terminate();
+        let amy_exit_code = amy.wait_for_exit().code().unwrap();
+        let bob_exit_code = bob.wait_for_exit().code().unwrap();
+        RecordedExchange {
+            amy_lines: events_of_member(network, amy_number),
+            bob_lines: events_of_member(network, bob_number),
+            unattached_id,
+            attached_id,
+            broadcast_id,
+            frame_ids,
+            second_claim,
+            bad_inbox,
+            amy_exit_code,
+            bob_exit_code,
+        }
+    }
+
+    /// Requires each process event of the exchange in spec:784's order with its fields.
+    fn assert_process_events(exchange: &RecordedExchange) {
+        let RecordedExchange {
+            amy_lines,
+            bob_lines,
+            ..
+        } = exchange;
+        assert_eq!(process_events(amy_lines), STOPPED_BY_END_OF_INPUT);
+        assert_eq!(process_events(bob_lines), STOPPED_BY_SIGTERM);
+        assert_eq!(
+            fields_named(amy_lines, "process.started"),
+            [json!([
+                ["version", env!("CARGO_PKG_VERSION")],
+                ["command", "mcp"]
+            ])]
+        );
+        assert_eq!(
+            fields_named(amy_lines, "process.claimed"),
+            [json!([["card", "amy-card"], ["handle", "amy"]])]
+        );
+        assert_eq!(
+            fields_named(bob_lines, "process.claimed"),
+            [json!([["card", "bob-card"], ["handle", "bob"]])]
+        );
+        assert_eq!(
+            fields_named(amy_lines, "process.claim_refused"),
+            [json!([["code", "bad_request"]])]
+        );
+        assert_eq!(fields_named(amy_lines, "process.input_ended"), [json!([])]);
+        assert_eq!(
+            fields_named(bob_lines, "process.signal_received"),
+            [json!([["signal", SPEC_TERMINATE_SIGNAL]])]
+        );
+        for lines in [amy_lines, bob_lines] {
+            for step in [
+                "process.departure_handed_over",
+                "process.lock_released",
+                "process.held_connections_dropped",
+            ] {
+                assert_eq!(fields_named(lines, step), [json!([])], "{step}");
+            }
+            assert_eq!(
+                fields_named(lines, "process.departure_wait_over"),
+                [json!([["wait_ms", SPEC_DEPARTURE_WAIT_MS]])]
+            );
+        }
+        assert_eq!(
+            fields_named(amy_lines, "process.exited"),
+            [json!([["status", exchange.amy_exit_code]])]
+        );
+        assert_eq!(
+            fields_named(bob_lines, "process.exited"),
+            [json!([["status", exchange.bob_exit_code]])]
+        );
+    }
+
+    /// Requires each frame bob's inbox delivered with its message id, its frame number and whether a client was attached, and the client's coming and going.
+    fn assert_inbox_events(exchange: &RecordedExchange) {
+        assert_eq!(
+            exchange.frame_ids,
+            [json!(exchange.unattached_id), json!(exchange.attached_id)]
+        );
+        assert_eq!(
+            fields_named(&exchange.bob_lines, "inbox.frame_delivered"),
+            [
+                json!([
+                    ["message", exchange.unattached_id],
+                    ["frame", 1],
+                    ["attached", false]
+                ]),
+                json!([
+                    ["message", exchange.attached_id],
+                    ["frame", 2],
+                    ["attached", true]
+                ]),
+                json!([
+                    ["message", exchange.broadcast_id],
+                    ["frame", 3],
+                    ["attached", false]
+                ]),
+            ]
+        );
+        assert_eq!(
+            fields_named(&exchange.bob_lines, "inbox.client_connected"),
+            [json!([["clients", 1]])]
+        );
+        assert_eq!(
+            fields_named(&exchange.bob_lines, "inbox.client_gone"),
+            [json!([["clients", 0]])]
+        );
+    }
+
+    /// Requires each tool call answered by name with its outcome, and each send of a send or broadcast with its handle and the message id the direct request carried.
+    fn assert_tool_events(exchange: &RecordedExchange) {
+        let RecordedExchange {
+            amy_lines,
+            bob_lines,
+            unattached_id,
+            attached_id,
+            broadcast_id,
+            ..
+        } = exchange;
+        assert_eq!(
+            exchange.second_claim["error"]["code"],
+            json!("bad_request"),
+            "{}",
+            exchange.second_claim
+        );
+        assert_eq!(
+            exchange.bad_inbox["error"]["code"],
+            json!("bad_request"),
+            "{}",
+            exchange.bad_inbox
+        );
+        assert_eq!(
+            fields_named(amy_lines, "tool.send_answered"),
+            [
+                json!([["to", "bob"], ["outcome", "ok"], ["message", unattached_id]]),
+                json!([["to", "bob"], ["outcome", "ok"], ["message", attached_id]]),
+                json!([
+                    ["to", NO_MEMBER],
+                    ["outcome", "error"],
+                    ["code", "unknown_handle"]
+                ]),
+                json!([["to", "bob"], ["outcome", "ok"], ["message", broadcast_id]]),
+            ]
+        );
+        let requests_sent: Vec<Value> = amy_lines
+            .iter()
+            .filter(|line| line.event == "direct.request_sent")
+            .filter_map(|line| line.value("message").cloned())
+            .collect();
+        for id in [unattached_id, attached_id, broadcast_id] {
+            assert!(
+                requests_sent.contains(&json!(id)),
+                "{id} in {requests_sent:?}"
+            );
+        }
+        let amy_tools = fields_named(amy_lines, "tool.answered");
+        assert_eq!(
+            amy_tools.first(),
+            Some(&json!([["tool", "init"], ["outcome", "ok"]]))
+        );
+        assert!(amy_tools.contains(&json!([["tool", "peers"], ["outcome", "ok"]])));
+        assert_eq!(
+            amy_tools.last(),
+            Some(&json!([
+                ["tool", "init"],
+                ["outcome", "error"],
+                ["code", "bad_request"]
+            ]))
+        );
+        assert!(fields_named(bob_lines, "tool.answered").contains(&json!([
+            ["tool", "inbox"],
+            ["outcome", "error"],
+            ["code", "bad_request"]
+        ])));
+    }
+
+    #[test]
+    fn observability_decision_9_a_real_exchange_records_each_process_inbox_and_tool_event_with_its_fields()
+     {
+        let network = LocalNetwork::create("o9", &RunRecordKeeping::from_environment());
+
+        let exchange = recorded_exchange(&network);
+
+        assert_process_events(&exchange);
+        assert_inbox_events(&exchange);
+        assert_tool_events(&exchange);
+    }
+}

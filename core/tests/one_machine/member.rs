@@ -14,6 +14,8 @@ use crate::trace_reader::TraceLine;
 const ENDPOINT_BIND_WAIT: Duration = Duration::from_secs(10);
 const ENDPOINT_BIND_POLL: Duration = Duration::from_millis(20);
 const OPEN_FILES_COMMAND: &str = "lsof";
+const SIGNAL_COMMAND: &str = "kill";
+const TERMINATE_SIGNAL_FLAG: &str = "-TERM";
 const IPV4_SOCKET_TYPE: &str = "IPv4";
 const LSOF_TYPE_FIELD: char = 't';
 const LSOF_NAME_FIELD: char = 'n';
@@ -128,6 +130,20 @@ impl Member {
     /// Closes the member's standard input, the end of input that stops its session.
     pub fn close_standard_input(&mut self) {
         self.server.close_standard_input();
+    }
+
+    /// Sends the process SIGTERM, the signal that stops its session with the runtime shut down in the background.
+    #[track_caller]
+    pub fn terminate(&self) {
+        let sent = Command::new(SIGNAL_COMMAND)
+            .args([TERMINATE_SIGNAL_FLAG, &self.process_id.to_string()])
+            .status()
+            .unwrap();
+        assert!(
+            sent.success(),
+            "SIGTERM was not sent to {}",
+            self.process_id
+        );
     }
 
     /// Kills the process with SIGKILL.
