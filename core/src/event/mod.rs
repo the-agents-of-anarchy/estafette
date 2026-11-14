@@ -45,7 +45,8 @@ pub use inbox::{InboxEvent, InboxEventName, ListCardsFailure};
 pub(crate) use peer::ShortId;
 pub use peer_table::{PeerTableEvent, PeerTableEventName};
 pub use process::{
-    CLOCK_BEFORE_UNIX_EPOCH, ClaimFailure, PanicLocation, ProcessEvent, ProcessEventName,
+    CLOCK_BEFORE_UNIX_EPOCH, ClaimFailure, ConfigurationRewrite, PanicLocation, ProcessEvent,
+    ProcessEventName,
 };
 pub use state::{StateEvent, StateEventName};
 pub use transport::{TransportEvent, TransportEventName};
@@ -235,7 +236,7 @@ mod tests {
     use super::*;
 
     const SPEC_FORMAT_VERSION: u64 = 1;
-    const PINNED_EVENT_NAMES: [&str; 66] = [
+    const PINNED_EVENT_NAMES: [&str; 67] = [
         "process.command_failed",
         "process.network_created",
         "process.clock_before_unix_epoch",
@@ -251,6 +252,7 @@ mod tests {
         "process.signal_received",
         "process.departure_handed_over",
         "process.lock_released",
+        "process.configuration_rewrite_decided",
         "process.held_connections_dropped",
         "process.departure_wait_over",
         "process.started",

@@ -25,6 +25,7 @@ const CARD_FIELD: &str = "card";
 const HANDLE_FIELD: &str = "handle";
 const SIGNAL_FIELD: &str = "signal";
 const WAIT_FIELD: &str = "wait_ms";
+const OUTCOME_FIELD: &str = "outcome";
 
 super::event_names! {
     /// The names of the process's events: its command, its clock and its claim.
@@ -47,6 +48,7 @@ super::event_names! {
         SignalReceived => "process.signal_received",
         DepartureHandedOver => "process.departure_handed_over",
         LockReleased => "process.lock_released",
+        ConfigurationRewriteDecided => "process.configuration_rewrite_decided",
         HeldConnectionsDropped => "process.held_connections_dropped",
         DepartureWaitOver => "process.departure_wait_over",
     }
@@ -90,10 +92,34 @@ pub enum ProcessEvent {
     DepartureHandedOver,
     /// The stopping session released its card's sidecar lock.
     LockReleased,
+    /// The stopping session's step that rewrites the network configuration when a held record is newer than the file's ended as the rewrite says.
+    ConfigurationRewriteDecided(ConfigurationRewrite),
     /// The stopping session dropped every direct connection it held.
     HeldConnectionsDropped,
     /// The stopping session waited out the departure wait, so the process may exit.
     DepartureWaitOver { waited: Duration },
+}
+
+/// What the stopping step that rewrites the network configuration did (spec:784).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigurationRewrite {
+    /// A held record was newer than the file's, and the file was rewritten.
+    Saved,
+    /// No held record was newer than the file's, so the file was left as it was.
+    NotNeeded,
+    /// A held record was newer than the file's, and rewriting the file failed.
+    Failed,
+}
+
+impl ConfigurationRewrite {
+    /// The word the events file writes the rewrite as.
+    const fn word(self) -> &'static str {
+        match self {
+            Self::Saved => "saved",
+            Self::NotNeeded => "not_needed",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 /// The source file and line a thread panicked at, taken from the panic's own location and from no other text.
@@ -190,6 +216,7 @@ impl AreaEvent for ProcessEvent {
             Self::SignalReceived { .. } => ProcessEventName::SignalReceived,
             Self::DepartureHandedOver => ProcessEventName::DepartureHandedOver,
             Self::LockReleased => ProcessEventName::LockReleased,
+            Self::ConfigurationRewriteDecided(_) => ProcessEventName::ConfigurationRewriteDecided,
             Self::HeldConnectionsDropped => ProcessEventName::HeldConnectionsDropped,
             Self::DepartureWaitOver { .. } => ProcessEventName::DepartureWaitOver,
         }
@@ -206,6 +233,7 @@ impl AreaEvent for ProcessEvent {
             | Self::SignalReceived { .. }
             | Self::DepartureHandedOver
             | Self::LockReleased
+            | Self::ConfigurationRewriteDecided(_)
             | Self::HeldConnectionsDropped
             | Self::DepartureWaitOver { .. } => None,
             Self::CommandFailed(failure) => Some(failure.to_string()),
@@ -268,6 +296,9 @@ impl AreaEvent for ProcessEvent {
                 (HANDLE_FIELD, Value::from(claimed.handle.as_str())),
             ],
             Self::ClaimRefused { code } => vec![(CODE_FIELD, Value::from(*code))],
+            Self::ConfigurationRewriteDecided(rewrite) => {
+                vec![(OUTCOME_FIELD, Value::from(rewrite.word()))]
+            }
             Self::SignalReceived { signal } => {
                 vec![(SIGNAL_FIELD, Value::from(signal_name(*signal)))]
             }

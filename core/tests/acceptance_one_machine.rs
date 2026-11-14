@@ -1739,7 +1739,7 @@ mod observability_decision_6_on_one_machine {
     const DELIVERY_WAIT: Duration = Duration::from_secs(20);
     const SPEC_SINCE_EVERY_FRAME: &str = "{\"since\": 0}\n";
     const CLIENT_WAIT: Duration = Duration::from_secs(20);
-    const EVENTS_THIS_EXCHANGE_RECORDS: [&str; 18] = [
+    const EVENTS_THIS_EXCHANGE_RECORDS: [&str; 19] = [
         "\"gossip.payload_accepted\"",
         "\"gossip.payload_broadcast\"",
         "\"peers.entry_created\"",
@@ -1750,6 +1750,7 @@ mod observability_decision_6_on_one_machine {
         "\"process.input_ended\"",
         "\"process.departure_handed_over\"",
         "\"process.lock_released\"",
+        "\"process.configuration_rewrite_decided\"",
         "\"process.held_connections_dropped\"",
         "\"process.departure_wait_over\"",
         "\"process.exited\"",
@@ -2096,24 +2097,26 @@ mod observability_decision_9_on_one_machine {
     /// The frames bob's inbox client reads: the one sent before it attached, replayed, and the one sent while attached.
     const FRAMES_THE_CLIENT_READS: usize = 2;
     /// The process events of a member whose standard input ends, in the order spec:784 and decision 9 give them.
-    const STOPPED_BY_END_OF_INPUT: [&str; 9] = [
+    const STOPPED_BY_END_OF_INPUT: [&str; 10] = [
         "process.started",
         "process.claimed",
         "process.claim_refused",
         "process.input_ended",
         "process.departure_handed_over",
         "process.lock_released",
+        "process.configuration_rewrite_decided",
         "process.held_connections_dropped",
         "process.departure_wait_over",
         "process.exited",
     ];
     /// The process events of a member stopped by SIGTERM, in the order spec:784 and decision 9 give them.
-    const STOPPED_BY_SIGTERM: [&str; 8] = [
+    const STOPPED_BY_SIGTERM: [&str; 9] = [
         "process.started",
         "process.claimed",
         "process.signal_received",
         "process.departure_handed_over",
         "process.lock_released",
+        "process.configuration_rewrite_decided",
         "process.held_connections_dropped",
         "process.departure_wait_over",
         "process.exited",

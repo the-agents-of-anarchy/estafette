@@ -205,15 +205,18 @@ impl Session {
         }
     }
 
-    /// Enters Stopping, handing the Departure over, releasing the lock, dropping held connections, then waits the departure wait, recording each step as it ends.
+    /// Enters Stopping, handing the Departure over, releasing the lock, waiting on the rewrite of the network configuration, dropping held connections, then waits the departure wait, recording each step as it ends.
     async fn stop(&self, departure_wait: Duration) {
         let Some(claimed) = self.enter_stopping() else {
             return;
         };
-        claimed.node.start_stopping();
+        let rewrite = claimed.node.start_stopping();
         self.record(ProcessEvent::DepartureHandedOver);
         drop(claimed.lock);
         self.record(ProcessEvent::LockReleased);
+        if let Ok(rewrite) = rewrite.await {
+            self.record(ProcessEvent::ConfigurationRewriteDecided(rewrite));
+        }
         claimed.node.drop_held_connections().await;
         self.record(ProcessEvent::HeldConnectionsDropped);
         sleep(departure_wait).await;
@@ -466,6 +469,10 @@ mod tests {
                 ("process.input_ended", vec![]),
                 ("process.departure_handed_over", vec![]),
                 ("process.lock_released", vec![]),
+                (
+                    "process.configuration_rewrite_decided",
+                    vec![("outcome", serde_json::Value::from("not_needed"))]
+                ),
                 ("process.held_connections_dropped", vec![]),
                 (
                     "process.departure_wait_over",
@@ -547,6 +554,7 @@ mod tests {
             "process.signal_received",
             "process.departure_handed_over",
             "process.lock_released",
+            "process.configuration_rewrite_decided",
             "process.held_connections_dropped",
         ] {
             steps.push(next_recorded(&mut recorded, awaited).await);
@@ -568,6 +576,10 @@ mod tests {
                 ),
                 ("process.departure_handed_over", vec![]),
                 ("process.lock_released", vec![]),
+                (
+                    "process.configuration_rewrite_decided",
+                    vec![("outcome", serde_json::Value::from("not_needed"))]
+                ),
                 ("process.held_connections_dropped", vec![]),
                 (
                     "process.signal_received",
@@ -1017,6 +1029,120 @@ mod tests {
         assert!(matches!(saved.origin, HostOrigin::Configured));
         drop(witness);
         drop(scratch);
+    }
+
+    const CONFIGURATION_REWRITE_DECIDED: &str = "process.configuration_rewrite_decided";
+    const WRITABLE_DIRECTORY_MODE: u32 = 0o755;
+    const READ_ONLY_DIRECTORY_MODE: u32 = 0o555;
+
+    /// The first event of the name whose fields match that the receiver hands out within the bound, failing with the name when none comes.
+    async fn recorded_named(
+        received: &mut mpsc::UnboundedReceiver<RecordedEvent>,
+        name: &str,
+        matching: impl Fn(&EventFields) -> bool + Send + Sync,
+        within: Duration,
+    ) -> RecordedEvent {
+        tokio::time::timeout(within, async {
+            loop {
+                let event = received.recv().await.unwrap();
+                if event.0 == name && matching(&event.1) {
+                    return event;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_elapsed| panic!("{name} not recorded within {within:?}"))
+    }
+
+    /// Sets the directory's permission bits to the mode.
+    fn set_mode(directory: &std::path::Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    /// The configuration rewrite a stopping session records once its member learned a host record newer than its file, the file's directory set to the mode while it stops.
+    async fn rewrite_recorded_after_a_newer_host_record(
+        tag: &str,
+        directory_mode_while_stopping: u32,
+    ) -> RecordedEvent {
+        let scratch = Scratch::new(tag).await;
+        let (node_record, mut node_events) = recording_events();
+        let (member, witness) = start_witnessed(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, SECOND_HANDLE, FIRST_MEMBER_PUBLIC)
+                .with_hosts(&[HOST_SEED])
+                .with_report(node_record),
+            None,
+        )
+        .await;
+        let record_ts = wall_clock_ms() / 1000;
+        let (_, lock) = scratch.locked_card(FIRST_SEED);
+        let (record, mut recorded) = recording_events();
+        let session = Arc::new(Session::recording_to(record));
+        session
+            .claim(card_named(FIRST_CARD), member.node, lock)
+            .unwrap();
+        witness
+            .broadcast_as(
+                HOST_SEED,
+                infrastructure_of(HOST_SEED, MOVED_HOST_RELAY, record_ts),
+            )
+            .await;
+        recorded_named(
+            &mut node_events,
+            "gossip.payload_accepted",
+            |fields| fields.contains(&("ts", serde_json::Value::from(record_ts))),
+            PAYLOAD_WAIT,
+        )
+        .await;
+        let config_directory = member.config_path.parent().unwrap().to_owned();
+        set_mode(&config_directory, directory_mode_while_stopping);
+
+        let stopping = run(&session, TEST_DEPARTURE_WAIT);
+        stopping.input_ended.send(()).unwrap();
+        let rewrite = recorded_named(
+            &mut recorded,
+            CONFIGURATION_REWRITE_DECIDED,
+            |_fields| true,
+            CONFIG_SAVED_WITHIN,
+        )
+        .await;
+        set_mode(&config_directory, WRITABLE_DIRECTORY_MODE);
+        drop(witness);
+        drop(scratch);
+        rewrite
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_the_stopping_rewrite_of_a_configuration_a_learned_host_record_made_older_is_recorded_saved_spec_3_3()
+     {
+        let rewrite =
+            rewrite_recorded_after_a_newer_host_record("rewrite-saved", WRITABLE_DIRECTORY_MODE)
+                .await;
+
+        assert_eq!(
+            rewrite,
+            (
+                CONFIGURATION_REWRITE_DECIDED,
+                vec![("outcome", serde_json::Value::from("saved"))]
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_stopping_rewrite_the_file_system_refuses_is_recorded_failed_spec_3_3()
+     {
+        let rewrite =
+            rewrite_recorded_after_a_newer_host_record("rewrite-failed", READ_ONLY_DIRECTORY_MODE)
+                .await;
+
+        assert_eq!(
+            rewrite,
+            (
+                CONFIGURATION_REWRITE_DECIDED,
+                vec![("outcome", serde_json::Value::from("failed"))]
+            )
+        );
     }
 
     async fn stopping_closes_the_connection_held_to_a_witness(

@@ -26,7 +26,7 @@ use super::rebind::{Rebinding, RelayProbe};
 use super::relay_loss::{RelayLossWatch, home_relays};
 use crate::config::{AcceptedValue, NetworkConfig};
 use crate::crypto::{NetworkKeys, NetworkSecret};
-use crate::event::{DirectEvent, Event, PeerTableEvent, RunRecord};
+use crate::event::{ConfigurationRewrite, DirectEvent, Event, PeerTableEvent, RunRecord};
 use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::inbox::buffer::ReceivedMessage;
 use crate::inbox::socket::{Attached, InboxSocket};
@@ -259,10 +259,12 @@ impl Node {
         self.state.table().peers(now_ms).cloned().collect()
     }
 
-    /// Starts refusing Messages and ignoring Probes and Introduces, and hands the Departure to the presence loop.
-    pub(super) fn start_stopping(&self) {
+    /// Starts refusing Messages and ignoring Probes and Introduces, hands the Departure to the presence loop, and returns what the loop's rewrite of the network configuration does once it decides.
+    pub(super) fn start_stopping(&self) -> oneshot::Receiver<ConfigurationRewrite> {
         self.state.stopping.store(true, Ordering::SeqCst);
-        self.state.hand_to_loop(LoopEvent::Depart);
+        let (rewritten, rewrite) = oneshot::channel();
+        self.state.hand_to_loop(LoopEvent::Depart(rewritten));
+        rewrite
     }
 
     /// Drops every direct connection the client holds, whether or not its card is in the table.
@@ -651,7 +653,7 @@ impl DirectRequester for Arc<NodeState> {
 
 /// What reaches the presence loop from the direct server and from the requests it spawned.
 enum LoopEvent {
-    Depart,
+    Depart(oneshot::Sender<ConfigurationRewrite>),
     Effects(Vec<Effect>),
     PeerReached,
     Answered(DirectAnswer),
@@ -1202,7 +1204,7 @@ impl PresenceLoop {
     async fn take_loop_event(&mut self, event: LoopEvent) {
         let now_ms = self.state.now_ms();
         match event {
-            LoopEvent::Depart => self.depart(now_ms).await,
+            LoopEvent::Depart(rewritten) => self.depart(now_ms, rewritten).await,
             LoopEvent::Effects(effects) => self.perform(effects).await,
             LoopEvent::PeerReached => {}
             LoopEvent::Answered(answer) => {
@@ -1243,8 +1245,8 @@ impl PresenceLoop {
         send_in_background(Arc::clone(&self.state), &self.client, requests);
     }
 
-    /// Broadcasts the Departure, announces nothing after it, and saves the known hosts when a record is newer than the file.
-    async fn depart(&mut self, now_ms: u64) {
+    /// Broadcasts the Departure, announces nothing after it, saves the known hosts when a record is newer than the file, and hands what the save did to the stopping session.
+    async fn depart(&mut self, now_ms: u64, rewritten: oneshot::Sender<ConfigurationRewrite>) {
         let seq = self.announcer.next_seq(now_ms);
         self.broadcast(Payload::Departure(Departure {
             v: Version::CURRENT,
@@ -1254,9 +1256,15 @@ impl PresenceLoop {
             sig: ZERO_SIGNATURE,
         }))
         .await;
-        if let Err(failure) = self.known_hosts.save_if_newer_than_file(now_ms) {
-            (self.report)(crate::event::GossipEvent::KnownHostsNotSaved(failure).into());
-        }
+        let rewrite = match self.known_hosts.save_if_newer_than_file(now_ms) {
+            Ok(true) => ConfigurationRewrite::Saved,
+            Ok(false) => ConfigurationRewrite::NotNeeded,
+            Err(failure) => {
+                (self.report)(crate::event::GossipEvent::KnownHostsNotSaved(failure).into());
+                ConfigurationRewrite::Failed
+            }
+        };
+        rewritten.send(rewrite).unwrap_or_default();
         self.record_state(SnapshotMoment::Stop);
     }
 

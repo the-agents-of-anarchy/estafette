@@ -165,12 +165,12 @@ impl KnownHosts {
         Ok(())
     }
 
-    /// Rewrites the network configuration only when a held record is newer than the file's (spec 3.3).
-    pub(crate) fn save_if_newer_than_file(&mut self, now_ms: u64) -> Result<(), ConfigError> {
+    /// Rewrites the network configuration only when a held record is newer than the file's (spec 3.3), returning whether it did.
+    pub(crate) fn save_if_newer_than_file(&mut self, now_ms: u64) -> Result<bool, ConfigError> {
         if self.newer_than_file {
-            self.save(now_ms)
+            self.save(now_ms).map(|()| true)
         } else {
-            Ok(())
+            Ok(false)
         }
     }
 }
