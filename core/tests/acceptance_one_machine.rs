@@ -2097,31 +2097,31 @@ mod observability_decision_9_on_one_machine {
     /// The frames bob's inbox client reads: the one sent before it attached, replayed, and the one sent while attached.
     const FRAMES_THE_CLIENT_READS: usize = 2;
     /// The process events of a member whose standard input ends, in the order spec:784 and decision 9 give them.
-    const STOPPED_BY_END_OF_INPUT: [&str; 10] = [
+    const STOPPED_BY_END_OF_INPUT: [&str; 9] = [
         "process.started",
         "process.claimed",
         "process.claim_refused",
         "process.input_ended",
         "process.departure_handed_over",
         "process.lock_released",
-        "process.configuration_rewrite_decided",
         "process.held_connections_dropped",
         "process.departure_wait_over",
         "process.exited",
     ];
     /// The process events of a member stopped by SIGTERM, in the order spec:784 and decision 9 give them.
-    const STOPPED_BY_SIGTERM: [&str; 9] = [
+    const STOPPED_BY_SIGTERM: [&str; 8] = [
         "process.started",
         "process.claimed",
         "process.signal_received",
         "process.departure_handed_over",
         "process.lock_released",
-        "process.configuration_rewrite_decided",
         "process.held_connections_dropped",
         "process.departure_wait_over",
         "process.exited",
     ];
     const PROCESS_AREA: &str = "process.";
+    /// The stopping step the node's presence loop records on its own task, in no order the node guarantees against the session's steps.
+    const CONFIGURATION_REWRITE_DECIDED: &str = "process.configuration_rewrite_decided";
 
     /// The event's own fields as written, each a pair of key and value, in order.
     fn fields_of(line: &TraceLine) -> Value {
@@ -2140,12 +2140,14 @@ mod observability_decision_9_on_one_machine {
             .collect()
     }
 
-    /// The names of the member's process events, in the order written.
+    /// The names of the member's process events but the configuration rewrite its node records, in the order written.
     fn process_events(lines: &[TraceLine]) -> Vec<&str> {
         lines
             .iter()
             .map(|line| line.event.as_str())
-            .filter(|event| event.starts_with(PROCESS_AREA))
+            .filter(|event| {
+                event.starts_with(PROCESS_AREA) && *event != CONFIGURATION_REWRITE_DECIDED
+            })
             .collect()
     }
 
@@ -2254,6 +2256,13 @@ mod observability_decision_9_on_one_machine {
         } = exchange;
         assert_eq!(process_events(amy_lines), STOPPED_BY_END_OF_INPUT);
         assert_eq!(process_events(bob_lines), STOPPED_BY_SIGTERM);
+        for lines in [amy_lines, bob_lines] {
+            assert_eq!(
+                fields_named(lines, CONFIGURATION_REWRITE_DECIDED).len(),
+                1,
+                "{CONFIGURATION_REWRITE_DECIDED}"
+            );
+        }
         assert_eq!(
             fields_named(amy_lines, "process.started"),
             [json!([
