@@ -419,6 +419,15 @@ macro_rules! counters_of {
 }
 
 impl CounterSnapshot {
+    /// A snapshot of no counters, for a process that has no endpoint yet.
+    #[must_use]
+    pub(crate) const fn without_endpoint(moment: SnapshotMoment) -> Self {
+        Self {
+            moment,
+            counters: Vec::new(),
+        }
+    }
+
     /// Every counter iroh keeps for an endpoint's socket and for a gossip instance, read now.
     #[must_use]
     pub(crate) fn read(

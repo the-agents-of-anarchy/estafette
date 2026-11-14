@@ -28,14 +28,16 @@ use crate::config::{NetworkConfig, host_relay_url};
 use crate::crypto::GateKey;
 use crate::dirs::{CARD_EXTENSION, Directories, DirectoriesError};
 use crate::errors::{Envelope, ErrorCode, You};
-use crate::event::{AnsweredFailure, ClaimFailure, InboxEvent, ListCardsFailure, RunRecord};
+use crate::event::{
+    AnsweredFailure, ClaimFailure, InboxEvent, ListCardsFailure, RunRecord, StateEvent,
+};
 use crate::handle::{AnnouncedHandle, Handle, MAX_LOCAL_LENGTH};
 use crate::inbox::buffer::InboxFrame;
 use crate::net::direct::MonotonicClock;
-use crate::net::endpoint::NodeEndpoint;
+use crate::net::endpoint::{CounterSnapshot, NodeEndpoint, SnapshotMoment};
 use crate::node::{
     BroadcastResult, DEPARTURE_WAIT, Delivery, Exit, Identity, Network, Node, NodeEffects, Session,
-    ShutdownSignal, forward_standard_input,
+    ShutdownSignal, forward_standard_input, snapshot_due_after,
 };
 use crate::peers::Peer;
 use crate::sidecar::{self, HeldSidecar, Pause, SidecarError};
@@ -145,6 +147,11 @@ pub async fn serve(
         input_ended,
         move |failure| reporting(InboxEvent::StandardInputFailed(failure).into()),
     ));
+    let recording = tokio::spawn(record_while_unclaimed(
+        Arc::clone(&session),
+        Arc::clone(&effects.node.monotonic),
+        Arc::clone(&effects.report),
+    ));
     let report = Arc::clone(&effects.report);
     let answering = tokio::spawn(answer_until_closed(
         Server::new(Arc::clone(&session), served, effects),
@@ -156,8 +163,27 @@ pub async fn serve(
         .run_until_exit(end_of_input, signals, DEPARTURE_WAIT)
         .await;
     forwarding.abort();
+    recording.abort();
     answering.abort();
     exit
+}
+
+/// Records a snapshot of no counters at each state snapshot interval until the session claims a card, whose node then records its own.
+async fn record_while_unclaimed(
+    session: Arc<Session>,
+    monotonic: MonotonicClock,
+    report: RunRecord,
+) {
+    loop {
+        tokio::time::sleep_until(snapshot_due_after(monotonic())).await;
+        if !matches!(session.node(), Err(ErrorCode::NotClaimed)) {
+            return;
+        }
+        report(
+            StateEvent::Counters(CounterSnapshot::without_endpoint(SnapshotMoment::Interval))
+                .into(),
+        );
+    }
 }
 
 /// Answers MCP requests from the input on the output until the client closes the input, recording a failed handshake or a failed answering task.
@@ -1090,6 +1116,7 @@ mod tests {
         config: NetworkConfig,
         bind_endpoint: BindEndpoint,
         report: RunRecord,
+        node_report: RunRecord,
         is_card_held: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
     }
 
@@ -1100,6 +1127,7 @@ mod tests {
                 config: network_config(Vec::new()),
                 bind_endpoint: bind_alone(),
                 report: Arc::new(|_event: Event| {}),
+                node_report: Arc::new(|_event: Event| {}),
                 is_card_held: Arc::new(|sidecar_path: &Path| {
                     sidecar::is_held(sidecar_path).is_ok_and(|held| held)
                 }),
@@ -1119,6 +1147,7 @@ mod tests {
                 }]),
                 bind_endpoint: bind_meeting(meeting),
                 report: Arc::new(|_event: Event| {}),
+                node_report: Arc::new(|_event: Event| {}),
                 is_card_held: Arc::new(|sidecar_path: &Path| {
                     sidecar::is_held(sidecar_path).is_ok_and(|held| held)
                 }),
@@ -1239,7 +1268,7 @@ mod tests {
                 fill_probe_nonce: Arc::new(move |nonce: &mut crate::wire::Nonce| {
                     nonce.fill(message_id_byte);
                 }),
-                report: Arc::new(|_event: Event| {}),
+                report: plan.node_report,
                 inbox,
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
             },
@@ -1434,6 +1463,82 @@ mod tests {
         assert_eq!(
             exit.unwrap().unwrap(),
             Exit::Stopped(RuntimeShutdown::Awaited)
+        );
+    }
+
+    const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
+    /// The node's second interval snapshot is due strictly after the server's first unclaimed one, since the node starts no earlier than the server.
+    const NODE_INTERVAL_SNAPSHOTS_AFTER_THE_FIRST_UNCLAIMED_DUE_TIME: usize = 2;
+
+    #[tokio::test(start_paused = true)]
+    async fn observability_decisions_9_and_13_a_server_not_yet_claimed_records_a_snapshot_of_no_counters_every_60_s()
+     {
+        let machine = Machine::new("unclaimed-counters");
+        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let mut client = start_server(
+            &machine,
+            ServerPlan {
+                report: record,
+                ..ServerPlan::alone(FIRST_PROCESS_ID)
+            },
+        );
+        client.initialize().await;
+
+        let first = crate::net::direct::tests::next_counters_snapshot(&mut recorded).await;
+        let second = crate::net::direct::tests::next_counters_snapshot(&mut recorded).await;
+
+        assert_eq!(
+            second.0.duration_since(first.0),
+            SPEC_STATE_SNAPSHOT_INTERVAL
+        );
+        for (_at, fields) in [first, second] {
+            assert_eq!(fields, vec![("moment", Value::from("interval"))]);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn observability_decision_9_a_claimed_server_records_only_its_nodes_snapshots_which_carry_the_counters()
+     {
+        let _slot = node_slot().await;
+        let machine = Machine::new("claimed-counters");
+        machine.create_card("amy-card", "amy", AMY_SEED);
+        let (record, mut recorded) = crate::net::direct::tests::recorded_events();
+        let mut client = start_server(
+            &machine,
+            ServerPlan {
+                report: Arc::clone(&record),
+                node_report: record,
+                ..ServerPlan::alone(FIRST_PROCESS_ID)
+            },
+        );
+        client.initialize().await;
+        let claim = client.envelope("init", json!({ "card": "amy-card" })).await;
+        assert_eq!(claim["ok"], json!(true), "{claim}");
+
+        let is_node_interval = |fields: &crate::event::EventFields| {
+            fields.len() > 1 && fields.first() == Some(&("moment", Value::from("interval")))
+        };
+        let mut snapshots = Vec::new();
+        while snapshots
+            .iter()
+            .filter(|fields| is_node_interval(fields))
+            .count()
+            < NODE_INTERVAL_SNAPSHOTS_AFTER_THE_FIRST_UNCLAIMED_DUE_TIME
+        {
+            snapshots.push(
+                crate::net::direct::tests::next_counters_snapshot(&mut recorded)
+                    .await
+                    .1,
+            );
+        }
+
+        let moments: Vec<(&Value, usize)> = snapshots
+            .iter()
+            .map(|fields| (&fields[0].1, fields.len()))
+            .collect();
+        assert!(
+            snapshots.iter().all(|fields| fields.len() > 1),
+            "a snapshot of no counters was recorded once the node ran: {moments:?}"
         );
     }
 
