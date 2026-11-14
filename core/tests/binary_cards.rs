@@ -480,7 +480,6 @@ fn binary_help_of_every_observer_command_names_the_cards_dir_flag_of_spec_3_3() 
 const CARD_FILE_NAME: &str = "ana-card.yaml";
 const REFUSED_CARD_EXIT_CODE: i32 = 1;
 const NESTING_DEPTHS: [usize; 3] = [3000, 10_000, 100_000];
-const REFUSAL_EXCERPT_CHARACTERS: usize = 300;
 
 type DeepPublicShape = (&'static str, fn(usize) -> String, &'static [usize]);
 
@@ -533,10 +532,7 @@ fn binary_list_cards_refuses_a_public_nested_too_deep_for_the_parser_as_an_inval
 
             let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
 
-            let refusal: String = String::from_utf8_lossy(&listed.stderr)
-                .chars()
-                .take(REFUSAL_EXCERPT_CHARACTERS)
-                .collect();
+            let refusal = stderr_text(&listed);
             assert_eq!(
                 listed.status.code(),
                 Some(REFUSED_CARD_EXIT_CODE),
