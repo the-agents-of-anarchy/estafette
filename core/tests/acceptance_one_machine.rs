@@ -219,7 +219,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         })
     }
 
-    /// Broadcasts bob's Presence from the scripted node once its topic reports the member up, and requires the member to list bob as last seen after the broadcast.
+    /// Broadcasts bob's Presence from the scripted node once its topic reports the member up, and requires the member to list bob as last seen in or after the millisecond of the broadcast.
     #[track_caller]
     fn announce_until_seen(
         network: &LocalNetwork,
@@ -233,7 +233,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         let sent_ms = wall_clock_ms();
         node.broadcast(presence_signed_by(network.keys(), key, "bob", address));
         member.peer_within("bob", PRESENCE_WAIT, |bob| {
-            bob["last_seen"].as_u64().unwrap() > sent_ms
+            bob["last_seen"].as_u64().unwrap() >= sent_ms
         });
         sent_ms
     }
