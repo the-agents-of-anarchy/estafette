@@ -203,7 +203,14 @@ impl McpServer {
     #[track_caller]
     fn response_to(&self, request_id: u64) -> Value {
         loop {
-            let message = self.messages.recv_timeout(RESPONSE_WAIT).unwrap();
+            let message = self
+                .messages
+                .recv_timeout(RESPONSE_WAIT)
+                .unwrap_or_else(|failure| {
+                    panic!(
+                        "no response to request {request_id} within {RESPONSE_WAIT:?}: {failure}"
+                    )
+                });
             if message["id"] == json!(request_id) {
                 return message;
             }

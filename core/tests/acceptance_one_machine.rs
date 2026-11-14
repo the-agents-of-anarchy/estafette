@@ -91,7 +91,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
     use crate::payloads::presence_signed_by;
     use crate::scratch_machine::{Card, RunRecordKeeping};
-    use crate::scripted_node::ScriptedNode;
+    use crate::scripted_node::{DIRECT_ANSWER_WAIT, ScriptedNode};
     use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
     use crate::timed_step::timed;
     use crate::{MESSAGE_ID, send};
@@ -191,7 +191,9 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         request: Request,
     ) -> Response {
         let sealed = seal_request(network.keys(), request).unwrap();
-        let answer = node.request_directly(to, &sealed).unwrap();
+        let answer = node.request_directly(to, &sealed).unwrap_or_else(|| {
+            panic!("no answer to the direct request within {DIRECT_ANSWER_WAIT:?}")
+        });
         open_response(network.keys(), &answer).unwrap()
     }
 
@@ -679,11 +681,11 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             before_presence
                 .as_ref()
                 .is_some_and(is_accepted_message_ack),
-            "{before_presence:?}"
+            "the restarted bob's message before its presence was not acked accepted within {DIRECT_REQUEST_WAIT:?}: {before_presence:?}"
         );
         assert!(
             after_presence.as_ref().is_some_and(is_accepted_message_ack),
-            "{after_presence:?}"
+            "the restarted bob's message after its presence was not acked accepted within {DIRECT_REQUEST_WAIT:?}: {after_presence:?}"
         );
         assert_eq!(
             bodies,
@@ -761,11 +763,11 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             before_presence
                 .as_ref()
                 .is_some_and(is_accepted_message_ack),
-            "{before_presence:?}"
+            "live bob's message before its presence was not acked accepted within {DIRECT_REQUEST_WAIT:?}: {before_presence:?}"
         );
         assert!(
             after_presence.as_ref().is_some_and(is_accepted_message_ack),
-            "{after_presence:?}"
+            "live bob's message after its presence was not acked accepted within {DIRECT_REQUEST_WAIT:?}: {after_presence:?}"
         );
     }
 }
@@ -1175,7 +1177,9 @@ mod spec_3_15_with_one_member {
                 card.id,
                 &seal_request(network.keys(), message_to(&card.id, HONEST_BODY)).unwrap(),
             )
-            .unwrap();
+            .unwrap_or_else(|| {
+                panic!("no answer to the honest message within {DIRECT_ANSWER_WAIT:?}")
+            });
         let bodies = amy.inbox_bodies();
 
         assert_eq!(forged_answer, None);
