@@ -1,7 +1,8 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError};
+use std::thread::{self, ThreadId};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -199,9 +200,29 @@ pub struct FileTrace {
     drain: Duration,
     header: Arc<HeaderSource>,
     queue: Mutex<Queue>,
+    stamping_thread: Mutex<Option<ThreadId>>,
     lost_at_close: Arc<Mutex<u64>>,
     ended: Mutex<Option<Receiver<io::Result<()>>>>,
     writer_moved: Arc<WriterMoved>,
+}
+
+/// This thread named as the one stamping a line under the queue's lock, until the guard drops, so a panic hook the stamp sets off on this thread never waits on that lock.
+struct Stamping<'trace> {
+    stamping_thread: &'trace Mutex<Option<ThreadId>>,
+}
+
+impl<'trace> Stamping<'trace> {
+    /// Names this thread as the one stamping a line.
+    fn by_this_thread(stamping_thread: &'trace Mutex<Option<ThreadId>>) -> Self {
+        *locked(stamping_thread) = Some(thread::current().id());
+        Self { stamping_thread }
+    }
+}
+
+impl Drop for Stamping<'_> {
+    fn drop(&mut self) {
+        *locked(self.stamping_thread) = None;
+    }
 }
 
 /// The writer's notice, after each line or marker it took off the queue, to every flush waiting for a slot or for its answer.
@@ -330,17 +351,24 @@ impl FileTrace {
                 lines: Some(queue),
                 lost: 0,
             }),
+            stamping_thread: Mutex::new(None),
             lost_at_close,
             ended: Mutex::new(Some(ended)),
             writer_moved,
         })
     }
 
-    /// Queues the event's line, or counts it lost when the queue is full; the thread numbers each line as it writes it.
+    /// Queues the event's line, or counts it lost when the queue is full, or drops it when this thread is stamping a line already, as a panic hook does on the thread whose stamp panicked; the thread numbers each line as it writes it.
     pub fn write(&self, name: &str, fields: &[(&str, Value)]) {
-        let mut queue = locked(&self.queue);
+        let Some(mut queue) = self.queue_unless_this_thread_stamps() else {
+            return;
+        };
+        let line = {
+            let _stamping = Stamping::by_this_thread(&self.stamping_thread);
+            self.header.stamp(name, fields)
+        };
         let queued = QueuedLine {
-            line: self.header.stamp(name, fields),
+            line,
             lost_before: queue.lost,
         };
         let is_queued = queue
@@ -354,9 +382,13 @@ impl FileTrace {
         };
     }
 
-    /// Waits at most the drain bound, for a slot while the queue is full and then for the thread, until the thread wrote every line queued before this call and cut the file back to its last line, leaving the queue open, saying how that left this file; a queue the stop already closed is drained.
+    /// Waits at most the drain bound, for a slot while the queue is full and then for the thread, until the thread wrote every line queued before this call and cut the file back to its last line, leaving the queue open, saying how that left this file; a queue the stop already closed is drained, and a flush on a thread stamping a line, as a panic hook on the thread whose stamp panicked, is not.
     pub fn flush(&self) -> TraceStop {
-        let Some(lines) = locked(&self.queue).lines.clone() else {
+        let lines = match self.queue_unless_this_thread_stamps() {
+            Some(queue) => queue.lines.clone(),
+            None => return TraceStop::NotDrained { file: self.kind },
+        };
+        let Some(lines) = lines else {
             return TraceStop::Drained;
         };
         let (written, answered) = mpsc::channel();
@@ -386,6 +418,19 @@ impl FileTrace {
             return TraceStop::Drained;
         };
         self.stop_answered(ended.recv_timeout(self.drain).ok())
+    }
+
+    /// The queue under its lock once any other holder lets go of it, or none when this thread holds that lock while it stamps a line, as a panic hook does on the thread whose stamp panicked.
+    fn queue_unless_this_thread_stamps(&self) -> Option<MutexGuard<'_, Queue>> {
+        match self.queue.try_lock() {
+            Ok(queue) => Some(queue),
+            Err(TryLockError::Poisoned(poisoned)) => Some(poisoned.into_inner()),
+            Err(TryLockError::WouldBlock) => {
+                let is_stamped_here =
+                    *locked(&self.stamping_thread) == Some(thread::current().id());
+                (!is_stamped_here).then(|| locked(&self.queue))
+            }
+        }
     }
 
     /// How the writer's answer left this file: drained when it ended at its last line, not cut when it could not, and not drained when no answer came.
