@@ -315,6 +315,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::io::{BufRead, BufReader};
     use std::process::{Child, Command, Stdio};
+    use std::time::Instant;
 
     struct SnapshotSequence(RefCell<Vec<Vec<ProcessEntry>>>);
 
@@ -534,7 +535,8 @@ mod tests {
         }
     }
 
-    const TREE_STARTUP_POLL_LIMIT: u32 = 200;
+    /// No shorter than the two hundred polls the tree was once given to start.
+    const TREE_STARTUP_WAIT: Duration = Duration::from_secs(30);
     fn executable_table(pid: u32, executable: &str) -> BTreeMap<Pid, String> {
         BTreeMap::from([(Pid(pid), executable.to_owned())])
     }
@@ -856,22 +858,24 @@ mod tests {
             .iter()
             .map(|pid| binary_socket(XDG_RUNTIME_DIRECTORY, *pid))
             .collect();
-        let mut polls = 0_u32;
         let matched = Cell::new(false);
         let harness_pid = Pid(tree.harness.id());
+        let started = Instant::now();
         follow_binary_sockets(
             harness_pid,
             &runtime_inputs(),
             &PsProcessTable,
             &mut |_| {
-                polls = polls.saturating_add(1);
-                if matched.get() || polls >= TREE_STARTUP_POLL_LIMIT {
+                if matched.get() || started.elapsed() >= TREE_STARTUP_WAIT {
                     tree.stop_harness();
                 }
             },
             &mut |sockets| matched.set(matched.get() || sockets == expected),
         )
         .expect("ps works");
-        assert!(matched.get(), "no poll reported exactly {expected:?}");
+        assert!(
+            matched.get(),
+            "no poll within {TREE_STARTUP_WAIT:?} reported exactly {expected:?}"
+        );
     }
 }
