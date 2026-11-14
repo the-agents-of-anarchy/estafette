@@ -1144,7 +1144,7 @@ impl From<ReadToEndError> for DirectError {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
     use std::time::Instant;
 
@@ -1158,6 +1158,7 @@ pub(crate) mod tests {
     use crate::crypto::{KEY_LEN, NetworkSecret};
     use crate::net::endpoint::NodeEndpoint;
     use crate::seeded_draws::Draws;
+    use crate::test_waits::found_within;
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [7; KEY_LEN];
     const SERVER_SEED: u8 = 1;
@@ -1734,16 +1735,56 @@ pub(crate) mod tests {
     const SILENCE_OF_A_GONE_PROCESS_JUDGED: Duration =
         GONE_PROCESS_SILENCE.saturating_add(HEARING_SAMPLE_INTERVAL);
 
+    /// A register clock reading the runtime's now plus however far the test has moved it forward.
+    #[derive(Clone, Default)]
+    struct ClockMovedByTheTest {
+        moved_millis: Arc<AtomicU64>,
+    }
+
+    impl ClockMovedByTheTest {
+        fn monotonic(&self) -> MonotonicClock {
+            let moved_millis = Arc::clone(&self.moved_millis);
+            Arc::new(move || {
+                tokio::time::Instant::now()
+                    .checked_add(Duration::from_millis(moved_millis.load(Ordering::SeqCst)))
+                    .unwrap()
+            })
+        }
+
+        /// Moves every later reading forward by the duration and answers the first reading after the move.
+        fn move_forward(&self, by: Duration) -> tokio::time::Instant {
+            self.moved_millis
+                .fetch_add(u64::try_from(by.as_millis()).unwrap(), Ordering::SeqCst);
+            (self.monotonic())()
+        }
+    }
+
     #[tokio::test]
     async fn spec_3_8_an_introduce_keeps_every_live_connection_accepted_from_its_sender_whatever_address_it_carries()
      {
-        let rig = rig().await;
+        let clock = ClockMovedByTheTest::default();
+        let rig = rig_over(
+            RecordingHost::with_card(card_of(SERVER_SEED)),
+            clock.monotonic(),
+        )
+        .await;
         let server = rig.link.server_node.endpoint().id();
         let earlier = raw_connection(&rig).await;
         raw_exchange(&earlier, &sealed_message_to_server(&keys()))
             .await
             .unwrap();
-        tokio::time::sleep(SILENCE_OF_A_GONE_PROCESS_JUDGED).await;
+        let register = rig.link.server_node.held_connections();
+        let moved_past_the_silence = clock.move_forward(SILENCE_OF_A_GONE_PROCESS_JUDGED);
+        let heard_after_the_move = found_within(SILENCE_OF_A_GONE_PROCESS_JUDGED, async || {
+            every_held_of_heard_since(&register, card_of(CLIENT_SEED), moved_past_the_silence)
+                .then_some(())
+        })
+        .await
+        .is_some();
+        assert!(
+            heard_after_the_move,
+            "the earlier connection was not heard after the register's clock moved {SILENCE_OF_A_GONE_PROCESS_JUDGED:?} forward, within {SILENCE_OF_A_GONE_PROCESS_JUDGED:?}"
+        );
 
         rig.link
             .client
@@ -1818,11 +1859,14 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_8_an_introduce_closes_the_connection_accepted_from_its_senders_process_that_is_gone()
      {
-        let rig = rig().await;
+        let rig = rig_over(
+            RecordingHost::with_card(card_of(SERVER_SEED)),
+            clock_reading_every_connection_as_gone(),
+        )
+        .await;
         let server = rig.link.server_node.endpoint().id();
         connection_from_a_process_that_vanished(rig.link.server_node.endpoint().addr()).await;
         let vanished = connections_held_open_from(&rig.link.server_node, card_of(CLIENT_SEED));
-        tokio::time::sleep(SILENCE_OF_A_GONE_PROCESS_JUDGED).await;
 
         rig.link
             .client
@@ -3533,6 +3577,10 @@ pub(crate) mod tests {
         fn connections(&self) -> usize {
             self.connections.load(Ordering::SeqCst)
         }
+
+        fn streams_taken(&self) -> usize {
+            self.streams.load(Ordering::SeqCst)
+        }
     }
 
     impl ProtocolHandler for ScriptedServer {
@@ -3755,15 +3803,18 @@ pub(crate) mod tests {
     }
 
     const HANDSHAKE_HELD_FOR: Duration = Duration::from_secs(2);
-    const PROBE_ACK_HELD_FOR: Duration = Duration::from_secs(2);
 
-    async fn answer_one_probe_late(server: Endpoint) {
+    /// Holds the handshake for its time, then holds the probe's ack until the probe call has returned.
+    async fn answer_one_probe_after_the_call_returned(
+        server: Endpoint,
+        call_returned: tokio::sync::oneshot::Receiver<()>,
+    ) {
         let incoming = server.accept().await.unwrap();
         tokio::time::sleep(HANDSHAKE_HELD_FOR).await;
         let connection = incoming.accept().unwrap().await.unwrap();
         let (mut send, mut recv) = connection.accept_bi().await.unwrap();
         recv.read_to_end(WIRE_LIMIT_BYTES).await.unwrap();
-        tokio::time::sleep(PROBE_ACK_HELD_FOR).await;
+        let _returned_or_dropped = call_returned.await;
         if send.write_all(&sealed_probe_ack(PROBE_NONCE)).await.is_ok() {
             let _finished_after_the_probe_timeout = send.finish();
         }
@@ -3781,11 +3832,26 @@ pub(crate) mod tests {
             ClientTimeouts::SPEC,
             unrecorded_register(),
         );
-        let _answering = tokio::spawn(answer_one_probe_late(server_node.endpoint().clone()));
+        let (call_returned, answer_after_the_call) = tokio::sync::oneshot::channel();
+        let _answering = tokio::spawn(answer_one_probe_after_the_call_returned(
+            server_node.endpoint().clone(),
+            answer_after_the_call,
+        ));
 
         let started = Instant::now();
-        let outcome = client.probe(server_node.endpoint().id(), PROBE_NONCE).await;
+        let outcome = timeout(
+            SPEC_PROBE_TIMEOUT + PROBE_FAILURE_SLACK,
+            client.probe(server_node.endpoint().id(), PROBE_NONCE),
+        )
+        .await
+        .unwrap_or_else(|_elapsed| {
+            panic!(
+                "the probe call did not return within {:?}",
+                SPEC_PROBE_TIMEOUT + PROBE_FAILURE_SLACK
+            )
+        });
         let waited = started.elapsed();
+        let _answering_gone = call_returned.send(());
 
         assert_eq!(outcome, Err(DirectError::Timeout));
         assert!(
@@ -3965,8 +4031,8 @@ pub(crate) mod tests {
     }
 
     const FIRST_REQUEST_PROBE_TIMEOUT: Duration = Duration::from_millis(600);
-    const BEFORE_FIRST_REQUEST_TIMES_OUT: Duration = Duration::from_millis(100);
-    const AFTER_FIRST_REQUEST_TIMED_OUT: Duration = Duration::from_millis(900);
+    const FIRST_REQUEST_RETURNED_WAIT: Duration =
+        FIRST_REQUEST_PROBE_TIMEOUT.saturating_add(TIMEOUT_SLACK);
 
     #[tokio::test]
     async fn spec_3_6_a_failure_on_an_old_connection_leaves_the_newer_connection_held() {
@@ -3981,18 +4047,41 @@ pub(crate) mod tests {
         };
         let link = link_to(server.clone(), timeouts).await;
         let peer = link.server_node.endpoint().id();
+        let (first_returned, first_return) = tokio::sync::oneshot::channel();
 
-        let (slow_first, later) = tokio::join!(link.client.probe(peer, PROBE_NONCE), async {
-            tokio::time::sleep(BEFORE_FIRST_REQUEST_TIMES_OUT).await;
-            let reset = link
-                .client
-                .send_message(peer, message_to(card_of(SERVER_SEED), BODY))
-                .await;
-            let redialed = link.client.probe(peer, PROBE_NONCE).await;
-            tokio::time::sleep(AFTER_FIRST_REQUEST_TIMED_OUT).await;
-            let on_newer = link.client.probe(peer, PROBE_NONCE).await;
-            (reset, redialed, on_newer)
-        });
+        let (slow_first, later) = tokio::join!(
+            async {
+                let outcome = link.client.probe(peer, PROBE_NONCE).await;
+                let _waited_on_or_not = first_returned.send(());
+                outcome
+            },
+            async {
+                let first_stream_taken = found_within(FIRST_REQUEST_PROBE_TIMEOUT, async || {
+                    (server.streams_taken() >= 1).then_some(())
+                })
+                .await
+                .is_some();
+                assert!(
+                    first_stream_taken,
+                    "the server took no stream of the first request within {FIRST_REQUEST_PROBE_TIMEOUT:?}"
+                );
+                let reset = link
+                    .client
+                    .send_message(peer, message_to(card_of(SERVER_SEED), BODY))
+                    .await;
+                let redialed = link.client.probe(peer, PROBE_NONCE).await;
+                let first_returned_in_time = matches!(
+                    timeout(FIRST_REQUEST_RETURNED_WAIT, first_return).await,
+                    Ok(Ok(()))
+                );
+                assert!(
+                    first_returned_in_time,
+                    "the first request did not return within {FIRST_REQUEST_RETURNED_WAIT:?}"
+                );
+                let on_newer = link.client.probe(peer, PROBE_NONCE).await;
+                (reset, redialed, on_newer)
+            }
+        );
 
         assert_eq!(slow_first, Err(DirectError::Timeout));
         assert_eq!(later.0, Err(DirectError::Refused));
@@ -4003,7 +4092,6 @@ pub(crate) mod tests {
     const CONCURRENT_STREAM_LIMIT: usize = 100;
     const STALLED_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
     const STALLED_PROBE_SLACK: Duration = Duration::from_millis(500);
-    const AFTER_THE_STREAM_LIMIT_IS_REACHED: Duration = Duration::from_millis(200);
 
     #[tokio::test]
     async fn spec_3_14_a_request_stalled_before_its_stream_opens_times_out_within_the_ack_timeout()
@@ -4013,7 +4101,7 @@ pub(crate) mod tests {
             probe: STALLED_PROBE_TIMEOUT,
             ..ClientTimeouts::SPEC
         };
-        let link = link_to(server, timeouts).await;
+        let link = link_to(server.clone(), timeouts).await;
         let peer = link.server_node.endpoint().id();
         let client = Arc::new(link.client);
         let mut holding_every_stream = tokio::task::JoinSet::new();
@@ -4021,7 +4109,16 @@ pub(crate) mod tests {
             let client = Arc::clone(&client);
             holding_every_stream.spawn(async move { client.probe(peer, PROBE_NONCE).await });
         }
-        tokio::time::sleep(AFTER_THE_STREAM_LIMIT_IS_REACHED).await;
+        let every_stream_taken = found_within(STALLED_PROBE_TIMEOUT, async || {
+            (server.streams_taken() >= CONCURRENT_STREAM_LIMIT).then_some(())
+        })
+        .await
+        .is_some();
+        assert!(
+            every_stream_taken,
+            "the server took fewer than {CONCURRENT_STREAM_LIMIT} streams within {STALLED_PROBE_TIMEOUT:?}: {}",
+            server.streams_taken()
+        );
 
         let stalled = tokio::time::timeout(
             STALLED_PROBE_TIMEOUT + STALLED_PROBE_SLACK,
