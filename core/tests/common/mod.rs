@@ -1,10 +1,12 @@
-use std::fs;
 use std::io;
 use std::path::PathBuf;
 
+pub mod fresh_directory;
+
+/// A directory of the temp directory that did not exist before the call, named for the prefix, the test and the process.
 pub fn scratch_root(prefix: &str, test_name: &str) -> io::Result<PathBuf> {
-    let root = std::env::temp_dir().join(format!("{prefix}-{test_name}-{}", std::process::id()));
-    drop(fs::remove_dir_all(&root));
-    fs::create_dir_all(&root)?;
-    Ok(root)
+    fresh_directory::fresh_directory_in(
+        &std::env::temp_dir(),
+        &format!("{prefix}-{test_name}-{}", std::process::id()),
+    )
 }

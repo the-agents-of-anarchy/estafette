@@ -1,9 +1,12 @@
+use std::fs::Permissions;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::{Command, Output};
 
 mod common;
+#[path = "common/remove_scratch.rs"]
+mod remove_scratch;
 
 const SCRATCH_PREFIX: &str = "estafette-binary-cards";
 const BINARY: &str = env!("CARGO_BIN_EXE_estafette");
@@ -231,6 +234,89 @@ fn binary_owner_key_is_owner_read_write_under_any_umask_of_spec_3_3() {
             "owner key, umask {umask}"
         );
     }
+}
+
+const LEFTOVER_PREFIX: &str = "estafette-scratch-root-leftover";
+const LEFTOVER_TEST_NAME: &str = "planted";
+const MADE_NOWHERE_TEST_NAME: &str = "made_nowhere";
+const REMOVED_NOWHERE_TEST_NAME: &str = "removed_nowhere";
+const UNLISTABLE_PARENT: &str = "config";
+const PLANTED_FILE: &str = "config/estafette/networks/acme.toml";
+const PLANTED_FILE_TEXT: &str = "an earlier run's network";
+const ABSENT_NAME: &str = "absent";
+const UNMADE_CHILD_NAME: &str = "child";
+const UNLISTABLE_PARENT_MODE: u32 = 0o377;
+const LISTABLE_PARENT_MODE: u32 = 0o700;
+
+fn plant_leftover_that_cannot_be_listed_or_removed(leftover: &Path) -> io::Result<()> {
+    let planted_file = leftover.join(PLANTED_FILE);
+    std::fs::create_dir_all(planted_file.parent().unwrap_or(leftover))?;
+    std::fs::write(planted_file, PLANTED_FILE_TEXT)?;
+    std::fs::set_permissions(
+        leftover.join(UNLISTABLE_PARENT),
+        Permissions::from_mode(UNLISTABLE_PARENT_MODE),
+    )
+}
+
+fn clear_planted_leftover(leftover: &Path) -> io::Result<()> {
+    std::fs::set_permissions(
+        leftover.join(UNLISTABLE_PARENT),
+        Permissions::from_mode(LISTABLE_PARENT_MODE),
+    )?;
+    remove_scratch::remove_scratch(leftover)
+}
+
+#[test]
+fn scratch_root_hands_out_an_empty_root_though_an_earlier_run_left_an_unremovable_one_under_its_name()
+ {
+    let leftover = std::env::temp_dir().join(format!(
+        "{LEFTOVER_PREFIX}-{LEFTOVER_TEST_NAME}-{}",
+        std::process::id()
+    ));
+    plant_leftover_that_cannot_be_listed_or_removed(&leftover).unwrap();
+
+    let root = common::scratch_root(LEFTOVER_PREFIX, LEFTOVER_TEST_NAME).unwrap();
+
+    assert_ne!(root, leftover);
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+    remove_scratch::remove_scratch(&root).unwrap();
+    clear_planted_leftover(&leftover).unwrap();
+}
+
+#[test]
+fn scratch_directory_that_cannot_be_made_fails_naming_its_path_and_the_cause() {
+    let root = common::scratch_root(LEFTOVER_PREFIX, MADE_NOWHERE_TEST_NAME).unwrap();
+    let absent_parent = root.join(ABSENT_NAME);
+
+    let failure =
+        common::fresh_directory::fresh_directory_in(&absent_parent, UNMADE_CHILD_NAME).unwrap_err();
+
+    assert_eq!(failure.kind(), io::ErrorKind::NotFound);
+    assert!(
+        failure.to_string().starts_with(&format!(
+            "{}: ",
+            absent_parent.join(UNMADE_CHILD_NAME).display()
+        )),
+        "{failure}"
+    );
+    remove_scratch::remove_scratch(&root).unwrap();
+}
+
+#[test]
+fn scratch_path_that_cannot_be_removed_fails_naming_its_path_and_the_cause() {
+    let root = common::scratch_root(LEFTOVER_PREFIX, REMOVED_NOWHERE_TEST_NAME).unwrap();
+    let absent = root.join(ABSENT_NAME);
+
+    let failure = remove_scratch::remove_scratch(&absent).unwrap_err();
+
+    assert_eq!(failure.kind(), io::ErrorKind::NotFound);
+    assert!(
+        failure
+            .to_string()
+            .starts_with(&format!("{}: ", absent.display())),
+        "{failure}"
+    );
+    remove_scratch::remove_scratch(&root).unwrap();
 }
 
 const SEARCH_BLOCKING_UMASK: &str = "0100";
