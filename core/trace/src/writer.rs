@@ -363,6 +363,12 @@ impl FileTrace {
         })
     }
 
+    /// The longest a flush or the stop waits for this file's writer.
+    #[must_use]
+    pub const fn drain(&self) -> Duration {
+        self.drain
+    }
+
     /// Queues the event's line, or counts it lost when the queue is full, or drops it when this thread is stamping a line already, as a panic hook does on the thread whose stamp panicked; the thread numbers each line as it writes it.
     pub fn write(&self, name: &str, fields: &[(&str, Value)]) {
         let Some(mut queue) = self.queue_unless_this_thread_stamps() else {
