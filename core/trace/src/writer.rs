@@ -1,7 +1,7 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use serde_json::Value;
@@ -201,6 +201,77 @@ pub struct FileTrace {
     queue: Mutex<Queue>,
     lost_at_close: Arc<Mutex<u64>>,
     ended: Mutex<Option<Receiver<io::Result<()>>>>,
+    writer_moved: Arc<WriterMoved>,
+}
+
+/// The writer's notice, after each line or marker it took off the queue, to every flush waiting for a slot or for its answer.
+#[derive(Default)]
+struct WriterMoved {
+    notice: Mutex<()>,
+    noticed: Condvar,
+}
+
+impl WriterMoved {
+    /// Wakes every flush waiting on the writer.
+    fn notify(&self) {
+        drop(locked(&self.notice));
+        self.noticed.notify_all();
+    }
+}
+
+/// Where one flush stands with the writer: its marker waiting for a slot, its marker queued and waiting for the writer's answer, that answer, or the writer gone without one.
+enum FlushProgress {
+    Unqueued {
+        marker: Queued,
+        lines: SyncSender<Queued>,
+        answered: Receiver<io::Result<()>>,
+    },
+    Queued(Receiver<io::Result<()>>),
+    Answered(io::Result<()>),
+    WriterGone,
+}
+
+impl FlushProgress {
+    /// Takes the flush one step on: its marker into a free slot, or the writer's answer once given.
+    fn advance(&mut self) {
+        *self = match std::mem::replace(self, Self::WriterGone) {
+            Self::Unqueued {
+                marker,
+                lines,
+                answered,
+            } => match lines.try_send(marker) {
+                Ok(()) => Self::Queued(answered),
+                Err(TrySendError::Full(marker)) => Self::Unqueued {
+                    marker,
+                    lines,
+                    answered,
+                },
+                Err(TrySendError::Disconnected(_marker)) => Self::WriterGone,
+            },
+            Self::Queued(answered) => match answered.try_recv() {
+                Ok(answer) => Self::Answered(answer),
+                Err(TryRecvError::Empty) => Self::Queued(answered),
+                Err(TryRecvError::Disconnected) => Self::WriterGone,
+            },
+            settled @ (Self::Answered(_) | Self::WriterGone) => settled,
+        };
+    }
+
+    /// Whether the flush still waits on the writer.
+    const fn is_waiting(&self) -> bool {
+        match self {
+            Self::Unqueued { .. } | Self::Queued(_) => true,
+            Self::Answered(_) | Self::WriterGone => false,
+        }
+    }
+
+    /// The writer's answer, when it gave one.
+    fn answer(self) -> Option<io::Result<()>> {
+        match self {
+            Self::Answered(answer) => Some(answer),
+            Self::Unqueued { .. } | Self::Queued(_) | Self::WriterGone => None,
+        }
+    }
 }
 
 /// The queue while it is open, and the events lost since the last line queued.
@@ -236,11 +307,18 @@ impl FileTrace {
         let lost_at_close = Arc::new(Mutex::new(0));
         let writer_header = Arc::clone(&header);
         let writer_lost_at_close = Arc::clone(&lost_at_close);
+        let writer_moved = Arc::new(WriterMoved::default());
+        let moved = Arc::clone(&writer_moved);
         spawn_thread(
             &format!("{PRODUCT_NAME}-{WRITER_THREAD_NAME_SUFFIX}"),
             Box::new(move || {
-                let closed =
-                    write_every_line(output, &writer_header, &lines, &writer_lost_at_close);
+                let closed = write_every_line(
+                    output,
+                    &writer_header,
+                    &lines,
+                    &writer_lost_at_close,
+                    &moved,
+                );
                 drop(ended_sender.send(closed));
             }),
         )?;
@@ -254,6 +332,7 @@ impl FileTrace {
             }),
             lost_at_close,
             ended: Mutex::new(Some(ended)),
+            writer_moved,
         })
     }
 
@@ -275,18 +354,26 @@ impl FileTrace {
         };
     }
 
-    /// Waits at most the drain bound for the thread to write every line queued before this call and cut the file back to its last line, leaving the queue open, saying how that left this file; a queue the stop already closed is drained, and a full one is not.
+    /// Waits at most the drain bound, for a slot while the queue is full and then for the thread, until the thread wrote every line queued before this call and cut the file back to its last line, leaving the queue open, saying how that left this file; a queue the stop already closed is drained.
     pub fn flush(&self) -> TraceStop {
-        let (written, flushed) = mpsc::channel();
-        let queued = match locked(&self.queue).lines.as_ref() {
-            Some(lines) => lines.try_send(Queued::Flush(written)),
-            None => return TraceStop::Drained,
+        let Some(lines) = locked(&self.queue).lines.clone() else {
+            return TraceStop::Drained;
         };
-        self.stop_answered(
-            queued
-                .ok()
-                .and_then(|()| flushed.recv_timeout(self.drain).ok()),
-        )
+        let (written, answered) = mpsc::channel();
+        let mut progress = FlushProgress::Unqueued {
+            marker: Queued::Flush(written),
+            lines,
+            answered,
+        };
+        let (_notice, _timed_out_is_read_from_the_progress) = self
+            .writer_moved
+            .noticed
+            .wait_timeout_while(locked(&self.writer_moved.notice), self.drain, |()| {
+                progress.advance();
+                progress.is_waiting()
+            })
+            .unwrap_or_else(PoisonError::into_inner);
+        self.stop_answered(progress.answer())
     }
 
     /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most the drain bound for it to take every line it holds, report that loss and cut the file back to its last line, saying how the stop left this file.
@@ -314,12 +401,13 @@ impl FileTrace {
     }
 }
 
-/// Writes each queued line under the next number, cutting the file back to its last line for each caller waiting on a flush, until the queue closes, then reports the events lost at its close and ends the output at its last line, saying whether it could.
+/// Writes each queued line under the next number, cutting the file back to its last line for each caller waiting on a flush and telling every waiting flush after each, until the queue closes, then reports the events lost at its close and ends the output at its last line, saying whether it could.
 fn write_every_line(
     mut output: impl TraceOutput,
     header: &HeaderSource,
     lines: &Receiver<Queued>,
     lost_at_close: &Mutex<u64>,
+    moved: &WriterMoved,
 ) -> io::Result<()> {
     let mut numbering = Numbering::default();
     for queued in lines {
@@ -330,6 +418,7 @@ fn write_every_line(
             }
             Queued::Flush(written) => drop(written.send(output.close())),
         }
+        moved.notify();
     }
     numbering.count_unwritten(*locked(lost_at_close));
     numbering.report_unwritten(&mut output, header);
