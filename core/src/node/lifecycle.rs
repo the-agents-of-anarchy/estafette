@@ -306,6 +306,7 @@ mod tests {
     };
     use crate::peers::Status;
     use crate::sidecar;
+    use crate::test_waits::found_within;
     use crate::wire::{Introduce, Nonce, Version};
 
     const FIRST_CARD: &str = "first-card";
@@ -319,7 +320,6 @@ mod tests {
     const STOPPING_STEP_RECORDED_WITHIN: Duration = Duration::from_millis(300);
     const EXITS_AT_ONCE_WITHIN: Duration = Duration::from_millis(1000);
     const SHORT_DEPARTURE_WAIT: Duration = Duration::from_millis(800);
-    const POLL: Duration = Duration::from_millis(20);
     const DEPARTURE_HANDED_OVER: &str = "process.departure_handed_over";
     const LOCK_RELEASED: &str = "process.lock_released";
     const HELD_CONNECTIONS_DROPPED: &str = "process.held_connections_dropped";
@@ -1269,13 +1269,11 @@ mod tests {
         stopping.input_ended.send(()).unwrap();
         stopping.exit.await.unwrap();
 
-        tokio::time::timeout(SOCKET_REMOVED_WITHIN, async {
-            while second.inbox_path.exists() {
-                tokio::time::sleep(POLL).await;
-            }
+        found_within(SOCKET_REMOVED_WITHIN, async || {
+            (!second.inbox_path.exists()).then_some(())
         })
         .await
-        .unwrap_or_else(|_elapsed| {
+        .unwrap_or_else(|| {
             panic!(
                 "the inbox socket file {} not removed within {SOCKET_REMOVED_WITHIN:?} of the exit",
                 second.inbox_path.display()
