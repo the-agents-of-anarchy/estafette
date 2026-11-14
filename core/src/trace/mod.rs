@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use estafette_trace::{EstafetteRun, FileTrace, Program};
 use iroh::EndpointId;
 use serde_json::Value;
@@ -48,6 +50,7 @@ pub struct Trace {
     run: EstafetteRun,
     events: FileTrace,
     raw: FileTrace,
+    drain: Duration,
 }
 
 impl Trace {
@@ -75,7 +78,12 @@ impl Trace {
             TraceLineName::RawFileOpened.as_str(),
             &[(SAFE_TO_POST_FIELD, Value::Bool(false))],
         );
-        Ok(Self { run, events, raw })
+        Ok(Self {
+            run,
+            events,
+            raw,
+            drain: bounds.drain,
+        })
     }
 
     /// The two files this trace writes.
@@ -107,6 +115,12 @@ impl Trace {
     /// Names the endpoint this process now runs on in every later line.
     pub fn note_endpoint(&self, id: EndpointId) {
         self.run.note_node(ShortId::from(id).text());
+    }
+
+    /// The longest a flush or the stop waits for each file's writer.
+    #[must_use]
+    pub const fn drain(&self) -> Duration {
+        self.drain
     }
 
     /// Waits, within the drain bound for each, until the writers wrote every line queued before this call and cut each file back to its last line, leaving both queues open, saying how that left the events file, then the raw file.
