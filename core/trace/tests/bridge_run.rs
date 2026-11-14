@@ -1,3 +1,10 @@
+#[cfg(test)]
+#[path = "../../tests/common/fresh_directory.rs"]
+mod fresh_directory;
+#[cfg(test)]
+#[path = "../../tests/common/remove_scratch.rs"]
+mod remove_scratch;
+
 /// The bridge's run of spec/observability.md decisions 4, 5 and 13, through the package's public surface.
 #[cfg(test)]
 mod observability {
@@ -10,6 +17,8 @@ mod observability {
     use std::thread;
     use std::time::{Duration, UNIX_EPOCH};
 
+    use super::fresh_directory::fresh_directory_in;
+    use super::remove_scratch::remove_scratch;
     use estafette_trace::{
         BridgeRun, RUN_ID_BYTES, RunId, TraceAction, TraceBounds, TraceClocks, TraceDirectory,
         TraceEffects, TraceStop,
@@ -33,12 +42,11 @@ mod observability {
 
     /// A fresh scratch root for the test and the trace directory under its data home.
     fn scratch_trace_directory(test_name: &str) -> (PathBuf, TraceDirectory) {
-        let root = std::env::temp_dir().join(format!(
-            "estafette-trace-package-{test_name}-{}",
-            std::process::id()
-        ));
-        drop(fs::remove_dir_all(&root));
-        fs::create_dir_all(&root).unwrap();
+        let root = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-trace-package-{test_name}-{}", std::process::id()),
+        )
+        .unwrap();
         let data_home = root.join("data");
         let directory = TraceDirectory::resolve(&move |name: &str| {
             (name == DATA_HOME_VARIABLE).then(|| OsString::from(&data_home))
@@ -112,7 +120,7 @@ mod observability {
                 .files_of(&format!("{START_STAMP}-{RUN_HEX}-bridge"))
                 .events
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     /// The line a bridge run writes for `ONE_EVENT` as its line `n`: the header in its order and no node.
@@ -137,7 +145,7 @@ mod observability {
             fs::read_to_string(run.events_file()).unwrap(),
             format!("{}{}", one_event_line(0), one_event_line(1))
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -218,7 +226,7 @@ mod observability {
                 format!("{fresh_estafette}.raw.jsonl"),
             ]
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -265,7 +273,7 @@ mod observability {
 
         let events = run.open_events().unwrap();
         assert!(matches!(events.finish(), TraceStop::Drained));
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -281,8 +289,8 @@ mod observability {
                 let mut round: u64 = 0;
                 while !removing_stop.load(Ordering::Relaxed) {
                     let entry = traces.join(format!("racing-{}", round % RACING_ENTRY_NAMES));
-                    drop(fs::write(&entry, b"x"));
-                    drop(fs::remove_file(&entry));
+                    fs::write(&entry, b"x").unwrap();
+                    remove_scratch(&entry).unwrap();
                     round += 1;
                 }
             }
@@ -306,7 +314,7 @@ mod observability {
             refusal.is_none(),
             "a listing that met a removed entry refused the start: {refusal:?}"
         );
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -331,6 +339,6 @@ mod observability {
         let refusal = refusal.expect("an entry that cannot be read refuses the start");
         assert_eq!(refusal.action(), TraceAction::ListDirectory);
         assert_eq!(refusal.path(), traces);
-        drop(fs::remove_dir_all(&root));
+        remove_scratch(&root).unwrap();
     }
 }
