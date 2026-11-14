@@ -195,6 +195,7 @@ do      run the first reviews in order, spec then quality; after a fix that chan
 never   a re-review of the whole range after a fix; a first quality review before the spec verdict passes; a spec rerun after a fix of structure alone
 why     A whole-range re-review rereads code no fix touched; two delta reviews side by side cost the wall time of one.
 ground  owner rulings 2026-11-13 ("RE-reviews go on delta only, faster, and in parallel"; round answers of 13:05 to 13:35, journal of that day)
+except  a quality reviewer launched beside a spec reviewer writes `Ready to merge: No` with no review when that spec verdict fails (seen 2026-11-13 and 2026-11-14, a note in its brief notwithstanding), so after a fix of behaviour the quality delta review starts when the spec delta verdict passes (the lead, 2026-11-14)
 
 ### ambiguity-passes-to-the-lead
 when    a reviewer meets a requirement that admits two readings, or the lead reads a verdict
@@ -288,7 +289,7 @@ ground  owner ruling 2026-10-23
 
 ### wakes-and-resumes
 when    work is in flight, an agent is dispatched, or an agent stopped at a usage limit
-do      while work is in flight keep a recurring heartbeat whose wakes fall less than an hour apart, inside the prompt cache lifetime, its prompt one generic line; re-arm it on waking; journal only an event; arm a backstop per dispatch or continuation at the unit class's P90 with the ladder quiet, quiet, probe, stop; kill it in the turn its subject completes; after a usage-limit stop decide each agent by orchestration-economics, one agent at a time, cheapest finishing step first; when the limit stopped the session too, decide on the first turn back
+do      while work is in flight keep a recurring heartbeat whose wakes fall less than an hour apart, inside the prompt cache's TTL (the span an idle cache survives), its prompt one generic line; re-arm it on waking; journal only an event; arm a backstop per dispatch or continuation at the unit class's P90 with the ladder quiet, quiet, probe, stop; kill it in the turn its subject completes; after a usage-limit stop decide each agent by orchestration-economics, one agent at a time, cheapest finishing step first; when the limit stopped the session too, decide on the first turn back
 never   facts or a journaling instruction in a wake prompt; a journal line saying nothing happened; leave a backstop after its subject completes; resume all at once; a reset-aligned wake, which cannot be set
 why     Session crons die and recurring ones expire in seven days; an 8-hour dormancy followed a skipped backstop; a mass resume hits the limit again.
 ground  owner ruling 2026-10-23
@@ -345,9 +346,9 @@ ground  owner ruling 2026-11-12
 
 ### work-in-progress
 when    choosing the next act while any unit is open, a unit being open from its first implementer launch until its merge reaches main
-do      take startable steps in order of distance to merge: integrate a passed unit; route a verdict or report that has arrived; continue a fix round; launch the reviews of a reported unit; only then start a new unit; start a new unit only when every open unit has an agent working on it or waits on a wake the lead set, and the usage window carries the new unit's first attempt and its check to their reports; route each open unit's next step inside its agents' cache life; start an integrator's or an acceptance gate pair when no other gate is due beside it, or name to it the gate that may overlap and order a test that fails on a time bound rerun alone; journal at each launch the number of open units and the cold-start dollars the launch causes
-never   a new implementer while an open unit waits on the lead; a unit left past its agents' cache life without a journaled reason and its cost; a cap by number before a measurement supplies one
-why     A unit took about 2.6 implementer attempts and 2.6 review pairs to merge (62 units counted 2026-11-12); a round resumed past the cache life pays the agent's whole context again (2.4 to 3.2 dollars of each 4.4 to 4.9 dollar review on 2026-11-12); tests failed under load when gates ran together.
+do      take startable steps in order of distance to merge: integrate a passed unit; route a verdict or report that has arrived; continue a fix round; launch the reviews of a reported unit; only then start a new unit; start a new unit only when every open unit has an agent working on it or waits on a wake the lead set, and the usage window carries the new unit's first attempt and its check to their reports; route each open unit's next step inside its agents' cache TTL (the span an idle cache survives); start an integrator's or an acceptance gate pair when no other gate is due beside it, or name to it the gate that may overlap and order a test that fails on a time bound rerun alone; journal at each launch the number of open units and the cold-start dollars the launch causes
+never   a new implementer while an open unit waits on the lead; a unit left past its agents' cache TTL without a journaled reason and its cost; a cap by number before a measurement supplies one
+why     A unit took about 2.6 implementer attempts and 2.6 review pairs to merge (62 units counted 2026-11-12); a round resumed past the cache TTL pays the agent's whole context again (2.4 to 3.2 dollars of each 4.4 to 4.9 dollar review on 2026-11-12); tests failed under load when gates ran together.
 ground  owner word 2026-11-13 ("refine the WIP directive."; "figure things out, will you?"); text by the lead; for this project it replaces the dev-cycle rule to launch in one turn every unit whose dependencies are integrated
 except  a unit blocked on what no agent can do now (a window reset, a lab run, an act only the owner can perform) does not hold back a new unit
 
@@ -379,6 +380,12 @@ do      start the caller once its callee has passed spec review, on the callee's
 never   hold a caller for its callee's quality review or merge; start a caller on a callee whose spec verdict has not passed
 why     A caller that waited for its callee's merge idled through the callee's quality review, fix round and integration.
 ground  owner ruling 2026-11-13 (round answer "After callee's spec pass", journal of that day)
+
+### two-equal-leads
+when    two lead sessions work the project
+do      either lead starts and integrates any startable unit; each runs the other's continuation or review on request, by brief path; a lead whose window binds hands routing over in the status file
+never   assign work to the other lead
+ground  owner ruling 2026-11-13 ("this should not be a suboardinate relationship")
 
 ## owner
 
