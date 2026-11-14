@@ -16,7 +16,7 @@ mod observability {
     use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc::{self, Receiver, Sender};
-    use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+    use std::sync::{Arc, Mutex, PoisonError};
     use std::thread;
     use std::time::Duration;
 
@@ -61,17 +61,16 @@ mod observability {
             monotonic_ms: Arc::new(move || {
                 if armed.swap(false, Ordering::SeqCst) {
                     holding.send(()).unwrap();
-                    locked(&released).recv().unwrap();
+                    released
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .recv()
+                        .unwrap();
                 }
                 frozen_monotonic_ms()
             }),
             ..frozen
         }
-    }
-
-    /// The mutex's value once any other holder lets go, whether or not a holder panicked.
-    fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-        mutex.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The event name and number of each line of a trace file, in file order.
