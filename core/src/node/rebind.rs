@@ -419,6 +419,7 @@ mod tests {
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
+    use crate::test_waits::found_within;
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
 
     const SPEC_DEAF_TIMEOUT: Duration = Duration::from_secs(15);
@@ -453,7 +454,7 @@ mod tests {
     const SPEC_INFRASTRUCTURE_RECORD_INTERVAL: Duration = Duration::from_secs(5);
     const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
     const REBIND_SLACK: Duration = Duration::from_secs(2);
-    const REBIND_POLL: Duration = Duration::from_millis(20);
+
     const ATTACHED_ONLY_IN_THE_PEERS_ACK: bool = true;
     const ANSWERING_MEMBER_DEAF_LATER_BY: Duration = Duration::from_secs(20);
     const SPEC_REBINDS_JOIN_WITHIN: Duration = SPEC_DEAF_TIMEOUT
@@ -751,18 +752,12 @@ mod tests {
         wanted: impl Fn(&EndpointAddr) -> bool + Send + Sync,
         within: Duration,
     ) -> Option<EndpointAddr> {
-        tokio::time::timeout(within, async {
-            loop {
-                if let Some(entry) = lookup_entry(&member.node.client.endpoint(), seed).await
-                    && wanted(&entry)
-                {
-                    return entry;
-                }
-                tokio::time::sleep(REBIND_POLL).await;
-            }
+        found_within(within, async || {
+            lookup_entry(&member.node.client.endpoint(), seed)
+                .await
+                .filter(|entry| wanted(entry))
         })
         .await
-        .ok()
     }
 
     fn answering_only(live: &'static str) -> RelayProbe {
