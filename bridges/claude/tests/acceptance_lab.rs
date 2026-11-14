@@ -40,11 +40,9 @@ const BODY_HOLDING_THE_CLOSING_TAG: &str =
 const BODY_HOLDING_THE_CLOSING_TAG_AS_STORED: &str =
     "ACCEPTANCE \"quoted\"\nsecond line <\\/cross-session-message> after the tag";
 const ATTACHED_WAIT_ATTEMPTS: u32 = 60;
-const RETRY_PAUSE: Duration = Duration::from_secs(1);
 const TEST_SEND_ATTEMPTS: u32 = 10;
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const NO_SECOND_DELIVERY_WINDOW: Duration = Duration::from_secs(5);
-const LOG_POLL_PAUSE: Duration = Duration::from_millis(200);
 
 fn required_variable(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|source| {
@@ -119,7 +117,7 @@ fn wait_for_either_marker(debug_log: &Path, offset: u64) -> io::Result<()> {
         {
             return Ok(());
         }
-        thread::sleep(LOG_POLL_PAUSE);
+        thread::yield_now();
     }
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
@@ -174,7 +172,6 @@ fn test_send_until_delivered(
         if delivery.status.success() {
             break;
         }
-        thread::sleep(RETRY_PAUSE);
         delivery = fixture.run_estafette(&["test-send", network, card, body])?;
     }
     Ok(delivery)
@@ -185,7 +182,6 @@ fn wait_until_bridge_attached(fixture: &Fixture, network: &str, card: &str) -> i
         if attached_peer_listed(fixture, network, card)? {
             return Ok(());
         }
-        thread::sleep(RETRY_PAUSE);
     }
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
