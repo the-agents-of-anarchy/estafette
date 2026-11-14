@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::ffi::OsString;
 use std::fmt;
 use std::future::Future;
@@ -5,6 +6,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::process::ExitCode;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -387,17 +389,46 @@ fn trace_clocks_started_now() -> TraceClocks {
     }
 }
 
-/// The run record written to the standard error stream and, when there is one, into the trace.
+thread_local! {
+    /// The standard error whose run record line this thread writes under that standard error's lock, if any.
+    static STANDARD_ERROR_WRITTEN_ON_THIS_THREAD: Cell<Option<NonNull<()>>> = const { Cell::new(None) };
+}
+
+/// This thread named as the one writing a run record line to one standard error until the guard drops, so a panic hook the write sets off on this thread never waits on that standard error's lock.
+struct WritingStandardError {
+    written_before: Option<NonNull<()>>,
+}
+
+impl WritingStandardError {
+    /// Names this thread as the one writing a run record line to `written`.
+    fn of(written: NonNull<()>) -> Self {
+        Self {
+            written_before: STANDARD_ERROR_WRITTEN_ON_THIS_THREAD.replace(Some(written)),
+        }
+    }
+}
+
+impl Drop for WritingStandardError {
+    fn drop(&mut self) {
+        STANDARD_ERROR_WRITTEN_ON_THIS_THREAD.set(self.written_before);
+    }
+}
+
+/// The run record written to the standard error stream and, when there is one, into the trace, leaving a line out when this thread already writes to that standard error, as a panic hook on the thread whose write panicked.
 fn run_record_on<StandardError: Write + Send + 'static>(
     stderr: &Arc<Mutex<StandardError>>,
     trace: Option<Arc<Trace>>,
 ) -> RunRecord {
     let stderr = Arc::clone(stderr);
     Arc::new(move |event: Event| {
-        drop(write_run_record(
-            &mut *stderr.lock().unwrap_or_else(PoisonError::into_inner),
-            &event,
-        ));
+        let written = NonNull::from(&*stderr).cast::<()>();
+        if STANDARD_ERROR_WRITTEN_ON_THIS_THREAD.get() != Some(written) {
+            let _writing = WritingStandardError::of(written);
+            drop(write_run_record(
+                &mut *stderr.lock().unwrap_or_else(PoisonError::into_inner),
+                &event,
+            ));
+        }
         if let Some(trace) = &trace {
             trace.record(&event);
         }
@@ -1895,6 +1926,11 @@ mod tests {
     /// The panic hook's report of a flush that left a trace file unfinished, by spec/observability.md decisions 3 and 12, through `run_traced`.
     mod panic_hook_reports_its_flush {
         include!("../tests/panic_hook/reports_its_flush.rs");
+    }
+
+    /// The panic hook's end when the panic was raised while the run record held standard error, by spec/observability.md decision 12, through `run_traced`.
+    mod panic_hook_ends_with_standard_error_held {
+        include!("../tests/panic_hook/ends_with_standard_error_held.rs");
     }
 
     #[test]
