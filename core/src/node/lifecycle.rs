@@ -391,15 +391,31 @@ mod tests {
     }
 
     async fn claimed_second(scratch: &Scratch) -> ClaimedSecond {
-        claimed_second_recording_to(scratch, Arc::new(|_event: Event| {})).await
-    }
-
-    async fn claimed_second_recording_to(scratch: &Scratch, record: RunRecord) -> ClaimedSecond {
         let (first, second) = start_pair(scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
             .unwrap();
         tokio::time::sleep(INTRODUCE_ROUND_TRIP).await;
+        let (sidecar_path, lock) = scratch.locked_card(SECOND_SEED);
+        let session = Arc::new(Session::new());
+        session
+            .claim(card_named(SECOND_CARD), second.node, lock)
+            .unwrap();
+        ClaimedSecond {
+            first,
+            session,
+            endpoint: second.endpoint,
+            inbox_path: second.inbox_path,
+            sidecar_path,
+        }
+    }
+
+    /// The pair started and the second member's card claimed in a session recording to the run record, once the first lists the second.
+    async fn claimed_second_recording_to(scratch: &Scratch, record: RunRecord) -> ClaimedSecond {
+        let (first, second) = start_pair(scratch).await;
+        listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
+            .await
+            .unwrap();
         let (sidecar_path, lock) = scratch.locked_card(SECOND_SEED);
         let session = Arc::new(Session::recording_to(record));
         session
