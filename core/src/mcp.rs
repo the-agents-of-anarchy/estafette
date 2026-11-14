@@ -1352,7 +1352,7 @@ mod tests {
             },
             bind_endpoint: plan.bind_endpoint,
             registry: Arc::new(OperatingSystemFilesystem),
-            pause_between_lock_tries: Arc::new(std::thread::sleep),
+            pause_between_lock_tries: Arc::new(|_pause: Duration| {}),
             is_card_held: plan.is_card_held,
             report: plan.report,
         };
