@@ -680,17 +680,18 @@ mod observability {
             .take(KILLED_AFTER_ANSWERS + 1)
             .count();
         let (events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
-        for path in [&events, &raw] {
-            assert!(
-                holds_a_whole_line_within_the_wait(path),
-                "{}: the process wrote none of its whole numbered lines within {WHOLE_LINE_WAIT:?}",
-                path.display()
-            );
-        }
+        let held_whole_lines = [&events, &raw].map(|path| holds_a_whole_line_within_the_wait(path));
 
         child.kill().unwrap();
         child.wait().unwrap();
         drop(input);
+        for (path, held) in [&events, &raw].into_iter().zip(held_whole_lines) {
+            assert!(
+                held,
+                "{}: the process wrote none of its whole numbered lines within {WHOLE_LINE_WAIT:?}",
+                path.display()
+            );
+        }
 
         assert_eq!(answers, KILLED_AFTER_ANSWERS + 1);
         for path in [&events, &raw] {
