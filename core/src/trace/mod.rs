@@ -170,12 +170,11 @@ mod tests {
 
     /// A fresh scratch root for the test and the trace directory under its data home.
     fn scratch_trace_directory(test_name: &str) -> (PathBuf, TraceDirectory) {
-        let root = std::env::temp_dir().join(format!(
-            "estafette-trace-{test_name}-{}",
-            std::process::id()
-        ));
-        drop(fs::remove_dir_all(&root));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-trace-{test_name}-{}", std::process::id()),
+        )
+        .unwrap();
         let data_home = root.join("data");
         let directory = TraceDirectory::resolve(&move |name: &str| {
             (name == DATA_HOME_VARIABLE).then(|| OsString::from(&data_home))
@@ -248,7 +247,7 @@ mod tests {
             fs::read_to_string(traces.join(format!("{run_name}.events.jsonl"))).unwrap(),
             ""
         );
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     /// A trace started on the operating system's files with its wall clock frozen at `wall_ms`.
@@ -289,7 +288,7 @@ mod tests {
             assert!(names.contains(&events), "{wall_ms}: {events} in {names:?}");
         }
         assert_eq!(names.len(), STAMPED_STARTS.len() * 2, "{names:?}");
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -326,7 +325,7 @@ mod tests {
                 header(2)
             )
         );
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -358,7 +357,7 @@ mod tests {
             format!("{}{}", clock_line(2, None), clock_line(3, None))
         );
         assert_eq!(names_in(&directory.path()).len(), 3);
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     /// The raw line numbered `n` of the test raw event.
@@ -463,7 +462,7 @@ mod tests {
                     "case {case}: the raw file the last rollover renamed begins with the not-safe line and holds the lines before it"
                 );
             }
-            drop(fs::remove_dir_all(&root));
+            crate::remove_scratch::remove_scratch(&root).unwrap();
         }
     }
 
@@ -513,7 +512,7 @@ mod tests {
                 events.display()
             )
         );
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -541,7 +540,7 @@ mod tests {
                 events.display()
             )
         );
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -562,7 +561,7 @@ mod tests {
         assert_eq!(refusal.action(), TraceAction::ListDirectory);
         assert_eq!(refusal.path(), traces);
         assert_eq!(names_in(&traces), Vec::<String>::new());
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -595,7 +594,7 @@ mod tests {
         assert_eq!(refusal.action(), TraceAction::RemoveOldFile);
         assert_eq!(refusal.path(), traces.join(STALE_EVENTS_FILE));
         assert_eq!(names_in(&traces), Vec::<String>::new());
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     /// Trace files held in memory, whose events-file writes, creations and renames fail at the attempts a test names, each counted from 0, and whose torn writes take half their bytes before the next attempt fails.
@@ -850,7 +849,7 @@ mod tests {
             files.numbered_events_of(&trace.files().events),
             [clock_event(0), dropped_event(3, 2), clock_event(4)]
         );
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -879,7 +878,7 @@ mod tests {
             [first, dropped, last].map(|line| numbered_event(line)),
             [clock_event(0), dropped_event(2, 1), clock_event(3)]
         );
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     /// An events file the test holds back: each write announces itself, waits for the test's release, then hands the line over.
@@ -1012,7 +1011,7 @@ mod tests {
             trace.finish(),
             [TraceStop::Drained, TraceStop::Drained]
         ));
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -1058,7 +1057,7 @@ mod tests {
             ]
         );
         releasing.join().unwrap();
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -1091,7 +1090,7 @@ mod tests {
         );
         assert_eq!(written.try_iter().count(), SMALL_QUEUE_LINES + 1);
         releasing.join().unwrap();
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -1116,7 +1115,7 @@ mod tests {
             ]
         );
         assert_eq!(files.text_of(&trace.files().events), line);
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -1149,7 +1148,7 @@ mod tests {
             files.text_of(&trace.files().events).len(),
             usize::try_from(TRACE_FILE_SIZED_AHEAD_BYTES).unwrap()
         );
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     /// The lengths the events file was given while it took one line carrying `text_bytes` bytes of text and stopped, and the bytes it then held.
@@ -1207,7 +1206,7 @@ mod tests {
                 .collect();
             assert_eq!(lengths, lengths_set, "{text_bytes}");
         }
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     #[test]
@@ -1242,7 +1241,7 @@ mod tests {
             files.numbered_events_of(events),
             [dropped_event(4, 2), clock_event(5)]
         );
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
     /// Creates a file of `bytes` bytes in the trace directory, last written at `written_ms`.
@@ -1314,6 +1313,6 @@ mod tests {
                 format!("{run_d}.events.jsonl"),
             ]
         );
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 }

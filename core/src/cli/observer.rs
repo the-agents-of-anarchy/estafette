@@ -1116,9 +1116,11 @@ mod tests {
     impl Lab {
         async fn new(tag: &str) -> Self {
             let slot = LAB_SLOT.acquire().await.unwrap();
-            let root = std::env::temp_dir().join(format!("u27-{tag}-{}", std::process::id()));
-            drop(fs::remove_dir_all(&root));
-            fs::create_dir_all(&root).unwrap();
+            let root = crate::fresh_directory::fresh_directory_in(
+                &std::env::temp_dir(),
+                &format!("u27-{tag}-{}", std::process::id()),
+            )
+            .unwrap();
             let base = root.clone();
             let environment = move |name: &str| match name {
                 "XDG_CONFIG_HOME" => Some(base.join("c").into_os_string()),
@@ -1286,7 +1288,7 @@ mod tests {
 
     impl Drop for Lab {
         fn drop(&mut self) {
-            drop(fs::remove_dir_all(&self.root));
+            crate::scratch_removal::remove_when_the_test_ends(&self.root);
         }
     }
 

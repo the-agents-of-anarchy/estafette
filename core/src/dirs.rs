@@ -344,7 +344,6 @@ fn create_base_directory(
 #[cfg(test)]
 pub(crate) mod scratch {
     use std::ffi::OsString;
-    use std::fs;
     use std::ops::Deref;
     use std::path::{Path, PathBuf};
 
@@ -366,17 +365,16 @@ pub(crate) mod scratch {
 
     impl Drop for ScratchDirectory {
         fn drop(&mut self) {
-            drop(fs::remove_dir_all(&self.0));
+            crate::scratch_removal::remove_when_the_test_ends(&self.0);
         }
     }
 
     pub fn scratch_directory(module: &str, test_name: &str) -> ScratchDirectory {
-        let directory = std::env::temp_dir().join(format!(
-            "estafette-{module}-{test_name}-{}",
-            std::process::id()
-        ));
-        drop(fs::remove_dir_all(&directory));
-        fs::create_dir_all(&directory).unwrap();
+        let directory = crate::fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-{module}-{test_name}-{}", std::process::id()),
+        )
+        .unwrap();
         ScratchDirectory(directory)
     }
 

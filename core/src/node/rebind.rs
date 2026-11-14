@@ -1049,11 +1049,11 @@ mod tests {
 
     /// The trace directory under a fresh data home for the test.
     fn trace_directory_for(test_name: &str) -> (std::path::PathBuf, crate::dirs::TraceDirectory) {
-        let root = std::env::temp_dir().join(format!(
-            "estafette-rebind-{test_name}-{}",
-            std::process::id()
-        ));
-        drop(std::fs::remove_dir_all(&root));
+        let root = crate::fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-rebind-{test_name}-{}", std::process::id()),
+        )
+        .unwrap();
         let data_home = root.join("data");
         let directory = crate::dirs::TraceDirectory::resolve(&move |name: &str| {
             (name == DATA_HOME_VARIABLE).then(|| std::ffi::OsString::from(&data_home))
@@ -1163,7 +1163,7 @@ mod tests {
         assert!(live.files().raw.exists());
         assert!(!traces.join(STALE_EVENTS_FILE).exists());
         assert!(!traces.join(STALE_RAW_FILE).exists());
-        drop(std::fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
         drop(scratch);
     }
 

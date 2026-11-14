@@ -5,6 +5,9 @@ pub mod crypto;
 pub mod dirs;
 pub mod errors;
 pub mod event;
+#[cfg(test)]
+#[path = "../tests/common/fresh_directory.rs"]
+mod fresh_directory;
 pub mod handle;
 pub mod inbox;
 pub mod invite;
@@ -14,6 +17,11 @@ pub mod net;
 pub mod node;
 pub mod payload;
 pub mod peers;
+#[cfg(test)]
+#[path = "../tests/common/remove_scratch.rs"]
+mod remove_scratch;
+#[cfg(test)]
+mod scratch_removal;
 #[cfg(test)]
 mod seeded_draws;
 pub mod sidecar;

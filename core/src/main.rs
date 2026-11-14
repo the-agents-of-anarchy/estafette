@@ -885,6 +885,18 @@ fn listen_for(kind: SignalKind, name: &'static str) -> Result<Signal, CommandLin
 }
 
 #[cfg(test)]
+#[path = "../tests/common/fresh_directory.rs"]
+mod fresh_directory;
+
+#[cfg(test)]
+#[path = "../tests/common/remove_scratch.rs"]
+mod remove_scratch;
+
+#[cfg(test)]
+#[path = "scratch_removal.rs"]
+mod scratch_removal;
+
+#[cfg(test)]
 #[path = "seeded_draws.rs"]
 mod seeded_draws;
 
@@ -918,7 +930,7 @@ mod tests {
 
     impl Drop for ScratchRoot {
         fn drop(&mut self) {
-            drop(std::fs::remove_dir_all(&self.0));
+            crate::scratch_removal::remove_when_the_test_ends(&self.0);
         }
     }
 
@@ -930,7 +942,11 @@ mod tests {
         const CONFIG_HOME_UNDER_ROOT: &str = "c";
         const DATA_HOME_UNDER_ROOT: &str = "d";
         const RUNTIME_DIRECTORY_UNDER_ROOT: &str = "r";
-        let root = std::env::temp_dir().join(format!("{prefix}-{}", std::process::id()));
+        let root = crate::fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("{prefix}-{}", std::process::id()),
+        )
+        .unwrap();
         let base = root.clone();
         let environment = move |name: &str| match name {
             CONFIG_HOME_VARIABLE => Some(base.join(CONFIG_HOME_UNDER_ROOT).into_os_string()),
@@ -1222,7 +1238,11 @@ mod tests {
         const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
         const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
         const SCRATCH_PREFIX: &str = "estafette-stderr-writable";
-        let root = std::env::temp_dir().join(format!("{SCRATCH_PREFIX}-{}", std::process::id()));
+        let root = crate::fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("{SCRATCH_PREFIX}-{}", std::process::id()),
+        )
+        .unwrap();
         let _scratch_removed_when_the_test_ends = ScratchRoot(root.clone());
         let (written, other_thread_wrote) = std::sync::mpsc::channel();
         let first_lookup = AtomicBool::new(true);
@@ -1767,8 +1787,11 @@ mod tests {
         const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
         const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
         const SECRET_SEED_BYTE: u8 = 3;
-        let root = std::env::temp_dir().join(format!("{SCRATCH_PREFIX}-{}", std::process::id()));
-        drop(std::fs::remove_dir_all(&root));
+        let root = crate::fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("{SCRATCH_PREFIX}-{}", std::process::id()),
+        )
+        .unwrap();
         let base = root.clone();
         let environment = move |name: &str| match name {
             CONFIG_HOME_VARIABLE => Some(base.join("c").into_os_string()),
@@ -1831,6 +1854,6 @@ mod tests {
                 .unwrap()
                 .contains("holds no certificate")
         );
-        drop(std::fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 }

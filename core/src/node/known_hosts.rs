@@ -182,8 +182,6 @@ const fn seconds_of(milliseconds: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
     use super::*;
     use crate::node::presence::tests::{
         FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, NETWORK_FILE_NAME, OWNER_SEED,
@@ -244,9 +242,11 @@ mod tests {
     /// Spec 3.3 and 3.8: a host learned from its record leaves the file at a later save exactly when more than 30 days have passed since it was heard.
     #[tokio::test]
     async fn spec_3_3_a_save_keeps_a_learned_host_exactly_while_it_was_heard_within_30_days() {
-        let root = std::env::temp_dir().join(format!("known-hosts-expiry-{}", std::process::id()));
-        drop(fs::remove_dir_all(&root));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("known-hosts-expiry-{}", std::process::id()),
+        )
+        .unwrap();
         let endpoint = bind(FIRST_SEED).await;
         let record = valid_record(
             opened_record(HOST_SEED, HOST_RELAY, FROZEN_CLOCK_MS / MILLIS_PER_SECOND).unwrap(),
@@ -293,6 +293,6 @@ mod tests {
                 "case {case}: saved {seconds_since_heard} s after the host was heard"
             );
         }
-        drop(fs::remove_dir_all(&root));
+        crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 }

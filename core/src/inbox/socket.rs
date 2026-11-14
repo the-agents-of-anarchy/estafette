@@ -413,9 +413,11 @@ mod tests {
     }
 
     fn scratch_directories(test_name: &str) -> Directories {
-        let root = std::env::temp_dir().join(format!("e15-{test_name}-{}", std::process::id()));
-        drop(fs::remove_dir_all(&root));
-        fs::create_dir_all(&root).unwrap();
+        let root = crate::fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("e15-{test_name}-{}", std::process::id()),
+        )
+        .unwrap();
         let environment = move |name: &str| match name {
             "XDG_CONFIG_HOME" => Some(root.join("config").into_os_string()),
             "XDG_DATA_HOME" => Some(root.join("data").into_os_string()),
