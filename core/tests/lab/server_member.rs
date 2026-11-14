@@ -38,6 +38,8 @@ const TRACE_FILES_NOT_FETCHED: &str =
     "its trace files were not fetched, so what it recorded is unknown";
 /// How long a member on a server may take to claim its card and answer a tool call, each call crossing SSH and the cloud API.
 const SERVING_WAIT: Duration = Duration::from_secs(60);
+/// The pause the re-asks of a member on a server were once spaced by, added to each re-ask's bound so the last re-ask may start as late as it once could.
+const RE_ASKS_ONCE_SPACED_BY: Duration = Duration::from_secs(1);
 /// What separates the server's clock stamp from the envelope a remote tool call prints.
 const STAMP_SEPARATOR: char = '\t';
 
@@ -100,6 +102,7 @@ impl<'server> ServerMember<'server> {
         condition: impl Fn(&Value) -> bool,
     ) -> Value {
         let started = Instant::now();
+        let until = within.saturating_add(RE_ASKS_ONCE_SPACED_BY);
         loop {
             let listed = self.call(PEERS_TOOL, &json!({}));
             let entry = listed[RESULT_KEY][PEERS_KEY]
@@ -111,8 +114,8 @@ impl<'server> ServerMember<'server> {
                 return peer.clone();
             }
             assert!(
-                started.elapsed() < within,
-                "{handle} was not listed as wanted by {} on {} within {within:?}; its entry: {entry:?}",
+                started.elapsed() < until,
+                "{handle} was not listed as wanted by {} on {} within {until:?}; its entry: {entry:?}",
                 self.card,
                 self.server.label()
             );
@@ -123,6 +126,7 @@ impl<'server> ServerMember<'server> {
     #[track_caller]
     fn serving_within(&self, within: Duration) {
         let started = Instant::now();
+        let until = within.saturating_add(RE_ASKS_ONCE_SPACED_BY);
         loop {
             let answered =
                 self.server
@@ -131,8 +135,8 @@ impl<'server> ServerMember<'server> {
                 return;
             }
             assert!(
-                started.elapsed() < within,
-                "{} on {} answered no tool call within {within:?}: {}",
+                started.elapsed() < until,
+                "{} on {} answered no tool call within {until:?}: {}",
                 self.card,
                 self.server.label(),
                 String::from_utf8_lossy(&answered.stderr)
