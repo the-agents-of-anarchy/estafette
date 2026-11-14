@@ -2701,7 +2701,6 @@ mod tests {
 
     const CLOCK_STEP_PAST_ANY_SILENCE: Duration = Duration::from_secs(3600);
     const SUPERSEDED_CLOSE_WAIT: Duration = Duration::from_secs(5);
-    const ACK_DROP_WOULD_SHOW_WITHIN: Duration = Duration::from_millis(500);
     const ONLINE_COLUMN: &str = "\tonline\t";
     const GONE_COLUMN: &str = "\tgone\t";
 
@@ -3030,21 +3029,22 @@ mod tests {
         let neighbor = start_silent_neighbor().await;
         lab.write_network_config(&[NEIGHBOR_SEED]);
         let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
-        let (effects, _operator_effects) = lab.effects(
+        let (record, mut recorded) = recorded_events();
+        let (effects, _operator_effects) = lab.effects_recording_every_event_to(
             vec![neighbor.address.clone()],
             Box::pin(async move { drop(interrupted.await) }),
+            record,
         );
         let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap()).unwrap();
         let observation = start_observation(&setup, effects).await.unwrap();
         let observer_host = Arc::clone(&observation.host);
         let mut tail_output = Vec::new();
 
-        let (tail_result, (closed_past_the_ack, closed_at_the_presence)) =
+        let (tail_result, closed_at_the_presence) =
             tokio::join!(observation.tail(&mut tail_output), async {
                 let introduced_on = first_connection_accepted(&neighbor, PAYLOAD_WAIT).await;
                 neighbor_listed_by(&observer_host, PAYLOAD_WAIT).await;
-                let closed_past_the_ack =
-                    tokio::time::timeout(ACK_DROP_WOULD_SHOW_WITHIN, introduced_on.closed()).await;
+                let presence_sent_ms = wall_clock_ms();
                 neighbor
                     .topic
                     .broadcast(
@@ -3053,16 +3053,37 @@ mod tests {
                     )
                     .await
                     .unwrap();
+                wait_until_the_observer_takes_the_neighbors_presence_sent_at(
+                    &observer_host,
+                    presence_sent_ms,
+                )
+                .await;
                 let closed_at_the_presence =
                     tokio::time::timeout(SUPERSEDED_CLOSE_WAIT, introduced_on.closed()).await;
                 interrupt.send(()).unwrap_or_default();
-                (closed_past_the_ack, closed_at_the_presence)
+                closed_at_the_presence
             });
 
         tail_result.unwrap();
+        let recorded_through_the_end = crate::net::direct::tests::recorded_so_far(&mut recorded);
+        let up_to_the_presence = recorded_until_the_neighbors_presence(&recorded_through_the_end);
+        let direct_to_the_neighbor = direct_connections_opened_to_the_neighbor(up_to_the_presence);
+        let closed_before_the_presence: Vec<&RecordedEvent> = up_to_the_presence
+            .iter()
+            .filter(|(name, fields)| {
+                *name == "transport.connection_closed"
+                    && crate::net::direct::tests::field(fields, "connection")
+                        .is_some_and(|connection| direct_to_the_neighbor.contains(connection))
+            })
+            .collect();
+        assert_ne!(
+            direct_to_the_neighbor.len(),
+            0,
+            "the observer opened no direct connection to the neighbor before it took the neighbor's Presence: {up_to_the_presence:?}"
+        );
         assert!(
-            closed_past_the_ack.is_err(),
-            "the observer closed the introduction's connection within {ACK_DROP_WOULD_SHOW_WITHIN:?} of the ack, before any Presence: {closed_past_the_ack:?}"
+            closed_before_the_presence.is_empty(),
+            "the observer closed the introduction's connection after the ack, before it took the member's next Presence: {closed_before_the_presence:?}"
         );
         assert!(
             matches!(
@@ -3072,6 +3093,44 @@ mod tests {
             "the observer did not close the introduction's connection within {SUPERSEDED_CLOSE_WAIT:?} of the member's next Presence: {closed_at_the_presence:?}"
         );
         drop(lab);
+    }
+
+    /// The events recorded before the observer took the neighbor's first Presence, failing with what was recorded when it never took one.
+    fn recorded_until_the_neighbors_presence(recorded: &[RecordedEvent]) -> &[RecordedEvent] {
+        let presence_from_the_neighbor = (
+            Some(serde_json::Value::from("presence")),
+            Some(neighbor_short_id()),
+        );
+        let taken_at = recorded.iter().position(|(name, fields)| {
+            *name == "gossip.payload_accepted"
+                && (
+                    crate::net::direct::tests::field(fields, "kind").cloned(),
+                    crate::net::direct::tests::field(fields, "peer").cloned(),
+                ) == presence_from_the_neighbor
+        });
+        let Some(taken_at) = taken_at else {
+            panic!("the observer took no Presence of the neighbor: {recorded:?}");
+        };
+        &recorded[..taken_at]
+    }
+
+    /// The ids of the direct connections the events show opened to or from the neighbor.
+    fn direct_connections_opened_to_the_neighbor(
+        recorded: &[RecordedEvent],
+    ) -> Vec<serde_json::Value> {
+        recorded
+            .iter()
+            .filter(|(name, fields)| {
+                *name == "transport.connection_opened"
+                    && crate::net::direct::tests::field(fields, "peer")
+                        == Some(&neighbor_short_id())
+                    && crate::net::direct::tests::field(fields, "protocol")
+                        == Some(&serde_json::Value::from("direct"))
+            })
+            .filter_map(|(_, fields)| {
+                crate::net::direct::tests::field(fields, "connection").cloned()
+            })
+            .collect()
     }
 
     /// What a node holds for the neighbor: its entry as show-peers lists it, the address it carries, and the lookup entry the node dials it by.
