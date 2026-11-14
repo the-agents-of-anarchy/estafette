@@ -1,12 +1,11 @@
 use serde_json::Value;
 
-use super::gossip::ShortId;
+use super::peer::ShortId;
 use super::{AreaEvent, EventFields};
 use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::peers::{ContactFailed, ContactSucceeded, Status, TableCause, TableChange};
 use crate::wire;
 
-const PEER_FIELD: &str = "peer";
 const HANDLE_FIELD: &str = "handle";
 const REQUESTED_FIELD: &str = "requested";
 const STATUS_FIELD: &str = "status";
@@ -39,7 +38,7 @@ impl NamedEntry {
     /// The entry's fields in the events file: its peer and its handle.
     fn fields(&self) -> EventFields {
         vec![
-            (PEER_FIELD, self.card.field()),
+            self.card.field(),
             (HANDLE_FIELD, Value::from(self.handle.as_str())),
         ]
     }
@@ -233,7 +232,7 @@ impl AreaEvent for PeerTableEvent {
                 direct_addresses,
                 relay,
             } => {
-                let mut fields = vec![(PEER_FIELD, card.field())];
+                let mut fields = vec![card.field()];
                 fields.extend(
                     handle
                         .as_ref()

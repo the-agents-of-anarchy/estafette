@@ -1,7 +1,7 @@
 use iroh::EndpointId;
 use serde_json::Value;
 
-use super::transport::{connection_field, peer_field};
+use super::transport::connection_field;
 use super::{AreaEvent, EventFields};
 use crate::errors::ErrorCode;
 use crate::net::direct::{
@@ -61,7 +61,7 @@ impl AreaEvent for DirectEvent {
             Self::ContactFailed { .. } => Vec::new(),
             Self::RequestSent(sent) => [
                 request_fields(sent.request),
-                vec![peer_field(sent.peer)],
+                vec![sent.peer.field()],
                 sent.connection
                     .map(|(connection, source)| {
                         vec![
@@ -76,7 +76,7 @@ impl AreaEvent for DirectEvent {
             .concat(),
             Self::RequestServed(served) => [
                 served.request.map(request_fields).unwrap_or_default(),
-                vec![peer_field(served.peer), connection_field(served.connection)],
+                vec![served.peer.field(), connection_field(served.connection)],
                 served_outcome_fields(served.outcome),
                 vec![(ELAPSED_FIELD, Value::from(served.elapsed_ms))],
             ]
