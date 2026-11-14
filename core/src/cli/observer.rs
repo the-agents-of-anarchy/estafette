@@ -1041,7 +1041,7 @@ mod tests {
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
     use crate::stream_items::StreamExt;
-    use crate::test_waits::{RecordedEvent, found_within, recorded_events};
+    use crate::test_waits::{RecordedEvent, found_within, next_recorded_meeting, recorded_events};
     use crate::wire::{Addr, Payload};
 
     const NETWORK_NAME: &str = "lab";
@@ -1068,7 +1068,6 @@ mod tests {
     const OPERATOR_BODY: &str = "a test message from the operator";
     const FRAME_WAIT: Duration = Duration::from_secs(2);
     const ATTACH_WAIT: Duration = Duration::from_secs(2);
-    const DETACH_WAIT: Duration = Duration::from_millis(300);
     const PAYLOAD_WAIT: Duration = Duration::from_secs(20);
     const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
     const SENT_INTRODUCE_WITHIN: Duration = Duration::from_secs(10);
@@ -1538,22 +1537,17 @@ mod tests {
         }
     }
 
-    async fn toggle_attachment_until_output_has(
+    /// Attaches a client to the member once the tail has joined its topic, so the member announces itself attached to a tail that hears it, waits until the tail prints the wanted line, then detaches.
+    async fn attached_once_the_tail_joins_until_output_has(
         member: &Member,
+        tail_recorded: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
         output: &SharedOutput,
         wanted: &str,
     ) {
-        tokio::time::timeout(PAYLOAD_WAIT, async {
-            while !output.text().contains(wanted) {
-                detach_client(member, attach_client(member).await).await;
-                drop(
-                    tokio::time::timeout(DETACH_WAIT, output.holds(|text| text.contains(wanted)))
-                        .await,
-                );
-            }
-        })
-        .await
-        .unwrap_or_else(|_elapsed| panic!("no payload line containing {wanted:?} arrived"));
+        next_recorded_meeting(tail_recorded, "gossip.topic_joined", |_| true, PAYLOAD_WAIT).await;
+        let client = attach_client(member).await;
+        printed_within_payload_wait(output, &[wanted.to_owned()]).await;
+        detach_client(member, client).await;
     }
 
     #[tokio::test]
@@ -1564,6 +1558,7 @@ mod tests {
         let output = SharedOutput::default();
         let mut tail_output = output.clone();
         let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
+        let (record, mut recorded) = recorded_events();
         let first_presence_line_start = format!(
             "presence\t1\t{}\t{FIRST_HANDLE}\t{}\ttrue\t",
             render_public_key(&secret_key(FIRST_SEED).public()),
@@ -1581,18 +1576,20 @@ mod tests {
                 &lab.directories,
                 &OperatingSystemFilesystem,
                 &NoPause,
-                lab.effects(
+                lab.effects_recording_every_event_to(
                     members
                         .iter()
                         .map(|member| member.address.clone())
                         .collect(),
                     Box::pin(async move { drop(interrupted.await) }),
+                    record,
                 ),
                 &mut tail_output,
             ),
             async {
-                toggle_attachment_until_output_has(
+                attached_once_the_tail_joins_until_output_has(
                     &members[0],
+                    &mut recorded,
                     &output,
                     &first_presence_line_start,
                 )
