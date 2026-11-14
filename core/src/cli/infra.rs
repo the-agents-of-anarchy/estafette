@@ -1924,7 +1924,13 @@ mod tests {
     }
 
     async fn saved_within(scratch: &Scratch, host_seed: u8, within: Duration) -> Option<Host> {
-        found_within(within, async || scratch.saved_host(host_seed)).await
+        let saved = found_within(within, async || scratch.saved_host(host_seed)).await;
+        if saved.is_none() {
+            eprintln!(
+                "the host's network file did not hold the host of seed {host_seed} within {within:?}"
+            );
+        }
+        saved
     }
 
     #[tokio::test]
