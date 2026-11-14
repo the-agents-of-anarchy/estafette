@@ -2993,6 +2993,24 @@ pub(super) mod tests {
         .await;
     }
 
+    /// Waits until the member's own address is the one the Presence announced, so no re-announce of a changed address is pending, failing with both addresses when it is not within the wait for a payload.
+    async fn announced_address_still_held(member: &Member, announced: &Payload) {
+        let Payload::Presence(presence) = announced else {
+            panic!("the member's answer is no Presence: {announced:?}");
+        };
+        let held = found_within(PAYLOAD_WAIT, async || {
+            (member.node.state.own_addr() == presence.addr).then_some(())
+        })
+        .await
+        .is_some();
+        assert!(
+            held,
+            "the member's address moved from the one it announced, {:?}, to {:?}, within {PAYLOAD_WAIT:?}",
+            presence.addr,
+            member.node.state.own_addr()
+        );
+    }
+
     async fn ask_for_presence(witness: &Witness, requester_seed: u8, seq: u64) {
         witness
             .broadcast_as(requester_seed, presence_request_from(requester_seed, seq))
@@ -3065,7 +3083,7 @@ pub(super) mod tests {
      {
         let scratch = Scratch::new("asked-stale").await;
         let (record, mut recorded) = recorded_events();
-        let (_member, mut witness) = start_witnessed(
+        let (member, mut witness) = start_witnessed(
             &scratch,
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
                 .with_clock(frozen_clock(FROZEN_CLOCK_MS))
@@ -3078,16 +3096,18 @@ pub(super) mod tests {
             .await
             .unwrap();
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
-        witness
+        let answered = witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
             .unwrap();
+        announced_address_still_held(&member, &answered).await;
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, REPLAYED_REQUEST_SEQ).await;
         request_dropped_by(&mut recorded, NOT_ABOVE_REQUESTER_SEQ_RULE).await;
         let after_replay = witness
             .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
             .await;
+        announced_address_still_held(&member, &answered).await;
         ask_for_presence(&witness, SECOND_REQUESTER_SEED, STALE_REQUEST_SEQ).await;
         request_dropped_by(&mut recorded, OLDER_THAN_MAX_AGE_RULE).await;
         let after_stale = witness
@@ -3098,8 +3118,14 @@ pub(super) mod tests {
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await;
 
-        assert!(after_replay.is_none());
-        assert!(after_stale.is_none());
+        assert!(
+            after_replay.is_none(),
+            "the member answered the replayed request: {after_replay:?}"
+        );
+        assert!(
+            after_stale.is_none(),
+            "the member answered the stale request: {after_stale:?}"
+        );
         assert_eq!(presence_fields(after_fresh), (FROZEN_CLOCK_MS + 2, false));
         drop(scratch);
     }
@@ -3170,7 +3196,10 @@ pub(super) mod tests {
             .payload_where(NOTHING_MORE_WAIT, presence_from(FIRST_SEED))
             .await;
 
-        assert!(answer.is_none());
+        assert!(
+            answer.is_none(),
+            "the stopping member answered the request: {answer:?}"
+        );
         drop(scratch);
     }
 
