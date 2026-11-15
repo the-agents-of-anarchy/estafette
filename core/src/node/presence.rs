@@ -750,7 +750,7 @@ impl DirectHost for Arc<NodeState> {
     }
 }
 
-impl DirectRequester for Arc<NodeState> {
+impl NodeState {
     /// This node's introduction: the effective handle once assigned, the public mapping, the attached flag and the address.
     fn introduction(&self) -> Introduce {
         Introduce {
@@ -765,25 +765,16 @@ impl DirectRequester for Arc<NodeState> {
             mac: ZERO_MAC,
         }
     }
-
-    fn hand_answer(&self, answer: DirectAnswer) {
-        self.hand_to_loop(LoopEvent::Answered {
-            answer,
-            #[cfg(test)]
-            cause: None,
-        });
-    }
 }
 
-/// The node's requester for the requests of one wake of its loop, handing each answer back with the cause of its request.
-#[cfg(test)]
-struct CausedRequests {
+/// The node's requester for the requests of one wake of its loop, handing each answer back to the loop.
+struct LoopRequests {
     state: Arc<NodeState>,
+    #[cfg(test)]
     cause: Option<RequestCause>,
 }
 
-#[cfg(test)]
-impl DirectHost for CausedRequests {
+impl DirectHost for LoopRequests {
     fn is_stopping(&self) -> bool {
         self.state.is_stopping()
     }
@@ -805,8 +796,7 @@ impl DirectHost for CausedRequests {
     }
 }
 
-#[cfg(test)]
-impl DirectRequester for CausedRequests {
+impl DirectRequester for LoopRequests {
     fn introduction(&self) -> Introduce {
         self.state.introduction()
     }
@@ -814,6 +804,7 @@ impl DirectRequester for CausedRequests {
     fn hand_answer(&self, answer: DirectAnswer) {
         self.state.hand_to_loop(LoopEvent::Answered {
             answer,
+            #[cfg(test)]
             cause: self.cause,
         });
     }
@@ -1376,13 +1367,11 @@ impl PresenceLoop {
                 .iter()
                 .filter_map(|request| request.made(self.cause)),
         );
-        #[cfg(test)]
-        let requester = CausedRequests {
+        let requester = LoopRequests {
             state: Arc::clone(&self.state),
+            #[cfg(test)]
             cause: self.cause,
         };
-        #[cfg(not(test))]
-        let requester = Arc::clone(&self.state);
         send_in_background(requester, &self.client, requests);
     }
 
