@@ -351,7 +351,10 @@ pub enum DirectExchange {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RequestCause {
     NeighborUp(wire::PublicKey),
-    NeighborDown(wire::PublicKey),
+    NeighborDown {
+        card: wire::PublicKey,
+        earlier_probes: usize,
+    },
     Presence(wire::PublicKey),
     Departure(wire::PublicKey),
     Message {
@@ -470,6 +473,26 @@ impl PeerRows {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+
+    /// How many probes to the card the node has made for neighbor-downs of that card.
+    #[cfg(test)]
+    pub(crate) fn probes_for_neighbor_downs_of(&self, card: wire::PublicKey) -> usize {
+        self.direct_exchanges
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|exchange| {
+                matches!(
+                    exchange,
+                    DirectExchange::Made {
+                        kind: crate::net::direct::RequestSummary::Probe,
+                        cause: Some(RequestCause::NeighborDown { card: down, .. }),
+                        ..
+                    } if *down == card
+                )
+            })
+            .count()
     }
 
     /// The peer table, locked for one operation.
@@ -1265,7 +1288,13 @@ impl PresenceLoop {
             GossipEvent::NeighborDown(node) => {
                 #[cfg(test)]
                 {
-                    self.cause = Some(RequestCause::NeighborDown(*node.as_bytes()));
+                    self.cause = Some(RequestCause::NeighborDown {
+                        card: *node.as_bytes(),
+                        earlier_probes: self
+                            .state
+                            .rows
+                            .probes_for_neighbor_downs_of(*node.as_bytes()),
+                    });
                 }
                 self.rebinding.neighbor_down(node);
                 let effects = self.state.rows.take_neighbor_down(node, now_ms);
@@ -3839,6 +3868,12 @@ pub(super) mod tests {
         settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
         let probe_answers_before =
             settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Probe).await;
+        marker_reaches(&member, &witness, MARKER_SEED).await;
+        let probes_for_earlier_downs = member
+            .node
+            .state
+            .rows
+            .probes_for_neighbor_downs_of(card(WITNESS_SEED));
         let probes_before = witness
             .probes_answered
             .load(std::sync::atomic::Ordering::SeqCst);
@@ -3858,7 +3893,10 @@ pub(super) mod tests {
             WITNESS_SEED,
             RequestSummary::Probe,
             probe_answers_before,
-            RequestCause::NeighborDown(card(WITNESS_SEED)),
+            RequestCause::NeighborDown {
+                card: card(WITNESS_SEED),
+                earlier_probes: probes_for_earlier_downs,
+            },
             DirectOutcome::Acknowledged,
             AFTER_PROBE_ACK,
         )
