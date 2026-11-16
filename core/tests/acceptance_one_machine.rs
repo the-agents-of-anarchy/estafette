@@ -76,7 +76,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use std::time::{Duration, Instant};
 
     use estafette::crypto::NetworkKeys;
-    use estafette::net::endpoint::{DIRECT_ALPN, GateFailure};
+    use estafette::net::endpoint::{DIRECT_ALPN, GateFailure, QUIC_KEEP_ALIVE_INTERVAL};
     use estafette::payload::{open_response, seal_payload, seal_request};
     use estafette::wire::{
         Addr, Departure, Introduce, Message, Payload, Request, Response, Version, WIRE_LIMIT_BYTES,
@@ -91,30 +91,55 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
     use crate::payloads::presence_signed_by;
     use crate::scratch_machine::{Card, RunRecordKeeping};
-    use crate::scripted_node::{DIRECT_ANSWER_WAIT, ScriptedNode};
+    use crate::scripted_node::{SPEC_DIRECT_TIMEOUT_WITH_SLACK, ScriptedNode};
     use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
     use crate::timed_step::timed;
     use crate::{MESSAGE_ID, send};
 
-    const DIRECT_REQUEST_WAIT: Duration = Duration::from_secs(15);
+    /// The body of bob's Message stamped just before his Departure's seq (spec 3.8).
     const SENT_BEFORE_THE_DEPARTURE: &str = "sent before the departure";
+    /// The body of bob's Message stamped just after his Departure's seq (spec 3.8).
     const SENT_AFTER_THE_DEPARTURE: &str = "sent after the departure";
+    /// The body of the restarted bob's Message sent before its new Presence.
     const SENT_BEFORE_THE_NEW_PRESENCE: &str = "sent before the new presence";
+    /// The body of the restarted bob's Message sent after its new Presence.
     const SENT_AFTER_THE_NEW_PRESENCE: &str = "sent after the new presence";
+    /// An address of the documentation range 192.0.2.0/24, where no host is reached.
     const DOCUMENTATION_HOST: IpAddr = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
+    /// The body of live bob's Message sent before his Presence.
     const SENT_BEFORE_THE_PRESENCE: &str = "sent before the presence";
+    /// The body of live bob's Message sent after his Presence.
     const SENT_AFTER_THE_PRESENCE: &str = "sent after the presence";
-    const GONE_PROCESS_SILENCE: Duration = Duration::from_millis(1500);
-    const HEARING_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
+    /// The keep-alives a held connection leaves unanswered before the member judges its process gone (architecture log, 2026-11-10).
+    const KEEP_ALIVES_A_GONE_PROCESS_LEAVES_UNANSWERED: u32 = 3;
+    /// How long a held connection goes unheard before the member closes it as a gone process's.
+    const GONE_PROCESS_SILENCE: Duration =
+        QUIC_KEEP_ALIVE_INTERVAL.saturating_mul(KEEP_ALIVES_A_GONE_PROCESS_LEAVES_UNANSWERED);
+    /// How many times per keep-alive interval the member samples whether a held connection was heard.
+    const HEARING_SAMPLES_PER_KEEP_ALIVE: u32 = 2;
+    /// How often the member samples whether a held connection was heard, the delay beyond the silence before it judges.
+    const HEARING_SAMPLE_INTERVAL: Duration = QUIC_KEEP_ALIVE_INTERVAL
+        .checked_div(HEARING_SAMPLES_PER_KEEP_ALIVE)
+        .unwrap();
+    /// The event a member records for each gossip payload it accepts (spec/observability.md decision 9).
     const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
+    /// The event a member records when it replaces a peer's lookup entry, the last step of applying a Presence.
     const LOOKUP_REPLACED_EVENT: &str = "peers.lookup_replaced";
+    /// The event a member records when its table gains an entry.
     const ENTRY_CREATED_EVENT: &str = "peers.entry_created";
+    /// The event a member records when an entry's status changes.
     const ENTRY_CHANGED_EVENT: &str = "peers.entry_changed";
+    /// The event a member records for each direct request it serves.
     const REQUEST_SERVED_EVENT: &str = "direct.request_served";
+    /// The kind of payload a presence is, as an events line names it.
     const PRESENCE_KIND: &str = "presence";
+    /// The kind of direct request a Message is, as an events line names it.
     const MESSAGE_KIND: &str = "message";
+    /// The kind of direct request an Introduce is, as an events line names it.
     const INTRODUCE_KIND: &str = "introduce";
+    /// The cause an events line gives an entry a Departure moved.
     const DEPARTURE_CAUSE: &str = "departure";
+    /// The status of a departed entry (spec 3.8).
     const GONE_STATUS: &str = "gone";
     /// The card name of the witness, a member started only to take the observer wait of its own claim.
     const WITNESS_CARD: &str = "witness-card";
@@ -196,7 +221,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     ) -> Response {
         let sealed = seal_request(network.keys(), request).unwrap();
         let answer = node.request_directly(to, &sealed).unwrap_or_else(|| {
-            panic!("no answer to the direct request within {DIRECT_ANSWER_WAIT:?}")
+            panic!("no answer to the direct request within {SPEC_DIRECT_TIMEOUT_WITH_SLACK:?}")
         });
         open_response(network.keys(), &answer).unwrap()
     }
@@ -221,7 +246,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     ) -> Option<Response> {
         let sealed = seal_request(network.keys(), request).unwrap();
         node.runtime().block_on(async {
-            tokio::time::timeout(DIRECT_REQUEST_WAIT, async {
+            tokio::time::timeout(SPEC_DIRECT_TIMEOUT_WITH_SLACK, async {
                 let (mut send, mut receive) = connection.open_bi().await.ok()?;
                 send.write_all(&sealed).await.ok()?;
                 send.finish().ok()?;
@@ -292,7 +317,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     ) -> Vec<Value> {
         member.wait_until(
             &format!("{REQUEST_SERVED_EVENT} of a {kind} after {handle}'s departure"),
-            DIRECT_REQUEST_WAIT,
+            SPEC_DIRECT_TIMEOUT_WITH_SLACK,
             |lines| {
                 let departed = lines.iter().position(|line| {
                     line.event == ENTRY_CHANGED_EVENT
@@ -694,11 +719,11 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             before_presence
                 .as_ref()
                 .is_some_and(is_accepted_message_ack),
-            "the restarted bob's message before its presence was not acked accepted within {DIRECT_REQUEST_WAIT:?}: {before_presence:?}"
+            "the restarted bob's message before its presence was not acked accepted within {SPEC_DIRECT_TIMEOUT_WITH_SLACK:?}: {before_presence:?}"
         );
         assert!(
             after_presence.as_ref().is_some_and(is_accepted_message_ack),
-            "the restarted bob's message after its presence was not acked accepted within {DIRECT_REQUEST_WAIT:?}: {after_presence:?}"
+            "the restarted bob's message after its presence was not acked accepted within {SPEC_DIRECT_TIMEOUT_WITH_SLACK:?}: {after_presence:?}"
         );
         assert_eq!(
             bodies,
@@ -776,11 +801,11 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             before_presence
                 .as_ref()
                 .is_some_and(is_accepted_message_ack),
-            "live bob's message before its presence was not acked accepted within {DIRECT_REQUEST_WAIT:?}: {before_presence:?}"
+            "live bob's message before its presence was not acked accepted within {SPEC_DIRECT_TIMEOUT_WITH_SLACK:?}: {before_presence:?}"
         );
         assert!(
             after_presence.as_ref().is_some_and(is_accepted_message_ack),
-            "live bob's message after its presence was not acked accepted within {DIRECT_REQUEST_WAIT:?}: {after_presence:?}"
+            "live bob's message after its presence was not acked accepted within {SPEC_DIRECT_TIMEOUT_WITH_SLACK:?}: {after_presence:?}"
         );
     }
 }
@@ -1044,23 +1069,36 @@ mod spec_3_15_with_one_member {
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::{presence_signed_by, presence_signed_by_at};
     use crate::scratch_machine::RunRecordKeeping;
-    use crate::scripted_node::{DIRECT_ANSWER_WAIT, ScriptedNode};
+    use crate::scripted_node::{SPEC_DIRECT_TIMEOUT_WITH_SLACK, ScriptedNode};
 
+    /// Spec 3.15 test 6: the two inits are written within this long of each other.
     const SPEC_SIMULTANEOUS_INIT_WINDOW: Duration = Duration::from_millis(100);
+    /// The six MCP tools of spec 3.10, in the order the tool list gives them.
     const SPEC_TOOL_NAMES: [&str; 6] =
         ["list_cards", "init", "peers", "send", "broadcast", "inbox"];
+    /// The gate timeout of spec 3.14 (3000 ms) with slack: how long a gate closing may take to be reported.
     const SPEC_GATE_TIMEOUT_WITH_SLACK: Duration = Duration::from_secs(5);
+    /// The deaf timeout of spec 3.14 (15 s) and the rebind it starts, with slack.
     const SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK: Duration = Duration::from_secs(30);
+    /// The member join wait of spec 3.14 (1500 ms) and the join it ends, with slack.
     const SPEC_MEMBER_JOIN_WAIT_WITH_SLACK: Duration = Duration::from_secs(10);
+    /// The event a member records when it begins to rebind (spec/observability.md decision 9).
     const REBINDING_EVENT: &str = "transport.rebinding";
+    /// The sidecar mode spec 3.15 test 16 gives a card, readable by group and others.
     const LOOSE_SIDECAR_MODE: u32 = 0o644;
+    /// The body of the Message sealed under another network's keys (spec 3.15 test 9).
     const FORGED_BODY: &str = "a message under a wrong mac";
+    /// The body of the Message sealed under the network's keys, which reaches the inbox (spec 3.15 test 9).
     const HONEST_BODY: &str = "a message under the network mac";
+    /// The handle the Messages of the stand-in host carry (spec 3.15 test 9).
     const ATTACKER_HANDLE: &str = "mallory";
     /// The handle the node holding the topic id but not the secret announces through the host (spec 3.15 test 21).
     const OUTSIDER_HANDLE: &str = "outsider";
+    /// Every byte of the secret of a network other than the test's, whose keys a member refuses.
     const OUTSIDER_SECRET_BYTE: u8 = 77;
+    /// The kind of payload a presence is, as an events line names it.
     const PRESENCE_KIND: &str = "presence";
+    /// How long a UDP socket the member opens for a moment, such as a relay probe's, may live, so a port held past it is the rebound endpoint's.
     const TRANSIENT_SOCKET_LIFETIME: Duration = Duration::from_millis(1000);
 
     /// The `you` of spec 3.10 for a session that has claimed no card.
@@ -1193,14 +1231,14 @@ mod spec_3_15_with_one_member {
                 &seal_request(network.keys(), message_to(&card.id, HONEST_BODY)).unwrap(),
             )
             .unwrap_or_else(|| {
-                panic!("no answer to the honest message within {DIRECT_ANSWER_WAIT:?}")
+                panic!("no answer to the honest message within {SPEC_DIRECT_TIMEOUT_WITH_SLACK:?}")
             });
         let bodies = amy.inbox_bodies();
 
         assert_eq!(forged_answer, None);
         assert!(
-            forged_ended_after < DIRECT_ANSWER_WAIT,
-            "the forged message's stream ended when its wait of {DIRECT_ANSWER_WAIT:?} ran out, not when the member ended it"
+            forged_ended_after < SPEC_DIRECT_TIMEOUT_WITH_SLACK,
+            "the forged message's stream ended when its wait of {SPEC_DIRECT_TIMEOUT_WITH_SLACK:?} ran out, not when the member ended it"
         );
         let Response::MessageAck(ack) = open_response(network.keys(), &honest_answer).unwrap()
         else {
@@ -1384,15 +1422,13 @@ mod spec_3_16_absences_on_one_machine {
     use crate::payload_placeholders::wall_clock_ms;
     use crate::payloads::presence_signed_by;
     use crate::scratch_machine::RunRecordKeeping;
-    use crate::scripted_node::ScriptedNode;
+    use crate::scripted_node::{SPEC_DIRECT_TIMEOUT_WITH_SLACK, ScriptedNode};
     use crate::send;
 
     /// Longer than every interval spec 3.14 names below the announcement max age: the 2000 ms re-announce interval, the 15 s deaf timeout and the 20 s rebind interval.
     const PRESENCE_QUIET_WINDOW: Duration = Duration::from_secs(30);
     /// Time for the address set a member announces to settle after its first Presence, beyond the 2000 ms re-announce interval.
     const ADDRESS_SETTLE: Duration = Duration::from_secs(5);
-    /// The ack timeout of spec 3.14 (10000 ms), the longest a send waits for an answer, with slack.
-    const SPEC_ACK_TIMEOUT_WITH_SLACK: Duration = Duration::from_secs(15);
     /// Time after a failed send in which a retry would reach the receiver.
     const RETRY_WATCH: Duration = Duration::from_secs(5);
     /// Thrice the ten sends per sixty seconds the Claude Code bridge allows itself, so any limit of that order in the binary refuses some.
@@ -1589,7 +1625,7 @@ mod spec_3_16_absences_on_one_machine {
         assert_eq!(messages_read.load(Ordering::SeqCst), 1);
         assert_eq!(sent["ok"], json!(false), "{sent}");
         assert!(
-            answered_after <= SPEC_ACK_TIMEOUT_WITH_SLACK,
+            answered_after <= SPEC_DIRECT_TIMEOUT_WITH_SLACK,
             "{answered_after:?}"
         );
     }

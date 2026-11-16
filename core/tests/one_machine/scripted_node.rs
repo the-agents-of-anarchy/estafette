@@ -5,13 +5,13 @@ use std::time::Duration;
 use estafette::crypto::GateKey;
 use estafette::net::endpoint::DIRECT_ALPN;
 use estafette::net::endpoint::{GateFailure, NodeEndpoint};
+use estafette::stream_items::StreamExt;
 use estafette::wire::WIRE_LIMIT_BYTES;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler, Router, RouterBuilder};
 use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey};
 use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId};
-use n0_future::StreamExt;
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
@@ -20,8 +20,8 @@ use crate::driven_runtime::DrivenRuntime;
 type Admitted = Arc<Mutex<BTreeSet<EndpointId>>>;
 type Events = Arc<watch::Sender<Vec<Event>>>;
 
-/// How long a direct request may take to be answered: the server read timeout of spec 3.14 (10000 ms) with slack.
-pub const DIRECT_ANSWER_WAIT: Duration = Duration::from_secs(15);
+/// The longest a direct request waits for its answer and a send for its ack: the server read timeout and the ack timeout of spec 3.14, both 10000 ms, with slack.
+pub const SPEC_DIRECT_TIMEOUT_WITH_SLACK: Duration = Duration::from_secs(15);
 /// How long a node joined to another may take to report it up as a gossip neighbor.
 const GOSSIP_NEIGHBOR_WAIT: Duration = Duration::from_secs(10);
 
@@ -178,7 +178,7 @@ impl ScriptedNode {
     /// Sends the bytes as one direct request to the node over a fresh connection and returns the answer, none when the connection, the stream or the wait fails.
     pub fn request_directly(&self, to: EndpointId, request: &[u8]) -> Option<Vec<u8>> {
         self.runtime().block_on(async {
-            tokio::time::timeout(DIRECT_ANSWER_WAIT, async {
+            tokio::time::timeout(SPEC_DIRECT_TIMEOUT_WITH_SLACK, async {
                 let connection = self
                     .endpoint()
                     .endpoint()
