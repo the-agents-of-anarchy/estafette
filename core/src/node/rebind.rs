@@ -403,7 +403,7 @@ mod tests {
     use super::{MemberJoins, RebindSchedule, RelayProbe, relay_answers};
     use crate::event::EventFields;
     use crate::event::{Event, RunRecord, TransportEvent};
-    use crate::net::direct::tests::test_salt;
+    use crate::net::direct::tests::{StandingClock, test_salt};
     use crate::net::direct::{
         ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock,
     };
@@ -423,7 +423,7 @@ mod tests {
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
     use crate::test_waits::{
-        RecordedEvent, StandingClock, found_within, next_recorded, recorded_events, recorded_until,
+        RecordedEvent, found_within, next_recorded, recorded_events, recorded_until,
     };
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
 

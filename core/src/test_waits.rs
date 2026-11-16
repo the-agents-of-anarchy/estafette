@@ -1,16 +1,11 @@
-//! The bounded waits a test of an in-process node uses in place of a sleep: on the events its run record was handed, and on a condition it can look at; and the clock a test moves where time itself must pass.
+//! The bounded waits a test of an in-process node uses in place of a sleep: on the events its run record was handed, and on a condition it can look at.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
-use tokio::sync::watch;
-use tokio::time::Instant;
 
 use crate::event::{Event, EventFields, RunRecord};
-use crate::net::direct::{MonotonicClock, MonotonicTime};
 
 /// The longest a test waits for an event when it names no bound of its own.
 const RECORDED_EVENT_WITHIN: Duration = Duration::from_secs(10);
@@ -88,41 +83,4 @@ pub async fn found_within<Found>(
     })
     .await
     .ok()
-}
-
-/// A monotonic clock standing at the instant the test last moved it to, waking each waiter once it reads that waiter's deadline.
-#[derive(Clone)]
-pub struct StandingClock(Arc<watch::Sender<Instant>>);
-
-impl StandingClock {
-    /// A clock standing at the runtime's now.
-    pub fn standing_now() -> Self {
-        Self(Arc::new(watch::Sender::new(Instant::now())))
-    }
-
-    /// Moves the clock forward by the span, waking each waiter whose deadline it then reads.
-    pub fn move_forward(&self, by: Duration) {
-        self.0
-            .send_modify(|now| *now = now.checked_add(by).unwrap());
-    }
-
-    /// The clock as a node or a register takes it.
-    pub fn monotonic(&self) -> MonotonicClock {
-        Arc::new(self.clone())
-    }
-}
-
-impl MonotonicTime for StandingClock {
-    fn now(&self) -> Instant {
-        *self.0.borrow()
-    }
-
-    fn reached(&self, deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        let mut readings = self.0.subscribe();
-        Box::pin(async move {
-            if readings.wait_for(|now| *now >= deadline).await.is_err() {
-                std::future::pending::<()>().await;
-            }
-        })
-    }
 }

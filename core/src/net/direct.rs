@@ -1211,7 +1211,7 @@ pub(crate) mod tests {
     use crate::crypto::{KEY_LEN, NetworkSecret};
     use crate::net::endpoint::NodeEndpoint;
     use crate::seeded_draws::Draws;
-    use crate::test_waits::{StandingClock, found_within};
+    use crate::test_waits::found_within;
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [7; KEY_LEN];
     const SERVER_SEED: u8 = 1;
@@ -2098,6 +2098,48 @@ pub(crate) mod tests {
     /// A register on the runtime's monotonic clock whose record drops every event.
     pub fn unrecorded_register() -> HeldConnections {
         HeldConnections::new(Arc::new(tokio::time::Instant::now), dropping_transport())
+    }
+
+    /// A monotonic clock standing at the instant the test last moved it to, waking each waiter once it reads that waiter's deadline.
+    #[derive(Clone)]
+    pub struct StandingClock(Arc<tokio::sync::watch::Sender<tokio::time::Instant>>);
+
+    impl StandingClock {
+        /// A clock standing at the runtime's now.
+        pub fn standing_now() -> Self {
+            Self(Arc::new(tokio::sync::watch::Sender::new(
+                tokio::time::Instant::now(),
+            )))
+        }
+
+        /// Moves the clock forward by the span, waking each waiter whose deadline it then reads.
+        pub fn move_forward(&self, by: Duration) {
+            self.0
+                .send_modify(|now| *now = now.checked_add(by).unwrap());
+        }
+
+        /// The clock as a node or a register takes it.
+        pub fn monotonic(&self) -> MonotonicClock {
+            Arc::new(self.clone())
+        }
+    }
+
+    impl MonotonicTime for StandingClock {
+        fn now(&self) -> tokio::time::Instant {
+            *self.0.borrow()
+        }
+
+        fn reached(
+            &self,
+            deadline: tokio::time::Instant,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            let mut readings = self.0.subscribe();
+            Box::pin(async move {
+                if readings.wait_for(|now| *now >= deadline).await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            })
+        }
     }
 
     /// Asserts that the map gives each case's input the case's output, and that its outputs hold as many distinct values as named.
