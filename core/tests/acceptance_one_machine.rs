@@ -886,7 +886,9 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
     use crate::scratch_machine::{Card, RunRecordKeeping};
     use crate::timed_step::timed;
 
+    /// Spec 3.15 test 7: the handle the first member holds and the second member's card requests too.
     const TAKEN: &str = AMY_HANDLE;
+    /// Spec 3.15 test 7: the effective handle `<h>-2` every node gives the second member that requests the taken handle (spec 3.1).
     const SECOND_EFFECTIVE: &str = "amy-2";
 
     #[test]
@@ -1852,24 +1854,39 @@ mod observability_decision_6_on_one_machine {
     use crate::mcp_server::{PRESENCE_WAIT, call_succeeded, online};
     use crate::scratch_machine::RunRecordKeeping;
 
+    /// The body amy sends bob, planted so an events file that holds it is found to write a body (decision 6).
     const BODY_MARKER: &str = "body-marker-q7x2v9";
     /// A body no other text of the run holds, so finding it anywhere means the body was written.
     const MARKER_BODY: &str = "marker body 7c1e quartz lantern 93fd";
     /// The members whose runs write an events file: amy and bob.
     const MEMBER_RUNS: usize = 2;
+    /// The start of the name of every path event of the transport area (decision 9).
     const PATH_EVENT_PREFIX: &str = "transport.path_";
+    /// The end of the name of a run's events file (decision 4).
     const SPEC_EVENTS_SUFFIX: &str = ".events.jsonl";
+    /// The directory under the data base directory that holds the trace files (decision 4).
     const SPEC_TRACES_UNDER_DATA_HOME: &str = "estafette/traces";
+    /// The hex characters of a 32-byte key, secret or whole card id.
     const SPEC_KEY_HEX_CHARS: usize = 64;
+    /// The shortest run of letters and digits taken for a secret, a key, a mac or an invitation in a file.
     const SHORTEST_SECRET_RUN: usize = 16;
+    /// The decimal groups of an IPv4 address written as a dotted quad.
     const DOTTED_QUAD_GROUPS: usize = 4;
+    /// The most digits a group of a dotted quad holds.
     const LONGEST_DOTTED_QUAD_GROUP: usize = 3;
+    /// The extension of an inbox socket file, `<runtime>/<pid>.sock` (spec 3.3).
     const SOCKET_EXTENSION: &str = "sock";
+    /// What every URL holds, a relay URL included, so no events file may hold it (decision 6).
     const URL_SCHEME_SEPARATOR: &str = "://";
+    /// The text of the IPv6 loopback address, which no events file may hold (decision 6).
     const IPV6_LOOPBACK: &str = "::1";
+    /// How long bob's inbox may take to return amy's message.
     const DELIVERY_WAIT: Duration = Duration::from_secs(20);
+    /// The first line an inbox client writes to read every frame from the first (spec 3.11).
     const SPEC_SINCE_EVERY_FRAME: &str = "{\"since\": 0}\n";
+    /// How long a member may take to record that the planted inbox client went away.
     const CLIENT_WAIT: Duration = Duration::from_secs(20);
+    /// The event names the exchange writes, each quoted as an events line holds it, so the scan is proved to read lines of every area the exchange touches.
     const EVENTS_THIS_EXCHANGE_RECORDS: [&str; 19] = [
         "\"gossip.payload_accepted\"",
         "\"gossip.payload_broadcast\"",
@@ -2205,14 +2222,23 @@ mod observability_decision_9_on_one_machine {
     use crate::scratch_machine::RunRecordKeeping;
     use crate::trace_reader::{TraceLine, events_lines_in};
 
+    /// The body amy sends bob before bob's inbox client attaches.
     const UNATTACHED_BODY: &str = "sent while bob has no inbox client";
+    /// The body amy sends bob while bob's inbox client is attached.
     const ATTACHED_BODY: &str = "sent while bob has an inbox client";
+    /// The body amy broadcasts to bob and to a handle no member holds.
     const BROADCAST_BODY: &str = "broadcast to bob and to nobody";
+    /// A handle no member of the exchange holds, so its send is answered `unknown_handle` (spec 3.10).
     const NO_MEMBER: &str = "nobody";
+    /// The first line an inbox client writes to read every frame from the first (spec 3.11).
     const SPEC_SINCE_EVERY_FRAME: &str = "{\"since\": 0}\n";
+    /// The departure wait at exit of spec 3.14, in milliseconds, as `process.departure_wait_over` writes it.
     const SPEC_DEPARTURE_WAIT_MS: u64 = 5000;
+    /// The signal name `process.signal_received` writes for a SIGTERM (spec 3.9).
     const SPEC_TERMINATE_SIGNAL: &str = "SIGTERM";
+    /// A `since` below the inbox tool's minimum of 0, which it answers `bad_request` (spec 3.10).
     const SPEC_BELOW_ANY_SEQ: i64 = -1;
+    /// How long a member may take to record an event the exchange provokes, and an inbox client to read a frame.
     const EVENT_WAIT: Duration = Duration::from_secs(20);
     /// The frames bob's inbox client reads: the one sent before it attached, replayed, and the one sent while attached.
     const FRAMES_THE_CLIENT_READS: usize = 2;
@@ -2239,6 +2265,7 @@ mod observability_decision_9_on_one_machine {
         "process.departure_wait_over",
         "process.exited",
     ];
+    /// The start of the name of every event of the process area (decision 9).
     const PROCESS_AREA: &str = "process.";
     /// The stopping step the node's presence loop records on its own task, in no order the node guarantees against the session's steps.
     const CONFIGURATION_REWRITE_DECIDED: &str = "process.configuration_rewrite_decided";

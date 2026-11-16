@@ -16,7 +16,7 @@ const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const CLIENT_NAME: &str = "estafette-acceptance";
 /// The version the client gives in its handshake.
 const CLIENT_VERSION: &str = "0";
-/// How long the server may take to answer a request.
+/// How long the server may take to answer a request: chosen, not measured, far above its slowest answer, an init that waits out the join timeout and the observer wait (spec 3.14), so only a hung server fails it.
 const RESPONSE_WAIT: Duration = Duration::from_secs(60);
 /// The tool a member claims its card with (spec 3.10).
 pub const INIT_TOOL: &str = "init";
