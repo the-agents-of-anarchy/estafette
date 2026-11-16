@@ -1116,7 +1116,7 @@ impl PresenceLoop {
         let hosts = known_host_addresses(&network.config)?;
         seed_lookup_with_known_hosts(&endpoint, &hosts);
         let (router, gossip) = serve(&endpoint, &network.keys, &state);
-        let subscribed = (effects.monotonic)();
+        let subscribed = effects.monotonic.now();
         let topic = NetworkTopic::join(
             &gossip,
             network.keys.clone(),
@@ -1230,7 +1230,7 @@ impl PresenceLoop {
             Wake::HomeRelaysChanged(statuses) => {
                 self.endpoint.record_home_relays(&statuses);
                 self.relay_loss
-                    .observe(&home_relays(&statuses), (self.monotonic)());
+                    .observe(&home_relays(&statuses), self.monotonic.now());
                 self.reconsider_own_address().await;
             }
             Wake::ObserverWaitOver => self.advance_init(InitEvent::ObserverWaitOver).await,
@@ -1277,7 +1277,7 @@ impl PresenceLoop {
                 self.perform(effects).await;
             }
             GossipEvent::Payload(payload) => {
-                self.rebinding.heard((self.monotonic)());
+                self.rebinding.heard(self.monotonic.now());
                 self.take_payload(*payload, now_ms).await;
             }
         }
@@ -1285,10 +1285,10 @@ impl PresenceLoop {
 
     /// Asks every member to announce itself at every join, then starts the observer wait at the first join, announces at every later join, and starts the member join wait after a rebind's.
     async fn take_joined(&mut self) {
-        self.rebinding.joined((self.monotonic)());
+        self.rebinding.joined(self.monotonic.now());
         self.request_presence().await;
         self.advance_init(InitEvent::Joined {
-            at: (self.monotonic)(),
+            at: self.monotonic.now(),
         })
         .await;
     }
@@ -1306,7 +1306,7 @@ impl PresenceLoop {
     /// Assigns the handle against the table as it stands when the first join gains no neighbor, and has a join that gains none end in a rebind when this member may rebind then.
     async fn take_join_timeout(&mut self) {
         if self.may_rebind() {
-            self.rebinding.join_timed_out((self.monotonic)());
+            self.rebinding.join_timed_out(self.monotonic.now());
         }
         self.advance_init(InitEvent::JoinTimedOut).await;
     }
@@ -1554,7 +1554,7 @@ impl PresenceLoop {
             self.endpoint.endpoint(),
             &self.gossip,
             &*self.report,
-            (self.monotonic)(),
+            self.monotonic.now(),
         );
     }
 
@@ -1579,7 +1579,7 @@ impl PresenceLoop {
             mac: ZERO_MAC,
             sig: ZERO_SIGNATURE,
         });
-        self.announcer.record(seq, addr, (self.monotonic)());
+        self.announcer.record(seq, addr, self.monotonic.now());
         self.broadcast(presence).await;
     }
 
@@ -1605,7 +1605,7 @@ impl PresenceLoop {
     async fn reconsider_own_address(&mut self) {
         match self
             .announcer
-            .reannounce_step(&self.state.own_addr(), (self.monotonic)())
+            .reannounce_step(&self.state.own_addr(), self.monotonic.now())
         {
             ReannounceStep::Unchanged => {}
             ReannounceStep::AnnounceNow => self.announce_presence().await,
@@ -1618,7 +1618,7 @@ impl PresenceLoop {
         let statuses = self.endpoint.endpoint().home_relay_status().get();
         for relay in self
             .relay_loss
-            .lost_relays(&home_relays(&statuses), (self.monotonic)())
+            .lost_relays(&home_relays(&statuses), self.monotonic.now())
         {
             self.endpoint.remove_relay(&relay).await;
         }

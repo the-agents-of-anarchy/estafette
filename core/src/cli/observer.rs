@@ -608,7 +608,7 @@ async fn start_observation(
         keys.clone(),
         setup.owner,
         setup.hosts.iter().map(|host| host.id).collect(),
-        (effects.monotonic)(),
+        effects.monotonic.now(),
     )
     .await;
     match topic {
@@ -618,7 +618,7 @@ async fn start_observation(
                 endpoint.endpoint(),
                 &gossip,
                 &*effects.report,
-                (effects.monotonic)(),
+                effects.monotonic.now(),
             );
             Ok(Observation {
                 client: Arc::new(DirectClient::new(
@@ -823,7 +823,7 @@ impl Observation {
 
     /// Starts the observer wait at the first join or join timeout and keeps one already started.
     fn start_observer_wait(&mut self) {
-        let joined_at = (self.monotonic)();
+        let joined_at = self.monotonic.now();
         self.wait_over
             .get_or_insert_with(|| observer_wait_over_at(joined_at));
     }
@@ -835,7 +835,7 @@ impl Observation {
             self.endpoint.endpoint(),
             &self.gossip,
             &*self.report,
-            (self.monotonic)(),
+            self.monotonic.now(),
         );
     }
 

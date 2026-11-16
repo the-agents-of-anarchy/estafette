@@ -73,7 +73,20 @@ pub trait DirectHost: Send + Sync + 'static {
 }
 
 /// A monotonic clock, read for the instant now.
-pub type MonotonicClock = Arc<dyn Fn() -> Instant + Send + Sync>;
+pub trait MonotonicTime: Send + Sync {
+    /// The instant the clock reads now.
+    fn now(&self) -> Instant;
+}
+
+/// A clock read by calling the function.
+impl<Reading: Fn() -> Instant + Send + Sync> MonotonicTime for Reading {
+    fn now(&self) -> Instant {
+        self()
+    }
+}
+
+/// The monotonic clock the composition root hands down.
+pub type MonotonicClock = Arc<dyn MonotonicTime>;
 
 /// Every connection the endpoint's gate let through and has not seen close, of any protocol, dialed or accepted, by the card at its other end, the cards whose spared connection still leaves iroh on a gone process's path, and the clock their silence is measured on.
 #[derive(Clone)]
@@ -116,7 +129,7 @@ impl HeldConnections {
 
     /// Closes every connection to or from the card that has heard nothing from its peer for as long as a gone process is silent, but the spared one, and then, when this pass or an earlier one found a gone process and none left reports a path iroh selected, every other but the spared one too.
     fn close_silent_of_sparing(&self, card: wire::PublicKey, spared: Option<ConnectionId>) {
-        let now = (self.monotonic)();
+        let now = self.monotonic.now();
         let mut held = self.held();
         let mut left_on_a_gone_path = self
             .left_on_a_gone_path
@@ -176,7 +189,7 @@ impl HeldConnections {
         self.record_paths_open_at_hold(connection);
         self.add(
             card,
-            HeldConnection::heard_at(connection, (self.monotonic)()),
+            HeldConnection::heard_at(connection, self.monotonic.now()),
         );
         tokio::spawn(self.clone().follow_hearing(
             card,
@@ -299,7 +312,7 @@ impl HeldConnections {
         else {
             return;
         };
-        let now = (self.monotonic)();
+        let now = self.monotonic.now();
         if let Some(held_connection) = self.held().get_mut(&card).and_then(|of_card| {
             of_card
                 .iter_mut()
@@ -707,7 +720,7 @@ impl<H: DirectHost> ServerState<H> {
         mut send: SendStream,
         recv: RecvStream,
     ) {
-        let started = (self.held.monotonic)();
+        let started = self.held.monotonic.now();
         let (request, outcome) = self
             .answer_stream(sender, arrived_on, &mut send, recv)
             .await;
@@ -718,7 +731,7 @@ impl<H: DirectHost> ServerState<H> {
                 Ok(()) | Err(ClosedStream { .. }) => {}
             }
         }
-        let elapsed = (self.held.monotonic)().saturating_duration_since(started);
+        let elapsed = self.held.monotonic.now().saturating_duration_since(started);
         self.held.record(|_transport| {
             DirectEvent::RequestServed(ServedRequest {
                 request,
@@ -977,10 +990,14 @@ impl DirectClient {
         acknowledgement_of: impl FnOnce(Response) -> Result<(SentOutcome, Acknowledgement), DirectError>,
     ) -> Result<Acknowledgement, DirectError> {
         let summary = RequestSummary::of(&request);
-        let started = (self.register.monotonic)();
+        let started = self.register.monotonic.now();
         let (connection, response) = self.exchange_over_a_connection(to, request, due).await;
         let acknowledged = response.and_then(acknowledgement_of);
-        let elapsed = (self.register.monotonic)().saturating_duration_since(started);
+        let elapsed = self
+            .register
+            .monotonic
+            .now()
+            .saturating_duration_since(started);
         self.register.record(|_transport| {
             DirectEvent::RequestSent(SentRequest {
                 request: summary,

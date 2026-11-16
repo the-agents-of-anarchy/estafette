@@ -717,7 +717,7 @@ impl BootstrapNode {
             known_hosts: files.network.into_known_hosts(),
             last_record: files.last_record,
             records_due: None,
-            snapshot_due: snapshot_due_after(monotonic()),
+            snapshot_due: snapshot_due_after(monotonic.now()),
             clock,
             monotonic,
             report,
@@ -806,7 +806,7 @@ impl BootstrapNode {
             self.endpoint.endpoint(),
             &self.gossip,
             &*self.report,
-            (self.monotonic)(),
+            self.monotonic.now(),
         );
     }
 

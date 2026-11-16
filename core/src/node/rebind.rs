@@ -241,7 +241,7 @@ impl PresenceLoop {
     pub(super) async fn rebind(&mut self, cause: RebindCause) -> ControlFlow<()> {
         (self.report)(TransportEvent::Rebinding(cause).into());
         self.record_state(SnapshotMoment::Rebind);
-        self.rebinding.rebound((self.monotonic)());
+        self.rebinding.rebound(self.monotonic.now());
         self.close_endpoint().await;
         let down = self.relays_found_down().await;
         self.strip_relays_from_members(&down);
@@ -261,7 +261,7 @@ impl PresenceLoop {
             self.rebinding.stop_asking();
             return;
         }
-        let now = (self.monotonic)();
+        let now = self.monotonic.now();
         if let Err(failure) =
             NetworkTopic::join(&self.gossip, self.keys.clone(), self.owner, members, now).await
         {
@@ -295,7 +295,7 @@ impl PresenceLoop {
             .into_iter()
             .map(|host| host.relay)
             .collect();
-        let deadline = later_by((self.monotonic)(), RELAY_PROBE_TIMEOUT);
+        let deadline = later_by(self.monotonic.now(), RELAY_PROBE_TIMEOUT);
         let answers = join_all(
             relays
                 .iter()
@@ -353,7 +353,7 @@ impl PresenceLoop {
             self.keys.clone(),
             self.owner,
             bootstrap,
-            (self.monotonic)(),
+            self.monotonic.now(),
         )
         .await
         {
