@@ -142,13 +142,13 @@ server-up: lab-context-exists
     set -euo pipefail
     just remote::backstop-status >&2
     expires="$(date -v+24H +%s)"
-    if ! {{ lab_hcloud }}ssh-key describe {{ lab_resource_name }} > /dev/null 2>&1; then
+    if ! {{ lab_hcloud }} ssh-key describe {{ lab_resource_name }} > /dev/null 2>&1; then
         {{ lab_hcloud }} ssh-key create --name {{ lab_resource_name }} --public-key-from-file {{ key }}.pub --label owner=estafette --label expires="$expires" >&2
     fi
-    if ! {{ lab_hcloud }}firewall describe {{ lab_resource_name }} > /dev/null 2>&1; then
+    if ! {{ lab_hcloud }} firewall describe {{ lab_resource_name }} > /dev/null 2>&1; then
         {{ lab_hcloud }} firewall create --name {{ lab_resource_name }} --rules-file {{ lab_skill }}/firewall-rules.json --label owner=estafette --label expires="$expires" >&2
     fi
-    if ! {{ lab_hcloud }}server describe {{ server }} > /dev/null 2>&1; then
+    if ! {{ lab_hcloud }} server describe {{ server }} > /dev/null 2>&1; then
         setup_file="$(mktemp)"
         python3 -I {{ lab_skill }}/fill-setup.py "$setup_file" >&2
         {{ lab_hcloud }} server create --name {{ server }} --type {{ lab_server_type }} --image {{ lab_image }} --location {{ lab_location }} --ssh-key {{ lab_resource_name }} --firewall {{ lab_resource_name }} --user-data-from-file "$setup_file" --label owner=estafette --label expires="$expires" >&2
