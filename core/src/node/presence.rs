@@ -35,7 +35,7 @@ use crate::inbox::socket::{Attached, InboxSocket};
 use crate::keys::{KeyError, parse_network_secret, parse_public_key};
 use crate::net::direct::{
     ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, GONE_PROCESS_SILENCE,
-    HEARING_SAMPLE_INTERVAL, HeldConnections, MonotonicClock,
+    HEARING_SAMPLE_INTERVAL, HeldConnections, MonotonicClock, MonotonicTime,
 };
 use crate::net::endpoint::{
     CounterSnapshot, DIRECT_ALPN, NodeEndpoint, RebindCause, SnapshotMoment,
@@ -1202,7 +1202,7 @@ impl PresenceLoop {
             () = sleep_until_deadline(observer_wait_over) => Wake::ObserverWaitOver,
             () = sleep_until_deadline(self.reannounce_due) => Wake::ReannounceDue,
             () = sleep_until_deadline(relay_loss_due) => Wake::RelayLossDue,
-            cause = sleep_until_rebind(next_rebind) => Wake::RebindDue(cause),
+            cause = sleep_until_rebind(&*self.monotonic, next_rebind) => Wake::RebindDue(cause),
             () = sleep_until_deadline(member_join_due) => Wake::MemberJoinDue,
             () = sleep_until(self.snapshot_due) => Wake::SnapshotDue,
         }
@@ -1785,11 +1785,14 @@ pub async fn broadcast_recording_outcome(
     }
 }
 
-/// Waits until the rebind is due and answers why, or forever when none is.
-async fn sleep_until_rebind(next_rebind: Option<(Instant, RebindCause)>) -> RebindCause {
+/// Waits until the clock reads the instant the rebind is due and answers why, or forever when none is.
+async fn sleep_until_rebind(
+    clock: &dyn MonotonicTime,
+    next_rebind: Option<(Instant, RebindCause)>,
+) -> RebindCause {
     match next_rebind {
         Some((due, cause)) => {
-            sleep_until(due).await;
+            clock.reached(due).await;
             cause
         }
         None => std::future::pending().await,

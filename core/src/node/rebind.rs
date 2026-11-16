@@ -412,7 +412,7 @@ mod tests {
     use crate::node::presence::acknowledgement_of;
     use crate::node::presence::tests::{
         FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, MARKER_SEED, Member, MemberPlan,
-        OWNER_SEED, PAYLOAD_WAIT, PEER, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, Scratch, TS,
+        OWNER_SEED, PAYLOAD_WAIT, PEER, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, Scratch,
         WITNESS_SEED, Witness, bind, card, entry_meeting_within, frozen_clock, keys, presence_from,
         presence_request_by, relay_url, secret_key, short_peer_id, spawn_member, start_members,
         start_members_reaching, status_within, unreachable_about, wall_clock_ms,
@@ -421,7 +421,7 @@ mod tests {
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
     use crate::test_waits::{
-        RecordedEvent, found_within, next_recorded, recorded_events, recorded_until,
+        RecordedEvent, StandingClock, found_within, next_recorded, recorded_events, recorded_until,
     };
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
 
@@ -550,14 +550,25 @@ mod tests {
             Self::serving(seed, Some(relays), None).await
         }
 
-        async fn broadcasting(seed: u8, every: Duration) -> Self {
-            Self::serving(seed, None, Some(every)).await
+        async fn broadcasting(seed: u8, every: Duration, clock: MonotonicClock) -> Self {
+            let first = clock.now().checked_add(every).unwrap();
+            Self::serving(
+                seed,
+                None,
+                Some(BroadcastSchedule {
+                    clock,
+                    every,
+                    next: first,
+                    sent: 0,
+                }),
+            )
+            .await
         }
 
         async fn serving(
             seed: u8,
             introduced_with_relays: Option<&[&str]>,
-            broadcast_every: Option<Duration>,
+            mut broadcasts: Option<BroadcastSchedule>,
         ) -> Self {
             let endpoint = bind(seed).await;
             let introduction = Addr::from_endpoint_report(
@@ -596,15 +607,14 @@ mod tests {
             let neighbors_up = Heard::default();
             let heard = presences.clone();
             let met = neighbors_up.clone();
-            let mut broadcasts = broadcast_every.map(tokio::time::interval);
             let listening = tokio::spawn(async move {
                 loop {
                     let event = tokio::select! {
                         event = topic.next_event() => event,
-                        () = next_broadcast(&mut broadcasts) => {
+                        ordinal = next_broadcast(&mut broadcasts) => {
                             drop(topic.broadcast(
                                 &secret_key(seed),
-                                unreachable_about(MARKER_SEED, seed, wall_clock_ms()),
+                                unreachable_about(MARKER_SEED, seed, wall_clock_ms().saturating_add(ordinal)),
                             ).await);
                             continue;
                         }
@@ -723,9 +733,23 @@ mod tests {
         }
     }
 
-    async fn next_broadcast(broadcasts: &mut Option<tokio::time::Interval>) {
+    /// When a stand-in host broadcasts its next report: every span on the clock, counting the reports sent.
+    struct BroadcastSchedule {
+        clock: MonotonicClock,
+        every: Duration,
+        next: Instant,
+        sent: u64,
+    }
+
+    /// The ordinal of the next report, once the clock reads its instant, the one after it scheduled a span later; never, for a node that does not broadcast.
+    async fn next_broadcast(broadcasts: &mut Option<BroadcastSchedule>) -> u64 {
         match broadcasts {
-            Some(interval) => drop(interval.tick().await),
+            Some(schedule) => {
+                schedule.clock.reached(schedule.next).await;
+                schedule.next = schedule.next.checked_add(schedule.every).unwrap();
+                schedule.sent = schedule.sent.saturating_add(1);
+                schedule.sent
+            }
             None => std::future::pending().await,
         }
     }
@@ -809,36 +833,50 @@ mod tests {
     async fn spec_3_15_test_24_logic_a_member_whose_host_broadcasts_every_5_s_records_no_rebind_past_the_deaf_timeout()
      {
         let scratch = Scratch::new("hearing").await;
-        let host = QuietNode::broadcasting(HOST_SEED, SPEC_INFRASTRUCTURE_RECORD_INTERVAL).await;
+        let clock = StandingClock::standing_now();
+        let host = QuietNode::broadcasting(
+            HOST_SEED,
+            SPEC_INFRASTRUCTURE_RECORD_INTERVAL,
+            clock.monotonic(),
+        )
+        .await;
         let (record, mut events) = recorded_events();
-        let started = Instant::now();
-        let past_the_deaf_timeout_ms =
-            wall_clock_ms() + millis_of(SPEC_DEAF_TIMEOUT + REBIND_SLACK);
 
         let _member = start_members_reaching(
             &scratch,
             vec![
                 MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
                     .with_hosts(&[HOST_SEED])
-                    .with_report(record),
+                    .with_report(record)
+                    .with_monotonic(clock.monotonic()),
             ],
             &[(HOST_SEED, host.addr())],
         )
         .await;
-        let (before_the_hosts_report, _report) = recorded_until(
+        let (mut before_the_last_report, _joined) = recorded_until(
             &mut events,
-            DROPPED_PAYLOAD,
-            |fields| is_report_by_dated_from(fields, HOST_SEED, past_the_deaf_timeout_ms),
-            HOST_REPORT_PAST_THE_DEAF_TIMEOUT_WITHIN,
+            TOPIC_JOINED,
+            |_fields| true,
+            JOINED_THROUGH_THE_HOST_WITHIN,
         )
         .await;
+        for _report in 0..REPORTS_PAST_THE_DEAF_TIMEOUT {
+            clock.move_forward(SPEC_INFRASTRUCTURE_RECORD_INTERVAL);
+            let (before_the_report, _report) = recorded_until(
+                &mut events,
+                DROPPED_PAYLOAD,
+                |fields| fields.contains(&(PEER, short_peer_id(HOST_SEED))),
+                REPORT_HEARD_WITHIN,
+            )
+            .await;
+            before_the_last_report.extend(before_the_report);
+        }
 
         assert_eq!(
-            rebinds_among(&before_the_hosts_report),
+            rebinds_among(&before_the_last_report),
             0,
-            "the member rebound while hearing its host: {before_the_hosts_report:?}"
+            "the member rebound while hearing its host: {before_the_last_report:?}"
         );
-        assert!(started.elapsed() >= SPEC_DEAF_TIMEOUT + REBIND_SLACK);
         drop(scratch);
     }
 
@@ -979,26 +1017,21 @@ mod tests {
     const COUNTERS: &str = "state.counters";
     const REBINDING: &str = "transport.rebinding";
     const DROPPED_PAYLOAD: &str = "gossip.payload_dropped";
+    const TOPIC_JOINED: &str = "gossip.topic_joined";
     const MOMENT: &str = "moment";
     const START_MOMENT: &str = "start";
-    /// The longest a member waits, from its start, for its host's first report dated past the deaf timeout: that span, then one broadcast interval of the host.
-    const HOST_REPORT_PAST_THE_DEAF_TIMEOUT_WITHIN: Duration = SPEC_DEAF_TIMEOUT
-        .saturating_add(REBIND_SLACK)
-        .saturating_add(SPEC_INFRASTRUCTURE_RECORD_INTERVAL)
-        .saturating_add(REBIND_SLACK);
-
-    /// The whole milliseconds of the span.
-    fn millis_of(span: Duration) -> u64 {
-        u64::try_from(span.as_millis()).unwrap()
-    }
-
-    /// Whether the recorded payload is a report signed by the seed's card dated at or after the instant in milliseconds.
-    fn is_report_by_dated_from(fields: &EventFields, seed: u8, from_ms: u64) -> bool {
-        fields.contains(&(PEER, short_peer_id(seed)))
-            && fields
-                .iter()
-                .any(|(name, ts)| *name == TS && ts.as_u64().is_some_and(|ts| ts >= from_ms))
-    }
+    /// The longest a member takes to join the topic through its running host: the join timeout, past which it would rebind instead.
+    const JOINED_THROUGH_THE_HOST_WITHIN: Duration = SPEC_JOIN_TIMEOUT;
+    /// The longest a host's report takes to reach the member that hears it.
+    const REPORT_HEARD_WITHIN: Duration = Duration::from_secs(10);
+    /// How many reports, an interval apart on the clock, move it past the deaf timeout and its slack.
+    const REPORTS_PAST_THE_DEAF_TIMEOUT: u32 = 4;
+    const _: () = assert!(
+        SPEC_INFRASTRUCTURE_RECORD_INTERVAL
+            .saturating_mul(REPORTS_PAST_THE_DEAF_TIMEOUT)
+            .as_millis()
+            >= SPEC_DEAF_TIMEOUT.saturating_add(REBIND_SLACK).as_millis()
+    );
 
     /// Whether the counters were recorded after the start: at the interval, at a rebind or at a stop.
     fn is_snapshot_after_the_start(fields: &EventFields) -> bool {
