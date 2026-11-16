@@ -28,14 +28,23 @@ import sys
 import time
 
 HCLOUD = shutil.which("hcloud", path=os.pathsep.join([os.environ.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin"])) or "hcloud"
+LAB_CONTEXT = "estafette-lab"
+ENVIRONMENT_WITHOUT_TOKEN = {name: value for name, value in os.environ.items() if name != "HCLOUD_TOKEN"}
 OWNER = "estafette"
 TTL = 24 * 3600
 KINDS = ["server", "primary-ip", "firewall", "ssh-key"]
 
 
 def hc(*args):
-    out = subprocess.run([HCLOUD, *args], capture_output=True, text=True)
+    out = subprocess.run([HCLOUD, "--context", LAB_CONTEXT, *args], capture_output=True, text=True, env=ENVIRONMENT_WITHOUT_TOKEN)
     return out.returncode, out.stdout, out.stderr.strip()
+
+
+def require_lab_context():
+    """Exits naming the lab's hcloud context unless this machine's hcloud holds it."""
+    _, out, _ = hc("context", "list", "-o", "noheader", "-o", "columns=name")
+    if LAB_CONTEXT not in out.split():
+        sys.exit(f"the hcloud context {LAB_CONTEXT} does not exist on this machine: no lab command runs without it")
 
 
 def stamp(t):
@@ -97,6 +106,7 @@ def check(dry):
 
 
 def main(argv):
+    require_lab_context()
     if len(argv) in (2, 3) and argv[1] == "check":
         check("--dry-run" in argv)
         return 0
