@@ -85,7 +85,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use iroh::{EndpointId, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
-    use crate::local_network::{LocalNetwork, MetPair};
+    use crate::local_network::{AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, LocalNetwork, MetPair};
     use crate::mcp_server::{PRESENCE_WAIT, gone, online};
     use crate::member::{Member, loopback_address, loopback_address_of};
     use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
@@ -116,6 +116,10 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const INTRODUCE_KIND: &str = "introduce";
     const DEPARTURE_CAUSE: &str = "departure";
     const GONE_STATUS: &str = "gone";
+    /// The card name of the witness, a member started only to take the observer wait of its own claim.
+    const WITNESS_CARD: &str = "witness-card";
+    /// The handle the witness's card requests.
+    const WITNESS_HANDLE: &str = "wit";
 
     /// A member, amy, who listed a scripted bob, then took bob's Departure of that seq and lists bob gone.
     struct ScriptedBobDeparted {
@@ -128,7 +132,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     /// A member, amy, claimed through a scripted bob who announced a Presence and then a Departure, once amy lists bob gone.
     #[track_caller]
     fn amy_after_scripted_bob_departed(network: &LocalNetwork) -> ScriptedBobDeparted {
-        let amy_card = network.create_card("amy-card", "amy");
+        let amy_card = network.create_card(AMY_CARD, AMY_HANDLE);
         let bob_key = SecretKey::generate();
         let bob = ScriptedNode::start(
             bob_key.clone(),
@@ -141,13 +145,13 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         bob.broadcast(presence_signed_by(
             network.keys(),
             &bob_key,
-            "bob",
+            BOB_HANDLE,
             &bob.endpoint().endpoint().addr(),
         ));
-        amy.peer_within("bob", PRESENCE_WAIT, |_listed| true);
+        amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, |_listed| true);
         let departure_seq = wall_clock_ms();
         bob.broadcast(departure_signed_by(network.keys(), &bob_key, departure_seq));
-        amy.peer_within("bob", PRESENCE_WAIT, gone);
+        amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, gone);
         ScriptedBobDeparted {
             amy,
             amy_card,
@@ -174,7 +178,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             v: Version::CURRENT,
             id: MESSAGE_ID,
             to: *to.as_bytes(),
-            handle: "bob".to_owned(),
+            handle: BOB_HANDLE.to_owned(),
             attached: false,
             sent_at,
             body: body.to_owned(),
@@ -242,8 +246,8 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         let (member, member_card) = member;
         node.wait_for_neighbor_up(member_card);
         let sent_ms = wall_clock_ms();
-        node.broadcast(presence_signed_by(network.keys(), key, "bob", address));
-        member.peer_within("bob", PRESENCE_WAIT, |bob| {
+        node.broadcast(presence_signed_by(network.keys(), key, BOB_HANDLE, address));
+        member.peer_within(BOB_HANDLE, PRESENCE_WAIT, |bob| {
             bob["last_seen"].as_u64().unwrap() >= sent_ms
         });
         sent_ms
@@ -259,7 +263,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                 let accepted = lines.iter().position(|line| {
                     line.event == PAYLOAD_ACCEPTED_EVENT
                         && line.value("kind") == Some(&json!(PRESENCE_KIND))
-                        && line.value("handle") == Some(&json!("bob"))
+                        && line.value("handle") == Some(&json!(BOB_HANDLE))
                         && line.value("seq").and_then(Value::as_u64) >= Some(sent_ms)
                 })?;
                 lines
@@ -267,7 +271,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                     .skip(accepted)
                     .any(|line| {
                         line.event == LOOKUP_REPLACED_EVENT
-                            && line.value("handle") == Some(&json!("bob"))
+                            && line.value("handle") == Some(&json!(BOB_HANDLE))
                     })
                     .then_some(())
             },
@@ -339,13 +343,13 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         timed(
             "amy lists the restarted bob online, seen after the kill",
             || {
-                amy.peer_within("bob", PRESENCE_WAIT, |bob| {
+                amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, |bob| {
                     online(bob) && bob["last_seen"].as_u64().unwrap() > killed_ms
                 })
             },
         );
         let new_presence_reached = Instant::now();
-        let sent = timed("amy's send to the restarted bob", || send(amy, "bob"));
+        let sent = timed("amy's send to the restarted bob", || send(amy, BOB_HANDLE));
         let delivered_after = new_presence_reached.elapsed();
 
         assert_eq!(
@@ -363,7 +367,8 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     #[test]
     fn spec_3_15_test_18_a_killed_member_restarted_with_its_card_is_delivered_to_within_1_s_of_its_new_presence()
      {
-        let network = LocalNetwork::create("r1", &RunRecordKeeping::from_environment());
+        let network =
+            LocalNetwork::create("restarted-member", &RunRecordKeeping::from_environment());
         let first_host = network.stand_in_host();
         let MetPair {
             mut amy,
@@ -374,7 +379,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             network.amy_and_bob_met(&first_host)
         });
         let first_send = timed("amy's send to bob before the kill", || {
-            send(&mut amy, "bob")
+            send(&mut amy, BOB_HANDLE)
         });
 
         bob.kill();
@@ -392,11 +397,12 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     #[test]
     fn spec_3_15_test_18_a_killed_member_restarted_with_its_card_is_delivered_to_within_1_s_of_its_new_presence_while_the_sender_still_holds_a_gossip_connection_to_its_killed_process()
      {
-        let network = LocalNetwork::create("r1g", &RunRecordKeeping::from_environment());
-        let amy_card = network.create_card("amy-card", "amy");
-        let bob_card = network.create_card("bob-card", "bob");
+        let network =
+            LocalNetwork::create("restart-gossip-held", &RunRecordKeeping::from_environment());
+        let amy_card = network.create_card(AMY_CARD, AMY_HANDLE);
+        let bob_card = network.create_card(BOB_CARD, BOB_HANDLE);
         let bob_key = network.card_key(&bob_card);
-        let first_session = network.scripted_member(&bob_key, "bob");
+        let first_session = network.scripted_member(&bob_key, BOB_HANDLE);
         let mut amy = timed("amy starts", || network.start_member());
         timed(
             "amy claims its card through the first bob, who links amy over gossip",
@@ -406,15 +412,15 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             first_session.broadcast(presence_signed_by(
                 network.keys(),
                 &bob_key,
-                "bob",
+                BOB_HANDLE,
                 &loopback_address_of(&first_session),
             ));
         });
         timed("amy lists the first bob online", || {
-            amy.peer_within("bob", PRESENCE_WAIT, online)
+            amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, online)
         });
         let first_send = timed("amy's send to bob before the kill", || {
-            send(&mut amy, "bob")
+            send(&mut amy, BOB_HANDLE)
         });
 
         timed("the first bob is killed with its connections open", || {
@@ -434,11 +440,12 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     #[test]
     fn spec_3_15_test_18_a_killed_member_restarted_with_its_card_that_connects_to_the_sender_before_its_new_presence_is_delivered_to_within_1_s_of_that_presence()
      {
-        let network = LocalNetwork::create("r1o", &RunRecordKeeping::from_environment());
-        let amy_card = network.create_card("amy-card", "amy");
-        let bob_card = network.create_card("bob-card", "bob");
+        let network =
+            LocalNetwork::create("restart-dials-first", &RunRecordKeeping::from_environment());
+        let amy_card = network.create_card(AMY_CARD, AMY_HANDLE);
+        let bob_card = network.create_card(BOB_CARD, BOB_HANDLE);
         let bob_key = network.card_key(&bob_card);
-        let first_session = network.scripted_member(&bob_key, "bob");
+        let first_session = network.scripted_member(&bob_key, BOB_HANDLE);
         let mut amy = timed("amy starts", || network.start_member());
         timed(
             "amy claims its card through the first bob, who links amy over gossip",
@@ -448,15 +455,15 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             first_session.broadcast(presence_signed_by(
                 network.keys(),
                 &bob_key,
-                "bob",
+                BOB_HANDLE,
                 &loopback_address_of(&first_session),
             ));
         });
         timed("amy lists the first bob online", || {
-            amy.peer_within("bob", PRESENCE_WAIT, online)
+            amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, online)
         });
         let first_send = timed("amy's send to bob before the kill", || {
-            send(&mut amy, "bob")
+            send(&mut amy, BOB_HANDLE)
         });
 
         timed("the first bob is killed with its connections open", || {
@@ -464,13 +471,13 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         });
         let killed = Instant::now();
         let killed_ms = wall_clock_ms();
-        let restarted = network.scripted_member(&bob_key, "bob");
+        let restarted = network.scripted_member(&bob_key, BOB_HANDLE);
         timed("the restarted bob connects to amy over gossip", || {
             restarted.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
             restarted.wait_for_neighbor_up(amy_card.id);
         });
         let witness_host = network.stand_in_host();
-        let witness_card = network.create_card("witness-card", "wit");
+        let witness_card = network.create_card(WITNESS_CARD, WITNESS_HANDLE);
         let mut witness = network.start_member();
         timed(
             "a witness claims through its own host, which takes the spec 3.14 observer wait, past the silence of a gone process",
@@ -485,17 +492,19 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             restarted.broadcast(presence_signed_by(
                 network.keys(),
                 &bob_key,
-                "bob",
+                BOB_HANDLE,
                 &loopback_address_of(&restarted),
             ));
         });
         timed("amy lists the restarted bob's presence", || {
-            amy.peer_within("bob", PRESENCE_WAIT, |bob| {
+            amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, |bob| {
                 bob["last_seen"].as_u64().unwrap() > killed_ms
             })
         });
         let new_presence_reached = Instant::now();
-        let sent = timed("amy's send to the restarted bob", || send(&mut amy, "bob"));
+        let sent = timed("amy's send to the restarted bob", || {
+            send(&mut amy, BOB_HANDLE)
+        });
         let delivered_after = new_presence_reached.elapsed();
 
         assert_eq!(
@@ -513,17 +522,18 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     #[test]
     fn spec_3_15_test_4_a_send_to_a_member_gone_by_the_end_of_input_after_an_earlier_send_is_unreachable()
      {
-        let network = LocalNetwork::create("r2", &RunRecordKeeping::from_environment());
+        let network =
+            LocalNetwork::create("gone-by-input-end", &RunRecordKeeping::from_environment());
         let host = network.stand_in_host();
         let MetPair {
             mut amy, mut bob, ..
         } = network.amy_and_bob_met(&host);
-        let first_send = send(&mut amy, "bob");
+        let first_send = send(&mut amy, BOB_HANDLE);
 
         bob.close_standard_input();
-        amy.peer_within("bob", PRESENCE_WAIT, gone);
+        amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, gone);
         let exit = bob.wait_for_exit();
-        let sent = send(&mut amy, "bob");
+        let sent = send(&mut amy, BOB_HANDLE);
 
         assert_eq!(
             first_send["result"]["delivered"],
@@ -537,7 +547,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     #[test]
     fn spec_3_15_test_4_a_message_sent_before_the_departure_amy_holds_reaches_her_inbox_and_leaves_its_sender_gone()
      {
-        let network = LocalNetwork::create("r3m", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("late-message", &RunRecordKeeping::from_environment());
         let ScriptedBobDeparted {
             mut amy,
             amy_card,
@@ -556,7 +566,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             ),
         );
         let statuses_after_the_earlier_message =
-            statuses_from_the_departure_once_served(&amy, "bob", MESSAGE_KIND);
+            statuses_from_the_departure_once_served(&amy, BOB_HANDLE, MESSAGE_KIND);
         let bodies = amy.inbox_bodies();
         let sent_after = request_directly(
             &network,
@@ -568,7 +578,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                 SENT_AFTER_THE_DEPARTURE,
             ),
         );
-        amy.peer_within("bob", PRESENCE_WAIT, online);
+        amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, online);
 
         assert!(is_accepted_message_ack(&sent_before), "{sent_before:?}");
         assert_eq!(statuses_after_the_earlier_message, [json!("gone")]);
@@ -578,7 +588,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
     #[test]
     fn spec_3_15_test_4_an_introduce_from_a_member_amy_holds_departed_leaves_it_gone() {
-        let network = LocalNetwork::create("r3i", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("late-introduce", &RunRecordKeeping::from_environment());
         let ScriptedBobDeparted {
             amy, amy_card, bob, ..
         } = amy_after_scripted_bob_departed(&network);
@@ -590,7 +600,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             amy_card.id,
             Request::Introduce(Introduce {
                 v: Version::CURRENT,
-                handle: Some("bob".to_owned()),
+                handle: Some(BOB_HANDLE.to_owned()),
                 public: b"{}".to_vec(),
                 attached: false,
                 addr: Addr::from_endpoint_report(
@@ -601,7 +611,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             }),
         );
         let statuses_after_the_introduce =
-            statuses_from_the_departure_once_served(&amy, "bob", INTRODUCE_KIND);
+            statuses_from_the_departure_once_served(&amy, BOB_HANDLE, INTRODUCE_KIND);
 
         assert!(matches!(answer, Response::IntroduceAck(_)), "{answer:?}");
         assert_eq!(statuses_after_the_introduce, [json!("gone")]);
@@ -610,10 +620,11 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     #[test]
     fn spec_3_15_test_18_a_restarted_member_whose_message_came_before_its_presence_keeps_that_connection_and_is_delivered_to()
      {
-        let network = LocalNetwork::create("r1k", &RunRecordKeeping::from_environment());
-        let amy_card = network.create_card("amy-card", "amy");
+        let network =
+            LocalNetwork::create("restart-kept-link", &RunRecordKeeping::from_environment());
+        let amy_card = network.create_card(AMY_CARD, AMY_HANDLE);
         let bob_key = SecretKey::generate();
-        let first_session = network.scripted_member(&bob_key, "bob");
+        let first_session = network.scripted_member(&bob_key, BOB_HANDLE);
         let mut amy = timed("amy starts", || network.start_member());
         timed("amy claims its card through the first bob", || {
             amy.init_through(&amy_card, &first_session)
@@ -622,16 +633,16 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             first_session.broadcast(presence_signed_by(
                 network.keys(),
                 &bob_key,
-                "bob",
+                BOB_HANDLE,
                 &loopback_address_of(&first_session),
             ));
         });
         timed("amy lists the first bob online", || {
-            amy.peer_within("bob", PRESENCE_WAIT, online)
+            amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, online)
         });
         drop(first_session);
 
-        let restarted = network.scripted_member(&bob_key, "bob");
+        let restarted = network.scripted_member(&bob_key, BOB_HANDLE);
         timed("the restarted bob links amy", || {
             restarted.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
         });
@@ -675,7 +686,9 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             )
         });
         let bodies = timed("amy's inbox tool answers", || amy.inbox_bodies());
-        let sent = timed("amy's send to the restarted bob", || send(&mut amy, "bob"));
+        let sent = timed("amy's send to the restarted bob", || {
+            send(&mut amy, BOB_HANDLE)
+        });
 
         assert!(
             before_presence
@@ -704,9 +717,9 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             "live-unannounced-path",
             &RunRecordKeeping::from_environment(),
         );
-        let amy_card = network.create_card("amy-card", "amy");
+        let amy_card = network.create_card(AMY_CARD, AMY_HANDLE);
         let bob_key = SecretKey::generate();
-        let bob = network.scripted_member(&bob_key, "bob");
+        let bob = network.scripted_member(&bob_key, BOB_HANDLE);
         let mut amy = timed("amy starts", || network.start_member());
         timed("amy claims its card through bob", || {
             amy.init_through(&amy_card, &bob)
@@ -726,7 +739,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         });
         let exchanged = Instant::now();
         let witness_host = network.stand_in_host();
-        let witness_card = network.create_card("witness-card", "wit");
+        let witness_card = network.create_card(WITNESS_CARD, WITNESS_HANDLE);
         let mut witness = network.start_member();
         timed(
             "a witness claims through its own host, which takes the spec 3.14 observer wait, past the silence that judges a connection gone",
@@ -781,7 +794,7 @@ mod spec_3_15_test_19_on_one_machine {
     use iroh_gossip::api::Event;
 
     use crate::SPEC_OBSERVER_WAIT;
-    use crate::local_network::{LocalNetwork, MetPair};
+    use crate::local_network::{CAROL_HANDLE, LocalNetwork, MetPair};
     use crate::mcp_server::online;
     use crate::member::{loopback_address, loopback_address_of};
     use crate::payloads::presence_signed_by;
@@ -814,18 +827,18 @@ mod spec_3_15_test_19_on_one_machine {
             ..
         } = network.amy_and_bob_met(&host);
         let carol_key = SecretKey::generate();
-        let carol = network.scripted_member(&carol_key, "carol");
+        let carol = network.scripted_member(&carol_key, CAROL_HANDLE);
         carol.admit(loopback_address(bob_card.id, &bob.bound_udp_ports()));
         carol.wait_for_neighbor_up(bob_card.id);
 
         carol.broadcast(presence_signed_by(
             network.keys(),
             &carol_key,
-            "carol",
+            CAROL_HANDLE,
             &loopback_address_of(&carol),
         ));
         let presence_sent = Instant::now();
-        amy.peer_within("carol", SPEC_OBSERVER_WAIT, online);
+        amy.peer_within(CAROL_HANDLE, SPEC_OBSERVER_WAIT, online);
         let listed_after = presence_sent.elapsed();
         let carol_gossip_neighbors = nodes_ever_gossip_neighbors(&carol);
 
@@ -841,14 +854,14 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
     use serde_json::json;
 
     use crate::SPEC_OBSERVER_WAIT;
-    use crate::local_network::{LocalNetwork, MetPair};
+    use crate::local_network::{AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, LocalNetwork, MetPair};
     use crate::mcp_server::{PRESENCE_WAIT, gone, online};
     use crate::member::{Member, loopback_address};
     use crate::payload_placeholders::wall_clock_ms;
     use crate::scratch_machine::{Card, RunRecordKeeping};
     use crate::timed_step::timed;
 
-    const TAKEN: &str = "amy";
+    const TAKEN: &str = AMY_HANDLE;
     const SECOND_EFFECTIVE: &str = "amy-2";
 
     #[test]
@@ -856,8 +869,8 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
      {
         let network = LocalNetwork::create("t7c", &RunRecordKeeping::from_environment());
         let host = network.stand_in_host();
-        let amy_card = network.create_card("amy-card", TAKEN);
-        let bob_card = network.create_card("bob-card", "bob");
+        let amy_card = network.create_card(AMY_CARD, TAKEN);
+        let bob_card = network.create_card(BOB_CARD, BOB_HANDLE);
         let ann_card = network.create_card("ann-card", TAKEN);
         let mut amy = timed("amy joins and claims its card", || {
             let mut amy = network.start_member();
@@ -870,7 +883,7 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
             bob
         });
         timed("amy and bob list each other online", || {
-            amy.peer_within("bob", PRESENCE_WAIT, online);
+            amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, online);
             bob.peer_within(TAKEN, PRESENCE_WAIT, online);
         });
 
@@ -941,7 +954,7 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
         timed(
             "amy lists the restarted bob online, seen after it went",
             || {
-                amy.peer_within("bob", PRESENCE_WAIT, |bob| {
+                amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, |bob| {
                     online(bob) && bob["last_seen"].as_u64().unwrap() > gone_ms
                 })
             },
@@ -950,7 +963,7 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
             "the restarted bob lists amy online within the observer wait of its init",
             || {
                 restarted.peer_within(
-                    "amy",
+                    AMY_HANDLE,
                     SPEC_OBSERVER_WAIT.saturating_sub(init_returned.elapsed()),
                     online,
                 )
@@ -1000,7 +1013,7 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
         assert!(timed("bob exits after the end of input", || bob.wait_for_exit()).success());
         let stopped_ms = wall_clock_ms();
         timed("amy lists bob gone", || {
-            amy.peer_within("bob", PRESENCE_WAIT, gone)
+            amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, gone)
         });
         restarted_bob_lists_amy_within_the_observer_wait_of_its_init(
             &network, &mut amy, &amy_card, &bob_card, stopped_ms,
@@ -1024,7 +1037,7 @@ mod spec_3_15_with_one_member {
         PAYLOAD_DROPPED_EVENT, is_dropped_payload_of_seq, short_id_text,
     };
     use crate::gate_closings::GateClosings;
-    use crate::local_network::LocalNetwork;
+    use crate::local_network::{AMY_CARD, AMY_HANDLE, LocalNetwork};
     use crate::mcp_server::PRESENCE_WAIT;
     use crate::member::{Member, loopback_address};
     use crate::message_body::BODY;
@@ -1044,6 +1057,8 @@ mod spec_3_15_with_one_member {
     const FORGED_BODY: &str = "a message under a wrong mac";
     const HONEST_BODY: &str = "a message under the network mac";
     const ATTACKER_HANDLE: &str = "mallory";
+    /// The handle the node holding the topic id but not the secret announces through the host (spec 3.15 test 21).
+    const OUTSIDER_HANDLE: &str = "outsider";
     const OUTSIDER_SECRET_BYTE: u8 = 77;
     const PRESENCE_KIND: &str = "presence";
     const TRANSIENT_SOCKET_LIFETIME: Duration = Duration::from_millis(1000);
@@ -1129,7 +1144,7 @@ mod spec_3_15_with_one_member {
     #[test]
     fn spec_3_15_test_6_two_processes_init_one_card_within_100_ms_and_exactly_one_claims_it() {
         let network = LocalNetwork::create("t6", &RunRecordKeeping::from_environment());
-        let card = network.create_card("amy-card", "amy");
+        let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let mut first = network.start_member();
         let mut second = network.start_member();
 
@@ -1149,7 +1164,7 @@ mod spec_3_15_with_one_member {
             .filter(|answer| answer["ok"] == json!(false))
             .collect();
         assert_eq!(claimed.len(), 1, "{answers:?}");
-        assert_eq!(claimed[0]["result"]["handle"], json!("amy"));
+        assert_eq!(claimed[0]["result"]["handle"], json!(AMY_HANDLE));
         assert_eq!(claimed[0]["you"]["status"], json!("claimed"));
         assert_eq!(refused.len(), 1, "{answers:?}");
         assert_eq!(refused[0]["error"]["code"], json!("card_held"));
@@ -1159,7 +1174,7 @@ mod spec_3_15_with_one_member {
     #[test]
     fn spec_3_15_test_9_a_message_with_a_wrong_mac_is_dropped_with_no_response() {
         let network = LocalNetwork::create("t9", &RunRecordKeeping::from_environment());
-        let card = network.create_card("amy-card", "amy");
+        let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let attacker = network.stand_in_host();
         let mut amy = network.start_member();
         amy.init_through(&card, &attacker);
@@ -1199,7 +1214,7 @@ mod spec_3_15_with_one_member {
     fn spec_3_15_test_10_a_gossip_payload_whose_signature_does_not_verify_against_its_card_is_dropped()
      {
         let network = LocalNetwork::create("t10", &RunRecordKeeping::from_environment());
-        let card = network.create_card("amy-card", "amy");
+        let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let host = network.stand_in_host();
         let mut amy = network.start_member();
         amy.init_through(&card, &host);
@@ -1238,7 +1253,7 @@ mod spec_3_15_with_one_member {
     #[test]
     fn spec_3_15_test_12_the_mcp_tool_list_is_identical_before_and_after_init() {
         let network = LocalNetwork::create("t12", &RunRecordKeeping::from_environment());
-        let card = network.create_card("amy-card", "amy");
+        let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let mut amy = network.start_member();
 
         let before = amy.request("tools/list", &json!({}));
@@ -1260,9 +1275,9 @@ mod spec_3_15_with_one_member {
     fn spec_3_15_test_13_every_tool_response_contains_you_with_the_current_status_before_and_after_init()
      {
         let network = LocalNetwork::create("t13", &RunRecordKeeping::from_environment());
-        let card = network.create_card("amy-card", "amy");
+        let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let mut amy = network.start_member();
-        let claimed = json!({ "card": card.name, "handle": "amy", "status": "claimed" });
+        let claimed = json!({ "card": card.name, "handle": AMY_HANDLE, "status": "claimed" });
 
         let before: Vec<Value> = every_tool_call("no-such-card")
             .into_iter()
@@ -1287,7 +1302,7 @@ mod spec_3_15_with_one_member {
     fn spec_3_15_test_16_a_card_whose_sidecar_has_permissions_0644_fails_init_with_sidecar_invalid()
     {
         let network = LocalNetwork::create("t16", &RunRecordKeeping::from_environment());
-        let card = network.create_card("amy-card", "amy");
+        let card = network.create_card(AMY_CARD, AMY_HANDLE);
         network.set_sidecar_mode(&card, LOOSE_SIDECAR_MODE);
         let mut amy = network.start_member();
 
@@ -1302,7 +1317,7 @@ mod spec_3_15_with_one_member {
     fn spec_3_15_test_21_a_node_with_the_topic_id_but_not_the_secret_gets_no_neighbor_and_no_payload_dialing_or_dialed()
      {
         let network = LocalNetwork::create("t21", &RunRecordKeeping::from_environment());
-        let card = network.create_card("amy-card", "amy");
+        let card = network.create_card(AMY_CARD, AMY_HANDLE);
         network.add_host_that_never_answers();
         let host = network.stand_in_host();
         let mut amy = network.start_member();
@@ -1324,10 +1339,10 @@ mod spec_3_15_with_one_member {
         host.broadcast(presence_signed_by(
             network.keys(),
             &outsider_key,
-            "outsider",
+            OUTSIDER_HANDLE,
             &outsider.endpoint().endpoint().addr(),
         ));
-        amy.peer_within("outsider", PRESENCE_WAIT, |_outsider| true);
+        amy.peer_within(OUTSIDER_HANDLE, PRESENCE_WAIT, |_outsider| true);
         let rebound = rebound_ports(
             &amy,
             &ports_before_rebind,
@@ -1360,7 +1375,9 @@ mod spec_3_16_absences_on_one_machine {
     use iroh_gossip::api::Event;
     use serde_json::{Value, json};
 
-    use crate::local_network::{LocalNetwork, MetPair};
+    use crate::local_network::{
+        AMY_CARD, AMY_HANDLE, BOB_HANDLE, CAROL_HANDLE, LocalNetwork, MetPair,
+    };
     use crate::mcp_server::{PRESENCE_WAIT, gone, online};
     use crate::member::{loopback_address, loopback_address_of};
     use crate::message_body::BODY;
@@ -1441,7 +1458,7 @@ mod spec_3_16_absences_on_one_machine {
     #[test]
     fn spec_3_16_no_file_under_the_base_directories_announces_the_inbox_socket() {
         let network = LocalNetwork::create("n1", &RunRecordKeeping::from_environment());
-        let card = network.create_card("amy-card", "amy");
+        let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let host = network.stand_in_host();
         let mut amy = network.start_member();
 
@@ -1472,7 +1489,7 @@ mod spec_3_16_absences_on_one_machine {
             bob_card,
             ..
         } = network.amy_and_bob_met(&host);
-        let delivered = send(&mut amy, "bob");
+        let delivered = send(&mut amy, BOB_HANDLE);
         let before_exit = bob.inbox_bodies();
         bob.close_standard_input();
         assert!(bob.wait_for_exit().success());
@@ -1501,15 +1518,15 @@ mod spec_3_16_absences_on_one_machine {
         } = network.amy_and_bob_met(&host);
         bob.close_standard_input();
         assert!(bob.wait_for_exit().success());
-        amy.peer_within("bob", PRESENCE_WAIT, gone);
+        amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, gone);
         let stopped_ms = wall_clock_ms();
 
-        let refused = send(&mut amy, "bob");
+        let refused = send(&mut amy, BOB_HANDLE);
         let second_host = network.stand_in_host();
         second_host.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
         let mut restarted = network.start_member();
         restarted.init_through(&bob_card, &second_host);
-        amy.peer_within("bob", PRESENCE_WAIT, |bob| {
+        amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, |bob| {
             online(bob) && bob["last_seen"].as_u64().unwrap() > stopped_ms
         });
         restarted.wait_for_time_to_pass(wall_clock_ms(), REDELIVERY_WATCH);
@@ -1522,7 +1539,7 @@ mod spec_3_16_absences_on_one_machine {
     fn spec_3_16_a_member_with_nothing_to_announce_sends_no_presence_for_longer_than_every_interval_of_spec_3_14()
      {
         let network = LocalNetwork::create("n4", &RunRecordKeeping::from_environment());
-        let card = network.create_card("amy-card", "amy");
+        let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let host = network.stand_in_host();
         let mut amy = network.start_member();
         amy.init_through(&card, &host);
@@ -1541,7 +1558,7 @@ mod spec_3_16_absences_on_one_machine {
     #[test]
     fn spec_3_16_a_send_whose_ack_never_comes_reaches_the_receiver_once() {
         let network = LocalNetwork::create("n5", &RunRecordKeeping::from_environment());
-        let card = network.create_card("amy-card", "amy");
+        let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let host = network.stand_in_host();
         let mut amy = network.start_member();
         amy.init_through(&card, &host);
@@ -1559,13 +1576,13 @@ mod spec_3_16_absences_on_one_machine {
         host.broadcast(presence_signed_by(
             network.keys(),
             &carol_key,
-            "carol",
+            CAROL_HANDLE,
             &loopback_address_of(&carol),
         ));
-        amy.peer_within("carol", PRESENCE_WAIT, |_carol| true);
+        amy.peer_within(CAROL_HANDLE, PRESENCE_WAIT, |_carol| true);
 
         let sent_at = Instant::now();
-        let sent = send(&mut amy, "carol");
+        let sent = send(&mut amy, CAROL_HANDLE);
         let answered_after = sent_at.elapsed();
         amy.wait_for_time_to_pass(wall_clock_ms(), RETRY_WATCH);
 
@@ -1580,22 +1597,22 @@ mod spec_3_16_absences_on_one_machine {
     #[test]
     fn spec_3_16_thirty_sends_in_a_row_are_all_delivered() {
         let network = LocalNetwork::create("n6", &RunRecordKeeping::from_environment());
-        let card = network.create_card("amy-card", "amy");
+        let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let host = network.stand_in_host();
         let mut amy = network.start_member();
         amy.init_through(&card, &host);
         let carol_key = SecretKey::generate();
-        let carol = network.scripted_member(&carol_key, "carol");
+        let carol = network.scripted_member(&carol_key, CAROL_HANDLE);
         host.broadcast(presence_signed_by(
             network.keys(),
             &carol_key,
-            "carol",
+            CAROL_HANDLE,
             &loopback_address_of(&carol),
         ));
-        amy.peer_within("carol", PRESENCE_WAIT, online);
+        amy.peer_within(CAROL_HANDLE, PRESENCE_WAIT, online);
 
         let outcomes: Vec<Value> = (0..SENDS_IN_A_ROW)
-            .map(|_| send(&mut amy, "carol")["result"]["delivered"].clone())
+            .map(|_| send(&mut amy, CAROL_HANDLE)["result"]["delivered"].clone())
             .collect();
 
         assert_eq!(outcomes, vec![json!(true); SENDS_IN_A_ROW]);
@@ -1611,7 +1628,7 @@ mod kept_run_records {
 
     use serde_json::json;
 
-    use crate::local_network::{LocalNetwork, MetPair, NETWORK};
+    use crate::local_network::{BOB_HANDLE, LocalNetwork, MetPair, NETWORK};
     use crate::scratch_machine::fresh_directory::fresh_directory_in;
     use crate::scratch_machine::remove_scratch::remove_scratch;
     use crate::scratch_machine::{REDACTED, RunRecordKeeping, ScratchMachine};
@@ -1688,7 +1705,7 @@ mod kept_run_records {
         let MetPair {
             mut amy, mut bob, ..
         } = network.amy_and_bob_met(&host);
-        let sent = send(&mut amy, "bob");
+        let sent = send(&mut amy, BOB_HANDLE);
         let received = bob.inbox_bodies();
         amy.close_standard_input();
         bob.close_standard_input();
@@ -1795,7 +1812,7 @@ mod observability_decision_6_on_one_machine {
 
     use serde_json::{Value, json};
 
-    use crate::local_network::{LocalNetwork, MetPair};
+    use crate::local_network::{AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, LocalNetwork, MetPair};
     use crate::mcp_server::{PRESENCE_WAIT, call_succeeded, online};
     use crate::scratch_machine::RunRecordKeeping;
 
@@ -1906,7 +1923,7 @@ mod observability_decision_6_on_one_machine {
         let MetPair {
             mut amy, mut bob, ..
         } = network.amy_and_bob_met(&host);
-        assert!(call_succeeded(&amy.send("bob", BODY_MARKER)));
+        assert!(call_succeeded(&amy.send(BOB_HANDLE, BODY_MARKER)));
         bob.wait_for_inbox_body(BODY_MARKER, DELIVERY_WAIT);
         let sockets: Vec<String> = network
             .base_directory_files()
@@ -2043,14 +2060,14 @@ mod observability_decision_6_on_one_machine {
      {
         let network = LocalNetwork::create("o6", &RunRecordKeeping::from_environment());
         let host = network.stand_in_host();
-        let amy_card = network.create_card("amy-card", "amy");
-        let bob_card = network.create_card("bob-card", "bob");
+        let amy_card = network.create_card(AMY_CARD, AMY_HANDLE);
+        let bob_card = network.create_card(BOB_CARD, BOB_HANDLE);
         let mut amy = network.start_member();
         let amy_claim = amy.init_through(&amy_card, &host);
         let mut bob = network.start_member();
         let bob_claim = bob.init_through(&bob_card, &host);
-        amy.peer_within("bob", PRESENCE_WAIT, online);
-        bob.peer_within("amy", PRESENCE_WAIT, online);
+        amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, online);
+        bob.peer_within(AMY_HANDLE, PRESENCE_WAIT, online);
         let host_address = host.endpoint().endpoint().addr();
         let host_ports: BTreeSet<u16> = host_address.ip_addrs().map(SocketAddr::port).collect();
         let mut markers = secrets_and_paths_of(&network);
@@ -2067,7 +2084,7 @@ mod observability_decision_6_on_one_machine {
         }
         markers.insert(MARKER_BODY.to_owned());
 
-        let sent = amy.send("bob", MARKER_BODY);
+        let sent = amy.send(BOB_HANDLE, MARKER_BODY);
         assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
         assert!(
             bob.inbox_bodies().contains(&json!(MARKER_BODY)),
@@ -2146,7 +2163,7 @@ mod observability_decision_9_on_one_machine {
 
     use serde_json::{Value, json};
 
-    use crate::local_network::LocalNetwork;
+    use crate::local_network::{AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, LocalNetwork};
     use crate::mcp_server::{INIT_TOOL, PRESENCE_WAIT, call_succeeded, init_arguments, online};
     use crate::member::Member;
     use crate::scratch_machine::RunRecordKeeping;
@@ -2271,24 +2288,24 @@ mod observability_decision_9_on_one_machine {
     /// Runs amy and bob through a host: a send before bob's inbox client attaches and one after, the client gone, a broadcast to nobody and bob, a second init and an inbox call below any seq, then amy's input ended and bob sent SIGTERM.
     fn recorded_exchange(network: &LocalNetwork) -> RecordedExchange {
         let host = network.stand_in_host();
-        let amy_card = network.create_card("amy-card", "amy");
-        let bob_card = network.create_card("bob-card", "bob");
+        let amy_card = network.create_card(AMY_CARD, AMY_HANDLE);
+        let bob_card = network.create_card(BOB_CARD, BOB_HANDLE);
         let (mut amy, amy_number, _amy_socket) = claimed_member(network, &host, &amy_card);
         let (mut bob, bob_number, bob_socket) = claimed_member(network, &host, &bob_card);
-        amy.peer_within("bob", PRESENCE_WAIT, online);
-        bob.peer_within("amy", PRESENCE_WAIT, online);
+        amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, online);
+        bob.peer_within(AMY_HANDLE, PRESENCE_WAIT, online);
 
-        let unattached_id = sent_id(&amy.send("bob", UNATTACHED_BODY));
+        let unattached_id = sent_id(&amy.send(BOB_HANDLE, UNATTACHED_BODY));
         let mut client = UnixStream::connect(&bob_socket).unwrap();
         client.set_read_timeout(Some(EVENT_WAIT)).unwrap();
         client.write_all(SPEC_SINCE_EVERY_FRAME.as_bytes()).unwrap();
         bob.wait_for_event("inbox.client_connected", EVENT_WAIT);
-        let attached_id = sent_id(&amy.send("bob", ATTACHED_BODY));
+        let attached_id = sent_id(&amy.send(BOB_HANDLE, ATTACHED_BODY));
         let frame_ids = frame_ids_read(client, FRAMES_THE_CLIENT_READS);
         bob.wait_for_event("inbox.client_gone", EVENT_WAIT);
         let broadcast = amy.call(
             "broadcast",
-            &json!({ "to": [NO_MEMBER, "bob"], "body": BROADCAST_BODY }),
+            &json!({ "to": [NO_MEMBER, BOB_HANDLE], "body": BROADCAST_BODY }),
         );
         let broadcast_id = broadcast["result"]["results"][1]["id"]
             .as_str()
@@ -2339,11 +2356,11 @@ mod observability_decision_9_on_one_machine {
         );
         assert_eq!(
             fields_named(amy_lines, "process.claimed"),
-            [json!([["card", "amy-card"], ["handle", "amy"]])]
+            [json!([["card", AMY_CARD], ["handle", AMY_HANDLE]])]
         );
         assert_eq!(
             fields_named(bob_lines, "process.claimed"),
-            [json!([["card", "bob-card"], ["handle", "bob"]])]
+            [json!([["card", BOB_CARD], ["handle", BOB_HANDLE]])]
         );
         assert_eq!(
             fields_named(amy_lines, "process.claim_refused"),
@@ -2438,14 +2455,26 @@ mod observability_decision_9_on_one_machine {
         assert_eq!(
             fields_named(amy_lines, "tool.send_answered"),
             [
-                json!([["to", "bob"], ["outcome", "ok"], ["message", unattached_id]]),
-                json!([["to", "bob"], ["outcome", "ok"], ["message", attached_id]]),
+                json!([
+                    ["to", BOB_HANDLE],
+                    ["outcome", "ok"],
+                    ["message", unattached_id]
+                ]),
+                json!([
+                    ["to", BOB_HANDLE],
+                    ["outcome", "ok"],
+                    ["message", attached_id]
+                ]),
                 json!([
                     ["to", NO_MEMBER],
                     ["outcome", "error"],
                     ["code", "unknown_handle"]
                 ]),
-                json!([["to", "bob"], ["outcome", "ok"], ["message", broadcast_id]]),
+                json!([
+                    ["to", BOB_HANDLE],
+                    ["outcome", "ok"],
+                    ["message", broadcast_id]
+                ]),
             ]
         );
         let requests_sent: Vec<Value> = amy_lines

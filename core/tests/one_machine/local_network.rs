@@ -20,6 +20,16 @@ use crate::scripted_node::ScriptedNode;
 
 /// The name of the network every local test creates.
 pub const NETWORK: &str = "acme";
+/// The card name of the member amy.
+pub const AMY_CARD: &str = "amy-card";
+/// The handle amy's card requests.
+pub const AMY_HANDLE: &str = "amy";
+/// The card name of the member bob.
+pub const BOB_CARD: &str = "bob-card";
+/// The handle bob's card requests.
+pub const BOB_HANDLE: &str = "bob";
+/// The handle the third member, carol, announces.
+pub const CAROL_HANDLE: &str = "carol";
 /// A relay URL no resolver answers, for a host that is never reached.
 const SILENT_RELAY: &str = "https://relay.estafette.invalid/";
 
@@ -128,14 +138,14 @@ impl LocalNetwork {
     /// Starts amy and bob on cards requesting those handles, each claiming through the host, and waits until each lists the other online.
     #[track_caller]
     pub fn amy_and_bob_met(&self, host: &ScriptedNode) -> MetPair {
-        let amy_card = self.create_card("amy-card", "amy");
-        let bob_card = self.create_card("bob-card", "bob");
+        let amy_card = self.create_card(AMY_CARD, AMY_HANDLE);
+        let bob_card = self.create_card(BOB_CARD, BOB_HANDLE);
         let mut amy = self.start_member();
         amy.init_through(&amy_card, host);
         let mut bob = self.start_member();
         bob.init_through(&bob_card, host);
-        amy.peer_within("bob", PRESENCE_WAIT, online);
-        bob.peer_within("amy", PRESENCE_WAIT, online);
+        amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, online);
+        bob.peer_within(AMY_HANDLE, PRESENCE_WAIT, online);
         MetPair {
             amy,
             amy_card,
