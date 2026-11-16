@@ -1,15 +1,15 @@
 use std::ffi::OsStr;
-use std::process::Command;
+use std::ops::Deref;
 use std::time::{Duration, Instant};
 
 use estafette::config::{Host, NetworkConfig};
-use estafette::dirs::{Directories, TraceDirectory};
+use estafette::dirs::TraceDirectory;
 
 use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use crate::live_network::LiveNetwork;
 use crate::mcp_server::{INIT_TOOL, McpServer, call_succeeded, init_arguments};
 use crate::member_events::MemberEvents;
-use crate::scratch_machine::{Card, ScratchMachine};
+use crate::scratch_machine::ScratchMachine;
 
 /// One machine's worth of estafette state under a scratch root of its own, joined to the live lab network.
 pub struct LabMachine {
@@ -28,6 +28,14 @@ impl ClaimedMember {
     }
 }
 
+impl Deref for LabMachine {
+    type Target = ScratchMachine;
+
+    fn deref(&self) -> &ScratchMachine {
+        &self.scratch
+    }
+}
+
 impl LabMachine {
     /// An empty scratch root named for the test, for the live network, its members' run records kept as the test asks.
     pub fn fresh(test_tag: &str, network: &LiveNetwork) -> Self {
@@ -43,16 +51,6 @@ impl LabMachine {
         machine
     }
 
-    /// The directories the binary derives from this machine's environment.
-    pub fn directories(&self) -> Directories {
-        self.scratch.directories()
-    }
-
-    /// The binary with this machine's environment alone.
-    pub fn command(&self) -> Command {
-        self.scratch.command()
-    }
-
     /// The events an observer command run on this machine records, in the trace directory the binary derives from the machine's own environment.
     pub fn observer_events(&self, label: &str) -> MemberEvents {
         let command = self.command();
@@ -65,11 +63,6 @@ impl LabMachine {
         .unwrap()
         .path();
         MemberEvents::new(label, &traces)
-    }
-
-    /// Creates a card requesting the handle by the binary's own command.
-    pub fn create_card(&self, name: &str, handle: &str) -> Card {
-        self.scratch.create_card(name, handle)
     }
 
     /// Starts the binary's MCP server for the network, handshaken and with no card claimed.

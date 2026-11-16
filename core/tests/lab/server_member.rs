@@ -83,7 +83,15 @@ impl<'server> ServerMember<'server> {
             &[&self.card, tool],
             arguments.to_string().as_bytes(),
         );
-        let (_stamp, envelope) = printed.trim_end().split_once(STAMP_SEPARATOR).unwrap();
+        let (_stamp, envelope) = printed
+            .trim_end()
+            .split_once(STAMP_SEPARATOR)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{tool} on {} printed no stamped envelope: {printed}",
+                    self.server.label()
+                )
+            });
         serde_json::from_str(envelope).unwrap()
     }
 

@@ -3,6 +3,19 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+/// The column separator of the lines `tail` and `show-peers` print (spec 3.13).
+pub const COLUMN_SEPARATOR: char = '\t';
+/// The kind word that opens a presence line of `tail` (spec 3.13).
+pub const PRESENCE_KIND: &str = "presence";
+/// The column of a presence line holding its card, after the kind and `v` (spec 3.7 order).
+pub const PRESENCE_CARD_COLUMN: usize = 2;
+/// The column of a presence line holding its `addr` as JSON (spec 3.7 order).
+pub const PRESENCE_ADDR_COLUMN: usize = 6;
+/// The kind word that opens an infrastructure line of `tail` (spec 3.13).
+pub const INFRASTRUCTURE_KIND: &str = "infrastructure";
+/// The key of the relay list in a printed `addr`.
+pub const RELAYS_KEY: &str = "relays";
+
 /// How long `tail` may take to print its first payload, a host record every 5 seconds once joined (spec 3.14).
 const FIRST_LINE_WAIT: Duration = Duration::from_secs(60);
 
@@ -45,6 +58,13 @@ impl Tail {
         Self { process, lines }
     }
 
+    /// The next line printed with the instant it arrived, none when no line arrives before the deadline.
+    fn next_line_before(&self, deadline: Instant) -> Option<(Instant, String)> {
+        self.lines
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .ok()
+    }
+
     /// Every line printed until the first that meets the condition, that one included, requiring it within the wait and naming what was awaited when it does not come.
     #[track_caller]
     pub fn lines_until(
@@ -56,8 +76,7 @@ impl Tail {
         let deadline = Instant::now().checked_add(within).unwrap();
         let mut printed = Vec::new();
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let Ok((_arrived, line)) = self.lines.recv_timeout(remaining) else {
+            let Some((_arrived, line)) = self.next_line_before(deadline) else {
                 panic!("no {awaited} within {within:?}; printed: {printed:?}")
             };
             let wanted = condition(&line);
@@ -85,8 +104,7 @@ impl Tail {
         let deadline = since.checked_add(within).unwrap();
         let mut printed_since = Vec::new();
         loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            let Ok((arrived, line)) = self.lines.recv_timeout(remaining) else {
+            let Some((arrived, line)) = self.next_line_before(deadline) else {
                 panic!(
                     "no {awaited} within {within:?} of the instant; printed since: {printed_since:#?}"
                 )

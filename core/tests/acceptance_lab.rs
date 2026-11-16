@@ -521,7 +521,10 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     use crate::live_host::live_host_to_itself;
     use crate::live_network::LiveNetwork;
     use crate::member_events::COUNTERS_EVENT;
-    use crate::tail::Tail;
+    use crate::tail::{
+        COLUMN_SEPARATOR, INFRASTRUCTURE_KIND, PRESENCE_ADDR_COLUMN, PRESENCE_CARD_COLUMN,
+        PRESENCE_KIND, RELAYS_KEY, Tail,
+    };
     use crate::time_passing::SNAPSHOT_PROVING_A_SPAN_WITHIN;
     use crate::trace_reader::TraceLine;
 
@@ -539,22 +542,11 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     const OBSERVER_TAG: &str = "u40-relay-tail";
     /// How many times a member is started before the test gives up on iroh homing it on the doomed host's relay, which iroh picks among the relays it knows.
     const HOMING_ATTEMPTS: usize = 3;
-    /// The kind word that opens a presence line of `tail`.
-    const PRESENCE_KIND: &str = "presence";
-    /// The column of a presence line holding its card, after the kind and `v` (spec 3.7 order).
-    const CARD_COLUMN: usize = 2;
-    /// The column of a presence line holding its `addr` as JSON (spec 3.7 order).
-    const ADDR_COLUMN: usize = 6;
-    /// The kind word that opens an infrastructure line of `tail`.
-    const INFRASTRUCTURE_KIND: &str = "infrastructure";
     /// The column of an infrastructure line holding its `relay`, after the kind, `v` and `host` (spec 3.7 order).
     const HOST_RELAY_COLUMN: usize = 3;
-    /// The key of the relay list in a printed `addr`.
-    const RELAYS_KEY: &str = "relays";
-    /// The column separator of a `tail` line.
-    const COLUMN_SEPARATOR: char = '\t';
     /// The event a member records for each payload it broadcasts, and its field naming the payload's kind (spec/observability.md decision 9).
     const PAYLOAD_BROADCAST_EVENT: &str = "gossip.payload_broadcast";
+    /// The field of an events line naming a payload's kind (spec/observability.md decision 9).
     const KIND_FIELD: &str = "kind";
     /// The kind word of a broadcast Presence in an events line.
     const PRESENCE_BROADCAST_KIND: &str = "presence";
@@ -582,10 +574,12 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     /// The relay URLs a `tail` line announces for the card, when it is a presence of that card.
     fn relays_announced_by(line: &str, card: &str) -> Option<Vec<String>> {
         let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
-        if columns.first() != Some(&PRESENCE_KIND) || columns.get(CARD_COLUMN) != Some(&card) {
+        if columns.first() != Some(&PRESENCE_KIND)
+            || columns.get(PRESENCE_CARD_COLUMN) != Some(&card)
+        {
             return None;
         }
-        let addr: Value = serde_json::from_str(columns.get(ADDR_COLUMN)?).ok()?;
+        let addr: Value = serde_json::from_str(columns.get(PRESENCE_ADDR_COLUMN)?).ok()?;
         addr.get(RELAYS_KEY)?
             .as_array()?
             .iter()
@@ -741,7 +735,10 @@ mod spec_3_15_two_members_through_the_live_host {
     use crate::lab_machine::LabMachine;
     use crate::live_host::live_host_to_itself;
     use crate::live_network::LiveNetwork;
-    use crate::mcp_server::{McpServer, PRESENCE_WAIT, SEND_TOOL, gone, online, send_arguments};
+    use crate::mcp_server::{
+        INIT_TOOL, McpServer, PRESENCE_WAIT, SEND_TOOL, call_succeeded, gone, init_arguments,
+        online, send_arguments,
+    };
     use crate::message_body::BODY;
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::{presence_signed_by, presence_signed_by_at};
@@ -750,33 +747,58 @@ mod spec_3_15_two_members_through_the_live_host {
     use crate::time_passing::wait_for_time_to_pass;
     use crate::timed_step::timed;
 
+    /// Spec 3.15 test 4: a member lists a peer that stopped cleanly gone within this long.
     const SPEC_GONE_WITHIN: Duration = Duration::from_millis(1000);
+    /// The QUIC idle timeout of spec 3.14, after which a killed peer's gossip neighbor-down event comes (spec 3.15 test 5).
     const SPEC_QUIC_IDLE_TIMEOUT: Duration = Duration::from_millis(10_000);
+    /// The probe timeout of spec 3.14, the second part of the bound of spec 3.15 test 5.
     const SPEC_PROBE_TIMEOUT: Duration = Duration::from_millis(3000);
+    /// Spec 3.15 test 17: the encoded size of the largest Presence, its worst case summed field by field.
     const SPEC_LARGEST_PRESENCE_BYTES: usize = 3951;
+    /// The gossip frame limit of spec 3.14.
     const SPEC_GOSSIP_FRAME_BYTES: usize = 4096;
+    /// What the gossip layer takes of each frame, so a Presence fits within the rest (spec 3.15 test 17).
     const SPEC_GOSSIP_LAYER_OVERHEAD_BYTES: usize = 38;
+    /// The limit of the serialized public mapping of spec 3.14.
     const SPEC_PUBLIC_MAX_BYTES: usize = 3072;
+    /// The longest effective handle a member announces, a requested handle with its suffix (spec 3.1).
     const SPEC_ANNOUNCED_HANDLE_MAX_CHARACTERS: usize = 53;
+    /// The longest handle a card requests (spec 3.1).
     const SPEC_REQUESTED_HANDLE_MAX_CHARACTERS: usize = 32;
+    /// The most relay URLs an Addr carries (spec 3.6 address caps).
     const SPEC_RELAY_URLS_PER_ADDR: u16 = 4;
+    /// The longest relay URL an Addr carries (spec 3.6 address caps).
     const SPEC_RELAY_URL_MAX_BYTES: usize = 128;
+    /// The most direct addresses an Addr carries (spec 3.6 address caps).
     const SPEC_DIRECT_ADDRS_PER_ADDR: u16 = 8;
+    /// The largest port, whose varint takes the 3 bytes spec 3.15 test 17 counts for a port.
     const LARGEST_THREE_BYTE_VARINT_PORT: u16 = 65_535;
+    /// The bytes of a relay URL around its host: the scheme and the closing slash.
     const RELAY_URL_FRAME_BYTES: usize = "https://".len() + "/".len();
+    /// The first segment of the IPv6 documentation prefix `2001:db8::/32`, where no host is reached.
     const DOCUMENTATION_PREFIX_FIRST_SEGMENT: u16 = 0x2001;
+    /// The second segment of the IPv6 documentation prefix `2001:db8::/32`.
     const DOCUMENTATION_PREFIX_SECOND_SEGMENT: u16 = 0x0db8;
+    /// The key of the public mapping whose value fills the mapping to its limit.
     const PUBLIC_NOTES_KEY: &str = "notes";
+    /// The bytes compact JSON spends on a mapping of one string key and one string value beyond the two strings.
     const COMPACT_JSON_MAPPING_FRAME_BYTES: usize = r#"{"":""}"#.len();
+    /// How long an inbox socket may take to emit the frame of a delivered message.
     const FRAME_WAIT: Duration = Duration::from_secs(10);
     /// How long after a frame a client is watched for a further one, ended by the member's own counters snapshot past it.
     const NO_FURTHER_FRAME_WINDOW: Duration = Duration::from_millis(1000);
     /// The kind of payload a presence is, as an events line names it.
     const PRESENCE_KIND: &str = "presence";
+    /// The description a member's first session gives at init.
     const FIRST_SESSION: &str = "first session";
+    /// The description a member's second session on the same card gives at init, so its Presence differs from the first's.
     const SECOND_SESSION: &str = "second session";
+    /// Spec 3.15 test 11: the frames a client reads before it reconnects, its `since` on reconnecting.
     const MESSAGES_BEFORE_RECONNECT: u64 = 3;
+    /// Spec 3.15 test 11: the frames sent in all.
     const MESSAGES_IN_ALL: u64 = 5;
+    /// The init tool's argument holding the description it inserts into the card's public mapping (spec 3.10).
+    const DESCRIPTION_ARGUMENT: &str = "description";
 
     /// A member on its own machine, joined to the live network with its card claimed.
     struct LabMember {
@@ -815,10 +837,10 @@ mod spec_3_15_two_members_through_the_live_host {
         let card = machine.create_card(&format!("{machine_tag}-card"), handle);
         let mut member = machine.start_server();
         let claim = member.call(
-            "init",
-            &json!({ "card": card.name, "description": description }),
+            INIT_TOOL,
+            &init_arguments_describing(&card.name, description),
         );
-        assert_eq!(claim["ok"], json!(true), "{claim}");
+        assert!(call_succeeded(&claim), "{claim}");
         LabMember {
             member,
             card,
@@ -826,6 +848,13 @@ mod spec_3_15_two_members_through_the_live_host {
             claim,
             machine,
         }
+    }
+
+    /// The init tool's arguments claiming the card of that name with the description (spec 3.10).
+    fn init_arguments_describing(card: &str, description: &str) -> Value {
+        let mut arguments = init_arguments(card);
+        arguments[DESCRIPTION_ARGUMENT] = json!(description);
+        arguments
     }
 
     /// Waits until each member lists the other online.
@@ -1090,7 +1119,7 @@ mod spec_3_15_two_members_through_the_live_host {
         );
         let mut restarted = timed("the restarted amy starts", || amy.machine.start_server());
         let restarted_claim = timed("the restarted amy claims its card", || {
-            restarted.call("init", &json!({ "card": amy.card.name }))
+            restarted.call(INIT_TOOL, &init_arguments(&amy.card.name))
         });
         let restarted_at_ann = timed("ann lists the restarted amy online as <h>", || {
             ann.member.peer_within(&taken, PRESENCE_WAIT, online)
@@ -1144,7 +1173,7 @@ mod spec_3_15_two_members_through_the_live_host {
         );
         let mut restarted = timed("the restarted amy starts", || amy.machine.start_server());
         let claim = timed("the restarted amy claims its card", || {
-            restarted.call("init", &json!({ "card": amy.card.name }))
+            restarted.call(INIT_TOOL, &init_arguments(&amy.card.name))
         });
         timed("bob lists the restarted amy online", || {
             bob.member.peer_within(&amy.handle, PRESENCE_WAIT, online)
@@ -1163,7 +1192,7 @@ mod spec_3_15_two_members_through_the_live_host {
             || listed_peer(&mut restarted, &bob.handle),
         );
 
-        assert_eq!(claim["ok"], json!(true), "{claim}");
+        assert!(call_succeeded(&claim), "{claim}");
         assert_eq!(unseen_before, None);
         assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
         assert_eq!(listed_after.unwrap()["status"], json!("online"));
@@ -1262,7 +1291,7 @@ mod spec_3_15_two_members_through_the_live_host {
             &format!("public:\n  {PUBLIC_NOTES_KEY}: {notes}\n"),
         );
         let mut amy = machine.start_server();
-        let claim = amy.call("init", &json!({ "card": card.name }));
+        let claim = amy.call(INIT_TOOL, &init_arguments(&card.name));
         let mut bob = lab_member(&network, "t17-bob", &unique_handle("bob"), FIRST_SESSION);
 
         let at_bob = bob
@@ -1271,7 +1300,7 @@ mod spec_3_15_two_members_through_the_live_host {
 
         assert_eq!(largest.len(), SPEC_LARGEST_PRESENCE_BYTES);
         assert!(largest.len() <= SPEC_GOSSIP_FRAME_BYTES - SPEC_GOSSIP_LAYER_OVERHEAD_BYTES);
-        assert_eq!(claim["ok"], json!(true), "{claim}");
+        assert!(call_succeeded(&claim), "{claim}");
         assert_eq!(longest_handle.len(), SPEC_REQUESTED_HANDLE_MAX_CHARACTERS);
         assert_eq!(at_bob["public"], json!({ PUBLIC_NOTES_KEY: notes }));
         assert_eq!(
@@ -1308,7 +1337,7 @@ mod spec_3_15_two_members_through_the_live_host {
         let killed_ms = wall_clock_ms();
         let mut restarted = timed("the restarted bob starts", || bob.machine.start_server());
         let claim = timed("the restarted bob claims its card", || {
-            restarted.call("init", &json!({ "card": bob.card.name }))
+            restarted.call(INIT_TOOL, &init_arguments(&bob.card.name))
         });
         timed(
             "amy lists the restarted bob online, seen after the kill",
@@ -1324,7 +1353,7 @@ mod spec_3_15_two_members_through_the_live_host {
         });
         let delivered_after = new_presence_reached.elapsed();
 
-        assert_eq!(claim["ok"], json!(true), "{claim}");
+        assert!(call_succeeded(&claim), "{claim}");
         assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
         assert!(
             delivered_after <= SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
@@ -1363,8 +1392,8 @@ mod spec_3_15_two_members_through_the_live_host {
         );
         let mut bob = bob_machine.start_server();
         let claim = bob.call(
-            "init",
-            &json!({ "card": bob_card.name, "description": SECOND_SESSION }),
+            INIT_TOOL,
+            &init_arguments_describing(&bob_card.name, SECOND_SESSION),
         );
         let before_replay = amy.member.peer_within(&bob_handle, PRESENCE_WAIT, online);
         let replayer = Forger::join_through(
@@ -1397,7 +1426,7 @@ mod spec_3_15_two_members_through_the_live_host {
             .member
             .peer_within(&bob_handle, PRESENCE_WAIT, |_bob| true);
 
-        assert_eq!(claim["ok"], json!(true), "{claim}");
+        assert!(call_succeeded(&claim), "{claim}");
         assert_eq!(
             before_replay["public"],
             json!({ "description": SECOND_SESSION })

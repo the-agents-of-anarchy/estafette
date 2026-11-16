@@ -24,14 +24,15 @@ use crate::message_body::BODY;
 use crate::payload_placeholders::wall_clock_ms;
 use crate::scratch_machine::{Card, ScratchMachine};
 use crate::server_member::ServerMember;
-use crate::tail::Tail;
+use crate::tail::{
+    COLUMN_SEPARATOR, INFRASTRUCTURE_KIND, PRESENCE_ADDR_COLUMN, PRESENCE_CARD_COLUMN,
+    PRESENCE_KIND, RELAYS_KEY, Tail,
+};
 use crate::time_passing::wait_for_time_to_pass;
 use crate::timed_step::timed;
 
 /// How long a member may take to list a peer that just started as online.
 const PRESENCE_WAIT: Duration = Duration::from_secs(30);
-/// The column separator of a `show-peers` line.
-const COLUMN_SEPARATOR: char = '\t';
 /// The column of a `show-peers` line holding the peer's status, after its handle (spec 3.13).
 const PEER_STATUS_COLUMN: usize = 1;
 /// How long an inbox socket may take to emit the frame of a delivered message.
@@ -62,22 +63,12 @@ const SPEC_QUIET_RUN: Duration = Duration::from_secs(180);
 const REBIND_RECORD_START: &str = "rebinding the endpoint";
 /// How long the killable host may take to send a record after its start began, the recipe's checks of the server included; chosen, not measured.
 const HOST_START_WAIT: Duration = Duration::from_secs(300);
-/// How `tail` begins the line of an infrastructure record (spec 3.13).
-const INFRASTRUCTURE_KIND: &str = "infrastructure";
 /// The column of an infrastructure line holding the host's node id.
 const RECORD_HOST_COLUMN: usize = 2;
 /// The column of an infrastructure line holding the record's ts.
 const RECORD_TS_COLUMN: usize = 5;
 /// How soon after the added host's first record every member's configuration must name it (spec 3.15 test 22).
 const SPEC_HOST_ADDED_WITHIN: Duration = Duration::from_millis(1000);
-/// How `tail` begins the line of a presence (spec 3.13).
-const PRESENCE_KIND: &str = "presence";
-/// The column of a presence line holding the card's id.
-const PRESENCE_CARD_COLUMN: usize = 2;
-/// The column of a presence line holding the announced address as JSON.
-const PRESENCE_ADDR_COLUMN: usize = 6;
-/// The key of an announced address listing its relays.
-const RELAYS_KEY: &str = "relays";
 /// How long every member may take to answer a fresh `tail`'s presence request, its join included.
 const ANNOUNCEMENT_WAIT: Duration = Duration::from_secs(60);
 /// How many times three fresh members are started to have each homed on the doomed host's relay alone.
@@ -165,6 +156,7 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
     let claim = timed("bob claims his card on this machine", || {
         bob.call(INIT_TOOL, &init_arguments(&bob_card.name))
     });
+    assert!(call_succeeded(&claim), "{claim}");
     let mut inbox = InboxClient::connect(&claim[RESULT_KEY][INBOX_PATH_KEY], 0);
     timed("amy lists bob online and attached", || {
         amy.peer_within(&bob_handle, PRESENCE_WAIT, |bob| {
@@ -182,7 +174,6 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
     });
 
     let id = sent[RESULT_KEY][ID_KEY].as_str().unwrap();
-    assert!(call_succeeded(&claim), "{claim}");
     assert_eq!(
         sent[RESULT_KEY],
         json!({ (ID_KEY): id, (DELIVERED_KEY): true, (ATTACHED_KEY): true }),
@@ -333,7 +324,9 @@ fn tail_of(observer: &LabMachine, network: &LiveNetwork) -> Tail {
 
 /// The host's node id as `tail` and the network configuration write it.
 fn host_id(host: &HostAddr) -> String {
-    render_public_key(&PublicKey::from_bytes(&host.id).unwrap())
+    let node_id = PublicKey::from_bytes(&host.id)
+        .unwrap_or_else(|refusal| panic!("host id {:?} is no node id: {refusal}", host.id));
+    render_public_key(&node_id)
 }
 
 /// The `ts` of a `tail` line when it is an infrastructure record of the host.

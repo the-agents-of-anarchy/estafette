@@ -13,9 +13,15 @@ const RELAY_ONLY_RECIPE: &str = "remote::relay-only-to-here";
 /// The recipe that deletes those drops, printing their counters.
 const RELAY_PATHS_RESTORED_RECIPE: &str = "remote::relay-paths-restored";
 
+/// Which lab server the remote recipes reach: the live host's, whose name the gate leaves to them, or one by name.
+enum LabServerName {
+    LiveHost,
+    Named(String),
+}
+
 /// A lab server the acceptance gate brought up, reached through the remote recipes.
 pub struct LabServer {
-    name: Option<String>,
+    name: LabServerName,
 }
 
 /// UDP between a lab server and this machine dropped both ways, so members on the two reach each other through a relay alone; restored when dropped, whether the test ended or failed.
@@ -26,17 +32,24 @@ pub struct RelayOnlyPath<'server> {
 impl LabServer {
     /// The server of the live host, which the remote recipes reach as the gate left them.
     pub const fn of_the_live_host() -> Self {
-        Self { name: None }
+        Self {
+            name: LabServerName::LiveHost,
+        }
     }
 
     /// The server of that name.
     pub const fn named(name: String) -> Self {
-        Self { name: Some(name) }
+        Self {
+            name: LabServerName::Named(name),
+        }
     }
 
     /// The server's name in messages and kept records.
     pub fn label(&self) -> &str {
-        self.name.as_deref().unwrap_or(LIVE_HOST_SERVER_LABEL)
+        match &self.name {
+            LabServerName::LiveHost => LIVE_HOST_SERVER_LABEL,
+            LabServerName::Named(name) => name,
+        }
     }
 
     /// The task runner set to run the remote recipe with the arguments against this server, with this machine's binary.
@@ -46,8 +59,11 @@ impl LabServer {
             .arg(recipe)
             .args(arguments)
             .env(LAB_BINARY_VARIABLE, BINARY);
-        if let Some(name) = &self.name {
-            command.env(LAB_SERVER_VARIABLE, name);
+        match &self.name {
+            LabServerName::LiveHost => {}
+            LabServerName::Named(name) => {
+                command.env(LAB_SERVER_VARIABLE, name);
+            }
         }
         command
     }
