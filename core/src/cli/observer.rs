@@ -39,7 +39,7 @@ use crate::node::{
     acknowledgement_of, broadcast_recorded, known_host_addresses, next_recorded_gossip_event,
     observer_wait_over_at, presence_request, record_counters, replace_lookup_entry,
     seed_lookup_with_known_hosts, send_in_background, serve, sleep_until_deadline,
-    snapshot_due_after, taken_without_a_row_record, wire_addr,
+    taken_without_a_row_record, wire_addr,
 };
 use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC};
 use crate::peers::{Effect, Peer, PeerTable};
@@ -603,7 +603,6 @@ async fn start_observation(
         to_loop,
     });
     let (router, gossip) = serve(&endpoint, keys, &host);
-    let snapshot_due = snapshot_due_after((effects.monotonic)());
     let topic = NetworkTopic::join(
         &gossip,
         keys.clone(),
@@ -613,27 +612,35 @@ async fn start_observation(
     )
     .await;
     match topic {
-        Ok(topic) => Ok(Observation {
-            client: Arc::new(DirectClient::new(
-                endpoint.endpoint().clone(),
-                keys.clone(),
-                ClientTimeouts::SPEC,
-                endpoint.held_connections(),
-            )),
-            host,
-            endpoint,
-            router,
-            gossip,
-            topic,
-            from_loop,
-            monotonic: effects.monotonic,
-            report: effects.report,
-            interrupted: effects.interrupted,
-            wait_over: None,
-            snapshot_due,
-            key: secret_key,
+        Ok(topic) => {
+            let snapshot_due = record_counters(
+                SnapshotMoment::Start,
+                endpoint.endpoint(),
+                &gossip,
+                &*effects.report,
+                (effects.monotonic)(),
+            );
+            Ok(Observation {
+                client: Arc::new(DirectClient::new(
+                    endpoint.endpoint().clone(),
+                    keys.clone(),
+                    ClientTimeouts::SPEC,
+                    endpoint.held_connections(),
+                )),
+                host,
+                endpoint,
+                router,
+                gossip,
+                topic,
+                from_loop,
+                monotonic: effects.monotonic,
+                report: effects.report,
+                interrupted: effects.interrupted,
+                wait_over: None,
+                snapshot_due,
+                key: secret_key,
+            })
         }
-        .with_start_recorded()),
         Err(failure) => {
             drop(router.shutdown().await);
             Err(Failure::Topic(failure))
@@ -771,7 +778,7 @@ impl Observation {
                 Step::Topic(Some(Ok(GossipEvent::JoinTimedOut))) => self.start_observer_wait(),
                 Step::Topic(Some(Ok(event))) => self.take_gossip_event(event),
                 Step::Loop(event) => self.take_loop_event(event),
-                Step::SnapshotDue => self.record_counters(SnapshotMoment::Interval),
+                Step::SnapshotDue => self.record_counters(),
             }
         }
         let now_ms = self.host.now_ms();
@@ -804,7 +811,7 @@ impl Observation {
                     self.take_gossip_event(event);
                 }
                 Step::Loop(event) => self.take_loop_event(event),
-                Step::SnapshotDue => self.record_counters(SnapshotMoment::Interval),
+                Step::SnapshotDue => self.record_counters(),
             }
         }
     }
@@ -821,16 +828,10 @@ impl Observation {
             .get_or_insert_with(|| observer_wait_over_at(joined_at));
     }
 
-    /// This observation, once it has recorded the counters of its start.
-    fn with_start_recorded(mut self) -> Self {
-        self.record_counters(SnapshotMoment::Start);
-        self
-    }
-
-    /// Records the socket and gossip counters at the start and at each interval, so the events file says the observer runs and is written at least that often while it does.
-    fn record_counters(&mut self, moment: SnapshotMoment) {
+    /// Records the socket and gossip counters at an interval, so the events file is written at least that often while the observer runs.
+    fn record_counters(&mut self) {
         self.snapshot_due = record_counters(
-            moment,
+            SnapshotMoment::Interval,
             self.endpoint.endpoint(),
             &self.gossip,
             &*self.report,
