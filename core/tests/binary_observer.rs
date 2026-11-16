@@ -41,6 +41,12 @@ const SIGINT_NUMBER: i32 = 2;
 const DATA_HOME: &str = "data";
 const NODE_RUNS_WITHIN: Duration = Duration::from_secs(10);
 const COMMAND_LABEL: &str = "the command";
+/// The command that sends a process a signal.
+const SIGNAL_COMMAND: &str = "kill";
+/// The `kill` flag of SIGINT, the signal whose prompt end spec 3.13 asks of an interrupted command.
+const INTERRUPT_SIGNAL_FLAG: &str = "-INT";
+/// The `kill` flag of SIGKILL, which ends a command that outlived its bound.
+const KILL_SIGNAL_FLAG: &str = "-KILL";
 
 fn binary(root: &Path) -> Command {
     let mut command = Command::new(BINARY);
@@ -61,6 +67,33 @@ fn short_scratch_root(test_name: &str) -> io::Result<PathBuf> {
         Path::new(SHORT_SCRATCH_PARENT),
         &format!("eo-{}-{test_name}", std::process::id()),
     )
+}
+
+/// A scratch root removed on every way out of the scope that holds it, a removal that fails reported on standard error.
+struct ScratchRemovedOnDrop {
+    path: PathBuf,
+}
+
+impl Drop for ScratchRemovedOnDrop {
+    fn drop(&mut self) {
+        if let Err(failure) = remove_scratch::remove_scratch(&self.path) {
+            eprintln!("scratch not removed: {failure}");
+        }
+    }
+}
+
+/// Sends the signal to the process, failing with an error naming the signal and the process id when `kill` does not succeed.
+fn signal_process(signal: &str, process_id: u32) -> io::Result<()> {
+    let sent = Command::new(SIGNAL_COMMAND)
+        .args([signal, &process_id.to_string()])
+        .status()?;
+    if sent.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "kill {signal} {process_id}: {sent}"
+        )))
+    }
 }
 
 fn create_network(root: &Path) -> io::Result<Output> {
@@ -224,14 +257,17 @@ fn status_after_sigint(
     arguments: &[&str],
     node_runs: fn(&Path, &mut dyn BufRead) -> io::Result<()>,
 ) -> io::Result<Option<ExitStatus>> {
-    let root = short_scratch_root(test_name)?;
-    let created = create_network(&root)?;
+    let scratch = ScratchRemovedOnDrop {
+        path: short_scratch_root(test_name)?,
+    };
+    let root = scratch.path.as_path();
+    let created = create_network(root)?;
     if !created.status.success() {
         return Err(io::Error::other(
             String::from_utf8_lossy(&created.stderr).into_owned(),
         ));
     }
-    let mut command = binary(&root)
+    let mut command = binary(root)
         .args(arguments)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -242,22 +278,13 @@ fn status_after_sigint(
             .take()
             .ok_or_else(|| io::Error::other("the command's standard error is not piped"))?,
     );
-    ended_when_the_wait_fails(&mut command, || node_runs(&root, &mut errors))?;
+    ended_when_the_wait_fails(&mut command, || node_runs(root, &mut errors))?;
     if let Some(ended_first) = command.try_wait()? {
         return Ok(Some(ended_first));
     }
-    let process_id = command.id();
-    let interrupt = Command::new("kill")
-        .args(["-INT", &process_id.to_string()])
-        .status()?;
-    if !interrupt.success() {
-        return Err(io::Error::other(format!(
-            "kill -INT {process_id}: {interrupt}"
-        )));
-    }
+    signal_process(INTERRUPT_SIGNAL_FLAG, command.id())?;
     let ended = exit_within(command, INTERRUPTED_COMMAND_ENDS_WITHIN)?;
     drop(errors);
-    remove_scratch::remove_scratch(&root)?;
     Ok(ended)
 }
 
@@ -295,13 +322,13 @@ fn binary_doctor_interrupted_by_sigint_ends_at_once_by_that_signal_of_spec_3_13(
 
 /// How the command exited when it exits within the bound, none when it outlives it and is killed.
 fn exit_within(mut command: Child, bound: Duration) -> io::Result<Option<ExitStatus>> {
-    let process_id = command.id().to_string();
+    let process_id = command.id();
     let (exited, exit) = mpsc::channel();
     std::thread::spawn(move || drop(exited.send(command.wait())));
     match exit.recv_timeout(bound) {
         Ok(status) => status.map(Some),
         Err(_outlived) => {
-            Command::new("kill").args(["-KILL", &process_id]).status()?;
+            signal_process(KILL_SIGNAL_FLAG, process_id)?;
             drop(exit.recv());
             Ok(None)
         }
