@@ -1173,7 +1173,7 @@ mod spec_3_15_two_members_through_the_live_host {
         );
         let mut restarted = timed("the restarted amy starts", || amy.machine.start_server());
         let claim = timed("the restarted amy claims its card", || {
-            restarted.call(INIT_TOOL, &init_arguments(&amy.card.name))
+            restarted.call("init", &json!({ "card": amy.card.name }))
         });
         timed("bob lists the restarted amy online", || {
             bob.member.peer_within(&amy.handle, PRESENCE_WAIT, online)
@@ -1192,7 +1192,7 @@ mod spec_3_15_two_members_through_the_live_host {
             || listed_peer(&mut restarted, &bob.handle),
         );
 
-        assert!(call_succeeded(&claim), "{claim}");
+        assert_eq!(claim["ok"], json!(true), "{claim}");
         assert_eq!(unseen_before, None);
         assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
         assert_eq!(listed_after.unwrap()["status"], json!("online"));
