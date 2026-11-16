@@ -632,7 +632,8 @@ async fn start_observation(
             wait_over: None,
             snapshot_due,
             key: secret_key,
-        }),
+        }
+        .with_start_recorded()),
         Err(failure) => {
             drop(router.shutdown().await);
             Err(Failure::Topic(failure))
@@ -770,7 +771,7 @@ impl Observation {
                 Step::Topic(Some(Ok(GossipEvent::JoinTimedOut))) => self.start_observer_wait(),
                 Step::Topic(Some(Ok(event))) => self.take_gossip_event(event),
                 Step::Loop(event) => self.take_loop_event(event),
-                Step::SnapshotDue => self.record_counters(),
+                Step::SnapshotDue => self.record_counters(SnapshotMoment::Interval),
             }
         }
         let now_ms = self.host.now_ms();
@@ -803,7 +804,7 @@ impl Observation {
                     self.take_gossip_event(event);
                 }
                 Step::Loop(event) => self.take_loop_event(event),
-                Step::SnapshotDue => self.record_counters(),
+                Step::SnapshotDue => self.record_counters(SnapshotMoment::Interval),
             }
         }
     }
@@ -820,10 +821,16 @@ impl Observation {
             .get_or_insert_with(|| observer_wait_over_at(joined_at));
     }
 
-    /// Records the socket and gossip counters at an interval, so the events file is written at least that often while the observer runs.
-    fn record_counters(&mut self) {
+    /// This observation, once it has recorded the counters of its start.
+    fn with_start_recorded(mut self) -> Self {
+        self.record_counters(SnapshotMoment::Start);
+        self
+    }
+
+    /// Records the socket and gossip counters at the start and at each interval, so the events file says the observer runs and is written at least that often while it does.
+    fn record_counters(&mut self, moment: SnapshotMoment) {
         self.snapshot_due = record_counters(
-            SnapshotMoment::Interval,
+            moment,
             self.endpoint.endpoint(),
             &self.gossip,
             &*self.report,
@@ -2650,7 +2657,7 @@ mod tests {
     const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
 
     #[tokio::test(start_paused = true)]
-    async fn observability_decisions_9_and_13_tail_records_its_socket_and_gossip_counters_every_60_s_while_it_runs()
+    async fn observability_decisions_9_and_13_tail_records_its_socket_and_gossip_counters_at_its_start_then_every_60_s_while_it_runs()
      {
         let lab = Lab::new("tail-counters").await;
         lab.write_network_config(&[NEIGHBOR_SEED]);
@@ -2666,7 +2673,7 @@ mod tests {
         };
         let mut printed = Vec::new();
 
-        let (tail_result, (first, second)) = tokio::join!(
+        let (tail_result, (at_start, first, second)) = tokio::join!(
             run(
                 &tail,
                 &lab.directories,
@@ -2676,10 +2683,12 @@ mod tests {
                 &mut printed,
             ),
             async {
+                let at_start =
+                    crate::net::direct::tests::next_counters_snapshot(&mut recorded).await;
                 let first = crate::net::direct::tests::next_counters_snapshot(&mut recorded).await;
                 let second = crate::net::direct::tests::next_counters_snapshot(&mut recorded).await;
                 interrupt.send(()).unwrap_or_default();
-                (first, second)
+                (at_start, first, second)
             }
         );
 
@@ -2688,10 +2697,14 @@ mod tests {
             second.0.duration_since(first.0),
             SPEC_STATE_SNAPSHOT_INTERVAL
         );
-        for (_at, fields) in [&first, &second] {
+        for ((_at, fields), moment) in [
+            (&at_start, "start"),
+            (&first, "interval"),
+            (&second, "interval"),
+        ] {
             assert_eq!(
                 fields.first(),
-                Some(&("moment", serde_json::Value::from("interval")))
+                Some(&("moment", serde_json::Value::from(moment)))
             );
             let names: Vec<&str> = fields.iter().map(|(name, _)| *name).collect();
             assert!(names.contains(&"socket.recv_datagrams"), "{names:?}");
