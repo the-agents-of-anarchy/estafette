@@ -121,7 +121,7 @@ impl CardRegistryReader for CannedRegistry {
 }
 
 #[test]
-fn list_cards_reads_only_through_the_handed_in_file_system() {
+fn list_cards_lists_the_cards_the_file_system_holds_of_spec_3_13() {
     let cards_dir = PathBuf::from("/nowhere-on-disk/cards");
     let registry = CannedRegistry {
         card_file: cards_dir.join(NETWORK).join("ana.yaml"),
