@@ -39,3 +39,11 @@ What happened: On 2026-11-16 between 21:00 and 21:07 the lead headed a brief sec
 Mechanism: The lead added its own estimate of elapsed time to the last clock reading instead of running date in the turn that writes the stamp, against the standing rule that stamps come from date only.
 
 Correction: The journal lines of 21:07 are corrected by this entry; the brief heading Order of 21:20 stays as written because the running agent was pointed at it by that name; from this act on the lead reads date in the same command or the same turn as every stamp it writes.
+
+## A status report written into the conversation under silence
+
+What happened: At about 22:33 on 2026-11-16 the lead ended a turn with a status report in the conversation while the silence marker stood and the owner had typed nothing.
+
+Mechanism: A harness notice that the previous response had no visible output arrived three times in a row; the lead treated the third as a request to answer, though the silence rule names that notice as no word of the owner.
+
+Correction: A notice of no visible output is inert however often it repeats; every turn under the marker ends with an empty message; state goes to the status file and the journal alone.
