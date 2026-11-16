@@ -10,10 +10,10 @@ use std::time::Duration;
 use crate::stream_items::join_all;
 use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 use tokio::net::TcpStream;
-use tokio::time::{Instant, timeout_at};
+use tokio::time::Instant;
 
 use crate::event::{GossipEvent, TransportEvent};
-use crate::net::direct::DirectHost;
+use crate::net::direct::{DirectHost, before_deadline};
 use crate::net::endpoint::{RebindCause, SnapshotMoment};
 use crate::net::gossip::NetworkTopic;
 use crate::node::addresses::endpoint_id;
@@ -287,7 +287,7 @@ impl PresenceLoop {
         }
     }
 
-    /// The relays of the known hosts that do not answer the probe within the relay probe timeout, recording each probe's answer.
+    /// The relays of the known hosts that do not answer the probe before the node's clock reads the relay probe timeout past the probe, recording each probe's answer.
     async fn relays_found_down(&self) -> BTreeSet<RelayUrl> {
         let relays: BTreeSet<RelayUrl> = self
             .known_hosts
@@ -296,15 +296,17 @@ impl PresenceLoop {
             .map(|host| host.relay)
             .collect();
         let deadline = later_by(self.monotonic.now(), RELAY_PROBE_TIMEOUT);
-        let answers = join_all(
-            relays
-                .iter()
-                .map(|relay| timeout_at(deadline, self.rebinding.probe(relay.clone()))),
-        )
+        let answers = join_all(relays.iter().map(|relay| {
+            before_deadline(
+                &*self.monotonic,
+                Some(deadline),
+                self.rebinding.probe(relay.clone()),
+            )
+        }))
         .await;
         let mut down = BTreeSet::new();
         for (relay, answer) in relays.into_iter().zip(answers) {
-            let answered = matches!(answer, Ok(true));
+            let answered = matches!(answer, Some(true));
             self.endpoint
                 .record(|transport| TransportEvent::RelayProbed {
                     location: transport.locate(&TransportAddr::Relay(relay.clone())),
@@ -811,22 +813,63 @@ mod tests {
         })
     }
 
-    fn answering_after(delays: &'static [(&'static str, Duration)]) -> RelayProbe {
-        Arc::new(move |relay: RelayUrl| {
-            let delay = delays
+    /// Stand-in relays that each answer the probe once the clock reads its delay past the probe, noting every relay asked and every one that answered; a relay without a delay answers no at once.
+    #[derive(Clone)]
+    struct RelaysAnsweringOnTheClock {
+        clock: MonotonicClock,
+        delays: &'static [(&'static str, Duration)],
+        asked: Arc<std::sync::Mutex<Vec<String>>>,
+        answered: Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    impl RelaysAnsweringOnTheClock {
+        fn new(clock: MonotonicClock, delays: &'static [(&'static str, Duration)]) -> Self {
+            Self {
+                clock,
+                delays,
+                asked: Arc::default(),
+                answered: Arc::default(),
+            }
+        }
+
+        /// The relay probe a member takes, answered by these relays.
+        fn probe(&self) -> RelayProbe {
+            let relays = self.clone();
+            Arc::new(move |relay: RelayUrl| Box::pin(relays.clone().answer(relay.to_string())))
+        }
+
+        /// Notes the relay asked, then answers yes once the clock reads its delay past now, noting the answer, or no at once for a relay without a delay.
+        async fn answer(self, relay: String) -> bool {
+            self.asked.lock().unwrap().push(relay.clone());
+            let Some(delay) = self
+                .delays
                 .iter()
-                .find(|(answering, _)| relay.to_string() == *answering)
-                .map(|(_, delay)| *delay);
-            Box::pin(async move {
-                match delay {
-                    Some(delay) => {
-                        tokio::time::sleep(delay).await;
-                        true
-                    }
-                    None => false,
-                }
-            })
-        })
+                .find(|(answering, _)| relay == *answering)
+                .map(|(_, delay)| *delay)
+            else {
+                return false;
+            };
+            let asked_at = self.clock.now();
+            self.clock
+                .reached(asked_at.checked_add(delay).unwrap())
+                .await;
+            self.answered.lock().unwrap().push(relay);
+            true
+        }
+
+        /// How many relays were asked so far.
+        fn asked(&self) -> usize {
+            self.asked.lock().unwrap().len()
+        }
+
+        /// Whether the relay has answered.
+        fn has_answered(&self, relay: &str) -> bool {
+            self.answered
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|answered| answered == relay)
+        }
     }
 
     #[tokio::test]
@@ -884,7 +927,15 @@ mod tests {
     async fn spec_3_14_a_relay_answering_within_the_1000_ms_probe_timeout_is_kept_and_one_answering_after_it_is_stripped()
      {
         let scratch = Scratch::new("probe-timeout").await;
-        let rebinds = RebindLog::default();
+        let clock = StandingClock::standing_now();
+        let relays = RelaysAnsweringOnTheClock::new(
+            clock.monotonic(),
+            &[
+                (KEPT_RELAY, ANSWER_WITHIN_THE_PROBE_TIMEOUT),
+                (STRIPPED_RELAY, ANSWER_AFTER_THE_PROBE_TIMEOUT),
+            ],
+        );
+        let (record, mut events) = recorded_events();
         let peer = QuietNode::answering(PEER_SEED, &[KEPT_RELAY, STRIPPED_RELAY]).await;
         let (member_endpoint, starting) = spawn_member(
             &scratch,
@@ -893,28 +944,61 @@ mod tests {
                     (LIVE_HOST_SEED, KEPT_RELAY),
                     (DEAD_HOST_SEED, STRIPPED_RELAY),
                 ])
-                .with_relay_probe(answering_after(&[
-                    (KEPT_RELAY, ANSWER_WITHIN_THE_PROBE_TIMEOUT),
-                    (STRIPPED_RELAY, ANSWER_AFTER_THE_PROBE_TIMEOUT),
-                ]))
-                .with_report(rebinds.sink()),
+                .with_relay_probe(relays.probe())
+                .with_monotonic(clock.monotonic())
+                .with_report(Arc::clone(&record))
+                .with_register(crate::net::direct::HeldConnections::new(
+                    Arc::new(Instant::now),
+                    TransportRecord::new(record, test_salt()),
+                )),
         )
         .await;
         peer.introduce_to(&member_endpoint).await;
         let member = starting.await.unwrap();
 
-        let rebound = rebinds
-            .nth_within(0, SPEC_JOIN_TIMEOUT + REBIND_SLACK)
-            .await;
+        recorded_until(
+            &mut events,
+            REBINDING,
+            |_fields| true,
+            SPEC_JOIN_TIMEOUT + REBIND_SLACK,
+        )
+        .await;
+        let asked = found_within(RELAYS_ASKED_WITHIN, async || {
+            (relays.asked() == RELAYS_OF_THE_KNOWN_HOSTS).then_some(())
+        })
+        .await;
+        assert!(
+            asked.is_some(),
+            "the rebind asked {} of the {RELAYS_OF_THE_KNOWN_HOSTS} relays within {RELAYS_ASKED_WITHIN:?}",
+            relays.asked()
+        );
+        clock.move_forward(ANSWER_WITHIN_THE_PROBE_TIMEOUT);
+        let kept_answered = found_within(RELAY_ANSWER_TAKEN_WITHIN, async || {
+            relays.has_answered(KEPT_RELAY).then_some(())
+        })
+        .await;
+        assert!(
+            kept_answered.is_some(),
+            "the relay answering within the probe timeout had not answered within {RELAY_ANSWER_TAKEN_WITHIN:?} of the clock reading its answer"
+        );
+        let judged_early: Vec<RecordedEvent> = std::iter::from_fn(|| events.try_recv().ok())
+            .filter(|(name, _fields)| *name == RELAY_PROBED)
+            .collect();
+        assert!(
+            judged_early.is_empty(),
+            "relays were judged before the clock read the probe timeout past the probe: {judged_early:?}"
+        );
+        clock.move_forward(PROBE_TIMEOUT_LEFT_AFTER_THE_ANSWER_WITHIN_IT);
+        next_recorded(&mut events, RELAY_PROBED).await;
+        next_recorded(&mut events, RELAY_PROBED).await;
         let stripped = entry_within(
             &member,
             PEER_SEED,
             |entry| !relays_of(entry).contains(&STRIPPED_RELAY.to_owned()),
-            IROH_DOCUMENTED_CLOSE_LATENCY + ANSWER_AFTER_THE_PROBE_TIMEOUT + REBIND_SLACK,
+            REBIND_SLACK,
         )
         .await;
 
-        assert!(rebound.is_some());
         assert_eq!(
             stripped.as_ref().map(relays_of),
             Some(vec![KEPT_RELAY.to_owned()])
@@ -935,10 +1019,7 @@ mod tests {
                     (LIVE_HOST_SEED, KEPT_RELAY),
                     (DEAD_HOST_SEED, STRIPPED_RELAY),
                 ])
-                .with_relay_probe(answering_after(&[
-                    (KEPT_RELAY, ANSWER_WITHIN_THE_PROBE_TIMEOUT),
-                    (STRIPPED_RELAY, ANSWER_AFTER_THE_PROBE_TIMEOUT),
-                ]))
+                .with_relay_probe(answering_only(KEPT_RELAY))
                 .with_report(Arc::clone(&record))
                 .with_register(crate::net::direct::HeldConnections::new(
                     Arc::new(Instant::now),
@@ -1018,6 +1099,16 @@ mod tests {
     const REBINDING: &str = "transport.rebinding";
     const DROPPED_PAYLOAD: &str = "gossip.payload_dropped";
     const TOPIC_JOINED: &str = "gossip.topic_joined";
+    const RELAY_PROBED: &str = "transport.relay_probed";
+    /// The relays of the two known hosts a rebind probes.
+    const RELAYS_OF_THE_KNOWN_HOSTS: usize = 2;
+    /// The longest a rebind takes from its start to ask every relay: the old endpoint's close, then the asks.
+    const RELAYS_ASKED_WITHIN: Duration =
+        IROH_DOCUMENTED_CLOSE_LATENCY.saturating_add(REBIND_SLACK);
+    /// The longest a stand-in relay takes to answer once the clock reads its delay.
+    const RELAY_ANSWER_TAKEN_WITHIN: Duration = Duration::from_secs(5);
+    const PROBE_TIMEOUT_LEFT_AFTER_THE_ANSWER_WITHIN_IT: Duration =
+        SPEC_RELAY_PROBE_TIMEOUT.saturating_sub(ANSWER_WITHIN_THE_PROBE_TIMEOUT);
     const MOMENT: &str = "moment";
     const START_MOMENT: &str = "start";
     /// The longest a member takes to join the topic through its running host: the join timeout, past which it would rebind instead.
