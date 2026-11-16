@@ -136,7 +136,7 @@ mod network_commands {
     }
 
     struct ConfigWriteBlockedAfterOwnerKey {
-        networks_directory: PathBuf,
+        config_file: PathBuf,
     }
 
     impl DirectoryFilesystem for ConfigWriteBlockedAfterOwnerKey {
@@ -160,11 +160,10 @@ mod network_commands {
 
         fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
             OperatingSystemFilesystem.create_new_owner_only_file(path, contents)?;
-            fs::set_permissions(&self.networks_directory, fs::Permissions::from_mode(0o500))
+            fs::create_dir(&self.config_file)
         }
 
         fn remove_file(&self, path: &Path) -> io::Result<()> {
-            fs::set_permissions(&self.networks_directory, fs::Permissions::from_mode(0o700))?;
             OperatingSystemFilesystem.remove_file(path)
         }
     }
@@ -200,17 +199,13 @@ mod network_commands {
     fn spec_3_13_a_create_network_whose_configuration_cannot_be_written_leaves_no_owner_key() {
         let machine = Machine::fresh("create-config-unwritable");
         let blocked = ConfigWriteBlockedAfterOwnerKey {
-            networks_directory: machine.networks_directory(),
+            config_file: machine.config_file(NETWORK),
         };
 
         let created = create_network_through(&machine, &blocked);
 
         assert!(!created);
-        fs::set_permissions(
-            machine.networks_directory(),
-            fs::Permissions::from_mode(0o700),
-        )
-        .unwrap();
+        fs::remove_dir(machine.config_file(NETWORK)).unwrap();
         assert!(!machine.owner_key_file(NETWORK).exists());
         assert!(create_network_through(&machine, &OperatingSystemFilesystem));
     }
