@@ -774,29 +774,11 @@ struct LoopRequests {
     cause: Option<RequestCause>,
 }
 
-impl DirectHost for LoopRequests {
+impl DirectRequester for LoopRequests {
     fn is_stopping(&self) -> bool {
         self.state.is_stopping()
     }
 
-    fn own_card(&self) -> Option<wire::PublicKey> {
-        self.state.own_card()
-    }
-
-    fn is_attached(&self) -> bool {
-        self.state.is_attached()
-    }
-
-    fn receive_message(&self, sender: wire::PublicKey, message: Message) -> bool {
-        self.state.receive_message(sender, message)
-    }
-
-    fn receive_introduce(&self, sender: wire::PublicKey, introduce: Introduce) -> IntroduceAck {
-        self.state.receive_introduce(sender, introduce)
-    }
-}
-
-impl DirectRequester for LoopRequests {
     fn introduction(&self) -> Introduce {
         self.state.introduction()
     }
@@ -923,7 +905,10 @@ impl DirectAnswer {
 }
 
 /// What sending direct requests needs from a node of any kind: whether it is stopping, its introduction, and where each answer goes.
-pub trait DirectRequester: DirectHost {
+pub trait DirectRequester: Send + Sync + 'static {
+    /// Whether this node is stopping, so it sends no Introduce or Probe.
+    fn is_stopping(&self) -> bool;
+
     /// The introduction this node sends, and answers an Introduce with.
     fn introduction(&self) -> Introduce;
 

@@ -699,6 +699,10 @@ impl DirectHost for Arc<ObserverHost> {
 }
 
 impl DirectRequester for Arc<ObserverHost> {
+    fn is_stopping(&self) -> bool {
+        DirectHost::is_stopping(self)
+    }
+
     /// This observer's introduction: no handle, an empty public mapping, not attached, and its current address.
     fn introduction(&self) -> Introduce {
         let own_address = self.endpoint.addr();
