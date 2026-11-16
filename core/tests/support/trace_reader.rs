@@ -24,6 +24,8 @@ const NODE_KEY: &str = "node";
 const EVENT_KEY: &str = "event";
 /// What a timeline says of a trace directory that holds no event.
 pub const NO_EVENT_RECORDED: &str = "no event recorded";
+/// The byte a trace file holds where it was sized ahead and no line has landed yet, which no line of JSON text holds (spec/observability.md decision 12).
+const SIZED_AHEAD_FILL: u8 = 0;
 
 /// One line of a trace file: the header every line begins with, the event's name and the event's own fields, in the order they were written.
 #[derive(Debug)]
@@ -193,7 +195,7 @@ fn trace_line_of(members: Vec<(String, Value)>, line: usize) -> Result<TraceLine
     })
 }
 
-/// Every whole line of the bytes, leaving out the unended last line a killed process may leave.
+/// Every whole line of the bytes, leaving out the unended last line a killed process may leave, and every line from the first one that a read, made while its write was landing, still shows partly as the zeros the file was sized ahead with.
 ///
 /// # Errors
 ///
@@ -203,6 +205,7 @@ pub fn parse_trace_lines(bytes: &[u8]) -> Result<Vec<TraceLine>, TraceLineError>
     segments.pop();
     segments
         .into_iter()
+        .take_while(|segment| !segment.contains(&SIZED_AHEAD_FILL))
         .enumerate()
         .map(|(index, segment)| {
             let line = index.saturating_add(1);
@@ -463,6 +466,39 @@ mod tests {
 
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].n, 4);
+    }
+
+    #[test]
+    fn observability_decision_12_a_first_line_read_while_it_still_shows_the_zeros_the_file_was_sized_ahead_with_is_no_line_until_it_is_whole()
+     {
+        const SIZED_AHEAD_BYTES: usize = 65_536;
+        const LEADING_BYTES_STILL_ZERO: usize = 64;
+        let directory = fresh_scratch_directory("first-line-still-zero");
+        let events_file =
+            directory.join("20261116T210036Z-e8e6b01fdb8dbfa0-estafette.events.jsonl");
+        let sized_ahead = |line: &[u8]| {
+            let mut bytes = line.to_vec();
+            bytes.resize(SIZED_AHEAD_BYTES, 0);
+            bytes
+        };
+        let mut first_line_still_zero_at_its_start = MEMBER_LINE.as_bytes().to_vec();
+        first_line_still_zero_at_its_start[..LEADING_BYTES_STILL_ZERO].fill(0);
+        let lines_numbered_in = |file: &Path| {
+            read_trace_file(file).map(|lines| lines.iter().map(|line| line.n).collect::<Vec<_>>())
+        };
+
+        fs::write(
+            &events_file,
+            sized_ahead(&first_line_still_zero_at_its_start),
+        )
+        .unwrap();
+        let while_written = lines_numbered_in(&events_file);
+        fs::write(&events_file, sized_ahead(MEMBER_LINE.as_bytes())).unwrap();
+        let once_whole = lines_numbered_in(&events_file);
+
+        assert_eq!(while_written, Ok(Vec::new()));
+        assert_eq!(once_whole, Ok(vec![4]));
+        remove_scratch(&directory).unwrap();
     }
 
     #[test]
