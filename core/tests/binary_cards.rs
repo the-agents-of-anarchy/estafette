@@ -16,7 +16,18 @@ const PERMISSION_BITS: u32 = 0o777;
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 const CARD_FILE_MODE: u32 = 0o644;
 const KEY_FILE_MODE: u32 = 0o600;
-const UMASKS: [&str; 2] = ["0400", "0000"];
+/// A umask that clears every permission bit of group and others.
+const RESTRICTIVE_UMASK: &str = "077";
+/// A umask that clears the owner's read bit, which a file written with the default mode would lose.
+const READ_BLOCKING_UMASK: &str = "0400";
+/// A umask that clears the owner's search bit, which a directory made with the default mode would lose.
+const SEARCH_BLOCKING_UMASK: &str = "0100";
+/// A umask that clears nothing.
+const PERMISSIVE_UMASK: &str = "0000";
+/// The umasks a key file must come out of owner read-write alone (spec 3.3).
+const KEY_FILE_UMASKS: [&str; 2] = [READ_BLOCKING_UMASK, PERMISSIVE_UMASK];
+/// The umasks a program directory must come out of owner-only (spec 3.3).
+const DIRECTORY_UMASKS: [&str; 2] = [SEARCH_BLOCKING_UMASK, PERMISSIVE_UMASK];
 
 fn run_binary_under_umask(root: &Path, umask: &str, arguments: &[&str]) -> io::Result<Output> {
     Command::new("sh")
@@ -234,8 +245,12 @@ fn binary_list_cards_creates_the_program_directories_as_its_help_states() {
 #[test]
 fn binary_create_card_sets_exact_file_modes_under_a_restrictive_umask_of_spec_3_5() {
     let root = common::scratch_root(SCRATCH_PREFIX, "restrictive_umask").unwrap();
-    let created =
-        run_binary_under_umask(&root, "077", &["create-card", "acme", "ana-card", "ana"]).unwrap();
+    let created = run_binary_under_umask(
+        &root,
+        RESTRICTIVE_UMASK,
+        &["create-card", "acme", "ana-card", "ana"],
+    )
+    .unwrap();
     assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
     let cards = root.join("data/estafette/cards/acme");
     assert_eq!(
@@ -247,7 +262,7 @@ fn binary_create_card_sets_exact_file_modes_under_a_restrictive_umask_of_spec_3_
 
 #[test]
 fn binary_owner_key_is_owner_read_write_under_any_umask_of_spec_3_3() {
-    for umask in UMASKS {
+    for umask in KEY_FILE_UMASKS {
         let root = common::scratch_root(SCRATCH_PREFIX, &format!("key_modes_{umask}")).unwrap();
         let network = run_binary_under_umask(&root, umask, &["network", "create", "acme"]).unwrap();
         assert_eq!(
@@ -357,11 +372,9 @@ fn scratch_path_that_cannot_be_removed_fails_naming_its_path_and_the_cause() {
     remove_scratch::remove_scratch(&root).unwrap();
 }
 
-const SEARCH_BLOCKING_UMASK: &str = "0100";
-
 #[test]
 fn binary_program_directories_are_owner_only_under_any_umask_of_spec_3_3() {
-    for umask in [SEARCH_BLOCKING_UMASK, "0000"] {
+    for umask in DIRECTORY_UMASKS {
         let root = common::scratch_root(SCRATCH_PREFIX, &format!("dir_modes_{umask}")).unwrap();
         for base in ["config", "data", "runtime"] {
             std::fs::create_dir(root.join(base)).unwrap();
