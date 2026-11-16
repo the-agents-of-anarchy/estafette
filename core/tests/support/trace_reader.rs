@@ -27,6 +27,23 @@ pub const NO_EVENT_RECORDED: &str = "no event recorded";
 /// The byte a trace file holds where it was sized ahead and no line has landed yet, which no line of JSON text holds (spec/observability.md decision 12).
 const SIZED_AHEAD_FILL: u8 = 0;
 
+/// Whether the process writing a trace file was still writing it when the test read it, as the caller states.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WritingProcess {
+    Running,
+    Ended,
+}
+
+impl WritingProcess {
+    /// Whether the line has landed whole: always once the process ended, and while it runs only when no byte of it still shows the zeros the file was sized ahead with.
+    fn has_landed(self, segment: &[u8]) -> bool {
+        match self {
+            Self::Running => !segment.contains(&SIZED_AHEAD_FILL),
+            Self::Ended => true,
+        }
+    }
+}
+
 /// One line of a trace file: the header every line begins with, the event's name and the event's own fields, in the order they were written.
 #[derive(Debug)]
 pub struct TraceLine {
@@ -195,17 +212,20 @@ fn trace_line_of(members: Vec<(String, Value)>, line: usize) -> Result<TraceLine
     })
 }
 
-/// Every whole line of the bytes, leaving out the unended last line a killed process may leave, and every line from the first one that a read, made while its write was landing, still shows partly as the zeros the file was sized ahead with.
+/// Every whole line of the bytes, leaving out the unended last line a killed process may leave and, while the process runs, every line from the first one that a read, made while its write was landing, still shows partly as the zeros the file was sized ahead with.
 ///
 /// # Errors
 ///
 /// Fails on a whole line that is no trace line, naming why, and on one with a format version this reader does not know, naming it and the version it knows.
-pub fn parse_trace_lines(bytes: &[u8]) -> Result<Vec<TraceLine>, TraceLineError> {
+pub fn parse_trace_lines(
+    bytes: &[u8],
+    writing: WritingProcess,
+) -> Result<Vec<TraceLine>, TraceLineError> {
     let mut segments: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
     segments.pop();
     segments
         .into_iter()
-        .take_while(|segment| !segment.contains(&SIZED_AHEAD_FILL))
+        .take_while(|segment| writing.has_landed(segment))
         .enumerate()
         .map(|(index, segment)| {
             let line = index.saturating_add(1);
@@ -220,17 +240,20 @@ pub fn parse_trace_lines(bytes: &[u8]) -> Result<Vec<TraceLine>, TraceLineError>
         .collect()
 }
 
-/// Every whole line of the trace file.
+/// Every whole line of the trace file, read as the caller states its writing process: running or ended.
 ///
 /// # Errors
 ///
 /// Fails when the file cannot be read, and as `parse_trace_lines` does, naming the file.
-pub fn read_trace_file(path: &Path) -> Result<Vec<TraceLine>, TraceReadError> {
+pub fn read_trace_file(
+    path: &Path,
+    writing: WritingProcess,
+) -> Result<Vec<TraceLine>, TraceReadError> {
     let bytes = fs::read(path).map_err(|failure| TraceReadError::Unreadable {
         path: path.to_path_buf(),
         kind: failure.kind(),
     })?;
-    parse_trace_lines(&bytes).map_err(|failure| TraceReadError::UnreadableLine {
+    parse_trace_lines(&bytes, writing).map_err(|failure| TraceReadError::UnreadableLine {
         path: path.to_path_buf(),
         failure,
     })
@@ -250,7 +273,8 @@ pub fn stopped_trace_lines_of(path: &Path) -> Vec<TraceLine> {
         path.display(),
         unended.len()
     );
-    parse_trace_lines(&bytes).unwrap_or_else(|failure| panic!("{}: {failure}", path.display()))
+    parse_trace_lines(&bytes, WritingProcess::Ended)
+        .unwrap_or_else(|failure| panic!("{}: {failure}", path.display()))
 }
 
 /// The events files in the trace directory, oldest run first and each run's earlier lines first; none when the directory does not exist.
@@ -297,7 +321,7 @@ fn reading_order(events_file: &Path) -> (String, bool) {
     )
 }
 
-/// Every whole line of every events file in the trace directory, oldest run first.
+/// Every whole line of every events file in the trace directory, oldest run first, each read as a file whose process ended.
 ///
 /// # Errors
 ///
@@ -305,12 +329,12 @@ fn reading_order(events_file: &Path) -> (String, bool) {
 pub fn events_lines_in(traces_directory: &Path) -> Result<Vec<TraceLine>, TraceReadError> {
     let mut lines = Vec::new();
     for file in events_files_in(traces_directory)? {
-        lines.extend(read_trace_file(&file)?);
+        lines.extend(read_trace_file(&file, WritingProcess::Ended)?);
     }
     Ok(lines)
 }
 
-/// Every whole line of the listed trace files, passing over a file removed since the listing named it, as an events file a wait listed may be when its run rolls over.
+/// Every whole line of the listed trace files of a running process, passing over a file removed since the listing named it, as an events file a wait listed may be when its run rolls over.
 ///
 /// # Errors
 ///
@@ -318,7 +342,7 @@ pub fn events_lines_in(traces_directory: &Path) -> Result<Vec<TraceLine>, TraceR
 pub fn lines_of_files_still_present(files: &[PathBuf]) -> Result<Vec<TraceLine>, TraceReadError> {
     let mut lines = Vec::new();
     for file in files {
-        match read_trace_file(file) {
+        match read_trace_file(file, WritingProcess::Running) {
             Ok(read) => lines.extend(read),
             Err(TraceReadError::Unreadable {
                 kind: std::io::ErrorKind::NotFound,
@@ -367,7 +391,7 @@ mod tests {
     #[test]
     fn observability_decision_11_a_line_reads_into_its_header_its_event_name_and_its_fields_in_written_order()
      {
-        let lines = parse_trace_lines(MEMBER_LINE.as_bytes()).unwrap();
+        let lines = parse_trace_lines(MEMBER_LINE.as_bytes(), WritingProcess::Ended).unwrap();
 
         let [line] = lines.as_slice() else {
             panic!("one line: {lines:?}");
@@ -400,7 +424,7 @@ mod tests {
         let future_line = MEMBER_LINE.replace("{\"v\":1", "{\"v\":2");
         let bytes = format!("{MEMBER_LINE}{future_line}");
 
-        let refusal = parse_trace_lines(bytes.as_bytes()).unwrap_err();
+        let refusal = parse_trace_lines(bytes.as_bytes(), WritingProcess::Ended).unwrap_err();
 
         assert_eq!(
             refusal,
@@ -446,8 +470,11 @@ mod tests {
     {
         let unended_object = "{\"v\":1,\"run\":\n";
 
-        let refusal =
-            parse_trace_lines(format!("{MEMBER_LINE}{unended_object}").as_bytes()).unwrap_err();
+        let refusal = parse_trace_lines(
+            format!("{MEMBER_LINE}{unended_object}").as_bytes(),
+            WritingProcess::Ended,
+        )
+        .unwrap_err();
 
         assert_eq!(
             refusal.to_string(),
@@ -462,7 +489,7 @@ mod tests {
         bytes.extend_from_slice(&MEMBER_LINE.as_bytes()[..40]);
         bytes.extend_from_slice(&[0; 64]);
 
-        let lines = parse_trace_lines(&bytes).unwrap();
+        let lines = parse_trace_lines(&bytes, WritingProcess::Ended).unwrap();
 
         assert_eq!(lines.len(), 1);
         assert_eq!(lines[0].n, 4);
@@ -484,7 +511,8 @@ mod tests {
         let mut first_line_still_zero_at_its_start = MEMBER_LINE.as_bytes().to_vec();
         first_line_still_zero_at_its_start[..LEADING_BYTES_STILL_ZERO].fill(0);
         let lines_numbered_in = |file: &Path| {
-            read_trace_file(file).map(|lines| lines.iter().map(|line| line.n).collect::<Vec<_>>())
+            read_trace_file(file, WritingProcess::Running)
+                .map(|lines| lines.iter().map(|line| line.n).collect::<Vec<_>>())
         };
 
         fs::write(
@@ -519,6 +547,30 @@ mod tests {
             failure.map_err(|payload| payload.downcast_ref::<String>().cloned()),
             Err(Some(format!(
                 "{}: {UNENDED_BYTES} bytes after its last whole line",
+                stopped_file.display()
+            )))
+        );
+        remove_scratch(&stopped_directory).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_12_a_stopped_process_file_whose_line_holds_a_zero_byte_before_a_whole_line_fails_the_test_reading_it()
+     {
+        const LEADING_BYTES_ZERO: usize = 64;
+        let stopped_directory = fresh_scratch_directory("stopped-zero-line");
+        let stopped_file = stopped_directory.join("stopped.events.jsonl");
+        let mut bytes = MEMBER_LINE.as_bytes().to_vec();
+        bytes[..LEADING_BYTES_ZERO].fill(0);
+        bytes.extend_from_slice(MEMBER_LINE.replace("\"n\":4", "\"n\":5").as_bytes());
+        fs::write(&stopped_file, bytes).unwrap();
+
+        let failure = std::panic::catch_unwind(|| stopped_trace_lines_of(&stopped_file))
+            .map(|lines| lines.len());
+
+        assert_eq!(
+            failure.map_err(|payload| payload.downcast_ref::<String>().cloned()),
+            Err(Some(format!(
+                "{}: line 1 is not a trace line: expected value at line 1 column 1",
                 stopped_file.display()
             )))
         );

@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
-use super::trace_reader::{TraceLine, parse_trace_lines};
+use super::trace_reader::{TraceLine, WritingProcess, parse_trace_lines};
 
 /// How long a test waits for a running process's trace file to come to hold what it waits for.
 pub const WHOLE_LINE_WAIT: Duration = Duration::from_secs(10);
@@ -42,7 +42,8 @@ pub fn whole_lines_of_a_run_file(path: &Path) -> Vec<TraceLine> {
         "{name}: the {} bytes after its last whole line are not the start of this run's own line",
         unended.len()
     );
-    let lines = parse_trace_lines(content).unwrap_or_else(|failure| panic!("{name}: {failure}"));
+    let lines = parse_trace_lines(content, WritingProcess::Ended)
+        .unwrap_or_else(|failure| panic!("{name}: {failure}"));
     for line in &lines {
         assert_eq!(line.run, run, "{name}");
     }
