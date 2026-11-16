@@ -26,6 +26,8 @@ const EVENT_KEY: &str = "event";
 pub const NO_EVENT_RECORDED: &str = "no event recorded";
 /// The byte a trace file holds where it was sized ahead and no line has landed yet, which no line of JSON text holds (spec/observability.md decision 12).
 const SIZED_AHEAD_FILL: u8 = 0;
+/// The byte that ends every trace line.
+const LINE_END: u8 = b'\n';
 
 /// Whether the process writing a trace file was still writing it when the test read it, as the caller states.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,11 +37,22 @@ pub enum WritingProcess {
 }
 
 impl WritingProcess {
-    /// Whether the line has landed whole: always once the process ended, and while it runs only when no byte of it still shows the zeros the file was sized ahead with.
-    fn has_landed(self, segment: &[u8]) -> bool {
+    /// The bytes before the first line not yet landed whole: all of them once the process ended, and while it runs those before the first line that still shows the zeros the file was sized ahead with.
+    pub fn landed_part(self, bytes: &[u8]) -> &[u8] {
         match self {
-            Self::Running => !segment.contains(&SIZED_AHEAD_FILL),
-            Self::Ended => true,
+            Self::Running => {
+                let landed_end = bytes
+                    .iter()
+                    .position(|byte| *byte == SIZED_AHEAD_FILL)
+                    .map_or(bytes.len(), |first_fill| {
+                        bytes[..first_fill]
+                            .iter()
+                            .rposition(|byte| *byte == LINE_END)
+                            .map_or(0, |line_end| line_end.saturating_add(1))
+                    });
+                &bytes[..landed_end]
+            }
+            Self::Ended => bytes,
         }
     }
 }
@@ -221,11 +234,13 @@ pub fn parse_trace_lines(
     bytes: &[u8],
     writing: WritingProcess,
 ) -> Result<Vec<TraceLine>, TraceLineError> {
-    let mut segments: Vec<&[u8]> = bytes.split(|byte| *byte == b'\n').collect();
+    let mut segments: Vec<&[u8]> = writing
+        .landed_part(bytes)
+        .split(|byte| *byte == LINE_END)
+        .collect();
     segments.pop();
     segments
         .into_iter()
-        .take_while(|segment| writing.has_landed(segment))
         .enumerate()
         .map(|(index, segment)| {
             let line = index.saturating_add(1);
@@ -327,9 +342,17 @@ fn reading_order(events_file: &Path) -> (String, bool) {
 ///
 /// Fails as `events_files_in` does, and as `read_trace_file` does for the first file it cannot read.
 pub fn events_lines_in(traces_directory: &Path) -> Result<Vec<TraceLine>, TraceReadError> {
+    events_lines_read_as(traces_directory, WritingProcess::Ended)
+}
+
+/// Every whole line of every events file in the trace directory, oldest run first, each read as the caller states its writing process.
+fn events_lines_read_as(
+    traces_directory: &Path,
+    writing: WritingProcess,
+) -> Result<Vec<TraceLine>, TraceReadError> {
     let mut lines = Vec::new();
     for file in events_files_in(traces_directory)? {
-        lines.extend(read_trace_file(&file, WritingProcess::Ended)?);
+        lines.extend(read_trace_file(&file, writing)?);
     }
     Ok(lines)
 }
@@ -357,9 +380,14 @@ pub fn lines_of_files_still_present(files: &[PathBuf]) -> Result<Vec<TraceLine>,
     Ok(lines)
 }
 
-/// The events lines of the trace directory one to a row, or the reason they cannot be read, for a test that prints a member's timeline as it fails.
+/// The events lines of the trace directory of a process that ended one to a row, or the reason they cannot be read, for a test that prints a member's timeline as it fails.
 pub fn timeline_in(traces_directory: &Path) -> String {
-    match events_lines_in(traces_directory) {
+    timeline_read_as(traces_directory, WritingProcess::Ended)
+}
+
+/// The events lines of the trace directory one to a row, read as the caller states its writing process, or the reason they cannot be read, for a test that prints a member's timeline as it fails.
+pub fn timeline_read_as(traces_directory: &Path, writing: WritingProcess) -> String {
+    match events_lines_read_as(traces_directory, writing) {
         Ok(lines) if lines.is_empty() => NO_EVENT_RECORDED.to_owned(),
         Ok(lines) => lines
             .iter()
@@ -371,7 +399,7 @@ pub fn timeline_in(traces_directory: &Path) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use serde_json::json;
 
     use super::super::fresh_directory::fresh_directory_in;
@@ -386,7 +414,19 @@ mod tests {
         .unwrap()
     }
 
-    const MEMBER_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":4,\"mono_ms\":17,\"wall_ms\":1794524353720,\"node\":\"8f43abc249\",\"event\":\"process.command_failed\",\"code\":\"unreachable\",\"handle\":\"bob\"}\n";
+    pub const MEMBER_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":4,\"mono_ms\":17,\"wall_ms\":1794524353720,\"node\":\"8f43abc249\",\"event\":\"process.command_failed\",\"code\":\"unreachable\",\"handle\":\"bob\"}\n";
+
+    /// The bytes a read of a live trace file sized ahead to 64 KiB gives while its second line is landing: `MEMBER_LINE` whole, then the same line numbered 5 still zero in its first 64 bytes.
+    pub fn second_line_still_zero_at_its_start_sized_ahead() -> Vec<u8> {
+        const SIZED_AHEAD_BYTES: usize = 65_536;
+        const LEADING_BYTES_STILL_ZERO: usize = 64;
+        let mut second_line = MEMBER_LINE.replace("\"n\":4", "\"n\":5").into_bytes();
+        second_line[..LEADING_BYTES_STILL_ZERO].fill(0);
+        let mut bytes = MEMBER_LINE.as_bytes().to_vec();
+        bytes.extend_from_slice(&second_line);
+        bytes.resize(SIZED_AHEAD_BYTES, 0);
+        bytes
+    }
 
     #[test]
     fn observability_decision_11_a_line_reads_into_its_header_its_event_name_and_its_fields_in_written_order()

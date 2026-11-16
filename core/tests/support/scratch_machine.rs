@@ -19,7 +19,7 @@ pub mod remove_scratch;
 #[path = "trace_reader.rs"]
 pub mod trace_reader;
 
-use trace_reader::timeline_in;
+use trace_reader::{WritingProcess, timeline_read_as};
 
 use crate::member_events::MemberEvents;
 
@@ -195,7 +195,10 @@ impl ScratchMachine {
                 format!(
                     "{TIMELINE_HEADING} {number} on {}:\n{}",
                     self.root.display(),
-                    timeline_in(&self.traces_directory_of_member(number))
+                    timeline_read_as(
+                        &self.traces_directory_of_member(number),
+                        WritingProcess::Running
+                    )
                 )
             })
             .collect()
@@ -447,4 +450,49 @@ fn environment(root: &Path) -> Vec<(&'static str, OsString)> {
             std::env::var_os(SEARCH_PATH_VARIABLE).unwrap_or_default(),
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::trace_reader::parse_trace_lines;
+    use super::trace_reader::tests::{
+        MEMBER_LINE, second_line_still_zero_at_its_start_sized_ahead,
+    };
+    use super::*;
+
+    #[test]
+    fn observability_decision_12_a_failing_machine_prints_the_lines_of_a_member_that_may_still_run_before_one_still_zero_filled()
+     {
+        let machine = ScratchMachine::fresh(
+            "still-zero",
+            "lab",
+            &RunRecordKeeping {
+                kept_in: None,
+                invitation: None,
+            },
+        );
+        machine.servers_started.set(1);
+        let traces = machine.traces_directory_of_member(0);
+        OperatingSystemFilesystem
+            .create_private_directory(&traces)
+            .unwrap();
+        fs::write(
+            traces.join("20261112T225914Z-6c935f82c118f7b3-estafette.events.jsonl"),
+            second_line_still_zero_at_its_start_sized_ahead(),
+        )
+        .unwrap();
+        let expected_row = parse_trace_lines(MEMBER_LINE.as_bytes(), WritingProcess::Ended)
+            .unwrap()[0]
+            .to_string();
+
+        let timelines = machine.member_timelines();
+
+        assert_eq!(
+            timelines,
+            [format!(
+                "{TIMELINE_HEADING} 0 on {}:\n{expected_row}",
+                machine.root.display()
+            )]
+        );
+    }
 }

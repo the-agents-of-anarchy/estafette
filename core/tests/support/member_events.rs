@@ -2,7 +2,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
-use crate::trace_reader::{TraceLine, events_files_in, lines_of_files_still_present, timeline_in};
+use crate::trace_reader::{
+    TraceLine, WritingProcess, events_files_in, lines_of_files_still_present, timeline_read_as,
+};
 
 /// The counters snapshot a running node records at its start, at each rebind and every 60 s (spec/observability.md decision 9).
 pub const COUNTERS_EVENT: &str = "state.counters";
@@ -65,7 +67,7 @@ impl MemberEvents {
         format!(
             "{}: no {awaited} within {within:?}; its timeline so far:\n{}",
             self.label,
-            timeline_in(&self.traces_directory)
+            timeline_read_as(&self.traces_directory, WritingProcess::Running)
         )
     }
 
@@ -87,5 +89,58 @@ impl MemberEvents {
         events_files_in(&self.traces_directory)
             .and_then(|files| lines_of_files_still_present(&files))
             .unwrap_or_else(|failure| panic!("{}: {failure}", self.label))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+    use crate::trace_reader::parse_trace_lines;
+    use crate::trace_reader::tests::{
+        MEMBER_LINE, second_line_still_zero_at_its_start_sized_ahead,
+    };
+
+    const LABEL: &str = "the member";
+    const NEVER_WRITTEN: &str = "a line never written";
+    const WAIT_BOUND: Duration = Duration::from_secs(10);
+
+    #[test]
+    fn observability_decision_12_a_live_wait_that_runs_out_prints_the_lines_before_one_still_zero_filled()
+     {
+        let traces =
+            std::env::temp_dir().join(format!("member-events-{}-still-zero", std::process::id()));
+        fs::create_dir_all(&traces).unwrap();
+        fs::write(
+            traces.join("20261112T225914Z-6c935f82c118f7b3-estafette.events.jsonl"),
+            second_line_still_zero_at_its_start_sized_ahead(),
+        )
+        .unwrap();
+        let started = Instant::now();
+        let past_the_bound = started.checked_add(WAIT_BOUND).unwrap();
+        let mut readings = std::iter::once(started);
+        let expected_row = parse_trace_lines(MEMBER_LINE.as_bytes(), WritingProcess::Ended)
+            .unwrap()[0]
+            .to_string();
+
+        let ran_out = std::panic::catch_unwind(|| {
+            MemberEvents::new(LABEL, &traces).wait_until_after(
+                NEVER_WRITTEN,
+                WAIT_BOUND,
+                move || readings.next().unwrap_or(past_the_bound),
+                || {},
+                |_lines| None::<()>,
+            );
+        })
+        .map_err(|payload| payload.downcast_ref::<String>().cloned());
+        fs::remove_dir_all(&traces).unwrap();
+
+        assert_eq!(
+            ran_out,
+            Err(Some(format!(
+                "{LABEL}: no {NEVER_WRITTEN} within {WAIT_BOUND:?}; its timeline so far:\n{expected_row}"
+            )))
+        );
     }
 }
