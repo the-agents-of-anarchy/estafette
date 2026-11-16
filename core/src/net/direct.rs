@@ -1,5 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -10,7 +12,7 @@ use iroh::endpoint::{
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointId};
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::time::{Instant, sleep, timeout};
+use tokio::time::{Instant, sleep, sleep_until, timeout};
 
 use super::endpoint::{
     Close, CloseReason, ConnectionId, DIRECT_ALPN, Direction, NodeEndpoint, PathChange, Protocol,
@@ -72,21 +74,44 @@ pub trait DirectHost: Send + Sync + 'static {
     ) -> IntroduceAck;
 }
 
-/// A monotonic clock, read for the instant now.
+/// A monotonic clock, read for the instant now and waited on until it reads a deadline.
 pub trait MonotonicTime: Send + Sync {
     /// The instant the clock reads now.
     fn now(&self) -> Instant;
+
+    /// Waits until the clock reads the deadline or a later instant.
+    fn reached(&self, deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 }
 
-/// A clock read by calling the function.
+/// A clock read by calling the function and waited on with the runtime's timer, the runtime's own clock when the function is the runtime's `Instant::now`.
 impl<Reading: Fn() -> Instant + Send + Sync> MonotonicTime for Reading {
     fn now(&self) -> Instant {
         self()
+    }
+
+    fn reached(&self, deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(sleep_until(deadline))
     }
 }
 
 /// The monotonic clock the composition root hands down.
 pub type MonotonicClock = Arc<dyn MonotonicTime>;
+
+/// What the work ends with, or none once the clock reads the deadline first; work with no deadline is waited for whole.
+pub(crate) async fn before_deadline<Ended>(
+    clock: &dyn MonotonicTime,
+    deadline: Option<Instant>,
+    work: impl Future<Output = Ended>,
+) -> Option<Ended> {
+    let Some(deadline) = deadline else {
+        return Some(work.await);
+    };
+    tokio::select! {
+        biased;
+        ended = work => Some(ended),
+        () = clock.reached(deadline) => None,
+    }
+}
 
 /// Every connection the endpoint's gate let through and has not seen close, of any protocol, dialed or accepted, by the card at its other end, the cards whose spared connection still leaves iroh on a gone process's path, and the clock their silence is measured on.
 #[derive(Clone)]
@@ -570,11 +595,11 @@ impl AckDue {
         }
     }
 
-    /// How long the acknowledgement of a request called `since_call` ago, now holding its connection, may still take.
-    const fn ack_timeout_left(self, since_call: Duration) -> Duration {
+    /// When the acknowledgement of a request called at `called`, holding its connection since `connected`, is due, none past the clock's reach.
+    fn ack_due(self, called: Instant, connected: Instant) -> Option<Instant> {
         match self {
-            Self::FromTheConnection(ack_timeout) => ack_timeout,
-            Self::FromTheCall(ack_timeout) => ack_timeout.saturating_sub(since_call),
+            Self::FromTheConnection(ack_timeout) => connected.checked_add(ack_timeout),
+            Self::FromTheCall(ack_timeout) => called.checked_add(ack_timeout),
         }
     }
 }
@@ -1027,16 +1052,23 @@ impl DirectClient {
             Ok(sealed) => sealed,
             Err(failure) => return (None, Err(DirectError::UnsealableRequest(failure))),
         };
-        let called = Instant::now();
+        let called = self.register.monotonic.now();
         let (connection, source) = match self
-            .connection_to(to, due.connection_timeout(self.timeouts.connect))
+            .connection_to(
+                to,
+                called.checked_add(due.connection_timeout(self.timeouts.connect)),
+            )
             .await
         {
             Ok(held_or_dialed) => held_or_dialed,
             Err(failure) => return (None, Err(failure)),
         };
         let response = self
-            .round_trip(&connection, &sealed, due.ack_timeout_left(called.elapsed()))
+            .round_trip(
+                &connection,
+                &sealed,
+                due.ack_due(called, self.register.monotonic.now()),
+            )
             .await;
         if response.is_err() {
             self.forget_connection(to, &connection).await;
@@ -1044,33 +1076,37 @@ impl DirectClient {
         (Some((ConnectionId::of(&connection), source)), response)
     }
 
-    /// Writes the sealed request on a new stream and reads the response, all within the ack timeout.
+    /// Writes the sealed request on a new stream and reads the response, all before the register's clock reads the ack's due instant.
     async fn round_trip(
         &self,
         connection: &Connection,
         sealed_request: &[u8],
-        ack_timeout: Duration,
+        ack_due: Option<Instant>,
     ) -> Result<Response, DirectError> {
-        let response_bytes = timeout(ack_timeout, async {
+        let response_bytes = before_deadline(&*self.register.monotonic, ack_due, async {
             let (mut send, mut recv) = connection.open_bi().await?;
             send.write_all(sealed_request).await?;
             send.finish()?;
             Ok::<_, DirectError>(recv.read_to_end(WIRE_LIMIT_BYTES).await?)
         })
         .await
-        .map_err(|_elapsed| DirectError::Timeout)??;
+        .ok_or(DirectError::Timeout)??;
         open_response(&self.keys, &response_bytes).map_err(DirectError::InvalidAck)
     }
 
-    /// The held connection to the peer, or a new one dialed by card id and held, saying which, unreachable when neither is in hand within the connection timeout.
+    /// The held connection to the peer, or a new one dialed by card id and held, saying which, unreachable when neither is in hand before the register's clock reads the connection's due instant.
     async fn connection_to(
         &self,
         to: EndpointId,
-        connection_timeout: Duration,
+        connection_due: Option<Instant>,
     ) -> Result<(Connection, ConnectionSource), DirectError> {
-        timeout(connection_timeout, self.held_or_dialed_connection(to))
-            .await
-            .map_err(|_elapsed| DirectError::Unreachable)?
+        before_deadline(
+            &*self.register.monotonic,
+            connection_due,
+            self.held_or_dialed_connection(to),
+        )
+        .await
+        .ok_or(DirectError::Unreachable)?
     }
 
     /// The connection held for the peer, one the client knows closed counting as none and leaving the slot, or else a new one dialed by card id under the slot's lock and held, so concurrent callers share one dial.
@@ -1175,7 +1211,7 @@ pub(crate) mod tests {
     use crate::crypto::{KEY_LEN, NetworkSecret};
     use crate::net::endpoint::NodeEndpoint;
     use crate::seeded_draws::Draws;
-    use crate::test_waits::found_within;
+    use crate::test_waits::{StandingClock, found_within};
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [7; KEY_LEN];
     const SERVER_SEED: u8 = 1;
@@ -3815,17 +3851,34 @@ pub(crate) mod tests {
     }
 
     const HANDSHAKE_HELD_FOR: Duration = Duration::from_secs(2);
+    const PROBE_TIMEOUT_LEFT_AFTER_THE_HANDSHAKE: Duration =
+        SPEC_PROBE_TIMEOUT.saturating_sub(HANDSHAKE_HELD_FOR);
+    /// The longest the probe's dial takes to reach the stand-in server.
+    const DIAL_ARRIVED_WITHIN: Duration = Duration::from_secs(5);
+    /// The longest a probe call or its stand-in server takes to act on a clock reading it waits for, well inside the probe timeout, so a probe timed on the runtime's clock cannot end within it.
+    const ACTED_ON_THE_READING_WITHIN: Duration = Duration::from_secs(1);
 
-    /// Holds the handshake for its time, then holds the probe's ack until the probe call has returned.
+    /// How far a stand-in server has gone with the one probe it answers.
+    #[derive(Default)]
+    struct ProbeServed {
+        dialed: AtomicBool,
+        read: AtomicBool,
+    }
+
+    /// Notes the dial, holds the handshake until the clock reads the release, notes that it has read the probe, then holds the probe's ack until the probe call has returned.
     async fn answer_one_probe_after_the_call_returned(
         server: Endpoint,
+        (clock, handshake_released_at): (MonotonicClock, tokio::time::Instant),
+        seen: Arc<ProbeServed>,
         call_returned: tokio::sync::oneshot::Receiver<()>,
     ) {
         let incoming = server.accept().await.unwrap();
-        tokio::time::sleep(HANDSHAKE_HELD_FOR).await;
+        seen.dialed.store(true, Ordering::SeqCst);
+        clock.reached(handshake_released_at).await;
         let connection = incoming.accept().unwrap().await.unwrap();
         let (mut send, mut recv) = connection.accept_bi().await.unwrap();
         recv.read_to_end(WIRE_LIMIT_BYTES).await.unwrap();
+        seen.read.store(true, Ordering::SeqCst);
         let _returned_or_dropped = call_returned.await;
         if send.write_all(&sealed_probe_ack(PROBE_NONCE)).await.is_ok() {
             let _finished_after_the_probe_timeout = send.finish();
@@ -3835,6 +3888,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn spec_3_6_a_probe_ack_arriving_after_the_probe_timeout_of_the_call_is_a_failed_probe() {
+        let clock = StandingClock::standing_now();
         let server_node = bind_node(SERVER_SEED).await;
         let client_node = bind_node(CLIENT_SEED).await;
         client_node.replace_address(server_node.endpoint().addr());
@@ -3842,34 +3896,54 @@ pub(crate) mod tests {
             client_node.endpoint().clone(),
             keys(),
             ClientTimeouts::SPEC,
-            unrecorded_register(),
+            HeldConnections::new(clock.monotonic(), dropping_transport()),
         );
+        let called = clock.now();
+        let seen = Arc::new(ProbeServed::default());
         let (call_returned, answer_after_the_call) = tokio::sync::oneshot::channel();
         let _answering = tokio::spawn(answer_one_probe_after_the_call_returned(
             server_node.endpoint().clone(),
+            (clock.monotonic(), called + HANDSHAKE_HELD_FOR),
+            Arc::clone(&seen),
             answer_after_the_call,
         ));
+        let peer = server_node.endpoint().id();
+        let probing = tokio::spawn(async move { client.probe(peer, PROBE_NONCE).await });
 
-        let started = Instant::now();
-        let outcome = timeout(
-            SPEC_PROBE_TIMEOUT + PROBE_FAILURE_SLACK,
-            client.probe(server_node.endpoint().id(), PROBE_NONCE),
-        )
-        .await
-        .unwrap_or_else(|_elapsed| {
-            panic!(
-                "the probe call did not return within {:?}",
-                SPEC_PROBE_TIMEOUT + PROBE_FAILURE_SLACK
-            )
-        });
-        let waited = started.elapsed();
+        let dialed = found_within(DIAL_ARRIVED_WITHIN, async || {
+            seen.dialed.load(Ordering::SeqCst).then_some(())
+        })
+        .await;
+        assert!(
+            dialed.is_some(),
+            "the probe's dial reached no server within {DIAL_ARRIVED_WITHIN:?}"
+        );
+        clock.move_forward(HANDSHAKE_HELD_FOR);
+        let read = found_within(ACTED_ON_THE_READING_WITHIN, async || {
+            seen.read.load(Ordering::SeqCst).then_some(())
+        })
+        .await;
+        assert!(
+            read.is_some(),
+            "the server read no probe within {ACTED_ON_THE_READING_WITHIN:?} of the clock reading the handshake's hold past the call"
+        );
+        assert!(
+            !probing.is_finished(),
+            "the probe ended before the clock read the probe timeout past the call"
+        );
+        clock.move_forward(PROBE_TIMEOUT_LEFT_AFTER_THE_HANDSHAKE);
+        let ended = found_within(ACTED_ON_THE_READING_WITHIN, async || {
+            probing.is_finished().then_some(())
+        })
+        .await;
+        assert!(
+            ended.is_some(),
+            "the probe did not end within {ACTED_ON_THE_READING_WITHIN:?} of the clock reading the probe timeout past the call"
+        );
+        let outcome = probing.await.unwrap();
         let _answering_gone = call_returned.send(());
 
         assert_eq!(outcome, Err(DirectError::Timeout));
-        assert!(
-            SPEC_PROBE_TIMEOUT <= waited && waited < SPEC_PROBE_TIMEOUT + PROBE_FAILURE_SLACK,
-            "the probe failed after {waited:?}"
-        );
     }
 
     #[tokio::test]
