@@ -58,7 +58,7 @@ An earlier lab used the label `com.ryzhakar.estafette-lab-control` and the owner
 <create-on-the-owners-go>
 Create a lab resource on the owner's go for it; never create one on inference. The owner's standing ruling for the estafette work: lab use is free, with the resource management in this skill.
 
-Choose a server type and location from the live API, where `hcloud server-type describe <type> -o json` lists each location with `available`; never choose from Hetzner's web pages.
+Choose a server type and location from the live API, where `env -u HCLOUD_TOKEN hcloud --context estafette-lab server-type describe <type> -o json` lists each location with `available`; never choose from Hetzner's web pages.
 
 Use the type, location, and image approved for this server (default cx23, nbg1, ubuntu-24.04; when the API shows cx23 unavailable in every location, the cheapest available type with at least 4 GB of memory, named in the report with the API listing that justified it); never substitute another.
 </create-on-the-owners-go>
@@ -74,17 +74,17 @@ Know that the backstop keeps an expired server while its type is not available i
 </give-each-lab-resource-its-deadline>
 
 <create-the-server-from-this-skills-setup>
-Upload the SSH key when `hcloud ssh-key list` lacks `estafette-lab`, with `hcloud ssh-key create --name estafette-lab --public-key-from-file ~/.ssh/estafette_lab.pub` and its deadline labels; never upload another key. The key pair `~/.ssh/estafette_lab` must exist; when it does not, ask the owner and never generate one unasked.
+Upload the SSH key when `env -u HCLOUD_TOKEN hcloud --context estafette-lab ssh-key list` lacks `estafette-lab`, with `env -u HCLOUD_TOKEN hcloud --context estafette-lab ssh-key create --name estafette-lab --public-key-from-file ~/.ssh/estafette_lab.pub` and its deadline labels; never upload another key. The key pair `~/.ssh/estafette_lab` must exist; when it does not, ask the owner and never generate one unasked.
 
-Create the firewall from this skill's `firewall-rules.json` with `hcloud firewall create --name <name> --rules-file firewall-rules.json` and its deadline labels; never open more than its three rules, inbound TCP 22 and 443 and all UDP; the relay answers its ACME challenge on 443, so port 80 stays closed.
+Create the firewall from this skill's `firewall-rules.json` with `env -u HCLOUD_TOKEN hcloud --context estafette-lab firewall create --name <name> --rules-file firewall-rules.json` and its deadline labels; never open more than its three rules, inbound TCP 22 and 443 and all UDP; the relay answers its ACME challenge on 443, so port 80 stays closed.
 
 Write the server's setup file with `python3 -I fill-setup.py <output path>`, which fills the public half of `~/.ssh/estafette_lab` and the channel of the repository's `rust-toolchain.toml` into this skill's `cloud-init.template.yaml`; never edit the template for one server.
 
 Keep in the template, for every server, the user `lab` without sudo, root by key only, mosh for the owner's terminal, uv and just in `/usr/local/bin`, and for `lab` the Rust toolchain the repository pins, with the default profile plus `rust-src` and `rust-analyzer`, cargo-binstall, Claude Code, the plugins this skill's `plugins.sh` installs, and the working directory `/home/lab/work` holding this skill's `lab-charter.md` as `CLAUDE.md` and a git repository; never drop one of them.
 
-Create the server with `hcloud server create --name <name> --type <type> --image <image> --location <location> --ssh-key estafette-lab --firewall <firewall> --user-data-from-file <setup file> --label owner=estafette --label expires=<unix seconds>`; never create it without the setup file.
+Create the server with `env -u HCLOUD_TOKEN hcloud --context estafette-lab server create --name <name> --type <type> --image <image> --location <location> --ssh-key estafette-lab --firewall <firewall> --user-data-from-file <setup file> --label owner=estafette --label expires=<unix seconds>`; never create it without the setup file.
 
-Label the server's two primary IP addresses at once, finding them with `hcloud primary-ip list`; never leave them unlabeled.
+Label the server's two primary IP addresses at once, finding them with `env -u HCLOUD_TOKEN hcloud --context estafette-lab primary-ip list`; never leave them unlabeled.
 </create-the-server-from-this-skills-setup>
 
 <bound-each-waiting-step>
