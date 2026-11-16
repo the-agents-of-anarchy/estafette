@@ -6,6 +6,8 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set working-directory := '..'
 
+lab_hcloud_context := "estafette-lab"
+lab_hcloud := "env -u HCLOUD_TOKEN hcloud --context " + lab_hcloud_context
 server := env("LAB_SERVER", "estafette-lab")
 key := env("LAB_KEY", home_directory() / ".ssh" / "estafette_lab")
 known_hosts := home_directory() / ".ssh" / "known_hosts_estafette_lab"
@@ -46,30 +48,35 @@ root_checkout_command := 'dirname "$(git rev-parse --path-format=absolute --git-
 help:
     @just --list remote
 
+[doc("Refuse, naming the context, unless this machine's hcloud holds the lab's context, so no lab command falls back to whichever context is active")]
+[private]
+lab-context-exists:
+    {{ lab_hcloud }} context list --output noheader --output columns=name | grep -x {{ lab_hcloud_context }} > /dev/null || { echo "the hcloud context {{ lab_hcloud_context }} does not exist on this machine: no lab command runs without it" >&2; exit 1; }
+
 [doc("Print the server's current IPv4 address, from the live API")]
 [group('read')]
-ip:
-    @hcloud server ip {{ server }}
+ip: lab-context-exists
+    @{{ lab_hcloud }} server ip {{ server }}
 
 [doc("Open a mosh terminal on the server; extra words run there, e.g. tmux attach -t lab")]
 [group('act')]
-mosh user="lab" *command:
-    mosh --ssh="ssh {{ ssh_opts }}" {{ user }}@$(hcloud server ip {{ server }}) {{ if command == "" { "" } else { "-- " + command } }}
+mosh user="lab" *command: lab-context-exists
+    mosh --ssh="ssh {{ ssh_opts }}" {{ user }}@$({{ lab_hcloud }} server ip {{ server }}) {{ if command == "" { "" } else { "-- " + command } }}
 
 [doc("Run a command on the server over SSH, stdin passed through; no command opens a shell")]
 [group('act')]
-ssh user="root" *command:
-    ssh {{ ssh_opts }} {{ user }}@$(hcloud server ip {{ server }}) {{ command }}
+ssh user="root" *command: lab-context-exists
+    ssh {{ ssh_opts }} {{ user }}@$({{ lab_hcloud }} server ip {{ server }}) {{ command }}
 
 [doc("Install the lab session's marketplaces and plugins on the server, from the skill's plugins.sh")]
 [group('act')]
-plugins:
-    ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) 'bash -l -s' < .claude/skills/run-hetzner-lab/plugins.sh
+plugins: lab-context-exists
+    ssh {{ ssh_opts }} lab@$({{ lab_hcloud }} server ip {{ server }}) 'bash -l -s' < .claude/skills/run-hetzner-lab/plugins.sh
 
 [doc("Forget the host key held for the server's current address, once a new server takes the address over")]
 [group('act')]
-forget-host:
-    ssh-keygen -R "$(hcloud server ip {{ server }})" -f {{ known_hosts }}
+forget-host: lab-context-exists
+    ssh-keygen -R "$({{ lab_hcloud }} server ip {{ server }})" -f {{ known_hosts }}
 
 [doc("Show whether the deadline backstop is loaded in launchd; fails when it is not")]
 [group('read')]
@@ -97,13 +104,13 @@ call card tool arguments="{}":
 
 [doc("Serve the card as a lab member on the server with its release binary, as a systemd unit run by lab, refusing when the server lacks the binary; its envelope and run record go to /home/lab/<card>.out and .err")]
 [group('lab')]
-member-on-server card: server-binary-built
-    ssh {{ ssh_opts }} root@$(hcloud server ip {{ server }}) systemd-run --collect --unit={{ member_unit_prefix }}{{ card }} --uid=lab --setenv=LAB_BINARY={{ server_binary }} --working-directory={{ remote_tree }} --property=StandardOutput=truncate:/home/lab/{{ card }}.out --property=StandardError=truncate:/home/lab/{{ card }}.err just remote::member {{ card }}
+member-on-server card: lab-context-exists server-binary-built
+    ssh {{ ssh_opts }} root@$({{ lab_hcloud }} server ip {{ server }}) systemd-run --collect --unit={{ member_unit_prefix }}{{ card }} --uid=lab --setenv=LAB_BINARY={{ server_binary }} --working-directory={{ remote_tree }} --property=StandardOutput=truncate:/home/lab/{{ card }}.out --property=StandardError=truncate:/home/lab/{{ card }}.err just remote::member {{ card }}
 
 [doc("Stop the card's lab member on the server cleanly, waiting out its departure")]
 [group('lab')]
-stop-member-on-server card:
-    ssh {{ ssh_opts }} root@$(hcloud server ip {{ server }}) systemctl stop {{ member_unit_prefix }}{{ card }}
+stop-member-on-server card: lab-context-exists
+    ssh {{ ssh_opts }} root@$({{ lab_hcloud }} server ip {{ server }}) systemctl stop {{ member_unit_prefix }}{{ card }}
 
 [doc("Print each frame of the inbox socket at the path init returned, stamped with this machine's clock")]
 [group('lab')]
@@ -117,10 +124,10 @@ lab-binary-built:
 
 [doc("Refuse, naming the server and the missing path, unless the server holds the release binary server-up builds")]
 [private]
-server-binary-built:
+server-binary-built: lab-context-exists
     #!/usr/bin/env bash
     set -euo pipefail
-    address="$(hcloud server ip {{ server }})"
+    address="$({{ lab_hcloud }} server ip {{ server }})"
     status=0
     ssh {{ ssh_opts }} root@"$address" test -x {{ remote_binary }} || status=$?
     if [ "$status" = 1 ]; then
@@ -130,28 +137,28 @@ server-binary-built:
 
 [doc("Create the lab server with its 24-hour deadline, or reuse it, wait for its setup, then push the committed tree and build the release binary with the relay there")]
 [group('lab')]
-server-up:
+server-up: lab-context-exists
     #!/usr/bin/env bash
     set -euo pipefail
     just remote::backstop-status >&2
     expires="$(date -v+24H +%s)"
-    if ! hcloud ssh-key describe {{ lab_resource_name }} > /dev/null 2>&1; then
-        hcloud ssh-key create --name {{ lab_resource_name }} --public-key-from-file {{ key }}.pub --label owner=estafette --label expires="$expires" >&2
+    if ! {{ lab_hcloud }}ssh-key describe {{ lab_resource_name }} > /dev/null 2>&1; then
+        {{ lab_hcloud }} ssh-key create --name {{ lab_resource_name }} --public-key-from-file {{ key }}.pub --label owner=estafette --label expires="$expires" >&2
     fi
-    if ! hcloud firewall describe {{ lab_resource_name }} > /dev/null 2>&1; then
-        hcloud firewall create --name {{ lab_resource_name }} --rules-file {{ lab_skill }}/firewall-rules.json --label owner=estafette --label expires="$expires" >&2
+    if ! {{ lab_hcloud }}firewall describe {{ lab_resource_name }} > /dev/null 2>&1; then
+        {{ lab_hcloud }} firewall create --name {{ lab_resource_name }} --rules-file {{ lab_skill }}/firewall-rules.json --label owner=estafette --label expires="$expires" >&2
     fi
-    if ! hcloud server describe {{ server }} > /dev/null 2>&1; then
+    if ! {{ lab_hcloud }}server describe {{ server }} > /dev/null 2>&1; then
         setup_file="$(mktemp)"
         python3 -I {{ lab_skill }}/fill-setup.py "$setup_file" >&2
-        hcloud server create --name {{ server }} --type {{ lab_server_type }} --image {{ lab_image }} --location {{ lab_location }} --ssh-key {{ lab_resource_name }} --firewall {{ lab_resource_name }} --user-data-from-file "$setup_file" --label owner=estafette --label expires="$expires" >&2
+        {{ lab_hcloud }} server create --name {{ server }} --type {{ lab_server_type }} --image {{ lab_image }} --location {{ lab_location }} --ssh-key {{ lab_resource_name }} --firewall {{ lab_resource_name }} --user-data-from-file "$setup_file" --label owner=estafette --label expires="$expires" >&2
         rm -f "$setup_file"
-        for address_id in $(hcloud server describe {{ server }} -o json | python3 -I -c 'import json, sys; network = json.load(sys.stdin)["public_net"]; print(*(network[family]["id"] for family in ("ipv4", "ipv6") if network[family]))'); do
+        for address_id in $({{ lab_hcloud }} server describe {{ server }} -o json | python3 -I -c 'import json, sys; network = json.load(sys.stdin)["public_net"]; print(*(network[family]["id"] for family in ("ipv4", "ipv6") if network[family]))'); do
             python3 -I {{ lab_skill }}/lab-backstop.py label primary-ip "$address_id" >&2
         done
-        ssh-keygen -R "$(hcloud server ip {{ server }})" -f {{ known_hosts }} > /dev/null 2>&1 || true
+        ssh-keygen -R "$({{ lab_hcloud }} server ip {{ server }})" -f {{ known_hosts }} > /dev/null 2>&1 || true
     fi
-    address="$(hcloud server ip {{ server }})"
+    address="$({{ lab_hcloud }} server ip {{ server }})"
     for try in $(seq {{ lab_setup_wait_tries }}); do
         if ssh {{ ssh_opts }} -o ConnectTimeout=5 root@"$address" test -e /var/lib/lab-setup-done 2> /dev/null; then
             break
@@ -168,10 +175,10 @@ server-up:
 
 [doc("Bring the server up and run the network's relay and bootstrap node there as a systemd unit, reusing a live one; prints the host address line; a second host starts after host-up so it joins the live host A, and restarts after A restarts; refuses before creating anything when the lab binary is missing")]
 [group('lab')]
-infrastructure: lab-binary-built server-up
+infrastructure: lab-context-exists lab-binary-built server-up
     #!/usr/bin/env bash
     set -euo pipefail
-    address="$(hcloud server ip {{ server }})"
+    address="$({{ lab_hcloud }} server ip {{ server }})"
     domain="${address//./-}.sslip.io"
     remote() { ssh {{ ssh_opts }} root@"$address" "$@"; }
     test -e {{ lab_config_file }} || just remote::estafette network create {{ lab_network }} >&2
@@ -187,7 +194,7 @@ infrastructure: lab-binary-built server-up
 
 [doc("Bring host A up for the lab network: drop every host of an earlier stretch from this machine's owner configuration, start A, add A as its only host, and record the invitation in the root checkout's lab/host.txt alone; two hosts run in this order: host-up for A first, then LAB_SERVER=<name> just remote::infrastructure for B, which joins the live A, and after A restarts restart B, since a host does not rejoin a peer host that restarts; refuses before creating anything when the lab binary is missing")]
 [group('lab')]
-host-up: lab-binary-built
+host-up: lab-context-exists lab-binary-built
     #!/usr/bin/env bash
     set -euo pipefail
     umask 077
@@ -197,7 +204,7 @@ host-up: lab-binary-built
         mv {{ lab_config_file }}.tmp {{ lab_config_file }}
     fi
     host_line="$(just remote::infrastructure)"
-    address="$(hcloud server ip {{ server }})"
+    address="$({{ lab_hcloud }} server ip {{ server }})"
     just remote::estafette network add-host {{ lab_network }} "$host_line" >&2
     invitation="$(just remote::estafette network show-invitation {{ lab_network }} 2> /dev/null)"
     record="$(just remote::host-record-path)"
@@ -214,26 +221,26 @@ host-record-path:
 
 [doc("Check that the lab holds a live host server and lab/host.txt holds an invitation, printing none of it; fails naming whichever is missing")]
 [group('lab')]
-invitation:
+invitation: lab-context-exists
     #!/usr/bin/env bash
     set -euo pipefail
     record="$(just remote::host-record-path)"
-    address="$(hcloud server ip {{ server }} 2> /dev/null)" || { echo "no lab server {{ server }} exists: run just remote::host-up" >&2; exit 1; }
+    address="$({{ lab_hcloud }} server ip {{ server }} 2> /dev/null)" || { echo "no lab server {{ server }} exists: run just remote::host-up" >&2; exit 1; }
     ssh {{ ssh_opts }} -o ConnectTimeout=5 root@"$address" systemctl is-active --quiet {{ host_unit }} 2> /dev/null || { echo "{{ server }} runs no live host: run just remote::host-up" >&2; exit 1; }
     grep -q '^invitation: .' "$record" 2> /dev/null || { echo "$record holds no invitation: run just remote::host-up" >&2; exit 1; }
 
 [doc("List every lab resource in the Hetzner project, to read before any creation")]
 [group('read')]
-list:
-    hcloud server list
-    hcloud primary-ip list
-    hcloud firewall list
-    hcloud ssh-key list
+list: lab-context-exists
+    {{ lab_hcloud }} server list
+    {{ lab_hcloud }} primary-ip list
+    {{ lab_hcloud }} firewall list
+    {{ lab_hcloud }} ssh-key list
 
 [doc("Write the lab network's configuration on the server as lab from stdin, replacing the one there; it holds the network secret, so it travels on stdin alone")]
 [group('lab')]
-network-on-server:
-    ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) 'cd {{ remote_tree }} && just remote::network-from-input'
+network-on-server: lab-context-exists
+    ssh {{ ssh_opts }} lab@$({{ lab_hcloud }} server ip {{ server }}) 'cd {{ remote_tree }} && just remote::network-from-input'
 
 [doc("Write the lab network's configuration on this machine from stdin, replacing the one there")]
 [group('lab')]
@@ -242,18 +249,18 @@ network-from-input:
 
 [doc("Create a card on the server's lab network as lab with the server's release binary, printing its public key; refuses when the server lacks the binary")]
 [group('lab')]
-card-on-server name handle: server-binary-built
-    ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) 'cd {{ remote_tree }} && LAB_BINARY={{ server_binary }} just remote::estafette create-card {{ lab_network }} {{ name }} {{ handle }}'
+card-on-server name handle: lab-context-exists server-binary-built
+    ssh {{ ssh_opts }} lab@$({{ lab_hcloud }} server ip {{ server }}) 'cd {{ remote_tree }} && LAB_BINARY={{ server_binary }} just remote::estafette create-card {{ lab_network }} {{ name }} {{ handle }}'
 
 [doc("Call one tool of the lab member serving the card on the server, its arguments as JSON on stdin; prints the envelope stamped with the server's clock")]
 [group('lab')]
-call-on-server card tool:
-    ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) 'cd {{ remote_tree }} && just remote::call {{ card }} {{ tool }} "$(cat)"'
+call-on-server card tool: lab-context-exists
+    ssh {{ ssh_opts }} lab@$({{ lab_hcloud }} server ip {{ server }}) 'cd {{ remote_tree }} && just remote::call {{ card }} {{ tool }} "$(cat)"'
 
 [doc("Print the run record of the card's lab member on the server")]
 [group('lab')]
-run-record-on-server card:
-    ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) cat /home/lab/{{ card }}.err
+run-record-on-server card: lab-context-exists
+    ssh {{ ssh_opts }} lab@$({{ lab_hcloud }} server ip {{ server }}) cat /home/lab/{{ card }}.err
 
 [doc("Write every trace file of the card's lab member on this machine to stdout as one tar stream: both files of each of its runs, rolled-over files included")]
 [group('lab')]
@@ -262,9 +269,9 @@ member-trace-files card:
 
 [doc("Fetch every trace file of the card's lab member on the server into the directory, created 0700: both files of each of its runs, rolled-over files included; the raw files hold real addresses and full ids and are not safe to post")]
 [group('lab')]
-trace-files-on-server card directory:
+trace-files-on-server card directory: lab-context-exists
     umask 077 && mkdir -p "{{ directory }}"
-    ssh {{ ssh_opts }} lab@$(hcloud server ip {{ server }}) 'cd {{ remote_tree }} && just remote::member-trace-files {{ card }}' | tar -x -C "{{ directory }}"
+    ssh {{ ssh_opts }} lab@$({{ lab_hcloud }} server ip {{ server }}) 'cd {{ remote_tree }} && just remote::member-trace-files {{ card }}' | tar -x -C "{{ directory }}"
 
 [doc("Print every events file under the directory, at any depth and rolled-over files included, as one timeline: each whole line as written, ordered by wall_ms, then run, then n; refuses, naming the file, the line and both versions, a line of a format version it does not know, and, naming the file, the line and why, a line that is no trace line")]
 [group('lab')]
@@ -304,10 +311,10 @@ relay_only_mark := "estafette-relay-only"
 
 [doc("Drop UDP between the server and this machine, IPv4 to and from this machine's address as the server sees it and every IPv6 datagram but DNS, so members on the two reach each other through a relay alone; relay-paths-restored undoes it")]
 [group('lab')]
-relay-only-to-here:
+relay-only-to-here: lab-context-exists
     #!/usr/bin/env bash
     set -euo pipefail
-    ssh {{ ssh_opts }} root@"$(hcloud server ip {{ server }})" bash -s <<'RULES'
+    ssh {{ ssh_opts }} root@"$({{ lab_hcloud }} server ip {{ server }})" bash -s <<'RULES'
     set -euo pipefail
     here="${SSH_CLIENT%% *}"
     iptables -I INPUT -s "$here" -p udp -m comment --comment {{ relay_only_mark }} -j DROP
@@ -318,10 +325,10 @@ relay-only-to-here:
 
 [doc("Print each rule relay-only-to-here put on the server with its drop counters, then delete every one of them; does nothing when none is there")]
 [group('lab')]
-relay-paths-restored:
+relay-paths-restored: lab-context-exists
     #!/usr/bin/env bash
     set -euo pipefail
-    ssh {{ ssh_opts }} root@"$(hcloud server ip {{ server }})" bash -s <<'RULES'
+    ssh {{ ssh_opts }} root@"$({{ lab_hcloud }} server ip {{ server }})" bash -s <<'RULES'
     set -uo pipefail
     for table in iptables ip6tables; do
         for chain in INPUT OUTPUT; do
@@ -335,15 +342,15 @@ relay-paths-restored:
 
 [doc("Stop the network's host on the server when it runs, relay and bootstrap node together; infrastructure starts it again")]
 [group('lab')]
-host-down:
-    ssh {{ ssh_opts }} root@$(hcloud server ip {{ server }}) 'if systemctl is-active --quiet {{ host_unit }}; then systemctl stop {{ host_unit }}; fi'
+host-down: lab-context-exists
+    ssh {{ ssh_opts }} root@$({{ lab_hcloud }} server ip {{ server }}) 'if systemctl is-active --quiet {{ host_unit }}; then systemctl stop {{ host_unit }}; fi'
 
 [doc("Start the network's host on the server unless it runs, as infrastructure set it up there, refusing with the server's name when hcloud reports the server not found and with hcloud's own error when describing it fails otherwise; creates, pushes and builds nothing")]
 [group('lab')]
-host-start:
+host-start: lab-context-exists
     #!/usr/bin/env bash
     set -euo pipefail
-    if ! describe_failure="$(hcloud server describe {{ server }} 2>&1 > /dev/null)"; then
+    if ! describe_failure="$({{ lab_hcloud }} server describe {{ server }} 2>&1 > /dev/null)"; then
         if [[ "$describe_failure" == *[Ss]"erver not found: {{ server }}"* ]]; then
             echo "no lab server {{ server }}: host-start starts a host only on a server the run already brought up and creates none" >&2
         else
@@ -352,7 +359,7 @@ host-start:
         exit 1
     fi
     just remote::server-binary-built
-    address="$(hcloud server ip {{ server }})"
+    address="$({{ lab_hcloud }} server ip {{ server }})"
     domain="${address//./-}.sslip.io"
     remote() { ssh {{ ssh_opts }} root@"$address" "$@"; }
     if ! remote systemctl is-active --quiet {{ host_unit }}; then
@@ -362,11 +369,11 @@ host-start:
 
 [doc("Delete every lab resource of the stretch, servers first then firewall and key (primary IPs go with their servers), through the skill's backstop script, and end by printing just remote::list")]
 [group('lab')]
-down:
+down: lab-context-exists
     #!/usr/bin/env bash
     set -euo pipefail
     for kind in server firewall ssh-key; do
-        resource_ids="$(hcloud "$kind" list --selector {{ lab_owner_label }} --output noheader --output columns=id)"
+        resource_ids="$({{ lab_hcloud }} "$kind" list --selector {{ lab_owner_label }} --output noheader --output columns=id)"
         for resource_id in $resource_ids; do
             python3 -I {{ lab_skill }}/lab-backstop.py extend "$kind" "$resource_id" 0
         done
