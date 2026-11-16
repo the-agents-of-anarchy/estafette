@@ -31,3 +31,11 @@ What happened: At 23:40 on 2026-11-14 the lead launched a spec review and an int
 Mechanism: The lead announced its own order (route the two units first, then the identity block and the emptied files) and read the absence of an objection as assent, and it read the owner's word to use the limits in full as ranking above the stop he had just settled.
 
 Correction: An order the owner settles in a round governs the next act; a plan the lead announces is no ruling until he answers it; before any launch that follows a settled stop the lead asks nothing and launches nothing, and does the stop's own steps first.
+
+## Stamps written from a guess, not from the clock
+
+What happened: On 2026-11-16 between 21:00 and 21:07 the lead headed a brief section Order of 21:20, stamped a plan line readings ruled 2026-11-16T21:05, and journaled a launch at 21:12 and a continuation at 21:23, while the clock read 21:07 when those lines were written; the true times are 21:03 for the launch of the implementer of deadlines-on-a-handed-clock, 21:02 for the plan line and 21:06 for the continuation of the implementer of absence-windows-in-node-tests.
+
+Mechanism: The lead added its own estimate of elapsed time to the last clock reading instead of running date in the turn that writes the stamp, against the standing rule that stamps come from date only.
+
+Correction: The journal lines of 21:07 are corrected by this entry; the brief heading Order of 21:20 stays as written because the running agent was pointed at it by that name; from this act on the lead reads date in the same command or the same turn as every stamp it writes.
