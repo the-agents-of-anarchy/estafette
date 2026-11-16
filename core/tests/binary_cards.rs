@@ -1,7 +1,7 @@
 use std::fs::Permissions;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 mod common;
@@ -406,6 +406,51 @@ fn binary_program_directories_are_owner_only_under_any_umask_of_spec_3_3() {
     }
 }
 
+/// The relay domain a host is run with, whose certificate is never obtained since the run ends at the missing host certificate.
+#[cfg(feature = "relay")]
+const HOST_KEY_RELAY_DOMAIN: &str = "relay.example.test";
+/// The address a host is run with, never bound since the run ends at the missing host certificate.
+#[cfg(feature = "relay")]
+const HOST_KEY_BIND_ADDRESS: &str = "127.0.0.1";
+/// The exit code of a host run that ends at its missing certificate, after it wrote its key (spec 3.14).
+#[cfg(feature = "relay")]
+const MISSING_CERTIFICATE_EXIT_CODE: i32 = 1;
+
+#[cfg(feature = "relay")]
+#[test]
+fn binary_host_key_is_owner_read_write_under_any_umask_of_spec_3_14() {
+    for umask in KEY_FILE_UMASKS {
+        let root =
+            common::scratch_root(SCRATCH_PREFIX, &format!("host_key_modes_{umask}")).unwrap();
+        let network = run_binary_under_umask(&root, umask, &["network", "create", "acme"]).unwrap();
+        require_success(&network).unwrap();
+
+        let started = run_binary_under_umask(
+            &root,
+            umask,
+            &[
+                "run-infrastructure",
+                "acme",
+                HOST_KEY_BIND_ADDRESS,
+                HOST_KEY_RELAY_DOMAIN,
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            started.status.code(),
+            Some(MISSING_CERTIFICATE_EXIT_CODE),
+            "umask {umask}: {}",
+            stderr_text(&started)
+        );
+        assert_eq!(
+            mode_of(&root.join("data/estafette/infra/acme.key")).unwrap(),
+            KEY_FILE_MODE,
+            "host key, umask {umask}"
+        );
+    }
+}
+
 const CARDS_DIRECTORY_VARIABLE: &str = "ESTAFETTE_CARDS_DIR";
 const CARDS_CHECK_LINE: &str = "cards\tpass\tcards valid: 1";
 
@@ -464,6 +509,26 @@ fn binary_doctor_reads_the_cards_of_the_cards_dir_flag_over_the_variable_of_spec
 }
 
 #[test]
+fn binary_doctor_reads_the_cards_of_the_cards_dir_variable_without_the_flag_of_spec_3_3() {
+    let root = common::scratch_root(SCRATCH_PREFIX, "doctor_variable_alone").unwrap();
+    let variable_directory = root.join("variable");
+    create_network_and_card_in(&root, variable_directory.to_str().unwrap()).unwrap();
+
+    let diagnosed = Command::new(BINARY)
+        .args(["doctor", "acme"])
+        .env_clear()
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_RUNTIME_DIR", root.join("runtime"))
+        .env(CARDS_DIRECTORY_VARIABLE, &variable_directory)
+        .output()
+        .unwrap();
+
+    let report = String::from_utf8(diagnosed.stdout).unwrap();
+    assert!(report.contains(CARDS_CHECK_LINE), "{report}");
+}
+
+#[test]
 fn binary_test_send_creates_its_operator_card_in_the_cards_dir_of_spec_3_3() {
     let root = common::scratch_root(SCRATCH_PREFIX, "test_send_flag").unwrap();
     let flagged = root.join("flagged");
@@ -503,6 +568,20 @@ fn binary_help_of_every_observer_command_names_the_cards_dir_flag_of_spec_3_3() 
 const CARD_FILE_NAME: &str = "ana-card.yaml";
 const REFUSED_CARD_EXIT_CODE: i32 = 1;
 const NESTING_DEPTHS: [usize; 3] = [3000, 10_000, 100_000];
+/// The block mapping stops at 10000 levels: its indentation grows quadratically, about 5 GB of text at 100000.
+const BLOCK_MAPPING_DEPTHS: [usize; 2] = [3000, 10_000];
+
+/// A scratch root named for the test holding the card `ana-card` the binary created, its file extended by the YAML text.
+fn root_with_card_extended_by(name: &str, extra_yaml: &str) -> io::Result<PathBuf> {
+    let root = common::scratch_root(SCRATCH_PREFIX, name)?;
+    let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"])?;
+    require_success(&created)?;
+    let card_file = root.join("data/estafette/cards/acme").join(CARD_FILE_NAME);
+    let mut text = std::fs::read_to_string(&card_file)?;
+    text.push_str(extra_yaml);
+    std::fs::write(&card_file, text)?;
+    Ok(root)
+}
 
 type DeepPublicShape = (&'static str, fn(usize) -> String, &'static [usize]);
 
@@ -530,7 +609,7 @@ fn flow_sequence_public(depth: usize) -> String {
 }
 
 const DEEP_PUBLIC_SHAPES: [DeepPublicShape; 4] = [
-    ("block mapping", block_mapping_public, &[3000, 10_000]),
+    ("block mapping", block_mapping_public, &BLOCK_MAPPING_DEPTHS),
     ("block sequence", block_sequence_public, &NESTING_DEPTHS),
     ("flow mapping", flow_mapping_public, &NESTING_DEPTHS),
     ("flow sequence", flow_sequence_public, &NESTING_DEPTHS),
@@ -541,17 +620,11 @@ fn binary_list_cards_refuses_a_public_nested_too_deep_for_the_parser_as_an_inval
  {
     for (shape, public_at, depths) in DEEP_PUBLIC_SHAPES {
         for &depth in depths {
-            let root = common::scratch_root(
-                SCRATCH_PREFIX,
+            let root = root_with_card_extended_by(
                 &format!("deep_{}_{depth}", shape.replace(' ', "_")),
+                &public_at(depth),
             )
             .unwrap();
-            let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
-            assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
-            let card_file = root.join("data/estafette/cards/acme").join(CARD_FILE_NAME);
-            let mut text = std::fs::read_to_string(&card_file).unwrap();
-            text.push_str(&public_at(depth));
-            std::fs::write(&card_file, text).unwrap();
 
             let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
 
@@ -569,21 +642,34 @@ fn binary_list_cards_refuses_a_public_nested_too_deep_for_the_parser_as_an_inval
     }
 }
 
+/// The start of the doctor's line for a cards check that fails (spec 3.13).
+const CARDS_CHECK_FAILED: &str = "cards\tfail\t";
+
+#[test]
+fn binary_doctor_fails_the_cards_check_for_a_public_nested_too_deep_for_the_parser_of_spec_3_5() {
+    let root = root_with_card_extended_by("doctor_deep", &block_sequence_public(NESTING_DEPTHS[0]))
+        .unwrap();
+    let network = run_binary(&root, &["network", "create", "acme"]).unwrap();
+    require_success(&network).unwrap();
+
+    let diagnosed = run_binary(&root, &["doctor", "acme"]).unwrap();
+
+    let report = String::from_utf8(diagnosed.stdout).unwrap();
+    assert!(report.contains(CARDS_CHECK_FAILED), "{report}");
+    assert!(report.contains(CARD_FILE_NAME), "{report}");
+}
+
 const DEEPEST_IGNORED_KEY_DEPTH: usize = 2000;
 const IGNORED_KEY_DEPTHS: [usize; 2] = [300, DEEPEST_IGNORED_KEY_DEPTH];
 
 #[test]
 fn binary_list_cards_lists_a_card_whose_ignored_key_nests_beyond_the_parser_bound_of_spec_3_5() {
     for depth in IGNORED_KEY_DEPTHS {
-        let root = common::scratch_root(SCRATCH_PREFIX, &format!("ignored_{depth}")).unwrap();
-        let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
-        assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
-        let card_file = root.join("data/estafette/cards/acme").join(CARD_FILE_NAME);
-        let mut text = std::fs::read_to_string(&card_file).unwrap();
-        text.push_str("ignored:\n");
-        text.push_str(&"- ".repeat(depth));
-        text.push_str("1\n");
-        std::fs::write(&card_file, text).unwrap();
+        let root = root_with_card_extended_by(
+            &format!("ignored_{depth}"),
+            &format!("ignored:\n{}1\n", "- ".repeat(depth)),
+        )
+        .unwrap();
 
         let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
 
@@ -603,15 +689,14 @@ fn binary_list_cards_lists_a_card_whose_ignored_key_nests_beyond_the_parser_boun
 #[test]
 fn binary_list_cards_lists_a_card_whose_public_aliases_a_container_anchored_beyond_the_parser_bound_of_spec_3_5()
  {
-    let root = common::scratch_root(SCRATCH_PREFIX, "alias_beyond_bound").unwrap();
-    let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
-    assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
-    let card_file = root.join("data/estafette/cards/acme").join(CARD_FILE_NAME);
-    let mut text = std::fs::read_to_string(&card_file).unwrap();
-    text.push_str("ignored:\n");
-    text.push_str(&"- ".repeat(DEEPEST_IGNORED_KEY_DEPTH));
-    text.push_str("&anchor [7]\npublic:\n  seen: *anchor\n");
-    std::fs::write(&card_file, text).unwrap();
+    let root = root_with_card_extended_by(
+        "alias_beyond_bound",
+        &format!(
+            "ignored:\n{}&anchor [7]\npublic:\n  seen: *anchor\n",
+            "- ".repeat(DEEPEST_IGNORED_KEY_DEPTH)
+        ),
+    )
+    .unwrap();
 
     let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
 
