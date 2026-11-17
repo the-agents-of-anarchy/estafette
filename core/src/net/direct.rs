@@ -1213,7 +1213,7 @@ pub(crate) mod tests {
     use crate::crypto::{KEY_LEN, NetworkSecret};
     use crate::net::endpoint::NodeEndpoint;
     use crate::seeded_draws::Draws;
-    use crate::test_waits::found_within;
+    use crate::test_waits::{answered_within, found_within};
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [7; KEY_LEN];
     const SERVER_SEED: u8 = 1;
@@ -2826,18 +2826,8 @@ pub(crate) mod tests {
     /// The longest a send takes on the runtime's clock: the connection timeout, then the ack timeout.
     const SEND_ANSWERED_WITHIN: Duration = CONNECT_TIMEOUT.saturating_add(ACK_TIMEOUT);
 
-    /// The acknowledgement of the message sent over the link, failing by name when none comes within the real time a send takes on the runtime's clock.
-    async fn acknowledged_within_a_send(
-        client: &DirectClient,
-        to: EndpointId,
-        message: Message,
-    ) -> Result<MessageAck, DirectError> {
-        tokio::time::timeout(SEND_ANSWERED_WITHIN, client.send_message(to, message))
-            .await
-            .unwrap_or_else(|_elapsed| {
-                panic!("no acknowledgement of the message within {SEND_ANSWERED_WITHIN:?}")
-            })
-    }
+    /// What a slow-host send awaits, named in the failure when it does not come.
+    const SEND_AWAITED: &str = "acknowledgement of the message";
 
     #[tokio::test]
     async fn observability_decision_9_a_message_is_recorded_sent_and_served_with_its_id_connection_outcome_and_elapsed_time_on_both_ends()
@@ -2850,14 +2840,22 @@ pub(crate) mod tests {
             _router: router,
         } = recording_link_over_a_slow_host().await;
 
-        acknowledged_within_a_send(&client, server_id, message_to(card_of(SERVER_SEED), BODY))
-            .await
-            .unwrap();
+        answered_within(
+            SEND_ANSWERED_WITHIN,
+            SEND_AWAITED,
+            client.send_message(server_id, message_to(card_of(SERVER_SEED), BODY)),
+        )
+        .await
+        .unwrap();
         let first_sent = next_recorded(&mut sent, "direct.request_sent").await;
         let first_served = next_recorded(&mut served, "direct.request_served").await;
-        acknowledged_within_a_send(&client, server_id, message_to(card_of(CLIENT_SEED), BODY))
-            .await
-            .unwrap();
+        answered_within(
+            SEND_ANSWERED_WITHIN,
+            SEND_AWAITED,
+            client.send_message(server_id, message_to(card_of(CLIENT_SEED), BODY)),
+        )
+        .await
+        .unwrap();
         let refused_sent = next_recorded(&mut sent, "direct.request_sent").await;
         let refused_served = next_recorded(&mut served, "direct.request_served").await;
 

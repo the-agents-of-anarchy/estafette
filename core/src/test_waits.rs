@@ -67,6 +67,17 @@ pub async fn recorded_until(
     }
 }
 
+/// The answer of the request, failing with the name of what was awaited when it does not come within the bound.
+pub async fn answered_within<Answer>(
+    within: Duration,
+    awaited: &str,
+    request: impl Future<Output = Answer>,
+) -> Answer {
+    tokio::time::timeout(within, request)
+        .await
+        .unwrap_or_else(|_elapsed| panic!("no {awaited} within {within:?}"))
+}
+
 /// What the look finds, looked for again each time the runtime has run its other tasks, or none when the bound runs out first.
 #[must_use]
 pub async fn found_within<Found>(
