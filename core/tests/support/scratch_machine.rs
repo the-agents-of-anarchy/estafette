@@ -55,8 +55,12 @@ const RUN_RECORD_EXTENSION: &str = "stderr";
 const RUN_RECORD_PREFIX: &str = "member";
 /// How a test names a member it started, before its number.
 const MEMBER_LABEL: &str = "member";
-/// The variable naming a directory where every member's run record is kept, redacted, when its scratch root is removed; unset, nothing is kept.
+/// The variable naming a directory where, when its scratch root is removed, every member's run record is kept, redacted, and every machine's data directory but its secret key files; unset, nothing is kept.
 pub const KEPT_RUN_RECORDS_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_RUN_RECORDS";
+/// What ends the name of the directory a machine's data directory is kept in, after the machine's name.
+const KEPT_DATA_SUFFIX: &str = "data";
+/// The extension of every file spec 3.3 gives a secret key in a data directory: a card's sidecar and a host's bootstrap key.
+const SECRET_KEY_EXTENSION: &str = "key";
 /// The variable the acceptance gate exports the live host's invitation in.
 pub const INVITATION_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_INVITATION";
 /// What a kept run record holds in place of a secret.
@@ -253,7 +257,7 @@ impl ScratchMachine {
     /// Copies every member's run record into the directory, named for this machine and the member, each line that holds a secret of this machine kept with that secret replaced by the redaction marker, and returns the kept files.
     pub fn keep_run_records(&self, directory: &Path) -> io::Result<Vec<PathBuf>> {
         let secrets = self.secrets_by_length();
-        let machine_name = self.root.file_name().unwrap_or_default().to_string_lossy();
+        let machine_name = self.name();
         let mut kept = Vec::new();
         for record in self.run_records()? {
             let member_name = record.file_stem().unwrap_or_default().to_string_lossy();
@@ -266,6 +270,31 @@ impl ScratchMachine {
             )?);
         }
         Ok(kept)
+    }
+
+    /// Copies every file under this machine's data directory, its members' and its observers' trace files included, into a directory beside its run records named for this machine, leaving out each secret key file, and returns the kept directory.
+    fn keep_data_directory(&self, directory: &Path) -> io::Result<PathBuf> {
+        let data = self.root.join(DATA_HOME);
+        let kept = directory.join(format!("{}-{KEPT_DATA_SUFFIX}", self.name()));
+        for file in files_beneath(&data)
+            .into_iter()
+            .filter(|file| !is_secret_key_file(file))
+        {
+            let kept_file = kept.join(file.strip_prefix(&data).map_err(io::Error::other)?);
+            fs::create_dir_all(kept_file.parent().unwrap_or(&kept))?;
+            fs::copy(&file, &kept_file)?;
+        }
+        eprintln!("data directory kept at {}", kept.display());
+        Ok(kept)
+    }
+
+    /// The name this machine's records are kept under: its scratch root's.
+    fn name(&self) -> String {
+        self.root
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// The run record files of the members this machine started.
@@ -339,14 +368,15 @@ impl Drop for ScratchMachine {
                 eprintln!("{timeline}");
             }
         }
-        let kept = self
-            .run_records
-            .kept_in()
-            .map(|directory| self.keep_run_records(directory));
+        let kept = self.run_records.kept_in().map(|directory| {
+            let run_records = self.keep_run_records(directory);
+            let data = self.keep_data_directory(directory);
+            run_records.and(data)
+        });
         let removed = remove_scratch::remove_scratch(&self.root);
         if let Some(Err(failure)) = kept {
             fail_unless_panicking(&format!(
-                "run records of {} not kept: {failure}",
+                "records of {} not kept: {failure}",
                 self.root.display()
             ));
         }
@@ -409,6 +439,12 @@ fn long_alphanumeric_runs(line: &str) -> impl Iterator<Item = &str> {
         .filter(|run| run.len() >= SHORTEST_SECRET_RUN)
 }
 
+/// Whether the file holds a secret key by spec 3.3's naming, so no copy of it is kept.
+fn is_secret_key_file(file: &Path) -> bool {
+    file.extension()
+        .is_some_and(|extension| extension == SECRET_KEY_EXTENSION)
+}
+
 /// Every file beneath the directory, at any depth; none when it does not exist.
 fn files_beneath(directory: &Path) -> Vec<PathBuf> {
     let Ok(entries) = fs::read_dir(directory) else {
@@ -460,12 +496,15 @@ mod tests {
     };
     use super::*;
 
+    /// The network the tests of this module configure their machines for.
+    const NETWORK: &str = "lab";
+
     #[test]
     fn observability_decision_12_a_failing_machine_prints_the_lines_of_a_member_that_may_still_run_before_one_still_zero_filled()
      {
         let machine = ScratchMachine::fresh(
             "still-zero",
-            "lab",
+            NETWORK,
             &RunRecordKeeping {
                 kept_in: None,
                 invitation: None,
@@ -494,5 +533,74 @@ mod tests {
                 machine.root.display()
             )]
         );
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_dropped_while_keeping_leaves_its_members_and_observers_data_beside_its_run_records_but_no_secret_key_file()
+     {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-data-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = ScratchMachine::fresh(
+            "kept-data",
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: Some(kept_in.clone()),
+                invitation: None,
+            },
+        );
+        let data = machine.root.join(DATA_HOME);
+        let observer_traces =
+            TraceDirectory::resolve(&|name: &str| variable_of(&environment(&machine.root), name))
+                .unwrap()
+                .path();
+        let member_traces = machine.traces_directory_of_member(0);
+        let cards = machine.directories().cards_directory(NETWORK).unwrap();
+        let written = [
+            (
+                member_traces.join("20261117T080000Z-1111111111111111-estafette.events.jsonl"),
+                "member events line\n",
+            ),
+            (
+                member_traces.join("20261117T080000Z-1111111111111111-estafette.raw.jsonl"),
+                "member raw line\n",
+            ),
+            (
+                observer_traces.join("20261117T080001Z-2222222222222222-estafette.events.jsonl"),
+                "observer events line\n",
+            ),
+            (cards.join("amy.yaml"), "card of amy\n"),
+        ];
+        let secret_key_file = cards.join("amy.key");
+        for (file, content) in &written {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, content).unwrap();
+        }
+        fs::write(&secret_key_file, "secret key of amy\n").unwrap();
+        let kept_data = kept_in.join(format!("{}-{KEPT_DATA_SUFFIX}", machine.name()));
+        let expected: BTreeSet<(PathBuf, String)> = written
+            .iter()
+            .map(|(file, content)| {
+                (
+                    kept_data.join(file.strip_prefix(&data).unwrap()),
+                    (*content).to_owned(),
+                )
+            })
+            .collect();
+
+        drop(machine);
+
+        let kept: BTreeSet<(PathBuf, String)> = files_beneath(&kept_in)
+            .into_iter()
+            .map(|file| {
+                let content = fs::read_to_string(&file).unwrap();
+                (file, content)
+            })
+            .collect();
+        assert_eq!(kept, expected);
+        assert!(!data.exists(), "{} was not removed", data.display());
+        remove_scratch::remove_scratch(&kept_in).unwrap();
     }
 }
