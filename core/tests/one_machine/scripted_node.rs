@@ -86,7 +86,7 @@ impl ScriptedNode {
                 |nonce| *nonce = SecretKey::generate().to_bytes(),
                 report_gate_closing,
                 estafette::net::direct::HeldConnections::new(
-                    std::sync::Arc::new(tokio::time::Instant::now),
+                    std::sync::Arc::new(estafette::net::direct::RuntimeClock),
                     estafette::net::endpoint::TransportRecord::new(
                         std::sync::Arc::new(|_event| {}),
                         estafette::trace::LocationSalt::from_random_bytes(
