@@ -8,7 +8,6 @@ use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
-use estafette::config::NetworkConfig;
 use estafette::dirs::{
     Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem, TraceDirectory,
     trace_file_of,
@@ -59,6 +58,8 @@ const DATA_HOME: &str = "d";
 const MEMBERS_UNDER_DATA_HOME: &str = "members";
 /// The runtime directory under a scratch root.
 const RUNTIME_DIRECTORY: &str = "r";
+/// The base directories under a scratch root: configuration, data and runtime.
+const BASE_DIRECTORIES: [&str; 3] = [CONFIG_HOME, DATA_HOME, RUNTIME_DIRECTORY];
 /// The extension of a member's run record file under a scratch root.
 const RUN_RECORD_EXTENSION: &str = "stderr";
 /// The extension of the file kept beside a member's run record when the member's stop failed, so a reader of what is kept knows the member may have run on while its records were taken.
@@ -81,6 +82,8 @@ const SECRET_KEY_EXTENSION: &str = "key";
 const REDACTED_NOTE_EXTENSION: &str = "redacted";
 /// The extension spec 3.3 gives a relay's certificate cache directory, which holds its private key.
 const CERTIFICATE_CACHE_EXTENSION: &str = "certs";
+/// The field of a network configuration holding the network's secret (spec 3.3).
+const NETWORK_SECRET_FIELD: &str = "secret";
 /// The variable the acceptance gate exports the live host's invitation in.
 pub const INVITATION_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_INVITATION";
 /// What a kept run record holds in place of a secret.
@@ -333,9 +336,16 @@ impl ScratchMachine {
         failures
     }
 
-    /// Copies every member's run record into the directory, named for the member, each line that holds a secret of this machine kept with that secret replaced by the redaction marker, and returns the kept files.
+    /// Copies every member's run record into the directory, named for the member, each line that holds a secret of this machine kept with that secret replaced by the redaction marker, and returns the kept files; keeps none when the secrets to search them for cannot be read.
     pub fn keep_run_records(&self, directory: &Path) -> io::Result<Vec<PathBuf>> {
-        let secrets = self.secrets_by_length();
+        let secrets = self.secrets_by_length().map_err(|failure| {
+            io::Error::new(
+                failure.kind(),
+                format!(
+                    "run records not kept, since the secrets to search them for could not be read: {failure}"
+                ),
+            )
+        })?;
         let mut kept = Vec::new();
         for record in self.run_records()? {
             let member_name = record.file_stem().unwrap_or_default().to_string_lossy();
@@ -361,7 +371,7 @@ impl ScratchMachine {
         Ok(kept)
     }
 
-    /// Copies every file under this machine's data directory, its members' and its observers' trace files included, into the data directory inside the directory, leaving out each file that holds a secret key, going on past each directory it cannot read and each file it cannot copy, and answers each such failure; keeps nothing of it when the secrets to search it for cannot be read.
+    /// Copies every file under this machine's data directory, its members' and its observers' trace files included, into the data directory inside the directory, leaving out each file that holds a secret key, going on past each file it cannot copy, and answers each such failure; keeps nothing of it when the secrets to search it for cannot be read, as when a directory beneath the base directories cannot be listed.
     fn keep_data_directory(&self, directory: &Path) -> Vec<io::Error> {
         let data = self.root.join(DATA_HOME);
         let kept = directory.join(KEPT_DATA_DIRECTORY);
@@ -400,20 +410,10 @@ impl ScratchMachine {
         failures
     }
 
-    /// The invitation and every token of this machine, its network's secret and the text of each of its secret key files, as the run-record redaction matches them, longest first, or why the directory naming its network's secret could not be established.
-    fn invitation_and_tokens(&self) -> Result<Vec<String>, DirectoriesError> {
-        let network_secret = self
-            .established_directories()?
-            .network_config_file(&self.network)
-            .ok()
-            .and_then(|config_file| NetworkConfig::load(&config_file).ok())
-            .map(|config| config.secret);
-        let secret_key_texts: Vec<String> = self
-            .base_directory_files()
-            .iter()
-            .filter(|file| is_a_secret_key_file(file))
-            .filter_map(|file| fs::read_to_string(file).ok())
-            .collect();
+    /// The invitation and every token of this machine, its network's secret and the text of each of its secret key files, as the run-record redaction matches them, longest first, or why its network configuration, a directory beneath its base directories or a secret key file could not be read; a configuration never written gives no network secret.
+    fn invitation_and_tokens(&self) -> io::Result<Vec<String>> {
+        let network_secret = self.network_secret()?;
+        let secret_key_texts = secret_key_texts(&self.listed_base_directory_files()?)?;
         Ok(self
             .run_records
             .secrets_longest_first(
@@ -425,6 +425,32 @@ impl ScratchMachine {
             .into_iter()
             .filter(|secret| !secret.is_empty())
             .collect())
+    }
+
+    /// The secret of this machine's network as its configuration names it, whether or not the rest of the configuration loads, none when the configuration was never written, or why it could not be found, read, parsed or found naming a secret.
+    fn network_secret(&self) -> io::Result<Option<String>> {
+        let config_file = self
+            .established_directories()
+            .and_then(|directories| directories.network_config_file(&self.network))
+            .map_err(io::Error::other)?;
+        let text = match fs::read_to_string(&config_file) {
+            Ok(text) => text,
+            Err(failure) if failure.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(failure) => return Err(naming(&config_file, &failure)),
+        };
+        let configuration: toml::Table = text
+            .parse()
+            .map_err(|failure| naming(&config_file, &io::Error::other(failure)))?;
+        configuration
+            .get(NETWORK_SECRET_FIELD)
+            .and_then(toml::Value::as_str)
+            .map(|secret| Some(secret.to_owned()))
+            .ok_or_else(|| {
+                naming(
+                    &config_file,
+                    &io::Error::other(format!("names no {NETWORK_SECRET_FIELD}")),
+                )
+            })
     }
 
     /// The name this machine's records are kept under: its scratch root's.
@@ -458,9 +484,17 @@ impl ScratchMachine {
 
     /// Every file under this machine's configuration, data and runtime directories, at any depth.
     pub fn base_directory_files(&self) -> Vec<PathBuf> {
-        [CONFIG_HOME, DATA_HOME, RUNTIME_DIRECTORY]
+        BASE_DIRECTORIES
             .into_iter()
             .flat_map(|base| files_beneath(&self.root.join(base)))
+            .collect()
+    }
+
+    /// Every file under this machine's configuration, data and runtime directories, at any depth, or the failure to read a directory beneath them, naming it.
+    fn listed_base_directory_files(&self) -> io::Result<Vec<PathBuf>> {
+        BASE_DIRECTORIES
+            .into_iter()
+            .flat_map(|base| files_beneath_for_keeping(&self.root.join(base)))
             .collect()
     }
 
@@ -490,22 +524,25 @@ impl ScratchMachine {
             .join(number.to_string())
     }
 
-    /// The secrets of every readable file under this machine's base directories but its debug traces, which are a record of the run like the run record itself, longest first.
-    fn secrets_by_length(&self) -> Vec<String> {
-        let contents: Vec<String> = self
-            .base_directory_files()
-            .iter()
-            .filter(|file| {
-                file.file_name()
-                    .and_then(|name| name.to_str())
-                    .and_then(trace_file_of)
-                    .is_none()
-            })
-            .filter_map(|file| fs::read(file).ok())
-            .map(|content| String::from_utf8_lossy(&content).into_owned())
-            .collect();
-        self.run_records
-            .secrets_longest_first(contents.iter().map(String::as_str))
+    /// The secrets of this machine's secret key files and of every other readable file under its base directories but its debug traces, which are a record of the run like the run record itself, longest first, or why a directory beneath them or a secret key file could not be read.
+    fn secrets_by_length(&self) -> io::Result<Vec<String>> {
+        let mut contents = secret_key_texts(&self.listed_base_directory_files()?)?;
+        contents.extend(
+            self.base_directory_files()
+                .iter()
+                .filter(|file| !is_a_secret_key_file(file))
+                .filter(|file| {
+                    file.file_name()
+                        .and_then(|name| name.to_str())
+                        .and_then(trace_file_of)
+                        .is_none()
+                })
+                .filter_map(|file| fs::read(file).ok())
+                .map(|content| String::from_utf8_lossy(&content).into_owned()),
+        );
+        Ok(self
+            .run_records
+            .secrets_longest_first(contents.iter().map(String::as_str)))
     }
 }
 
@@ -668,6 +705,19 @@ fn is_a_secret_key_file(file: &Path) -> bool {
         .is_some_and(|extension| extension == SECRET_KEY_EXTENSION)
 }
 
+/// The text of each secret key file among the files, or the failure to read one, naming it.
+fn secret_key_texts(files: &[PathBuf]) -> io::Result<Vec<String>> {
+    files
+        .iter()
+        .filter(|file| is_a_secret_key_file(file))
+        .map(|file| {
+            fs::read(file)
+                .map(|content| String::from_utf8_lossy(&content).into_owned())
+                .map_err(|failure| naming(file, &failure))
+        })
+        .collect()
+}
+
 /// Writes the kept copy of the data file, byte for byte when it holds no invitation or token, else with each replaced by the redaction marker and a note beside the copy naming the file.
 fn keep_data_file(
     file: &Path,
@@ -782,6 +832,7 @@ mod tests {
     use super::trace_reader::tests::{
         MEMBER_LINE, second_line_still_zero_at_its_start_sized_ahead,
     };
+    use estafette::config::NetworkConfig;
     use std::os::unix::fs::PermissionsExt;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -825,6 +876,12 @@ mod tests {
     const FIRST_FAILURE: &str = "the test failed first";
     /// Where a test moves a machine's configuration base directory so a file can take its place.
     const CONFIGURATION_HOME_SET_ASIDE: &str = "c-set-aside";
+    /// The card whose secret key file a test plants.
+    const CARD: &str = "amy";
+    /// The events file a test plants in a member's trace directory.
+    const MEMBER_EVENTS_FILE: &str = "20261117T080000Z-1111111111111111-estafette.events.jsonl";
+    /// What a test writes where a network configuration belongs, which does not load.
+    const NOT_A_NETWORK_CONFIGURATION: &str = "not a network configuration\n";
 
     #[test]
     fn observability_decision_12_a_failing_machine_prints_the_lines_of_a_member_that_may_still_run_before_one_still_zero_filled()
@@ -1098,7 +1155,7 @@ mod tests {
     }
 
     #[test]
-    fn observability_decision_16_a_machine_whose_data_subdirectory_cannot_be_read_answers_that_failure_and_keeps_what_it_could_read()
+    fn observability_decision_16_a_machine_whose_data_subdirectory_cannot_be_read_answers_that_failure_for_its_run_records_and_its_data_and_keeps_neither()
      {
         let kept_in = fresh_directory::fresh_directory_in(
             &std::env::temp_dir(),
@@ -1137,14 +1194,18 @@ mod tests {
         let not_kept = machine.keep_records(&kept_in);
 
         fs::set_permissions(&unreadable_directory, fs::Permissions::from_mode(READABLE)).unwrap();
-        assert_eq!(not_kept.len(), 1, "{not_kept:?}");
+        assert_eq!(not_kept.len(), 2, "{not_kept:?}");
         assert!(
-            not_kept[0]
+            not_kept.iter().all(|failure| failure
                 .to_string()
-                .contains(&unreadable_directory.display().to_string()),
+                .contains(&unreadable_directory.display().to_string())),
             "{not_kept:?}"
         );
-        assert_eq!(fs::read_to_string(&kept_readable).unwrap(), "events line\n");
+        assert!(
+            !kept_readable.exists(),
+            "{} was kept though a directory its secrets might lie in could not be read",
+            kept_readable.display()
+        );
         remove_scratch::remove_scratch(&kept_in).unwrap();
     }
 
@@ -1427,5 +1488,161 @@ mod tests {
             kept_data.display()
         );
         remove_scratch::remove_scratch(&kept_in).unwrap();
+    }
+
+    /// Drops, on a test that was not failing, a machine of the tag keeping into a fresh directory, its first member's run record and events file each holding the planted token, once the setup handed in made one source of its secrets unreadable and named it; returns what the drop failed with, every file kept, the directory the machine kept in and the source named.
+    fn dropped_with_a_secret_unread(
+        tag: &str,
+        make_unreadable: impl FnOnce(&ScratchMachine) -> PathBuf,
+    ) -> (String, BTreeSet<PathBuf>, PathBuf, PathBuf) {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-{tag}-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = ScratchMachine::fresh(
+            tag,
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: Some(kept_in.clone()),
+                invitation: None,
+            },
+        );
+        let holding_the_token = format!("key {PLANTED_TOKEN} seen\n");
+        fs::write(
+            machine
+                .root
+                .join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}")),
+            &holding_the_token,
+        )
+        .unwrap();
+        let events_file = machine
+            .traces_directory_of_member(0)
+            .join(MEMBER_EVENTS_FILE);
+        fs::create_dir_all(events_file.parent().unwrap()).unwrap();
+        fs::write(&events_file, &holding_the_token).unwrap();
+        let unread = make_unreadable(&machine);
+        let root = machine.root.clone();
+        let kept_machine = kept_in.join(machine.name());
+
+        let dropped = catch_unwind(AssertUnwindSafe(move || drop(machine)));
+
+        if unread.exists() {
+            fs::set_permissions(&unread, fs::Permissions::from_mode(READABLE)).unwrap();
+        }
+        let failure = dropped.expect_err("a machine whose secrets could not be read kept whole");
+        let message = failure.downcast_ref::<String>().unwrap().clone();
+        let kept: BTreeSet<PathBuf> = files_beneath(&kept_in).into_iter().collect();
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+        if root.exists() {
+            remove_scratch::remove_scratch(&root).unwrap();
+        }
+        (message, kept, kept_machine, unread)
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_network_configuration_does_not_parse_keeps_no_data_unsearched_and_names_the_configuration()
+     {
+        let (message, kept, kept_machine, unread) =
+            dropped_with_a_secret_unread("unloaded-configuration", |machine| {
+                let configuration = machine.directories().network_config_file(NETWORK).unwrap();
+                fs::create_dir_all(configuration.parent().unwrap()).unwrap();
+                fs::write(&configuration, NOT_A_NETWORK_CONFIGURATION).unwrap();
+                configuration
+            });
+
+        assert_eq!(
+            kept,
+            BTreeSet::from([
+                kept_machine.join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}"))
+            ])
+        );
+        assert!(message.contains(&unread.display().to_string()), "{message}");
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_network_configuration_names_its_secret_but_does_not_load_keeps_its_data_with_that_secret_redacted()
+     {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-unloaded-secret-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = ScratchMachine::fresh(
+            "unloaded-secret",
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: Some(kept_in.clone()),
+                invitation: None,
+            },
+        );
+        let configuration = machine.directories().network_config_file(NETWORK).unwrap();
+        fs::create_dir_all(configuration.parent().unwrap()).unwrap();
+        fs::write(
+            &configuration,
+            format!("{NETWORK_SECRET_FIELD} = \"{PLANTED_NETWORK_SECRET}\"\n"),
+        )
+        .unwrap();
+        let events_file = machine
+            .traces_directory_of_member(0)
+            .join(MEMBER_EVENTS_FILE);
+        fs::create_dir_all(events_file.parent().unwrap()).unwrap();
+        fs::write(
+            &events_file,
+            format!("network {PLANTED_NETWORK_SECRET} joined\n"),
+        )
+        .unwrap();
+        let kept_events_file = kept_in.join(machine.name()).join(KEPT_DATA_DIRECTORY).join(
+            events_file
+                .strip_prefix(machine.root.join(DATA_HOME))
+                .unwrap(),
+        );
+
+        drop(machine);
+
+        assert_eq!(
+            fs::read_to_string(&kept_events_file).unwrap(),
+            format!("network {REDACTED} joined\n")
+        );
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_secret_key_file_cannot_be_read_keeps_neither_its_data_nor_its_run_records_unsearched_and_names_the_key_file()
+     {
+        let (message, kept, _kept_machine, unread) =
+            dropped_with_a_secret_unread("unread-key-file", |machine| {
+                let sidecar = machine
+                    .directories()
+                    .card_sidecar_file(NETWORK, CARD)
+                    .unwrap();
+                fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+                fs::write(&sidecar, format!("{PLANTED_TOKEN}\n")).unwrap();
+                fs::set_permissions(&sidecar, fs::Permissions::from_mode(UNREADABLE)).unwrap();
+                sidecar
+            });
+
+        assert_eq!(kept, BTreeSet::new());
+        assert!(message.contains(&unread.display().to_string()), "{message}");
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_directory_holding_a_secret_key_file_cannot_be_read_keeps_neither_its_data_nor_its_run_records_unsearched_and_names_the_directory()
+     {
+        let (message, kept, _kept_machine, unread) =
+            dropped_with_a_secret_unread("unread-key-directory", |machine| {
+                let sidecar = machine
+                    .directories()
+                    .card_sidecar_file(NETWORK, CARD)
+                    .unwrap();
+                let cards = sidecar.parent().unwrap().to_path_buf();
+                fs::create_dir_all(&cards).unwrap();
+                fs::write(&sidecar, format!("{PLANTED_TOKEN}\n")).unwrap();
+                fs::set_permissions(&cards, fs::Permissions::from_mode(UNREADABLE)).unwrap();
+                cards
+            });
+
+        assert_eq!(kept, BTreeSet::new());
+        assert!(message.contains(&unread.display().to_string()), "{message}");
     }
 }
