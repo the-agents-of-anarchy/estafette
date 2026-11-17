@@ -485,7 +485,7 @@ impl ScratchMachine {
             Err(failure) => return vec![failure],
         };
         let run_records = self.keep_run_records(&kept).err();
-        let end_failures = self.keep_end_failures(&kept).err();
+        let end_failures = self.keep_end_failures(&kept, secrets).err();
         let mut failures: Vec<io::Error> =
             [run_records, end_failures].into_iter().flatten().collect();
         failures.extend(self.keep_data_directory(&kept, secrets));
@@ -535,12 +535,16 @@ impl ScratchMachine {
         Ok(kept)
     }
 
-    /// Copies the mark of every process of this machine whose end failed into the directory as it was written, and returns the kept marks.
-    fn keep_end_failures(&self, directory: &Path) -> io::Result<Vec<PathBuf>> {
+    /// Copies the mark of every process of this machine whose end failed into the directory through the writer of kept files, and returns the kept marks.
+    fn keep_end_failures(
+        &self,
+        directory: &Path,
+        secrets: &KeptSecrets,
+    ) -> io::Result<Vec<PathBuf>> {
         let mut kept = Vec::new();
         for mark in self.root_files_with_extension(END_FAILED_EXTENSION)? {
             let kept_mark = directory.join(mark.file_name().unwrap_or_default());
-            fs::copy(&mark, &kept_mark)?;
+            keep_file(secrets, KeptAs::Evidence, &kept_mark, &fs::read(&mark)?)?;
             eprintln!("failed end kept at {}", kept_mark.display());
             kept.push(kept_mark);
         }
@@ -753,15 +757,20 @@ pub fn keep_stop_failure(
     )
 }
 
-/// Writes into the directory a mark file of that name holding the text, each secret replaced by the redaction marker.
+/// Writes into the directory a mark file of that name holding the text, through the writer of kept files.
 fn keep_mark(
     directory: &Path,
     mark_name: &str,
     text: &str,
     secrets: &KeptSecrets,
 ) -> io::Result<()> {
-    let (redacted_text, _redacted_lines) = secrets.redacted(text, KeptAs::Evidence);
-    fs::write(directory.join(mark_name), redacted_text)
+    keep_file(
+        secrets,
+        KeptAs::Evidence,
+        &directory.join(mark_name),
+        text.as_bytes(),
+    )
+    .map(drop)
 }
 
 /// The record with each secret replaced by the redaction marker, and how many of its lines held one.
@@ -1516,6 +1525,7 @@ mod tests {
             BTreeSet::from([
                 kept_in.join("amy.stderr"),
                 kept_in.join("amy.stop-failed"),
+                kept_in.join(format!("amy.stop-failed.{REDACTED_NOTE_EXTENSION}")),
                 kept_in.join("bob.stderr"),
             ])
         );
@@ -1527,6 +1537,47 @@ mod tests {
             "{mark}"
         );
         remove_scratch::remove_scratch(&kept_in).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_16_a_failed_end_whose_mark_names_the_invitation_is_kept_redacted_with_a_note_beside_it()
+     {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-redacted-mark-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = ScratchMachine::fresh(
+            "kept-redacted-mark",
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: Some(kept_in.clone()),
+                invitation: Some(PLANTED_INVITATION.to_owned()),
+            },
+        );
+        let mut failing_its_end =
+            machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), FAILED_LABEL);
+        let mark_name = format!(
+            "{FAILED_LABEL}-{}.{END_FAILED_EXTENSION}",
+            failing_its_end.id()
+        );
+        failing_its_end
+            .end_through(|_process| Err(io::Error::other(format!("refused {PLANTED_INVITATION}"))));
+        drop(failing_its_end);
+        let kept_mark = kept_in.join(machine.name()).join(&mark_name);
+
+        drop(machine);
+
+        let marked = fs::read_to_string(&kept_mark).unwrap();
+        let mut note = kept_mark.into_os_string();
+        note.push(format!(".{REDACTED_NOTE_EXTENSION}"));
+        let noted = fs::read_to_string(note).unwrap_or_default();
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+        assert!(
+            marked.contains(&format!("refused {REDACTED}")) && !marked.contains(PLANTED_INVITATION),
+            "{marked}"
+        );
+        assert!(noted.contains(&mark_name), "{noted}");
     }
 
     #[test]

@@ -754,6 +754,9 @@ mod tests {
                 run_record_mark.clone(),
                 kept.join(KEPT_TRACE_FILES_DIRECTORY),
                 fetch_mark.clone(),
+                kept.join(format!(
+                    "{KEPT_TRACE_FILES_DIRECTORY}.{FETCH_FAILED_EXTENSION}.{REDACTED_NOTE_EXTENSION}"
+                )),
             ])
         );
         let run_record_marked = fs::read_to_string(&run_record_mark).unwrap();
