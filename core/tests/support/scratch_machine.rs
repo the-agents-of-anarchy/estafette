@@ -706,7 +706,7 @@ mod tests {
                 .unwrap()
                 .path();
         let member_traces = machine.traces_directory_of_member(0);
-        let cards = machine.directories().cards_directory(NETWORK).unwrap();
+        let directories = machine.directories();
         let written = [
             (
                 member_traces.join("20261117T080000Z-1111111111111111-estafette.events.jsonl"),
@@ -720,14 +720,25 @@ mod tests {
                 observer_traces.join("20261117T080001Z-2222222222222222-estafette.events.jsonl"),
                 "observer events line\n",
             ),
-            (cards.join("amy.yaml"), "card of amy\n"),
+            (
+                directories.card_file(NETWORK, "amy").unwrap(),
+                "card of amy\n",
+            ),
         ];
-        let secret_key_file = cards.join("amy.key");
-        for (file, content) in &written {
+        let secret_key_files = [
+            (
+                directories.card_sidecar_file(NETWORK, "amy").unwrap(),
+                "secret key of amy\n",
+            ),
+            (
+                directories.infrastructure_key_file(NETWORK).unwrap(),
+                "bootstrap key of the host\n",
+            ),
+        ];
+        for (file, content) in written.iter().chain(&secret_key_files) {
             fs::create_dir_all(file.parent().unwrap()).unwrap();
             fs::write(file, content).unwrap();
         }
-        fs::write(&secret_key_file, "secret key of amy\n").unwrap();
         let kept_data = kept_in.join(machine.name()).join(KEPT_DATA_DIRECTORY);
         let expected: BTreeSet<(PathBuf, String)> = written
             .iter()
