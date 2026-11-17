@@ -934,7 +934,8 @@ mod spec_3_15_two_members_through_the_live_host {
             .unwrap()
     }
 
-    /// The address a presence line of `tail` announces for the card, none when the line is no presence of that card.
+    /// The address a presence line of `tail` announces for the card, none when the line is no presence of that card, failing the test, naming the place and the reason, when a presence of that card announces an address or a relay that does not parse.
+    #[track_caller]
     fn address_announced_by(line: &str, card: EndpointId) -> Option<EndpointAddr> {
         let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
         if columns.first() != Some(&crate::tail::PRESENCE_KIND)
@@ -942,14 +943,46 @@ mod spec_3_15_two_members_through_the_live_host {
         {
             return None;
         }
-        let printed: PrintedAddr = serde_json::from_str(columns.get(PRESENCE_ADDR_COLUMN)?).ok()?;
-        let relays = printed
-            .relays
-            .iter()
-            .filter_map(|relay| relay.parse().ok())
-            .map(TransportAddr::Relay);
+        let addr = columns
+            .get(PRESENCE_ADDR_COLUMN)
+            .unwrap_or_else(|| panic!("the presence of {card} has no addr column: {line}"));
+        let printed: PrintedAddr = serde_json::from_str(addr).unwrap_or_else(|refusal| {
+            panic!("the addr of the presence of {card} does not parse: {refusal}; line: {line}")
+        });
+        let relays = printed.relays.iter().enumerate().map(|(place, relay)| {
+            TransportAddr::Relay(relay.parse().unwrap_or_else(|refusal| {
+                panic!(
+                    "relay {place} of the addr of the presence of {card}, {relay:?}, does not parse: {refusal}; line: {line}"
+                )
+            }))
+        });
         let direct = printed.direct.into_iter().map(TransportAddr::Ip);
         Some(EndpointAddr::from_parts(card, relays.chain(direct)))
+    }
+
+    #[test]
+    fn spec_3_15_test_8_a_presence_of_the_card_whose_relay_does_not_parse_fails_naming_the_relays_place_and_why()
+     {
+        let card = SecretKey::from_bytes(&[OFF_TOPIC_MESSAGE_ID[0]; 32]).public();
+        let line = [
+            PRESENCE_KIND,
+            "1",
+            &render_public_key(&card),
+            "handle",
+            "public",
+            "seq",
+            r#"{"relays":["https://relay.example/","not a relay url"],"direct":[]}"#,
+        ]
+        .join(&COLUMN_SEPARATOR.to_string());
+
+        let failure = std::panic::catch_unwind(|| address_announced_by(&line, card))
+            .expect_err("a presence whose relay does not parse was read");
+
+        let message = failure.downcast_ref::<String>().unwrap();
+        assert!(
+            message.contains("relay 1") && message.contains("\"not a relay url\""),
+            "{message}"
+        );
     }
 
     /// The numbers of the member's events lines recording a Presence signed by the peer accepted before the frame of the message, once that frame is recorded, requiring it within the frame wait.
