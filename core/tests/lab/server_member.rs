@@ -1,4 +1,5 @@
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::time::{Duration, Instant};
@@ -11,11 +12,9 @@ use crate::live_network::LiveNetwork;
 use crate::mcp_server::{HANDLE_KEY, PEERS_KEY, PEERS_TOOL, RESULT_KEY, SEND_TOOL, send_arguments};
 use crate::scratch_machine::fresh_directory::fresh_directory_in;
 use crate::scratch_machine::remove_scratch::remove_scratch;
+use crate::scratch_machine::server_member_end::{ServerMemberStep, ended_server_member, succeeded};
 use crate::scratch_machine::trace_reader::timeline_in;
-use crate::scratch_machine::{
-    TIMELINE_HEADING, fail_unless_panicking, fresh_kept_directory, keep_run_record,
-    keep_stop_failure,
-};
+use crate::scratch_machine::{TIMELINE_HEADING, fail_unless_panicking};
 
 /// The recipe that writes the lab network's configuration on a server from its standard input.
 const NETWORK_ON_SERVER_RECIPE: &str = "remote::network-on-server";
@@ -31,8 +30,6 @@ const STOP_MEMBER_ON_SERVER_RECIPE: &str = "remote::stop-member-on-server";
 const RUN_RECORD_ON_SERVER_RECIPE: &str = "remote::run-record-on-server";
 /// The recipe that fetches both trace files of each run of a member on a server into a directory.
 const TRACE_FILES_ON_SERVER_RECIPE: &str = "remote::trace-files-on-server";
-/// The directory a member's fetched trace files are kept in, inside the directory its records are kept in.
-const KEPT_TRACE_FILES_DIRECTORY: &str = "traces";
 /// What begins the name of the scratch directory a failing test fetches a member's trace files into for its timeline alone.
 const FETCHED_FOR_THE_PRINT_PREFIX: &str = "ea-timeline";
 /// The name, inside that scratch directory, of the directory the recipe fetches into.
@@ -156,70 +153,41 @@ impl<'server> ServerMember<'server> {
         }
     }
 
-    /// Keeps the member's run record in the directory by the scratch machines' redaction rule, its secrets those of its configuration and card, failing the test when the record cannot be read or kept.
-    fn keep_run_record(&self, directory: &Path) {
-        let printed = self
-            .server
-            .attempt(RUN_RECORD_ON_SERVER_RECIPE, &[&self.card], &[]);
-        if !printed.status.success() {
-            fail_unless_panicking(&format!(
-                "run record of {} on {} not read: {}",
-                self.card,
-                self.server.label(),
-                String::from_utf8_lossy(&printed.stderr)
-            ));
-            return;
-        }
-        let record = String::from_utf8_lossy(&printed.stdout);
-        if let Err(failure) = keep_run_record(directory, &self.card, &record, &self.secrets) {
-            fail_unless_panicking(&format!("run record of {} not kept: {failure}", self.card));
+    /// Runs the recipe of the step of the member's end on its server, unredacted where it fetches trace files, so its raw files are not safe to post, never panicking.
+    fn run_end_step(&self, step: ServerMemberStep<'_>) -> io::Result<Output> {
+        match step {
+            ServerMemberStep::Stop => self.server.attempt_without_panicking(
+                STOP_MEMBER_ON_SERVER_RECIPE,
+                &[&self.card],
+                &[],
+            ),
+            ServerMemberStep::PrintRunRecord => self.server.attempt_without_panicking(
+                RUN_RECORD_ON_SERVER_RECIPE,
+                &[&self.card],
+                &[],
+            ),
+            ServerMemberStep::FetchTraceFiles(into) => self.server.attempt_without_panicking(
+                TRACE_FILES_ON_SERVER_RECIPE,
+                &[&self.card, &into.to_string_lossy()],
+                &[],
+            ),
         }
     }
 
-    /// Keeps the member's run record and trace files together in a directory of its own beneath the test's, named for its server and card and numbered after any earlier keeping of that name, with a mark beside the run record when its stop failed, and answers where its trace files are, when they were fetched, failing the test when that directory or that mark cannot be made.
-    fn keep_records(&self, directory: &Path, stop: &Output) -> Option<PathBuf> {
-        let kept =
-            fresh_kept_directory(directory, &format!("{}-{}", self.server.label(), self.card))
-                .inspect_err(|failure| {
-                    fail_unless_panicking(&format!("records of {} not kept: {failure}", self.card));
-                })
-                .ok()?;
-        let marked = keep_stop_failure(&kept, &self.card, stop.status, &stop.stderr, &self.secrets);
-        self.keep_run_record(&kept);
-        let kept_trace_files = self.keep_trace_files(&kept);
-        if let Err(failure) = marked {
-            fail_unless_panicking(&format!(
-                "failed stop of {} not marked: {failure}",
-                self.card
-            ));
-        }
-        kept_trace_files
-    }
-
-    /// Fetches both trace files of each of the member's runs into the directory, unredacted, so its raw files are not safe to post, and answers the directory when they were fetched, failing the test when they were not.
+    /// Fetches both trace files of each of the member's runs into the directory and answers the directory when they were fetched, printing why they were not.
     fn fetch_trace_files<'into>(&self, into: &'into Path) -> Option<&'into Path> {
-        let fetched = self.server.attempt(
-            TRACE_FILES_ON_SERVER_RECIPE,
-            &[&self.card, &into.to_string_lossy()],
-            &[],
-        );
-        if !fetched.status.success() {
-            fail_unless_panicking(&format!(
-                "trace files of {} on {} not fetched: {}",
-                self.card,
-                self.server.label(),
-                String::from_utf8_lossy(&fetched.stderr)
-            ));
+        let fetched = self.run_end_step(ServerMemberStep::FetchTraceFiles(into));
+        match succeeded(&fetched) {
+            Ok(_fetched) => Some(into),
+            Err(failure) => {
+                eprintln!(
+                    "trace files of {} on {} not fetched: {failure}",
+                    self.card,
+                    self.server.label()
+                );
+                None
+            }
         }
-        fetched.status.success().then_some(into)
-    }
-
-    /// Keeps both trace files of each of the member's runs beside its run record and answers where, when they were fetched.
-    fn keep_trace_files(&self, directory: &Path) -> Option<PathBuf> {
-        let kept_trace_files = directory.join(KEPT_TRACE_FILES_DIRECTORY);
-        let fetched = self.fetch_trace_files(&kept_trace_files)?;
-        eprintln!("trace files of {} kept at {}", self.card, fetched.display());
-        Some(fetched.to_path_buf())
     }
 
     /// Prints the timeline a failing test shows for the member.
@@ -259,27 +227,24 @@ impl<'server> ServerMember<'server> {
 
 impl Drop for ServerMember<'_> {
     fn drop(&mut self) {
-        let stopped = self
-            .server
-            .attempt(STOP_MEMBER_ON_SERVER_RECIPE, &[&self.card], &[]);
-        if !stopped.status.success() {
-            eprintln!(
-                "{} on {} did not stop cleanly: {}",
-                self.card,
-                self.server.label(),
-                String::from_utf8_lossy(&stopped.stderr)
-            );
-        }
-        let kept_trace_files = self
-            .kept_in
-            .as_deref()
-            .map(|directory| self.keep_records(directory, &stopped));
+        let ended = ended_server_member(
+            &self.card,
+            self.server.label(),
+            &format!("{}-{}", self.server.label(), self.card),
+            self.kept_in.as_deref(),
+            &self.secrets,
+            |step| self.run_end_step(step),
+        );
         if std::thread::panicking() {
-            let timeline = kept_trace_files.map_or_else(
-                || self.timeline_fetched_for_the_print(),
-                |kept| timeline_of_fetched(kept.as_deref()),
-            );
+            let timeline = if self.kept_in.is_some() {
+                timeline_of_fetched(ended.kept_trace_files.as_deref())
+            } else {
+                self.timeline_fetched_for_the_print()
+            };
             self.print_timeline(&timeline);
+        }
+        if !ended.failures.is_empty() {
+            fail_unless_panicking(&ended.failures.join("\n"));
         }
     }
 }

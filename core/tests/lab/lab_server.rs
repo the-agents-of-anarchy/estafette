@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{self, Write};
 use std::process::{Command, Output, Stdio};
 
 use crate::live_network::{LAB_BINARY_VARIABLE, TASK_RUNNER};
@@ -82,16 +82,31 @@ impl LabServer {
     }
 
     /// Runs the remote recipe against this server with the input on its standard input and returns how it ended.
+    #[track_caller]
     pub fn attempt(&self, recipe: &str, arguments: &[&str], input: &[u8]) -> Output {
+        self.attempt_without_panicking(recipe, arguments, input)
+            .unwrap()
+    }
+
+    /// Runs the remote recipe against this server with the input on its standard input and returns how it ended, or why it could not run, never panicking.
+    pub fn attempt_without_panicking(
+        &self,
+        recipe: &str,
+        arguments: &[&str],
+        input: &[u8],
+    ) -> io::Result<Output> {
         let mut running = self
             .recipe_command(recipe, arguments)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        running.stdin.take().unwrap().write_all(input).unwrap();
-        running.wait_with_output().unwrap()
+            .spawn()?;
+        let written = running
+            .stdin
+            .take()
+            .map_or(Ok(()), |mut recipe_input| recipe_input.write_all(input));
+        let output = running.wait_with_output()?;
+        written.map(|()| output)
     }
 
     /// Drops UDP between this server and this machine until the returned path is dropped, which also undoes a drop that failed half way.

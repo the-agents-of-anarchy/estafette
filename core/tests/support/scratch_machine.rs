@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
@@ -20,10 +20,13 @@ pub mod fresh_directory;
 pub mod owned_process;
 #[path = "../common/remove_scratch.rs"]
 pub mod remove_scratch;
+#[path = "server_member_end.rs"]
+pub mod server_member_end;
 #[path = "trace_reader.rs"]
 pub mod trace_reader;
 
 use owned_process::{END_FAILED_EXTENSION, OwnedProcess};
+use server_member_end::succeeded;
 use trace_reader::{WritingProcess, timeline_read_as};
 
 use crate::member_events::MemberEvents;
@@ -514,20 +517,18 @@ pub fn keep_run_record(
     Ok(kept_record)
 }
 
-/// Writes beside the member's run record in the directory, when the member's stop ended in failure, a file named for the member saying so, with how the stop ended and what it printed, each secret replaced by the redaction marker; nothing when the stop succeeded.
+/// Writes beside the member's run record in the directory, when the member's stop failed or could not run, a file named for the member saying so, with how the stop ended and what it printed, each secret replaced by the redaction marker; nothing when the stop succeeded.
 pub fn keep_stop_failure(
     directory: &Path,
     member_name: &str,
-    stop: ExitStatus,
-    printed_by_the_stop: &[u8],
+    stop: &io::Result<Output>,
     secrets_by_length: &[String],
 ) -> io::Result<()> {
-    if stop.success() {
+    let Err(failure) = succeeded(stop) else {
         return Ok(());
-    }
+    };
     let mark = format!(
-        "the stop of {member_name} ended with {stop}, so it may have run on while its records were taken; the stop printed:\n{}",
-        String::from_utf8_lossy(printed_by_the_stop)
+        "the stop of {member_name} failed, so it may have run on while its records were taken; the stop ended with {failure}"
     );
     let (text, _redacted_lines) = redacted(&mark, secrets_by_length);
     fs::write(
@@ -962,13 +963,19 @@ mod tests {
         let failed_stop = Command::new(EXITS_IN_FAILURE).status().unwrap();
         let clean_stop = Command::new(EXITS_IN_SUCCESS).status().unwrap();
         let printed_by_the_failed_stop = format!("ssh: the server refused {secret}\n");
+        let stop_printing = |status, printed: &str| {
+            Ok(Output {
+                status,
+                stdout: Vec::new(),
+                stderr: printed.as_bytes().to_vec(),
+            })
+        };
 
         keep_run_record(&kept_in, "amy", "record of amy\n", &secrets).unwrap();
         keep_stop_failure(
             &kept_in,
             "amy",
-            failed_stop,
-            printed_by_the_failed_stop.as_bytes(),
+            &stop_printing(failed_stop, &printed_by_the_failed_stop),
             &secrets,
         )
         .unwrap();
@@ -976,8 +983,7 @@ mod tests {
         keep_stop_failure(
             &kept_in,
             "bob",
-            clean_stop,
-            b"bob printed this while stopping\n",
+            &stop_printing(clean_stop, "bob printed this while stopping\n"),
             &secrets,
         )
         .unwrap();
