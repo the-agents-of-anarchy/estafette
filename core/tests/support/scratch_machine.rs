@@ -559,15 +559,19 @@ impl Drop for ScratchMachine {
             .map(|directory| self.keep_records(directory))
             .unwrap_or_default();
         let removed = remove_scratch::remove_scratch(&self.root);
+        let mut failures = Vec::new();
         if !not_kept.is_empty() {
-            fail_unless_panicking(&format!(
+            failures.push(format!(
                 "records of {} not kept: {}",
                 self.root.display(),
                 each_failure(&not_kept)
             ));
         }
         if let Err(failure) = removed {
-            fail_unless_panicking(&failure.to_string());
+            failures.push(failure.to_string());
+        }
+        if !failures.is_empty() {
+            fail_unless_panicking(&failures.join("; "));
         }
     }
 }
@@ -880,6 +884,11 @@ mod tests {
     const CARD: &str = "amy";
     /// The events file a test plants in a member's trace directory.
     const MEMBER_EVENTS_FILE: &str = "20261117T080000Z-1111111111111111-estafette.events.jsonl";
+    /// The events file a test plants in a second member's trace directory.
+    const SECOND_MEMBER_EVENTS_FILE: &str =
+        "20261117T080001Z-2222222222222222-estafette.events.jsonl";
+    /// The steps of a machine's keeping that search for its secrets, run records and data, each failing on its own when they cannot be read.
+    const KEEPING_STEPS_SEARCHING_FOR_SECRETS: usize = 2;
     /// What a test writes where a network configuration belongs, which does not load.
     const NOT_A_NETWORK_CONFIGURATION: &str = "not a network configuration\n";
 
@@ -1155,58 +1164,42 @@ mod tests {
     }
 
     #[test]
-    fn observability_decision_16_a_machine_whose_data_subdirectory_cannot_be_read_answers_that_failure_for_its_run_records_and_its_data_and_keeps_neither()
+    fn observability_decision_16_a_machine_dropped_on_a_test_that_was_not_failing_whose_data_subdirectory_cannot_be_read_reports_each_failure_of_its_keeping_and_the_failed_removal_of_its_scratch_root()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-unreadable-test-{}", std::process::id()),
-        )
-        .unwrap();
-        let machine = ScratchMachine::fresh(
-            "kept-unreadable",
-            NETWORK,
-            &RunRecordKeeping {
-                kept_in: None,
-                invitation: None,
-            },
-        );
-        let readable = machine
-            .traces_directory_of_member(0)
-            .join("20261117T080000Z-1111111111111111-estafette.events.jsonl");
-        let unreadable_directory = machine.traces_directory_of_member(1);
-        for file in [
-            &readable,
-            &unreadable_directory.join("20261117T080001Z-2222222222222222-estafette.events.jsonl"),
-        ] {
-            fs::create_dir_all(file.parent().unwrap()).unwrap();
-            fs::write(file, "events line\n").unwrap();
-        }
-        fs::set_permissions(
-            &unreadable_directory,
-            fs::Permissions::from_mode(UNREADABLE),
-        )
-        .unwrap();
-        let kept_readable = kept_in
-            .join(machine.name())
-            .join(KEPT_DATA_DIRECTORY)
-            .join(readable.strip_prefix(machine.root.join(DATA_HOME)).unwrap());
+        let dropped = dropped_with_a_source_unread("kept-unreadable", |machine| {
+            let unreadable_directory = machine.traces_directory_of_member(1);
+            fs::create_dir_all(&unreadable_directory).unwrap();
+            fs::write(
+                unreadable_directory.join(SECOND_MEMBER_EVENTS_FILE),
+                "events line\n",
+            )
+            .unwrap();
+            fs::set_permissions(
+                &unreadable_directory,
+                fs::Permissions::from_mode(UNREADABLE),
+            )
+            .unwrap();
+            unreadable_directory
+        });
 
-        let not_kept = machine.keep_records(&kept_in);
-
-        fs::set_permissions(&unreadable_directory, fs::Permissions::from_mode(READABLE)).unwrap();
-        assert_eq!(not_kept.len(), 2, "{not_kept:?}");
-        assert!(
-            not_kept.iter().all(|failure| failure
-                .to_string()
-                .contains(&unreadable_directory.display().to_string())),
-            "{not_kept:?}"
+        assert_eq!(dropped.kept, BTreeSet::new());
+        assert_eq!(
+            dropped
+                .message
+                .matches(&dropped.unread.display().to_string())
+                .count(),
+            KEEPING_STEPS_SEARCHING_FOR_SECRETS,
+            "{}",
+            dropped.message
         );
         assert!(
-            !kept_readable.exists(),
-            "{} was kept though a directory its secrets might lie in could not be read",
-            kept_readable.display()
+            dropped
+                .message
+                .contains(&format!("{}: ", dropped.root.display())),
+            "the failed removal of {} is not reported: {}",
+            dropped.root.display(),
+            dropped.message
         );
-        remove_scratch::remove_scratch(&kept_in).unwrap();
     }
 
     #[test]
@@ -1490,11 +1483,20 @@ mod tests {
         remove_scratch::remove_scratch(&kept_in).unwrap();
     }
 
-    /// Drops, on a test that was not failing, a machine of the tag keeping into a fresh directory, its first member's run record and events file each holding the planted token, once the setup handed in made one source of its secrets unreadable and named it; returns what the drop failed with, every file kept, the directory the machine kept in and the source named.
-    fn dropped_with_a_secret_unread(
+    /// What a machine dropped on a test that was not failing left: the message its drop failed with, every file it kept, the directory it kept in, its scratch root and the source the setup made unreadable.
+    struct DroppedFailing {
+        message: String,
+        kept: BTreeSet<PathBuf>,
+        kept_machine: PathBuf,
+        root: PathBuf,
+        unread: PathBuf,
+    }
+
+    /// Drops, on a test that was not failing, a machine of the tag keeping into a fresh directory, its first member's run record and events file each holding the planted token, once the setup handed in made one source unreadable and named it, then makes that source readable again and removes what is left.
+    fn dropped_with_a_source_unread(
         tag: &str,
         make_unreadable: impl FnOnce(&ScratchMachine) -> PathBuf,
-    ) -> (String, BTreeSet<PathBuf>, PathBuf, PathBuf) {
+    ) -> DroppedFailing {
         let kept_in = fresh_directory::fresh_directory_in(
             &std::env::temp_dir(),
             &format!("estafette-kept-{tag}-test-{}", std::process::id()),
@@ -1530,34 +1532,46 @@ mod tests {
         if unread.exists() {
             fs::set_permissions(&unread, fs::Permissions::from_mode(READABLE)).unwrap();
         }
-        let failure = dropped.expect_err("a machine whose secrets could not be read kept whole");
+        let failure =
+            dropped.expect_err("a machine with a source unread was dropped with no failure");
         let message = failure.downcast_ref::<String>().unwrap().clone();
         let kept: BTreeSet<PathBuf> = files_beneath(&kept_in).into_iter().collect();
         remove_scratch::remove_scratch(&kept_in).unwrap();
         if root.exists() {
             remove_scratch::remove_scratch(&root).unwrap();
         }
-        (message, kept, kept_machine, unread)
+        DroppedFailing {
+            message,
+            kept,
+            kept_machine,
+            root,
+            unread,
+        }
     }
 
     #[test]
     fn observability_decision_16_a_machine_whose_network_configuration_does_not_parse_keeps_no_data_unsearched_and_names_the_configuration()
      {
-        let (message, kept, kept_machine, unread) =
-            dropped_with_a_secret_unread("unloaded-configuration", |machine| {
-                let configuration = machine.directories().network_config_file(NETWORK).unwrap();
-                fs::create_dir_all(configuration.parent().unwrap()).unwrap();
-                fs::write(&configuration, NOT_A_NETWORK_CONFIGURATION).unwrap();
-                configuration
-            });
+        let dropped = dropped_with_a_source_unread("unloaded-configuration", |machine| {
+            let configuration = machine.directories().network_config_file(NETWORK).unwrap();
+            fs::create_dir_all(configuration.parent().unwrap()).unwrap();
+            fs::write(&configuration, NOT_A_NETWORK_CONFIGURATION).unwrap();
+            configuration
+        });
 
         assert_eq!(
-            kept,
-            BTreeSet::from([
-                kept_machine.join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}"))
-            ])
+            dropped.kept,
+            BTreeSet::from([dropped
+                .kept_machine
+                .join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}"))])
         );
-        assert!(message.contains(&unread.display().to_string()), "{message}");
+        assert!(
+            dropped
+                .message
+                .contains(&dropped.unread.display().to_string()),
+            "{}",
+            dropped.message
+        );
     }
 
     #[test]
@@ -1610,39 +1624,49 @@ mod tests {
     #[test]
     fn observability_decision_16_a_machine_whose_secret_key_file_cannot_be_read_keeps_neither_its_data_nor_its_run_records_unsearched_and_names_the_key_file()
      {
-        let (message, kept, _kept_machine, unread) =
-            dropped_with_a_secret_unread("unread-key-file", |machine| {
-                let sidecar = machine
-                    .directories()
-                    .card_sidecar_file(NETWORK, CARD)
-                    .unwrap();
-                fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
-                fs::write(&sidecar, format!("{PLANTED_TOKEN}\n")).unwrap();
-                fs::set_permissions(&sidecar, fs::Permissions::from_mode(UNREADABLE)).unwrap();
-                sidecar
-            });
+        let dropped = dropped_with_a_source_unread("unread-key-file", |machine| {
+            let sidecar = machine
+                .directories()
+                .card_sidecar_file(NETWORK, CARD)
+                .unwrap();
+            fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+            fs::write(&sidecar, format!("{PLANTED_TOKEN}\n")).unwrap();
+            fs::set_permissions(&sidecar, fs::Permissions::from_mode(UNREADABLE)).unwrap();
+            sidecar
+        });
 
-        assert_eq!(kept, BTreeSet::new());
-        assert!(message.contains(&unread.display().to_string()), "{message}");
+        assert_eq!(dropped.kept, BTreeSet::new());
+        assert!(
+            dropped
+                .message
+                .contains(&dropped.unread.display().to_string()),
+            "{}",
+            dropped.message
+        );
     }
 
     #[test]
     fn observability_decision_16_a_machine_whose_directory_holding_a_secret_key_file_cannot_be_read_keeps_neither_its_data_nor_its_run_records_unsearched_and_names_the_directory()
      {
-        let (message, kept, _kept_machine, unread) =
-            dropped_with_a_secret_unread("unread-key-directory", |machine| {
-                let sidecar = machine
-                    .directories()
-                    .card_sidecar_file(NETWORK, CARD)
-                    .unwrap();
-                let cards = sidecar.parent().unwrap().to_path_buf();
-                fs::create_dir_all(&cards).unwrap();
-                fs::write(&sidecar, format!("{PLANTED_TOKEN}\n")).unwrap();
-                fs::set_permissions(&cards, fs::Permissions::from_mode(UNREADABLE)).unwrap();
-                cards
-            });
+        let dropped = dropped_with_a_source_unread("unread-key-directory", |machine| {
+            let sidecar = machine
+                .directories()
+                .card_sidecar_file(NETWORK, CARD)
+                .unwrap();
+            let cards = sidecar.parent().unwrap().to_path_buf();
+            fs::create_dir_all(&cards).unwrap();
+            fs::write(&sidecar, format!("{PLANTED_TOKEN}\n")).unwrap();
+            fs::set_permissions(&cards, fs::Permissions::from_mode(UNREADABLE)).unwrap();
+            cards
+        });
 
-        assert_eq!(kept, BTreeSet::new());
-        assert!(message.contains(&unread.display().to_string()), "{message}");
+        assert_eq!(dropped.kept, BTreeSet::new());
+        assert!(
+            dropped
+                .message
+                .contains(&dropped.unread.display().to_string()),
+            "{}",
+            dropped.message
+        );
     }
 }
