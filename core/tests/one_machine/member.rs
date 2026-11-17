@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::ops::{Deref, DerefMut};
-use std::process::{Child, Command};
+use std::process::Command;
 use std::time::Duration;
 
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
@@ -10,6 +10,7 @@ use crate::mcp_server::{INIT_TOOL, McpServer, RESULT_KEY, call_succeeded, init_a
 use crate::member_events::{COUNTERS_EVENT, MemberEvents};
 use crate::node_start::{NODE_START_MOMENT, is_node_start_snapshot};
 use crate::scratch_machine::Card;
+use crate::scratch_machine::owned_process::OwnedProcess;
 use crate::scripted_node::ScriptedNode;
 use crate::time_passing::wait_for_time_to_pass;
 use crate::trace_reader::TraceLine;
@@ -53,7 +54,7 @@ impl DerefMut for Member {
 impl Member {
     /// Takes the spawned MCP server over, completes the MCP handshake, and answers for its events through the reader handed in.
     #[track_caller]
-    pub fn start(process: Child, events: MemberEvents) -> Self {
+    pub fn start(process: OwnedProcess, events: MemberEvents) -> Self {
         let process_id = process.id();
         Self {
             server: McpServer::handshaken(process, events),

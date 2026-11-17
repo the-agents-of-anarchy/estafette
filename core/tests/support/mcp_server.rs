@@ -1,11 +1,12 @@
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ExitStatus};
+use std::process::ExitStatus;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
 use crate::member_events::MemberEvents;
+use crate::scratch_machine::owned_process::OwnedProcess;
 use crate::trace_reader::TraceLine;
 
 /// The JSON-RPC version MCP speaks.
@@ -51,7 +52,7 @@ const GONE: &str = "gone";
 
 /// A running `estafette mcp` process driven as an MCP client over its standard streams, with the events it records, stopped when dropped.
 pub struct McpServer {
-    process: Child,
+    process: OwnedProcess,
     messages: Receiver<Value>,
     next_request_id: u64,
     events: MemberEvents,
@@ -65,7 +66,7 @@ pub struct PendingCall {
 impl McpServer {
     /// Takes the spawned server over its piped standard streams, owning it before anything can fail so a failure ends it, and completes the MCP handshake, its events read through the reader handed in.
     #[track_caller]
-    pub fn handshaken(process: Child, events: MemberEvents) -> Self {
+    pub fn handshaken(process: OwnedProcess, events: MemberEvents) -> Self {
         let (forward, messages) = mpsc::channel();
         let mut server = Self {
             process,
@@ -279,6 +280,7 @@ mod tests {
 
     use super::McpServer;
     use crate::member_events::MemberEvents;
+    use crate::scratch_machine::owned_process::OwnedProcess;
 
     /// A command that runs until it is ended, reading nothing and printing nothing.
     const RUNS_UNTIL_ENDED: [&str; 3] = ["tail", "-f", "/dev/null"];
@@ -299,13 +301,13 @@ mod tests {
     fn observability_decision_16_a_server_whose_handshake_fails_before_it_starts_is_ended_before_the_failure_reaches_its_machine()
      {
         let (only_the_stand_in_writes, stand_in_end) = io::pipe().unwrap();
-        let process = Command::new(RUNS_UNTIL_ENDED[0])
-            .args(&RUNS_UNTIL_ENDED[1..])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(stand_in_end)
-            .spawn()
-            .unwrap();
+        let process = OwnedProcess::spawned(
+            Command::new(RUNS_UNTIL_ENDED[0])
+                .args(&RUNS_UNTIL_ENDED[1..])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(stand_in_end),
+        );
         let events = MemberEvents::new("member with no output", Path::new("/nonexistent"));
 
         let handshake = catch_unwind(AssertUnwindSafe(|| McpServer::handshaken(process, events)));

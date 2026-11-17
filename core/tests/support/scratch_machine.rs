@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 
 use estafette::dirs::{
     Directories, DirectoryFilesystem, OperatingSystemFilesystem, TraceDirectory, trace_file_of,
@@ -14,11 +14,14 @@ use iroh::EndpointId;
 
 #[path = "../common/fresh_directory.rs"]
 pub mod fresh_directory;
+#[path = "owned_process.rs"]
+pub mod owned_process;
 #[path = "../common/remove_scratch.rs"]
 pub mod remove_scratch;
 #[path = "trace_reader.rs"]
 pub mod trace_reader;
 
+use owned_process::OwnedProcess;
 use trace_reader::{WritingProcess, timeline_read_as};
 
 use crate::member_events::MemberEvents;
@@ -225,7 +228,7 @@ impl ScratchMachine {
     }
 
     /// Starts the binary's MCP server for this machine's network as the next member, with the reader of the events it records in its own trace directory, made before the start so nothing can fail between the start and the return.
-    pub fn spawn_recorded_mcp_server(&self) -> (Child, MemberEvents) {
+    pub fn spawn_recorded_mcp_server(&self) -> (OwnedProcess, MemberEvents) {
         let number = self.members_started();
         let events = MemberEvents::new(
             &format!("{MEMBER_LABEL} {number}"),
@@ -241,8 +244,8 @@ impl ScratchMachine {
         command
     }
 
-    /// Starts the binary's MCP server for the network with its standard input and output piped, its run record written to a file of the scratch root numbered for the server, and a trace directory of its own made ready.
-    pub fn spawn_mcp_server(&self) -> Child {
+    /// Starts the binary's MCP server for the network with its standard input and output piped, its run record written to a file of the scratch root numbered for the server, and a trace directory of its own made ready, owned from its spawn.
+    pub fn spawn_mcp_server(&self) -> OwnedProcess {
         let started = self.members_started();
         self.servers_started.set(started.checked_add(1).unwrap());
         OperatingSystemFilesystem
@@ -252,13 +255,13 @@ impl ScratchMachine {
             "{RUN_RECORD_PREFIX}-{started}.{RUN_RECORD_EXTENSION}"
         )))
         .unwrap();
-        self.member_command(started)
-            .args(["mcp", &self.network])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(run_record)
-            .spawn()
-            .unwrap()
+        OwnedProcess::spawned(
+            self.member_command(started)
+                .args(["mcp", &self.network])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(run_record),
+        )
     }
 
     /// Keeps this machine's run records and data directory together in a directory of its own beneath the test's, named for this machine and numbered after any earlier keeping of that name.
