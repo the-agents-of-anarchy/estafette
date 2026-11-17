@@ -1065,7 +1065,7 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
     use estafette_bridge_claude::discover::{ProcessEntry, binary_sockets_under};
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixStream;
@@ -2524,18 +2524,19 @@ mod tests {
             )
         }
 
-        fn run_over(
+        fn run_over<S, B, C>(
             &self,
             tracing: Tracing,
             effects: TraceEffects,
             bounds: TraceBounds,
-            bridge_effects: BridgeEffects<
-                DownConnector,
-                Box<dyn Fn(PathBuf) -> DownConnector>,
-                StandInFiles,
-            >,
+            bridge_effects: BridgeEffects<S, C, StandInFiles>,
             processes: &impl ProcessTable,
-        ) -> (ExitCode, String) {
+        ) -> (ExitCode, String)
+        where
+            S: InboxConnector + Send + 'static,
+            B: InboxConnector + Send + 'static,
+            C: Fn(PathBuf) -> B,
+        {
             let data_home = self.data_home.clone();
             let data_home_variable = self.data_home_variable;
             let environment =
@@ -2863,10 +2864,29 @@ mod tests {
         tracing: Tracing,
     ) -> (ExitCode, String) {
         let clock: Arc<Mutex<Duration>> = Arc::default();
-        let monotonic_clock = Arc::clone(&clock);
-        let wall_clock = Arc::clone(&clock);
-        let bridge_clock = Arc::clone(&clock);
-        let moved_clock = Arc::clone(&clock);
+        let harness = HarnessRunsUntil {
+            clock: Arc::clone(&clock),
+            harness_exits_at: HARNESS_EXITS_AT,
+        };
+        run_over_a_clock_only_its_waits_move(probe, tracing, &clock, wiring().effects, &harness)
+    }
+
+    fn run_over_a_clock_only_its_waits_move<S, B, C>(
+        probe: &TraceProbe,
+        tracing: Tracing,
+        clock: &Arc<Mutex<Duration>>,
+        serving: BridgeEffects<S, C, StandInFiles>,
+        processes: &impl ProcessTable,
+    ) -> (ExitCode, String)
+    where
+        S: InboxConnector + Send + 'static,
+        B: InboxConnector + Send + 'static,
+        C: Fn(PathBuf) -> B,
+    {
+        let monotonic_clock = Arc::clone(clock);
+        let wall_clock = Arc::clone(clock);
+        let bridge_clock = Arc::clone(clock);
+        let moved_clock = Arc::clone(clock);
         probe.run_over(
             tracing,
             TraceEffects::of_the_operating_system(TraceClocks {
@@ -2882,12 +2902,9 @@ mod tests {
                     let mut now = lock(&moved_clock);
                     *now = now.saturating_add(pause);
                 }),
-                ..wiring().effects
+                ..serving
             },
-            &HarnessRunsUntil {
-                clock,
-                harness_exits_at: HARNESS_EXITS_AT,
-            },
+            processes,
         )
     }
 
@@ -2959,6 +2976,106 @@ mod tests {
         assert_eq!(status, ExitCode::SUCCESS);
         assert_eq!(written, UNREADABLE_CLASS_LINE);
         assert!(!probe.data_home.exists());
+    }
+
+    const SPEC_ALIVE_EVENT: &str = "process.alive";
+    const SPEC_NOTICE_WRITTEN_EVENT: &str = "notice.written";
+    const FRAME_DELIVERED_AT_MS: u64 = 90_000;
+    const HARNESS_EXITS_AFTER_THE_FRAME_AT: Duration = Duration::from_secs(155);
+
+    struct HarnessListsItsBinaryAtOnePollFrom {
+        harness: HarnessRunsUntil,
+        binary_listed_from: Duration,
+        binary_listed: Cell<bool>,
+    }
+
+    impl ProcessTable for HarnessListsItsBinaryAtOnePollFrom {
+        fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
+            let entries = self.harness.list()?;
+            let binary_appears = !entries.is_empty()
+                && *lock(&self.harness.clock) >= self.binary_listed_from
+                && !self.binary_listed.replace(true);
+            Ok(if binary_appears {
+                harness_with_one_binary()
+            } else {
+                entries
+            })
+        }
+    }
+
+    #[test]
+    fn observability_decision_13_a_frame_delivered_between_two_alive_lines_leaves_the_second_one_period_after_the_first()
+     {
+        let probe = TraceProbe::new("frame-between-alive-lines");
+        let clock: Arc<Mutex<Duration>> = Arc::default();
+        let wiring = wiring();
+        let connections = Arc::new(Mutex::new(VecDeque::from([ScriptedInboxConnection {
+            replies: scripted_frame_line(1, "ana", "one"),
+            fails_after_replies: false,
+        }])));
+
+        let (status, _) = run_over_a_clock_only_its_waits_move(
+            &probe,
+            Tracing::Debug,
+            &clock,
+            BridgeEffects {
+                own_pid: wiring.effects.own_pid,
+                runtime_inputs: wiring.effects.runtime_inputs,
+                session_connector: WritableSessionSocket,
+                session_token: wiring.effects.session_token,
+                claude_config_directory: wiring.effects.claude_config_directory,
+                connect_binary_socket: move |_socket_path| ScriptedInboxSocket {
+                    connections: Arc::clone(&connections),
+                    since_lines: SinceLines::default(),
+                },
+                files: files_of_live_session("bypassPermissions"),
+                elapsed: wiring.effects.elapsed,
+                record: wiring.effects.record,
+                spawn: Arc::new(|task| task()),
+                wait: wiring.effects.wait,
+            },
+            &HarnessListsItsBinaryAtOnePollFrom {
+                harness: HarnessRunsUntil {
+                    clock: Arc::clone(&clock),
+                    harness_exits_at: HARNESS_EXITS_AFTER_THE_FRAME_AT,
+                },
+                binary_listed_from: Duration::from_millis(FRAME_DELIVERED_AT_MS),
+                binary_listed: Cell::new(false),
+            },
+        );
+
+        let deliveries_and_alive_lines: Vec<(serde_json::Value, serde_json::Value)> =
+            fs::read_to_string(probe.events_file())
+                .expect("events file")
+                .lines()
+                .map(|line| {
+                    serde_json::from_str::<serde_json::Value>(line).expect("one JSON object a line")
+                })
+                .filter(|line| {
+                    line["event"] == SPEC_ALIVE_EVENT || line["event"] == SPEC_NOTICE_WRITTEN_EVENT
+                })
+                .map(|line| (line["event"].clone(), line["mono_ms"].clone()))
+                .collect();
+        assert_eq!(status, ExitCode::SUCCESS);
+        assert_eq!(
+            deliveries_and_alive_lines,
+            [
+                (
+                    SPEC_ALIVE_EVENT.into(),
+                    SPEC_LIVE_PROCESS_WRITES_AT_LEAST_EVERY_MS.into()
+                ),
+                (
+                    SPEC_NOTICE_WRITTEN_EVENT.into(),
+                    FRAME_DELIVERED_AT_MS.into()
+                ),
+                (
+                    SPEC_ALIVE_EVENT.into(),
+                    SPEC_LIVE_PROCESS_WRITES_AT_LEAST_EVERY_MS
+                        .saturating_mul(2)
+                        .into()
+                ),
+            ]
+        );
     }
 
     struct WritableSessionSocket;
