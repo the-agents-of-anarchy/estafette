@@ -6,8 +6,8 @@ use super::fresh_directory::fresh_directory_in;
 use super::remove_scratch::remove_scratch;
 use super::trace_reader::timeline_in;
 use super::{
-    fail_unless_panicking, fresh_kept_directory, keep_mark, keep_run_record, keep_stop_failure,
-    redact_files_beneath,
+    KeptSecrets, fail_unless_panicking, fresh_kept_directory, keep_mark, keep_run_record,
+    keep_stop_failure, redact_files_beneath,
 };
 
 /// The directory a member's fetched trace files are kept in, inside the directory its records are kept in.
@@ -60,12 +60,12 @@ enum TraceFilesKept {
     NowhereToKeep,
 }
 
-/// Stops the member on the server through the runner and, when the test keeps records, keeps a mark of a failed stop, its run record and its trace files, each fetched file holding one of its secrets kept redacted with a note beside it, in a directory of its own named for the server and the member, then, when the test is failing, reads the member's timeline, from what was kept or else from a fetch of its own; each step runs whatever an earlier one did, and every failure, a failed stop included, is answered once all have run.
+/// Stops the member on the server through the runner and, when the test keeps records and the member's secrets were read, keeps a mark of a failed stop, its run record and its trace files, each searched for those secrets and a file holding one kept redacted with a note beside it, in a directory of its own named for the server and the member, then, when the test is failing, reads the member's timeline, from what was kept or else from a fetch of its own; each step runs whatever an earlier one did, and every failure, a failed stop and secrets that could not be read included, is answered once all have run.
 pub fn ended_server_member(
     member: &str,
     server: &str,
     kept_in: Option<&Path>,
-    secrets: &[String],
+    secrets: &io::Result<KeptSecrets>,
     test: TestSoFar,
     run: impl Fn(ServerMemberStep<'_>) -> io::Result<Output>,
 ) -> ServerMemberEnd {
@@ -76,23 +76,27 @@ pub fn ended_server_member(
             "{member} on {server} did not stop cleanly: {failure}"
         ));
     }
-    let made = kept_in.map(|directory| {
-        (
-            directory,
-            fresh_kept_directory(directory, &kept_name(server, member)),
-        )
-    });
-    let trace_files = match made {
-        None => TraceFilesKept::NowhereToKeep,
-        Some((_directory, Ok(kept))) => {
-            kept_records(member, server, &kept, &stop, secrets, &run, &mut failures)
-        }
-        Some((directory, Err(failure))) => {
+    let trace_files = match (kept_in, secrets) {
+        (None, _) => TraceFilesKept::NowhereToKeep,
+        (Some(_directory), Err(unread)) => {
             failures.push(format!(
-                "records of {member} not kept in {}: {failure}",
-                directory.display()
+                "nothing of {member} on {server} kept, since the secrets to search it for could not be read: {unread}"
             ));
             TraceFilesKept::NowhereToKeep
+        }
+        (Some(directory), Ok(secrets)) => {
+            match fresh_kept_directory(directory, &kept_name(server, member)) {
+                Ok(kept) => {
+                    kept_records(member, server, &kept, &stop, secrets, &run, &mut failures)
+                }
+                Err(failure) => {
+                    failures.push(format!(
+                        "records of {member} not kept in {}: {failure}",
+                        directory.display()
+                    ));
+                    TraceFilesKept::NowhereToKeep
+                }
+            }
         }
     };
     let timeline = (test == TestSoFar::Failing)
@@ -111,7 +115,7 @@ fn kept_records(
     server: &str,
     kept: &Path,
     stop: &io::Result<Output>,
-    secrets: &[String],
+    secrets: &KeptSecrets,
     run: &impl Fn(ServerMemberStep<'_>) -> io::Result<Output>,
     failures: &mut Vec<String>,
 ) -> TraceFilesKept {
@@ -266,7 +270,9 @@ mod tests {
     use crate::scratch_machine::fresh_directory::fresh_directory_in;
     use crate::scratch_machine::remove_scratch::remove_scratch;
     use crate::scratch_machine::trace_reader::NO_EVENT_RECORDED;
-    use crate::scratch_machine::{REDACTED, REDACTED_NOTE_EXTENSION, STOP_FAILED_EXTENSION};
+    use crate::scratch_machine::{
+        INVITATION_VARIABLE, REDACTED, REDACTED_NOTE_EXTENSION, STOP_FAILED_EXTENSION,
+    };
 
     /// The card a test's member serves.
     const MEMBER: &str = "amy";
@@ -302,6 +308,121 @@ mod tests {
     const LEFT_UNDONE: &str = "the UDP drops on lab-server were not deleted";
     /// The failure a test raises before a drop reports its recipe.
     const FIRST_FAILURE: &str = "the test failed first";
+    /// The owner key a test's member's network configuration names, no real one.
+    const PLANTED_OWNER: &str = "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e";
+    /// What a test writes as the network configuration a member wrote to its server, naming no secret.
+    const CONFIGURATION_NAMING_NO_SECRET: &str = "owner = \"0e0e0e0e\"\n";
+    /// The field of a network configuration naming its secret, as spec 3.3 names it.
+    const NETWORK_SECRET_FIELD: &str = "secret";
+
+    /// The network configuration a test's member wrote to its server, naming the secret.
+    fn configuration_naming(secret: &str) -> String {
+        format!("{NETWORK_SECRET_FIELD} = \"{secret}\"\nowner = \"{PLANTED_OWNER}\"\n")
+    }
+
+    /// The secrets of a test's member: the planted token as its network's secret, and the planted invitation.
+    fn secrets_of_the_member() -> io::Result<KeptSecrets> {
+        KeptSecrets::of_server_member(
+            &configuration_naming(PLANTED_TOKEN),
+            Some(PLANTED_INVITATION),
+        )
+    }
+
+    /// Ends a test's member whose stop failed, whose run record prints and whose fetch writes one trace file, keeping into a fresh directory with the secrets handed in, and answers its end and every file kept, then removes what was kept.
+    fn ended_with_stop_failing(
+        tag: &str,
+        secrets: &io::Result<KeptSecrets>,
+    ) -> (ServerMemberEnd, BTreeSet<PathBuf>) {
+        let kept_in = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-server-member-{tag}-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop => Ok(failed_run(STOP_REFUSAL)),
+            ServerMemberStep::PrintRunRecord => Ok(succeeded_run("record of amy\n")),
+            ServerMemberStep::FetchTraceFiles(into) => {
+                fs::create_dir_all(into).unwrap();
+                fs::write(into.join(FETCHED_TRACE_FILE), "").unwrap();
+                Ok(succeeded_run(""))
+            }
+        };
+
+        let ended = ended_server_member(
+            MEMBER,
+            SERVER,
+            Some(&kept_in),
+            secrets,
+            TestSoFar::NotFailing,
+            stand_in_for_the_recipes,
+        );
+
+        let kept = fs::read_dir(&kept_in)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        remove_scratch(&kept_in).unwrap();
+        (ended, kept)
+    }
+
+    /// Requires that the end answered the failure the secrets were built with and the failed stop, having kept nothing.
+    fn require_nothing_kept_and_each_failure_answered(
+        secrets: &io::Result<KeptSecrets>,
+        ended: &ServerMemberEnd,
+        kept: &BTreeSet<PathBuf>,
+    ) {
+        let Err(unread) = secrets else {
+            panic!("the member's secrets were built")
+        };
+        assert_eq!(kept, &BTreeSet::new());
+        for answered in [unread.to_string(), STOP_REFUSAL.to_owned()] {
+            assert!(
+                ended
+                    .failures
+                    .iter()
+                    .any(|failure| failure.contains(&answered)),
+                "{answered} is not answered: {:?}",
+                ended.failures
+            );
+        }
+    }
+
+    #[test]
+    fn observability_decision_16_a_server_member_whose_network_configuration_names_no_secret_keeps_nothing_and_answers_that_beside_its_failed_stop()
+     {
+        let secrets =
+            KeptSecrets::of_server_member(CONFIGURATION_NAMING_NO_SECRET, Some(PLANTED_INVITATION));
+
+        let (ended, kept) = ended_with_stop_failing("no-secret", &secrets);
+
+        require_nothing_kept_and_each_failure_answered(&secrets, &ended, &kept);
+        assert!(
+            ended
+                .failures
+                .iter()
+                .any(|failure| failure.contains(NETWORK_SECRET_FIELD)),
+            "{:?}",
+            ended.failures
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_server_member_started_with_the_invitation_unset_keeps_nothing_and_answers_that_beside_its_failed_stop()
+     {
+        let secrets = KeptSecrets::of_server_member(&configuration_naming(PLANTED_TOKEN), None);
+
+        let (ended, kept) = ended_with_stop_failing("invitation-unset", &secrets);
+
+        require_nothing_kept_and_each_failure_answered(&secrets, &ended, &kept);
+        assert!(
+            ended
+                .failures
+                .iter()
+                .any(|failure| failure.contains(INVITATION_VARIABLE)),
+            "{:?}",
+            ended.failures
+        );
+    }
 
     /// A recipe run that exited with code 1 having printed the text on standard error.
     fn failed_run(printed: &str) -> Output {
@@ -357,7 +478,7 @@ mod tests {
             MEMBER,
             SERVER,
             Some(&kept_in),
-            &[PLANTED_INVITATION.to_owned(), PLANTED_TOKEN.to_owned()],
+            &secrets_of_the_member(),
             TestSoFar::NotFailing,
             stand_in_for_the_recipes,
         );
@@ -434,7 +555,7 @@ mod tests {
             MEMBER,
             SERVER,
             Some(&kept_in),
-            &[],
+            &secrets_of_the_member(),
             TestSoFar::Failing,
             stand_in_for_the_recipes,
         );
@@ -505,7 +626,7 @@ mod tests {
             MEMBER,
             SERVER,
             Some(&kept_in),
-            &[],
+            &secrets_of_the_member(),
             TestSoFar::NotFailing,
             stand_in_for_the_recipes,
         );
@@ -566,7 +687,7 @@ mod tests {
             MEMBER,
             SERVER,
             Some(&not_a_directory.join(KEPT_BENEATH_NOT_A_DIRECTORY)),
-            &[],
+            &secrets_of_the_member(),
             TestSoFar::Failing,
             stand_in_for_the_recipes,
         );
@@ -613,7 +734,7 @@ mod tests {
             MEMBER,
             SERVER,
             Some(&kept_in),
-            &[PLANTED_TOKEN.to_owned()],
+            &secrets_of_the_member(),
             TestSoFar::NotFailing,
             stand_in_for_the_recipes,
         );

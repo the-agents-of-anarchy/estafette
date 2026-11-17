@@ -11,7 +11,7 @@ use crate::lab_server::LabServer;
 use crate::live_network::LiveNetwork;
 use crate::mcp_server::{HANDLE_KEY, PEERS_KEY, PEERS_TOOL, RESULT_KEY, SEND_TOOL, send_arguments};
 use crate::scratch_machine::server_member_end::{ServerMemberStep, TestSoFar, ended_server_member};
-use crate::scratch_machine::{TIMELINE_HEADING, fail_unless_panicking};
+use crate::scratch_machine::{KeptSecrets, TIMELINE_HEADING, fail_unless_panicking};
 
 /// The recipe that writes the lab network's configuration on a server from its standard input.
 const NETWORK_ON_SERVER_RECIPE: &str = "remote::network-on-server";
@@ -34,11 +34,11 @@ const RE_ASKS_ONCE_SPACED_BY: Duration = Duration::from_secs(1);
 /// What separates the server's clock stamp from the envelope a remote tool call prints.
 const STAMP_SEPARATOR: char = '\t';
 
-/// A lab member serving a card on a lab server, configured as the live network's invitation describes, stopped when dropped with its run record and trace files kept when the test asks, a failed stop marked beside them, and its timeline printed when the test fails.
+/// A lab member serving a card on a lab server, configured as the live network's invitation describes, stopped when dropped with its run record and trace files kept when the test asks, searched for the secrets read where it started, a failed stop marked beside them, and its timeline printed when the test fails.
 pub struct ServerMember<'server> {
     server: &'server LabServer,
     card: String,
-    secrets: Vec<String>,
+    secrets: io::Result<KeptSecrets>,
     kept_in: Option<PathBuf>,
 }
 
@@ -47,13 +47,14 @@ impl<'server> ServerMember<'server> {
     #[track_caller]
     pub fn started(server: &'server LabServer, network: &LiveNetwork, handle: &str) -> Self {
         let configuration = invitation_configuration(network, handle);
-        server.run(NETWORK_ON_SERVER_RECIPE, &[], configuration.as_bytes());
-        let card_key = server.run(CARD_ON_SERVER_RECIPE, &[handle, handle], &[]);
         let run_records = network.run_records();
+        let secrets = KeptSecrets::of_server_member(&configuration, run_records.invitation());
+        server.run(NETWORK_ON_SERVER_RECIPE, &[], configuration.as_bytes());
+        server.run(CARD_ON_SERVER_RECIPE, &[handle, handle], &[]);
         let member = Self {
             server,
             card: handle.to_owned(),
-            secrets: run_records.secrets_longest_first([configuration.as_str(), card_key.as_str()]),
+            secrets,
             kept_in: run_records.kept_in().map(Path::to_path_buf),
         };
         server.run(MEMBER_ON_SERVER_RECIPE, &[handle], &[]);

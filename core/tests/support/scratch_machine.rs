@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, OnceCell};
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File};
@@ -84,6 +84,8 @@ const REDACTED_NOTE_EXTENSION: &str = "redacted";
 const CERTIFICATE_CACHE_EXTENSION: &str = "certs";
 /// The field of a network configuration holding the network's secret (spec 3.3).
 const NETWORK_SECRET_FIELD: &str = "secret";
+/// The extension spec 3.3 gives a network configuration.
+const NETWORK_CONFIG_EXTENSION: &str = "toml";
 /// The variable the acceptance gate exports the live host's invitation in.
 pub const INVITATION_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_INVITATION";
 /// What a kept run record holds in place of a secret.
@@ -93,12 +95,13 @@ const SHORTEST_SECRET_RUN: usize = 16;
 /// The directory a test's records are kept under when the harness gave its thread no name.
 const UNNAMED_TEST: &str = "unnamed-test";
 
-/// One machine's worth of estafette state under a scratch root of its own, short enough for an inbox socket path, configured for one network, counting the MCP servers it started so each keeps its own run record.
+/// One machine's worth of estafette state under a scratch root of its own, short enough for an inbox socket path, configured for one network, counting the MCP servers it started so each keeps its own run record, and reading the secrets what it keeps is searched for once, at its first keeping.
 pub struct ScratchMachine {
     root: PathBuf,
     network: String,
     servers_started: Cell<u32>,
     run_records: RunRecordKeeping,
+    kept_secrets: OnceCell<io::Result<KeptSecrets>>,
 }
 
 /// What a test asks of its members' run records, as the test reads it from the environment the acceptance gate exports: the directory they are kept in, none while unset, and the invitation they must not show.
@@ -106,6 +109,21 @@ pub struct ScratchMachine {
 pub struct RunRecordKeeping {
     kept_in: Option<PathBuf>,
     invitation: Option<String>,
+}
+
+/// Every text a machine's or a server member's kept files are searched for, read from every source of its secrets before anything of it is kept, so no file is kept unsearched.
+pub struct KeptSecrets {
+    secrets_longest_first: Vec<String>,
+    secrets_and_lines_of_other_files_longest_first: Vec<String>,
+}
+
+/// What a kept file is searched for beside the secrets of its machine or member.
+#[derive(Clone, Copy)]
+pub enum KeptAs {
+    /// A run record, searched also for every line of its machine's or member's other readable files.
+    RunRecord,
+    /// A mark, a data file or a fetched trace file, searched for the secrets alone.
+    Evidence,
 }
 
 /// A card the binary created: the name init claims it by and the node id its key gives.
@@ -133,26 +151,159 @@ impl RunRecordKeeping {
         self.kept_in.as_deref()
     }
 
-    /// Every non-empty line of the texts, each long run of letters and digits in one, and the invitation, longest first so a whole line is replaced before a part of it.
-    pub fn secrets_longest_first<'text>(
-        &self,
-        texts: impl IntoIterator<Item = &'text str>,
-    ) -> Vec<String> {
-        let mut secrets = BTreeSet::new();
-        for line in texts.into_iter().flat_map(str::lines) {
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                secrets.insert(trimmed.to_owned());
-            }
-            secrets.extend(long_alphanumeric_runs(line).map(str::to_owned));
-        }
-        if let Some(invitation) = &self.invitation {
-            secrets.insert(invitation.trim().to_owned());
-        }
-        let mut by_length: Vec<String> = secrets.into_iter().collect();
-        by_length.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
-        by_length
+    /// The invitation the gate exports, which nothing kept may show; none when the variable is unset.
+    pub fn invitation(&self) -> Option<&str> {
+        self.invitation.as_deref()
     }
+}
+
+impl KeptSecrets {
+    /// The secrets of the machine, read before anything of it is kept: the invitation when set, the `secret` of every network configuration under its configuration directory, and the text of every secret key file and every file of a certificate cache under its configuration, data and runtime directories, a run record also searched for every line of the other files it can read there but debug traces; or the first listing, read or configuration that fails, naming the path.
+    fn of_machine(machine: &ScratchMachine) -> io::Result<Self> {
+        let mut secret_texts = Vec::new();
+        for file in files_listed_beneath_base_directories(&machine.root)? {
+            let in_root = file.strip_prefix(&machine.root).unwrap_or(&file);
+            if holds_a_secret_key(in_root) {
+                secret_texts.push(text_of(&file)?);
+            } else if is_a_network_configuration(in_root) {
+                secret_texts.push(
+                    network_secret_named_in(&text_of(&file)?)
+                        .map_err(|failure| naming(&file, &failure))?,
+                );
+            }
+        }
+        let other_texts: Vec<String> = machine
+            .base_directory_files()
+            .iter()
+            .filter(|file| {
+                !holds_a_secret_key(file.strip_prefix(&machine.root).unwrap_or(file))
+                    && !is_a_debug_trace(file)
+            })
+            .filter_map(|file| fs::read(file).ok())
+            .map(|content| String::from_utf8_lossy(&content).into_owned())
+            .collect();
+        Ok(Self::searching_for(
+            &secret_texts,
+            &other_texts,
+            machine.run_records.invitation(),
+        ))
+    }
+
+    /// The secrets of a member serving on a server, read where it starts: the `secret` of the network configuration it wrote there and the invitation, a run record also searched for every line of that configuration; or why either is missing.
+    pub fn of_server_member(configuration: &str, invitation: Option<&str>) -> io::Result<Self> {
+        let secret = network_secret_named_in(configuration).map_err(|failure| {
+            io::Error::new(
+                failure.kind(),
+                format!("the network configuration written to the member's server: {failure}"),
+            )
+        })?;
+        let invitation = invitation.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!(
+                    "{INVITATION_VARIABLE} is unset, so nothing can be searched for the invitation"
+                ),
+            )
+        })?;
+        Ok(Self::searching_for(
+            &[secret],
+            &[configuration.to_owned()],
+            Some(invitation),
+        ))
+    }
+
+    /// The secrets of the secret texts and the invitation, and for a run record also of the other texts.
+    fn searching_for(
+        secret_texts: &[String],
+        other_texts: &[String],
+        invitation: Option<&str>,
+    ) -> Self {
+        Self {
+            secrets_longest_first: longest_first(
+                secret_texts.iter().map(String::as_str),
+                invitation,
+            ),
+            secrets_and_lines_of_other_files_longest_first: longest_first(
+                secret_texts.iter().chain(other_texts).map(String::as_str),
+                invitation,
+            ),
+        }
+    }
+
+    /// The text with each secret, and for a run record each line of the other files, replaced by the redaction marker, and how many of its lines held one.
+    fn redacted(&self, text: &str, kept_as: KeptAs) -> (String, usize) {
+        match kept_as {
+            KeptAs::RunRecord => {
+                redacted(text, &self.secrets_and_lines_of_other_files_longest_first)
+            }
+            KeptAs::Evidence => redacted(text, &self.secrets_longest_first),
+        }
+    }
+}
+
+/// Every non-empty line of the texts, each long run of letters and digits in one, and the invitation, longest first so a whole line is replaced before a part of it.
+fn longest_first<'text>(
+    texts: impl IntoIterator<Item = &'text str>,
+    invitation: Option<&str>,
+) -> Vec<String> {
+    let mut secrets = BTreeSet::new();
+    for line in texts.into_iter().flat_map(str::lines) {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            secrets.insert(trimmed.to_owned());
+        }
+        secrets.extend(long_alphanumeric_runs(line).map(str::to_owned));
+    }
+    secrets.extend(
+        invitation
+            .map(str::trim)
+            .filter(|invitation| !invitation.is_empty())
+            .map(str::to_owned),
+    );
+    let mut by_length: Vec<String> = secrets.into_iter().collect();
+    by_length.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+    by_length
+}
+
+/// The secret a network configuration's text names in its `secret` string, whether or not the rest of it loads, or why it names none.
+fn network_secret_named_in(configuration: &str) -> io::Result<String> {
+    let table: toml::Table = configuration.parse().map_err(io::Error::other)?;
+    table
+        .get(NETWORK_SECRET_FIELD)
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| io::Error::other(format!("names no {NETWORK_SECRET_FIELD} string")))
+}
+
+/// The text of the file, any bytes that are not UTF-8 replaced, or the failure to read it, naming it.
+fn text_of(file: &Path) -> io::Result<String> {
+    fs::read(file)
+        .map(|content| String::from_utf8_lossy(&content).into_owned())
+        .map_err(|failure| naming(file, &failure))
+}
+
+/// Every file under the configuration, data and runtime directories of the scratch root, at any depth, or the first failure to list a directory beneath them, naming it; nothing of a directory that does not exist.
+fn files_listed_beneath_base_directories(root: &Path) -> io::Result<Vec<PathBuf>> {
+    BASE_DIRECTORIES
+        .into_iter()
+        .flat_map(|base| files_beneath_for_keeping(&root.join(base)))
+        .collect()
+}
+
+/// Whether the file, named from its scratch root, is a network configuration by spec 3.3's naming: a TOML file under the configuration directory.
+fn is_a_network_configuration(in_root: &Path) -> bool {
+    in_root.starts_with(CONFIG_HOME)
+        && in_root
+            .extension()
+            .is_some_and(|extension| extension == NETWORK_CONFIG_EXTENSION)
+}
+
+/// Whether the file is a debug trace, a record of the run like the run record itself.
+fn is_a_debug_trace(file: &Path) -> bool {
+    file.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(trace_file_of)
+        .is_some()
 }
 
 impl ScratchMachine {
@@ -168,6 +319,7 @@ impl ScratchMachine {
             network: network.to_owned(),
             servers_started: Cell::new(0),
             run_records: run_records.clone(),
+            kept_secrets: OnceCell::new(),
         }
     }
 
@@ -322,8 +474,12 @@ impl ScratchMachine {
         (process, lines)
     }
 
-    /// Keeps this machine's run records, the marks of its processes whose end failed, and its data directory together in a directory of its own beneath the test's, named for this machine and numbered after any earlier keeping of that name, and answers every failure of that keeping, none when all was kept.
+    /// Keeps this machine's run records, the marks of its processes whose end failed, and its data directory together in a directory of its own beneath the test's, named for this machine and numbered after any earlier keeping of that name, and answers every failure of that keeping, none when all was kept; keeps nothing, not even that directory, when the secrets to search them for cannot be read.
     fn keep_records(&self, directory: &Path) -> Vec<io::Error> {
+        let secrets = match self.kept_secrets() {
+            Ok(secrets) => secrets,
+            Err(unread) => return self.failures_keeping_nothing(unread),
+        };
         let kept = match fresh_kept_directory(directory, &self.name()) {
             Ok(kept) => kept,
             Err(failure) => return vec![failure],
@@ -332,20 +488,40 @@ impl ScratchMachine {
         let end_failures = self.keep_end_failures(&kept).err();
         let mut failures: Vec<io::Error> =
             [run_records, end_failures].into_iter().flatten().collect();
-        failures.extend(self.keep_data_directory(&kept));
+        failures.extend(self.keep_data_directory(&kept, secrets));
+        failures
+    }
+
+    /// The secrets every kept file of this machine is searched for, read at the first call, or the failure to read one of their sources, naming it.
+    fn kept_secrets(&self) -> Result<&KeptSecrets, &io::Error> {
+        self.kept_secrets
+            .get_or_init(|| KeptSecrets::of_machine(self))
+            .as_ref()
+    }
+
+    /// The failures of this machine when the secrets to search what it keeps for could not be read: that one, and the failed end of each process whose mark is then not kept.
+    fn failures_keeping_nothing(&self, unread: &io::Error) -> Vec<io::Error> {
+        let mut failures = vec![io::Error::new(
+            unread.kind(),
+            format!("nothing kept, since the secrets to search it for could not be read: {unread}"),
+        )];
+        match self.root_files_with_extension(END_FAILED_EXTENSION) {
+            Ok(marks) => failures.extend(marks.iter().map(|mark| {
+                io::Error::other(format!(
+                    "the end of a process failed, as {} says, and that mark is not kept",
+                    mark.display()
+                ))
+            })),
+            Err(failure) => failures.push(naming(&self.root, &failure)),
+        }
         failures
     }
 
     /// Copies every member's run record into the directory, named for the member, each line that holds a secret of this machine kept with that secret replaced by the redaction marker, and returns the kept files; keeps none when the secrets to search them for cannot be read.
     pub fn keep_run_records(&self, directory: &Path) -> io::Result<Vec<PathBuf>> {
-        let secrets = self.secrets_by_length().map_err(|failure| {
-            io::Error::new(
-                failure.kind(),
-                format!(
-                    "run records not kept, since the secrets to search them for could not be read: {failure}"
-                ),
-            )
-        })?;
+        let secrets = self
+            .kept_secrets()
+            .map_err(|unread| io::Error::new(unread.kind(), unread.to_string()))?;
         let mut kept = Vec::new();
         for record in self.run_records()? {
             let member_name = record.file_stem().unwrap_or_default().to_string_lossy();
@@ -353,7 +529,7 @@ impl ScratchMachine {
                 directory,
                 &member_name,
                 &fs::read_to_string(&record).map_err(|failure| naming(&record, &failure))?,
-                &secrets,
+                secrets,
             )?);
         }
         Ok(kept)
@@ -371,19 +547,10 @@ impl ScratchMachine {
         Ok(kept)
     }
 
-    /// Copies every file under this machine's data directory, its members' and its observers' trace files included, into the data directory inside the directory, leaving out each file that holds a secret key, going on past each file it cannot copy, and answers each such failure; keeps nothing of it when the secrets to search it for cannot be read, as when a directory beneath the base directories cannot be listed.
-    fn keep_data_directory(&self, directory: &Path) -> Vec<io::Error> {
+    /// Copies every file under this machine's data directory, its members' and its observers' trace files included, into the data directory inside the directory, searched for the secrets, leaving out each file that holds a secret key, going on past each file it cannot copy, and answers each such failure.
+    fn keep_data_directory(&self, directory: &Path, secrets: &KeptSecrets) -> Vec<io::Error> {
         let data = self.root.join(DATA_HOME);
         let kept = directory.join(KEPT_DATA_DIRECTORY);
-        let invitation_and_tokens = match self.invitation_and_tokens() {
-            Ok(invitation_and_tokens) => invitation_and_tokens,
-            Err(failure) => {
-                return vec![io::Error::other(format!(
-                    "{} not kept, since the secrets to search it for could not be read: {failure}",
-                    data.display()
-                ))];
-            }
-        };
         let mut failures = Vec::new();
         for listed in files_beneath_for_keeping(&data) {
             let file = match listed {
@@ -399,58 +566,15 @@ impl ScratchMachine {
             if holds_a_secret_key(in_data) {
                 continue;
             }
-            let kept_file = kept.join(in_data);
-            let copied = fs::create_dir_all(kept_file.parent().unwrap_or(&kept))
-                .and_then(|()| keep_data_file(&file, &kept_file, &invitation_and_tokens));
+            let copied = fs::read(&file).and_then(|content| {
+                keep_file(secrets, KeptAs::Evidence, &kept.join(in_data), &content)
+            });
             if let Err(failure) = copied {
                 failures.push(naming(&file, &failure));
             }
         }
         eprintln!("data directory kept at {}", kept.display());
         failures
-    }
-
-    /// The invitation and every token of this machine, its network's secret and the text of each of its secret key files, as the run-record redaction matches them, longest first, or why its network configuration, a directory beneath its base directories or a secret key file could not be read; a configuration never written gives no network secret.
-    fn invitation_and_tokens(&self) -> io::Result<Vec<String>> {
-        let network_secret = self.network_secret()?;
-        let secret_key_texts = secret_key_texts(&self.listed_base_directory_files()?)?;
-        Ok(self
-            .run_records
-            .secrets_longest_first(
-                network_secret
-                    .iter()
-                    .chain(&secret_key_texts)
-                    .map(String::as_str),
-            )
-            .into_iter()
-            .filter(|secret| !secret.is_empty())
-            .collect())
-    }
-
-    /// The secret of this machine's network as its configuration names it, whether or not the rest of the configuration loads, none when the configuration was never written, or why it could not be found, read, parsed or found naming a secret.
-    fn network_secret(&self) -> io::Result<Option<String>> {
-        let config_file = self
-            .established_directories()
-            .and_then(|directories| directories.network_config_file(&self.network))
-            .map_err(io::Error::other)?;
-        let text = match fs::read_to_string(&config_file) {
-            Ok(text) => text,
-            Err(failure) if failure.kind() == io::ErrorKind::NotFound => return Ok(None),
-            Err(failure) => return Err(naming(&config_file, &failure)),
-        };
-        let configuration: toml::Table = text
-            .parse()
-            .map_err(|failure| naming(&config_file, &io::Error::other(failure)))?;
-        configuration
-            .get(NETWORK_SECRET_FIELD)
-            .and_then(toml::Value::as_str)
-            .map(|secret| Some(secret.to_owned()))
-            .ok_or_else(|| {
-                naming(
-                    &config_file,
-                    &io::Error::other(format!("names no {NETWORK_SECRET_FIELD}")),
-                )
-            })
     }
 
     /// The name this machine's records are kept under: its scratch root's.
@@ -490,14 +614,6 @@ impl ScratchMachine {
             .collect()
     }
 
-    /// Every file under this machine's configuration, data and runtime directories, at any depth, or the failure to read a directory beneath them, naming it.
-    fn listed_base_directory_files(&self) -> io::Result<Vec<PathBuf>> {
-        BASE_DIRECTORIES
-            .into_iter()
-            .flat_map(|base| files_beneath_for_keeping(&self.root.join(base)))
-            .collect()
-    }
-
     /// The environment of the member of that number: the machine's, but with a data directory of its own under the machine's data directory, and the machine's cards.
     fn member_environment(&self, number: u32) -> Vec<(&'static str, OsString)> {
         let cards = self.directories().cards_directory(&self.network).unwrap();
@@ -522,27 +638,6 @@ impl ScratchMachine {
             .join(DATA_HOME)
             .join(MEMBERS_UNDER_DATA_HOME)
             .join(number.to_string())
-    }
-
-    /// The secrets of this machine's secret key files and of every other readable file under its base directories but its debug traces, which are a record of the run like the run record itself, longest first, or why a directory beneath them or a secret key file could not be read.
-    fn secrets_by_length(&self) -> io::Result<Vec<String>> {
-        let mut contents = secret_key_texts(&self.listed_base_directory_files()?)?;
-        contents.extend(
-            self.base_directory_files()
-                .iter()
-                .filter(|file| !is_a_secret_key_file(file))
-                .filter(|file| {
-                    file.file_name()
-                        .and_then(|name| name.to_str())
-                        .and_then(trace_file_of)
-                        .is_none()
-                })
-                .filter_map(|file| fs::read(file).ok())
-                .map(|content| String::from_utf8_lossy(&content).into_owned()),
-        );
-        Ok(self
-            .run_records
-            .secrets_longest_first(contents.iter().map(String::as_str)))
     }
 }
 
@@ -626,10 +721,10 @@ pub fn keep_run_record(
     directory: &Path,
     member_name: &str,
     record: &str,
-    secrets_by_length: &[String],
+    secrets: &KeptSecrets,
 ) -> io::Result<PathBuf> {
     let kept_record = directory.join(format!("{member_name}.{RUN_RECORD_EXTENSION}"));
-    let (text, redacted_lines) = redacted(record, secrets_by_length);
+    let (text, redacted_lines) = secrets.redacted(record, KeptAs::RunRecord);
     fs::write(&kept_record, text)?;
     eprintln!(
         "run record kept at {}: {redacted_lines} lines redacted",
@@ -643,7 +738,7 @@ pub fn keep_stop_failure(
     directory: &Path,
     member_name: &str,
     stop: &io::Result<Output>,
-    secrets_by_length: &[String],
+    secrets: &KeptSecrets,
 ) -> io::Result<()> {
     let Err(failure) = succeeded(stop) else {
         return Ok(());
@@ -655,7 +750,7 @@ pub fn keep_stop_failure(
         directory,
         &format!("{member_name}.{STOP_FAILED_EXTENSION}"),
         &mark,
-        secrets_by_length,
+        secrets,
     )
 }
 
@@ -664,9 +759,9 @@ fn keep_mark(
     directory: &Path,
     mark_name: &str,
     text: &str,
-    secrets_by_length: &[String],
+    secrets: &KeptSecrets,
 ) -> io::Result<()> {
-    let (redacted_text, _redacted_lines) = redacted(text, secrets_by_length);
+    let (redacted_text, _redacted_lines) = secrets.redacted(text, KeptAs::Evidence);
     fs::write(directory.join(mark_name), redacted_text)
 }
 
@@ -709,34 +804,21 @@ fn is_a_secret_key_file(file: &Path) -> bool {
         .is_some_and(|extension| extension == SECRET_KEY_EXTENSION)
 }
 
-/// The text of each secret key file among the files, or the failure to read one, naming it.
-fn secret_key_texts(files: &[PathBuf]) -> io::Result<Vec<String>> {
-    files
-        .iter()
-        .filter(|file| is_a_secret_key_file(file))
-        .map(|file| {
-            fs::read(file)
-                .map(|content| String::from_utf8_lossy(&content).into_owned())
-                .map_err(|failure| naming(file, &failure))
-        })
-        .collect()
-}
-
-/// Writes the kept copy of the data file, byte for byte when it holds no invitation or token, else with each replaced by the redaction marker and a note beside the copy naming the file.
-fn keep_data_file(
-    file: &Path,
+/// Writes one file into a kept directory, making the directories it lies in: byte for byte when it holds no text the secrets name for a file kept as that, else with each such text replaced by the redaction marker and a note beside it naming the file; answers how many of its lines were redacted.
+pub fn keep_file(
+    secrets: &KeptSecrets,
+    kept_as: KeptAs,
     kept_file: &Path,
-    invitation_and_tokens: &[String],
-) -> io::Result<()> {
-    let content = fs::read(file)?;
-    let text = String::from_utf8_lossy(&content);
-    if !invitation_and_tokens
-        .iter()
-        .any(|secret| text.contains(secret.as_str()))
-    {
-        return fs::write(kept_file, &content);
+    content: &[u8],
+) -> io::Result<usize> {
+    if let Some(directory) = kept_file.parent() {
+        fs::create_dir_all(directory)?;
     }
-    let (kept_text, redacted_lines) = redacted(&text, invitation_and_tokens);
+    let (kept_text, redacted_lines) = secrets.redacted(&String::from_utf8_lossy(content), kept_as);
+    if redacted_lines == 0 {
+        fs::write(kept_file, content)?;
+        return Ok(redacted_lines);
+    }
     fs::write(kept_file, kept_text)?;
     let mut note = kept_file.as_os_str().to_owned();
     note.push(format!(".{REDACTED_NOTE_EXTENSION}"));
@@ -744,19 +826,21 @@ fn keep_data_file(
         &note,
         format!(
             "{} was kept with each invitation and token in it replaced by {REDACTED}: {redacted_lines} lines redacted\n",
-            file.file_name().unwrap_or_default().to_string_lossy()
+            kept_file.file_name().unwrap_or_default().to_string_lossy()
         ),
-    )
+    )?;
+    Ok(redacted_lines)
 }
 
-/// Rewrites each file beneath the directory that holds an invitation or a token with each replaced by the redaction marker and a note beside it naming the file, every other file keeping its bytes, and answers each failure.
-fn redact_files_beneath(directory: &Path, invitation_and_tokens: &[String]) -> Vec<io::Error> {
+/// Rewrites each file beneath the directory that holds a secret with each replaced by the redaction marker and a note beside it naming the file, every other file keeping its bytes, and answers each failure.
+fn redact_files_beneath(directory: &Path, secrets: &KeptSecrets) -> Vec<io::Error> {
     files_beneath_for_keeping(directory)
         .into_iter()
         .filter_map(|listed| {
             listed
                 .and_then(|file| {
-                    keep_data_file(&file, &file, invitation_and_tokens)
+                    fs::read(&file)
+                        .and_then(|content| keep_file(secrets, KeptAs::Evidence, &file, &content))
                         .map_err(|failure| naming(&file, &failure))
                 })
                 .err()
@@ -837,6 +921,7 @@ mod tests {
         MEMBER_LINE, second_line_still_zero_at_its_start_sized_ahead,
     };
     use estafette::config::NetworkConfig;
+    use std::cell::RefCell;
     use std::os::unix::fs::PermissionsExt;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -887,10 +972,25 @@ mod tests {
     /// The events file a test plants in a second member's trace directory.
     const SECOND_MEMBER_EVENTS_FILE: &str =
         "20261117T080001Z-2222222222222222-estafette.events.jsonl";
-    /// The steps of a machine's keeping that search for its secrets, run records and data, each failing on its own when they cannot be read.
-    const KEEPING_STEPS_SEARCHING_FOR_SECRETS: usize = 2;
     /// What a test writes where a network configuration belongs, which does not load.
     const NOT_A_NETWORK_CONFIGURATION: &str = "not a network configuration\n";
+    /// A network other than the one a test's machine is configured for, whose configuration lies beside its own.
+    const OTHER_NETWORK: &str = "other";
+    /// A network secret a test plants in the other network's configuration, no real one.
+    const PLANTED_OTHER_NETWORK_SECRET: &str =
+        "a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4a1b2c3d4";
+    /// What a test writes as a network configuration that loads as TOML and names no secret.
+    const CONFIGURATION_NAMING_NO_SECRET: &str = "owner = \"0e0e0e0e\"\n";
+    /// The text a test plants in a network owner's key file, no real key.
+    const PLANTED_OWNER_KEY: &str = "plantedownerkey0123456789abcdef";
+    /// The text a test plants in a key file of the runtime directory, no real key.
+    const PLANTED_RUNTIME_KEY: &str = "plantedruntimekey0123456789abc";
+    /// A key file a test plants in a machine's runtime directory.
+    const RUNTIME_KEY_FILE: &str = "planted.key";
+    /// The text a test plants in a file of a relay's certificate cache, no real key.
+    const PLANTED_CACHED_KEY: &str = "plantedcachedkey0123456789abcd";
+    /// A file a test plants in a relay's certificate cache.
+    const CACHED_ACCOUNT_FILE: &str = "acme-account.json";
 
     #[test]
     fn observability_decision_12_a_failing_machine_prints_the_lines_of_a_member_that_may_still_run_before_one_still_zero_filled()
@@ -1174,13 +1274,13 @@ mod tests {
             unreadable_directory
         });
 
-        assert_eq!(dropped.kept, BTreeSet::new());
+        assert_eq!(dropped.made_in_kept_in, BTreeSet::new());
         assert_eq!(
             dropped
                 .message
                 .matches(&dropped.unread.display().to_string())
                 .count(),
-            KEEPING_STEPS_SEARCHING_FOR_SECRETS,
+            1,
             "{}",
             dropped.message
         );
@@ -1378,7 +1478,11 @@ mod tests {
         )
         .unwrap();
         let secret = "network-secret-0123456789abcdef";
-        let secrets = [secret.to_owned()];
+        let secrets = KeptSecrets::of_server_member(
+            &format!("{NETWORK_SECRET_FIELD} = \"{secret}\"\n"),
+            Some(PLANTED_INVITATION),
+        )
+        .unwrap();
         let failed_stop = Command::new(EXITS_IN_FAILURE).status().unwrap();
         let clean_stop = Command::new(EXITS_IN_SUCCESS).status().unwrap();
         let printed_by_the_failed_stop = format!("ssh: the server refused {secret}\n");
@@ -1475,11 +1579,11 @@ mod tests {
         remove_scratch::remove_scratch(&kept_in).unwrap();
     }
 
-    /// What a machine dropped on a test that was not failing left: the message its drop failed with, every file it kept, the directory it kept in, its scratch root and the source the setup made unreadable.
+    /// What a machine dropped on a test that was not failing left: the message its drop failed with, every file it kept, every entry made in the directory it kept in, its scratch root and the source the setup made unreadable.
     struct DroppedFailing {
         message: String,
         kept: BTreeSet<PathBuf>,
-        kept_machine: PathBuf,
+        made_in_kept_in: BTreeSet<PathBuf>,
         root: PathBuf,
         unread: PathBuf,
     }
@@ -1517,7 +1621,6 @@ mod tests {
         fs::write(&events_file, &holding_the_token).unwrap();
         let unread = make_unreadable(&machine);
         let root = machine.root.clone();
-        let kept_machine = kept_in.join(machine.name());
 
         let dropped = catch_unwind(AssertUnwindSafe(move || drop(machine)));
 
@@ -1528,6 +1631,10 @@ mod tests {
             dropped.expect_err("a machine with a source unread was dropped with no failure");
         let message = failure.downcast_ref::<String>().unwrap().clone();
         let kept: BTreeSet<PathBuf> = files_beneath(&kept_in).into_iter().collect();
+        let made_in_kept_in: BTreeSet<PathBuf> = fs::read_dir(&kept_in)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
         remove_scratch::remove_scratch(&kept_in).unwrap();
         if root.exists() {
             remove_scratch::remove_scratch(&root).unwrap();
@@ -1535,14 +1642,14 @@ mod tests {
         DroppedFailing {
             message,
             kept,
-            kept_machine,
+            made_in_kept_in,
             root,
             unread,
         }
     }
 
     #[test]
-    fn observability_decision_16_a_machine_whose_network_configuration_does_not_parse_keeps_no_data_unsearched_and_names_the_configuration()
+    fn observability_decision_16_a_machine_whose_network_configuration_does_not_parse_keeps_nothing_and_names_the_configuration()
      {
         let dropped = dropped_with_a_source_unread("unloaded-configuration", |machine| {
             let configuration = machine.directories().network_config_file(NETWORK).unwrap();
@@ -1551,12 +1658,7 @@ mod tests {
             configuration
         });
 
-        assert_eq!(
-            dropped.kept,
-            BTreeSet::from([dropped
-                .kept_machine
-                .join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}"))])
-        );
+        assert_eq!(dropped.made_in_kept_in, BTreeSet::new());
         assert!(
             dropped
                 .message
@@ -1627,7 +1729,7 @@ mod tests {
             sidecar
         });
 
-        assert_eq!(dropped.kept, BTreeSet::new());
+        assert_eq!(dropped.made_in_kept_in, BTreeSet::new());
         assert!(
             dropped
                 .message
@@ -1652,7 +1754,7 @@ mod tests {
             cards
         });
 
-        assert_eq!(dropped.kept, BTreeSet::new());
+        assert_eq!(dropped.made_in_kept_in, BTreeSet::new());
         assert!(
             dropped
                 .message
@@ -1660,5 +1762,258 @@ mod tests {
             "{}",
             dropped.message
         );
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_network_configuration_cannot_be_read_keeps_nothing_and_names_the_configuration()
+     {
+        let dropped = dropped_with_a_source_unread("unread-configuration", |machine| {
+            let configuration = planted_network_configuration(machine, NETWORK);
+            fs::set_permissions(&configuration, fs::Permissions::from_mode(UNREADABLE)).unwrap();
+            configuration
+        });
+
+        assert_eq!(dropped.made_in_kept_in, BTreeSet::new());
+        assert!(
+            dropped
+                .message
+                .contains(&dropped.unread.display().to_string()),
+            "{}",
+            dropped.message
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_other_networks_configuration_names_no_secret_keeps_nothing_and_names_that_configuration()
+     {
+        let dropped = dropped_with_a_source_unread("configuration-naming-no-secret", |machine| {
+            let configuration = machine
+                .directories()
+                .network_config_file(OTHER_NETWORK)
+                .unwrap();
+            fs::create_dir_all(configuration.parent().unwrap()).unwrap();
+            fs::write(&configuration, CONFIGURATION_NAMING_NO_SECRET).unwrap();
+            configuration
+        });
+
+        assert_eq!(dropped.made_in_kept_in, BTreeSet::new());
+        assert!(
+            dropped
+                .message
+                .contains(&dropped.unread.display().to_string()),
+            "{}",
+            dropped.message
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_certificate_cache_file_cannot_be_read_keeps_nothing_and_names_the_file()
+     {
+        let dropped = dropped_with_a_source_unread("unread-certificate-cache", |machine| {
+            let cached_account = planted_cached_account(machine);
+            fs::set_permissions(&cached_account, fs::Permissions::from_mode(UNREADABLE)).unwrap();
+            cached_account
+        });
+
+        assert_eq!(dropped.made_in_kept_in, BTreeSet::new());
+        assert!(
+            dropped
+                .message
+                .contains(&dropped.unread.display().to_string()),
+            "{}",
+            dropped.message
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_secrets_cannot_be_read_keeps_not_even_the_mark_of_a_failed_end_and_names_that_end_beside_the_unread_configuration()
+     {
+        let failed_mark = RefCell::new(PathBuf::new());
+        let dropped = dropped_with_a_source_unread("unread-secrets-failed-end", |machine| {
+            let mut failing_its_end =
+                machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), FAILED_LABEL);
+            failed_mark.replace(machine.root.join(format!(
+                "{FAILED_LABEL}-{}.{END_FAILED_EXTENSION}",
+                failing_its_end.id()
+            )));
+            failing_its_end.end_through(|_process| Err(io::Error::other(PLANTED_END_FAILURE)));
+            drop(failing_its_end);
+            let configuration = planted_network_configuration(machine, NETWORK);
+            fs::set_permissions(&configuration, fs::Permissions::from_mode(UNREADABLE)).unwrap();
+            configuration
+        });
+
+        assert_eq!(dropped.made_in_kept_in, BTreeSet::new());
+        for named in [&dropped.unread, &failed_mark.into_inner()] {
+            assert!(
+                dropped.message.contains(&named.display().to_string()),
+                "{} is not named: {}",
+                named.display(),
+                dropped.message
+            );
+        }
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_keeps_its_data_and_run_records_with_the_secret_of_another_networks_configuration_redacted()
+     {
+        let text = format!("network {PLANTED_OTHER_NETWORK_SECRET} joined\n");
+        let kept = kept_after_planting("other-network-secret", &text, |machine| {
+            planted_network_configuration(machine, NETWORK);
+            let other = machine
+                .directories()
+                .network_config_file(OTHER_NETWORK)
+                .unwrap();
+            NetworkConfig {
+                secret: PLANTED_OTHER_NETWORK_SECRET.to_owned(),
+                owner: PLANTED_OWNER.to_owned(),
+                hosts: Vec::new(),
+            }
+            .rewrite(&other, 0)
+            .unwrap();
+        });
+
+        let redacted = format!("network {REDACTED} joined\n");
+        assert_eq!(kept.events, redacted.as_bytes());
+        assert_eq!(kept.run_record, redacted.as_bytes());
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_keeps_its_data_and_run_records_with_the_text_of_a_key_file_under_each_base_directory_redacted_and_no_key_file()
+     {
+        let text = format!("keys {PLANTED_OWNER_KEY} {PLANTED_TOKEN} {PLANTED_RUNTIME_KEY}\n");
+        let kept = kept_after_planting("key-under-each-base", &text, |machine| {
+            let directories = machine.directories();
+            for (key_file, key) in [
+                (
+                    directories.owner_key_file(NETWORK).unwrap(),
+                    PLANTED_OWNER_KEY,
+                ),
+                (
+                    directories.card_sidecar_file(NETWORK, CARD).unwrap(),
+                    PLANTED_TOKEN,
+                ),
+                (
+                    directories
+                        .inbox_socket_file(std::process::id())
+                        .with_file_name(RUNTIME_KEY_FILE),
+                    PLANTED_RUNTIME_KEY,
+                ),
+            ] {
+                fs::create_dir_all(key_file.parent().unwrap()).unwrap();
+                fs::write(&key_file, format!("{key}\n")).unwrap();
+            }
+        });
+
+        let redacted = format!("keys {REDACTED} {REDACTED} {REDACTED}\n");
+        assert_eq!(kept.events, redacted.as_bytes());
+        assert_eq!(kept.run_record, redacted.as_bytes());
+        let key_files_kept: Vec<&PathBuf> = kept
+            .files
+            .iter()
+            .filter(|file| is_a_secret_key_file(file))
+            .collect();
+        assert_eq!(key_files_kept, Vec::<&PathBuf>::new());
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_keeps_its_data_and_run_records_with_the_text_of_a_certificate_cache_file_redacted_and_leaves_the_cache_out()
+     {
+        let text = format!("cache {PLANTED_CACHED_KEY} read\n");
+        let kept = kept_after_planting("certificate-cache-text", &text, |machine| {
+            planted_cached_account(machine);
+        });
+
+        let redacted = format!("cache {REDACTED} read\n");
+        assert_eq!(kept.events, redacted.as_bytes());
+        assert_eq!(kept.run_record, redacted.as_bytes());
+        let cache_files_kept: Vec<&PathBuf> = kept
+            .files
+            .iter()
+            .filter(|file| file.ends_with(CACHED_ACCOUNT_FILE))
+            .collect();
+        assert_eq!(cache_files_kept, Vec::<&PathBuf>::new());
+    }
+
+    /// Writes the network configuration of the network on the machine naming the planted secret, and returns its file.
+    fn planted_network_configuration(machine: &ScratchMachine, network: &str) -> PathBuf {
+        let configuration = machine.directories().network_config_file(network).unwrap();
+        fs::create_dir_all(configuration.parent().unwrap()).unwrap();
+        NetworkConfig {
+            secret: PLANTED_NETWORK_SECRET.to_owned(),
+            owner: PLANTED_OWNER.to_owned(),
+            hosts: Vec::new(),
+        }
+        .rewrite(&configuration, 0)
+        .unwrap();
+        configuration
+    }
+
+    /// Writes a file holding the planted cached key in the relay's certificate cache of the machine, and returns it.
+    fn planted_cached_account(machine: &ScratchMachine) -> PathBuf {
+        let cached_account = machine
+            .directories()
+            .infrastructure_certificate_cache_directory(NETWORK)
+            .unwrap()
+            .join(CACHED_ACCOUNT_FILE);
+        fs::create_dir_all(cached_account.parent().unwrap()).unwrap();
+        fs::write(
+            &cached_account,
+            format!("{{\"key\":\"{PLANTED_CACHED_KEY}\"}}\n"),
+        )
+        .unwrap();
+        cached_account
+    }
+
+    /// What a machine dropped while keeping left: every file it kept, and the kept copies of its first member's events file and run record.
+    struct KeptAfterPlanting {
+        files: BTreeSet<PathBuf>,
+        events: Vec<u8>,
+        run_record: Vec<u8>,
+    }
+
+    /// Drops, keeping into a fresh directory, a machine of the tag whose first member's run record and events file each hold the text, once the setup handed in planted its sources, requiring the drop to report no failure, then removes what was kept.
+    fn kept_after_planting(
+        tag: &str,
+        text: &str,
+        plant: impl FnOnce(&ScratchMachine),
+    ) -> KeptAfterPlanting {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-{tag}-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = ScratchMachine::fresh(
+            tag,
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: Some(kept_in.clone()),
+                invitation: None,
+            },
+        );
+        let record_name = format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}");
+        fs::write(machine.root.join(&record_name), text).unwrap();
+        let events_file = machine
+            .traces_directory_of_member(0)
+            .join(MEMBER_EVENTS_FILE);
+        fs::create_dir_all(events_file.parent().unwrap()).unwrap();
+        fs::write(&events_file, text).unwrap();
+        plant(&machine);
+        let kept_machine = kept_in.join(machine.name());
+        let kept_events = kept_machine.join(KEPT_DATA_DIRECTORY).join(
+            events_file
+                .strip_prefix(machine.root.join(DATA_HOME))
+                .unwrap(),
+        );
+
+        drop(machine);
+
+        let kept = KeptAfterPlanting {
+            files: files_beneath(&kept_in).into_iter().collect(),
+            events: fs::read(kept_events).unwrap(),
+            run_record: fs::read(kept_machine.join(record_name)).unwrap(),
+        };
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+        kept
     }
 }
