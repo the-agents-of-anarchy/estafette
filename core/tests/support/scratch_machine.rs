@@ -776,8 +776,6 @@ mod tests {
     const ENDED_LABEL: &str = "ended";
     /// How a test names a process whose end it marks as failed.
     const FAILED_LABEL: &str = "failed";
-    /// The process id a test marks a failed end under, no process of its own.
-    const PLANTED_PROCESS_ID: u32 = 4242;
     /// The failure a test plants as the cause of a failed end.
     const PLANTED_END_FAILURE: &str = "planted failure of the wait";
     /// The mode of a file or directory its owner can neither read nor list, so keeping it fails.
@@ -1243,25 +1241,24 @@ mod tests {
             },
         );
         drop(machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), ENDED_LABEL));
-        owned_process::mark_end_failure(
-            &machine.root,
-            FAILED_LABEL,
-            PLANTED_PROCESS_ID,
-            &io::Error::other(PLANTED_END_FAILURE),
-        );
+        let mut failing_its_end =
+            machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), FAILED_LABEL);
+        let failing_process_id = failing_its_end.id();
+        failing_its_end.end_through(|_process| Err(io::Error::other(PLANTED_END_FAILURE)));
+        drop(failing_its_end);
         let kept_machine = kept_in.join(machine.name());
 
         drop(machine);
 
         let kept: BTreeSet<PathBuf> = files_beneath(&kept_in).into_iter().collect();
         let mark = kept_machine.join(format!(
-            "{FAILED_LABEL}-{PLANTED_PROCESS_ID}.{END_FAILED_EXTENSION}"
+            "{FAILED_LABEL}-{failing_process_id}.{END_FAILED_EXTENSION}"
         ));
         assert_eq!(kept, BTreeSet::from([mark.clone()]));
         let marked = fs::read_to_string(&mark).unwrap();
         assert!(
             marked.contains(FAILED_LABEL)
-                && marked.contains(&PLANTED_PROCESS_ID.to_string())
+                && marked.contains(&failing_process_id.to_string())
                 && marked.contains(PLANTED_END_FAILURE),
             "{marked}"
         );

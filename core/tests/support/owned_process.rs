@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{self, PipeReader, Read};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, ExitStatus};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -31,8 +31,15 @@ impl OwnedProcess {
 
     /// Kills the process and waits for it, never panicking: a kill or a wait that fails is written to standard error and marked in its directory; a no-op once the process has ended.
     pub fn end(&mut self) {
-        let ended = self.child.kill().and_then(|()| self.child.wait());
-        if let Err(failure) = ended {
+        self.end_through(|process| process.kill().and_then(|()| process.wait()));
+    }
+
+    /// Ends the process through the kill and wait handed in, never panicking: one that fails is written to standard error and marked in its directory.
+    pub fn end_through(
+        &mut self,
+        kill_then_wait: impl FnOnce(&mut Child) -> io::Result<ExitStatus>,
+    ) {
+        if let Err(failure) = kill_then_wait(&mut self.child) {
             mark_end_failure(&self.marked_in, &self.label, self.child.id(), &failure);
         }
     }
@@ -59,7 +66,7 @@ impl Drop for OwnedProcess {
 }
 
 /// Writes to standard error, and to a file of the directory named for the process, that its end failed and why, a mark that cannot be written reported on standard error alone.
-pub fn mark_end_failure(marked_in: &Path, label: &str, process_id: u32, failure: &io::Error) {
+fn mark_end_failure(marked_in: &Path, label: &str, process_id: u32, failure: &io::Error) {
     let mark = format!(
         "the end of {label}, process {process_id}, failed, so it may have run on while its machine's data was kept: {failure}\n"
     );
