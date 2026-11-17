@@ -21,7 +21,7 @@ use iroh_gossip::Gossip;
 use iroh_relay::server::{
     AcmeConfig, CertConfig, QuicConfig, RelayConfig, Server, ServerConfig, TlsConfig,
 };
-use tokio::time::{Instant, Interval, MissedTickBehavior, interval, sleep_until};
+use tokio::time::{Instant, Interval, MissedTickBehavior, interval};
 
 use super::debug::DebugArgs;
 use super::network::NetworkFilesystem;
@@ -746,7 +746,7 @@ impl BootstrapNode {
             biased;
             () = stopped => Wake::Stopped,
             () = next_tick(self.records_due.as_mut()) => Wake::RecordDue,
-            () = sleep_until(self.snapshot_due) => Wake::SnapshotDue,
+            () = self.monotonic.reached(self.snapshot_due) => Wake::SnapshotDue,
             event = next_recorded_gossip_event(&mut self.topic, None, &*self.report) => Wake::Topic(event),
         }
     }
@@ -2428,6 +2428,53 @@ mod tests {
             assert!(names.contains(&"socket.recv_datagrams"), "{names:?}");
             assert!(names.contains(&"gossip.neighbor_up"), "{names:?}");
         }
+    }
+
+    /// The longest the host takes to record its counters once its handed clock reads them due, which the runtime's timer would never reach on a clock an hour ahead.
+    const SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
+    const STATE_COUNTERS: &str = "state.counters";
+    /// The host's readings of its clock by its first snapshot's schedule: the join's start and the schedule itself.
+    const READINGS_BY_THE_FIRST_SNAPSHOT_SCHEDULE: u64 = 2;
+
+    #[tokio::test]
+    async fn observability_decisions_9_and_13_the_host_records_its_counters_once_its_handed_clock_reads_60_s_past_its_join()
+     {
+        let scratch = Scratch::new("counters-on-the-clock");
+        scratch.configure_network();
+        scratch.certify(HOST_SEED);
+        let seen = Seen::default();
+        let (stop, stopped) = stopped_on_signal();
+        let (record, mut recorded) = recorded_events();
+        let clock = crate::net::direct::tests::StandingClock::standing_an_hour_ahead();
+        let plan = Plan {
+            stopped,
+            report: record,
+            monotonic: clock.monotonic(),
+            ..Plan::new(HOST_SEED)
+        };
+
+        let ((_printed, outcome), snapshot) =
+            tokio::join!(run_planned(&scratch, plan, &seen), async {
+                clock
+                    .read_at_least(READINGS_BY_THE_FIRST_SNAPSHOT_SCHEDULE)
+                    .await;
+                clock.move_forward(SPEC_STATE_SNAPSHOT_INTERVAL);
+                let snapshot = next_recorded_meeting(
+                    &mut recorded,
+                    STATE_COUNTERS,
+                    |_fields| true,
+                    SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN,
+                )
+                .await;
+                stop.send(()).unwrap();
+                snapshot
+            });
+
+        outcome.unwrap();
+        assert_eq!(
+            snapshot.first(),
+            Some(&("moment", serde_json::Value::from("interval")))
+        );
     }
 
     #[tokio::test]
