@@ -35,7 +35,7 @@ use crate::inbox::socket::{Attached, InboxSocket};
 use crate::keys::{KeyError, parse_network_secret, parse_public_key};
 use crate::net::direct::{
     ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, GONE_PROCESS_SILENCE,
-    HEARING_SAMPLE_INTERVAL, HeldConnections, MonotonicClock, MonotonicTime,
+    HEARING_SAMPLE_INTERVAL, HeldConnections, MonotonicClock, MonotonicTime, later_by,
 };
 use crate::net::endpoint::{
     CounterSnapshot, DIRECT_ALPN, NodeEndpoint, RebindCause, SnapshotMoment,
@@ -1638,7 +1638,7 @@ pub const fn presence_request(requester: wire::PublicKey, seq: u64) -> Payload {
 
 /// When a node of any kind next records its counters after `now`, so its events file is written at least every state snapshot interval.
 pub fn snapshot_due_after(now: Instant) -> Instant {
-    now.checked_add(STATE_SNAPSHOT_INTERVAL).unwrap_or(now)
+    later_by(now, STATE_SNAPSHOT_INTERVAL)
 }
 
 /// Records the counters iroh keeps for the endpoint's socket and for the gossip at the moment.
@@ -1654,7 +1654,7 @@ pub fn record_counters(
 
 /// When the observer wait that starts at `joined` is over.
 pub fn observer_wait_over_at(joined: Instant) -> Instant {
-    joined.checked_add(OBSERVER_WAIT).unwrap_or(joined)
+    later_by(joined, OBSERVER_WAIT)
 }
 
 /// Waits until the clock reads the deadline, or forever when there is none.
@@ -1870,7 +1870,7 @@ impl Announcer {
         if last.addr == *current {
             return ReannounceStep::Unchanged;
         }
-        let earliest = last.at.checked_add(REANNOUNCE_INTERVAL).unwrap_or(last.at);
+        let earliest = later_by(last.at, REANNOUNCE_INTERVAL);
         if now >= earliest {
             ReannounceStep::AnnounceNow
         } else {

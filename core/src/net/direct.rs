@@ -99,6 +99,11 @@ impl MonotonicTime for RuntimeClock {
 /// The monotonic clock the composition root hands down.
 pub type MonotonicClock = Arc<dyn MonotonicTime>;
 
+/// The instant a span after `at`, or `at` itself past the clock's range.
+pub(crate) fn later_by(at: Instant, span: Duration) -> Instant {
+    at.checked_add(span).unwrap_or(at)
+}
+
 /// What the work ends with, or none once the clock reads the deadline first; work with no deadline is waited for whole.
 pub(crate) async fn before_deadline<Ended>(
     clock: &dyn MonotonicTime,
@@ -246,9 +251,7 @@ impl HeldConnections {
         tokio::pin!(closed);
         let mut last_read = held_at;
         let ended = loop {
-            let sample_due = last_read
-                .checked_add(HEARING_SAMPLE_INTERVAL)
-                .unwrap_or(last_read);
+            let sample_due = later_by(last_read, HEARING_SAMPLE_INTERVAL);
             tokio::select! {
                 biased;
                 Some(change) = paths.next() => self.record_path_change(connection_id, &connection, change),

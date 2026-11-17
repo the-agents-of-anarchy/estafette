@@ -7,7 +7,7 @@ use iroh_gossip::{Gossip, TopicId};
 use tokio::time::Instant;
 
 use crate::crypto::NetworkKeys;
-use crate::net::direct::MonotonicClock;
+use crate::net::direct::{MonotonicClock, later_by};
 use crate::payload::{
     OpenedPayload, PayloadError, PayloadRefusal, open_described_payload, seal_payload,
 };
@@ -90,7 +90,7 @@ impl NetworkTopic {
             keys,
             owner,
             join_progress: JoinProgress::AwaitingFirstNeighbor {
-                timed_out_at: started.checked_add(JOIN_TIMEOUT).unwrap_or(started),
+                timed_out_at: later_by(started, JOIN_TIMEOUT),
             },
             monotonic,
         })

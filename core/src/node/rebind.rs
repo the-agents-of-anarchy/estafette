@@ -13,7 +13,7 @@ use tokio::net::TcpStream;
 use tokio::time::Instant;
 
 use crate::event::{GossipEvent, TransportEvent};
-use crate::net::direct::{DirectHost, before_deadline};
+use crate::net::direct::{DirectHost, before_deadline, later_by};
 use crate::net::endpoint::{RebindCause, SnapshotMoment};
 use crate::net::gossip::NetworkTopic;
 use crate::node::addresses::endpoint_id;
@@ -394,11 +394,6 @@ fn without_relays(address: EndpointAddr, down: &BTreeSet<RelayUrl>) -> EndpointA
             .into_iter()
             .filter(|path| !matches!(path, TransportAddr::Relay(relay) if down.contains(relay))),
     )
-}
-
-/// The instant a span after `at`, or `at` itself past the clock's range.
-fn later_by(at: Instant, span: Duration) -> Instant {
-    at.checked_add(span).unwrap_or(at)
 }
 
 #[cfg(test)]
