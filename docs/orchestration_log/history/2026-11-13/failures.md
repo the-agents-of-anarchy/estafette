@@ -71,3 +71,11 @@ What happened: On 2026-11-17 between about 06:48 and 07:13 two lab servers ran f
 Mechanism: The lead's runner brief checked that the backstop job was loaded and did not order the check the lab skill names, a log line from the backstop's last hour; a loaded job that reads the wrong project passes the loaded check.
 
 Correction: No lab resource is created until a diagnosis shows why the backstop read another project and a tooling change makes it read the lab's own; every lab brief orders the runner to read the backstop's log for a line within the hour before creation that covers the lab's project, and to stop without creating when there is none.
+
+## Text written in silence at 08:14 on 2026-11-17
+
+What happened: The lead ended a turn with two sentences of text in the conversation while the silence marker stood; the turn had been started by a harness notice that the previous response had no visible output.
+
+Mechanism: The lead explained its silence to the notice instead of keeping it: an explanation of an empty ending is still text, and the notice is not the owner's word.
+
+Correction: Every turn ends with a message of zero characters while the marker stands, whatever notice starts it; nothing about the silence itself is written to the conversation.
