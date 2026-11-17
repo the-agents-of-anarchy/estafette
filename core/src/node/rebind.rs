@@ -413,11 +413,12 @@ mod tests {
     use crate::net::gossip::{GossipEvent, NetworkTopic};
     use crate::node::presence::acknowledgement_of;
     use crate::node::presence::tests::{
-        FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, MARKER_SEED, Member, MemberPlan,
-        OWNER_SEED, PAYLOAD_WAIT, PEER, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, Scratch,
-        WITNESS_SEED, Witness, bind, card, entry_meeting_within, frozen_clock, keys, presence_from,
-        presence_request_by, relay_url, secret_key, short_peer_id, spawn_member, start_members,
-        start_members_reaching, status_within, unreachable_about, wall_clock_ms,
+        FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, KIND, MARKER_SEED, Member, MemberPlan,
+        OWNER_SEED, PAYLOAD_ACCEPTED, PAYLOAD_WAIT, PEER, PRESENCE_KIND, PRESENCE_REQUEST_KIND,
+        SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, SEQ, Scratch, WITNESS_SEED, Witness, bind, card,
+        entry_meeting_within, frozen_clock, keys, presence_from, presence_request_by, relay_url,
+        secret_key, short_peer_id, spawn_member, start_members, start_members_reaching,
+        status_within, unreachable_about, wall_clock_ms,
     };
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
@@ -461,7 +462,6 @@ mod tests {
     const REBIND_SLACK: Duration = Duration::from_secs(2);
 
     const ATTACHED_ONLY_IN_THE_PEERS_ACK: bool = true;
-    const ANSWERING_MEMBER_DEAF_LATER_BY: Duration = Duration::from_secs(20);
     const SPEC_REBINDS_JOIN_WITHIN: Duration = SPEC_DEAF_TIMEOUT
         .saturating_add(IROH_DOCUMENTED_CLOSE_LATENCY)
         .saturating_add(SPEC_RELAY_PROBE_TIMEOUT)
@@ -1421,27 +1421,30 @@ mod tests {
     async fn spec_3_8_a_member_whose_wall_clock_stands_still_asks_again_at_its_rebinds_join_and_a_member_answers()
      {
         let scratch = Scratch::new("ask-again").await;
-        let leading = ShiftedClock::default();
-        leading.move_forward(ANSWERING_MEMBER_DEAF_LATER_BY);
+        let (answering_record, mut answering_events) = recorded_events();
         let answering = start_members(
             &scratch,
             vec![
                 MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
                     .with_clock(frozen_clock(FROZEN_CLOCK_MS))
-                    .with_monotonic(leading.monotonic()),
+                    .with_report(answering_record),
             ],
         )
         .await
         .pop()
         .unwrap();
         let mut witness = Witness::joined_through(WITNESS_SEED, None, &answering.endpoint).await;
+        let asking_clock = ShiftedClock::default();
+        let (asking_record, mut asking_events) = recorded_events();
 
         let _asking = start_members_reaching(
             &scratch,
             vec![
                 MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
                     .with_hosts(&[WITNESS_SEED])
-                    .with_clock(frozen_clock(FROZEN_CLOCK_MS)),
+                    .with_clock(frozen_clock(FROZEN_CLOCK_MS))
+                    .with_monotonic(asking_clock.monotonic())
+                    .with_report(asking_record),
             ],
             &[(WITNESS_SEED, witness.address())],
         )
@@ -1449,14 +1452,42 @@ mod tests {
         let first_ask = witness
             .payload_where(PAYLOAD_WAIT, presence_request_by(SECOND_SEED))
             .await;
-        let ask_at_the_rebinds_join = witness
-            .payload_where(SPEC_REBINDS_JOIN_WITHIN, presence_request_by(SECOND_SEED))
-            .await;
+        recorded_until(
+            &mut asking_events,
+            PAYLOAD_ACCEPTED,
+            |fields| {
+                fields.contains(&(KIND, serde_json::Value::from(PRESENCE_KIND)))
+                    && fields.contains(&(PEER, short_peer_id(FIRST_SEED)))
+            },
+            PAYLOAD_WAIT,
+        )
+        .await;
+        asking_clock.move_forward(SPEC_DEAF_TIMEOUT);
+        let ask_at_the_rebinds_join = request_seq(
+            witness
+                .payload_where(SPEC_REBINDS_JOIN_WITHIN, presence_request_by(SECOND_SEED))
+                .await,
+        );
         let answer = witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await;
+        let (before_the_answering_member_took_the_ask, _ask) = recorded_until(
+            &mut answering_events,
+            PAYLOAD_ACCEPTED,
+            |fields| {
+                fields.contains(&(KIND, serde_json::Value::from(PRESENCE_REQUEST_KIND)))
+                    && fields.contains(&(SEQ, serde_json::Value::from(ask_at_the_rebinds_join)))
+            },
+            PAYLOAD_WAIT,
+        )
+        .await;
 
-        assert!(request_seq(first_ask) < request_seq(ask_at_the_rebinds_join));
+        assert!(request_seq(first_ask) < ask_at_the_rebinds_join);
+        assert_eq!(
+            rebinds_among(&before_the_answering_member_took_the_ask),
+            0,
+            "the answering member began a rebind before the ask at the other's rebind's join reached it: {before_the_answering_member_took_the_ask:?}"
+        );
         assert!(answer.is_some());
         drop(scratch);
     }

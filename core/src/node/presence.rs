@@ -2029,10 +2029,10 @@ pub(super) mod tests {
         .saturating_add(PAYLOAD_WAIT);
     const PROBE_ANSWERED_WAIT: Duration = Duration::from_secs(5);
     const AFTER_PROBE_ACK: Duration = Duration::from_millis(300);
-    const PAYLOAD_ACCEPTED: &str = "gossip.payload_accepted";
-    const KIND: &str = "kind";
-    const PRESENCE_KIND: &str = "presence";
-    const PRESENCE_REQUEST_KIND: &str = "presence_request";
+    pub(in crate::node) const PAYLOAD_ACCEPTED: &str = "gossip.payload_accepted";
+    pub(in crate::node) const KIND: &str = "kind";
+    pub(in crate::node) const PRESENCE_KIND: &str = "presence";
+    pub(in crate::node) const PRESENCE_REQUEST_KIND: &str = "presence_request";
     const PAYLOAD_DROPPED: &str = "gossip.payload_dropped";
     const RULE: &str = "rule";
     const NOT_ABOVE_REQUESTER_SEQ_RULE: &str = "not_above_requester_seq";
@@ -2049,7 +2049,7 @@ pub(super) mod tests {
     const TOPIC_JOINED: &str = "gossip.topic_joined";
     const UNREACHABLE_KIND: &str = "unreachable";
     pub(in crate::node) const PEER: &str = "peer";
-    const SEQ: &str = "seq";
+    pub(in crate::node) const SEQ: &str = "seq";
     pub(in crate::node) const TS: &str = "ts";
 
     const FIRST_REQUESTER_SEED: u8 = 72;
