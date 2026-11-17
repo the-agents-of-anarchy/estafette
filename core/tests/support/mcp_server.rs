@@ -270,49 +270,53 @@ pub fn gone(peer: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{self, PipeReader, Read};
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::path::Path;
     use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     use super::McpServer;
     use crate::member_events::MemberEvents;
 
     /// A command that runs until it is ended, reading nothing and printing nothing.
     const RUNS_UNTIL_ENDED: [&str; 3] = ["tail", "-f", "/dev/null"];
-    /// The command that sends a process a signal by its id.
-    const SIGNAL_COMMAND: &str = "kill";
+    /// How long the end of a stand-in may take to reach the pipe only it holds once its owner ended it: chosen, not measured, far above a kill and a wait.
+    const STAND_IN_ENDED_WITHIN: Duration = Duration::from_secs(10);
 
-    /// Sends the process of that id the default signal and answers whether one was still there to receive it, so a test ends whatever a fixture left running.
-    fn was_still_running(process_id: u32) -> bool {
-        Command::new(SIGNAL_COMMAND)
-            .arg(process_id.to_string())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap()
-            .success()
+    /// Whether the end of the pipe that only the stand-in holds open closes within the bound, the sign the stand-in has ended, read on a thread of its own so no signal is sent to any process.
+    fn stand_in_ended_within(only_the_stand_in_writes: PipeReader, within: Duration) -> bool {
+        let (closed, close_seen) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut written = Vec::new();
+            drop(closed.send((&only_the_stand_in_writes).read_to_end(&mut written)));
+        });
+        close_seen.recv_timeout(within).is_ok()
     }
 
     #[test]
     fn observability_decision_16_a_server_whose_handshake_fails_before_it_starts_is_ended_before_the_failure_reaches_its_machine()
      {
+        let (only_the_stand_in_writes, stand_in_end) = io::pipe().unwrap();
         let process = Command::new(RUNS_UNTIL_ENDED[0])
             .args(&RUNS_UNTIL_ENDED[1..])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
+            .stderr(stand_in_end)
             .spawn()
             .unwrap();
-        let process_id = process.id();
         let events = MemberEvents::new("member with no output", Path::new("/nonexistent"));
 
         let handshake = catch_unwind(AssertUnwindSafe(|| McpServer::handshaken(process, events)));
 
-        let left_running = was_still_running(process_id);
+        let ended = stand_in_ended_within(only_the_stand_in_writes, STAND_IN_ENDED_WITHIN);
         let Err(_failure) = handshake else {
             panic!("a server whose output is not piped was handshaken")
         };
         assert!(
-            !left_running,
-            "process {process_id} still ran after its handshake failed"
+            ended,
+            "the stand-in still ran {STAND_IN_ENDED_WITHIN:?} after its handshake failed"
         );
     }
 }
