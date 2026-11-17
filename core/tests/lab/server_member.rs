@@ -10,10 +10,7 @@ use crate::lab_machine::LabMachine;
 use crate::lab_server::LabServer;
 use crate::live_network::LiveNetwork;
 use crate::mcp_server::{HANDLE_KEY, PEERS_KEY, PEERS_TOOL, RESULT_KEY, SEND_TOOL, send_arguments};
-use crate::scratch_machine::fresh_directory::fresh_directory_in;
-use crate::scratch_machine::remove_scratch::remove_scratch;
-use crate::scratch_machine::server_member_end::{ServerMemberStep, ended_server_member, succeeded};
-use crate::scratch_machine::trace_reader::timeline_in;
+use crate::scratch_machine::server_member_end::{ServerMemberStep, TestSoFar, ended_server_member};
 use crate::scratch_machine::{TIMELINE_HEADING, fail_unless_panicking};
 
 /// The recipe that writes the lab network's configuration on a server from its standard input.
@@ -30,13 +27,6 @@ const STOP_MEMBER_ON_SERVER_RECIPE: &str = "remote::stop-member-on-server";
 const RUN_RECORD_ON_SERVER_RECIPE: &str = "remote::run-record-on-server";
 /// The recipe that fetches both trace files of each run of a member on a server into a directory.
 const TRACE_FILES_ON_SERVER_RECIPE: &str = "remote::trace-files-on-server";
-/// What begins the name of the scratch directory a failing test fetches a member's trace files into for its timeline alone.
-const FETCHED_FOR_THE_PRINT_PREFIX: &str = "ea-timeline";
-/// The name, inside that scratch directory, of the directory the recipe fetches into.
-const FETCHED_FOR_THE_PRINT_DIRECTORY: &str = "fetched";
-/// What a failing test prints in place of a member's timeline when its trace files could not be fetched.
-const TRACE_FILES_NOT_FETCHED: &str =
-    "its trace files were not fetched, so what it recorded is unknown";
 /// How long a member on a server may take to claim its card and answer a tool call, each call crossing SSH and the cloud API.
 const SERVING_WAIT: Duration = Duration::from_secs(60);
 /// The pause the re-asks of a member on a server were once spaced by, added to each re-ask's bound so the last re-ask may start as late as it once could.
@@ -174,22 +164,6 @@ impl<'server> ServerMember<'server> {
         }
     }
 
-    /// Fetches both trace files of each of the member's runs into the directory and answers the directory when they were fetched, printing why they were not.
-    fn fetch_trace_files<'into>(&self, into: &'into Path) -> Option<&'into Path> {
-        let fetched = self.run_end_step(ServerMemberStep::FetchTraceFiles(into));
-        match succeeded(&fetched) {
-            Ok(_fetched) => Some(into),
-            Err(failure) => {
-                eprintln!(
-                    "trace files of {} on {} not fetched: {failure}",
-                    self.card,
-                    self.server.label()
-                );
-                None
-            }
-        }
-    }
-
     /// Prints the timeline a failing test shows for the member.
     fn print_timeline(&self, timeline: &str) {
         eprintln!(
@@ -198,60 +172,31 @@ impl<'server> ServerMember<'server> {
             self.server.label()
         );
     }
-
-    /// The member's timeline read from a copy of its trace files fetched into a scratch directory, which is removed once read.
-    fn timeline_fetched_for_the_print(&self) -> String {
-        let holder = match fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!(
-                "{FETCHED_FOR_THE_PRINT_PREFIX}-{}-{}-{}",
-                std::process::id(),
-                self.server.label(),
-                self.card
-            ),
-        ) {
-            Ok(holder) => holder,
-            Err(failure) => {
-                fail_unless_panicking(&failure.to_string());
-                return TRACE_FILES_NOT_FETCHED.to_owned();
-            }
-        };
-        let fetched_for_the_print = holder.join(FETCHED_FOR_THE_PRINT_DIRECTORY);
-        let timeline = timeline_of_fetched(self.fetch_trace_files(&fetched_for_the_print));
-        if let Err(failure) = remove_scratch(&holder) {
-            fail_unless_panicking(&failure.to_string());
-        }
-        timeline
-    }
 }
 
 impl Drop for ServerMember<'_> {
     fn drop(&mut self) {
+        let test = if std::thread::panicking() {
+            TestSoFar::Failing
+        } else {
+            TestSoFar::NotFailing
+        };
         let ended = ended_server_member(
             &self.card,
             self.server.label(),
             &format!("{}-{}", self.server.label(), self.card),
             self.kept_in.as_deref(),
             &self.secrets,
+            test,
             |step| self.run_end_step(step),
         );
-        if std::thread::panicking() {
-            let timeline = if self.kept_in.is_some() {
-                timeline_of_fetched(ended.kept_trace_files.as_deref())
-            } else {
-                self.timeline_fetched_for_the_print()
-            };
-            self.print_timeline(&timeline);
+        if let Some(timeline) = &ended.timeline {
+            self.print_timeline(timeline);
         }
         if !ended.failures.is_empty() {
             fail_unless_panicking(&ended.failures.join("\n"));
         }
     }
-}
-
-/// The member's timeline read from the directory its trace files were fetched into, or, when they were not fetched, that its timeline is unknown.
-fn timeline_of_fetched(fetched_into: Option<&Path>) -> String {
-    fetched_into.map_or_else(|| TRACE_FILES_NOT_FETCHED.to_owned(), timeline_in)
 }
 
 /// The network configuration the invitation describes, as joining the network writes it on a scratch machine named for the handle.
@@ -264,29 +209,4 @@ fn invitation_configuration(network: &LiveNetwork, handle: &str) -> String {
             .unwrap(),
     )
     .unwrap()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{TRACE_FILES_NOT_FETCHED, timeline_of_fetched};
-    use crate::scratch_machine::fresh_directory::fresh_directory_in;
-    use crate::scratch_machine::remove_scratch::remove_scratch;
-    use crate::scratch_machine::trace_reader::NO_EVENT_RECORDED;
-
-    #[test]
-    fn observability_decision_15_a_member_whose_trace_files_were_not_fetched_is_printed_as_not_fetched_not_as_recording_nothing()
-     {
-        let fetched_into = fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("server-member-{}-fetched-into", std::process::id()),
-        )
-        .unwrap();
-
-        let not_fetched = timeline_of_fetched(None);
-        let fetched_with_no_event = timeline_of_fetched(Some(&fetched_into));
-
-        assert_eq!(not_fetched, TRACE_FILES_NOT_FETCHED);
-        assert_eq!(fetched_with_no_event, NO_EVENT_RECORDED);
-        remove_scratch(&fetched_into).unwrap();
-    }
 }

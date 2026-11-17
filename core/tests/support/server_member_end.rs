@@ -2,10 +2,20 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use super::fresh_directory::fresh_directory_in;
+use super::remove_scratch::remove_scratch;
+use super::trace_reader::timeline_in;
 use super::{fresh_kept_directory, keep_run_record, keep_stop_failure, redact_files_beneath};
 
 /// The directory a member's fetched trace files are kept in, inside the directory its records are kept in.
 const KEPT_TRACE_FILES_DIRECTORY: &str = "traces";
+/// What begins the name of the scratch directory a failing test fetches a member's trace files into for its timeline alone.
+const FETCHED_FOR_THE_PRINT_PREFIX: &str = "ea-timeline";
+/// The name, inside that scratch directory, of the directory the recipe fetches into.
+const FETCHED_FOR_THE_PRINT_DIRECTORY: &str = "fetched";
+/// What a failing test prints in place of a member's timeline when its trace files could not be fetched.
+const TRACE_FILES_NOT_FETCHED: &str =
+    "its trace files were not fetched, so what it recorded is unknown";
 
 /// A step of the end of a member serving on a server, each a recipe run on that server.
 #[derive(Clone, Copy)]
@@ -18,50 +28,85 @@ pub enum ServerMemberStep<'into> {
     FetchTraceFiles(&'into Path),
 }
 
-/// Where the end of a member on a server kept its trace files, when it fetched them, and each failure of its steps in the order they ran.
+/// Whether the test running a member's end had already failed when the end began, so the end reads the member's timeline for its print.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TestSoFar {
+    /// The test had failed: its thread was panicking.
+    Failing,
+    /// The test had not failed.
+    NotFailing,
+}
+
+/// The timeline a failing test prints for the member, none when the test was not failing, and each failure of the end's steps in the order they ran.
 pub struct ServerMemberEnd {
-    pub kept_trace_files: Option<PathBuf>,
+    pub timeline: Option<String>,
     pub failures: Vec<String>,
 }
 
-/// Stops the member on the server through the runner and, when the test keeps records, keeps a mark of a failed stop, its run record and its trace files, each fetched file holding one of its secrets kept redacted with a note beside it, in a directory of its own named as given, each step run whatever an earlier one did.
+/// Where the end of a member left its trace files for a failing test's timeline.
+enum TraceFilesKept {
+    /// Fetched whole into the directory its records are kept in.
+    Fetched(PathBuf),
+    /// Not fetched whole into that directory.
+    NotFetched,
+    /// No directory to keep them in: the test keeps no records, or the directory could not be made.
+    NowhereToKeep,
+}
+
+/// Stops the member on the server through the runner and, when the test keeps records, keeps a mark of a failed stop, its run record and its trace files, each fetched file holding one of its secrets kept redacted with a note beside it, in a directory of its own named as given, then, when the test is failing, reads the member's timeline, from what was kept or else from a fetch of its own; each step runs whatever an earlier one did, and every failure, a failed stop included, is answered once all have run.
 pub fn ended_server_member(
     member: &str,
     server: &str,
     kept_as: &str,
     kept_in: Option<&Path>,
     secrets: &[String],
+    test: TestSoFar,
     run: impl Fn(ServerMemberStep<'_>) -> io::Result<Output>,
 ) -> ServerMemberEnd {
     let stop = run(ServerMemberStep::Stop);
-    if let Err(failure) = succeeded(&stop) {
-        eprintln!("{member} on {server} did not stop cleanly: {failure}");
-    }
     let mut failures = Vec::new();
-    let Some(directory) = kept_in else {
-        return ServerMemberEnd {
-            kept_trace_files: None,
-            failures,
-        };
-    };
-    let kept = match fresh_kept_directory(directory, kept_as) {
-        Ok(kept) => kept,
-        Err(failure) => {
-            failures.push(format!("records of {member} not kept: {failure}"));
-            return ServerMemberEnd {
-                kept_trace_files: None,
-                failures,
-            };
+    if let Err(failure) = succeeded(&stop) {
+        failures.push(format!(
+            "{member} on {server} did not stop cleanly: {failure}"
+        ));
+    }
+    let made = kept_in.map(|directory| (directory, fresh_kept_directory(directory, kept_as)));
+    let trace_files = match made {
+        None => TraceFilesKept::NowhereToKeep,
+        Some((_directory, Ok(kept))) => {
+            kept_records(member, server, &kept, &stop, secrets, &run, &mut failures)
+        }
+        Some((directory, Err(failure))) => {
+            failures.push(format!(
+                "records of {member} not kept in {}: {failure}",
+                directory.display()
+            ));
+            TraceFilesKept::NowhereToKeep
         }
     };
-    if let Err(failure) = keep_stop_failure(&kept, member, &stop, secrets) {
+    let timeline = (test == TestSoFar::Failing)
+        .then(|| timeline_for_the_print(member, server, trace_files, &run, &mut failures));
+    ServerMemberEnd { timeline, failures }
+}
+
+/// Keeps in the directory a mark of a failed stop, the member's run record and its trace files, each fetched file holding one of its secrets kept redacted with a note beside it, adding each failure, and answers where the trace files were left.
+fn kept_records(
+    member: &str,
+    server: &str,
+    kept: &Path,
+    stop: &io::Result<Output>,
+    secrets: &[String],
+    run: &impl Fn(ServerMemberStep<'_>) -> io::Result<Output>,
+    failures: &mut Vec<String>,
+) -> TraceFilesKept {
+    if let Err(failure) = keep_stop_failure(kept, member, stop, secrets) {
         failures.push(format!("failed stop of {member} not marked: {failure}"));
     }
     let printed = run(ServerMemberStep::PrintRunRecord);
     match succeeded(&printed) {
         Ok(output) => {
             let record = String::from_utf8_lossy(&output.stdout);
-            if let Err(failure) = keep_run_record(&kept, member, &record, secrets) {
+            if let Err(failure) = keep_run_record(kept, member, &record, secrets) {
                 failures.push(format!("run record of {member} not kept: {failure}"));
             }
         }
@@ -85,19 +130,74 @@ pub fn ended_server_member(
         ));
     }
     if fetch_failure.is_some() {
-        return ServerMemberEnd {
-            kept_trace_files: None,
-            failures,
-        };
+        return TraceFilesKept::NotFetched;
     }
     eprintln!(
         "trace files of {member} kept at {}",
         kept_trace_files.display()
     );
-    ServerMemberEnd {
-        kept_trace_files: Some(kept_trace_files),
-        failures,
+    TraceFilesKept::Fetched(kept_trace_files)
+}
+
+/// The member's timeline for a failing test's print: read from the trace files kept, unknown when they were not fetched, or read from a fetch into a scratch directory when there was nowhere to keep them, adding each failure.
+fn timeline_for_the_print(
+    member: &str,
+    server: &str,
+    trace_files: TraceFilesKept,
+    run: &impl Fn(ServerMemberStep<'_>) -> io::Result<Output>,
+    failures: &mut Vec<String>,
+) -> String {
+    match trace_files {
+        TraceFilesKept::Fetched(directory) => timeline_of_fetched(Some(&directory)),
+        TraceFilesKept::NotFetched => timeline_of_fetched(None),
+        TraceFilesKept::NowhereToKeep => {
+            timeline_fetched_for_the_print(member, server, run, failures)
+        }
     }
+}
+
+/// The member's timeline read from a copy of its trace files fetched into a scratch directory, which is removed once read, adding each failure.
+fn timeline_fetched_for_the_print(
+    member: &str,
+    server: &str,
+    run: &impl Fn(ServerMemberStep<'_>) -> io::Result<Output>,
+    failures: &mut Vec<String>,
+) -> String {
+    let holder = match fresh_directory_in(
+        &std::env::temp_dir(),
+        &format!(
+            "{FETCHED_FOR_THE_PRINT_PREFIX}-{}-{server}-{member}",
+            std::process::id()
+        ),
+    ) {
+        Ok(holder) => holder,
+        Err(failure) => {
+            failures.push(format!(
+                "trace files of {member} not fetched for its timeline: {failure}"
+            ));
+            return timeline_of_fetched(None);
+        }
+    };
+    let fetched_for_the_print = holder.join(FETCHED_FOR_THE_PRINT_DIRECTORY);
+    let fetched = run(ServerMemberStep::FetchTraceFiles(&fetched_for_the_print));
+    let timeline = match succeeded(&fetched) {
+        Ok(_fetched) => timeline_of_fetched(Some(&fetched_for_the_print)),
+        Err(failure) => {
+            failures.push(format!(
+                "trace files of {member} on {server} not fetched for its timeline: {failure}"
+            ));
+            timeline_of_fetched(None)
+        }
+    };
+    if let Err(failure) = remove_scratch(&holder) {
+        failures.push(failure.to_string());
+    }
+    timeline
+}
+
+/// The member's timeline read from the directory its trace files were fetched into, or, when they were not fetched, that its timeline is unknown.
+fn timeline_of_fetched(fetched_into: Option<&Path>) -> String {
+    fetched_into.map_or_else(|| TRACE_FILES_NOT_FETCHED.to_owned(), timeline_in)
 }
 
 /// The output of a recipe run that succeeded, or why it failed: its exit status and standard error, or the error that kept it from running.
@@ -124,6 +224,7 @@ mod tests {
     use super::*;
     use crate::scratch_machine::fresh_directory::fresh_directory_in;
     use crate::scratch_machine::remove_scratch::remove_scratch;
+    use crate::scratch_machine::trace_reader::NO_EVENT_RECORDED;
     use crate::scratch_machine::{REDACTED, REDACTED_NOTE_EXTENSION, STOP_FAILED_EXTENSION};
 
     /// The card a test's member serves.
@@ -150,6 +251,10 @@ mod tests {
     const PLANTED_INVITATION: &str = "estafette-invite-1:plantedinvitation0123456789";
     /// A token a test plants among a member's secrets and in what is fetched of it, no real one.
     const PLANTED_TOKEN: &str = "plantedtoken0123456789abcdef";
+    /// A file a test makes where a directory is wanted, so no directory can be made beneath it.
+    const NOT_A_DIRECTORY: &str = "not-a-directory";
+    /// The directory a test asks a member's records be kept in, beneath that file.
+    const KEPT_BENEATH_NOT_A_DIRECTORY: &str = "kept";
 
     /// A recipe run that exited with code 1 having printed the text on standard error.
     fn failed_run(printed: &str) -> Output {
@@ -207,6 +312,7 @@ mod tests {
             &format!("{SERVER}-{MEMBER}"),
             Some(&kept_in),
             &[PLANTED_INVITATION.to_owned(), PLANTED_TOKEN.to_owned()],
+            TestSoFar::NotFailing,
             stand_in_for_the_recipes,
         );
 
@@ -284,6 +390,7 @@ mod tests {
             &format!("{SERVER}-{MEMBER}"),
             Some(&kept_in),
             &[],
+            TestSoFar::Failing,
             stand_in_for_the_recipes,
         );
 
@@ -293,12 +400,19 @@ mod tests {
             steps_run.into_inner(),
             ["stop", "print run record", "fetch trace files"]
         );
-        assert_eq!(ended.kept_trace_files, Some(kept_traces.clone()));
-        assert_eq!(ended.failures.len(), 1, "{:?}", ended.failures);
+        assert_eq!(ended.timeline.as_deref(), Some(NO_EVENT_RECORDED));
+        assert_eq!(ended.failures.len(), 2, "{:?}", ended.failures);
         assert!(
             ended.failures[0].contains(MEMBER)
                 && ended.failures[0].contains(SERVER)
-                && ended.failures[0].contains(RUN_RECORD_REFUSAL),
+                && ended.failures[0].contains(STOP_REFUSAL),
+            "{:?}",
+            ended.failures
+        );
+        assert!(
+            ended.failures[1].contains(MEMBER)
+                && ended.failures[1].contains(SERVER)
+                && ended.failures[1].contains(RUN_RECORD_REFUSAL),
             "{:?}",
             ended.failures
         );
@@ -314,5 +428,138 @@ mod tests {
             ])
         );
         remove_scratch(&kept_in).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_16_a_server_member_whose_stop_failed_fails_a_test_that_was_not_failing_once_every_fetch_has_run_beside_its_mark()
+     {
+        let kept_in = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-server-member-stop-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let steps_run = RefCell::new(Vec::new());
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop => {
+                steps_run.borrow_mut().push("stop");
+                Ok(failed_run(STOP_REFUSAL))
+            }
+            ServerMemberStep::PrintRunRecord => {
+                steps_run.borrow_mut().push("print run record");
+                Ok(succeeded_run("record of amy\n"))
+            }
+            ServerMemberStep::FetchTraceFiles(into) => {
+                steps_run.borrow_mut().push("fetch trace files");
+                fs::create_dir_all(into).unwrap();
+                Ok(succeeded_run(""))
+            }
+        };
+
+        let ended = ended_server_member(
+            MEMBER,
+            SERVER,
+            &format!("{SERVER}-{MEMBER}"),
+            Some(&kept_in),
+            &[],
+            TestSoFar::NotFailing,
+            stand_in_for_the_recipes,
+        );
+
+        let kept = kept_in.join(format!("{SERVER}-{MEMBER}"));
+        assert_eq!(
+            steps_run.into_inner(),
+            ["stop", "print run record", "fetch trace files"]
+        );
+        assert_eq!(ended.timeline, None);
+        assert_eq!(ended.failures.len(), 1, "{:?}", ended.failures);
+        assert!(
+            ended.failures[0].contains(MEMBER)
+                && ended.failures[0].contains(SERVER)
+                && ended.failures[0].contains(STOP_REFUSAL),
+            "{:?}",
+            ended.failures
+        );
+        assert!(
+            kept.join(format!("{MEMBER}.{STOP_FAILED_EXTENSION}"))
+                .is_file(),
+            "no mark of the failed stop beside {}",
+            kept.display()
+        );
+        remove_scratch(&kept_in).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_16_a_failing_test_whose_server_members_kept_directory_cannot_be_made_answers_that_failure_and_still_fetches_its_trace_files_for_the_timeline()
+     {
+        let scratch = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-server-member-unkept-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let not_a_directory = scratch.join(NOT_A_DIRECTORY);
+        fs::write(&not_a_directory, "").unwrap();
+        let fetched_into = RefCell::new(Vec::new());
+        let steps_run = RefCell::new(Vec::new());
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop => {
+                steps_run.borrow_mut().push("stop");
+                Ok(succeeded_run(""))
+            }
+            ServerMemberStep::PrintRunRecord => {
+                steps_run.borrow_mut().push("print run record");
+                Ok(succeeded_run("record of amy\n"))
+            }
+            ServerMemberStep::FetchTraceFiles(into) => {
+                steps_run.borrow_mut().push("fetch trace files");
+                fetched_into.borrow_mut().push(into.to_path_buf());
+                fs::create_dir_all(into).unwrap();
+                Ok(succeeded_run(""))
+            }
+        };
+
+        let ended = ended_server_member(
+            MEMBER,
+            SERVER,
+            &format!("{SERVER}-{MEMBER}"),
+            Some(&not_a_directory.join(KEPT_BENEATH_NOT_A_DIRECTORY)),
+            &[],
+            TestSoFar::Failing,
+            stand_in_for_the_recipes,
+        );
+
+        assert_eq!(steps_run.into_inner(), ["stop", "fetch trace files"]);
+        assert_eq!(ended.timeline.as_deref(), Some(NO_EVENT_RECORDED));
+        assert_eq!(ended.failures.len(), 1, "{:?}", ended.failures);
+        assert!(
+            ended.failures[0].contains(MEMBER)
+                && ended.failures[0].contains(&not_a_directory.display().to_string()),
+            "{:?}",
+            ended.failures
+        );
+        for fetched in fetched_into.into_inner() {
+            assert!(
+                !fetched.exists(),
+                "{} was not removed once read",
+                fetched.display()
+            );
+        }
+        remove_scratch(&scratch).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_15_a_member_whose_trace_files_were_not_fetched_is_printed_as_not_fetched_not_as_recording_nothing()
+     {
+        let fetched_into = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("server-member-{}-fetched-into", std::process::id()),
+        )
+        .unwrap();
+
+        let not_fetched = timeline_of_fetched(None);
+        let fetched_with_no_event = timeline_of_fetched(Some(&fetched_into));
+
+        assert_eq!(not_fetched, TRACE_FILES_NOT_FETCHED);
+        assert_eq!(fetched_with_no_event, NO_EVENT_RECORDED);
+        remove_scratch(&fetched_into).unwrap();
     }
 }
