@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 use estafette::config::NetworkConfig;
 use estafette::dirs::{
-    Directories, DirectoryFilesystem, OperatingSystemFilesystem, TraceDirectory, trace_file_of,
+    Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem, TraceDirectory,
+    trace_file_of,
 };
 use estafette::keys::parse_public_key;
 use iroh::EndpointId;
@@ -174,13 +175,17 @@ impl ScratchMachine {
 
     /// The directories the binary derives from this machine's environment.
     pub fn directories(&self) -> Directories {
+        self.established_directories().unwrap()
+    }
+
+    /// The directories the binary derives from this machine's environment, or why they could not be established, never panicking.
+    fn established_directories(&self) -> Result<Directories, DirectoriesError> {
         let environment = environment(&self.root);
         Directories::establish(
             |name: &str| variable_of(&environment, name),
             &OperatingSystemFilesystem,
             None,
         )
-        .unwrap()
     }
 
     /// The binary with this machine's environment alone.
@@ -227,9 +232,12 @@ impl ScratchMachine {
             .collect()
     }
 
-    /// The trace directory of the member of that number, which no other member writes in.
+    /// The trace directory of the member of that number, which no other member writes in, derived from its data directory alone so nothing is established on the way.
     pub fn traces_directory_of_member(&self, number: u32) -> PathBuf {
-        let environment = self.member_environment(number);
+        let environment = [(
+            DATA_HOME_VARIABLE,
+            self.member_data_home(number).into_os_string(),
+        )];
         TraceDirectory::resolve(&|name: &str| variable_of(&environment, name))
             .unwrap()
             .path()
@@ -353,11 +361,19 @@ impl ScratchMachine {
         Ok(kept)
     }
 
-    /// Copies every file under this machine's data directory, its members' and its observers' trace files included, into the data directory inside the directory, leaving out each file that holds a secret key, going on past each directory it cannot read and each file it cannot copy, and answers each such failure.
+    /// Copies every file under this machine's data directory, its members' and its observers' trace files included, into the data directory inside the directory, leaving out each file that holds a secret key, going on past each directory it cannot read and each file it cannot copy, and answers each such failure; keeps nothing of it when the secrets to search it for cannot be read.
     fn keep_data_directory(&self, directory: &Path) -> Vec<io::Error> {
         let data = self.root.join(DATA_HOME);
         let kept = directory.join(KEPT_DATA_DIRECTORY);
-        let invitation_and_tokens = self.invitation_and_tokens();
+        let invitation_and_tokens = match self.invitation_and_tokens() {
+            Ok(invitation_and_tokens) => invitation_and_tokens,
+            Err(failure) => {
+                return vec![io::Error::other(format!(
+                    "{} not kept, since the secrets to search it for could not be read: {failure}",
+                    data.display()
+                ))];
+            }
+        };
         let mut failures = Vec::new();
         for listed in files_beneath_for_keeping(&data) {
             let file = match listed {
@@ -384,10 +400,10 @@ impl ScratchMachine {
         failures
     }
 
-    /// The invitation and every token of this machine, its network's secret and the text of each of its secret key files, as the run-record redaction matches them, longest first.
-    fn invitation_and_tokens(&self) -> Vec<String> {
+    /// The invitation and every token of this machine, its network's secret and the text of each of its secret key files, as the run-record redaction matches them, longest first, or why the directory naming its network's secret could not be established.
+    fn invitation_and_tokens(&self) -> Result<Vec<String>, DirectoriesError> {
         let network_secret = self
-            .directories()
+            .established_directories()?
             .network_config_file(&self.network)
             .ok()
             .and_then(|config_file| NetworkConfig::load(&config_file).ok())
@@ -398,7 +414,8 @@ impl ScratchMachine {
             .filter(|file| is_a_secret_key_file(file))
             .filter_map(|file| fs::read_to_string(file).ok())
             .collect();
-        self.run_records
+        Ok(self
+            .run_records
             .secrets_longest_first(
                 network_secret
                     .iter()
@@ -407,7 +424,7 @@ impl ScratchMachine {
             )
             .into_iter()
             .filter(|secret| !secret.is_empty())
-            .collect()
+            .collect())
     }
 
     /// The name this machine's records are kept under: its scratch root's.
@@ -456,17 +473,21 @@ impl ScratchMachine {
             .collect();
         variables.push((
             DATA_HOME_VARIABLE,
-            self.root
-                .join(DATA_HOME)
-                .join(MEMBERS_UNDER_DATA_HOME)
-                .join(number.to_string())
-                .into_os_string(),
+            self.member_data_home(number).into_os_string(),
         ));
         variables.push((
             CARDS_DIRECTORY_VARIABLE,
             cards.parent().unwrap().as_os_str().to_owned(),
         ));
         variables
+    }
+
+    /// The data directory of the member of that number, under the machine's data directory.
+    fn member_data_home(&self, number: u32) -> PathBuf {
+        self.root
+            .join(DATA_HOME)
+            .join(MEMBERS_UNDER_DATA_HOME)
+            .join(number.to_string())
     }
 
     /// The secrets of every readable file under this machine's base directories but its debug traces, which are a record of the run like the run record itself, longest first.
@@ -800,6 +821,10 @@ mod tests {
     const STAND_IN_LABEL: &str = "stand-in";
     /// The bound a test gives a first-line wait that ends at once, its output closed, so the bound is never waited out.
     const FIRST_LINE_WITHIN: Duration = Duration::from_secs(60);
+    /// The failure a test raises before a machine it holds is dropped.
+    const FIRST_FAILURE: &str = "the test failed first";
+    /// Where a test moves a machine's configuration base directory so a file can take its place.
+    const CONFIGURATION_HOME_SET_ASIDE: &str = "c-set-aside";
 
     #[test]
     fn observability_decision_12_a_failing_machine_prints_the_lines_of_a_member_that_may_still_run_before_one_still_zero_filled()
@@ -1355,6 +1380,55 @@ mod tests {
                 && mark.contains(&format!("ssh: the server refused {REDACTED}\n"))
                 && !mark.contains(secret),
             "{mark}"
+        );
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_dropped_on_a_failing_test_whose_base_directories_cannot_be_made_leaves_that_failure_standing_and_keeps_no_unsearched_data()
+     {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-unmade-base-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = ScratchMachine::fresh(
+            "unmade-base",
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: Some(kept_in.clone()),
+                invitation: None,
+            },
+        );
+        let kept_data = kept_in.join(machine.name()).join(KEPT_DATA_DIRECTORY);
+
+        let unwound = catch_unwind(AssertUnwindSafe(move || {
+            machine.directories();
+            let data_file = machine
+                .traces_directory_of_member(0)
+                .join("20261117T080000Z-1111111111111111-estafette.events.jsonl");
+            fs::create_dir_all(data_file.parent().unwrap()).unwrap();
+            fs::write(&data_file, "events line\n").unwrap();
+            let configuration_home = machine.root.join(CONFIG_HOME);
+            fs::rename(
+                &configuration_home,
+                machine.root.join(CONFIGURATION_HOME_SET_ASIDE),
+            )
+            .unwrap();
+            fs::write(&configuration_home, "").unwrap();
+            machine.servers_started.set(1);
+            panic!("{FIRST_FAILURE}");
+        }));
+
+        let first = unwound.expect_err("the test did not fail first");
+        assert_eq!(
+            first.downcast_ref::<String>().map(String::as_str),
+            Some(FIRST_FAILURE)
+        );
+        assert!(
+            files_beneath(&kept_data).is_empty(),
+            "data whose secrets could not be read was kept at {}",
+            kept_data.display()
         );
         remove_scratch::remove_scratch(&kept_in).unwrap();
     }
