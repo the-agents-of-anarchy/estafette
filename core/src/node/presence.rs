@@ -1200,7 +1200,7 @@ impl PresenceLoop {
             Some(_) = self.own_addresses.next() => Wake::OwnAddressChanged,
             Some(statuses) = self.relay_statuses.next() => Wake::HomeRelaysChanged(statuses),
             () = deadline_reached(&*self.monotonic, observer_wait_over) => Wake::ObserverWaitOver,
-            () = sleep_until_deadline(self.reannounce_due) => Wake::ReannounceDue,
+            () = deadline_reached(&*self.monotonic, self.reannounce_due) => Wake::ReannounceDue,
             () = deadline_reached(&*self.monotonic, relay_loss_due) => Wake::RelayLossDue,
             cause = sleep_until_rebind(&*self.monotonic, next_rebind) => Wake::RebindDue(cause),
             () = sleep_until_deadline(member_join_due) => Wake::MemberJoinDue,
@@ -4906,6 +4906,9 @@ pub(super) mod tests {
 
     #[cfg(feature = "relay")]
     const HOME_RELAY: &str = "transport.home_relay";
+    /// The longest a member takes to announce once its handed clock reads the end of the reannounce interval, which the runtime's timer would never reach on a clock an hour ahead.
+    #[cfg(feature = "relay")]
+    const ANNOUNCED_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
 
     /// A relay server on a local port, and its URL.
     #[cfg(feature = "relay")]
@@ -5055,6 +5058,88 @@ pub(super) mod tests {
         assert!(
             removed.is_some(),
             "the relay map still holds the lost home relay {RELAY_LOSS_REMOVAL_SLACK:?} after the clock read the relay loss wait"
+        );
+        drop(scratch);
+    }
+
+    #[cfg(feature = "relay")]
+    #[tokio::test]
+    async fn spec_3_8_an_address_changed_inside_the_reannounce_interval_is_announced_once_the_handed_clock_reads_its_end()
+     {
+        let scratch = Scratch::new("reannounce-on-clock").await;
+        let clock = StandingClock::standing_an_hour_ahead();
+        let (_relay, relay_address) = local_relay().await;
+        let (record, mut events) = recorded_events();
+        let endpoint = endpoint_recording_to(Vec::new(), &record).await;
+        let (member, ()) = tokio::join!(
+            start_member(
+                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                    .with_monotonic(clock.monotonic())
+                    .with_report(record),
+                endpoint,
+                (
+                    scratch.inbox(FIRST_SEED),
+                    scratch.directories.inbox_socket_file(u32::from(FIRST_SEED)),
+                ),
+                scratch.network_file(FIRST_SEED),
+            ),
+            async {
+                next_recorded_meeting(&mut events, STATE_COUNTERS, |_fields| true, PAYLOAD_WAIT)
+                    .await;
+                clock.move_forward(SPEC_JOIN_TIMEOUT);
+                next_recorded_meeting(
+                    &mut events,
+                    OWN_HANDLE_ASSIGNED,
+                    |_fields| true,
+                    PAYLOAD_WAIT,
+                )
+                .await;
+            }
+        );
+        let _client = tokio::net::UnixStream::connect(&member.inbox_path)
+            .await
+            .unwrap();
+        next_recorded_meeting(
+            &mut events,
+            PAYLOAD_BROADCAST,
+            |fields| fields.contains(&(KIND, serde_json::Value::from(PRESENCE_KIND))),
+            PAYLOAD_WAIT,
+        )
+        .await;
+        member
+            .endpoint
+            .insert_relay(
+                relay_address.clone(),
+                Arc::new(iroh::RelayConfig::from(relay_address)),
+            )
+            .await;
+        next_recorded_meeting(
+            &mut events,
+            HOME_RELAY,
+            |fields| fields.contains(&("connected", serde_json::Value::from(true))),
+            HOME_RELAY_STATUS_WITHIN,
+        )
+        .await;
+        found_within(PAYLOAD_WAIT, async || {
+            (!member.node.state.own_addr().relays().is_empty()).then_some(())
+        })
+        .await
+        .unwrap();
+        let before_the_interval_ends: Vec<RecordedEvent> =
+            std::iter::from_fn(|| events.try_recv().ok()).collect();
+
+        clock.move_forward(SPEC_REANNOUNCE_INTERVAL);
+        next_recorded_meeting(
+            &mut events,
+            PAYLOAD_BROADCAST,
+            |fields| fields.contains(&(KIND, serde_json::Value::from(PRESENCE_KIND))),
+            ANNOUNCED_ONCE_THE_CLOCK_READS_IT_WITHIN,
+        )
+        .await;
+
+        assert_eq!(
+            broadcasts_of(&before_the_interval_ends, PRESENCE_KIND),
+            Vec::<crate::event::EventFields>::new()
         );
         drop(scratch);
     }
