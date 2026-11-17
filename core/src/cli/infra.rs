@@ -2496,7 +2496,7 @@ mod tests {
             .collect();
         assert!(
             counters_before_the_first.is_empty(),
-            "{counters_before_the_first:?}"
+            "counters recorded before the clock read the first snapshot due: {counters_before_the_first:?}"
         );
         for snapshot in snapshots {
             assert_eq!(
