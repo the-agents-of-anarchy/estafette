@@ -2518,7 +2518,7 @@ pub(crate) mod tests {
     #[derive(Clone)]
     struct SlowHost {
         card: wire::PublicKey,
-        clock: Arc<Mutex<tokio::time::Instant>>,
+        clock: StandingClock,
     }
 
     impl DirectHost for SlowHost {
@@ -2535,10 +2535,8 @@ pub(crate) mod tests {
         }
 
         fn receive_message(&self, _sender: wire::PublicKey, _message: Message) -> bool {
-            let mut now = self.clock.lock().unwrap();
-            *now = now
-                .checked_add(Duration::from_millis(SERVER_HANDLING_MS))
-                .unwrap();
+            self.clock
+                .move_forward(Duration::from_millis(SERVER_HANDLING_MS));
             false
         }
 
@@ -2561,9 +2559,8 @@ pub(crate) mod tests {
     }
 
     async fn recording_link_over_a_slow_host() -> RecordingLink {
-        let shared_clock = Arc::new(Mutex::new(tokio::time::Instant::now()));
-        let reading = Arc::clone(&shared_clock);
-        let clock: MonotonicClock = Arc::new(move || *reading.lock().unwrap());
+        let shared_clock = StandingClock::standing_now();
+        let clock = shared_clock.monotonic();
         let (client_record, sent) = recorded_events();
         let (server_record, served) = recorded_events();
         let server_node = bind_node_holding(
@@ -2996,16 +2993,6 @@ pub(crate) mod tests {
         drop(open);
     }
 
-    /// A monotonic clock the test sets, read at the instant it was last set to, and the setting it reads from.
-    fn clock_the_test_sets() -> (MonotonicClock, Arc<Mutex<tokio::time::Instant>>) {
-        let reading = Arc::new(Mutex::new(tokio::time::Instant::now()));
-        let clock: MonotonicClock = {
-            let reading = Arc::clone(&reading);
-            Arc::new(move || *reading.lock().unwrap())
-        };
-        (clock, reading)
-    }
-
     const HEARING_NOTED_WAIT: Duration = Duration::from_secs(5);
 
     /// Waits until the register has noted every datagram each connection to or from the card has received, so a silence read later starts at the last of them, failing by name when it has not within the wait.
@@ -3052,24 +3039,26 @@ pub(crate) mod tests {
     }
 
     /// Moves the clock the test sets on by as long as a gone process is silent.
-    fn move_past_the_silence_of_a_gone_process(reading: &Mutex<tokio::time::Instant>) {
-        let mut reading = reading.lock().unwrap();
-        *reading = reading.checked_add(SILENCE_OF_A_GONE_PROCESS).unwrap();
+    fn move_past_the_silence_of_a_gone_process(clock: &StandingClock) {
+        clock.move_forward(SILENCE_OF_A_GONE_PROCESS);
     }
 
     #[tokio::test]
     async fn spec_3_8_closing_a_restarted_cards_gone_connections_also_closes_its_new_one_that_reports_no_selected_path_so_the_next_dial_reaches_the_new_process()
      {
-        let (clock, reading) = clock_the_test_sets();
-        let Rig { link, .. } =
-            rig_over(RecordingHost::with_card(card_of(SERVER_SEED)), clock).await;
+        let clock = StandingClock::standing_now();
+        let Rig { link, .. } = rig_over(
+            RecordingHost::with_card(card_of(SERVER_SEED)),
+            clock.monotonic(),
+        )
+        .await;
         connection_from_a_process_that_vanished(link.server_node.endpoint().addr()).await;
         wait_until_every_datagram_of_is_noted(
             &link.server_node.held_connections(),
             card_of(CLIENT_SEED),
         )
         .await;
-        move_past_the_silence_of_a_gone_process(&reading);
+        move_past_the_silence_of_a_gone_process(&clock);
         let restarted = link
             .client_node
             .endpoint()
@@ -3342,9 +3331,12 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_8_an_introduce_from_a_restarted_process_closes_its_cards_gone_connection_and_keeps_the_one_it_arrived_on_whatever_path_iroh_selected()
      {
-        let (clock, reading) = clock_the_test_sets();
-        let Rig { link, .. } =
-            rig_over(RecordingHost::with_card(card_of(SERVER_SEED)), clock).await;
+        let clock = StandingClock::standing_now();
+        let Rig { link, .. } = rig_over(
+            RecordingHost::with_card(card_of(SERVER_SEED)),
+            clock.monotonic(),
+        )
+        .await;
         let server = link.server_node.endpoint().id();
         connection_from_a_process_that_vanished(link.server_node.endpoint().addr()).await;
         let gone = connections_held_open_from(&link.server_node, card_of(CLIENT_SEED));
@@ -3353,7 +3345,7 @@ pub(crate) mod tests {
             card_of(CLIENT_SEED),
         )
         .await;
-        move_past_the_silence_of_a_gone_process(&reading);
+        move_past_the_silence_of_a_gone_process(&clock);
 
         let introduced = link
             .client
@@ -3377,14 +3369,17 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_8_a_presence_after_an_introduce_that_left_its_card_on_a_gone_processs_path_closes_the_introduces_connection_so_the_next_dial_reaches_the_new_process()
      {
-        let (clock, reading) = clock_the_test_sets();
-        let Rig { link, .. } =
-            rig_over(RecordingHost::with_card(card_of(SERVER_SEED)), clock).await;
+        let clock = StandingClock::standing_now();
+        let Rig { link, .. } = rig_over(
+            RecordingHost::with_card(card_of(SERVER_SEED)),
+            clock.monotonic(),
+        )
+        .await;
         let server = link.server_node.endpoint().id();
         let register = link.server_node.held_connections();
         connection_from_a_process_that_vanished(link.server_node.endpoint().addr()).await;
         wait_until_every_datagram_of_is_noted(&register, card_of(CLIENT_SEED)).await;
-        move_past_the_silence_of_a_gone_process(&reading);
+        move_past_the_silence_of_a_gone_process(&clock);
         link.client
             .introduce(server, introduction_from_client())
             .await
