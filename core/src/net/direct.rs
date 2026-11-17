@@ -2151,6 +2151,11 @@ pub(crate) mod tests {
             .expect("the clock holds the sender of its asked deadlines");
         }
 
+        /// Every deadline any waiter has asked the clock to wake it at.
+        pub fn asked_deadlines(&self) -> BTreeSet<tokio::time::Instant> {
+            self.asked_deadlines.borrow().clone()
+        }
+
         /// The clock as a node or a register takes it.
         pub fn monotonic(&self) -> MonotonicClock {
             Arc::new(self.clone())
@@ -3009,6 +3014,42 @@ pub(crate) mod tests {
         SILENCE_OF_A_GONE_PROCESS.saturating_sub(JUST_BEFORE);
     const SPEC_HEARING_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
     const HEARING_SAMPLES_ON_THE_MOVED_CLOCK: u32 = 20;
+    /// How much later than its due instant each step's move wakes a hearing sample, times the step's index, so the reading at a wake and the instant it was due disagree.
+    const SAMPLE_WOKEN_LATE_PER_STEP: Duration = Duration::from_millis(1);
+    /// The longest a step of the hearing test waits for the peer's datagram to arrive, or for the sample at the wake to note it.
+    const HEARING_STEP_WAIT: Duration = Duration::from_secs(10);
+
+    /// The count of datagrams the one connection to or from the card has received and the count the register last heard on it, or none while the register holds no live such connection.
+    fn datagrams_received_and_heard(
+        register: &HeldConnections,
+        card: wire::PublicKey,
+    ) -> Option<(u64, u64)> {
+        register
+            .held()
+            .get(&card)?
+            .first()
+            .and_then(|held_connection| {
+                let received = held_connection
+                    .connection
+                    .upgrade()?
+                    .stats()
+                    .udp_rx
+                    .datagrams;
+                Some((received, held_connection.datagrams_heard))
+            })
+    }
+
+    /// When the register last heard from the peer on its one connection to or from the card, or none while it holds no such connection.
+    fn last_heard_on_the_one_of(
+        register: &HeldConnections,
+        card: wire::PublicKey,
+    ) -> Option<tokio::time::Instant> {
+        register
+            .held()
+            .get(&card)?
+            .first()
+            .map(|held_connection| held_connection.last_heard)
+    }
 
     #[tokio::test]
     async fn spec_3_8_a_held_connection_is_next_sampled_one_hearing_sample_interval_after_each_reading_of_its_handed_clock()
@@ -3028,18 +3069,52 @@ pub(crate) mod tests {
             }
         );
         let _dialed = dialed.unwrap();
-        let _accepted = accepted.unwrap();
+        let accepted = accepted.unwrap();
+        let mut from_the_peer = accepted.open_uni().await.unwrap();
+        let peer = card_of(CLIENT_SEED);
 
-        let mut last_reading = clock.now();
-        for sample in 1..=HEARING_SAMPLES_ON_THE_MOVED_CLOCK {
-            let sample_due = last_reading
-                .checked_add(SPEC_HEARING_SAMPLE_INTERVAL)
-                .unwrap();
+        let mut asked = BTreeSet::new();
+        let mut sample_due = clock
+            .now()
+            .checked_add(SPEC_HEARING_SAMPLE_INTERVAL)
+            .unwrap();
+        for step in 1..=HEARING_SAMPLES_ON_THE_MOVED_CLOCK {
             clock
-                .asked_to_wake(&format!("hearing sample {sample}"), sample_due)
+                .asked_to_wake(&format!("hearing sample {step}"), sample_due)
                 .await;
-            clock.move_forward(SPEC_HEARING_SAMPLE_INTERVAL);
-            last_reading = sample_due;
+            asked.insert(sample_due);
+            assert_eq!(
+                clock.asked_deadlines(),
+                asked,
+                "deadlines asked of the clock by hearing sample {step}"
+            );
+            from_the_peer.write_all(&[0]).await.unwrap();
+            found_within(HEARING_STEP_WAIT, async || {
+                datagrams_received_and_heard(&register, peer)
+                    .filter(|(received, heard)| received > heard)
+            })
+            .await
+            .unwrap_or_else(|| {
+                panic!(
+                    "no datagram from the peer past the count the register last heard before hearing sample {step} within {HEARING_STEP_WAIT:?}"
+                )
+            });
+            clock.move_forward(
+                SPEC_HEARING_SAMPLE_INTERVAL
+                    .checked_add(SAMPLE_WOKEN_LATE_PER_STEP.checked_mul(step).unwrap())
+                    .unwrap(),
+            );
+            let reading = clock.now();
+            found_within(HEARING_STEP_WAIT, async || {
+                (last_heard_on_the_one_of(&register, peer) == Some(reading)).then_some(())
+            })
+            .await
+            .unwrap_or_else(|| {
+                panic!(
+                    "no hearing noted at the clock's reading by hearing sample {step} within {HEARING_STEP_WAIT:?}"
+                )
+            });
+            sample_due = reading.checked_add(SPEC_HEARING_SAMPLE_INTERVAL).unwrap();
         }
     }
 
