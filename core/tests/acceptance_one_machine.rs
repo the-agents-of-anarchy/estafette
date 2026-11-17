@@ -1065,7 +1065,7 @@ mod spec_3_15_with_one_member {
     };
     use crate::gate_closings::GateClosings;
     use crate::local_network::{AMY_CARD, AMY_HANDLE, LocalNetwork};
-    use crate::mcp_server::PRESENCE_WAIT;
+    use crate::mcp_server::{INIT_TOOL, PRESENCE_WAIT, call_succeeded, init_arguments};
     use crate::member::{Member, loopback_address};
     use crate::message_body::BODY;
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
@@ -1351,6 +1351,22 @@ mod spec_3_15_with_one_member {
         assert_eq!(refused["ok"], json!(false), "{refused}");
         assert_eq!(refused["error"]["code"], json!("sidecar_invalid"));
         assert_eq!(refused["you"], unclaimed());
+    }
+
+    #[test]
+    fn spec_3_5_a_card_whose_public_key_is_upper_case_hex_is_claimed_through_init() {
+        let network = LocalNetwork::create("upper-key", &RunRecordKeeping::from_environment());
+        let card = network.create_card(AMY_CARD, AMY_HANDLE);
+        network.uppercase_public_key(&card);
+        let mut amy = network.start_member();
+
+        let claim = amy.call(INIT_TOOL, &init_arguments(&card.name));
+
+        assert!(call_succeeded(&claim), "{claim}");
+        assert_eq!(
+            claim["you"],
+            json!({ "card": card.name, "handle": AMY_HANDLE, "status": "claimed" })
+        );
     }
 
     #[test]

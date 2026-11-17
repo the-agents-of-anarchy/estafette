@@ -115,6 +115,19 @@ impl LocalNetwork {
         parse_secret_key(&fs::read_to_string(sidecar).unwrap()).unwrap()
     }
 
+    /// Rewrites the card file's public key in upper-case hexadecimal.
+    pub fn uppercase_public_key(&self, card: &Card) {
+        let card_file = self
+            .machine
+            .directories()
+            .card_file(NETWORK, &card.name)
+            .unwrap();
+        let lower = card.id.to_string();
+        let text = fs::read_to_string(&card_file).unwrap();
+        assert!(text.contains(&lower), "the card file does not hold {lower}");
+        fs::write(card_file, text.replace(&lower, &lower.to_uppercase())).unwrap();
+    }
+
     /// Sets the permission bits of the card's sidecar.
     pub fn set_sidecar_mode(&self, card: &Card, mode: u32) {
         let sidecar = self
