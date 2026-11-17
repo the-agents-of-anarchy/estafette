@@ -7,7 +7,7 @@ use estafette::invite::parse_host_line;
 use estafette::wire::HostAddr;
 
 use crate::lab_server::LabServer;
-use crate::scratch_machine::server_member_end::fail_unless_succeeded;
+use crate::scratch_machine::server_member_end::{fail_unless_succeeded, recipe_failure};
 
 /// The variable the acceptance gate names the lab server in whose host the test may kill.
 const SERVER_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_KILLABLE_SERVER";
@@ -81,13 +81,13 @@ impl KillableHost {
     /// Starts the host on its server unless it runs, with the identity and certificate it had, failing with the server's name when the server does not exist.
     #[track_caller]
     pub fn start(&self) {
-        self.server.run(HOST_STARTED_RECIPE, &[], &[]);
+        self.server.run(HOST_STARTED_RECIPE, &[], &[], None);
     }
 
     /// Stops the host on its server when it runs, relay and bootstrap node together.
     #[track_caller]
     pub fn stop(&self) {
-        self.server.run(HOST_STOPPED_RECIPE, &[], &[]);
+        self.server.run(HOST_STOPPED_RECIPE, &[], &[], None);
     }
 
     /// Starts the host again once the returned guard is dropped, so a test may stop or kill it and leave it serving.
@@ -133,7 +133,7 @@ impl KillableHost {
             killed.status.success(),
             "the kill on {} failed: {}",
             self.server.label(),
-            String::from_utf8_lossy(&killed.stderr)
+            recipe_failure(&killed, None)
         );
         KillStamps { sent, returned }
     }

@@ -12,6 +12,7 @@ use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use iroh_gossip::TopicId;
 
 use crate::forgeries::wall_clock_seconds;
+use crate::scratch_machine::server_member_end::recipe_failure;
 use crate::scratch_machine::{BINARY, INVITATION_VARIABLE, RunRecordKeeping};
 
 /// The task runner every project task runs through.
@@ -128,7 +129,7 @@ impl LiveNetwork {
         assert!(
             certified.status.success(),
             "certify on the lab owner's machine failed: {}",
-            String::from_utf8_lossy(&certified.stderr)
+            recipe_failure(&certified, None)
         );
         let certificate = HEXLOWER
             .decode(

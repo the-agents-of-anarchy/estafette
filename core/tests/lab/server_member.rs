@@ -10,7 +10,9 @@ use crate::lab_machine::LabMachine;
 use crate::lab_server::LabServer;
 use crate::live_network::LiveNetwork;
 use crate::mcp_server::{HANDLE_KEY, PEERS_KEY, PEERS_TOOL, RESULT_KEY, SEND_TOOL, send_arguments};
-use crate::scratch_machine::server_member_end::{ServerMemberStep, TestSoFar, ended_server_member};
+use crate::scratch_machine::server_member_end::{
+    ServerMemberStep, TestSoFar, ended_server_member, recipe_failure,
+};
 use crate::scratch_machine::{KeptSecrets, TIMELINE_HEADING, fail_unless_panicking};
 
 /// The recipe that writes the lab network's configuration on a server from its standard input.
@@ -49,15 +51,30 @@ impl<'server> ServerMember<'server> {
         let configuration = invitation_configuration(network, handle);
         let run_records = network.run_records();
         let secrets = KeptSecrets::of_server_member(&configuration, run_records.invitation());
-        server.run(NETWORK_ON_SERVER_RECIPE, &[], configuration.as_bytes());
-        server.run(CARD_ON_SERVER_RECIPE, &[handle, handle], &[]);
+        server.run(
+            NETWORK_ON_SERVER_RECIPE,
+            &[],
+            configuration.as_bytes(),
+            secrets.as_ref().ok(),
+        );
+        server.run(
+            CARD_ON_SERVER_RECIPE,
+            &[handle, handle],
+            &[],
+            secrets.as_ref().ok(),
+        );
         let member = Self {
             server,
             card: handle.to_owned(),
             secrets,
             kept_in: run_records.kept_in().map(Path::to_path_buf),
         };
-        server.run(MEMBER_ON_SERVER_RECIPE, &[handle], &[]);
+        server.run(
+            MEMBER_ON_SERVER_RECIPE,
+            &[handle],
+            &[],
+            member.secrets.as_ref().ok(),
+        );
         member.serving_within(SERVING_WAIT);
         member
     }
@@ -74,6 +91,7 @@ impl<'server> ServerMember<'server> {
             CALL_ON_SERVER_RECIPE,
             &[&self.card, tool],
             arguments.to_string().as_bytes(),
+            self.secrets.as_ref().ok(),
         );
         let (_stamp, envelope) = printed
             .trim_end()
@@ -139,7 +157,7 @@ impl<'server> ServerMember<'server> {
                 "{} on {} answered no tool call within {until:?}: {}",
                 self.card,
                 self.server.label(),
-                String::from_utf8_lossy(&answered.stderr)
+                recipe_failure(&answered, self.secrets.as_ref().ok())
             );
         }
     }

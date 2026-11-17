@@ -743,7 +743,7 @@ pub fn keep_stop_failure(
     stop: &io::Result<Output>,
     secrets: &KeptSecrets,
 ) -> io::Result<()> {
-    let Err(failure) = succeeded(stop) else {
+    let Err(failure) = succeeded(stop, Some(secrets)) else {
         return Ok(());
     };
     let mark = format!(
@@ -1509,7 +1509,6 @@ mod tests {
             BTreeSet::from([
                 kept_in.join("amy.stderr"),
                 kept_in.join("amy.stop-failed"),
-                kept_in.join(format!("amy.stop-failed.{REDACTED_NOTE_EXTENSION}")),
                 kept_in.join("bob.stderr"),
             ])
         );

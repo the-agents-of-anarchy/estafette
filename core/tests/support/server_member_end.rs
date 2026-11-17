@@ -105,7 +105,7 @@ pub fn ended_server_member(
 ) -> ServerMemberEnd {
     let stop = run(ServerMemberStep::Stop);
     let mut failures = Vec::new();
-    if let Err(failure) = succeeded(&stop) {
+    if let Err(failure) = succeeded(&stop, secrets.as_ref().ok()) {
         failures.push(format!(
             "{member} on {server} did not stop cleanly: {failure}"
         ));
@@ -124,7 +124,7 @@ pub fn ended_server_member(
             failures,
         };
     }
-    let staged = staged_fetch(member, server, &run);
+    let staged = staged_fetch(member, server, secrets.as_ref().ok(), &run);
     if let Some(failure) = staged.failure() {
         failures.push(format!(
             "trace files of {member} on {server} not fetched: {failure}"
@@ -185,7 +185,7 @@ fn keep_printed_run_record(
     failures: &mut Vec<String>,
 ) {
     let printed = run(ServerMemberStep::PrintRunRecord);
-    match succeeded(&printed) {
+    match succeeded(&printed, Some(secrets)) {
         Ok(output) => {
             if let Err(failure) = keep_run_record(kept, member, &output.stdout, secrets) {
                 failures.push(format!("run record of {member} not kept: {failure}"));
@@ -212,6 +212,7 @@ fn keep_printed_run_record(
 fn staged_fetch(
     member: &str,
     server: &str,
+    secrets: Option<&KeptSecrets>,
     run: &impl Fn(ServerMemberStep<'_>) -> io::Result<Output>,
 ) -> StagedFetch {
     match fresh_directory_in(
@@ -223,7 +224,7 @@ fn staged_fetch(
                 &holder.join(STAGED_DIRECTORY),
             ));
             StagedFetch::Staged {
-                failure: succeeded(&fetched).err(),
+                failure: succeeded(&fetched, secrets).err(),
                 holder,
             }
         }
@@ -296,22 +297,38 @@ fn timeline_of_fetched(fetched_into: Option<&Path>) -> String {
     fetched_into.map_or_else(|| TRACE_FILES_NOT_FETCHED.to_owned(), timeline_in)
 }
 
-/// The output of a recipe run that succeeded, or why it failed: its exit status and standard error, or the error that kept it from running.
-pub fn succeeded(ran: &io::Result<Output>) -> Result<&Output, String> {
+/// The output of a recipe run that succeeded, or why it failed: what a failed recipe's line says, or the error that kept it from running.
+pub fn succeeded<'ran>(
+    ran: &'ran io::Result<Output>,
+    secrets: Option<&KeptSecrets>,
+) -> Result<&'ran Output, String> {
     match ran {
         Ok(output) if output.status.success() => Ok(output),
-        Ok(output) => Err(format!(
-            "{}: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        )),
+        Ok(output) => Err(recipe_failure(output, secrets)),
         Err(failure) => Err(failure.to_string()),
     }
 }
 
-/// Fails a test that was not failing, saying what was left undone and why, when a recipe run from a drop failed or could not run, and prints that instead on a test already failing, so no drop panics on a thread already panicking.
+/// What a printed line says of a recipe that ran and failed: its exit status and its standard error searched for the secrets, or, when no secrets stand, that it failed, its standard error left out.
+pub fn recipe_failure(output: &Output, secrets: Option<&KeptSecrets>) -> String {
+    secrets.map_or_else(
+        || {
+            format!(
+                "{}: the recipe failed; its standard error is left out, since no secrets stand to search it for",
+                output.status
+            )
+        },
+        |secrets| {
+            let (searched, _redacted_lines) =
+                secrets.redacted(&String::from_utf8_lossy(&output.stderr), KeptAs::Evidence);
+            format!("{}: {searched}", output.status)
+        },
+    )
+}
+
+/// Fails a test that was not failing, saying what was left undone and that the recipe failed, its standard error left out, when a recipe run from a drop failed or could not run, and prints that instead on a test already failing, so no drop panics on a thread already panicking.
 pub fn fail_unless_succeeded(ran: &io::Result<Output>, left_undone: &str) {
-    if let Err(failure) = succeeded(ran) {
+    if let Err(failure) = succeeded(ran, None) {
         fail_unless_panicking(&format!("{left_undone}: {failure}"));
     }
 }
@@ -426,7 +443,7 @@ mod tests {
         (ended, kept)
     }
 
-    /// Requires that the end answered the failure the secrets were built with and the failed stop, having kept nothing.
+    /// Requires that the end answered the failure the secrets were built with and the failed stop, the stop's standard error left out, having kept nothing.
     fn require_nothing_kept_and_each_failure_answered(
         secrets: &io::Result<KeptSecrets>,
         ended: &ServerMemberEnd,
@@ -436,7 +453,11 @@ mod tests {
             panic!("the member's secrets were built")
         };
         assert_eq!(kept, &BTreeSet::new());
-        for answered in [unread.to_string(), STOP_REFUSAL.to_owned()] {
+        let failed_stop = format!(
+            "{MEMBER} on {SERVER} did not stop cleanly: {}",
+            ExitStatus::from_raw(EXITED_WITH_ONE)
+        );
+        for answered in [unread.to_string(), failed_stop] {
             assert!(
                 ended
                     .failures
@@ -446,6 +467,14 @@ mod tests {
                 ended.failures
             );
         }
+        assert!(
+            ended
+                .failures
+                .iter()
+                .all(|failure| !failure.contains(STOP_REFUSAL)),
+            "{:?}",
+            ended.failures
+        );
     }
 
     #[test]
@@ -816,9 +845,6 @@ mod tests {
                 run_record_mark.clone(),
                 kept.join(KEPT_TRACE_FILES_DIRECTORY),
                 fetch_mark.clone(),
-                kept.join(format!(
-                    "{KEPT_TRACE_FILES_DIRECTORY}.{FETCH_FAILED_EXTENSION}.{REDACTED_NOTE_EXTENSION}"
-                )),
             ])
         );
         let run_record_marked = fs::read_to_string(&run_record_mark).unwrap();
@@ -939,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn observability_decision_16_a_drop_whose_recipe_failed_fails_a_test_that_was_not_failing_saying_what_was_left_undone_and_why()
+    fn observability_decision_16_a_drop_whose_recipe_failed_fails_a_test_that_was_not_failing_saying_what_was_left_undone_and_that_the_recipe_failed_leaving_out_its_standard_error()
      {
         let failed = std::panic::catch_unwind(|| {
             fail_unless_succeeded(&Ok(failed_run(STOP_REFUSAL)), LEFT_UNDONE);
@@ -948,8 +974,60 @@ mod tests {
         let failure = failed.expect_err("a failed recipe did not fail the test");
         let message = failure.downcast_ref::<String>().unwrap();
         assert!(
-            message.contains(LEFT_UNDONE) && message.contains(STOP_REFUSAL),
+            message.contains(LEFT_UNDONE)
+                && message.contains(&ExitStatus::from_raw(EXITED_WITH_ONE).to_string())
+                && !message.contains(STOP_REFUSAL),
             "{message}"
         );
+    }
+
+    #[test]
+    fn observability_decision_16_a_server_members_failure_lines_carry_a_recipes_standard_error_with_its_secrets_redacted()
+     {
+        let refusal = format!("ssh: refused {PLANTED_TOKEN}");
+        let stand_in_for_the_recipes = |_step: ServerMemberStep<'_>| Ok(failed_run(&refusal));
+
+        let ended = ended_server_member(
+            MEMBER,
+            SERVER,
+            None,
+            &secrets_of_the_member(),
+            TestSoFar::Failing,
+            stand_in_for_the_recipes,
+        );
+
+        assert_eq!(ended.failures.len(), 2, "{:?}", ended.failures);
+        for failure in &ended.failures {
+            assert!(
+                failure.contains(&format!("ssh: refused {REDACTED}"))
+                    && !failure.contains(PLANTED_TOKEN),
+                "{failure}"
+            );
+        }
+    }
+
+    #[test]
+    fn observability_decision_16_a_server_member_whose_secrets_were_not_read_prints_that_its_recipe_failed_leaving_out_its_standard_error()
+     {
+        let refusal = format!("ssh: refused {PLANTED_TOKEN}");
+        let stand_in_for_the_recipes = |_step: ServerMemberStep<'_>| Ok(failed_run(&refusal));
+
+        let ended = ended_server_member(
+            MEMBER,
+            SERVER,
+            None,
+            &KeptSecrets::of_server_member(&configuration_naming(PLANTED_TOKEN), None),
+            TestSoFar::Failing,
+            stand_in_for_the_recipes,
+        );
+
+        assert_eq!(ended.failures.len(), 2, "{:?}", ended.failures);
+        for failure in &ended.failures {
+            assert!(
+                failure.contains(&ExitStatus::from_raw(EXITED_WITH_ONE).to_string())
+                    && !failure.contains("ssh: refused"),
+                "{failure}"
+            );
+        }
     }
 }

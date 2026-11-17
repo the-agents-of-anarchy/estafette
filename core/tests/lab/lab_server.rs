@@ -2,8 +2,8 @@ use std::io::{self, Write};
 use std::process::{Command, Output, Stdio};
 
 use crate::live_network::{LAB_BINARY_VARIABLE, TASK_RUNNER};
-use crate::scratch_machine::BINARY;
-use crate::scratch_machine::server_member_end::{fail_unless_succeeded, succeeded};
+use crate::scratch_machine::server_member_end::{fail_unless_succeeded, recipe_failure, succeeded};
+use crate::scratch_machine::{BINARY, KeptSecrets};
 
 /// The variable the remote recipes take the server's name from; left as the gate left it, they reach the live host's server.
 const LAB_SERVER_VARIABLE: &str = "LAB_SERVER";
@@ -69,15 +69,21 @@ impl LabServer {
         command
     }
 
-    /// Runs the remote recipe against this server with the input on its standard input, requiring success, and returns what it printed.
+    /// Runs the remote recipe against this server with the input on its standard input, requiring success, its failure printed with its standard error searched for the secrets or left out when none stand, and returns what it printed.
     #[track_caller]
-    pub fn run(&self, recipe: &str, arguments: &[&str], input: &[u8]) -> String {
+    pub fn run(
+        &self,
+        recipe: &str,
+        arguments: &[&str],
+        input: &[u8],
+        secrets: Option<&KeptSecrets>,
+    ) -> String {
         let output = self.attempt(recipe, arguments, input);
         assert!(
             output.status.success(),
             "{recipe} {arguments:?} on {} failed: {}",
             self.label(),
-            String::from_utf8_lossy(&output.stderr)
+            recipe_failure(&output, secrets)
         );
         String::from_utf8(output.stdout).unwrap()
     }
@@ -114,7 +120,7 @@ impl LabServer {
     #[track_caller]
     pub fn relay_only_to_here(&self) -> RelayOnlyPath<'_> {
         let path = RelayOnlyPath { server: self };
-        self.run(RELAY_ONLY_RECIPE, &[], &[]);
+        self.run(RELAY_ONLY_RECIPE, &[], &[], None);
         path
     }
 }
@@ -124,7 +130,7 @@ impl Drop for RelayOnlyPath<'_> {
         let restored = self
             .server
             .attempt_without_panicking(RELAY_PATHS_RESTORED_RECIPE, &[], &[]);
-        if let Ok(output) = succeeded(&restored) {
+        if let Ok(output) = succeeded(&restored, None) {
             eprintln!(
                 "UDP paths between {} and this machine restored; the drops counted by each rule:\n{}",
                 self.server.label(),
