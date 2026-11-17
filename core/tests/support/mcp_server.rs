@@ -186,6 +186,13 @@ impl McpServer {
         self.process.wait().unwrap()
     }
 
+    /// Ends the process at once, its standard input closed, killed and waited for, so nothing of it runs on once this returns.
+    pub fn end(&mut self) {
+        self.close_standard_input();
+        self.kill();
+        self.wait_for_exit();
+    }
+
     /// Writes the request and returns its id.
     fn send_request(&mut self, method: &str, params: &Value) -> u64 {
         let request_id = self.next_request_id;
@@ -227,9 +234,7 @@ impl McpServer {
 
 impl Drop for McpServer {
     fn drop(&mut self) {
-        self.close_standard_input();
-        self.kill();
-        self.wait_for_exit();
+        self.end();
     }
 }
 

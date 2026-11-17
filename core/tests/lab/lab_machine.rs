@@ -16,10 +16,16 @@ pub struct LabMachine {
     scratch: ScratchMachine,
 }
 
-/// A running `estafette mcp` process that has claimed its card, kept alive until dropped, holding the machine it runs on so the process ends before the machine keeps its data.
+/// A running `estafette mcp` process that has claimed its card, kept alive until dropped, holding the machine it runs on and ending the process in its own drop, which runs before any field drops, so the process ends before the machine keeps its data whatever the order of the fields.
 pub struct ClaimedMember {
     server: McpServer,
     machine: LabMachine,
+}
+
+impl Drop for ClaimedMember {
+    fn drop(&mut self) {
+        self.server.end();
+    }
 }
 
 impl ClaimedMember {
