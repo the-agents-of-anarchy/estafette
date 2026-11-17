@@ -2968,15 +2968,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_8_a_connection_silent_just_under_three_keep_alive_intervals_is_kept_and_one_silent_for_them_is_closed()
      {
-        let held_at = tokio::time::Instant::now();
-        let reading = Arc::new(Mutex::new(held_at));
-        let register = HeldConnections::new(
-            {
-                let reading = Arc::clone(&reading);
-                Arc::new(move || *reading.lock().unwrap())
-            },
-            dropping_transport(),
-        );
+        let clock = StandingClock::standing_now();
+        let register = HeldConnections::new(clock.monotonic(), dropping_transport());
         let this_node = bind_node_holding(SERVER_SEED, register.clone()).await;
         let peer_node = bind_node(CLIENT_SEED).await;
         this_node.replace_address(peer_node.endpoint().addr());
@@ -2992,12 +2985,10 @@ pub(crate) mod tests {
         let dialed = dialed.unwrap();
         let _accepted = accepted.unwrap();
 
-        *reading.lock().unwrap() = held_at
-            .checked_add(JUST_UNDER_THE_SILENCE_OF_A_GONE_PROCESS)
-            .unwrap();
+        clock.move_forward(JUST_UNDER_THE_SILENCE_OF_A_GONE_PROCESS);
         register.close_silent_of(card_of(CLIENT_SEED));
         let closed_just_before_the_bound = dialed.close_reason();
-        *reading.lock().unwrap() = held_at.checked_add(SILENCE_OF_A_GONE_PROCESS).unwrap();
+        clock.move_forward(JUST_BEFORE);
         register.close_silent_of(card_of(CLIENT_SEED));
 
         assert_eq!(closed_just_before_the_bound, None);
