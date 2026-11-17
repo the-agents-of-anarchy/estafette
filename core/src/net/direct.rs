@@ -3013,7 +3013,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_8_a_held_connection_is_next_sampled_one_hearing_sample_interval_after_each_reading_of_its_handed_clock()
      {
-        let clock = StandingClock::standing_now();
+        let clock = StandingClock::standing_an_hour_ahead();
         let register = HeldConnections::new(clock.monotonic(), dropping_transport());
         let this_node = bind_node_holding(SERVER_SEED, register.clone()).await;
         let peer_node = bind_node(CLIENT_SEED).await;
