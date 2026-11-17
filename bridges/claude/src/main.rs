@@ -87,6 +87,8 @@ const MANAGED_DROP_IN_DIRECTORY: &str = "managed-settings.d";
 const SETTINGS_EXTENSION: &str = "json";
 const HIDDEN_FILE_PREFIX: char = '.';
 const STAGING_SUFFIX: &str = ".staging";
+/// How often a serving bridge writes its alive line, on its own clock: `spec/observability.md` decision 13 has a live process write its events file at least this often.
+const ALIVE_LINE_PERIOD: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
@@ -602,6 +604,19 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
             (self.record)(BridgeEvent::DroppedFramesNotWritten(error));
         }
     }
+
+    /// Waits out the pause before the next poll, writing the alive line at each reading of the clock it falls due at inside the pause, and gives the reading the next one falls due at.
+    fn wait_between_polls(&self, pause: Duration, alive_line_due: Duration) -> Duration {
+        let pause_ends = (self.elapsed)().saturating_add(pause);
+        let mut next_alive_line_due = alive_line_due;
+        while next_alive_line_due <= pause_ends {
+            (self.wait)(next_alive_line_due.saturating_sub((self.elapsed)()));
+            (self.record)(BridgeEvent::Alive);
+            next_alive_line_due = (self.elapsed)().saturating_add(ALIVE_LINE_PERIOD);
+        }
+        (self.wait)(pause_ends.saturating_sub((self.elapsed)()));
+        next_alive_line_due
+    }
 }
 
 /// Starts a task that follows one binary inbox socket until its connection fails.
@@ -711,11 +726,11 @@ where
     B: InboxConnector + Send + 'static,
     F: Files + Send + Sync + 'static,
 {
+    let mut alive_line_due = (effects.elapsed)().saturating_add(ALIVE_LINE_PERIOD);
     let entries = processes.list().map_err(CommandError::ProcessTable)?;
     if let Some(bridge_pid) = running_bridge_for(harness_pid, effects.own_pid, &entries) {
         return Ok(BridgeOutcome::AlreadyServed { bridge_pid });
     }
-    let wait = effects.wait;
     let session = Arc::new(BridgeSession {
         notifier: Mutex::new(SessionNotifier::new(
             effects.session_connector,
@@ -743,7 +758,7 @@ where
         elapsed: effects.elapsed,
         record: effects.record,
         spawn: effects.spawn,
-        wait: Arc::clone(&wait),
+        wait: effects.wait,
     });
     if let Some(class) = session.read_live_permission_class() {
         lock(&session.notifier).attest(class);
@@ -753,7 +768,7 @@ where
         harness_pid,
         &effects.runtime_inputs,
         processes,
-        &mut |pause| wait(pause),
+        &mut |pause| alive_line_due = session.wait_between_polls(pause, alive_line_due),
         &mut |sockets| {
             session.forget_handled_seqs_except(sockets);
             for socket in sockets {
@@ -2495,6 +2510,27 @@ mod tests {
             effects: TraceEffects,
             bounds: TraceBounds,
         ) -> (ExitCode, String) {
+            self.run_over(
+                tracing,
+                effects,
+                bounds,
+                wiring().effects,
+                &FixedProcessTable(Vec::new()),
+            )
+        }
+
+        fn run_over(
+            &self,
+            tracing: Tracing,
+            effects: TraceEffects,
+            bounds: TraceBounds,
+            bridge_effects: BridgeEffects<
+                DownConnector,
+                Box<dyn Fn(PathBuf) -> DownConnector>,
+                StandInFiles,
+            >,
+            processes: &impl ProcessTable,
+        ) -> (ExitCode, String) {
             let data_home = self.data_home.clone();
             let data_home_variable = self.data_home_variable;
             let environment =
@@ -2521,7 +2557,6 @@ mod tests {
                 fs::create_dir_all(path)
             };
             let errors: Arc<Mutex<Vec<u8>>> = Arc::default();
-            let wiring = wiring();
             let status = run_command(
                 HARNESS_PID,
                 tracing,
@@ -2536,10 +2571,10 @@ mod tests {
                 move |record| {
                     Ok(BridgeEffects {
                         record,
-                        ..wiring.effects
+                        ..bridge_effects
                     })
                 },
-                &FixedProcessTable(Vec::new()),
+                processes,
             );
             let written = String::from_utf8(lock(&errors).clone()).expect("utf8 standard error");
             (status, written)
@@ -2794,6 +2829,131 @@ mod tests {
             ),
             "{written}"
         );
+    }
+
+    const HARNESS_EXITS_AT: Duration = Duration::from_secs(125);
+    const SPEC_LIVE_PROCESS_WRITES_AT_LEAST_EVERY_MS: u64 = 60_000;
+
+    struct HarnessRunsUntil {
+        clock: Arc<Mutex<Duration>>,
+        harness_exits_at: Duration,
+    }
+
+    impl ProcessTable for HarnessRunsUntil {
+        fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
+            Ok(if *lock(&self.clock) < self.harness_exits_at {
+                harness_without_binaries()
+            } else {
+                Vec::new()
+            })
+        }
+    }
+
+    fn milliseconds_on(clock: &Mutex<Duration>) -> u64 {
+        u64::try_from(lock(clock).as_millis()).unwrap_or(u64::MAX)
+    }
+
+    fn run_serving_on_a_clock_only_its_waits_move(
+        probe: &TraceProbe,
+        tracing: Tracing,
+    ) -> (ExitCode, String) {
+        let clock: Arc<Mutex<Duration>> = Arc::default();
+        let monotonic_clock = Arc::clone(&clock);
+        let wall_clock = Arc::clone(&clock);
+        let bridge_clock = Arc::clone(&clock);
+        let moved_clock = Arc::clone(&clock);
+        probe.run_over(
+            tracing,
+            TraceEffects::of_the_operating_system(TraceClocks {
+                monotonic_ms: Arc::new(move || milliseconds_on(&monotonic_clock)),
+                wall_ms: Arc::new(move || {
+                    START_WALL_MS.saturating_add(milliseconds_on(&wall_clock))
+                }),
+            }),
+            TraceBounds::SPEC,
+            BridgeEffects {
+                elapsed: Arc::new(move || *lock(&bridge_clock)),
+                wait: Arc::new(move |pause| {
+                    let mut now = lock(&moved_clock);
+                    *now = now.saturating_add(pause);
+                }),
+                ..wiring().effects
+            },
+            &HarnessRunsUntil {
+                clock,
+                harness_exits_at: HARNESS_EXITS_AT,
+            },
+        )
+    }
+
+    #[test]
+    fn observability_decision_13_a_bridge_serving_with_no_frame_writes_a_line_to_its_events_file_every_60_s_of_its_clock_and_nothing_more()
+     {
+        let probe = TraceProbe::new("every-60-s");
+
+        let (status, written) = run_serving_on_a_clock_only_its_waits_move(&probe, Tracing::Debug);
+
+        let events: Vec<serde_json::Value> = fs::read_to_string(probe.events_file())
+            .expect("events file")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("one JSON object a line"))
+            .collect();
+        assert_eq!(status, ExitCode::SUCCESS);
+        assert_eq!(
+            written,
+            format!(
+                "writing the debug trace: {} (safe to post)\n{UNREADABLE_CLASS_LINE}",
+                probe.events_file().display()
+            )
+        );
+        assert_eq!(
+            events
+                .iter()
+                .map(|line| (line["event"].clone(), line["mono_ms"].clone()))
+                .collect::<Vec<_>>(),
+            [
+                ("process.started".into(), 0.into()),
+                ("permission_class.unreadable".into(), 0.into()),
+                (
+                    "process.alive".into(),
+                    SPEC_LIVE_PROCESS_WRITES_AT_LEAST_EVERY_MS.into()
+                ),
+                (
+                    "process.alive".into(),
+                    SPEC_LIVE_PROCESS_WRITES_AT_LEAST_EVERY_MS
+                        .saturating_mul(2)
+                        .into()
+                ),
+            ]
+        );
+        for alive in events
+            .iter()
+            .filter(|line| line["event"] == "process.alive")
+        {
+            assert_eq!(
+                alive
+                    .as_object()
+                    .expect("an object")
+                    .keys()
+                    .map(String::as_str)
+                    .collect::<BTreeSet<&str>>(),
+                BTreeSet::from(["v", "run", "n", "mono_ms", "wall_ms", "event"]),
+                "{alive}"
+            );
+        }
+    }
+
+    #[test]
+    fn observability_decision_3_a_bridge_serving_past_60_s_with_no_debug_writes_standard_error_as_before_and_no_trace()
+     {
+        let probe = TraceProbe::new("every-60-s-no-debug");
+
+        let (status, written) =
+            run_serving_on_a_clock_only_its_waits_move(&probe, Tracing::NoDebug);
+
+        assert_eq!(status, ExitCode::SUCCESS);
+        assert_eq!(written, UNREADABLE_CLASS_LINE);
+        assert!(!probe.data_home.exists());
     }
 
     struct WritableSessionSocket;

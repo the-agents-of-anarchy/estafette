@@ -49,6 +49,7 @@ macro_rules! bridge_event_names {
 
 bridge_event_names! {
     Started => "process.started",
+    Alive => "process.alive",
     UsageRefused => "process.usage_refused",
     AlreadyServed => "process.already_served",
     CommandFailed => "process.command_failed",
@@ -100,6 +101,8 @@ impl FrameIds {
 pub enum BridgeEvent {
     /// The bridge started serving the harness process.
     Started { harness_pid: Pid },
+    /// The bridge still serves the harness process, written every `ALIVE_LINE_PERIOD` so the events file of a live bridge is never taken for an old run's.
+    Alive,
     /// The command line was neither `run` nor `doctor` in a form either takes.
     UsageRefused,
     /// Another bridge already serves the harness process, so this one ends at once.
@@ -167,6 +170,7 @@ impl BridgeEvent {
     pub const fn name(&self) -> BridgeEventName {
         match self {
             Self::Started { .. } => BridgeEventName::Started,
+            Self::Alive => BridgeEventName::Alive,
             Self::UsageRefused => BridgeEventName::UsageRefused,
             Self::AlreadyServed { .. } => BridgeEventName::AlreadyServed,
             Self::CommandFailed(_) => BridgeEventName::CommandFailed,
@@ -242,6 +246,7 @@ impl BridgeEvent {
                 fields
             }
             Self::UsageRefused
+            | Self::Alive
             | Self::CommandFailed(_)
             | Self::TraceNotDrained { .. }
             | Self::TraceNotCut(_)
@@ -254,6 +259,7 @@ impl BridgeEvent {
     pub fn run_record_line(&self) -> Option<String> {
         match self {
             Self::Started { .. }
+            | Self::Alive
             | Self::InboxConnected { .. }
             | Self::InboxClosed { .. }
             | Self::FrameReceived { .. }
@@ -341,8 +347,9 @@ mod tests {
 
     const SPEC_FORMAT_VERSION: u64 = 1;
     const SPEC_DROPPED_LINE_NAME: &str = "dropped";
-    const PINNED_EVENT_NAMES: [&str; 20] = [
+    const PINNED_EVENT_NAMES: [&str; 21] = [
         "process.started",
+        "process.alive",
         "process.usage_refused",
         "process.already_served",
         "process.command_failed",
