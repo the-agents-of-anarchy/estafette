@@ -21,7 +21,7 @@ pub mod remove_scratch;
 #[path = "trace_reader.rs"]
 pub mod trace_reader;
 
-use owned_process::OwnedProcess;
+use owned_process::{END_FAILED_EXTENSION, OwnedProcess};
 use trace_reader::{WritingProcess, timeline_read_as};
 
 use crate::member_events::MemberEvents;
@@ -255,21 +255,29 @@ impl ScratchMachine {
             "{RUN_RECORD_PREFIX}-{started}.{RUN_RECORD_EXTENSION}"
         )))
         .unwrap();
-        OwnedProcess::spawned(
+        self.spawn_owned(
             self.member_command(started)
                 .args(["mcp", &self.network])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(run_record),
+            &format!("{RUN_RECORD_PREFIX}-{started}"),
         )
     }
 
-    /// Keeps this machine's run records and data directory together in a directory of its own beneath the test's, named for this machine and numbered after any earlier keeping of that name.
+    /// Spawns the command as a process of this machine, owned from its spawn, a failed end of it marked under the label in the scratch root and kept beside the run records.
+    #[track_caller]
+    pub fn spawn_owned(&self, command: &mut Command, label: &str) -> OwnedProcess {
+        OwnedProcess::spawned(command, &self.root, label)
+    }
+
+    /// Keeps this machine's run records, the marks of its processes whose end failed, and its data directory together in a directory of its own beneath the test's, named for this machine and numbered after any earlier keeping of that name.
     fn keep_records(&self, directory: &Path) -> io::Result<()> {
         let kept = fresh_kept_directory(directory, &self.name())?;
         let run_records = self.keep_run_records(&kept);
+        let end_failures = self.keep_end_failures(&kept);
         let data = self.keep_data_directory(&kept);
-        run_records.and(data).map(|_data| ())
+        run_records.and(end_failures).and(data).map(|_data| ())
     }
 
     /// Copies every member's run record into the directory, named for the member, each line that holds a secret of this machine kept with that secret replaced by the redaction marker, and returns the kept files.
@@ -284,6 +292,18 @@ impl ScratchMachine {
                 &fs::read_to_string(&record)?,
                 &secrets,
             )?);
+        }
+        Ok(kept)
+    }
+
+    /// Copies the mark of every process of this machine whose end failed into the directory as it was written, and returns the kept marks.
+    fn keep_end_failures(&self, directory: &Path) -> io::Result<Vec<PathBuf>> {
+        let mut kept = Vec::new();
+        for mark in self.root_files_with_extension(END_FAILED_EXTENSION)? {
+            let kept_mark = directory.join(mark.file_name().unwrap_or_default());
+            fs::copy(&mark, &kept_mark)?;
+            eprintln!("failed end kept at {}", kept_mark.display());
+            kept.push(kept_mark);
         }
         Ok(kept)
     }
@@ -316,17 +336,22 @@ impl ScratchMachine {
 
     /// The run record files of the members this machine started.
     pub fn run_records(&self) -> io::Result<Vec<PathBuf>> {
-        let mut records: Vec<PathBuf> = fs::read_dir(&self.root)?
+        self.root_files_with_extension(RUN_RECORD_EXTENSION)
+    }
+
+    /// The files directly in this machine's scratch root with the extension, in order of name.
+    fn root_files_with_extension(&self, wanted: &str) -> io::Result<Vec<PathBuf>> {
+        let mut files: Vec<PathBuf> = fs::read_dir(&self.root)?
             .map(|entry| entry.map(|entry| entry.path()))
             .collect::<io::Result<Vec<PathBuf>>>()?
             .into_iter()
             .filter(|path| {
                 path.extension()
-                    .is_some_and(|extension| extension == RUN_RECORD_EXTENSION)
+                    .is_some_and(|extension| extension == wanted)
             })
             .collect();
-        records.sort();
-        Ok(records)
+        files.sort();
+        Ok(files)
     }
 
     /// Every file under this machine's configuration, data and runtime directories, at any depth.
@@ -568,6 +593,14 @@ mod tests {
     const EXITS_IN_FAILURE: &str = "false";
     /// A command that does nothing and exits in success, standing in for a stop that succeeded.
     const EXITS_IN_SUCCESS: &str = "true";
+    /// How a test names a process that ended cleanly.
+    const ENDED_LABEL: &str = "ended";
+    /// How a test names a process whose end it marks as failed.
+    const FAILED_LABEL: &str = "failed";
+    /// The process id a test marks a failed end under, no process of its own.
+    const PLANTED_PROCESS_ID: u32 = 4242;
+    /// The failure a test plants as the cause of a failed end.
+    const PLANTED_END_FAILURE: &str = "planted failure of the wait";
 
     #[test]
     fn observability_decision_12_a_failing_machine_prints_the_lines_of_a_member_that_may_still_run_before_one_still_zero_filled()
@@ -789,6 +822,48 @@ mod tests {
             })
             .collect();
         assert_eq!(kept, expected);
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_16_a_process_whose_kill_or_wait_failed_is_marked_beside_its_machines_run_records_and_one_that_ended_is_not()
+     {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-end-failure-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = ScratchMachine::fresh(
+            "kept-end-failure",
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: Some(kept_in.clone()),
+                invitation: None,
+            },
+        );
+        drop(machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), ENDED_LABEL));
+        owned_process::mark_end_failure(
+            &machine.root,
+            FAILED_LABEL,
+            PLANTED_PROCESS_ID,
+            &io::Error::other(PLANTED_END_FAILURE),
+        );
+        let kept_machine = kept_in.join(machine.name());
+
+        drop(machine);
+
+        let kept: BTreeSet<PathBuf> = files_beneath(&kept_in).into_iter().collect();
+        let mark = kept_machine.join(format!(
+            "{FAILED_LABEL}-{PLANTED_PROCESS_ID}.{END_FAILED_EXTENSION}"
+        ));
+        assert_eq!(kept, BTreeSet::from([mark.clone()]));
+        let marked = fs::read_to_string(&mark).unwrap();
+        assert!(
+            marked.contains(FAILED_LABEL)
+                && marked.contains(&PLANTED_PROCESS_ID.to_string())
+                && marked.contains(PLANTED_END_FAILURE),
+            "{marked}"
+        );
         remove_scratch::remove_scratch(&kept_in).unwrap();
     }
 

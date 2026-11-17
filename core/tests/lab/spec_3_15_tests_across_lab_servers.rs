@@ -319,7 +319,7 @@ fn config_file_of(machine: &ScratchMachine) -> PathBuf {
 fn tail_of(observer: &LabMachine, network: &LiveNetwork) -> Tail {
     let mut command = observer.command();
     command.args(["tail", network.name()]);
-    Tail::start(command)
+    Tail::start(observer, command)
 }
 
 /// The host's node id as `tail` and the network configuration write it.

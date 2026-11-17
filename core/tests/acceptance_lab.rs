@@ -349,7 +349,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
         network.join(&observer.directories());
         let mut tail_command = observer.command();
         tail_command.args(["tail", network.name()]);
-        let tail = Tail::start(tail_command);
+        let tail = Tail::start(&observer, tail_command);
         let requester = key(TAMPERED_REQUESTER_SEED);
         let forger = Forger::join_through(
             key(TAMPERED_REQUESTER_SEED),
@@ -642,7 +642,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
         );
         let mut tail_command = observer.command();
         tail_command.args(["tail", network.name()]);
-        let tail = Tail::start(tail_command);
+        let tail = Tail::start(&observer, tail_command);
         let (first_homed, _) = tail.first_line_after(
             &format!("presence of {card} naming a relay"),
             started,
@@ -924,7 +924,7 @@ mod spec_3_15_two_members_through_the_live_host {
         let observer = LabMachine::joined(TAIL_MACHINE_TAG, network);
         let mut command = observer.command();
         command.args([TAIL_COMMAND, network.name()]);
-        let tail = Tail::start(command);
+        let tail = Tail::start(&observer, command);
         let printed = tail.lines_until(&format!("presence of {card}"), PRESENCE_WAIT, |line| {
             address_announced_by(line, card).is_some()
         });

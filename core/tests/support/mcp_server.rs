@@ -187,11 +187,10 @@ impl McpServer {
         self.process.wait().unwrap()
     }
 
-    /// Ends the process at once, its standard input closed, killed and waited for, so nothing of it runs on once this returns.
+    /// Ends the process at once, its standard input closed, killed and waited for, never panicking, so nothing of it runs on once this returns unless a mark beside what its machine keeps says its end failed.
     pub fn end(&mut self) {
         self.close_standard_input();
-        self.kill();
-        self.wait_for_exit();
+        self.process.end();
     }
 
     /// Writes the request and returns its id.
@@ -284,6 +283,8 @@ mod tests {
 
     /// A command that runs until it is ended, reading nothing and printing nothing.
     const RUNS_UNTIL_ENDED: [&str; 3] = ["tail", "-f", "/dev/null"];
+    /// How a failed end of the stand-in would be marked.
+    const STAND_IN_LABEL: &str = "stand-in";
     /// How long the end of a stand-in may take to reach the pipe only it holds once its owner ended it: chosen, not measured, far above a kill and a wait.
     const STAND_IN_ENDED_WITHIN: Duration = Duration::from_secs(10);
 
@@ -307,6 +308,8 @@ mod tests {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(stand_in_end),
+            &std::env::temp_dir(),
+            STAND_IN_LABEL,
         );
         let events = MemberEvents::new("member with no output", Path::new("/nonexistent"));
 

@@ -1,7 +1,10 @@
 use std::io::{BufRead, BufReader};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
+
+use crate::scratch_machine::ScratchMachine;
+use crate::scratch_machine::owned_process::OwnedProcess;
 
 /// The column separator of the lines `tail` and `show-peers` print (spec 3.13).
 pub const COLUMN_SEPARATOR: char = '\t';
@@ -18,25 +21,28 @@ pub const RELAYS_KEY: &str = "relays";
 
 /// How long `tail` may take to print its first payload, a host record every 5 seconds once joined (spec 3.14).
 const FIRST_LINE_WAIT: Duration = Duration::from_secs(60);
+/// How a failed end of a `tail` process is marked beside what its machine keeps.
+const TAIL_LABEL: &str = "tail";
 
 /// A running `estafette tail`, its payload lines read as they arrive, each with the instant it arrived.
 pub struct Tail {
-    process: Child,
+    process: OwnedProcess,
     lines: Receiver<(Instant, String)>,
 }
 
 impl Tail {
-    /// Starts the command, a `tail` of the network, owning it before anything can fail so a failure ends it, and waits for its first payload line, the sign it has joined the topic, leaving that line to be read.
+    /// Starts the command, a `tail` of the network, on the observer's machine, owning it before anything can fail so a failure ends it, and waits for its first payload line, the sign it has joined the topic, leaving that line to be read.
     #[track_caller]
-    pub fn start(mut command: Command) -> Self {
+    pub fn start(observer: &ScratchMachine, mut command: Command) -> Self {
         let (forward, lines) = mpsc::channel();
         let mut tail = Self {
-            process: command
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap(),
+            process: observer.spawn_owned(
+                command
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null()),
+                TAIL_LABEL,
+            ),
             lines,
         };
         let (announce_joined, joined) = mpsc::sync_channel(1);
@@ -120,12 +126,5 @@ impl Tail {
             }
             printed_since.push(line);
         }
-    }
-}
-
-impl Drop for Tail {
-    fn drop(&mut self) {
-        drop(self.process.kill());
-        drop(self.process.wait());
     }
 }
