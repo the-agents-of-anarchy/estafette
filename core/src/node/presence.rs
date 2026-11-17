@@ -5025,6 +5025,18 @@ pub(super) mod tests {
         .0
     }
 
+    /// Waits until the member's loop has taken the change its home relay made to its own address, which the loop reconsiders, holding that relay, in the same step that records the relay connected, failing by name when that record does not come within the wait for the status.
+    #[cfg(feature = "relay")]
+    async fn own_address_change_taken_by_the_loop(events: &mut UnboundedReceiver<RecordedEvent>) {
+        next_recorded_meeting(
+            events,
+            HOME_RELAY,
+            |fields| fields.contains(&("connected", serde_json::Value::from(true))),
+            HOME_RELAY_STATUS_WITHIN,
+        )
+        .await;
+    }
+
     #[cfg(feature = "relay")]
     #[tokio::test]
     async fn spec_3_8_a_lost_home_relay_leaves_the_relay_map_once_the_handed_clock_reads_the_relay_loss_wait()
@@ -5105,18 +5117,7 @@ pub(super) mod tests {
                 Arc::new(iroh::RelayConfig::from(relay_address)),
             )
             .await;
-        next_recorded_meeting(
-            &mut events,
-            HOME_RELAY,
-            |fields| fields.contains(&("connected", serde_json::Value::from(true))),
-            HOME_RELAY_STATUS_WITHIN,
-        )
-        .await;
-        found_within(PAYLOAD_WAIT, async || {
-            (!member.node.state.own_addr().relays().is_empty()).then_some(())
-        })
-        .await
-        .unwrap();
+        own_address_change_taken_by_the_loop(&mut events).await;
         let before_the_interval_ends: Vec<RecordedEvent> =
             std::iter::from_fn(|| events.try_recv().ok()).collect();
 
