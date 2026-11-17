@@ -2,7 +2,8 @@ use std::io::{self, Write};
 use std::process::{Command, Output, Stdio};
 
 use crate::live_network::{LAB_BINARY_VARIABLE, TASK_RUNNER};
-use crate::scratch_machine::{BINARY, fail_unless_panicking};
+use crate::scratch_machine::BINARY;
+use crate::scratch_machine::server_member_end::fail_unless_succeeded;
 
 /// The variable the remote recipes take the server's name from; left as the gate left it, they reach the live host's server.
 const LAB_SERVER_VARIABLE: &str = "LAB_SERVER";
@@ -120,18 +121,19 @@ impl LabServer {
 
 impl Drop for RelayOnlyPath<'_> {
     fn drop(&mut self) {
-        let restored = self.server.attempt(RELAY_PATHS_RESTORED_RECIPE, &[], &[]);
-        eprintln!(
-            "UDP paths between {} and this machine restored; the drops counted by each rule:\n{}",
-            self.server.label(),
-            String::from_utf8_lossy(&restored.stdout)
-        );
-        if !restored.status.success() {
-            fail_unless_panicking(&format!(
-                "the UDP drops on {} were not deleted: {}",
+        let restored = self
+            .server
+            .attempt_without_panicking(RELAY_PATHS_RESTORED_RECIPE, &[], &[]);
+        if let Ok(output) = &restored {
+            eprintln!(
+                "UDP paths between {} and this machine restored; the drops counted by each rule:\n{}",
                 self.server.label(),
-                String::from_utf8_lossy(&restored.stderr)
-            ));
+                String::from_utf8_lossy(&output.stdout)
+            );
         }
+        fail_unless_succeeded(
+            &restored,
+            &format!("the UDP drops on {} were not deleted", self.server.label()),
+        );
     }
 }

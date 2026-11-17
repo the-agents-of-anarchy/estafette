@@ -6,7 +6,8 @@ use super::fresh_directory::fresh_directory_in;
 use super::remove_scratch::remove_scratch;
 use super::trace_reader::timeline_in;
 use super::{
-    fresh_kept_directory, keep_mark, keep_run_record, keep_stop_failure, redact_files_beneath,
+    fail_unless_panicking, fresh_kept_directory, keep_mark, keep_run_record, keep_stop_failure,
+    redact_files_beneath,
 };
 
 /// The directory a member's fetched trace files are kept in, inside the directory its records are kept in.
@@ -237,6 +238,13 @@ pub fn succeeded(ran: &io::Result<Output>) -> Result<&Output, String> {
     }
 }
 
+/// Fails a test that was not failing, saying what was left undone and why, when a recipe run from a drop failed or could not run, and prints that instead on a test already failing, so no drop panics on a thread already panicking.
+pub fn fail_unless_succeeded(ran: &io::Result<Output>, left_undone: &str) {
+    if let Err(failure) = succeeded(ran) {
+        fail_unless_panicking(&format!("{left_undone}: {failure}"));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -279,6 +287,12 @@ mod tests {
     const NOT_A_DIRECTORY: &str = "not-a-directory";
     /// The directory a test asks a member's records be kept in, beneath that file.
     const KEPT_BENEATH_NOT_A_DIRECTORY: &str = "kept";
+    /// Why a test's recipe could not run.
+    const RECIPE_UNRUNNABLE: &str = "the task runner could not be started";
+    /// What a test's drop says its recipe left undone.
+    const LEFT_UNDONE: &str = "the UDP drops on lab-server were not deleted";
+    /// The failure a test raises before a drop reports its recipe.
+    const FIRST_FAILURE: &str = "the test failed first";
 
     /// A recipe run that exited with code 1 having printed the text on standard error.
     fn failed_run(printed: &str) -> Output {
@@ -648,5 +662,44 @@ mod tests {
         assert_eq!(not_fetched, TRACE_FILES_NOT_FETCHED);
         assert_eq!(fetched_with_no_event, NO_EVENT_RECORDED);
         remove_scratch(&fetched_into).unwrap();
+    }
+
+    /// A value that, when dropped, reports a recipe run from its drop that could not run, as a lab fixture's drop does.
+    struct ReportingARecipeThatCouldNotRun;
+
+    impl Drop for ReportingARecipeThatCouldNotRun {
+        fn drop(&mut self) {
+            fail_unless_succeeded(&Err(io::Error::other(RECIPE_UNRUNNABLE)), LEFT_UNDONE);
+        }
+    }
+
+    #[test]
+    fn observability_decision_16_a_drop_whose_recipe_could_not_run_on_a_test_already_failing_leaves_that_failure_standing_and_panics_no_further()
+     {
+        let unwound = std::panic::catch_unwind(|| {
+            let _reporting = ReportingARecipeThatCouldNotRun;
+            panic!("{FIRST_FAILURE}");
+        });
+
+        let first = unwound.expect_err("the test did not fail first");
+        assert_eq!(
+            first.downcast_ref::<String>().map(String::as_str),
+            Some(FIRST_FAILURE)
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_drop_whose_recipe_failed_fails_a_test_that_was_not_failing_saying_what_was_left_undone_and_why()
+     {
+        let failed = std::panic::catch_unwind(|| {
+            fail_unless_succeeded(&Ok(failed_run(STOP_REFUSAL)), LEFT_UNDONE);
+        });
+
+        let failure = failed.expect_err("a failed recipe did not fail the test");
+        let message = failure.downcast_ref::<String>().unwrap();
+        assert!(
+            message.contains(LEFT_UNDONE) && message.contains(STOP_REFUSAL),
+            "{message}"
+        );
     }
 }

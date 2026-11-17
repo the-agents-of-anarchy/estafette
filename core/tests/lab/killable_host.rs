@@ -7,7 +7,7 @@ use estafette::invite::parse_host_line;
 use estafette::wire::HostAddr;
 
 use crate::lab_server::LabServer;
-use crate::scratch_machine::fail_unless_panicking;
+use crate::scratch_machine::server_member_end::fail_unless_succeeded;
 
 /// The variable the acceptance gate names the lab server in whose host the test may kill.
 const SERVER_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_KILLABLE_SERVER";
@@ -142,14 +142,11 @@ impl KillableHost {
 impl Drop for HostStartedWhenDropped<'_> {
     fn drop(&mut self) {
         let server = &self.killable.server;
-        let started = server.attempt(HOST_STARTED_RECIPE, &[], &[]);
-        if !started.status.success() {
-            fail_unless_panicking(&format!(
-                "the host on {} was not started again: {}",
-                server.label(),
-                String::from_utf8_lossy(&started.stderr)
-            ));
-        }
+        let started = server.attempt_without_panicking(HOST_STARTED_RECIPE, &[], &[]);
+        fail_unless_succeeded(
+            &started,
+            &format!("the host on {} was not started again", server.label()),
+        );
     }
 }
 
