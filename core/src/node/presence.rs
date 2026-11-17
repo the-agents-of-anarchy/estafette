@@ -1201,7 +1201,7 @@ impl PresenceLoop {
             Some(statuses) = self.relay_statuses.next() => Wake::HomeRelaysChanged(statuses),
             () = deadline_reached(&*self.monotonic, observer_wait_over) => Wake::ObserverWaitOver,
             () = sleep_until_deadline(self.reannounce_due) => Wake::ReannounceDue,
-            () = sleep_until_deadline(relay_loss_due) => Wake::RelayLossDue,
+            () = deadline_reached(&*self.monotonic, relay_loss_due) => Wake::RelayLossDue,
             cause = sleep_until_rebind(&*self.monotonic, next_rebind) => Wake::RebindDue(cause),
             () = sleep_until_deadline(member_join_due) => Wake::MemberJoinDue,
             () = sleep_until(self.snapshot_due) => Wake::SnapshotDue,
@@ -4901,6 +4901,161 @@ pub(super) mod tests {
         });
 
         assert!(member.endpoint.remove_relay(&relay_address).await.is_none());
+        drop(scratch);
+    }
+
+    #[cfg(feature = "relay")]
+    const HOME_RELAY: &str = "transport.home_relay";
+
+    /// A relay server on a local port, and its URL.
+    #[cfg(feature = "relay")]
+    async fn local_relay() -> (iroh_relay::server::Server, RelayUrl) {
+        use iroh_relay::server::{RelayConfig, Server, ServerConfig};
+
+        let mut relay_config = ServerConfig::default();
+        relay_config.relay = Some(RelayConfig::new(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST,
+            0,
+        ))));
+        let relay = Server::spawn(relay_config).await.unwrap();
+        let relay_address = relay_url(&format!("http://{}/", relay.http_addr().unwrap()));
+        (relay, relay_address)
+    }
+
+    /// The first seed's endpoint on the relays, its register on the runtime's clock handing its transport events to the record.
+    #[cfg(feature = "relay")]
+    async fn endpoint_recording_to(relays: Vec<RelayUrl>, record: &RunRecord) -> NodeEndpoint {
+        NodeEndpoint::bind(
+            secret_key(FIRST_SEED),
+            *keys().gate_key(),
+            relays,
+            move |nonce: &mut [u8; KEY_LEN]| *nonce = [FIRST_SEED; KEY_LEN],
+            |_ignored| {},
+            HeldConnections::new(
+                Arc::new(RuntimeClock),
+                crate::net::endpoint::TransportRecord::new(
+                    Arc::clone(record),
+                    crate::net::direct::tests::test_salt(),
+                ),
+            ),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// A member alone on the standing clock, with the local relay it reached as its home relay before its init announced it, the relay map it dials through, and the events it records.
+    #[cfg(feature = "relay")]
+    struct MemberOnALocalRelay {
+        member: Member,
+        relay: iroh_relay::server::Server,
+        relay_address: RelayUrl,
+        relay_map: iroh::RelayMap,
+        events: UnboundedReceiver<RecordedEvent>,
+    }
+
+    /// Starts a member alone on the clock whose only relay is a local one, ending its init by moving the clock past the join timeout once the relay is its home relay.
+    #[cfg(feature = "relay")]
+    async fn member_on_a_local_relay(
+        scratch: &Scratch,
+        clock: &StandingClock,
+    ) -> MemberOnALocalRelay {
+        let (relay, relay_address) = local_relay().await;
+        let (record, mut events) = recorded_events();
+        let endpoint = endpoint_recording_to(vec![relay_address.clone()], &record).await;
+        let relay_map = endpoint.relay_map();
+        let (member, ()) = tokio::join!(
+            start_member(
+                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                    .with_monotonic(clock.monotonic())
+                    .with_report(record),
+                endpoint,
+                (
+                    scratch.inbox(FIRST_SEED),
+                    scratch.directories.inbox_socket_file(u32::from(FIRST_SEED)),
+                ),
+                scratch.network_file(FIRST_SEED),
+            ),
+            async {
+                let before_connected = recorded_until(
+                    &mut events,
+                    HOME_RELAY,
+                    |fields| fields.contains(&("connected", serde_json::Value::from(true))),
+                    HOME_RELAY_STATUS_WITHIN,
+                )
+                .await
+                .0;
+                if !before_connected
+                    .iter()
+                    .any(|(name, _fields)| *name == STATE_COUNTERS)
+                {
+                    next_recorded_meeting(
+                        &mut events,
+                        STATE_COUNTERS,
+                        |_fields| true,
+                        PAYLOAD_WAIT,
+                    )
+                    .await;
+                }
+                clock.move_forward(SPEC_JOIN_TIMEOUT);
+                next_recorded_meeting(
+                    &mut events,
+                    OWN_HANDLE_ASSIGNED,
+                    |_fields| true,
+                    PAYLOAD_WAIT,
+                )
+                .await;
+            }
+        );
+        MemberOnALocalRelay {
+            member,
+            relay,
+            relay_address,
+            relay_map,
+            events,
+        }
+    }
+
+    /// Every event the member recorded until it took its home relay for lost, by when it has read its clock for the loss, failing by name when that does not come within the wait for the status.
+    #[cfg(feature = "relay")]
+    async fn home_relay_taken_for_lost(
+        events: &mut UnboundedReceiver<RecordedEvent>,
+    ) -> Vec<RecordedEvent> {
+        recorded_until(
+            events,
+            HOME_RELAY,
+            |fields| fields.contains(&("connected", serde_json::Value::from(false))),
+            HOME_RELAY_STATUS_WITHIN,
+        )
+        .await
+        .0
+    }
+
+    #[cfg(feature = "relay")]
+    #[tokio::test]
+    async fn spec_3_8_a_lost_home_relay_leaves_the_relay_map_once_the_handed_clock_reads_the_relay_loss_wait()
+     {
+        let scratch = Scratch::new("loss-on-clock").await;
+        let clock = StandingClock::standing_an_hour_ahead();
+        let MemberOnALocalRelay {
+            member: _member,
+            relay,
+            relay_address,
+            relay_map,
+            mut events,
+        } = member_on_a_local_relay(&scratch, &clock).await;
+
+        relay.shutdown().await.unwrap();
+        home_relay_taken_for_lost(&mut events).await;
+        clock.move_forward(SPEC_RELAY_LOSS_WAIT);
+        let removed = found_within(RELAY_LOSS_REMOVAL_SLACK, async || {
+            (!relay_map.contains(&relay_address)).then_some(())
+        })
+        .await;
+
+        assert!(
+            removed.is_some(),
+            "the relay map still holds the lost home relay {RELAY_LOSS_REMOVAL_SLACK:?} after the clock read the relay loss wait"
+        );
         drop(scratch);
     }
 
