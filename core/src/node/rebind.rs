@@ -967,6 +967,8 @@ mod tests {
         )
         .await;
         peer.introduce_to(&member_endpoint).await;
+        next_recorded(&mut events, COUNTERS).await;
+        clock.move_forward(SPEC_JOIN_TIMEOUT);
         let member = starting.await.unwrap();
 
         recorded_until(
