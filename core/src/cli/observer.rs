@@ -2805,7 +2805,7 @@ mod tests {
             .collect();
         assert!(
             counters_before_the_first.is_empty(),
-            "{counters_before_the_first:?}"
+            "counters recorded before the clock read the first interval due: {counters_before_the_first:?}"
         );
         for at_the_interval in at_the_intervals {
             assert_eq!(
