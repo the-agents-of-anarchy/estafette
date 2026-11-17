@@ -200,6 +200,7 @@ mod tests {
     use crate::net::direct::RuntimeClock;
     use crate::net::direct::tests::StandingClock;
     use crate::net::endpoint::NodeEndpoint;
+    use crate::test_waits::{answered_within, found_within};
     use crate::wire::{
         Addr, Departure, Infrastructure, Presence, RelayUrl, SignatureBytes, Version, encode,
     };
@@ -543,15 +544,18 @@ mod tests {
         .unwrap();
 
         clock.move_forward(SPEC_JOIN_TIMEOUT.saturating_sub(JUST_UNDER));
-        let just_before = timeout(Duration::ZERO, topic.next_event()).await;
+        let just_before =
+            found_within(Duration::ZERO, async || Some(topic.next_event().await)).await;
         clock.move_forward(JUST_UNDER);
-        let at_the_timeout = timeout(JOIN_TIMEOUT_SLACK, topic.next_event()).await;
+        let at_the_timeout = answered_within(
+            JOIN_TIMEOUT_SLACK,
+            "the topic's event once the handed clock read the join timeout",
+            topic.next_event(),
+        )
+        .await;
 
-        assert!(just_before.is_err(), "{just_before:?}");
-        assert_eq!(
-            at_the_timeout.unwrap().unwrap().unwrap(),
-            GossipEvent::JoinTimedOut
-        );
+        assert!(just_before.is_none(), "{just_before:?}");
+        assert_eq!(at_the_timeout.unwrap().unwrap(), GossipEvent::JoinTimedOut);
     }
 
     #[tokio::test]
