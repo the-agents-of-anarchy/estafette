@@ -2107,16 +2107,13 @@ pub(crate) mod tests {
 
     /// How far ahead of the runtime's now a clock stands so that no deadline read from it falls due on the runtime's timer while a test runs.
     const AHEAD_OF_THE_RUNTIME: Duration = Duration::from_secs(3600);
-    /// The longest a test waits for a clock to be read as often as it expects.
-    const CLOCK_READ_WAIT: Duration = Duration::from_secs(10);
     /// The longest a test waits for a waiter to ask a clock to wake it at a deadline.
     const WAKE_ASKED_WAIT: Duration = Duration::from_secs(10);
 
-    /// A monotonic clock standing at the instant the test last moved it to, counting its readings, keeping every deadline a waiter asked it to wake at and waking each waiter once it reads that waiter's deadline.
+    /// A monotonic clock standing at the instant the test last moved it to, keeping every deadline a waiter asked it to wake at and waking each waiter once it reads that waiter's deadline.
     #[derive(Clone)]
     pub struct StandingClock {
         reading: Arc<tokio::sync::watch::Sender<tokio::time::Instant>>,
-        readings: Arc<tokio::sync::watch::Sender<u64>>,
         asked_deadlines: Arc<tokio::sync::watch::Sender<BTreeSet<tokio::time::Instant>>>,
     }
 
@@ -2125,7 +2122,6 @@ pub(crate) mod tests {
         pub fn standing_now() -> Self {
             Self {
                 reading: Arc::new(tokio::sync::watch::Sender::new(tokio::time::Instant::now())),
-                readings: Arc::new(tokio::sync::watch::Sender::new(0)),
                 asked_deadlines: Arc::new(tokio::sync::watch::Sender::new(BTreeSet::new())),
             }
         }
@@ -2141,23 +2137,6 @@ pub(crate) mod tests {
         pub fn move_forward(&self, by: Duration) {
             self.reading
                 .send_modify(|now| *now = now.checked_add(by).unwrap());
-        }
-
-        /// How many times the clock has been read.
-        pub fn readings(&self) -> u64 {
-            *self.readings.borrow()
-        }
-
-        /// Waits until the clock has been read at least the count of times, failing by name when it has not within the wait.
-        pub async fn read_at_least(&self, times: u64) {
-            let mut readings = self.readings.subscribe();
-            answered_within(
-                CLOCK_READ_WAIT,
-                &format!("reading number {times} of the clock"),
-                readings.wait_for(|read| *read >= times),
-            )
-            .await
-            .expect("the clock holds the sender of its readings");
         }
 
         /// Waits until the named waiter has asked the clock to wake it at the deadline, failing with that name when it has not within the wait.
@@ -2180,8 +2159,6 @@ pub(crate) mod tests {
 
     impl MonotonicTime for StandingClock {
         fn now(&self) -> tokio::time::Instant {
-            self.readings
-                .send_modify(|read| *read = read.saturating_add(1));
             *self.reading.borrow()
         }
 

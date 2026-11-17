@@ -1050,7 +1050,7 @@ mod tests {
     use crate::inbox::socket::ProcessTable;
     use crate::keys::render_public_key;
     use crate::net::direct::tests::{LeapingClock, StandingClock};
-    use crate::net::direct::{DirectServer, RuntimeClock};
+    use crate::net::direct::{DirectServer, MonotonicTime, RuntimeClock};
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
     use crate::stream_items::StreamExt;
@@ -2785,6 +2785,11 @@ mod tests {
         let lab = Lab::new("show-peers-on-the-clock").await;
         lab.write_network_config(&[NEIGHBOR_SEED]);
         let clock = StandingClock::standing_an_hour_ahead();
+        let observer_wait_over = clock
+            .now()
+            .checked_add(SPEC_JOIN_TIMEOUT)
+            .and_then(|join_timed_out| join_timed_out.checked_add(SPEC_OBSERVER_WAIT))
+            .unwrap();
         let (record, mut recorded) = recorded_events();
         let (mut effects, operator_effects) = lab.effects(Vec::new(), never_interrupted());
         effects.report = record;
@@ -2817,9 +2822,10 @@ mod tests {
                     ONCE_THE_CLOCK_READS_IT_WITHIN,
                 )
                 .await;
-                let read_by_the_start = clock.readings();
                 clock.move_forward(SPEC_JOIN_TIMEOUT);
-                clock.read_at_least(read_by_the_start + 1).await;
+                clock
+                    .asked_to_wake("show-peers' observer wait", observer_wait_over)
+                    .await;
                 clock.move_forward(SPEC_OBSERVER_WAIT);
             }
         );
