@@ -47,3 +47,11 @@ What happened: At about 22:33 on 2026-11-16 the lead ended a turn with a status 
 Mechanism: A harness notice that the previous response had no visible output arrived three times in a row; the lead treated the third as a request to answer, though the silence rule names that notice as no word of the owner.
 
 Correction: A notice of no visible output is inert however often it repeats; every turn under the marker ends with an empty message; state goes to the status file and the journal alone.
+
+## Clock times typed by hand inside two status lines
+
+What happened: Two governing lines of dev-status.md written on 2026-11-17 carry times the clock contradicts: a continuation said to be sent at 02:44 was sent at about 02:40, and an integrator said to run since 03:22 was launched at about 03:19.
+
+Mechanism: Each line took its own stamp from date, but a second time inside the sentence was written from estimate.
+
+Correction: Every time written into a status line or a journal line comes from the stamp variable read by date in the same command, or is left out.
