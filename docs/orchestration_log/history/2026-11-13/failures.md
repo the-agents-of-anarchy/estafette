@@ -95,3 +95,11 @@ What happened: At 17:50 on 2026-11-17 the spec reviewer of the layout of lab-tes
 Mechanism: The brief generator leaves the path of the whole run's evidence to the lead's note, and the note the lead wrote for this review named none; nothing checked the note before the launch.
 
 Correction: The note now names the evidence path and the review is relaunched; before every spec review launch the lead counts the evidence path in the note with a search, and launches on a count of one or more.
+
+## Text written to the conversation in three turns after the owner's one question was answered
+
+What happened: on 2026-11-18, in the turns ended near 00:28, 00:34 and 00:47, each started by a task notification and not by the owner, the lead ended with a status paragraph in the conversation while the silence marker stood.
+
+Mechanism: the owner's typed question of 2026-11-17T19:02 was answered in the conversation on his word that the lead stays silent unless spoken to; the turns that followed were started by notifications, and the lead carried the answering register over to them as though the question still stood, without checking who had started the turn.
+
+Correction: one typed question licenses one answer. Every turn started by a notification, a heartbeat, an agent's message or a nudge ends with a message of zero characters; the state those paragraphs held stands in the status line and the journal.
