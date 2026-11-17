@@ -16,15 +16,21 @@ pub struct LabMachine {
     scratch: ScratchMachine,
 }
 
-/// A running `estafette mcp` process that has claimed its card, kept alive until dropped.
+/// A running `estafette mcp` process that has claimed its card, kept alive until dropped, holding the machine it runs on so the process ends before the machine keeps its data.
 pub struct ClaimedMember {
     server: McpServer,
+    machine: LabMachine,
 }
 
 impl ClaimedMember {
     /// The events the member records, awaited in its trace directory.
     pub const fn events(&self) -> &MemberEvents {
         self.server.events()
+    }
+
+    /// The machine the member runs on.
+    pub const fn machine(&self) -> &LabMachine {
+        &self.machine
     }
 }
 
@@ -72,13 +78,16 @@ impl LabMachine {
         McpServer::handshaken(process, events)
     }
 
-    /// Starts the binary's MCP server for the network and claims the card through its init tool, requiring the claim to succeed.
+    /// Starts the binary's MCP server for the network on this machine, which the member then holds, and claims the card through its init tool, requiring the claim to succeed.
     #[track_caller]
-    pub fn start_member(&self, card: &str) -> ClaimedMember {
+    pub fn start_member(self, card: &str) -> ClaimedMember {
         let mut server = self.start_server();
         let claim = server.call(INIT_TOOL, &init_arguments(card));
         assert!(call_succeeded(&claim), "{claim}");
-        ClaimedMember { server }
+        ClaimedMember {
+            server,
+            machine: self,
+        }
     }
 
     /// The hosts the network configuration names once one of them has the id, looked at once and again on each change in the configuration's directory, requiring that within the wait.

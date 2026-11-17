@@ -179,7 +179,6 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
     /// A member claimed on a machine of its own, and a forger, both joined to the live network through its host.
     struct Scene {
         network: LiveNetwork,
-        machine: LabMachine,
         member: ClaimedMember,
         forger: Forger,
         _live_host: MutexGuard<'static, ()>,
@@ -202,7 +201,6 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             );
             Self {
                 network,
-                machine,
                 member,
                 forger,
                 _live_host: live_host,
@@ -230,7 +228,8 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             let record = self.certified_record(marker, wall_clock_seconds());
             self.forger
                 .broadcast(sealed(self.network.keys(), marker, record));
-            self.machine
+            self.member
+                .machine()
                 .hosts_once_named(&id_text(marker), ACCEPTANCE_WAIT);
             let forged_peer = short_id_text(forged_host);
             self.member.events().wait_until(
@@ -246,7 +245,8 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
                     (dropped >= forgeries).then_some(())
                 },
             );
-            self.machine
+            self.member
+                .machine()
                 .hosts_once_named(&id_text(marker), ACCEPTANCE_WAIT)
         }
     }
@@ -450,7 +450,8 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
         );
         scene.forger.broadcast(accepted);
         scene
-            .machine
+            .member
+            .machine()
             .hosts_once_named(&id_text(&host), ACCEPTANCE_WAIT);
 
         scene.forger.broadcast(replayed_below);
@@ -478,7 +479,8 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             .forger
             .broadcast(remacked(scene.network.keys(), unedited));
         let hosts = scene
-            .machine
+            .member
+            .machine()
             .hosts_once_named(&id_text(&host), ACCEPTANCE_WAIT);
 
         let saved = hosts.iter().find(|saved| saved.id == id_text(&host));
@@ -501,7 +503,8 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             .forger
             .broadcast(sealed(scene.network.keys(), &host, record));
         let hosts = scene
-            .machine
+            .member
+            .machine()
             .hosts_once_named(&id_text(&host), ACCEPTANCE_WAIT);
 
         let saved = hosts.iter().find(|saved| saved.id == id_text(&host));
@@ -619,7 +622,6 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
         tail: Tail,
         member: ClaimedMember,
         _observer: LabMachine,
-        _machine: LabMachine,
     }
 
     /// Starts a member whose only host is the doomed one and a `tail` joined through it, returning them once its first announced relays are the doomed host's alone and it has relayed the live host's record, or nothing when iroh homed it elsewhere.
@@ -664,7 +666,6 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
             tail,
             member,
             _observer: observer,
-            _machine: machine,
         })
     }
 
