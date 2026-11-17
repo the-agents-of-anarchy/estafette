@@ -61,6 +61,8 @@ pub const KEPT_RUN_RECORDS_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_RUN_RECORDS";
 const KEPT_DATA_SUFFIX: &str = "data";
 /// The extension of every file spec 3.3 gives a secret key in a data directory: a card's sidecar and a host's bootstrap key.
 const SECRET_KEY_EXTENSION: &str = "key";
+/// The extension spec 3.3 gives a relay's certificate cache directory, which holds its private key.
+const CERTIFICATE_CACHE_EXTENSION: &str = "certs";
 /// The variable the acceptance gate exports the live host's invitation in.
 pub const INVITATION_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_INVITATION";
 /// What a kept run record holds in place of a secret.
@@ -272,15 +274,16 @@ impl ScratchMachine {
         Ok(kept)
     }
 
-    /// Copies every file under this machine's data directory, its members' and its observers' trace files included, into a directory beside its run records named for this machine, leaving out each secret key file, and returns the kept directory.
+    /// Copies every file under this machine's data directory, its members' and its observers' trace files included, into a directory beside its run records named for this machine, leaving out each file that holds a secret key, and returns the kept directory.
     fn keep_data_directory(&self, directory: &Path) -> io::Result<PathBuf> {
         let data = self.root.join(DATA_HOME);
         let kept = directory.join(format!("{}-{KEPT_DATA_SUFFIX}", self.name()));
-        for file in files_beneath(&data)
-            .into_iter()
-            .filter(|file| !is_secret_key_file(file))
-        {
-            let kept_file = kept.join(file.strip_prefix(&data).map_err(io::Error::other)?);
+        for file in files_beneath(&data) {
+            let in_data = file.strip_prefix(&data).map_err(io::Error::other)?;
+            if holds_a_secret_key(in_data) {
+                continue;
+            }
+            let kept_file = kept.join(in_data);
             fs::create_dir_all(kept_file.parent().unwrap_or(&kept))?;
             fs::copy(&file, &kept_file)?;
         }
@@ -439,10 +442,15 @@ fn long_alphanumeric_runs(line: &str) -> impl Iterator<Item = &str> {
         .filter(|run| run.len() >= SHORTEST_SECRET_RUN)
 }
 
-/// Whether the file holds a secret key by spec 3.3's naming, so no copy of it is kept.
-fn is_secret_key_file(file: &Path) -> bool {
+/// Whether the file holds a secret key by spec 3.3's naming, a key file itself or any file of a relay's certificate cache, so no copy of it is kept.
+fn holds_a_secret_key(file: &Path) -> bool {
     file.extension()
         .is_some_and(|extension| extension == SECRET_KEY_EXTENSION)
+        || file.ancestors().skip(1).any(|directory| {
+            directory
+                .extension()
+                .is_some_and(|extension| extension == CERTIFICATE_CACHE_EXTENSION)
+        })
 }
 
 /// Every file beneath the directory, at any depth; none when it does not exist.
@@ -601,6 +609,52 @@ mod tests {
             .collect();
         assert_eq!(kept, expected);
         assert!(!data.exists(), "{} was not removed", data.display());
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+    }
+
+    #[test]
+    fn spec_3_3_a_machine_dropped_while_keeping_leaves_out_the_relay_certificate_cache_but_keeps_the_host_certificate()
+     {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-kept-certificate-cache-test-{}",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let machine = ScratchMachine::fresh(
+            "kept-certificate-cache",
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: Some(kept_in.clone()),
+                invitation: None,
+            },
+        );
+        let data = machine.root.join(DATA_HOME);
+        let directories = machine.directories();
+        let host_certificate = directories
+            .infrastructure_certificate_file(NETWORK)
+            .unwrap();
+        let cached_account = directories
+            .infrastructure_certificate_cache_directory(NETWORK)
+            .unwrap()
+            .join("acme-account.json");
+        for (file, content) in [
+            (&host_certificate, "certificate of the host\n"),
+            (&cached_account, "account and private key of the relay\n"),
+        ] {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, content).unwrap();
+        }
+        let kept_data = kept_in.join(format!("{}-{KEPT_DATA_SUFFIX}", machine.name()));
+        let expected =
+            BTreeSet::from([kept_data.join(host_certificate.strip_prefix(&data).unwrap())]);
+
+        drop(machine);
+
+        let kept: BTreeSet<PathBuf> = files_beneath(&kept_in).into_iter().collect();
+        assert_eq!(kept, expected);
         remove_scratch::remove_scratch(&kept_in).unwrap();
     }
 }
