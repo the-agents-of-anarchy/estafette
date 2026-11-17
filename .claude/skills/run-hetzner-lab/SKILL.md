@@ -48,7 +48,7 @@ launchctl list | grep com.estafette.lab-backstop
 
 Never run the backstop from this skill's directory; copy `lab-backstop.py` into `~/.local/share/estafette/` again whenever this skill's copy changes, and never let the two differ.
 
-Read the backstop's log at `~/.local/state/estafette/backstop.log`, one line per lab resource per run; never take the backstop as working without a line from its last hour.
+Read the backstop's log at `~/.local/state/estafette/backstop.log`, one line per lab resource and one summary line per run, which names the context `estafette-lab` and counts the resources seen, deleted, kept, and left alone and is written even when the project is empty; before creating a lab resource, read a summary line from the last hour that names that context; never take the backstop as working without it.
 
 Remove it on the owner's word with `launchctl bootout gui/$(id -u)/com.estafette.lab-backstop` and the deletion of its plist; never remove it while a lab resource exists.
 

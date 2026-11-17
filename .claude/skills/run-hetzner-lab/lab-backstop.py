@@ -13,7 +13,7 @@ usage:
   python3 -I lab-backstop.py extend <kind> <id-or-name> <hours>  deadline = now + hours
 kinds: server, primary-ip, firewall, ssh-key
 
-check prints one line per resource. It deletes managed resources past their deadline,
+check prints one line per resource, then one summary line per run. It deletes managed resources past their deadline,
 servers first, then primary IPs, firewalls, and SSH keys. It deletes nothing that lacks
 the owner label or a deadline; it names those instead. Owner ruling, 2026-10-21: an
 expired server is kept while its type is not available in its location (scarce types are
@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections import Counter
 
 HCLOUD = shutil.which("hcloud", path=os.pathsep.join([os.environ.get("PATH", ""), "/opt/homebrew/bin", "/usr/local/bin"])) or "hcloud"
 LAB_CONTEXT = "estafette-lab"
@@ -77,32 +78,40 @@ def replaceable(server):
 def check(dry):
     now = int(time.time())
     kept = []
+    tally = Counter()
     for kind in KINDS:
         code, out, err = hc(kind, "list", "-o", "json")
         if code != 0:
             print(f"{stamp(now)} {kind} ERROR list failed: {err[:200]}", flush=True)
             continue
         for res in json.loads(out) or []:
+            tally["seen"] += 1
             labels = res.get("labels") or {}
             head = f"{stamp(now)} {kind} {res['id']} {res['name']}"
             expires = labels.get("expires", "")
             if labels.get("owner") != OWNER:
+                tally["left alone"] += 1
                 print(f"{head} UNMANAGED, left alone", flush=True)
             elif not expires.isdigit():
+                tally["left alone"] += 1
                 print(f"{head} NO DEADLINE, left alone", flush=True)
             elif now < int(expires):
                 print(f"{head} ok, expires {stamp(int(expires))}, {(int(expires) - now) // 60} min left", flush=True)
             elif kind == "server" and not replaceable(res):
                 kept.append(res["name"])
+                tally["kept"] += 1
                 print(f"{head} EXPIRED {stamp(int(expires))}, KEPT: {res['server_type']['name']} not available in {res['location']['name']}", flush=True)
             elif kind != "server" and kept:
+                tally["kept"] += 1
                 print(f"{head} EXPIRED {stamp(int(expires))}, KEPT with server {', '.join(kept)}", flush=True)
             elif dry:
                 print(f"{head} EXPIRED {stamp(int(expires))}, would delete (dry run)", flush=True)
             else:
                 code, _, err = hc(kind, "delete", str(res["id"]))
                 result = "deleted" if code == 0 else f"DELETE FAILED: {err[:200]}"
+                tally["deleted"] += code == 0
                 print(f"{head} EXPIRED {stamp(int(expires))}, {result}", flush=True)
+    print(f"{stamp(now)} check of {LAB_CONTEXT}: {tally['seen']} resources seen, {tally['deleted']} deleted, {tally['kept']} kept, {tally['left alone']} left alone", flush=True)
 
 
 def main(argv):
