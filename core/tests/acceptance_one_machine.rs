@@ -1067,11 +1067,14 @@ mod spec_3_15_with_one_member {
     use crate::local_network::{AMY_CARD, AMY_HANDLE, LocalNetwork};
     use crate::mcp_server::{INIT_TOOL, PRESENCE_WAIT, call_succeeded, init_arguments};
     use crate::member::{Member, loopback_address};
+    use crate::member_events::COUNTERS_EVENT;
     use crate::message_body::BODY;
+    use crate::node_start::MOMENT_FIELD;
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::{presence_signed_by, presence_signed_by_at};
     use crate::scratch_machine::RunRecordKeeping;
     use crate::scripted_node::{SPEC_DIRECT_TIMEOUT_WITH_SLACK, ScriptedNode};
+    use crate::trace_reader::TraceLine;
 
     /// Spec 3.15 test 6: the two inits are written within this long of each other.
     const SPEC_SIMULTANEOUS_INIT_WINDOW: Duration = Duration::from_millis(100);
@@ -1084,8 +1087,8 @@ mod spec_3_15_with_one_member {
     const SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK: Duration = Duration::from_secs(30);
     /// The member join wait of spec 3.14 (1500 ms) and the join it ends, with slack.
     const SPEC_MEMBER_JOIN_WAIT_WITH_SLACK: Duration = Duration::from_secs(10);
-    /// The event a member records when it begins to rebind (spec/observability.md decision 9).
-    const REBINDING_EVENT: &str = "transport.rebinding";
+    /// The moment of the counters a member records once its rebind's fresh endpoint is bound (spec/observability.md decision 9).
+    const REBOUND_MOMENT: &str = "rebound";
     /// The sidecar mode spec 3.15 test 16 gives a card, readable by group and others.
     const LOOSE_SIDECAR_MODE: u32 = 0o644;
     /// The body of the Message sealed under another network's keys (spec 3.15 test 9).
@@ -1100,8 +1103,6 @@ mod spec_3_15_with_one_member {
     const OUTSIDER_SECRET_BYTE: u8 = 77;
     /// The kind of payload a presence is, as an events line names it.
     const PRESENCE_KIND: &str = "presence";
-    /// How long a UDP socket the member opens for a moment, such as a relay probe's, may live, so a port held past it is the rebound endpoint's.
-    const TRANSIENT_SOCKET_LIFETIME: Duration = Duration::from_millis(1000);
 
     /// The `you` of spec 3.10 for a session that has claimed no card.
     fn unclaimed() -> Value {
@@ -1158,27 +1159,26 @@ mod spec_3_15_with_one_member {
         wire::encode(&Payload::Presence(presence)).unwrap()
     }
 
-    /// The UDP ports the member holds that it did not hold before and that outlive a transient socket, once it has recorded that it began rebinding, requiring both within the wait.
+    /// The UDP ports the member holds that it did not hold before, once it has recorded the counters of the endpoint its rebind bound, requiring that record within the wait.
     #[track_caller]
     fn rebound_ports(member: &Member, before: &[u16], within: Duration) -> Vec<u16> {
-        let started = Instant::now();
-        member.wait_for_event(REBINDING_EVENT, within);
-        loop {
-            let fresh = member.ipv4_udp_ports();
-            std::thread::sleep(TRANSIENT_SOCKET_LIFETIME);
-            let held: Vec<u16> = member
-                .ipv4_udp_ports()
-                .into_iter()
-                .filter(|port| fresh.contains(port) && !before.contains(port))
-                .collect();
-            if !held.is_empty() {
-                return held;
-            }
-            assert!(
-                started.elapsed() < within,
-                "no UDP port of the rebound endpoint outlived a transient socket within {within:?}"
-            );
-        }
+        member.wait_until(
+            &format!("{COUNTERS_EVENT} of its rebind's {REBOUND_MOMENT} endpoint"),
+            within,
+            |lines| lines.iter().any(is_rebound_snapshot).then_some(()),
+        );
+        let rebound: Vec<u16> = member
+            .ipv4_udp_ports()
+            .into_iter()
+            .filter(|port| !before.contains(port))
+            .collect();
+        assert!(!rebound.is_empty(), "no UDP port of the rebound endpoint");
+        rebound
+    }
+
+    /// Whether the events line is the counters snapshot a member records once its rebind's fresh endpoint is bound.
+    fn is_rebound_snapshot(line: &TraceLine) -> bool {
+        line.event == COUNTERS_EVENT && line.value(MOMENT_FIELD) == Some(&json!(REBOUND_MOMENT))
     }
 
     #[test]
