@@ -4744,8 +4744,8 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_8_the_observer_wait_runs_on_the_monotonic_clock_the_composition_root_hands_in()
-    {
+    async fn spec_3_8_the_observer_wait_starts_at_a_reading_of_the_handed_clock_and_ends_on_the_runtimes_timer()
+     {
         let scratch = Scratch::new("monotonic").await;
         let started = tokio::time::Instant::now();
         let lagging = ShiftedClock::default();
