@@ -2142,17 +2142,14 @@ pub(crate) mod tests {
 
         /// Waits until the clock has been read at least the count of times, failing by name when it has not within the wait.
         pub async fn read_at_least(&self, times: u64) {
-            let read = tokio::time::timeout(
+            let mut readings = self.readings.subscribe();
+            answered_within(
                 CLOCK_READ_WAIT,
-                self.readings.subscribe().wait_for(|read| *read >= times),
+                &format!("reading number {times} of the clock"),
+                readings.wait_for(|read| *read >= times),
             )
             .await
-            .is_ok_and(|read| read.is_ok());
-            assert!(
-                read,
-                "the clock was read {} times, not {times}, within {CLOCK_READ_WAIT:?}",
-                self.readings()
-            );
+            .expect("the clock holds the sender of its readings");
         }
 
         /// The clock as a node or a register takes it.
@@ -3036,21 +3033,21 @@ pub(crate) mod tests {
         let _accepted = accepted.unwrap();
         let read_at_the_hold = clock.readings();
 
-        let sampled = timeout(HEARING_SAMPLES_ON_THE_MOVED_CLOCK_WITHIN, async {
-            for sample in 1..=HEARING_SAMPLES_ON_THE_MOVED_CLOCK {
-                clock.move_forward(SPEC_HEARING_SAMPLE_INTERVAL);
-                clock
-                    .read_at_least(read_at_the_hold.saturating_add(u64::from(sample)))
-                    .await;
-            }
-        })
+        answered_within(
+            HEARING_SAMPLES_ON_THE_MOVED_CLOCK_WITHIN,
+            &format!(
+                "{HEARING_SAMPLES_ON_THE_MOVED_CLOCK} hearing samples, one at each move of the clock"
+            ),
+            async {
+                for sample in 1..=HEARING_SAMPLES_ON_THE_MOVED_CLOCK {
+                    clock.move_forward(SPEC_HEARING_SAMPLE_INTERVAL);
+                    clock
+                        .read_at_least(read_at_the_hold.saturating_add(u64::from(sample)))
+                        .await;
+                }
+            },
+        )
         .await;
-
-        assert!(
-            sampled.is_ok(),
-            "{HEARING_SAMPLES_ON_THE_MOVED_CLOCK} samples, one at each move of the clock, took longer than {HEARING_SAMPLES_ON_THE_MOVED_CLOCK_WITHIN:?}; the clock was read {} times",
-            clock.readings()
-        );
     }
 
     #[tokio::test]
