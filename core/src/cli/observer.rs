@@ -1054,7 +1054,9 @@ mod tests {
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
     use crate::stream_items::StreamExt;
-    use crate::test_waits::{RecordedEvent, found_within, next_recorded_meeting, recorded_events};
+    use crate::test_waits::{
+        RecordedEvent, answered_within, found_within, next_recorded_meeting, recorded_events,
+    };
     use crate::wire::{Addr, Payload};
 
     const NETWORK_NAME: &str = "lab";
@@ -2795,8 +2797,9 @@ mod tests {
         let mut printed = Vec::new();
 
         let (shown, ()) = tokio::join!(
-            tokio::time::timeout(
+            answered_within(
                 ONCE_THE_CLOCK_READS_IT_WITHIN,
+                "the end of show-peers once the clock read the observer wait past its join timeout",
                 run(
                     &show_peers,
                     &lab.directories,
@@ -2821,10 +2824,7 @@ mod tests {
             }
         );
 
-        assert!(
-            shown.is_ok(),
-            "show-peers did not end within {ONCE_THE_CLOCK_READS_IT_WITHIN:?} once the clock read the observer wait past its join timeout"
-        );
+        shown.unwrap();
         drop(lab);
     }
 
