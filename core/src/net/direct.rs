@@ -1804,32 +1804,32 @@ pub(crate) mod tests {
     /// A register clock reading the runtime's now plus however far the test has moved it forward, counting its readings.
     #[derive(Clone, Default)]
     struct ClockMovedByTheTest {
-        moved_millis: Arc<AtomicU64>,
+        shifted: ShiftedClock,
         readings: Arc<AtomicU64>,
+    }
+
+    impl MonotonicTime for ClockMovedByTheTest {
+        fn now(&self) -> tokio::time::Instant {
+            self.readings.fetch_add(1, Ordering::SeqCst);
+            self.shifted.now()
+        }
+
+        fn reached(
+            &self,
+            deadline: tokio::time::Instant,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            self.shifted.reached(deadline)
+        }
     }
 
     impl ClockMovedByTheTest {
         fn monotonic(&self) -> MonotonicClock {
-            let clock = self.clone();
-            Arc::new(move || {
-                clock.readings.fetch_add(1, Ordering::SeqCst);
-                clock.now()
-            })
-        }
-
-        /// The runtime's now plus how far the test has moved the clock, read without counting a reading.
-        fn now(&self) -> tokio::time::Instant {
-            tokio::time::Instant::now()
-                .checked_add(Duration::from_millis(
-                    self.moved_millis.load(Ordering::SeqCst),
-                ))
-                .unwrap()
+            Arc::new(self.clone())
         }
 
         /// Moves every later reading forward by the duration.
         fn move_forward(&self, by: Duration) {
-            self.moved_millis
-                .fetch_add(u64::try_from(by.as_millis()).unwrap(), Ordering::SeqCst);
+            self.shifted.move_forward(by);
         }
 
         /// Waits until the register reads the clock again, which, while no connection opens or closes, is a hearing sample of a held connection, failing by name when none comes within the wait.
@@ -2150,6 +2150,77 @@ pub(crate) mod tests {
             Box::pin(async move {
                 if readings.wait_for(|now| *now >= deadline).await.is_err() {
                     std::future::pending::<()>().await;
+                }
+            })
+        }
+    }
+
+    /// A monotonic clock reading the runtime's now shifted by however far the test has moved it, waking each waiter once it reads that waiter's deadline.
+    #[derive(Clone)]
+    pub struct ShiftedClock {
+        origin: tokio::time::Instant,
+        reading_at_origin: Arc<tokio::sync::watch::Sender<tokio::time::Instant>>,
+    }
+
+    impl Default for ShiftedClock {
+        fn default() -> Self {
+            let origin = tokio::time::Instant::now();
+            Self {
+                origin,
+                reading_at_origin: Arc::new(tokio::sync::watch::Sender::new(origin)),
+            }
+        }
+    }
+
+    impl ShiftedClock {
+        /// Moves every later reading forward by the span, waking each waiter whose deadline it then reads.
+        pub fn move_forward(&self, by: Duration) {
+            self.reading_at_origin
+                .send_modify(|reading| *reading = reading.checked_add(by).unwrap());
+        }
+
+        /// Moves every later reading back by the span, so each waiter waits that much longer.
+        pub fn move_back(&self, by: Duration) {
+            self.reading_at_origin
+                .send_modify(|reading| *reading = reading.checked_sub(by).unwrap());
+        }
+
+        /// The clock as a node or a register takes it.
+        pub fn monotonic(&self) -> MonotonicClock {
+            Arc::new(self.clone())
+        }
+    }
+
+    impl MonotonicTime for ShiftedClock {
+        fn now(&self) -> tokio::time::Instant {
+            self.reading_at_origin
+                .borrow()
+                .checked_add(tokio::time::Instant::now().saturating_duration_since(self.origin))
+                .unwrap()
+        }
+
+        fn reached(
+            &self,
+            deadline: tokio::time::Instant,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            let origin = self.origin;
+            let mut shifts = self.reading_at_origin.subscribe();
+            Box::pin(async move {
+                loop {
+                    let runtime_due = origin
+                        .checked_add(
+                            deadline.saturating_duration_since(*shifts.borrow_and_update()),
+                        )
+                        .unwrap();
+                    tokio::select! {
+                        () = sleep_until(runtime_due) => return,
+                        moved = shifts.changed() => {
+                            if moved.is_err() {
+                                sleep_until(runtime_due).await;
+                                return;
+                            }
+                        }
+                    }
                 }
             })
         }

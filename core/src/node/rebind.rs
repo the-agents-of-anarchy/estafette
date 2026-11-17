@@ -403,7 +403,7 @@ mod tests {
     use super::{MemberJoins, RebindSchedule, RelayProbe, relay_answers};
     use crate::event::EventFields;
     use crate::event::{Event, RunRecord, TransportEvent};
-    use crate::net::direct::tests::{StandingClock, test_salt};
+    use crate::net::direct::tests::{ShiftedClock, StandingClock, test_salt};
     use crate::net::direct::{
         ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock, RuntimeClock,
     };
@@ -1421,17 +1421,14 @@ mod tests {
     async fn spec_3_8_a_member_whose_wall_clock_stands_still_asks_again_at_its_rebinds_join_and_a_member_answers()
      {
         let scratch = Scratch::new("ask-again").await;
-        let leading: MonotonicClock = Arc::new(|| {
-            Instant::now()
-                .checked_add(ANSWERING_MEMBER_DEAF_LATER_BY)
-                .unwrap()
-        });
+        let leading = ShiftedClock::default();
+        leading.move_forward(ANSWERING_MEMBER_DEAF_LATER_BY);
         let answering = start_members(
             &scratch,
             vec![
                 MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
                     .with_clock(frozen_clock(FROZEN_CLOCK_MS))
-                    .with_monotonic(leading),
+                    .with_monotonic(leading.monotonic()),
             ],
         )
         .await

@@ -1946,6 +1946,7 @@ pub(super) mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
+    use crate::net::direct::tests::ShiftedClock;
     use crate::net::direct::{RequestSummary, RuntimeClock};
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
@@ -4747,18 +4748,18 @@ pub(super) mod tests {
     {
         let scratch = Scratch::new("monotonic").await;
         let started = tokio::time::Instant::now();
-        let lagging: MonotonicClock =
-            Arc::new(|| Instant::now().checked_sub(MONOTONIC_LAG).unwrap());
+        let lagging = ShiftedClock::default();
+        lagging.move_back(MONOTONIC_LAG);
 
         let _members = start_members(
             &scratch,
             vec![
                 MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
                     .with_hosts(&[SECOND_SEED])
-                    .with_monotonic(Arc::clone(&lagging)),
+                    .with_monotonic(lagging.monotonic()),
                 MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
                     .with_hosts(&[FIRST_SEED])
-                    .with_monotonic(lagging),
+                    .with_monotonic(lagging.monotonic()),
             ],
         )
         .await;
@@ -5116,23 +5117,11 @@ pub(super) mod tests {
     const LONGER_THAN_ANY_SILENCE: Duration = Duration::from_secs(3600);
     const INTRODUCED_WAIT: Duration = Duration::from_secs(10);
 
-    /// A clock that reads the time now, or an hour on while the flag is set, so the register takes every connection it holds as one of a gone process.
-    fn clock_reading_every_connection_as_gone_while(flag: Arc<AtomicBool>) -> MonotonicClock {
-        Arc::new(move || {
-            let now = Instant::now();
-            if flag.load(Ordering::SeqCst) {
-                now.checked_add(LONGER_THAN_ANY_SILENCE).unwrap()
-            } else {
-                now
-            }
-        })
-    }
-
     /// A peer holding the witness card that queues every Message it accepts and, at the first, has its register close every connection of the sender before the ack is written, as the rule closes a connection with a Message in flight.
     struct ClosingAtTheFirstMessage {
         addr: Addr,
         register: HeldConnections,
-        reads_every_connection_as_gone: Arc<AtomicBool>,
+        register_clock: ShiftedClock,
         closed_once: AtomicBool,
         queued: Arc<Mutex<Vec<Message>>>,
         introductions: Arc<std::sync::atomic::AtomicUsize>,
@@ -5154,11 +5143,9 @@ pub(super) mod tests {
         fn receive_message(&self, sender: crate::wire::PublicKey, message: Message) -> bool {
             self.queued.lock().unwrap().push(message);
             if !self.closed_once.swap(true, Ordering::SeqCst) {
-                self.reads_every_connection_as_gone
-                    .store(true, Ordering::SeqCst);
+                self.register_clock.move_forward(LONGER_THAN_ANY_SILENCE);
                 self.register.close_silent_of(sender);
-                self.reads_every_connection_as_gone
-                    .store(false, Ordering::SeqCst);
+                self.register_clock.move_back(LONGER_THAN_ANY_SILENCE);
             }
             false
         }
@@ -5184,15 +5171,13 @@ pub(super) mod tests {
     async fn spec_3_10_a_message_whose_connection_its_recipient_closes_after_queueing_it_fails_at_its_sender_as_unreachable_and_its_resend_is_queued_twice()
      {
         let scratch = Scratch::new("cut").await;
-        let reads_every_connection_as_gone = Arc::new(AtomicBool::new(false));
+        let register_clock = ShiftedClock::default();
         let queued = Arc::new(Mutex::new(Vec::new()));
         let introductions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let endpoint = bind_holding(
             WITNESS_SEED,
             HeldConnections::new(
-                clock_reading_every_connection_as_gone_while(Arc::clone(
-                    &reads_every_connection_as_gone,
-                )),
+                register_clock.monotonic(),
                 crate::net::direct::tests::dropping_transport(),
             ),
         )
@@ -5214,7 +5199,7 @@ pub(super) mod tests {
                     ClosingAtTheFirstMessage {
                         addr: wire_addr(&endpoint.endpoint().addr()),
                         register: endpoint.held_connections(),
-                        reads_every_connection_as_gone,
+                        register_clock,
                         closed_once: AtomicBool::new(false),
                         queued: Arc::clone(&queued),
                         introductions: Arc::clone(&introductions),
