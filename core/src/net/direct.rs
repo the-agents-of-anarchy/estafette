@@ -83,17 +83,6 @@ pub trait MonotonicTime: Send + Sync {
     fn reached(&self, deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 }
 
-/// A clock read by calling the function and waited on with the runtime's timer, the runtime's own clock when the function is the runtime's `Instant::now`.
-impl<Reading: Fn() -> Instant + Send + Sync> MonotonicTime for Reading {
-    fn now(&self) -> Instant {
-        self()
-    }
-
-    fn reached(&self, deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(sleep_until(deadline))
-    }
-}
-
 /// The runtime's own clock, read with the runtime's `Instant::now` and waited on with the runtime's timer.
 pub struct RuntimeClock;
 
