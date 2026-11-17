@@ -12,7 +12,7 @@ use iroh::endpoint::{
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointId};
 use tokio::sync::Mutex as AsyncMutex;
-use tokio::time::{Instant, sleep, sleep_until, timeout};
+use tokio::time::{Instant, sleep_until, timeout};
 
 use super::endpoint::{
     Close, CloseReason, ConnectionId, DIRECT_ALPN, Direction, NodeEndpoint, PathChange, Protocol,
@@ -214,16 +214,15 @@ impl HeldConnections {
             protocol: Protocol::of(connection.alpn()),
         });
         self.record_paths_open_at_hold(connection);
-        self.add(
-            card,
-            HeldConnection::heard_at(connection, self.monotonic.now()),
-        );
+        let held_at = self.monotonic.now();
+        self.add(card, HeldConnection::heard_at(connection, held_at));
         tokio::spawn(self.clone().follow_hearing(
             card,
             ConnectionId::of(connection),
             weak,
             closed,
             paths,
+            held_at,
         ));
     }
 
@@ -234,7 +233,7 @@ impl HeldConnections {
         held.entry(card).or_default().push(held_connection);
     }
 
-    /// Reads what the connection to or from the card has heard every hearing sample interval and records each change of its paths, a change already reported before the close included, until it closes, then records the close and forgets it.
+    /// Reads what the connection to or from the card has heard each time the clock reads one hearing sample interval past its last reading, the hold's first, and records each change of its paths, a change already reported before the close included, until it closes, then records the close and forgets it.
     async fn follow_hearing(
         self,
         card: wire::PublicKey,
@@ -242,14 +241,22 @@ impl HeldConnections {
         connection: WeakConnectionHandle,
         closed: impl Future<Output = Option<Closed>>,
         mut paths: PathEventStream,
+        held_at: Instant,
     ) {
         tokio::pin!(closed);
+        let mut last_read = held_at;
         let ended = loop {
+            let sample_due = last_read
+                .checked_add(HEARING_SAMPLE_INTERVAL)
+                .unwrap_or(last_read);
             tokio::select! {
                 biased;
                 Some(change) = paths.next() => self.record_path_change(connection_id, &connection, change),
                 ended = &mut closed => break ended,
-                () = sleep(HEARING_SAMPLE_INTERVAL) => self.note_hearing(card, connection_id, &connection),
+                () = self.monotonic.reached(sample_due) => {
+                    last_read = self.monotonic.now();
+                    self.note_hearing(card, connection_id, &connection, last_read);
+                }
             }
         };
         if let Some(ended) = ended {
@@ -326,12 +333,13 @@ impl HeldConnections {
         });
     }
 
-    /// Takes now as the last time the connection to or from the card heard from its peer, when it received a datagram since its last reading.
+    /// Takes `now` as the last time the connection to or from the card heard from its peer, when it received a datagram since its last reading.
     fn note_hearing(
         &self,
         card: wire::PublicKey,
         connection_id: ConnectionId,
         connection: &WeakConnectionHandle,
+        now: Instant,
     ) {
         let Some(datagrams) = connection
             .upgrade()
@@ -339,7 +347,6 @@ impl HeldConnections {
         else {
             return;
         };
-        let now = self.monotonic.now();
         if let Some(held_connection) = self.held().get_mut(&card).and_then(|of_card| {
             of_card
                 .iter_mut()
@@ -2096,17 +2103,23 @@ pub(crate) mod tests {
 
     /// How far ahead of the runtime's now a clock stands so that no deadline read from it falls due on the runtime's timer while a test runs.
     const AHEAD_OF_THE_RUNTIME: Duration = Duration::from_secs(3600);
+    /// The longest a test waits for a clock to be read as often as it expects.
+    const CLOCK_READ_WAIT: Duration = Duration::from_secs(10);
 
-    /// A monotonic clock standing at the instant the test last moved it to, waking each waiter once it reads that waiter's deadline.
+    /// A monotonic clock standing at the instant the test last moved it to, counting its readings and waking each waiter once it reads that waiter's deadline.
     #[derive(Clone)]
-    pub struct StandingClock(Arc<tokio::sync::watch::Sender<tokio::time::Instant>>);
+    pub struct StandingClock {
+        reading: Arc<tokio::sync::watch::Sender<tokio::time::Instant>>,
+        readings: Arc<tokio::sync::watch::Sender<u64>>,
+    }
 
     impl StandingClock {
         /// A clock standing at the runtime's now.
         pub fn standing_now() -> Self {
-            Self(Arc::new(tokio::sync::watch::Sender::new(
-                tokio::time::Instant::now(),
-            )))
+            Self {
+                reading: Arc::new(tokio::sync::watch::Sender::new(tokio::time::Instant::now())),
+                readings: Arc::new(tokio::sync::watch::Sender::new(0)),
+            }
         }
 
         /// A clock standing an hour ahead of the runtime's now, so no deadline read from it falls due on the runtime's timer while a test runs.
@@ -2118,8 +2131,28 @@ pub(crate) mod tests {
 
         /// Moves the clock forward by the span, waking each waiter whose deadline it then reads.
         pub fn move_forward(&self, by: Duration) {
-            self.0
+            self.reading
                 .send_modify(|now| *now = now.checked_add(by).unwrap());
+        }
+
+        /// How many times the clock has been read.
+        pub fn readings(&self) -> u64 {
+            *self.readings.borrow()
+        }
+
+        /// Waits until the clock has been read at least the count of times, failing by name when it has not within the wait.
+        pub async fn read_at_least(&self, times: u64) {
+            let read = tokio::time::timeout(
+                CLOCK_READ_WAIT,
+                self.readings.subscribe().wait_for(|read| *read >= times),
+            )
+            .await
+            .is_ok_and(|read| read.is_ok());
+            assert!(
+                read,
+                "the clock was read {} times, not {times}, within {CLOCK_READ_WAIT:?}",
+                self.readings()
+            );
         }
 
         /// The clock as a node or a register takes it.
@@ -2130,16 +2163,18 @@ pub(crate) mod tests {
 
     impl MonotonicTime for StandingClock {
         fn now(&self) -> tokio::time::Instant {
-            *self.0.borrow()
+            self.readings
+                .send_modify(|read| *read = read.saturating_add(1));
+            *self.reading.borrow()
         }
 
         fn reached(
             &self,
             deadline: tokio::time::Instant,
         ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-            let mut readings = self.0.subscribe();
+            let mut moves = self.reading.subscribe();
             Box::pin(async move {
-                if readings.wait_for(|now| *now >= deadline).await.is_err() {
+                if moves.wait_for(|now| *now >= deadline).await.is_err() {
                     std::future::pending::<()>().await;
                 }
             })
@@ -2975,6 +3010,48 @@ pub(crate) mod tests {
     const JUST_BEFORE: Duration = Duration::from_millis(1);
     const JUST_UNDER_THE_SILENCE_OF_A_GONE_PROCESS: Duration =
         SILENCE_OF_A_GONE_PROCESS.saturating_sub(JUST_BEFORE);
+    const SPEC_HEARING_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
+    const HEARING_SAMPLES_ON_THE_MOVED_CLOCK: u32 = 20;
+    /// A fifth of the time the samples would take on the runtime's timer, one hearing sample interval apart.
+    const HEARING_SAMPLES_ON_THE_MOVED_CLOCK_WITHIN: Duration = Duration::from_millis(1000);
+
+    #[tokio::test]
+    async fn spec_3_8_a_held_connection_is_sampled_each_time_its_handed_clock_reads_one_hearing_sample_interval_on()
+     {
+        let clock = StandingClock::standing_now();
+        let register = HeldConnections::new(clock.monotonic(), dropping_transport());
+        let this_node = bind_node_holding(SERVER_SEED, register.clone()).await;
+        let peer_node = bind_node(CLIENT_SEED).await;
+        this_node.replace_address(peer_node.endpoint().addr());
+        let (dialed, accepted) = tokio::join!(
+            this_node
+                .endpoint()
+                .connect(peer_node.endpoint().id(), GOSSIP_ALPN),
+            async {
+                let incoming = peer_node.endpoint().accept().await.unwrap();
+                incoming.accept().unwrap().await
+            }
+        );
+        let _dialed = dialed.unwrap();
+        let _accepted = accepted.unwrap();
+        let read_at_the_hold = clock.readings();
+
+        let sampled = timeout(HEARING_SAMPLES_ON_THE_MOVED_CLOCK_WITHIN, async {
+            for sample in 1..=HEARING_SAMPLES_ON_THE_MOVED_CLOCK {
+                clock.move_forward(SPEC_HEARING_SAMPLE_INTERVAL);
+                clock
+                    .read_at_least(read_at_the_hold.saturating_add(u64::from(sample)))
+                    .await;
+            }
+        })
+        .await;
+
+        assert!(
+            sampled.is_ok(),
+            "{HEARING_SAMPLES_ON_THE_MOVED_CLOCK} samples, one at each move of the clock, took longer than {HEARING_SAMPLES_ON_THE_MOVED_CLOCK_WITHIN:?}; the clock was read {} times",
+            clock.readings()
+        );
+    }
 
     #[tokio::test]
     async fn spec_3_8_a_connection_silent_just_under_three_keep_alive_intervals_is_kept_and_one_silent_for_them_is_closed()
@@ -3107,10 +3184,11 @@ pub(crate) mod tests {
 
     const HEARING_NOTED_WAIT: Duration = Duration::from_secs(5);
 
-    /// Waits until the register has noted every datagram each connection to or from the card has received, so a silence read later starts at the last of them, failing by name when it has not within the wait.
+    /// Moves the clock on one hearing sample interval at a time until the register has noted every datagram each connection to or from the card has received, so a silence read later starts at the last of them, failing by name when it has not within the wait.
     async fn wait_until_every_datagram_of_is_noted(
         register: &HeldConnections,
         card: wire::PublicKey,
+        clock: &StandingClock,
     ) {
         let noted = timeout(HEARING_NOTED_WAIT, async {
             while !register.held().get(&card).is_some_and(|of_card| {
@@ -3120,6 +3198,7 @@ pub(crate) mod tests {
                     })
                 })
             }) {
+                clock.move_forward(SPEC_HEARING_SAMPLE_INTERVAL);
                 tokio::task::yield_now().await;
             }
         })
@@ -3168,6 +3247,7 @@ pub(crate) mod tests {
         wait_until_every_datagram_of_is_noted(
             &link.server_node.held_connections(),
             card_of(CLIENT_SEED),
+            &clock,
         )
         .await;
         move_past_the_silence_of_a_gone_process(&clock);
@@ -3455,6 +3535,7 @@ pub(crate) mod tests {
         wait_until_every_datagram_of_is_noted(
             &link.server_node.held_connections(),
             card_of(CLIENT_SEED),
+            &clock,
         )
         .await;
         move_past_the_silence_of_a_gone_process(&clock);
@@ -3490,7 +3571,7 @@ pub(crate) mod tests {
         let server = link.server_node.endpoint().id();
         let register = link.server_node.held_connections();
         connection_from_a_process_that_vanished(link.server_node.endpoint().addr()).await;
-        wait_until_every_datagram_of_is_noted(&register, card_of(CLIENT_SEED)).await;
+        wait_until_every_datagram_of_is_noted(&register, card_of(CLIENT_SEED), &clock).await;
         move_past_the_silence_of_a_gone_process(&clock);
         link.client
             .introduce(server, introduction_from_client())
