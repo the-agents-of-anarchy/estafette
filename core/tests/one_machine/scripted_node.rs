@@ -15,6 +15,11 @@ use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
 
+#[path = "../support/gated_endpoint.rs"]
+mod gated_endpoint;
+
+use gated_endpoint::{bind_gated_endpoint, unrecorded_connections};
+
 use crate::driven_runtime::DrivenRuntime;
 
 type Admitted = Arc<Mutex<BTreeSet<EndpointId>>>;
@@ -78,24 +83,14 @@ impl ScriptedNode {
     ) -> Self {
         let driven = DrivenRuntime::start();
         let runtime = driven.handle().clone();
-        let endpoint = runtime
-            .block_on(NodeEndpoint::bind(
-                key,
-                gate_key,
-                Vec::<RelayUrl>::new(),
-                |nonce| *nonce = SecretKey::generate().to_bytes(),
-                report_gate_closing,
-                estafette::net::direct::HeldConnections::new(
-                    std::sync::Arc::new(estafette::net::direct::RuntimeClock),
-                    estafette::net::endpoint::TransportRecord::new(
-                        std::sync::Arc::new(|_event| {}),
-                        estafette::trace::LocationSalt::from_random_bytes(
-                            [0; estafette::trace::LOCATION_SALT_BYTES],
-                        ),
-                    ),
-                ),
-            ))
-            .unwrap();
+        let endpoint = bind_gated_endpoint(
+            &runtime,
+            key,
+            gate_key,
+            Vec::<RelayUrl>::new(),
+            report_gate_closing,
+            unrecorded_connections(),
+        );
         let admitted = Admitted::default();
         let events = Arc::new(watch::Sender::new(Vec::new()));
         let _inside_runtime = runtime.enter();
