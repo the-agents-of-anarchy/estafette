@@ -2433,8 +2433,6 @@ mod tests {
     /// The longest the host takes to record its counters once its handed clock reads them due, which the runtime's timer would never reach on a clock an hour ahead.
     const SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
     const STATE_COUNTERS: &str = "state.counters";
-    /// The host's readings of its clock by its first snapshot's schedule: the join's start and the schedule itself.
-    const READINGS_BY_THE_FIRST_SNAPSHOT_SCHEDULE: u64 = 2;
 
     #[tokio::test]
     async fn observability_decisions_9_and_13_the_host_records_its_counters_once_its_handed_clock_reads_60_s_past_its_join()
@@ -2446,6 +2444,10 @@ mod tests {
         let (stop, stopped) = stopped_on_signal();
         let (record, mut recorded) = recorded_events();
         let clock = crate::net::direct::tests::StandingClock::standing_an_hour_ahead();
+        let first_snapshot_due = clock
+            .now()
+            .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
+            .unwrap();
         let plan = Plan {
             stopped,
             report: record,
@@ -2456,7 +2458,7 @@ mod tests {
         let ((_printed, outcome), snapshot) =
             tokio::join!(run_planned(&scratch, plan, &seen), async {
                 clock
-                    .read_at_least(READINGS_BY_THE_FIRST_SNAPSHOT_SCHEDULE)
+                    .asked_to_wake("the host's first counters snapshot", first_snapshot_due)
                     .await;
                 clock.move_forward(SPEC_STATE_SNAPSHOT_INTERVAL);
                 let snapshot = next_recorded_meeting(
