@@ -354,7 +354,6 @@ impl PresenceLoop {
             self.endpoint.endpoint(),
             &self.gossip,
             &*self.report,
-            self.monotonic.now(),
         );
         self.own_addresses = own_address_changes(self.endpoint.endpoint());
         self.relay_statuses = home_relay_changes(self.endpoint.endpoint());

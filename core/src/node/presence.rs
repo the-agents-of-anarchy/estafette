@@ -1549,12 +1549,12 @@ impl PresenceLoop {
 
     /// Records the socket and gossip counters at the moment, and takes the next snapshot the state snapshot interval later.
     pub(super) fn record_state(&mut self, moment: SnapshotMoment) {
-        self.snapshot_due = record_counters(
+        self.snapshot_due = snapshot_due_after(self.monotonic.now());
+        record_counters(
             moment,
             self.endpoint.endpoint(),
             &self.gossip,
             &*self.report,
-            self.monotonic.now(),
         );
     }
 
@@ -1641,17 +1641,15 @@ pub fn snapshot_due_after(now: Instant) -> Instant {
     now.checked_add(STATE_SNAPSHOT_INTERVAL).unwrap_or(now)
 }
 
-/// Records the counters iroh keeps for the endpoint's socket and for the gossip at the moment, read at `now`, and returns when the next snapshot is due.
+/// Records the counters iroh keeps for the endpoint's socket and for the gossip at the moment.
 pub fn record_counters(
     moment: SnapshotMoment,
     endpoint: &iroh::Endpoint,
     gossip: &Gossip,
     report: &(dyn Fn(Event) + Send + Sync),
-    now: Instant,
-) -> Instant {
+) {
     let snapshot = CounterSnapshot::read(moment, &endpoint.metrics().socket, gossip.metrics());
     report(crate::event::StateEvent::Counters(snapshot).into());
-    snapshot_due_after(now)
 }
 
 /// When the observer wait that starts at `joined` is over.

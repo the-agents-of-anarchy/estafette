@@ -801,12 +801,12 @@ impl BootstrapNode {
 
     /// Records the socket and gossip counters at an interval, so the events file is written at least that often while the host serves.
     fn record_counters(&mut self) {
-        self.snapshot_due = record_counters(
+        self.snapshot_due = snapshot_due_after(self.monotonic.now());
+        record_counters(
             SnapshotMoment::Interval,
             self.endpoint.endpoint(),
             &self.gossip,
             &*self.report,
-            self.monotonic.now(),
         );
     }
 

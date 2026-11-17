@@ -39,7 +39,7 @@ use crate::node::{
     acknowledgement_of, broadcast_recorded, known_host_addresses, next_recorded_gossip_event,
     observer_wait_over_at, presence_request, record_counters, replace_lookup_entry,
     seed_lookup_with_known_hosts, send_in_background, serve, sleep_until_deadline,
-    taken_without_a_row_record, wire_addr,
+    snapshot_due_after, taken_without_a_row_record, wire_addr,
 };
 use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC};
 use crate::peers::{Effect, Peer, PeerTable};
@@ -613,12 +613,12 @@ async fn start_observation(
     .await;
     match topic {
         Ok(topic) => {
-            let snapshot_due = record_counters(
+            let snapshot_due = snapshot_due_after(effects.monotonic.now());
+            record_counters(
                 SnapshotMoment::Start,
                 endpoint.endpoint(),
                 &gossip,
                 &*effects.report,
-                effects.monotonic.now(),
             );
             Ok(Observation {
                 client: Arc::new(DirectClient::new(
@@ -830,12 +830,12 @@ impl Observation {
 
     /// Records the socket and gossip counters at an interval, so the events file is written at least that often while the observer runs.
     fn record_counters(&mut self) {
-        self.snapshot_due = record_counters(
+        self.snapshot_due = snapshot_due_after(self.monotonic.now());
+        record_counters(
             SnapshotMoment::Interval,
             self.endpoint.endpoint(),
             &self.gossip,
             &*self.report,
-            self.monotonic.now(),
         );
     }
 
