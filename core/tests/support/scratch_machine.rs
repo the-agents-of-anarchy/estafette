@@ -662,6 +662,21 @@ fn keep_data_file(
     )
 }
 
+/// Rewrites each file beneath the directory that holds an invitation or a token with each replaced by the redaction marker and a note beside it naming the file, every other file keeping its bytes, and answers each failure.
+fn redact_files_beneath(directory: &Path, invitation_and_tokens: &[String]) -> Vec<io::Error> {
+    files_beneath_for_keeping(directory)
+        .into_iter()
+        .filter_map(|listed| {
+            listed
+                .and_then(|file| {
+                    keep_data_file(&file, &file, invitation_and_tokens)
+                        .map_err(|failure| naming(&file, &failure))
+                })
+                .err()
+        })
+        .collect()
+}
+
 /// Every file beneath the directory at any depth, or the failure to read a directory or its entry, naming that directory; nothing when the directory does not exist.
 fn files_beneath_for_keeping(directory: &Path) -> Vec<io::Result<PathBuf>> {
     let entries = match fs::read_dir(directory) {
