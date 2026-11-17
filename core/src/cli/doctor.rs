@@ -412,7 +412,6 @@ mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use iroh::{EndpointAddr, SecretKey};
-    use tokio::time::Instant;
 
     use super::*;
     use crate::cli::observer::ObserverEffects;
@@ -422,6 +421,7 @@ mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
+    use crate::net::direct::RuntimeClock;
     use crate::net::endpoint::NodeEndpoint;
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::sidecar::{SEED_BYTES, create_card};
@@ -616,7 +616,7 @@ mod tests {
                 .unwrap(),
                 NodeEffects {
                     clock: Arc::new(wall_clock_ms),
-                    monotonic: Arc::new(Instant::now),
+                    monotonic: Arc::new(RuntimeClock),
                     fill_probe_nonce: Arc::new(|nonce: &mut Nonce| *nonce = PROBE_NONCE),
                     report: Arc::new(|_event: Event| {}),
                     inbox,
@@ -637,7 +637,7 @@ mod tests {
                 .collect();
             let effects = ObserverEffects {
                 clock: Arc::new(wall_clock_ms),
-                monotonic: Arc::new(Instant::now),
+                monotonic: Arc::new(RuntimeClock),
                 fill_seed: Arc::new(|seed| *seed = [OBSERVER_SEED; SEED_BYTES]),
                 bind_endpoint: Box::new(move |key, gate_key, relays, monotonic| {
                     Box::pin(async move {

@@ -33,7 +33,7 @@ use estafette::event::{
 };
 use estafette::inbox::socket::{InboxSocket, InboxSocketError, OperatingSystemProcessTable};
 use estafette::mcp::{self, ServedNetwork, ServerEffects};
-use estafette::net::direct::{HeldConnections, MonotonicClock};
+use estafette::net::direct::{HeldConnections, MonotonicClock, RuntimeClock};
 use estafette::net::endpoint::{GateFailure, NodeEndpoint, TransportRecord};
 use estafette::node::{
     Exit, Network, NodeEffects, NodeError, RuntimeShutdown, ShutdownSignal, relay_answers,
@@ -565,7 +565,7 @@ fn server_effects(
     ServerEffects {
         node: NodeEffects {
             clock: Arc::new(recording_wall_clock(Arc::clone(&record))),
-            monotonic: Arc::new(tokio::time::Instant::now),
+            monotonic: Arc::new(RuntimeClock),
             fill_probe_nonce: Arc::new(|nonce: &mut Nonce| fill_with_secure_random_bytes(nonce)),
             report: Arc::clone(&record),
             inbox,
@@ -783,7 +783,7 @@ fn observer_effects(
     let accept_record = Arc::clone(&record);
     let effects = ObserverEffects {
         clock: Arc::new(clock),
-        monotonic: Arc::new(Instant::now),
+        monotonic: Arc::new(RuntimeClock),
         fill_seed: Arc::new(|seed: &mut [u8; RANDOM_BYTES_PER_SECRET_KEY]| {
             fill_with_secure_random_bytes(seed);
         }),
@@ -907,7 +907,7 @@ fn infrastructure_effects(
                 trace.clone(),
             )
         }),
-        monotonic: Arc::new(Instant::now),
+        monotonic: Arc::new(RuntimeClock),
         start_relay: Box::new(|site| Box::pin(infra::start_embedded_relay(site))),
         stopped,
         report: record,

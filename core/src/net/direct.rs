@@ -94,6 +94,19 @@ impl<Reading: Fn() -> Instant + Send + Sync> MonotonicTime for Reading {
     }
 }
 
+/// The runtime's own clock, read with the runtime's `Instant::now` and waited on with the runtime's timer.
+pub struct RuntimeClock;
+
+impl MonotonicTime for RuntimeClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+
+    fn reached(&self, deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(sleep_until(deadline))
+    }
+}
+
 /// The monotonic clock the composition root hands down.
 pub type MonotonicClock = Arc<dyn MonotonicTime>;
 
@@ -1380,7 +1393,7 @@ pub(crate) mod tests {
     async fn rig() -> Rig {
         rig_over(
             RecordingHost::with_card(card_of(SERVER_SEED)),
-            Arc::new(tokio::time::Instant::now),
+            Arc::new(RuntimeClock),
         )
         .await
     }
@@ -1736,7 +1749,7 @@ pub(crate) mod tests {
                 detaches_on_delivery: true,
                 ..RecordingHost::with_card(card_of(SERVER_SEED))
             },
-            Arc::new(tokio::time::Instant::now),
+            Arc::new(RuntimeClock),
         )
         .await;
         rig.host.attached.store(true, Ordering::SeqCst);
@@ -2097,7 +2110,7 @@ pub(crate) mod tests {
 
     /// A register on the runtime's monotonic clock whose record drops every event.
     pub fn unrecorded_register() -> HeldConnections {
-        HeldConnections::new(Arc::new(tokio::time::Instant::now), dropping_transport())
+        HeldConnections::new(Arc::new(RuntimeClock), dropping_transport())
     }
 
     /// A monotonic clock standing at the instant the test last moved it to, waking each waiter once it reads that waiter's deadline.
@@ -2340,7 +2353,7 @@ pub(crate) mod tests {
         let peer_node = bind_node_holding(
             CLIENT_SEED,
             HeldConnections::new(
-                Arc::new(tokio::time::Instant::now),
+                Arc::new(RuntimeClock),
                 super::super::endpoint::TransportRecord::new(peer_record, test_salt()),
             ),
         )
@@ -2428,7 +2441,7 @@ pub(crate) mod tests {
         let this_node = bind_node_holding(
             SERVER_SEED,
             HeldConnections::new(
-                Arc::new(tokio::time::Instant::now),
+                Arc::new(RuntimeClock),
                 super::super::endpoint::TransportRecord::new(this_record, test_salt()),
             ),
         )
@@ -2618,7 +2631,7 @@ pub(crate) mod tests {
             |nonce: &mut [u8; KEY_LEN]| *nonce = [0; KEY_LEN],
             |_reason| {},
             HeldConnections::new(
-                Arc::new(tokio::time::Instant::now),
+                Arc::new(RuntimeClock),
                 super::super::endpoint::TransportRecord::new(this_record, test_salt()),
             ),
         )
@@ -2806,7 +2819,7 @@ pub(crate) mod tests {
      {
         let (client_record, mut sent) = recorded_events();
         let client_register = HeldConnections::new(
-            Arc::new(tokio::time::Instant::now),
+            Arc::new(RuntimeClock),
             super::super::endpoint::TransportRecord::new(client_record, test_salt()),
         );
         let client_node = bind_node_holding(CLIENT_SEED, client_register.clone()).await;
@@ -3556,11 +3569,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_14_a_node_without_a_card_refuses_every_message_and_answers_probe_and_introduce()
     {
-        let Rig { host, link } = rig_over(
-            RecordingHost::without_card(),
-            Arc::new(tokio::time::Instant::now),
-        )
-        .await;
+        let Rig { host, link } =
+            rig_over(RecordingHost::without_card(), Arc::new(RuntimeClock)).await;
         let server = link.server_node.endpoint().id();
 
         let to_server_id = link

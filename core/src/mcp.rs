@@ -1022,6 +1022,7 @@ mod tests {
     use crate::event::Event;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
+    use crate::net::direct::RuntimeClock;
     use crate::node::RuntimeShutdown;
     use crate::sidecar;
     use crate::test_waits::{RecordedEvent, found_within, recorded_events};
@@ -1342,7 +1343,7 @@ mod tests {
         let effects = ServerEffects {
             node: NodeEffects {
                 clock: Arc::new(wall_clock_ms),
-                monotonic: Arc::new(tokio::time::Instant::now),
+                monotonic: Arc::new(RuntimeClock),
                 fill_probe_nonce: Arc::new(move |nonce: &mut crate::wire::Nonce| {
                     nonce.fill(message_id_byte);
                 }),

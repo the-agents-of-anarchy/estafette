@@ -405,7 +405,7 @@ mod tests {
     use crate::event::{Event, RunRecord, TransportEvent};
     use crate::net::direct::tests::{StandingClock, test_salt};
     use crate::net::direct::{
-        ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock,
+        ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock, RuntimeClock,
     };
     use crate::net::endpoint::{
         DIRECT_ALPN, LocationHash, NodeEndpoint, RebindCause, TransportRecord,
@@ -948,7 +948,7 @@ mod tests {
                 .with_monotonic(clock.monotonic())
                 .with_report(Arc::clone(&record))
                 .with_register(crate::net::direct::HeldConnections::new(
-                    Arc::new(Instant::now),
+                    Arc::new(RuntimeClock),
                     TransportRecord::new(record, test_salt()),
                 )),
         )
@@ -1022,7 +1022,7 @@ mod tests {
                 .with_relay_probe(answering_only(KEPT_RELAY))
                 .with_report(Arc::clone(&record))
                 .with_register(crate::net::direct::HeldConnections::new(
-                    Arc::new(Instant::now),
+                    Arc::new(RuntimeClock),
                     TransportRecord::new(record, test_salt()),
                 )),
         )

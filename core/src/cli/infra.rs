@@ -919,8 +919,8 @@ mod tests {
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::invite::render_host_line;
     use crate::keys::{render_public_key, render_secret_key};
-    use crate::net::direct::MonotonicClock;
     use crate::net::direct::{ClientTimeouts, DirectClient};
+    use crate::net::direct::{MonotonicClock, RuntimeClock};
     use crate::net::endpoint::NodeEndpoint;
     use crate::node::{Identity, Node, NodeEffects};
     use crate::test_waits::{RecordedEvent, found_within, next_recorded_meeting, recorded_events};
@@ -1126,7 +1126,7 @@ mod tests {
                 relay_shutdown_failure: None,
                 transport: crate::net::direct::tests::dropping_transport(),
                 report: Arc::new(|_record| {}),
-                monotonic: Arc::new(Instant::now),
+                monotonic: Arc::new(RuntimeClock),
             }
         }
 
@@ -2104,7 +2104,7 @@ mod tests {
             Network::new(config, scratch.root.join(MEMBER_CONFIG_FILE)).unwrap(),
             NodeEffects {
                 clock: Arc::new(|| FROZEN_CLOCK_MS),
-                monotonic: Arc::new(Instant::now),
+                monotonic: Arc::new(RuntimeClock),
                 fill_probe_nonce: Arc::new(|nonce: &mut wire::Nonce| *nonce = PROBE_NONCE),
                 report: Arc::new(|_record| {}),
                 inbox: Arc::new(inbox),

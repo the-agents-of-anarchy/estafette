@@ -1049,7 +1049,7 @@ mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::ProcessTable;
     use crate::keys::render_public_key;
-    use crate::net::direct::DirectServer;
+    use crate::net::direct::{DirectServer, RuntimeClock};
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
     use crate::stream_items::StreamExt;
@@ -1289,7 +1289,7 @@ mod tests {
             let directories = Arc::clone(&self.directories);
             let effects = ObserverEffects {
                 clock: Arc::new(wall_clock_ms),
-                monotonic: Arc::new(Instant::now),
+                monotonic: Arc::new(RuntimeClock),
                 fill_seed: Arc::new(|seed| *seed = [OBSERVER_SEED; SEED_BYTES]),
                 bind_endpoint: Box::new(move |key, gate_key, relays, monotonic| {
                     Box::pin(async move {
@@ -1391,7 +1391,7 @@ mod tests {
             .unwrap(),
             NodeEffects {
                 clock: Arc::new(wall_clock_ms),
-                monotonic: Arc::new(Instant::now),
+                monotonic: Arc::new(RuntimeClock),
                 fill_probe_nonce: Arc::new(|nonce: &mut Nonce| *nonce = PROBE_NONCE),
                 report: Arc::new(|_event: Event| {}),
                 inbox: Arc::clone(&inbox),

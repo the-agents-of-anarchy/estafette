@@ -1946,7 +1946,7 @@ pub(super) mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
-    use crate::net::direct::RequestSummary;
+    use crate::net::direct::{RequestSummary, RuntimeClock};
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
@@ -2262,12 +2262,12 @@ pub(super) mod tests {
                 host_relays: BTreeMap::new(),
                 reachable: Vec::new(),
                 clock: Arc::new(wall_clock_ms),
-                monotonic: Arc::new(Instant::now),
+                monotonic: Arc::new(RuntimeClock),
                 report: Arc::new(|_event: Event| {}),
                 inbox: None,
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
                 register: HeldConnections::new(
-                    Arc::new(Instant::now),
+                    Arc::new(RuntimeClock),
                     crate::net::direct::tests::dropping_transport(),
                 ),
             }
@@ -4227,7 +4227,7 @@ pub(super) mod tests {
                     .with_hosts(&[WITNESS_SEED])
                     .with_report(Arc::clone(&record))
                     .with_register(HeldConnections::new(
-                        Arc::new(Instant::now),
+                        Arc::new(RuntimeClock),
                         crate::net::endpoint::TransportRecord::new(
                             record,
                             crate::net::direct::tests::test_salt(),
@@ -4877,7 +4877,7 @@ pub(super) mod tests {
             move |nonce: &mut [u8; KEY_LEN]| *nonce = [FIRST_SEED; KEY_LEN],
             |_ignored| {},
             HeldConnections::new(
-                Arc::new(Instant::now),
+                Arc::new(RuntimeClock),
                 TransportRecord::new(record, test_salt()),
             ),
         )
