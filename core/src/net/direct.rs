@@ -2823,6 +2823,22 @@ pub(crate) mod tests {
         }
     }
 
+    /// The longest a send takes on the runtime's clock: the connection timeout, then the ack timeout.
+    const SEND_ANSWERED_WITHIN: Duration = CONNECT_TIMEOUT.saturating_add(ACK_TIMEOUT);
+
+    /// The acknowledgement of the message sent over the link, failing by name when none comes within the real time a send takes on the runtime's clock.
+    async fn acknowledged_within_a_send(
+        client: &DirectClient,
+        to: EndpointId,
+        message: Message,
+    ) -> Result<MessageAck, DirectError> {
+        tokio::time::timeout(SEND_ANSWERED_WITHIN, client.send_message(to, message))
+            .await
+            .unwrap_or_else(|_elapsed| {
+                panic!("no acknowledgement of the message within {SEND_ANSWERED_WITHIN:?}")
+            })
+    }
+
     #[tokio::test]
     async fn observability_decision_9_a_message_is_recorded_sent_and_served_with_its_id_connection_outcome_and_elapsed_time_on_both_ends()
      {
@@ -2834,14 +2850,12 @@ pub(crate) mod tests {
             _router: router,
         } = recording_link_over_a_slow_host().await;
 
-        client
-            .send_message(server_id, message_to(card_of(SERVER_SEED), BODY))
+        acknowledged_within_a_send(&client, server_id, message_to(card_of(SERVER_SEED), BODY))
             .await
             .unwrap();
         let first_sent = next_recorded(&mut sent, "direct.request_sent").await;
         let first_served = next_recorded(&mut served, "direct.request_served").await;
-        client
-            .send_message(server_id, message_to(card_of(CLIENT_SEED), BODY))
+        acknowledged_within_a_send(&client, server_id, message_to(card_of(CLIENT_SEED), BODY))
             .await
             .unwrap();
         let refused_sent = next_recorded(&mut sent, "direct.request_sent").await;
