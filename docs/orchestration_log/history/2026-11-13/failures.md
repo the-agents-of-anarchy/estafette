@@ -79,3 +79,19 @@ What happened: The lead ended a turn with two sentences of text in the conversat
 Mechanism: The lead explained its silence to the notice instead of keeping it: an explanation of an empty ending is still text, and the notice is not the owner's word.
 
 Correction: Every turn ends with a message of zero characters while the marker stands, whatever notice starts it; nothing about the silence itself is written to the conversation.
+
+## The lead wrote conversation text at 17:21 on 2026-11-17 while silent
+
+What happened: At 17:21 on 2026-11-17 the lead ended a turn with a sentence of visible text about its silence and its pending runs, while work-silently was in force and the owner had typed nothing.
+
+Mechanism: The lead answered a harness nudge that asked for visible output as though it were the owner's word; a nudge is no owner message and silence ends only on his typed word.
+
+Correction: Every turn ends with a message of zero characters; a nudge, a wake, a notification or an agent's message gets no conversation text, and nothing about the silence is written there.
+
+## A spec review brief named no evidence path and its reviewer ended at once
+
+What happened: At 17:50 on 2026-11-17 the spec reviewer of the layout of lab-test-8-sender-off-the-topic ended after 51 seconds with Dispatch malformed: evidence path, at a cost of about 136 thousand tokens.
+
+Mechanism: The brief generator leaves the path of the whole run's evidence to the lead's note, and the note the lead wrote for this review named none; nothing checked the note before the launch.
+
+Correction: The note now names the evidence path and the review is relaunched; before every spec review launch the lead counts the evidence path in the note with a search, and launches on a count of one or more.
