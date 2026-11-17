@@ -1140,25 +1140,33 @@ mod tests {
             "the fresh endpoint's counters follow every relay probe: {before_the_fresh_snapshot:?}"
         );
         assert!(
-            datagrams_counted_in(&at_the_fresh_bind) < datagrams_counted_in(&at_the_rebind),
+            counted_in(&at_the_fresh_bind, RECEIVED_DATAGRAMS)
+                < counted_in(&at_the_rebind, RECEIVED_DATAGRAMS),
             "the fresh endpoint counts its datagrams afresh, below the old endpoint's: {at_the_fresh_bind:?} after {at_the_rebind:?}"
+        );
+        assert!(
+            counted_in(&at_the_fresh_bind, GOSSIP_REQUESTS_TAKEN)
+                < counted_in(&at_the_rebind, GOSSIP_REQUESTS_TAKEN),
+            "the fresh gossip instance counts its requests afresh, below the old instance's: {at_the_fresh_bind:?} after {at_the_rebind:?}"
         );
         drop(scratch);
     }
 
-    /// The datagrams the endpoint whose counters the snapshot read has received.
+    /// The count the snapshot read for the counter.
     #[track_caller]
-    fn datagrams_counted_in(snapshot: &EventFields) -> u64 {
+    fn counted_in(snapshot: &EventFields, counter: &str) -> u64 {
         snapshot
             .iter()
-            .find(|(name, _count)| *name == RECEIVED_DATAGRAMS)
+            .find(|(name, _count)| *name == counter)
             .and_then(|(_name, count)| count.as_u64())
-            .unwrap_or_else(|| panic!("no {RECEIVED_DATAGRAMS} count in {snapshot:?}"))
+            .unwrap_or_else(|| panic!("no {counter} count in {snapshot:?}"))
     }
 
     const SNAPSHOT_AT_THE_REBIND_WITHIN: Duration = Duration::from_secs(10);
     const REBOUND_MOMENT: &str = "rebound";
     const RECEIVED_DATAGRAMS: &str = "socket.recv_datagrams";
+    /// The requests a gossip instance has taken, its topic joins among them, so a fresh instance counts none before its join.
+    const GOSSIP_REQUESTS_TAKEN: &str = "gossip.actor_tick_rx";
     /// The events a rebind records only once its old endpoint has closed: that endpoint's connections and paths ending, then the relay probes.
     const SHOWS_THE_OLD_ENDPOINT_CLOSED: [&str; 3] = [
         "transport.connection_closed",
