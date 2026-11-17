@@ -1159,21 +1159,20 @@ mod spec_3_15_with_one_member {
         wire::encode(&Payload::Presence(presence)).unwrap()
     }
 
-    /// The UDP ports the member holds that it did not hold before, once it has recorded the counters of the endpoint its rebind bound, requiring that record within the wait.
+    /// The UDP ports the member holds once it has recorded the counters of the endpoint its rebind bound, requiring that record within the wait, so the fresh endpoint's port is among them even where it takes a port a socket held before the rebind.
     #[track_caller]
-    fn rebound_ports(member: &Member, before: &[u16], within: Duration) -> Vec<u16> {
+    fn rebound_ports(member: &Member, within: Duration) -> Vec<u16> {
         member.wait_until(
             &format!("{COUNTERS_EVENT} of its rebind's {REBOUND_MOMENT} endpoint"),
             within,
             |lines| lines.iter().any(is_rebound_snapshot).then_some(()),
         );
-        let rebound: Vec<u16> = member
-            .ipv4_udp_ports()
-            .into_iter()
-            .filter(|port| !before.contains(port))
-            .collect();
-        assert!(!rebound.is_empty(), "no UDP port of the rebound endpoint");
-        rebound
+        let held = member.ipv4_udp_ports();
+        assert!(
+            !held.is_empty(),
+            "the member holds no IPv4 UDP port once its rebind's fresh endpoint is bound"
+        );
+        held
     }
 
     /// Whether the events line is the counters snapshot a member records once its rebind's fresh endpoint is bound.
@@ -1399,11 +1398,7 @@ mod spec_3_15_with_one_member {
             &outsider.endpoint().endpoint().addr(),
         ));
         amy.peer_within(OUTSIDER_HANDLE, PRESENCE_WAIT, |_outsider| true);
-        let rebound = rebound_ports(
-            &amy,
-            &ports_before_rebind,
-            SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK,
-        );
+        let rebound = rebound_ports(&amy, SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK);
         host.admit(loopback_address(card.id, &rebound));
         let closed_when_dialed =
             closings.wait_beyond(closed_when_dialing, SPEC_MEMBER_JOIN_WAIT_WITH_SLACK);
