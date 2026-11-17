@@ -902,8 +902,10 @@ fn io_failure(path: &Path) -> impl FnOnce(io::Error) -> Failure {
 mod tests {
     use std::ffi::OsString;
     use std::fs;
+    use std::future::Future;
     use std::net::Ipv4Addr;
     use std::os::unix::fs::PermissionsExt;
+    use std::pin::Pin;
     use std::sync::Mutex;
 
     use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
@@ -920,7 +922,7 @@ mod tests {
     use crate::invite::render_host_line;
     use crate::keys::{render_public_key, render_secret_key};
     use crate::net::direct::{ClientTimeouts, DirectClient};
-    use crate::net::direct::{MonotonicClock, RuntimeClock};
+    use crate::net::direct::{MonotonicClock, MonotonicTime, RuntimeClock};
     use crate::net::endpoint::NodeEndpoint;
     use crate::node::{Identity, Node, NodeEffects};
     use crate::test_waits::{RecordedEvent, found_within, next_recorded_meeting, recorded_events};
@@ -1801,6 +1803,20 @@ mod tests {
         );
     }
 
+    /// The runtime's clock, noting on the channel each time it is read.
+    struct RuntimeClockNotingReads(tokio::sync::watch::Sender<bool>);
+
+    impl MonotonicTime for RuntimeClockNotingReads {
+        fn now(&self) -> Instant {
+            self.0.send_replace(true);
+            RuntimeClock.now()
+        }
+
+        fn reached(&self, deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            RuntimeClock.reached(deadline)
+        }
+    }
+
     #[tokio::test]
     async fn spec_3_14_a_host_alone_past_the_join_timeout_neither_rebinds_nor_gives_up_and_announces_at_the_first_join()
      {
@@ -1812,10 +1828,7 @@ mod tests {
         let (clock_read, mut clock_reads) = tokio::sync::watch::channel(false);
         let plan = Plan {
             stopped,
-            monotonic: Arc::new(move || {
-                clock_read.send_replace(true);
-                Instant::now()
-            }),
+            monotonic: Arc::new(RuntimeClockNotingReads(clock_read)),
             ..Plan::new(HOST_SEED)
         };
 
