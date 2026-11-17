@@ -14,7 +14,7 @@ use iroh::protocol::Router;
 use iroh_gossip::Gossip;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinError;
-use tokio::time::{Instant, sleep_until};
+use tokio::time::Instant;
 
 use crate::card::{Card, CardInvalid, CardUnusable};
 use crate::cli::debug::DebugArgs;
@@ -849,7 +849,7 @@ impl Observation {
             ) => Step::Topic(event),
             Some(event) = self.from_loop.recv() => Step::Loop(event),
             () = deadline_reached(&*self.monotonic, self.wait_over) => Step::WaitOver,
-            () = sleep_until(self.snapshot_due) => Step::SnapshotDue,
+            () = self.monotonic.reached(self.snapshot_due) => Step::SnapshotDue,
             () = &mut self.interrupted => Step::Interrupted,
         }
     }
@@ -2719,6 +2719,63 @@ mod tests {
     const ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     const STATE_COUNTERS: &str = "state.counters";
+
+    #[tokio::test]
+    async fn observability_decisions_9_and_13_tail_records_its_counters_once_its_handed_clock_reads_60_s_past_its_start()
+     {
+        let lab = Lab::new("tail-counters-on-the-clock").await;
+        lab.write_network_config(&[NEIGHBOR_SEED]);
+        let clock = StandingClock::standing_an_hour_ahead();
+        let (record, mut recorded) = recorded_events();
+        let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
+        let (mut effects, operator_effects) =
+            lab.effects(Vec::new(), Box::pin(async move { drop(interrupted.await) }));
+        effects.report = record;
+        effects.monotonic = clock.monotonic();
+        let tail = ObserverCommand::Tail {
+            network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
+            debug: DebugArgs::default(),
+        };
+        let mut printed = Vec::new();
+
+        let (tail_result, at_the_interval) = tokio::join!(
+            run(
+                &tail,
+                &lab.directories,
+                &OperatingSystemFilesystem,
+                &NoPause,
+                (effects, operator_effects),
+                &mut printed,
+            ),
+            async {
+                next_recorded_meeting(
+                    &mut recorded,
+                    STATE_COUNTERS,
+                    |_fields| true,
+                    ONCE_THE_CLOCK_READS_IT_WITHIN,
+                )
+                .await;
+                clock.move_forward(SPEC_STATE_SNAPSHOT_INTERVAL);
+                let at_the_interval = next_recorded_meeting(
+                    &mut recorded,
+                    STATE_COUNTERS,
+                    |_fields| true,
+                    ONCE_THE_CLOCK_READS_IT_WITHIN,
+                )
+                .await;
+                interrupt.send(()).unwrap_or_default();
+                at_the_interval
+            }
+        );
+
+        tail_result.unwrap();
+        assert_eq!(
+            at_the_interval.first(),
+            Some(&("moment", serde_json::Value::from("interval")))
+        );
+        drop(lab);
+    }
 
     #[tokio::test]
     async fn spec_3_8_show_peers_ends_once_its_handed_clock_reads_the_observer_wait_past_its_join_timeout()
