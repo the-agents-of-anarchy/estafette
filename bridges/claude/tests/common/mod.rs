@@ -1,11 +1,13 @@
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use estafette_trace::{Program, TraceDirectory, TraceFileKind, trace_file_of};
 use serde_json::{Value, json};
 
 pub const BRIDGE: &str = env!("CARGO_BIN_EXE_estafette-bridge-claude");
@@ -24,6 +26,11 @@ const RUNTIME_DIRECTORY: &str = "runtime";
 const TMP_DIRECTORY: &str = "tmp";
 pub const CONFIG_HOME: &str = "config";
 const DATA_HOME: &str = "data";
+const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
+const BRIDGE_ALIVE_EVENT: &str = "process.alive";
+const EVENT_KEY: &str = "event";
+const WALL_MS_KEY: &str = "wall_ms";
+const RUN_NAME_SEPARATOR: char = '-';
 const SETTINGS_FILE: &str = "settings.json";
 const MESSAGING_SOCKET_FILE: &str = "messaging.sock";
 const BINARY_NOT_BUILT: &str = "build it first: cargo build -p estafette (cargo test at the workspace root builds it through the integration tests of core)";
@@ -77,13 +84,23 @@ impl Fixture {
         command
             .env_clear()
             .env("XDG_CONFIG_HOME", self.root.join(CONFIG_HOME))
-            .env("XDG_DATA_HOME", self.data_home())
+            .env(DATA_HOME_VARIABLE, self.data_home())
             .env("XDG_RUNTIME_DIR", self.root.join(RUNTIME_DIRECTORY));
         command
     }
 
     pub fn data_home(&self) -> PathBuf {
         self.root.join(DATA_HOME)
+    }
+
+    /// The trace directory every program the fixture starts writes its runs under.
+    pub fn traces_directory(&self) -> io::Result<PathBuf> {
+        let data_home = self.data_home();
+        TraceDirectory::resolve(&|name: &str| {
+            (name == DATA_HOME_VARIABLE).then(|| data_home.clone().into_os_string())
+        })
+        .map(|directory| directory.path())
+        .map_err(io::Error::other)
     }
 
     pub fn temporary_directory(&self) -> PathBuf {
@@ -97,7 +114,7 @@ impl Fixture {
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.root.join(HOME_DIRECTORY))
             .env("XDG_CONFIG_HOME", self.root.join(CONFIG_HOME))
-            .env("XDG_DATA_HOME", self.data_home())
+            .env(DATA_HOME_VARIABLE, self.data_home())
             .env("TMPDIR", self.temporary_directory())
             .env("XDG_RUNTIME_DIR", self.root.join(RUNTIME_DIRECTORY))
             .env("CLAUDE_CODE_MESSAGING_SOCKET", &self.messaging_socket)
@@ -178,6 +195,44 @@ impl Drop for Spawned {
         drop(self.0.kill());
         drop(self.0.wait());
     }
+}
+
+/// Whether the events file of a bridge run in the trace directory holds an alive line stamped on the wall clock at or after `window_ends`.
+pub fn bridge_alive_line_stamped_from(traces: &Path, window_ends: SystemTime) -> io::Result<bool> {
+    for entry in fs::read_dir(traces)? {
+        let path = entry?.path();
+        if is_bridge_events_file(&path)
+            && holds_alive_line_stamped_from(&fs::read(&path)?, window_ends)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Whether the path names the events file of a bridge run, or the file it rolled over into.
+fn is_bridge_events_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .and_then(trace_file_of)
+        .is_some_and(|(run_name, kind)| {
+            kind == TraceFileKind::Events
+                && run_name.rsplit(RUN_NAME_SEPARATOR).next() == Some(Program::Bridge.name())
+        })
+}
+
+/// Whether the events file's bytes hold an alive line stamped on the wall clock at or after `window_ends`, passing over the zeros a live file is sized ahead with.
+fn holds_alive_line_stamped_from(events: &[u8], window_ends: SystemTime) -> bool {
+    String::from_utf8_lossy(events)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|line| line.get(EVENT_KEY) == Some(&Value::from(BRIDGE_ALIVE_EVENT)))
+        .filter_map(|line| line.get(WALL_MS_KEY).and_then(Value::as_u64))
+        .any(|wall_ms| {
+            UNIX_EPOCH
+                .checked_add(Duration::from_millis(wall_ms))
+                .is_some_and(|stamped| stamped >= window_ends)
+        })
 }
 
 fn forward_json_lines(source: impl std::io::Read + Send + 'static) -> Receiver<MemberLine> {

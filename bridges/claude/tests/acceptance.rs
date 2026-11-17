@@ -5,12 +5,12 @@ use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use common::Fixture;
+use common::{Fixture, bridge_alive_line_stamped_from};
 use estafette_bridge_claude::discover::Pid;
 use estafette_bridge_claude::doctor::dropped_frames_path;
-use estafette_trace::TraceDirectory;
+use estafette_trace::{TraceDirectory, events_trace_file_name};
 
 mod common;
 
@@ -81,10 +81,6 @@ fn run_bridge(fixture: &Fixture, words: &[&str]) -> io::Result<Output> {
     fixture.bridge().args(words).output()
 }
 
-fn traces_directory(fixture: &Fixture) -> PathBuf {
-    fixture.data_home().join("estafette").join("traces")
-}
-
 fn mode_of(path: &Path) -> io::Result<u32> {
     Ok(fs::metadata(path)?.permissions().mode() & PERMISSION_BITS)
 }
@@ -98,6 +94,7 @@ fn observability_decision_3_the_binary_names_its_events_file_first_on_standard_e
 
     let errors = String::from_utf8(output.stderr).unwrap();
     assert_eq!(output.status.code(), Some(0), "{errors}");
+    let traces = fixture.traces_directory().unwrap();
     let first_line = errors.lines().next().unwrap();
     let events_file = PathBuf::from(
         first_line
@@ -105,20 +102,14 @@ fn observability_decision_3_the_binary_names_its_events_file_first_on_standard_e
             .and_then(|rest| rest.strip_suffix(" (safe to post)"))
             .unwrap_or_else(|| panic!("first line names no events file: {first_line}")),
     );
-    assert_eq!(
-        events_file.parent(),
-        Some(traces_directory(&fixture).as_path())
-    );
+    assert_eq!(events_file.parent(), Some(traces.as_path()));
     let file_name = events_file.file_name().unwrap().to_str().unwrap();
     let run_hex = file_name
         .strip_suffix("-bridge.events.jsonl")
         .and_then(|run_name| run_name.split('-').nth(1))
         .unwrap_or_else(|| panic!("not a bridge events file: {file_name}"));
     assert_eq!(run_hex.len(), SPEC_RUN_HEX_CHARS, "{file_name}");
-    assert_eq!(
-        mode_of(&traces_directory(&fixture)).unwrap(),
-        PRIVATE_DIRECTORY_MODE
-    );
+    assert_eq!(mode_of(&traces).unwrap(), PRIVATE_DIRECTORY_MODE);
     assert_eq!(mode_of(&events_file).unwrap(), PRIVATE_FILE_MODE);
     let events = fs::read_to_string(&events_file).unwrap();
     let first_event: serde_json::Value =
@@ -171,4 +162,61 @@ fn spec_3_12_the_binary_refuses_a_malformed_command_line_with_the_usage_naming_e
         "usage: estafette-bridge-claude run <harness-pid> [--debug | --no-debug] | run --help | doctor\n"
     );
     assert!(!fixture.data_home().exists());
+}
+
+const WINDOW_ENDS_WALL_MS: u64 = 1_763_400_000_123;
+const BRIDGE_RUN: &str = "20251117T172000Z-a1b2c3d4e5f60718-bridge";
+const MEMBER_RUN: &str = "20251117T172000Z-0718a1b2c3d4e5f6-estafette";
+const SIZED_AHEAD_ZEROS: [u8; 64] = [0; 64];
+const LATER_BY_MS: u64 = 1000;
+
+fn events_line(event: &str, wall_ms: u64) -> String {
+    format!(
+        "{{\"v\":1,\"run\":\"a1b2c3d4e5f60718\",\"n\":0,\"mono_ms\":0,\"wall_ms\":{wall_ms},\"event\":\"{event}\"}}\n"
+    )
+}
+
+fn write_events_file(path: &Path, lines: &[String]) -> io::Result<()> {
+    fs::write(
+        path,
+        [lines.concat().as_bytes(), &SIZED_AHEAD_ZEROS].concat(),
+    )
+}
+
+#[test]
+fn observability_decision_13_the_bridge_lab_window_ends_on_a_bridge_alive_line_stamped_at_or_after_its_end_and_on_no_other_line()
+ {
+    let fixture = Fixture::new().unwrap();
+    let traces = fixture.traces_directory().unwrap();
+    fs::create_dir_all(&traces).unwrap();
+    let window_ends = UNIX_EPOCH
+        .checked_add(Duration::from_millis(WINDOW_ENDS_WALL_MS))
+        .unwrap();
+    let after_the_end = WINDOW_ENDS_WALL_MS.checked_add(LATER_BY_MS).unwrap();
+    let before_the_end = WINDOW_ENDS_WALL_MS.checked_sub(1).unwrap();
+    let bridge_events = traces.join(events_trace_file_name(BRIDGE_RUN));
+    let lines_before_the_end = [
+        events_line("process.started", before_the_end),
+        events_line("process.alive", before_the_end),
+        events_line("notice.written", after_the_end),
+    ];
+    write_events_file(&bridge_events, &lines_before_the_end).unwrap();
+    write_events_file(
+        &traces.join(events_trace_file_name(MEMBER_RUN)),
+        &[events_line("process.alive", after_the_end)],
+    )
+    .unwrap();
+
+    assert!(!bridge_alive_line_stamped_from(&traces, window_ends).unwrap());
+
+    write_events_file(
+        &bridge_events,
+        &[
+            lines_before_the_end.concat(),
+            events_line("process.alive", WINDOW_ENDS_WALL_MS),
+        ],
+    )
+    .unwrap();
+
+    assert!(bridge_alive_line_stamped_from(&traces, window_ends).unwrap());
 }

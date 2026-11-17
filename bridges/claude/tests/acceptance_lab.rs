@@ -4,9 +4,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
-use common::{CONFIG_HOME, Fixture};
+use common::{CONFIG_HOME, Fixture, bridge_alive_line_stamped_from};
 use estafette_bridge_claude::permission_class::PermissionClass;
 use serde_json::Value;
 
@@ -57,6 +57,16 @@ const TEST_SEND_DELIVERED_WITHIN: Duration = RETRY_PAUSE
     .saturating_mul(TEST_SEND_ATTEMPTS);
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 const NO_SECOND_DELIVERY_WINDOW: Duration = Duration::from_secs(5);
+/// The most a live process waits between two lines of its events file, which a serving bridge meets with its alive line (spec/observability.md decision 13).
+const SPEC_LIVE_PROCESS_WRITES_AT_LEAST_EVERY: Duration = Duration::from_secs(60);
+/// How late past its due time the bridge's alive line may reach its events file on a loaded machine.
+const ALIVE_LINE_LATENESS: Duration = Duration::from_secs(5);
+/// How long the window waits for an alive line stamped at its end: the window, then at most one period and the lateness until the next alive line.
+const NO_SECOND_DELIVERY_WINDOW_ENDS_WITHIN: Duration = NO_SECOND_DELIVERY_WINDOW
+    .saturating_add(SPEC_LIVE_PROCESS_WRITES_AT_LEAST_EVERY)
+    .saturating_add(ALIVE_LINE_LATENESS);
+const EITHER_MARKER_LOGGED: &str = "the receiving session logged a delivery or a hold";
+const NO_SECOND_DELIVERY_WINDOW_ENDED: &str = "the bridge's events file holds an alive line stamped at least the window after the first marker";
 
 fn required_variable(name: &str) -> Result<String, String> {
     std::env::var(name).map_err(|source| {
@@ -122,20 +132,28 @@ fn lines_with_marker(text: &str, marker: &str) -> usize {
     text.lines().filter(|line| line.contains(marker)).count()
 }
 
-fn wait_for_either_marker(debug_log: &Path, offset: u64) -> io::Result<()> {
+fn either_marker_logged(debug_log: &Path, offset: u64) -> io::Result<bool> {
+    let appended = text_appended_since(debug_log, offset)?;
+    Ok(lines_with_marker(&appended, DELIVERED_LINE_MARKER) > 0
+        || lines_with_marker(&appended, HELD_LINE_MARKER) > 0)
+}
+
+/// Waits until the condition holds, failing with its name once the bound passes without it.
+fn wait_until(
+    condition: &str,
+    bound: Duration,
+    mut holds: impl FnMut() -> io::Result<bool>,
+) -> io::Result<()> {
     let started = Instant::now();
-    while started.elapsed() < DELIVERY_TIMEOUT {
-        let appended = text_appended_since(debug_log, offset)?;
-        if lines_with_marker(&appended, DELIVERED_LINE_MARKER) > 0
-            || lines_with_marker(&appended, HELD_LINE_MARKER) > 0
-        {
+    while started.elapsed() < bound {
+        if holds()? {
             return Ok(());
         }
         thread::yield_now();
     }
     Err(io::Error::new(
         io::ErrorKind::TimedOut,
-        "the receiving session logged neither a delivery nor a hold",
+        format!("not within {bound:?}: {condition}"),
     ))
 }
 
@@ -280,8 +298,18 @@ fn deliver_through_bridge(body: &str, stored_body: &str) -> Outcome<Scenario> {
         return Err(format!("the test send was not delivered: {result_line}").into());
     }
 
-    wait_for_either_marker(&session.debug_log, debug_log_offset)?;
-    thread::sleep(NO_SECOND_DELIVERY_WINDOW);
+    wait_until(EITHER_MARKER_LOGGED, DELIVERY_TIMEOUT, || {
+        either_marker_logged(&session.debug_log, debug_log_offset)
+    })?;
+    let window_ends = SystemTime::now()
+        .checked_add(NO_SECOND_DELIVERY_WINDOW)
+        .ok_or("the window ends past the wall clock's range")?;
+    let traces = fixture.traces_directory()?;
+    wait_until(
+        NO_SECOND_DELIVERY_WINDOW_ENDED,
+        NO_SECOND_DELIVERY_WINDOW_ENDS_WITHIN,
+        || bridge_alive_line_stamped_from(&traces, window_ends),
+    )?;
     let transcript = text_appended_since(&session.transcript, transcript_offset)?;
     Ok(Scenario {
         debug_log: text_appended_since(&session.debug_log, debug_log_offset)?,
@@ -300,13 +328,13 @@ fn assert_one_peer_message_arrived_without_a_hold(scenario: &Scenario) {
     assert_eq!(
         lines_with_marker(debug_log, DELIVERED_LINE_MARKER),
         1,
-        "the receiving session logged other than one delivery by the end of the {NO_SECOND_DELIVERY_WINDOW:?} after the first: {debug_log}"
+        "the receiving session logged other than one delivery by the end of at least the {NO_SECOND_DELIVERY_WINDOW:?} after the first: {debug_log}"
     );
     let records = &scenario.records;
     assert_eq!(
         records.len(),
         1,
-        "the transcript holds other than one peer message by the end of the {NO_SECOND_DELIVERY_WINDOW:?} after the first delivery: {records:?}"
+        "the transcript holds other than one peer message by the end of at least the {NO_SECOND_DELIVERY_WINDOW:?} after the first delivery: {records:?}"
     );
     for record in records {
         assert_eq!(
