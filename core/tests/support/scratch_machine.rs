@@ -788,6 +788,11 @@ mod tests {
     const PLANTED_INVITATION: &str = "estafette-invite-1:plantedinvitation0123456789";
     /// A token a test plants as a card's secret key and in what a machine keeps, no real one.
     const PLANTED_TOKEN: &str = "plantedtoken0123456789abcdef";
+    /// A network secret a test plants in a machine's network configuration and in what it keeps, no real one.
+    const PLANTED_NETWORK_SECRET: &str =
+        "5ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2e75ec2";
+    /// The owner key a test's planted network configuration names, no real one.
+    const PLANTED_OWNER: &str = "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e";
     /// The shell a test runs a stand-in's command line with, and the flag that hands it the line.
     const SHELL: &str = "sh";
     const SHELL_COMMAND_FLAG: &str = "-c";
@@ -1146,7 +1151,18 @@ mod tests {
             traces.join("20261117T080000Z-1111111111111111-estafette.events.jsonl");
         let naming_the_token = traces.join("20261117T080000Z-1111111111111111-estafette.raw.jsonl");
         let naming_neither = traces.join("20261117T080001Z-2222222222222222-estafette.raw.jsonl");
+        let naming_the_network_secret =
+            traces.join("20261117T080002Z-3333333333333333-estafette.events.jsonl");
         let neither_bytes = [b'n', b'o', 0xff, 0x00, b'\n'];
+        let network_config_file = machine.directories().network_config_file(NETWORK).unwrap();
+        fs::create_dir_all(network_config_file.parent().unwrap()).unwrap();
+        NetworkConfig {
+            secret: PLANTED_NETWORK_SECRET.to_owned(),
+            owner: PLANTED_OWNER.to_owned(),
+            hosts: Vec::new(),
+        }
+        .rewrite(&network_config_file, 0)
+        .unwrap();
         fs::create_dir_all(&traces).unwrap();
         fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
         fs::write(&sidecar, format!("{PLANTED_TOKEN}\n")).unwrap();
@@ -1157,6 +1173,11 @@ mod tests {
         .unwrap();
         fs::write(&naming_the_token, format!("key {PLANTED_TOKEN} seen\n")).unwrap();
         fs::write(&naming_neither, neither_bytes).unwrap();
+        fs::write(
+            &naming_the_network_secret,
+            format!("network {PLANTED_NETWORK_SECRET} joined\n"),
+        )
+        .unwrap();
         let kept_data = kept_in.join(machine.name()).join(KEPT_DATA_DIRECTORY);
         let kept_of = |file: &Path| kept_data.join(file.strip_prefix(&data).unwrap());
         let note_of = |file: &Path| {
@@ -1176,6 +1197,8 @@ mod tests {
                 kept_of(&naming_the_token),
                 note_of(&naming_the_token),
                 kept_of(&naming_neither),
+                kept_of(&naming_the_network_secret),
+                note_of(&naming_the_network_secret),
             ])
         );
         assert_eq!(
@@ -1186,8 +1209,16 @@ mod tests {
             fs::read_to_string(kept_of(&naming_the_token)).unwrap(),
             format!("key {REDACTED} seen\n")
         );
+        assert_eq!(
+            fs::read_to_string(kept_of(&naming_the_network_secret)).unwrap(),
+            format!("network {REDACTED} joined\n")
+        );
         assert_eq!(fs::read(kept_of(&naming_neither)).unwrap(), neither_bytes);
-        for file in [&naming_the_invitation, &naming_the_token] {
+        for file in [
+            &naming_the_invitation,
+            &naming_the_token,
+            &naming_the_network_secret,
+        ] {
             let note = fs::read_to_string(note_of(file)).unwrap();
             let name = file.file_name().unwrap().to_string_lossy();
             assert!(note.contains(name.as_ref()), "{note}");

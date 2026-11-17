@@ -732,7 +732,7 @@ mod spec_3_15_two_members_through_the_live_host {
     use estafette::wire::{
         self, Addr, Message, MessageId, Payload, Presence, SignatureBytes, Version,
     };
-    use iroh::{EndpointAddr, EndpointId, SecretKey, TransportAddr};
+    use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
     use crate::dropped_payloads::{
@@ -759,6 +759,9 @@ mod spec_3_15_two_members_through_the_live_host {
     use crate::time_passing::wait_for_time_to_pass;
     use crate::timed_step::timed;
     use crate::trace_reader::TraceLine;
+
+    /// A relay a test's presence line prints that is no relay URL.
+    const NOT_A_RELAY_URL: &str = "not a relay url";
 
     /// Spec 3.15 test 4: a member lists a peer that stopped cleanly gone within this long.
     const SPEC_GONE_WITHIN: Duration = Duration::from_millis(1000);
@@ -971,16 +974,19 @@ mod spec_3_15_two_members_through_the_live_host {
             "handle",
             "public",
             "seq",
-            r#"{"relays":["https://relay.example/","not a relay url"],"direct":[]}"#,
+            &format!(r#"{{"relays":["https://relay.example/","{NOT_A_RELAY_URL}"],"direct":[]}}"#),
         ]
         .join(&COLUMN_SEPARATOR.to_string());
+        let refusal = NOT_A_RELAY_URL.parse::<RelayUrl>().unwrap_err();
 
         let failure = std::panic::catch_unwind(|| address_announced_by(&line, card))
             .expect_err("a presence whose relay does not parse was read");
 
         let message = failure.downcast_ref::<String>().unwrap();
         assert!(
-            message.contains("relay 1") && message.contains("\"not a relay url\""),
+            message.contains("relay 1")
+                && message.contains(&format!("{NOT_A_RELAY_URL:?}"))
+                && message.contains(&format!("does not parse: {refusal};")),
             "{message}"
         );
     }
