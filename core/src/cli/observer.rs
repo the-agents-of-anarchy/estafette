@@ -2799,7 +2799,7 @@ mod tests {
         let (shown, ()) = tokio::join!(
             answered_within(
                 ONCE_THE_CLOCK_READS_IT_WITHIN,
-                "the end of show-peers once the clock read the observer wait past its join timeout",
+                "end of show-peers once the clock read the observer wait past its join timeout",
                 run(
                     &show_peers,
                     &lab.directories,

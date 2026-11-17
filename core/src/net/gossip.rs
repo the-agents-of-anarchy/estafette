@@ -549,7 +549,7 @@ mod tests {
         clock.move_forward(JUST_UNDER);
         let at_the_timeout = answered_within(
             JOIN_TIMEOUT_SLACK,
-            "the topic's event once the handed clock read the join timeout",
+            "event of the topic once the handed clock read the join timeout",
             topic.next_event(),
         )
         .await;
