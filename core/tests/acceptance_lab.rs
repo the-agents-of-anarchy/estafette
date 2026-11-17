@@ -14,6 +14,9 @@ mod forger;
 #[path = "lab/forgeries.rs"]
 mod forgeries;
 #[cfg(test)]
+#[path = "support/gated_endpoint.rs"]
+mod gated_endpoint;
+#[cfg(test)]
 #[path = "lab/handles.rs"]
 mod handles;
 #[cfg(test)]
@@ -40,6 +43,9 @@ mod member_events;
 #[cfg(test)]
 #[path = "support/message_body.rs"]
 mod message_body;
+#[cfg(test)]
+#[path = "lab/off_topic_sender.rs"]
+mod off_topic_sender;
 #[cfg(test)]
 #[path = "support/payload_placeholders.rs"]
 mod payload_placeholders;
@@ -720,10 +726,12 @@ mod spec_3_15_two_members_through_the_live_host {
     use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
     use std::time::{Duration, Instant};
 
-    use estafette::keys::parse_secret_key;
+    use estafette::keys::{parse_secret_key, render_public_key};
     use estafette::net::endpoint::QUIC_KEEP_ALIVE_INTERVAL;
-    use estafette::wire::{self, Addr, Payload, Presence, SignatureBytes, Version};
-    use iroh::{EndpointAddr, SecretKey, TransportAddr};
+    use estafette::wire::{
+        self, Addr, Message, MessageId, Payload, Presence, SignatureBytes, Version,
+    };
+    use iroh::{EndpointAddr, EndpointId, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
     use crate::dropped_payloads::{
@@ -739,13 +747,17 @@ mod spec_3_15_two_members_through_the_live_host {
         INIT_TOOL, McpServer, PRESENCE_WAIT, SEND_TOOL, call_succeeded, gone, init_arguments,
         online, send_arguments,
     };
+    use crate::member_events::MemberEvents;
     use crate::message_body::BODY;
+    use crate::off_topic_sender::OffTopicSender;
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::{presence_signed_by, presence_signed_by_at};
     use crate::scratch_machine::Card;
     use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
+    use crate::tail::{COLUMN_SEPARATOR, PRESENCE_ADDR_COLUMN, PRESENCE_CARD_COLUMN, Tail};
     use crate::time_passing::wait_for_time_to_pass;
     use crate::timed_step::timed;
+    use crate::trace_reader::TraceLine;
 
     /// Spec 3.15 test 4: a member lists a peer that stopped cleanly gone within this long.
     const SPEC_GONE_WITHIN: Duration = Duration::from_millis(1000);
@@ -799,6 +811,19 @@ mod spec_3_15_two_members_through_the_live_host {
     const MESSAGES_IN_ALL: u64 = 5;
     /// The init tool's argument holding the description it inserts into the card's public mapping (spec 3.10).
     const DESCRIPTION_ARGUMENT: &str = "description";
+    /// The id of the Message the card off the topic sends in spec 3.15 test 8.
+    const OFF_TOPIC_MESSAGE_ID: MessageId = [8; 16];
+    /// The scratch tag of the machine whose `tail` reads the receiver's address in spec 3.15 test 8.
+    const TAIL_MACHINE_TAG: &str = "t8-tail";
+    /// The observer command that prints each gossip payload as it arrives (spec 3.13).
+    const TAIL_COMMAND: &str = "tail";
+    /// The event a member records for each gossip payload it accepts, and the fields naming the payload's kind and signer (spec/observability.md decisions 6 and 9).
+    const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
+    const KIND_FIELD: &str = "kind";
+    const PEER_FIELD: &str = "peer";
+    /// The event a member records for each inbox frame it delivers, and its field naming the frame's message id (spec/observability.md decision 9).
+    const FRAME_DELIVERED_EVENT: &str = "inbox.frame_delivered";
+    const MESSAGE_FIELD: &str = "message";
 
     /// A member on its own machine, joined to the live network with its card claimed.
     struct LabMember {
@@ -807,6 +832,13 @@ mod spec_3_15_two_members_through_the_live_host {
         handle: String,
         claim: Value,
         machine: LabMachine,
+    }
+
+    /// The `addr` of a Presence as a presence line of `tail` prints it (spec 3.7).
+    #[derive(serde::Deserialize)]
+    struct PrintedAddr {
+        relays: Vec<String>,
+        direct: Vec<SocketAddr>,
     }
 
     /// Waits until the member has recorded the replayed presence, the one signed by the key with that seq, dropped.
@@ -883,6 +915,81 @@ mod spec_3_15_two_members_through_the_live_host {
             .flatten()
             .find(|peer| peer["handle"] == handle)
             .cloned()
+    }
+
+    /// The address of the card as announced by the first presence of it that a `tail` on a machine of its own prints, requiring that presence within the presence wait.
+    #[track_caller]
+    fn address_tail_prints_for(network: &LiveNetwork, card: EndpointId) -> EndpointAddr {
+        let observer = LabMachine::joined(TAIL_MACHINE_TAG, network);
+        let mut command = observer.command();
+        command.args([TAIL_COMMAND, network.name()]);
+        let tail = Tail::start(command);
+        let printed = tail.lines_until(&format!("presence of {card}"), PRESENCE_WAIT, |line| {
+            address_announced_by(line, card).is_some()
+        });
+        printed
+            .last()
+            .and_then(|line| address_announced_by(line, card))
+            .unwrap()
+    }
+
+    /// The address a presence line of `tail` announces for the card, none when the line is no presence of that card.
+    fn address_announced_by(line: &str, card: EndpointId) -> Option<EndpointAddr> {
+        let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
+        if columns.first() != Some(&crate::tail::PRESENCE_KIND)
+            || columns.get(PRESENCE_CARD_COLUMN) != Some(&render_public_key(&card).as_str())
+        {
+            return None;
+        }
+        let printed: PrintedAddr = serde_json::from_str(columns.get(PRESENCE_ADDR_COLUMN)?).ok()?;
+        let relays = printed
+            .relays
+            .iter()
+            .filter_map(|relay| relay.parse().ok())
+            .map(TransportAddr::Relay);
+        let direct = printed.direct.into_iter().map(TransportAddr::Ip);
+        Some(EndpointAddr::from_parts(card, relays.chain(direct)))
+    }
+
+    /// The numbers of the member's events lines recording a Presence signed by the peer accepted before the frame of the message, once that frame is recorded, requiring it within the frame wait.
+    #[track_caller]
+    fn presences_accepted_before_the_frame(
+        events: &MemberEvents,
+        peer: &str,
+        message: MessageId,
+    ) -> Vec<u64> {
+        let message_text = uuid::Uuid::from_bytes(message).to_string();
+        events.wait_until(
+            &format!("{FRAME_DELIVERED_EVENT} of message {message_text}"),
+            FRAME_WAIT,
+            |lines| presences_accepted_before_the_frame_in(&lines, peer, &message_text),
+        )
+    }
+
+    /// The numbers of the lines recording a Presence signed by the peer accepted before the line recording the frame of the message of that id text, none while no line records that frame.
+    fn presences_accepted_before_the_frame_in(
+        lines: &[TraceLine],
+        peer: &str,
+        message_text: &str,
+    ) -> Option<Vec<u64>> {
+        let frame = lines.iter().find(|line| {
+            line.event == FRAME_DELIVERED_EVENT
+                && line.value(MESSAGE_FIELD) == Some(&Value::from(message_text))
+        })?;
+        Some(
+            lines
+                .iter()
+                .filter(|line| line.n < frame.n && is_accepted_presence_of(line, peer))
+                .map(|line| line.n)
+                .collect(),
+        )
+    }
+
+    /// Whether the events line records a Presence signed by the peer accepted.
+    fn is_accepted_presence_of(line: &TraceLine, peer: &str) -> bool {
+        line.event == PAYLOAD_ACCEPTED_EVENT
+            && line.value(KIND_FIELD) == Some(&Value::from(PRESENCE_KIND))
+            && line.value(PEER_FIELD) == Some(&Value::from(peer))
     }
 
     /// Adds the public mapping, written as YAML, to the card's file.
@@ -1158,44 +1265,56 @@ mod spec_3_15_two_members_through_the_live_host {
         let mut amy = timed("amy joins and claims its card", || {
             lab_member(&network, "t8-amy", &unique_handle("amy"), FIRST_SESSION)
         });
-        let mut bob = timed("bob joins and claims its card", || {
-            lab_member(&network, "t8-bob", &unique_handle("bob"), FIRST_SESSION)
+        let amy_address = timed("a tail prints amy's presence", || {
+            address_tail_prints_for(&network, amy.card.id)
         });
-        timed("amy and bob list each other online", || {
-            meet(&mut amy, &mut bob);
-        });
-        amy.member.close_standard_input();
-        assert!(
-            timed("amy exits after the end of input", || amy
-                .member
-                .wait_for_exit())
-            .success()
+        let bob_key = SecretKey::generate();
+        let bob_handle = unique_handle("bob");
+        let bob = timed(
+            "bob, a card off the topic, serves the direct protocol",
+            || {
+                OffTopicSender::start(
+                    network.keys(),
+                    network.host_address().relay_urls().cloned(),
+                    bob_key.clone(),
+                    &bob_handle,
+                )
+            },
         );
-        let mut restarted = timed("the restarted amy starts", || amy.machine.start_server());
-        let claim = timed("the restarted amy claims its card", || {
-            restarted.call("init", &json!({ "card": amy.card.name }))
-        });
-        timed("bob lists the restarted amy online", || {
-            bob.member.peer_within(&amy.handle, PRESENCE_WAIT, online)
-        });
+        let message = Message {
+            v: Version::CURRENT,
+            id: OFF_TOPIC_MESSAGE_ID,
+            to: *amy.card.id.as_bytes(),
+            handle: bob_handle.clone(),
+            attached: false,
+            sent_at: wall_clock_ms(),
+            body: BODY.to_owned(),
+            mac: UNSET_MAC,
+        };
 
-        let unseen_before = timed(
-            "the restarted amy's peers tool answers before bob's send",
-            || listed_peer(&mut restarted, &bob.handle),
-        );
-        let amy_handle = amy.handle.clone();
-        let sent = timed("bob's send to the restarted amy", || {
-            send(&mut bob, &amy_handle, BODY)
+        let unseen_before = timed("amy's peers tool answers before bob's send", || {
+            listed_peer(&mut amy.member, &bob_handle)
         });
-        let listed_after = timed(
-            "the restarted amy's peers tool answers after bob's send",
-            || listed_peer(&mut restarted, &bob.handle),
-        );
+        let sent = timed("bob's direct send to amy", || {
+            bob.send(amy_address, message)
+        });
+        let listed_after = timed("amy's peers tool answers after bob's send", || {
+            listed_peer(&mut amy.member, &bob_handle)
+        });
+        let presences_of_bob_before_the_frame =
+            timed("amy records the frame of bob's message", || {
+                presences_accepted_before_the_frame(
+                    amy.member.events(),
+                    &short_id_text(&bob_key),
+                    OFF_TOPIC_MESSAGE_ID,
+                )
+            });
 
-        assert_eq!(claim["ok"], json!(true), "{claim}");
+        assert!(call_succeeded(&amy.claim), "{}", amy.claim);
         assert_eq!(unseen_before, None);
-        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
+        assert!(sent.as_ref().is_ok_and(|ack| ack.accepted), "{sent:?}");
         assert_eq!(listed_after.unwrap()["status"], json!("online"));
+        assert_eq!(presences_of_bob_before_the_frame, Vec::<u64>::new());
     }
 
     #[test]
