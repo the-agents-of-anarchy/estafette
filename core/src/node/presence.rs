@@ -1204,7 +1204,7 @@ impl PresenceLoop {
             () = deadline_reached(&*self.monotonic, relay_loss_due) => Wake::RelayLossDue,
             cause = sleep_until_rebind(&*self.monotonic, next_rebind) => Wake::RebindDue(cause),
             () = deadline_reached(&*self.monotonic, member_join_due) => Wake::MemberJoinDue,
-            () = sleep_until(self.snapshot_due) => Wake::SnapshotDue,
+            () = self.monotonic.reached(self.snapshot_due) => Wake::SnapshotDue,
         }
     }
 

@@ -439,7 +439,8 @@ mod tests {
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
     use crate::test_waits::{
-        RecordedEvent, found_within, next_recorded, recorded_events, recorded_until,
+        RecordedEvent, found_within, next_recorded, next_recorded_meeting, recorded_events,
+        recorded_until,
     };
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
 
@@ -1199,6 +1200,7 @@ mod tests {
         SPEC_RELAY_PROBE_TIMEOUT.saturating_sub(ANSWER_WITHIN_THE_PROBE_TIMEOUT);
     const MOMENT: &str = "moment";
     const START_MOMENT: &str = "start";
+    const INTERVAL_MOMENT: &str = "interval";
     /// The longest a host's report takes to reach the member that hears it.
     const REPORT_HEARD_WITHIN: Duration = Duration::from_secs(10);
     /// How many reports, an interval apart on the clock, move it past the deaf timeout and its slack.
@@ -1285,6 +1287,45 @@ mod tests {
         assert!(names.contains(&"socket.recv_datagrams"), "{names:?}");
         assert!(names.contains(&"gossip.neighbor_up"), "{names:?}");
         assert_eq!(names.len(), 1 + 35 + 18, "{names:?}");
+        drop(scratch);
+    }
+
+    /// The longest the counters snapshot takes once the handed clock reads the snapshot interval past the last, which the runtime's timer would never reach on a clock an hour ahead.
+    const SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn observability_decision_9_a_quiet_member_records_its_counters_once_its_handed_clock_reads_60_s_past_its_start()
+     {
+        let scratch = Scratch::new("state-on-the-clock").await;
+        let clock = StandingClock::standing_an_hour_ahead();
+        let (record, mut events) = recorded_events();
+
+        let (_members, at_the_interval) = tokio::join!(
+            start_members(
+                &scratch,
+                vec![
+                    MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                        .with_report(record)
+                        .with_monotonic(clock.monotonic()),
+                ],
+            ),
+            async {
+                next_recorded(&mut events, COUNTERS).await;
+                clock.move_forward(SPEC_STATE_SNAPSHOT_INTERVAL);
+                next_recorded_meeting(
+                    &mut events,
+                    COUNTERS,
+                    is_snapshot_after_the_start,
+                    SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN,
+                )
+                .await
+            }
+        );
+
+        assert_eq!(
+            at_the_interval.first(),
+            Some(&(MOMENT, serde_json::Value::from(INTERVAL_MOMENT)))
+        );
         drop(scratch);
     }
 
