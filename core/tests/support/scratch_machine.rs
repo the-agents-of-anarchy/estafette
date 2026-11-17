@@ -8,6 +8,7 @@ use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
+use estafette::config::NetworkConfig;
 use estafette::dirs::{
     Directories, DirectoryFilesystem, OperatingSystemFilesystem, TraceDirectory, trace_file_of,
 };
@@ -75,6 +76,8 @@ const LATER_KEEPING_SEPARATOR: &str = ".kept-";
 const SECOND_KEEPING: u32 = 2;
 /// The extension of every file spec 3.3 gives a secret key in a data directory: a card's sidecar and a host's bootstrap key.
 const SECRET_KEY_EXTENSION: &str = "key";
+/// The extension of the note kept beside a data file that was kept with each invitation and token in it replaced by the redaction marker.
+const REDACTED_NOTE_EXTENSION: &str = "redacted";
 /// The extension spec 3.3 gives a relay's certificate cache directory, which holds its private key.
 const CERTIFICATE_CACHE_EXTENSION: &str = "certs";
 /// The variable the acceptance gate exports the live host's invitation in.
@@ -354,6 +357,7 @@ impl ScratchMachine {
     fn keep_data_directory(&self, directory: &Path) -> Vec<io::Error> {
         let data = self.root.join(DATA_HOME);
         let kept = directory.join(KEPT_DATA_DIRECTORY);
+        let invitation_and_tokens = self.invitation_and_tokens();
         let mut failures = Vec::new();
         for listed in files_beneath_for_keeping(&data) {
             let file = match listed {
@@ -371,13 +375,39 @@ impl ScratchMachine {
             }
             let kept_file = kept.join(in_data);
             let copied = fs::create_dir_all(kept_file.parent().unwrap_or(&kept))
-                .and_then(|()| fs::copy(&file, &kept_file));
+                .and_then(|()| keep_data_file(&file, &kept_file, &invitation_and_tokens));
             if let Err(failure) = copied {
                 failures.push(naming(&file, &failure));
             }
         }
         eprintln!("data directory kept at {}", kept.display());
         failures
+    }
+
+    /// The invitation and every token of this machine, its network's secret and the text of each of its secret key files, as the run-record redaction matches them, longest first.
+    fn invitation_and_tokens(&self) -> Vec<String> {
+        let network_secret = self
+            .directories()
+            .network_config_file(&self.network)
+            .ok()
+            .and_then(|config_file| NetworkConfig::load(&config_file).ok())
+            .map(|config| config.secret);
+        let secret_key_texts: Vec<String> = self
+            .base_directory_files()
+            .iter()
+            .filter(|file| is_a_secret_key_file(file))
+            .filter_map(|file| fs::read_to_string(file).ok())
+            .collect();
+        self.run_records
+            .secrets_longest_first(
+                network_secret
+                    .iter()
+                    .chain(&secret_key_texts)
+                    .map(String::as_str),
+            )
+            .into_iter()
+            .filter(|secret| !secret.is_empty())
+            .collect()
     }
 
     /// The name this machine's records are kept under: its scratch root's.
@@ -591,13 +621,45 @@ fn long_alphanumeric_runs(line: &str) -> impl Iterator<Item = &str> {
 
 /// Whether the file holds a secret key by spec 3.3's naming, a key file itself or any file of a relay's certificate cache, so no copy of it is kept.
 fn holds_a_secret_key(file: &Path) -> bool {
-    file.extension()
-        .is_some_and(|extension| extension == SECRET_KEY_EXTENSION)
+    is_a_secret_key_file(file)
         || file.ancestors().skip(1).any(|directory| {
             directory
                 .extension()
                 .is_some_and(|extension| extension == CERTIFICATE_CACHE_EXTENSION)
         })
+}
+
+/// Whether the file is a secret key file by spec 3.3's naming: a card's sidecar, a host's bootstrap key or a network owner's key.
+fn is_a_secret_key_file(file: &Path) -> bool {
+    file.extension()
+        .is_some_and(|extension| extension == SECRET_KEY_EXTENSION)
+}
+
+/// Writes the kept copy of the data file, byte for byte when it holds no invitation or token, else with each replaced by the redaction marker and a note beside the copy naming the file.
+fn keep_data_file(
+    file: &Path,
+    kept_file: &Path,
+    invitation_and_tokens: &[String],
+) -> io::Result<()> {
+    let content = fs::read(file)?;
+    let text = String::from_utf8_lossy(&content);
+    if !invitation_and_tokens
+        .iter()
+        .any(|secret| text.contains(secret.as_str()))
+    {
+        return fs::write(kept_file, &content);
+    }
+    let (kept_text, redacted_lines) = redacted(&text, invitation_and_tokens);
+    fs::write(kept_file, kept_text)?;
+    let mut note = kept_file.as_os_str().to_owned();
+    note.push(format!(".{REDACTED_NOTE_EXTENSION}"));
+    fs::write(
+        &note,
+        format!(
+            "{} was kept with each invitation and token in it replaced by {REDACTED}: {redacted_lines} lines redacted\n",
+            file.file_name().unwrap_or_default().to_string_lossy()
+        ),
+    )
 }
 
 /// Every file beneath the directory at any depth, or the failure to read a directory or its entry, naming that directory; nothing when the directory does not exist.
@@ -695,6 +757,10 @@ mod tests {
     const UNREADABLE: u32 = 0o000;
     /// The mode that makes such a file or directory its owner's again, so the test can remove it.
     const READABLE: u32 = 0o700;
+    /// An invitation a test plants in what a machine keeps, no real one.
+    const PLANTED_INVITATION: &str = "estafette-invite-1:plantedinvitation0123456789";
+    /// A token a test plants as a card's secret key and in what a machine keeps, no real one.
+    const PLANTED_TOKEN: &str = "plantedtoken0123456789abcdef";
     /// The shell a test runs a stand-in's command line with, and the flag that hands it the line.
     const SHELL: &str = "sh";
     const SHELL_COMMAND_FLAG: &str = "-c";
@@ -1024,6 +1090,81 @@ mod tests {
             "{not_kept:?}"
         );
         assert_eq!(fs::read_to_string(&kept_readable).unwrap(), "events line\n");
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_16_a_kept_data_file_holding_the_invitation_or_a_token_is_kept_redacted_with_a_note_beside_it_and_any_other_byte_for_byte()
+     {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-redacted-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = ScratchMachine::fresh(
+            "kept-redacted",
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: Some(kept_in.clone()),
+                invitation: Some(PLANTED_INVITATION.to_owned()),
+            },
+        );
+        let data = machine.root.join(DATA_HOME);
+        let traces = machine.traces_directory_of_member(0);
+        let sidecar = machine
+            .directories()
+            .card_sidecar_file(NETWORK, "amy")
+            .unwrap();
+        let naming_the_invitation =
+            traces.join("20261117T080000Z-1111111111111111-estafette.events.jsonl");
+        let naming_the_token = traces.join("20261117T080000Z-1111111111111111-estafette.raw.jsonl");
+        let naming_neither = traces.join("20261117T080001Z-2222222222222222-estafette.raw.jsonl");
+        let neither_bytes = [b'n', b'o', 0xff, 0x00, b'\n'];
+        fs::create_dir_all(&traces).unwrap();
+        fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+        fs::write(&sidecar, format!("{PLANTED_TOKEN}\n")).unwrap();
+        fs::write(
+            &naming_the_invitation,
+            format!("first line\njoined by {PLANTED_INVITATION} here\n"),
+        )
+        .unwrap();
+        fs::write(&naming_the_token, format!("key {PLANTED_TOKEN} seen\n")).unwrap();
+        fs::write(&naming_neither, neither_bytes).unwrap();
+        let kept_data = kept_in.join(machine.name()).join(KEPT_DATA_DIRECTORY);
+        let kept_of = |file: &Path| kept_data.join(file.strip_prefix(&data).unwrap());
+        let note_of = |file: &Path| {
+            let mut note = kept_of(file).into_os_string();
+            note.push(format!(".{REDACTED_NOTE_EXTENSION}"));
+            PathBuf::from(note)
+        };
+
+        drop(machine);
+
+        let kept: BTreeSet<PathBuf> = files_beneath(&kept_in).into_iter().collect();
+        assert_eq!(
+            kept,
+            BTreeSet::from([
+                kept_of(&naming_the_invitation),
+                note_of(&naming_the_invitation),
+                kept_of(&naming_the_token),
+                note_of(&naming_the_token),
+                kept_of(&naming_neither),
+            ])
+        );
+        assert_eq!(
+            fs::read_to_string(kept_of(&naming_the_invitation)).unwrap(),
+            format!("first line\njoined by {REDACTED} here\n")
+        );
+        assert_eq!(
+            fs::read_to_string(kept_of(&naming_the_token)).unwrap(),
+            format!("key {REDACTED} seen\n")
+        );
+        assert_eq!(fs::read(kept_of(&naming_neither)).unwrap(), neither_bytes);
+        for file in [&naming_the_invitation, &naming_the_token] {
+            let note = fs::read_to_string(note_of(file)).unwrap();
+            let name = file.file_name().unwrap().to_string_lossy();
+            assert!(note.contains(name.as_ref()), "{note}");
+        }
         remove_scratch::remove_scratch(&kept_in).unwrap();
     }
 
