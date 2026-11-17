@@ -278,7 +278,7 @@ mod tests {
     use super::McpServer;
     use crate::member_events::MemberEvents;
     use crate::scratch_machine::owned_process::{
-        OwnedProcess, STAND_IN_ENDED_WITHIN, stand_in_ended_within,
+        OwnedProcess, STAND_IN_ENDED_WITHIN, require_stand_in_ended_within,
     };
 
     /// A command that runs until it is ended, reading nothing and printing nothing.
@@ -303,13 +303,13 @@ mod tests {
 
         let handshake = catch_unwind(AssertUnwindSafe(|| McpServer::handshaken(process, events)));
 
-        let ended = stand_in_ended_within(only_the_stand_in_writes, STAND_IN_ENDED_WITHIN);
         let Err(_failure) = handshake else {
             panic!("a server whose output is not piped was handshaken")
         };
-        assert!(
-            ended,
-            "the stand-in still ran {STAND_IN_ENDED_WITHIN:?} after its handshake failed"
+        require_stand_in_ended_within(
+            only_the_stand_in_writes,
+            STAND_IN_ENDED_WITHIN,
+            "its handshake failed",
         );
     }
 }

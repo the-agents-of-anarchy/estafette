@@ -1313,17 +1313,13 @@ mod tests {
         }));
         drop(stand_in);
 
-        let ended = owned_process::stand_in_ended_within(
-            only_the_stand_in_writes,
-            owned_process::STAND_IN_ENDED_WITHIN,
-        );
         let Err(_failure) = started else {
             panic!("a stand-in that closed its output printed a first line")
         };
-        assert!(
-            ended,
-            "the stand-in still ran {:?} after its first-line wait failed",
-            owned_process::STAND_IN_ENDED_WITHIN
+        owned_process::require_stand_in_ended_within(
+            only_the_stand_in_writes,
+            owned_process::STAND_IN_ENDED_WITHIN,
+            "its first-line wait failed",
         );
     }
 

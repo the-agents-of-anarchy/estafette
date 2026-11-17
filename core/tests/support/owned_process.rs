@@ -3,7 +3,7 @@ use std::io::{self, PipeReader, Read};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
-use std::sync::mpsc;
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
 /// The extension of the file that marks a process whose kill or wait failed, beside the run records its machine keeps.
@@ -77,12 +77,28 @@ fn mark_end_failure(marked_in: &Path, label: &str, process_id: u32, failure: &io
     }
 }
 
-/// Whether the end of the pipe that only a test's stand-in holds open closes within the bound, the sign the stand-in has ended, read on a thread of its own so no signal is sent to any process.
-pub fn stand_in_ended_within(only_the_stand_in_writes: PipeReader, within: Duration) -> bool {
+/// Requires that the pipe only a test's stand-in holds open closes within the bound, the sign the stand-in ended, failing the test when it stays open or cannot be read; read on a thread of its own so no signal is sent to any process.
+#[track_caller]
+pub fn require_stand_in_ended_within(
+    only_the_stand_in_writes: PipeReader,
+    within: Duration,
+    after: &str,
+) {
     let (closed, close_seen) = mpsc::channel();
     std::thread::spawn(move || {
         let mut written = Vec::new();
         drop(closed.send((&only_the_stand_in_writes).read_to_end(&mut written)));
     });
-    close_seen.recv_timeout(within).is_ok()
+    match close_seen.recv_timeout(within) {
+        Ok(Ok(_bytes_read)) => {}
+        Ok(Err(failure)) => panic!(
+            "the stand-in's pipe could not be read after {after}, so whether the stand-in ended is unknown: {failure}"
+        ),
+        Err(RecvTimeoutError::Timeout) => {
+            panic!("the stand-in still ran {within:?} after {after}")
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            panic!("the thread reading the stand-in's pipe ended without an answer after {after}")
+        }
+    }
 }
