@@ -18,7 +18,9 @@ use crate::net::endpoint::{RebindCause, SnapshotMoment};
 use crate::net::gossip::NetworkTopic;
 use crate::node::addresses::endpoint_id;
 use crate::node::known_hosts::seed_lookup_with_known_hosts;
-use crate::node::presence::{PresenceLoop, home_relay_changes, own_address_changes, serve};
+use crate::node::presence::{
+    PresenceLoop, home_relay_changes, own_address_changes, record_counters, serve,
+};
 use crate::node::relay_loss::RelayLossWatch;
 use crate::peers::Status;
 
@@ -334,7 +336,7 @@ impl PresenceLoop {
         }
     }
 
-    /// Serves the fresh endpoint and subscribes to the topic through every known host and every Online peer whose address the lookup holds.
+    /// Serves the fresh endpoint, records its counters and the fresh gossip's without moving the next interval snapshot, and subscribes to the topic through every known host and every Online peer whose address the lookup holds.
     async fn subscribe_through_known_nodes(&mut self) -> ControlFlow<()> {
         let hosts = self.known_hosts.addresses();
         seed_lookup_with_known_hosts(&self.endpoint, &hosts);
@@ -347,6 +349,13 @@ impl PresenceLoop {
         let (router, gossip) = serve(&self.endpoint, &self.keys, &self.state);
         self.router = router;
         self.gossip = gossip;
+        record_counters(
+            SnapshotMoment::Rebound,
+            self.endpoint.endpoint(),
+            &self.gossip,
+            &*self.report,
+            self.monotonic.now(),
+        );
         self.own_addresses = own_address_changes(self.endpoint.endpoint());
         self.relay_statuses = home_relay_changes(self.endpoint.endpoint());
         self.relay_loss = RelayLossWatch::default();
@@ -1085,7 +1094,72 @@ mod tests {
         drop(scratch);
     }
 
+    #[tokio::test]
+    async fn observability_decision_9_a_rebind_records_the_fresh_endpoints_counters_once_it_is_bound_after_every_relay_probe()
+     {
+        let scratch = Scratch::new("rebound-record").await;
+        let (record, mut events) = recorded_events();
+        let peer = QuietNode::answering(PEER_SEED, &[KEPT_RELAY, STRIPPED_RELAY]).await;
+        let (member_endpoint, starting) = spawn_member(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                .with_host_relays(&[
+                    (LIVE_HOST_SEED, KEPT_RELAY),
+                    (DEAD_HOST_SEED, STRIPPED_RELAY),
+                ])
+                .with_relay_probe(answering_only(KEPT_RELAY))
+                .with_report(Arc::clone(&record))
+                .with_register(crate::net::direct::HeldConnections::new(
+                    Arc::new(RuntimeClock),
+                    TransportRecord::new(record, test_salt()),
+                )),
+        )
+        .await;
+        peer.introduce_to(&member_endpoint).await;
+        let _member = starting.await.unwrap();
+
+        next_recorded(&mut events, REBINDING).await;
+        let at_the_rebind = next_recorded(&mut events, COUNTERS).await;
+        let (before_the_fresh_snapshot, at_the_fresh_bind) = recorded_until(
+            &mut events,
+            COUNTERS,
+            |_fields| true,
+            SNAPSHOT_AT_THE_REBIND_WITHIN,
+        )
+        .await;
+
+        assert_eq!(
+            at_the_fresh_bind.first(),
+            Some(&(MOMENT, serde_json::Value::from(REBOUND_MOMENT)))
+        );
+        assert_eq!(
+            before_the_fresh_snapshot
+                .iter()
+                .filter(|(name, _fields)| *name == RELAY_PROBED)
+                .count(),
+            RELAYS_OF_THE_KNOWN_HOSTS,
+            "the fresh endpoint's counters follow every relay probe: {before_the_fresh_snapshot:?}"
+        );
+        assert!(
+            datagrams_counted_in(&at_the_fresh_bind) < datagrams_counted_in(&at_the_rebind),
+            "the fresh endpoint counts its datagrams afresh, below the old endpoint's: {at_the_fresh_bind:?} after {at_the_rebind:?}"
+        );
+        drop(scratch);
+    }
+
+    /// The datagrams the endpoint whose counters the snapshot read has received.
+    #[track_caller]
+    fn datagrams_counted_in(snapshot: &EventFields) -> u64 {
+        snapshot
+            .iter()
+            .find(|(name, _count)| *name == RECEIVED_DATAGRAMS)
+            .and_then(|(_name, count)| count.as_u64())
+            .unwrap_or_else(|| panic!("no {RECEIVED_DATAGRAMS} count in {snapshot:?}"))
+    }
+
     const SNAPSHOT_AT_THE_REBIND_WITHIN: Duration = Duration::from_secs(10);
+    const REBOUND_MOMENT: &str = "rebound";
+    const RECEIVED_DATAGRAMS: &str = "socket.recv_datagrams";
     /// The events a rebind records only once its old endpoint has closed: that endpoint's connections and paths ending, then the relay probes.
     const SHOWS_THE_OLD_ENDPOINT_CLOSED: [&str; 3] = [
         "transport.connection_closed",

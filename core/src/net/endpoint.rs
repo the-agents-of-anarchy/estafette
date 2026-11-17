@@ -401,11 +401,12 @@ pub enum RebindCause {
     JoinGainedNoNeighbor,
 }
 
-/// When a snapshot of the counters was taken: at start, at a rebind, at an interval, or at stop.
+/// When a snapshot of the counters was taken: at start, at a rebind before its old endpoint closes, once a rebind's fresh endpoint and gossip are in place, at an interval, or at stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnapshotMoment {
     Start,
     Rebind,
+    Rebound,
     Interval,
     Stop,
 }

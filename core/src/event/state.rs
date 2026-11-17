@@ -39,6 +39,7 @@ impl AreaEvent for StateEvent {
                 let moment = match snapshot.moment() {
                     SnapshotMoment::Start => "start",
                     SnapshotMoment::Rebind => "rebind",
+                    SnapshotMoment::Rebound => "rebound",
                     SnapshotMoment::Interval => "interval",
                     SnapshotMoment::Stop => "stop",
                 };
@@ -172,6 +173,10 @@ mod tests {
             (
                 SnapshotMoment::Rebind,
                 vec![("moment", Value::from("rebind"))],
+            ),
+            (
+                SnapshotMoment::Rebound,
+                vec![("moment", Value::from("rebound"))],
             ),
             (
                 SnapshotMoment::Interval,
