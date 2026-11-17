@@ -264,8 +264,14 @@ impl PresenceLoop {
             return;
         }
         let now = self.monotonic.now();
-        if let Err(failure) =
-            NetworkTopic::join(&self.gossip, self.keys.clone(), self.owner, members, now).await
+        if let Err(failure) = NetworkTopic::join(
+            &self.gossip,
+            self.keys.clone(),
+            self.owner,
+            members,
+            Arc::clone(&self.monotonic),
+        )
+        .await
         {
             (self.report)(GossipEvent::TopicFailed(failure).into());
         }
@@ -363,7 +369,7 @@ impl PresenceLoop {
             self.keys.clone(),
             self.owner,
             bootstrap,
-            self.monotonic.now(),
+            Arc::clone(&self.monotonic),
         )
         .await
         {
@@ -608,7 +614,7 @@ mod tests {
                 keys(),
                 secret_key(OWNER_SEED).public(),
                 Vec::new(),
-                Instant::now(),
+                Arc::new(RuntimeClock),
             )
             .await
             .unwrap();

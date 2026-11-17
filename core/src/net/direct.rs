@@ -2094,6 +2094,9 @@ pub(crate) mod tests {
         HeldConnections::new(Arc::new(RuntimeClock), dropping_transport())
     }
 
+    /// How far ahead of the runtime's now a clock stands so that no deadline read from it falls due on the runtime's timer while a test runs.
+    const AHEAD_OF_THE_RUNTIME: Duration = Duration::from_secs(3600);
+
     /// A monotonic clock standing at the instant the test last moved it to, waking each waiter once it reads that waiter's deadline.
     #[derive(Clone)]
     pub struct StandingClock(Arc<tokio::sync::watch::Sender<tokio::time::Instant>>);
@@ -2104,6 +2107,13 @@ pub(crate) mod tests {
             Self(Arc::new(tokio::sync::watch::Sender::new(
                 tokio::time::Instant::now(),
             )))
+        }
+
+        /// A clock standing an hour ahead of the runtime's now, so no deadline read from it falls due on the runtime's timer while a test runs.
+        pub fn standing_an_hour_ahead() -> Self {
+            let clock = Self::standing_now();
+            clock.move_forward(AHEAD_OF_THE_RUNTIME);
+            clock
         }
 
         /// Moves the clock forward by the span, waking each waiter whose deadline it then reads.

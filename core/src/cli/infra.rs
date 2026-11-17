@@ -703,7 +703,7 @@ impl BootstrapNode {
         };
         let (router, gossip) = serve(&endpoint, &keys, &answers);
         let bootstrap = files.other_hosts.iter().map(|host| host.id).collect();
-        let topic = NetworkTopic::join(&gossip, keys, owner, bootstrap, Instant::now())
+        let topic = NetworkTopic::join(&gossip, keys, owner, bootstrap, Arc::clone(&monotonic))
             .await
             .map_err(|source| Failure::Node(NodeError::Topic(source)))?;
         Ok(Self {
@@ -1310,7 +1310,7 @@ mod tests {
                 network_keys(),
                 secret_key(OWNER_SEED).public(),
                 vec![host.id()],
-                Instant::now(),
+                Arc::new(RuntimeClock),
             )
             .await
             .unwrap();

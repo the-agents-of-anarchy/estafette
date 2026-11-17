@@ -4,9 +4,10 @@ use std::time::Duration;
 use iroh::{EndpointId, PublicKey, SecretKey};
 use iroh_gossip::api::{ApiError, Event, GossipReceiver, GossipSender, JoinOptions};
 use iroh_gossip::{Gossip, TopicId};
-use tokio::time::{Instant, sleep};
+use tokio::time::Instant;
 
 use crate::crypto::NetworkKeys;
+use crate::net::direct::MonotonicClock;
 use crate::payload::{
     OpenedPayload, PayloadError, PayloadRefusal, open_described_payload, seal_payload,
 };
@@ -53,18 +54,19 @@ pub struct NetworkTopic {
     keys: NetworkKeys,
     owner: PublicKey,
     join_progress: JoinProgress,
+    monotonic: MonotonicClock,
 }
 
 #[derive(Clone, Copy)]
 enum JoinProgress {
-    AwaitingFirstNeighbor { since: Instant },
+    AwaitingFirstNeighbor { timed_out_at: Instant },
     TimedOut,
     JoinedWithNeighborUpToReport(EndpointId),
     Joined,
 }
 
 impl NetworkTopic {
-    /// Subscribes to the network's topic with the known hosts as bootstrap, counting the join timeout from `now`.
+    /// Subscribes to the network's topic with the known hosts as bootstrap, counting the join timeout on the monotonic clock from its reading as the join starts.
     ///
     /// # Errors
     /// `GossipError::Topic` when the gossip actor is gone.
@@ -73,8 +75,9 @@ impl NetworkTopic {
         keys: NetworkKeys,
         owner: PublicKey,
         bootstrap: Vec<EndpointId>,
-        now: Instant,
+        monotonic: MonotonicClock,
     ) -> Result<Self, GossipError> {
+        let started = monotonic.now();
         let topic_id = TopicId::from_bytes(*keys.topic_id().as_bytes());
         let topic = gossip
             .subscribe_with_opts(topic_id, JoinOptions::with_bootstrap(bootstrap))
@@ -86,7 +89,10 @@ impl NetworkTopic {
             receiver,
             keys,
             owner,
-            join_progress: JoinProgress::AwaitingFirstNeighbor { since: now },
+            join_progress: JoinProgress::AwaitingFirstNeighbor {
+                timed_out_at: started.checked_add(JOIN_TIMEOUT).unwrap_or(started),
+            },
+            monotonic,
         })
     }
 
@@ -130,10 +136,10 @@ impl NetworkTopic {
                     self.join_progress = JoinProgress::Joined;
                     return Some(Ok(GossipEvent::NeighborUp(neighbor)));
                 }
-                JoinProgress::AwaitingFirstNeighbor { since } => {
+                JoinProgress::AwaitingFirstNeighbor { timed_out_at } => {
                     tokio::select! {
                         incoming = self.receiver.next() => incoming,
-                        () = sleep(JOIN_TIMEOUT.saturating_sub(since.elapsed())) => {
+                        () = self.monotonic.reached(timed_out_at) => {
                             self.join_progress = JoinProgress::TimedOut;
                             return Some(Ok(GossipEvent::JoinTimedOut));
                         }
@@ -187,8 +193,12 @@ impl NetworkTopic {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
     use crate::crypto::{KEY_LEN, MAC_LEN, NetworkSecret, sign_host_certificate};
+    use crate::net::direct::RuntimeClock;
+    use crate::net::direct::tests::StandingClock;
     use crate::net::endpoint::NodeEndpoint;
     use crate::wire::{
         Addr, Departure, Infrastructure, Presence, RelayUrl, SignatureBytes, Version, encode,
@@ -213,7 +223,7 @@ mod tests {
     const DELIVERY_WAIT: Duration = Duration::from_secs(60);
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     const JOIN_TIMEOUT_SLACK: Duration = Duration::from_millis(1000);
-    const JOIN_HANDED_THIS_LONG_AGO: Duration = Duration::from_millis(3000);
+    const JUST_UNDER: Duration = Duration::from_millis(1);
     const NOTHING_MORE_WAIT: Duration = Duration::from_millis(500);
     const OVERSIZE_PUBLIC_BYTES: usize = 4000;
     const EVENT_WAIT: Duration = Duration::from_millis(8000);
@@ -277,7 +287,7 @@ mod tests {
             keys(),
             secret_key(OWNER_SEED).public(),
             bootstrap,
-            Instant::now(),
+            Arc::new(RuntimeClock),
         )
         .await
         .unwrap()
@@ -505,7 +515,7 @@ mod tests {
             keys(),
             secret_key(OWNER_SEED).public(),
             vec![absent],
-            started,
+            Arc::new(RuntimeClock),
         )
         .await
         .unwrap();
@@ -518,26 +528,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_14_join_timeout_counts_from_the_instant_the_join_was_handed() {
+    async fn spec_3_14_join_timeout_ends_once_the_handed_clock_reads_5_s_past_the_join() {
         let lonely = bind_member(FIRST_SEED).await;
         let absent = secret_key(ABSENT_BOOTSTRAP_SEED).public();
-        let started = Instant::now();
-        let handed_instant = started.checked_sub(JOIN_HANDED_THIS_LONG_AGO).unwrap();
+        let clock = StandingClock::standing_an_hour_ahead();
         let mut topic = NetworkTopic::join(
             &lonely.gossip,
             keys(),
             secret_key(OWNER_SEED).public(),
             vec![absent],
-            handed_instant,
+            clock.monotonic(),
         )
         .await
         .unwrap();
 
-        let event = topic.next_event().await.unwrap().unwrap();
+        clock.move_forward(SPEC_JOIN_TIMEOUT.saturating_sub(JUST_UNDER));
+        let just_before = timeout(Duration::ZERO, topic.next_event()).await;
+        clock.move_forward(JUST_UNDER);
+        let at_the_timeout = timeout(JOIN_TIMEOUT_SLACK, topic.next_event()).await;
 
-        assert_eq!(event, GossipEvent::JoinTimedOut);
-        assert!(started.elapsed() >= SPEC_JOIN_TIMEOUT.saturating_sub(JOIN_HANDED_THIS_LONG_AGO));
-        assert!(started.elapsed() < SPEC_JOIN_TIMEOUT);
+        assert!(just_before.is_err(), "{just_before:?}");
+        assert_eq!(
+            at_the_timeout.unwrap().unwrap().unwrap(),
+            GossipEvent::JoinTimedOut
+        );
     }
 
     #[tokio::test]

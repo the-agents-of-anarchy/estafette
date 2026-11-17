@@ -608,7 +608,7 @@ async fn start_observation(
         keys.clone(),
         setup.owner,
         setup.hosts.iter().map(|host| host.id).collect(),
-        effects.monotonic.now(),
+        Arc::clone(&effects.monotonic),
     )
     .await;
     match topic {
@@ -2030,7 +2030,7 @@ mod tests {
             network_keys(),
             secret_key(OWNER_SEED).public(),
             bootstrap_ids,
-            Instant::now(),
+            Arc::new(RuntimeClock),
         )
         .await
         .unwrap();

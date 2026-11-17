@@ -1122,7 +1122,7 @@ impl PresenceLoop {
             network.keys.clone(),
             network.owner,
             hosts.iter().map(|host| host.id).collect(),
-            subscribed,
+            Arc::clone(&effects.monotonic),
         )
         .await
         .map_err(NodeError::Topic)?;
@@ -2695,7 +2695,7 @@ pub(super) mod tests {
                 keys(),
                 secret_key(OWNER_SEED).public(),
                 vec![through.id()],
-                Instant::now(),
+                Arc::new(RuntimeClock),
             )
             .await
             .unwrap();

@@ -1191,7 +1191,7 @@ async fn observability_decision_9_a_broadcast_the_topic_refuses_is_recorded_as_f
         keys(),
         secret_key(HOST_SEED).public(),
         Vec::new(),
-        tokio::time::Instant::now(),
+        Arc::new(crate::net::direct::RuntimeClock),
     )
     .await
     .unwrap();
