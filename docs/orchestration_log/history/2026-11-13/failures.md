@@ -55,3 +55,19 @@ What happened: Two governing lines of dev-status.md written on 2026-11-17 carry 
 Mechanism: Each line took its own stamp from date, but a second time inside the sentence was written from estimate.
 
 Correction: Every time written into a status line or a journal line comes from the stamp variable read by date in the same command, or is left out.
+
+## Text written to the conversation in silence at a quiet heartbeat
+
+What happened: At the heartbeat of 06:24 on 2026-11-17 the lead ended its turn with three sentences of status in the conversation, while the silence marker stood and no owner-typed message had arrived; the wake had found nothing new.
+
+Mechanism: A harness line asking for a user-visible response preceded the heartbeat, and the lead answered it as if it were the owner's word; the rule that only owner-typed text ends silence was not applied to that line.
+
+Correction: Every turn ends with a message of zero characters while the marker stands; a nudge, a heartbeat, a notification and an agent's message are no owner's word; a wake that finds nothing new leaves no text and no record.
+
+## Lab servers created while the backstop covered nothing
+
+What happened: On 2026-11-17 between about 06:48 and 07:13 two lab servers ran for the lab run of lab-test-8-sender-off-the-topic while the launchd backstop, by the runner's reading of its log, had written no line for about ten hours and had before that read another project's resources; the run's own teardown removed everything, and the last list was empty.
+
+Mechanism: The lead's runner brief checked that the backstop job was loaded and did not order the check the lab skill names, a log line from the backstop's last hour; a loaded job that reads the wrong project passes the loaded check.
+
+Correction: No lab resource is created until a diagnosis shows why the backstop read another project and a tooling change makes it read the lab's own; every lab brief orders the runner to read the backstop's log for a line within the hour before creation that covers the lab's project, and to stop without creating when there is none.
