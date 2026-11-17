@@ -5,10 +5,16 @@ use std::process::Output;
 use super::fresh_directory::fresh_directory_in;
 use super::remove_scratch::remove_scratch;
 use super::trace_reader::timeline_in;
-use super::{fresh_kept_directory, keep_run_record, keep_stop_failure, redact_files_beneath};
+use super::{
+    fresh_kept_directory, keep_mark, keep_run_record, keep_stop_failure, redact_files_beneath,
+};
 
 /// The directory a member's fetched trace files are kept in, inside the directory its records are kept in.
 const KEPT_TRACE_FILES_DIRECTORY: &str = "traces";
+/// The extension of the file kept beside a member's records when its run record could not be read, so a reader knows why none is kept.
+const RUN_RECORD_READ_FAILED_EXTENSION: &str = "run-record-read-failed";
+/// The extension of the file kept beside the trace files' directory, named as it is, when the fetch into it failed, so an absent, empty or partial directory is not read as a whole fetch.
+const FETCH_FAILED_EXTENSION: &str = "fetch-failed";
 /// What begins the name of the scratch directory a failing test fetches a member's trace files into for its timeline alone.
 const FETCHED_FOR_THE_PRINT_PREFIX: &str = "ea-timeline";
 /// The name, inside that scratch directory, of the directory the recipe fetches into.
@@ -114,6 +120,15 @@ fn kept_records(
             failures.push(format!(
                 "run record of {member} on {server} not read: {failure}"
             ));
+            let mark = format!(
+                "the run record of {member} on {server} was not read, so none is kept here; the read ended with {failure}"
+            );
+            let mark_name = format!("{member}.{RUN_RECORD_READ_FAILED_EXTENSION}");
+            if let Err(unmarked) = keep_mark(kept, &mark_name, &mark, secrets) {
+                failures.push(format!(
+                    "failed read of the run record of {member} not marked: {unmarked}"
+                ));
+            }
         }
     }
     let kept_trace_files = kept.join(KEPT_TRACE_FILES_DIRECTORY);
@@ -123,6 +138,15 @@ fn kept_records(
         failures.push(format!(
             "trace files of {member} on {server} not fetched: {failure}"
         ));
+        let mark = format!(
+            "the trace files of {member} on {server} were not fetched whole, so {KEPT_TRACE_FILES_DIRECTORY}/ beside this file may be absent, empty or partial; the fetch ended with {failure}"
+        );
+        let mark_name = format!("{KEPT_TRACE_FILES_DIRECTORY}.{FETCH_FAILED_EXTENSION}");
+        if let Err(unmarked) = keep_mark(kept, &mark_name, &mark, secrets) {
+            failures.push(format!(
+                "failed fetch of the trace files of {member} not marked: {unmarked}"
+            ));
+        }
     }
     for failure in redact_files_beneath(&kept_trace_files, secrets) {
         failures.push(format!(
@@ -424,6 +448,7 @@ mod tests {
             kept_files,
             BTreeSet::from([
                 kept.join(format!("{MEMBER}.{STOP_FAILED_EXTENSION}")),
+                kept.join(format!("{MEMBER}.{RUN_RECORD_READ_FAILED_EXTENSION}")),
                 kept_traces
             ])
         );
@@ -544,6 +569,68 @@ mod tests {
             );
         }
         remove_scratch(&scratch).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_16_a_server_members_failed_run_record_read_and_failed_fetch_are_each_marked_beside_what_is_kept_so_a_partial_fetch_cannot_be_read_as_whole()
+     {
+        let kept_in = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-server-member-marked-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let fetch_refusal = format!("ssh: the stream broke after {PLANTED_TOKEN}");
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop => Ok(succeeded_run("")),
+            ServerMemberStep::PrintRunRecord => Ok(failed_run(RUN_RECORD_REFUSAL)),
+            ServerMemberStep::FetchTraceFiles(into) => {
+                fs::create_dir_all(into).unwrap();
+                fs::write(into.join(FETCHED_TRACE_FILE), "part of a line").unwrap();
+                Ok(failed_run(&fetch_refusal))
+            }
+        };
+
+        let ended = ended_server_member(
+            MEMBER,
+            SERVER,
+            &format!("{SERVER}-{MEMBER}"),
+            Some(&kept_in),
+            &[PLANTED_TOKEN.to_owned()],
+            TestSoFar::NotFailing,
+            stand_in_for_the_recipes,
+        );
+
+        let kept = kept_in.join(format!("{SERVER}-{MEMBER}"));
+        let run_record_mark = kept.join(format!("{MEMBER}.{RUN_RECORD_READ_FAILED_EXTENSION}"));
+        let fetch_mark = kept.join(format!(
+            "{KEPT_TRACE_FILES_DIRECTORY}.{FETCH_FAILED_EXTENSION}"
+        ));
+        assert_eq!(ended.failures.len(), 2, "{:?}", ended.failures);
+        let kept_files: BTreeSet<PathBuf> = fs::read_dir(&kept)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(
+            kept_files,
+            BTreeSet::from([
+                run_record_mark.clone(),
+                kept.join(KEPT_TRACE_FILES_DIRECTORY),
+                fetch_mark.clone(),
+            ])
+        );
+        let run_record_marked = fs::read_to_string(&run_record_mark).unwrap();
+        assert!(
+            run_record_marked.contains(MEMBER) && run_record_marked.contains(RUN_RECORD_REFUSAL),
+            "{run_record_marked}"
+        );
+        let fetch_marked = fs::read_to_string(&fetch_mark).unwrap();
+        assert!(
+            fetch_marked.contains(MEMBER)
+                && fetch_marked.contains(&format!("ssh: the stream broke after {REDACTED}"))
+                && !fetch_marked.contains(PLANTED_TOKEN),
+            "{fetch_marked}"
+        );
+        remove_scratch(&kept_in).unwrap();
     }
 
     #[test]

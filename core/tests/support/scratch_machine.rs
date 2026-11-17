@@ -589,11 +589,23 @@ pub fn keep_stop_failure(
     let mark = format!(
         "the stop of {member_name} failed, so it may have run on while its records were taken; the stop ended with {failure}"
     );
-    let (text, _redacted_lines) = redacted(&mark, secrets_by_length);
-    fs::write(
-        directory.join(format!("{member_name}.{STOP_FAILED_EXTENSION}")),
-        text,
+    keep_mark(
+        directory,
+        &format!("{member_name}.{STOP_FAILED_EXTENSION}"),
+        &mark,
+        secrets_by_length,
     )
+}
+
+/// Writes into the directory a mark file of that name holding the text, each secret replaced by the redaction marker.
+fn keep_mark(
+    directory: &Path,
+    mark_name: &str,
+    text: &str,
+    secrets_by_length: &[String],
+) -> io::Result<()> {
+    let (redacted_text, _redacted_lines) = redacted(text, secrets_by_length);
+    fs::write(directory.join(mark_name), redacted_text)
 }
 
 /// The record with each secret replaced by the redaction marker, and how many of its lines held one.
