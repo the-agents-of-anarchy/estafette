@@ -1022,8 +1022,8 @@ mod tests {
     use crate::event::Event;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
-    use crate::net::direct::RuntimeClock;
     use crate::net::direct::tests::StandingClock;
+    use crate::net::direct::{MonotonicTime, RuntimeClock};
     use crate::node::RuntimeShutdown;
     use crate::sidecar;
     use crate::test_waits::{RecordedEvent, found_within, next_recorded_meeting, recorded_events};
@@ -1661,6 +1661,10 @@ mod tests {
      {
         let machine = Machine::new("unclaimed-on-clock");
         let clock = StandingClock::standing_an_hour_ahead();
+        let snapshot_due = clock
+            .now()
+            .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
+            .unwrap();
         let (record, mut recorded) = recorded_events();
         let mut client = start_server(
             &machine,
@@ -1671,7 +1675,9 @@ mod tests {
             },
         );
         client.initialize().await;
-        clock.read_at_least(1).await;
+        clock
+            .asked_to_wake("the unclaimed server's counters snapshot", snapshot_due)
+            .await;
 
         clock.move_forward(SPEC_STATE_SNAPSHOT_INTERVAL);
         let snapshot = next_recorded_meeting(
