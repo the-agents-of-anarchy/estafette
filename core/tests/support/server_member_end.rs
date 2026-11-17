@@ -125,8 +125,7 @@ fn kept_records(
     let printed = run(ServerMemberStep::PrintRunRecord);
     match succeeded(&printed) {
         Ok(output) => {
-            let record = String::from_utf8_lossy(&output.stdout);
-            if let Err(failure) = keep_run_record(kept, member, &record, secrets) {
+            if let Err(failure) = keep_run_record(kept, member, &output.stdout, secrets) {
                 failures.push(format!("run record of {member} not kept: {failure}"));
             }
         }

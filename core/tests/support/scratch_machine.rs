@@ -528,7 +528,7 @@ impl ScratchMachine {
             kept.push(keep_run_record(
                 directory,
                 &member_name,
-                &fs::read_to_string(&record).map_err(|failure| naming(&record, &failure))?,
+                &fs::read(&record).map_err(|failure| naming(&record, &failure))?,
                 secrets,
             )?);
         }
@@ -716,16 +716,15 @@ pub fn fresh_kept_directory(directory: &Path, name: &str) -> io::Result<PathBuf>
     ))
 }
 
-/// Writes the member's run record into the directory, named for the member, each secret replaced by the redaction marker, and returns the kept file.
+/// Writes the member's run record into the directory, named for the member, through the writer of kept files, and returns the kept file.
 pub fn keep_run_record(
     directory: &Path,
     member_name: &str,
-    record: &str,
+    record: &[u8],
     secrets: &KeptSecrets,
 ) -> io::Result<PathBuf> {
     let kept_record = directory.join(format!("{member_name}.{RUN_RECORD_EXTENSION}"));
-    let (text, redacted_lines) = secrets.redacted(record, KeptAs::RunRecord);
-    fs::write(&kept_record, text)?;
+    let redacted_lines = keep_file(secrets, KeptAs::RunRecord, &kept_record, record)?;
     eprintln!(
         "run record kept at {}: {redacted_lines} lines redacted",
         kept_record.display()
@@ -1494,7 +1493,7 @@ mod tests {
             })
         };
 
-        keep_run_record(&kept_in, "amy", "record of amy\n", &secrets).unwrap();
+        keep_run_record(&kept_in, "amy", b"record of amy\n", &secrets).unwrap();
         keep_stop_failure(
             &kept_in,
             "amy",
@@ -1502,7 +1501,7 @@ mod tests {
             &secrets,
         )
         .unwrap();
-        keep_run_record(&kept_in, "bob", "record of bob\n", &secrets).unwrap();
+        keep_run_record(&kept_in, "bob", b"record of bob\n", &secrets).unwrap();
         keep_stop_failure(
             &kept_in,
             "bob",
@@ -1935,6 +1934,42 @@ mod tests {
         assert_eq!(cache_files_kept, Vec::<&PathBuf>::new());
     }
 
+    #[test]
+    fn observability_decision_16_a_machines_run_record_holding_a_secret_is_kept_redacted_with_a_note_beside_it_naming_it_and_one_holding_none_byte_for_byte()
+     {
+        let holding = format!("network {PLANTED_NETWORK_SECRET} joined\n");
+        let holding_none = [b'n', b'o', 0xff, 0x00, b'\n'];
+
+        let redacted = kept_after_planting("run-record-note", &holding, |machine| {
+            planted_network_configuration(machine, NETWORK);
+        });
+        let kept_whole = kept_after_planting(
+            "run-record-whole",
+            &String::from_utf8_lossy(&holding_none),
+            |machine| {
+                fs::write(
+                    machine
+                        .root
+                        .join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}")),
+                    holding_none,
+                )
+                .unwrap();
+            },
+        );
+
+        assert_eq!(
+            redacted.run_record,
+            format!("network {REDACTED} joined\n").as_bytes()
+        );
+        let note = redacted.run_record_note.unwrap_or_default();
+        assert!(
+            note.contains(&format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}")),
+            "{note}"
+        );
+        assert_eq!(kept_whole.run_record, holding_none);
+        assert_eq!(kept_whole.run_record_note, None);
+    }
+
     /// Writes the network configuration of the network on the machine naming the planted secret, and returns its file.
     fn planted_network_configuration(machine: &ScratchMachine, network: &str) -> PathBuf {
         let configuration = machine.directories().network_config_file(network).unwrap();
@@ -1965,11 +2000,12 @@ mod tests {
         cached_account
     }
 
-    /// What a machine dropped while keeping left: every file it kept, and the kept copies of its first member's events file and run record.
+    /// What a machine dropped while keeping left: every file it kept, the kept copies of its first member's events file and run record, and the note beside that run record, none when it has none.
     struct KeptAfterPlanting {
         files: BTreeSet<PathBuf>,
         events: Vec<u8>,
         run_record: Vec<u8>,
+        run_record_note: Option<String>,
     }
 
     /// Drops, keeping into a fresh directory, a machine of the tag whose first member's run record and events file each hold the text, once the setup handed in planted its sources, requiring the drop to report no failure, then removes what was kept.
@@ -2011,7 +2047,11 @@ mod tests {
         let kept = KeptAfterPlanting {
             files: files_beneath(&kept_in).into_iter().collect(),
             events: fs::read(kept_events).unwrap(),
-            run_record: fs::read(kept_machine.join(record_name)).unwrap(),
+            run_record: fs::read(kept_machine.join(&record_name)).unwrap(),
+            run_record_note: fs::read_to_string(
+                kept_machine.join(format!("{record_name}.{REDACTED_NOTE_EXTENSION}")),
+            )
+            .ok(),
         };
         remove_scratch::remove_scratch(&kept_in).unwrap();
         kept
