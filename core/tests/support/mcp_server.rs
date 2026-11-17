@@ -270,33 +270,21 @@ pub fn gone(peer: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::io::{self, PipeReader, Read};
+    use std::io;
     use std::panic::{AssertUnwindSafe, catch_unwind};
     use std::path::Path;
     use std::process::{Command, Stdio};
-    use std::sync::mpsc;
-    use std::time::Duration;
 
     use super::McpServer;
     use crate::member_events::MemberEvents;
-    use crate::scratch_machine::owned_process::OwnedProcess;
+    use crate::scratch_machine::owned_process::{
+        OwnedProcess, STAND_IN_ENDED_WITHIN, stand_in_ended_within,
+    };
 
     /// A command that runs until it is ended, reading nothing and printing nothing.
     const RUNS_UNTIL_ENDED: [&str; 3] = ["tail", "-f", "/dev/null"];
     /// How a failed end of the stand-in would be marked.
     const STAND_IN_LABEL: &str = "stand-in";
-    /// How long the end of a stand-in may take to reach the pipe only it holds once its owner ended it: chosen, not measured, far above a kill and a wait.
-    const STAND_IN_ENDED_WITHIN: Duration = Duration::from_secs(10);
-
-    /// Whether the end of the pipe that only the stand-in holds open closes within the bound, the sign the stand-in has ended, read on a thread of its own so no signal is sent to any process.
-    fn stand_in_ended_within(only_the_stand_in_writes: PipeReader, within: Duration) -> bool {
-        let (closed, close_seen) = mpsc::channel();
-        std::thread::spawn(move || {
-            let mut written = Vec::new();
-            drop(closed.send((&only_the_stand_in_writes).read_to_end(&mut written)));
-        });
-        close_seen.recv_timeout(within).is_ok()
-    }
 
     #[test]
     fn observability_decision_16_a_server_whose_handshake_fails_before_it_starts_is_ended_before_the_failure_reaches_its_machine()

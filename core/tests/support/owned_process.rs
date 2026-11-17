@@ -1,11 +1,15 @@
 use std::fs;
-use std::io;
+use std::io::{self, PipeReader, Read};
 use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::mpsc;
+use std::time::Duration;
 
 /// The extension of the file that marks a process whose kill or wait failed, beside the run records its machine keeps.
 pub const END_FAILED_EXTENSION: &str = "end-failed";
+/// How long the end of a test's stand-in may take to reach the pipe only it holds once its owner ended it: chosen, not measured, far above a kill and a wait.
+pub const STAND_IN_ENDED_WITHIN: Duration = Duration::from_secs(10);
 
 /// A spawned process owned from its spawn and ended when dropped, killed and waited for, so no failure after its spawn leaves it running unmarked.
 pub struct OwnedProcess {
@@ -64,4 +68,14 @@ pub fn mark_end_failure(marked_in: &Path, label: &str, process_id: u32, failure:
     if let Err(unwritten) = fs::write(&marked, mark) {
         eprintln!("{}: {unwritten}", marked.display());
     }
+}
+
+/// Whether the end of the pipe that only a test's stand-in holds open closes within the bound, the sign the stand-in has ended, read on a thread of its own so no signal is sent to any process.
+pub fn stand_in_ended_within(only_the_stand_in_writes: PipeReader, within: Duration) -> bool {
+    let (closed, close_seen) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut written = Vec::new();
+        drop(closed.send((&only_the_stand_in_writes).read_to_end(&mut written)));
+    });
+    close_seen.recv_timeout(within).is_ok()
 }

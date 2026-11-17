@@ -2,9 +2,11 @@ use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io;
+use std::io::{self, BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::mpsc::{self, Receiver};
+use std::time::{Duration, Instant};
 
 use estafette::dirs::{
     Directories, DirectoryFilesystem, OperatingSystemFilesystem, TraceDirectory, trace_file_of,
@@ -269,6 +271,38 @@ impl ScratchMachine {
     #[track_caller]
     pub fn spawn_owned(&self, command: &mut Command, label: &str) -> OwnedProcess {
         OwnedProcess::spawned(command, &self.root, label)
+    }
+
+    /// Starts the command as a process of this machine owned from its spawn, its standard output read line by line with the instant each line arrived, and requires its first line within the wait, leaving that line to be read.
+    #[track_caller]
+    pub fn start_printing_lines(
+        &self,
+        command: &mut Command,
+        label: &str,
+        first_line_within: Duration,
+    ) -> (OwnedProcess, Receiver<(Instant, String)>) {
+        let mut process = self.spawn_owned(command.stdout(Stdio::piped()), label);
+        let (forward, lines) = mpsc::channel();
+        let (announce_first_line, first_line) = mpsc::sync_channel(1);
+        let output = BufReader::new(process.stdout.take().unwrap());
+        std::thread::spawn(move || {
+            let mut announce_first_line = Some(announce_first_line);
+            for line in output.lines().map_while(Result::ok) {
+                if let Some(first) = announce_first_line.take()
+                    && first.send(()).is_err()
+                {
+                    return;
+                }
+                if forward.send((Instant::now(), line)).is_err() {
+                    return;
+                }
+            }
+        });
+        assert!(
+            first_line.recv_timeout(first_line_within).is_ok(),
+            "{label} printed no line within {first_line_within:?}"
+        );
+        (process, lines)
     }
 
     /// Keeps this machine's run records, the marks of its processes whose end failed, and its data directory together in a directory of its own beneath the test's, named for this machine and numbered after any earlier keeping of that name.
@@ -585,6 +619,8 @@ mod tests {
     use super::trace_reader::tests::{
         MEMBER_LINE, second_line_still_zero_at_its_start_sized_ahead,
     };
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
     use super::*;
 
     /// The network the tests of this module configure their machines for.
@@ -601,6 +637,15 @@ mod tests {
     const PLANTED_PROCESS_ID: u32 = 4242;
     /// The failure a test plants as the cause of a failed end.
     const PLANTED_END_FAILURE: &str = "planted failure of the wait";
+    /// The shell a test runs a stand-in's command line with, and the flag that hands it the line.
+    const SHELL: &str = "sh";
+    const SHELL_COMMAND_FLAG: &str = "-c";
+    /// A stand-in that closes its standard output at its start and runs until it is ended, printing nothing.
+    const CLOSES_ITS_OUTPUT_AND_RUNS_UNTIL_ENDED: &str = "exec tail -f /dev/null >&-";
+    /// How a test names its stand-in.
+    const STAND_IN_LABEL: &str = "stand-in";
+    /// The bound a test gives a first-line wait that ends at once, its output closed, so the bound is never waited out.
+    const FIRST_LINE_WITHIN: Duration = Duration::from_secs(60);
 
     #[test]
     fn observability_decision_12_a_failing_machine_prints_the_lines_of_a_member_that_may_still_run_before_one_still_zero_filled()
@@ -865,6 +910,43 @@ mod tests {
             "{marked}"
         );
         remove_scratch::remove_scratch(&kept_in).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_16_a_process_whose_first_line_never_comes_is_ended_before_the_failure_reaches_its_machine()
+     {
+        let machine = ScratchMachine::fresh(
+            "first-line",
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: None,
+                invitation: None,
+            },
+        );
+        let (only_the_stand_in_writes, stand_in_end) = io::pipe().unwrap();
+        let mut stand_in = Command::new(SHELL);
+        stand_in
+            .args([SHELL_COMMAND_FLAG, CLOSES_ITS_OUTPUT_AND_RUNS_UNTIL_ENDED])
+            .stdin(Stdio::null())
+            .stderr(stand_in_end);
+
+        let started = catch_unwind(AssertUnwindSafe(|| {
+            machine.start_printing_lines(&mut stand_in, STAND_IN_LABEL, FIRST_LINE_WITHIN)
+        }));
+        drop(stand_in);
+
+        let ended = owned_process::stand_in_ended_within(
+            only_the_stand_in_writes,
+            owned_process::STAND_IN_ENDED_WITHIN,
+        );
+        let Err(_failure) = started else {
+            panic!("a stand-in that closed its output printed a first line")
+        };
+        assert!(
+            ended,
+            "the stand-in still ran {:?} after its first-line wait failed",
+            owned_process::STAND_IN_ENDED_WITHIN
+        );
     }
 
     #[test]

@@ -1,6 +1,5 @@
-use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use crate::scratch_machine::ScratchMachine;
@@ -26,7 +25,7 @@ const TAIL_LABEL: &str = "tail";
 
 /// A running `estafette tail`, its payload lines read as they arrive, each with the instant it arrived.
 pub struct Tail {
-    process: OwnedProcess,
+    _process: OwnedProcess,
     lines: Receiver<(Instant, String)>,
 }
 
@@ -34,37 +33,15 @@ impl Tail {
     /// Starts the command, a `tail` of the network, on the observer's machine, owning it before anything can fail so a failure ends it, and waits for its first payload line, the sign it has joined the topic, leaving that line to be read.
     #[track_caller]
     pub fn start(observer: &ScratchMachine, mut command: Command) -> Self {
-        let (forward, lines) = mpsc::channel();
-        let mut tail = Self {
-            process: observer.spawn_owned(
-                command
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::null()),
-                TAIL_LABEL,
-            ),
-            lines,
-        };
-        let (announce_joined, joined) = mpsc::sync_channel(1);
-        let output = BufReader::new(tail.process.stdout.take().unwrap());
-        std::thread::spawn(move || {
-            let mut announce_joined = Some(announce_joined);
-            for line in output.lines().map_while(Result::ok) {
-                if let Some(joined) = announce_joined.take()
-                    && joined.send(()).is_err()
-                {
-                    return;
-                }
-                if forward.send((Instant::now(), line)).is_err() {
-                    return;
-                }
-            }
-        });
-        assert!(
-            joined.recv_timeout(FIRST_LINE_WAIT).is_ok(),
-            "tail printed no payload within {FIRST_LINE_WAIT:?}"
+        let (process, lines) = observer.start_printing_lines(
+            command.stdin(Stdio::null()).stderr(Stdio::null()),
+            TAIL_LABEL,
+            FIRST_LINE_WAIT,
         );
-        tail
+        Self {
+            _process: process,
+            lines,
+        }
     }
 
     /// The next line printed with the instant it arrived, none when no line arrives before the deadline.
