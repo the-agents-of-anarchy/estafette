@@ -462,8 +462,7 @@ mod tests {
     const REBIND_SLACK: Duration = Duration::from_secs(2);
 
     const ATTACHED_ONLY_IN_THE_PEERS_ACK: bool = true;
-    const SPEC_REBINDS_JOIN_WITHIN: Duration = SPEC_DEAF_TIMEOUT
-        .saturating_add(IROH_DOCUMENTED_CLOSE_LATENCY)
+    const SPEC_REBINDS_JOIN_ONCE_DEAF_WITHIN: Duration = IROH_DOCUMENTED_CLOSE_LATENCY
         .saturating_add(SPEC_RELAY_PROBE_TIMEOUT)
         .saturating_add(REBIND_SLACK);
 
@@ -1465,7 +1464,10 @@ mod tests {
         asking_clock.move_forward(SPEC_DEAF_TIMEOUT);
         let ask_at_the_rebinds_join = request_seq(
             witness
-                .payload_where(SPEC_REBINDS_JOIN_WITHIN, presence_request_by(SECOND_SEED))
+                .payload_where(
+                    SPEC_REBINDS_JOIN_ONCE_DEAF_WITHIN,
+                    presence_request_by(SECOND_SEED),
+                )
                 .await,
         );
         let answer = witness
