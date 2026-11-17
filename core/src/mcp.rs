@@ -176,7 +176,7 @@ async fn record_while_unclaimed(
     report: RunRecord,
 ) {
     loop {
-        tokio::time::sleep_until(snapshot_due_after(monotonic.now())).await;
+        monotonic.reached(snapshot_due_after(monotonic.now())).await;
         if !session.is_unclaimed() {
             return;
         }
@@ -1023,9 +1023,10 @@ mod tests {
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
     use crate::net::direct::RuntimeClock;
+    use crate::net::direct::tests::StandingClock;
     use crate::node::RuntimeShutdown;
     use crate::sidecar;
-    use crate::test_waits::{RecordedEvent, found_within, recorded_events};
+    use crate::test_waits::{RecordedEvent, found_within, next_recorded_meeting, recorded_events};
 
     const NETWORK: &str = "acme";
     const NETWORK_SECRET_BYTE: u8 = 44;
@@ -1181,6 +1182,7 @@ mod tests {
         report: RunRecord,
         node_report: RunRecord,
         is_card_held: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
+        monotonic: MonotonicClock,
     }
 
     impl ServerPlan {
@@ -1194,6 +1196,7 @@ mod tests {
                 is_card_held: Arc::new(|sidecar_path: &Path| {
                     sidecar::is_held(sidecar_path).is_ok_and(|held| held)
                 }),
+                monotonic: Arc::new(RuntimeClock),
             }
         }
 
@@ -1214,6 +1217,7 @@ mod tests {
                 is_card_held: Arc::new(|sidecar_path: &Path| {
                     sidecar::is_held(sidecar_path).is_ok_and(|held| held)
                 }),
+                monotonic: Arc::new(RuntimeClock),
             }
         }
     }
@@ -1343,7 +1347,7 @@ mod tests {
         let effects = ServerEffects {
             node: NodeEffects {
                 clock: Arc::new(wall_clock_ms),
-                monotonic: Arc::new(RuntimeClock),
+                monotonic: plan.monotonic,
                 fill_probe_nonce: Arc::new(move |nonce: &mut crate::wire::Nonce| {
                     nonce.fill(message_id_byte);
                 }),
@@ -1646,6 +1650,39 @@ mod tests {
         for (_at, fields) in [first, second] {
             assert_eq!(fields, vec![("moment", Value::from("interval"))]);
         }
+    }
+
+    /// The longest the snapshot of no counters takes once the handed clock reads the snapshot interval past the server's reading, which the runtime's timer would never reach on a clock an hour ahead.
+    const UNCLAIMED_SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
+    const STATE_COUNTERS: &str = "state.counters";
+
+    #[tokio::test]
+    async fn observability_decisions_9_and_13_a_server_not_yet_claimed_records_its_snapshot_once_its_handed_clock_reads_60_s_on()
+     {
+        let machine = Machine::new("unclaimed-on-clock");
+        let clock = StandingClock::standing_an_hour_ahead();
+        let (record, mut recorded) = recorded_events();
+        let mut client = start_server(
+            &machine,
+            ServerPlan {
+                report: record,
+                monotonic: clock.monotonic(),
+                ..ServerPlan::alone(FIRST_PROCESS_ID)
+            },
+        );
+        client.initialize().await;
+        clock.read_at_least(1).await;
+
+        clock.move_forward(SPEC_STATE_SNAPSHOT_INTERVAL);
+        let snapshot = next_recorded_meeting(
+            &mut recorded,
+            STATE_COUNTERS,
+            |_fields| true,
+            UNCLAIMED_SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN,
+        )
+        .await;
+
+        assert_eq!(snapshot, vec![("moment", Value::from("interval"))]);
     }
 
     #[tokio::test(start_paused = true)]
