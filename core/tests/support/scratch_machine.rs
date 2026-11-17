@@ -218,15 +218,14 @@ impl ScratchMachine {
             .path()
     }
 
-    /// Starts the binary's MCP server for this machine's network as the next member, with the reader of the events it records in its own trace directory.
+    /// Starts the binary's MCP server for this machine's network as the next member, with the reader of the events it records in its own trace directory, made before the start so nothing can fail between the start and the return.
     pub fn spawn_recorded_mcp_server(&self) -> (Child, MemberEvents) {
         let number = self.members_started();
-        let process = self.spawn_mcp_server();
         let events = MemberEvents::new(
             &format!("{MEMBER_LABEL} {number}"),
             &self.traces_directory_of_member(number),
         );
-        (process, events)
+        (self.spawn_mcp_server(), events)
     }
 
     /// The binary with the environment of the member of that number: the machine's, but a data directory of its own and the machine's cards.

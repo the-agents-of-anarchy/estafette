@@ -235,14 +235,14 @@ impl Member {
         }
     }
 
-    /// Closes the member's standard input and requires a clean exit, keeping its machine and card for a restart.
+    /// Closes the member's standard input and requires a clean exit, keeping its machine and card for a restart, the server bound last so a failed wait ends it before its machine keeps data.
     #[track_caller]
     fn stopped(self) -> StoppedMember {
         let Self {
-            mut server,
             machine,
             card,
             handle,
+            mut server,
         } = self;
         server.close_standard_input();
         let exit = server.wait_for_exit();

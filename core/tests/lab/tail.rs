@@ -26,18 +26,21 @@ pub struct Tail {
 }
 
 impl Tail {
-    /// Starts the command, a `tail` of the network, and waits for its first payload line, the sign it has joined the topic, leaving that line to be read.
+    /// Starts the command, a `tail` of the network, owning it before anything can fail so a failure ends it, and waits for its first payload line, the sign it has joined the topic, leaving that line to be read.
     #[track_caller]
     pub fn start(mut command: Command) -> Self {
-        let mut process = command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
         let (forward, lines) = mpsc::channel();
+        let mut tail = Self {
+            process: command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+            lines,
+        };
         let (announce_joined, joined) = mpsc::sync_channel(1);
-        let output = BufReader::new(process.stdout.take().unwrap());
+        let output = BufReader::new(tail.process.stdout.take().unwrap());
         std::thread::spawn(move || {
             let mut announce_joined = Some(announce_joined);
             for line in output.lines().map_while(Result::ok) {
@@ -55,7 +58,7 @@ impl Tail {
             joined.recv_timeout(FIRST_LINE_WAIT).is_ok(),
             "tail printed no payload within {FIRST_LINE_WAIT:?}"
         );
-        Self { process, lines }
+        tail
     }
 
     /// The next line printed with the instant it arrived, none when no line arrives before the deadline.

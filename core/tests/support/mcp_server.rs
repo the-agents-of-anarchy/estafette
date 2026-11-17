@@ -63,11 +63,17 @@ pub struct PendingCall {
 }
 
 impl McpServer {
-    /// Takes the spawned server over its piped standard streams and completes the MCP handshake, its events read through the reader handed in.
+    /// Takes the spawned server over its piped standard streams, owning it before anything can fail so a failure ends it, and completes the MCP handshake, its events read through the reader handed in.
     #[track_caller]
-    pub fn handshaken(mut process: Child, events: MemberEvents) -> Self {
-        let output = BufReader::new(process.stdout.take().unwrap());
+    pub fn handshaken(process: Child, events: MemberEvents) -> Self {
         let (forward, messages) = mpsc::channel();
+        let mut server = Self {
+            process,
+            messages,
+            next_request_id: 1,
+            events,
+        };
+        let output = BufReader::new(server.process.stdout.take().unwrap());
         std::thread::spawn(move || {
             for line in output.lines().map_while(Result::ok) {
                 if let Ok(message) = serde_json::from_str(&line)
@@ -77,12 +83,6 @@ impl McpServer {
                 }
             }
         });
-        let mut server = Self {
-            process,
-            messages,
-            next_request_id: 1,
-            events,
-        };
         server.request(
             "initialize",
             &json!({
@@ -261,4 +261,53 @@ pub fn online(peer: &Value) -> bool {
 /// Whether the peers tool lists the peer gone.
 pub fn gone(peer: &Value) -> bool {
     peer[STATUS_KEY] == json!(GONE)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+
+    use super::McpServer;
+    use crate::member_events::MemberEvents;
+
+    /// A command that runs until it is ended, reading nothing and printing nothing.
+    const RUNS_UNTIL_ENDED: [&str; 3] = ["tail", "-f", "/dev/null"];
+    /// The command that sends a process a signal by its id.
+    const SIGNAL_COMMAND: &str = "kill";
+
+    /// Sends the process of that id the default signal and answers whether one was still there to receive it, so a test ends whatever a fixture left running.
+    fn was_still_running(process_id: u32) -> bool {
+        Command::new(SIGNAL_COMMAND)
+            .arg(process_id.to_string())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    }
+
+    #[test]
+    fn observability_decision_16_a_server_whose_handshake_fails_before_it_starts_is_ended_before_the_failure_reaches_its_machine()
+     {
+        let process = Command::new(RUNS_UNTIL_ENDED[0])
+            .args(&RUNS_UNTIL_ENDED[1..])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let process_id = process.id();
+        let events = MemberEvents::new("member with no output", Path::new("/nonexistent"));
+
+        let handshake = catch_unwind(AssertUnwindSafe(|| McpServer::handshaken(process, events)));
+
+        let left_running = was_still_running(process_id);
+        let Err(_failure) = handshake else {
+            panic!("a server whose output is not piped was handshaken")
+        };
+        assert!(
+            !left_running,
+            "process {process_id} still ran after its handshake failed"
+        );
+    }
 }

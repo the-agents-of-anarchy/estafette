@@ -54,13 +54,12 @@ pub struct ServerMember<'server> {
 }
 
 impl<'server> ServerMember<'server> {
-    /// Writes the network configuration the invitation describes on the server, creates a card there named for the handle and requesting it, and serves it until it answers a tool call.
+    /// Writes the network configuration the invitation describes on the server, creates a card there named for the handle and requesting it, and serves it, owned from before its start so a failed start still stops it, until it answers a tool call.
     #[track_caller]
     pub fn started(server: &'server LabServer, network: &LiveNetwork, handle: &str) -> Self {
         let configuration = invitation_configuration(network, handle);
         server.run(NETWORK_ON_SERVER_RECIPE, &[], configuration.as_bytes());
         let card_key = server.run(CARD_ON_SERVER_RECIPE, &[handle, handle], &[]);
-        server.run(MEMBER_ON_SERVER_RECIPE, &[handle], &[]);
         let run_records = network.run_records();
         let member = Self {
             server,
@@ -68,6 +67,7 @@ impl<'server> ServerMember<'server> {
             secrets: run_records.secrets_longest_first([configuration.as_str(), card_key.as_str()]),
             kept_in: run_records.kept_in().map(Path::to_path_buf),
         };
+        server.run(MEMBER_ON_SERVER_RECIPE, &[handle], &[]);
         member.serving_within(SERVING_WAIT);
         member
     }
