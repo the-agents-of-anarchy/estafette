@@ -1199,7 +1199,7 @@ impl PresenceLoop {
             },
             Some(_) = self.own_addresses.next() => Wake::OwnAddressChanged,
             Some(statuses) = self.relay_statuses.next() => Wake::HomeRelaysChanged(statuses),
-            () = sleep_until_deadline(observer_wait_over) => Wake::ObserverWaitOver,
+            () = deadline_reached(&*self.monotonic, observer_wait_over) => Wake::ObserverWaitOver,
             () = sleep_until_deadline(self.reannounce_due) => Wake::ReannounceDue,
             () = sleep_until_deadline(relay_loss_due) => Wake::RelayLossDue,
             cause = sleep_until_rebind(&*self.monotonic, next_rebind) => Wake::RebindDue(cause),
@@ -1665,6 +1665,14 @@ pub async fn sleep_until_deadline(deadline: Option<Instant>) {
     }
 }
 
+/// Waits until the clock reads the deadline, or forever when there is none.
+pub async fn deadline_reached(clock: &dyn MonotonicTime, deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => clock.reached(deadline).await,
+        None => std::future::pending().await,
+    }
+}
+
 /// The record of a received payload the node took, or dropped by the rule the admission named, naming its signer by the handle the table holds for it, if any.
 pub(super) fn admission_record<Taken>(
     facts: PayloadFacts,
@@ -1944,7 +1952,7 @@ pub(super) mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
-    use crate::net::direct::tests::ShiftedClock;
+    use crate::net::direct::tests::{ShiftedClock, StandingClock};
     use crate::net::direct::{RequestSummary, RuntimeClock};
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
@@ -1968,8 +1976,8 @@ pub(super) mod tests {
     const SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT: Duration = Duration::from_millis(8000);
     pub(in crate::node) const NETWORK_FILE_NAME: &str = "network.toml";
     const NOT_A_KEY: &str = "not a key";
-    const MONOTONIC_LAG: Duration = Duration::from_millis(2000);
-    const INIT_ON_A_LAGGING_CLOCK_LATEST: Duration = Duration::from_millis(2000);
+    /// A third of the observer wait, which the runtime's timer would take whole.
+    const ASSIGNED_ONCE_THE_CLOCK_READS_THE_WAIT_WITHIN: Duration = Duration::from_millis(1000);
     pub(in crate::node) const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
     #[cfg(feature = "relay")]
     const HOME_RELAY_STATUS_WITHIN: Duration = Duration::from_secs(10);
@@ -3351,6 +3359,23 @@ pub(super) mod tests {
         )
         .await
         .0
+    }
+
+    /// Every event the member recorded until it reported its topic joined and asked for presence at that join, by when it has read its clock for the join, failing by name when either does not come within the wait for a payload.
+    pub(in crate::node) async fn joined_and_asked_for_presence(
+        recorded: &mut UnboundedReceiver<RecordedEvent>,
+    ) -> Vec<RecordedEvent> {
+        let (mut before, _joined) =
+            recorded_until(recorded, TOPIC_JOINED, |_fields| true, PAYLOAD_WAIT).await;
+        let (before_the_ask, _asked) = recorded_until(
+            recorded,
+            PAYLOAD_BROADCAST,
+            |fields| fields.contains(&(KIND, serde_json::Value::from(PRESENCE_REQUEST_KIND))),
+            PAYLOAD_WAIT,
+        )
+        .await;
+        before.extend(before_the_ask);
+        before
     }
 
     /// Every event the member recorded until its counters snapshot at the interval, which only the passing of the snapshot interval since its start produces, failing when none comes within the wait for it.
@@ -4742,27 +4767,55 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_8_the_observer_wait_starts_at_a_reading_of_the_handed_clock_and_ends_on_the_runtimes_timer()
-     {
+    async fn spec_3_8_the_observer_wait_runs_on_the_monotonic_clock_the_composition_root_hands_in()
+    {
         let scratch = Scratch::new("monotonic").await;
-        let started = tokio::time::Instant::now();
-        let lagging = ShiftedClock::default();
-        lagging.move_back(MONOTONIC_LAG);
+        let clock = StandingClock::standing_an_hour_ahead();
+        let (first_record, mut first_events) = recorded_events();
+        let (second_record, mut second_events) = recorded_events();
 
-        let _members = start_members(
-            &scratch,
-            vec![
-                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
-                    .with_hosts(&[SECOND_SEED])
-                    .with_monotonic(lagging.monotonic()),
-                MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
-                    .with_hosts(&[FIRST_SEED])
-                    .with_monotonic(lagging.monotonic()),
-            ],
-        )
-        .await;
+        let (_members, before_the_wait) = tokio::join!(
+            start_members(
+                &scratch,
+                vec![
+                    MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                        .with_hosts(&[SECOND_SEED])
+                        .with_monotonic(clock.monotonic())
+                        .with_report(first_record),
+                    MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
+                        .with_hosts(&[FIRST_SEED])
+                        .with_monotonic(clock.monotonic())
+                        .with_report(second_record),
+                ],
+            ),
+            async {
+                let mut before_the_wait = joined_and_asked_for_presence(&mut first_events).await;
+                before_the_wait.extend(joined_and_asked_for_presence(&mut second_events).await);
+                for events in [&mut first_events, &mut second_events] {
+                    before_the_wait.extend(std::iter::from_fn(|| events.try_recv().ok()));
+                }
+                clock.move_forward(SPEC_OBSERVER_WAIT);
+                for events in [&mut first_events, &mut second_events] {
+                    next_recorded_meeting(
+                        events,
+                        OWN_HANDLE_ASSIGNED,
+                        |_fields| true,
+                        ASSIGNED_ONCE_THE_CLOCK_READS_THE_WAIT_WITHIN,
+                    )
+                    .await;
+                }
+                before_the_wait
+            }
+        );
 
-        assert!(started.elapsed() < INIT_ON_A_LAGGING_CLOCK_LATEST);
+        let assigned_before_the_wait: Vec<&RecordedEvent> = before_the_wait
+            .iter()
+            .filter(|(name, _fields)| *name == OWN_HANDLE_ASSIGNED)
+            .collect();
+        assert!(
+            assigned_before_the_wait.is_empty(),
+            "{assigned_before_the_wait:?}"
+        );
         drop(scratch);
     }
 

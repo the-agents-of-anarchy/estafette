@@ -429,10 +429,11 @@ mod tests {
     use crate::node::presence::tests::{
         FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, KIND, MARKER_SEED, Member, MemberPlan,
         OWNER_SEED, PAYLOAD_ACCEPTED, PAYLOAD_WAIT, PEER, PRESENCE_KIND, PRESENCE_REQUEST_KIND,
-        SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, SEQ, Scratch, WITNESS_SEED, Witness, bind, card,
-        entry_meeting_within, frozen_clock, keys, presence_from, presence_request_by, relay_url,
-        secret_key, short_peer_id, spawn_member, start_members, start_members_reaching,
-        status_within, unreachable_about, wall_clock_ms,
+        SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, SEQ, SPEC_OBSERVER_WAIT, Scratch, WITNESS_SEED,
+        Witness, bind, card, entry_meeting_within, frozen_clock, joined_and_asked_for_presence,
+        keys, presence_from, presence_request_by, relay_url, secret_key, short_peer_id,
+        spawn_member, start_members, start_members_reaching, status_within, unreachable_about,
+        wall_clock_ms,
     };
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
@@ -897,25 +898,25 @@ mod tests {
         )
         .await;
         let (record, mut events) = recorded_events();
+        let running_host = [(HOST_SEED, host.addr())];
 
-        let _member = start_members_reaching(
-            &scratch,
-            vec![
-                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
-                    .with_hosts(&[HOST_SEED])
-                    .with_report(record)
-                    .with_monotonic(clock.monotonic()),
-            ],
-            &[(HOST_SEED, host.addr())],
-        )
-        .await;
-        let (mut before_the_last_report, _joined) = recorded_until(
-            &mut events,
-            TOPIC_JOINED,
-            |_fields| true,
-            JOINED_THROUGH_THE_HOST_WITHIN,
-        )
-        .await;
+        let (_member, mut before_the_last_report) = tokio::join!(
+            start_members_reaching(
+                &scratch,
+                vec![
+                    MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                        .with_hosts(&[HOST_SEED])
+                        .with_report(record)
+                        .with_monotonic(clock.monotonic()),
+                ],
+                &running_host,
+            ),
+            async {
+                let joined = joined_and_asked_for_presence(&mut events).await;
+                clock.move_forward(SPEC_OBSERVER_WAIT);
+                joined
+            }
+        );
         for _report in 0..REPORTS_PAST_THE_DEAF_TIMEOUT {
             clock.move_forward(SPEC_INFRASTRUCTURE_RECORD_INTERVAL);
             let (before_the_report, _report) = recorded_until(
@@ -1186,7 +1187,6 @@ mod tests {
     const COUNTERS: &str = "state.counters";
     const REBINDING: &str = "transport.rebinding";
     const DROPPED_PAYLOAD: &str = "gossip.payload_dropped";
-    const TOPIC_JOINED: &str = "gossip.topic_joined";
     const RELAY_PROBED: &str = "transport.relay_probed";
     /// The relays of the two known hosts a rebind probes.
     const RELAYS_OF_THE_KNOWN_HOSTS: usize = 2;
@@ -1199,8 +1199,6 @@ mod tests {
         SPEC_RELAY_PROBE_TIMEOUT.saturating_sub(ANSWER_WITHIN_THE_PROBE_TIMEOUT);
     const MOMENT: &str = "moment";
     const START_MOMENT: &str = "start";
-    /// The longest a member takes to join the topic through its running host: the join timeout, past which it would rebind instead.
-    const JOINED_THROUGH_THE_HOST_WITHIN: Duration = SPEC_JOIN_TIMEOUT;
     /// The longest a host's report takes to reach the member that hears it.
     const REPORT_HEARD_WITHIN: Duration = Duration::from_secs(10);
     /// How many reports, an interval apart on the clock, move it past the deaf timeout and its slack.
