@@ -11,7 +11,9 @@ use crate::mcp_server::{HANDLE_KEY, PEERS_KEY, PEERS_TOOL, RESULT_KEY, SEND_TOOL
 use crate::scratch_machine::fresh_directory::fresh_directory_in;
 use crate::scratch_machine::remove_scratch::remove_scratch;
 use crate::scratch_machine::trace_reader::timeline_in;
-use crate::scratch_machine::{TIMELINE_HEADING, fail_unless_panicking, keep_run_record};
+use crate::scratch_machine::{
+    TIMELINE_HEADING, fail_unless_panicking, fresh_kept_directory, keep_run_record,
+};
 
 /// The recipe that writes the lab network's configuration on a server from its standard input.
 const NETWORK_ON_SERVER_RECIPE: &str = "remote::network-on-server";
@@ -27,8 +29,8 @@ const STOP_MEMBER_ON_SERVER_RECIPE: &str = "remote::stop-member-on-server";
 const RUN_RECORD_ON_SERVER_RECIPE: &str = "remote::run-record-on-server";
 /// The recipe that fetches both trace files of each run of a member on a server into a directory.
 const TRACE_FILES_ON_SERVER_RECIPE: &str = "remote::trace-files-on-server";
-/// What ends the name of the directory a member's fetched trace files are kept in, after its server and card.
-const KEPT_TRACE_FILES_SUFFIX: &str = "traces";
+/// The directory a member's fetched trace files are kept in, inside the directory its records are kept in.
+const KEPT_TRACE_FILES_DIRECTORY: &str = "traces";
 /// What begins the name of the scratch directory a failing test fetches a member's trace files into for its timeline alone.
 const FETCHED_FOR_THE_PRINT_PREFIX: &str = "ea-timeline";
 /// The name, inside that scratch directory, of the directory the recipe fetches into.
@@ -152,7 +154,7 @@ impl<'server> ServerMember<'server> {
         }
     }
 
-    /// Keeps the member's run record in the directory by the scratch machines' layout and redaction rule, its secrets those of its configuration and card, failing the test when the record cannot be read or kept.
+    /// Keeps the member's run record in the directory by the scratch machines' redaction rule, its secrets those of its configuration and card, failing the test when the record cannot be read or kept.
     fn keep_run_record(&self, directory: &Path) {
         let printed = self
             .server
@@ -167,24 +169,21 @@ impl<'server> ServerMember<'server> {
             return;
         }
         let record = String::from_utf8_lossy(&printed.stdout);
-        if let Err(failure) = keep_run_record(
-            directory,
-            self.server.label(),
-            &self.card,
-            &record,
-            &self.secrets,
-        ) {
+        if let Err(failure) = keep_run_record(directory, &self.card, &record, &self.secrets) {
             fail_unless_panicking(&format!("run record of {} not kept: {failure}", self.card));
         }
     }
 
-    /// The directory beside the member's run record that its trace files are kept in.
-    fn kept_trace_files_directory(&self, directory: &Path) -> PathBuf {
-        directory.join(format!(
-            "{}-{}-{KEPT_TRACE_FILES_SUFFIX}",
-            self.server.label(),
-            self.card
-        ))
+    /// Keeps the member's run record and trace files together in a directory of its own beneath the test's, named for its server and card and numbered after any earlier keeping of that name, and answers where its trace files are, when they were fetched, failing the test when that directory cannot be made.
+    fn keep_records(&self, directory: &Path) -> Option<PathBuf> {
+        let kept =
+            fresh_kept_directory(directory, &format!("{}-{}", self.server.label(), self.card))
+                .inspect_err(|failure| {
+                    fail_unless_panicking(&format!("records of {} not kept: {failure}", self.card));
+                })
+                .ok()?;
+        self.keep_run_record(&kept);
+        self.keep_trace_files(&kept)
     }
 
     /// Fetches both trace files of each of the member's runs into the directory, unredacted, so its raw files are not safe to post, and answers the directory when they were fetched, failing the test when they were not.
@@ -207,7 +206,7 @@ impl<'server> ServerMember<'server> {
 
     /// Keeps both trace files of each of the member's runs beside its run record and answers where, when they were fetched.
     fn keep_trace_files(&self, directory: &Path) -> Option<PathBuf> {
-        let kept_trace_files = self.kept_trace_files_directory(directory);
+        let kept_trace_files = directory.join(KEPT_TRACE_FILES_DIRECTORY);
         let fetched = self.fetch_trace_files(&kept_trace_files)?;
         eprintln!("trace files of {} kept at {}", self.card, fetched.display());
         Some(fetched.to_path_buf())
@@ -261,10 +260,10 @@ impl Drop for ServerMember<'_> {
                 String::from_utf8_lossy(&stopped.stderr)
             );
         }
-        let kept_trace_files = self.kept_in.as_deref().map(|directory| {
-            self.keep_run_record(directory);
-            self.keep_trace_files(directory)
-        });
+        let kept_trace_files = self
+            .kept_in
+            .as_deref()
+            .map(|directory| self.keep_records(directory));
         if std::thread::panicking() {
             let timeline = kept_trace_files.map_or_else(
                 || self.timeline_fetched_for_the_print(),
