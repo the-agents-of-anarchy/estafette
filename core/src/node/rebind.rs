@@ -414,7 +414,8 @@ mod tests {
     use crate::event::{Event, RunRecord, TransportEvent};
     use crate::net::direct::tests::{ShiftedClock, StandingClock, test_salt};
     use crate::net::direct::{
-        ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock, RuntimeClock,
+        ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock, MonotonicTime,
+        RuntimeClock,
     };
     use crate::net::endpoint::{
         DIRECT_ALPN, LocationHash, NodeEndpoint, RebindCause, TransportRecord,
@@ -1289,13 +1290,13 @@ mod tests {
     const SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
 
     #[tokio::test]
-    async fn observability_decision_9_a_quiet_member_records_its_counters_once_its_handed_clock_reads_60_s_past_its_start()
+    async fn observability_decision_9_a_quiet_member_records_its_counters_once_its_handed_clock_reads_60_s_past_its_start_and_again_60_s_past_that_reading()
      {
         let scratch = Scratch::new("state-on-the-clock").await;
         let clock = StandingClock::standing_an_hour_ahead();
         let (record, mut events) = recorded_events();
 
-        let (_members, at_the_interval) = tokio::join!(
+        let (_members, at_the_intervals) = tokio::join!(
             start_members(
                 &scratch,
                 vec![
@@ -1306,21 +1307,39 @@ mod tests {
             ),
             async {
                 next_recorded(&mut events, COUNTERS).await;
-                clock.move_forward(SPEC_STATE_SNAPSHOT_INTERVAL);
-                next_recorded_meeting(
-                    &mut events,
-                    COUNTERS,
-                    is_snapshot_after_the_start,
-                    SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN,
-                )
-                .await
+                let mut at_the_intervals = Vec::new();
+                for interval in ["first", "second"] {
+                    let snapshot_due = clock
+                        .now()
+                        .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
+                        .unwrap();
+                    clock
+                        .asked_to_wake(
+                            &format!("the quiet member's {interval} interval counters"),
+                            snapshot_due,
+                        )
+                        .await;
+                    clock.move_late_past(snapshot_due);
+                    at_the_intervals.push(
+                        next_recorded_meeting(
+                            &mut events,
+                            COUNTERS,
+                            is_snapshot_after_the_start,
+                            SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN,
+                        )
+                        .await,
+                    );
+                }
+                at_the_intervals
             }
         );
 
-        assert_eq!(
-            at_the_interval.first(),
-            Some(&(MOMENT, serde_json::Value::from(INTERVAL_MOMENT)))
-        );
+        for at_the_interval in at_the_intervals {
+            assert_eq!(
+                at_the_interval.first(),
+                Some(&(MOMENT, serde_json::Value::from(INTERVAL_MOMENT)))
+            );
+        }
         drop(scratch);
     }
 
@@ -1819,6 +1838,12 @@ mod tests {
         clock.move_forward(SPEC_DEAF_TIMEOUT);
         recorded_until(&mut events, REBINDING, |_fields| true, PAYLOAD_WAIT).await;
         joined_and_asked_for_presence(&mut events).await;
+        clock
+            .asked_to_wake(
+                "the member join wait",
+                clock.now().checked_add(SPEC_MEMBER_JOIN_WAIT).unwrap(),
+            )
+            .await;
         clock.move_forward(SPEC_MEMBER_JOIN_WAIT);
         let met = unreachable_member
             .first_neighbor_up_of(FIRST_SEED, MEMBER_JOIN_ASKED_ONCE_THE_CLOCK_READS_IT_WITHIN)
