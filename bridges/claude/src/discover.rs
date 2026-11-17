@@ -9,7 +9,8 @@ use std::process::{Command, ExitStatus};
 use std::str::FromStr;
 use std::time::Duration;
 
-const POLL_INTERVAL: Duration = Duration::from_millis(2000);
+/// The pause `follow_binary_sockets` waits between two polls of the process table.
+pub const POLL_INTERVAL: Duration = Duration::from_millis(2000);
 const BINARY_EXECUTABLE_NAME: &str = "estafette";
 const MCP_MODE_ARGUMENT: &str = "mcp";
 const RUNTIME_DIRECTORY_PREFIX: &str = "estafette-";

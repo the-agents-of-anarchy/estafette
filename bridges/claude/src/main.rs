@@ -12,8 +12,8 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use estafette_bridge_claude::discover::{
-    BinarySocket, Pid, ProcessTable, ProcessTableError, PsProcessTable, RuntimeDirectoryInputs,
-    follow_binary_sockets,
+    BinarySocket, POLL_INTERVAL, Pid, ProcessTable, ProcessTableError, PsProcessTable,
+    RuntimeDirectoryInputs, follow_binary_sockets,
 };
 use estafette_bridge_claude::doctor::{
     DoctorInputs, MESSAGING_SOCKET_VARIABLE, MessagingSocket, RUN_SUBCOMMAND, SettingsFile,
@@ -89,6 +89,8 @@ const HIDDEN_FILE_PREFIX: char = '.';
 const STAGING_SUFFIX: &str = ".staging";
 /// How often a serving bridge writes its alive line, on its own clock: `spec/observability.md` decision 13 has a live process write its events file at least this often.
 const ALIVE_LINE_PERIOD: Duration = Duration::from_secs(60);
+/// The loop that writes each alive line falling due inside one pause between polls ends, on a clock that never runs back, only while that pause is shorter than the period.
+const _: () = assert!(POLL_INTERVAL.as_nanos() < ALIVE_LINE_PERIOD.as_nanos());
 
 #[derive(Debug, Eq, PartialEq)]
 enum Command {
