@@ -36,9 +36,9 @@ use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
     DEPARTURE_WAIT, Delivery, DirectAnswer, DirectRequest, DirectRequester, Identity,
     KnownHostAddress, Network, Node, NodeEffects, NodeError, PeerRows, RelayProbe, Session,
-    acknowledgement_of, broadcast_recorded, known_host_addresses, next_recorded_gossip_event,
-    observer_wait_over_at, presence_request, record_counters, replace_lookup_entry,
-    seed_lookup_with_known_hosts, send_in_background, serve, sleep_until_deadline,
+    acknowledgement_of, broadcast_recorded, deadline_reached, known_host_addresses,
+    next_recorded_gossip_event, observer_wait_over_at, presence_request, record_counters,
+    replace_lookup_entry, seed_lookup_with_known_hosts, send_in_background, serve,
     snapshot_due_after, taken_without_a_row_record, wire_addr,
 };
 use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC};
@@ -848,7 +848,7 @@ impl Observation {
                 &*self.report,
             ) => Step::Topic(event),
             Some(event) = self.from_loop.recv() => Step::Loop(event),
-            () = sleep_until_deadline(self.wait_over) => Step::WaitOver,
+            () = deadline_reached(&*self.monotonic, self.wait_over) => Step::WaitOver,
             () = sleep_until(self.snapshot_due) => Step::SnapshotDue,
             () = &mut self.interrupted => Step::Interrupted,
         }
@@ -1049,7 +1049,7 @@ mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::ProcessTable;
     use crate::keys::render_public_key;
-    use crate::net::direct::tests::LeapingClock;
+    use crate::net::direct::tests::{LeapingClock, StandingClock};
     use crate::net::direct::{DirectServer, RuntimeClock};
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
@@ -2712,6 +2712,62 @@ mod tests {
             assert!(names.contains(&"socket.recv_datagrams"), "{names:?}");
             assert!(names.contains(&"gossip.neighbor_up"), "{names:?}");
         }
+        drop(lab);
+    }
+
+    /// The longest an observer takes to act once its handed clock reads a deadline, which the runtime's timer would never reach on a clock an hour ahead.
+    const ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
+    const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
+    const STATE_COUNTERS: &str = "state.counters";
+
+    #[tokio::test]
+    async fn spec_3_8_show_peers_ends_once_its_handed_clock_reads_the_observer_wait_past_its_join_timeout()
+     {
+        let lab = Lab::new("show-peers-on-the-clock").await;
+        lab.write_network_config(&[NEIGHBOR_SEED]);
+        let clock = StandingClock::standing_an_hour_ahead();
+        let (record, mut recorded) = recorded_events();
+        let (mut effects, operator_effects) = lab.effects(Vec::new(), never_interrupted());
+        effects.report = record;
+        effects.monotonic = clock.monotonic();
+        let show_peers = ObserverCommand::ShowPeers {
+            network: NETWORK_NAME.parse().unwrap(),
+            cards_dir: None,
+            debug: DebugArgs::default(),
+        };
+        let mut printed = Vec::new();
+
+        let (shown, ()) = tokio::join!(
+            tokio::time::timeout(
+                ONCE_THE_CLOCK_READS_IT_WITHIN,
+                run(
+                    &show_peers,
+                    &lab.directories,
+                    &OperatingSystemFilesystem,
+                    &NoPause,
+                    (effects, operator_effects),
+                    &mut printed,
+                ),
+            ),
+            async {
+                next_recorded_meeting(
+                    &mut recorded,
+                    STATE_COUNTERS,
+                    |_fields| true,
+                    ONCE_THE_CLOCK_READS_IT_WITHIN,
+                )
+                .await;
+                let read_by_the_start = clock.readings();
+                clock.move_forward(SPEC_JOIN_TIMEOUT);
+                clock.read_at_least(read_by_the_start + 1).await;
+                clock.move_forward(SPEC_OBSERVER_WAIT);
+            }
+        );
+
+        assert!(
+            shown.is_ok(),
+            "show-peers did not end within {ONCE_THE_CLOCK_READS_IT_WITHIN:?} once the clock read the observer wait past its join timeout"
+        );
         drop(lab);
     }
 

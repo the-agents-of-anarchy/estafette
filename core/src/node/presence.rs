@@ -16,7 +16,7 @@ use iroh::{EndpointAddr, EndpointId, SecretKey, Watcher};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, sleep_until};
+use tokio::time::Instant;
 
 use super::addresses::{endpoint_id, replace_lookup_entry, wire_addr};
 use super::known_hosts::{
@@ -1655,14 +1655,6 @@ pub fn record_counters(
 /// When the observer wait that starts at `joined` is over.
 pub fn observer_wait_over_at(joined: Instant) -> Instant {
     joined.checked_add(OBSERVER_WAIT).unwrap_or(joined)
-}
-
-/// Sleeps until the deadline, or forever when there is none.
-pub async fn sleep_until_deadline(deadline: Option<Instant>) {
-    match deadline {
-        Some(deadline) => sleep_until(deadline).await,
-        None => std::future::pending().await,
-    }
 }
 
 /// Waits until the clock reads the deadline, or forever when there is none.
