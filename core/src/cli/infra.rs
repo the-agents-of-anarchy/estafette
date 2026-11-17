@@ -2435,7 +2435,7 @@ mod tests {
     const STATE_COUNTERS: &str = "state.counters";
 
     #[tokio::test]
-    async fn observability_decisions_9_and_13_the_host_records_its_counters_once_its_handed_clock_reads_60_s_past_its_join()
+    async fn observability_decisions_9_and_13_the_host_records_its_counters_once_its_handed_clock_reads_60_s_past_its_join_and_again_60_s_past_that_reading()
      {
         let scratch = Scratch::new("counters-on-the-clock");
         scratch.configure_network();
@@ -2455,13 +2455,30 @@ mod tests {
             ..Plan::new(HOST_SEED)
         };
 
-        let ((_printed, outcome), snapshot) =
+        let ((_printed, outcome), (before_the_first, snapshots)) =
             tokio::join!(run_planned(&scratch, plan, &seen), async {
                 clock
                     .asked_to_wake("the host's first counters snapshot", first_snapshot_due)
                     .await;
-                clock.move_forward(SPEC_STATE_SNAPSHOT_INTERVAL);
-                let snapshot = next_recorded_meeting(
+                let before_the_first: Vec<RecordedEvent> =
+                    std::iter::from_fn(|| recorded.try_recv().ok()).collect();
+                clock.move_late_past(first_snapshot_due);
+                let first = next_recorded_meeting(
+                    &mut recorded,
+                    STATE_COUNTERS,
+                    |_fields| true,
+                    SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN,
+                )
+                .await;
+                let second_snapshot_due = clock
+                    .now()
+                    .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
+                    .unwrap();
+                clock
+                    .asked_to_wake("the host's second counters snapshot", second_snapshot_due)
+                    .await;
+                clock.move_late_past(second_snapshot_due);
+                let second = next_recorded_meeting(
                     &mut recorded,
                     STATE_COUNTERS,
                     |_fields| true,
@@ -2469,14 +2486,24 @@ mod tests {
                 )
                 .await;
                 stop.send(()).unwrap();
-                snapshot
+                (before_the_first, [first, second])
             });
 
         outcome.unwrap();
-        assert_eq!(
-            snapshot.first(),
-            Some(&("moment", serde_json::Value::from("interval")))
+        let counters_before_the_first: Vec<&RecordedEvent> = before_the_first
+            .iter()
+            .filter(|(name, _fields)| *name == STATE_COUNTERS)
+            .collect();
+        assert!(
+            counters_before_the_first.is_empty(),
+            "{counters_before_the_first:?}"
         );
+        for snapshot in snapshots {
+            assert_eq!(
+                snapshot.first(),
+                Some(&("moment", serde_json::Value::from("interval")))
+            );
+        }
     }
 
     #[tokio::test]

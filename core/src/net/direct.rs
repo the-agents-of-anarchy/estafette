@@ -2109,6 +2109,8 @@ pub(crate) mod tests {
     const AHEAD_OF_THE_RUNTIME: Duration = Duration::from_secs(3600);
     /// The longest a test waits for a waiter to ask a clock to wake it at a deadline.
     const WAKE_ASKED_WAIT: Duration = Duration::from_secs(10);
+    /// How far past a deadline a test moves a clock to wake its waiter late, so the reading at the wake and the deadline disagree.
+    const WOKEN_LATE_BY: Duration = Duration::from_millis(7);
 
     /// A monotonic clock standing at the instant the test last moved it to, keeping every deadline a waiter asked it to wake at and waking each waiter once it reads that waiter's deadline.
     #[derive(Clone)]
@@ -2137,6 +2139,13 @@ pub(crate) mod tests {
         pub fn move_forward(&self, by: Duration) {
             self.reading
                 .send_modify(|now| *now = now.checked_add(by).unwrap());
+        }
+
+        /// Moves the clock to a reading a few milliseconds past the deadline, so its waiter wakes at a reading later than the deadline it asked.
+        pub fn move_late_past(&self, deadline: tokio::time::Instant) {
+            self.reading.send_modify(|now| {
+                *now = (*now).max(deadline.checked_add(WOKEN_LATE_BY).unwrap());
+            });
         }
 
         /// Waits until the named waiter has asked the clock to wake it at the deadline, failing with that name when it has not within the wait.
