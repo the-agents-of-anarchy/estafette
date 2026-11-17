@@ -1049,6 +1049,7 @@ mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::ProcessTable;
     use crate::keys::render_public_key;
+    use crate::net::direct::tests::LeapingClock;
     use crate::net::direct::{DirectServer, RuntimeClock};
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
@@ -2727,16 +2728,7 @@ mod tests {
 
     /// A monotonic clock that moves an hour on at every reading, so every connection the observer holds reads as long silent whenever it is judged.
     fn clock_moving_past_any_silence_at_each_reading() -> MonotonicClock {
-        let started = Instant::now();
-        let readings = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        Arc::new(move || {
-            started
-                .checked_add(
-                    CLOCK_STEP_PAST_ANY_SILENCE
-                        .saturating_mul(readings.fetch_add(1, std::sync::atomic::Ordering::SeqCst)),
-                )
-                .unwrap()
-        })
+        LeapingClock::leaping_by(CLOCK_STEP_PAST_ANY_SILENCE)
     }
 
     async fn answer_on(connection: &iroh::endpoint::Connection, request: wire::Request) -> Vec<u8> {

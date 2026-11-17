@@ -1210,7 +1210,7 @@ impl From<ReadToEndError> for DirectError {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     use std::time::Instant;
 
@@ -2026,15 +2026,7 @@ pub(crate) mod tests {
 
     /// A clock that moves a gone process's silence forward at every reading, so every held connection reads as gone when judged.
     fn clock_reading_every_connection_as_gone() -> MonotonicClock {
-        let started = tokio::time::Instant::now();
-        let readings = Arc::new(AtomicU32::new(0));
-        Arc::new(move || {
-            started
-                .checked_add(
-                    GONE_PROCESS_SILENCE.saturating_mul(readings.fetch_add(1, Ordering::SeqCst)),
-                )
-                .unwrap()
-        })
+        LeapingClock::leaping_by(GONE_PROCESS_SILENCE)
     }
 
     #[tokio::test]
@@ -2149,6 +2141,53 @@ pub(crate) mod tests {
             let mut readings = self.0.subscribe();
             Box::pin(async move {
                 if readings.wait_for(|now| *now >= deadline).await.is_err() {
+                    std::future::pending::<()>().await;
+                }
+            })
+        }
+    }
+
+    /// A monotonic clock first reading the runtime's now and leaping forward by its step at every reading, waking each waiter once it has read that waiter's deadline.
+    #[derive(Clone)]
+    pub struct LeapingClock {
+        step: Duration,
+        next_reading: Arc<tokio::sync::watch::Sender<tokio::time::Instant>>,
+    }
+
+    impl LeapingClock {
+        /// The clock leaping by the step, as a node or a register takes it.
+        pub fn leaping_by(step: Duration) -> MonotonicClock {
+            Arc::new(Self {
+                step,
+                next_reading: Arc::new(
+                    tokio::sync::watch::Sender::new(tokio::time::Instant::now()),
+                ),
+            })
+        }
+    }
+
+    impl MonotonicTime for LeapingClock {
+        fn now(&self) -> tokio::time::Instant {
+            let mut read = None;
+            self.next_reading.send_modify(|next| {
+                read = Some(*next);
+                *next = next.checked_add(self.step).unwrap();
+            });
+            read.unwrap()
+        }
+
+        fn reached(
+            &self,
+            deadline: tokio::time::Instant,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            let next_once_read = deadline.checked_add(self.step).unwrap();
+            let mut next_readings = self.next_reading.subscribe();
+            Box::pin(async move {
+                if next_readings
+                    .wait_for(|next| *next >= next_once_read)
+                    .await
+                    .is_err()
+                {
                     std::future::pending::<()>().await;
                 }
             })
