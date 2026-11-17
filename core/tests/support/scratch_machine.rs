@@ -308,13 +308,19 @@ impl ScratchMachine {
         (process, lines)
     }
 
-    /// Keeps this machine's run records, the marks of its processes whose end failed, and its data directory together in a directory of its own beneath the test's, named for this machine and numbered after any earlier keeping of that name.
-    fn keep_records(&self, directory: &Path) -> io::Result<()> {
-        let kept = fresh_kept_directory(directory, &self.name())?;
-        let run_records = self.keep_run_records(&kept);
-        let end_failures = self.keep_end_failures(&kept);
-        let data = self.keep_data_directory(&kept);
-        run_records.and(end_failures).and(data).map(|_data| ())
+    /// Keeps this machine's run records, the marks of its processes whose end failed, and its data directory together in a directory of its own beneath the test's, named for this machine and numbered after any earlier keeping of that name, and answers every failure of that keeping, none when all was kept.
+    fn keep_records(&self, directory: &Path) -> Vec<io::Error> {
+        let kept = match fresh_kept_directory(directory, &self.name()) {
+            Ok(kept) => kept,
+            Err(failure) => return vec![failure],
+        };
+        let run_records = self.keep_run_records(&kept).err();
+        let end_failures = self.keep_end_failures(&kept).err();
+        let data = self.keep_data_directory(&kept).err();
+        [run_records, end_failures, data]
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     /// Copies every member's run record into the directory, named for the member, each line that holds a secret of this machine kept with that secret replaced by the redaction marker, and returns the kept files.
@@ -447,21 +453,32 @@ impl Drop for ScratchMachine {
                 eprintln!("{timeline}");
             }
         }
-        let kept = self
+        let not_kept = self
             .run_records
             .kept_in()
-            .map(|directory| self.keep_records(directory));
+            .map(|directory| self.keep_records(directory))
+            .unwrap_or_default();
         let removed = remove_scratch::remove_scratch(&self.root);
-        if let Some(Err(failure)) = kept {
+        if !not_kept.is_empty() {
             fail_unless_panicking(&format!(
-                "records of {} not kept: {failure}",
-                self.root.display()
+                "records of {} not kept: {}",
+                self.root.display(),
+                each_failure(&not_kept)
             ));
         }
         if let Err(failure) = removed {
             fail_unless_panicking(&failure.to_string());
         }
     }
+}
+
+/// Every failure's text, joined so a reader meets each.
+fn each_failure(failures: &[io::Error]) -> String {
+    failures
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Fails the test with the message, or prints it when the test is already failing, so a cleanup failure never hides the failure that came first.
@@ -620,6 +637,7 @@ mod tests {
     use super::trace_reader::tests::{
         MEMBER_LINE, second_line_still_zero_at_its_start_sized_ahead,
     };
+    use std::os::unix::fs::PermissionsExt;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use super::*;
@@ -638,6 +656,10 @@ mod tests {
     const PLANTED_PROCESS_ID: u32 = 4242;
     /// The failure a test plants as the cause of a failed end.
     const PLANTED_END_FAILURE: &str = "planted failure of the wait";
+    /// The mode of a file or directory its owner can neither read nor list, so keeping it fails.
+    const UNREADABLE: u32 = 0o000;
+    /// The mode that makes such a file or directory its owner's again, so the test can remove it.
+    const READABLE: u32 = 0o700;
     /// The shell a test runs a stand-in's command line with, and the flag that hands it the line.
     const SHELL: &str = "sh";
     const SHELL_COMMAND_FLAG: &str = "-c";
@@ -879,6 +901,43 @@ mod tests {
             })
             .collect();
         assert_eq!(kept, expected);
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_run_records_and_data_both_fail_to_be_kept_answers_both_failures()
+     {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-both-failures-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = ScratchMachine::fresh(
+            "kept-both-failures",
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: None,
+                invitation: None,
+            },
+        );
+        let unreadable_record = machine
+            .root
+            .join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}"));
+        let unreadable_data = machine
+            .traces_directory_of_member(0)
+            .join("20261117T080000Z-1111111111111111-estafette.events.jsonl");
+        fs::create_dir_all(unreadable_data.parent().unwrap()).unwrap();
+        for file in [&unreadable_record, &unreadable_data] {
+            fs::write(file, "line no keeping can read\n").unwrap();
+            fs::set_permissions(file, fs::Permissions::from_mode(UNREADABLE)).unwrap();
+        }
+
+        let not_kept = machine.keep_records(&kept_in);
+
+        for file in [&unreadable_record, &unreadable_data] {
+            fs::set_permissions(file, fs::Permissions::from_mode(READABLE)).unwrap();
+        }
+        assert_eq!(not_kept.len(), 2, "{not_kept:?}");
         remove_scratch::remove_scratch(&kept_in).unwrap();
     }
 
