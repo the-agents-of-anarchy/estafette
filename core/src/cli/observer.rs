@@ -2723,7 +2723,7 @@ mod tests {
     const STATE_COUNTERS: &str = "state.counters";
 
     #[tokio::test]
-    async fn observability_decisions_9_and_13_tail_records_its_counters_once_its_handed_clock_reads_60_s_past_its_start()
+    async fn observability_decisions_9_and_13_tail_records_its_counters_once_its_handed_clock_reads_60_s_past_its_start_and_again_60_s_past_that_reading()
      {
         let lab = Lab::new("tail-counters-on-the-clock").await;
         lab.write_network_config(&[NEIGHBOR_SEED]);
@@ -2741,7 +2741,7 @@ mod tests {
         };
         let mut printed = Vec::new();
 
-        let (tail_result, at_the_interval) = tokio::join!(
+        let (tail_result, (before_the_first, at_the_intervals)) = tokio::join!(
             run(
                 &tail,
                 &lab.directories,
@@ -2758,8 +2758,32 @@ mod tests {
                     ONCE_THE_CLOCK_READS_IT_WITHIN,
                 )
                 .await;
-                clock.move_forward(SPEC_STATE_SNAPSHOT_INTERVAL);
-                let at_the_interval = next_recorded_meeting(
+                let first_snapshot_due = clock
+                    .now()
+                    .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
+                    .unwrap();
+                clock
+                    .asked_to_wake("tail's first interval counters", first_snapshot_due)
+                    .await;
+                let before_the_first: Vec<RecordedEvent> =
+                    std::iter::from_fn(|| recorded.try_recv().ok()).collect();
+                clock.move_late_past(first_snapshot_due);
+                let at_the_first_interval = next_recorded_meeting(
+                    &mut recorded,
+                    STATE_COUNTERS,
+                    |_fields| true,
+                    ONCE_THE_CLOCK_READS_IT_WITHIN,
+                )
+                .await;
+                let second_snapshot_due = clock
+                    .now()
+                    .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
+                    .unwrap();
+                clock
+                    .asked_to_wake("tail's second interval counters", second_snapshot_due)
+                    .await;
+                clock.move_late_past(second_snapshot_due);
+                let at_the_second_interval = next_recorded_meeting(
                     &mut recorded,
                     STATE_COUNTERS,
                     |_fields| true,
@@ -2767,15 +2791,28 @@ mod tests {
                 )
                 .await;
                 interrupt.send(()).unwrap_or_default();
-                at_the_interval
+                (
+                    before_the_first,
+                    [at_the_first_interval, at_the_second_interval],
+                )
             }
         );
 
         tail_result.unwrap();
-        assert_eq!(
-            at_the_interval.first(),
-            Some(&("moment", serde_json::Value::from("interval")))
+        let counters_before_the_first: Vec<&RecordedEvent> = before_the_first
+            .iter()
+            .filter(|(name, _fields)| *name == STATE_COUNTERS)
+            .collect();
+        assert!(
+            counters_before_the_first.is_empty(),
+            "{counters_before_the_first:?}"
         );
+        for at_the_interval in at_the_intervals {
+            assert_eq!(
+                at_the_interval.first(),
+                Some(&("moment", serde_json::Value::from("interval")))
+            );
+        }
         drop(lab);
     }
 
