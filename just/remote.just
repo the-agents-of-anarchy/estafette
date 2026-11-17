@@ -8,7 +8,9 @@ set working-directory := '..'
 
 lab_hcloud_context := "estafette-lab"
 lab_hcloud := "env -u HCLOUD_TOKEN hcloud --context " + lab_hcloud_context
-server := env("LAB_SERVER", "estafette-lab")
+host_a_server := "estafette-lab"
+server := env("LAB_SERVER", host_a_server)
+lab_host_letter := if server == host_a_server { "A" } else { "B" }
 key := env("LAB_KEY", home_directory() / ".ssh" / "estafette_lab")
 known_hosts := home_directory() / ".ssh" / "known_hosts_estafette_lab"
 ssh_opts := "-i " + key + " -o IdentitiesOnly=yes -o UserKnownHostsFile=" + known_hosts + " -o StrictHostKeyChecking=accept-new"
@@ -20,8 +22,8 @@ lab_config_and_runtime := "XDG_CONFIG_HOME=" + lab_root / "config" + " XDG_RUNTI
 lab_directories := lab_config_and_runtime + " XDG_DATA_HOME=" + lab_data
 lab_cards_directory := lab_data / "estafette/cards"
 lab_members_data := lab_data / "members"
-lab_server_type := env("LAB_SERVER_TYPE", "cpx22")
-lab_location := "nbg1"
+lab_server_type := env("LAB_HOST_" + lab_host_letter + "_SERVER_TYPE", "cpx22")
+lab_location := env("LAB_HOST_" + lab_host_letter + "_LOCATION", "nbg1")
 lab_image := "ubuntu-24.04"
 lab_resource_name := "estafette-lab"
 lab_skill := ".claude/skills/run-hetzner-lab"
@@ -135,7 +137,7 @@ server-binary-built: lab-context-exists
     fi
     exit "$status"
 
-[doc("Create the lab server with its 24-hour deadline, or reuse it, wait for its setup, then push the committed tree and build the release binary with the relay there")]
+[doc("Create the lab server with its 24-hour deadline, or reuse it, wait for its setup, then push the committed tree and build the release binary with the relay there; host A, the server estafette-lab, is created at LAB_HOST_A_LOCATION with type LAB_HOST_A_SERVER_TYPE, any other server at LAB_HOST_B_LOCATION with type LAB_HOST_B_SERVER_TYPE")]
 [group('lab')]
 server-up: lab-context-exists
     #!/usr/bin/env bash
