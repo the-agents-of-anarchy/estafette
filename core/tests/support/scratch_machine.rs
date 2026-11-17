@@ -352,7 +352,7 @@ impl ScratchMachine {
             kept.push(keep_run_record(
                 directory,
                 &member_name,
-                &fs::read_to_string(&record)?,
+                &fs::read_to_string(&record).map_err(|failure| naming(&record, &failure))?,
                 &secrets,
             )?);
         }
@@ -1127,40 +1127,32 @@ mod tests {
     }
 
     #[test]
-    fn observability_decision_16_a_machine_whose_run_records_and_data_both_fail_to_be_kept_answers_both_failures()
+    fn observability_decision_16_a_machine_dropped_on_a_test_that_was_not_failing_whose_run_record_and_data_both_fail_to_be_kept_reports_both_failures()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-both-failures-test-{}", std::process::id()),
-        )
-        .unwrap();
-        let machine = ScratchMachine::fresh(
-            "kept-both-failures",
-            NETWORK,
-            &RunRecordKeeping {
-                kept_in: None,
-                invitation: None,
-            },
-        );
-        let unreadable_record = machine
-            .root
-            .join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}"));
-        let unreadable_data = machine
-            .traces_directory_of_member(0)
-            .join("20261117T080000Z-1111111111111111-estafette.events.jsonl");
-        fs::create_dir_all(unreadable_data.parent().unwrap()).unwrap();
-        for file in [&unreadable_record, &unreadable_data] {
-            fs::write(file, "line no keeping can read\n").unwrap();
-            fs::set_permissions(file, fs::Permissions::from_mode(UNREADABLE)).unwrap();
-        }
+        let mut unreadable = Vec::new();
+        let dropped = dropped_with_a_source_unread("kept-both-failures", |machine| {
+            let record = machine
+                .root
+                .join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}"));
+            let data = machine
+                .traces_directory_of_member(0)
+                .join(MEMBER_EVENTS_FILE);
+            for file in [&record, &data] {
+                fs::set_permissions(file, fs::Permissions::from_mode(UNREADABLE)).unwrap();
+            }
+            unreadable.extend([record, data.clone()]);
+            data
+        });
 
-        let not_kept = machine.keep_records(&kept_in);
-
-        for file in [&unreadable_record, &unreadable_data] {
-            fs::set_permissions(file, fs::Permissions::from_mode(READABLE)).unwrap();
+        assert_eq!(dropped.kept, BTreeSet::new());
+        for file in &unreadable {
+            assert!(
+                dropped.message.contains(&file.display().to_string()),
+                "{} is not named: {}",
+                file.display(),
+                dropped.message
+            );
         }
-        assert_eq!(not_kept.len(), 2, "{not_kept:?}");
-        remove_scratch::remove_scratch(&kept_in).unwrap();
     }
 
     #[test]
