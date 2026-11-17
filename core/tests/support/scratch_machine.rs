@@ -4,7 +4,7 @@ use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 
 use estafette::dirs::{
     Directories, DirectoryFilesystem, OperatingSystemFilesystem, TraceDirectory, trace_file_of,
@@ -51,6 +51,8 @@ const MEMBERS_UNDER_DATA_HOME: &str = "members";
 const RUNTIME_DIRECTORY: &str = "r";
 /// The extension of a member's run record file under a scratch root.
 const RUN_RECORD_EXTENSION: &str = "stderr";
+/// The extension of the file kept beside a member's run record when the member's stop failed, so a reader of what is kept knows the member may have run on while its records were taken.
+const STOP_FAILED_EXTENSION: &str = "stop-failed";
 /// The start of a member's run record file name, before the member's number on its machine.
 const RUN_RECORD_PREFIX: &str = "member";
 /// How a test names a member it started, before its number.
@@ -425,6 +427,28 @@ pub fn keep_run_record(
     Ok(kept_record)
 }
 
+/// Writes beside the member's run record in the directory, when the member's stop ended in failure, a file named for the member saying so, with how the stop ended and what it printed, each secret replaced by the redaction marker; nothing when the stop succeeded.
+pub fn keep_stop_failure(
+    directory: &Path,
+    member_name: &str,
+    stop: ExitStatus,
+    printed_by_the_stop: &[u8],
+    secrets_by_length: &[String],
+) -> io::Result<()> {
+    if stop.success() {
+        return Ok(());
+    }
+    let mark = format!(
+        "the stop of {member_name} ended with {stop}, so it may have run on while its records were taken; the stop printed:\n{}",
+        String::from_utf8_lossy(printed_by_the_stop)
+    );
+    let (text, _redacted_lines) = redacted(&mark, secrets_by_length);
+    fs::write(
+        directory.join(format!("{member_name}.{STOP_FAILED_EXTENSION}")),
+        text,
+    )
+}
+
 /// The record with each secret replaced by the redaction marker, and how many of its lines held one.
 fn redacted(record: &str, secrets_by_length: &[String]) -> (String, usize) {
     let mut redacted_lines = 0_usize;
@@ -512,6 +536,10 @@ mod tests {
 
     /// The network the tests of this module configure their machines for.
     const NETWORK: &str = "lab";
+    /// A command that does nothing and exits in failure, standing in for a stop that failed.
+    const EXITS_IN_FAILURE: &str = "false";
+    /// A command that does nothing and exits in success, standing in for a stop that succeeded.
+    const EXITS_IN_SUCCESS: &str = "true";
 
     #[test]
     fn observability_decision_12_a_failing_machine_prints_the_lines_of_a_member_that_may_still_run_before_one_still_zero_filled()
@@ -733,6 +761,58 @@ mod tests {
             })
             .collect();
         assert_eq!(kept, expected);
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_16_a_member_whose_stop_failed_is_kept_with_a_mark_beside_its_run_record_saying_so_and_one_that_stopped_with_none()
+     {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-stop-failure-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let secret = "network-secret-0123456789abcdef";
+        let secrets = [secret.to_owned()];
+        let failed_stop = Command::new(EXITS_IN_FAILURE).status().unwrap();
+        let clean_stop = Command::new(EXITS_IN_SUCCESS).status().unwrap();
+        let printed_by_the_failed_stop = format!("ssh: the server refused {secret}\n");
+
+        keep_run_record(&kept_in, "amy", "record of amy\n", &secrets).unwrap();
+        keep_stop_failure(
+            &kept_in,
+            "amy",
+            failed_stop,
+            printed_by_the_failed_stop.as_bytes(),
+            &secrets,
+        )
+        .unwrap();
+        keep_run_record(&kept_in, "bob", "record of bob\n", &secrets).unwrap();
+        keep_stop_failure(
+            &kept_in,
+            "bob",
+            clean_stop,
+            b"bob printed this while stopping\n",
+            &secrets,
+        )
+        .unwrap();
+
+        let kept: BTreeSet<PathBuf> = files_beneath(&kept_in).into_iter().collect();
+        assert_eq!(
+            kept,
+            BTreeSet::from([
+                kept_in.join("amy.stderr"),
+                kept_in.join("amy.stop-failed"),
+                kept_in.join("bob.stderr"),
+            ])
+        );
+        let mark = fs::read_to_string(kept_in.join("amy.stop-failed")).unwrap();
+        assert!(
+            mark.contains(&failed_stop.to_string())
+                && mark.contains(&format!("ssh: the server refused {REDACTED}\n"))
+                && !mark.contains(secret),
+            "{mark}"
+        );
         remove_scratch::remove_scratch(&kept_in).unwrap();
     }
 }

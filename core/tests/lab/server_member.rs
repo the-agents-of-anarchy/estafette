@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Output;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -13,6 +14,7 @@ use crate::scratch_machine::remove_scratch::remove_scratch;
 use crate::scratch_machine::trace_reader::timeline_in;
 use crate::scratch_machine::{
     TIMELINE_HEADING, fail_unless_panicking, fresh_kept_directory, keep_run_record,
+    keep_stop_failure,
 };
 
 /// The recipe that writes the lab network's configuration on a server from its standard input.
@@ -45,7 +47,7 @@ const RE_ASKS_ONCE_SPACED_BY: Duration = Duration::from_secs(1);
 /// What separates the server's clock stamp from the envelope a remote tool call prints.
 const STAMP_SEPARATOR: char = '\t';
 
-/// A lab member serving a card on a lab server, configured as the live network's invitation describes, stopped when dropped with its run record and trace files kept when the test asks and its timeline printed when the test fails.
+/// A lab member serving a card on a lab server, configured as the live network's invitation describes, stopped when dropped with its run record and trace files kept when the test asks, a failed stop marked beside them, and its timeline printed when the test fails.
 pub struct ServerMember<'server> {
     server: &'server LabServer,
     card: String,
@@ -174,16 +176,24 @@ impl<'server> ServerMember<'server> {
         }
     }
 
-    /// Keeps the member's run record and trace files together in a directory of its own beneath the test's, named for its server and card and numbered after any earlier keeping of that name, and answers where its trace files are, when they were fetched, failing the test when that directory cannot be made.
-    fn keep_records(&self, directory: &Path) -> Option<PathBuf> {
+    /// Keeps the member's run record and trace files together in a directory of its own beneath the test's, named for its server and card and numbered after any earlier keeping of that name, with a mark beside the run record when its stop failed, and answers where its trace files are, when they were fetched, failing the test when that directory or that mark cannot be made.
+    fn keep_records(&self, directory: &Path, stop: &Output) -> Option<PathBuf> {
         let kept =
             fresh_kept_directory(directory, &format!("{}-{}", self.server.label(), self.card))
                 .inspect_err(|failure| {
                     fail_unless_panicking(&format!("records of {} not kept: {failure}", self.card));
                 })
                 .ok()?;
+        let marked = keep_stop_failure(&kept, &self.card, stop.status, &stop.stderr, &self.secrets);
         self.keep_run_record(&kept);
-        self.keep_trace_files(&kept)
+        let kept_trace_files = self.keep_trace_files(&kept);
+        if let Err(failure) = marked {
+            fail_unless_panicking(&format!(
+                "failed stop of {} not marked: {failure}",
+                self.card
+            ));
+        }
+        kept_trace_files
     }
 
     /// Fetches both trace files of each of the member's runs into the directory, unredacted, so its raw files are not safe to post, and answers the directory when they were fetched, failing the test when they were not.
@@ -263,7 +273,7 @@ impl Drop for ServerMember<'_> {
         let kept_trace_files = self
             .kept_in
             .as_deref()
-            .map(|directory| self.keep_records(directory));
+            .map(|directory| self.keep_records(directory, &stopped));
         if std::thread::panicking() {
             let timeline = kept_trace_files.map_or_else(
                 || self.timeline_fetched_for_the_print(),
