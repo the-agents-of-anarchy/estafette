@@ -1209,6 +1209,7 @@ impl From<ReadToEndError> for DirectError {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
     use std::time::Instant;
@@ -2108,12 +2109,15 @@ pub(crate) mod tests {
     const AHEAD_OF_THE_RUNTIME: Duration = Duration::from_secs(3600);
     /// The longest a test waits for a clock to be read as often as it expects.
     const CLOCK_READ_WAIT: Duration = Duration::from_secs(10);
+    /// The longest a test waits for a waiter to ask a clock to wake it at a deadline.
+    const WAKE_ASKED_WAIT: Duration = Duration::from_secs(10);
 
-    /// A monotonic clock standing at the instant the test last moved it to, counting its readings and waking each waiter once it reads that waiter's deadline.
+    /// A monotonic clock standing at the instant the test last moved it to, counting its readings, keeping every deadline a waiter asked it to wake at and waking each waiter once it reads that waiter's deadline.
     #[derive(Clone)]
     pub struct StandingClock {
         reading: Arc<tokio::sync::watch::Sender<tokio::time::Instant>>,
         readings: Arc<tokio::sync::watch::Sender<u64>>,
+        asked_deadlines: Arc<tokio::sync::watch::Sender<BTreeSet<tokio::time::Instant>>>,
     }
 
     impl StandingClock {
@@ -2122,6 +2126,7 @@ pub(crate) mod tests {
             Self {
                 reading: Arc::new(tokio::sync::watch::Sender::new(tokio::time::Instant::now())),
                 readings: Arc::new(tokio::sync::watch::Sender::new(0)),
+                asked_deadlines: Arc::new(tokio::sync::watch::Sender::new(BTreeSet::new())),
             }
         }
 
@@ -2155,6 +2160,18 @@ pub(crate) mod tests {
             .expect("the clock holds the sender of its readings");
         }
 
+        /// Waits until the named waiter has asked the clock to wake it at the deadline, failing with that name when it has not within the wait.
+        pub async fn asked_to_wake(&self, waiter: &str, deadline: tokio::time::Instant) {
+            let mut asked_deadlines = self.asked_deadlines.subscribe();
+            answered_within(
+                WAKE_ASKED_WAIT,
+                &format!("wake asked of the clock for {waiter}"),
+                asked_deadlines.wait_for(|asked| asked.contains(&deadline)),
+            )
+            .await
+            .expect("the clock holds the sender of its asked deadlines");
+        }
+
         /// The clock as a node or a register takes it.
         pub fn monotonic(&self) -> MonotonicClock {
             Arc::new(self.clone())
@@ -2172,6 +2189,9 @@ pub(crate) mod tests {
             &self,
             deadline: tokio::time::Instant,
         ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            self.asked_deadlines.send_modify(|asked| {
+                asked.insert(deadline);
+            });
             let mut moves = self.reading.subscribe();
             Box::pin(async move {
                 if moves.wait_for(|now| *now >= deadline).await.is_err() {
@@ -3012,11 +3032,9 @@ pub(crate) mod tests {
         SILENCE_OF_A_GONE_PROCESS.saturating_sub(JUST_BEFORE);
     const SPEC_HEARING_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
     const HEARING_SAMPLES_ON_THE_MOVED_CLOCK: u32 = 20;
-    /// A fifth of the time the samples would take on the runtime's timer, one hearing sample interval apart.
-    const HEARING_SAMPLES_ON_THE_MOVED_CLOCK_WITHIN: Duration = Duration::from_millis(1000);
 
     #[tokio::test]
-    async fn spec_3_8_a_held_connection_is_sampled_each_time_its_handed_clock_reads_one_hearing_sample_interval_on()
+    async fn spec_3_8_a_held_connection_is_next_sampled_one_hearing_sample_interval_after_each_reading_of_its_handed_clock()
      {
         let clock = StandingClock::standing_now();
         let register = HeldConnections::new(clock.monotonic(), dropping_transport());
@@ -3034,23 +3052,18 @@ pub(crate) mod tests {
         );
         let _dialed = dialed.unwrap();
         let _accepted = accepted.unwrap();
-        let read_at_the_hold = clock.readings();
 
-        answered_within(
-            HEARING_SAMPLES_ON_THE_MOVED_CLOCK_WITHIN,
-            &format!(
-                "{HEARING_SAMPLES_ON_THE_MOVED_CLOCK} hearing samples, one at each move of the clock"
-            ),
-            async {
-                for sample in 1..=HEARING_SAMPLES_ON_THE_MOVED_CLOCK {
-                    clock.move_forward(SPEC_HEARING_SAMPLE_INTERVAL);
-                    clock
-                        .read_at_least(read_at_the_hold.saturating_add(u64::from(sample)))
-                        .await;
-                }
-            },
-        )
-        .await;
+        let mut last_reading = clock.now();
+        for sample in 1..=HEARING_SAMPLES_ON_THE_MOVED_CLOCK {
+            let sample_due = last_reading
+                .checked_add(SPEC_HEARING_SAMPLE_INTERVAL)
+                .unwrap();
+            clock
+                .asked_to_wake(&format!("hearing sample {sample}"), sample_due)
+                .await;
+            clock.move_forward(SPEC_HEARING_SAMPLE_INTERVAL);
+            last_reading = sample_due;
+        }
     }
 
     #[tokio::test]
