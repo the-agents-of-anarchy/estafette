@@ -60,11 +60,10 @@ enum TraceFilesKept {
     NowhereToKeep,
 }
 
-/// Stops the member on the server through the runner and, when the test keeps records, keeps a mark of a failed stop, its run record and its trace files, each fetched file holding one of its secrets kept redacted with a note beside it, in a directory of its own named as given, then, when the test is failing, reads the member's timeline, from what was kept or else from a fetch of its own; each step runs whatever an earlier one did, and every failure, a failed stop included, is answered once all have run.
+/// Stops the member on the server through the runner and, when the test keeps records, keeps a mark of a failed stop, its run record and its trace files, each fetched file holding one of its secrets kept redacted with a note beside it, in a directory of its own named for the server and the member, then, when the test is failing, reads the member's timeline, from what was kept or else from a fetch of its own; each step runs whatever an earlier one did, and every failure, a failed stop included, is answered once all have run.
 pub fn ended_server_member(
     member: &str,
     server: &str,
-    kept_as: &str,
     kept_in: Option<&Path>,
     secrets: &[String],
     test: TestSoFar,
@@ -77,7 +76,12 @@ pub fn ended_server_member(
             "{member} on {server} did not stop cleanly: {failure}"
         ));
     }
-    let made = kept_in.map(|directory| (directory, fresh_kept_directory(directory, kept_as)));
+    let made = kept_in.map(|directory| {
+        (
+            directory,
+            fresh_kept_directory(directory, &kept_name(server, member)),
+        )
+    });
     let trace_files = match made {
         None => TraceFilesKept::NowhereToKeep,
         Some((_directory, Ok(kept))) => {
@@ -94,6 +98,11 @@ pub fn ended_server_member(
     let timeline = (test == TestSoFar::Failing)
         .then(|| timeline_for_the_print(member, server, trace_files, &run, &mut failures));
     ServerMemberEnd { timeline, failures }
+}
+
+/// The name a member serving on a server keeps its records under, beside the machines' directories: the server's, then the member's.
+fn kept_name(server: &str, member: &str) -> String {
+    format!("{server}-{member}")
 }
 
 /// Keeps in the directory a mark of a failed stop, the member's run record and its trace files, each fetched file holding one of its secrets kept redacted with a note beside it, adding each failure, and answers where the trace files were left.
@@ -347,7 +356,6 @@ mod tests {
         let ended = ended_server_member(
             MEMBER,
             SERVER,
-            &format!("{SERVER}-{MEMBER}"),
             Some(&kept_in),
             &[PLANTED_INVITATION.to_owned(), PLANTED_TOKEN.to_owned()],
             TestSoFar::NotFailing,
@@ -355,7 +363,7 @@ mod tests {
         );
 
         let kept_traces = kept_in
-            .join(format!("{SERVER}-{MEMBER}"))
+            .join(kept_name(SERVER, MEMBER))
             .join(KEPT_TRACE_FILES_DIRECTORY);
         let note_of = |name: &str| kept_traces.join(format!("{name}.{REDACTED_NOTE_EXTENSION}"));
         assert!(ended.failures.is_empty(), "{:?}", ended.failures);
@@ -425,14 +433,13 @@ mod tests {
         let ended = ended_server_member(
             MEMBER,
             SERVER,
-            &format!("{SERVER}-{MEMBER}"),
             Some(&kept_in),
             &[],
             TestSoFar::Failing,
             stand_in_for_the_recipes,
         );
 
-        let kept = kept_in.join(format!("{SERVER}-{MEMBER}"));
+        let kept = kept_in.join(kept_name(SERVER, MEMBER));
         let kept_traces = kept.join(KEPT_TRACE_FILES_DIRECTORY);
         assert_eq!(
             steps_run.into_inner(),
@@ -497,14 +504,13 @@ mod tests {
         let ended = ended_server_member(
             MEMBER,
             SERVER,
-            &format!("{SERVER}-{MEMBER}"),
             Some(&kept_in),
             &[],
             TestSoFar::NotFailing,
             stand_in_for_the_recipes,
         );
 
-        let kept = kept_in.join(format!("{SERVER}-{MEMBER}"));
+        let kept = kept_in.join(kept_name(SERVER, MEMBER));
         assert_eq!(
             steps_run.into_inner(),
             ["stop", "print run record", "fetch trace files"]
@@ -559,7 +565,6 @@ mod tests {
         let ended = ended_server_member(
             MEMBER,
             SERVER,
-            &format!("{SERVER}-{MEMBER}"),
             Some(&not_a_directory.join(KEPT_BENEATH_NOT_A_DIRECTORY)),
             &[],
             TestSoFar::Failing,
@@ -607,14 +612,13 @@ mod tests {
         let ended = ended_server_member(
             MEMBER,
             SERVER,
-            &format!("{SERVER}-{MEMBER}"),
             Some(&kept_in),
             &[PLANTED_TOKEN.to_owned()],
             TestSoFar::NotFailing,
             stand_in_for_the_recipes,
         );
 
-        let kept = kept_in.join(format!("{SERVER}-{MEMBER}"));
+        let kept = kept_in.join(kept_name(SERVER, MEMBER));
         let run_record_mark = kept.join(format!("{MEMBER}.{RUN_RECORD_READ_FAILED_EXTENSION}"));
         let fetch_mark = kept.join(format!(
             "{KEPT_TRACE_FILES_DIRECTORY}.{FETCH_FAILED_EXTENSION}"

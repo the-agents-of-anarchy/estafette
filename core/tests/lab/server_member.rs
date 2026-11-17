@@ -184,7 +184,6 @@ impl Drop for ServerMember<'_> {
         let ended = ended_server_member(
             &self.card,
             self.server.label(),
-            &format!("{}-{}", self.server.label(), self.card),
             self.kept_in.as_deref(),
             &self.secrets,
             test,
