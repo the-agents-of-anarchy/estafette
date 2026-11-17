@@ -1798,9 +1798,13 @@ mod tests {
 
     /// The longest the member takes to ask to join the members once its handed clock reads the member join wait past its rebind's join, which the runtime's timer would never reach on a clock an hour ahead.
     const MEMBER_JOIN_ASKED_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
+    const NEIGHBOR_DOWN: &str = "gossip.neighbor_down";
+    /// The longest the member takes to record a gossip neighbor gone once that neighbor's endpoint closed.
+    const NEIGHBOR_DOWN_RECORDED_WITHIN: Duration =
+        IROH_DOCUMENTED_CLOSE_LATENCY.saturating_add(REBIND_SLACK);
 
     #[tokio::test]
-    async fn spec_3_8_after_a_rebinds_join_the_member_asks_to_join_an_unreachable_member_once_its_handed_clock_reads_the_member_join_wait()
+    async fn spec_3_8_after_a_rebinds_join_the_member_asks_to_join_an_unreachable_member_once_its_handed_clock_reads_the_member_join_wait_then_one_member_join_interval_after_each_ask()
      {
         let scratch = Scratch::new("joins-on-clock").await;
         let host = QuietNode::start(HOST_SEED).await;
@@ -1838,21 +1842,44 @@ mod tests {
         clock.move_forward(SPEC_DEAF_TIMEOUT);
         recorded_until(&mut events, REBINDING, |_fields| true, PAYLOAD_WAIT).await;
         joined_and_asked_for_presence(&mut events).await;
+        let first_ask_due = clock.now().checked_add(SPEC_MEMBER_JOIN_WAIT).unwrap();
         clock
-            .asked_to_wake(
-                "the member join wait",
-                clock.now().checked_add(SPEC_MEMBER_JOIN_WAIT).unwrap(),
-            )
+            .asked_to_wake("the member join wait", first_ask_due)
             .await;
-        clock.move_forward(SPEC_MEMBER_JOIN_WAIT);
+        clock.move_late_past(first_ask_due);
+        let first_ask_reading = clock.now();
         let met = unreachable_member
             .first_neighbor_up_of(FIRST_SEED, MEMBER_JOIN_ASKED_ONCE_THE_CLOCK_READS_IT_WITHIN)
             .await;
-
         assert!(
             met.is_some(),
             "the unreachable member met no ask to join within {MEMBER_JOIN_ASKED_ONCE_THE_CLOCK_READS_IT_WITHIN:?} of the clock reading the member join wait"
         );
+        unreachable_member.endpoint.endpoint().close().await;
+        recorded_until(
+            &mut events,
+            NEIGHBOR_DOWN,
+            |fields| fields.contains(&(PEER, short_peer_id(PEER_SEED))),
+            NEIGHBOR_DOWN_RECORDED_WITHIN,
+        )
+        .await;
+        let second_ask_due = first_ask_reading
+            .checked_add(SPEC_MEMBER_JOIN_INTERVAL)
+            .unwrap();
+        clock
+            .asked_to_wake(
+                "the second ask, one member join interval after the first ask's reading",
+                second_ask_due,
+            )
+            .await;
+        clock.move_late_past(second_ask_due);
+
+        clock
+            .asked_to_wake(
+                "the third ask, one member join interval after the second ask's reading",
+                clock.now().checked_add(SPEC_MEMBER_JOIN_INTERVAL).unwrap(),
+            )
+            .await;
         drop(scratch);
     }
 
