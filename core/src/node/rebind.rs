@@ -1741,6 +1741,60 @@ mod tests {
         drop(scratch);
     }
 
+    /// The longest the member takes to ask to join the members once its handed clock reads the member join wait past its rebind's join, which the runtime's timer would never reach on a clock an hour ahead.
+    const MEMBER_JOIN_ASKED_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
+
+    #[tokio::test]
+    async fn spec_3_8_after_a_rebinds_join_the_member_asks_to_join_an_unreachable_member_once_its_handed_clock_reads_the_member_join_wait()
+     {
+        let scratch = Scratch::new("joins-on-clock").await;
+        let host = QuietNode::start(HOST_SEED).await;
+        let unreachable_member = QuietNode::start(PEER_SEED).await;
+        let clock = StandingClock::standing_an_hour_ahead();
+        let (record, mut events) = recorded_events();
+        let running_host = [(HOST_SEED, host.addr())];
+
+        let (mut members, ()) = tokio::join!(
+            start_members_reaching(
+                &scratch,
+                vec![
+                    MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                        .with_hosts(&[HOST_SEED])
+                        .with_report(record)
+                        .with_monotonic(clock.monotonic()),
+                ],
+                &running_host,
+            ),
+            async {
+                joined_and_asked_for_presence(&mut events).await;
+                clock.move_forward(SPEC_OBSERVER_WAIT);
+            }
+        );
+        let member = members.pop().unwrap();
+        unreachable_member.introduce_to(&member.endpoint).await;
+        status_within(
+            &member,
+            PEER_SEED,
+            |status| status == Status::Unreachable,
+            PAYLOAD_WAIT,
+        )
+        .await
+        .unwrap();
+        clock.move_forward(SPEC_DEAF_TIMEOUT);
+        recorded_until(&mut events, REBINDING, |_fields| true, PAYLOAD_WAIT).await;
+        joined_and_asked_for_presence(&mut events).await;
+        clock.move_forward(SPEC_MEMBER_JOIN_WAIT);
+        let met = unreachable_member
+            .first_neighbor_up_of(FIRST_SEED, MEMBER_JOIN_ASKED_ONCE_THE_CLOCK_READS_IT_WITHIN)
+            .await;
+
+        assert!(
+            met.is_some(),
+            "the unreachable member met no ask to join within {MEMBER_JOIN_ASKED_ONCE_THE_CLOCK_READS_IT_WITHIN:?} of the clock reading the member join wait"
+        );
+        drop(scratch);
+    }
+
     #[tokio::test]
     async fn spec_3_8_a_send_that_turns_its_unreachable_peer_online_lets_a_long_deaf_member_rebind_at_once()
      {
