@@ -2241,10 +2241,10 @@ pub(crate) mod tests {
                         )
                         .unwrap();
                     tokio::select! {
-                        () = sleep_until(runtime_due) => return,
+                        () = RuntimeClock.reached(runtime_due) => return,
                         moved = shifts.changed() => {
                             if moved.is_err() {
-                                sleep_until(runtime_due).await;
+                                RuntimeClock.reached(runtime_due).await;
                                 return;
                             }
                         }
