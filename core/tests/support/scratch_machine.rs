@@ -316,11 +316,10 @@ impl ScratchMachine {
         };
         let run_records = self.keep_run_records(&kept).err();
         let end_failures = self.keep_end_failures(&kept).err();
-        let data = self.keep_data_directory(&kept).err();
-        [run_records, end_failures, data]
-            .into_iter()
-            .flatten()
-            .collect()
+        let mut failures: Vec<io::Error> =
+            [run_records, end_failures].into_iter().flatten().collect();
+        failures.extend(self.keep_data_directory(&kept));
+        failures
     }
 
     /// Copies every member's run record into the directory, named for the member, each line that holds a secret of this machine kept with that secret replaced by the redaction marker, and returns the kept files.
@@ -351,21 +350,34 @@ impl ScratchMachine {
         Ok(kept)
     }
 
-    /// Copies every file under this machine's data directory, its members' and its observers' trace files included, into the data directory inside the directory, leaving out each file that holds a secret key, and returns the kept data directory.
-    fn keep_data_directory(&self, directory: &Path) -> io::Result<PathBuf> {
+    /// Copies every file under this machine's data directory, its members' and its observers' trace files included, into the data directory inside the directory, leaving out each file that holds a secret key, going on past each directory it cannot read and each file it cannot copy, and answers each such failure.
+    fn keep_data_directory(&self, directory: &Path) -> Vec<io::Error> {
         let data = self.root.join(DATA_HOME);
         let kept = directory.join(KEPT_DATA_DIRECTORY);
-        for file in files_beneath(&data) {
-            let in_data = file.strip_prefix(&data).map_err(io::Error::other)?;
+        let mut failures = Vec::new();
+        for listed in files_beneath_for_keeping(&data) {
+            let file = match listed {
+                Ok(file) => file,
+                Err(failure) => {
+                    failures.push(failure);
+                    continue;
+                }
+            };
+            let Ok(in_data) = file.strip_prefix(&data) else {
+                continue;
+            };
             if holds_a_secret_key(in_data) {
                 continue;
             }
             let kept_file = kept.join(in_data);
-            fs::create_dir_all(kept_file.parent().unwrap_or(&kept))?;
-            fs::copy(&file, &kept_file)?;
+            let copied = fs::create_dir_all(kept_file.parent().unwrap_or(&kept))
+                .and_then(|()| fs::copy(&file, &kept_file));
+            if let Err(failure) = copied {
+                failures.push(naming(&file, &failure));
+            }
         }
         eprintln!("data directory kept at {}", kept.display());
-        Ok(kept)
+        failures
     }
 
     /// The name this machine's records are kept under: its scratch root's.
@@ -586,6 +598,29 @@ fn holds_a_secret_key(file: &Path) -> bool {
                 .extension()
                 .is_some_and(|extension| extension == CERTIFICATE_CACHE_EXTENSION)
         })
+}
+
+/// Every file beneath the directory at any depth, or the failure to read a directory or its entry, naming that directory; nothing when the directory does not exist.
+fn files_beneath_for_keeping(directory: &Path) -> Vec<io::Result<PathBuf>> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(failure) if failure.kind() == io::ErrorKind::NotFound => return Vec::new(),
+        Err(failure) => return vec![Err(naming(directory, &failure))],
+    };
+    let mut files = Vec::new();
+    for entry in entries {
+        match entry.map(|entry| entry.path()) {
+            Ok(path) if path.is_dir() => files.extend(files_beneath_for_keeping(&path)),
+            Ok(path) => files.push(Ok(path)),
+            Err(failure) => files.push(Err(naming(directory, &failure))),
+        }
+    }
+    files
+}
+
+/// The failure of the same kind with the path it concerns written before its text.
+fn naming(path: &Path, failure: &io::Error) -> io::Error {
+    io::Error::new(failure.kind(), format!("{}: {failure}", path.display()))
 }
 
 /// Every file beneath the directory, at any depth; none when it does not exist.
@@ -938,6 +973,57 @@ mod tests {
             fs::set_permissions(file, fs::Permissions::from_mode(READABLE)).unwrap();
         }
         assert_eq!(not_kept.len(), 2, "{not_kept:?}");
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_data_subdirectory_cannot_be_read_answers_that_failure_and_keeps_what_it_could_read()
+     {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-unreadable-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = ScratchMachine::fresh(
+            "kept-unreadable",
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: None,
+                invitation: None,
+            },
+        );
+        let readable = machine
+            .traces_directory_of_member(0)
+            .join("20261117T080000Z-1111111111111111-estafette.events.jsonl");
+        let unreadable_directory = machine.traces_directory_of_member(1);
+        for file in [
+            &readable,
+            &unreadable_directory.join("20261117T080001Z-2222222222222222-estafette.events.jsonl"),
+        ] {
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "events line\n").unwrap();
+        }
+        fs::set_permissions(
+            &unreadable_directory,
+            fs::Permissions::from_mode(UNREADABLE),
+        )
+        .unwrap();
+        let kept_readable = kept_in
+            .join(machine.name())
+            .join(KEPT_DATA_DIRECTORY)
+            .join(readable.strip_prefix(machine.root.join(DATA_HOME)).unwrap());
+
+        let not_kept = machine.keep_records(&kept_in);
+
+        fs::set_permissions(&unreadable_directory, fs::Permissions::from_mode(READABLE)).unwrap();
+        assert_eq!(not_kept.len(), 1, "{not_kept:?}");
+        assert!(
+            not_kept[0]
+                .to_string()
+                .contains(&unreadable_directory.display().to_string()),
+            "{not_kept:?}"
+        );
+        assert_eq!(fs::read_to_string(&kept_readable).unwrap(), "events line\n");
         remove_scratch::remove_scratch(&kept_in).unwrap();
     }
 
