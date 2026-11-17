@@ -61,6 +61,10 @@ const MEMBER_LABEL: &str = "member";
 pub const KEPT_RUN_RECORDS_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_RUN_RECORDS";
 /// The directory a machine's data directory is kept in, inside the directory its records are kept in.
 const KEPT_DATA_DIRECTORY: &str = "data";
+/// What joins a kept name to the number of a later keeping of that name, a form unlike the hyphen and number a scratch root's name takes when its own name is taken.
+const LATER_KEEPING_SEPARATOR: &str = ".kept-";
+/// The number the second keeping of a name takes, the first taking the name alone.
+const SECOND_KEEPING: u32 = 2;
 /// The extension of every file spec 3.3 gives a secret key in a data directory: a card's sidecar and a host's bootstrap key.
 const SECRET_KEY_EXTENSION: &str = "key";
 /// The extension spec 3.3 gives a relay's certificate cache directory, which holds its private key.
@@ -404,10 +408,31 @@ pub fn fail_unless_panicking(failure: &str) {
     }
 }
 
-/// Creates the directory a machine's or a member's records are kept in beneath the test's, named for it and numbered after any earlier one of that name, so no keeping overwrites or merges into another.
+/// Creates the directory a machine's or a member's records are kept in beneath the test's, named for it, or for a later keeping of that name its number joined in a form no scratch root's name takes, so no keeping overwrites or merges into another and no number reads as a scratch root's own.
 pub fn fresh_kept_directory(directory: &Path, name: &str) -> io::Result<PathBuf> {
     fs::create_dir_all(directory)?;
-    fresh_directory::fresh_directory_in(directory, name)
+    let later_keepings =
+        (SECOND_KEEPING..).map(|number| format!("{name}{LATER_KEEPING_SEPARATOR}{number}"));
+    for candidate in std::iter::once(name.to_owned()).chain(later_keepings) {
+        let kept = directory.join(candidate);
+        match fs::create_dir(&kept) {
+            Ok(()) => return Ok(kept),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(io::Error::new(
+                    error.kind(),
+                    format!("{}: {error}", kept.display()),
+                ));
+            }
+        }
+    }
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        format!(
+            "{}: every later keeping of {name} is taken",
+            directory.display()
+        ),
+    ))
 }
 
 /// Writes the member's run record into the directory, named for the member, each secret replaced by the redaction marker, and returns the kept file.
@@ -724,7 +749,7 @@ mod tests {
     }
 
     #[test]
-    fn observability_decision_16_a_machine_keeping_under_the_name_an_earlier_machine_kept_under_takes_a_numbered_name_and_leaves_the_earlier_records_whole()
+    fn observability_decision_16_a_machine_keeping_under_the_name_an_earlier_machine_kept_under_takes_a_name_numbered_unlike_a_scratch_root_and_leaves_the_earlier_records_whole()
      {
         let kept_in = fresh_directory::fresh_directory_in(
             &std::env::temp_dir(),
@@ -740,7 +765,7 @@ mod tests {
         assert_eq!(first_name, second_name);
         let record = format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}");
         let first = kept_in.join(&first_name);
-        let second = kept_in.join(format!("{second_name}-1"));
+        let second = kept_in.join(format!("{second_name}.kept-2"));
         let expected = BTreeSet::from([
             (first.join(&record), first_text.to_owned()),
             (
