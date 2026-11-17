@@ -1657,11 +1657,11 @@ mod tests {
     const STATE_COUNTERS: &str = "state.counters";
 
     #[tokio::test]
-    async fn observability_decisions_9_and_13_a_server_not_yet_claimed_records_its_snapshot_once_its_handed_clock_reads_60_s_on()
+    async fn observability_decisions_9_and_13_a_server_not_yet_claimed_records_its_snapshot_once_its_handed_clock_reads_60_s_on_and_again_60_s_past_that_reading()
      {
         let machine = Machine::new("unclaimed-on-clock");
         let clock = StandingClock::standing_an_hour_ahead();
-        let snapshot_due = clock
+        let first_snapshot_due = clock
             .now()
             .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
             .unwrap();
@@ -1676,11 +1676,32 @@ mod tests {
         );
         client.initialize().await;
         clock
-            .asked_to_wake("the unclaimed server's counters snapshot", snapshot_due)
+            .asked_to_wake(
+                "the unclaimed server's first counters snapshot",
+                first_snapshot_due,
+            )
             .await;
 
-        clock.move_forward(SPEC_STATE_SNAPSHOT_INTERVAL);
-        let snapshot = next_recorded_meeting(
+        clock.move_late_past(first_snapshot_due);
+        let first = next_recorded_meeting(
+            &mut recorded,
+            STATE_COUNTERS,
+            |_fields| true,
+            UNCLAIMED_SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN,
+        )
+        .await;
+        let second_snapshot_due = clock
+            .now()
+            .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
+            .unwrap();
+        clock
+            .asked_to_wake(
+                "the unclaimed server's second counters snapshot",
+                second_snapshot_due,
+            )
+            .await;
+        clock.move_late_past(second_snapshot_due);
+        let second = next_recorded_meeting(
             &mut recorded,
             STATE_COUNTERS,
             |_fields| true,
@@ -1688,7 +1709,9 @@ mod tests {
         )
         .await;
 
-        assert_eq!(snapshot, vec![("moment", Value::from("interval"))]);
+        for snapshot in [first, second] {
+            assert_eq!(snapshot, vec![("moment", Value::from("interval"))]);
+        }
     }
 
     #[tokio::test(start_paused = true)]
