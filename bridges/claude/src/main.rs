@@ -612,11 +612,16 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
         while next_alive_line_due <= pause_ends {
             (self.wait)(next_alive_line_due.saturating_sub((self.elapsed)()));
             (self.record)(BridgeEvent::Alive);
-            next_alive_line_due = (self.elapsed)().saturating_add(ALIVE_LINE_PERIOD);
+            next_alive_line_due = alive_line_due_after((self.elapsed)());
         }
         (self.wait)(pause_ends.saturating_sub((self.elapsed)()));
         next_alive_line_due
     }
+}
+
+/// Gives the reading of the bridge's clock at which the alive line falls due: one period after the reading handed in.
+const fn alive_line_due_after(reading: Duration) -> Duration {
+    reading.saturating_add(ALIVE_LINE_PERIOD)
 }
 
 /// Starts a task that follows one binary inbox socket until its connection fails.
@@ -726,7 +731,7 @@ where
     B: InboxConnector + Send + 'static,
     F: Files + Send + Sync + 'static,
 {
-    let mut alive_line_due = (effects.elapsed)().saturating_add(ALIVE_LINE_PERIOD);
+    let mut alive_line_due = alive_line_due_after((effects.elapsed)());
     let entries = processes.list().map_err(CommandError::ProcessTable)?;
     if let Some(bridge_pid) = running_bridge_for(harness_pid, effects.own_pid, &entries) {
         return Ok(BridgeOutcome::AlreadyServed { bridge_pid });
