@@ -4783,6 +4783,12 @@ pub(super) mod tests {
             async {
                 let mut before_the_wait = joined_and_asked_for_presence(&mut first_events).await;
                 before_the_wait.extend(joined_and_asked_for_presence(&mut second_events).await);
+                clock
+                    .asked_to_wake(
+                        "each member's observer wait",
+                        clock.now().checked_add(SPEC_OBSERVER_WAIT).unwrap(),
+                    )
+                    .await;
                 for events in [&mut first_events, &mut second_events] {
                     before_the_wait.extend(std::iter::from_fn(|| events.try_recv().ok()));
                 }
@@ -5053,6 +5059,12 @@ pub(super) mod tests {
 
         relay.shutdown().await.unwrap();
         home_relay_taken_for_lost(&mut events).await;
+        clock
+            .asked_to_wake(
+                "the relay loss wait",
+                clock.now().checked_add(SPEC_RELAY_LOSS_WAIT).unwrap(),
+            )
+            .await;
         clock.move_forward(SPEC_RELAY_LOSS_WAIT);
         let removed = found_within(RELAY_LOSS_REMOVAL_SLACK, async || {
             (!relay_map.contains(&relay_address)).then_some(())
@@ -5118,6 +5130,12 @@ pub(super) mod tests {
             )
             .await;
         own_address_change_taken_by_the_loop(&mut events).await;
+        clock
+            .asked_to_wake(
+                "the end of the reannounce interval",
+                clock.now().checked_add(SPEC_REANNOUNCE_INTERVAL).unwrap(),
+            )
+            .await;
         let before_the_interval_ends: Vec<RecordedEvent> =
             std::iter::from_fn(|| events.try_recv().ok()).collect();
 
