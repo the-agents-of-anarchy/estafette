@@ -8,7 +8,7 @@ use super::remove_scratch::remove_scratch;
 use super::trace_reader::timeline_in;
 use super::{
     KeptAs, KeptSecrets, fail_unless_panicking, files_beneath_for_keeping, fresh_kept_directory,
-    keep_file, keep_mark, keep_run_record, keep_stop_failure, naming,
+    keep_file, keep_mark, keep_run_record, keep_stop_failure, naming, print_to_standard_error,
 };
 
 /// The directory a member's fetched trace files are kept in, inside the directory its records are kept in.
@@ -300,10 +300,10 @@ fn keep_staged_trace_files(
         .chain(unkept)
         .collect();
     if not_whole.is_empty() {
-        eprintln!(
+        print_to_standard_error(&format!(
             "trace files of {member} kept at {}",
             kept_trace_files.display()
-        );
+        ));
         return;
     }
     let mark = format!(

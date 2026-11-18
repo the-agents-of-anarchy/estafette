@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -536,7 +536,7 @@ impl ScratchMachine {
             let kept_mark = directory.join(mark.file_name().unwrap_or_default());
             let text = fs::read(&mark).map_err(|failure| naming(&mark, &failure))?;
             keep_file(secrets, KeptAs::Evidence, &kept_mark, &text)?;
-            eprintln!("failed end kept at {}", kept_mark.display());
+            print_to_standard_error(&format!("failed end kept at {}", kept_mark.display()));
             kept.push(kept_mark);
         }
         Ok(kept)
@@ -570,7 +570,7 @@ impl ScratchMachine {
                 failures.push(failure);
             }
         }
-        eprintln!("data directory kept at {}", kept.display());
+        print_to_standard_error(&format!("data directory kept at {}", kept.display()));
         failures
     }
 
@@ -646,7 +646,7 @@ impl Drop for ScratchMachine {
     fn drop(&mut self) {
         if std::thread::panicking() {
             for timeline in self.member_timelines() {
-                eprintln!("{timeline}");
+                print_to_standard_error(&timeline);
             }
         }
         let not_kept = self
@@ -684,10 +684,15 @@ fn each_failure(failures: &[io::Error]) -> String {
 /// Fails the test with the message, or prints it when the test is already failing, so a cleanup failure never hides the failure that came first.
 pub fn fail_unless_panicking(failure: &str) {
     if std::thread::panicking() {
-        eprintln!("{failure}");
+        print_to_standard_error(failure);
     } else {
         panic!("{failure}");
     }
+}
+
+/// Writes the text and a line end straight to standard error, ignoring a write that fails, so a print a drop makes never panics, even while its thread unwinds.
+pub fn print_to_standard_error(text: &str) {
+    drop(writeln!(io::stderr(), "{text}"));
 }
 
 /// Creates the directory a machine's or a member's records are kept in beneath the test's, named for it, or for a later keeping of that name its number joined in a form no scratch root's name takes, so no keeping overwrites or merges into another and no number reads as a scratch root's own.
@@ -726,10 +731,10 @@ fn keep_run_record(
 ) -> io::Result<PathBuf> {
     let kept_record = directory.join(format!("{member_name}.{RUN_RECORD_EXTENSION}"));
     let redacted_lines = keep_file(secrets, KeptAs::RunRecord, &kept_record, record)?;
-    eprintln!(
+    print_to_standard_error(&format!(
         "run record kept at {}: {redacted_lines} lines redacted",
         kept_record.display()
-    );
+    ));
     Ok(kept_record)
 }
 
@@ -978,6 +983,13 @@ mod tests {
     const UNLISTABLE: u32 = 0o300;
     /// The mode of a directory its owner may list and enter but not write in.
     pub(super) const UNWRITABLE: u32 = 0o500;
+    /// The variable a parent test sets, naming the fixture it runs in a child process, so the fixture refuses to run anywhere else.
+    const FIXTURE_VARIABLE: &str = "ESTAFETTE_FIXTURE_OF_A_PARENT_TEST";
+    /// The fixture whose machine prints while its thread unwinds, by the name the test harness runs it by.
+    const PRINTING_WHILE_UNWINDING_FIXTURE: &str =
+        "scratch_machine::tests::forced_failure_with_a_machine_printing_while_it_unwinds";
+    /// The exit code of a test binary whose test failed, as against a signal that ends one that aborts.
+    const FAILED_TEST_EXIT_CODE: i32 = 101;
 
     #[test]
     fn observability_decision_12_a_failing_machine_prints_the_lines_of_a_member_that_may_still_run_before_one_still_zero_filled()
@@ -2085,6 +2097,49 @@ mod tests {
         let redacted = format!("network {REDACTED} joined\n");
         assert_eq!(kept.events, redacted.as_bytes());
         assert_eq!(kept.run_record, redacted.as_bytes());
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_dropped_on_a_failing_test_whose_standard_error_is_closed_ends_in_that_failure_and_never_aborts()
+     {
+        let (closed_by_its_reader, standard_error) = io::pipe().unwrap();
+        drop(closed_by_its_reader);
+
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                PRINTING_WHILE_UNWINDING_FIXTURE,
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(FIXTURE_VARIABLE, PRINTING_WHILE_UNWINDING_FIXTURE)
+            .stdout(Stdio::null())
+            .stderr(standard_error)
+            .status()
+            .unwrap();
+
+        assert_eq!(child.code(), Some(FAILED_TEST_EXIT_CODE), "{child:?}");
+    }
+
+    /// Starts a member's count on a machine that keeps nothing, so its drop prints a timeline, then fails first, so the drop prints while the thread unwinds; run as the child process of the test of a closed standard error, which sets the variable, and refusing to run without it; ignored in the suite.
+    #[test]
+    #[ignore = "a fixture: the child process of observability_decision_16_a_machine_dropped_on_a_failing_test_whose_standard_error_is_closed_ends_in_that_failure_and_never_aborts"]
+    fn forced_failure_with_a_machine_printing_while_it_unwinds() {
+        assert_eq!(
+            std::env::var(FIXTURE_VARIABLE).ok().as_deref(),
+            Some(PRINTING_WHILE_UNWINDING_FIXTURE),
+            "{PRINTING_WHILE_UNWINDING_FIXTURE} is a fixture its parent test runs with {FIXTURE_VARIABLE} naming it"
+        );
+        let machine = ScratchMachine::fresh(
+            "printing-while-unwinding",
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: None,
+                invitation: None,
+            },
+        );
+        machine.servers_started.set(1);
+        panic!("{FIRST_FAILURE}");
     }
 
     #[test]

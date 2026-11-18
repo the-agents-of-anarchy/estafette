@@ -13,7 +13,9 @@ use crate::mcp_server::{HANDLE_KEY, PEERS_KEY, PEERS_TOOL, RESULT_KEY, SEND_TOOL
 use crate::scratch_machine::server_member_end::{
     ServerMemberStep, TestSoFar, ended_server_member, recipe_failure,
 };
-use crate::scratch_machine::{KeptSecrets, TIMELINE_HEADING, fail_unless_panicking};
+use crate::scratch_machine::{
+    KeptSecrets, TIMELINE_HEADING, fail_unless_panicking, print_to_standard_error,
+};
 
 /// The recipe that writes the lab network's configuration on a server from its standard input.
 const NETWORK_ON_SERVER_RECIPE: &str = "remote::network-on-server";
@@ -185,11 +187,11 @@ impl<'server> ServerMember<'server> {
 
     /// Prints the timeline a failing test shows for the member.
     fn print_timeline(&self, timeline: &str) {
-        eprintln!(
+        print_to_standard_error(&format!(
             "{TIMELINE_HEADING} {} on {}:\n{timeline}",
             self.card,
             self.server.label()
-        );
+        ));
     }
 }
 

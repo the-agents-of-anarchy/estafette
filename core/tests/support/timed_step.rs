@@ -1,5 +1,7 @@
 use std::time::Instant;
 
+use crate::scratch_machine::print_to_standard_error;
+
 /// A step of a test, a wait or a send, whose description and elapsed milliseconds go to the test's stderr when it ends, whether it ended or failed.
 struct TimedStep<'description> {
     description: &'description str,
@@ -13,11 +15,11 @@ impl Drop for TimedStep<'_> {
         } else {
             "ended"
         };
-        eprintln!(
+        print_to_standard_error(&format!(
             "step {outcome} after {} ms: {}",
             self.started.elapsed().as_millis(),
             self.description
-        );
+        ));
     }
 }
 

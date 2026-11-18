@@ -6,6 +6,8 @@ use std::process::{Child, Command, ExitStatus};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
+use super::print_to_standard_error;
+
 /// The extension of the file that marks a process whose kill or wait failed, beside the run records its machine keeps.
 pub const END_FAILED_EXTENSION: &str = "end-failed";
 /// How long the end of a test's stand-in may take to reach the pipe only it holds once its owner ended it: chosen, not measured, far above a kill and a wait.
@@ -70,10 +72,10 @@ fn mark_end_failure(marked_in: &Path, label: &str, process_id: u32, failure: &io
     let mark = format!(
         "the end of {label}, process {process_id}, failed, so it may have run on while its machine's data was kept: {failure}\n"
     );
-    eprint!("{mark}");
+    print_to_standard_error(mark.trim_end());
     let marked = marked_in.join(format!("{label}-{process_id}.{END_FAILED_EXTENSION}"));
     if let Err(unwritten) = fs::write(&marked, mark) {
-        eprintln!("{}: {unwritten}", marked.display());
+        print_to_standard_error(&format!("{}: {unwritten}", marked.display()));
     }
 }
 

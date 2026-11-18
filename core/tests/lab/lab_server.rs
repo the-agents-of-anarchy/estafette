@@ -3,7 +3,7 @@ use std::process::{Command, Output, Stdio};
 
 use crate::live_network::{LAB_BINARY_VARIABLE, TASK_RUNNER};
 use crate::scratch_machine::server_member_end::{fail_unless_succeeded, recipe_failure, succeeded};
-use crate::scratch_machine::{BINARY, KeptSecrets};
+use crate::scratch_machine::{BINARY, KeptSecrets, print_to_standard_error};
 
 /// The variable the remote recipes take the server's name from; left as the gate left it, they reach the live host's server.
 const LAB_SERVER_VARIABLE: &str = "LAB_SERVER";
@@ -131,11 +131,11 @@ impl Drop for RelayOnlyPath<'_> {
             .server
             .attempt_without_panicking(RELAY_PATHS_RESTORED_RECIPE, &[], &[]);
         if let Ok(output) = succeeded(&restored) {
-            eprintln!(
+            print_to_standard_error(&format!(
                 "UDP paths between {} and this machine restored; the drops counted by each rule:\n{}",
                 self.server.label(),
                 String::from_utf8_lossy(&output.stdout)
-            );
+            ));
         }
         fail_unless_succeeded(
             &restored,
