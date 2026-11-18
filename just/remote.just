@@ -22,6 +22,8 @@ lab_config_and_runtime := "XDG_CONFIG_HOME=" + lab_root / "config" + " XDG_RUNTI
 lab_directories := lab_config_and_runtime + " XDG_DATA_HOME=" + lab_data
 lab_cards_directory := lab_data / "estafette/cards"
 lab_members_data := lab_data / "members"
+key_file_named_after_a_held_trace_file := " (key file "
+shortest_key_run := "16"
 lab_server_type := env("LAB_HOST_" + lab_host_letter + "_SERVER_TYPE", "cpx22")
 lab_location := env("LAB_HOST_" + lab_host_letter + "_LOCATION", "nbg1")
 lab_image := "ubuntu-24.04"
@@ -264,7 +266,7 @@ call-on-server card tool: lab-context-exists
 run-record-on-server card: lab-context-exists
     ssh {{ ssh_opts }} lab@$({{ lab_hcloud }} server ip {{ server }}) cat /home/lab/{{ card }}.err
 
-[doc("Print the name of each trace file of the card's lab member on this machine that holds the text of a key file of the member (its card's sidecar, or any .key file beneath its data directory), one a line, then `withheld: <count>`, never the text; fails when a key file or the trace files cannot be read")]
+[doc("Print, for each trace file of the card's lab member on this machine that holds the text of a key file of the member (its card's sidecar, or any .key file beneath its data directory), one line naming the trace file and that key file, then `withheld: <count>` of those lines, never the text; a key file's text is each trimmed non-blank line of it and each run of 16 or more letters and digits within a line, each key file read on its own; fails when a key file or the trace files cannot be read")]
 [group('lab')]
 trace-files-holding-keys card:
     #!/usr/bin/env bash
@@ -275,11 +277,23 @@ trace-files-holding-keys card:
     for key_file in "${key_files[@]}"; do
         test -r "$key_file" || { echo "the key file $key_file cannot be read, so the trace files of {{ card }} cannot be searched for it" >&2; exit 1; }
     done
-    held="$(cd "$traces" && { grep -r -l -F -f <(cat "${key_files[@]}" | grep -v '^[[:space:]]*$') . || test "$?" = 1; } | sed 's|^\./||')"
+    key_texts() {
+        LC_ALL=C awk -v shortest={{ shortest_key_run }} '{
+            line = $0; gsub(/^[[:space:]]+|[[:space:]]+$/, "", line); if (line != "") print line
+            rest = $0; while (match(rest, /[A-Za-z0-9]+/)) { if (RLENGTH >= shortest) print substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH) }
+        }' "$1"
+    }
+    held=""
+    for key_file in "${key_files[@]}"; do
+        holding="$(cd "$traces" && { grep -r -l -F -f <(key_texts "$key_file") . || test "$?" = 1; } | sed 's|^\./||')"
+        while IFS= read -r trace_file; do
+            if [ -n "$trace_file" ]; then held+="$trace_file{{ key_file_named_after_a_held_trace_file }}$key_file)"$'\n'; fi
+        done <<< "$holding"
+    done
     count=0
     if [ -n "$held" ]; then
-        printf '%s\n' "$held"
-        count="$(printf '%s\n' "$held" | wc -l | tr -d ' ')"
+        printf '%s' "$held"
+        count="$(printf '%s' "$held" | wc -l | tr -d ' ')"
     fi
     printf 'withheld: %s\n' "$count"
 
@@ -288,11 +302,11 @@ trace-files-holding-keys card:
 member-trace-files card:
     #!/usr/bin/env bash
     set -euo pipefail
-    held="$(just remote::trace-files-holding-keys {{ card }} | sed '$d')"
+    held="$(just remote::trace-files-holding-keys {{ card }} | sed '$d' | sed 's|{{ key_file_named_after_a_held_trace_file }}.*$||' | sort -u)"
     cd {{ lab_members_data }}/{{ card }}/estafette/traces
     find . -type f | sed 's|^\./||' | { grep -v -x -F -f <(printf '%s\n' "$held" | grep -v '^$') || test "$?" = 1; } | tar -c -T -
 
-[doc("Fetch every trace file of the card's lab member on the server into the directory, created 0700, both files of each of its runs, rolled-over files included, but each file that holds the text of a key file of the member, which stays on the server: first prints what trace-files-holding-keys prints there, the names and their count; the raw files hold real addresses and full ids and are not safe to post")]
+[doc("Fetch every trace file of the card's lab member on the server into the directory, created 0700, both files of each of its runs, rolled-over files included, but each file that holds the text of a key file of the member, which stays on the server: first prints what trace-files-holding-keys prints there, a line naming each such file and its key file, and their count; the raw files hold real addresses and full ids and are not safe to post")]
 [group('lab')]
 trace-files-on-server card directory: lab-context-exists
     #!/usr/bin/env bash
