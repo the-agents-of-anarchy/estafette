@@ -65,8 +65,7 @@ MODULE_DECLARATION_PATTERN = re.compile(r'\bmod\s+(?P<name>\w+)\s*;')
 INLINE_MODULE_PATTERN = re.compile(r'\bmod\s+(?P<name>\w+)\s*\{')
 USE_STATEMENT_PATTERN = re.compile(r'\buse\b[^;]*;')
 SLEEP_ALIAS_PATTERN = re.compile(rf"\b(?:{'|'.join(SLEEP_FUNCTION_NAMES)})\s+as\s+(?P<alias>[A-Za-z]\w*)")
-SHELL_SLEEP_COMMAND_PATTERN = re.compile(rf'''{SHELL_SLEEP_PROGRAM}\s+(?:[\d.${{"']|infinity\b)''')
-SHELL_SLEEP_PROGRAM_PATTERN = re.compile(rf'(?:\S*/)?{SHELL_SLEEP_PROGRAM}')
+SHELL_SLEEP_PATTERN = re.compile(rf'{SHELL_SLEEP_PROGRAM}(?=\s|\\\r?\n|\Z)')
 SCRIPT_COMMENT_PATTERN = re.compile(r'(?:^|\s)#.*')
 STRING_ESCAPE_PATTERN = re.compile(r'\\(?:\n\s*|x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|.)', re.DOTALL)
 LINE_CONTINUATION_START = '\\\n'
@@ -548,10 +547,8 @@ def decode_string_literal(literal: StringLiteral) -> Tuple[str, Sequence[int]]:
 def find_shell_sleep(literal: StringLiteral) -> Optional[int]:
     """Return the source offset of the shell sleep a string literal's value holds, or none."""
     value, source_offsets = decode_string_literal(literal)
-    command = SHELL_SLEEP_COMMAND_PATTERN.search(value)
-    if command is not None:
-        return literal.offset + source_offsets[command.start()]
-    return literal.offset if SHELL_SLEEP_PROGRAM_PATTERN.fullmatch(value.strip()) else None
+    command = SHELL_SLEEP_PATTERN.search(value)
+    return None if command is None else literal.offset + source_offsets[command.start()]
 
 
 def find_rust_sleep_lines(parsed: ParsedRust, text: str) -> Set[int]:
@@ -572,7 +569,9 @@ def find_rust_sleep_lines(parsed: ParsedRust, text: str) -> Set[int]:
 
 def find_script_sleep_lines(text: str) -> Set[int]:
     """Return the line of every shell sleep a script runs, its comments left out."""
-    return {number for number, line in enumerate(text.split('\n'), start=1) if SHELL_SLEEP_COMMAND_PATTERN.search(SCRIPT_COMMENT_PATTERN.sub('', line))}
+    commands = '\n'.join(SCRIPT_COMMENT_PATTERN.sub('', line) for line in text.split('\n'))
+    lines = LineIndex(commands)
+    return {lines.line_of(command.start()) for command in SHELL_SLEEP_PATTERN.finditer(commands)}
 
 
 def find_sleeps(texts: Dict[Path, str]) -> Sequence[Finding]:
