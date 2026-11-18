@@ -94,6 +94,8 @@ pub const INVITATION_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_INVITATION";
 pub const REDACTED: &str = "<redacted>";
 /// The fewest letters and digits in a row that a key, a secret or an invitation is written with, so such a run is redacted even where the record quotes it apart from its line.
 const SHORTEST_SECRET_RUN: usize = 16;
+/// What a machine's drop reports of each process it owned whose kill or wait failed, before the mark that says so.
+const FAILED_END_REPORTED: &str = "the end of a process failed, as";
 /// The directory a test's records are kept under when the harness gave its thread no name.
 const UNNAMED_TEST: &str = "unnamed-test";
 
@@ -469,7 +471,7 @@ impl ScratchMachine {
     fn keep_records(&self, directory: &Path) -> Vec<io::Error> {
         let secrets = match KeptSecrets::of_machine(self) {
             Ok(secrets) => secrets,
-            Err(unread) => return self.failures_keeping_nothing(&unread),
+            Err(unread) => return vec![nothing_kept(&unread)],
         };
         let kept = match fresh_kept_directory(directory, &self.name()) {
             Ok(kept) => kept,
@@ -483,22 +485,15 @@ impl ScratchMachine {
         failures
     }
 
-    /// The failures of this machine when the secrets to search what it keeps for could not be read: that one, and the failed end of each process whose mark is then not kept.
-    fn failures_keeping_nothing(&self, unread: &io::Error) -> Vec<io::Error> {
-        let mut failures = vec![io::Error::new(
-            unread.kind(),
-            format!("nothing kept, since the secrets to search it for could not be read: {unread}"),
-        )];
+    /// A report of each process of this machine whose kill or wait failed, naming the mark in its scratch root that says so, or the failure to list that root for marks.
+    fn failed_ends(&self) -> Vec<String> {
         match self.root_files_with_extension(END_FAILED_EXTENSION) {
-            Ok(marks) => failures.extend(marks.iter().map(|mark| {
-                io::Error::other(format!(
-                    "the end of a process failed, as {} says, and that mark is not kept",
-                    mark.display()
-                ))
-            })),
-            Err(failure) => failures.push(failure),
+            Ok(marks) => marks
+                .iter()
+                .map(|mark| format!("{FAILED_END_REPORTED} {} says", mark.display()))
+                .collect(),
+            Err(unlisted) => vec![unlisted.to_string()],
         }
-        failures
     }
 
     /// Copies every member's run record into the directory, named for the member, each line that holds a secret of this machine, read as this keeping starts, kept with that secret replaced by the redaction marker, and returns the kept files; keeps none when those secrets cannot be read.
@@ -649,6 +644,7 @@ impl Drop for ScratchMachine {
                 print_to_standard_error(&timeline);
             }
         }
+        let failed_ends = self.failed_ends();
         let not_kept = self
             .run_records
             .kept_in()
@@ -666,10 +662,19 @@ impl Drop for ScratchMachine {
         if let Err(failure) = removed {
             failures.push(failure.to_string());
         }
+        failures.extend(failed_ends);
         if !failures.is_empty() {
             fail_unless_panicking(&failures.join("; "));
         }
     }
+}
+
+/// The failure of a keeping whose secrets to search what it keeps for could not be read, so nothing is kept.
+fn nothing_kept(unread: &io::Error) -> io::Error {
+    io::Error::new(
+        unread.kind(),
+        format!("nothing kept, since the secrets to search it for could not be read: {unread}"),
+    )
 }
 
 /// Every failure's text, joined so a reader meets each.
@@ -1418,7 +1423,7 @@ mod tests {
         drop(failing_its_end);
         let kept_machine = kept_in.join(machine.name());
 
-        drop(machine);
+        let _failed_end_reported = failure_of_dropping(machine);
 
         let kept: BTreeSet<PathBuf> = files_listed_beneath(&kept_in);
         let mark = kept_machine.join(format!(
@@ -1557,7 +1562,7 @@ mod tests {
         drop(failing_its_end);
         let kept_mark = kept_in.join(machine.name()).join(&mark_name);
 
-        drop(machine);
+        let _failed_end_reported = failure_of_dropping(machine);
 
         let marked = fs::read_to_string(&kept_mark).unwrap();
         let mut note = kept_mark.into_os_string();
@@ -2100,6 +2105,63 @@ mod tests {
     }
 
     #[test]
+    fn observability_decision_16_a_process_whose_kill_or_wait_failed_fails_a_test_that_was_not_failing_once_its_machine_has_kept_the_mark_and_removed_its_scratch_root()
+     {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-failed-end-fails-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = machine_keeping_in("failed-end-fails", &kept_in);
+        let mut failing_its_end =
+            machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), FAILED_LABEL);
+        let mark_name = format!(
+            "{FAILED_LABEL}-{}.{END_FAILED_EXTENSION}",
+            failing_its_end.id()
+        );
+        failing_its_end.end_through(|_process| Err(io::Error::other(PLANTED_END_FAILURE)));
+        drop(failing_its_end);
+        let root = machine.root.clone();
+        let kept_mark = kept_in.join(machine.name()).join(&mark_name);
+
+        let message = failure_of_dropping(machine);
+
+        let mark_kept = kept_mark.is_file();
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+        assert!(
+            message.contains(&format!(
+                "{FAILED_END_REPORTED} {} says",
+                root.join(&mark_name).display()
+            )),
+            "{message}"
+        );
+        assert!(mark_kept, "{} was not kept", kept_mark.display());
+        assert!(!root.exists(), "{} was not removed", root.display());
+    }
+
+    #[test]
+    fn observability_decision_16_a_process_whose_kill_or_wait_failed_on_a_test_already_failing_is_printed_by_its_machines_drop()
+     {
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                PRINTING_WHILE_UNWINDING_FIXTURE,
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(FIXTURE_VARIABLE, PRINTING_WHILE_UNWINDING_FIXTURE)
+            .stdout(Stdio::null())
+            .output()
+            .unwrap();
+
+        let printed = String::from_utf8_lossy(&child.stderr);
+        assert!(
+            printed.contains(FIRST_FAILURE) && printed.contains(FAILED_END_REPORTED),
+            "{printed}"
+        );
+    }
+
+    #[test]
     fn observability_decision_16_a_machine_dropped_on_a_failing_test_whose_standard_error_is_closed_ends_in_that_failure_and_never_aborts()
      {
         let (closed_by_its_reader, standard_error) = io::pipe().unwrap();
@@ -2121,9 +2183,9 @@ mod tests {
         assert_eq!(child.code(), Some(FAILED_TEST_EXIT_CODE), "{child:?}");
     }
 
-    /// Starts a member's count on a machine that keeps nothing, so its drop prints a timeline, then fails first, so the drop prints while the thread unwinds; run as the child process of the test of a closed standard error, which sets the variable, and refusing to run without it; ignored in the suite.
+    /// Starts a member's count and a process whose end fails on a machine that keeps nothing, so its drop prints a timeline and that failed end, then fails first, so the drop prints while the thread unwinds; run as the child process of a parent test, which sets the variable, and refusing to run without it; ignored in the suite.
     #[test]
-    #[ignore = "a fixture: the child process of observability_decision_16_a_machine_dropped_on_a_failing_test_whose_standard_error_is_closed_ends_in_that_failure_and_never_aborts"]
+    #[ignore = "a fixture: the child process of the tests of a machine printing while its test fails"]
     fn forced_failure_with_a_machine_printing_while_it_unwinds() {
         assert_eq!(
             std::env::var(FIXTURE_VARIABLE).ok().as_deref(),
@@ -2139,6 +2201,10 @@ mod tests {
             },
         );
         machine.servers_started.set(1);
+        let mut failing_its_end =
+            machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), FAILED_LABEL);
+        failing_its_end.end_through(|_process| Err(io::Error::other(PLANTED_END_FAILURE)));
+        drop(failing_its_end);
         panic!("{FIRST_FAILURE}");
     }
 
@@ -2185,10 +2251,10 @@ mod tests {
         fs::set_permissions(&root, fs::Permissions::from_mode(READABLE)).unwrap();
         remove_scratch::remove_scratch(&root).unwrap();
         remove_scratch::remove_scratch(&kept_in).unwrap();
-        let run_records_end_marks_and_removal = 3;
+        let failed_ends_run_records_end_marks_and_removal = 4;
         assert_eq!(
             message.matches(&format!("{}: ", root.display())).count(),
-            run_records_end_marks_and_removal,
+            failed_ends_run_records_end_marks_and_removal,
             "{message}"
         );
     }
