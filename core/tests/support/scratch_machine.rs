@@ -118,7 +118,7 @@ pub struct KeptSecrets {
 
 /// What a kept file is searched for beside the secrets of its machine or member.
 #[derive(Clone, Copy)]
-pub enum KeptAs {
+enum KeptAs {
     /// A run record, searched also for every line of its machine's or member's other readable files.
     RunRecord,
     /// A mark, a data file or a fetched trace file, searched for the secrets alone.
@@ -686,7 +686,7 @@ pub fn fail_unless_panicking(failure: &str) {
 }
 
 /// Creates the directory a machine's or a member's records are kept in beneath the test's, named for it, or for a later keeping of that name its number joined in a form no scratch root's name takes, so no keeping overwrites or merges into another and no number reads as a scratch root's own.
-pub fn fresh_kept_directory(directory: &Path, name: &str) -> io::Result<PathBuf> {
+fn fresh_kept_directory(directory: &Path, name: &str) -> io::Result<PathBuf> {
     fs::create_dir_all(directory)?;
     let later_keepings =
         (SECOND_KEEPING..).map(|number| format!("{name}{LATER_KEEPING_SEPARATOR}{number}"));
@@ -805,7 +805,7 @@ fn is_a_secret_key_file(file: &Path) -> bool {
 }
 
 /// Writes one file into a kept directory, making the directories it lies in: byte for byte when it holds no text the secrets name for a file kept as that, else with each such text replaced by the redaction marker and a note beside it naming the file; answers how many of its lines were redacted.
-pub fn keep_file(
+fn keep_file(
     secrets: &KeptSecrets,
     kept_as: KeptAs,
     kept_file: &Path,
