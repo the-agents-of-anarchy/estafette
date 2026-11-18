@@ -160,27 +160,22 @@ impl KeptSecrets {
     /// The secrets of the machine, read before anything of it is kept: the invitation when set, the `secret` of every network configuration under its configuration directory, and the text of every secret key file and every file of a certificate cache under its configuration, data and runtime directories, a run record also searched for every line of the other files it can read there but debug traces; or the first listing, read or configuration that fails, naming the path.
     fn of_machine(machine: &ScratchMachine) -> io::Result<Self> {
         let mut secret_texts = Vec::new();
+        let mut other_texts = Vec::new();
         for file in files_listed_beneath_base_directories(&machine.root)? {
             let in_root = file.strip_prefix(&machine.root).unwrap_or(&file);
             if holds_a_secret_key(in_root) {
                 secret_texts.push(text_of(&file)?);
             } else if is_a_network_configuration(in_root) {
+                let configuration = text_of(&file)?;
                 secret_texts.push(
-                    network_secret_named_in(&text_of(&file)?)
+                    network_secret_named_in(&configuration)
                         .map_err(|failure| naming(&file, &failure))?,
                 );
+                other_texts.push(configuration);
+            } else if !is_a_debug_trace(&file) {
+                other_texts.extend(text_of(&file).ok());
             }
         }
-        let other_texts: Vec<String> = machine
-            .base_directory_files()
-            .iter()
-            .filter(|file| {
-                !holds_a_secret_key(file.strip_prefix(&machine.root).unwrap_or(file))
-                    && !is_a_debug_trace(file)
-            })
-            .filter_map(|file| fs::read(file).ok())
-            .map(|content| String::from_utf8_lossy(&content).into_owned())
-            .collect();
         Ok(Self::searching_for(
             &secret_texts,
             &other_texts,
