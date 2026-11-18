@@ -847,22 +847,6 @@ fn naming(path: &Path, failure: &io::Error) -> io::Error {
     io::Error::new(failure.kind(), format!("{}: {failure}", path.display()))
 }
 
-/// Every file beneath the directory, at any depth; none when it does not exist.
-fn files_beneath(directory: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = fs::read_dir(directory) else {
-        return Vec::new();
-    };
-    let mut files = Vec::new();
-    for path in entries.filter_map(Result::ok).map(|entry| entry.path()) {
-        if path.is_dir() {
-            files.extend(files_beneath(&path));
-        } else {
-            files.push(path);
-        }
-    }
-    files
-}
-
 /// The value the environment gives the variable, none when it names none.
 fn variable_of(environment: &[(&str, OsString)], name: &str) -> Option<OsString> {
     environment
@@ -1072,7 +1056,7 @@ mod tests {
 
         drop(machine);
 
-        let kept: BTreeSet<(PathBuf, String)> = files_beneath(&kept_in)
+        let kept: BTreeSet<(PathBuf, String)> = files_listed_beneath(&kept_in)
             .into_iter()
             .map(|file| {
                 let content = fs::read_to_string(&file).unwrap();
@@ -1125,7 +1109,7 @@ mod tests {
 
         drop(machine);
 
-        let kept: BTreeSet<PathBuf> = files_beneath(&kept_in).into_iter().collect();
+        let kept: BTreeSet<PathBuf> = files_listed_beneath(&kept_in);
         assert_eq!(kept, expected);
         remove_scratch::remove_scratch(&kept_in).unwrap();
     }
@@ -1191,7 +1175,7 @@ mod tests {
                 second_text.to_owned(),
             ),
         ]);
-        let kept: BTreeSet<(PathBuf, String)> = files_beneath(&kept_in)
+        let kept: BTreeSet<(PathBuf, String)> = files_listed_beneath(&kept_in)
             .into_iter()
             .map(|file| {
                 let content = fs::read_to_string(&file).unwrap();
@@ -1333,7 +1317,7 @@ mod tests {
 
         drop(machine);
 
-        let kept: BTreeSet<PathBuf> = files_beneath(&kept_in).into_iter().collect();
+        let kept: BTreeSet<PathBuf> = files_listed_beneath(&kept_in);
         assert_eq!(
             kept,
             BTreeSet::from([
@@ -1397,7 +1381,7 @@ mod tests {
 
         drop(machine);
 
-        let kept: BTreeSet<PathBuf> = files_beneath(&kept_in).into_iter().collect();
+        let kept: BTreeSet<PathBuf> = files_listed_beneath(&kept_in);
         let mark = kept_machine.join(format!(
             "{FAILED_LABEL}-{failing_process_id}.{END_FAILED_EXTENSION}"
         ));
@@ -1487,7 +1471,7 @@ mod tests {
         )
         .unwrap();
 
-        let kept: BTreeSet<PathBuf> = files_beneath(&kept_in).into_iter().collect();
+        let kept: BTreeSet<PathBuf> = files_listed_beneath(&kept_in);
         assert_eq!(
             kept,
             BTreeSet::from([
@@ -1563,8 +1547,6 @@ mod tests {
                 invitation: None,
             },
         );
-        let kept_data = kept_in.join(machine.name()).join(KEPT_DATA_DIRECTORY);
-
         let unwound = catch_unwind(AssertUnwindSafe(move || {
             machine.directories();
             let data_file = machine
@@ -1589,9 +1571,9 @@ mod tests {
             Some(FIRST_FAILURE)
         );
         assert!(
-            files_beneath(&kept_data).is_empty(),
-            "data whose secrets could not be read was kept at {}",
-            kept_data.display()
+            files_listed_beneath(&kept_in).is_empty(),
+            "data whose secrets could not be read was kept in {}",
+            kept_in.display()
         );
         remove_scratch::remove_scratch(&kept_in).unwrap();
     }
@@ -1647,7 +1629,7 @@ mod tests {
         let failure =
             dropped.expect_err("a machine with a source unread was dropped with no failure");
         let message = failure.downcast_ref::<String>().unwrap().clone();
-        let kept: BTreeSet<PathBuf> = files_beneath(&kept_in).into_iter().collect();
+        let kept: BTreeSet<PathBuf> = files_listed_beneath(&kept_in);
         let made_in_kept_in: BTreeSet<PathBuf> = fs::read_dir(&kept_in)
             .unwrap()
             .map(|entry| entry.unwrap().path())
@@ -2126,7 +2108,7 @@ mod tests {
         drop(machine);
 
         let kept = KeptAfterPlanting {
-            files: files_beneath(&kept_in).into_iter().collect(),
+            files: files_listed_beneath(&kept_in),
             events: fs::read(kept_events).unwrap(),
             run_record: fs::read(kept_machine.join(&record_name)).unwrap(),
             run_record_note: fs::read_to_string(
@@ -2136,5 +2118,16 @@ mod tests {
         };
         remove_scratch::remove_scratch(&kept_in).unwrap();
         kept
+    }
+
+    /// Every file beneath the kept directory at any depth, failing the test, naming the directory, when it or one beneath it cannot be listed, so an unlistable directory never reads as one holding nothing.
+    fn files_listed_beneath(directory: &Path) -> BTreeSet<PathBuf> {
+        if let Err(failure) = fs::read_dir(directory) {
+            panic!("{}: {failure}", directory.display());
+        }
+        files_beneath_for_keeping(directory)
+            .into_iter()
+            .map(|listed| listed.unwrap_or_else(|failure| panic!("{failure}")))
+            .collect()
     }
 }
