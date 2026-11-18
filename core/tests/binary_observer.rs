@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -77,7 +77,7 @@ struct ScratchRemovedOnDrop {
 impl Drop for ScratchRemovedOnDrop {
     fn drop(&mut self) {
         if let Err(failure) = remove_scratch::remove_scratch(&self.path) {
-            eprintln!("scratch not removed: {failure}");
+            drop(writeln!(io::stderr(), "scratch not removed: {failure}"));
         }
     }
 }
