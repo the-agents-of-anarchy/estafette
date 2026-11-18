@@ -2555,7 +2555,7 @@ mod tests {
     }
 
     /// Every file beneath the kept directory at any depth, failing the test, naming the directory, when it or one beneath it cannot be listed, so an unlistable directory never reads as one holding nothing.
-    fn files_listed_beneath(directory: &Path) -> BTreeSet<PathBuf> {
+    pub(super) fn files_listed_beneath(directory: &Path) -> BTreeSet<PathBuf> {
         if let Err(failure) = fs::read_dir(directory) {
             panic!("{}: {failure}", directory.display());
         }

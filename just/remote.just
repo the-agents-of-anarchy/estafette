@@ -264,16 +264,43 @@ call-on-server card tool: lab-context-exists
 run-record-on-server card: lab-context-exists
     ssh {{ ssh_opts }} lab@$({{ lab_hcloud }} server ip {{ server }}) cat /home/lab/{{ card }}.err
 
-[doc("Write every trace file of the card's lab member on this machine to stdout as one tar stream: both files of each of its runs, rolled-over files included")]
+[doc("Print the name of each trace file of the card's lab member on this machine that holds the text of a key file of the member (its card's sidecar, or any .key file beneath its data directory), one a line, then `withheld: <count>`, never the text; fails when a key file or the trace files cannot be read")]
+[group('lab')]
+trace-files-holding-keys card:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    traces={{ lab_members_data }}/{{ card }}/estafette/traces
+    key_files=({{ lab_cards_directory }}/{{ lab_network }}/{{ card }}.key)
+    while IFS= read -r -d '' key_file; do key_files+=("$key_file"); done < <(find {{ lab_members_data }}/{{ card }} -type f -name '*.key' -print0)
+    for key_file in "${key_files[@]}"; do
+        test -r "$key_file" || { echo "the key file $key_file cannot be read, so the trace files of {{ card }} cannot be searched for it" >&2; exit 1; }
+    done
+    held="$(cd "$traces" && { grep -r -l -F -f <(cat "${key_files[@]}" | grep -v '^[[:space:]]*$') . || test "$?" = 1; } | sed 's|^\./||')"
+    count=0
+    if [ -n "$held" ]; then
+        printf '%s\n' "$held"
+        count="$(printf '%s\n' "$held" | wc -l | tr -d ' ')"
+    fi
+    printf 'withheld: %s\n' "$count"
+
+[doc("Write every trace file of the card's lab member on this machine to stdout as one tar stream, both files of each of its runs, rolled-over files included, but each file trace-files-holding-keys names, which stays here")]
 [group('lab')]
 member-trace-files card:
-    tar -c -C {{ lab_members_data }}/{{ card }}/estafette/traces .
+    #!/usr/bin/env bash
+    set -euo pipefail
+    held="$(just remote::trace-files-holding-keys {{ card }} | sed '$d')"
+    cd {{ lab_members_data }}/{{ card }}/estafette/traces
+    find . -type f | sed 's|^\./||' | { grep -v -x -F -f <(printf '%s\n' "$held" | grep -v '^$') || test "$?" = 1; } | tar -c -T -
 
-[doc("Fetch every trace file of the card's lab member on the server into the directory, created 0700: both files of each of its runs, rolled-over files included; the raw files hold real addresses and full ids and are not safe to post")]
+[doc("Fetch every trace file of the card's lab member on the server into the directory, created 0700, both files of each of its runs, rolled-over files included, but each file that holds the text of a key file of the member, which stays on the server: first prints what trace-files-holding-keys prints there, the names and their count; the raw files hold real addresses and full ids and are not safe to post")]
 [group('lab')]
 trace-files-on-server card directory: lab-context-exists
+    #!/usr/bin/env bash
+    set -euo pipefail
     umask 077 && mkdir -p "{{ directory }}"
-    ssh {{ ssh_opts }} lab@$({{ lab_hcloud }} server ip {{ server }}) 'cd {{ remote_tree }} && just remote::member-trace-files {{ card }}' | tar -x -C "{{ directory }}"
+    address="$({{ lab_hcloud }} server ip {{ server }})"
+    ssh {{ ssh_opts }} lab@"$address" 'cd {{ remote_tree }} && just remote::trace-files-holding-keys {{ card }}'
+    ssh {{ ssh_opts }} lab@"$address" 'cd {{ remote_tree }} && just remote::member-trace-files {{ card }}' | tar -x -C "{{ directory }}"
 
 [doc("Print every events file under the directory, at any depth and rolled-over files included, as one timeline: each whole line as written, ordered by wall_ms, then run, then n; refuses, naming the file, the line and both versions, a line of a format version it does not know, and, naming the file, the line and why, a line that is no trace line")]
 [group('lab')]

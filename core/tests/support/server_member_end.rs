@@ -25,6 +25,12 @@ const STAGED_DIRECTORY: &str = "fetched";
 /// What a failing test prints in place of a member's timeline when its trace files could not be fetched.
 const TRACE_FILES_NOT_FETCHED: &str =
     "its trace files were not fetched, so what it recorded is unknown";
+/// What begins the last line a whole fetch prints, before the count of the trace files it left on the server for holding the text of a key file of the member, each named on a line before it.
+const WITHHELD_COUNT_PREFIX: &str = "withheld: ";
+/// What the mark beside a member's trace files says, after a file's name and before the member's, of a file the fetch left on the server.
+const HOLDS_A_KEY_FILES_TEXT: &str = "holds the text of a key file of";
+/// What a failure and the mark beside a member's trace files say when a whole fetch's print does not end in the count of the files it left on the server.
+const LEFT_ON_THE_SERVER_UNCOUNTED: &str = "what the fetch printed does not end in the count of the trace files it left on the server for holding the text of a key file, so which it left is unknown";
 
 /// A step of the end of a member serving on a server, each a recipe run on that server.
 #[derive(Clone, Copy)]
@@ -33,7 +39,7 @@ pub enum ServerMemberStep<'into> {
     Stop,
     /// Prints the member's run record.
     PrintRunRecord,
-    /// Fetches both trace files of each of the member's runs into the directory.
+    /// Fetches both trace files of each of the member's runs into the directory, but each that holds the text of a key file of the member, printing the names of those it left and their count.
     FetchTraceFiles(&'into Path),
 }
 
@@ -112,6 +118,17 @@ impl StagedFetch {
     fn whole(&self) -> Option<PathBuf> {
         self.failure()
             .map_or_else(|| self.fetched_into(), |_failure| None)
+    }
+
+    /// The names a whole fetch printed of the trace files it left on the server for holding the text of a key file, nothing unless the fetch was whole, or none when its print does not end in their count.
+    fn withheld(&self) -> Option<Vec<String>> {
+        match self {
+            Self::Staged {
+                fetched: Ok(output),
+                ..
+            } if output.status.success() => names_counted(&output.stdout),
+            Self::NotStaged(_) | Self::Staged { .. } => Some(Vec::new()),
+        }
     }
 
     /// Removes the scratch directory with what was fetched into it, nothing when none was made.
@@ -264,7 +281,7 @@ fn staged_fetch(
     }
 }
 
-/// Keeps every file of the staged fetch in the trace files' directory inside the directory through the writer of kept files, adding a failure for each file that cannot be read or kept, and marks beside that directory, with each failure, a fetch that is not whole or a file not kept.
+/// Keeps every file of the staged fetch in the trace files' directory inside the directory through the writer of kept files, adding a failure for each file that cannot be read or kept and for a whole fetch whose print does not count the files it left on the server, and marks beside that directory, with each failure, a fetch that is not whole, a file not kept, or a file the fetch left on the server for holding the text of a key file.
 fn keep_staged_trace_files(
     member: &str,
     server: &str,
@@ -300,11 +317,30 @@ fn keep_staged_trace_files(
     for failure in &unkept {
         failures.push(format!("a trace file of {member} not kept: {failure}"));
     }
+    let withheld = staged.withheld().map_or_else(
+        || {
+            failures.push(format!(
+                "trace files of {member} on {server}: {LEFT_ON_THE_SERVER_UNCOUNTED}"
+            ));
+            vec![LEFT_ON_THE_SERVER_UNCOUNTED.to_owned()]
+        },
+        |names| {
+            names
+                .into_iter()
+                .map(|name| {
+                    format!(
+                        "{name} {HOLDS_A_KEY_FILES_TEXT} {member}, so it was left on the server"
+                    )
+                })
+                .collect()
+        },
+    );
     let not_whole: Vec<String> = staged
         .failure()
         .map(|failure| failure.marked())
         .into_iter()
         .chain(unkept)
+        .chain(withheld)
         .collect();
     if not_whole.is_empty() {
         print_to_standard_error(&format!(
@@ -328,6 +364,17 @@ fn keep_staged_trace_files(
 /// The member's timeline read from the directory its trace files were fetched into, or, when they were not fetched, that its timeline is unknown.
 fn timeline_of_fetched(fetched_into: Option<&Path>) -> String {
     fetched_into.map_or_else(|| TRACE_FILES_NOT_FETCHED.to_owned(), timeline_in)
+}
+
+/// The names printed one a line before a last line giving their count, none when the print is no text, has no such last line, or counts otherwise.
+fn names_counted(printed: &[u8]) -> Option<Vec<String>> {
+    let mut lines: Vec<&str> = std::str::from_utf8(printed).ok()?.lines().collect();
+    let count: usize = lines
+        .pop()?
+        .strip_prefix(WITHHELD_COUNT_PREFIX)?
+        .parse()
+        .ok()?;
+    (count == lines.len()).then(|| lines.into_iter().map(str::to_owned).collect())
 }
 
 /// The output of a recipe run that succeeded, or why it did not: it failed, or it could not run.
@@ -376,7 +423,8 @@ mod tests {
     use crate::scratch_machine::fresh_directory::fresh_directory_in;
     use crate::scratch_machine::remove_scratch::remove_scratch;
     use crate::scratch_machine::tests::{
-        KEPT_BENEATH_NOT_A_DIRECTORY, NOT_A_DIRECTORY, READABLE, UNWRITABLE, member_line_naming,
+        KEPT_BENEATH_NOT_A_DIRECTORY, NOT_A_DIRECTORY, READABLE, UNWRITABLE, files_listed_beneath,
+        member_line_naming,
     };
     use crate::scratch_machine::trace_reader::tests::MEMBER_LINE;
     use crate::scratch_machine::trace_reader::{
@@ -419,6 +467,19 @@ mod tests {
     const FIRST_FAILURE: &str = "the test failed first";
     /// The owner key a test's member's network configuration names, no real one.
     const PLANTED_OWNER: &str = "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e";
+    /// The public id of the host a test's member's network configuration names, no real one.
+    const PLANTED_HOST_ID: &str =
+        "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f";
+    /// The relay of the host a test's member's network configuration names, no real one.
+    const PLANTED_RELAY: &str = "https://relay.lab-server.invalid";
+    /// The public id of a card a test plants in what is fetched of its member, no real one.
+    const PLANTED_CARD_ID: &str =
+        "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c";
+    /// A fetched trace file a test's stand-in writes naming public ids alone: the host's, the owner's and a card's.
+    const FETCHED_NAMING_PUBLIC_IDS: &str =
+        "20261117T120002Z-3333333333333333-estafette.events.jsonl";
+    /// A trace file a test's stand-in fetch names as left on the server for holding the text of a key file of its member.
+    const FETCHED_NAMING_A_KEY: &str = "20261117T120003Z-4444444444444444-estafette.raw.jsonl";
     /// What a test writes as the network configuration a member wrote to its server, naming no secret.
     const CONFIGURATION_NAMING_NO_SECRET: &str = "owner = \"0e0e0e0e\"\n";
     /// The field of a network configuration naming its secret, as spec 3.3 names it.
@@ -430,9 +491,11 @@ mod tests {
     /// The longest name a file system here takes, in bytes, so a test can name a kept directory that fits and a mark in it that does not.
     const LONGEST_FILE_NAME: usize = 255;
 
-    /// The network configuration a test's member wrote to its server, naming the secret.
+    /// The network configuration a test's member wrote to its server, naming the secret, the owner and one host.
     fn configuration_naming(secret: &str) -> String {
-        format!("{NETWORK_SECRET_FIELD} = \"{secret}\"\nowner = \"{PLANTED_OWNER}\"\n")
+        format!(
+            "{NETWORK_SECRET_FIELD} = \"{secret}\"\nowner = \"{PLANTED_OWNER}\"\n\n[[hosts]]\nid = \"{PLANTED_HOST_ID}\"\nrelay = \"{PLANTED_RELAY}\"\n"
+        )
     }
 
     /// The secrets of a test's member: the planted token as its network's secret, and the planted invitation.
@@ -459,7 +522,7 @@ mod tests {
             ServerMemberStep::FetchTraceFiles(into) => {
                 fs::create_dir_all(into).unwrap();
                 fs::write(into.join(FETCHED_TRACE_FILE), "").unwrap();
-                Ok(succeeded_run(""))
+                Ok(fetched_with_none_left_on_the_server())
             }
         };
 
@@ -591,9 +654,8 @@ mod tests {
         let refusal = format!("ssh: refused {PLANTED_TOKEN}");
         let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
             ServerMemberStep::Stop => Ok(failed_run(&refusal)),
-            ServerMemberStep::PrintRunRecord | ServerMemberStep::FetchTraceFiles(_) => {
-                Ok(succeeded_run(""))
-            }
+            ServerMemberStep::PrintRunRecord => Ok(succeeded_run("")),
+            ServerMemberStep::FetchTraceFiles(_) => Ok(fetched_with_none_left_on_the_server()),
         };
 
         let ended = ended_server_member(
@@ -640,7 +702,7 @@ mod tests {
             ServerMemberStep::FetchTraceFiles(into) => {
                 fs::create_dir_all(into).unwrap();
                 fs::write(into.join(FETCHED_TRACE_FILE), "").unwrap();
-                Ok(succeeded_run(""))
+                Ok(fetched_with_none_left_on_the_server())
             }
         };
 
@@ -687,7 +749,8 @@ mod tests {
         .unwrap();
         let kept = kept_in.join(kept_name(SERVER, MEMBER));
         let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
-            ServerMemberStep::Stop | ServerMemberStep::FetchTraceFiles(_) => Ok(succeeded_run("")),
+            ServerMemberStep::Stop => Ok(succeeded_run("")),
+            ServerMemberStep::FetchTraceFiles(_) => Ok(fetched_with_none_left_on_the_server()),
             ServerMemberStep::PrintRunRecord => {
                 fs::set_permissions(&kept, fs::Permissions::from_mode(UNWRITABLE)).unwrap();
                 Ok(failed_run(RUN_RECORD_REFUSAL))
@@ -818,7 +881,7 @@ mod tests {
                     member_line_naming(PLANTED_TOKEN),
                 )
                 .unwrap();
-                Ok(succeeded_run(""))
+                Ok(fetched_with_none_left_on_the_server())
             }
         };
         ended_server_member(
@@ -882,7 +945,7 @@ mod tests {
             ServerMemberStep::FetchTraceFiles(into) => {
                 fs::create_dir_all(into).unwrap();
                 fs::write(into.join(FETCHED_TRACE_FILE), MEMBER_LINE).unwrap();
-                Ok(succeeded_run(""))
+                Ok(fetched_with_none_left_on_the_server())
             }
         };
         ended_server_member(
@@ -920,6 +983,123 @@ mod tests {
         }
     }
 
+    /// The output of a test's stand-in fetch that succeeded leaving the named files on the server, printing their names and their count as the recipe does.
+    fn fetched_leaving_on_the_server(names: &[&str]) -> Output {
+        let mut printed = names.join("\n");
+        if !names.is_empty() {
+            printed.push('\n');
+        }
+        printed.push_str(WITHHELD_COUNT_PREFIX);
+        printed.push_str(&names.len().to_string());
+        printed.push('\n');
+        succeeded_run(&printed)
+    }
+
+    /// The output of a test's stand-in fetch that succeeded leaving no file on the server.
+    fn fetched_with_none_left_on_the_server() -> Output {
+        fetched_leaving_on_the_server(&[])
+    }
+
+    #[test]
+    fn observability_decision_16_a_server_members_trace_file_holding_the_text_of_its_key_file_is_left_on_the_server_and_named_in_the_mark_beside_its_kept_trace_files()
+     {
+        let kept_in = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-server-member-left-on-server-test-{}",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop => Ok(succeeded_run("")),
+            ServerMemberStep::PrintRunRecord => Ok(succeeded_run("record of amy\n")),
+            ServerMemberStep::FetchTraceFiles(into) => {
+                fs::create_dir_all(into).unwrap();
+                fs::write(into.join(FETCHED_TRACE_FILE), "").unwrap();
+                Ok(fetched_leaving_on_the_server(&[FETCHED_NAMING_A_KEY]))
+            }
+        };
+
+        let ended = ended_server_member(
+            MEMBER,
+            SERVER,
+            Some(&kept_in),
+            &secrets_of_the_member(),
+            TestSoFar::NotFailing,
+            stand_in_for_the_recipes,
+        );
+
+        let kept = kept_in.join(kept_name(SERVER, MEMBER));
+        let kept_traces = files_listed_beneath(&kept.join(KEPT_TRACE_FILES_DIRECTORY));
+        let fetch_mark = fs::read_to_string(kept.join(format!(
+            "{KEPT_TRACE_FILES_DIRECTORY}.{FETCH_FAILED_EXTENSION}"
+        )))
+        .unwrap_or_default();
+        remove_scratch(&kept_in).unwrap();
+        assert!(ended.failures.is_empty(), "{:?}", ended.failures);
+        assert_eq!(
+            kept_traces,
+            BTreeSet::from([kept
+                .join(KEPT_TRACE_FILES_DIRECTORY)
+                .join(FETCHED_TRACE_FILE)])
+        );
+        assert!(
+            fetch_mark.contains(&format!(
+                "{FETCHED_NAMING_A_KEY} {HOLDS_A_KEY_FILES_TEXT} {MEMBER}"
+            )),
+            "the fetch mark names no file left on the server: {fetch_mark}"
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_server_members_fetch_whose_print_counts_no_file_left_on_the_server_fails_a_test_that_was_not_failing_and_is_marked()
+     {
+        let kept_in = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-server-member-uncounted-fetch-test-{}",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop => Ok(succeeded_run("")),
+            ServerMemberStep::PrintRunRecord => Ok(succeeded_run("record of amy\n")),
+            ServerMemberStep::FetchTraceFiles(into) => {
+                fs::create_dir_all(into).unwrap();
+                fs::write(into.join(FETCHED_TRACE_FILE), "").unwrap();
+                Ok(succeeded_run(&format!("{FETCHED_NAMING_A_KEY}\n")))
+            }
+        };
+
+        let ended = ended_server_member(
+            MEMBER,
+            SERVER,
+            Some(&kept_in),
+            &secrets_of_the_member(),
+            TestSoFar::NotFailing,
+            stand_in_for_the_recipes,
+        );
+
+        let fetch_mark = fs::read_to_string(kept_in.join(kept_name(SERVER, MEMBER)).join(format!(
+            "{KEPT_TRACE_FILES_DIRECTORY}.{FETCH_FAILED_EXTENSION}"
+        )))
+        .unwrap_or_default();
+        remove_scratch(&kept_in).unwrap();
+        assert_eq!(ended.failures.len(), 1, "{:?}", ended.failures);
+        assert!(
+            ended.failures[0].contains(LEFT_ON_THE_SERVER_UNCOUNTED),
+            "{:?}",
+            ended.failures
+        );
+        assert!(ended.timeline.is_some(), "no timeline printed");
+        assert!(
+            fetch_mark.contains(LEFT_ON_THE_SERVER_UNCOUNTED),
+            "the fetch mark says nothing of the uncounted print: {fetch_mark}"
+        );
+    }
+
     #[test]
     fn observability_decision_16_a_server_members_fetched_trace_file_holding_its_invitation_or_a_token_is_kept_redacted_with_a_note_beside_it_and_any_other_byte_for_byte()
      {
@@ -932,6 +1112,9 @@ mod tests {
         )
         .unwrap();
         let neither_bytes = [b'n', b'o', 0xff, 0x00, b'\n'];
+        let naming_public_ids = format!(
+            "host {PLANTED_HOST_ID}\nowner = \"{PLANTED_OWNER}\"\ncard {PLANTED_CARD_ID}\n"
+        );
         let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
             ServerMemberStep::Stop => Ok(succeeded_run("")),
             ServerMemberStep::PrintRunRecord => Ok(succeeded_run("record of amy\n")),
@@ -948,7 +1131,8 @@ mod tests {
                 )
                 .unwrap();
                 fs::write(into.join(FETCHED_NAMING_NEITHER), neither_bytes).unwrap();
-                Ok(succeeded_run(""))
+                fs::write(into.join(FETCHED_NAMING_PUBLIC_IDS), &naming_public_ids).unwrap();
+                Ok(fetched_with_none_left_on_the_server())
             }
         };
 
@@ -978,7 +1162,12 @@ mod tests {
                 kept_traces.join(FETCHED_NAMING_THE_TOKEN),
                 note_of(FETCHED_NAMING_THE_TOKEN),
                 kept_traces.join(FETCHED_NAMING_NEITHER),
+                kept_traces.join(FETCHED_NAMING_PUBLIC_IDS),
             ])
+        );
+        assert_eq!(
+            fs::read_to_string(kept_traces.join(FETCHED_NAMING_PUBLIC_IDS)).unwrap(),
+            naming_public_ids
         );
         assert_eq!(
             fs::read_to_string(kept_traces.join(FETCHED_NAMING_THE_INVITATION)).unwrap(),
@@ -1021,11 +1210,7 @@ mod tests {
                 steps_run.borrow_mut().push("fetch trace files".to_owned());
                 fs::create_dir_all(into).unwrap();
                 fs::write(into.join(FETCHED_TRACE_FILE), "").unwrap();
-                Ok(Output {
-                    status: ExitStatus::from_raw(0),
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
-                })
+                Ok(fetched_with_none_left_on_the_server())
             }
         };
 
@@ -1096,7 +1281,7 @@ mod tests {
             ServerMemberStep::FetchTraceFiles(into) => {
                 steps_run.borrow_mut().push("fetch trace files");
                 fs::create_dir_all(into).unwrap();
-                Ok(succeeded_run(""))
+                Ok(fetched_with_none_left_on_the_server())
             }
         };
 
@@ -1157,7 +1342,7 @@ mod tests {
                 steps_run.borrow_mut().push("fetch trace files");
                 fetched_into.borrow_mut().push(into.to_path_buf());
                 fs::create_dir_all(into).unwrap();
-                Ok(succeeded_run(""))
+                Ok(fetched_with_none_left_on_the_server())
             }
         };
 
@@ -1273,7 +1458,7 @@ mod tests {
                 let unreadable = into.join(FETCHED_NAMING_THE_TOKEN);
                 fs::write(&unreadable, format!("key {PLANTED_TOKEN} seen\n")).unwrap();
                 fs::set_permissions(&unreadable, fs::Permissions::from_mode(UNREADABLE)).unwrap();
-                Ok(succeeded_run(""))
+                Ok(fetched_with_none_left_on_the_server())
             }
         };
 
