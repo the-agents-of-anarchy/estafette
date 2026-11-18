@@ -1,8 +1,10 @@
 use std::cell::Cell;
 use std::collections::BTreeSet;
+use std::env::VarError;
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{self, BufRead, BufReader, Write};
+use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::mpsc::{self, Receiver};
@@ -90,6 +92,13 @@ const NETWORK_CONFIG_EXTENSION: &str = "toml";
 const CONFIGURATION_NOT_TOML: &str = "does not parse as TOML";
 /// The variable the acceptance gate exports the live host's invitation in.
 pub const INVITATION_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_INVITATION";
+/// What a failure says of the invitation variable when it is set to a value that is not unicode, after the variable's name, never the value.
+pub const INVITATION_NOT_UNICODE: &str =
+    "is set but not valid unicode, so nothing can be searched for the invitation";
+/// The marker a test plants in an invitation variable that is not unicode, no real invitation.
+pub const PLANTED_UNREADABLE_INVITATION_MARKER: &str = "plantedunreadableinvitation0123456789";
+/// A byte no UTF-8 text holds, which makes a value that ends in it not unicode.
+const NOT_UNICODE_BYTE: u8 = 0xff;
 /// What a kept run record holds in place of a secret.
 pub const REDACTED: &str = "<redacted>";
 /// The fewest letters and digits in a row that a key, a secret or an invitation is written with, so such a run is redacted even where the record quotes it apart from its line.
@@ -117,7 +126,18 @@ pub struct ScratchMachine {
 #[derive(Clone)]
 pub struct RunRecordKeeping {
     kept_in: Option<PathBuf>,
-    invitation: Option<String>,
+    invitation: InvitationVariable,
+}
+
+/// The invitation variable as a test found it: its text, unset, or set to a value that is not unicode, which is left unread.
+#[derive(Clone)]
+enum InvitationVariable {
+    /// Set to this text.
+    Set(String),
+    /// Not set.
+    Unset,
+    /// Set to a value that is not unicode, left unread so nothing prints or keeps it.
+    NotUnicode,
 }
 
 /// Every text a machine's or a server member's kept files are searched for, read from every source of its secrets before anything of it is kept, so no file is kept unsearched.
@@ -151,7 +171,11 @@ impl RunRecordKeeping {
         Self {
             kept_in: std::env::var_os(KEPT_RUN_RECORDS_VARIABLE)
                 .map(|directory| PathBuf::from(directory).join(test)),
-            invitation: std::env::var(INVITATION_VARIABLE).ok(),
+            invitation: match std::env::var(INVITATION_VARIABLE) {
+                Ok(invitation) => InvitationVariable::Set(invitation),
+                Err(VarError::NotPresent) => InvitationVariable::Unset,
+                Err(VarError::NotUnicode(_left_unread)) => InvitationVariable::NotUnicode,
+            },
         }
     }
 
@@ -160,15 +184,23 @@ impl RunRecordKeeping {
         self.kept_in.as_deref()
     }
 
-    /// The invitation the gate exports, which nothing kept may show; none when the variable is unset.
-    pub fn invitation(&self) -> Option<&str> {
-        self.invitation.as_deref()
+    /// The invitation the gate exports, which nothing kept may show; none when the variable is unset, and a failure naming the variable, never its value, when it is set to a value that is not unicode.
+    pub fn invitation(&self) -> io::Result<Option<&str>> {
+        match &self.invitation {
+            InvitationVariable::Set(invitation) => Ok(Some(invitation)),
+            InvitationVariable::Unset => Ok(None),
+            InvitationVariable::NotUnicode => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{INVITATION_VARIABLE} {INVITATION_NOT_UNICODE}"),
+            )),
+        }
     }
 }
 
 impl KeptSecrets {
-    /// The secrets of the machine, read before anything of it is kept: the invitation when set, the `secret` of every network configuration under its configuration directory, and the text of every secret key file and every file of a certificate cache under its configuration, data and runtime directories, a run record also searched for every line of the other files it can read there but debug traces; or the first listing, read or configuration that fails, naming the path.
+    /// The secrets of the machine, read before anything of it is kept: the invitation when set, the `secret` of every network configuration under its configuration directory, and the text of every secret key file and every file of a certificate cache under its configuration, data and runtime directories, a run record also searched for every line of the other files it can read there but debug traces; or the first failure, naming the invitation variable when it is not unicode, or the path of the listing, read or configuration that fails.
     fn of_machine(machine: &ScratchMachine) -> io::Result<Self> {
+        let invitation = machine.run_records.invitation()?;
         let mut secret_texts = Vec::new();
         let mut other_texts = Vec::new();
         for file in machine.base_directory_files()? {
@@ -186,11 +218,7 @@ impl KeptSecrets {
                 other_texts.extend(text_of(&file).ok());
             }
         }
-        Ok(Self::searching_for(
-            &secret_texts,
-            &other_texts,
-            machine.run_records.invitation(),
-        ))
+        Ok(Self::searching_for(&secret_texts, &other_texts, invitation))
     }
 
     /// The secrets of a member serving on a server, read where it starts: the `secret` of the network configuration it wrote there and the invitation, a run record also searched for every line of that configuration; or why either is missing.
@@ -762,6 +790,13 @@ pub fn print_to_standard_error(text: &str) {
     drop(writeln!(io::stderr(), "{text}"));
 }
 
+/// The value a test sets the invitation variable to in a child process: the planted marker and a byte that makes it not unicode, no real invitation.
+pub fn planted_invitation_not_unicode() -> OsString {
+    let mut value = PLANTED_UNREADABLE_INVITATION_MARKER.as_bytes().to_vec();
+    value.push(NOT_UNICODE_BYTE);
+    OsString::from_vec(value)
+}
+
 /// Creates the directory a machine's or a member's records are kept in beneath the test's, named for it, or for a later keeping of that name its number joined in a form no scratch root's name takes, so no keeping overwrites or merges into another and no number reads as a scratch root's own.
 fn fresh_kept_directory(directory: &Path, name: &str) -> io::Result<PathBuf> {
     fs::create_dir_all(directory).map_err(|failure| naming(directory, &failure))?;
@@ -972,7 +1007,10 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
-    use super::owned_process::{FIXTURE_ENDED_WITHIN, FIXTURE_VARIABLE, fixture_exit_within};
+    use super::owned_process::{
+        FAILED_TEST_EXIT_CODE, FIXTURE_ENDED_WITHIN, FIXTURE_STANDARD_ERROR, FIXTURE_VARIABLE,
+        fixture_run_within,
+    };
     use super::*;
 
     /// The network the tests of this module configure their machines for.
@@ -1051,13 +1089,14 @@ mod tests {
     const UNLISTABLE: u32 = 0o300;
     /// The mode of a directory its owner may list and enter but not write in.
     pub(super) const UNWRITABLE: u32 = 0o500;
-    /// The file a test sends a fixture's standard error to.
-    const FIXTURE_STANDARD_ERROR: &str = "fixture.stderr";
     /// The fixture whose machine prints while its thread unwinds, by the name the test harness runs it by.
     const PRINTING_WHILE_UNWINDING_FIXTURE: &str =
         "scratch_machine::tests::forced_failure_with_a_machine_printing_while_it_unwinds";
-    /// The exit code of a test binary whose test failed, as against a signal that ends one that aborts.
-    const FAILED_TEST_EXIT_CODE: i32 = 101;
+    /// The fixture whose machine keeps its records while the invitation variable is not unicode, by the name the test harness runs it by.
+    const INVITATION_NOT_UNICODE_FIXTURE: &str =
+        "scratch_machine::tests::forced_keeping_with_an_invitation_variable_that_is_not_unicode";
+    /// The directory a test's fixture keeps its run records under, beside its standard error.
+    const FIXTURE_KEPT_RUN_RECORDS: &str = "kept";
     /// The mode spec 3.3 gives every directory the binary makes private.
     const SPEC_PRIVATE_DIRECTORY_MODE: u32 = 0o700;
     /// The bits of a mode that grant reading, writing and searching.
@@ -1071,7 +1110,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: None,
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         );
         machine.servers_started.set(1);
@@ -1152,7 +1191,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: None,
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         );
         planted_network_configuration(&machine, NETWORK);
@@ -1179,7 +1218,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: None,
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         );
 
@@ -1213,7 +1252,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: Some(kept_in.clone()),
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         );
         let data = machine.root.join(DATA_HOME);
@@ -1296,7 +1335,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: Some(kept_in.clone()),
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         );
         let data = machine.root.join(DATA_HOME);
@@ -1333,7 +1372,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: Some(kept_in.to_path_buf()),
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         );
         fs::write(
@@ -1479,7 +1518,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: Some(kept_in.clone()),
-                invitation: Some(PLANTED_INVITATION.to_owned()),
+                invitation: InvitationVariable::Set(PLANTED_INVITATION.to_owned()),
             },
         );
         let data = machine.root.join(DATA_HOME);
@@ -1580,7 +1619,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: Some(kept_in.clone()),
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         );
         drop(machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), ENDED_LABEL));
@@ -1616,7 +1655,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: None,
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         );
         let (only_the_stand_in_writes, stand_in_end) = io::pipe().unwrap();
@@ -1716,7 +1755,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: Some(kept_in.clone()),
-                invitation: Some(PLANTED_INVITATION.to_owned()),
+                invitation: InvitationVariable::Set(PLANTED_INVITATION.to_owned()),
             },
         );
         let mut failing_its_end =
@@ -1757,7 +1796,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: Some(kept_in.clone()),
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         );
         let unwound = catch_unwind(AssertUnwindSafe(move || {
@@ -1815,7 +1854,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: Some(kept_in.clone()),
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         );
         let holding_the_token = format!("key {PLANTED_TOKEN} seen\n");
@@ -1919,7 +1958,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: Some(kept_in.clone()),
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         );
         let configuration = machine.directories().network_config_file(NETWORK).unwrap();
@@ -2375,7 +2414,7 @@ mod tests {
         .unwrap();
         let standard_error = scratch.join(FIXTURE_STANDARD_ERROR);
 
-        fixture_exit_within(
+        fixture_run_within(
             PRINTING_WHILE_UNWINDING_FIXTURE,
             &[],
             File::create(&standard_error).unwrap().into(),
@@ -2396,12 +2435,13 @@ mod tests {
         let (closed_by_its_reader, standard_error) = io::pipe().unwrap();
         drop(closed_by_its_reader);
 
-        let child = fixture_exit_within(
+        let child = fixture_run_within(
             PRINTING_WHILE_UNWINDING_FIXTURE,
             &[],
             standard_error.into(),
             FIXTURE_ENDED_WITHIN,
-        );
+        )
+        .exit;
 
         assert_eq!(child.code(), Some(FAILED_TEST_EXIT_CODE), "{child:?}");
     }
@@ -2420,7 +2460,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: None,
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         );
         machine.servers_started.set(1);
@@ -2429,6 +2469,85 @@ mod tests {
         failing_its_end.end_through(|_process| Err(io::Error::other(PLANTED_END_FAILURE)));
         drop(failing_its_end);
         panic!("{FIRST_FAILURE}");
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_invitation_variable_is_set_but_not_unicode_fails_naming_the_variable_and_prints_and_keeps_nothing_of_its_value()
+     {
+        let scratch = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-invitation-not-unicode-test-{}",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let standard_error = scratch.join(FIXTURE_STANDARD_ERROR);
+        let kept_in = scratch.join(FIXTURE_KEPT_RUN_RECORDS);
+        fs::create_dir(&kept_in).unwrap();
+        let invitation = planted_invitation_not_unicode();
+
+        let run = fixture_run_within(
+            INVITATION_NOT_UNICODE_FIXTURE,
+            &[
+                (INVITATION_VARIABLE, &invitation),
+                (KEPT_RUN_RECORDS_VARIABLE, kept_in.as_os_str()),
+            ],
+            File::create(&standard_error).unwrap().into(),
+            FIXTURE_ENDED_WITHIN,
+        );
+
+        let printed = String::from_utf8_lossy(&fs::read(&standard_error).unwrap()).into_owned();
+        let kept_holding_the_marker: Vec<PathBuf> = files_listed_beneath(&kept_in)
+            .into_iter()
+            .filter(|file| {
+                file.to_string_lossy()
+                    .contains(PLANTED_UNREADABLE_INVITATION_MARKER)
+                    || String::from_utf8_lossy(&fs::read(file).unwrap())
+                        .contains(PLANTED_UNREADABLE_INVITATION_MARKER)
+            })
+            .collect();
+        remove_scratch::remove_scratch(&scratch).unwrap();
+        assert_eq!(run.exit.code(), Some(FAILED_TEST_EXIT_CODE), "{printed}");
+        assert!(
+            printed.contains(&format!("{INVITATION_VARIABLE} {INVITATION_NOT_UNICODE}")),
+            "{printed}"
+        );
+        assert!(
+            !printed.contains(PLANTED_UNREADABLE_INVITATION_MARKER),
+            "standard error shows the invitation: {printed}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&run.standard_output)
+                .contains(PLANTED_UNREADABLE_INVITATION_MARKER),
+            "standard output shows the invitation"
+        );
+        assert_eq!(kept_holding_the_marker, Vec::<PathBuf>::new());
+    }
+
+    /// Writes a run record holding the invitation variable's value on a machine that keeps its records as the environment asks, then drops it on a test that was not failing; run as the child process of a parent test, which sets the invitation to a value that is not unicode, and refusing to run without the fixture variable; ignored in the suite.
+    #[test]
+    #[ignore = "a fixture: the child process of the test of an invitation variable that is not unicode"]
+    fn forced_keeping_with_an_invitation_variable_that_is_not_unicode() {
+        assert_eq!(
+            std::env::var(FIXTURE_VARIABLE).ok().as_deref(),
+            Some(INVITATION_NOT_UNICODE_FIXTURE),
+            "{INVITATION_NOT_UNICODE_FIXTURE} is a fixture its parent test runs with {FIXTURE_VARIABLE} naming it"
+        );
+        let machine = ScratchMachine::fresh(
+            "invitation-not-unicode",
+            NETWORK,
+            &RunRecordKeeping::from_environment(),
+        );
+        fs::write(
+            machine
+                .root
+                .join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}")),
+            std::env::var_os(INVITATION_VARIABLE)
+                .unwrap_or_default()
+                .into_vec(),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -2553,7 +2672,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: Some(kept_in.to_path_buf()),
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         )
     }
@@ -2619,7 +2738,7 @@ mod tests {
             NETWORK,
             &RunRecordKeeping {
                 kept_in: Some(kept_in.clone()),
-                invitation: None,
+                invitation: InvitationVariable::Unset,
             },
         );
         let record_name = format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}");

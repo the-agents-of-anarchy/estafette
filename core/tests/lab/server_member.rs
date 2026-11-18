@@ -52,7 +52,9 @@ impl<'server> ServerMember<'server> {
     pub fn started(server: &'server LabServer, network: &LiveNetwork, handle: &str) -> Self {
         let configuration = invitation_configuration(network, handle);
         let run_records = network.run_records();
-        let secrets = KeptSecrets::of_server_member(&configuration, run_records.invitation());
+        let secrets = run_records
+            .invitation()
+            .and_then(|invitation| KeptSecrets::of_server_member(&configuration, invitation));
         server.run(
             NETWORK_ON_SERVER_RECIPE,
             &[],

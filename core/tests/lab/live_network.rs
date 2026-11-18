@@ -22,6 +22,9 @@ pub const TASK_RUNNER: &str = "just";
 const OWNER_MACHINE_RECIPE: &str = "remote::estafette";
 /// The variable that recipe takes the binary's path from.
 pub const LAB_BINARY_VARIABLE: &str = "LAB_BINARY";
+/// What a failure to read the invitation tells its reader to do, after why.
+const INVITATION_EXPORTED_BY: &str =
+    "run `just gate::acceptance`, which exports it from the live lab host";
 
 /// The network the live lab host serves, as the invitation the acceptance gate exports names it.
 pub struct LiveNetwork {
@@ -31,20 +34,21 @@ pub struct LiveNetwork {
 }
 
 impl LiveNetwork {
-    /// Reads the invitation and the running test's run record keeping from the variables the acceptance gate exports, failing with the invitation variable's name when it is unset.
+    /// Reads the invitation and the running test's run record keeping from the variables the acceptance gate exports, failing with the invitation variable's name and the kind of failure, never its value, when it is unset or not unicode.
     pub fn from_environment() -> Self {
-        let text = std::env::var(INVITATION_VARIABLE).unwrap_or_else(|source| {
-            panic!(
-                "{INVITATION_VARIABLE} is not usable ({source}): run `just gate::acceptance`, which exports it from the live lab host"
-            )
-        });
+        let run_records = RunRecordKeeping::from_environment();
+        let text = match run_records.invitation() {
+            Ok(Some(text)) => text.to_owned(),
+            Ok(None) => panic!("{INVITATION_VARIABLE} is unset: {INVITATION_EXPORTED_BY}"),
+            Err(unreadable) => panic!("{unreadable}: {INVITATION_EXPORTED_BY}"),
+        };
         let invitation = parse_invitation(text.trim())
             .unwrap_or_else(|refusal| panic!("{INVITATION_VARIABLE} is refused: {refusal}"));
         let keys = NetworkKeys::derive(&crypto::NetworkSecret::from_bytes(invitation.secret));
         Self {
             invitation,
             keys,
-            run_records: RunRecordKeeping::from_environment(),
+            run_records,
         }
     }
 
@@ -100,7 +104,8 @@ impl LiveNetwork {
     pub fn kept_secrets(&self) -> io::Result<KeptSecrets> {
         let configuration = toml::to_string(&self.configuration_through(&self.invitation.hosts))
             .map_err(io::Error::other)?;
-        KeptSecrets::of_server_member(&configuration, self.run_records.invitation())
+        let invitation = self.run_records.invitation()?;
+        KeptSecrets::of_server_member(&configuration, invitation)
     }
 
     /// The network configuration of the invitation, naming the hosts given in place of the invitation's.
@@ -153,5 +158,75 @@ impl LiveNetwork {
             )
             .unwrap();
         SignatureBytes(certificate.try_into().unwrap())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs::{self, File};
+
+    use super::LiveNetwork;
+    use crate::scratch_machine::owned_process::{
+        FAILED_TEST_EXIT_CODE, FIXTURE_ENDED_WITHIN, FIXTURE_STANDARD_ERROR, FIXTURE_VARIABLE,
+        fixture_run_within,
+    };
+    use crate::scratch_machine::{
+        INVITATION_NOT_UNICODE, INVITATION_VARIABLE, PLANTED_UNREADABLE_INVITATION_MARKER,
+        fresh_directory, planted_invitation_not_unicode, remove_scratch,
+    };
+
+    /// The fixture that reads the live network while the invitation variable is not unicode, by the name the test harness runs it by.
+    const INVITATION_NOT_UNICODE_FIXTURE: &str =
+        "live_network::tests::forced_failure_reading_an_invitation_variable_that_is_not_unicode";
+
+    #[test]
+    fn observability_decision_16_a_live_network_whose_invitation_variable_is_set_but_not_unicode_fails_naming_the_variable_and_prints_nothing_of_its_value()
+     {
+        let scratch = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-live-invitation-not-unicode-test-{}",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let standard_error = scratch.join(FIXTURE_STANDARD_ERROR);
+        let invitation = planted_invitation_not_unicode();
+
+        let run = fixture_run_within(
+            INVITATION_NOT_UNICODE_FIXTURE,
+            &[(INVITATION_VARIABLE, &invitation)],
+            File::create(&standard_error).unwrap().into(),
+            FIXTURE_ENDED_WITHIN,
+        );
+
+        let printed = String::from_utf8_lossy(&fs::read(&standard_error).unwrap()).into_owned();
+        remove_scratch::remove_scratch(&scratch).unwrap();
+        assert_eq!(run.exit.code(), Some(FAILED_TEST_EXIT_CODE), "{printed}");
+        assert!(
+            printed.contains(&format!("{INVITATION_VARIABLE} {INVITATION_NOT_UNICODE}")),
+            "{printed}"
+        );
+        assert!(
+            !printed.contains(PLANTED_UNREADABLE_INVITATION_MARKER),
+            "standard error shows the invitation: {printed}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&run.standard_output)
+                .contains(PLANTED_UNREADABLE_INVITATION_MARKER),
+            "standard output shows the invitation"
+        );
+    }
+
+    /// Reads the live network from the environment; run as the child process of a parent test, which sets the invitation to a value that is not unicode, and refusing to run without the fixture variable; ignored in the suite.
+    #[test]
+    #[ignore = "a fixture: the child process of the test of an invitation variable that is not unicode"]
+    fn forced_failure_reading_an_invitation_variable_that_is_not_unicode() {
+        assert_eq!(
+            std::env::var(FIXTURE_VARIABLE).ok().as_deref(),
+            Some(INVITATION_NOT_UNICODE_FIXTURE),
+            "{INVITATION_NOT_UNICODE_FIXTURE} is a fixture its parent test runs with {FIXTURE_VARIABLE} naming it"
+        );
+        drop(LiveNetwork::from_environment());
     }
 }

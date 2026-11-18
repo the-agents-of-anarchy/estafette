@@ -19,6 +19,10 @@ pub const STAND_IN_ENDED_WITHIN: Duration = Duration::from_secs(10);
 pub const FIXTURE_VARIABLE: &str = "ESTAFETTE_FIXTURE_OF_A_PARENT_TEST";
 /// How long a fixture a parent test runs as a child test binary may take to end: chosen, not measured, far above a fixture that starts one machine and fails.
 pub const FIXTURE_ENDED_WITHIN: Duration = Duration::from_secs(60);
+/// The file a test sends a fixture's standard error to, in a scratch directory of its own.
+pub const FIXTURE_STANDARD_ERROR: &str = "fixture.stderr";
+/// The exit code of a test binary whose test failed, as against a signal that ends one that aborts.
+pub const FAILED_TEST_EXIT_CODE: i32 = 101;
 
 /// A spawned process owned from its spawn and ended when dropped, killed and waited for, so no failure after its spawn leaves it running unmarked.
 pub struct OwnedProcess {
@@ -134,14 +138,20 @@ impl Drop for OwnedProcess {
     }
 }
 
-/// Runs an ignored fixture of the running test binary as a child process, the fixture variable naming it beside the variables handed in and its standard error sent where handed, requires the child to end within the bound, ending it and failing the test when it does not, and returns how it exited.
+/// How a fixture run as a child process ended: its exit and every byte it wrote to standard output.
+pub struct FixtureRun {
+    pub exit: ExitStatus,
+    pub standard_output: Vec<u8>,
+}
+
+/// Runs an ignored fixture of the running test binary as a child process, the fixture variable naming it beside the variables handed in and its standard error sent where handed, requires the child to end within the bound, ending it and failing the test when it does not, and returns how it ended.
 #[track_caller]
-pub fn fixture_exit_within(
+pub fn fixture_run_within(
     fixture: &str,
     variables: &[(&str, &OsStr)],
     standard_error: Stdio,
     within: Duration,
-) -> ExitStatus {
+) -> FixtureRun {
     let (only_the_child_writes, child_output) = io::pipe().unwrap();
     let mut child = Command::new(std::env::current_exe().unwrap())
         .args(["--exact", fixture, "--ignored", "--nocapture"])
@@ -154,18 +164,21 @@ pub fn fixture_exit_within(
         .unwrap();
     let after = format!("the fixture {fixture} started");
     let ended = catch_unwind(AssertUnwindSafe(|| {
-        require_stand_in_ended_within(only_the_child_writes, within, &after);
+        written_until_the_stand_in_ended_within(only_the_child_writes, within, &after)
     }));
-    if let Err(still_running) = ended {
+    let standard_output = ended.unwrap_or_else(|still_running| {
         if let Err(unended) = child.kill().and_then(|()| child.wait()) {
             print_to_standard_error(&format!(
                 "the fixture {fixture}, process {}, could not be ended: {unended}",
                 child.id()
             ));
         }
-        resume_unwind(still_running);
+        resume_unwind(still_running)
+    });
+    FixtureRun {
+        exit: child.wait().unwrap(),
+        standard_output,
     }
-    child.wait().unwrap()
 }
 
 /// Requires that the pipe only a test's stand-in holds open closes within the bound, the sign the stand-in ended, failing the test when it stays open or cannot be read; read on a thread of its own so no signal is sent to any process.
@@ -175,13 +188,28 @@ pub fn require_stand_in_ended_within(
     within: Duration,
     after: &str,
 ) {
+    drop(written_until_the_stand_in_ended_within(
+        only_the_stand_in_writes,
+        within,
+        after,
+    ));
+}
+
+/// Every byte written to the pipe only a test's stand-in holds open, read until it closes within the bound, the sign the stand-in ended, failing the test when it stays open or cannot be read; read on a thread of its own so no signal is sent to any process.
+#[track_caller]
+pub fn written_until_the_stand_in_ended_within(
+    only_the_stand_in_writes: PipeReader,
+    within: Duration,
+    after: &str,
+) -> Vec<u8> {
     let (closed, close_seen) = mpsc::channel();
     std::thread::spawn(move || {
         let mut written = Vec::new();
-        drop(closed.send((&only_the_stand_in_writes).read_to_end(&mut written)));
+        let read = (&only_the_stand_in_writes).read_to_end(&mut written);
+        drop(closed.send(read.map(|_bytes_read| written)));
     });
     match close_seen.recv_timeout(within) {
-        Ok(Ok(_bytes_read)) => {}
+        Ok(Ok(written)) => written,
         Ok(Err(failure)) => panic!(
             "the stand-in's pipe could not be read after {after}, so whether the stand-in ended is unknown: {failure}"
         ),
