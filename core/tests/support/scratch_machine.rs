@@ -86,6 +86,8 @@ const CERTIFICATE_CACHE_EXTENSION: &str = "certs";
 const NETWORK_SECRET_FIELD: &str = "secret";
 /// The extension spec 3.3 gives a network configuration.
 const NETWORK_CONFIG_EXTENSION: &str = "toml";
+/// What a failure says of a network configuration that does not parse as TOML, in place of the parser's text, which quotes the line it stopped at.
+const CONFIGURATION_NOT_TOML: &str = "does not parse as TOML";
 /// The variable the acceptance gate exports the live host's invitation in.
 pub const INVITATION_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_INVITATION";
 /// What a kept run record holds in place of a secret.
@@ -259,9 +261,13 @@ fn longest_first<'text>(
     by_length
 }
 
-/// The secret a network configuration's text names in its `secret` string, whether or not the rest of it loads, or why it names none.
+/// The secret a network configuration's text names in its `secret` string, whether or not the rest of it loads, or the kind of failure that kept it from naming one, never a line of it.
 fn network_secret_named_in(configuration: &str) -> io::Result<String> {
-    let table: toml::Table = configuration.parse().map_err(io::Error::other)?;
+    let table: toml::Table = configuration
+        .parse()
+        .map_err(|_unparsed: toml::de::Error| {
+            io::Error::new(io::ErrorKind::InvalidData, CONFIGURATION_NOT_TOML)
+        })?;
     table
         .get(NETWORK_SECRET_FIELD)
         .and_then(toml::Value::as_str)
@@ -951,6 +957,8 @@ mod tests {
     const PLANTED_CACHED_KEY: &str = "plantedcachedkey0123456789abcd";
     /// A file a test plants in a relay's certificate cache.
     const CACHED_ACCOUNT_FILE: &str = "acme-account.json";
+    /// A marker a test plants in the `secret` line of a network configuration that does not parse, no real secret.
+    const PLANTED_MALFORMED_SECRET: &str = "plantedmalformedsecret0123456789";
 
     #[test]
     fn observability_decision_12_a_failing_machine_prints_the_lines_of_a_member_that_may_still_run_before_one_still_zero_filled()
@@ -1662,6 +1670,32 @@ mod tests {
             dropped
                 .message
                 .contains(&dropped.unread.display().to_string()),
+            "{}",
+            dropped.message
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_network_configurations_secret_line_does_not_parse_names_the_configuration_and_the_kind_of_failure_and_neither_prints_nor_keeps_the_line()
+     {
+        let dropped = dropped_with_a_source_unread("malformed-secret-line", |machine| {
+            let configuration = machine.directories().network_config_file(NETWORK).unwrap();
+            fs::create_dir_all(configuration.parent().unwrap()).unwrap();
+            fs::write(
+                &configuration,
+                format!("{NETWORK_SECRET_FIELD} = \"{PLANTED_MALFORMED_SECRET}\n"),
+            )
+            .unwrap();
+            configuration
+        });
+
+        assert_eq!(dropped.kept, BTreeSet::new());
+        assert!(
+            dropped
+                .message
+                .contains(&dropped.unread.display().to_string())
+                && dropped.message.contains(CONFIGURATION_NOT_TOML)
+                && !dropped.message.contains(PLANTED_MALFORMED_SECRET),
             "{}",
             dropped.message
         );

@@ -347,7 +347,8 @@ mod tests {
     use crate::scratch_machine::remove_scratch::remove_scratch;
     use crate::scratch_machine::trace_reader::NO_EVENT_RECORDED;
     use crate::scratch_machine::{
-        INVITATION_VARIABLE, REDACTED, REDACTED_NOTE_EXTENSION, STOP_FAILED_EXTENSION,
+        CONFIGURATION_NOT_TOML, INVITATION_VARIABLE, REDACTED, REDACTED_NOTE_EXTENSION,
+        STOP_FAILED_EXTENSION,
     };
 
     /// The card a test's member serves.
@@ -392,6 +393,8 @@ mod tests {
     const NETWORK_SECRET_FIELD: &str = "secret";
     /// The mode of a fetched file nobody can read, so keeping it fails.
     const UNREADABLE: u32 = 0o000;
+    /// A marker a test plants in the `secret` line of a network configuration that does not parse, no real secret.
+    const PLANTED_MALFORMED_SECRET: &str = "plantedmalformedsecret0123456789";
 
     /// The network configuration a test's member wrote to its server, naming the secret.
     fn configuration_naming(secret: &str) -> String {
@@ -509,6 +512,31 @@ mod tests {
                 .failures
                 .iter()
                 .any(|failure| failure.contains(INVITATION_VARIABLE)),
+            "{:?}",
+            ended.failures
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_server_member_whose_network_configurations_secret_line_does_not_parse_answers_the_kind_of_failure_and_neither_prints_nor_keeps_the_line()
+     {
+        let secrets = KeptSecrets::of_server_member(
+            &format!("{NETWORK_SECRET_FIELD} = \"{PLANTED_MALFORMED_SECRET}\n"),
+            Some(PLANTED_INVITATION),
+        );
+
+        let (ended, kept) = ended_with_stop_failing("malformed-secret-line", &secrets);
+
+        require_nothing_kept_and_each_failure_answered(&secrets, &ended, &kept);
+        assert!(
+            ended
+                .failures
+                .iter()
+                .any(|failure| failure.contains(CONFIGURATION_NOT_TOML))
+                && ended
+                    .failures
+                    .iter()
+                    .all(|failure| !failure.contains(PLANTED_MALFORMED_SECRET)),
             "{:?}",
             ended.failures
         );
