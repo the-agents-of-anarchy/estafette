@@ -705,7 +705,7 @@ fn fresh_kept_directory(directory: &Path, name: &str) -> io::Result<PathBuf> {
 }
 
 /// Writes the member's run record into the directory, named for the member, through the writer of kept files, and returns the kept file.
-pub fn keep_run_record(
+fn keep_run_record(
     directory: &Path,
     member_name: &str,
     record: &[u8],
@@ -721,7 +721,7 @@ pub fn keep_run_record(
 }
 
 /// Writes beside the member's run record in the directory, when the member's stop failed or could not run, a file named for the member saying so, with how the stop ended and what it printed, each secret replaced by the redaction marker; nothing when the stop succeeded.
-pub fn keep_stop_failure(
+fn keep_stop_failure(
     directory: &Path,
     member_name: &str,
     stop: &io::Result<Output>,
