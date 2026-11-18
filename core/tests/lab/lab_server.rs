@@ -177,7 +177,7 @@ pub mod tests {
     /// The name of the server a test's stand-in recipes play, no real one.
     const PLANTED_SERVER: &str = "lab-server-stand-in";
     /// Why a test's stand-in recipe could not run.
-    pub const RECIPE_UNRUNNABLE: &str = "the task runner could not be started";
+    const RECIPE_UNRUNNABLE: &str = "the task runner could not be started";
     /// The failure a test raises before a drop runs its recipe.
     pub const FIRST_FAILURE: &str = "the test failed first";
 

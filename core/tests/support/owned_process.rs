@@ -41,8 +41,8 @@ pub struct EndMarks {
 /// A process whose kill or wait failed: the label it was spawned under and its process id.
 #[derive(Clone)]
 pub struct FailedEnd {
-    pub label: String,
-    pub process_id: u32,
+    pub(super) label: String,
+    pub(super) process_id: u32,
 }
 
 impl EndMarks {
@@ -55,7 +55,7 @@ impl EndMarks {
     }
 
     /// Every failed end met so far, in the order met.
-    pub fn failed(&self) -> Vec<FailedEnd> {
+    pub(super) fn failed(&self) -> Vec<FailedEnd> {
         self.failed
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -82,7 +82,7 @@ impl EndMarks {
 
 impl FailedEnd {
     /// The name of the file that marks this failed end.
-    pub fn mark_name(&self) -> String {
+    pub(super) fn mark_name(&self) -> String {
         format!("{}-{}.{END_FAILED_EXTENSION}", self.label, self.process_id)
     }
 }
@@ -197,7 +197,7 @@ pub fn require_stand_in_ended_within(
 
 /// Every byte written to the pipe only a test's stand-in holds open, read until it closes within the bound, the sign the stand-in ended, failing the test when it stays open or cannot be read; read on a thread of its own so no signal is sent to any process.
 #[track_caller]
-pub fn written_until_the_stand_in_ended_within(
+fn written_until_the_stand_in_ended_within(
     only_the_stand_in_writes: PipeReader,
     within: Duration,
     after: &str,
