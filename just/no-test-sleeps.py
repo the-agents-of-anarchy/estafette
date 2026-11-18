@@ -1,5 +1,6 @@
 """Refuse a sleep in the test code of core and the Claude Code bridge, printing each as file, line and line text, then their count, on standard error."""
 import bisect
+import itertools
 import os
 import re
 import subprocess
@@ -172,12 +173,24 @@ def find_item_end(code: str, start: int) -> int:
     return len(code)
 
 
+def read_configuration_tokens(lexed: LexedRust, span: Span) -> Sequence[str]:
+    """Return the tokens of the cfg predicate text in the span, each key's value read from the string literal after its equals sign."""
+    literal_offsets = [literal.offset for literal in lexed.literals]
+    tokens: List[str] = []
+    for token in CONFIGURATION_TOKEN_PATTERN.finditer(lexed.code, span.start, span.end):
+        tokens.append(token.group())
+        if token.group() == KEY_VALUE_SEPARATOR:
+            value_index = bisect.bisect_right(literal_offsets, token.start())
+            tokens.append(lexed.literals[value_index].text if value_index < len(lexed.literals) else '')
+    return tokens
+
+
 def parse_configuration_predicate(tokens: Sequence[str], position: int) -> Tuple[ConfigurationPredicate, int]:
     """Parse the cfg predicate that starts at the token position, returning it and the position past it."""
     name = tokens[position]
     position += 1
     if position < len(tokens) and tokens[position] == KEY_VALUE_SEPARATOR:
-        return ConfigurationPredicate(name + KEY_VALUE_SEPARATOR, None), position + 1
+        return ConfigurationPredicate(name + KEY_VALUE_SEPARATOR + tokens[position + 1], None), position + 2
     if position >= len(tokens) or tokens[position] != ARGUMENTS_OPENER:
         return ConfigurationPredicate(name, None), position
     position += 1
@@ -190,39 +203,62 @@ def parse_configuration_predicate(tokens: Sequence[str], position: int) -> Tuple
     return ConfigurationPredicate(name, arguments), position + 1
 
 
-def holds_only_with_test(predicate: ConfigurationPredicate) -> bool:
-    """Whether the predicate compiles its item for tests: it holds only with test set, or an any of it holds with test set."""
-    if predicate.arguments is None:
-        return predicate.name == TEST_CONFIGURATION_NAME
-    if predicate.name in (ALL_OPERATOR, ANY_OPERATOR):
-        return any(map(holds_only_with_test, predicate.arguments))
-    if predicate.name == NOT_OPERATOR:
-        return any(map(holds_only_without_test, predicate.arguments))
-    return False
+def is_connective(predicate: ConfigurationPredicate) -> bool:
+    """Whether the predicate is an all, an any or a not over its arguments, where any other predicate is one name that a setting decides."""
+    return predicate.arguments is not None and predicate.name in (ALL_OPERATOR, ANY_OPERATOR, NOT_OPERATOR)
 
 
-def holds_only_without_test(predicate: ConfigurationPredicate) -> bool:
-    """Whether the predicate can hold only with test unset."""
+def configuration_name(predicate: ConfigurationPredicate) -> str:
+    """Return the name a setting decides a predicate that is no connective by: its own text."""
     if predicate.arguments is None:
-        return False
+        return predicate.name
+    return f'{predicate.name}{ARGUMENTS_OPENER}{ARGUMENT_SEPARATOR.join(map(configuration_name, predicate.arguments))}{ARGUMENTS_CLOSER}'
+
+
+def configuration_names(predicate: ConfigurationPredicate) -> Set[str]:
+    """Return every name the predicate's value depends on."""
+    if not is_connective(predicate):
+        return {configuration_name(predicate)}
+    return set().union(*map(configuration_names, predicate.arguments))
+
+
+def evaluate_configuration(predicate: ConfigurationPredicate, setting: Dict[str, bool]) -> bool:
+    """Return whether the predicate holds under the setting of its names."""
+    if not is_connective(predicate):
+        return setting[configuration_name(predicate)]
+    values = [evaluate_configuration(argument, setting) for argument in predicate.arguments]
     if predicate.name == ALL_OPERATOR:
-        return any(map(holds_only_without_test, predicate.arguments))
+        return all(values)
     if predicate.name == ANY_OPERATOR:
-        return bool(predicate.arguments) and all(map(holds_only_without_test, predicate.arguments))
-    if predicate.name == NOT_OPERATOR:
-        return any(map(holds_only_with_test, predicate.arguments))
-    return False
+        return any(values)
+    return not any(values)
 
 
-def marks_test(attribute: str) -> bool:
-    """Whether an attribute's content compiles its item for tests: a test function attribute, or a cfg whose predicate means test code."""
-    if TEST_FUNCTION_ATTRIBUTE_PATTERN.fullmatch(attribute):
+def settings_of_other_names(predicate: ConfigurationPredicate) -> Iterable[Dict[str, bool]]:
+    """Yield every setting of the predicate's names other than test."""
+    names = sorted(configuration_names(predicate) - {TEST_CONFIGURATION_NAME})
+    for values in itertools.product((False, True), repeat=len(names)):
+        yield dict(zip(names, values))
+
+
+def compiles_for_tests_alone(predicate: ConfigurationPredicate) -> bool:
+    """Whether some setting of the names other than test makes the predicate hold with test set and fail with test unset."""
+    return any(
+        evaluate_configuration(predicate, {**setting, TEST_CONFIGURATION_NAME: True})
+        and not evaluate_configuration(predicate, {**setting, TEST_CONFIGURATION_NAME: False})
+        for setting in settings_of_other_names(predicate)
+    )
+
+
+def marks_test(lexed: LexedRust, attribute: Span) -> bool:
+    """Whether an attribute's content compiles its item for tests: a test function attribute, or a cfg whose predicate compiles for tests alone."""
+    if TEST_FUNCTION_ATTRIBUTE_PATTERN.fullmatch(lexed.code, attribute.start, attribute.end):
         return True
-    configuration = CONFIGURATION_ATTRIBUTE_PATTERN.fullmatch(attribute)
+    configuration = CONFIGURATION_ATTRIBUTE_PATTERN.fullmatch(lexed.code, attribute.start, attribute.end)
     if configuration is None:
         return False
-    predicate, _ = parse_configuration_predicate(CONFIGURATION_TOKEN_PATTERN.findall(configuration.group('predicate')), 0)
-    return holds_only_with_test(predicate)
+    predicate, _ = parse_configuration_predicate(read_configuration_tokens(lexed, Span(*configuration.span('predicate'))), 0)
+    return compiles_for_tests_alone(predicate)
 
 
 def read_path_attribute(attribute_text: str) -> Optional[str]:
@@ -231,8 +267,9 @@ def read_path_attribute(attribute_text: str) -> Optional[str]:
     return path_attribute.group('path') if path_attribute else None
 
 
-def find_attribute_runs(text: str, code: str) -> Tuple[Sequence[AttributeRun], bool]:
+def find_attribute_runs(text: str, lexed: LexedRust) -> Tuple[Sequence[AttributeRun], bool]:
     """Return each run of outer attributes with the item it applies to, and whether an inner attribute compiles the whole file for tests alone."""
+    code = lexed.code
     runs: List[AttributeRun] = []
     whole_file_is_test = False
     run_start: Optional[int] = None
@@ -243,16 +280,16 @@ def find_attribute_runs(text: str, code: str) -> Tuple[Sequence[AttributeRun], b
         if start.start() < previous_end:
             continue
         end = find_closing_bracket(code, start.end() - 1)
-        content = code[start.end():end - 1]
+        content = Span(start.end(), end - 1)
         if start.group('inner'):
-            whole_file_is_test = whole_file_is_test or marks_test(content)
+            whole_file_is_test = whole_file_is_test or marks_test(lexed, content)
             previous_end = end
             continue
         if run_start is None or code[previous_end:start.start()].strip():
             if run_start is not None:
                 runs.append(AttributeRun(Span(run_start, find_item_end(code, previous_end)), run_marks_test, run_path))
             run_start, run_marks_test, run_path = start.start(), False, None
-        run_marks_test = run_marks_test or marks_test(content)
+        run_marks_test = run_marks_test or marks_test(lexed, content)
         run_path = read_path_attribute(text[start.end():end - 1]) or run_path
         previous_end = end
     if run_start is not None:
@@ -283,7 +320,7 @@ def find_module_declarations(code: str, runs: Sequence[AttributeRun]) -> Sequenc
 def parse_rust(text: str) -> ParsedRust:
     """Parse a Rust file into its lexed text, the spans compiled for tests alone and its module declarations."""
     lexed = lex_rust(text)
-    runs, whole_file_is_test = find_attribute_runs(text, lexed.code)
+    runs, whole_file_is_test = find_attribute_runs(text, lexed)
     test_spans = [Span(0, len(text))] if whole_file_is_test else [run.span for run in runs if run.marks_test]
     return ParsedRust(lexed, test_spans, find_module_declarations(lexed.code, runs))
 
