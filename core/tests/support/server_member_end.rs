@@ -9,6 +9,7 @@ use super::trace_reader::timeline_in;
 use super::{
     KeptAs, KeptSecrets, fail_unless_panicking, files_beneath_for_keeping, fresh_kept_directory,
     keep_file, keep_mark, keep_run_record, keep_stop_failure, naming, print_to_standard_error,
+    timeline_to_print,
 };
 
 /// The directory a member's fetched trace files are kept in, inside the directory its records are kept in.
@@ -163,7 +164,12 @@ pub fn ended_server_member(
     if let Some((kept, secrets)) = &kept {
         keep_staged_trace_files(member, server, kept, secrets, &staged, &mut failures);
     }
-    let timeline = failing.then(|| timeline_of_fetched(staged.whole().as_deref()));
+    let timeline = failing.then(|| {
+        timeline_to_print(
+            &timeline_of_fetched(staged.whole().as_deref()),
+            secrets.as_ref(),
+        )
+    });
     if let Err(failure) = staged.removed() {
         failures.push(failure.to_string());
     }
@@ -369,12 +375,12 @@ mod tests {
     use crate::scratch_machine::fresh_directory::fresh_directory_in;
     use crate::scratch_machine::remove_scratch::remove_scratch;
     use crate::scratch_machine::tests::{
-        KEPT_BENEATH_NOT_A_DIRECTORY, NOT_A_DIRECTORY, READABLE, UNWRITABLE,
+        KEPT_BENEATH_NOT_A_DIRECTORY, NOT_A_DIRECTORY, READABLE, UNWRITABLE, member_line_naming,
     };
     use crate::scratch_machine::trace_reader::NO_EVENT_RECORDED;
     use crate::scratch_machine::{
         CONFIGURATION_NOT_TOML, INVITATION_VARIABLE, REDACTED, REDACTED_NOTE_EXTENSION,
-        STOP_FAILED_EXTENSION,
+        STOP_FAILED_EXTENSION, TIMELINE_NOT_PRINTED,
     };
 
     /// The card a test's member serves.
@@ -765,6 +771,60 @@ mod tests {
                 mark.display()
             );
         }
+    }
+
+    #[test]
+    fn observability_decision_15_a_failing_test_prints_a_server_members_timeline_with_each_secret_of_the_member_redacted()
+     {
+        let ended = ended_failing_with_a_trace_line_naming_the_token(&secrets_of_the_member());
+
+        let timeline = ended.timeline.unwrap_or_default();
+        assert!(
+            timeline.contains(&format!("\"{REDACTED}\"")) && !timeline.contains(PLANTED_TOKEN),
+            "{timeline}"
+        );
+    }
+
+    #[test]
+    fn observability_decision_15_a_failing_test_whose_server_members_secrets_were_not_read_prints_no_timeline_and_says_so()
+     {
+        let ended = ended_failing_with_a_trace_line_naming_the_token(
+            &KeptSecrets::of_server_member(&configuration_naming(PLANTED_TOKEN), None),
+        );
+
+        let timeline = ended.timeline.unwrap_or_default();
+        assert!(
+            timeline.contains(TIMELINE_NOT_PRINTED)
+                && timeline.contains(INVITATION_VARIABLE)
+                && !timeline.contains(PLANTED_TOKEN),
+            "{timeline}"
+        );
+    }
+
+    /// Ends, on a failing test that keeps nothing, a member with the secrets handed in whose fetch writes one events line naming the planted token.
+    fn ended_failing_with_a_trace_line_naming_the_token(
+        secrets: &io::Result<KeptSecrets>,
+    ) -> ServerMemberEnd {
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop | ServerMemberStep::PrintRunRecord => Ok(succeeded_run("")),
+            ServerMemberStep::FetchTraceFiles(into) => {
+                fs::create_dir_all(into).unwrap();
+                fs::write(
+                    into.join(FETCHED_TRACE_FILE),
+                    member_line_naming(PLANTED_TOKEN),
+                )
+                .unwrap();
+                Ok(succeeded_run(""))
+            }
+        };
+        ended_server_member(
+            MEMBER,
+            SERVER,
+            None,
+            secrets,
+            TestSoFar::Failing,
+            stand_in_for_the_recipes,
+        )
     }
 
     /// A recipe run that exited with code 1 having printed the text on standard error.

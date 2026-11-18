@@ -94,6 +94,9 @@ pub const INVITATION_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_INVITATION";
 pub const REDACTED: &str = "<redacted>";
 /// The fewest letters and digits in a row that a key, a secret or an invitation is written with, so such a run is redacted even where the record quotes it apart from its line.
 const SHORTEST_SECRET_RUN: usize = 16;
+/// What a failing test prints in place of a member's timeline when no secrets stand to search it for, before why.
+const TIMELINE_NOT_PRINTED: &str =
+    "not printed, since the secrets to search it for could not be read";
 /// What a machine's drop reports of each process it owned whose kill or wait failed, before the mark that says so.
 const FAILED_END_REPORTED: &str = "the end of a process failed, as";
 /// The directory a test's records are kept under when the harness gave its thread no name.
@@ -364,17 +367,19 @@ impl ScratchMachine {
         self.servers_started.get()
     }
 
-    /// The timeline of each member this machine started, headed by the member's number and this machine's root, for a failing test to print.
+    /// The timeline of each member this machine started, headed by the member's number and this machine's root, searched for the secrets read as it is made, for a failing test to print.
     fn member_timelines(&self) -> Vec<String> {
+        let secrets = KeptSecrets::of_machine(self);
         (0..self.members_started())
             .map(|number| {
+                let timeline = timeline_read_as(
+                    &self.traces_directory_of_member(number),
+                    WritingProcess::Running,
+                );
                 format!(
                     "{TIMELINE_HEADING} {number} on {}:\n{}",
                     self.root.display(),
-                    timeline_read_as(
-                        &self.traces_directory_of_member(number),
-                        WritingProcess::Running
-                    )
+                    timeline_to_print(&timeline, secrets.as_ref())
                 )
             })
             .collect()
@@ -675,6 +680,14 @@ fn nothing_kept(unread: &io::Error) -> io::Error {
         unread.kind(),
         format!("nothing kept, since the secrets to search it for could not be read: {unread}"),
     )
+}
+
+/// The timeline with each secret replaced by the redaction marker, or, when no secrets stand to search it for, that it is not printed and why.
+fn timeline_to_print(timeline: &str, secrets: Result<&KeptSecrets, &io::Error>) -> String {
+    match secrets {
+        Ok(secrets) => secrets.redacted(timeline, KeptAs::Evidence).0,
+        Err(unread) => format!("{TIMELINE_NOT_PRINTED}: {unread}"),
+    }
 }
 
 /// Every failure's text, joined so a reader meets each.
@@ -1030,6 +1043,79 @@ mod tests {
                 machine.root.display()
             )]
         );
+    }
+
+    #[test]
+    fn observability_decision_15_a_failing_machine_prints_its_members_timeline_with_each_secret_of_the_machine_redacted()
+     {
+        let machine = machine_with_a_member_naming_the_network_secret("timeline-redacted");
+
+        let timelines = machine.member_timelines();
+
+        let expected_row = parse_trace_lines(
+            member_line_naming(REDACTED).as_bytes(),
+            WritingProcess::Ended,
+        )
+        .unwrap()[0]
+            .to_string();
+        assert_eq!(
+            timelines,
+            [format!(
+                "{TIMELINE_HEADING} 0 on {}:\n{expected_row}",
+                machine.root.display()
+            )]
+        );
+    }
+
+    #[test]
+    fn observability_decision_15_a_failing_machine_whose_secrets_cannot_be_read_prints_no_timeline_and_says_so()
+     {
+        let machine = machine_with_a_member_naming_the_network_secret("timeline-unprinted");
+        let configuration = machine.directories().network_config_file(NETWORK).unwrap();
+        fs::set_permissions(&configuration, fs::Permissions::from_mode(UNREADABLE)).unwrap();
+
+        let timelines = machine.member_timelines();
+
+        fs::set_permissions(&configuration, fs::Permissions::from_mode(READABLE)).unwrap();
+        let [timeline] = &timelines[..] else {
+            panic!("one timeline for the one member: {timelines:?}")
+        };
+        assert!(
+            timeline.starts_with(&format!(
+                "{TIMELINE_HEADING} 0 on {}:",
+                machine.root.display()
+            )) && timeline.contains(TIMELINE_NOT_PRINTED)
+                && timeline.contains(&configuration.display().to_string())
+                && !timeline.contains(PLANTED_NETWORK_SECRET),
+            "{timeline}"
+        );
+    }
+
+    /// A machine keeping nothing, configured with the planted network secret, whose one member's events file holds one line naming that secret.
+    fn machine_with_a_member_naming_the_network_secret(tag: &str) -> ScratchMachine {
+        let machine = ScratchMachine::fresh(
+            tag,
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: None,
+                invitation: None,
+            },
+        );
+        planted_network_configuration(&machine, NETWORK);
+        machine.servers_started.set(1);
+        let traces = machine.traces_directory_of_member(0);
+        fs::create_dir_all(&traces).unwrap();
+        fs::write(
+            traces.join(MEMBER_EVENTS_FILE),
+            member_line_naming(PLANTED_NETWORK_SECRET),
+        )
+        .unwrap();
+        machine
+    }
+
+    /// The member's trace line with its handle field holding the text.
+    pub(super) fn member_line_naming(text: &str) -> String {
+        MEMBER_LINE.replace("\"handle\":\"bob\"", &format!("\"handle\":\"{text}\""))
     }
 
     #[test]
