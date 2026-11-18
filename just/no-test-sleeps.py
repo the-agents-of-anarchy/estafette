@@ -44,6 +44,7 @@ INLINE_MODULE_PATTERN = re.compile(r'\bmod\s+(?P<name>\w+)\s*\{')
 USE_STATEMENT_PATTERN = re.compile(r'\buse\b[^;]*;')
 SLEEP_ALIAS_PATTERN = re.compile(rf"\b(?:{'|'.join(SLEEP_FUNCTION_NAMES)})\s+as\s+(?P<alias>[A-Za-z]\w*)")
 SHELL_SLEEP_COMMAND_PATTERN = re.compile(rf'''{SHELL_SLEEP_PROGRAM}\s+(?:[\d.${{"']|infinity\b)''')
+SHELL_SLEEP_PROGRAM_PATTERN = re.compile(rf'(?:\S*/)?{SHELL_SLEEP_PROGRAM}')
 SCRIPT_COMMENT_PATTERN = re.compile(r'(?:^|\s)#.*')
 STRING_ESCAPE_PATTERN = re.compile(r'\\(?:\n\s*|x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|.)', re.DOTALL)
 LINE_CONTINUATION_START = '\\\n'
@@ -356,7 +357,7 @@ def find_shell_sleep(literal: StringLiteral) -> Optional[int]:
     command = SHELL_SLEEP_COMMAND_PATTERN.search(value)
     if command is not None:
         return literal.offset + source_offsets[command.start()]
-    return literal.offset if value.strip() == SHELL_SLEEP_PROGRAM else None
+    return literal.offset if SHELL_SLEEP_PROGRAM_PATTERN.fullmatch(value.strip()) else None
 
 
 def find_rust_sleep_lines(parsed: ParsedRust, text: str) -> Set[int]:
