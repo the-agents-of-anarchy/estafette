@@ -75,7 +75,7 @@ impl LocalNetwork {
 
     /// Every file under the base directories of the machine the members run on.
     pub fn base_directory_files(&self) -> Vec<PathBuf> {
-        self.machine.base_directory_files()
+        self.machine.base_directory_files().unwrap()
     }
 
     /// The machine the members run on.

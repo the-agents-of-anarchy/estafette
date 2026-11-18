@@ -161,7 +161,7 @@ impl KeptSecrets {
     fn of_machine(machine: &ScratchMachine) -> io::Result<Self> {
         let mut secret_texts = Vec::new();
         let mut other_texts = Vec::new();
-        for file in files_listed_beneath_base_directories(&machine.root)? {
+        for file in machine.base_directory_files()? {
             let in_root = file.strip_prefix(&machine.root).unwrap_or(&file);
             if holds_a_secret_key(in_root) {
                 secret_texts.push(text_of(&file)?);
@@ -274,14 +274,6 @@ fn text_of(file: &Path) -> io::Result<String> {
     fs::read(file)
         .map(|content| String::from_utf8_lossy(&content).into_owned())
         .map_err(|failure| naming(file, &failure))
-}
-
-/// Every file under the configuration, data and runtime directories of the scratch root, at any depth, or the first failure to list a directory beneath them, naming it; nothing of a directory that does not exist.
-fn files_listed_beneath_base_directories(root: &Path) -> io::Result<Vec<PathBuf>> {
-    BASE_DIRECTORIES
-        .into_iter()
-        .flat_map(|base| files_beneath_for_keeping(&root.join(base)))
-        .collect()
 }
 
 /// Whether the file, named from its scratch root, is a network configuration by spec 3.3's naming: a TOML file under the configuration directory.
@@ -602,11 +594,11 @@ impl ScratchMachine {
         Ok(files)
     }
 
-    /// Every file under this machine's configuration, data and runtime directories, at any depth.
-    pub fn base_directory_files(&self) -> Vec<PathBuf> {
+    /// Every file under this machine's configuration, data and runtime directories, at any depth, or the first failure to list a directory beneath them, naming it; nothing of a directory that does not exist.
+    pub fn base_directory_files(&self) -> io::Result<Vec<PathBuf>> {
         BASE_DIRECTORIES
             .into_iter()
-            .flat_map(|base| files_beneath(&self.root.join(base)))
+            .flat_map(|base| files_beneath_for_keeping(&self.root.join(base)))
             .collect()
     }
 
