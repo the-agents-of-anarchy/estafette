@@ -674,7 +674,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     fn spec_3_15_test_28_within_2000_ms_of_its_home_relays_death_a_member_lists_only_live_relays() {
         let _live_host = live_host_to_itself();
         let network = LiveNetwork::from_environment();
-        let doomed = KillableHost::from_environment();
+        let doomed = KillableHost::from_environment(&network);
         let homed = (0..HOMING_ATTEMPTS)
             .find_map(|_| start_member_homed_on(&network, &doomed))
             .unwrap_or_else(|| {

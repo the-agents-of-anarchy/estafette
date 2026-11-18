@@ -1,4 +1,5 @@
 use std::fs;
+use std::io;
 use std::process::Command;
 
 use data_encoding::HEXLOWER;
@@ -13,7 +14,7 @@ use iroh_gossip::TopicId;
 
 use crate::forgeries::wall_clock_seconds;
 use crate::scratch_machine::server_member_end::recipe_failure;
-use crate::scratch_machine::{BINARY, INVITATION_VARIABLE, RunRecordKeeping};
+use crate::scratch_machine::{BINARY, INVITATION_VARIABLE, KeptSecrets, RunRecordKeeping};
 
 /// The task runner every project task runs through.
 pub const TASK_RUNNER: &str = "just";
@@ -90,6 +91,20 @@ impl LiveNetwork {
     pub fn join_through(&self, directories: &Directories, hosts: &[HostAddr]) {
         let config_file = directories.network_config_file(self.name()).unwrap();
         fs::create_dir_all(config_file.parent().unwrap()).unwrap();
+        self.configuration_through(hosts)
+            .rewrite(&config_file, wall_clock_seconds())
+            .unwrap();
+    }
+
+    /// The secrets a recipe run for the network with no member prints its failure searched for, read as a server member's are from the configuration the invitation describes and the invitation; or why they could not be read.
+    pub fn kept_secrets(&self) -> io::Result<KeptSecrets> {
+        let configuration = toml::to_string(&self.configuration_through(&self.invitation.hosts))
+            .map_err(io::Error::other)?;
+        KeptSecrets::of_server_member(&configuration, self.run_records.invitation())
+    }
+
+    /// The network configuration of the invitation, naming the hosts given in place of the invitation's.
+    fn configuration_through(&self, hosts: &[HostAddr]) -> NetworkConfig {
         NetworkConfig {
             secret: render_network_secret(&NetworkSecret::from_bytes(self.invitation.secret)),
             owner: render_public_key(&iroh::PublicKey::from_bytes(&self.invitation.owner).unwrap()),
@@ -103,8 +118,6 @@ impl LiveNetwork {
                 })
                 .collect(),
         }
-        .rewrite(&config_file, wall_clock_seconds())
-        .unwrap();
     }
 
     /// The owner's certificate of the host id, made by the binary's certify command on the lab owner's machine.
@@ -129,7 +142,7 @@ impl LiveNetwork {
         assert!(
             certified.status.success(),
             "certify on the lab owner's machine failed: {}",
-            recipe_failure(&certified, None)
+            recipe_failure(&certified, self.kept_secrets().ok().as_ref())
         );
         let certificate = HEXLOWER
             .decode(

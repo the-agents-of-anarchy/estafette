@@ -403,10 +403,14 @@ pub fn recipe_failure(output: &Output, secrets: Option<&KeptSecrets>) -> String 
     )
 }
 
-/// Fails a test that was not failing, saying what was left undone and that the recipe failed, its standard error left out, when a recipe run from a drop failed or could not run, and prints that instead on a test already failing, so no drop panics on a thread already panicking.
-pub fn fail_unless_succeeded(ran: &io::Result<Output>, left_undone: &str) {
+/// Fails a test that was not failing, saying what was left undone and how the recipe failed as `recipe_failure` prints it with the secrets, when a recipe run from a drop failed or could not run, and prints that instead on a test already failing, so no drop panics on a thread already panicking.
+pub fn fail_unless_succeeded(
+    ran: &io::Result<Output>,
+    left_undone: &str,
+    secrets: Option<&KeptSecrets>,
+) {
     if let Err(failure) = succeeded(ran) {
-        fail_unless_panicking(&format!("{left_undone}: {}", failure.printed(None)));
+        fail_unless_panicking(&format!("{left_undone}: {}", failure.printed(secrets)));
     }
 }
 
@@ -1521,7 +1525,7 @@ mod tests {
 
     impl Drop for ReportingARecipeThatCouldNotRun {
         fn drop(&mut self) {
-            fail_unless_succeeded(&Err(io::Error::other(RECIPE_UNRUNNABLE)), LEFT_UNDONE);
+            fail_unless_succeeded(&Err(io::Error::other(RECIPE_UNRUNNABLE)), LEFT_UNDONE, None);
         }
     }
 
@@ -1544,7 +1548,7 @@ mod tests {
     fn observability_decision_16_a_drop_whose_recipe_failed_fails_a_test_that_was_not_failing_saying_what_was_left_undone_and_that_the_recipe_failed_leaving_out_its_standard_error()
      {
         let failed = std::panic::catch_unwind(|| {
-            fail_unless_succeeded(&Ok(failed_run(STOP_REFUSAL)), LEFT_UNDONE);
+            fail_unless_succeeded(&Ok(failed_run(STOP_REFUSAL)), LEFT_UNDONE, None);
         });
 
         let failure = failed.expect_err("a failed recipe did not fail the test");

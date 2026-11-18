@@ -29,9 +29,10 @@ pub struct LabServer {
     runner: RecipeRunner,
 }
 
-/// UDP between a lab server and this machine dropped both ways, so members on the two reach each other through a relay alone; restored when dropped, whether the test ended or failed.
+/// UDP between a lab server and this machine dropped both ways, so members on the two reach each other through a relay alone; restored when dropped, whether the test ended or failed, a failed restore printed with its standard error searched for the secrets or left out when none stand.
 pub struct RelayOnlyPath<'server> {
     server: &'server LabServer,
+    secrets: Option<&'server KeptSecrets>,
 }
 
 impl LabServer {
@@ -111,11 +112,17 @@ impl LabServer {
         (self.runner)(self, recipe, arguments, input)
     }
 
-    /// Drops UDP between this server and this machine until the returned path is dropped, which also undoes a drop that failed half way.
+    /// Drops UDP between this server and this machine until the returned path is dropped, which also undoes a drop that failed half way, each recipe's failure printed with its standard error searched for the secrets or left out when none stand.
     #[track_caller]
-    pub fn relay_only_to_here(&self) -> RelayOnlyPath<'_> {
-        let path = RelayOnlyPath { server: self };
-        self.run(RELAY_ONLY_RECIPE, &[], &[], None);
+    pub fn relay_only_to_here<'path>(
+        &'path self,
+        secrets: Option<&'path KeptSecrets>,
+    ) -> RelayOnlyPath<'path> {
+        let path = RelayOnlyPath {
+            server: self,
+            secrets,
+        };
+        self.run(RELAY_ONLY_RECIPE, &[], &[], secrets);
         path
     }
 }
@@ -135,6 +142,7 @@ impl Drop for RelayOnlyPath<'_> {
         fail_unless_succeeded(
             &restored,
             &format!("the UDP drops on {} were not deleted", self.server.label()),
+            self.secrets,
         );
     }
 }
@@ -173,12 +181,19 @@ pub mod tests {
     /// The failure a test raises before a drop runs its recipe.
     pub const FIRST_FAILURE: &str = "the test failed first";
 
-    /// A server whose every recipe cannot run, so a test reaches no server.
-    pub fn server_whose_recipes_cannot_run() -> LabServer {
+    /// A server whose every recipe the runner plays, so a test reaches no server.
+    pub fn server_running(runner: RecipeRunner) -> LabServer {
         LabServer {
             name: LabServerName::Named(PLANTED_SERVER.to_owned()),
-            runner: |_server, _recipe, _arguments, _input| Err(io::Error::other(RECIPE_UNRUNNABLE)),
+            runner,
         }
+    }
+
+    /// A server whose every recipe cannot run, so a test reaches no server.
+    pub fn server_whose_recipes_cannot_run() -> LabServer {
+        server_running(|_server, _recipe, _arguments, _input| {
+            Err(io::Error::other(RECIPE_UNRUNNABLE))
+        })
     }
 
     /// Requires that the test ended in the failure it raised first, so no drop beside it raised another.
@@ -196,7 +211,10 @@ pub mod tests {
         let server = server_whose_recipes_cannot_run();
 
         let ended = panic::catch_unwind(AssertUnwindSafe(|| {
-            let _path = RelayOnlyPath { server: &server };
+            let _path = RelayOnlyPath {
+                server: &server,
+                secrets: None,
+            };
             panic!("{FIRST_FAILURE}");
         }));
 
