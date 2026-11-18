@@ -43,13 +43,21 @@ MODULE_DECLARATION_PATTERN = re.compile(r'\bmod\s+(?P<name>\w+)\s*;')
 INLINE_MODULE_PATTERN = re.compile(r'\bmod\s+(?P<name>\w+)\s*\{')
 USE_STATEMENT_PATTERN = re.compile(r'\buse\b[^;]*;')
 SLEEP_ALIAS_PATTERN = re.compile(rf"\b(?:{'|'.join(SLEEP_FUNCTION_NAMES)})\s+as\s+(?P<alias>[A-Za-z]\w*)")
-SHELL_SLEEP_COMMAND_PATTERN = re.compile(rf'''(?<![\w-]){SHELL_SLEEP_PROGRAM}\s+(?:[\d.${{"']|infinity\b)''')
+SHELL_SLEEP_COMMAND_PATTERN = re.compile(rf'''{SHELL_SLEEP_PROGRAM}\s+(?:[\d.${{"']|infinity\b)''')
 SCRIPT_COMMENT_PATTERN = re.compile(r'(?:^|\s)#.*')
+STRING_ESCAPE_PATTERN = re.compile(r'\\(?:\n\s*|x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|.)', re.DOTALL)
+LINE_CONTINUATION_START = '\\\n'
+BYTE_ESCAPE_START = '\\x'
+UNICODE_ESCAPE_START = '\\u{'
+UNICODE_ESCAPE_END = '}'
+HEXADECIMAL_BASE = 16
+CHARACTER_BY_ESCAPE = {'n': '\n', 't': '\t', 'r': '\r', '0': '\0'}
 
 
 class StringLiteral(NamedTuple):
     offset: int
     text: str
+    is_raw: bool
 
 
 class LexedRust(NamedTuple):
@@ -112,9 +120,10 @@ def lex_rust(text: str) -> LexedRust:
     position = 0
     while (lexeme := LEXEME_PATTERN.search(text, position)) is not None:
         end = find_block_comment_end(text, lexeme.start()) if lexeme.group('block_comment') else lexeme.end()
-        body_group = 'raw_body' if lexeme.group('raw_string') is not None else 'body' if lexeme.group('string') is not None else None
+        is_raw = lexeme.group('raw_string') is not None
+        body_group = 'raw_body' if is_raw else 'body' if lexeme.group('string') is not None else None
         if body_group is not None:
-            literals.append(StringLiteral(lexeme.start(body_group), lexeme.group(body_group)))
+            literals.append(StringLiteral(lexeme.start(body_group), lexeme.group(body_group), is_raw))
         code_parts.append(text[position:lexeme.start()])
         code_parts.append(blank(text[lexeme.start():end]))
         position = end
@@ -311,6 +320,45 @@ class LineIndex:
         return bisect.bisect_right(self.line_starts, offset)
 
 
+def decode_escape(escape: str) -> str:
+    """Return the characters one escape of a Rust string literal stands for, none for a line continuation."""
+    if escape.startswith(LINE_CONTINUATION_START):
+        return ''
+    if escape.startswith(BYTE_ESCAPE_START):
+        return chr(int(escape[len(BYTE_ESCAPE_START):], HEXADECIMAL_BASE))
+    if escape.startswith(UNICODE_ESCAPE_START):
+        return chr(int(escape[len(UNICODE_ESCAPE_START):-len(UNICODE_ESCAPE_END)], HEXADECIMAL_BASE))
+    return CHARACTER_BY_ESCAPE.get(escape[1], escape[1])
+
+
+def decode_string_literal(literal: StringLiteral) -> Tuple[str, Sequence[int]]:
+    """Return the value a string literal holds, beside the offset in its source text that each character of the value comes from."""
+    if literal.is_raw:
+        return literal.text, range(len(literal.text))
+    characters: List[str] = []
+    source_offsets: List[int] = []
+    position = 0
+    for escape in STRING_ESCAPE_PATTERN.finditer(literal.text):
+        characters.append(literal.text[position:escape.start()])
+        source_offsets.extend(range(position, escape.start()))
+        decoded = decode_escape(escape.group())
+        characters.append(decoded)
+        source_offsets.extend([escape.start()] * len(decoded))
+        position = escape.end()
+    characters.append(literal.text[position:])
+    source_offsets.extend(range(position, len(literal.text)))
+    return ''.join(characters), source_offsets
+
+
+def find_shell_sleep(literal: StringLiteral) -> Optional[int]:
+    """Return the source offset of the shell sleep a string literal's value holds, or none."""
+    value, source_offsets = decode_string_literal(literal)
+    command = SHELL_SLEEP_COMMAND_PATTERN.search(value)
+    if command is not None:
+        return literal.offset + source_offsets[command.start()]
+    return literal.offset if value.strip() == SHELL_SLEEP_PROGRAM else None
+
+
 def find_rust_sleep_lines(parsed: ParsedRust, text: str) -> Set[int]:
     """Return the line of every sleep the test spans of a Rust file name in code or run through a shell string."""
     code = parsed.lexed.code
@@ -323,12 +371,7 @@ def find_rust_sleep_lines(parsed: ParsedRust, text: str) -> Set[int]:
         for reference in sleep_reference.finditer(code)
         if reference.group('definition') is None and not is_in_spans(reference.start(), use_statements)
     ]
-    literal_offsets = [
-        literal.offset + (command.start() if command else 0)
-        for literal in parsed.lexed.literals
-        for command in [SHELL_SLEEP_COMMAND_PATTERN.search(literal.text)]
-        if command or literal.text.strip() == SHELL_SLEEP_PROGRAM
-    ]
+    literal_offsets = [offset for offset in map(find_shell_sleep, parsed.lexed.literals) if offset is not None]
     return {lines.line_of(offset) for offset in code_offsets + literal_offsets if is_in_spans(offset, parsed.test_spans)}
 
 
