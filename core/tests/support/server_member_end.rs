@@ -123,7 +123,7 @@ impl StagedFetch {
     }
 }
 
-/// Stops the member on the server through the runner and, when the test keeps records and the member's secrets were read, keeps a mark of a failed stop, its run record and its trace files through the writer of kept files in a directory of its own named for the server and the member, the trace files fetched first into a scratch directory outside it; when the test is failing, reads the member's timeline from that fetch; each step runs whatever an earlier one did, and every failure, a failed stop and secrets that could not be read included, is answered once all have run.
+/// Stops the member on the server through the runner and, when the test keeps records and the member's secrets were read, keeps a mark of a failed stop, its run record and its trace files through the writer of kept files in a directory of its own named for the server and the member, the trace files fetched first into a scratch directory outside it; when the test was failing or its end fails it, fetches them whether or not it keeps them and reads the member's timeline from that fetch; each step runs whatever an earlier one did, and every failure, a failed stop and secrets that could not be read included, is answered once all have run.
 pub fn ended_server_member(
     member: &str,
     server: &str,
@@ -147,8 +147,8 @@ pub fn ended_server_member(
         }
         keep_printed_run_record(member, server, kept, secrets, &run, &mut failures);
     }
-    let failing = test == TestSoFar::Failing;
-    if kept.is_none() && !failing {
+    let ends_failing = |failures: &[String]| test == TestSoFar::Failing || !failures.is_empty();
+    if kept.is_none() && !ends_failing(&failures) {
         return ServerMemberEnd {
             timeline: None,
             failures,
@@ -164,16 +164,17 @@ pub fn ended_server_member(
     if let Some((kept, secrets)) = &kept {
         keep_staged_trace_files(member, server, kept, secrets, &staged, &mut failures);
     }
-    let timeline = failing.then(|| {
-        timeline_to_print(
-            &timeline_of_fetched(staged.whole().as_deref()),
-            secrets.as_ref(),
-        )
-    });
+    let timeline_read = timeline_to_print(
+        &timeline_of_fetched(staged.whole().as_deref()),
+        secrets.as_ref(),
+    );
     if let Err(failure) = staged.removed() {
         failures.push(failure.to_string());
     }
-    ServerMemberEnd { timeline, failures }
+    ServerMemberEnd {
+        timeline: ends_failing(&failures).then_some(timeline_read),
+        failures,
+    }
 }
 
 /// The name a member serving on a server keeps its records under, beside the machines' directories: the server's, then the member's.
@@ -377,7 +378,10 @@ mod tests {
     use crate::scratch_machine::tests::{
         KEPT_BENEATH_NOT_A_DIRECTORY, NOT_A_DIRECTORY, READABLE, UNWRITABLE, member_line_naming,
     };
-    use crate::scratch_machine::trace_reader::NO_EVENT_RECORDED;
+    use crate::scratch_machine::trace_reader::tests::MEMBER_LINE;
+    use crate::scratch_machine::trace_reader::{
+        NO_EVENT_RECORDED, WritingProcess, parse_trace_lines,
+    };
     use crate::scratch_machine::{
         CONFIGURATION_NOT_TOML, INVITATION_VARIABLE, REDACTED, REDACTED_NOTE_EXTENSION,
         STOP_FAILED_EXTENSION, TIMELINE_NOT_PRINTED,
@@ -827,6 +831,77 @@ mod tests {
         )
     }
 
+    #[test]
+    fn observability_decision_15_a_server_member_whose_failed_stop_fails_a_test_that_was_not_failing_has_its_timeline_fetched_and_printed()
+     {
+        let ended = ended_not_failing_with_a_trace_line(None, Ok(failed_run(STOP_REFUSAL)));
+
+        assert!(
+            !ended.failures.is_empty(),
+            "the failed stop was not answered"
+        );
+        require_the_timeline_of_the_fetched_line(&ended);
+    }
+
+    #[test]
+    fn observability_decision_15_a_server_member_whose_kept_directory_cannot_be_made_on_a_test_that_was_not_failing_has_its_timeline_fetched_and_printed()
+     {
+        let scratch = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-server-member-unkept-timeline-test-{}",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let not_a_directory = scratch.join(NOT_A_DIRECTORY);
+        fs::write(&not_a_directory, "").unwrap();
+
+        let ended = ended_not_failing_with_a_trace_line(
+            Some(&not_a_directory.join(KEPT_BENEATH_NOT_A_DIRECTORY)),
+            Ok(succeeded_run("")),
+        );
+
+        remove_scratch(&scratch).unwrap();
+        assert!(
+            !ended.failures.is_empty(),
+            "the unmade directory was not answered"
+        );
+        require_the_timeline_of_the_fetched_line(&ended);
+    }
+
+    /// Ends, on a test that was not failing, a member keeping in the directory handed in, whose stop ends as handed in and whose fetch writes the member's trace line.
+    fn ended_not_failing_with_a_trace_line(
+        kept_in: Option<&Path>,
+        stop: io::Result<Output>,
+    ) -> ServerMemberEnd {
+        let stop = RefCell::new(Some(stop));
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop => stop.borrow_mut().take().unwrap(),
+            ServerMemberStep::PrintRunRecord => Ok(succeeded_run("")),
+            ServerMemberStep::FetchTraceFiles(into) => {
+                fs::create_dir_all(into).unwrap();
+                fs::write(into.join(FETCHED_TRACE_FILE), MEMBER_LINE).unwrap();
+                Ok(succeeded_run(""))
+            }
+        };
+        ended_server_member(
+            MEMBER,
+            SERVER,
+            kept_in,
+            &secrets_of_the_member(),
+            TestSoFar::NotFailing,
+            stand_in_for_the_recipes,
+        )
+    }
+
+    /// Requires that the end answered the timeline read from the member's fetched trace line.
+    fn require_the_timeline_of_the_fetched_line(ended: &ServerMemberEnd) {
+        let expected = parse_trace_lines(MEMBER_LINE.as_bytes(), WritingProcess::Ended).unwrap()[0]
+            .to_string();
+        assert_eq!(ended.timeline.as_deref(), Some(expected.as_str()));
+    }
+
     /// A recipe run that exited with code 1 having printed the text on standard error.
     fn failed_run(printed: &str) -> Output {
         Output {
@@ -1039,7 +1114,7 @@ mod tests {
             steps_run.into_inner(),
             ["stop", "print run record", "fetch trace files"]
         );
-        assert_eq!(ended.timeline, None);
+        assert_eq!(ended.timeline.as_deref(), Some(NO_EVENT_RECORDED));
         assert_eq!(ended.failures.len(), 1, "{:?}", ended.failures);
         assert!(
             ended.failures[0].contains(MEMBER)
