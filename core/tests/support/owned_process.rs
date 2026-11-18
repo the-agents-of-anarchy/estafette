@@ -39,14 +39,14 @@ pub struct EndMarks {
 }
 
 /// A process whose kill or wait failed: the label it was spawned under and its process id.
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone)]
 pub struct FailedEnd {
     pub label: String,
     pub process_id: u32,
 }
 
 impl EndMarks {
-    /// Marks kept in the directory, no failed end met yet.
+    /// Marks written in the directory, no failed end met yet.
     pub fn in_directory(directory: &Path) -> Self {
         Self {
             directory: directory.to_path_buf(),
