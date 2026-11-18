@@ -413,10 +413,17 @@ impl ScratchMachine {
         command
     }
 
-    /// Starts the binary's MCP server for the network with its standard input and output piped, its run record written to a file of the scratch root numbered for the server, and a trace directory of its own made ready, owned from its spawn.
+    /// Starts the binary's MCP server for the network with its standard input and output piped, its run record written to a file of the scratch root numbered for the server, its directories made as the binary makes them, private, and then a trace directory of its own made ready, owned from its spawn.
     pub fn spawn_mcp_server(&self) -> OwnedProcess {
         let started = self.members_started();
         self.servers_started.set(started.checked_add(1).unwrap());
+        let environment = self.member_environment(started);
+        Directories::establish(
+            |name: &str| variable_of(&environment, name),
+            &OperatingSystemFilesystem,
+            None,
+        )
+        .unwrap();
         OperatingSystemFilesystem
             .create_private_directory(&self.traces_directory_of_member(started))
             .unwrap();
@@ -1008,6 +1015,10 @@ mod tests {
         "scratch_machine::tests::forced_failure_with_a_machine_printing_while_it_unwinds";
     /// The exit code of a test binary whose test failed, as against a signal that ends one that aborts.
     const FAILED_TEST_EXIT_CODE: i32 = 101;
+    /// The mode spec 3.3 gives every directory the binary makes private.
+    const SPEC_PRIVATE_DIRECTORY_MODE: u32 = 0o700;
+    /// The bits of a mode that grant reading, writing and searching.
+    const MODE_BITS: u32 = 0o777;
 
     #[test]
     fn observability_decision_12_a_failing_machine_prints_the_lines_of_a_member_that_may_still_run_before_one_still_zero_filled()
@@ -1116,6 +1127,34 @@ mod tests {
     /// The member's trace line with its handle field holding the text.
     pub(super) fn member_line_naming(text: &str) -> String {
         MEMBER_LINE.replace("\"handle\":\"bob\"", &format!("\"handle\":\"{text}\""))
+    }
+
+    #[test]
+    fn spec_3_3_a_member_spawned_before_any_card_is_created_leaves_its_data_directory_private() {
+        let machine = ScratchMachine::fresh(
+            "member-first",
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: None,
+                invitation: None,
+            },
+        );
+
+        let member = machine.spawn_mcp_server();
+
+        let data_directory = machine
+            .traces_directory_of_member(0)
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let mode = fs::metadata(&data_directory).map(|metadata| metadata.permissions().mode());
+        drop(member);
+        assert_eq!(
+            mode.unwrap() & MODE_BITS,
+            SPEC_PRIVATE_DIRECTORY_MODE,
+            "{}",
+            data_directory.display()
+        );
     }
 
     #[test]
