@@ -37,6 +37,8 @@ ITEM_DELIMITER_PATTERN = re.compile(r'[(\[{;]|[)\]}]')
 ATTRIBUTE_START_PATTERN = re.compile(r'#\s*(?P<inner>!?)\s*\[')
 TEST_FUNCTION_ATTRIBUTE_PATTERN = re.compile(r'\s*(?:\w+\s*::\s*)*test\s*(?:\(.*\))?\s*', re.DOTALL)
 CONFIGURATION_ATTRIBUTE_PATTERN = re.compile(r'\s*cfg\s*\((?P<predicate>.*)\)\s*', re.DOTALL)
+CONDITIONAL_ATTRIBUTE_PATTERN = re.compile(r'\s*cfg_attr\s*\((?P<arguments>.*)\)\s*', re.DOTALL)
+ARGUMENT_DELIMITER_PATTERN = re.compile(r'[(\[{]|[)\]}]|,')
 CONFIGURATION_TOKEN_PATTERN = re.compile(r'\w+|[(),=]')
 TEST_CONFIGURATION_NAME = 'test'
 ALL_OPERATOR = 'all'
@@ -250,15 +252,46 @@ def compiles_for_tests_alone(predicate: ConfigurationPredicate) -> bool:
     )
 
 
+def can_hold_with_test(predicate: ConfigurationPredicate) -> bool:
+    """Whether some setting of the names other than test makes the predicate hold with test set."""
+    return any(evaluate_configuration(predicate, {**setting, TEST_CONFIGURATION_NAME: True}) for setting in settings_of_other_names(predicate))
+
+
+def split_arguments(code: str, arguments: Span) -> Sequence[Span]:
+    """Return the span of each argument of a bracketed list, split at its top-level commas."""
+    spans: List[Span] = []
+    depth = 0
+    start = arguments.start
+    for delimiter in ARGUMENT_DELIMITER_PATTERN.finditer(code, arguments.start, arguments.end):
+        token = delimiter.group()
+        if token in OPENING_BRACKETS:
+            depth += 1
+        elif token != ARGUMENT_SEPARATOR:
+            depth -= 1
+        elif depth == 0:
+            spans.append(Span(start, delimiter.start()))
+            start = delimiter.end()
+    spans.append(Span(start, arguments.end))
+    return spans
+
+
+def read_configuration_predicate(lexed: LexedRust, predicate: Span) -> ConfigurationPredicate:
+    """Parse the cfg predicate whose text the span holds."""
+    return parse_configuration_predicate(read_configuration_tokens(lexed, predicate), 0)[0]
+
+
 def marks_test(lexed: LexedRust, attribute: Span) -> bool:
-    """Whether an attribute's content compiles its item for tests: a test function attribute, or a cfg whose predicate compiles for tests alone."""
+    """Whether an attribute's content compiles its item for tests: a test function attribute, a cfg whose predicate compiles for tests alone, or a cfg_attr that can carry either with test set."""
     if TEST_FUNCTION_ATTRIBUTE_PATTERN.fullmatch(lexed.code, attribute.start, attribute.end):
         return True
     configuration = CONFIGURATION_ATTRIBUTE_PATTERN.fullmatch(lexed.code, attribute.start, attribute.end)
-    if configuration is None:
+    if configuration is not None:
+        return compiles_for_tests_alone(read_configuration_predicate(lexed, Span(*configuration.span('predicate'))))
+    conditional = CONDITIONAL_ATTRIBUTE_PATTERN.fullmatch(lexed.code, attribute.start, attribute.end)
+    if conditional is None:
         return False
-    predicate, _ = parse_configuration_predicate(read_configuration_tokens(lexed, Span(*configuration.span('predicate'))), 0)
-    return compiles_for_tests_alone(predicate)
+    predicate, *carried = split_arguments(lexed.code, Span(*conditional.span('arguments')))
+    return can_hold_with_test(read_configuration_predicate(lexed, predicate)) and any(marks_test(lexed, carried_attribute) for carried_attribute in carried)
 
 
 def read_path_attribute(attribute_text: str) -> Optional[str]:
