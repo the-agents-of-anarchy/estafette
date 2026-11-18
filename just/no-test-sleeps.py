@@ -66,7 +66,7 @@ INLINE_MODULE_PATTERN = re.compile(r'\bmod\s+(?P<name>\w+)\s*\{')
 USE_STATEMENT_PATTERN = re.compile(r'\buse\b[^;]*;')
 SLEEP_ALIAS_PATTERN = re.compile(rf"\b(?:{'|'.join(SLEEP_FUNCTION_NAMES)})\s+as\s+(?P<alias>[A-Za-z]\w*)")
 SHELL_SLEEP_PATTERN = re.compile(rf'{SHELL_SLEEP_PROGRAM}(?=\s|\\\r?\n|\Z)')
-SCRIPT_COMMENT_PATTERN = re.compile(r'(?:^|\s)#.*')
+SCRIPT_LEXEME_PATTERN = re.compile(r'''\\.|'[^']*'|"(?:\\.|[^"\\])*"|(?P<comment>(?:(?<=[\s;&|()<>])|^)\#[^\n]*)''', re.DOTALL)
 STRING_ESCAPE_PATTERN = re.compile(r'\\(?:\n\s*|x[0-9a-fA-F]{2}|u\{[0-9a-fA-F]{1,6}\}|.)', re.DOTALL)
 LINE_CONTINUATION_START = '\\\n'
 BYTE_ESCAPE_START = '\\x'
@@ -569,7 +569,7 @@ def find_rust_sleep_lines(parsed: ParsedRust, text: str) -> Set[int]:
 
 def find_script_sleep_lines(text: str) -> Set[int]:
     """Return the line of every shell sleep a script runs, its comments left out."""
-    commands = '\n'.join(SCRIPT_COMMENT_PATTERN.sub('', line) for line in text.split('\n'))
+    commands = SCRIPT_LEXEME_PATTERN.sub(lambda lexeme: blank(lexeme.group()) if lexeme.group('comment') else lexeme.group(), text)
     lines = LineIndex(commands)
     return {lines.line_of(command.start()) for command in SHELL_SLEEP_PATTERN.finditer(commands)}
 
