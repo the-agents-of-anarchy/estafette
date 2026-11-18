@@ -496,7 +496,7 @@ impl ScratchMachine {
                     mark.display()
                 ))
             })),
-            Err(failure) => failures.push(naming(&self.root, &failure)),
+            Err(failure) => failures.push(failure),
         }
         failures
     }
@@ -534,7 +534,8 @@ impl ScratchMachine {
         let mut kept = Vec::new();
         for mark in self.root_files_with_extension(END_FAILED_EXTENSION)? {
             let kept_mark = directory.join(mark.file_name().unwrap_or_default());
-            keep_file(secrets, KeptAs::Evidence, &kept_mark, &fs::read(&mark)?)?;
+            let text = fs::read(&mark).map_err(|failure| naming(&mark, &failure))?;
+            keep_file(secrets, KeptAs::Evidence, &kept_mark, &text)?;
             eprintln!("failed end kept at {}", kept_mark.display());
             kept.push(kept_mark);
         }
@@ -560,11 +561,13 @@ impl ScratchMachine {
             if holds_a_secret_key(in_data) {
                 continue;
             }
-            let copied = fs::read(&file).and_then(|content| {
-                keep_file(secrets, KeptAs::Evidence, &kept.join(in_data), &content)
-            });
+            let copied = fs::read(&file)
+                .map_err(|failure| naming(&file, &failure))
+                .and_then(|content| {
+                    keep_file(secrets, KeptAs::Evidence, &kept.join(in_data), &content)
+                });
             if let Err(failure) = copied {
-                failures.push(naming(&file, &failure));
+                failures.push(failure);
             }
         }
         eprintln!("data directory kept at {}", kept.display());
@@ -585,11 +588,15 @@ impl ScratchMachine {
         self.root_files_with_extension(RUN_RECORD_EXTENSION)
     }
 
-    /// The files directly in this machine's scratch root with the extension, in order of name.
+    /// The files directly in this machine's scratch root with the extension, in order of name, or the failure to list it, naming it.
     fn root_files_with_extension(&self, wanted: &str) -> io::Result<Vec<PathBuf>> {
-        let mut files: Vec<PathBuf> = fs::read_dir(&self.root)?
-            .map(|entry| entry.map(|entry| entry.path()))
-            .collect::<io::Result<Vec<PathBuf>>>()?
+        let listed: io::Result<Vec<PathBuf>> = fs::read_dir(&self.root).and_then(|entries| {
+            entries
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect()
+        });
+        let mut files: Vec<PathBuf> = listed
+            .map_err(|failure| naming(&self.root, &failure))?
             .into_iter()
             .filter(|path| {
                 path.extension()
@@ -685,7 +692,7 @@ pub fn fail_unless_panicking(failure: &str) {
 
 /// Creates the directory a machine's or a member's records are kept in beneath the test's, named for it, or for a later keeping of that name its number joined in a form no scratch root's name takes, so no keeping overwrites or merges into another and no number reads as a scratch root's own.
 fn fresh_kept_directory(directory: &Path, name: &str) -> io::Result<PathBuf> {
-    fs::create_dir_all(directory)?;
+    fs::create_dir_all(directory).map_err(|failure| naming(directory, &failure))?;
     let later_keepings =
         (SECOND_KEEPING..).map(|number| format!("{name}{LATER_KEEPING_SEPARATOR}{number}"));
     for candidate in std::iter::once(name.to_owned()).chain(later_keepings) {
@@ -802,7 +809,7 @@ fn is_a_secret_key_file(file: &Path) -> bool {
         .is_some_and(|extension| extension == SECRET_KEY_EXTENSION)
 }
 
-/// Writes one file into a kept directory, making the directories it lies in: byte for byte when it holds no text the secrets name for a file kept as that, else with each such text replaced by the redaction marker and a note beside it naming the file; answers how many of its lines were redacted.
+/// Writes one file into a kept directory, making the directories it lies in: byte for byte when it holds no text the secrets name for a file kept as that, else with each such text replaced by the redaction marker and a note beside it naming the file; answers how many of its lines were redacted, or the failure, naming the file or directory it could not write.
 fn keep_file(
     secrets: &KeptSecrets,
     kept_as: KeptAs,
@@ -810,14 +817,14 @@ fn keep_file(
     content: &[u8],
 ) -> io::Result<usize> {
     if let Some(directory) = kept_file.parent() {
-        fs::create_dir_all(directory)?;
+        fs::create_dir_all(directory).map_err(|failure| naming(directory, &failure))?;
     }
     let (kept_text, redacted_lines) = secrets.redacted(&String::from_utf8_lossy(content), kept_as);
     if redacted_lines == 0 {
-        fs::write(kept_file, content)?;
+        fs::write(kept_file, content).map_err(|failure| naming(kept_file, &failure))?;
         return Ok(redacted_lines);
     }
-    fs::write(kept_file, kept_text)?;
+    fs::write(kept_file, kept_text).map_err(|failure| naming(kept_file, &failure))?;
     let mut note = kept_file.as_os_str().to_owned();
     note.push(format!(".{REDACTED_NOTE_EXTENSION}"));
     fs::write(
@@ -826,7 +833,8 @@ fn keep_file(
             "{} was kept with each invitation and token in it replaced by {REDACTED}: {redacted_lines} lines redacted\n",
             kept_file.file_name().unwrap_or_default().to_string_lossy()
         ),
-    )?;
+    )
+    .map_err(|failure| naming(Path::new(&note), &failure))?;
     Ok(redacted_lines)
 }
 
@@ -908,7 +916,7 @@ mod tests {
     /// The mode of a file or directory its owner can neither read nor list, so keeping it fails.
     const UNREADABLE: u32 = 0o000;
     /// The mode that makes such a file or directory its owner's again, so the test can remove it.
-    const READABLE: u32 = 0o700;
+    pub(super) const READABLE: u32 = 0o700;
     /// An invitation a test plants in what a machine keeps, no real one.
     const PLANTED_INVITATION: &str = "estafette-invite-1:plantedinvitation0123456789";
     /// A token a test plants as a card's secret key and in what a machine keeps, no real one.
@@ -959,6 +967,16 @@ mod tests {
     const CACHED_ACCOUNT_FILE: &str = "acme-account.json";
     /// A marker a test plants in the `secret` line of a network configuration that does not parse, no real secret.
     const PLANTED_MALFORMED_SECRET: &str = "plantedmalformedsecret0123456789";
+    /// A file a test makes where a directory is wanted, so no directory can be made beneath it.
+    pub(super) const NOT_A_DIRECTORY: &str = "not-a-directory";
+    /// The directory a test asks records be kept in, beneath that file.
+    pub(super) const KEPT_BENEATH_NOT_A_DIRECTORY: &str = "kept";
+    /// The length of a name a test gives a kept file, short enough to be kept and too long for the note beside it, the longest name a file system here takes being 255 bytes.
+    const NAME_TOO_LONG_FOR_ITS_NOTE: usize = 240;
+    /// The mode of a directory its owner may enter and write in but not list.
+    const UNLISTABLE: u32 = 0o300;
+    /// The mode of a directory its owner may list and enter but not write in.
+    pub(super) const UNWRITABLE: u32 = 0o500;
 
     #[test]
     fn observability_decision_12_a_failing_machine_prints_the_lines_of_a_member_that_may_still_run_before_one_still_zero_filled()
@@ -2065,6 +2083,140 @@ mod tests {
         let redacted = format!("network {REDACTED} joined\n");
         assert_eq!(kept.events, redacted.as_bytes());
         assert_eq!(kept.run_record, redacted.as_bytes());
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_test_directory_cannot_be_made_names_that_directory()
+     {
+        let scratch = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-kept-unmade-test-directory-test-{}",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        fs::write(scratch.join(NOT_A_DIRECTORY), "").unwrap();
+        let test_directory = scratch
+            .join(NOT_A_DIRECTORY)
+            .join(KEPT_BENEATH_NOT_A_DIRECTORY);
+        let machine = machine_keeping_in("unmade-test-directory", &test_directory);
+
+        let message = failure_of_dropping(machine);
+
+        remove_scratch::remove_scratch(&scratch).unwrap();
+        assert!(
+            message.contains(&format!("{}: ", test_directory.display())),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_scratch_root_cannot_be_listed_names_it_in_the_failure_of_each_step_that_lists_it()
+     {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-unlisted-root-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = machine_keeping_in("unlisted-root", &kept_in);
+        let root = machine.root.clone();
+        fs::set_permissions(&root, fs::Permissions::from_mode(UNLISTABLE)).unwrap();
+
+        let message = failure_of_dropping(machine);
+
+        fs::set_permissions(&root, fs::Permissions::from_mode(READABLE)).unwrap();
+        remove_scratch::remove_scratch(&root).unwrap();
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+        let run_records_end_marks_and_removal = 3;
+        assert_eq!(
+            message.matches(&format!("{}: ", root.display())).count(),
+            run_records_end_marks_and_removal,
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_end_mark_cannot_be_read_names_the_mark() {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-unread-mark-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = machine_keeping_in("unread-mark", &kept_in);
+        let mark = machine
+            .root
+            .join(format!("{FAILED_LABEL}-1.{END_FAILED_EXTENSION}"));
+        fs::write(&mark, PLANTED_END_FAILURE).unwrap();
+        fs::set_permissions(&mark, fs::Permissions::from_mode(UNREADABLE)).unwrap();
+
+        let message = failure_of_dropping(machine);
+
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+        assert!(
+            message.contains(&format!("{}: ", mark.display())),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_machine_whose_writer_cannot_write_a_kept_file_names_that_kept_file_for_a_run_record_an_end_mark_and_a_data_file()
+     {
+        let kept_in = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("estafette-kept-unwritten-test-{}", std::process::id()),
+        )
+        .unwrap();
+        let machine = machine_keeping_in("unwritten", &kept_in);
+        planted_network_configuration(&machine, NETWORK);
+        let long_name = "a".repeat(NAME_TOO_LONG_FOR_ITS_NOTE);
+        let holding_the_secret = format!("network {PLANTED_NETWORK_SECRET} joined\n");
+        let run_record = format!("{long_name}.{RUN_RECORD_EXTENSION}");
+        let end_mark = format!("{long_name}.{END_FAILED_EXTENSION}");
+        for file in [
+            machine.root.join(&run_record),
+            machine.root.join(&end_mark),
+            machine.root.join(DATA_HOME).join(&run_record),
+        ] {
+            fs::write(file, &holding_the_secret).unwrap();
+        }
+        let kept = kept_in.join(machine.name());
+        let unwritten_notes = [
+            kept.join(format!("{run_record}.{REDACTED_NOTE_EXTENSION}")),
+            kept.join(format!("{end_mark}.{REDACTED_NOTE_EXTENSION}")),
+            kept.join(KEPT_DATA_DIRECTORY)
+                .join(format!("{run_record}.{REDACTED_NOTE_EXTENSION}")),
+        ];
+
+        let message = failure_of_dropping(machine);
+
+        remove_scratch::remove_scratch(&kept_in).unwrap();
+        for note in &unwritten_notes {
+            assert!(
+                message.contains(&format!("{}: ", note.display())),
+                "{} is not named: {message}",
+                note.display()
+            );
+        }
+    }
+
+    /// A machine of the tag whose records are kept in the directory, with no invitation set.
+    fn machine_keeping_in(tag: &str, kept_in: &Path) -> ScratchMachine {
+        ScratchMachine::fresh(
+            tag,
+            NETWORK,
+            &RunRecordKeeping {
+                kept_in: Some(kept_in.to_path_buf()),
+                invitation: None,
+            },
+        )
+    }
+
+    /// The message the machine's drop fails a test that was not failing with, failing the test when the drop reports nothing.
+    fn failure_of_dropping(machine: ScratchMachine) -> String {
+        let dropped = catch_unwind(AssertUnwindSafe(move || drop(machine)));
+        let failure = dropped.expect_err("the machine was dropped with no failure");
+        failure.downcast_ref::<String>().unwrap().clone()
     }
 
     /// Writes the network configuration of the network on the machine naming the planted secret, and returns its file.

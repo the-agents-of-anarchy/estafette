@@ -166,10 +166,7 @@ fn kept_directory<'secrets>(
     match fresh_kept_directory(directory, &kept_name(server, member)) {
         Ok(kept) => Some((kept, secrets)),
         Err(failure) => {
-            failures.push(format!(
-                "records of {member} not kept in {}: {failure}",
-                directory.display()
-            ));
+            failures.push(format!("records of {member} not kept: {failure}"));
             None
         }
     }
@@ -250,6 +247,7 @@ fn keep_staged_trace_files(
                     .and_then(|file| {
                         let in_fetch = file.strip_prefix(&fetched_into).unwrap_or(&file);
                         fs::read(&file)
+                            .map_err(|failure| naming(&file, &failure))
                             .and_then(|content| {
                                 keep_file(
                                     secrets,
@@ -258,7 +256,6 @@ fn keep_staged_trace_files(
                                     &content,
                                 )
                             })
-                            .map_err(|failure| naming(&file, &failure))
                     })
                     .err()
             })
@@ -345,6 +342,9 @@ mod tests {
     use super::*;
     use crate::scratch_machine::fresh_directory::fresh_directory_in;
     use crate::scratch_machine::remove_scratch::remove_scratch;
+    use crate::scratch_machine::tests::{
+        KEPT_BENEATH_NOT_A_DIRECTORY, NOT_A_DIRECTORY, READABLE, UNWRITABLE,
+    };
     use crate::scratch_machine::trace_reader::NO_EVENT_RECORDED;
     use crate::scratch_machine::{
         CONFIGURATION_NOT_TOML, INVITATION_VARIABLE, REDACTED, REDACTED_NOTE_EXTENSION,
@@ -375,10 +375,6 @@ mod tests {
     const PLANTED_INVITATION: &str = "estafette-invite-1:plantedinvitation0123456789";
     /// A token a test plants among a member's secrets and in what is fetched of it, no real one.
     const PLANTED_TOKEN: &str = "plantedtoken0123456789abcdef";
-    /// A file a test makes where a directory is wanted, so no directory can be made beneath it.
-    const NOT_A_DIRECTORY: &str = "not-a-directory";
-    /// The directory a test asks a member's records be kept in, beneath that file.
-    const KEPT_BENEATH_NOT_A_DIRECTORY: &str = "kept";
     /// Why a test's recipe could not run.
     const RECIPE_UNRUNNABLE: &str = "the task runner could not be started";
     /// What a test's drop says its recipe left undone.
@@ -395,6 +391,8 @@ mod tests {
     const UNREADABLE: u32 = 0o000;
     /// A marker a test plants in the `secret` line of a network configuration that does not parse, no real secret.
     const PLANTED_MALFORMED_SECRET: &str = "plantedmalformedsecret0123456789";
+    /// The longest name a file system here takes, in bytes, so a test can name a kept directory that fits and a mark in it that does not.
+    const LONGEST_FILE_NAME: usize = 255;
 
     /// The network configuration a test's member wrote to its server, naming the secret.
     fn configuration_naming(secret: &str) -> String {
@@ -537,6 +535,146 @@ mod tests {
                     .failures
                     .iter()
                     .all(|failure| !failure.contains(PLANTED_MALFORMED_SECRET)),
+            "{:?}",
+            ended.failures
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_server_member_whose_failed_stop_cannot_be_marked_names_the_mark()
+    {
+        let kept_in = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-server-member-unwritten-stop-mark-test-{}",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let card = "a".repeat(LONGEST_FILE_NAME.saturating_sub(kept_name(SERVER, "").len()));
+        let refusal = format!("ssh: refused {PLANTED_TOKEN}");
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop => Ok(failed_run(&refusal)),
+            ServerMemberStep::PrintRunRecord | ServerMemberStep::FetchTraceFiles(_) => {
+                Ok(succeeded_run(""))
+            }
+        };
+
+        let ended = ended_server_member(
+            &card,
+            SERVER,
+            Some(&kept_in),
+            &secrets_of_the_member(),
+            TestSoFar::NotFailing,
+            stand_in_for_the_recipes,
+        );
+
+        let unwritten_mark = kept_in
+            .join(kept_name(SERVER, &card))
+            .join(format!("{card}.{STOP_FAILED_EXTENSION}"));
+        remove_scratch(&kept_in).unwrap();
+        assert!(
+            ended
+                .failures
+                .iter()
+                .any(|failure| failure.contains(&format!("{}: ", unwritten_mark.display()))),
+            "{:?}",
+            ended.failures
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_server_member_whose_kept_directory_turns_unwritable_names_each_kept_file_not_written()
+     {
+        let kept_in = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-server-member-unwritable-test-{}",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let kept = kept_in.join(kept_name(SERVER, MEMBER));
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop => Ok(succeeded_run("")),
+            ServerMemberStep::PrintRunRecord => {
+                fs::set_permissions(&kept, fs::Permissions::from_mode(UNWRITABLE)).unwrap();
+                Ok(succeeded_run("record of amy\n"))
+            }
+            ServerMemberStep::FetchTraceFiles(into) => {
+                fs::create_dir_all(into).unwrap();
+                fs::write(into.join(FETCHED_TRACE_FILE), "").unwrap();
+                Ok(succeeded_run(""))
+            }
+        };
+
+        let ended = ended_server_member(
+            MEMBER,
+            SERVER,
+            Some(&kept_in),
+            &secrets_of_the_member(),
+            TestSoFar::NotFailing,
+            stand_in_for_the_recipes,
+        );
+
+        fs::set_permissions(&kept, fs::Permissions::from_mode(READABLE)).unwrap();
+        remove_scratch(&kept_in).unwrap();
+        for unwritten in [
+            kept.join(format!("{MEMBER}.stderr")),
+            kept.join(KEPT_TRACE_FILES_DIRECTORY),
+            kept.join(format!(
+                "{KEPT_TRACE_FILES_DIRECTORY}.{FETCH_FAILED_EXTENSION}"
+            )),
+        ] {
+            assert!(
+                ended
+                    .failures
+                    .iter()
+                    .any(|failure| failure.contains(&format!("{}: ", unwritten.display()))),
+                "{} is not named: {:?}",
+                unwritten.display(),
+                ended.failures
+            );
+        }
+    }
+
+    #[test]
+    fn observability_decision_16_a_server_member_whose_failed_run_record_read_cannot_be_marked_names_the_mark()
+     {
+        let kept_in = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-server-member-unwritten-read-mark-test-{}",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let kept = kept_in.join(kept_name(SERVER, MEMBER));
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop | ServerMemberStep::FetchTraceFiles(_) => Ok(succeeded_run("")),
+            ServerMemberStep::PrintRunRecord => {
+                fs::set_permissions(&kept, fs::Permissions::from_mode(UNWRITABLE)).unwrap();
+                Ok(failed_run(RUN_RECORD_REFUSAL))
+            }
+        };
+
+        let ended = ended_server_member(
+            MEMBER,
+            SERVER,
+            Some(&kept_in),
+            &secrets_of_the_member(),
+            TestSoFar::NotFailing,
+            stand_in_for_the_recipes,
+        );
+
+        fs::set_permissions(&kept, fs::Permissions::from_mode(READABLE)).unwrap();
+        remove_scratch(&kept_in).unwrap();
+        let unwritten = kept.join(format!("{MEMBER}.{RUN_RECORD_READ_FAILED_EXTENSION}"));
+        assert!(
+            ended
+                .failures
+                .iter()
+                .any(|failure| failure.contains(&format!("{}: ", unwritten.display()))),
             "{:?}",
             ended.failures
         );
