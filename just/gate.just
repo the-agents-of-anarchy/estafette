@@ -2,6 +2,7 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 set working-directory := '..'
 
 heavy_evidence_script := source_directory() + '/heavy-evidence.py'
+no_test_sleeps_script := source_directory() + '/no-test-sleeps.py'
 audit_pin := "0.22.2"
 killable_server := "estafette-lab-2"
 built_binary := "target/debug/estafette"
@@ -12,9 +13,9 @@ claude_session_variables := "ESTAFETTE_ACCEPTANCE_CLAUDE_SOCKET ESTAFETTE_ACCEPT
 [group('verify')]
 check: check-light check-heavy
 
-[doc("The light gate, run by the commit hook on every source commit: format check, then clippy over every target with and without relay, warnings denied; stops at the first failure")]
+[doc("The light gate, run by the commit hook on every source commit: format check, then the refusal of a sleep in test code, then clippy over every target with and without relay, warnings denied; stops at the first failure")]
 [group('verify')]
-check-light: fmt-check clippy clippy-relay
+check-light: fmt-check no-test-sleeps clippy clippy-relay
 
 [doc("The heavy gate, run once at a head: takes the machine-wide heavy gate lock first, printing the holder and waiting while another heavy gate holds it, then every test of the workspace, then the pinned advisory audit, both always run; writes one evidence file (commit, tree, worktree status, seconds waited for the lock, times, each exit code, every test result line with its binary, ignored tests, the full log's path) under target/heavy-evidence/ or at evidence_path, whatever the outcome, prints its absolute path as the last line of standard output and exits nonzero when either command failed")]
 [group('verify')]
@@ -25,6 +26,11 @@ check-heavy evidence_path="":
 [group('verify')]
 fmt-check:
     cargo fmt --all -- --check
+
+[doc("Fail when test code under core/ or bridges/claude/ sleeps. Reads every file git lists there, tracked or not ignored; test code is every file under a tests directory, every item under a cfg naming test outside a not or under a test attribute, and every file a test module line names, with every file beneath it. A sleep is std::thread::sleep, tokio::time::sleep or sleep_until named in code, called or passed, by any path ending in ::sleep or ::sleep_until, bare (a variable of that name included), or bare under an alias a use ... as of the same file gives; a string literal that is sleep, or holds sleep and then a number, a variable, a quote or infinity, whether or not a shell runs it; such a line in a script under a tests directory. Prints each as file:line: line, then the count, on standard error, exiting 1, and nothing, exiting 0, when there is none; exits 2 on a test module line that names no file. Does not see: a wait whose running out is the pass (a timeout around a receive, recv_timeout, park_timeout, a wait on a condition variable, a spin on the clock); a sleep reached through a function or macro product code defines and a test calls; a method named sleep; an alias given in another file and reached through use super::*; a timer of another name (tokio::time::interval, a Delay future); a shell command built from pieces; a doc-comment example run as a doctest; a script outside a tests directory that a test runs")]
+[group('verify')]
+no-test-sleeps:
+    @python3 -I {{ quote(no_test_sleeps_script) }}
 
 [doc("Clippy over every target, warnings denied")]
 [group('verify')]
