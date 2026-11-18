@@ -36,8 +36,15 @@ ITEM_DELIMITER_PATTERN = re.compile(r'[(\[{;]|[)\]}]')
 ATTRIBUTE_START_PATTERN = re.compile(r'#\s*(?P<inner>!?)\s*\[')
 TEST_FUNCTION_ATTRIBUTE_PATTERN = re.compile(r'\s*(?:\w+\s*::\s*)*test\s*(?:\(.*\))?\s*', re.DOTALL)
 CONFIGURATION_ATTRIBUTE_PATTERN = re.compile(r'\s*cfg\s*\((?P<predicate>.*)\)\s*', re.DOTALL)
-NEGATION_START_PATTERN = re.compile(r'\bnot\s*\(')
-TEST_PREDICATE_PATTERN = re.compile(r'\btest\b')
+CONFIGURATION_TOKEN_PATTERN = re.compile(r'\w+|[(),=]')
+TEST_CONFIGURATION_NAME = 'test'
+ALL_OPERATOR = 'all'
+ANY_OPERATOR = 'any'
+NOT_OPERATOR = 'not'
+ARGUMENTS_OPENER = '('
+ARGUMENTS_CLOSER = ')'
+ARGUMENT_SEPARATOR = ','
+KEY_VALUE_SEPARATOR = '='
 PATH_ATTRIBUTE_PATTERN = re.compile(r'\s*path\s*=\s*"(?P<path>[^"]*)"\s*')
 MODULE_DECLARATION_PATTERN = re.compile(r'\bmod\s+(?P<name>\w+)\s*;')
 INLINE_MODULE_PATTERN = re.compile(r'\bmod\s+(?P<name>\w+)\s*\{')
@@ -82,6 +89,11 @@ class ModuleDeclaration(NamedTuple):
     offset: int
     path: Optional[str]
     enclosing_inline_modules: Sequence[str]
+
+
+class ConfigurationPredicate(NamedTuple):
+    name: str
+    arguments: Optional[Sequence['ConfigurationPredicate']]
 
 
 class ParsedRust(NamedTuple):
@@ -160,19 +172,57 @@ def find_item_end(code: str, start: int) -> int:
     return len(code)
 
 
-def strip_negations(predicate: str) -> str:
-    """Return a cfg predicate without any of its not(...) groups."""
-    while (negation := NEGATION_START_PATTERN.search(predicate)) is not None:
-        predicate = predicate[:negation.start()] + predicate[find_closing_bracket(predicate, negation.end() - 1):]
-    return predicate
+def parse_configuration_predicate(tokens: Sequence[str], position: int) -> Tuple[ConfigurationPredicate, int]:
+    """Parse the cfg predicate that starts at the token position, returning it and the position past it."""
+    name = tokens[position]
+    position += 1
+    if position < len(tokens) and tokens[position] == KEY_VALUE_SEPARATOR:
+        return ConfigurationPredicate(name + KEY_VALUE_SEPARATOR, None), position + 1
+    if position >= len(tokens) or tokens[position] != ARGUMENTS_OPENER:
+        return ConfigurationPredicate(name, None), position
+    position += 1
+    arguments: List[ConfigurationPredicate] = []
+    while tokens[position] != ARGUMENTS_CLOSER:
+        argument, position = parse_configuration_predicate(tokens, position)
+        arguments.append(argument)
+        if tokens[position] == ARGUMENT_SEPARATOR:
+            position += 1
+    return ConfigurationPredicate(name, arguments), position + 1
+
+
+def holds_only_with_test(predicate: ConfigurationPredicate) -> bool:
+    """Whether the predicate compiles its item for tests: it holds only with test set, or an any of it holds with test set."""
+    if predicate.arguments is None:
+        return predicate.name == TEST_CONFIGURATION_NAME
+    if predicate.name in (ALL_OPERATOR, ANY_OPERATOR):
+        return any(map(holds_only_with_test, predicate.arguments))
+    if predicate.name == NOT_OPERATOR:
+        return any(map(holds_only_without_test, predicate.arguments))
+    return False
+
+
+def holds_only_without_test(predicate: ConfigurationPredicate) -> bool:
+    """Whether the predicate can hold only with test unset."""
+    if predicate.arguments is None:
+        return False
+    if predicate.name == ALL_OPERATOR:
+        return any(map(holds_only_without_test, predicate.arguments))
+    if predicate.name == ANY_OPERATOR:
+        return bool(predicate.arguments) and all(map(holds_only_without_test, predicate.arguments))
+    if predicate.name == NOT_OPERATOR:
+        return any(map(holds_only_with_test, predicate.arguments))
+    return False
 
 
 def marks_test(attribute: str) -> bool:
-    """Whether an attribute's content compiles its item for tests: a test function attribute, or a cfg naming test outside a not."""
+    """Whether an attribute's content compiles its item for tests: a test function attribute, or a cfg whose predicate means test code."""
     if TEST_FUNCTION_ATTRIBUTE_PATTERN.fullmatch(attribute):
         return True
     configuration = CONFIGURATION_ATTRIBUTE_PATTERN.fullmatch(attribute)
-    return configuration is not None and TEST_PREDICATE_PATTERN.search(strip_negations(configuration.group('predicate'))) is not None
+    if configuration is None:
+        return False
+    predicate, _ = parse_configuration_predicate(CONFIGURATION_TOKEN_PATTERN.findall(configuration.group('predicate')), 0)
+    return holds_only_with_test(predicate)
 
 
 def read_path_attribute(attribute_text: str) -> Optional[str]:
