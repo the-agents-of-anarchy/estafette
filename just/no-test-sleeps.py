@@ -13,7 +13,7 @@ TEST_DIRECTORY_NAME = 'tests'
 RUST_SUFFIX = '.rs'
 MOD_FILE_NAME = 'mod.rs'
 MOD_RS_FILE_NAMES = (MOD_FILE_NAME, 'lib.rs', 'main.rs')
-SLEEP_FUNCTION_NAMES = ('sleep_until', 'sleep')
+SLEEP_FUNCTION_NAMES = ('sleep_until', 'sleep_ms', 'sleep')
 SHELL_SLEEP_PROGRAM = 'sleep'
 LEXEME_PATTERN = re.compile(r'''
     (?P<line_comment>//[^\n]*)
