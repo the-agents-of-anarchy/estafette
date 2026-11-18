@@ -6,6 +6,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use super::print_to_standard_error;
@@ -23,32 +24,92 @@ pub const FIXTURE_ENDED_WITHIN: Duration = Duration::from_secs(60);
 pub struct OwnedProcess {
     child: Child,
     label: String,
-    marked_in: PathBuf,
+    end_marks: EndMarks,
 }
 
-impl OwnedProcess {
-    /// Spawns the command, owning the process in the value it returns, a failed end of it to be marked in the directory under the label.
-    #[track_caller]
-    pub fn spawned(command: &mut Command, marked_in: &Path, label: &str) -> Self {
+/// Where the processes of one owner mark a failed end, and every failed end they met, held whether or not its mark could be written.
+#[derive(Clone)]
+pub struct EndMarks {
+    directory: PathBuf,
+    failed: Arc<Mutex<Vec<FailedEnd>>>,
+}
+
+/// A process whose kill or wait failed: the label it was spawned under and its process id.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct FailedEnd {
+    pub label: String,
+    pub process_id: u32,
+}
+
+impl EndMarks {
+    /// Marks kept in the directory, no failed end met yet.
+    pub fn in_directory(directory: &Path) -> Self {
         Self {
-            child: command.spawn().unwrap(),
-            label: label.to_owned(),
-            marked_in: marked_in.to_path_buf(),
+            directory: directory.to_path_buf(),
+            failed: Arc::default(),
         }
     }
 
-    /// Kills the process and waits for it, never panicking: a kill or a wait that fails is written to standard error and marked in its directory; a no-op once the process has ended.
+    /// Every failed end met so far, in the order met.
+    pub fn failed(&self) -> Vec<FailedEnd> {
+        self.failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Holds the failed end, then writes to standard error, and to its mark in the directory, that it failed and why, a mark that cannot be written reported on standard error alone.
+    fn mark(&self, failed: FailedEnd, failure: &io::Error) {
+        let mark = format!(
+            "the end of {}, process {}, failed, so it may have run on while its machine's data was kept: {failure}\n",
+            failed.label, failed.process_id
+        );
+        let marked = self.directory.join(failed.mark_name());
+        self.failed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(failed);
+        print_to_standard_error(mark.trim_end());
+        if let Err(unwritten) = fs::write(&marked, mark) {
+            print_to_standard_error(&format!("{}: {unwritten}", marked.display()));
+        }
+    }
+}
+
+impl FailedEnd {
+    /// The name of the file that marks this failed end.
+    pub fn mark_name(&self) -> String {
+        format!("{}-{}.{END_FAILED_EXTENSION}", self.label, self.process_id)
+    }
+}
+
+impl OwnedProcess {
+    /// Spawns the command, owning the process in the value it returns, a failed end of it to be held and marked by the end marks under the label.
+    #[track_caller]
+    pub fn spawned(command: &mut Command, end_marks: &EndMarks, label: &str) -> Self {
+        Self {
+            child: command.spawn().unwrap(),
+            label: label.to_owned(),
+            end_marks: end_marks.clone(),
+        }
+    }
+
+    /// Kills the process and waits for it, never panicking: a kill or a wait that fails is held, written to standard error and marked by its end marks; a no-op once the process has ended.
     pub fn end(&mut self) {
         self.end_through(|process| process.kill().and_then(|()| process.wait()));
     }
 
-    /// Ends the process through the kill and wait handed in, never panicking: one that fails is written to standard error and marked in its directory.
+    /// Ends the process through the kill and wait handed in, never panicking: one that fails is held, written to standard error and marked by its end marks.
     pub fn end_through(
         &mut self,
         kill_then_wait: impl FnOnce(&mut Child) -> io::Result<ExitStatus>,
     ) {
         if let Err(failure) = kill_then_wait(&mut self.child) {
-            mark_end_failure(&self.marked_in, &self.label, self.child.id(), &failure);
+            let failed = FailedEnd {
+                label: self.label.clone(),
+                process_id: self.child.id(),
+            };
+            self.end_marks.mark(failed, &failure);
         }
     }
 }
@@ -70,18 +131,6 @@ impl DerefMut for OwnedProcess {
 impl Drop for OwnedProcess {
     fn drop(&mut self) {
         self.end();
-    }
-}
-
-/// Writes to standard error, and to a file of the directory named for the process, that its end failed and why, a mark that cannot be written reported on standard error alone.
-fn mark_end_failure(marked_in: &Path, label: &str, process_id: u32, failure: &io::Error) {
-    let mark = format!(
-        "the end of {label}, process {process_id}, failed, so it may have run on while its machine's data was kept: {failure}\n"
-    );
-    print_to_standard_error(mark.trim_end());
-    let marked = marked_in.join(format!("{label}-{process_id}.{END_FAILED_EXTENSION}"));
-    if let Err(unwritten) = fs::write(&marked, mark) {
-        print_to_standard_error(&format!("{}: {unwritten}", marked.display()));
     }
 }
 

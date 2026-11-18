@@ -278,7 +278,7 @@ mod tests {
     use super::McpServer;
     use crate::member_events::MemberEvents;
     use crate::scratch_machine::owned_process::{
-        OwnedProcess, STAND_IN_ENDED_WITHIN, require_stand_in_ended_within,
+        EndMarks, OwnedProcess, STAND_IN_ENDED_WITHIN, require_stand_in_ended_within,
     };
 
     /// A command that runs until it is ended, reading nothing and printing nothing.
@@ -296,7 +296,7 @@ mod tests {
                 .stdin(Stdio::piped())
                 .stdout(Stdio::null())
                 .stderr(stand_in_end),
-            &std::env::temp_dir(),
+            &EndMarks::in_directory(&std::env::temp_dir()),
             STAND_IN_LABEL,
         );
         let events = MemberEvents::new("member with no output", Path::new("/nonexistent"));
