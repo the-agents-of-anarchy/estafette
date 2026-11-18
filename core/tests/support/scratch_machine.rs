@@ -930,6 +930,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
+    use super::owned_process::{FIXTURE_ENDED_WITHIN, FIXTURE_VARIABLE, fixture_exit_within};
     use super::*;
 
     /// The network the tests of this module configure their machines for.
@@ -1008,8 +1009,8 @@ mod tests {
     const UNLISTABLE: u32 = 0o300;
     /// The mode of a directory its owner may list and enter but not write in.
     pub(super) const UNWRITABLE: u32 = 0o500;
-    /// The variable a parent test sets, naming the fixture it runs in a child process, so the fixture refuses to run anywhere else.
-    const FIXTURE_VARIABLE: &str = "ESTAFETTE_FIXTURE_OF_A_PARENT_TEST";
+    /// The file a test sends a fixture's standard error to.
+    const FIXTURE_STANDARD_ERROR: &str = "fixture.stderr";
     /// The fixture whose machine prints while its thread unwinds, by the name the test harness runs it by.
     const PRINTING_WHILE_UNWINDING_FIXTURE: &str =
         "scratch_machine::tests::forced_failure_with_a_machine_printing_while_it_unwinds";
@@ -2267,19 +2268,25 @@ mod tests {
     #[test]
     fn observability_decision_16_a_process_whose_kill_or_wait_failed_on_a_test_already_failing_is_printed_by_its_machines_drop()
      {
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                PRINTING_WHILE_UNWINDING_FIXTURE,
-                "--ignored",
-                "--nocapture",
-            ])
-            .env(FIXTURE_VARIABLE, PRINTING_WHILE_UNWINDING_FIXTURE)
-            .stdout(Stdio::null())
-            .output()
-            .unwrap();
+        let scratch = fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-printing-while-unwinding-test-{}",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let standard_error = scratch.join(FIXTURE_STANDARD_ERROR);
 
-        let printed = String::from_utf8_lossy(&child.stderr);
+        fixture_exit_within(
+            PRINTING_WHILE_UNWINDING_FIXTURE,
+            &[],
+            File::create(&standard_error).unwrap().into(),
+            FIXTURE_ENDED_WITHIN,
+        );
+
+        let printed = String::from_utf8_lossy(&fs::read(&standard_error).unwrap()).into_owned();
+        remove_scratch::remove_scratch(&scratch).unwrap();
         assert!(
             printed.contains(FIRST_FAILURE) && printed.contains(FAILED_END_REPORTED),
             "{printed}"
@@ -2292,18 +2299,12 @@ mod tests {
         let (closed_by_its_reader, standard_error) = io::pipe().unwrap();
         drop(closed_by_its_reader);
 
-        let child = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                PRINTING_WHILE_UNWINDING_FIXTURE,
-                "--ignored",
-                "--nocapture",
-            ])
-            .env(FIXTURE_VARIABLE, PRINTING_WHILE_UNWINDING_FIXTURE)
-            .stdout(Stdio::null())
-            .stderr(standard_error)
-            .status()
-            .unwrap();
+        let child = fixture_exit_within(
+            PRINTING_WHILE_UNWINDING_FIXTURE,
+            &[],
+            standard_error.into(),
+            FIXTURE_ENDED_WITHIN,
+        );
 
         assert_eq!(child.code(), Some(FAILED_TEST_EXIT_CODE), "{child:?}");
     }
