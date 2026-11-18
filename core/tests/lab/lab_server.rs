@@ -20,9 +20,13 @@ enum LabServerName {
     Named(String),
 }
 
+/// How a lab server runs a remote recipe with the arguments and the input on its standard input: how it ended, or why it could not run.
+type RecipeRunner = fn(&LabServer, &str, &[&str], &[u8]) -> io::Result<Output>;
+
 /// A lab server the acceptance gate brought up, reached through the remote recipes.
 pub struct LabServer {
     name: LabServerName,
+    runner: RecipeRunner,
 }
 
 /// UDP between a lab server and this machine dropped both ways, so members on the two reach each other through a relay alone; restored when dropped, whether the test ended or failed.
@@ -35,6 +39,7 @@ impl LabServer {
     pub const fn of_the_live_host() -> Self {
         Self {
             name: LabServerName::LiveHost,
+            runner: run_through_the_task_runner,
         }
     }
 
@@ -42,6 +47,7 @@ impl LabServer {
     pub const fn named(name: String) -> Self {
         Self {
             name: LabServerName::Named(name),
+            runner: run_through_the_task_runner,
         }
     }
 
@@ -102,18 +108,7 @@ impl LabServer {
         arguments: &[&str],
         input: &[u8],
     ) -> io::Result<Output> {
-        let mut running = self
-            .recipe_command(recipe, arguments)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
-        let written = running
-            .stdin
-            .take()
-            .map_or(Ok(()), |mut recipe_input| recipe_input.write_all(input));
-        let output = running.wait_with_output()?;
-        written.map(|()| output)
+        (self.runner)(self, recipe, arguments, input)
     }
 
     /// Drops UDP between this server and this machine until the returned path is dropped, which also undoes a drop that failed half way.
@@ -141,5 +136,70 @@ impl Drop for RelayOnlyPath<'_> {
             &restored,
             &format!("the UDP drops on {} were not deleted", self.server.label()),
         );
+    }
+}
+
+/// Runs the remote recipe through the task runner, as the server's command sets it, writing the input to its standard input.
+fn run_through_the_task_runner(
+    server: &LabServer,
+    recipe: &str,
+    arguments: &[&str],
+    input: &[u8],
+) -> io::Result<Output> {
+    let mut running = server
+        .recipe_command(recipe, arguments)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let written = running
+        .stdin
+        .take()
+        .map_or(Ok(()), |mut recipe_input| recipe_input.write_all(input));
+    let output = running.wait_with_output()?;
+    written.map(|()| output)
+}
+
+#[cfg(test)]
+pub mod tests {
+    use std::panic::{self, AssertUnwindSafe};
+
+    use super::*;
+
+    /// The name of the server a test's stand-in recipes play, no real one.
+    const PLANTED_SERVER: &str = "lab-server-stand-in";
+    /// Why a test's stand-in recipe could not run.
+    pub const RECIPE_UNRUNNABLE: &str = "the task runner could not be started";
+    /// The failure a test raises before a drop runs its recipe.
+    pub const FIRST_FAILURE: &str = "the test failed first";
+
+    /// A server whose every recipe cannot run, so a test reaches no server.
+    pub fn server_whose_recipes_cannot_run() -> LabServer {
+        LabServer {
+            name: LabServerName::Named(PLANTED_SERVER.to_owned()),
+            runner: |_server, _recipe, _arguments, _input| Err(io::Error::other(RECIPE_UNRUNNABLE)),
+        }
+    }
+
+    /// Requires that the test ended in the failure it raised first, so no drop beside it raised another.
+    pub fn require_ended_in_the_first_failure(ended: std::thread::Result<()>) {
+        let payload = ended.expect_err("the test did not fail");
+        assert_eq!(
+            payload.downcast_ref::<String>().map(String::as_str),
+            Some(FIRST_FAILURE)
+        );
+    }
+
+    #[test]
+    fn observability_decision_16_a_relay_only_path_dropped_on_a_failing_test_whose_restore_cannot_run_leaves_that_failure_standing()
+     {
+        let server = server_whose_recipes_cannot_run();
+
+        let ended = panic::catch_unwind(AssertUnwindSafe(|| {
+            let _path = RelayOnlyPath { server: &server };
+            panic!("{FIRST_FAILURE}");
+        }));
+
+        require_ended_in_the_first_failure(ended);
     }
 }

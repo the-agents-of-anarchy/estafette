@@ -156,3 +156,45 @@ fn armed_kill() -> String {
         "'echo {ARMED_LINE} && read -r _ && systemctl kill --kill-whom=main --signal=SIGKILL {HOST_UNIT}'"
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use std::panic::{self, AssertUnwindSafe};
+
+    use estafette::wire::{RelayUrl, Version};
+
+    use super::*;
+    use crate::lab_server::tests::{
+        FIRST_FAILURE, require_ended_in_the_first_failure, server_whose_recipes_cannot_run,
+    };
+
+    /// The id a test's killable host names, no real one.
+    const PLANTED_HOST_ID: [u8; 32] = [0x0f; 32];
+    /// The relay a test's killable host names, no real one.
+    const PLANTED_RELAY: &str = "https://relay.lab-server.invalid";
+
+    /// A killable host on a server whose every recipe cannot run, so a test reaches no server.
+    fn host_whose_recipes_cannot_run() -> KillableHost {
+        KillableHost {
+            server: server_whose_recipes_cannot_run(),
+            address: HostAddr {
+                v: Version::CURRENT,
+                id: PLANTED_HOST_ID,
+                relay: RelayUrl::try_from(PLANTED_RELAY.to_owned()).unwrap(),
+            },
+        }
+    }
+
+    #[test]
+    fn observability_decision_16_a_host_started_again_when_dropped_on_a_failing_test_whose_start_cannot_run_leaves_that_failure_standing()
+     {
+        let killable = host_whose_recipes_cannot_run();
+
+        let ended = panic::catch_unwind(AssertUnwindSafe(|| {
+            let _host_back = killable.started_when_dropped();
+            panic!("{FIRST_FAILURE}");
+        }));
+
+        require_ended_in_the_first_failure(ended);
+    }
+}
