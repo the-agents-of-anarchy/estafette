@@ -54,20 +54,48 @@ pub struct ServerMemberEnd {
 /// A fetch of a member's trace files into a scratch directory outside every kept directory.
 enum StagedFetch {
     /// No scratch directory could be made, so nothing was fetched; why.
-    NotStaged(String),
-    /// Fetched beneath the scratch directory, whole unless the fetch's failure is named.
+    NotStaged(io::Error),
+    /// Fetched beneath the scratch directory, whole when the fetch succeeded.
     Staged {
         holder: PathBuf,
-        failure: Option<String>,
+        fetched: io::Result<Output>,
     },
+}
+
+/// Why a recipe run did not succeed: it ran and exited in failure, or it could not run.
+pub enum RecipeFailure<'ran> {
+    Failed(&'ran Output),
+    Unrunnable(&'ran io::Error),
+}
+
+impl RecipeFailure<'_> {
+    /// What a printed line says of it: a failed recipe's line made by `recipe_failure` with the secrets, or the error that kept it from running.
+    pub fn printed(&self, secrets: Option<&KeptSecrets>) -> String {
+        match self {
+            Self::Failed(output) => recipe_failure(output, secrets),
+            Self::Unrunnable(failure) => failure.to_string(),
+        }
+    }
+
+    /// What a kept mark says of it, a failed recipe's standard error whole, so the writer of kept files searches it and notes what it redacts.
+    pub(super) fn marked(&self) -> String {
+        match self {
+            Self::Failed(output) => format!(
+                "{}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            ),
+            Self::Unrunnable(failure) => failure.to_string(),
+        }
+    }
 }
 
 impl StagedFetch {
     /// Why the fetch is not whole, none when it is.
-    fn failure(&self) -> Option<&str> {
+    fn failure(&self) -> Option<RecipeFailure<'_>> {
         match self {
-            Self::NotStaged(failure) => Some(failure),
-            Self::Staged { failure, .. } => failure.as_deref(),
+            Self::NotStaged(unmade) => Some(RecipeFailure::Unrunnable(unmade)),
+            Self::Staged { fetched, .. } => succeeded(fetched).err(),
         }
     }
 
@@ -105,9 +133,10 @@ pub fn ended_server_member(
 ) -> ServerMemberEnd {
     let stop = run(ServerMemberStep::Stop);
     let mut failures = Vec::new();
-    if let Err(failure) = succeeded(&stop, secrets.as_ref().ok()) {
+    if let Err(failure) = succeeded(&stop) {
         failures.push(format!(
-            "{member} on {server} did not stop cleanly: {failure}"
+            "{member} on {server} did not stop cleanly: {}",
+            failure.printed(secrets.as_ref().ok())
         ));
     }
     let kept = kept_directory(member, server, kept_in, secrets, &mut failures);
@@ -124,10 +153,11 @@ pub fn ended_server_member(
             failures,
         };
     }
-    let staged = staged_fetch(member, server, secrets.as_ref().ok(), &run);
+    let staged = staged_fetch(member, server, &run);
     if let Some(failure) = staged.failure() {
         failures.push(format!(
-            "trace files of {member} on {server} not fetched: {failure}"
+            "trace files of {member} on {server} not fetched: {}",
+            failure.printed(secrets.as_ref().ok())
         ));
     }
     if let Some((kept, secrets)) = &kept {
@@ -182,7 +212,7 @@ fn keep_printed_run_record(
     failures: &mut Vec<String>,
 ) {
     let printed = run(ServerMemberStep::PrintRunRecord);
-    match succeeded(&printed, Some(secrets)) {
+    match succeeded(&printed) {
         Ok(output) => {
             if let Err(failure) = keep_run_record(kept, member, &output.stdout, secrets) {
                 failures.push(format!("run record of {member} not kept: {failure}"));
@@ -190,10 +220,12 @@ fn keep_printed_run_record(
         }
         Err(failure) => {
             failures.push(format!(
-                "run record of {member} on {server} not read: {failure}"
+                "run record of {member} on {server} not read: {}",
+                failure.printed(Some(secrets))
             ));
             let mark = format!(
-                "the run record of {member} on {server} was not read, so none is kept here; the read ended with {failure}"
+                "the run record of {member} on {server} was not read, so none is kept here; the read ended with {}",
+                failure.marked()
             );
             let mark_name = format!("{member}.{RUN_RECORD_READ_FAILED_EXTENSION}");
             if let Err(unmarked) = keep_mark(kept, &mark_name, &mark, secrets) {
@@ -209,7 +241,6 @@ fn keep_printed_run_record(
 fn staged_fetch(
     member: &str,
     server: &str,
-    secrets: Option<&KeptSecrets>,
     run: &impl Fn(ServerMemberStep<'_>) -> io::Result<Output>,
 ) -> StagedFetch {
     match fresh_directory_in(
@@ -220,12 +251,9 @@ fn staged_fetch(
             let fetched = run(ServerMemberStep::FetchTraceFiles(
                 &holder.join(STAGED_DIRECTORY),
             ));
-            StagedFetch::Staged {
-                failure: succeeded(&fetched, secrets).err(),
-                holder,
-            }
+            StagedFetch::Staged { holder, fetched }
         }
-        Err(failure) => StagedFetch::NotStaged(failure.to_string()),
+        Err(unmade) => StagedFetch::NotStaged(unmade),
     }
 }
 
@@ -265,10 +293,11 @@ fn keep_staged_trace_files(
     for failure in &unkept {
         failures.push(format!("a trace file of {member} not kept: {failure}"));
     }
-    let not_whole: Vec<&str> = staged
+    let not_whole: Vec<String> = staged
         .failure()
+        .map(|failure| failure.marked())
         .into_iter()
-        .chain(unkept.iter().map(String::as_str))
+        .chain(unkept)
         .collect();
     if not_whole.is_empty() {
         eprintln!(
@@ -294,15 +323,12 @@ fn timeline_of_fetched(fetched_into: Option<&Path>) -> String {
     fetched_into.map_or_else(|| TRACE_FILES_NOT_FETCHED.to_owned(), timeline_in)
 }
 
-/// The output of a recipe run that succeeded, or why it failed: what a failed recipe's line says, or the error that kept it from running.
-pub fn succeeded<'ran>(
-    ran: &'ran io::Result<Output>,
-    secrets: Option<&KeptSecrets>,
-) -> Result<&'ran Output, String> {
+/// The output of a recipe run that succeeded, or why it did not: it failed, or it could not run.
+pub fn succeeded(ran: &io::Result<Output>) -> Result<&Output, RecipeFailure<'_>> {
     match ran {
         Ok(output) if output.status.success() => Ok(output),
-        Ok(output) => Err(recipe_failure(output, secrets)),
-        Err(failure) => Err(failure.to_string()),
+        Ok(output) => Err(RecipeFailure::Failed(output)),
+        Err(failure) => Err(RecipeFailure::Unrunnable(failure)),
     }
 }
 
@@ -325,8 +351,8 @@ pub fn recipe_failure(output: &Output, secrets: Option<&KeptSecrets>) -> String 
 
 /// Fails a test that was not failing, saying what was left undone and that the recipe failed, its standard error left out, when a recipe run from a drop failed or could not run, and prints that instead on a test already failing, so no drop panics on a thread already panicking.
 pub fn fail_unless_succeeded(ran: &io::Result<Output>, left_undone: &str) {
-    if let Err(failure) = succeeded(ran, None) {
-        fail_unless_panicking(&format!("{left_undone}: {failure}"));
+    if let Err(failure) = succeeded(ran) {
+        fail_unless_panicking(&format!("{left_undone}: {}", failure.printed(None)));
     }
 }
 
@@ -680,6 +706,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn observability_decision_16_a_server_members_mark_holding_a_recipes_secret_is_kept_redacted_with_its_note_beside_it()
+     {
+        let kept_in = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-server-member-redacted-marks-test-{}",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let refusal = format!("ssh: refused {PLANTED_TOKEN}");
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop | ServerMemberStep::PrintRunRecord => Ok(failed_run(&refusal)),
+            ServerMemberStep::FetchTraceFiles(into) => {
+                fs::create_dir_all(into).unwrap();
+                Ok(failed_run(&refusal))
+            }
+        };
+
+        ended_server_member(
+            MEMBER,
+            SERVER,
+            Some(&kept_in),
+            &secrets_of_the_member(),
+            TestSoFar::NotFailing,
+            stand_in_for_the_recipes,
+        );
+
+        let kept = kept_in.join(kept_name(SERVER, MEMBER));
+        let marks = [
+            kept.join(format!("{MEMBER}.{STOP_FAILED_EXTENSION}")),
+            kept.join(format!("{MEMBER}.{RUN_RECORD_READ_FAILED_EXTENSION}")),
+            kept.join(format!(
+                "{KEPT_TRACE_FILES_DIRECTORY}.{FETCH_FAILED_EXTENSION}"
+            )),
+        ];
+        let read_marks: Vec<(String, String)> = marks
+            .iter()
+            .map(|mark| {
+                let mut note = mark.clone().into_os_string();
+                note.push(format!(".{REDACTED_NOTE_EXTENSION}"));
+                (
+                    fs::read_to_string(mark).unwrap_or_default(),
+                    fs::read_to_string(note).unwrap_or_default(),
+                )
+            })
+            .collect();
+        remove_scratch(&kept_in).unwrap();
+        for (mark, (marked, noted)) in marks.iter().zip(&read_marks) {
+            let name = mark.file_name().unwrap().to_string_lossy();
+            assert!(
+                marked.contains(&format!("ssh: refused {REDACTED}"))
+                    && !marked.contains(PLANTED_TOKEN)
+                    && noted.contains(name.as_ref()),
+                "{}: {marked} / {noted}",
+                mark.display()
+            );
+        }
+    }
+
     /// A recipe run that exited with code 1 having printed the text on standard error.
     fn failed_run(printed: &str) -> Output {
         Output {
@@ -1011,6 +1098,9 @@ mod tests {
                 run_record_mark.clone(),
                 kept.join(KEPT_TRACE_FILES_DIRECTORY),
                 fetch_mark.clone(),
+                kept.join(format!(
+                    "{KEPT_TRACE_FILES_DIRECTORY}.{FETCH_FAILED_EXTENSION}.{REDACTED_NOTE_EXTENSION}"
+                )),
             ])
         );
         let run_record_marked = fs::read_to_string(&run_record_mark).unwrap();

@@ -130,7 +130,7 @@ impl Drop for RelayOnlyPath<'_> {
         let restored = self
             .server
             .attempt_without_panicking(RELAY_PATHS_RESTORED_RECIPE, &[], &[]);
-        if let Ok(output) = succeeded(&restored, None) {
+        if let Ok(output) = succeeded(&restored) {
             eprintln!(
                 "UDP paths between {} and this machine restored; the drops counted by each rule:\n{}",
                 self.server.label(),

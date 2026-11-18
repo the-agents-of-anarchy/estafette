@@ -740,11 +740,12 @@ fn keep_stop_failure(
     stop: &io::Result<Output>,
     secrets: &KeptSecrets,
 ) -> io::Result<()> {
-    let Err(failure) = succeeded(stop, Some(secrets)) else {
+    let Err(failure) = succeeded(stop) else {
         return Ok(());
     };
     let mark = format!(
-        "the stop of {member_name} failed, so it may have run on while its records were taken; the stop ended with {failure}"
+        "the stop of {member_name} failed, so it may have run on while its records were taken; the stop ended with {}",
+        failure.marked()
     );
     keep_mark(
         directory,
@@ -1503,6 +1504,7 @@ mod tests {
             BTreeSet::from([
                 kept_in.join("amy.stderr"),
                 kept_in.join("amy.stop-failed"),
+                kept_in.join("amy.stop-failed.redacted"),
                 kept_in.join("bob.stderr"),
             ])
         );
