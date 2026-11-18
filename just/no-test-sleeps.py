@@ -34,6 +34,18 @@ BODY_OPENER = '{'
 BODY_CLOSER = '}'
 BLOCK_COMMENT_OPENER = '/*'
 ITEM_DELIMITER_PATTERN = re.compile(r'[(\[{;]|[)\]}]')
+CLOSING_BRACKETS = ')]}'
+MATCH_ARM_ARROW = '=>'
+STATEMENT_DELIMITER_PATTERN = re.compile(r'[(\[{]|[)\]}]|;|,|=>')
+ITEM_QUALIFIERS = r'(?:pub\b\s*(?:\([^()]*\)\s*)?)?(?:(?:default|unsafe|async|const|extern)\b\s*)*'
+ITEM_START_PATTERN = re.compile(rf'\s*{ITEM_QUALIFIERS}(?P<keyword>fn|mod|struct|enum|union|trait|impl|extern|macro_rules|type|static|const|use|crate)\b')
+BODY_ITEM_KEYWORDS = ('fn', 'mod', 'struct', 'enum', 'union', 'trait', 'impl', 'extern', 'macro_rules')
+BRACED_MACRO_PATTERN = re.compile(r'\s*(?:\w+\s*::\s*)*\w+\s*!\s*(?:\w+\s*)?\{')
+BLOCK_EXPRESSION_PATTERN = re.compile(r"\s*(?:'\w+\s*:\s*)?(?:(?:if|match|loop|while|for)\b|unsafe\s*\{|\{)")
+PATTERN_CONTINUATION_PATTERN = re.compile(r'\s*(?:=(?![=>])|in\b)')
+ELSE_PATTERN = re.compile(r'\s*else\b')
+EXPRESSION_CONTINUATION_PATTERN = re.compile(r'\s*[.?]')
+FIELD_START_PATTERN = re.compile(r'\s*(?:pub\b\s*(?:\([^()]*\)\s*)?)?\w+\s*(?::(?!:)|,)')
 ATTRIBUTE_START_PATTERN = re.compile(r'#\s*(?P<inner>!?)\s*\[')
 TEST_FUNCTION_ATTRIBUTE_PATTERN = re.compile(r'\s*(?:\w+\s*::\s*)*test\s*(?:\(.*\))?\s*', re.DOTALL)
 CONFIGURATION_ATTRIBUTE_PATTERN = re.compile(r'\s*cfg\s*\((?P<predicate>.*)\)\s*', re.DOTALL)
@@ -158,7 +170,7 @@ def find_closing_bracket(code: str, opening: int) -> int:
 
 
 def find_item_end(code: str, start: int) -> int:
-    """Return the offset just past the item that starts at the offset: its first semicolon or braced body outside parentheses and brackets."""
+    """Return the offset just past the item with a body that starts at the offset: its first semicolon or braced body outside parentheses and brackets."""
     depth = 0
     for delimiter in ITEM_DELIMITER_PATTERN.finditer(code, start):
         token = delimiter.group()
@@ -174,6 +186,68 @@ def find_item_end(code: str, start: int) -> int:
             return delimiter.start()
     return len(code)
 
+
+def find_block_expression_end(code: str, start: int) -> Optional[int]:
+    """Return the offset just past the last block of the block-like expression that starts at the offset, or none when the expression is not block-like."""
+    if BLOCK_EXPRESSION_PATTERN.match(code, start) is None:
+        return None
+    end = find_item_end(code, start)
+    while PATTERN_CONTINUATION_PATTERN.match(code, end) or ELSE_PATTERN.match(code, end):
+        end = find_item_end(code, end)
+    return end
+
+
+def find_statement_end(code: str, start: int, ends_at_comma: bool) -> int:
+    """Return the offset just past the statement or expression that starts at the offset: its own semicolon, comma or match arm outside every bracket, else the close of the brackets around it."""
+    depth = 0
+    for delimiter in STATEMENT_DELIMITER_PATTERN.finditer(code, start):
+        token = delimiter.group()
+        if token in OPENING_BRACKETS:
+            depth += 1
+        elif token in CLOSING_BRACKETS and depth == 0:
+            return delimiter.start()
+        elif token in CLOSING_BRACKETS:
+            depth -= 1
+        elif depth == 0 and token == ITEM_TERMINATOR:
+            return delimiter.end()
+        elif depth == 0 and token == ARGUMENT_SEPARATOR and ends_at_comma:
+            return delimiter.end()
+        elif depth == 0 and token == MATCH_ARM_ARROW:
+            return find_expression_end(code, delimiter.end(), ends_at_comma=True)
+    return len(code)
+
+
+def find_expression_end(code: str, start: int, ends_at_comma: bool) -> int:
+    """Return the offset just past the statement or expression that starts at the offset, a block-like one ending at its last block unless a method call or question mark follows."""
+    block_end = find_block_expression_end(code, start)
+    if block_end is None:
+        return find_statement_end(code, start, ends_at_comma)
+    if EXPRESSION_CONTINUATION_PATTERN.match(code, block_end):
+        return find_statement_end(code, block_end, ends_at_comma)
+    return block_end
+
+
+def find_enclosing_opener(code: str, offset: int) -> Optional[str]:
+    """Return the opening bracket that most closely encloses the offset, or none at the top level."""
+    openers: List[str] = []
+    for bracket in BRACKET_PATTERN.finditer(code, 0, offset):
+        if bracket.group() in OPENING_BRACKETS:
+            openers.append(bracket.group())
+        elif openers:
+            openers.pop()
+    return openers[-1] if openers else None
+
+
+def find_attributed_end(code: str, start: int) -> int:
+    """Return the offset just past what the attributes before the offset apply to: an item to the close of its body or its semicolon, a statement or expression whole."""
+    item = ITEM_START_PATTERN.match(code, start)
+    if (item is not None and item.group('keyword') in BODY_ITEM_KEYWORDS) or BRACED_MACRO_PATTERN.match(code, start):
+        return find_item_end(code, start)
+    if item is not None:
+        return find_statement_end(code, start, ends_at_comma=False)
+    enclosing = find_enclosing_opener(code, start)
+    is_listed = enclosing in GROUP_OPENERS or (enclosing == BODY_OPENER and FIELD_START_PATTERN.match(code, start) is not None)
+    return find_expression_end(code, start, ends_at_comma=is_listed)
 
 def read_configuration_tokens(lexed: LexedRust, span: Span) -> Sequence[str]:
     """Return the tokens of the cfg predicate text in the span, each key's value read from the string literal after its equals sign."""
@@ -320,13 +394,13 @@ def find_attribute_runs(text: str, lexed: LexedRust) -> Tuple[Sequence[Attribute
             continue
         if run_start is None or code[previous_end:start.start()].strip():
             if run_start is not None:
-                runs.append(AttributeRun(Span(run_start, find_item_end(code, previous_end)), run_marks_test, run_path))
+                runs.append(AttributeRun(Span(run_start, find_attributed_end(code, previous_end)), run_marks_test, run_path))
             run_start, run_marks_test, run_path = start.start(), False, None
         run_marks_test = run_marks_test or marks_test(lexed, content)
         run_path = read_path_attribute(text[start.end():end - 1]) or run_path
         previous_end = end
     if run_start is not None:
-        runs.append(AttributeRun(Span(run_start, find_item_end(code, previous_end)), run_marks_test, run_path))
+        runs.append(AttributeRun(Span(run_start, find_attributed_end(code, previous_end)), run_marks_test, run_path))
     return runs, whole_file_is_test
 
 
