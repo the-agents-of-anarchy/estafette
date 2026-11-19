@@ -4,7 +4,6 @@ set working-directory := '..'
 heavy_evidence_script := source_directory() + '/heavy-evidence.py'
 no_test_sleeps_script := source_directory() + '/no-test-sleeps.py'
 audit_pin := "0.22.2"
-killable_server := "estafette-lab-2"
 built_binary := "target/debug/estafette"
 claude_session_variables := "ESTAFETTE_ACCEPTANCE_CLAUDE_SOCKET ESTAFETTE_ACCEPTANCE_CLAUDE_TOKEN ESTAFETTE_ACCEPTANCE_CLAUDE_EXPECTED_PERMISSION_MODE ESTAFETTE_ACCEPTANCE_CLAUDE_DEBUG_LOG ESTAFETTE_ACCEPTANCE_CLAUDE_TRANSCRIPT"
 
@@ -67,17 +66,19 @@ test:
 fmt:
     cargo fmt --all
 
-[doc("Run the acceptance tests of spec 3.15: every core acceptance target, the one-machine ones and the lab target against the live lab host and a second host it may kill, brought up first by just remote::infrastructure; the lab target starts members on both servers and on this machine, stops, starts and kills the second host, and drops UDP between the second host's server and this machine while test 3 runs, deleting the drops when it ends; then the bridge lab target, skipped with a line naming the unset ESTAFETTE_ACCEPTANCE_CLAUDE_* variables; exits with the first non-zero code; both servers are torn down by the run-hetzner-lab skill once it exits; set ESTAFETTE_ACCEPTANCE_RUN_RECORDS to a directory to keep there, under the test name, every member run record with secrets replaced by <redacted> and every machine's data directory but its secret key files")]
+[doc("Run the acceptance tests of spec 3.15: every core acceptance target, the one-machine ones and the lab target against the live lab host and a second host it may kill, brought up first by just remote::lab-up (host A, host B, both proven serving); the lab target starts members on both servers and on this machine, stops, starts and kills the second host, and drops UDP between the second host's server and this machine while test 3 runs, deleting the drops when it ends; then the bridge lab target, skipped with a line naming the unset ESTAFETTE_ACCEPTANCE_CLAUDE_* variables; exits with the first non-zero code; both servers are torn down by the run-hetzner-lab skill once it exits; set ESTAFETTE_ACCEPTANCE_RUN_RECORDS to a directory to keep there, under the test name, every member run record with secrets replaced by <redacted> and every machine's data directory but its secret key files")]
 [group('verify')]
 acceptance:
     #!/usr/bin/env bash
     set -uo pipefail
     cargo build -p estafette || exit
+    killable_server="$(just remote::host-b-server)" || exit
+    LAB_BINARY={{ built_binary }} just remote::lab-up || exit
     just remote::invitation || exit
     invitation="$(sed -n 's/^invitation: //p' "$(just remote::host-record-path)")"
-    killable_host_line="$(LAB_SERVER={{ killable_server }} LAB_BINARY={{ built_binary }} just remote::infrastructure)" || exit
+    killable_host_line="$(LAB_SERVER="$killable_server" LAB_BINARY={{ built_binary }} just remote::infrastructure)" || exit
     export ESTAFETTE_ACCEPTANCE_INVITATION="$invitation"
-    export ESTAFETTE_ACCEPTANCE_KILLABLE_SERVER={{ killable_server }}
+    export ESTAFETTE_ACCEPTANCE_KILLABLE_SERVER="$killable_server"
     export ESTAFETTE_ACCEPTANCE_KILLABLE_HOST_LINE="$killable_host_line"
     first_failure=0
     cargo test -p estafette --features lab --no-fail-fast --test 'acceptance_*' || first_failure=$?

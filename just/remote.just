@@ -233,6 +233,11 @@ host-record-path:
     set -euo pipefail
     printf '%s\n' "${LAB_HOST_RECORD:-$({{ root_checkout_command }})/{{ host_record_under_root }}}"
 
+[doc("Print the name of host B's server, the second lab host, which the acceptance gate may kill")]
+[private]
+host-b-server:
+    @printf '%s\n' {{ host_b_server }}
+
 [doc("Check that the lab holds a live host server and lab/host.txt holds an invitation, printing none of it; fails naming whichever is missing")]
 [group('lab')]
 invitation: lab-context-exists
