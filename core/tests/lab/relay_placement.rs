@@ -3,7 +3,11 @@ use std::time::{Duration, Instant};
 
 use iroh::RelayUrl;
 
-/// How many connections from this machine to each host's relay spec 3.15 test 23 times before any member starts.
+use crate::killable_host::KillableHost;
+use crate::live_network::LiveNetwork;
+use crate::scratch_machine::print_to_standard_error;
+
+/// How many connections from this machine to each host's relay spec 3.15 tests 23 and 28 time before any member starts.
 pub const CONNECTS_PER_RELAY: usize = 10;
 /// How long one timed connection to a relay may take before the reading fails the test: chosen, not measured, far above a round trip between two continents.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -13,6 +17,19 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct RelayConnectTimes {
     pub relay: String,
     pub readings: [Duration; CONNECTS_PER_RELAY],
+}
+
+/// Times the connections from this machine to the doomed host's relay and to the live host's, prints every reading, and fails the test unless the placement spec 3.15 tests 23 and 28 stand on holds.
+#[track_caller]
+pub fn placement_held(doomed: &KillableHost, network: &LiveNetwork) {
+    let killed = connect_times_to(doomed.relay());
+    let living = connect_times_to(network.host_relay());
+    print_to_standard_error(&format!(
+        "connect times to the doomed host's relay: {killed:?}; to the live host's relay: {living:?}"
+    ));
+    if let Err(refusal) = killed_relay_answers_faster(&killed, &living) {
+        panic!("{refusal}");
+    }
 }
 
 /// Times TCP connections from this machine to the relay's port one after another, its name resolved once before the first, each from the start of the connect to the open connection, failing the test naming the relay when its name does not resolve or a connection is not open within the connect timeout.
@@ -52,7 +69,7 @@ fn connect_time(relay: &str, address: SocketAddr) -> Duration {
     took
 }
 
-/// Whether the placement spec 3.15 test 23 stands on holds: the slowest connection to the relay of the host that will be killed is faster than the fastest to the relay of the host that lives, the refusal naming that precondition and every reading.
+/// Whether the placement spec 3.15 tests 23 and 28 stand on holds: the slowest connection to the relay of the host that will be killed is faster than the fastest to the relay of the host that lives, the refusal naming that precondition and every reading.
 pub fn killed_relay_answers_faster(
     killed: &RelayConnectTimes,
     living: &RelayConnectTimes,
@@ -63,7 +80,7 @@ pub fn killed_relay_answers_faster(
         Ok(())
     } else {
         Err(format!(
-            "spec 3.15 test 23 stands on every member homing on the relay of the host it kills, which this lab holds only when the slowest of {CONNECTS_PER_RELAY} connections from this machine to the relay of the host that will be killed, {}, is faster than the fastest of {CONNECTS_PER_RELAY} to the relay of the host that lives, {}: it is not, slowest {slowest_to_killed:?} against fastest {fastest_to_living:?}; to the killed host's relay: {:?}; to the living host's relay: {:?}",
+            "spec 3.15 tests 23 and 28 stand on every member homing on the relay of the host they kill, which this lab holds only when the slowest of {CONNECTS_PER_RELAY} connections from this machine to the relay of the host that will be killed, {}, is faster than the fastest of {CONNECTS_PER_RELAY} to the relay of the host that lives, {}: it is not, slowest {slowest_to_killed:?} against fastest {fastest_to_living:?}; to the killed host's relay: {:?}; to the living host's relay: {:?}",
             killed.relay, living.relay, killed.readings, living.readings
         ))
     }

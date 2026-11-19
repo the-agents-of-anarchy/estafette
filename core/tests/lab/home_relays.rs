@@ -20,7 +20,7 @@ const HOME_RELAY_SET: &str = "true";
 /// What a refusal names as the home of a member whose record names none.
 const NO_HOME: &str = "none";
 
-/// Reads each member's own raw trace once, by the reader handed in, and requires every one to name the relay as its home relay, the refusal naming each member that does not and the home it reports (spec 3.15 test 23).
+/// Reads each member's own raw trace once, by the reader handed in, and requires every one to name the relay as its home relay, the refusal naming each member that does not and the home it reports (spec 3.15 tests 23 and 28).
 pub fn every_member_homed_on<'member>(
     relay: &str,
     members: impl IntoIterator<Item = (&'member str, &'member Path)>,
@@ -42,7 +42,7 @@ pub fn every_member_homed_on<'member>(
         Ok(())
     } else {
         Err(format!(
-            "spec 3.15 test 23 kills the host every member is homed on, and every member's own raw trace, read once, must name its relay {relay} as the home relay: {}",
+            "spec 3.15 tests 23 and 28 kill the host every member is homed on, and every member's own raw trace, read once, must name its relay {relay} as the home relay: {}",
             homed_elsewhere.join("; ")
         ))
     }

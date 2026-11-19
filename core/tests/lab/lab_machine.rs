@@ -1,5 +1,6 @@
 use std::ffi::OsStr;
 use std::ops::Deref;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use estafette::config::{Host, NetworkConfig};
@@ -37,6 +38,12 @@ impl ClaimedMember {
     /// The machine the member runs on.
     pub const fn machine(&self) -> &LabMachine {
         &self.machine
+    }
+
+    /// The trace directory of the server the member runs, the last its machine started.
+    pub fn own_traces(&self) -> PathBuf {
+        let serving = self.machine.members_started().checked_sub(1).unwrap();
+        self.machine.traces_directory_of_member(serving)
     }
 }
 

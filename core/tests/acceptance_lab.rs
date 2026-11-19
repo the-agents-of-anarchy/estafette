@@ -534,11 +534,13 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     use estafette::wire::{HostAddr, Version};
     use serde_json::Value;
 
+    use crate::home_relays::{every_member_homed_on, raw_lines_of_running_member};
     use crate::killable_host::KillableHost;
     use crate::lab_machine::{ClaimedMember, LabMachine};
     use crate::live_host::live_host_to_itself;
     use crate::live_network::LiveNetwork;
     use crate::member_events::COUNTERS_EVENT;
+    use crate::relay_placement::placement_held;
     use crate::tail::{
         COLUMN_SEPARATOR, INFRASTRUCTURE_KIND, PRESENCE_ADDR_COLUMN, PRESENCE_CARD_COLUMN,
         PRESENCE_KIND, RELAYS_KEY, Tail,
@@ -558,8 +560,6 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     const MEMBER_CARD: &str = "u40-relay-loss";
     /// The scratch tag of the machine whose `tail` observes the member.
     const OBSERVER_TAG: &str = "u40-relay-tail";
-    /// How many times a member is started before the test gives up on iroh homing it on the doomed host's relay, which iroh picks among the relays it knows.
-    const HOMING_ATTEMPTS: usize = 3;
     /// The column of an infrastructure line holding its `relay`, after the kind, `v` and `host` (spec 3.7 order).
     const HOST_RELAY_COLUMN: usize = 3;
     /// The event a member records for each payload it broadcasts, and its field naming the payload's kind (spec/observability.md decision 9).
@@ -633,9 +633,9 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
         _observer: LabMachine,
     }
 
-    /// Starts a member whose only host is the doomed one and a `tail` joined through it, returning them once its first announced relays are the doomed host's alone and it has relayed the live host's record, or nothing when iroh homed it elsewhere.
+    /// Starts a member whose only host is the doomed one and a `tail` joined through it, returning them once its first announced relays, required to be the doomed host's alone, are followed at the tail by the live host's record, and the one read of the member's own raw trace then names the doomed host's relay as its home.
     #[track_caller]
-    fn start_member_homed_on(network: &LiveNetwork, doomed: &KillableHost) -> Option<HomedMember> {
+    fn start_member_homed_on(network: &LiveNetwork, doomed: &KillableHost) -> HomedMember {
         let machine = LabMachine::fresh(MEMBER_CARD, network);
         network.join_through(
             &machine.directories(),
@@ -658,9 +658,12 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
             ANNOUNCEMENT_WAIT,
             |line| relays_announced_by(line, &card).is_some_and(|relays| !relays.is_empty()),
         );
-        if relays_announced_by(&first_homed, &card) != Some(vec![doomed.relay().to_owned()]) {
-            return None;
-        }
+        assert_eq!(
+            relays_announced_by(&first_homed, &card),
+            Some(vec![doomed.relay().to_owned()]),
+            "{MEMBER_CARD}'s first presence names other relays than {} alone: {first_homed}",
+            doomed.relay()
+        );
         tail.first_line_after(
             &format!(
                 "record of the host relaying through {}",
@@ -670,12 +673,20 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
             ANNOUNCEMENT_WAIT,
             |line| is_a_record_of_the_host_relaying_through(line, network.host_relay()),
         );
-        Some(HomedMember {
+        let own_traces = member.own_traces();
+        if let Err(refusal) = every_member_homed_on(
+            doomed.relay(),
+            [(MEMBER_CARD, own_traces.as_path())],
+            raw_lines_of_running_member,
+        ) {
+            panic!("{refusal}");
+        }
+        HomedMember {
             card,
             tail,
             member,
             _observer: observer,
-        })
+        }
     }
 
     /// Spec 3.15 test 28: within 2000 ms of the kill of a member's home relay, the member announces an address whose relays are the live host's alone, the kill waiting until the member's last Presence is a re-announce interval old so spec:777 cannot hold that announcement past the bound.
@@ -684,11 +695,8 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
         let _live_host = live_host_to_itself();
         let network = LiveNetwork::from_environment();
         let doomed = KillableHost::from_environment(&network);
-        let homed = (0..HOMING_ATTEMPTS)
-            .find_map(|_| start_member_homed_on(&network, &doomed))
-            .unwrap_or_else(|| {
-                panic!("iroh homed the member on another relay than {} in each of {HOMING_ATTEMPTS} starts", doomed.relay())
-            });
+        placement_held(&doomed, &network);
+        let homed = start_member_homed_on(&network, &doomed);
         let (last_presence_ms, quiet_proved_ms) = homed.member.events().wait_until(
             &format!(
                 "{COUNTERS_EVENT} at least {SPEC_REANNOUNCE_INTERVAL:?} after the last presence {} broadcast",
