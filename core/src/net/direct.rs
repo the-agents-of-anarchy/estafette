@@ -3308,6 +3308,15 @@ pub(crate) mod tests {
         clock.move_forward(SILENCE_OF_A_GONE_PROCESS);
     }
 
+    /// How a stream left unfinished on the connection after one byte ends: reset at the server's read timeout while the connection stays open, or lost at its close; none when the closed connection took no stream.
+    async fn unfinished_stream_end(
+        connection: &Connection,
+    ) -> Option<Result<Vec<u8>, ReadToEndError>> {
+        let (mut send, mut recv) = connection.open_bi().await.ok()?;
+        send.write_all(&[0]).await.ok()?;
+        Some(recv.read_to_end(WIRE_LIMIT_BYTES).await)
+    }
+
     #[tokio::test]
     async fn spec_3_8_closing_a_restarted_cards_gone_connections_also_closes_its_new_one_that_reports_no_selected_path_so_the_next_dial_reaches_the_new_process()
      {
@@ -3340,7 +3349,13 @@ pub(crate) mod tests {
         let paths_before = paths_of_each_held_of(&register, card_of(CLIENT_SEED));
 
         register.close_silent_of(card_of(CLIENT_SEED));
-        let restarted_closed = timeout(DIRECT_ANSWER_WAIT, restarted.closed()).await;
+        let restarted_stream_end = answered_within(
+            SPEC_SERVER_READ_TIMEOUT_LATEST,
+            "end of a stream left unfinished on the restarted connection",
+            unfinished_stream_end(&restarted),
+        )
+        .await;
+        let restarted_closed = restarted.close_reason();
         let dialed_back = timeout(DIRECT_ANSWER_WAIT, async {
             tokio::join!(
                 link.server_node
@@ -3357,14 +3372,21 @@ pub(crate) mod tests {
         let restarted_reported_a_selected_path = reported_before.get(1) == Some(&true);
         let restarted_closed_as_superseded = matches!(
             &restarted_closed,
-            Ok(ConnectionError::ApplicationClosed(close))
+            Some(ConnectionError::ApplicationClosed(close))
                 if close.error_code == VarInt::from_u32(SUPERSEDED_CONNECTION_CLOSE_CODE)
         );
+        let restarted_open_at_the_read_timeout = restarted_closed.is_none()
+            && restarted_stream_end.as_ref().and_then(reset_code_of)
+                == Some(VarInt::from_u32(READ_TIMEOUT_RESET_CODE_ON_THE_WIRE));
 
         assert_eq!(reported_before.len(), 2, "{paths_before:?}");
         assert_eq!(
             restarted_closed_as_superseded, !restarted_reported_a_selected_path,
-            "the restarted connection, among {paths_before:?}, ended {restarted_closed:?}"
+            "the restarted connection, among {paths_before:?}, ended {restarted_closed:?}; a stream left unfinished on it ended {restarted_stream_end:?}"
+        );
+        assert!(
+            restarted_closed_as_superseded || restarted_open_at_the_read_timeout,
+            "the restarted connection, among {paths_before:?}, was neither closed as superseded nor open when the server's read timeout reset a stream left unfinished on it: {restarted_closed:?}, {restarted_stream_end:?}"
         );
         assert!(
             matches!(&dialed_back, Ok((Ok(_), Some(_)))),
