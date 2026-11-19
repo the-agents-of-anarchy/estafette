@@ -7,11 +7,12 @@ use std::time::Duration;
 
 use iroh::endpoint::{
     Closed, ClosedStream, Connection, ConnectionError, PathEvent, PathEventStream, ReadError,
-    ReadToEndError, RecvStream, SendStream, VarInt, WeakConnectionHandle, WriteError,
+    ReadToEndError, RecvStream, SendStream, StoppedError, VarInt, WeakConnectionHandle, WriteError,
 };
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointId};
 use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::watch;
 use tokio::time::{Instant, sleep_until, timeout};
 
 use super::endpoint::{
@@ -120,11 +121,12 @@ pub(crate) async fn before_deadline<Ended>(
     }
 }
 
-/// Every connection the endpoint's gate let through and has not seen close, of any protocol, dialed or accepted, by the card at its other end, the cards whose spared connection still leaves iroh on a gone process's path, and the clock their silence is measured on.
+/// Every connection the endpoint's gate let through and has not seen close, of any protocol, dialed or accepted, by the card at its other end, the cards whose spared connection still leaves iroh on a gone process's path, how many Introduce answers to each card its peer has yet to acknowledge, and the clock their silence is measured on.
 #[derive(Clone)]
 pub struct HeldConnections {
     held: Arc<Mutex<HashMap<wire::PublicKey, Vec<HeldConnection>>>>,
     left_on_a_gone_path: Arc<Mutex<HashSet<wire::PublicKey>>>,
+    introduce_answers_in_flight: watch::Sender<HashMap<wire::PublicKey, usize>>,
     monotonic: MonotonicClock,
     transport: TransportRecord,
 }
@@ -144,6 +146,7 @@ impl HeldConnections {
         Self {
             held: Arc::default(),
             left_on_a_gone_path: Arc::default(),
+            introduce_answers_in_flight: watch::Sender::default(),
             monotonic,
             transport,
         }
@@ -157,6 +160,38 @@ impl HeldConnections {
     /// Closes every connection to or from the card whose process no longer runs, and every other while iroh stays on that process's path, but the one an Introduce arrived on (spec 3.8, address lookup).
     fn close_silent_others_of(&self, card: wire::PublicKey, arrived_on: &Connection) {
         self.close_silent_of_sparing(card, Some(ConnectionId::of(arrived_on)));
+    }
+
+    /// Closes the card's connections that keep iroh on a gone process's path once its peer has acknowledged every Introduce answer to the card, so a dial to the card that follows reaches its live process (spec 3.8, address lookup).
+    pub(crate) async fn close_gone_path_of(&self, card: wire::PublicKey) {
+        let left_on_a_gone_path = self
+            .left_on_a_gone_path
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&card);
+        if !left_on_a_gone_path {
+            return;
+        }
+        let mut answers_in_flight = self.introduce_answers_in_flight.subscribe();
+        if answers_in_flight
+            .wait_for(|in_flight| !in_flight.contains_key(&card))
+            .await
+            .is_ok()
+        {
+            self.close_silent_of(card);
+        }
+    }
+
+    /// Counts an Introduce answer to the card in flight until the guard is dropped.
+    fn introduce_answer_in_flight(&self, card: wire::PublicKey) -> IntroduceAnswerInFlight {
+        self.introduce_answers_in_flight.send_modify(|in_flight| {
+            let answers = in_flight.entry(card).or_default();
+            *answers = answers.saturating_add(1);
+        });
+        IntroduceAnswerInFlight {
+            register: self.clone(),
+            card,
+        }
     }
 
     /// Closes every connection to or from the card that has heard nothing from its peer for as long as a gone process is silent, but the spared one, and then, when this pass or an earlier one found a gone process and none left reports a path iroh selected, every other but the spared one too.
@@ -410,6 +445,40 @@ impl HeldConnection {
         self.connection
             .upgrade()
             .is_some_and(|live| live.paths().iter().any(|path| path.is_selected()))
+    }
+}
+
+/// An Introduce answer to the card that the register counts in flight until this is dropped.
+struct IntroduceAnswerInFlight {
+    register: HeldConnections,
+    card: wire::PublicKey,
+}
+
+impl IntroduceAnswerInFlight {
+    /// Keeps the answer in flight until its stream reports every byte acknowledged by the peer, stopped, or lost with its connection.
+    async fn until_acknowledged(
+        self,
+        acknowledged: impl Future<Output = Result<Option<VarInt>, StoppedError>>,
+    ) {
+        drop(acknowledged.await);
+        drop(self);
+    }
+}
+
+impl Drop for IntroduceAnswerInFlight {
+    fn drop(&mut self) {
+        self.register
+            .introduce_answers_in_flight
+            .send_modify(|in_flight| {
+                let still_in_flight = in_flight
+                    .get(&self.card)
+                    .map_or(0, |answers| answers.saturating_sub(1));
+                if still_in_flight == 0 {
+                    in_flight.remove(&self.card);
+                } else {
+                    in_flight.insert(self.card, still_in_flight);
+                }
+            });
     }
 }
 
@@ -780,7 +849,7 @@ impl<H: DirectHost> ServerState<H> {
         });
     }
 
-    /// Reads and opens the request, writes the response and finishes the send side, saying which request it was once it opened and how the stream ended.
+    /// Reads and opens the request, writes the response and finishes the send side, keeping an Introduce's answer counted in flight until its peer acknowledges it, and says which request it was once it opened and how the stream ended.
     async fn answer_stream(
         &self,
         sender: wire::PublicKey,
@@ -798,6 +867,8 @@ impl<H: DirectHost> ServerState<H> {
             Err(end) => return (None, Err(end)),
         };
         let summary = RequestSummary::of(&request);
+        let introduce_answer = (summary == RequestSummary::Introduce)
+            .then(|| self.held.introduce_answer_in_flight(sender));
         let outcome = async {
             let response = self.answer(sender, arrived_on, request)?;
             let outcome = ServedOutcome::of(&response);
@@ -808,6 +879,11 @@ impl<H: DirectHost> ServerState<H> {
             Ok::<_, StreamEnd>(outcome)
         }
         .await;
+        if outcome.is_ok()
+            && let Some(in_flight) = introduce_answer
+        {
+            tokio::spawn(in_flight.until_acknowledged(send.stopped()));
+        }
         (Some(summary), outcome)
     }
 
@@ -1121,7 +1197,7 @@ impl DirectClient {
         .ok_or(DirectError::Unreachable)?
     }
 
-    /// The connection held for the peer, one the client knows closed counting as none and leaving the slot, or else a new one dialed by card id under the slot's lock and held, so concurrent callers share one dial.
+    /// The connection held for the peer, one the client knows closed counting as none and leaving the slot, or else a new one dialed by card id, once the card's connections that keep iroh on a gone process's path are closed, under the slot's lock and held, so concurrent callers share one dial.
     async fn held_or_dialed_connection(
         &self,
         to: EndpointId,
@@ -1132,6 +1208,7 @@ impl DirectClient {
         if let Some(connection) = held.as_ref() {
             return Ok((connection.clone(), ConnectionSource::Held));
         }
+        self.register.close_gone_path_of(*to.as_bytes()).await;
         let dialed = self
             .endpoint()
             .connect(to, DIRECT_ALPN)
@@ -3706,6 +3783,89 @@ pub(crate) mod tests {
         assert!(
             matches!(&dialed_back, Ok((Ok(_), Some(_)))),
             "the server's dial back to the restarted process did not connect within {DIRECT_ANSWER_WAIT:?}: {dialed_back:?}"
+        );
+    }
+
+    /// A quarter of QUIC's first probe timeout, 999 ms under noq's initial round-trip estimate of 333 ms, which a dial whose first flight went to a gone process's path waits before it resends to every known path.
+    const ANSWERED_WITHOUT_A_RESEND_WITHIN: Duration = Duration::from_millis(250);
+
+    /// A member that held a connection from a vanished process of the client's card, and the client restarted under that card, serving the direct protocol, after its Introduce to the member.
+    struct RestartedProcessIntroduced {
+        link: Link,
+        member: Arc<DirectClient>,
+        introduced: Result<IntroduceAck, DirectError>,
+        reported_after_the_introduce: Vec<bool>,
+        _restarted_serving: Router,
+    }
+
+    /// The member's server over the host built from the member's own client, a connection from a vanished process of the client's card held past a gone process's silence, then the restarted client's Introduce, with whether each connection from the card reports a selected path after it.
+    async fn restarted_process_introduced_to_a_member<Host: DirectHost>(
+        host_of: impl FnOnce(Arc<DirectClient>) -> Host,
+    ) -> RestartedProcessIntroduced {
+        let clock = StandingClock::standing_now();
+        let register = HeldConnections::new(clock.monotonic(), dropping_transport());
+        let member_node = bind_node_holding(SERVER_SEED, register.clone()).await;
+        let member = Arc::new(DirectClient::new(
+            member_node.endpoint().clone(),
+            keys(),
+            ClientTimeouts::SPEC,
+            register.clone(),
+        ));
+        let server = DirectServer::new(keys(), host_of(Arc::clone(&member)), &member_node);
+        let link = link_on(member_node, server, ClientTimeouts::SPEC).await;
+        let restarted_serving = serving_the_direct_protocol(&link.client_node, CLIENT_SEED);
+        connection_from_a_process_that_vanished(link.server_node.endpoint().addr()).await;
+        wait_until_every_datagram_of_is_noted(&register, card_of(CLIENT_SEED), &clock).await;
+        move_past_the_silence_of_a_gone_process(&clock);
+
+        let introduced = link
+            .client
+            .introduce(link.server_node.endpoint().id(), introduction_from_client())
+            .await;
+        let reported_after_the_introduce =
+            selected_path_reported_by_each_held_of(&register, card_of(CLIENT_SEED));
+        RestartedProcessIntroduced {
+            link,
+            member,
+            introduced,
+            reported_after_the_introduce,
+            _restarted_serving: restarted_serving,
+        }
+    }
+
+    #[tokio::test]
+    async fn spec_3_15_test_18_a_request_a_member_starts_after_a_restarted_processs_introduce_and_before_its_presence_is_answered_without_waiting_on_the_gone_processs_path()
+     {
+        let restart = restarted_process_introduced_to_a_member(|_member| {
+            RecordingHost::with_card(card_of(SERVER_SEED))
+        })
+        .await;
+        assert!(
+            matches!(restart.introduced, Ok(IntroduceAck { .. })),
+            "{:?}",
+            restart.introduced
+        );
+        assert_eq!(
+            restart.reported_after_the_introduce,
+            vec![false],
+            "iroh did not keep the gone process's path selected once the introduce's connection opened"
+        );
+
+        let started = Instant::now();
+        let probed = answered_within(
+            DIRECT_ANSWER_WAIT,
+            "the member's probe of the restarted process",
+            restart
+                .member
+                .probe(restart.link.client_node.endpoint().id(), PROBE_NONCE),
+        )
+        .await;
+        let took = started.elapsed();
+
+        assert_eq!(probed.unwrap().nonce, PROBE_NONCE);
+        assert!(
+            took < ANSWERED_WITHOUT_A_RESEND_WITHIN,
+            "the member's probe of the restarted process was answered in {took:?}"
         );
     }
 
