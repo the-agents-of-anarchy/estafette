@@ -231,6 +231,7 @@ impl NetworkKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seeded_draws::Draws;
 
     const SECRET_BYTES: [u8; KEY_LEN] = [7; KEY_LEN];
     const SECRET: NetworkSecret = NetworkSecret::from_bytes(SECRET_BYTES);
@@ -294,7 +295,17 @@ mod tests {
         );
     }
 
-    const SIGNER_SEED: [u8; KEY_LEN] = [3; KEY_LEN];
+    const SIGNING_CASES: u64 = 16;
+    const BYTE_VALUES: u64 = 256;
+    const ENCODING_BYTES: usize = 40;
+
+    fn drawn_bytes<const LENGTH: usize>(draws: &mut Draws) -> [u8; LENGTH] {
+        [(); LENGTH].map(|()| u8::try_from(draws.below(BYTE_VALUES)).unwrap())
+    }
+
+    fn drawn_secret_key(draws: &mut Draws) -> SecretKey {
+        SecretKey::from_bytes(&drawn_bytes(draws))
+    }
 
     macro_rules! all_signed_kinds {
         ($($kind:ident),+) => {
@@ -317,73 +328,111 @@ mod tests {
         PresenceRequest
     );
 
-    #[test]
-    fn spec_3_4_payload_signature_under_one_prefix_fails_under_another() {
-        let signer = SecretKey::from_bytes(&SIGNER_SEED);
-        let other_signer = SecretKey::from_bytes(&[4; KEY_LEN]);
-        let presence_signature = sign_payload(SignedPayloadKind::Presence, &signer, ENCODING);
+    const DOMAIN_PREFIXES: [(SignedPayloadKind, &[u8]); ALL_KINDS.len()] = [
+        (SignedPayloadKind::Presence, b"estafette-presence-v1"),
+        (SignedPayloadKind::Departure, b"estafette-departure-v1"),
+        (SignedPayloadKind::Unreachable, b"estafette-unreachable-v1"),
+        (SignedPayloadKind::Infrastructure, b"estafette-infra-v1"),
+        (
+            SignedPayloadKind::PresenceRequest,
+            b"estafette-presence-request-v1",
+        ),
+    ];
 
-        let mut prefixed = b"estafette-presence-v1".to_vec();
-        prefixed.extend_from_slice(ENCODING);
-        assert_eq!(presence_signature, signer.sign(&prefixed));
-        for kind in ALL_KINDS {
-            let outcome =
-                verify_payload_signature(kind, &signer.public(), ENCODING, &presence_signature);
-            if kind == SignedPayloadKind::Presence {
-                assert_eq!(outcome, Ok(()));
-            } else {
-                assert_eq!(outcome, Err(CryptoError::SignatureMismatch));
+    #[test]
+    fn spec_3_4_each_signed_kind_signs_under_its_own_domain_prefix() {
+        assert_eq!(DOMAIN_PREFIXES.map(|(kind, _prefix)| kind), ALL_KINDS);
+        for case in 0..SIGNING_CASES {
+            let mut draws = Draws::seeded(case);
+            let signer = drawn_secret_key(&mut draws);
+            let encoding: [u8; ENCODING_BYTES] = drawn_bytes(&mut draws);
+            for (kind, prefix) in DOMAIN_PREFIXES {
+                assert_eq!(
+                    sign_payload(kind, &signer, &encoding),
+                    signer.sign(&[prefix, &encoding].concat()),
+                    "{kind:?}"
+                );
             }
         }
-        assert_eq!(
-            verify_payload_signature(
-                SignedPayloadKind::Presence,
-                &other_signer.public(),
-                ENCODING,
-                &presence_signature
-            ),
-            Err(CryptoError::SignatureMismatch)
-        );
-        assert_eq!(
-            verify_payload_signature(
-                SignedPayloadKind::Presence,
-                &signer.public(),
-                b"another encoding",
-                &presence_signature
-            ),
-            Err(CryptoError::SignatureMismatch)
-        );
+    }
+
+    #[test]
+    fn spec_3_4_payload_signature_under_one_prefix_fails_under_another() {
+        for case in 0..SIGNING_CASES {
+            let mut draws = Draws::seeded(case);
+            let signer = drawn_secret_key(&mut draws);
+            let other_signer = drawn_secret_key(&mut draws);
+            let encoding: [u8; ENCODING_BYTES] = drawn_bytes(&mut draws);
+            let another_encoding: [u8; ENCODING_BYTES] = drawn_bytes(&mut draws);
+            let presence_signature = sign_payload(SignedPayloadKind::Presence, &signer, &encoding);
+
+            for kind in ALL_KINDS {
+                let outcome = verify_payload_signature(
+                    kind,
+                    &signer.public(),
+                    &encoding,
+                    &presence_signature,
+                );
+                if kind == SignedPayloadKind::Presence {
+                    assert_eq!(outcome, Ok(()));
+                } else {
+                    assert_eq!(outcome, Err(CryptoError::SignatureMismatch));
+                }
+            }
+            assert_eq!(
+                verify_payload_signature(
+                    SignedPayloadKind::Presence,
+                    &other_signer.public(),
+                    &encoding,
+                    &presence_signature
+                ),
+                Err(CryptoError::SignatureMismatch)
+            );
+            assert_eq!(
+                verify_payload_signature(
+                    SignedPayloadKind::Presence,
+                    &signer.public(),
+                    &another_encoding,
+                    &presence_signature
+                ),
+                Err(CryptoError::SignatureMismatch)
+            );
+        }
     }
 
     #[test]
     fn spec_3_4_host_certificate_verifies_only_under_the_owner_key() {
-        let owner = SecretKey::from_bytes(&SIGNER_SEED);
-        let impostor = SecretKey::from_bytes(&[4; KEY_LEN]);
-        let host = SecretKey::from_bytes(&[5; KEY_LEN]).public();
-        let other_host = SecretKey::from_bytes(&[6; KEY_LEN]).public();
-        let certificate = sign_host_certificate(&owner, &host);
+        for case in 0..SIGNING_CASES {
+            let mut draws = Draws::seeded(case);
+            let owner = drawn_secret_key(&mut draws);
+            let impostor = drawn_secret_key(&mut draws);
+            let host = drawn_secret_key(&mut draws).public();
+            let other_host = drawn_secret_key(&mut draws).public();
+            let certificate = sign_host_certificate(&owner, &host);
 
-        let mut prefixed = b"estafette-host-cert-v1".to_vec();
-        prefixed.extend_from_slice(host.as_bytes());
-        assert_eq!(certificate, owner.sign(&prefixed));
-        assert_eq!(
-            verify_host_certificate(&owner.public(), &host, &certificate),
-            Ok(())
-        );
-        assert_eq!(
-            verify_host_certificate(&impostor.public(), &host, &certificate),
-            Err(CryptoError::SignatureMismatch)
-        );
-        assert_eq!(
-            verify_host_certificate(&owner.public(), &other_host, &certificate),
-            Err(CryptoError::SignatureMismatch)
-        );
-        for kind in ALL_KINDS {
-            let payload_signature = sign_payload(kind, &owner, host.as_bytes());
             assert_eq!(
-                verify_host_certificate(&owner.public(), &host, &payload_signature),
+                certificate,
+                owner.sign(&[b"estafette-host-cert-v1".as_slice(), host.as_bytes()].concat())
+            );
+            assert_eq!(
+                verify_host_certificate(&owner.public(), &host, &certificate),
+                Ok(())
+            );
+            assert_eq!(
+                verify_host_certificate(&impostor.public(), &host, &certificate),
                 Err(CryptoError::SignatureMismatch)
             );
+            assert_eq!(
+                verify_host_certificate(&owner.public(), &other_host, &certificate),
+                Err(CryptoError::SignatureMismatch)
+            );
+            for kind in ALL_KINDS {
+                let payload_signature = sign_payload(kind, &owner, host.as_bytes());
+                assert_eq!(
+                    verify_host_certificate(&owner.public(), &host, &payload_signature),
+                    Err(CryptoError::SignatureMismatch)
+                );
+            }
         }
     }
 
@@ -394,5 +443,6 @@ mod tests {
         assert_eq!(format!("{keys:?}"), "NetworkKeys { .. }");
         assert_eq!(format!("{SECRET:?}"), "NetworkSecret { .. }");
         assert_eq!(format!("{:?}", keys.gate_key()), "GateKey { .. }");
+        assert_eq!(format!("{:?}", keys.mac_key), "MacKey { .. }");
     }
 }
