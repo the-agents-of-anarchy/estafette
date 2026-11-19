@@ -931,6 +931,10 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
         let ann_at_restarted = timed("the restarted amy lists ann online as <h>-2", || {
             restarted.peer_within(SECOND_EFFECTIVE, PRESENCE_WAIT, online)
         });
+        let ann_at_bob_after_restart = timed(
+            "bob still lists ann online as <h>-2 after the restart",
+            || bob.peer_within(SECOND_EFFECTIVE, PRESENCE_WAIT, online),
+        );
 
         assert_eq!(ann_claim["result"]["handle"], json!(SECOND_EFFECTIVE));
         assert_eq!(at_amy["handle"], json!(SECOND_EFFECTIVE));
@@ -939,6 +943,7 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
         assert_eq!(restarted_at_ann["handle"], json!(TAKEN));
         assert_eq!(restarted_at_bob["handle"], json!(TAKEN));
         assert_eq!(ann_at_restarted["handle"], json!(SECOND_EFFECTIVE));
+        assert_eq!(ann_at_bob_after_restart["handle"], json!(SECOND_EFFECTIVE));
         assert_eq!(own_after_restart["you"]["handle"], json!(SECOND_EFFECTIVE));
     }
 
