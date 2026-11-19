@@ -534,7 +534,9 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     use estafette::wire::{HostAddr, Version};
     use serde_json::Value;
 
-    use crate::home_relays::{every_member_homed_on, raw_lines_of_running_member};
+    use crate::home_relays::{
+        every_member_homed_on, live_host_record_accepted, raw_lines_of_running_member,
+    };
     use crate::killable_host::KillableHost;
     use crate::lab_machine::{ClaimedMember, LabMachine};
     use crate::live_host::live_host_to_itself;
@@ -673,6 +675,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
             ANNOUNCEMENT_WAIT,
             |line| is_a_record_of_the_host_relaying_through(line, network.host_relay()),
         );
+        live_host_record_accepted(member.events(), network);
         let own_traces = member.own_traces();
         if let Err(refusal) = every_member_homed_on(
             doomed.relay(),

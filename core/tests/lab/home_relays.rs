@@ -1,9 +1,22 @@
 use std::path::Path;
+use std::time::Duration;
 
 use estafette::dirs::TraceFileKind;
 use serde_json::Value;
 
+use crate::dropped_payloads::short_id_of_node;
+use crate::live_network::LiveNetwork;
+use crate::member_events::MemberEvents;
 use crate::trace_reader::{TraceLine, lines_of_files_still_present, trace_files_in};
+
+/// How long a member may take to accept a record of the live host, which sends one every 5 s: chosen, not measured.
+const LIVE_HOST_RECORD_WAIT: Duration = Duration::from_secs(60);
+/// The event a member records for each gossip payload it accepts, and the fields naming the payload's kind and signer (spec/observability.md decisions 6 and 9).
+const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
+const KIND_FIELD: &str = "kind";
+const PEER_FIELD: &str = "peer";
+/// The kind of payload a host's infrastructure record is, as an events line names it.
+const INFRASTRUCTURE_PAYLOAD_KIND: &str = "infrastructure";
 
 /// The event of a raw line holding one of iroh's own tracing lines (spec/observability.md decision 7).
 const IROH_LINE_EVENT: &str = "iroh_line";
@@ -19,6 +32,26 @@ const HOME_RELAY_FIELD: &str = "home_relay";
 const HOME_RELAY_SET: &str = "true";
 /// What a refusal names as the home of a member whose record names none.
 const NO_HOME: &str = "none";
+
+/// Waits until the member's own events record a record of the live host accepted, after which iroh ranks the live host's relay among the relays it may home on (spec 3.15 tests 23 and 28).
+#[track_caller]
+pub fn live_host_record_accepted(member_events: &MemberEvents, network: &LiveNetwork) {
+    let live_host = short_id_of_node(network.host_address().id);
+    member_events.wait_until(
+        &format!("{PAYLOAD_ACCEPTED_EVENT} of an {INFRASTRUCTURE_PAYLOAD_KIND} record of the live host {live_host}"),
+        LIVE_HOST_RECORD_WAIT,
+        |lines| {
+            lines
+                .iter()
+                .any(|line| {
+                    line.event == PAYLOAD_ACCEPTED_EVENT
+                        && line.value(KIND_FIELD) == Some(&Value::from(INFRASTRUCTURE_PAYLOAD_KIND))
+                        && line.value(PEER_FIELD) == Some(&Value::from(live_host.as_str()))
+                })
+                .then_some(())
+        },
+    );
+}
 
 /// Reads each member's own raw trace once, by the reader handed in, and requires every one to name the relay as its home relay, the refusal naming each member that does not and the home it reports (spec 3.15 tests 23 and 28).
 pub fn every_member_homed_on<'member>(

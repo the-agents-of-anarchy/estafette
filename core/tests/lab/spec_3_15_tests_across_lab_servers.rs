@@ -9,10 +9,11 @@ use estafette::wire::HostAddr;
 use iroh::PublicKey;
 use serde_json::{Value, json};
 
-use crate::dropped_payloads::short_id_of_node;
 use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use crate::handles::unique_handle;
-use crate::home_relays::{every_member_homed_on, raw_lines_of_running_member};
+use crate::home_relays::{
+    every_member_homed_on, live_host_record_accepted, raw_lines_of_running_member,
+};
 use crate::inbox_client::InboxClient;
 use crate::killable_host::KillableHost;
 use crate::lab_machine::LabMachine;
@@ -74,14 +75,6 @@ const RECORD_TS_COLUMN: usize = 5;
 const SPEC_HOST_ADDED_WITHIN: Duration = Duration::from_millis(1000);
 /// How long every member may take to answer a fresh `tail`'s presence request, its join included.
 const ANNOUNCEMENT_WAIT: Duration = Duration::from_secs(60);
-/// How long a member may take to accept a record of the live host, which sends one every 5 s: chosen, not measured.
-const LIVE_HOST_RECORD_WAIT: Duration = Duration::from_secs(60);
-/// The event a member records for each gossip payload it accepts, and the fields naming the payload's kind and signer (spec/observability.md decisions 6 and 9).
-const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
-const KIND_FIELD: &str = "kind";
-const PEER_FIELD: &str = "peer";
-/// The kind of payload a host's infrastructure record is, as an events line names it.
-const INFRASTRUCTURE_PAYLOAD_KIND: &str = "infrastructure";
 /// How soon after the kill every member's send to every other must be delivered (spec 3.15 test 23).
 const SPEC_DELIVERED_WITHIN_OF_THE_KILL: Duration = Duration::from_secs(60);
 /// How many rebinds a member may record after the kill: none twice (spec 3.15 test 23).
@@ -272,26 +265,6 @@ impl Member {
     fn own_traces(&self) -> PathBuf {
         let serving = self.machine.members_started().checked_sub(1).unwrap();
         self.machine.traces_directory_of_member(serving)
-    }
-
-    /// Waits until the member's own events record a record of the live host accepted, after which iroh ranks the live host's relay among the relays it may home on.
-    #[track_caller]
-    fn live_host_record_accepted(&self, network: &LiveNetwork) {
-        let live_host = short_id_of_node(network.host_address().id);
-        self.server.events().wait_until(
-            &format!("{PAYLOAD_ACCEPTED_EVENT} of an {INFRASTRUCTURE_PAYLOAD_KIND} record of the live host {live_host}"),
-            LIVE_HOST_RECORD_WAIT,
-            |lines| {
-                lines
-                    .iter()
-                    .any(|line| {
-                        line.event == PAYLOAD_ACCEPTED_EVENT
-                            && line.value(KIND_FIELD) == Some(&json!(INFRASTRUCTURE_PAYLOAD_KIND))
-                            && line.value(PEER_FIELD) == Some(&json!(live_host))
-                    })
-                    .then_some(())
-            },
-        );
     }
 
     /// How many rebinds the member's run records name so far.
@@ -628,7 +601,7 @@ fn trio_homed_on(
         .map(|base| Member::joined_through(network, base, std::slice::from_ref(doomed)))
         .collect();
     for member in &trio {
-        member.live_host_record_accepted(network);
+        live_host_record_accepted(member.server.events(), network);
     }
     let announced = relays_announced_now(network, &trio);
     let own_traces: Vec<PathBuf> = trio.iter().map(Member::own_traces).collect();
