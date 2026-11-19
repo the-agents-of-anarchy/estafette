@@ -3869,6 +3869,97 @@ pub(crate) mod tests {
         );
     }
 
+    /// The member's probe of the introducing process, running.
+    type StartedProbe = tokio::task::JoinHandle<Result<ProbeAck, DirectError>>;
+
+    /// A host that, as it applies an Introduce, polls the member's probe of the introducing process once, before the answer is written, and leaves the probe running.
+    struct HostProbingTheIntroducerWhileAnswering {
+        recording: RecordingHost,
+        member: Arc<DirectClient>,
+        started_probe: Arc<Mutex<Option<StartedProbe>>>,
+    }
+
+    impl DirectHost for HostProbingTheIntroducerWhileAnswering {
+        fn is_stopping(&self) -> bool {
+            self.recording.is_stopping()
+        }
+
+        fn own_card(&self) -> Option<wire::PublicKey> {
+            self.recording.own_card()
+        }
+
+        fn is_attached(&self) -> bool {
+            self.recording.is_attached()
+        }
+
+        fn receive_message(&self, sender: wire::PublicKey, message: Message) -> bool {
+            self.recording.receive_message(sender, message)
+        }
+
+        fn receive_introduce(
+            &self,
+            sender: wire::PublicKey,
+            introduce: wire::Introduce,
+        ) -> IntroduceAck {
+            let member = Arc::clone(&self.member);
+            let introducer = EndpointId::from_bytes(&sender).unwrap();
+            let mut probe = Box::pin(async move { member.probe(introducer, PROBE_NONCE).await });
+            let started = match probe
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+            {
+                std::task::Poll::Ready(answered) => tokio::spawn(std::future::ready(answered)),
+                std::task::Poll::Pending => tokio::spawn(probe),
+            };
+            *self.started_probe.lock().unwrap() = Some(started);
+            self.recording.receive_introduce(sender, introduce)
+        }
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_restarted_process_reads_its_introduce_ack_though_the_member_starts_a_request_to_it_while_answering()
+     {
+        let recording = RecordingHost::with_card(card_of(SERVER_SEED));
+        let started_probe = Arc::new(Mutex::new(None));
+        let restart = restarted_process_introduced_to_a_member(|member| {
+            HostProbingTheIntroducerWhileAnswering {
+                recording: recording.clone(),
+                member,
+                started_probe: Arc::clone(&started_probe),
+            }
+        })
+        .await;
+        let ack = restart.introduced.unwrap_or_else(|failure| {
+            panic!("the restarted process read no answer to its introduce: {failure:?}")
+        });
+        assert_eq!(
+            ack,
+            IntroduceAck {
+                mac: ack.mac,
+                ..own_introduction(false)
+            }
+        );
+        assert_eq!(
+            restart.reported_after_the_introduce,
+            vec![false],
+            "iroh did not keep the gone process's path selected once the introduce's connection opened"
+        );
+        let probe = started_probe.lock().unwrap().take().unwrap();
+
+        let probed = answered_within(
+            DIRECT_ANSWER_WAIT,
+            "the probe the member started while answering the introduce",
+            probe,
+        )
+        .await;
+
+        let introduced = recording.introduced.lock().unwrap().clone();
+        assert_eq!(introduced.len(), 1);
+        assert_eq!(introduced[0].0, card_of(CLIENT_SEED));
+        assert_eq!(introduced[0].1.handle.as_deref(), Some(SENDER_HANDLE));
+        assert_eq!(probed.unwrap().unwrap().nonce, PROBE_NONCE);
+    }
+
     #[tokio::test]
     async fn spec_3_8_an_introduce_keeps_the_connection_it_arrived_on_even_one_that_reads_as_gone()
     {
