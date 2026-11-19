@@ -1049,13 +1049,14 @@ mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::ProcessTable;
     use crate::keys::render_public_key;
-    use crate::net::direct::tests::{LeapingClock, StandingClock};
+    use crate::net::direct::tests::{LeapingClock, StandingClock, field};
     use crate::net::direct::{DirectServer, MonotonicTime, RuntimeClock};
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
         RecordedEvent, answered_within, found_within, next_recorded_meeting, recorded_events,
+        recorded_until,
     };
     use crate::wire::{Addr, Payload};
 
@@ -2873,7 +2874,15 @@ mod tests {
 
     const CLOCK_STEP_PAST_ANY_SILENCE: Duration = Duration::from_secs(3600);
     const SUPERSEDED_CLOSE_WAIT: Duration = Duration::from_secs(5);
+    /// How far past the ack the observer's clock is moved before the member's next Presence, the span within which a drop at the ack would show.
     const ACK_DROP_WOULD_SHOW_WITHIN: Duration = Duration::from_millis(500);
+    const CONNECTION_OPENED_EVENT: &str = "transport.connection_opened";
+    const CONNECTION_CLOSED_EVENT: &str = "transport.connection_closed";
+    const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
+    const CONNECTION_FIELD: &str = "connection";
+    const PEER_FIELD: &str = "peer";
+    const PROTOCOL_FIELD: &str = "protocol";
+    const DIRECT_PROTOCOL: &str = "direct";
     const ONLINE_COLUMN: &str = "\tonline\t";
     const GONE_COLUMN: &str = "\tgone\t";
 
@@ -3193,21 +3202,35 @@ mod tests {
         let neighbor = start_silent_neighbor().await;
         lab.write_network_config(&[NEIGHBOR_SEED]);
         let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
-        let (effects, _operator_effects) = lab.effects(
+        let (record, mut recorded) = recorded_events();
+        let (mut effects, _operator_effects) = lab.effects_recording_every_event_to(
             vec![neighbor.address.clone()],
             Box::pin(async move { drop(interrupted.await) }),
+            record,
         );
+        let observer_clock = StandingClock::standing_an_hour_ahead();
+        effects.monotonic = observer_clock.monotonic();
         let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap()).unwrap();
         let observation = start_observation(&setup, effects).await.unwrap();
         let observer_host = Arc::clone(&observation.host);
         let mut tail_output = Vec::new();
 
-        let (tail_result, (closed_past_the_ack, closed_at_the_presence)) =
+        let (tail_result, (recorded_before_the_close, closed_at_the_presence)) =
             tokio::join!(observation.tail(&mut tail_output), async {
                 let introduced_on = first_connection_accepted(&neighbor, PAYLOAD_WAIT).await;
                 neighbor_listed_by(&observer_host, PAYLOAD_WAIT).await;
-                let closed_past_the_ack =
-                    tokio::time::timeout(ACK_DROP_WOULD_SHOW_WITHIN, introduced_on.closed()).await;
+                let introduction = next_recorded_meeting(
+                    &mut recorded,
+                    CONNECTION_OPENED_EVENT,
+                    |fields| {
+                        field(fields, PROTOCOL_FIELD)
+                            == Some(&serde_json::Value::from(DIRECT_PROTOCOL))
+                            && field(fields, PEER_FIELD) == Some(&neighbor_short_id())
+                    },
+                    PAYLOAD_WAIT,
+                )
+                .await;
+                observer_clock.move_forward(ACK_DROP_WOULD_SHOW_WITHIN);
                 neighbor
                     .topic
                     .broadcast(
@@ -3218,14 +3241,27 @@ mod tests {
                     .unwrap();
                 let closed_at_the_presence =
                     tokio::time::timeout(SUPERSEDED_CLOSE_WAIT, introduced_on.closed()).await;
+                let (recorded_before_the_close, _closed) = recorded_until(
+                    &mut recorded,
+                    CONNECTION_CLOSED_EVENT,
+                    |fields| {
+                        field(fields, CONNECTION_FIELD) == field(&introduction, CONNECTION_FIELD)
+                    },
+                    SUPERSEDED_CLOSE_WAIT,
+                )
+                .await;
                 interrupt.send(()).unwrap_or_default();
-                (closed_past_the_ack, closed_at_the_presence)
+                (recorded_before_the_close, closed_at_the_presence)
             });
 
         tail_result.unwrap();
         assert!(
-            closed_past_the_ack.is_err(),
-            "the observer closed the introduction's connection within {ACK_DROP_WOULD_SHOW_WITHIN:?} of the ack, before any Presence: {closed_past_the_ack:?}"
+            kinds_and_peers_recorded_as(&recorded_before_the_close, PAYLOAD_ACCEPTED_EVENT)
+                .contains(&(
+                    Some(serde_json::Value::from(PRESENCE_KIND)),
+                    Some(neighbor_short_id())
+                )),
+            "the observer closed the introduction's connection before it took the member's next Presence, sent once its clock read {ACK_DROP_WOULD_SHOW_WITHIN:?} past the ack: {recorded_before_the_close:?}"
         );
         assert!(
             matches!(
