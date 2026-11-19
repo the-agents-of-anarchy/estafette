@@ -617,7 +617,7 @@ fn relays_announced_now(
     announced
 }
 
-/// Three members whose configuration names the doomed host alone, with what each announced to a fresh `tail` started once each accepted a record of the live host, failing the test unless the one read of each member's own raw trace then names the doomed host's relay as its home.
+/// Three members whose configuration names the doomed host alone, with what each announced to a fresh `tail` started once each accepted a record of the live host, failing the test unless the one read of each member's own raw trace then names the doomed host's relay as its home and each member announced that relay alone.
 #[track_caller]
 fn trio_homed_on(
     network: &LiveNetwork,
@@ -642,6 +642,12 @@ fn trio_homed_on(
     if let Err(refusal) = homed {
         panic!("{refusal}; members announced to a fresh tail: {announced:?}");
     }
+    let homed_alone = vec![doomed.relay.as_str().to_owned()];
+    assert!(
+        announced.values().all(|relays| *relays == homed_alone),
+        "a member announced other relays than {} alone to a fresh tail: {announced:?}",
+        doomed.relay.as_str()
+    );
     (trio, announced)
 }
 
