@@ -619,7 +619,7 @@ fn refuse_too_deep(mapping: Map<String, Value>) -> Result<Map<String, Value>, Ca
 
 /// The compact JSON bytes of the mapping, without whitespace.
 fn compact_json(mapping: &Map<String, Value>) -> Vec<u8> {
-    serde_json::to_vec(mapping).unwrap_or_default()
+    Value::Object(mapping.clone()).to_string().into_bytes()
 }
 
 /// Whether `public` bytes a peer sent are what a card sends: a JSON mapping within the cap and the deepest nesting whose mappings name each key once and whose integers fit 64 bits, judged on the bytes as they arrived (spec 3.5).
