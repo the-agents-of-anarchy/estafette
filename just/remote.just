@@ -66,7 +66,7 @@ lab-context-exists:
 ip: lab-context-exists
     @{{ lab_hcloud }} server ip {{ server }}
 
-[doc("Print the name of the server's relay, the one name every recipe starts or records its host with: s<the server's numeric id at Hetzner>.<its IPv4 address, dots as hyphens>.sslip.io, which sslip.io resolves to that address; no later server repeats the id, so no other server orders a certificate for the name, and the server keeps it through every restart, so its certificate cache serves a restart")]
+[doc("Print the name of the server's relay, the one name every recipe starts or records its host with: s<the server's numeric id at Hetzner>.<its IPv4 address, dots as hyphens>.sslip.io, which sslip.io resolves to that address; no later server repeats the id, so no other lab server orders a certificate for the name, and the server keeps it through every restart, so its certificate cache serves a restart")]
 [private]
 relay-name: lab-context-exists
     @{{ lab_hcloud }} server describe {{ server }} -o json | python3 -I -c 'import json, sys; label_letter = "s"; resolver_suffix = ".sslip.io"; server = json.load(sys.stdin); print(label_letter + str(server["id"]) + "." + server["public_net"]["ipv4"]["ip"].replace(".", "-") + resolver_suffix)'
