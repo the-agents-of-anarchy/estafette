@@ -838,6 +838,13 @@ mod spec_3_15_two_members_through_the_live_host {
     /// The event a member records for each inbox frame it delivers, and its field naming the frame's message id (spec/observability.md decision 9).
     const FRAME_DELIVERED_EVENT: &str = "inbox.frame_delivered";
     const MESSAGE_FIELD: &str = "message";
+    /// The event a member records for each direct request it sends, the field naming how it ended, and the words for an Introduce and for an acknowledged request (spec/observability.md decision 9).
+    const REQUEST_SENT_EVENT: &str = "direct.request_sent";
+    const OUTCOME_FIELD: &str = "outcome";
+    const INTRODUCE_KIND: &str = "introduce";
+    const ACKNOWLEDGED_OUTCOME: &str = "acknowledged";
+    /// How long a member may take to have its Introduce to the sender of a Message acknowledged after it recorded the Message's frame: chosen, not measured, above the 5000 ms connect and 10000 ms ack timeouts of spec 3.14 together.
+    const INTRODUCE_ACKNOWLEDGED_WAIT: Duration = Duration::from_secs(30);
 
     /// A member on its own machine, joined to the live network with its card claimed.
     struct LabMember {
@@ -1040,6 +1047,28 @@ mod spec_3_15_two_members_through_the_live_host {
         line.event == PAYLOAD_ACCEPTED_EVENT
             && line.value(KIND_FIELD) == Some(&Value::from(PRESENCE_KIND))
             && line.value(PEER_FIELD) == Some(&Value::from(peer))
+    }
+
+    /// Waits until the member records an Introduce it sent to the peer acknowledged, requiring it within the introduce wait.
+    #[track_caller]
+    fn introduce_acknowledged_by(events: &MemberEvents, peer: &str) {
+        events.wait_until(
+            &format!(
+                "{REQUEST_SENT_EVENT} of an {INTRODUCE_KIND} to {peer} {ACKNOWLEDGED_OUTCOME}"
+            ),
+            INTRODUCE_ACKNOWLEDGED_WAIT,
+            |lines| {
+                lines
+                    .iter()
+                    .any(|line| {
+                        line.event == REQUEST_SENT_EVENT
+                            && line.value(KIND_FIELD) == Some(&Value::from(INTRODUCE_KIND))
+                            && line.value(PEER_FIELD) == Some(&Value::from(peer))
+                            && line.value(OUTCOME_FIELD) == Some(&Value::from(ACKNOWLEDGED_OUTCOME))
+                    })
+                    .then_some(())
+            },
+        );
     }
 
     /// Adds the public mapping, written as YAML, to the card's file.
@@ -1359,6 +1388,12 @@ mod spec_3_15_two_members_through_the_live_host {
                     OFF_TOPIC_MESSAGE_ID,
                 )
             });
+        timed(
+            "amy's introduce to bob is acknowledged while bob serves",
+            || {
+                introduce_acknowledged_by(amy.member.events(), &short_id_text(&bob_key));
+            },
+        );
 
         assert!(call_succeeded(&amy.claim), "{}", amy.claim);
         assert_eq!(unseen_before, None);
