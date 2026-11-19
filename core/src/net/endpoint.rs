@@ -20,7 +20,7 @@ use crate::crypto::GateKey;
 use crate::event::{RunRecord, TransportEvent};
 use crate::trace::LocationSalt;
 
-pub use super::gate::GateFailure;
+pub use super::gate::{GateFailure, GateFailureReason};
 
 pub const DIRECT_ALPN: &[u8] = b"estafette/direct/1";
 const SPEC_3_14_QUIC_IDLE_TIMEOUT_MILLIS: VarInt = VarInt::from_u32(10_000);
@@ -1083,18 +1083,33 @@ mod tests {
             accept_next(&outsider)
         );
         assert!(dial_is_locally_rejected(&dialed));
-        assert!(recorded_reasons_match(&recorded, |reason| matches!(
-            reason,
-            GateFailure::Timeout
-        )));
+        let closing = the_one_closing(&recorded);
+        assert!(matches!(closing.reason, GateFailureReason::Timeout));
+        assert_written_as(closing, outsider.id(), "dialed", "timeout");
     }
 
-    fn recorded_reasons_match(
-        recorded: &Mutex<Vec<GateFailure>>,
-        expected: fn(&GateFailure) -> bool,
-    ) -> bool {
-        let reasons = recorded.lock().unwrap();
-        reasons.len() == 1 && reasons.iter().all(expected)
+    #[track_caller]
+    fn the_one_closing(recorded: &Mutex<Vec<GateFailure>>) -> GateFailure {
+        let mut closings = recorded.lock().unwrap();
+        assert_eq!(closings.len(), 1, "{closings:?}");
+        closings.pop().unwrap()
+    }
+
+    /// Requires the closing to be written with its connection's id, its peer, the side that opened it and the reason's word, in that order.
+    #[track_caller]
+    fn assert_written_as(closing: GateFailure, peer: EndpointId, direction: &str, reason: &str) {
+        let written = crate::event::Event::from(TransportEvent::GateClosed(closing)).fields();
+        let (connection, rest) = written.split_first().unwrap();
+        assert_eq!(connection.0, "connection");
+        assert!(connection.1.is_u64(), "{connection:?}");
+        assert_eq!(
+            rest,
+            [
+                ("peer", serde_json::Value::from(ShortId::from(peer).text())),
+                ("direction", serde_json::Value::from(direction)),
+                ("reason", serde_json::Value::from(reason)),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1121,10 +1136,9 @@ mod tests {
             tokio::join!(answer_under_another_secret, accept_next(member.endpoint()));
 
         assert!(accept_is_locally_rejected(&accepted));
-        assert!(recorded_reasons_match(&recorded, |reason| matches!(
-            reason,
-            GateFailure::WrongProof
-        )));
+        let closing = the_one_closing(&recorded);
+        assert!(matches!(closing.reason, GateFailureReason::WrongProof));
+        assert_written_as(closing, outsider_id, "accepted", "wrong_proof");
     }
 
     #[tokio::test]
@@ -1149,10 +1163,12 @@ mod tests {
         );
 
         assert!(accept_is_locally_rejected(&accepted));
-        assert!(recorded_reasons_match(&recorded, |reason| matches!(
-            reason,
-            GateFailure::StreamRead(ReadExactError::FinishedEarly(read)) if *read == NONCE_CUT_SHORT.len()
-        )));
+        let closing = the_one_closing(&recorded);
+        assert!(matches!(
+            &closing.reason,
+            GateFailureReason::StreamRead(ReadExactError::FinishedEarly(read)) if *read == NONCE_CUT_SHORT.len()
+        ));
+        assert_written_as(closing, peer.id(), "accepted", "stream_read");
     }
 
     #[tokio::test]
@@ -1179,10 +1195,12 @@ mod tests {
         );
 
         assert!(accept_is_locally_rejected(&accepted));
-        assert!(recorded_reasons_match(&recorded, |reason| matches!(
-            reason,
-            GateFailure::StreamWrite(WriteError::Stopped(code)) if *code == PEER_STOP_CODE
-        )));
+        let closing = the_one_closing(&recorded);
+        assert!(matches!(
+            &closing.reason,
+            GateFailureReason::StreamWrite(WriteError::Stopped(code)) if *code == PEER_STOP_CODE
+        ));
+        assert_written_as(closing, peer.id(), "accepted", "stream_write");
     }
 
     #[tokio::test]
@@ -1197,10 +1215,9 @@ mod tests {
         );
 
         assert!(dial_is_locally_rejected(&dialed));
-        assert!(recorded_reasons_match(&recorded, |reason| matches!(
-            reason,
-            GateFailure::Timeout
-        )));
+        let closing = the_one_closing(&recorded);
+        assert!(matches!(closing.reason, GateFailureReason::Timeout));
+        assert_written_as(closing, silent.id(), "dialed", "timeout");
     }
 
     #[tokio::test]
@@ -1222,11 +1239,63 @@ mod tests {
             tokio::join!(close_before_the_challenge, accept_next(member.endpoint()));
 
         assert!(accept_is_locally_rejected(&accepted));
-        assert!(recorded_reasons_match(&recorded, |reason| matches!(
-            reason,
-            GateFailure::Transport(Close::Peer { code, reason: CloseReason::Unlisted { bytes } })
+        let closing = the_one_closing(&recorded);
+        assert!(matches!(
+            &closing.reason,
+            GateFailureReason::Transport(Close::Peer { code, reason: CloseReason::Unlisted { bytes } })
                 if *code == u64::from(PEER_CLOSE_CODE) && *bytes == PEER_CLOSE_REASON.len()
-        )));
+        ));
+        assert_written_as(closing, peer.id(), "accepted", "transport");
+    }
+
+    #[test]
+    fn spec_3_6_a_gate_closing_appends_exactly_one_line_after_whatever_the_record_holds() {
+        for case in 0..CATCH_ALL_CASES {
+            let held = bytes_beside(&[b"held".as_slice()], &mut Draws::seeded(case));
+            let mut record = held.clone();
+            let closing = tested_gate_failure(GateFailureReason::Timeout);
+
+            crate::event::write_run_record(
+                &mut record,
+                &TransportEvent::GateClosed(closing).into(),
+            )
+            .unwrap();
+
+            let mut expected = held;
+            expected.extend(
+                b"a gossip connection was closed at the network secret gate: the gate timeout passed before both proofs\n",
+            );
+            assert_eq!(record, expected, "case {case}");
+        }
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_each_connection_the_gate_closes_is_written_under_an_id_of_its_own()
+     {
+        let (member, recorded) =
+            bind_node_recording_gate_closings(MEMBER_SEED, MEMBER_SECRET).await;
+        let first_peer = bind_plain_endpoint_granting_no_streams(SPEC_PEER_SEED).await;
+        let second_peer = bind_plain_endpoint_granting_no_streams(SILENT_PEER_SEED).await;
+
+        for peer in [&first_peer, &second_peer] {
+            let close_before_the_challenge = async {
+                let connection = peer
+                    .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                    .await
+                    .unwrap();
+                connection.close(PEER_CLOSE_CODE, PEER_CLOSE_REASON);
+                connection
+            };
+            let (_closed_connection, accepted) =
+                tokio::join!(close_before_the_challenge, accept_next(member.endpoint()));
+            assert!(accept_is_locally_rejected(&accepted));
+        }
+
+        let closings = std::mem::take(&mut *recorded.lock().unwrap());
+        let [first, second] = closings.as_slice() else {
+            panic!("two closings were recorded: {closings:?}");
+        };
+        assert_ne!(first.connection, second.connection);
     }
 
     const HOSTILE_HEX_RUN: &str =
@@ -1392,6 +1461,15 @@ mod tests {
     const PEER_KEY_BYTE: u8 = 9;
     const MISSED_PATH_EVENTS: u64 = 5;
     const ELAPSED_MS: u64 = 12;
+
+    fn tested_gate_failure(reason: GateFailureReason) -> GateFailure {
+        GateFailure {
+            connection: ConnectionId(TESTED_CONNECTION),
+            peer: ShortId::from(tested_peer()),
+            direction: Direction::Accepted,
+            reason,
+        }
+    }
 
     fn tested_peer() -> EndpointId {
         SecretKey::from_bytes(&[PEER_KEY_BYTE; crate::crypto::KEY_LEN]).public()
@@ -1567,7 +1645,8 @@ mod tests {
                 "transport.rebind_failed",
             ),
             (
-                TransportEvent::GateClosed(GateFailure::WrongProof).into(),
+                TransportEvent::GateClosed(tested_gate_failure(GateFailureReason::WrongProof))
+                    .into(),
                 "transport.gate_closed",
             ),
         ];

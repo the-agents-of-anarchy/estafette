@@ -11,8 +11,9 @@ use iroh_gossip::ALPN as GOSSIP_ALPN;
 use tokio::time::timeout;
 
 use crate::crypto::GateKey;
+use crate::event::ShortId;
 use crate::net::direct::HeldConnections;
-use crate::net::endpoint::Close;
+use crate::net::endpoint::{Close, ConnectionId, Direction};
 
 const GATE_NONCE_BYTES: usize = 32;
 const PROOF_BYTES: usize = blake3::OUT_LEN;
@@ -24,7 +25,7 @@ pub(super) const GATE_REFUSAL_REASON: &[u8] = b"gate";
 pub type GateNonce = [u8; GATE_NONCE_BYTES];
 /// The source each gate nonce is drawn from.
 pub type FillGateNonce = Arc<dyn Fn(&mut GateNonce) + Send + Sync>;
-/// The sink each reason the gate closed a connection for is handed to.
+/// The sink each gossip connection the gate closed is handed to, with why.
 pub type ReportGateClosing = Arc<dyn Fn(GateFailure) + Send + Sync>;
 type Proof = [u8; PROOF_BYTES];
 
@@ -62,7 +63,10 @@ impl NetworkSecretGate {
     }
 
     /// Passes when the peer answered this side's nonce correctly and this side answered the peer's, both within the gate timeout.
-    async fn peer_proves_network_secret(&self, connection: &Connection) -> Result<(), GateFailure> {
+    async fn peer_proves_network_secret(
+        &self,
+        connection: &Connection,
+    ) -> Result<(), GateFailureReason> {
         let both_challenges = async {
             tokio::try_join!(
                 self.peer_answers_nonce(connection),
@@ -71,24 +75,24 @@ impl NetworkSecretGate {
         };
         timeout(GATE_TIMEOUT, both_challenges)
             .await
-            .unwrap_or(Err(GateFailure::Timeout))
+            .unwrap_or(Err(GateFailureReason::Timeout))
             .map(|((), ())| ())
     }
 
     /// Sends a fresh nonce on a stream this side opens and accepts only the peer's correct proof.
-    async fn peer_answers_nonce(&self, connection: &Connection) -> Result<(), GateFailure> {
+    async fn peer_answers_nonce(&self, connection: &Connection) -> Result<(), GateFailureReason> {
         let nonce = self.fresh_nonce();
         let answer = send_nonce_for_answer(connection, &nonce).await?;
         let expected = gate_proof(&self.gate_key, &nonce, self.own_id, connection.remote_id());
         if blake3::Hash::from_bytes(answer) == expected {
             Ok(())
         } else {
-            Err(GateFailure::WrongProof)
+            Err(GateFailureReason::WrongProof)
         }
     }
 
     /// Reads the nonce the peer sends on the stream it opens and answers it with this side's proof.
-    async fn answer_peer_nonce(&self, connection: &Connection) -> Result<(), GateFailure> {
+    async fn answer_peer_nonce(&self, connection: &Connection) -> Result<(), GateFailureReason> {
         let (mut send, mut recv) = connection.accept_bi().await?;
         let mut nonce = [0; GATE_NONCE_BYTES];
         recv.read_exact(&mut nonce).await?;
@@ -121,17 +125,38 @@ impl EndpointHooks for NetworkSecretGate {
         }
         match self.peer_proves_network_secret(connection).await {
             Ok(()) => self.let_through(connection),
-            Err(closing_reason) => {
-                (self.report_closing)(closing_reason);
+            Err(reason) => {
+                (self.report_closing)(GateFailure::of(connection, reason));
                 gate_refusal()
             }
         }
     }
 }
 
+/// A gossip connection the gate closed: which connection, whose peer, which side opened it, and why.
+#[derive(Debug)]
+pub struct GateFailure {
+    pub(crate) connection: ConnectionId,
+    pub(crate) peer: ShortId,
+    pub(crate) direction: Direction,
+    pub(crate) reason: GateFailureReason,
+}
+
+impl GateFailure {
+    /// The closing of the connection for the reason.
+    fn of(connection: &Connection, reason: GateFailureReason) -> Self {
+        Self {
+            connection: ConnectionId::of(connection),
+            peer: ShortId::from(connection.remote_id()),
+            direction: Direction::of(connection.side()),
+            reason,
+        }
+    }
+}
+
 /// Why the gate closed a gossip connection.
 #[derive(Debug)]
-pub enum GateFailure {
+pub enum GateFailureReason {
     Transport(Close),
     StreamWrite(WriteError),
     StreamFinish(ClosedStream),
@@ -140,7 +165,7 @@ pub enum GateFailure {
     Timeout,
 }
 
-impl fmt::Display for GateFailure {
+impl fmt::Display for GateFailureReason {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Transport(error) => write!(
@@ -160,27 +185,27 @@ impl fmt::Display for GateFailure {
     }
 }
 
-impl std::error::Error for GateFailure {}
+impl std::error::Error for GateFailureReason {}
 
-impl From<ConnectionError> for GateFailure {
+impl From<ConnectionError> for GateFailureReason {
     fn from(error: ConnectionError) -> Self {
         Self::Transport(Close::of(&error))
     }
 }
 
-impl From<WriteError> for GateFailure {
+impl From<WriteError> for GateFailureReason {
     fn from(error: WriteError) -> Self {
         Self::StreamWrite(error)
     }
 }
 
-impl From<ClosedStream> for GateFailure {
+impl From<ClosedStream> for GateFailureReason {
     fn from(error: ClosedStream) -> Self {
         Self::StreamFinish(error)
     }
 }
 
-impl From<ReadExactError> for GateFailure {
+impl From<ReadExactError> for GateFailureReason {
     fn from(error: ReadExactError) -> Self {
         Self::StreamRead(error)
     }
@@ -190,7 +215,7 @@ impl From<ReadExactError> for GateFailure {
 async fn send_nonce_for_answer(
     connection: &Connection,
     nonce: &GateNonce,
-) -> Result<Proof, GateFailure> {
+) -> Result<Proof, GateFailureReason> {
     let (mut send, mut recv) = connection.open_bi().await?;
     send.write_all(nonce).await?;
     send.finish()?;

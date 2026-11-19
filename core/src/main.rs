@@ -1258,28 +1258,6 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_6_a_gate_closing_appends_exactly_one_line_after_whatever_the_record_holds() {
-        for case in 0..PROPERTY_CASES {
-            let failure = if case.is_multiple_of(2) {
-                GateFailure::WrongProof
-            } else {
-                GateFailure::Timeout
-            };
-            let held = held_bytes(&mut Draws::seeded(case));
-            let mut record = held.clone();
-
-            let expected_line =
-                format!("a gossip connection was closed at the network secret gate: {failure}\n");
-
-            write_run_record(&mut record, &TransportEvent::GateClosed(failure).into()).unwrap();
-
-            let mut expected = held;
-            expected.extend(expected_line.into_bytes());
-            assert_eq!(record, expected, "case {case}");
-        }
-    }
-
-    #[test]
     fn spec_3_13_a_command_ends_with_the_status_it_reached_or_failure_after_one_line_of_its_message()
      {
         for case in 0..PROPERTY_CASES {

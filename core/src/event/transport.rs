@@ -5,8 +5,8 @@ use tokio::task::JoinError;
 use super::peer::ShortId;
 use super::{AreaEvent, EventFields};
 use crate::net::endpoint::{
-    Close, CloseReason, ConnectionId, Direction, GateFailure, Location, LocationKind, PathChange,
-    Protocol, RebindCause,
+    Close, CloseReason, ConnectionId, Direction, GateFailure, GateFailureReason, Location,
+    LocationKind, PathChange, Protocol, RebindCause,
 };
 
 const CAUSE_FIELD: &str = "cause";
@@ -89,7 +89,7 @@ pub enum TransportEvent {
     RouterShutdownFailed(JoinError),
     /// The endpoint was not bound again, so the node announces nothing more.
     RebindFailed(BindError),
-    /// A gossip connection was closed at the network secret gate.
+    /// A gossip connection was closed at the network secret gate: which connection, its peer, the side that opened it, and why.
     GateClosed(GateFailure),
 }
 
@@ -132,18 +132,29 @@ impl AreaEvent for TransportEvent {
             Self::RebindFailed(source) => format!(
                 "the endpoint was not bound again, so this node announces nothing more: {source}"
             ),
-            Self::GateClosed(failure) => {
-                format!("a gossip connection was closed at the network secret gate: {failure}")
-            }
+            Self::GateClosed(failure) => format!(
+                "a gossip connection was closed at the network secret gate: {}",
+                failure.reason
+            ),
         })
     }
 
     fn fields(&self) -> EventFields {
         match self {
             Self::Rebinding(cause) => vec![(CAUSE_FIELD, Value::from(cause_text(*cause)))],
-            Self::RouterShutdownFailed(_) | Self::RebindFailed(_) | Self::GateClosed(_) => {
-                Vec::new()
-            }
+            Self::RouterShutdownFailed(_) | Self::RebindFailed(_) => Vec::new(),
+            Self::GateClosed(failure) => vec![
+                connection_field(failure.connection),
+                failure.peer.field(),
+                (
+                    DIRECTION_FIELD,
+                    Value::from(direction_text(failure.direction)),
+                ),
+                (
+                    REASON_FIELD,
+                    Value::from(gate_failure_reason_text(&failure.reason)),
+                ),
+            ],
             Self::ConnectionOpened {
                 connection,
                 peer,
@@ -232,6 +243,18 @@ const fn direction_text(direction: Direction) -> &'static str {
     }
 }
 
+/// The reason the gate closed a connection as the events file writes it.
+const fn gate_failure_reason_text(reason: &GateFailureReason) -> &'static str {
+    match reason {
+        GateFailureReason::Transport(_) => "transport",
+        GateFailureReason::StreamWrite(_) => "stream_write",
+        GateFailureReason::StreamFinish(_) => "stream_finish",
+        GateFailureReason::StreamRead(_) => "stream_read",
+        GateFailureReason::WrongProof => "wrong_proof",
+        GateFailureReason::Timeout => "timeout",
+    }
+}
+
 /// The protocol of a connection as the events file writes it.
 const fn protocol_text(protocol: Protocol) -> &'static str {
     match protocol {
@@ -282,12 +305,15 @@ fn location_fields(location: Location) -> EventFields {
 
 #[cfg(test)]
 mod tests {
+    use iroh::endpoint::{ClosedStream, ReadExactError, VarInt, WriteError};
+
     use super::*;
     use crate::net::direct::tests::{assert_each_arm, test_salt};
     use crate::net::endpoint::LocationHash;
 
     const SPEC_SUPERSEDED_CLOSE_CODE: u64 = 410;
     const UNLISTED_REASON_BYTES: usize = 37;
+    const STOP_CODE: u32 = 59;
     const DIRECT_PORT: u16 = 7842;
     const RELAY_PORT: u16 = 443;
 
@@ -351,6 +377,33 @@ mod tests {
         ];
 
         assert_each_arm(&cases, |close| close_fields(*close), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_each_way_the_gate_closes_is_written_as_a_word_of_its_own() {
+        let cases = [
+            (GateFailureReason::Transport(Close::PeerReset), "transport"),
+            (
+                GateFailureReason::StreamWrite(WriteError::Stopped(VarInt::from_u32(STOP_CODE))),
+                "stream_write",
+            ),
+            (
+                GateFailureReason::StreamFinish(ClosedStream::default()),
+                "stream_finish",
+            ),
+            (
+                GateFailureReason::StreamRead(ReadExactError::FinishedEarly(0)),
+                "stream_read",
+            ),
+            (GateFailureReason::WrongProof, "wrong_proof"),
+            (GateFailureReason::Timeout, "timeout"),
+        ];
+
+        assert_each_arm(
+            &cases,
+            |reason| gate_failure_reason_text(reason),
+            cases.len(),
+        );
     }
 
     #[test]
