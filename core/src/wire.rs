@@ -546,6 +546,7 @@ mod tests {
     use std::net::{IpAddr, Ipv6Addr};
 
     use super::*;
+    use crate::seeded_draws::Draws;
 
     const GOSSIP_FRAME_BYTES: usize = 4096;
     const GOSSIP_LAYER_OVERHEAD_BYTES: usize = 38;
@@ -558,8 +559,8 @@ mod tests {
     const UNSUPPORTED_VERSION: u8 = 2;
     const SHORT_RELAY_BYTES: usize = 8;
     const DISTINCT_SHORT_RELAY_LENGTHS: [usize; 4] = [10, 20, 30, 40];
-    const REQUEST_PROBE_INDEX: u8 = 1;
     const SPEC_REQUEST_VARIANT_INDICES: [u8; 3] = [0, 1, 2];
+    const REQUEST_PROBE_INDEX: u8 = SPEC_REQUEST_VARIANT_INDICES[1];
     const SPEC_RESPONSE_VARIANT_INDICES: [u8; 3] = [0, 1, 2];
     const SPEC_PAYLOAD_VARIANT_INDICES: [u8; 5] = [0, 1, 2, 3, 4];
     const SPEC_WIRE_LIMIT_BYTES: usize = 1_114_112;
@@ -572,10 +573,7 @@ mod tests {
         + ZERO_VARINT_BYTES
         + MAC_BYTES
         + SIGNATURE_BYTES;
-    const SEED_SPREAD_MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
-    const XORSHIFT_FIRST_LEFT_SHIFT: u32 = 13;
-    const XORSHIFT_RIGHT_SHIFT: u32 = 7;
-    const XORSHIFT_SECOND_LEFT_SHIFT: u32 = 17;
+    const BYTE_VALUES: u64 = 256;
     const FLAG_VALUES: usize = 2;
     const ROUND_TRIP_BODY_CAP_CHARACTERS: usize = 200;
     const ROUND_TRIP_PUBLIC_CAP_BYTES: usize = 300;
@@ -979,25 +977,19 @@ mod tests {
         );
     }
 
-    struct Seeded(u64);
+    struct Seeded(Draws);
 
     impl Seeded {
         fn for_case(case: u64) -> Self {
-            Self(case.wrapping_add(1).wrapping_mul(SEED_SPREAD_MULTIPLIER))
+            Self(Draws::seeded(case))
         }
 
         fn next_word(&mut self) -> u64 {
-            self.0 ^= self.0 << XORSHIFT_FIRST_LEFT_SHIFT;
-            self.0 ^= self.0 >> XORSHIFT_RIGHT_SHIFT;
-            self.0 ^= self.0 << XORSHIFT_SECOND_LEFT_SHIFT;
-            self.0
+            self.0.below(u64::MAX)
         }
 
         fn below(&mut self, bound: usize) -> usize {
-            usize::try_from(self.next_word())
-                .unwrap_or(usize::MAX)
-                .checked_rem(bound)
-                .unwrap_or(0)
+            usize::try_from(self.0.below(u64::try_from(bound).unwrap())).unwrap()
         }
 
         fn flag(&mut self) -> bool {
@@ -1005,7 +997,7 @@ mod tests {
         }
 
         fn array<const N: usize>(&mut self) -> [u8; N] {
-            std::array::from_fn(|_| self.next_word().to_be_bytes()[0])
+            std::array::from_fn(|_| u8::try_from(self.0.below(BYTE_VALUES)).unwrap())
         }
 
         fn signature(&mut self) -> SignatureBytes {
