@@ -12,6 +12,7 @@ use tokio::time::timeout;
 
 use crate::crypto::GateKey;
 use crate::net::direct::HeldConnections;
+use crate::net::endpoint::Close;
 
 const GATE_NONCE_BYTES: usize = 32;
 const PROOF_BYTES: usize = blake3::OUT_LEN;
@@ -131,7 +132,7 @@ impl EndpointHooks for NetworkSecretGate {
 /// Why the gate closed a gossip connection.
 #[derive(Debug)]
 pub enum GateFailure {
-    Transport(ConnectionError),
+    Transport(Close),
     StreamWrite(WriteError),
     StreamFinish(ClosedStream),
     StreamRead(ReadExactError),
@@ -163,7 +164,7 @@ impl std::error::Error for GateFailure {}
 
 impl From<ConnectionError> for GateFailure {
     fn from(error: ConnectionError) -> Self {
-        Self::Transport(error)
+        Self::Transport(Close::of(&error))
     }
 }
 

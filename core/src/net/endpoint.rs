@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -353,6 +354,16 @@ impl CloseReason {
     }
 }
 
+impl fmt::Display for CloseReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Superseded => formatter.write_str("the reason superseded"),
+            Self::Gate => formatter.write_str("the reason gate"),
+            Self::Unlisted { bytes } => write!(formatter, "a reason of {bytes} bytes"),
+        }
+    }
+}
+
 /// How a connection closed: by this side, by the peer with a code and reason, by a reset, at the idle timeout, or by a transport failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Close {
@@ -382,6 +393,23 @@ impl Close {
             ConnectionError::VersionMismatch
             | ConnectionError::TransportError(_)
             | ConnectionError::CidsExhausted => Self::TransportFailure,
+        }
+    }
+}
+
+impl fmt::Display for Close {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ThisSide => formatter.write_str("closed by this side"),
+            Self::Peer { code, reason } => {
+                write!(
+                    formatter,
+                    "closed by the peer with code {code} and {reason}"
+                )
+            }
+            Self::PeerReset => formatter.write_str("reset by the peer"),
+            Self::IdleTimeout => formatter.write_str("timed out"),
+            Self::TransportFailure => formatter.write_str("failed in the transport"),
         }
     }
 }
@@ -1196,9 +1224,48 @@ mod tests {
         assert!(accept_is_locally_rejected(&accepted));
         assert!(recorded_reasons_match(&recorded, |reason| matches!(
             reason,
-            GateFailure::Transport(ConnectionError::ApplicationClosed(close))
-                if close.error_code == PEER_CLOSE_CODE && close.reason == PEER_CLOSE_REASON
+            GateFailure::Transport(Close::Peer { code, reason: CloseReason::Unlisted { bytes } })
+                if *code == u64::from(PEER_CLOSE_CODE) && *bytes == PEER_CLOSE_REASON.len()
         )));
+    }
+
+    const HOSTILE_HEX_RUN: &str =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const HOSTILE_CLOSE_REASON: &[u8] = b"\x1b[2J\r\nforged record 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\x07";
+    const HOSTILE_PHRASE: &str = "forged record";
+    const CONTROL_CHARACTERS: [char; 4] = ['\x1b', '\r', '\n', '\x07'];
+
+    #[tokio::test]
+    async fn spec_3_6_a_peer_that_closes_the_gate_with_a_hostile_reason_reaches_neither_standard_error_nor_the_events_line()
+     {
+        let (member, recorded) =
+            bind_node_recording_gate_closings(MEMBER_SEED, MEMBER_SECRET).await;
+        let peer = bind_plain_endpoint_granting_no_streams(SPEC_PEER_SEED).await;
+
+        let close_with_a_hostile_reason = async {
+            let connection = peer
+                .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                .await
+                .unwrap();
+            connection.close(PEER_CLOSE_CODE, HOSTILE_CLOSE_REASON);
+            connection
+        };
+        let (_closed_connection, accepted) =
+            tokio::join!(close_with_a_hostile_reason, accept_next(member.endpoint()));
+        assert!(accept_is_locally_rejected(&accepted));
+
+        let closing = recorded.lock().unwrap().pop().unwrap();
+        let event: crate::event::Event = TransportEvent::GateClosed(closing).into();
+        let standard_error_line = event.run_record_line().unwrap();
+        let events_line = format!("{:?}", event.fields());
+        for written in [&standard_error_line, &events_line] {
+            assert!(!written.contains(HOSTILE_HEX_RUN), "{written}");
+            assert!(!written.contains(HOSTILE_PHRASE), "{written}");
+        }
+        assert!(
+            !standard_error_line.contains(CONTROL_CHARACTERS),
+            "{standard_error_line:?}"
+        );
     }
 
     const VENDORED_GOSSIP_ALPN: &[u8] = b"/iroh-gossip/1";
