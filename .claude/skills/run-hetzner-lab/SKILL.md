@@ -1,7 +1,7 @@
 ---
 name: run-hetzner-lab
 description: >
-  Run the Hetzner Cloud lab for estafette from creation to deletion: one server per run, torn down when the run ends, each resource under its own deadline and an hourly backstop check. Use it for the multi-machine acceptance tests (spec 3.15 tests 3, 15, 22 to 28).
+  Run the Hetzner Cloud lab for estafette from creation to deletion: two servers per run, host A and host B, brought up proven whole and torn down when the run ends, each resource under its own deadline and an hourly backstop check. Use it for the multi-machine acceptance tests (spec 3.15 tests 3, 15, 22 to 28).
   "create a lab server", "hetzner", "hcloud", "a second machine", "a remote machine for the test", "extend the deadline", "tear down the lab", "delete the server", "lab backstop", or any request to create, check, extend, or delete a Hetzner Cloud resource.
 ---
 
@@ -24,7 +24,7 @@ Recreate the server when the next run needs it; never keep it up to save the set
 
 List before creating: run `just remote::list`, which shows every server, primary IP, firewall, and SSH key in the project; never create a resource that a listed one can serve.
 
-Reuse applies only to a server that is up for a run still in progress, and never to a second run; never create a second server while that one runs.
+Reuse applies only to a server that is up for a run still in progress, and never to a second run; never create a server beyond the run's host A and host B while they run.
 
 Put the deadline label on every resource at creation; never leave a resource unlabeled.
 
@@ -98,6 +98,20 @@ Check the tools after the setup with `uv --version` and `just --version`, and as
 
 Take a new server at a reused address as a new host: run `just remote::forget-host` first.
 </bound-each-waiting-step>
+
+<bring-the-lab-up-proven-whole>
+Bring the lab up with `just remote::lab-up`, the `LAB_HOST_A_*` and `LAB_HOST_B_*` location and type variables exported; never start host B's host by hand, and never run a test on a lab whose bring-up exited non-zero.
+
+Know what the bring-up proves before it exits 0: host A up by `host-up`; host B's server built by `server-up`; host A's relay completes a TLS handshake from the Mac by its name, with a chain the Mac's trust store verifies for that name, before host B's host starts, so B never starts before its peer serves; host B's relay does the same; then `just remote::both-hosts-serve` passes. When that proof fails, the bring-up restarts host B's host once and runs the proof again; a second failure exits non-zero.
+
+Prove the lab whole with `just remote::both-hosts-serve` before every batch of tests and after every test that kills and restores a host: it checks both relays by name and then that each host's running process stands joined, its events file holding `gossip.topic_joined` and at least one `gossip.neighbor_up` (at bring-up no member exists, so a host's only possible neighbor is the other host); it changes nothing on any server, restarts nothing, names hosts by letter alone, prints no address and no name holding one, and exits 0 or non-zero, so its output goes into a report as printed; never run a batch on a lab it has not just proven.
+
+Read a relay's run-out, which waits up to `relay_certificate_wait_seconds` of `just/remote.just`: `host <letter>: relay did not answer TLS by name within <n> s; last handshake: <curl's error line, the name and any address replaced>`, then from the server `unit estafette-host is <state>`, `TCP 443 listens` or `does not listen`, `relay certificate cache files: <count>`, and one `cache file <name> modified <time> UTC` line per file, never their contents. An error line ending `alert access denied` means the relay holds no certificate; a `cached_account_*` file with no `cached_cert_*` file means an order was sent and refused or failed, a rate limit among the causes; neither file means no order was sent; TCP 443 not listening means the relay never started; a unit not active means the host process is gone.
+
+Read a join's run-out, which waits up to `host_join_wait_seconds` of `just/remote.just`: `host <letter> did not stand joined within <n> s: gossip.topic_joined lines <a>, gossip.neighbor_up lines <b>, events lines <c>`; a 0 names the missing line. `host <letter>: no events file is held open by a running host process` means the host unit is not running.
+
+Know the form of a relay's name: `s<the server's numeric id at Hetzner>.<its IPv4 address, dots as hyphens>.sslip.io`, derived by the private recipe `relay-name` alone, which every start, restart, restore and record of a host goes through; sslip.io resolves the name to the address it embeds. Hetzner hands addresses out again and Let's Encrypt allows five certificates for one exact name in seven days, and a name built from the address alone was ordered seven times in four days by the servers that held one address, then got no certificate; the id is never repeated by a later server, so no earlier server ordered for the name, and a server keeps its name through every restart, so the certificate its cache holds serves the restart. Never derive a relay name anywhere else.
+</bring-the-lab-up-proven-whole>
 
 <extend-a-deadline-while-work-runs>
 Extend a deadline on the owner's word, or while lab work on that lab resource is running, with `python3 -I lab-backstop.py extend <kind> <id> <hours>`; never extend one for an idle lab resource.
