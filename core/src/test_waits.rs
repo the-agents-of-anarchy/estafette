@@ -50,21 +50,31 @@ pub async fn recorded_until(
     let mut before = Vec::new();
     let found = tokio::time::timeout(within, async {
         loop {
-            let (recorded_name, fields) = receiver.recv().await.unwrap();
+            let (recorded_name, fields) = receiver.recv().await?;
             if recorded_name == name && meets(&fields) {
-                return fields;
+                return Some(fields);
             }
             before.push((recorded_name, fields));
         }
     })
-    .await;
-    match found {
-        Ok(fields) => (before, fields),
-        Err(_elapsed) => {
-            let seen: Vec<&str> = before.iter().map(|(seen, _fields)| *seen).collect();
-            panic!("no {name} meeting the condition within {within:?}; seen {seen:?}")
-        }
-    }
+    .await
+    .unwrap_or_else(|_elapsed| {
+        panic!(
+            "no {name} meeting the condition within {within:?}; seen {:?}",
+            names_of(&before)
+        )
+    });
+    let Some(fields) = found else {
+        panic!(
+            "the run record closed before any {name} meeting the condition; seen {:?}",
+            names_of(&before)
+        )
+    };
+    (before, fields)
+}
+
+fn names_of(events: &[RecordedEvent]) -> Vec<&'static str> {
+    events.iter().map(|(name, _fields)| *name).collect()
 }
 
 /// The answer of the request, failing with the name of what was awaited when it does not come within the bound.
@@ -94,4 +104,20 @@ pub async fn found_within<Found>(
     })
     .await
     .ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[should_panic(
+        expected = "the run record closed before any process.started meeting the condition; seen []"
+    )]
+    async fn a_closed_run_record_fails_naming_what_was_awaited() {
+        let (record, mut receiver) = recorded_events();
+        drop(record);
+
+        next_recorded(&mut receiver, "process.started").await;
+    }
 }
