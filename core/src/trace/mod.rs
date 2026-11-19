@@ -1274,7 +1274,11 @@ mod tests {
      {
         let (root, directory) = scratch_trace_directory("prune");
         let traces = directory.path();
-        fs::create_dir_all(&traces).unwrap();
+        for private_directory in directory.private_directories() {
+            OperatingSystemFilesystem
+                .create_private_directory(&private_directory)
+                .unwrap();
+        }
         let fresh_at_the_bound = NOW_MS - SMALL_FRESHNESS_MS;
         let stale_by_one = NOW_MS - SMALL_FRESHNESS_MS - 1;
         let run_a = "20000101T000000Z-0000000000000001-estafette";

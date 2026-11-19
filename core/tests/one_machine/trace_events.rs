@@ -4,6 +4,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use estafette::dirs::{DirectoryFilesystem, OperatingSystemFilesystem};
+
 use crate::local_network::{LocalNetwork, NETWORK};
 use crate::member::first_line_named;
 use crate::member_events::MemberEvents;
@@ -52,7 +54,12 @@ fn clock_ticking_by(tick: Duration) -> impl FnMut() -> Instant {
 
 /// Runs `test-send` to an unknown handle as the member of that number, which ends having recorded `process.command_failed` in the member's trace directory.
 fn send_to_nobody_as_member(machine: &ScratchMachine, number: u32) {
-    fs::create_dir_all(machine.traces_directory_of_member(number)).unwrap();
+    let traces = machine.traces_directory_of_member(number);
+    for private_directory in [traces.parent().unwrap(), traces.as_path()] {
+        OperatingSystemFilesystem
+            .create_private_directory(private_directory)
+            .unwrap();
+    }
     let status = machine
         .member_command(number)
         .args(["test-send", NETWORK, UNKNOWN_HANDLE, BODY])

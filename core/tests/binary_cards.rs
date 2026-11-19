@@ -1,6 +1,6 @@
 use std::fs::Permissions;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -702,4 +702,64 @@ fn binary_list_cards_lists_a_card_whose_public_aliases_a_container_anchored_beyo
 
     assert_eq!(listed.status.code(), Some(0), "{}", stderr_text(&listed));
     assert!(String::from_utf8_lossy(&listed.stdout).starts_with("ana-card\tana\t"));
+}
+
+const GROUP_OTHER_READABLE_DIRECTORY_MODE: u32 = 0o755;
+
+fn runtime_directory_of(root: &Path) -> io::Result<PathBuf> {
+    let user_id = std::fs::metadata(root)?.uid();
+    Ok(root.join(format!("runtime/estafette-{user_id}")))
+}
+
+#[test]
+fn binary_refuses_an_existing_runtime_directory_that_grants_access_to_group_and_other_runtime_directory_is_private_or_refused()
+ {
+    let root = common::scratch_root(SCRATCH_PREFIX, "runtime_directory_0755").unwrap();
+    let runtime = runtime_directory_of(&root).unwrap();
+    std::fs::create_dir_all(&runtime).unwrap();
+    std::fs::set_permissions(
+        &runtime,
+        Permissions::from_mode(GROUP_OTHER_READABLE_DIRECTORY_MODE),
+    )
+    .unwrap();
+
+    let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
+
+    assert_eq!(listed.status.code(), Some(1), "{}", stderr_text(&listed));
+    assert_eq!(listed.stdout, Vec::<u8>::new());
+    let path = runtime.display();
+    assert_eq!(
+        stderr_text(&listed),
+        format!(
+            "cannot create {path}: {path} already exists and is mode 0755, which grants access to group or other; it must be a directory of yours with no access for group or other\n"
+        )
+    );
+    assert_eq!(
+        mode_of(&runtime).unwrap(),
+        GROUP_OTHER_READABLE_DIRECTORY_MODE
+    );
+}
+
+#[test]
+fn binary_refuses_a_symbolic_link_in_place_of_the_runtime_directory_runtime_directory_is_private_or_refused()
+ {
+    let root = common::scratch_root(SCRATCH_PREFIX, "runtime_directory_link").unwrap();
+    let runtime = runtime_directory_of(&root).unwrap();
+    let target = root.join("elsewhere");
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::set_permissions(&target, Permissions::from_mode(PRIVATE_DIRECTORY_MODE)).unwrap();
+    std::fs::create_dir_all(runtime.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&target, &runtime).unwrap();
+
+    let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
+
+    assert_eq!(listed.status.code(), Some(1), "{}", stderr_text(&listed));
+    assert_eq!(listed.stdout, Vec::<u8>::new());
+    let path = runtime.display();
+    assert_eq!(
+        stderr_text(&listed),
+        format!(
+            "cannot create {path}: {path} already exists and is a symbolic link; it must be a directory of yours with no access for group or other\n"
+        )
+    );
 }

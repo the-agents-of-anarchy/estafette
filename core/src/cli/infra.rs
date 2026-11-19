@@ -917,7 +917,7 @@ mod tests {
     use crate::crypto::{
         NetworkKeys, NetworkSecret, render_host_certificate, sign_host_certificate,
     };
-    use crate::dirs::OperatingSystemFilesystem;
+    use crate::dirs::{DirectoryFilesystem, OperatingSystemFilesystem};
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::invite::render_host_line;
     use crate::keys::{render_public_key, render_secret_key};
@@ -1005,6 +1005,12 @@ mod tests {
         directories: Directories,
     }
 
+    fn make_private_directory(directory: &Path) {
+        OperatingSystemFilesystem
+            .create_private_directory(directory)
+            .unwrap();
+    }
+
     impl Scratch {
         fn new(tag: &str) -> Self {
             let root = crate::fresh_directory::fresh_directory_in(
@@ -1030,7 +1036,7 @@ mod tests {
 
         fn configure_network_with(&self, hosts: Vec<Host>) {
             let path = self.config_file();
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            make_private_directory(path.parent().unwrap());
             NetworkConfig {
                 secret: data_encoding::HEXLOWER.encode(&NETWORK_SECRET),
                 owner: render_public_key(&secret_key(OWNER_SEED).public()),
@@ -1065,7 +1071,7 @@ mod tests {
 
         fn certify(&self, host_seed: u8) {
             let path = self.certificate_file();
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            make_private_directory(path.parent().unwrap());
             fs::write(path, certificate_line(OWNER_SEED, host_seed)).unwrap();
         }
 
@@ -1487,7 +1493,7 @@ mod tests {
                 crate::remove_scratch::remove_scratch(&scratch.certificate_file()).unwrap();
             }
             if let Some(certificate) = certificate {
-                fs::create_dir_all(scratch.certificate_file().parent().unwrap()).unwrap();
+                make_private_directory(scratch.certificate_file().parent().unwrap());
                 fs::write(scratch.certificate_file(), certificate).unwrap();
             }
 

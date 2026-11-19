@@ -491,6 +491,11 @@ mod observability {
         .unwrap();
         let traces = traces_directory(&root.join(DATA_HOME));
         fs::create_dir_all(traces.parent().unwrap()).unwrap();
+        fs::set_permissions(
+            traces.parent().unwrap(),
+            fs::Permissions::from_mode(SPEC_DIRECTORY_MODE),
+        )
+        .unwrap();
         fs::write(&traces, "a file where the trace directory belongs").unwrap();
 
         let output = run_with_input(&root, &["mcp", NETWORK], NOT_JSON);
