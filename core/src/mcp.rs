@@ -49,16 +49,27 @@ const SERVER_NAME: &str = "estafette";
 const SERVER_INPUT_BUFFER_BYTES: usize = 64 * 1024;
 /// The six tools of spec 3.10 (D28).
 const TOOL_COUNT: usize = 6;
+/// The JSON Schema keyword naming the type of a value.
 const SCHEMA_TYPE_KEY: &str = "type";
+/// The JSON Schema type of a tool's arguments.
 const SCHEMA_OBJECT_TYPE: &str = "object";
+/// The JSON Schema keyword listing the arguments an object accepts.
 const SCHEMA_PROPERTIES_KEY: &str = "properties";
+/// The JSON Schema keyword listing the arguments an object must carry.
 const SCHEMA_REQUIRED_KEY: &str = "required";
+/// The JSON Schema keyword that refuses arguments an object does not list.
 const SCHEMA_ADDITIONAL_PROPERTIES_KEY: &str = "additionalProperties";
+/// The JSON Schema keyword naming the type of each element of an array.
 const SCHEMA_ITEMS_KEY: &str = "items";
+/// The JSON Schema keyword bounding a number from below.
 const SCHEMA_MINIMUM_KEY: &str = "minimum";
+/// The JSON Schema keyword bounding a string's length.
 const SCHEMA_MAX_LENGTH_KEY: &str = "maxLength";
+/// The JSON Schema type of a text argument.
 const SCHEMA_STRING_TYPE: &str = "string";
+/// The JSON Schema type of a list argument.
 const SCHEMA_ARRAY_TYPE: &str = "array";
+/// The JSON Schema type of a whole-number argument.
 const SCHEMA_INTEGER_TYPE: &str = "integer";
 /// The argument naming the card, spec 3.10.
 const CARD_ARGUMENT: &str = "card";
