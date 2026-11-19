@@ -925,7 +925,9 @@ mod tests {
     use crate::net::direct::{MonotonicClock, MonotonicTime, RuntimeClock};
     use crate::net::endpoint::NodeEndpoint;
     use crate::node::{Identity, Node, NodeEffects};
-    use crate::test_waits::{RecordedEvent, found_within, next_recorded_meeting, recorded_events};
+    use crate::test_waits::{
+        RecordedEvent, answered_within, found_within, next_recorded_meeting, recorded_events,
+    };
 
     use crate::wire::{HostAddr, Version};
 
@@ -1608,28 +1610,38 @@ mod tests {
         .unwrap();
         let seen = Seen::default();
         let (stop, stopped) = stopped_on_signal();
+        let (record, mut recorded) = recorded_events();
         let plan = Plan {
             stopped,
+            report: record,
             ..Plan::new(HOST_SEED)
         };
 
-        let ((_printed, outcome), heard) =
-            tokio::join!(run_planned(&scratch, plan, &seen), async {
+        let ((_printed, outcome), _peer) = tokio::join!(
+            answered_within(
+                PEER_JOIN_WAIT,
+                "end of the host's run once its first record was due",
+                run_planned(&scratch, plan, &seen),
+            ),
+            async {
                 let host = bound_endpoint(&seen, 0).await;
-                let mut peer = Peer::subscribed_through(PEER_SEED, &host).await;
-                let heard = peer.next_host_record(RECORD_AT_JOIN_WAIT).await;
-                drop(stop);
-                heard
-            });
+                Peer::subscribed_through(PEER_SEED, &host).await
+            }
+        );
+        drop(stop);
+        let recorded_through_the_end = crate::net::direct::tests::recorded_so_far(&mut recorded);
 
         fs::set_permissions(
             &infrastructure_directory,
             fs::Permissions::from_mode(SPEC_PRIVATE_DIRECTORY_MODE),
         )
         .unwrap();
-        assert_eq!(
-            heard, None,
-            "the peer heard a host record within {RECORD_AT_JOIN_WAIT:?}"
+        assert!(
+            !recorded_through_the_end.iter().any(|(name, fields)| {
+                *name == BROADCAST_EVENT
+                    && fields.contains(&(KIND_FIELD, serde_json::Value::from(INFRASTRUCTURE_KIND)))
+            }),
+            "the host broadcast a record whose counter it could not write first: {recorded_through_the_end:?}"
         );
         assert!(
             outcome
