@@ -233,6 +233,8 @@ mod tests {
     const NOTHING_MORE_WITHIN: Duration = Duration::from_millis(500);
     const OVERSIZE_PUBLIC_BYTES: usize = 4000;
     const EVENT_WAIT: Duration = Duration::from_millis(8000);
+    /// The bound of the look for the drop and the next good Presence, as long as the wait for that Presence and the half second of silence after it that the look replaces.
+    const DROPPED_AND_ARRIVED_WITHIN: Duration = Duration::from_millis(8500);
     const GATE_CLOSED_EVENT: &str = "transport.gate_closed";
     const FORGED_DEPARTURE_SEQ: u64 = 3;
     const UNCERTIFIED_RECORD_TS: u64 = 1_700_000_000;
@@ -459,7 +461,7 @@ mod tests {
         let record_drop = |refusal: PayloadRefusal| drops.lock().unwrap().push(refusal);
         let mut arrived = Vec::new();
 
-        let dropped_and_arrived = found_within(EVENT_WAIT, async || {
+        let dropped_and_arrived = found_within(DROPPED_AND_ARRIVED_WITHIN, async || {
             if let Some(Ok(GossipEvent::Payload(payload))) =
                 first_topic.next_event_recording_drops(&record_drop).await
             {
@@ -476,7 +478,7 @@ mod tests {
         );
         assert!(
             dropped_and_arrived.is_some(),
-            "the node did not both drop {dropped_as:?} and take the next good presence within {EVENT_WAIT:?}; it took {arrived:?} and dropped {:?}",
+            "the node did not both drop {dropped_as:?} and take the next good presence within {DROPPED_AND_ARRIVED_WITHIN:?}; it took {arrived:?} and dropped {:?}",
             drops.lock().unwrap()
         );
         assert_eq!(
