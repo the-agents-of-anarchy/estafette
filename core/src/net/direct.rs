@@ -165,7 +165,7 @@ impl HeldConnections {
     }
 
     /// Closes the card's connections that keep iroh on a gone process's path once its peer has acknowledged every Introduce answer to the card, so a dial to the card that follows reaches its live process (spec 3.8, address lookup).
-    pub(crate) async fn close_gone_path_of(&self, card: wire::PublicKey) {
+    async fn close_gone_path_of(&self, card: wire::PublicKey) {
         let left_on_a_gone_path = self
             .left_on_a_gone_path
             .lock()
