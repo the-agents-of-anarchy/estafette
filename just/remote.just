@@ -46,6 +46,7 @@ remote_host_certificate_temporary := remote_host_certificate_file + ".tmp"
 remote_host_line_file := remote_host_root / "host-line"
 remote_relay_certificate_cache := remote_host_root / "data/estafette/infra" / lab_network + ".certs"
 relay_certificate_wait_seconds := "300"
+host_join_wait_seconds := "60"
 host_record_under_root := "docs/orchestration_log/recon/2026-10-24/lab/host.txt"
 root_checkout_command := 'dirname "$(git rev-parse --path-format=absolute --git-common-dir)"'
 
@@ -428,6 +429,15 @@ relay-answers-tls: lab-context-exists
     fi
     ssh {{ ssh_opts }} root@"$({{ lab_hcloud }} server ip {{ server }})" bash -s -- {{ lab_host_letter }} {{ host_unit }} {{ remote_relay_certificate_cache }} < just/remote/relay-state.sh
     exit 1
+
+[doc("Wait until the events file the server's running host process holds open shows gossip.topic_joined and at least one gossip.neighbor_up, polling up to host_join_wait_seconds, sixty times the 1 s a restarted host of 2026-11-19 took from its start to both lines; at bring-up no member exists, so a host's one possible neighbor is the other host; changes nothing; prints, by host letter, the counts of those two lines and of all events lines, never a line, an id or an address; fails at the bound, or at once when no running host process holds an events file")]
+[group('lab')]
+host-joined: lab-context-exists
+    #!/usr/bin/env bash
+    set -euo pipefail
+    address="$({{ lab_hcloud }} server ip {{ server }})"
+    events_file="$(ssh {{ ssh_opts }} root@"$address" 'readlink -f /proc/"$(systemctl show --property=MainPID --value {{ host_unit }})"/fd/* | grep "\.events\.jsonl$"')" || events_file=""
+    ssh {{ ssh_opts }} root@"$address" bash -s -- {{ lab_host_letter }} {{ host_join_wait_seconds }} "'$events_file'" < just/remote/host-joined.sh
 
 [doc("Delete every lab resource of the stretch, servers first then firewall and key (primary IPs go with their servers), through the skill's backstop script, and end by printing just remote::list")]
 [group('lab')]
