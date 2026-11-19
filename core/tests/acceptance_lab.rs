@@ -1394,12 +1394,20 @@ mod spec_3_15_two_members_through_the_live_host {
                 introduce_acknowledged_by(amy.member.events(), &short_id_text(&bob_key));
             },
         );
+        let listed_after_the_introduce = timed(
+            "amy's peers tool answers after her introduce to bob",
+            || listed_peer(&mut amy.member, &bob_handle),
+        );
 
         assert!(call_succeeded(&amy.claim), "{}", amy.claim);
         assert_eq!(unseen_before, None);
         assert!(sent.as_ref().is_ok_and(|ack| ack.accepted), "{sent:?}");
         assert_eq!(listed_after.unwrap()["status"], json!("online"));
         assert_eq!(presences_of_bob_before_the_frame, Vec::<u64>::new());
+        assert_eq!(
+            listed_after_the_introduce.unwrap()["status"],
+            json!("online")
+        );
     }
 
     #[test]
