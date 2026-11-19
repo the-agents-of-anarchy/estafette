@@ -22,7 +22,8 @@ use crate::mcp_server::{
 };
 use crate::message_body::BODY;
 use crate::payload_placeholders::wall_clock_ms;
-use crate::scratch_machine::{Card, ScratchMachine};
+use crate::relay_placement::{connect_times_to, killed_relay_answers_faster};
+use crate::scratch_machine::{Card, ScratchMachine, print_to_standard_error};
 use crate::server_member::ServerMember;
 use crate::tail::{
     COLUMN_SEPARATOR, INFRASTRUCTURE_KIND, PRESENCE_ADDR_COLUMN, PRESENCE_CARD_COLUMN,
@@ -607,6 +608,19 @@ fn trio_homed_on(
     );
 }
 
+/// Times the connections from this machine to the doomed host's relay and to the live host's, prints every reading, and fails the test unless the placement spec 3.15 test 23 stands on holds.
+#[track_caller]
+fn placement_held(doomed: &KillableHost, network: &LiveNetwork) {
+    let killed = connect_times_to(doomed.relay());
+    let living = connect_times_to(network.host_relay());
+    print_to_standard_error(&format!(
+        "connect times to the doomed host's relay: {killed:?}; to the live host's relay: {living:?}"
+    ));
+    if let Err(refusal) = killed_relay_answers_faster(&killed, &living) {
+        panic!("{refusal}");
+    }
+}
+
 /// One send from every member to every other, in a fixed order, each timed, with its sender, receiver and envelope.
 fn sweep_of_sends(members: &mut [Member]) -> Vec<(String, String, Value)> {
     let handles: Vec<String> = members.iter().map(|member| member.handle.clone()).collect();
@@ -636,6 +650,9 @@ fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_othe
     });
     timed("the killable host serving", || {
         killable_host_serving(&doomed, &tail);
+    });
+    timed("connections to both hosts' relays timed", || {
+        placement_held(&doomed, &network);
     });
     let (mut trio, announced) = timed("three members homed on the killable host", || {
         trio_homed_on(&network, doomed.address())

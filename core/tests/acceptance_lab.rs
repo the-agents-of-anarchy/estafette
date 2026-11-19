@@ -56,6 +56,9 @@ mod payload_placeholders;
 #[path = "support/payloads.rs"]
 mod payloads;
 #[cfg(test)]
+#[path = "lab/relay_placement.rs"]
+mod relay_placement;
+#[cfg(test)]
 #[path = "support/scratch_machine.rs"]
 mod scratch_machine;
 #[cfg(test)]
