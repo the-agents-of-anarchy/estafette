@@ -2,7 +2,7 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use estafette::dirs::{TraceFileKind, events_trace_file_name, trace_file_of};
+use estafette::dirs::{TraceFileKind, events_trace_file_name, raw_trace_file_name, trace_file_of};
 use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
 use serde_json::Value;
 
@@ -298,6 +298,18 @@ pub fn stopped_trace_lines_of(path: &Path) -> Vec<TraceLine> {
 ///
 /// Fails with `TraceReadError::Unreadable` when the directory exists but cannot be listed.
 pub fn events_files_in(traces_directory: &Path) -> Result<Vec<PathBuf>, TraceReadError> {
+    trace_files_in(traces_directory, TraceFileKind::Events)
+}
+
+/// The trace files of the kind in the trace directory, oldest run first and each run's earlier lines first; none when the directory does not exist.
+///
+/// # Errors
+///
+/// Fails with `TraceReadError::Unreadable` when the directory exists but cannot be listed.
+pub fn trace_files_in(
+    traces_directory: &Path,
+    kind: TraceFileKind,
+) -> Result<Vec<PathBuf>, TraceReadError> {
     let unreadable = |failure: std::io::Error| TraceReadError::Unreadable {
         path: traces_directory.to_path_buf(),
         kind: failure.kind(),
@@ -310,12 +322,12 @@ pub fn events_files_in(traces_directory: &Path) -> Result<Vec<PathBuf>, TraceRea
     let mut files = Vec::new();
     for entry in entries {
         let path = entry.map_err(unreadable)?.path();
-        let is_events_file = path
+        let is_of_the_kind = path
             .file_name()
             .and_then(|name| name.to_str())
             .and_then(trace_file_of)
-            .is_some_and(|(_run, kind)| kind == TraceFileKind::Events);
-        if is_events_file {
+            .is_some_and(|(_run, file_kind)| file_kind == kind);
+        if is_of_the_kind {
             files.push(path);
         }
     }
@@ -323,17 +335,21 @@ pub fn events_files_in(traces_directory: &Path) -> Result<Vec<PathBuf>, TraceRea
     Ok(files)
 }
 
-/// Where an events file is read among the others: by its run, and within its run the file it rolled over into before the file written after the rollover.
-fn reading_order(events_file: &Path) -> (String, bool) {
-    let name = events_file
+/// Where a trace file is read among the others of its kind: by its run, and within its run the file it rolled over into before the file written after the rollover.
+fn reading_order(trace_file: &Path) -> (String, bool) {
+    let name = trace_file
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
-    let run_name = trace_file_of(name).map_or(name, |(run_name, _kind)| run_name);
-    (
-        run_name.to_owned(),
-        name == events_trace_file_name(run_name),
-    )
+    let (run_name, written_after_the_rollover) =
+        trace_file_of(name).map_or((name, false), |(run_name, kind)| {
+            let unrolled_name = match kind {
+                TraceFileKind::Events => events_trace_file_name(run_name),
+                TraceFileKind::Raw => raw_trace_file_name(run_name),
+            };
+            (run_name, name == unrolled_name)
+        });
+    (run_name.to_owned(), written_after_the_rollover)
 }
 
 /// Every whole line of every events file in the trace directory, oldest run first, each read as a file whose process ended.
@@ -704,6 +720,39 @@ pub mod tests {
             .collect();
 
         assert_eq!(numbers, [4, 7]);
+        remove_scratch(&directory).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_7_a_trace_directory_reads_as_its_raw_files_in_run_order_the_rolled_over_lines_first_leaving_out_events_files()
+     {
+        let directory = fresh_scratch_directory("raw-files");
+        let earlier_run = "20261112T225913Z-bbbbbbbbbbbbbbbb-estafette.raw.jsonl";
+        fs::write(directory.join(format!("{earlier_run}.1")), MEMBER_LINE).unwrap();
+        fs::write(
+            directory.join(earlier_run),
+            MEMBER_LINE.replace("\"n\":4", "\"n\":7"),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("20261112T225914Z-aaaaaaaaaaaaaaaa-estafette.raw.jsonl"),
+            MEMBER_LINE.replace("\"n\":4", "\"n\":9"),
+        )
+        .unwrap();
+        fs::write(
+            directory.join("20261112T225913Z-bbbbbbbbbbbbbbbb-estafette.events.jsonl"),
+            MEMBER_LINE.replace("\"n\":4", "\"n\":2"),
+        )
+        .unwrap();
+
+        let numbers: Vec<u64> = trace_files_in(&directory, TraceFileKind::Raw)
+            .and_then(|files| lines_of_files_still_present(&files))
+            .unwrap()
+            .iter()
+            .map(|line| line.n)
+            .collect();
+
+        assert_eq!(numbers, [4, 7, 9]);
         remove_scratch(&directory).unwrap();
     }
 
