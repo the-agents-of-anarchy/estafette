@@ -44,6 +44,8 @@ remote_host_config_file := remote_host_root / "config/estafette/networks" / lab_
 remote_host_certificate_file := remote_host_root / "data/estafette/infra" / lab_network + ".cert"
 remote_host_certificate_temporary := remote_host_certificate_file + ".tmp"
 remote_host_line_file := remote_host_root / "host-line"
+remote_relay_certificate_cache := remote_host_root / "data/estafette/infra" / lab_network + ".certs"
+relay_certificate_wait_seconds := "300"
 host_record_under_root := "docs/orchestration_log/recon/2026-10-24/lab/host.txt"
 root_checkout_command := 'dirname "$(git rev-parse --path-format=absolute --git-common-dir)"'
 
@@ -414,6 +416,18 @@ host-start: lab-context-exists
         remote systemctl reset-failed {{ host_unit }} 2> /dev/null || true
         remote systemd-run --unit={{ host_unit }} $(printf -- '--setenv=%s ' {{ remote_host_directories }}) {{ remote_binary }} run-infrastructure {{ lab_network }} "$address" "$domain" >&2
     fi
+
+[doc("Wait until the server's relay completes a TLS handshake from this machine by its relay-name, with a chain the Mac's trust store verifies for that name, polling up to relay_certificate_wait_seconds, three times the 100 s a relay of 2026-11-19 took from its start to its certificate; changes nothing; at the bound fails printing, by host letter, the last handshake's error line with the name and any address replaced, and from the server whether its host unit is active, whether TCP 443 listens, and the name and time of each file in the relay's certificate cache, never their contents")]
+[group('lab')]
+relay-answers-tls: lab-context-exists
+    #!/usr/bin/env bash
+    set -euo pipefail
+    relay_name="$(LAB_SERVER={{ server }} just remote::relay-name)"
+    if bash just/remote/relay-answers-tls.sh {{ lab_host_letter }} "$relay_name" {{ relay_certificate_wait_seconds }}; then
+        exit 0
+    fi
+    ssh {{ ssh_opts }} root@"$({{ lab_hcloud }} server ip {{ server }})" bash -s -- {{ lab_host_letter }} {{ host_unit }} {{ remote_relay_certificate_cache }} < just/remote/relay-state.sh
+    exit 1
 
 [doc("Delete every lab resource of the stretch, servers first then firewall and key (primary IPs go with their servers), through the skill's backstop script, and end by printing just remote::list")]
 [group('lab')]
