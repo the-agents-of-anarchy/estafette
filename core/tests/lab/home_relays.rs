@@ -81,6 +81,40 @@ pub fn every_member_homed_on<'member>(
     }
 }
 
+/// Requires every member's home at the kill, by the home changes its own raw trace stamps at or before the kill's wall-clock instant, to be the killed host's relay, reading each member's trace once by the reader handed in, the refusal naming each member homed elsewhere and the home it held (spec 3.15 tests 23 and 28).
+pub fn every_member_homed_at_the_kill_on<'member>(
+    killed_relay: &str,
+    kill_wall_ms: u64,
+    members: impl IntoIterator<Item = (&'member str, &'member Path)>,
+    mut own_raw_lines: impl FnMut(&Path) -> Vec<TraceLine>,
+) -> Result<(), String> {
+    let homed_elsewhere: Vec<String> = members
+        .into_iter()
+        .filter_map(|(member, traces)| {
+            let home = home_relay_at_the_kill(&own_raw_lines(traces), kill_wall_ms);
+            (home.as_deref() != Some(killed_relay)).then(|| {
+                format!(
+                    "{member} was homed on {} at the kill",
+                    home.as_deref().unwrap_or(NO_HOME)
+                )
+            })
+        })
+        .collect();
+    if homed_elsewhere.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "spec 3.15 tests 23 and 28 kill the host every member is homed on, and every member's own raw trace must name the killed relay {killed_relay} as the home relay by its home changes stamped at or before the kill's {kill_wall_ms} ms: {}",
+            homed_elsewhere.join("; ")
+        ))
+    }
+}
+
+/// The home relay the raw lines leave by the home changes stamped at or before the kill's wall-clock instant.
+fn home_relay_at_the_kill(lines: &[TraceLine], kill_wall_ms: u64) -> Option<String> {
+    home_relay_named_by(lines.iter().filter(|line| line.wall_ms <= kill_wall_ms))
+}
+
 /// Every whole line of the raw files a running member wrote in its trace directory so far, failing the test naming the directory when they cannot be read.
 #[track_caller]
 pub fn raw_lines_of_running_member(traces: &Path) -> Vec<TraceLine> {
@@ -90,9 +124,9 @@ pub fn raw_lines_of_running_member(traces: &Path) -> Vec<TraceLine> {
 }
 
 /// The relay the raw lines leave as the home relay: the last one iroh made the home, unless iroh unset it after.
-fn home_relay_named_by(lines: &[TraceLine]) -> Option<String> {
+fn home_relay_named_by<'line>(lines: impl IntoIterator<Item = &'line TraceLine>) -> Option<String> {
     lines
-        .iter()
+        .into_iter()
         .filter_map(home_change_of)
         .fold(None, |home, (relay, is_home)| {
             if is_home {
@@ -126,7 +160,7 @@ mod tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::path::{Path, PathBuf};
 
-    use super::every_member_homed_on;
+    use super::{every_member_homed_at_the_kill_on, every_member_homed_on};
     use crate::trace_reader::{TraceLine, WritingProcess, parse_trace_lines};
 
     const DOOMED_RELAY: &str = "https://doomed.example/";
@@ -134,12 +168,22 @@ mod tests {
     const AMY: &str = "amyhzqv";
     const BOB: &str = "bobxkwt";
     const CID: &str = "cidpmrf";
+    /// The wall-clock stamp a fixture's line 0 would carry; line `n` is stamped `n` ms later, its `mono_ms` being `n` alone.
+    const WALL_MS_OF_LINE_ZERO: u64 = 1_794_524_353_720;
+    /// The line whose stamp is the kill's instant in the fixtures of the home at the kill: lines 1 to 4 come before it, 6 and 7 after.
+    const KILL_LINE: u64 = 5;
 
     /// A raw line of iroh's own, of the target, with the relay URL and the home flag as iroh words them.
     fn relay_line(n: u64, target: &str, url: &str, home: &str) -> String {
+        let wall_ms = stamp_of_line(n);
         format!(
-            r#"{{"v":1,"run":"6c935f82c118f7b3","n":{n},"mono_ms":{n},"wall_ms":1794524353720,"node":"8f43abc249","event":"iroh_line","target":"{target}","level":"DEBUG","fields":{{"home_relay":"{home}","url":"{url}"}}}}"#
+            r#"{{"v":1,"run":"6c935f82c118f7b3","n":{n},"mono_ms":{n},"wall_ms":{wall_ms},"node":"8f43abc249","event":"iroh_line","target":"{target}","level":"DEBUG","fields":{{"home_relay":"{home}","url":"{url}"}}}}"#
         )
+    }
+
+    /// The wall-clock stamp of a fixture's line `n`, the kill's instant of a fixture that kills at that stamp.
+    const fn stamp_of_line(n: u64) -> u64 {
+        WALL_MS_OF_LINE_ZERO.saturating_add(n)
     }
 
     /// The raw line iroh writes when a relay becomes or stops being the home relay.
@@ -289,5 +333,116 @@ mod tests {
             "{homed:?}"
         );
         assert_eq!(handed.reads(), [AMY, BOB, CID].map(PathBuf::from));
+    }
+
+    #[test]
+    fn spec_3_15_tests_23_and_28_members_whose_last_home_change_at_or_before_the_kill_names_the_killed_relay_were_homed_on_it()
+     {
+        let homed = homed_at_the_kill(vec![
+            (
+                AMY,
+                vec![
+                    home_changed(1, LIVE_RELAY, true),
+                    home_changed(2, DOOMED_RELAY, true),
+                    connected(3, LIVE_RELAY),
+                    connected(6, LIVE_RELAY),
+                ],
+            ),
+            (BOB, vec![home_changed(4, DOOMED_RELAY, true)]),
+        ]);
+
+        assert_eq!(homed, Ok(()));
+    }
+
+    /// Whether each member was homed on the doomed relay at a kill at the stamp of the kill line, by the one raw record each member is handed.
+    fn homed_at_the_kill(members: Vec<(&str, Vec<String>)>) -> Result<(), String> {
+        let names: Vec<&str> = members.iter().map(|(member, _lines)| *member).collect();
+        let handed = HandedRecords::of(
+            members
+                .into_iter()
+                .map(|(member, lines)| (member, vec![raw(&lines)]))
+                .collect(),
+        );
+        every_member_homed_at_the_kill_on(
+            DOOMED_RELAY,
+            stamp_of_line(KILL_LINE),
+            names.iter().map(|member| (*member, Path::new(member))),
+            |traces| handed.read(traces),
+        )
+    }
+
+    #[test]
+    fn spec_3_15_tests_23_and_28_a_member_rehomed_on_the_living_relay_before_the_kill_is_refused_by_name_and_home()
+     {
+        let homed = homed_at_the_kill(vec![
+            (AMY, vec![home_changed(1, DOOMED_RELAY, true)]),
+            (
+                BOB,
+                vec![
+                    home_changed(1, DOOMED_RELAY, true),
+                    home_changed(3, LIVE_RELAY, true),
+                ],
+            ),
+        ]);
+
+        assert_eq!(
+            homed,
+            Err(format!(
+                "spec 3.15 tests 23 and 28 kill the host every member is homed on, and every member's own raw trace must name the killed relay {DOOMED_RELAY} as the home relay by its home changes stamped at or before the kill's {} ms: {BOB} was homed on {LIVE_RELAY} at the kill",
+                stamp_of_line(KILL_LINE)
+            ))
+        );
+    }
+
+    #[test]
+    fn spec_3_15_tests_23_and_28_a_member_rehomed_on_the_living_relay_after_the_kill_was_homed_on_the_killed_relay()
+     {
+        let homed = homed_at_the_kill(vec![(
+            AMY,
+            vec![
+                home_changed(1, DOOMED_RELAY, true),
+                home_changed(6, LIVE_RELAY, true),
+                home_changed(7, DOOMED_RELAY, false),
+            ],
+        )]);
+
+        assert_eq!(homed, Ok(()));
+    }
+
+    #[test]
+    fn spec_3_15_tests_23_and_28_a_home_change_stamped_at_the_kills_instant_counts_as_before_the_kill()
+     {
+        let homed = homed_at_the_kill(vec![(
+            AMY,
+            vec![
+                home_changed(1, DOOMED_RELAY, true),
+                home_changed(KILL_LINE, LIVE_RELAY, true),
+            ],
+        )]);
+
+        assert!(
+            homed.as_ref().is_err_and(|refusal| refusal
+                .ends_with(&format!("{AMY} was homed on {LIVE_RELAY} at the kill"))),
+            "{homed:?}"
+        );
+    }
+
+    #[test]
+    fn spec_3_15_tests_23_and_28_a_member_with_no_home_change_before_the_kill_is_refused_as_homed_nowhere()
+     {
+        let homed = homed_at_the_kill(vec![(
+            AMY,
+            vec![
+                connected(1, DOOMED_RELAY),
+                home_changed(6, DOOMED_RELAY, true),
+            ],
+        )]);
+
+        assert!(
+            homed.as_ref().is_err_and(
+                |refusal| refusal.ends_with(&format!("{AMY} was homed on none at the kill"))
+            ),
+            "{homed:?}"
+        );
     }
 }
