@@ -87,11 +87,8 @@ impl InboxBuffer {
     /// Every buffered frame with seq greater than `since`, oldest first, leaving the buffer untouched.
     #[must_use]
     pub fn frames_since(&self, since: u64) -> Vec<InboxFrame> {
-        self.frames
-            .iter()
-            .filter(|frame| frame.seq > since)
-            .cloned()
-            .collect()
+        let first_newer = self.frames.partition_point(|frame| frame.seq <= since);
+        self.frames.range(first_newer..).cloned().collect()
     }
 }
 
