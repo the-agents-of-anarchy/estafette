@@ -535,7 +535,8 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     use serde_json::Value;
 
     use crate::home_relays::{
-        every_member_homed_on, live_host_record_accepted, raw_lines_of_running_member,
+        every_member_homed_at_the_kill_on, every_member_homed_on, live_host_record_accepted,
+        raw_lines_of_running_member, raw_lines_once_stamped_past,
     };
     use crate::killable_host::KillableHost;
     use crate::lab_machine::{ClaimedMember, LabMachine};
@@ -692,7 +693,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
         }
     }
 
-    /// Spec 3.15 test 28: within 2000 ms of the kill of a member's home relay, the member announces an address whose relays are the live host's alone, the kill waiting until the member's last Presence is a re-announce interval old so spec:777 cannot hold that announcement past the bound.
+    /// Spec 3.15 test 28: within 2000 ms of the kill of a member's home relay, the member announces an address whose relays are the live host's alone, the kill waiting until the member's last Presence is a re-announce interval old so spec:777 cannot hold that announcement past the bound, and the member's own raw trace naming the killed relay as its home at the kill.
     #[test]
     fn spec_3_15_test_28_within_2000_ms_of_its_home_relays_death_a_member_lists_only_live_relays() {
         let _live_host = live_host_to_itself();
@@ -730,6 +731,15 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
                 break after;
             }
         };
+        let own_traces = homed.member.own_traces();
+        if let Err(refusal) = every_member_homed_at_the_kill_on(
+            doomed.relay(),
+            kill.wall_ms,
+            [(MEMBER_CARD, own_traces.as_path())],
+            |traces| raw_lines_once_stamped_past(traces, kill.wall_ms),
+        ) {
+            panic!("{refusal}");
+        }
 
         assert!(
             after_the_kill <= SPEC_LIVE_RELAYS_WITHIN,

@@ -8,6 +8,7 @@ use estafette::wire::HostAddr;
 
 use crate::lab_server::LabServer;
 use crate::live_network::LiveNetwork;
+use crate::payload_placeholders::wall_clock_ms;
 use crate::scratch_machine::KeptSecrets;
 use crate::scratch_machine::server_member_end::{fail_unless_succeeded, recipe_failure};
 
@@ -37,8 +38,9 @@ pub struct KillableHost {
     secrets: io::Result<KeptSecrets>,
 }
 
-/// When the kill was sent over the open session, and when its command returned.
+/// When the kill was sent over the open session, on this machine's wall clock in milliseconds since the Unix epoch, as a member's trace stamps `wall_ms`, and on its monotonic clock, and when its command returned.
 pub struct KillStamps {
+    pub wall_ms: u64,
     pub sent: Instant,
     pub returned: Instant,
 }
@@ -106,7 +108,7 @@ impl KillableHost {
         HostStartedWhenDropped { killable: self }
     }
 
-    /// Opens the kill's SSH session and waits for the host to stand ready, then stamps the instant, sends the kill over the open session and stamps its return, so only the warmed round trip separates the stamp from the kill.
+    /// Opens the kill's SSH session and waits for the host to stand ready, then stamps the instant on the wall clock and on the monotonic clock, sends the kill over the open session and stamps its return, so only the warmed round trip separates the stamps from the kill.
     #[track_caller]
     pub fn kill(&self) -> KillStamps {
         let mut session = self
@@ -135,6 +137,7 @@ impl KillableHost {
             );
         }
         let mut trigger = session.stdin.take().unwrap();
+        let wall_ms = wall_clock_ms();
         let sent = Instant::now();
         trigger.write_all(b"\n").unwrap();
         drop(trigger);
@@ -146,7 +149,11 @@ impl KillableHost {
             self.server.label(),
             recipe_failure(&killed, self.secrets())
         );
-        KillStamps { sent, returned }
+        KillStamps {
+            wall_ms,
+            sent,
+            returned,
+        }
     }
 }
 

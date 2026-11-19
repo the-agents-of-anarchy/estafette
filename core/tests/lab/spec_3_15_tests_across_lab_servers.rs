@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use crate::handles::unique_handle;
 use crate::home_relays::{
-    every_member_homed_on, live_host_record_accepted, raw_lines_of_running_member,
+    every_member_homed_at_the_kill_on, every_member_homed_on, live_host_record_accepted,
+    raw_lines_of_running_member, raw_lines_once_stamped_past,
 };
 use crate::inbox_client::InboxClient;
 use crate::killable_host::KillableHost;
@@ -639,7 +640,7 @@ fn sweep_of_sends(members: &mut [Member]) -> Vec<(String, String, Value)> {
     sends
 }
 
-/// Spec 3.15 test 23: three members on this machine whose configuration names the killable host alone, its relay answering this machine faster than the live host's and each member's own raw trace naming it as the home just before the kill, see that host's relay and bootstrap node killed while the live host lives, and a sweep of sends from every member to every other, sweeps following each other, is delivered whole and ends within 60 s of the kill, while no member's run record names a rebind twice by the end of those 60 s.
+/// Spec 3.15 test 23: three members on this machine whose configuration names the killable host alone, its relay answering this machine faster than the live host's and each member's own raw trace naming it as the home just before the kill and at the kill, see that host's relay and bootstrap node killed while the live host lives, and a sweep of sends from every member to every other, sweeps following each other, is delivered whole and ends within 60 s of the kill, while no member's run record names a rebind twice by the end of those 60 s.
 #[test]
 fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_other_within_60_s_and_none_rebinds_twice()
  {
@@ -694,6 +695,17 @@ fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_othe
         .iter()
         .map(|member| (member.handle.clone(), member.rebinds_recorded()))
         .collect();
+    let own_traces: Vec<PathBuf> = trio.iter().map(Member::own_traces).collect();
+    if let Err(refusal) = every_member_homed_at_the_kill_on(
+        doomed.relay(),
+        kill.wall_ms,
+        trio.iter()
+            .map(|member| member.handle.as_str())
+            .zip(own_traces.iter().map(PathBuf::as_path)),
+        |traces| raw_lines_once_stamped_past(traces, kill.wall_ms),
+    ) {
+        panic!("{refusal}");
+    }
 
     assert!(
         delivered_whole_at.is_some_and(|ended| ended <= window_ends),
