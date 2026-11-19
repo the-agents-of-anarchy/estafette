@@ -455,6 +455,10 @@ mod tests {
         }
     }
 
+    fn publish_message_number(socket: &InboxSocket, n: u64) {
+        let _attached = socket.publish(message_number(n));
+    }
+
     fn started(directories: &Directories) -> InboxSocket {
         InboxSocket::start(
             directories,
@@ -492,13 +496,13 @@ mod tests {
         let directories = scratch_directories("test11");
         let socket = started(&directories);
         for n in 1..=5 {
-            let _attached = socket.publish(message_number(n));
+            publish_message_number(&socket, n);
         }
         let mut client =
             connect_with_since(&directories.inbox_socket_file(OWN_PROCESS_ID), 3).await;
         assert_eq!(next_seq(&mut client).await, 4);
         assert_eq!(next_seq(&mut client).await, 5);
-        let _attached = socket.publish(message_number(6));
+        publish_message_number(&socket, 6);
         assert_eq!(next_seq(&mut client).await, 6);
     }
 
@@ -507,7 +511,7 @@ mod tests {
         let directories = scratch_directories("two-clients");
         let socket = started(&directories);
         for n in 1..=5 {
-            let _attached = socket.publish(message_number(n));
+            publish_message_number(&socket, n);
         }
         let path = directories.inbox_socket_file(OWN_PROCESS_ID);
         let mut from_start = connect_with_since(&path, 0).await;
@@ -516,7 +520,7 @@ mod tests {
         for expected in 1..=5 {
             assert_eq!(next_seq(&mut from_start).await, expected);
         }
-        let _attached = socket.publish(message_number(6));
+        publish_message_number(&socket, 6);
         assert_eq!(next_seq(&mut from_four).await, 6);
         assert_eq!(next_seq(&mut from_start).await, 6);
     }
@@ -525,7 +529,7 @@ mod tests {
     async fn spec_3_11_a_frame_carries_the_six_spec_keys() {
         let directories = scratch_directories("frame-keys");
         let socket = started(&directories);
-        let _attached = socket.publish(message_number(7));
+        publish_message_number(&socket, 7);
         let mut client =
             connect_with_since(&directories.inbox_socket_file(OWN_PROCESS_ID), 0).await;
         assert_eq!(
@@ -553,7 +557,7 @@ mod tests {
         );
         let mut second = connect_with_since(&path, 0).await;
         drop(first);
-        let _attached = socket.publish(message_number(1));
+        publish_message_number(&socket, 1);
         assert_eq!(next_seq(&mut second).await, 1);
         assert!(attached.is_attached());
         drop(second);
@@ -570,7 +574,7 @@ mod tests {
         directories: &Directories,
         socket: &InboxSocket,
     ) -> Vec<u8> {
-        let _attached = socket.publish(message_number(1));
+        publish_message_number(socket, 1);
         let mut stream = UnixStream::connect(directories.inbox_socket_file(OWN_PROCESS_ID))
             .await
             .unwrap();
@@ -622,11 +626,11 @@ mod tests {
         let directories = scratch_directories("since-newest");
         let socket = started(&directories);
         for n in 1..=5 {
-            let _attached = socket.publish(message_number(n));
+            publish_message_number(&socket, n);
         }
         let mut client =
             connect_with_since(&directories.inbox_socket_file(OWN_PROCESS_ID), 5).await;
-        let _attached = socket.publish(message_number(6));
+        publish_message_number(&socket, 6);
         assert_eq!(next_seq(&mut client).await, 6);
     }
 
