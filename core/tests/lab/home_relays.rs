@@ -1,10 +1,11 @@
-use std::path::Path;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use estafette::dirs::TraceFileKind;
 use serde_json::Value;
 
 use crate::dropped_payloads::short_id_of_node;
+use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use crate::live_network::LiveNetwork;
 use crate::member_events::MemberEvents;
 use crate::trace_reader::{TraceLine, lines_of_files_still_present, trace_files_in};
@@ -32,6 +33,8 @@ const HOME_RELAY_FIELD: &str = "home_relay";
 const HOME_RELAY_SET: &str = "true";
 /// What a refusal names as the home of a member whose record names none.
 const NO_HOME: &str = "none";
+/// How long a member's own raw trace may take, after the kill, to hold a line stamped after it, iroh writing lines as the killed relay's connection fails: chosen, not measured.
+const RAW_LINE_PAST_THE_KILL_WAIT: Duration = Duration::from_secs(60);
 
 /// Waits until the member's own events record a record of the live host accepted, after which iroh ranks the live host's relay among the relays it may home on (spec 3.15 tests 23 and 28).
 #[track_caller]
@@ -115,11 +118,63 @@ fn home_relay_at_the_kill(lines: &[TraceLine], kill_wall_ms: u64) -> Option<Stri
     home_relay_named_by(lines.iter().filter(|line| line.wall_ms <= kill_wall_ms))
 }
 
+/// Every whole line of the member's own raw trace once it holds a line stamped after the kill's wall-clock instant, which its writer puts on disk only after every line stamped at or before it, failing the test naming that condition when none comes within the bound.
+#[track_caller]
+pub fn raw_lines_once_stamped_past(traces: &Path, kill_wall_ms: u64) -> Vec<TraceLine> {
+    raw_lines_once_stamped_past_read_by(traces, kill_wall_ms, Instant::now)
+}
+
+/// As `raw_lines_once_stamped_past`, reading the time from `clock`.
+#[track_caller]
+fn raw_lines_once_stamped_past_read_by(
+    traces: &Path,
+    kill_wall_ms: u64,
+    clock: impl FnMut() -> Instant,
+) -> Vec<TraceLine> {
+    let mut watch = GrowthWatch::of_path(traces)
+        .unwrap_or_else(|failure| panic!("{}: {failure}", traces.display()));
+    let past_the_kill = first_found_as_files_grow(
+        &mut watch,
+        RAW_LINE_PAST_THE_KILL_WAIT,
+        clock,
+        || {},
+        |watch| {
+            for file in raw_files_of_running_member(traces) {
+                watch
+                    .watch_file(&file)
+                    .unwrap_or_else(|failure| panic!("{}: {failure}", traces.display()));
+            }
+            let lines = raw_lines_of_running_member(traces);
+            lines
+                .iter()
+                .any(|line| line.wall_ms > kill_wall_ms)
+                .then_some(lines)
+        },
+    );
+    match past_the_kill {
+        Ok(lines) => lines,
+        Err(WaitEnded::RanOut) => panic!(
+            "{}: no raw line stamped after the kill's {kill_wall_ms} ms within {RAW_LINE_PAST_THE_KILL_WAIT:?}",
+            traces.display()
+        ),
+        Err(WaitEnded::WatcherFailed(failure)) => {
+            panic!("{}: the file watcher failed: {failure}", traces.display())
+        }
+        Err(WaitEnded::WatcherEnded) => panic!("{}: the file watcher ended", traces.display()),
+    }
+}
+
+/// The raw files a running member wrote in its trace directory so far, failing the test naming the directory when it cannot be listed.
+#[track_caller]
+fn raw_files_of_running_member(traces: &Path) -> Vec<PathBuf> {
+    trace_files_in(traces, TraceFileKind::Raw)
+        .unwrap_or_else(|failure| panic!("{}: {failure}", traces.display()))
+}
+
 /// Every whole line of the raw files a running member wrote in its trace directory so far, failing the test naming the directory when they cannot be read.
 #[track_caller]
 pub fn raw_lines_of_running_member(traces: &Path) -> Vec<TraceLine> {
-    trace_files_in(traces, TraceFileKind::Raw)
-        .and_then(|files| lines_of_files_still_present(&files))
+    lines_of_files_still_present(&raw_files_of_running_member(traces))
         .unwrap_or_else(|failure| panic!("{}: {failure}", traces.display()))
 }
 
@@ -158,9 +213,14 @@ fn home_change_of(line: &TraceLine) -> Option<(&str, bool)> {
 mod tests {
     use std::cell::RefCell;
     use std::collections::{BTreeMap, VecDeque};
+    use std::fs;
     use std::path::{Path, PathBuf};
+    use std::time::Instant;
 
-    use super::{every_member_homed_at_the_kill_on, every_member_homed_on};
+    use super::{
+        RAW_LINE_PAST_THE_KILL_WAIT, every_member_homed_at_the_kill_on, every_member_homed_on,
+        raw_lines_once_stamped_past, raw_lines_once_stamped_past_read_by,
+    };
     use crate::trace_reader::{TraceLine, WritingProcess, parse_trace_lines};
 
     const DOOMED_RELAY: &str = "https://doomed.example/";
@@ -443,6 +503,72 @@ mod tests {
                 |refusal| refusal.ends_with(&format!("{AMY} was homed on none at the kill"))
             ),
             "{homed:?}"
+        );
+    }
+
+    /// A raw trace file's name, as a member's run names its raw file.
+    const RAW_FILE_NAME: &str = "20261112T225914Z-6c935f82c118f7b3-estafette.raw.jsonl";
+
+    /// A fresh trace directory named for the test, holding one raw file of the lines given.
+    fn traces_holding(test: &str, lines: &[String]) -> PathBuf {
+        let traces =
+            std::env::temp_dir().join(format!("home-relays-{}-{test}", std::process::id()));
+        fs::create_dir_all(&traces).unwrap();
+        fs::write(
+            traces.join(RAW_FILE_NAME),
+            format!("{}\n", lines.join("\n")),
+        )
+        .unwrap();
+        traces
+    }
+
+    #[test]
+    fn spec_3_15_tests_23_and_28_once_a_raw_line_stamped_after_the_kill_is_on_disk_every_line_is_read()
+     {
+        let lines = [
+            home_changed(1, DOOMED_RELAY, true),
+            connected(KILL_LINE, LIVE_RELAY),
+            home_changed(6, LIVE_RELAY, true),
+        ];
+        let traces = traces_holding("past-the-kill", &lines);
+
+        let read = raw_lines_once_stamped_past(&traces, stamp_of_line(KILL_LINE));
+        fs::remove_dir_all(&traces).unwrap();
+
+        assert_eq!(
+            read.iter().map(|line| line.n).collect::<Vec<_>>(),
+            [1, KILL_LINE, 6]
+        );
+    }
+
+    #[test]
+    fn spec_3_15_tests_23_and_28_a_raw_line_stamped_at_the_kills_instant_does_not_end_the_wait() {
+        let traces = traces_holding(
+            "at-the-kill",
+            &[
+                home_changed(1, DOOMED_RELAY, true),
+                connected(KILL_LINE, LIVE_RELAY),
+            ],
+        );
+        let started = Instant::now();
+        let past_the_bound = started.checked_add(RAW_LINE_PAST_THE_KILL_WAIT).unwrap();
+        let mut readings = std::iter::once(started);
+
+        let ran_out = std::panic::catch_unwind(|| {
+            raw_lines_once_stamped_past_read_by(&traces, stamp_of_line(KILL_LINE), move || {
+                readings.next().unwrap_or(past_the_bound)
+            });
+        })
+        .map_err(|payload| payload.downcast_ref::<String>().cloned());
+        fs::remove_dir_all(&traces).unwrap();
+
+        assert_eq!(
+            ran_out,
+            Err(Some(format!(
+                "{}: no raw line stamped after the kill's {} ms within {RAW_LINE_PAST_THE_KILL_WAIT:?}",
+                traces.display(),
+                stamp_of_line(KILL_LINE)
+            )))
         );
     }
 }
