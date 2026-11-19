@@ -111,3 +111,11 @@ What happened: Checking the investigator's saved ACME reply, the lead ran a coun
 Mechanism: The lead globbed a directory it knew held a credential file instead of naming the one raw reply it meant to count in.
 
 Correction: In a directory that holds a key, name each file to be read or counted; never a glob.
+
+## A cd inside a compound command at the records push
+
+What happened: The lead's command that pushed the records to main at about 20:3x ended with a cd into the project root before a gh call, joined by semicolons, though the shell already stood there.
+
+Mechanism: The lead wanted gh to run from the root and added the cd by habit instead of relying on the directory pwd had just printed; conventions git-from-root forbids a cd inside a compound command because the owner's zoxide alias can abort it.
+
+Correction: No harm came: the directory was unchanged and gh ran. gh and git run from the directory pwd prints, with -C or absolute paths, and no cd is written into a compound command.
