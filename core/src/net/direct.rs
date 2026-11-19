@@ -1,6 +1,8 @@
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
+use std::num::NonZeroUsize;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
@@ -126,7 +128,7 @@ pub(crate) async fn before_deadline<Ended>(
 pub struct HeldConnections {
     held: Arc<Mutex<HashMap<wire::PublicKey, Vec<HeldConnection>>>>,
     left_on_a_gone_path: Arc<Mutex<HashSet<wire::PublicKey>>>,
-    introduce_answers_in_flight: watch::Sender<HashMap<wire::PublicKey, usize>>,
+    introduce_answers_in_flight: IntroduceAnswersInFlight,
     monotonic: MonotonicClock,
     transport: TransportRecord,
 }
@@ -146,7 +148,7 @@ impl HeldConnections {
         Self {
             held: Arc::default(),
             left_on_a_gone_path: Arc::default(),
-            introduce_answers_in_flight: watch::Sender::default(),
+            introduce_answers_in_flight: IntroduceAnswersInFlight::default(),
             monotonic,
             transport,
         }
@@ -172,26 +174,8 @@ impl HeldConnections {
         if !left_on_a_gone_path {
             return;
         }
-        let mut answers_in_flight = self.introduce_answers_in_flight.subscribe();
-        if answers_in_flight
-            .wait_for(|in_flight| !in_flight.contains_key(&card))
-            .await
-            .is_ok()
-        {
-            self.close_silent_of(card);
-        }
-    }
-
-    /// Counts an Introduce answer to the card in flight until the guard is dropped.
-    fn introduce_answer_in_flight(&self, card: wire::PublicKey) -> IntroduceAnswerInFlight {
-        self.introduce_answers_in_flight.send_modify(|in_flight| {
-            let answers = in_flight.entry(card).or_default();
-            *answers = answers.saturating_add(1);
-        });
-        IntroduceAnswerInFlight {
-            register: self.clone(),
-            card,
-        }
+        self.introduce_answers_in_flight.settled(card).await;
+        self.close_silent_of(card);
     }
 
     /// Closes every connection to or from the card that has heard nothing from its peer for as long as a gone process is silent, but the spared one, and then, when this pass or an earlier one found a gone process and none left reports a path iroh selected, every other but the spared one too.
@@ -448,9 +432,55 @@ impl HeldConnection {
     }
 }
 
-/// An Introduce answer to the card that the register counts in flight until this is dropped.
+/// How many Introduce answers to each card its peer has yet to acknowledge, a card absent once none is.
+#[derive(Clone, Default)]
+struct IntroduceAnswersInFlight(watch::Sender<HashMap<wire::PublicKey, NonZeroUsize>>);
+
+impl IntroduceAnswersInFlight {
+    /// Counts an Introduce answer to the card in flight until the returned guard is dropped.
+    fn count(&self, card: wire::PublicKey) -> IntroduceAnswerInFlight {
+        self.0.send_modify(|in_flight| {
+            in_flight
+                .entry(card)
+                .and_modify(|answers| *answers = answers.saturating_add(1))
+                .or_insert(NonZeroUsize::MIN);
+        });
+        IntroduceAnswerInFlight {
+            in_flight: self.clone(),
+            card,
+        }
+    }
+
+    /// Waits until no Introduce answer to the card is in flight.
+    async fn settled(&self, card: wire::PublicKey) {
+        let mut in_flight = self.0.subscribe();
+        drop(
+            in_flight
+                .wait_for(|answers| !answers.contains_key(&card))
+                .await,
+        );
+    }
+
+    /// Takes one Introduce answer to the card out of flight, leaving the card absent once none is in flight.
+    fn released(&self, card: wire::PublicKey) {
+        self.0.send_modify(|in_flight| {
+            if let Entry::Occupied(mut answers) = in_flight.entry(card) {
+                match NonZeroUsize::new(answers.get().get().saturating_sub(1)) {
+                    Some(left) => {
+                        answers.insert(left);
+                    }
+                    None => {
+                        answers.remove();
+                    }
+                }
+            }
+        });
+    }
+}
+
+/// An Introduce answer to the card counted in flight until this is dropped.
 struct IntroduceAnswerInFlight {
-    register: HeldConnections,
+    in_flight: IntroduceAnswersInFlight,
     card: wire::PublicKey,
 }
 
@@ -467,18 +497,7 @@ impl IntroduceAnswerInFlight {
 
 impl Drop for IntroduceAnswerInFlight {
     fn drop(&mut self) {
-        self.register
-            .introduce_answers_in_flight
-            .send_modify(|in_flight| {
-                let still_in_flight = in_flight
-                    .get(&self.card)
-                    .map_or(0, |answers| answers.saturating_sub(1));
-                if still_in_flight == 0 {
-                    in_flight.remove(&self.card);
-                } else {
-                    in_flight.insert(self.card, still_in_flight);
-                }
-            });
+        self.in_flight.released(self.card);
     }
 }
 
@@ -868,7 +887,7 @@ impl<H: DirectHost> ServerState<H> {
         };
         let summary = RequestSummary::of(&request);
         let introduce_answer = (summary == RequestSummary::Introduce)
-            .then(|| self.held.introduce_answer_in_flight(sender));
+            .then(|| self.held.introduce_answers_in_flight.count(sender));
         let outcome = async {
             let response = self.answer(sender, arrived_on, request)?;
             let outcome = ServedOutcome::of(&response);
