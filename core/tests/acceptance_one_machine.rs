@@ -1067,6 +1067,14 @@ mod spec_3_15_with_one_member {
     const SPEC_GATE_TIMEOUT_WITH_SLACK: Duration = Duration::from_secs(5);
     /// The event a member records for each gossip connection its gate closes (spec/observability.md decision 9).
     const GATE_CLOSED_EVENT: &str = "transport.gate_closed";
+    /// The field of a gate closing naming the peer of the connection.
+    const PEER_FIELD: &str = "peer";
+    /// The field of a gate closing naming the side that opened the connection.
+    const DIRECTION_FIELD: &str = "direction";
+    /// The side of a connection the peer opened.
+    const ACCEPTED_DIRECTION: &str = "accepted";
+    /// The side of a connection the member opened.
+    const DIALED_DIRECTION: &str = "dialed";
     /// The deaf timeout of spec 3.14 (15 s) and the rebind it starts, with slack.
     const SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK: Duration = Duration::from_secs(30);
     /// The member join wait of spec 3.14 (1500 ms) and the join it ends, with slack.
@@ -1159,20 +1167,26 @@ mod spec_3_15_with_one_member {
         held
     }
 
-    /// The count of gate closings the member has recorded once it exceeds `already`, requiring that within the wait.
+    /// Requires the member to record, within the wait, that its gate closed a connection of the peer that the side opened.
     #[track_caller]
-    fn gate_closings_beyond(member: &Member, already: usize, within: Duration) -> usize {
+    fn gate_closed_connection_of(member: &Member, peer: &str, direction: &str, within: Duration) {
         member.wait_until(
-            &format!("a {GATE_CLOSED_EVENT} beyond {already}"),
+            &format!("a {GATE_CLOSED_EVENT} of the {direction} connection of {peer}"),
             within,
             |lines| {
-                let recorded = lines
+                lines
                     .iter()
-                    .filter(|line| line.event == GATE_CLOSED_EVENT)
-                    .count();
-                (recorded > already).then_some(recorded)
+                    .any(|line| is_gate_closing_of(line, peer, direction))
+                    .then_some(())
             },
-        )
+        );
+    }
+
+    /// Whether the events line records the member's gate closing a connection of the peer that the side opened.
+    fn is_gate_closing_of(line: &TraceLine, peer: &str, direction: &str) -> bool {
+        line.event == GATE_CLOSED_EVENT
+            && line.value(PEER_FIELD) == Some(&json!(peer))
+            && line.value(DIRECTION_FIELD) == Some(&json!(direction))
     }
 
     /// Whether the events line is the counters snapshot a member records once its rebind's fresh endpoint is bound.
@@ -1382,7 +1396,13 @@ mod spec_3_15_with_one_member {
         let outsider = ScriptedNode::start_without_gate(outsider_key.clone(), network.topic());
 
         outsider.admit(loopback_address(card.id, &ports_before_rebind));
-        let closed_when_dialed = gate_closings_beyond(&amy, 0, SPEC_GATE_TIMEOUT_WITH_SLACK);
+        let outsider_peer = short_id_text(&outsider_key);
+        gate_closed_connection_of(
+            &amy,
+            &outsider_peer,
+            ACCEPTED_DIRECTION,
+            SPEC_GATE_TIMEOUT_WITH_SLACK,
+        );
         host.broadcast(presence_signed_by(
             network.keys(),
             &outsider_key,
@@ -1392,7 +1412,12 @@ mod spec_3_15_with_one_member {
         amy.peer_within(OUTSIDER_HANDLE, PRESENCE_WAIT, |_outsider| true);
         let rebound = rebound_ports(&amy, SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK);
         host.admit(loopback_address(card.id, &rebound));
-        gate_closings_beyond(&amy, closed_when_dialed, SPEC_MEMBER_JOIN_WAIT_WITH_SLACK);
+        gate_closed_connection_of(
+            &amy,
+            &outsider_peer,
+            DIALED_DIRECTION,
+            SPEC_MEMBER_JOIN_WAIT_WITH_SLACK,
+        );
 
         assert_eq!(outsider.events(), Vec::<Event>::new());
     }
