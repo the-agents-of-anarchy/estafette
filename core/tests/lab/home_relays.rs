@@ -184,7 +184,7 @@ fn raw_lines_once_stamped_past_read_by(
     match past_the_kill {
         Ok(lines) => lines,
         Err(WaitEnded::RanOut) => panic!(
-            "{}: no raw line stamped after the kill's {kill_wall_ms} ms within {RAW_LINE_PAST_THE_KILL_WAIT:?}",
+            "{}: no raw line other than a {DROPPED_LINE_NAME} line stamped after the kill's {kill_wall_ms} ms came within {RAW_LINE_PAST_THE_KILL_WAIT:?}",
             traces.display()
         ),
         Err(WaitEnded::WatcherFailed(failure)) => {
@@ -597,7 +597,7 @@ mod tests {
         assert_eq!(
             ran_out,
             Err(Some(format!(
-                "{}: no raw line stamped after the kill's {} ms within {RAW_LINE_PAST_THE_KILL_WAIT:?}",
+                "{}: no raw line other than a {DROPPED_LINE_NAME} line stamped after the kill's {} ms came within {RAW_LINE_PAST_THE_KILL_WAIT:?}",
                 traces.display(),
                 stamp_of_line(KILL_LINE)
             )))
@@ -655,13 +655,13 @@ mod tests {
         fs::remove_dir_all(&only_dropped_past_the_kill).unwrap();
         fs::remove_dir_all(&ordinary_past_the_kill).unwrap();
 
-        assert!(
-            ended_by_the_dropped_line
-                .as_ref()
-                .is_err_and(|ran_out| ran_out
-                    .as_deref()
-                    .is_some_and(|text| text.contains("no raw line stamped after the kill's"))),
-            "{ended_by_the_dropped_line:?}"
+        assert_eq!(
+            ended_by_the_dropped_line,
+            Err(Some(format!(
+                "{}: no raw line other than a {DROPPED_LINE_NAME} line stamped after the kill's {} ms came within {RAW_LINE_PAST_THE_KILL_WAIT:?}",
+                only_dropped_past_the_kill.display(),
+                stamp_of_line(KILL_LINE)
+            )))
         );
         assert_eq!(ended_by_the_ordinary_line, Ok(vec![1, 6, 7]));
     }
