@@ -2,6 +2,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Output;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::fresh_directory::fresh_directory_in;
 use super::remove_scratch::remove_scratch;
@@ -20,6 +21,8 @@ const RUN_RECORD_READ_FAILED_EXTENSION: &str = "run-record-read-failed";
 const FETCH_FAILED_EXTENSION: &str = "fetch-failed";
 /// What begins the name of the scratch directory, outside every kept directory, a member's trace files are fetched into before they are kept or read.
 const STAGING_PREFIX: &str = "ea-fetched";
+/// The number of the next fetch this process stages, part of its holder's name, so no two fetches of one process are handed one holder.
+static NEXT_STAGED_FETCH: AtomicUsize = AtomicUsize::new(0);
 /// The name, inside that scratch directory, of the directory the recipe fetches into.
 const STAGED_DIRECTORY: &str = "fetched";
 /// What a failing test prints in place of a member's timeline when its trace files could not be fetched.
@@ -261,7 +264,7 @@ fn keep_printed_run_record(
     }
 }
 
-/// Fetches the member's trace files into a fresh scratch directory outside every kept directory.
+/// Fetches the member's trace files into a fresh scratch directory outside every kept directory, named for this process and this fetch alone.
 fn staged_fetch(
     member: &str,
     server: &str,
@@ -269,7 +272,11 @@ fn staged_fetch(
 ) -> StagedFetch {
     match fresh_directory_in(
         &std::env::temp_dir(),
-        &format!("{STAGING_PREFIX}-{}-{server}-{member}", std::process::id()),
+        &format!(
+            "{STAGING_PREFIX}-{}-{}-{server}-{member}",
+            std::process::id(),
+            NEXT_STAGED_FETCH.fetch_add(1, Ordering::Relaxed)
+        ),
     ) {
         Ok(holder) => {
             let fetched = run(ServerMemberStep::FetchTraceFiles(
@@ -1376,6 +1383,40 @@ mod tests {
             );
         }
         remove_scratch(&scratch).unwrap();
+    }
+
+    #[test]
+    fn observability_decision_16_two_fetches_of_one_member_on_one_server_in_one_process_are_staged_in_distinct_holders_though_the_first_is_removed_before_the_second()
+     {
+        let fetched_into = RefCell::new(Vec::new());
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop => Ok(succeeded_run("")),
+            ServerMemberStep::PrintRunRecord => Ok(succeeded_run("record of amy\n")),
+            ServerMemberStep::FetchTraceFiles(into) => {
+                fetched_into.borrow_mut().push(into.to_path_buf());
+                fs::create_dir_all(into).unwrap();
+                Ok(fetched_with_none_left_on_the_server())
+            }
+        };
+
+        for _fetch in 0..2 {
+            drop(ended_server_member(
+                MEMBER,
+                SERVER,
+                None,
+                &secrets_of_the_member(),
+                TestSoFar::Failing,
+                stand_in_for_the_recipes,
+            ));
+        }
+
+        let fetched_into = fetched_into.into_inner();
+        assert_eq!(fetched_into.len(), 2, "{fetched_into:?}");
+        assert_ne!(
+            fetched_into[0].parent(),
+            fetched_into[1].parent(),
+            "two fetches of one process were staged in one holder"
+        );
     }
 
     #[test]
