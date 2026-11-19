@@ -23,7 +23,7 @@ lab_config_and_runtime := "XDG_CONFIG_HOME=" + lab_root / "config" + " XDG_RUNTI
 lab_directories := lab_config_and_runtime + " XDG_DATA_HOME=" + lab_data
 lab_cards_directory := lab_data / "estafette/cards"
 lab_members_data := lab_data / "members"
-key_file_named_after_a_held_trace_file := " (key file "
+held_trace_file_key_file_separator := " (key file "
 shortest_key_run := "16"
 lab_server_type := env("LAB_HOST_" + lab_host_letter + "_SERVER_TYPE", "cpx22")
 lab_location := env("LAB_HOST_" + lab_host_letter + "_LOCATION", "nbg1")
@@ -296,7 +296,7 @@ trace-files-holding-keys card:
     for key_file in "${key_files[@]}"; do
         holding="$(cd "$traces" && { grep -r -l -F -f <(key_texts "$key_file") . || test "$?" = 1; } | sed 's|^\./||')"
         while IFS= read -r trace_file; do
-            if [ -n "$trace_file" ]; then held+="$trace_file{{ key_file_named_after_a_held_trace_file }}$key_file)"$'\n'; fi
+            if [ -n "$trace_file" ]; then held+="$trace_file{{ held_trace_file_key_file_separator }}$key_file)"$'\n'; fi
         done <<< "$holding"
     done
     count=0
@@ -311,7 +311,7 @@ trace-files-holding-keys card:
 member-trace-files card:
     #!/usr/bin/env bash
     set -euo pipefail
-    held="$(just remote::trace-files-holding-keys {{ card }} | sed '$d' | sed 's|{{ key_file_named_after_a_held_trace_file }}.*$||' | sort -u)"
+    held="$(just remote::trace-files-holding-keys {{ card }} | sed '$d' | sed 's|{{ held_trace_file_key_file_separator }}.*$||' | sort -u)"
     cd {{ lab_members_data }}/{{ card }}/estafette/traces
     find . -type f | sed 's|^\./||' | { grep -v -x -F -f <(printf '%s\n' "$held" | grep -v '^$') || test "$?" = 1; } | tar -c -T -
 
