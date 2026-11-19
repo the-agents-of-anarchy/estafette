@@ -1018,6 +1018,7 @@ mod tests {
     use std::fs;
     use std::io;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -1036,6 +1037,7 @@ mod tests {
     use crate::net::direct::tests::StandingClock;
     use crate::net::direct::{MonotonicTime, RuntimeClock};
     use crate::node::RuntimeShutdown;
+    use crate::seeded_draws::Draws;
     use crate::sidecar;
     use crate::test_waits::{RecordedEvent, found_within, next_recorded_meeting, recorded_events};
 
@@ -1044,6 +1046,7 @@ mod tests {
     const OWNER_SEED: u8 = 45;
     const KEY_BYTES: usize = 32;
     const GATE_NONCE_BYTE: u8 = 46;
+    const BYTE_VALUES: u64 = 256;
     const PIPE_BYTES: usize = 1 << 20;
     const RESPONSE_WAIT: Duration = Duration::from_secs(20);
     const CLIENT_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -1345,7 +1348,7 @@ mod tests {
             .unwrap(),
         );
         let inbox_path = directories.inbox_socket_file(plan.process_id);
-        let message_id_byte = u8::try_from(plan.process_id).unwrap();
+        let random_draws = Mutex::new(Draws::seeded(u64::from(plan.process_id)));
         let served = ServedNetwork {
             config_path: machine
                 .root
@@ -1360,7 +1363,10 @@ mod tests {
                 clock: Arc::new(wall_clock_ms),
                 monotonic: plan.monotonic,
                 fill_probe_nonce: Arc::new(move |nonce: &mut crate::wire::Nonce| {
-                    nonce.fill(message_id_byte);
+                    let mut draws = random_draws.lock().unwrap();
+                    for byte in nonce.iter_mut() {
+                        *byte = u8::try_from(draws.below(BYTE_VALUES)).unwrap();
+                    }
                 }),
                 report: plan.node_report,
                 inbox,
