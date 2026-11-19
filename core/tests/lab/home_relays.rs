@@ -748,4 +748,26 @@ mod tests {
             "{homed:?}"
         );
     }
+
+    #[test]
+    fn spec_3_15_tests_23_and_28_a_dropped_line_in_a_trace_with_no_ordinary_line_after_the_kill_is_refused_as_lines_lost()
+     {
+        let homed = homed_at_the_kill(vec![(
+            AMY,
+            vec![
+                home_changed(1, DOOMED_RELAY, true),
+                connected(3, DOOMED_RELAY),
+                dropped(6),
+            ],
+        )]);
+
+        assert!(
+            homed.as_ref().is_err_and(|refusal| {
+                refusal.ends_with(&format!(
+                "{AMY}'s raw trace lost lines that could hold a home change at or before the kill"
+            ))
+            }),
+            "{homed:?}"
+        );
+    }
 }
