@@ -1986,8 +1986,10 @@ pub(crate) mod tests {
         );
     }
 
-    /// Dials the server under the client's card from a process of its own, answers one Message there, and ends that process without closing its connection.
-    async fn connection_from_a_process_that_vanished(server: iroh::EndpointAddr) {
+    /// Dials the server under the client's card from a process of its own, answers one Message there, and ends that process without closing its connection, returning the address that process was reachable at.
+    async fn connection_from_a_process_that_vanished(
+        server: iroh::EndpointAddr,
+    ) -> iroh::EndpointAddr {
         tokio::task::spawn_blocking(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -2007,11 +2009,13 @@ pub(crate) mod tests {
                     .unwrap();
                 (node, connection)
             });
+            let vanished_at = vanished.0.endpoint().addr();
             drop(runtime);
             drop(vanished);
+            vanished_at
         })
         .await
-        .unwrap();
+        .unwrap()
     }
 
     /// How many connections from the card the endpoint's register holds, whether or not any is still alive.
@@ -3814,6 +3818,7 @@ pub(crate) mod tests {
         member: Arc<DirectClient>,
         introduced: Result<IntroduceAck, DirectError>,
         reported_after_the_introduce: Vec<bool>,
+        vanished_at: iroh::EndpointAddr,
         _restarted_serving: Router,
     }
 
@@ -3834,7 +3839,8 @@ pub(crate) mod tests {
         let server = DirectServer::new(keys(), host_of(Arc::clone(&member)), &member_node);
         let link = link_on(member_node, server, ClientTimeouts::SPEC).await;
         let restarted_serving = serving_the_direct_protocol(&link.client_node, CLIENT_SEED);
-        connection_from_a_process_that_vanished(link.server_node.endpoint().addr()).await;
+        let vanished_at =
+            connection_from_a_process_that_vanished(link.server_node.endpoint().addr()).await;
         wait_until_every_datagram_of_is_noted(&register, card_of(CLIENT_SEED), &clock).await;
         move_past_the_silence_of_a_gone_process(&clock);
 
@@ -3849,6 +3855,7 @@ pub(crate) mod tests {
             member,
             introduced,
             reported_after_the_introduce,
+            vanished_at,
             _restarted_serving: restarted_serving,
         }
     }
@@ -3903,18 +3910,25 @@ pub(crate) mod tests {
         .await
     }
 
-    /// The bytes of a QUIC Initial datagram, padded to the 1200-byte minimum of RFC 9000 section 14.1, which a dial's first flight sends.
-    const QUIC_INITIAL_DATAGRAM_BYTES: u64 = 1200;
     /// The longest the test waits for the member's dial to send its first flight.
     const FIRST_FLIGHT_WAIT: Duration = Duration::from_secs(5);
 
-    /// The bytes the node's endpoint has sent over IPv4 and IPv6.
-    fn bytes_sent_by(node: &NodeEndpoint) -> u64 {
-        let socket = &node.endpoint().metrics().socket;
-        socket
-            .send_ipv4
-            .get()
-            .saturating_add(socket.send_ipv6.get())
+    /// The gone process's IPv4 socket bound again by the test, which answers nothing and so stands where the dead port stood, while showing when a datagram reaches it.
+    async fn gone_processs_port_bound_again(
+        restart: &RestartedProcessIntroduced,
+    ) -> tokio::net::UdpSocket {
+        let port = restart
+            .vanished_at
+            .ip_addrs()
+            .find(|address| address.is_ipv4())
+            .map(std::net::SocketAddr::port)
+            .expect("the gone process was reachable over IPv4");
+        tokio::net::UdpSocket::bind(std::net::SocketAddr::from((
+            std::net::Ipv4Addr::UNSPECIFIED,
+            port,
+        )))
+        .await
+        .unwrap()
     }
 
     #[tokio::test]
@@ -3930,19 +3944,15 @@ pub(crate) mod tests {
             "iroh did not keep the gone process's path selected once the introduce's connection opened"
         );
         let register = restart.link.server_node.held_connections();
-        let first_flight_sent_at =
-            bytes_sent_by(&restart.link.server_node).saturating_add(QUIC_INITIAL_DATAGRAM_BYTES);
+        let gone_port = gone_processs_port_bound_again(&restart).await;
 
         let started = Instant::now();
         let (probed, ()) = tokio::join!(members_probe_of_the_restarted(&restart), async {
-            let first_flight_sent = found_within(FIRST_FLIGHT_WAIT, async || {
-                (bytes_sent_by(&restart.link.server_node) >= first_flight_sent_at).then_some(())
-            })
-            .await
-            .is_some();
+            let first_flight_reached_the_gone_port =
+                timeout(FIRST_FLIGHT_WAIT, gone_port.readable()).await;
             assert!(
-                first_flight_sent,
-                "the member's dial sent no first flight within {FIRST_FLIGHT_WAIT:?}"
+                matches!(first_flight_reached_the_gone_port, Ok(Ok(()))),
+                "the member's dial sent no first flight to the gone process's port within {FIRST_FLIGHT_WAIT:?}: {first_flight_reached_the_gone_port:?}"
             );
             register.close_silent_of(card_of(CLIENT_SEED));
         });
