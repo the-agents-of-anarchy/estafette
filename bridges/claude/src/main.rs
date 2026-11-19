@@ -23,6 +23,10 @@ use estafette_bridge_claude::inbox_client::{
     InboxConnection, InboxConnector, InboxFrame, UnixSocketConnector, follow_inbox,
 };
 use estafette_bridge_claude::inject::SessionNotifier;
+use estafette_bridge_claude::owned_entry::{
+    EntryFacts, ExistingDirectoryRefused, read_state_file, require_private_directory_of,
+    write_state_file,
+};
 use estafette_bridge_claude::permission_class::PermissionClass;
 use estafette_bridge_claude::session_files::{
     latest_permission_mode, session_id_of_registry_entry, transcript_file_name,
@@ -87,6 +91,7 @@ const MANAGED_DROP_IN_DIRECTORY: &str = "managed-settings.d";
 const SETTINGS_EXTENSION: &str = "json";
 const HIDDEN_FILE_PREFIX: char = '.';
 const STAGING_SUFFIX: &str = ".staging";
+const RUNTIME_DIRECTORY_PREFIX: &str = "estafette-";
 /// How often a serving bridge writes its alive line, on its own clock: `spec/observability.md` decision 13 has a live process write its events file at least this often.
 const ALIVE_LINE_PERIOD: Duration = Duration::from_secs(60);
 /// The loop that writes each alive line falling due inside one pause between polls ends, on a clock that never runs back, only while that pause is shorter than the period.
@@ -201,6 +206,7 @@ enum CommandError {
     DataDirectoryUnresolvable(BaseDirectoryUnresolvable),
     RunIdUnreadable(io::Error),
     TraceRefused(TraceRefused),
+    RuntimeDirectoryRefused(ExistingDirectoryRefused),
 }
 
 impl fmt::Display for CommandError {
@@ -243,6 +249,7 @@ impl fmt::Display for CommandError {
                 trace_skip_hint()
             ),
             Self::TraceRefused(source) => source.fmt(formatter),
+            Self::RuntimeDirectoryRefused(source) => source.fmt(formatter),
         }
     }
 }
@@ -263,7 +270,11 @@ trait Files {
     fn create_private_directory(&self, path: &Path) -> io::Result<()>;
     /// Gives the numeric id of the user owning the path.
     fn owner_user_id(&self, path: &Path) -> io::Result<u32>;
-    /// Writes a file by staging it beside the final name and renaming it over that name.
+    /// Reads the facts of the entry at the path without following a symbolic link there.
+    fn entry_facts(&self, path: &Path) -> io::Result<EntryFacts>;
+    /// Reads a state file of the bridge as text, refusing anything but a regular file of the user.
+    fn read_state_text(&self, path: &Path, user_id: u32) -> io::Result<String>;
+    /// Writes a state file by staging it beside the final name and renaming it over that name, refusing a final name that is a symbolic link or another user's file.
     fn write_text_atomically(&self, path: &Path, text: &str) -> io::Result<()>;
 }
 
@@ -323,10 +334,16 @@ impl Files for OperatingSystemFiles {
         Ok(fs::metadata(path)?.uid())
     }
 
+    fn entry_facts(&self, path: &Path) -> io::Result<EntryFacts> {
+        EntryFacts::at(path)
+    }
+
+    fn read_state_text(&self, path: &Path, user_id: u32) -> io::Result<String> {
+        read_state_file(path, user_id)
+    }
+
     fn write_text_atomically(&self, path: &Path, text: &str) -> io::Result<()> {
-        let staging = unique_staging_path(path);
-        fs::write(&staging, text)?;
-        fs::rename(staging, path)
+        write_state_file(path, &unique_staging_path(path), text)
     }
 }
 
@@ -376,6 +393,30 @@ fn runtime_inputs(
         temporary_dir: environment.temporary_dir.clone(),
         user_id,
     })
+}
+
+/// Names the directory of the inbox sockets, as discovery derives each socket path from it.
+fn runtime_directory_path(inputs: &RuntimeDirectoryInputs) -> PathBuf {
+    inputs
+        .xdg_runtime_dir
+        .as_ref()
+        .unwrap_or(&inputs.temporary_dir)
+        .join(format!("{RUNTIME_DIRECTORY_PREFIX}{}", inputs.user_id))
+}
+
+/// Refuses the runtime directory when it exists and is not a directory of the user that grants nothing to group or other; a missing one holds no socket to connect to.
+fn require_usable_runtime_directory(
+    files: &impl Files,
+    inputs: &RuntimeDirectoryInputs,
+) -> Result<(), CommandError> {
+    let directory = runtime_directory_path(inputs);
+    files
+        .entry_facts(&directory)
+        .ok()
+        .map_or(Ok(()), |facts| {
+            require_private_directory_of(inputs.user_id, &directory, facts)
+        })
+        .map_err(CommandError::RuntimeDirectoryRefused)
 }
 
 /// Takes a mutex whether or not a panicking holder poisoned it, which the abort-on-panic release profile makes unreachable.
@@ -738,6 +779,7 @@ where
     if let Some(bridge_pid) = running_bridge_for(harness_pid, effects.own_pid, &entries) {
         return Ok(BridgeOutcome::AlreadyServed { bridge_pid });
     }
+    require_usable_runtime_directory(&effects.files, &effects.runtime_inputs)?;
     let session = Arc::new(BridgeSession {
         notifier: Mutex::new(SessionNotifier::new(
             effects.session_connector,
@@ -779,10 +821,18 @@ where
         &mut |sockets| {
             session.forget_handled_seqs_except(sockets);
             for socket in sockets {
-                if lock(&session.followed_sockets).insert(socket.path().to_owned()) {
-                    let connector = (effects.connect_binary_socket)(socket.path().to_owned());
-                    follow_binary_socket(&session, socket.clone(), connector);
+                if lock(&session.followed_sockets).contains(socket.path()) {
+                    continue;
                 }
+                if let Err(refusal) =
+                    require_usable_runtime_directory(&session.files, &effects.runtime_inputs)
+                {
+                    (session.record)(BridgeEvent::CommandFailed(refusal));
+                    break;
+                }
+                lock(&session.followed_sockets).insert(socket.path().to_owned());
+                let connector = (effects.connect_binary_socket)(socket.path().to_owned());
+                follow_binary_socket(&session, socket.clone(), connector);
             }
         },
     )
@@ -910,9 +960,14 @@ fn run_doctor_command(
         unreadable_settings: managed.unreadable,
         runtime_inputs: runtime_inputs(environment, files)?,
     };
-    let report = run_doctor(&inputs, processes, &|path: &Path| {
-        files.read_text(path).ok()
-    })
+    let user_id = inputs.runtime_inputs.user_id;
+    let report = run_doctor(
+        &inputs,
+        processes,
+        &|path: &Path| files.read_text(path).ok(),
+        &|path: &Path| files.read_state_text(path, user_id).ok(),
+        &|path: &Path| files.entry_facts(path).ok(),
+    )
     .map_err(CommandError::ProcessTable)?;
     writeln!(output, "{report}").map_err(CommandError::ReportUnwritable)?;
     Ok(report.all_passed())
@@ -1067,6 +1122,7 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
     use estafette_bridge_claude::discover::{ProcessEntry, binary_sockets_under};
+    use estafette_bridge_claude::owned_entry::EntryKind;
     use std::cell::{Cell, RefCell};
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
     use std::os::unix::fs::PermissionsExt;
@@ -1558,6 +1614,130 @@ mod tests {
     }
 
     type SinceLines = Arc<Mutex<Vec<String>>>;
+
+    const RUNTIME_DIRECTORY_OF_WIRING: &str = "/run/user/1000/estafette-1000";
+    const GROUP_OTHER_READABLE_DIRECTORY_MODE: u32 = 0o755;
+    const PRIVATE_RUNTIME_DIRECTORY_MODE: u32 = 0o700;
+    const USER_OF_WIRING: u32 = 1000;
+
+    fn directory_facts(permission_bits: u32) -> EntryFacts {
+        EntryFacts {
+            kind: EntryKind::Directory,
+            owner_user_id: USER_OF_WIRING,
+            permission_bits,
+        }
+    }
+
+    fn harness_entry() -> ProcessEntry {
+        ProcessEntry {
+            pid: HARNESS_PID,
+            parent_pid: Pid(1),
+            executable: Some("/usr/bin/claude".to_owned()),
+            arguments: Vec::new(),
+        }
+    }
+
+    const REFUSED_RUNTIME_DIRECTORY_MESSAGE: &str = "/run/user/1000/estafette-1000 already exists and is mode 0755, which grants access to group or other; it must be a directory of yours with no access for group or other";
+
+    #[test]
+    fn spec_3_3_the_bridge_refuses_at_its_start_a_runtime_directory_granting_access_to_group_and_other_runtime_directory_is_private_or_refused()
+     {
+        let wiring = wiring();
+        lock(&wiring.effects.files.entries).insert(
+            PathBuf::from(RUNTIME_DIRECTORY_OF_WIRING),
+            directory_facts(GROUP_OTHER_READABLE_DIRECTORY_MODE),
+        );
+        let polls = SnapshotSequence(RefCell::new(vec![
+            vec![harness_entry(), mcp_binary(101)],
+            Vec::new(),
+        ]));
+
+        let outcome = run_bridge(HARNESS_PID, wiring.effects, &polls);
+
+        assert_eq!(
+            outcome.err().map(|error| error.to_string()),
+            Some(REFUSED_RUNTIME_DIRECTORY_MESSAGE.to_owned())
+        );
+        assert_eq!(*lock(&wiring.factory_paths), Vec::<PathBuf>::new());
+        assert_eq!(lock(&wiring.spawned).len(), 0);
+    }
+
+    const LISTING_OF_THE_SECOND_POLL: usize = 3;
+
+    struct DirectoryLoosenedAtItsSecondPoll {
+        entries: Arc<Mutex<BTreeMap<PathBuf, EntryFacts>>>,
+        polls: SnapshotSequence,
+        listings: RefCell<usize>,
+    }
+
+    impl ProcessTable for DirectoryLoosenedAtItsSecondPoll {
+        fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
+            let listing_number = {
+                let mut listings = self.listings.borrow_mut();
+                *listings = listings.saturating_add(1);
+                *listings
+            };
+            if listing_number == LISTING_OF_THE_SECOND_POLL {
+                lock(&self.entries).insert(
+                    PathBuf::from(RUNTIME_DIRECTORY_OF_WIRING),
+                    directory_facts(GROUP_OTHER_READABLE_DIRECTORY_MODE),
+                );
+            }
+            self.polls.list()
+        }
+    }
+
+    #[test]
+    fn spec_3_3_the_bridge_connects_to_no_socket_once_its_runtime_directory_stops_being_private_runtime_directory_is_private_or_refused()
+     {
+        let wiring = wiring();
+        lock(&wiring.effects.files.entries).insert(
+            PathBuf::from(RUNTIME_DIRECTORY_OF_WIRING),
+            directory_facts(PRIVATE_RUNTIME_DIRECTORY_MODE),
+        );
+        let polls = DirectoryLoosenedAtItsSecondPoll {
+            entries: Arc::clone(&wiring.effects.files.entries),
+            polls: SnapshotSequence(RefCell::new(vec![
+                vec![harness_entry()],
+                vec![harness_entry()],
+                vec![harness_entry(), mcp_binary(101)],
+                Vec::new(),
+            ])),
+            listings: RefCell::new(0),
+        };
+
+        run_bridge(HARNESS_PID, wiring.effects, &polls).expect("bridge runs");
+
+        assert_eq!(*lock(&wiring.factory_paths), Vec::<PathBuf>::new());
+        assert_eq!(lock(&wiring.spawned).len(), 0);
+        assert_eq!(
+            lock(&wiring.errors).last().map(String::as_str),
+            Some(REFUSED_RUNTIME_DIRECTORY_MESSAGE)
+        );
+    }
+
+    #[test]
+    fn spec_3_3_the_runtime_directory_the_bridge_checks_is_the_one_discovery_puts_each_socket_in_runtime_directory_is_private_or_refused()
+     {
+        let inputs = RuntimeDirectoryInputs {
+            xdg_runtime_dir: Some(PathBuf::from("/run/user/1000")),
+            temporary_dir: PathBuf::from(TEST_TEMPORARY_DIR),
+            user_id: USER_OF_WIRING,
+        };
+        let without_xdg = RuntimeDirectoryInputs {
+            xdg_runtime_dir: None,
+            temporary_dir: PathBuf::from(TEST_TEMPORARY_DIR),
+            user_id: USER_OF_WIRING,
+        };
+        for inputs in [&inputs, &without_xdg] {
+            let sockets =
+                binary_sockets_under(HARNESS_PID, inputs, &[harness_entry(), mcp_binary(101)]);
+            assert_eq!(
+                sockets[0].path().parent(),
+                Some(runtime_directory_path(inputs).as_path())
+            );
+        }
+    }
 
     struct ScriptedInboxStream {
         replies: io::Cursor<Vec<u8>>,
@@ -2210,6 +2390,7 @@ mod tests {
         listings: Mutex<usize>,
         writes: Arc<Mutex<Vec<(PathBuf, String)>>>,
         owners: BTreeMap<PathBuf, Result<u32, io::ErrorKind>>,
+        entries: Arc<Mutex<BTreeMap<PathBuf, EntryFacts>>>,
         creation_failures: BTreeMap<PathBuf, io::ErrorKind>,
         created: Mutex<Vec<PathBuf>>,
     }
@@ -2270,6 +2451,17 @@ mod tests {
                 Some(Err(kind)) => Err(io::Error::from(*kind)),
                 None => Ok(1000),
             }
+        }
+
+        fn entry_facts(&self, path: &Path) -> io::Result<EntryFacts> {
+            lock(&self.entries)
+                .get(path)
+                .copied()
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
+        }
+
+        fn read_state_text(&self, path: &Path, _user_id: u32) -> io::Result<String> {
+            self.text_of(path)
         }
 
         fn write_text_atomically(&self, path: &Path, text: &str) -> io::Result<()> {

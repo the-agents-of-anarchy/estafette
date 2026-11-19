@@ -1,9 +1,9 @@
 use std::fs;
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -219,4 +219,115 @@ fn observability_decision_13_the_bridge_lab_window_ends_on_a_bridge_alive_line_s
     .unwrap();
 
     assert!(bridge_alive_line_stamped_from(&traces, window_ends).unwrap());
+}
+
+const GROUP_OTHER_READABLE_DIRECTORY_MODE: u32 = 0o755;
+const REFUSED_RUNTIME_DIRECTORY_EXIT_CODE: i32 = 1;
+const BRIDGE_EXIT_DEADLINE: Duration = Duration::from_secs(10);
+
+fn runtime_directory_of(fixture: &Fixture) -> io::Result<PathBuf> {
+    let user_id = fs::metadata(&fixture.root)?.uid();
+    Ok(fixture
+        .root
+        .join("runtime")
+        .join(format!("estafette-{user_id}")))
+}
+
+/// A process standing in for the harness, alive while its standard input stays open and until it is dropped.
+struct LiveHarness(Child);
+
+impl LiveHarness {
+    fn start() -> io::Result<Self> {
+        Command::new("cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .map(Self)
+    }
+}
+
+impl Drop for LiveHarness {
+    fn drop(&mut self) {
+        drop(self.0.kill());
+        drop(self.0.wait());
+    }
+}
+
+/// The output of a bridge serving a harness that stays alive, which must end by itself within the deadline.
+fn output_of_a_bridge_that_must_end_by_itself(fixture: &Fixture) -> io::Result<Output> {
+    let harness = LiveHarness::start()?;
+    let mut bridge = fixture
+        .bridge()
+        .args(["run", &harness.0.id().to_string(), "--no-debug"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let started_waiting = Instant::now();
+    while bridge.try_wait()?.is_none() {
+        if started_waiting.elapsed() >= BRIDGE_EXIT_DEADLINE {
+            bridge.kill()?;
+            bridge.wait()?;
+            return Err(io::Error::other(format!(
+                "the bridge was still serving {BRIDGE_EXIT_DEADLINE:?} after it started"
+            )));
+        }
+        thread::yield_now();
+    }
+    bridge.wait_with_output()
+}
+
+#[test]
+fn spec_3_3_the_bridge_refuses_an_existing_runtime_directory_that_grants_access_to_group_and_other_runtime_directory_is_private_or_refused()
+ {
+    let fixture = Fixture::new().unwrap();
+    let runtime = runtime_directory_of(&fixture).unwrap();
+    fs::create_dir_all(&runtime).unwrap();
+    fs::set_permissions(
+        &runtime,
+        fs::Permissions::from_mode(GROUP_OTHER_READABLE_DIRECTORY_MODE),
+    )
+    .unwrap();
+
+    let output = output_of_a_bridge_that_must_end_by_itself(&fixture).unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(REFUSED_RUNTIME_DIRECTORY_EXIT_CODE)
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "{} already exists and is mode 0755, which grants access to group or other; it must be a directory of yours with no access for group or other\n",
+            runtime.display()
+        )
+    );
+    assert_eq!(
+        mode_of(&runtime).unwrap(),
+        GROUP_OTHER_READABLE_DIRECTORY_MODE
+    );
+}
+
+#[test]
+fn spec_3_3_the_bridge_refuses_a_symbolic_link_in_place_of_the_runtime_directory_runtime_directory_is_private_or_refused()
+ {
+    let fixture = Fixture::new().unwrap();
+    let runtime = runtime_directory_of(&fixture).unwrap();
+    let target = fixture.root.join("elsewhere");
+    fs::create_dir_all(&target).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(PRIVATE_DIRECTORY_MODE)).unwrap();
+    std::os::unix::fs::symlink(&target, &runtime).unwrap();
+
+    let output = output_of_a_bridge_that_must_end_by_itself(&fixture).unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(REFUSED_RUNTIME_DIRECTORY_EXIT_CODE)
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "{} already exists and is a symbolic link; it must be a directory of yours with no access for group or other\n",
+            runtime.display()
+        )
+    );
 }

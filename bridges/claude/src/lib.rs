@@ -6,6 +6,7 @@ pub mod doctor;
 mod fresh_directory;
 pub mod inbox_client;
 pub mod inject;
+pub mod owned_entry;
 pub mod permission_class;
 mod ratelimit;
 #[cfg(test)]
