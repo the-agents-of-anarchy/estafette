@@ -193,14 +193,18 @@ impl NetworkTopic {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use super::*;
-    use crate::crypto::{KEY_LEN, MAC_LEN, NetworkSecret, sign_host_certificate};
+    use crate::crypto::{
+        KEY_LEN, MAC_LEN, NetworkSecret, SignedPayloadKind, sign_host_certificate,
+    };
+    use crate::event::{RunRecord, TransportEvent};
     use crate::net::direct::RuntimeClock;
     use crate::net::direct::tests::StandingClock;
     use crate::net::endpoint::NodeEndpoint;
-    use crate::test_waits::{answered_within, found_within};
+    use crate::payload::{PayloadDropRule, PayloadFacts, PayloadStamp};
+    use crate::test_waits::{answered_within, found_within, next_recorded, recorded_events};
     use crate::wire::{
         Addr, Departure, Infrastructure, Presence, RelayUrl, SignatureBytes, Version, encode,
     };
@@ -225,9 +229,13 @@ mod tests {
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     const JOIN_TIMEOUT_SLACK: Duration = Duration::from_millis(1000);
     const JUST_UNDER: Duration = Duration::from_millis(1);
-    const NOTHING_MORE_WAIT: Duration = Duration::from_millis(500);
+    /// How long past its join timeout the outsider is shown to take nothing more from the topic.
+    const NOTHING_MORE_WITHIN: Duration = Duration::from_millis(500);
     const OVERSIZE_PUBLIC_BYTES: usize = 4000;
     const EVENT_WAIT: Duration = Duration::from_millis(8000);
+    const GATE_CLOSED_EVENT: &str = "transport.gate_closed";
+    const FORGED_DEPARTURE_SEQ: u64 = 3;
+    const UNCERTIFIED_RECORD_TS: u64 = 1_700_000_000;
 
     fn keys() -> NetworkKeys {
         NetworkKeys::derive(&NETWORK_SECRET)
@@ -244,16 +252,21 @@ mod tests {
     }
 
     async fn bind_member(seed: u8) -> Member {
-        bind_member_with_gate_of(seed, &NETWORK_SECRET).await
+        bind_member_with_gate_of(seed, &NETWORK_SECRET, Arc::new(|_event| {})).await
     }
 
-    async fn bind_member_with_gate_of(seed: u8, secret: &NetworkSecret) -> Member {
+    /// A member whose gate proves the secret and hands each gossip connection it closes to the record as `transport.gate_closed`.
+    async fn bind_member_with_gate_of(
+        seed: u8,
+        secret: &NetworkSecret,
+        gate_closings: RunRecord,
+    ) -> Member {
         let node = NodeEndpoint::bind(
             secret_key(seed),
             *NetworkKeys::derive(secret).gate_key(),
             Vec::new(),
             move |nonce: &mut [u8; KEY_LEN]| *nonce = [seed; KEY_LEN],
-            |_ignored| {},
+            move |failure| gate_closings(TransportEvent::GateClosed(failure).into()),
             crate::net::direct::tests::unrecorded_register(),
         )
         .await
@@ -283,12 +296,21 @@ mod tests {
     }
 
     async fn join_topic(member: &Member, bootstrap: Vec<EndpointId>) -> NetworkTopic {
+        join_topic_on(member, bootstrap, Arc::new(RuntimeClock)).await
+    }
+
+    /// The member's topic, its join timeout counted on the handed clock.
+    async fn join_topic_on(
+        member: &Member,
+        bootstrap: Vec<EndpointId>,
+        monotonic: MonotonicClock,
+    ) -> NetworkTopic {
         NetworkTopic::join(
             &member.gossip,
             keys(),
             secret_key(OWNER_SEED).public(),
             bootstrap,
-            Arc::new(RuntimeClock),
+            monotonic,
         )
         .await
         .unwrap()
@@ -350,7 +372,7 @@ mod tests {
         let unsealed = Departure {
             v: Version::CURRENT,
             card: *secret_key(FIRST_SEED).public().as_bytes(),
-            seq: 3,
+            seq: FORGED_DEPARTURE_SEQ,
             mac: [0; 32],
             sig: signature,
         };
@@ -364,7 +386,7 @@ mod tests {
             host: *secret_key(HOST_SEED).public().as_bytes(),
             relay: RelayUrl::try_from(HOST_RELAY.to_owned()).unwrap(),
             addr: Addr::from_endpoint_report([HOST_RELAY.to_owned()], std::iter::empty()),
-            ts: 1_700_000_000,
+            ts: UNCERTIFIED_RECORD_TS,
             cert: SignatureBytes(
                 sign_host_certificate(
                     &secret_key(IMPOSTOR_OWNER_SEED),
@@ -406,12 +428,23 @@ mod tests {
         }
     }
 
-    async fn nothing_more_arrives(topic: &mut NetworkTopic) {
-        let more = timeout(NOTHING_MORE_WAIT, next_payload(topic)).await;
-        more.unwrap_err();
+    /// What the payload layer records when it drops the forged Departure under the rule.
+    fn forged_departure_dropped_by(rule: PayloadDropRule) -> PayloadRefusal {
+        PayloadRefusal {
+            facts: Some(PayloadFacts {
+                kind: SignedPayloadKind::Departure,
+                signer: *secret_key(FIRST_SEED).public().as_bytes(),
+                stamp: PayloadStamp::Seq(FORGED_DEPARTURE_SEQ),
+            }),
+            rule,
+        }
     }
 
-    async fn dropped_while_the_next_good_presence_arrives(forged: Vec<u8>) {
+    /// Sends the forged bytes and then a good Presence, and proves the node took the Presence alone and dropped the forged bytes as `dropped_as` on the way.
+    async fn dropped_while_the_next_good_presence_arrives(
+        forged: Vec<u8>,
+        dropped_as: PayloadRefusal,
+    ) {
         let JoinedPair {
             mut first_topic,
             second_topic,
@@ -422,14 +455,34 @@ mod tests {
             .broadcast(&secret_key(SECOND_SEED), presence_of(SECOND_SEED, "bob", 8))
             .await
             .unwrap();
+        let drops = Mutex::new(Vec::new());
+        let record_drop = |refusal: PayloadRefusal| drops.lock().unwrap().push(refusal);
+        let mut arrived = Vec::new();
 
-        let arrived = next_payload(&mut first_topic).await;
+        let dropped_and_arrived = found_within(EVENT_WAIT, async || {
+            if let Some(Ok(GossipEvent::Payload(payload))) =
+                first_topic.next_event_recording_drops(&record_drop).await
+            {
+                arrived.push(Payload::from(*payload));
+            }
+            let dropped = drops.lock().unwrap().contains(&dropped_as);
+            (arrived.len() > 1 || dropped && arrived.len() == 1).then_some(())
+        })
+        .await;
 
+        assert!(
+            arrived.len() <= 1,
+            "a payload other than the next good presence reached the node: {arrived:?}"
+        );
+        assert!(
+            dropped_and_arrived.is_some(),
+            "the node did not both drop {dropped_as:?} and take the next good presence within {EVENT_WAIT:?}; it took {arrived:?} and dropped {:?}",
+            drops.lock().unwrap()
+        );
         assert_eq!(
-            presence_in(arrived).card,
+            presence_in(arrived.remove(0)).card,
             *secret_key(SECOND_SEED).public().as_bytes()
         );
-        nothing_more_arrives(&mut first_topic).await;
     }
 
     #[tokio::test]
@@ -440,7 +493,11 @@ mod tests {
             *keys.mac(zeroed).as_bytes()
         });
 
-        dropped_while_the_next_good_presence_arrives(forged).await;
+        dropped_while_the_next_good_presence_arrives(
+            forged,
+            forged_departure_dropped_by(PayloadDropRule::SignatureMismatch),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -451,7 +508,7 @@ mod tests {
             Payload::Departure(Departure {
                 v: Version::CURRENT,
                 card: *secret_key(FIRST_SEED).public().as_bytes(),
-                seq: 3,
+                seq: FORGED_DEPARTURE_SEQ,
                 mac: [0; 32],
                 sig: SignatureBytes([0; 64]),
             }),
@@ -460,7 +517,11 @@ mod tests {
         let mac_first_byte = wrong_mac.len() - Signature::LENGTH - MAC_LEN;
         wrong_mac[mac_first_byte] ^= 1;
 
-        dropped_while_the_next_good_presence_arrives(wrong_mac).await;
+        dropped_while_the_next_good_presence_arrives(
+            wrong_mac,
+            forged_departure_dropped_by(PayloadDropRule::MacMismatch),
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -472,7 +533,18 @@ mod tests {
         )
         .unwrap();
 
-        dropped_while_the_next_good_presence_arrives(sealed).await;
+        dropped_while_the_next_good_presence_arrives(
+            sealed,
+            PayloadRefusal {
+                facts: Some(PayloadFacts {
+                    kind: SignedPayloadKind::Infrastructure,
+                    signer: *secret_key(HOST_SEED).public().as_bytes(),
+                    stamp: PayloadStamp::Ts(UNCERTIFIED_RECORD_TS),
+                }),
+                rule: PayloadDropRule::HostNotCertified,
+            },
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -583,25 +655,48 @@ mod tests {
     #[tokio::test]
     async fn test_21_node_holding_the_topic_id_but_not_the_secret_gets_no_neighbor_and_no_payload()
     {
-        let member = bind_member(FIRST_SEED).await;
-        let outsider = bind_member_with_gate_of(OUTSIDER_SEED, &OUTSIDER_SECRET).await;
+        let (member_gate, mut closed_at_the_members_gate) = recorded_events();
+        let (outsider_gate, mut closed_at_the_outsiders_gate) = recorded_events();
+        let member = bind_member_with_gate_of(FIRST_SEED, &NETWORK_SECRET, member_gate).await;
+        let outsider =
+            bind_member_with_gate_of(OUTSIDER_SEED, &OUTSIDER_SECRET, outsider_gate).await;
         teach_address(&outsider, &member);
         teach_address(&member, &outsider);
+        let outsider_clock = StandingClock::standing_an_hour_ahead();
         let member_topic = join_topic(&member, vec![outsider.node.endpoint().id()]).await;
-        let mut outsider_topic = join_topic(&outsider, vec![member.node.endpoint().id()]).await;
+        let mut outsider_topic = join_topic_on(
+            &outsider,
+            vec![member.node.endpoint().id()],
+            outsider_clock.monotonic(),
+        )
+        .await;
         member_topic
             .broadcast(&secret_key(FIRST_SEED), presence_of(FIRST_SEED, "amy", 1))
             .await
             .unwrap();
 
-        let first_outsider_event = timeout(EVENT_WAIT, outsider_topic.next_event())
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        next_recorded(&mut closed_at_the_members_gate, GATE_CLOSED_EVENT).await;
+        next_recorded(&mut closed_at_the_outsiders_gate, GATE_CLOSED_EVENT).await;
+        outsider_clock.move_forward(SPEC_JOIN_TIMEOUT);
+        let first_outsider_event = answered_within(
+            EVENT_WAIT,
+            "outsider's first event once its handed clock read the join timeout",
+            outsider_topic.next_event(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        outsider_clock.move_forward(NOTHING_MORE_WITHIN);
+        let taken_past_the_join_timeout = found_within(Duration::ZERO, async || {
+            Some(outsider_topic.next_event().await)
+        })
+        .await;
 
         assert_eq!(first_outsider_event, GossipEvent::JoinTimedOut);
-        nothing_more_arrives(&mut outsider_topic).await;
+        assert!(
+            taken_past_the_join_timeout.is_none(),
+            "the outsider took more from the topic within {NOTHING_MORE_WITHIN:?} of its join timeout: {taken_past_the_join_timeout:?}"
+        );
         assert!(member_topic.receiver.neighbors().next().is_none());
     }
 
