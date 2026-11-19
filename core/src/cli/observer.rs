@@ -2874,15 +2874,26 @@ mod tests {
 
     const CLOCK_STEP_PAST_ANY_SILENCE: Duration = Duration::from_secs(3600);
     const SUPERSEDED_CLOSE_WAIT: Duration = Duration::from_secs(5);
-    /// How far past the ack the observer's clock is moved before the member's next Presence, the span within which a drop at the ack would show.
+    /// How far past every `IntroduceAck` the observer's clock is moved before the member's next Presence, the span within which a drop at an ack would show.
     const ACK_DROP_WOULD_SHOW_WITHIN: Duration = Duration::from_millis(500);
     const CONNECTION_OPENED_EVENT: &str = "transport.connection_opened";
     const CONNECTION_CLOSED_EVENT: &str = "transport.connection_closed";
     const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
+    const REQUEST_SENT_EVENT: &str = "direct.request_sent";
     const CONNECTION_FIELD: &str = "connection";
     const PEER_FIELD: &str = "peer";
     const PROTOCOL_FIELD: &str = "protocol";
+    const KIND_FIELD: &str = "kind";
+    const SEQ_FIELD: &str = "seq";
+    const CONNECTION_SOURCE_FIELD: &str = "connection_source";
     const DIRECT_PROTOCOL: &str = "direct";
+    const INTRODUCE_KIND: &str = "introduce";
+    const HELD_CONNECTION_SOURCE: &str = "held";
+    const PRESENCE_REQUEST_EVENT_KIND: &str = "presence_request";
+    /// The seq of the neighbor's presence request the observer takes once it has the answers of both its Introduces, before its clock moves.
+    const REQUEST_SEQ_BEFORE_THE_MOVE: u64 = 1_000_006;
+    /// The seq of the neighbor's presence request the observer takes once its clock has moved past every ack.
+    const REQUEST_SEQ_AFTER_THE_MOVE: u64 = 1_000_007;
     const ONLINE_COLUMN: &str = "\tonline\t";
     const GONE_COLUMN: &str = "\tgone\t";
 
@@ -3215,8 +3226,9 @@ mod tests {
         let observer_host = Arc::clone(&observation.host);
         let mut tail_output = Vec::new();
 
-        let (tail_result, (recorded_before_the_close, closed_at_the_presence)) =
-            tokio::join!(observation.tail(&mut tail_output), async {
+        let (tail_result, (recorded_before_the_close, closed_at_the_presence)) = tokio::join!(
+            observation.tail(&mut tail_output),
+            async {
                 let introduced_on = first_connection_accepted(&neighbor, PAYLOAD_WAIT).await;
                 neighbor_listed_by(&observer_host, PAYLOAD_WAIT).await;
                 let introduction = next_recorded_meeting(
@@ -3230,7 +3242,20 @@ mod tests {
                     PAYLOAD_WAIT,
                 )
                 .await;
-                observer_clock.move_forward(ACK_DROP_WOULD_SHOW_WITHIN);
+                let recorded_past_the_acks = recorded_once_the_clock_moves_past_every_ack(
+                    &neighbor,
+                    &mut recorded,
+                    &observer_clock,
+                )
+                .await;
+                assert!(
+                    !recorded_past_the_acks.iter().any(|(name, fields)| {
+                        *name == CONNECTION_CLOSED_EVENT
+                            && field(fields, CONNECTION_FIELD)
+                                == field(&introduction, CONNECTION_FIELD)
+                    }),
+                    "the observer closed the introduction's connection once its clock read {ACK_DROP_WOULD_SHOW_WITHIN:?} past every IntroduceAck, before any Presence: {recorded_past_the_acks:?}"
+                );
                 neighbor
                     .topic
                     .broadcast(
@@ -3252,7 +3277,8 @@ mod tests {
                 .await;
                 interrupt.send(()).unwrap_or_default();
                 (recorded_before_the_close, closed_at_the_presence)
-            });
+            }
+        );
 
         tail_result.unwrap();
         assert!(
@@ -3261,7 +3287,7 @@ mod tests {
                     Some(serde_json::Value::from(PRESENCE_KIND)),
                     Some(neighbor_short_id())
                 )),
-            "the observer closed the introduction's connection before it took the member's next Presence, sent once its clock read {ACK_DROP_WOULD_SHOW_WITHIN:?} past the ack: {recorded_before_the_close:?}"
+            "the observer closed the introduction's connection before it took the member's next Presence, sent once its clock read {ACK_DROP_WOULD_SHOW_WITHIN:?} past every IntroduceAck: {recorded_before_the_close:?}"
         );
         assert!(
             matches!(
@@ -3271,6 +3297,69 @@ mod tests {
             "the observer did not close the introduction's connection within {SUPERSEDED_CLOSE_WAIT:?} of the member's next Presence: {closed_at_the_presence:?}"
         );
         drop(lab);
+    }
+
+    /// Every event the observer records from the answer to its second Introduce until it takes a presence request after its clock has moved past every ack, the clock moved only once it has taken a request sent after that answer.
+    async fn recorded_once_the_clock_moves_past_every_ack(
+        neighbor: &SilentNeighbor,
+        recorded: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+        observer_clock: &StandingClock,
+    ) -> Vec<RecordedEvent> {
+        let (mut recorded_past_the_acks, _second_ack) = recorded_until(
+            recorded,
+            REQUEST_SENT_EVENT,
+            |fields| {
+                field(fields, KIND_FIELD) == Some(&serde_json::Value::from(INTRODUCE_KIND))
+                    && field(fields, CONNECTION_SOURCE_FIELD)
+                        == Some(&serde_json::Value::from(HELD_CONNECTION_SOURCE))
+            },
+            PAYLOAD_WAIT,
+        )
+        .await;
+        recorded_past_the_acks.extend(
+            recorded_until_the_observer_takes_a_request(
+                neighbor,
+                recorded,
+                REQUEST_SEQ_BEFORE_THE_MOVE,
+            )
+            .await,
+        );
+        observer_clock.move_forward(ACK_DROP_WOULD_SHOW_WITHIN);
+        recorded_past_the_acks.extend(
+            recorded_until_the_observer_takes_a_request(
+                neighbor,
+                recorded,
+                REQUEST_SEQ_AFTER_THE_MOVE,
+            )
+            .await,
+        );
+        recorded_past_the_acks
+    }
+
+    /// Every event the observer records before it takes a presence request the neighbor broadcasts with the seq, failing when it takes none within the payload wait.
+    async fn recorded_until_the_observer_takes_a_request(
+        neighbor: &SilentNeighbor,
+        recorded: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+        seq: u64,
+    ) -> Vec<RecordedEvent> {
+        let requester = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        neighbor
+            .topic
+            .broadcast(&secret_key(NEIGHBOR_SEED), presence_request(requester, seq))
+            .await
+            .unwrap();
+        let (before, _taken) = recorded_until(
+            recorded,
+            PAYLOAD_ACCEPTED_EVENT,
+            |fields| {
+                field(fields, KIND_FIELD)
+                    == Some(&serde_json::Value::from(PRESENCE_REQUEST_EVENT_KIND))
+                    && field(fields, SEQ_FIELD) == Some(&serde_json::Value::from(seq))
+            },
+            PAYLOAD_WAIT,
+        )
+        .await;
+        before
     }
 
     /// What a node holds for the neighbor: its entry as show-peers lists it, the address it carries, and the lookup entry the node dials it by.
