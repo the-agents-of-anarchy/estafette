@@ -8,8 +8,6 @@ mod dropped_payloads;
 #[path = "support/file_growth.rs"]
 mod file_growth;
 #[cfg(test)]
-#[path = "one_machine/gate_closings.rs"]
-mod gate_closings;
 #[cfg(test)]
 #[path = "one_machine/local_network.rs"]
 mod local_network;
@@ -79,7 +77,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use std::time::{Duration, Instant};
 
     use estafette::crypto::NetworkKeys;
-    use estafette::net::endpoint::{DIRECT_ALPN, GateFailure, QUIC_KEEP_ALIVE_INTERVAL};
+    use estafette::net::endpoint::{DIRECT_ALPN, QUIC_KEEP_ALIVE_INTERVAL};
     use estafette::payload::{open_response, seal_payload, seal_request};
     use estafette::wire::{
         Addr, Departure, Introduce, Message, Payload, Request, Response, Version, WIRE_LIMIT_BYTES,
@@ -163,19 +161,14 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     fn amy_after_scripted_bob_departed(network: &LocalNetwork) -> ScriptedBobDeparted {
         let amy_card = network.create_card(AMY_CARD, AMY_HANDLE);
         let bob_key = SecretKey::generate();
-        let bob = ScriptedNode::start(
-            bob_key.clone(),
-            *network.keys().gate_key(),
-            network.topic(),
-            |_closing: GateFailure| {},
-        );
+        let bob = ScriptedNode::start(bob_key.clone(), *network.keys().gate_key(), network.topic());
         let mut amy = network.start_member();
         amy.init_through(&amy_card, &bob);
         bob.broadcast(presence_signed_by(
             network.keys(),
             &bob_key,
             BOB_HANDLE,
-            &bob.endpoint().endpoint().addr(),
+            &bob.endpoint().addr(),
         ));
         amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, |_listed| true);
         let departure_seq = wall_clock_ms();
@@ -232,7 +225,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
     /// The node's id with each of its socket ports on the documentation host, an address no connection of this machine runs over.
     fn address_on_a_host_no_connection_runs_over(node: &ScriptedNode) -> iroh::EndpointAddr {
-        let address = node.endpoint().endpoint().addr();
+        let address = node.endpoint().addr();
         let sockets: Vec<TransportAddr> = address
             .ip_addrs()
             .map(|socket| TransportAddr::Ip(SocketAddr::new(DOCUMENTATION_HOST, socket.port())))
@@ -612,7 +605,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         let ScriptedBobDeparted {
             amy, amy_card, bob, ..
         } = amy_after_scripted_bob_departed(&network);
-        let bob_address = bob.endpoint().endpoint().addr();
+        let bob_address = bob.endpoint().addr();
 
         let answer = request_directly(
             &network,
@@ -669,12 +662,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         let held = timed("the restarted bob connects to amy", || {
             restarted
                 .runtime()
-                .block_on(
-                    restarted
-                        .endpoint()
-                        .endpoint()
-                        .connect(amy_card.id, DIRECT_ALPN),
-                )
+                .block_on(restarted.endpoint().connect(amy_card.id, DIRECT_ALPN))
                 .unwrap()
         });
         let before_presence = timed("the restarted bob's message before its presence", || {
@@ -746,7 +734,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         });
         let held = timed("bob connects to amy", || {
             bob.runtime()
-                .block_on(bob.endpoint().endpoint().connect(amy_card.id, DIRECT_ALPN))
+                .block_on(bob.endpoint().connect(amy_card.id, DIRECT_ALPN))
                 .unwrap()
         });
         let before_presence = timed("bob's message before its presence", || {
@@ -1058,7 +1046,6 @@ mod spec_3_15_with_one_member {
     use crate::dropped_payloads::{
         PAYLOAD_DROPPED_EVENT, is_dropped_payload_of_seq, short_id_text,
     };
-    use crate::gate_closings::GateClosings;
     use crate::local_network::{AMY_CARD, AMY_HANDLE, LocalNetwork};
     use crate::mcp_server::{INIT_TOOL, PRESENCE_WAIT, call_succeeded, init_arguments};
     use crate::member::{Member, loopback_address};
@@ -1076,8 +1063,10 @@ mod spec_3_15_with_one_member {
     /// The six MCP tools of spec 3.10, in the order the tool list gives them.
     const SPEC_TOOL_NAMES: [&str; 6] =
         ["list_cards", "init", "peers", "send", "broadcast", "inbox"];
-    /// The gate timeout of spec 3.14 (3000 ms) with slack: how long a gate closing may take to be reported.
+    /// The gate timeout of spec 3.14 (3000 ms) with slack: how long a gate closing may take to be recorded.
     const SPEC_GATE_TIMEOUT_WITH_SLACK: Duration = Duration::from_secs(5);
+    /// The event a member records for each gossip connection its gate closes (spec/observability.md decision 9).
+    const GATE_CLOSED_EVENT: &str = "transport.gate_closed";
     /// The deaf timeout of spec 3.14 (15 s) and the rebind it starts, with slack.
     const SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK: Duration = Duration::from_secs(30);
     /// The member join wait of spec 3.14 (1500 ms) and the join it ends, with slack.
@@ -1168,6 +1157,22 @@ mod spec_3_15_with_one_member {
             "the member holds no IPv4 UDP port once its rebind's fresh endpoint is bound"
         );
         held
+    }
+
+    /// The count of gate closings the member has recorded once it exceeds `already`, requiring that within the wait.
+    #[track_caller]
+    fn gate_closings_beyond(member: &Member, already: usize, within: Duration) -> usize {
+        member.wait_until(
+            &format!("a {GATE_CLOSED_EVENT} beyond {already}"),
+            within,
+            |lines| {
+                let recorded = lines
+                    .iter()
+                    .filter(|line| line.event == GATE_CLOSED_EVENT)
+                    .count();
+                (recorded > already).then_some(recorded)
+            },
+        )
     }
 
     /// Whether the events line is the counters snapshot a member records once its rebind's fresh endpoint is bound.
@@ -1374,32 +1379,21 @@ mod spec_3_15_with_one_member {
         amy.init_through(&card, &host);
         let ports_before_rebind = amy.bound_udp_ports();
         let outsider_key = SecretKey::generate();
-        let outsider_keys =
-            NetworkKeys::derive(&NetworkSecret::from_bytes([OUTSIDER_SECRET_BYTE; 32]));
-        let closings = GateClosings::default();
-        let outsider = ScriptedNode::start(
-            outsider_key.clone(),
-            *outsider_keys.gate_key(),
-            network.topic(),
-            closings.sink(),
-        );
+        let outsider = ScriptedNode::start_without_gate(outsider_key.clone(), network.topic());
 
         outsider.admit(loopback_address(card.id, &ports_before_rebind));
-        let closed_when_dialing = closings.wait_beyond(0, SPEC_GATE_TIMEOUT_WITH_SLACK);
+        let closed_when_dialed = gate_closings_beyond(&amy, 0, SPEC_GATE_TIMEOUT_WITH_SLACK);
         host.broadcast(presence_signed_by(
             network.keys(),
             &outsider_key,
             OUTSIDER_HANDLE,
-            &outsider.endpoint().endpoint().addr(),
+            &outsider.endpoint().addr(),
         ));
         amy.peer_within(OUTSIDER_HANDLE, PRESENCE_WAIT, |_outsider| true);
         let rebound = rebound_ports(&amy, SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK);
         host.admit(loopback_address(card.id, &rebound));
-        let closed_when_dialed =
-            closings.wait_beyond(closed_when_dialing, SPEC_MEMBER_JOIN_WAIT_WITH_SLACK);
+        gate_closings_beyond(&amy, closed_when_dialed, SPEC_MEMBER_JOIN_WAIT_WITH_SLACK);
 
-        assert!(closed_when_dialing >= 1);
-        assert!(closed_when_dialed > closed_when_dialing);
         assert_eq!(outsider.events(), Vec::<Event>::new());
     }
 }
@@ -2127,7 +2121,7 @@ mod observability_decision_6_on_one_machine {
         let bob_claim = bob.init_through(&bob_card, &host);
         amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, online);
         bob.peer_within(AMY_HANDLE, PRESENCE_WAIT, online);
-        let host_address = host.endpoint().endpoint().addr();
+        let host_address = host.endpoint().addr();
         let host_ports: BTreeSet<u16> = host_address.ip_addrs().map(SocketAddr::port).collect();
         let mut markers = secrets_and_paths_of(&network);
         markers.extend(address_markers(host_address.ip_addrs().copied()));

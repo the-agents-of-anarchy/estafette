@@ -182,7 +182,7 @@ pub fn loopback_address(node: EndpointId, ports: &[u16]) -> EndpointAddr {
 
 /// The address that reaches the scripted node at its UDP ports on this machine's loopback alone.
 pub fn loopback_address_of(node: &ScriptedNode) -> EndpointAddr {
-    let address = node.endpoint().endpoint().addr();
+    let address = node.endpoint().addr();
     let ports: Vec<u16> = address.ip_addrs().map(SocketAddr::port).collect();
     loopback_address(address.id, &ports)
 }

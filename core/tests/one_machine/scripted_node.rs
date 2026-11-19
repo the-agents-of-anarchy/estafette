@@ -7,9 +7,10 @@ use estafette::net::endpoint::DIRECT_ALPN;
 use estafette::net::endpoint::{GateFailure, NodeEndpoint};
 use estafette::stream_items::StreamExt;
 use estafette::wire::WIRE_LIMIT_BYTES;
-use iroh::endpoint::Connection;
+use iroh::address_lookup::MemoryLookup;
+use iroh::endpoint::{Connection, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router, RouterBuilder};
-use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey};
 use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId};
 use tokio::runtime::Handle;
@@ -30,10 +31,39 @@ pub const SPEC_DIRECT_TIMEOUT_WITH_SLACK: Duration = Duration::from_secs(15);
 /// How long a node joined to another may take to report it up as a gossip neighbor.
 const GOSSIP_NEIGHBOR_WAIT: Duration = Duration::from_secs(10);
 
+/// How a scripted node reaches iroh: behind the network secret gate, or with no gate at all.
+enum Reach {
+    Gated(Box<NodeEndpoint>),
+    Ungated {
+        endpoint: Endpoint,
+        address_lookup: MemoryLookup,
+    },
+}
+
+impl Reach {
+    /// The iroh endpoint the node's gossip and direct protocols run on.
+    fn iroh(&self) -> &Endpoint {
+        match self {
+            Self::Gated(node_endpoint) => node_endpoint.endpoint(),
+            Self::Ungated { endpoint, .. } => endpoint,
+        }
+    }
+
+    /// Takes the address as the only way to its node.
+    fn replace_address(&self, address: EndpointAddr) {
+        match self {
+            Self::Gated(node_endpoint) => node_endpoint.replace_address(address),
+            Self::Ungated { address_lookup, .. } => {
+                address_lookup.set_endpoint_info(address);
+            }
+        }
+    }
+}
+
 /// An iroh node the test drives on the network topic: it links the nodes it admits, and plays a host, a forger or an outsider.
 pub struct ScriptedNode {
     runtime: DrivenRuntime,
-    endpoint: NodeEndpoint,
+    reach: Reach,
     router: Option<Router>,
     topic: GossipSender,
     admitted: Admitted,
@@ -41,20 +71,9 @@ pub struct ScriptedNode {
 }
 
 impl ScriptedNode {
-    /// Starts the node under the key on the topic, behind the gate of that key whose every closing goes to the sink, accepting gossip only from the nodes it admits.
-    pub fn start(
-        key: SecretKey,
-        gate_key: GateKey,
-        topic: TopicId,
-        report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
-    ) -> Self {
-        Self::start_with(
-            key,
-            gate_key,
-            topic,
-            report_gate_closing,
-            |router, _endpoint| router,
-        )
+    /// Starts the node under the key on the topic, behind the gate of the gate key, accepting gossip only from the nodes it admits.
+    pub fn start(key: SecretKey, gate_key: GateKey, topic: TopicId) -> Self {
+        Self::start_gated(key, gate_key, topic, |_endpoint| |router| router)
     }
 
     /// Starts the node as `start` does, also answering the direct protocol with the handler it builds on the node's endpoint.
@@ -64,22 +83,44 @@ impl ScriptedNode {
         topic: TopicId,
         direct: impl FnOnce(&NodeEndpoint) -> P,
     ) -> Self {
-        Self::start_with(
-            key,
-            gate_key,
+        Self::start_gated(key, gate_key, topic, |endpoint| {
+            let handler = direct(endpoint);
+            move |router: RouterBuilder| router.accept(DIRECT_ALPN, handler)
+        })
+    }
+
+    /// Starts the node under the key on the topic with no gate of its own, so it holds the topic id and no secret, accepting gossip only from the nodes it admits.
+    pub fn start_without_gate(key: SecretKey, topic: TopicId) -> Self {
+        let driven = DrivenRuntime::start();
+        let address_lookup = MemoryLookup::new();
+        let endpoint = driven
+            .handle()
+            .block_on(
+                Endpoint::builder(presets::Minimal)
+                    .secret_key(key)
+                    .alpns(vec![DIRECT_ALPN.to_vec(), GOSSIP_ALPN.to_vec()])
+                    .relay_mode(RelayMode::Disabled)
+                    .address_lookup(address_lookup.clone())
+                    .bind(),
+            )
+            .unwrap();
+        Self::assemble(
+            driven,
+            Reach::Ungated {
+                endpoint,
+                address_lookup,
+            },
             topic,
-            |_closing: GateFailure| {},
-            |router, endpoint| router.accept(DIRECT_ALPN, direct(endpoint)),
+            |router| router,
         )
     }
 
-    /// Starts the node with the protocols the extension adds beside gossip.
-    fn start_with(
+    /// Binds the node behind the gate and starts it with the protocols the extension, built on its endpoint, adds beside gossip.
+    fn start_gated<Extension: FnOnce(RouterBuilder) -> RouterBuilder>(
         key: SecretKey,
         gate_key: GateKey,
         topic: TopicId,
-        report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
-        extend: impl FnOnce(RouterBuilder, &NodeEndpoint) -> RouterBuilder,
+        extension_on: impl FnOnce(&NodeEndpoint) -> Extension,
     ) -> Self {
         let driven = DrivenRuntime::start();
         let runtime = driven.handle().clone();
@@ -88,23 +129,35 @@ impl ScriptedNode {
             key,
             gate_key,
             Vec::<RelayUrl>::new(),
-            report_gate_closing,
+            |_closing: GateFailure| {},
             unrecorded_connections(),
         );
+        let extension = {
+            let _inside_runtime = runtime.enter();
+            extension_on(&endpoint)
+        };
+        Self::assemble(driven, Reach::Gated(Box::new(endpoint)), topic, extension)
+    }
+
+    /// Starts gossip and the router on the node's endpoint, subscribes to the topic and records what it gives.
+    fn assemble(
+        driven: DrivenRuntime,
+        reach: Reach,
+        topic: TopicId,
+        extend: impl FnOnce(RouterBuilder) -> RouterBuilder,
+    ) -> Self {
+        let runtime = driven.handle().clone();
         let admitted = Admitted::default();
         let events = Arc::new(watch::Sender::new(Vec::new()));
         let _inside_runtime = runtime.enter();
-        let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
-        let router = extend(
-            Router::builder(endpoint.endpoint().clone()).accept(
-                GOSSIP_ALPN,
-                AdmittedOnly {
-                    gossip: gossip.clone(),
-                    admitted: Arc::clone(&admitted),
-                },
-            ),
-            &endpoint,
-        )
+        let gossip = Gossip::builder().spawn(reach.iroh().clone());
+        let router = extend(Router::builder(reach.iroh().clone()).accept(
+            GOSSIP_ALPN,
+            AdmittedOnly {
+                gossip: gossip.clone(),
+                admitted: Arc::clone(&admitted),
+            },
+        ))
         .spawn();
         let (topic, receiver) = runtime
             .block_on(gossip.subscribe(topic, Vec::new()))
@@ -113,7 +166,7 @@ impl ScriptedNode {
         runtime.spawn(record(receiver, Arc::clone(&events)));
         Self {
             runtime: driven,
-            endpoint,
+            reach,
             router: Some(router),
             topic,
             admitted,
@@ -124,7 +177,7 @@ impl ScriptedNode {
     /// Takes the address as the node's only way to the other node and joins it on the topic.
     pub fn admit(&self, address: EndpointAddr) {
         let other = address.id;
-        self.endpoint().replace_address(address);
+        self.reach.replace_address(address);
         self.admitted.lock().unwrap().insert(other);
         self.runtime()
             .block_on(self.topic.join_peers(vec![other]))
@@ -174,12 +227,7 @@ impl ScriptedNode {
     pub fn request_directly(&self, to: EndpointId, request: &[u8]) -> Option<Vec<u8>> {
         self.runtime().block_on(async {
             tokio::time::timeout(SPEC_DIRECT_TIMEOUT_WITH_SLACK, async {
-                let connection = self
-                    .endpoint()
-                    .endpoint()
-                    .connect(to, DIRECT_ALPN)
-                    .await
-                    .ok()?;
+                let connection = self.endpoint().connect(to, DIRECT_ALPN).await.ok()?;
                 let (mut send, mut receive) = connection.open_bi().await.ok()?;
                 send.write_all(request).await.ok()?;
                 send.finish().ok()?;
@@ -191,9 +239,9 @@ impl ScriptedNode {
         })
     }
 
-    /// The node's endpoint.
-    pub const fn endpoint(&self) -> &NodeEndpoint {
-        &self.endpoint
+    /// The node's iroh endpoint.
+    pub fn endpoint(&self) -> &Endpoint {
+        self.reach.iroh()
     }
 
     /// The runtime the node's tasks run on, which the test thread may block on.

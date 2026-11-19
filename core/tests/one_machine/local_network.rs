@@ -7,7 +7,6 @@ use estafette::crypto::{NetworkKeys, NetworkSecret};
 use estafette::invite::render_host_line;
 use estafette::keys::{parse_network_secret, parse_secret_key};
 use estafette::net::direct::{DirectHost, DirectServer};
-use estafette::net::endpoint::GateFailure;
 use estafette::wire::{self, Addr, HostAddr, Introduce, IntroduceAck, Message, RelayUrl, Version};
 use iroh::SecretKey;
 use iroh_gossip::TopicId;
@@ -140,12 +139,7 @@ impl LocalNetwork {
 
     /// Starts a node standing in for a bootstrap host: it holds the network secret and links the members it admits.
     pub fn stand_in_host(&self) -> ScriptedNode {
-        ScriptedNode::start(
-            SecretKey::generate(),
-            *self.keys.gate_key(),
-            self.topic(),
-            |_closing: GateFailure| {},
-        )
+        ScriptedNode::start(SecretKey::generate(), *self.keys.gate_key(), self.topic())
     }
 
     /// Starts amy and bob on cards requesting those handles, each claiming through the host, and waits until each lists the other online.
