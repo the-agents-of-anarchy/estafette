@@ -185,8 +185,6 @@ impl fmt::Display for GateFailureReason {
     }
 }
 
-impl std::error::Error for GateFailureReason {}
-
 impl From<ConnectionError> for GateFailureReason {
     fn from(error: ConnectionError) -> Self {
         Self::Transport(Close::of(&error))
