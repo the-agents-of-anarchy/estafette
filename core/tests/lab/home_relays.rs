@@ -180,6 +180,7 @@ mod tests {
                 vec![raw(&[
                     connected(1, LIVE_RELAY),
                     home_changed(2, DOOMED_RELAY, true),
+                    connected(3, LIVE_RELAY),
                 ])],
             ),
             (
