@@ -3798,12 +3798,13 @@ pub(crate) mod tests {
         _restarted_serving: Router,
     }
 
-    /// The member's server over the host built from the member's own client, a connection from a vanished process of the client's card held past a gone process's silence, then the restarted client's Introduce, with whether each connection from the card reports a selected path after it.
+    /// The member's server, its register recording to the transport record, over the host built from the member's own client, a connection from a vanished process of the client's card held past a gone process's silence, then the restarted client's Introduce, with whether each connection from the card reports a selected path after it.
     async fn restarted_process_introduced_to_a_member<Host: DirectHost>(
+        transport: TransportRecord,
         host_of: impl FnOnce(Arc<DirectClient>) -> Host,
     ) -> RestartedProcessIntroduced {
         let clock = StandingClock::standing_now();
-        let register = HeldConnections::new(clock.monotonic(), dropping_transport());
+        let register = HeldConnections::new(clock.monotonic(), transport);
         let member_node = bind_node_holding(SERVER_SEED, register.clone()).await;
         let member = Arc::new(DirectClient::new(
             member_node.endpoint().clone(),
@@ -3836,7 +3837,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_15_test_18_a_request_a_member_starts_after_a_restarted_processs_introduce_and_before_its_presence_is_answered_without_waiting_on_the_gone_processs_path()
      {
-        let restart = restarted_process_introduced_to_a_member(|_member| {
+        let restart = restarted_process_introduced_to_a_member(dropping_transport(), |_member| {
             RecordingHost::with_card(card_of(SERVER_SEED))
         })
         .await;
@@ -3901,7 +3902,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_15_test_18_after_a_restarted_processs_introduce_the_members_next_request_to_it_and_then_its_next_request_to_the_member_are_answered()
      {
-        let restart = restarted_process_introduced_to_a_member(|_member| {
+        let restart = restarted_process_introduced_to_a_member(dropping_transport(), |_member| {
             RecordingHost::with_card(card_of(SERVER_SEED))
         })
         .await;
@@ -3921,7 +3922,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_15_test_18_after_a_restarted_processs_introduce_its_next_request_to_the_member_and_then_the_members_next_request_to_it_are_answered()
      {
-        let restart = restarted_process_introduced_to_a_member(|_member| {
+        let restart = restarted_process_introduced_to_a_member(dropping_transport(), |_member| {
             RecordingHost::with_card(card_of(SERVER_SEED))
         })
         .await;
@@ -3936,6 +3937,48 @@ pub(crate) mod tests {
 
         assert_eq!(answered_by_the_member.unwrap().nonce, PROBE_NONCE_REVERSED);
         assert_eq!(answered_by_the_restarted.unwrap().nonce, PROBE_NONCE);
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_the_close_before_a_members_dial_to_a_restarted_process_is_recorded_closing_the_introduces_connection_with_estafettes_code_and_reason()
+     {
+        let (record, mut recorded) = recorded_events();
+        let restart = restarted_process_introduced_to_a_member(
+            TransportRecord::new(record, test_salt()),
+            |_member| RecordingHost::with_card(card_of(SERVER_SEED)),
+        )
+        .await;
+        assert_eq!(
+            restart.reported_after_the_introduce,
+            vec![false],
+            "iroh did not keep the gone process's path selected once the introduce's connection opened"
+        );
+        let introduces_connection =
+            connections_held_open_from(&restart.link.server_node, card_of(CLIENT_SEED));
+        drop(recorded_so_far(&mut recorded));
+
+        let probed = members_probe_of_the_restarted(&restart).await;
+        let closing = next_recorded(&mut recorded, "transport.connection_closing").await;
+
+        assert_eq!(introduces_connection.len(), 1);
+        assert_eq!(
+            closing,
+            vec![
+                (
+                    "connection",
+                    serde_json::Value::from(introduces_connection[0].stable_id())
+                ),
+                (
+                    "peer",
+                    serde_json::Value::from(
+                        data_encoding::HEXLOWER.encode(&card_of(CLIENT_SEED)[..5])
+                    )
+                ),
+                ("code", serde_json::Value::from(SPEC_SUPERSEDED_CLOSE_CODE)),
+                ("reason", serde_json::Value::from("superseded")),
+            ]
+        );
+        assert_eq!(probed.unwrap().nonce, PROBE_NONCE);
     }
 
     /// The member's probe of the introducing process, running.
@@ -3990,7 +4033,7 @@ pub(crate) mod tests {
      {
         let recording = RecordingHost::with_card(card_of(SERVER_SEED));
         let started_probe = Arc::new(Mutex::new(None));
-        let restart = restarted_process_introduced_to_a_member(|member| {
+        let restart = restarted_process_introduced_to_a_member(dropping_transport(), |member| {
             HostProbingTheIntroducerWhileAnswering {
                 recording: recording.clone(),
                 member,
