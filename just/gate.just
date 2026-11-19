@@ -37,15 +37,10 @@ no-test-sleeps:
 clippy:
     cargo clippy --all-targets -- -D warnings
 
-[doc("Clippy over every target with the relay feature, warnings denied; skipped while no package declares it")]
+[doc("Clippy over every target with the relay feature, warnings denied; fails when no package declares the feature")]
 [group('verify')]
 clippy-relay:
-    metadata="$(cargo metadata --no-deps --format-version 1)"; \
-    if grep -q '"relay":\[' <<<"$metadata"; then \
-        cargo clippy --all-targets --features relay -- -D warnings; \
-    else \
-        echo 'relay feature absent; skipped'; \
-    fi
+    cargo clippy --all-targets --features relay -- -D warnings
 
 [doc("Fail on any RustSec advisory against Cargo.lock, with cargo-audit held at its pinned version")]
 [group('verify')]
