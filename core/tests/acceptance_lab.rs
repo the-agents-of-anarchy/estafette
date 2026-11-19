@@ -44,6 +44,9 @@ mod member_events;
 #[path = "support/message_body.rs"]
 mod message_body;
 #[cfg(test)]
+#[path = "support/new_presence_window.rs"]
+mod new_presence_window;
+#[cfg(test)]
 #[path = "lab/off_topic_sender.rs"]
 mod off_topic_sender;
 #[cfg(test)]
@@ -750,6 +753,7 @@ mod spec_3_15_two_members_through_the_live_host {
     };
     use crate::member_events::MemberEvents;
     use crate::message_body::BODY;
+    use crate::new_presence_window::{acknowledged_after, new_presence_accepted};
     use crate::off_topic_sender::OffTopicSender;
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::{presence_signed_by, presence_signed_by_at};
@@ -1498,22 +1502,16 @@ mod spec_3_15_two_members_through_the_live_host {
         let claim = timed("the restarted bob claims its card", || {
             restarted.call(INIT_TOOL, &init_arguments(&bob.card.name))
         });
-        timed(
-            "amy lists the restarted bob online, seen after the kill",
-            || {
-                amy.member.peer_within(&bob_handle, PRESENCE_WAIT, |bob| {
-                    online(bob) && bob["last_seen"].as_u64().unwrap() > killed_ms
-                })
-            },
-        );
-        let new_presence_reached = Instant::now();
+        let new_presence = timed("amy accepts the restarted bob's new presence", || {
+            new_presence_accepted(amy.member.events(), bob.card.id, killed_ms)
+        });
         let sent = timed("amy's send to the restarted bob", || {
             send(&mut amy, &bob_handle, BODY)
         });
-        let delivered_after = new_presence_reached.elapsed();
 
         assert!(call_succeeded(&claim), "{claim}");
         assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
+        let delivered_after = acknowledged_after(amy.member.events(), &new_presence, &sent);
         assert!(
             delivered_after <= SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
             "{delivered_after:?}"

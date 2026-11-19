@@ -26,6 +26,9 @@ mod member_events;
 #[path = "support/message_body.rs"]
 mod message_body;
 #[cfg(test)]
+#[path = "support/new_presence_window.rs"]
+mod new_presence_window;
+#[cfg(test)]
 #[path = "support/node_start.rs"]
 mod node_start;
 #[cfg(test)]
@@ -88,6 +91,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use crate::local_network::{AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, LocalNetwork, MetPair};
     use crate::mcp_server::{PRESENCE_WAIT, gone, online};
     use crate::member::{Member, loopback_address, loopback_address_of};
+    use crate::new_presence_window::{acknowledged_after, new_presence_accepted};
     use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
     use crate::payloads::presence_signed_by;
     use crate::scratch_machine::{Card, RunRecordKeeping};
@@ -365,17 +369,10 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         timed("the restarted bob claims its card", || {
             restarted.init_through(bob_card, &second_host)
         });
-        timed(
-            "amy lists the restarted bob online, seen after the kill",
-            || {
-                amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, |bob| {
-                    online(bob) && bob["last_seen"].as_u64().unwrap() > killed_ms
-                })
-            },
-        );
-        let new_presence_reached = Instant::now();
+        let new_presence = timed("amy accepts the restarted bob's new presence", || {
+            new_presence_accepted(amy.events(), bob_card.id, killed_ms)
+        });
         let sent = timed("amy's send to the restarted bob", || send(amy, BOB_HANDLE));
-        let delivered_after = new_presence_reached.elapsed();
 
         assert_eq!(
             first_send["result"]["delivered"],
@@ -383,6 +380,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             "{first_send}"
         );
         assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
+        let delivered_after = acknowledged_after(amy.events(), &new_presence, &sent);
         assert!(
             delivered_after <= SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
             "{delivered_after:?}"
@@ -521,16 +519,12 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                 &loopback_address_of(&restarted),
             ));
         });
-        timed("amy lists the restarted bob's presence", || {
-            amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, |bob| {
-                bob["last_seen"].as_u64().unwrap() > killed_ms
-            })
+        let new_presence = timed("amy accepts the restarted bob's new presence", || {
+            new_presence_accepted(amy.events(), bob_card.id, killed_ms)
         });
-        let new_presence_reached = Instant::now();
         let sent = timed("amy's send to the restarted bob", || {
             send(&mut amy, BOB_HANDLE)
         });
-        let delivered_after = new_presence_reached.elapsed();
 
         assert_eq!(
             first_send["result"]["delivered"],
@@ -538,6 +532,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             "{first_send}"
         );
         assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
+        let delivered_after = acknowledged_after(amy.events(), &new_presence, &sent);
         assert!(
             delivered_after <= SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
             "{delivered_after:?}"
