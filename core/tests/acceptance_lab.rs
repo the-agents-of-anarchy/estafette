@@ -1513,8 +1513,8 @@ mod spec_3_15_two_members_through_the_live_host {
         assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
         let delivered_after = acknowledged_after(amy.member.events(), &new_presence, &sent);
         assert!(
-            delivered_after <= SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
-            "{delivered_after:?}"
+            delivered_after < SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
+            "acknowledged {delivered_after:?} after the new presence, not under {SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE:?}"
         );
     }
 
