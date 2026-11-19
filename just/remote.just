@@ -9,6 +9,7 @@ set working-directory := '..'
 lab_hcloud_context := "estafette-lab"
 lab_hcloud := "env -u HCLOUD_TOKEN hcloud --context " + lab_hcloud_context
 host_a_server := "estafette-lab"
+host_b_server := "estafette-lab-2"
 server := env("LAB_SERVER", host_a_server)
 lab_host_letter := if server == host_a_server { "A" } else { "B" }
 key := env("LAB_KEY", home_directory() / ".ssh" / "estafette_lab")
@@ -185,7 +186,7 @@ server-up: lab-context-exists
     git archive HEAD | ssh {{ ssh_opts }} lab@"$address" 'mkdir -p {{ remote_tree }} && tar -x -C {{ remote_tree }}'
     ssh {{ ssh_opts }} lab@"$address" 'bash -l -c "cd {{ remote_tree }} && cargo build --release -p estafette --features relay"' >&2
 
-[doc("Bring the server up and run the network's relay and bootstrap node there as a systemd unit, reusing a live one, its relay named by relay-name; prints the host address line; a second host starts after host-up so it joins the live host A, and restarts after A restarts; refuses before creating anything when the lab binary is missing")]
+[doc("Bring the server up and run the network's relay and bootstrap node there as a systemd unit, reusing a live one, its relay named by relay-name; prints the host address line; lab-up runs it for host B only once host A's relay answers TLS by name, so B joins the live A; refuses before creating anything when the lab binary is missing")]
 [group('lab')]
 infrastructure: lab-context-exists lab-binary-built server-up
     #!/usr/bin/env bash
@@ -204,7 +205,7 @@ infrastructure: lab-context-exists lab-binary-built server-up
     LAB_SERVER={{ server }} just remote::host-start >&2
     printf '%s\n' "$host_line"
 
-[doc("Bring host A up for the lab network: drop every host of an earlier stretch from this machine's owner configuration, start A, add A as its only host, and record the invitation in the root checkout's lab/host.txt alone; two hosts run in this order: host-up for A first, then LAB_SERVER=<name> just remote::infrastructure for B, which joins the live A, and after A restarts restart B, since a host does not rejoin a peer host that restarts; refuses before creating anything when the lab binary is missing")]
+[doc("Bring host A up for the lab network: drop every host of an earlier stretch from this machine's owner configuration, start A, add A as its only host, and record the invitation in the root checkout's lab/host.txt alone; lab-up runs it first and brings host B up after it; a host does not rejoin a peer host that restarts, so after A restarts restart B; refuses before creating anything when the lab binary is missing")]
 [group('lab')]
 host-up: lab-context-exists lab-binary-built
     #!/usr/bin/env bash
@@ -438,6 +439,37 @@ host-joined: lab-context-exists
     address="$({{ lab_hcloud }} server ip {{ server }})"
     events_file="$(ssh {{ ssh_opts }} root@"$address" 'readlink -f /proc/"$(systemctl show --property=MainPID --value {{ host_unit }})"/fd/* | grep "\.events\.jsonl$"')" || events_file=""
     ssh {{ ssh_opts }} root@"$address" bash -s -- {{ lab_host_letter }} {{ host_join_wait_seconds }} "'$events_file'" < just/remote/host-joined.sh
+
+[doc("Prove the whole lab, changing nothing on any server: relay-answers-tls for host A and host B, then host-joined for host A and host B; runs all four and exits non-zero when any fails; names hosts by letter alone and prints no address and no name that holds one, so its output can be pasted; call it before any batch of tests and after any test that kills and restores a host")]
+[group('lab')]
+both-hosts-serve:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    failed_checks=0
+    for check in relay-answers-tls host-joined; do
+        for lab_server in {{ host_a_server }} {{ host_b_server }}; do
+            LAB_SERVER="$lab_server" just remote::"$check" || failed_checks=$((failed_checks + 1))
+        done
+    done
+    [ "$failed_checks" = 0 ]
+
+[doc("Bring the lab up whole: host A by host-up, host B's server by server-up, host B's host started by infrastructure only once host A's relay answers TLS by name, host B's relay waited for likewise, then both-hosts-serve; when that fails, host B's host is restarted once and both-hosts-serve runs again, and a second failure ends the bring-up non-zero; refuses before creating anything when the lab binary is missing")]
+[group('lab')]
+lab-up: lab-context-exists lab-binary-built
+    #!/usr/bin/env bash
+    set -euo pipefail
+    LAB_SERVER={{ host_a_server }} just remote::host-up
+    LAB_SERVER={{ host_b_server }} just remote::server-up
+    LAB_SERVER={{ host_a_server }} just remote::relay-answers-tls
+    LAB_SERVER={{ host_b_server }} just remote::infrastructure > /dev/null
+    LAB_SERVER={{ host_b_server }} just remote::relay-answers-tls
+    if just remote::both-hosts-serve; then
+        exit 0
+    fi
+    echo "the lab does not serve whole: restarting host B once" >&2
+    LAB_SERVER={{ host_b_server }} just remote::host-down
+    LAB_SERVER={{ host_b_server }} just remote::host-start
+    just remote::both-hosts-serve
 
 [doc("Delete every lab resource of the stretch, servers first then firewall and key (primary IPs go with their servers), through the skill's backstop script, and end by printing just remote::list")]
 [group('lab')]
