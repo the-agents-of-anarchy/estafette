@@ -62,6 +62,11 @@ lab-context-exists:
 ip: lab-context-exists
     @{{ lab_hcloud }} server ip {{ server }}
 
+[doc("Print the name of the server's relay, the one name every recipe starts or records its host with: s<the server's numeric id at Hetzner>.<its IPv4 address, dots as hyphens>.sslip.io, which sslip.io resolves to that address; no later server repeats the id, so no other server orders a certificate for the name, and the server keeps it through every restart, so its certificate cache serves a restart")]
+[private]
+relay-name: lab-context-exists
+    @{{ lab_hcloud }} server describe {{ server }} -o json | python3 -I -c 'import json, sys; label_letter = "s"; resolver_suffix = ".sslip.io"; server = json.load(sys.stdin); print(label_letter + str(server["id"]) + "." + server["public_net"]["ipv4"]["ip"].replace(".", "-") + resolver_suffix)'
+
 [doc("Open a mosh terminal on the server; extra words run there, e.g. tmux attach -t lab")]
 [group('act')]
 mosh user="lab" *command: lab-context-exists
@@ -177,13 +182,13 @@ server-up: lab-context-exists
     git archive HEAD | ssh {{ ssh_opts }} lab@"$address" 'mkdir -p {{ remote_tree }} && tar -x -C {{ remote_tree }}'
     ssh {{ ssh_opts }} lab@"$address" 'bash -l -c "cd {{ remote_tree }} && cargo build --release -p estafette --features relay"' >&2
 
-[doc("Bring the server up and run the network's relay and bootstrap node there as a systemd unit, reusing a live one; prints the host address line; a second host starts after host-up so it joins the live host A, and restarts after A restarts; refuses before creating anything when the lab binary is missing")]
+[doc("Bring the server up and run the network's relay and bootstrap node there as a systemd unit, reusing a live one, its relay named by relay-name; prints the host address line; a second host starts after host-up so it joins the live host A, and restarts after A restarts; refuses before creating anything when the lab binary is missing")]
 [group('lab')]
 infrastructure: lab-context-exists lab-binary-built server-up
     #!/usr/bin/env bash
     set -euo pipefail
     address="$({{ lab_hcloud }} server ip {{ server }})"
-    domain="${address//./-}.sslip.io"
+    domain="$(LAB_SERVER={{ server }} just remote::relay-name)"
     remote() { ssh {{ ssh_opts }} root@"$address" "$@"; }
     test -e {{ lab_config_file }} || just remote::estafette network create {{ lab_network }} >&2
     remote 'umask 077 && mkdir -p {{ remote_host_root }}/run $(dirname {{ remote_host_config_file }}) && chmod 0700 {{ remote_host_root }} && { test -e {{ remote_host_config_file }} || cat > {{ remote_host_config_file }}; }' < {{ lab_config_file }}
@@ -212,7 +217,7 @@ host-up: lab-context-exists lab-binary-built
     just remote::estafette network add-host {{ lab_network }} "$host_line" >&2
     invitation="$(just remote::estafette network show-invitation {{ lab_network }} 2> /dev/null)"
     record="$(just remote::host-record-path)"
-    printf 'network: %s\ninvitation: %s\nhost: %s\nserver: %s %s\ndomain: %s\nwritten: %s\n' {{ lab_network }} "$invitation" "$host_line" {{ server }} "$address" "${address//./-}.sslip.io" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$record"
+    printf 'network: %s\ninvitation: %s\nhost: %s\nserver: %s %s\ndomain: %s\nwritten: %s\n' {{ lab_network }} "$invitation" "$host_line" {{ server }} "$address" "$(LAB_SERVER={{ server }} just remote::relay-name)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$record"
     chmod 0600 "$record"
     printf 'wrote %s for %s %s\n' "$record" {{ server }} "$address" >&2
 
@@ -403,7 +408,7 @@ host-start: lab-context-exists
     fi
     just remote::server-binary-built
     address="$({{ lab_hcloud }} server ip {{ server }})"
-    domain="${address//./-}.sslip.io"
+    domain="$(LAB_SERVER={{ server }} just remote::relay-name)"
     remote() { ssh {{ ssh_opts }} root@"$address" "$@"; }
     if ! remote systemctl is-active --quiet {{ host_unit }}; then
         remote systemctl reset-failed {{ host_unit }} 2> /dev/null || true
