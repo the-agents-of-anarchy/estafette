@@ -9,8 +9,10 @@ use estafette::wire::HostAddr;
 use iroh::PublicKey;
 use serde_json::{Value, json};
 
+use crate::dropped_payloads::short_id_of_node;
 use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use crate::handles::unique_handle;
+use crate::home_relays::{every_member_homed_on, raw_lines_of_running_member};
 use crate::inbox_client::InboxClient;
 use crate::killable_host::KillableHost;
 use crate::lab_machine::LabMachine;
@@ -72,8 +74,14 @@ const RECORD_TS_COLUMN: usize = 5;
 const SPEC_HOST_ADDED_WITHIN: Duration = Duration::from_millis(1000);
 /// How long every member may take to answer a fresh `tail`'s presence request, its join included.
 const ANNOUNCEMENT_WAIT: Duration = Duration::from_secs(60);
-/// How many times three fresh members are started to have each homed on the doomed host's relay alone.
-const HOMING_ATTEMPTS: usize = 3;
+/// How long a member may take to accept a record of the live host, which sends one every 5 s: chosen, not measured.
+const LIVE_HOST_RECORD_WAIT: Duration = Duration::from_secs(60);
+/// The event a member records for each gossip payload it accepts, and the fields naming the payload's kind and signer (spec/observability.md decisions 6 and 9).
+const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
+const KIND_FIELD: &str = "kind";
+const PEER_FIELD: &str = "peer";
+/// The kind of payload a host's infrastructure record is, as an events line names it.
+const INFRASTRUCTURE_PAYLOAD_KIND: &str = "infrastructure";
 /// How soon after the kill every member's send to every other must be delivered (spec 3.15 test 23).
 const SPEC_DELIVERED_WITHIN_OF_THE_KILL: Duration = Duration::from_secs(60);
 /// How many rebinds a member may record after the kill: none twice (spec 3.15 test 23).
@@ -258,6 +266,32 @@ impl Member {
     /// The member's card id as `tail` writes it.
     fn card_key(&self) -> String {
         render_public_key(&self.card.id)
+    }
+
+    /// The trace directory of the server the member runs, the last its machine started.
+    fn own_traces(&self) -> PathBuf {
+        let serving = self.machine.members_started().checked_sub(1).unwrap();
+        self.machine.traces_directory_of_member(serving)
+    }
+
+    /// Waits until the member's own events record a record of the live host accepted, after which iroh ranks the live host's relay among the relays it may home on.
+    #[track_caller]
+    fn live_host_record_accepted(&self, network: &LiveNetwork) {
+        let live_host = short_id_of_node(network.host_address().id);
+        self.server.events().wait_until(
+            &format!("{PAYLOAD_ACCEPTED_EVENT} of an {INFRASTRUCTURE_PAYLOAD_KIND} record of the live host {live_host}"),
+            LIVE_HOST_RECORD_WAIT,
+            |lines| {
+                lines
+                    .iter()
+                    .any(|line| {
+                        line.event == PAYLOAD_ACCEPTED_EVENT
+                            && line.value(KIND_FIELD) == Some(&json!(INFRASTRUCTURE_PAYLOAD_KIND))
+                            && line.value(PEER_FIELD) == Some(&json!(live_host))
+                    })
+                    .then_some(())
+            },
+        );
     }
 
     /// How many rebinds the member's run records name so far.
@@ -583,29 +617,32 @@ fn relays_announced_now(
     announced
 }
 
-/// Three members whose configuration names the doomed host alone, started until each announces the doomed host's relay alone, with what each announced, giving up after the homing attempts.
+/// Three members whose configuration names the doomed host alone, with what each announced to a fresh `tail` started once each accepted a record of the live host, failing the test unless the one read of each member's own raw trace then names the doomed host's relay as its home.
 #[track_caller]
 fn trio_homed_on(
     network: &LiveNetwork,
     doomed: &HostAddr,
 ) -> (Vec<Member>, BTreeMap<String, Vec<String>>) {
-    let homed_alone = vec![doomed.relay.as_str().to_owned()];
-    let mut attempts = Vec::new();
-    for _ in 0..HOMING_ATTEMPTS {
-        let trio: Vec<Member> = TRIO
-            .iter()
-            .map(|base| Member::joined_through(network, base, std::slice::from_ref(doomed)))
-            .collect();
-        let announced = relays_announced_now(network, &trio);
-        if announced.values().all(|relays| *relays == homed_alone) {
-            return (trio, announced);
-        }
-        attempts.push(announced);
+    let trio: Vec<Member> = TRIO
+        .iter()
+        .map(|base| Member::joined_through(network, base, std::slice::from_ref(doomed)))
+        .collect();
+    for member in &trio {
+        member.live_host_record_accepted(network);
     }
-    panic!(
-        "iroh homed a member on another relay than {} in each of {HOMING_ATTEMPTS} attempts: {attempts:#?}",
-        doomed.relay.as_str()
+    let announced = relays_announced_now(network, &trio);
+    let own_traces: Vec<PathBuf> = trio.iter().map(Member::own_traces).collect();
+    let homed = every_member_homed_on(
+        doomed.relay.as_str(),
+        trio.iter()
+            .map(|member| member.handle.as_str())
+            .zip(own_traces.iter().map(PathBuf::as_path)),
+        raw_lines_of_running_member,
     );
+    if let Err(refusal) = homed {
+        panic!("{refusal}; members announced to a fresh tail: {announced:?}");
+    }
+    (trio, announced)
 }
 
 /// Times the connections from this machine to the doomed host's relay and to the live host's, prints every reading, and fails the test unless the placement spec 3.15 test 23 stands on holds.
@@ -636,7 +673,7 @@ fn sweep_of_sends(members: &mut [Member]) -> Vec<(String, String, Value)> {
     sends
 }
 
-/// Spec 3.15 test 23: three members on this machine whose configuration names the killable host alone, each announcing its relay alone to a fresh `tail` just before the kill, see that host's relay and bootstrap node killed while the live host lives, and a sweep of sends from every member to every other, sweeps following each other, is delivered whole and ends within 60 s of the kill, while no member's run record names a rebind twice by the end of those 60 s.
+/// Spec 3.15 test 23: three members on this machine whose configuration names the killable host alone, its relay answering this machine faster than the live host's and each member's own raw trace naming it as the home just before the kill, see that host's relay and bootstrap node killed while the live host lives, and a sweep of sends from every member to every other, sweeps following each other, is delivered whole and ends within 60 s of the kill, while no member's run record names a rebind twice by the end of those 60 s.
 #[test]
 fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_other_within_60_s_and_none_rebinds_twice()
  {

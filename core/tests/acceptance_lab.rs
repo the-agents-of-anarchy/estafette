@@ -20,6 +20,9 @@ mod gated_endpoint;
 #[path = "lab/handles.rs"]
 mod handles;
 #[cfg(test)]
+#[path = "lab/home_relays.rs"]
+mod home_relays;
+#[cfg(test)]
 #[path = "lab/inbox_client.rs"]
 mod inbox_client;
 #[cfg(test)]
