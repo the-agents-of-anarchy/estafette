@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::print_to_standard_error;
 
@@ -25,10 +25,6 @@ pub const FIXTURE_STANDARD_ERROR: &str = "fixture.stderr";
 pub const FAILED_TEST_EXIT_CODE: i32 = 101;
 /// What a test is failed with when a child it runs closed its standard output and outlived the bound on its exit.
 const OUTLIVED_ITS_OUTPUT: &str = "closed its standard output and had not exited";
-/// The command that sends a process a signal by its id.
-const KILL_COMMAND: &str = "kill";
-/// The flag that makes that signal one no process can catch.
-const KILL_SIGNAL_FLAG: &str = "-KILL";
 
 /// A spawned process owned from its spawn and ended when dropped, killed and waited for, so no failure after its spawn leaves it running unmarked.
 pub struct OwnedProcess {
@@ -190,46 +186,44 @@ fn ran_within(mut command: Command, named: &str, within: Duration) -> FixtureRun
     }
 }
 
-/// How the child exited, waited for on a thread of its own within the bound, failing the test when its exit cannot be waited for, or, once it is killed, when it outlives the bound.
+/// How the child exited, its exit taken through the handle that owns it within the bound, failing the test when its exit cannot be taken, or, once that handle has killed it, when it outlives the bound.
 #[track_caller]
 fn exited_within(mut child: Child, named: &str, within: Duration) -> ExitStatus {
-    let process_id = child.id();
-    let (exited, exit) = mpsc::channel();
-    std::thread::spawn(move || drop(exited.send(child.wait())));
-    match exit.recv_timeout(within) {
-        Ok(Ok(status)) => status,
-        Ok(Err(unwaited)) => {
-            panic!("the exit of {named}, process {process_id}, could not be waited for: {unwaited}")
-        }
-        Err(RecvTimeoutError::Timeout) => {
-            if let Err(unended) = killed_within(process_id, &exit, within) {
-                print_unended(named, process_id, &unended);
+    match reaped_within(&mut child, within) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            if let Err(unended) = killed_within(&mut child, within) {
+                print_unended(named, child.id(), &unended);
             }
             panic!("{named} {OUTLIVED_ITS_OUTPUT} {within:?} later")
         }
-        Err(RecvTimeoutError::Disconnected) => {
-            panic!("the thread waiting for the exit of {named} ended without an answer")
-        }
+        Err(unwaited) => panic!(
+            "the exit of {named}, process {}, could not be waited for: {unwaited}",
+            child.id()
+        ),
     }
 }
 
-/// Kills the process by its id, still unreaped while the thread waiting for it holds no answer, and waits within the bound for that thread to see it exit, or why it could not be ended.
-fn killed_within(
-    process_id: u32,
-    exit: &mpsc::Receiver<io::Result<ExitStatus>>,
-    within: Duration,
-) -> io::Result<()> {
-    let killed = Command::new(KILL_COMMAND)
-        .args([KILL_SIGNAL_FLAG, &process_id.to_string()])
-        .status()?;
-    if !killed.success() {
-        return Err(io::Error::other(format!(
-            "{KILL_COMMAND} {KILL_SIGNAL_FLAG} {process_id}: {killed}"
-        )));
+/// The child's exit once its handle reaps it within the bound, none when the bound runs out first, the thread yielding between two asks and never sleeping.
+fn reaped_within(child: &mut Child, within: Duration) -> io::Result<Option<ExitStatus>> {
+    let asked = Instant::now();
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if asked.elapsed() >= within {
+            return Ok(None);
+        }
+        std::thread::yield_now();
     }
-    exit.recv_timeout(within)
-        .map_err(|unanswered| io::Error::other(format!("no exit within {within:?}: {unanswered}")))?
+}
+
+/// Kills the child through the handle that owns it, which sends no signal once it has reaped the child, and requires its exit within the bound, or why it could not be ended.
+fn killed_within(child: &mut Child, within: Duration) -> io::Result<()> {
+    child.kill()?;
+    reaped_within(child, within)?
         .map(drop)
+        .ok_or_else(|| io::Error::other(format!("no exit within {within:?} of the kill")))
 }
 
 /// Writes to standard error that the named process could not be ended, and why.
