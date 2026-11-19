@@ -3869,6 +3869,75 @@ pub(crate) mod tests {
         );
     }
 
+    /// The member's probe of the restarted process, or failing by name when no answer comes within the wait.
+    async fn members_probe_of_the_restarted(
+        restart: &RestartedProcessIntroduced,
+    ) -> Result<ProbeAck, DirectError> {
+        answered_within(
+            DIRECT_ANSWER_WAIT,
+            "the member's probe of the restarted process",
+            restart
+                .member
+                .probe(restart.link.client_node.endpoint().id(), PROBE_NONCE),
+        )
+        .await
+    }
+
+    /// The restarted process's probe of the member, or failing by name when no answer comes within the wait.
+    async fn restarted_processs_probe_of_the_member(
+        restart: &RestartedProcessIntroduced,
+    ) -> Result<ProbeAck, DirectError> {
+        answered_within(
+            DIRECT_ANSWER_WAIT,
+            "the restarted process's probe of the member",
+            restart.link.client.probe(
+                restart.link.server_node.endpoint().id(),
+                PROBE_NONCE_REVERSED,
+            ),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn spec_3_15_test_18_after_a_restarted_processs_introduce_the_members_next_request_to_it_and_then_its_next_request_to_the_member_are_answered()
+     {
+        let restart = restarted_process_introduced_to_a_member(|_member| {
+            RecordingHost::with_card(card_of(SERVER_SEED))
+        })
+        .await;
+        assert_eq!(
+            restart.reported_after_the_introduce,
+            vec![false],
+            "iroh did not keep the gone process's path selected once the introduce's connection opened"
+        );
+
+        let answered_by_the_restarted = members_probe_of_the_restarted(&restart).await;
+        let answered_by_the_member = restarted_processs_probe_of_the_member(&restart).await;
+
+        assert_eq!(answered_by_the_restarted.unwrap().nonce, PROBE_NONCE);
+        assert_eq!(answered_by_the_member.unwrap().nonce, PROBE_NONCE_REVERSED);
+    }
+
+    #[tokio::test]
+    async fn spec_3_15_test_18_after_a_restarted_processs_introduce_its_next_request_to_the_member_and_then_the_members_next_request_to_it_are_answered()
+     {
+        let restart = restarted_process_introduced_to_a_member(|_member| {
+            RecordingHost::with_card(card_of(SERVER_SEED))
+        })
+        .await;
+        assert_eq!(
+            restart.reported_after_the_introduce,
+            vec![false],
+            "iroh did not keep the gone process's path selected once the introduce's connection opened"
+        );
+
+        let answered_by_the_member = restarted_processs_probe_of_the_member(&restart).await;
+        let answered_by_the_restarted = members_probe_of_the_restarted(&restart).await;
+
+        assert_eq!(answered_by_the_member.unwrap().nonce, PROBE_NONCE_REVERSED);
+        assert_eq!(answered_by_the_restarted.unwrap().nonce, PROBE_NONCE);
+    }
+
     /// The member's probe of the introducing process, running.
     type StartedProbe = tokio::task::JoinHandle<Result<ProbeAck, DirectError>>;
 
