@@ -3903,6 +3903,58 @@ pub(crate) mod tests {
         .await
     }
 
+    /// The bytes of a QUIC Initial datagram, padded to the 1200-byte minimum of RFC 9000 section 14.1, which a dial's first flight sends.
+    const QUIC_INITIAL_DATAGRAM_BYTES: u64 = 1200;
+    /// The longest the test waits for the member's dial to send its first flight.
+    const FIRST_FLIGHT_WAIT: Duration = Duration::from_secs(5);
+
+    /// The bytes the node's endpoint has sent over IPv4 and IPv6.
+    fn bytes_sent_by(node: &NodeEndpoint) -> u64 {
+        let socket = &node.endpoint().metrics().socket;
+        socket
+            .send_ipv4
+            .get()
+            .saturating_add(socket.send_ipv6.get())
+    }
+
+    #[tokio::test]
+    async fn spec_3_15_test_18_a_request_a_member_starts_after_a_restarted_processs_introduce_is_answered_without_waiting_on_the_gone_processs_path_when_the_presence_pass_runs_once_its_dial_has_sent_a_first_flight()
+     {
+        let restart = restarted_process_introduced_to_a_member(dropping_transport(), |_member| {
+            RecordingHost::with_card(card_of(SERVER_SEED))
+        })
+        .await;
+        assert_eq!(
+            restart.reported_after_the_introduce,
+            vec![false],
+            "iroh did not keep the gone process's path selected once the introduce's connection opened"
+        );
+        let register = restart.link.server_node.held_connections();
+        let first_flight_sent_at =
+            bytes_sent_by(&restart.link.server_node).saturating_add(QUIC_INITIAL_DATAGRAM_BYTES);
+
+        let started = Instant::now();
+        let (probed, ()) = tokio::join!(members_probe_of_the_restarted(&restart), async {
+            let first_flight_sent = found_within(FIRST_FLIGHT_WAIT, async || {
+                (bytes_sent_by(&restart.link.server_node) >= first_flight_sent_at).then_some(())
+            })
+            .await
+            .is_some();
+            assert!(
+                first_flight_sent,
+                "the member's dial sent no first flight within {FIRST_FLIGHT_WAIT:?}"
+            );
+            register.close_silent_of(card_of(CLIENT_SEED));
+        });
+        let took = started.elapsed();
+
+        assert_eq!(probed.unwrap().nonce, PROBE_NONCE);
+        assert!(
+            took < ANSWERED_WITHOUT_A_RESEND_WITHIN,
+            "the member's probe of the restarted process was answered in {took:?}"
+        );
+    }
+
     /// The restarted process's probe of the member, or failing by name when no answer comes within the wait.
     async fn restarted_processs_probe_of_the_member(
         restart: &RestartedProcessIntroduced,
