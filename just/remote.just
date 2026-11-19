@@ -25,6 +25,7 @@ lab_cards_directory := lab_data / "estafette/cards"
 lab_members_data := lab_data / "members"
 held_trace_file_key_file_separator := " (key file "
 shortest_key_run := "16"
+created_server_address_lines := "^IPv[46]"
 lab_server_type := env("LAB_HOST_" + lab_host_letter + "_SERVER_TYPE", "cpx22")
 lab_location := env("LAB_HOST_" + lab_host_letter + "_LOCATION", "nbg1")
 lab_image := "ubuntu-24.04"
@@ -164,7 +165,7 @@ server-up: lab-context-exists
     if ! {{ lab_hcloud }} server describe {{ server }} > /dev/null 2>&1; then
         setup_file="$(mktemp)"
         python3 -I {{ lab_skill }}/fill-setup.py "$setup_file" >&2
-        {{ lab_hcloud }} server create --name {{ server }} --type {{ lab_server_type }} --image {{ lab_image }} --location {{ lab_location }} --ssh-key {{ lab_resource_name }} --firewall {{ lab_resource_name }} --user-data-from-file "$setup_file" --label owner=estafette --label expires="$expires" >&2
+        {{ lab_hcloud }} server create --name {{ server }} --type {{ lab_server_type }} --image {{ lab_image }} --location {{ lab_location }} --ssh-key {{ lab_resource_name }} --firewall {{ lab_resource_name }} --user-data-from-file "$setup_file" --label owner=estafette --label expires="$expires" 2>&1 | sed -E '/{{ created_server_address_lines }}/d' >&2
         rm -f "$setup_file"
         for address_id in $({{ lab_hcloud }} server describe {{ server }} -o json | python3 -I -c 'import json, sys; network = json.load(sys.stdin)["public_net"]; print(*(network[family]["id"] for family in ("ipv4", "ipv6") if network[family]))'); do
             python3 -I {{ lab_skill }}/lab-backstop.py label primary-ip "$address_id" >&2
@@ -223,7 +224,7 @@ host-up: lab-context-exists lab-binary-built
     record="$(just remote::host-record-path)"
     printf 'network: %s\ninvitation: %s\nhost: %s\nserver: %s %s\ndomain: %s\nwritten: %s\n' {{ lab_network }} "$invitation" "$host_line" {{ server }} "$address" "$(LAB_SERVER={{ server }} just remote::relay-name)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$record"
     chmod 0600 "$record"
-    printf 'wrote %s for %s %s\n' "$record" {{ server }} "$address" >&2
+    printf 'wrote %s for %s\n' "$record" {{ server }} >&2
 
 [doc("Print the path of the file that holds the lab host's invitation: lab/host.txt of the root checkout, or LAB_HOST_RECORD")]
 [private]
