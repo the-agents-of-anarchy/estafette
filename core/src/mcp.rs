@@ -435,8 +435,8 @@ impl Server {
         self.session
             .claimed_card()
             .map_or(You::Unclaimed, |claimed| You::Claimed {
-                card: claimed.card.as_str().to_owned(),
-                handle: claimed.handle.as_str().to_owned(),
+                card: claimed.card,
+                handle: claimed.handle,
             })
     }
 

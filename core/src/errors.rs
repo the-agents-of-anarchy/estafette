@@ -1,3 +1,4 @@
+use crate::handle::{Handle, LocalHandle};
 use serde::Serialize;
 use serde::ser::{SerializeStruct, Serializer};
 use serde_json::Value;
@@ -19,7 +20,7 @@ const ENVELOPE_FIELD_COUNT: usize = 3;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum You {
     Unclaimed,
-    Claimed { card: String, handle: String },
+    Claimed { card: Handle, handle: LocalHandle },
 }
 
 /// What every tool answers with, success or failure.
@@ -137,8 +138,8 @@ impl Serialize for You {
                 status: STATUS_UNCLAIMED,
             },
             Self::Claimed { card, handle } => YouView {
-                card: Some(card),
-                handle: Some(handle),
+                card: Some(card.as_str()),
+                handle: Some(handle.as_str()),
                 status: STATUS_CLAIMED,
             },
         };
@@ -188,8 +189,8 @@ mod tests {
     fn success_envelope_matches_spec_3_10_example() {
         let envelope = Envelope::Success {
             you: You::Claimed {
-                card: "ana".to_owned(),
-                handle: "ana-2".to_owned(),
+                card: "ana".parse().unwrap(),
+                handle: "ana-2".parse().unwrap(),
             },
             result: json!({ "handle": "ana-2", "inbox_path": "/x/inbox.sock" }),
         };
@@ -239,8 +240,8 @@ mod tests {
     fn failure_envelope_keeps_a_claimed_you_for_an_unknown_tool_of_spec_3_10() {
         let envelope = Envelope::Failure {
             you: You::Claimed {
-                card: "ana".to_owned(),
-                handle: "ana-2".to_owned(),
+                card: "ana".parse().unwrap(),
+                handle: "ana-2".parse().unwrap(),
             },
             error: ErrorCode::BadRequest,
         };
