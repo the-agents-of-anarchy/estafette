@@ -221,7 +221,7 @@ mod tests {
 
         let trace = Trace::start(
             &directory,
-            &OperatingSystemFilesystem,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
             RunId::from_random_bytes(RUN_BYTES),
             &TraceEffects::of_the_operating_system(frozen_clocks(LEAP_DAY_LAST_SECOND_MS)),
             TraceBounds::SPEC,
@@ -267,7 +267,7 @@ mod tests {
     fn started(directory: &TraceDirectory, wall_ms: u64, bounds: TraceBounds) -> Trace {
         Trace::start(
             directory,
-            &OperatingSystemFilesystem,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
             RunId::from_random_bytes(RUN_BYTES),
             &TraceEffects::of_the_operating_system(frozen_clocks(wall_ms)),
             bounds,
@@ -492,7 +492,7 @@ mod tests {
     ) -> Option<TraceRefused> {
         Trace::start(
             directory,
-            &OperatingSystemFilesystem,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
             RunId::from_random_bytes(RUN_BYTES),
             effects,
             bounds,
@@ -825,7 +825,7 @@ mod tests {
     ) -> Trace {
         Trace::start(
             directory,
-            &OperatingSystemFilesystem,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
             RunId::from_random_bytes(RUN_BYTES),
             effects,
             bounds,
@@ -1275,7 +1275,8 @@ mod tests {
         let (root, directory) = scratch_trace_directory("prune");
         let traces = directory.path();
         for private_directory in directory.private_directories() {
-            OperatingSystemFilesystem
+            OperatingSystemFilesystem::of_this_process()
+                .unwrap()
                 .create_private_directory(&private_directory)
                 .unwrap();
         }

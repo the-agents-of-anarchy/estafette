@@ -1006,7 +1006,8 @@ mod tests {
     }
 
     fn make_private_directory(directory: &Path) {
-        OperatingSystemFilesystem
+        OperatingSystemFilesystem::of_this_process()
+            .unwrap()
             .create_private_directory(directory)
             .unwrap();
     }
@@ -1025,8 +1026,12 @@ mod tests {
                 RUNTIME_DIRECTORY_VARIABLE => Some(base.join("r").into_os_string()),
                 _ => None::<OsString>,
             };
-            let directories =
-                Directories::establish(environment, &OperatingSystemFilesystem, None).unwrap();
+            let directories = Directories::establish(
+                environment,
+                &OperatingSystemFilesystem::of_this_process().unwrap(),
+                None,
+            )
+            .unwrap();
             Self { root, directories }
         }
 
@@ -1243,7 +1248,7 @@ mod tests {
         let outcome = run(
             command_for(plan.domain),
             &scratch.directories,
-            &OperatingSystemFilesystem,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
             plan.effects(seen),
             &mut printed,
         )

@@ -52,7 +52,7 @@ pub fn started(
     Arc::new(
         Trace::start(
             directory,
-            &OperatingSystemFilesystem,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
             RunId::from_random_bytes(RUN_BYTES),
             effects,
             bounds,

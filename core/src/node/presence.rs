@@ -2121,8 +2121,12 @@ pub(super) mod tests {
                 "XDG_RUNTIME_DIR" => Some(base.join("r").into_os_string()),
                 _ => None::<OsString>,
             };
-            let directories =
-                Directories::establish(environment, &OperatingSystemFilesystem, None).unwrap();
+            let directories = Directories::establish(
+                environment,
+                &OperatingSystemFilesystem::of_this_process().unwrap(),
+                None,
+            )
+            .unwrap();
             Self {
                 root,
                 directories,

@@ -43,10 +43,20 @@ fn execute_with_environment(
 ) -> Outcome {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
+    let filesystem = match OperatingSystemFilesystem::of_this_process() {
+        Ok(filesystem) => filesystem,
+        Err(failure) => {
+            return Outcome {
+                status: ExitStatus::Failure,
+                stdout: String::new(),
+                stderr: failure.to_string(),
+            };
+        }
+    };
     let status = run(
         command,
         environment,
-        &OperatingSystemFilesystem,
+        &filesystem,
         |seed| seed.fill(seed_byte),
         &mut stdout,
         &mut stderr,

@@ -15,7 +15,8 @@ fn standard_error_after_a_survived_panic(trace_effects: &TraceEffects) -> Vec<St
         environment,
         None,
         standard_error.clone(),
-        TraceSetup {
+        ProcessSetup {
+            filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
             effects: trace_effects,
             bounds: TraceBounds {
                 drain: STOP_REPORTED_WITHIN,

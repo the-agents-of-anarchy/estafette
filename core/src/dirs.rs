@@ -1,10 +1,10 @@
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::{self, OpenOptions, Permissions};
+use std::fs::{self, Permissions};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::fd::OwnedFd;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) use estafette_trace::ROLLED_OVER_TRACE_SUFFIX;
 use estafette_trace::{
@@ -16,7 +16,6 @@ pub use estafette_trace::{
 };
 
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
-const PRIVATE_FILE_MODE: u32 = 0o600;
 const PERMISSION_BITS: u32 = 0o777;
 const GROUP_AND_OTHER_PERMISSION_BITS: u32 = 0o077;
 const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
@@ -57,8 +56,68 @@ pub trait DirectoryFilesystem {
     fn owner_user_id(&self, path: &Path) -> io::Result<u32>;
 }
 
-/// The operating system's filesystem.
-pub struct OperatingSystemFilesystem;
+/// The user this process runs as, learned once from the owner of a pipe the process makes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ProcessUser(u32);
+
+impl ProcessUser {
+    /// Reads the owner that the operating system reports for an anonymous pipe this process makes, which is the user the process creates files as.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the pipe cannot be made or its owner cannot be read.
+    pub fn of_this_process() -> Result<Self, ProcessUserUnknown> {
+        let (reader, _writer) = io::pipe().map_err(ProcessUserUnknown::PipeNotMade)?;
+        let owner = fs::File::from(OwnedFd::from(reader))
+            .metadata()
+            .map_err(ProcessUserUnknown::PipeOwnerUnreadable)?
+            .uid();
+        Ok(Self(owner))
+    }
+}
+
+/// The user this process runs as could not be learned.
+#[derive(Debug)]
+pub enum ProcessUserUnknown {
+    PipeNotMade(io::Error),
+    PipeOwnerUnreadable(io::Error),
+}
+
+impl fmt::Display for ProcessUserUnknown {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PipeNotMade(source) => write!(
+                formatter,
+                "cannot learn the user this process runs as: it could not make a pipe: {source}"
+            ),
+            Self::PipeOwnerUnreadable(source) => write!(
+                formatter,
+                "cannot learn the user this process runs as: it could not read the owner of a pipe it made: {source}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProcessUserUnknown {}
+
+/// The operating system's filesystem, used by one process user.
+#[derive(Clone, Copy, Debug)]
+pub struct OperatingSystemFilesystem {
+    user: ProcessUser,
+}
+
+impl OperatingSystemFilesystem {
+    /// The filesystem as the user of this process uses it.
+    ///
+    /// # Errors
+    ///
+    /// Fails when the user of this process cannot be learned.
+    pub fn of_this_process() -> Result<Self, ProcessUserUnknown> {
+        Ok(Self {
+            user: ProcessUser::of_this_process()?,
+        })
+    }
+}
 
 impl DirectoryFilesystem for OperatingSystemFilesystem {
     fn create_private_directory(&self, path: &Path) -> io::Result<()> {
@@ -71,7 +130,7 @@ impl DirectoryFilesystem for OperatingSystemFilesystem {
         {
             Ok(()) => fs::set_permissions(path, Permissions::from_mode(PRIVATE_DIRECTORY_MODE)),
             Err(failure) if failure.kind() == io::ErrorKind::AlreadyExists => {
-                require_private_directory_of_this_user(path)
+                require_private_directory_of(path, self.user)
             }
             Err(failure) => Err(failure),
         }
@@ -148,7 +207,7 @@ const fn existing_directory_finding(
 
 /// An existing directory that is refused, with the directory and what was found.
 #[derive(Debug)]
-pub struct ExistingDirectoryRefused {
+struct ExistingDirectoryRefused {
     path: PathBuf,
     found: ExistingDirectoryFinding,
 }
@@ -166,8 +225,8 @@ impl fmt::Display for ExistingDirectoryRefused {
 
 impl std::error::Error for ExistingDirectoryRefused {}
 
-/// Refuses an existing entry that is not a directory of this process's user granting nothing to group or other, changing nothing.
-fn require_private_directory_of_this_user(path: &Path) -> io::Result<()> {
+/// Refuses an existing entry that is not a directory of the given user granting nothing to group or other, changing nothing.
+fn require_private_directory_of(path: &Path, user: ProcessUser) -> io::Result<()> {
     let metadata = fs::symlink_metadata(path)?;
     let file_type = metadata.file_type();
     let kind = if file_type.is_symlink() {
@@ -182,7 +241,7 @@ fn require_private_directory_of_this_user(path: &Path) -> io::Result<()> {
         owner_user_id: metadata.uid(),
         permission_bits: metadata.mode() & PERMISSION_BITS,
     };
-    existing_directory_finding(facts, user_id_of_this_process()?).map_or(Ok(()), |found| {
+    existing_directory_finding(facts, user.0).map_or(Ok(()), |found| {
         Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             ExistingDirectoryRefused {
@@ -191,27 +250,6 @@ fn require_private_directory_of_this_user(path: &Path) -> io::Result<()> {
             },
         ))
     })
-}
-
-/// The numeric id of the user this process runs as, read as the owner of a file the process creates in the temporary directory and removes at once.
-fn user_id_of_this_process() -> io::Result<u32> {
-    let nanoseconds = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let probe = std::env::temp_dir().join(format!(
-        "{PRODUCT_NAME}-user-probe-{}-{nanoseconds}",
-        std::process::id()
-    ));
-    let owner = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(PRIVATE_FILE_MODE)
-        .open(&probe)?
-        .metadata()?
-        .uid();
-    fs::remove_file(&probe)?;
-    Ok(owner)
 }
 
 /// A directory could not be resolved or created.
@@ -604,6 +642,18 @@ mod tests {
     }
 
     #[test]
+    fn the_process_user_is_the_owner_of_a_file_the_process_creates_runtime_directory_is_private_or_refused()
+     {
+        let root = scratch_root("process_user_is_file_owner");
+        let created = root.join("created-by-this-process");
+        fs::write(&created, b"").unwrap();
+
+        let user = ProcessUser::of_this_process().unwrap();
+
+        assert_eq!(user.0, fs::metadata(&created).unwrap().uid());
+    }
+
+    #[test]
     fn config_base_follows_xdg_config_home_spec_3_3() {
         let (directories, created) = established(&[
             (CONFIG_HOME_VARIABLE, "/xc"),
@@ -836,9 +886,12 @@ mod tests {
     #[test]
     fn fresh_directories_get_mode_0700_spec_3_3() {
         let root = scratch_root("fresh");
-        let directories =
-            Directories::establish(scratch_environment(&root), &OperatingSystemFilesystem, None)
-                .unwrap();
+        let directories = Directories::establish(
+            scratch_environment(&root),
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
+            None,
+        )
+        .unwrap();
         assert_eq!(
             mode_of(&root.join("config/estafette")),
             SPEC_PRIVATE_DIRECTORY_MODE
@@ -853,7 +906,8 @@ mod tests {
             .unwrap()
             .to_path_buf();
         assert_eq!(mode_of(&runtime_directory), SPEC_PRIVATE_DIRECTORY_MODE);
-        let user_id = OperatingSystemFilesystem
+        let user_id = OperatingSystemFilesystem::of_this_process()
+            .unwrap()
             .owner_user_id(&root.join("config/estafette"))
             .unwrap();
         assert_eq!(
@@ -868,7 +922,10 @@ mod tests {
         let config = root.join("config/estafette");
         let user_id = {
             fs::create_dir_all(&config).unwrap();
-            OperatingSystemFilesystem.owner_user_id(&config).unwrap()
+            OperatingSystemFilesystem::of_this_process()
+                .unwrap()
+                .owner_user_id(&config)
+                .unwrap()
         };
         let existing = [
             config,
@@ -883,8 +940,12 @@ mod tests {
             )
             .unwrap();
         }
-        Directories::establish(scratch_environment(&root), &OperatingSystemFilesystem, None)
-            .unwrap();
+        Directories::establish(
+            scratch_environment(&root),
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
+            None,
+        )
+        .unwrap();
         for directory in &existing {
             assert_eq!(mode_of(directory), SPEC_PRIVATE_DIRECTORY_MODE);
         }
@@ -902,7 +963,7 @@ mod tests {
 
             let failure = Directories::establish(
                 scratch_environment(&root),
-                &OperatingSystemFilesystem,
+                &OperatingSystemFilesystem::of_this_process().unwrap(),
                 None,
             )
             .unwrap_err();
@@ -926,7 +987,8 @@ mod tests {
         fs::create_dir_all(root.join("target")).unwrap();
         std::os::unix::fs::symlink(root.join("target"), &linked).unwrap();
 
-        let failure = OperatingSystemFilesystem
+        let failure = OperatingSystemFilesystem::of_this_process()
+            .unwrap()
             .create_private_directory(&linked)
             .unwrap_err();
 
@@ -1011,9 +1073,12 @@ mod tests {
         let root = scratch_root("blocked-leaf");
         fs::create_dir_all(root.join("config")).unwrap();
         fs::write(root.join("config/estafette"), b"").unwrap();
-        let failure =
-            Directories::establish(scratch_environment(&root), &OperatingSystemFilesystem, None)
-                .unwrap_err();
+        let failure = Directories::establish(
+            scratch_environment(&root),
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
+            None,
+        )
+        .unwrap_err();
         assert!(matches!(failure, DirectoriesError::CreationFailed { .. }));
         assert!(failure.to_string().starts_with(&format!(
             "cannot create {}",
@@ -1085,9 +1150,12 @@ mod tests {
     fn a_file_in_place_of_a_directory_is_refused_naming_the_path_spec_3_3() {
         let root = scratch_root("blocked");
         fs::write(root.join("config"), b"").unwrap();
-        let failure =
-            Directories::establish(scratch_environment(&root), &OperatingSystemFilesystem, None)
-                .unwrap_err();
+        let failure = Directories::establish(
+            scratch_environment(&root),
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
+            None,
+        )
+        .unwrap_err();
         assert!(failure.to_string().starts_with(&format!(
             "cannot create {}",
             root.join("config/estafette").display()

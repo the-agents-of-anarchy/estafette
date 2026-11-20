@@ -1063,6 +1063,12 @@ mod tests {
     const NETWORK_NAME: &str = "lab";
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];
     const OWNER_SEED: u8 = 60;
+
+    fn operating_system_filesystem() -> &'static OperatingSystemFilesystem {
+        static FILESYSTEM: std::sync::OnceLock<OperatingSystemFilesystem> =
+            std::sync::OnceLock::new();
+        FILESYSTEM.get_or_init(|| OperatingSystemFilesystem::of_this_process().unwrap())
+    }
     const FIRST_SEED: u8 = 61;
     const SECOND_SEED: u8 = 62;
     const OBSERVER_SEED: u8 = 70;
@@ -1171,7 +1177,7 @@ mod tests {
                 _ => None::<OsString>,
             };
             let directories =
-                Directories::establish(environment, &OperatingSystemFilesystem, None).unwrap();
+                Directories::establish(environment, operating_system_filesystem(), None).unwrap();
             Self {
                 root,
                 directories: Arc::new(directories),
@@ -1483,7 +1489,7 @@ mod tests {
                 debug: DebugArgs::default(),
             },
             &lab.directories,
-            &OperatingSystemFilesystem,
+            operating_system_filesystem(),
             &NoPause,
             lab.effects(
                 members
@@ -1590,7 +1596,7 @@ mod tests {
             run(
                 &tail,
                 &lab.directories,
-                &OperatingSystemFilesystem,
+                operating_system_filesystem(),
                 &NoPause,
                 lab.effects_recording_every_event_to(
                     members
@@ -1664,7 +1670,7 @@ mod tests {
             run(
                 &tail,
                 &lab.directories,
-                &OperatingSystemFilesystem,
+                operating_system_filesystem(),
                 &NoPause,
                 lab.effects(
                     member_addresses.clone(),
@@ -1752,7 +1758,7 @@ mod tests {
         run(
             &test_send,
             &lab.directories,
-            &OperatingSystemFilesystem,
+            operating_system_filesystem(),
             &NoPause,
             lab.effects(
                 members
@@ -1829,7 +1835,7 @@ mod tests {
         run(
             &operator_test_send(),
             &lab.directories,
-            &OperatingSystemFilesystem,
+            operating_system_filesystem(),
             &NoPause,
             lab.effects(
                 members
@@ -1870,7 +1876,7 @@ mod tests {
         let refusal = run(
             &operator_test_send(),
             &lab.directories,
-            &OperatingSystemFilesystem,
+            operating_system_filesystem(),
             &NoPause,
             lab.effects(Vec::new(), never_interrupted()),
             &mut output,
@@ -1907,7 +1913,7 @@ mod tests {
         let refusal = run(
             &operator_test_send(),
             &lab.directories,
-            &OperatingSystemFilesystem,
+            operating_system_filesystem(),
             &NoPause,
             lab.effects(Vec::new(), never_interrupted()),
             &mut output,
@@ -2101,7 +2107,7 @@ mod tests {
         run(
             &show_peers,
             &lab.directories,
-            &OperatingSystemFilesystem,
+            operating_system_filesystem(),
             &NoPause,
             lab.effects(vec![neighbor.address.clone()], never_interrupted()),
             &mut output,
@@ -2142,7 +2148,7 @@ mod tests {
         run(
             &show_peers,
             &lab.directories,
-            &OperatingSystemFilesystem,
+            operating_system_filesystem(),
             &NoPause,
             lab.effects_recording_to(
                 vec![neighbor.address.clone()],
@@ -2256,7 +2262,7 @@ mod tests {
             run(
                 &show_peers,
                 &lab.directories,
-                &OperatingSystemFilesystem,
+                operating_system_filesystem(),
                 &NoPause,
                 effects,
                 &mut output,
@@ -2457,7 +2463,7 @@ mod tests {
             run(
                 &tail,
                 &lab.directories,
-                &OperatingSystemFilesystem,
+                operating_system_filesystem(),
                 &NoPause,
                 lab.effects(
                     vec![neighbor.address.clone()],
@@ -2629,7 +2635,7 @@ mod tests {
             run(
                 &tail,
                 &lab.directories,
-                &OperatingSystemFilesystem,
+                operating_system_filesystem(),
                 &NoPause,
                 (effects, operator_effects),
                 &mut printed,
@@ -2682,7 +2688,7 @@ mod tests {
             run(
                 &tail,
                 &lab.directories,
-                &OperatingSystemFilesystem,
+                operating_system_filesystem(),
                 &NoPause,
                 (effects, operator_effects),
                 &mut printed,
@@ -2746,7 +2752,7 @@ mod tests {
             run(
                 &tail,
                 &lab.directories,
-                &OperatingSystemFilesystem,
+                operating_system_filesystem(),
                 &NoPause,
                 (effects, operator_effects),
                 &mut printed,
@@ -2846,7 +2852,7 @@ mod tests {
                 run(
                     &show_peers,
                     &lab.directories,
-                    &OperatingSystemFilesystem,
+                    operating_system_filesystem(),
                     &NoPause,
                     (effects, operator_effects),
                     &mut printed,
@@ -2957,7 +2963,7 @@ mod tests {
             run(
                 &tail,
                 &lab.directories,
-                &OperatingSystemFilesystem,
+                operating_system_filesystem(),
                 &NoPause,
                 (effects, operator_effects),
                 &mut tail_output,
@@ -3572,7 +3578,7 @@ mod tests {
         let refusal = run(
             &show_peers,
             &lab.directories,
-            &OperatingSystemFilesystem,
+            operating_system_filesystem(),
             &NoPause,
             lab.effects(Vec::new(), never_interrupted()),
             &mut output,

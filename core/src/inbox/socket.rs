@@ -442,7 +442,12 @@ mod tests {
             "XDG_RUNTIME_DIR" => Some(root.join("run").into_os_string()),
             _ => None::<OsString>,
         };
-        Directories::establish(environment, &OperatingSystemFilesystem, None).unwrap()
+        Directories::establish(
+            environment,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
+            None,
+        )
+        .unwrap()
     }
 
     fn message_number(n: u64) -> ReceivedMessage {

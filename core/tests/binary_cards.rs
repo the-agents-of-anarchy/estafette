@@ -763,3 +763,90 @@ fn binary_refuses_a_symbolic_link_in_place_of_the_runtime_directory_runtime_dire
         )
     );
 }
+
+const READ_SEARCH_ONLY_DIRECTORY_MODE: u32 = 0o500;
+/// The descriptor limit that leaves the three standard streams open and one descriptor free, where a pipe needs two.
+const NO_ROOM_FOR_A_PIPE: &str = "4";
+
+#[test]
+fn binary_refuses_to_start_when_it_cannot_make_a_pipe_to_learn_its_user_runtime_directory_is_private_or_refused()
+ {
+    let root = common::scratch_root(SCRATCH_PREFIX, "no_descriptor_for_a_pipe").unwrap();
+
+    let listed = Command::new("sh")
+        .args([
+            "-c",
+            &format!("ulimit -n {NO_ROOM_FOR_A_PIPE}; exec \"$0\" \"$@\""),
+            BINARY,
+            "list-cards",
+            "acme",
+        ])
+        .env_clear()
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_RUNTIME_DIR", root.join("runtime"))
+        .output()
+        .unwrap();
+
+    assert_eq!(listed.status.code(), Some(1), "{}", stderr_text(&listed));
+    assert_eq!(listed.stdout, Vec::<u8>::new());
+    assert_eq!(
+        stderr_text(&listed),
+        "cannot learn the user this process runs as: it could not make a pipe: Too many open files (os error 24)\n"
+    );
+}
+
+fn run_binary_with_temporary_directory(
+    root: &Path,
+    temporary_directory: &Path,
+    arguments: &[&str],
+) -> io::Result<Output> {
+    Command::new(BINARY)
+        .args(arguments)
+        .env_clear()
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_RUNTIME_DIR", root.join("runtime"))
+        .env("TMPDIR", temporary_directory)
+        .output()
+}
+
+#[test]
+fn binary_starts_over_existing_private_directories_when_the_temporary_directory_is_missing_runtime_directory_is_private_or_refused()
+ {
+    let root = common::scratch_root(SCRATCH_PREFIX, "temporary_directory_missing").unwrap();
+    let first = run_binary(&root, &["list-cards", "acme"]).unwrap();
+    assert_eq!(first.status.code(), Some(0), "{}", stderr_text(&first));
+
+    let listed = run_binary_with_temporary_directory(
+        &root,
+        &root.join("no-such-temporary-directory"),
+        &["list-cards", "acme"],
+    )
+    .unwrap();
+
+    assert_eq!(listed.status.code(), Some(0), "{}", stderr_text(&listed));
+    assert_eq!(stderr_text(&listed), "");
+}
+
+#[test]
+fn binary_starts_over_existing_private_directories_when_the_temporary_directory_is_not_writable_runtime_directory_is_private_or_refused()
+ {
+    let root = common::scratch_root(SCRATCH_PREFIX, "temporary_directory_0500").unwrap();
+    let first = run_binary(&root, &["list-cards", "acme"]).unwrap();
+    assert_eq!(first.status.code(), Some(0), "{}", stderr_text(&first));
+    let temporary_directory = root.join("read-only-temporary-directory");
+    std::fs::create_dir(&temporary_directory).unwrap();
+    std::fs::set_permissions(
+        &temporary_directory,
+        Permissions::from_mode(READ_SEARCH_ONLY_DIRECTORY_MODE),
+    )
+    .unwrap();
+
+    let listed =
+        run_binary_with_temporary_directory(&root, &temporary_directory, &["list-cards", "acme"])
+            .unwrap();
+
+    assert_eq!(listed.status.code(), Some(0), "{}", stderr_text(&listed));
+    assert_eq!(stderr_text(&listed), "");
+}

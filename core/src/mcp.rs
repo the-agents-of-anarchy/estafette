@@ -1105,7 +1105,12 @@ mod tests {
                 "XDG_RUNTIME_DIR" => Some(base.join("r").into_os_string()),
                 _ => None::<OsString>,
             };
-            Directories::establish(environment, &OperatingSystemFilesystem, None).unwrap()
+            Directories::establish(
+                environment,
+                &OperatingSystemFilesystem::of_this_process().unwrap(),
+                None,
+            )
+            .unwrap()
         }
 
         fn create_card(&self, name: &str, handle: &str, seed: u8) {
@@ -1373,7 +1378,7 @@ mod tests {
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
             },
             bind_endpoint: plan.bind_endpoint,
-            registry: Arc::new(OperatingSystemFilesystem),
+            registry: Arc::new(OperatingSystemFilesystem::of_this_process().unwrap()),
             pause_between_lock_tries: Arc::new(|_pause: Duration| {}),
             is_card_held: plan.is_card_held,
             report: plan.report,

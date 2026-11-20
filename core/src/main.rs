@@ -25,7 +25,9 @@ use estafette::cli::observer::{
 };
 use estafette::config::{ConfigError, NetworkConfig};
 use estafette::crypto::GateKey;
-use estafette::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem, TraceDirectory};
+use estafette::dirs::{
+    Directories, DirectoriesError, OperatingSystemFilesystem, ProcessUserUnknown, TraceDirectory,
+};
 use estafette::errors::ExitStatus;
 use estafette::event::{
     CLOCK_BEFORE_UNIX_EPOCH, Event, InboxEvent, PanicLocation, ProcessEvent, RunRecord,
@@ -74,9 +76,10 @@ type InstallIrohLines = fn(Arc<Trace>) -> Result<(), IrohLinesRefused>;
 /// Sets the panic hook that writes each panic's source location into a trace's events file and reports through a standard error record a flush that left a file unfinished, done once per process by the composition root.
 type RecordPanics = fn(Arc<Trace>, RunRecord);
 
-/// What the trace of a process that starts an endpoint runs on: its effects, its bounds, the install that sends iroh's own lines to it, and the panic hook that records into it.
+/// What a process runs on: the filesystem as its user uses it, and, for the trace of a process that starts an endpoint, its effects, its bounds, the install that sends iroh's own lines to it, and the panic hook that records into it.
 #[derive(Clone, Copy)]
-struct TraceSetup<'effects> {
+struct ProcessSetup<'effects> {
+    filesystem: OperatingSystemFilesystem,
     effects: &'effects TraceEffects,
     bounds: TraceBounds,
     install_iroh_lines: InstallIrohLines,
@@ -125,6 +128,7 @@ enum Command {
 #[derive(Debug)]
 enum CommandLineFailure {
     Directories(DirectoriesError),
+    ProcessUser(ProcessUserUnknown),
     ClockBeforeUnixEpoch,
     Network(NetworkCommandError),
     NetworkConfig(ConfigError),
@@ -147,6 +151,7 @@ impl fmt::Display for CommandLineFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Directories(source) => write!(formatter, "{source}"),
+            Self::ProcessUser(source) => write!(formatter, "{source}"),
             Self::ClockBeforeUnixEpoch => formatter.write_str(CLOCK_BEFORE_UNIX_EPOCH),
             Self::Network(source) => write!(formatter, "{source}"),
             Self::NetworkConfig(source) => write!(formatter, "{source}"),
@@ -170,10 +175,20 @@ impl fmt::Display for CommandLineFailure {
 impl std::error::Error for CommandLineFailure {}
 
 fn main() -> ExitCode {
+    let filesystem = match OperatingSystemFilesystem::of_this_process() {
+        Ok(filesystem) => filesystem,
+        Err(failure) => {
+            return ExitCode::from(u8::from(exit_status_after(
+                Err(CommandLineFailure::ProcessUser(failure)),
+                standard_error_record().as_ref(),
+            )));
+        }
+    };
     let status = run_command(
         EstafetteArguments::parse().command,
         |name| std::env::var_os(name),
-        TraceSetup {
+        ProcessSetup {
+            filesystem,
             effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
             bounds: TraceBounds::SPEC,
             install_iroh_lines: iroh_lines::install,
@@ -183,17 +198,18 @@ fn main() -> ExitCode {
     ExitCode::from(u8::from(status))
 }
 
-/// Runs the command on the process's streams, reading the environment through the given lookup and tracing on the given setup, and says how the process ends.
+/// Runs the command on the process's streams, reading the environment through the given lookup and running on the given setup, and says how the process ends.
 fn run_command(
     command: Command,
     environment: impl Fn(&str) -> Option<OsString>,
-    trace_setup: TraceSetup<'_>,
+    setup: ProcessSetup<'_>,
 ) -> ExitStatus {
+    let filesystem = setup.filesystem;
     match command {
         Command::Cards(command) => cards::run(
             command,
             &environment,
-            &OperatingSystemFilesystem,
+            &filesystem,
             fill_with_secure_random_bytes,
             &mut io::stdout(),
             &mut io::stderr(),
@@ -204,11 +220,17 @@ fn run_command(
             &environment,
             &mut io::stdout(),
             io::stderr(),
-            trace_setup,
+            setup,
         ),
         Command::Network { command } => exit_status_after(
-            run_network_command(&command, &environment, &mut io::stdout(), &mut io::stderr())
-                .map(|()| ExitStatus::Success),
+            run_network_command(
+                &command,
+                &environment,
+                filesystem,
+                &mut io::stdout(),
+                &mut io::stderr(),
+            )
+            .map(|()| ExitStatus::Success),
             standard_error_record().as_ref(),
         ),
         Command::Observer(command) => run_traced(
@@ -217,10 +239,16 @@ fn run_command(
             &environment,
             command.cards_dir(),
             io::stderr(),
-            trace_setup,
+            setup,
             |directories, process| {
-                run_observer_command(&command, directories, process, &mut io::stdout())
-                    .map(|()| ExitStatus::Success)
+                run_observer_command(
+                    &command,
+                    directories,
+                    process,
+                    filesystem,
+                    &mut io::stdout(),
+                )
+                .map(|()| ExitStatus::Success)
             },
         ),
         Command::Mcp { registry, debug } => run_traced(
@@ -229,8 +257,8 @@ fn run_command(
             &environment,
             registry.cards_dir.clone(),
             io::stderr(),
-            trace_setup,
-            |directories, process| serve_mcp(registry, directories, process),
+            setup,
+            |directories, process| serve_mcp(registry, directories, process, filesystem),
         ),
         Command::Doctor { arguments, debug } => run_traced(
             DOCTOR_COMMAND,
@@ -238,9 +266,15 @@ fn run_command(
             &environment,
             arguments.registry.cards_dir.clone(),
             io::stderr(),
-            trace_setup,
+            setup,
             |directories, process| {
-                run_doctor_command(&arguments, directories, process, &mut io::stdout())
+                run_doctor_command(
+                    &arguments,
+                    directories,
+                    process,
+                    filesystem,
+                    &mut io::stdout(),
+                )
             },
         ),
     }
@@ -260,15 +294,16 @@ fn run_traced<StandardError: Write + Send + 'static>(
     environment: impl Fn(&str) -> Option<OsString>,
     cards_dir: Option<PathBuf>,
     stderr: StandardError,
-    trace_setup: TraceSetup<'_>,
+    setup: ProcessSetup<'_>,
     command: impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure>,
 ) -> ExitStatus {
     let stderr = Arc::new(Mutex::new(stderr));
     let trace = match start_trace(
         tracing,
         &environment,
-        trace_setup.effects,
-        trace_setup.bounds,
+        setup.filesystem,
+        setup.effects,
+        setup.bounds,
     ) {
         Ok(trace) => trace,
         Err(failure) => {
@@ -281,7 +316,7 @@ fn run_traced<StandardError: Write + Send + 'static>(
             "{}",
             trace.announcement()
         ));
-        (trace_setup.record_panics)(Arc::clone(trace), run_record_on(&stderr, None));
+        (setup.record_panics)(Arc::clone(trace), run_record_on(&stderr, None));
     }
     let process = ProcessRecord {
         record: run_record_on(&stderr, trace.clone()),
@@ -294,11 +329,11 @@ fn run_traced<StandardError: Write + Send + 'static>(
         }
         .into(),
     );
-    let outcome = Directories::establish(environment, &OperatingSystemFilesystem, cards_dir)
+    let outcome = Directories::establish(environment, &setup.filesystem, cards_dir)
         .map_err(CommandLineFailure::Directories)
         .and_then(|directories| {
             if let Some(trace) = &process.trace {
-                (trace_setup.install_iroh_lines)(Arc::clone(trace))
+                (setup.install_iroh_lines)(Arc::clone(trace))
                     .map_err(CommandLineFailure::IrohLines)?;
             }
             command(directories, &process)
@@ -333,6 +368,7 @@ fn report_unfinished_trace_stops(
 fn start_trace(
     tracing: Tracing,
     environment: &impl Fn(&str) -> Option<OsString>,
+    filesystem: OperatingSystemFilesystem,
     trace_effects: &TraceEffects,
     trace_bounds: TraceBounds,
 ) -> Result<Option<Arc<Trace>>, CommandLineFailure> {
@@ -345,7 +381,7 @@ fn start_trace(
             fill_with_secure_random_bytes(&mut run_id);
             Trace::start(
                 &directory,
-                &OperatingSystemFilesystem,
+                &filesystem,
                 RunId::from_random_bytes(run_id),
                 trace_effects,
                 trace_bounds,
@@ -486,6 +522,7 @@ fn serve_mcp(
     registry: RegistryArgs,
     directories: Directories,
     process: &ProcessRecord,
+    filesystem: OperatingSystemFilesystem,
 ) -> Result<ExitStatus, CommandLineFailure> {
     let config_path = directories
         .network_config_file(registry.network.as_str())
@@ -523,7 +560,7 @@ fn serve_mcp(
             tokio::io::stdout(),
             signals,
             served,
-            server_effects(Arc::new(inbox), record, trace, salt),
+            server_effects(Arc::new(inbox), record, trace, salt, filesystem),
         )
         .await)
     })?;
@@ -560,6 +597,7 @@ fn server_effects(
     record: RunRecord,
     trace: Option<Arc<Trace>>,
     salt: LocationSalt,
+    filesystem: OperatingSystemFilesystem,
 ) -> ServerEffects {
     let endpoint_record = Arc::clone(&record);
     ServerEffects {
@@ -582,7 +620,7 @@ fn server_effects(
                 trace.clone(),
             )
         }),
-        registry: Arc::new(OperatingSystemFilesystem),
+        registry: Arc::new(filesystem),
         pause_between_lock_tries: Arc::new(std::thread::sleep),
         is_card_held: Arc::new(|sidecar_path: &Path| {
             sidecar::is_held(sidecar_path).is_ok_and(|held| held)
@@ -665,16 +703,17 @@ const fn exit_status_of(exit: Exit) -> ExitStatus {
 fn run_network_command(
     command: &NetworkCommand,
     environment: impl Fn(&str) -> Option<OsString>,
+    filesystem: OperatingSystemFilesystem,
     result: &mut impl Write,
     record: &mut impl Write,
 ) -> Result<(), CommandLineFailure> {
-    let directories = Directories::establish(environment, &OperatingSystemFilesystem, None)
+    let directories = Directories::establish(environment, &filesystem, None)
         .map_err(CommandLineFailure::Directories)?;
     let now_unix_seconds = unix_seconds_of(SystemTime::now())?;
     network::run(
         command,
         &directories,
-        &OperatingSystemFilesystem,
+        &filesystem,
         fill_with_secure_random_bytes,
         now_unix_seconds,
         result,
@@ -724,6 +763,7 @@ fn run_observer_command(
     command: &ObserverCommand,
     directories: Directories,
     process: &ProcessRecord,
+    filesystem: OperatingSystemFilesystem,
     result: &mut (impl Write + Send),
 ) -> Result<(), CommandLineFailure> {
     let ObserverRuntime {
@@ -736,7 +776,7 @@ fn run_observer_command(
         .block_on(observer::run(
             command,
             &directories,
-            &OperatingSystemFilesystem,
+            &filesystem,
             &ThreadSleep,
             effects,
             operator_effects,
@@ -749,6 +789,7 @@ fn run_doctor_command(
     arguments: &DoctorArgs,
     directories: Directories,
     process: &ProcessRecord,
+    filesystem: OperatingSystemFilesystem,
     result: &mut impl Write,
 ) -> Result<ExitStatus, CommandLineFailure> {
     let ObserverRuntime {
@@ -761,7 +802,7 @@ fn run_doctor_command(
         .block_on(doctor::run(
             arguments,
             &directories,
-            &OperatingSystemFilesystem,
+            &filesystem,
             &ThreadSleep,
             effects,
             operator_effects.probe_relay,
@@ -837,17 +878,18 @@ fn run_infrastructure_command(
     environment: impl Fn(&str) -> Option<OsString>,
     result: &mut (impl Write + Send),
     stderr: impl Write + Send + 'static,
-    trace_setup: TraceSetup<'_>,
+    setup: ProcessSetup<'_>,
 ) -> ExitStatus {
+    let filesystem = setup.filesystem;
     run_traced(
         infra::RUN_INFRASTRUCTURE_COMMAND,
         command.debug().tracing(),
         environment,
         None,
         stderr,
-        trace_setup,
+        setup,
         |directories, process| {
-            serve_infrastructure(command, &directories, process, result)
+            serve_infrastructure(command, &directories, process, filesystem, result)
                 .map(|()| ExitStatus::Success)
         },
     )
@@ -859,6 +901,7 @@ fn serve_infrastructure(
     command: InfrastructureCommand,
     directories: &Directories,
     process: &ProcessRecord,
+    filesystem: OperatingSystemFilesystem,
     result: &mut (impl Write + Send),
 ) -> Result<(), CommandLineFailure> {
     ensure_clock_after_unix_epoch()?;
@@ -874,7 +917,7 @@ fn serve_infrastructure(
         .block_on(infra::run(
             command,
             directories,
-            &OperatingSystemFilesystem,
+            &filesystem,
             infrastructure_effects(stopped, process),
             result,
         ))
@@ -1336,7 +1379,8 @@ mod tests {
         let status = run_command(
             Command::Observer(observer),
             environment,
-            TraceSetup {
+            ProcessSetup {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
                 effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
                 bounds: TraceBounds::SPEC,
                 install_iroh_lines: IROH_LINES_LEFT_OUT,
@@ -1458,7 +1502,8 @@ mod tests {
             environment,
             None,
             io::sink(),
-            TraceSetup {
+            ProcessSetup {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
                 effects: &trace_effects,
                 bounds: TraceBounds::SPEC,
                 install_iroh_lines: IROH_LINES_LEFT_OUT,
@@ -1511,7 +1556,8 @@ mod tests {
             environment,
             None,
             standard_error.clone(),
-            TraceSetup {
+            ProcessSetup {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
                 effects: &trace_effects,
                 bounds: TraceBounds {
                     drain: Duration::ZERO,
@@ -1652,7 +1698,8 @@ mod tests {
             environment,
             None,
             standard_error.clone(),
-            TraceSetup {
+            ProcessSetup {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
                 effects: &trace_effects,
                 bounds: TraceBounds {
                     drain: STOP_REPORTED_WITHIN,
@@ -1695,7 +1742,8 @@ mod tests {
             environment,
             None,
             standard_error.clone(),
-            TraceSetup {
+            ProcessSetup {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
                 effects: &trace_effects,
                 bounds: TraceBounds {
                     drain: STOP_REPORTED_WITHIN,
@@ -1735,7 +1783,8 @@ mod tests {
             environment,
             None,
             standard_error.clone(),
-            TraceSetup {
+            ProcessSetup {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
                 effects: &trace_effects,
                 bounds: TraceBounds {
                     drain: STOP_REPORTED_WITHIN,
@@ -1775,7 +1824,8 @@ mod tests {
             environment,
             None,
             standard_error.clone(),
-            TraceSetup {
+            ProcessSetup {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
                 effects: &trace_effects,
                 bounds: TraceBounds {
                     drain: STOP_REPORTED_WITHIN,
@@ -1815,7 +1865,8 @@ mod tests {
             environment,
             None,
             standard_error.clone(),
-            TraceSetup {
+            ProcessSetup {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
                 effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
                 bounds: TraceBounds::SPEC,
                 install_iroh_lines: iroh_lines::install,
@@ -1875,7 +1926,8 @@ mod tests {
             &environment,
             None,
             io::sink(),
-            TraceSetup {
+            ProcessSetup {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
                 effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
                 bounds: TraceBounds::SPEC,
                 install_iroh_lines: IROH_LINES_LEFT_OUT,
@@ -1928,6 +1980,7 @@ mod tests {
         let trace = start_trace(
             Tracing::Debug,
             &environment,
+            OperatingSystemFilesystem::of_this_process().unwrap(),
             &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
             TraceBounds::SPEC,
         )
@@ -1970,6 +2023,7 @@ mod tests {
         let trace = start_trace(
             Tracing::Debug,
             &environment,
+            OperatingSystemFilesystem::of_this_process().unwrap(),
             &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
             TraceBounds::SPEC,
         )
@@ -2057,7 +2111,8 @@ mod tests {
                 &environment,
                 None,
                 io::sink(),
-                TraceSetup {
+                ProcessSetup {
+                    filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
                     effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
                     bounds: TraceBounds::SPEC,
                     install_iroh_lines: IROH_LINES_LEFT_OUT,
@@ -2115,12 +2170,16 @@ mod tests {
         let Command::Network { command } = created else {
             panic!("network create parses as a network command");
         };
-        let directories =
-            Directories::establish(&environment, &OperatingSystemFilesystem, None).unwrap();
+        let directories = Directories::establish(
+            &environment,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
+            None,
+        )
+        .unwrap();
         network::run(
             &command,
             &directories,
-            &OperatingSystemFilesystem,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
             |bytes| *bytes = [SECRET_SEED_BYTE; KEY_LEN],
             SECONDS_AFTER_EPOCH,
             &mut Vec::new(),
@@ -2147,7 +2206,8 @@ mod tests {
             &environment,
             &mut printed,
             recorded.clone(),
-            TraceSetup {
+            ProcessSetup {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
                 effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
                 bounds: TraceBounds::SPEC,
                 install_iroh_lines: IROH_LINES_LEFT_OUT,

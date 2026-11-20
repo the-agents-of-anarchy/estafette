@@ -62,7 +62,8 @@ fn after_a_panic_raised_while_standard_error_is_held() -> AfterThePanic {
             record: standard_error.clone(),
             armed: Arc::clone(&armed),
         },
-        TraceSetup {
+        ProcessSetup {
+            filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
             effects: &trace_effects,
             bounds: TraceBounds {
                 drain: STOP_REPORTED_WITHIN,

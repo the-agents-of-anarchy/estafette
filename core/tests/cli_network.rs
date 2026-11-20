@@ -137,34 +137,35 @@ mod network_commands {
 
     struct ConfigWriteBlockedAfterOwnerKey {
         config_file: PathBuf,
+        filesystem: OperatingSystemFilesystem,
     }
 
     impl DirectoryFilesystem for ConfigWriteBlockedAfterOwnerKey {
         fn create_private_directory(&self, path: &Path) -> io::Result<()> {
-            OperatingSystemFilesystem.create_private_directory(path)
+            self.filesystem.create_private_directory(path)
         }
 
         fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
-            OperatingSystemFilesystem.owner_user_id(path)
+            self.filesystem.owner_user_id(path)
         }
     }
 
     impl NetworkFilesystem for ConfigWriteBlockedAfterOwnerKey {
         fn path_exists(&self, path: &Path) -> io::Result<bool> {
-            OperatingSystemFilesystem.path_exists(path)
+            self.filesystem.path_exists(path)
         }
 
         fn read_to_string(&self, path: &Path) -> io::Result<String> {
-            OperatingSystemFilesystem.read_to_string(path)
+            self.filesystem.read_to_string(path)
         }
 
         fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
-            OperatingSystemFilesystem.create_new_owner_only_file(path, contents)?;
+            self.filesystem.create_new_owner_only_file(path, contents)?;
             fs::create_dir(&self.config_file)
         }
 
         fn remove_file(&self, path: &Path) -> io::Result<()> {
-            OperatingSystemFilesystem.remove_file(path)
+            self.filesystem.remove_file(path)
         }
     }
 
@@ -177,7 +178,7 @@ mod network_commands {
                 "XDG_RUNTIME_DIR" => Some(root.join("runtime").into_os_string()),
                 _ => None,
             },
-            &OperatingSystemFilesystem,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
             None,
         )
         .unwrap();
@@ -200,6 +201,7 @@ mod network_commands {
         let machine = Machine::fresh("create-config-unwritable");
         let blocked = ConfigWriteBlockedAfterOwnerKey {
             config_file: machine.config_file(NETWORK),
+            filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
         };
 
         let created = create_network_through(&machine, &blocked);
@@ -207,7 +209,10 @@ mod network_commands {
         assert!(!created);
         fs::remove_dir(machine.config_file(NETWORK)).unwrap();
         assert!(!machine.owner_key_file(NETWORK).exists());
-        assert!(create_network_through(&machine, &OperatingSystemFilesystem));
+        assert!(create_network_through(
+            &machine,
+            &OperatingSystemFilesystem::of_this_process().unwrap()
+        ));
     }
 
     #[test]
@@ -634,7 +639,7 @@ mod network_commands {
                 "XDG_RUNTIME_DIR" => Some(root.join("runtime").into_os_string()),
                 _ => None,
             },
-            &OperatingSystemFilesystem,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
             None,
         )
         .unwrap();
@@ -645,7 +650,7 @@ mod network_commands {
         let refusal = run(
             &command,
             &directories,
-            &OperatingSystemFilesystem,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
             |_bytes| (),
             0,
             &mut BrokenPipe,

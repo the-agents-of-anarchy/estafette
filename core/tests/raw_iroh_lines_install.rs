@@ -50,7 +50,7 @@ mod raw_iroh_lines_install {
         let trace = Arc::new(
             Trace::start(
                 &directory,
-                &OperatingSystemFilesystem,
+                &OperatingSystemFilesystem::of_this_process().unwrap(),
                 RunId::from_random_bytes(RUN_BYTES),
                 &TraceEffects::of_the_operating_system(TraceClocks {
                     monotonic_ms: Arc::new(|| 0),

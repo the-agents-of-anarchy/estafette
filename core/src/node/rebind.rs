@@ -1386,7 +1386,7 @@ mod tests {
         let live = Arc::new(
             Trace::start(
                 &directory,
-                &crate::dirs::OperatingSystemFilesystem,
+                &crate::dirs::OperatingSystemFilesystem::of_this_process().unwrap(),
                 RunId::from_random_bytes(LIVE_RUN_BYTES),
                 &TraceEffects::of_the_operating_system(machine_trace_clocks(wall_clock_ms)),
                 TraceBounds::SPEC,
@@ -1445,7 +1445,7 @@ mod tests {
 
         let pruning = Trace::start(
             &directory,
-            &crate::dirs::OperatingSystemFilesystem,
+            &crate::dirs::OperatingSystemFilesystem::of_this_process().unwrap(),
             RunId::from_random_bytes(PRUNING_RUN_BYTES),
             &TraceEffects::of_the_operating_system(machine_trace_clocks(move || {
                 just_before_the_next_snapshot_ms

@@ -56,7 +56,8 @@ fn clock_ticking_by(tick: Duration) -> impl FnMut() -> Instant {
 fn send_to_nobody_as_member(machine: &ScratchMachine, number: u32) {
     let traces = machine.traces_directory_of_member(number);
     for private_directory in [traces.parent().unwrap(), traces.as_path()] {
-        OperatingSystemFilesystem
+        OperatingSystemFilesystem::of_this_process()
+            .unwrap()
             .create_private_directory(private_directory)
             .unwrap();
     }

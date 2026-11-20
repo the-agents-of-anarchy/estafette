@@ -11,8 +11,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use estafette::dirs::{
-    Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem, TraceDirectory,
-    trace_file_of,
+    Directories, DirectoryFilesystem, OperatingSystemFilesystem, TraceDirectory, trace_file_of,
 };
 use estafette::keys::parse_public_key;
 use iroh::EndpointId;
@@ -358,17 +357,13 @@ impl ScratchMachine {
 
     /// The directories the binary derives from this machine's environment.
     pub fn directories(&self) -> Directories {
-        self.established_directories().unwrap()
-    }
-
-    /// The directories the binary derives from this machine's environment, or why they could not be established, never panicking.
-    fn established_directories(&self) -> Result<Directories, DirectoriesError> {
         let environment = environment(&self.root);
         Directories::establish(
             |name: &str| variable_of(&environment, name),
-            &OperatingSystemFilesystem,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
             None,
         )
+        .unwrap()
     }
 
     /// The binary with this machine's environment alone.
@@ -452,11 +447,12 @@ impl ScratchMachine {
         let environment = self.member_environment(started);
         Directories::establish(
             |name: &str| variable_of(&environment, name),
-            &OperatingSystemFilesystem,
+            &OperatingSystemFilesystem::of_this_process().unwrap(),
             None,
         )
         .unwrap();
-        OperatingSystemFilesystem
+        OperatingSystemFilesystem::of_this_process()
+            .unwrap()
             .create_private_directory(&self.traces_directory_of_member(started))
             .unwrap();
         let run_record = File::create(self.root.join(format!(
@@ -1115,7 +1111,8 @@ mod tests {
         );
         machine.servers_started.set(1);
         let traces = machine.traces_directory_of_member(0);
-        OperatingSystemFilesystem
+        OperatingSystemFilesystem::of_this_process()
+            .unwrap()
             .create_private_directory(&traces)
             .unwrap();
         fs::write(
