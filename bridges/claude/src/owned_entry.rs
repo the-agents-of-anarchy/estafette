@@ -214,11 +214,19 @@ fn refusal_of(path: &Path, found: StateFileFinding) -> io::Error {
 ///
 /// Fails when the file cannot be read, or with a `StateFileRefused` inside the error when it is not a regular file of the user.
 pub fn read_state_file(path: &Path, user_id: u32) -> io::Result<String> {
+    read_state_file_opened_by(path, user_id, |path: &Path| File::open(path))
+}
+
+fn read_state_file_opened_by(
+    path: &Path,
+    user_id: u32,
+    open: impl FnOnce(&Path) -> io::Result<File>,
+) -> io::Result<String> {
     let metadata = fs::symlink_metadata(path)?;
     if let Some(found) = state_file_finding(EntryFacts::of(&metadata), user_id) {
         return Err(refusal_of(path, found));
     }
-    let mut file = File::open(path)?;
+    let mut file = open(path)?;
     let opened = file.metadata()?;
     if (opened.dev(), opened.ino()) != (metadata.dev(), metadata.ino()) {
         return Err(refusal_of(path, StateFileFinding::ReplacedWhileOpened));
@@ -486,6 +494,28 @@ mod tests {
         assert_eq!(
             refusal_inside(&failure).found,
             StateFileFinding::SymbolicLink
+        );
+        crate::remove_scratch::remove_scratch(&directory).unwrap();
+    }
+
+    #[test]
+    fn spec_3_12_a_read_refuses_a_file_swapped_for_another_between_its_inspection_and_its_opening_runtime_directory_is_private_or_refused()
+     {
+        let directory = scratch_directory("read-swapped");
+        let inspected = directory.join("count");
+        let swapped_in = directory.join("planted");
+        fs::write(&inspected, STATE_TEXT).unwrap();
+        fs::write(&swapped_in, VICTIM_TEXT).unwrap();
+        let user_id = fs::metadata(&inspected).unwrap().uid();
+
+        let failure = read_state_file_opened_by(&inspected, user_id, |_inspected: &Path| {
+            File::open(&swapped_in)
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            refusal_inside(&failure).found,
+            StateFileFinding::ReplacedWhileOpened
         );
         crate::remove_scratch::remove_scratch(&directory).unwrap();
     }
