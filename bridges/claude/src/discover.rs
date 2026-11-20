@@ -263,7 +263,9 @@ pub fn binary_sockets_under(
         .collect()
 }
 
-fn runtime_directory(inputs: &RuntimeDirectoryInputs) -> PathBuf {
+/// Names the directory of the inbox sockets, the one place every socket path is derived from.
+#[must_use]
+pub fn runtime_directory(inputs: &RuntimeDirectoryInputs) -> PathBuf {
     let base = inputs
         .xdg_runtime_dir
         .clone()

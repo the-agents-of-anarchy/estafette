@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use estafette_bridge_claude::discover::{
     BinarySocket, POLL_INTERVAL, Pid, ProcessTable, ProcessTableError, PsProcessTable,
-    RuntimeDirectoryInputs, follow_binary_sockets,
+    RuntimeDirectoryInputs, follow_binary_sockets, runtime_directory,
 };
 use estafette_bridge_claude::doctor::{
     DoctorInputs, MESSAGING_SOCKET_VARIABLE, MessagingSocket, RUN_SUBCOMMAND, SettingsFile,
@@ -91,7 +91,6 @@ const MANAGED_DROP_IN_DIRECTORY: &str = "managed-settings.d";
 const SETTINGS_EXTENSION: &str = "json";
 const HIDDEN_FILE_PREFIX: char = '.';
 const STAGING_SUFFIX: &str = ".staging";
-const RUNTIME_DIRECTORY_PREFIX: &str = "estafette-";
 /// How often a serving bridge writes its alive line, on its own clock: `spec/observability.md` decision 13 has a live process write its events file at least this often.
 const ALIVE_LINE_PERIOD: Duration = Duration::from_secs(60);
 /// The loop that writes each alive line falling due inside one pause between polls ends, on a clock that never runs back, only while that pause is shorter than the period.
@@ -395,21 +394,12 @@ fn runtime_inputs(
     })
 }
 
-/// Names the directory of the inbox sockets, as discovery derives each socket path from it.
-fn runtime_directory_path(inputs: &RuntimeDirectoryInputs) -> PathBuf {
-    inputs
-        .xdg_runtime_dir
-        .as_ref()
-        .unwrap_or(&inputs.temporary_dir)
-        .join(format!("{RUNTIME_DIRECTORY_PREFIX}{}", inputs.user_id))
-}
-
 /// Refuses the runtime directory when it exists and is not a directory of the user that grants nothing to group or other; a missing one holds no socket to connect to.
 fn require_usable_runtime_directory(
     files: &impl Files,
     inputs: &RuntimeDirectoryInputs,
 ) -> Result<(), CommandError> {
-    let directory = runtime_directory_path(inputs);
+    let directory = runtime_directory(inputs);
     files
         .entry_facts(&directory)
         .ok()
@@ -1714,29 +1704,6 @@ mod tests {
             lock(&wiring.errors).last().map(String::as_str),
             Some(REFUSED_RUNTIME_DIRECTORY_MESSAGE)
         );
-    }
-
-    #[test]
-    fn spec_3_3_the_runtime_directory_the_bridge_checks_is_the_one_discovery_puts_each_socket_in_runtime_directory_is_private_or_refused()
-     {
-        let inputs = RuntimeDirectoryInputs {
-            xdg_runtime_dir: Some(PathBuf::from("/run/user/1000")),
-            temporary_dir: PathBuf::from(TEST_TEMPORARY_DIR),
-            user_id: USER_OF_WIRING,
-        };
-        let without_xdg = RuntimeDirectoryInputs {
-            xdg_runtime_dir: None,
-            temporary_dir: PathBuf::from(TEST_TEMPORARY_DIR),
-            user_id: USER_OF_WIRING,
-        };
-        for inputs in [&inputs, &without_xdg] {
-            let sockets =
-                binary_sockets_under(HARNESS_PID, inputs, &[harness_entry(), mcp_binary(101)]);
-            assert_eq!(
-                sockets[0].path().parent(),
-                Some(runtime_directory_path(inputs).as_path())
-            );
-        }
     }
 
     struct ScriptedInboxStream {
