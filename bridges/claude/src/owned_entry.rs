@@ -58,7 +58,7 @@ impl EntryFacts {
 
 /// What stops an existing entry from being used as a private directory of the user.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DirectoryFinding {
+enum DirectoryFinding {
     SymbolicLink,
     NotADirectory,
     OwnedByAnotherUser { owner: u32, user: u32 },
@@ -83,7 +83,7 @@ impl fmt::Display for DirectoryFinding {
 
 /// Says what stops the entry from being a directory of the user that grants nothing to group or other, none when nothing does.
 #[must_use]
-pub const fn directory_finding(facts: EntryFacts, user_id: u32) -> Option<DirectoryFinding> {
+const fn directory_finding(facts: EntryFacts, user_id: u32) -> Option<DirectoryFinding> {
     match facts.kind {
         EntryKind::SymbolicLink => Some(DirectoryFinding::SymbolicLink),
         EntryKind::RegularFile | EntryKind::Other => Some(DirectoryFinding::NotADirectory),
@@ -142,7 +142,7 @@ pub fn require_private_directory_of(
 
 /// What stops an existing entry from being trusted as one of the bridge's state files.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StateFileFinding {
+enum StateFileFinding {
     SymbolicLink,
     NotARegularFile,
     OwnedByAnotherUser { owner: u32, user: u32 },
@@ -164,7 +164,7 @@ impl fmt::Display for StateFileFinding {
 
 /// Says what stops the entry from being a regular file of the user, none when nothing does.
 #[must_use]
-pub const fn state_file_finding(facts: EntryFacts, user_id: u32) -> Option<StateFileFinding> {
+const fn state_file_finding(facts: EntryFacts, user_id: u32) -> Option<StateFileFinding> {
     match facts.kind {
         EntryKind::SymbolicLink => Some(StateFileFinding::SymbolicLink),
         EntryKind::Directory | EntryKind::Other => Some(StateFileFinding::NotARegularFile),
@@ -180,7 +180,7 @@ pub const fn state_file_finding(facts: EntryFacts, user_id: u32) -> Option<State
 
 /// A state file the bridge refuses to read or replace, with the file and what was found.
 #[derive(Debug, Eq, PartialEq)]
-pub struct StateFileRefused {
+struct StateFileRefused {
     path: PathBuf,
     found: StateFileFinding,
 }
