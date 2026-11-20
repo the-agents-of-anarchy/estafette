@@ -58,7 +58,7 @@ pub trait DirectoryFilesystem {
 
 /// The user this process runs as, learned once from the owner of a pipe the process makes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ProcessUser(u32);
+struct ProcessUser(u32);
 
 impl ProcessUser {
     /// Reads the owner that the operating system reports for an anonymous pipe this process makes, which is the user the process creates files as.
@@ -66,7 +66,7 @@ impl ProcessUser {
     /// # Errors
     ///
     /// Fails when the pipe cannot be made or its owner cannot be read.
-    pub fn of_this_process() -> Result<Self, ProcessUserUnknown> {
+    fn of_this_process() -> Result<Self, ProcessUserUnknown> {
         let (reader, _writer) = io::pipe().map_err(ProcessUserUnknown::PipeNotMade)?;
         let owner = fs::File::from(OwnedFd::from(reader))
             .metadata()
