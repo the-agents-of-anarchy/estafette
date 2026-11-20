@@ -178,6 +178,47 @@ pub fn require_private_directory_of(
     })
 }
 
+/// What stops the runtime directory from being used: it cannot be inspected, or it exists and is refused.
+#[derive(Debug)]
+pub enum RuntimeDirectoryProblem {
+    Uninspectable { path: PathBuf, source: io::Error },
+    Refused(ExistingDirectoryRefused),
+}
+
+impl fmt::Display for RuntimeDirectoryProblem {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Uninspectable { path, source } => {
+                write!(formatter, "cannot inspect {}: {source}", path.display())
+            }
+            Self::Refused(refusal) => refusal.fmt(formatter),
+        }
+    }
+}
+
+impl std::error::Error for RuntimeDirectoryProblem {}
+
+/// Judges the runtime directory: a missing one passes, one that cannot be inspected or is not a private directory of the user is a problem.
+///
+/// # Errors
+///
+/// `RuntimeDirectoryProblem` naming the directory and what was found.
+pub fn check_runtime_directory(
+    user_id: u32,
+    directory: &Path,
+    inspect: impl FnOnce(&Path) -> io::Result<EntryFacts>,
+) -> Result<(), RuntimeDirectoryProblem> {
+    match inspect(directory) {
+        Err(failure) if failure.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(RuntimeDirectoryProblem::Uninspectable {
+            path: directory.to_path_buf(),
+            source,
+        }),
+        Ok(facts) => require_private_directory_of(user_id, directory, facts)
+            .map_err(RuntimeDirectoryProblem::Refused),
+    }
+}
+
 /// What stops an existing entry from being trusted as one of the bridge's state files.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StateFileFinding {

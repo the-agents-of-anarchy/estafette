@@ -24,8 +24,8 @@ use estafette_bridge_claude::inbox_client::{
 };
 use estafette_bridge_claude::inject::SessionNotifier;
 use estafette_bridge_claude::owned_entry::{
-    EntryFacts, ExistingDirectoryRefused, ProcessUserUnknown, process_user_id, read_state_file,
-    require_private_directory_of, write_state_file,
+    EntryFacts, ProcessUserUnknown, RuntimeDirectoryProblem, check_runtime_directory,
+    process_user_id, read_state_file, write_state_file,
 };
 use estafette_bridge_claude::permission_class::PermissionClass;
 use estafette_bridge_claude::session_files::{
@@ -205,8 +205,7 @@ enum CommandError {
     DataDirectoryUnresolvable(BaseDirectoryUnresolvable),
     RunIdUnreadable(io::Error),
     TraceRefused(TraceRefused),
-    RuntimeDirectoryRefused(ExistingDirectoryRefused),
-    RuntimeDirectoryUninspectable { path: PathBuf, source: io::Error },
+    RuntimeDirectoryRefused(RuntimeDirectoryProblem),
 }
 
 impl fmt::Display for CommandError {
@@ -246,9 +245,6 @@ impl fmt::Display for CommandError {
             ),
             Self::TraceRefused(source) => source.fmt(formatter),
             Self::RuntimeDirectoryRefused(source) => source.fmt(formatter),
-            Self::RuntimeDirectoryUninspectable { path, source } => {
-                write!(formatter, "cannot inspect {}: {source}", path.display())
-            }
         }
     }
 }
@@ -402,16 +398,10 @@ fn require_usable_runtime_directory(
     files: &impl Files,
     inputs: &RuntimeDirectoryInputs,
 ) -> Result<(), CommandError> {
-    let directory = runtime_directory(inputs);
-    match files.entry_facts(&directory) {
-        Err(failure) if failure.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(CommandError::RuntimeDirectoryUninspectable {
-            path: directory,
-            source,
-        }),
-        Ok(facts) => require_private_directory_of(inputs.user_id, &directory, facts)
-            .map_err(CommandError::RuntimeDirectoryRefused),
-    }
+    check_runtime_directory(inputs.user_id, &runtime_directory(inputs), |directory| {
+        files.entry_facts(directory)
+    })
+    .map_err(CommandError::RuntimeDirectoryRefused)
 }
 
 /// Takes a mutex whether or not a panicking holder poisoned it, which the abort-on-panic release profile makes unreachable.

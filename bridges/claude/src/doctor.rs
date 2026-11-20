@@ -7,10 +7,10 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::discover::{
-    BinarySocket, Pid, ProcessEntry, ProcessTable, ProcessTableError, RuntimeDirectoryInputs,
-    binary_sockets_under,
+    Pid, ProcessEntry, ProcessTable, ProcessTableError, RuntimeDirectoryInputs,
+    binary_sockets_under, runtime_directory,
 };
-use crate::owned_entry::{EntryFacts, require_private_directory_of};
+use crate::owned_entry::{EntryFacts, check_runtime_directory};
 use crate::permission_class::PermissionClass;
 
 const BRIDGE_EXECUTABLE_NAME: &str = "estafette-bridge-claude";
@@ -359,29 +359,20 @@ fn judge_binary_process_found(
         );
     };
     let sockets = binary_sockets_under(harness_pid, runtime_inputs, entries);
-    let Some(first_socket) = sockets.first() else {
+    if sockets.is_empty() {
         return Verdict::Failed(format!(
             "no estafette process in mcp mode runs under process {harness_pid}"
         ));
-    };
-    runtime_directory_problem(first_socket, runtime_inputs.user_id, inspect_entry)
-        .map_or(Verdict::Passed, Verdict::Failed)
-}
-
-/// What stops the directory that holds the socket from being used, none when it is missing or private and the user's.
-fn runtime_directory_problem(
-    socket: &BinarySocket,
-    user_id: u32,
-    inspect_entry: &impl Fn(&Path) -> io::Result<EntryFacts>,
-) -> Option<String> {
-    let directory = socket.path().parent()?;
-    match inspect_entry(directory) {
-        Err(failure) if failure.kind() == io::ErrorKind::NotFound => None,
-        Err(failure) => Some(format!("cannot inspect {}: {failure}", directory.display())),
-        Ok(facts) => require_private_directory_of(user_id, directory, facts)
-            .err()
-            .map(|refusal| refusal.to_string()),
     }
+    check_runtime_directory(
+        runtime_inputs.user_id,
+        &runtime_directory(runtime_inputs),
+        inspect_entry,
+    )
+    .map_or_else(
+        |problem| Verdict::Failed(problem.to_string()),
+        |()| Verdict::Passed,
+    )
 }
 
 /// Judges whether a bridge runs for an ancestor of the doctor.
