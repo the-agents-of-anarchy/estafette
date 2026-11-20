@@ -206,6 +206,7 @@ enum CommandError {
     RunIdUnreadable(io::Error),
     TraceRefused(TraceRefused),
     RuntimeDirectoryRefused(ExistingDirectoryRefused),
+    RuntimeDirectoryUninspectable { path: PathBuf, source: io::Error },
 }
 
 impl fmt::Display for CommandError {
@@ -249,6 +250,9 @@ impl fmt::Display for CommandError {
             ),
             Self::TraceRefused(source) => source.fmt(formatter),
             Self::RuntimeDirectoryRefused(source) => source.fmt(formatter),
+            Self::RuntimeDirectoryUninspectable { path, source } => {
+                write!(formatter, "cannot inspect {}: {source}", path.display())
+            }
         }
     }
 }
@@ -400,13 +404,15 @@ fn require_usable_runtime_directory(
     inputs: &RuntimeDirectoryInputs,
 ) -> Result<(), CommandError> {
     let directory = runtime_directory(inputs);
-    files
-        .entry_facts(&directory)
-        .ok()
-        .map_or(Ok(()), |facts| {
-            require_private_directory_of(inputs.user_id, &directory, facts)
-        })
-        .map_err(CommandError::RuntimeDirectoryRefused)
+    match files.entry_facts(&directory) {
+        Err(failure) if failure.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(CommandError::RuntimeDirectoryUninspectable {
+            path: directory,
+            source,
+        }),
+        Ok(facts) => require_private_directory_of(inputs.user_id, &directory, facts)
+            .map_err(CommandError::RuntimeDirectoryRefused),
+    }
 }
 
 /// Takes a mutex whether or not a panicking holder poisoned it, which the abort-on-panic release profile makes unreachable.
@@ -956,7 +962,7 @@ fn run_doctor_command(
         processes,
         &|path: &Path| files.read_text(path).ok(),
         &|path: &Path| files.read_state_text(path, user_id).ok(),
-        &|path: &Path| files.entry_facts(path).ok(),
+        &|path: &Path| files.entry_facts(path),
     )
     .map_err(CommandError::ProcessTable)?;
     writeln!(output, "{report}").map_err(CommandError::ReportUnwritable)?;
@@ -1653,6 +1659,30 @@ mod tests {
     }
 
     const LISTING_OF_THE_SECOND_POLL: usize = 3;
+
+    #[test]
+    fn spec_3_3_the_bridge_refuses_at_its_start_a_runtime_directory_it_cannot_inspect_runtime_directory_is_private_or_refused()
+     {
+        let wiring = wiring();
+        lock(&wiring.effects.files.entry_failures).insert(
+            PathBuf::from(RUNTIME_DIRECTORY_OF_WIRING),
+            io::ErrorKind::PermissionDenied,
+        );
+        let polls = SnapshotSequence(RefCell::new(vec![
+            vec![harness_entry(), mcp_binary(101)],
+            Vec::new(),
+        ]));
+
+        let outcome = run_bridge(HARNESS_PID, wiring.effects, &polls);
+
+        assert_eq!(
+            outcome.err().map(|error| error.to_string()),
+            Some(format!(
+                "cannot inspect {RUNTIME_DIRECTORY_OF_WIRING}: permission denied"
+            ))
+        );
+        assert_eq!(lock(&wiring.spawned).len(), 0);
+    }
 
     struct DirectoryLoosenedAtItsSecondPoll {
         entries: Arc<Mutex<BTreeMap<PathBuf, EntryFacts>>>,
@@ -2358,6 +2388,7 @@ mod tests {
         writes: Arc<Mutex<Vec<(PathBuf, String)>>>,
         owners: BTreeMap<PathBuf, Result<u32, io::ErrorKind>>,
         entries: Arc<Mutex<BTreeMap<PathBuf, EntryFacts>>>,
+        entry_failures: Mutex<BTreeMap<PathBuf, io::ErrorKind>>,
         creation_failures: BTreeMap<PathBuf, io::ErrorKind>,
         created: Mutex<Vec<PathBuf>>,
     }
@@ -2421,6 +2452,9 @@ mod tests {
         }
 
         fn entry_facts(&self, path: &Path) -> io::Result<EntryFacts> {
+            if let Some(kind) = lock(&self.entry_failures).get(path) {
+                return Err(io::Error::from(*kind));
+            }
             lock(&self.entries)
                 .get(path)
                 .copied()

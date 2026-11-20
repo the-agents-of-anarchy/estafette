@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
 use std::fmt;
+use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -9,7 +10,7 @@ use crate::discover::{
     BinarySocket, Pid, ProcessEntry, ProcessTable, ProcessTableError, RuntimeDirectoryInputs,
     binary_sockets_under,
 };
-use crate::owned_entry::{EntryFacts, ExistingDirectoryRefused, require_private_directory_of};
+use crate::owned_entry::{EntryFacts, require_private_directory_of};
 use crate::permission_class::PermissionClass;
 
 const BRIDGE_EXECUTABLE_NAME: &str = "estafette-bridge-claude";
@@ -171,7 +172,7 @@ pub fn run_doctor(
     processes: &impl ProcessTable,
     read_text_file: &impl Fn(&Path) -> Option<String>,
     read_state_file: &impl Fn(&Path) -> Option<String>,
-    inspect_entry: &impl Fn(&Path) -> Option<EntryFacts>,
+    inspect_entry: &impl Fn(&Path) -> io::Result<EntryFacts>,
 ) -> Result<DoctorReport, ProcessTableError> {
     let entries = processes.list()?;
     let harness_pid = harness_of_bridge_for_session(inputs.own_pid, &entries);
@@ -350,7 +351,7 @@ fn judge_binary_process_found(
     harness_pid: Option<Pid>,
     entries: &[ProcessEntry],
     runtime_inputs: &RuntimeDirectoryInputs,
-    inspect_entry: &impl Fn(&Path) -> Option<EntryFacts>,
+    inspect_entry: &impl Fn(&Path) -> io::Result<EntryFacts>,
 ) -> Verdict {
     let Some(harness_pid) = harness_pid else {
         return Verdict::Failed(
@@ -363,20 +364,24 @@ fn judge_binary_process_found(
             "no estafette process in mcp mode runs under process {harness_pid}"
         ));
     };
-    refused_runtime_directory_of(first_socket, runtime_inputs.user_id, inspect_entry)
-        .map_or(Verdict::Passed, |refusal| {
-            Verdict::Failed(refusal.to_string())
-        })
+    runtime_directory_problem(first_socket, runtime_inputs.user_id, inspect_entry)
+        .map_or(Verdict::Passed, Verdict::Failed)
 }
 
-/// The refusal of the directory that holds the socket, none when it is missing or private and the user's.
-fn refused_runtime_directory_of(
+/// What stops the directory that holds the socket from being used, none when it is missing or private and the user's.
+fn runtime_directory_problem(
     socket: &BinarySocket,
     user_id: u32,
-    inspect_entry: &impl Fn(&Path) -> Option<EntryFacts>,
-) -> Option<ExistingDirectoryRefused> {
+    inspect_entry: &impl Fn(&Path) -> io::Result<EntryFacts>,
+) -> Option<String> {
     let directory = socket.path().parent()?;
-    require_private_directory_of(user_id, directory, inspect_entry(directory)?).err()
+    match inspect_entry(directory) {
+        Err(failure) if failure.kind() == io::ErrorKind::NotFound => None,
+        Err(failure) => Some(format!("cannot inspect {}: {failure}", directory.display())),
+        Ok(facts) => require_private_directory_of(user_id, directory, facts)
+            .err()
+            .map(|refusal| refusal.to_string()),
+    }
 }
 
 /// Judges whether a bridge runs for an ancestor of the doctor.
@@ -529,13 +534,17 @@ mod tests {
         }
     }
 
+    fn no_such_entry(_: &Path) -> io::Result<EntryFacts> {
+        Err(io::ErrorKind::NotFound.into())
+    }
+
     fn doctor_report(inputs: &DoctorInputs, processes: &FixedProcessTable) -> DoctorReport {
         run_doctor(
             inputs,
             processes,
             &|_: &Path| None,
             &read_only_the_state_files_of_harness_100,
-            &|_: &Path| None,
+            &no_such_entry,
         )
         .expect("the table never fails")
     }
@@ -737,11 +746,15 @@ mod tests {
         let sockets = binary_sockets_under(Pid(100), &inputs.runtime_inputs, &processes.0);
         let runtime_directory = sockets[0].path().parent().unwrap().to_path_buf();
         let facts_of_the_runtime_directory = |path: &Path| {
-            (path == runtime_directory).then_some(EntryFacts {
-                kind,
-                owner_user_id: inputs.runtime_inputs.user_id,
-                permission_bits,
-            })
+            if path == runtime_directory {
+                Ok(EntryFacts {
+                    kind,
+                    owner_user_id: inputs.runtime_inputs.user_id,
+                    permission_bits,
+                })
+            } else {
+                no_such_entry(path)
+            }
         };
         let report = run_doctor(
             &inputs,
@@ -791,6 +804,31 @@ mod tests {
         let (verdict, _) =
             binary_process_verdict_when_the_runtime_directory_is(EntryKind::Directory, 0o700);
         assert_eq!(verdict, Verdict::Passed);
+    }
+
+    #[test]
+    fn spec_3_3_doctor_fails_the_binary_process_check_for_a_runtime_directory_it_cannot_inspect_runtime_directory_is_private_or_refused()
+     {
+        let (inputs, processes) = healthy_session();
+        let sockets = binary_sockets_under(Pid(100), &inputs.runtime_inputs, &processes.0);
+        let runtime_directory = sockets[0].path().parent().unwrap().to_path_buf();
+
+        let report = run_doctor(
+            &inputs,
+            &processes,
+            &|_: &Path| None,
+            &read_only_the_state_files_of_harness_100,
+            &|_: &Path| Err(io::ErrorKind::PermissionDenied.into()),
+        )
+        .expect("the table never fails");
+
+        assert_eq!(
+            report.verdict(Check::BinaryProcessFound),
+            &Verdict::Failed(format!(
+                "cannot inspect {}: permission denied",
+                runtime_directory.display()
+            ))
+        );
     }
 
     #[test]
@@ -919,7 +957,7 @@ mod tests {
                 &processes,
                 &|_: &Path| None,
                 &|_: &Path| text.map(str::to_owned),
-                &|_: &Path| None,
+                &no_such_entry,
             )
             .expect("the table never fails")
             .dropped_frames
@@ -939,7 +977,7 @@ mod tests {
                 &processes,
                 &|_: &Path| None,
                 &|_: &Path| text.map(str::to_owned),
-                &|_: &Path| None,
+                &no_such_entry,
             )
             .expect("the table never fails");
             assert_eq!(report.attested_class, None);
@@ -969,7 +1007,7 @@ mod tests {
             &processes,
             read_text_file,
             &|_: &Path| None,
-            &|_: &Path| None,
+            &no_such_entry,
         )
         .expect("the table never fails")
         .verdict(Check::NoRefuseApplies)
