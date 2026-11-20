@@ -337,6 +337,8 @@ const DROPPED_FRAME_COUNT_NOT_WRITTEN: &str = "cannot write the dropped-frame co
 const EXIT_CHECK_FAILED_CODE: i32 = 3;
 /// The descriptor limit that leaves the three standard streams open and one descriptor free, where a pipe needs two.
 const NO_ROOM_FOR_A_PIPE: &str = "4";
+/// Closes the descriptors a test runner may leave open, such as the heavy gate's lock, which a process under so low a limit aborts on.
+const CLOSE_INHERITED_DESCRIPTORS: &str = "exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-";
 
 /// A bridge process that is killed when dropped.
 struct ServingBridge(Child);
@@ -471,7 +473,9 @@ fn spec_3_3_the_bridge_refuses_to_start_when_it_cannot_make_a_pipe_to_learn_its_
     limited
         .args([
             "-c",
-            &format!("ulimit -n {NO_ROOM_FOR_A_PIPE}; exec \"$0\" \"$@\""),
+            &format!(
+                "{CLOSE_INHERITED_DESCRIPTORS}; ulimit -n {NO_ROOM_FOR_A_PIPE}; exec \"$0\" \"$@\""
+            ),
             common::BRIDGE,
             "run",
             &exited_harness_pid().unwrap(),

@@ -767,6 +767,8 @@ fn binary_refuses_a_symbolic_link_in_place_of_the_runtime_directory_runtime_dire
 const READ_SEARCH_ONLY_DIRECTORY_MODE: u32 = 0o500;
 /// The descriptor limit that leaves the three standard streams open and one descriptor free, where a pipe needs two.
 const NO_ROOM_FOR_A_PIPE: &str = "4";
+/// Closes the descriptors a test runner may leave open, such as the heavy gate's lock, which a process under so low a limit aborts on.
+const CLOSE_INHERITED_DESCRIPTORS: &str = "exec 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-";
 
 #[test]
 fn binary_refuses_to_start_when_it_cannot_make_a_pipe_to_learn_its_user_runtime_directory_is_private_or_refused()
@@ -776,7 +778,9 @@ fn binary_refuses_to_start_when_it_cannot_make_a_pipe_to_learn_its_user_runtime_
     let listed = Command::new("sh")
         .args([
             "-c",
-            &format!("ulimit -n {NO_ROOM_FOR_A_PIPE}; exec \"$0\" \"$@\""),
+            &format!(
+                "{CLOSE_INHERITED_DESCRIPTORS}; ulimit -n {NO_ROOM_FOR_A_PIPE}; exec \"$0\" \"$@\""
+            ),
             BINARY,
             "list-cards",
             "acme",
