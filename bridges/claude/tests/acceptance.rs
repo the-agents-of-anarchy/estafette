@@ -1,5 +1,5 @@
 use std::fs;
-use std::io;
+use std::io::{self, BufRead};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -329,5 +329,169 @@ fn spec_3_3_the_bridge_refuses_a_symbolic_link_in_place_of_the_runtime_directory
             "{} already exists and is a symbolic link; it must be a directory of yours with no access for group or other\n",
             runtime.display()
         )
+    );
+}
+
+const READ_SEARCH_ONLY_DIRECTORY_MODE: u32 = 0o500;
+const DROPPED_FRAME_COUNT_NOT_WRITTEN: &str = "cannot write the dropped-frame count: ";
+const EXIT_CHECK_FAILED_CODE: i32 = 3;
+/// The descriptor limit that leaves the three standard streams open and one descriptor free, where a pipe needs two.
+const NO_ROOM_FOR_A_PIPE: &str = "4";
+
+/// A bridge process that is killed when dropped.
+struct ServingBridge(Child);
+
+impl Drop for ServingBridge {
+    fn drop(&mut self) {
+        drop(self.0.kill());
+        drop(self.0.wait());
+    }
+}
+
+/// Starts a bridge serving a live harness with the given temporary directory, waits for it to say that it cannot write its dropped-frame count, and says that line and whether the bridge still serves after it.
+fn dropped_frame_line_and_whether_the_bridge_still_serves(
+    fixture: &Fixture,
+    temporary_directory: &Path,
+) -> io::Result<(String, bool)> {
+    let harness = LiveHarness::start()?;
+    let mut bridge = ServingBridge(
+        fixture
+            .bridge()
+            .env("TMPDIR", temporary_directory)
+            .args(["run", &harness.0.id().to_string(), "--no-debug"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()?,
+    );
+    let mut errors = io::BufReader::new(
+        bridge
+            .0
+            .stderr
+            .take()
+            .ok_or_else(|| io::Error::other("the bridge has no standard error"))?,
+    );
+    loop {
+        let mut line = String::new();
+        if errors.read_line(&mut line)? == 0 {
+            return Err(io::Error::other(
+                "the bridge ended before it said it cannot write its dropped-frame count",
+            ));
+        }
+        if line.starts_with(DROPPED_FRAME_COUNT_NOT_WRITTEN) {
+            return Ok((line, bridge.0.try_wait()?.is_none()));
+        }
+    }
+}
+
+#[test]
+fn spec_3_12_the_bridge_serves_though_the_temporary_directory_is_missing_runtime_directory_is_private_or_refused()
+ {
+    let fixture = Fixture::new().unwrap();
+
+    let (line, still_serving) = dropped_frame_line_and_whether_the_bridge_still_serves(
+        &fixture,
+        &fixture.root.join("no-such-temporary-directory"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        line,
+        "cannot write the dropped-frame count: No such file or directory (os error 2)\n"
+    );
+    assert!(still_serving);
+}
+
+#[test]
+fn spec_3_12_the_bridge_serves_though_the_temporary_directory_is_not_writable_runtime_directory_is_private_or_refused()
+ {
+    let fixture = Fixture::new().unwrap();
+    let temporary_directory = fixture.root.join("read-only-temporary-directory");
+    fs::create_dir(&temporary_directory).unwrap();
+    fs::set_permissions(
+        &temporary_directory,
+        fs::Permissions::from_mode(READ_SEARCH_ONLY_DIRECTORY_MODE),
+    )
+    .unwrap();
+
+    let (line, still_serving) =
+        dropped_frame_line_and_whether_the_bridge_still_serves(&fixture, &temporary_directory)
+            .unwrap();
+
+    assert_eq!(
+        line,
+        "cannot write the dropped-frame count: Permission denied (os error 13)\n"
+    );
+    assert!(still_serving);
+}
+
+#[test]
+fn spec_3_12_the_doctor_reports_its_report_though_the_temporary_directory_is_unusable_runtime_directory_is_private_or_refused()
+ {
+    let fixture = Fixture::new().unwrap();
+    let unusable = [
+        fixture.root.join("no-such-temporary-directory"),
+        fixture.root.join("read-only-temporary-directory"),
+    ];
+    fs::create_dir(&unusable[1]).unwrap();
+    fs::set_permissions(
+        &unusable[1],
+        fs::Permissions::from_mode(READ_SEARCH_ONLY_DIRECTORY_MODE),
+    )
+    .unwrap();
+
+    for temporary_directory in &unusable {
+        let doctor = fixture
+            .bridge()
+            .env("TMPDIR", temporary_directory)
+            .arg("doctor")
+            .output()
+            .unwrap();
+
+        let report = String::from_utf8(doctor.stdout).unwrap();
+        assert_eq!(
+            doctor.status.code(),
+            Some(EXIT_CHECK_FAILED_CODE),
+            "{} {report}",
+            temporary_directory.display()
+        );
+        assert!(
+            report.ends_with("attested permission class: unknown\ndropped frames: unknown\n"),
+            "{report}"
+        );
+        assert_eq!(String::from_utf8(doctor.stderr).unwrap(), "");
+    }
+}
+
+#[test]
+fn spec_3_3_the_bridge_refuses_to_start_when_it_cannot_make_a_pipe_to_learn_its_user_runtime_directory_is_private_or_refused()
+ {
+    let fixture = Fixture::new().unwrap();
+    let configured = fixture.bridge();
+    let mut limited = Command::new("sh");
+    limited
+        .args([
+            "-c",
+            &format!("ulimit -n {NO_ROOM_FOR_A_PIPE}; exec \"$0\" \"$@\""),
+            common::BRIDGE,
+            "run",
+            &exited_harness_pid().unwrap(),
+        ])
+        .env_clear()
+        .envs(
+            configured
+                .get_envs()
+                .filter_map(|(name, value)| value.map(|value| (name, value))),
+        )
+        .current_dir(&fixture.root);
+
+    let output = limited.output().unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(REFUSED_RUNTIME_DIRECTORY_EXIT_CODE)
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "cannot learn the user this process runs as: it could not make a pipe: Too many open files (os error 24)\n"
     );
 }

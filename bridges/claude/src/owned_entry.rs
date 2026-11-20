@@ -1,6 +1,7 @@
 use std::fmt;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -54,6 +55,43 @@ impl EntryFacts {
     pub fn at(path: &Path) -> io::Result<Self> {
         fs::symlink_metadata(path).map(|metadata| Self::of(&metadata))
     }
+}
+
+/// The user this process runs as could not be learned.
+#[derive(Debug)]
+pub enum ProcessUserUnknown {
+    PipeNotMade(io::Error),
+    PipeOwnerUnreadable(io::Error),
+}
+
+impl fmt::Display for ProcessUserUnknown {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PipeNotMade(source) => write!(
+                formatter,
+                "cannot learn the user this process runs as: it could not make a pipe: {source}"
+            ),
+            Self::PipeOwnerUnreadable(source) => write!(
+                formatter,
+                "cannot learn the user this process runs as: it could not read the owner of a pipe it made: {source}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProcessUserUnknown {}
+
+/// Reads the numeric id of the user this process runs as from the owner the operating system reports for an anonymous pipe the process makes, which is the user the process creates files as.
+///
+/// # Errors
+///
+/// Fails when the pipe cannot be made or its owner cannot be read.
+pub fn process_user_id() -> Result<u32, ProcessUserUnknown> {
+    let (reader, _writer) = io::pipe().map_err(ProcessUserUnknown::PipeNotMade)?;
+    File::from(OwnedFd::from(reader))
+        .metadata()
+        .map(|metadata| metadata.uid())
+        .map_err(ProcessUserUnknown::PipeOwnerUnreadable)
 }
 
 /// What stops an existing entry from being used as a private directory of the user.
@@ -236,18 +274,18 @@ fn read_state_file_opened_by(
     Ok(text)
 }
 
-/// Writes the text to a new file at the staging path, owner read and write alone, and renames it over the state file unless that is not a regular file of the writer.
+/// Writes the text to a new file at the staging path, owner read and write alone, and renames it over the state file unless that is not a regular file of the user.
 ///
 /// # Errors
 ///
 /// Fails when the staging path is taken or the file cannot be written, or with a `StateFileRefused` inside the error when the state file is a symbolic link or another user's; the staging file is then left unrenamed and removed.
-pub fn write_state_file(path: &Path, staging: &Path, text: &str) -> io::Result<()> {
+pub fn write_state_file(user_id: u32, path: &Path, staging: &Path, text: &str) -> io::Result<()> {
     let mut staged = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(PRIVATE_FILE_MODE)
         .open(staging)?;
-    let outcome = fill_and_rename_over(&mut staged, staging, path, text);
+    let outcome = fill_and_rename_over(&mut staged, user_id, staging, path, text);
     if outcome.is_err() {
         drop(fs::remove_file(staging));
     }
@@ -256,23 +294,24 @@ pub fn write_state_file(path: &Path, staging: &Path, text: &str) -> io::Result<(
 
 fn fill_and_rename_over(
     staged: &mut File,
+    user_id: u32,
     staging: &Path,
     path: &Path,
     text: &str,
 ) -> io::Result<()> {
     staged.set_permissions(Permissions::from_mode(PRIVATE_FILE_MODE))?;
     staged.write_all(text.as_bytes())?;
-    let writer_user_id = staged.metadata()?.uid();
-    require_replaceable(path, writer_user_id)?;
+    require_replaceable(path, user_id)?;
     fs::rename(staging, path)
 }
 
-fn require_replaceable(path: &Path, writer_user_id: u32) -> io::Result<()> {
+fn require_replaceable(path: &Path, user_id: u32) -> io::Result<()> {
     match EntryFacts::at(path) {
         Err(failure) if failure.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(failure) => Err(failure),
-        Ok(facts) => state_file_finding(facts, writer_user_id)
-            .map_or(Ok(()), |found| Err(refusal_of(path, found))),
+        Ok(facts) => {
+            state_file_finding(facts, user_id).map_or(Ok(()), |found| Err(refusal_of(path, found)))
+        }
     }
 }
 
@@ -364,6 +403,21 @@ mod tests {
         .unwrap()
     }
 
+    fn this_user() -> u32 {
+        process_user_id().unwrap()
+    }
+
+    #[test]
+    fn the_process_user_is_the_owner_of_a_file_the_process_creates_runtime_directory_is_private_or_refused()
+     {
+        let directory = scratch_directory("process-user");
+        let created = directory.join("created-by-this-process");
+        fs::write(&created, b"").unwrap();
+
+        assert_eq!(this_user(), fs::metadata(&created).unwrap().uid());
+        crate::remove_scratch::remove_scratch(&directory).unwrap();
+    }
+
     fn refusal_inside(failure: &io::Error) -> &StateFileRefused {
         failure
             .get_ref()
@@ -380,7 +434,7 @@ mod tests {
         fs::write(&state, "older").unwrap();
         fs::set_permissions(&state, Permissions::from_mode(LOOSE_FILE_MODE)).unwrap();
 
-        write_state_file(&state, &staging, STATE_TEXT).unwrap();
+        write_state_file(this_user(), &state, &staging, STATE_TEXT).unwrap();
 
         assert_eq!(fs::read_to_string(&state).unwrap(), STATE_TEXT);
         assert_eq!(
@@ -400,7 +454,8 @@ mod tests {
         fs::write(&victim, VICTIM_TEXT).unwrap();
         symlink(&victim, &staging).unwrap();
 
-        let failure = write_state_file(&directory.join("count"), &staging, STATE_TEXT).unwrap_err();
+        let failure = write_state_file(this_user(), &directory.join("count"), &staging, STATE_TEXT)
+            .unwrap_err();
 
         assert_eq!(failure.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(&victim).unwrap(), VICTIM_TEXT);
@@ -421,7 +476,8 @@ mod tests {
         let planted = directory.join("count.0.staging");
         fs::write(&planted, VICTIM_TEXT).unwrap();
 
-        let failure = write_state_file(&directory.join("count"), &planted, STATE_TEXT).unwrap_err();
+        let failure = write_state_file(this_user(), &directory.join("count"), &planted, STATE_TEXT)
+            .unwrap_err();
 
         assert_eq!(failure.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read_to_string(&planted).unwrap(), VICTIM_TEXT);
@@ -439,7 +495,7 @@ mod tests {
         fs::write(&victim, VICTIM_TEXT).unwrap();
         symlink(&victim, &state).unwrap();
 
-        let failure = write_state_file(&state, &staging, STATE_TEXT).unwrap_err();
+        let failure = write_state_file(this_user(), &state, &staging, STATE_TEXT).unwrap_err();
 
         assert_eq!(
             refusal_inside(&failure).to_string(),
@@ -467,7 +523,7 @@ mod tests {
         let staging = directory.join("count.0.staging");
         fs::create_dir(&state).unwrap();
 
-        let failure = write_state_file(&state, &staging, STATE_TEXT).unwrap_err();
+        let failure = write_state_file(this_user(), &state, &staging, STATE_TEXT).unwrap_err();
 
         assert_eq!(
             refusal_inside(&failure).found,

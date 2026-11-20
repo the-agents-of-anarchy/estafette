@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,8 +24,8 @@ use estafette_bridge_claude::inbox_client::{
 };
 use estafette_bridge_claude::inject::SessionNotifier;
 use estafette_bridge_claude::owned_entry::{
-    EntryFacts, ExistingDirectoryRefused, read_state_file, require_private_directory_of,
-    write_state_file,
+    EntryFacts, ExistingDirectoryRefused, ProcessUserUnknown, process_user_id, read_state_file,
+    require_private_directory_of, write_state_file,
 };
 use estafette_bridge_claude::permission_class::PermissionClass;
 use estafette_bridge_claude::session_files::{
@@ -196,7 +196,7 @@ enum CommandError {
     MissingVariable(&'static str),
     ConfigBaseUnresolvable,
     ConfigDirectoryCreationFailed { path: PathBuf, source: io::Error },
-    ConfigDirectoryOwnerUnreadable { path: PathBuf, source: io::Error },
+    ProcessUserUnknown(ProcessUserUnknown),
     SettingsUnreadable { path: PathBuf, source: io::Error },
     WorkingDirectoryUnreadable(io::Error),
     ReportUnwritable(io::Error),
@@ -220,11 +220,7 @@ impl fmt::Display for CommandError {
             Self::ConfigDirectoryCreationFailed { path, source } => {
                 write!(formatter, "cannot create {}: {source}", path.display())
             }
-            Self::ConfigDirectoryOwnerUnreadable { path, source } => write!(
-                formatter,
-                "cannot read the owner of {}: {source}",
-                path.display()
-            ),
+            Self::ProcessUserUnknown(source) => source.fmt(formatter),
             Self::SettingsUnreadable { path, source } => {
                 write!(formatter, "cannot read {}: {source}", path.display())
             }
@@ -271,17 +267,30 @@ trait Files {
     fn exists(&self, path: &Path) -> bool;
     /// Creates the directory with the private mode and its missing parents, leaving an existing directory untouched.
     fn create_private_directory(&self, path: &Path) -> io::Result<()>;
-    /// Gives the numeric id of the user owning the path.
-    fn owner_user_id(&self, path: &Path) -> io::Result<u32>;
+    /// Gives the numeric id of the user this process runs as, learned once at the entry.
+    fn user_id(&self) -> u32;
     /// Reads the facts of the entry at the path without following a symbolic link there.
     fn entry_facts(&self, path: &Path) -> io::Result<EntryFacts>;
     /// Reads a state file of the bridge as text, refusing anything but a regular file of the user.
-    fn read_state_text(&self, path: &Path, user_id: u32) -> io::Result<String>;
+    fn read_state_text(&self, path: &Path) -> io::Result<String>;
     /// Writes a state file by staging it beside the final name and renaming it over that name, refusing a final name that is a symbolic link or another user's file.
     fn write_text_atomically(&self, path: &Path, text: &str) -> io::Result<()>;
 }
 
-struct OperatingSystemFiles;
+/// The operating system's files, read and written as the user this process runs as.
+#[derive(Clone, Copy)]
+struct OperatingSystemFiles {
+    user_id: u32,
+}
+
+impl OperatingSystemFiles {
+    /// The files as the user of this process uses them.
+    fn of_this_process() -> Result<Self, CommandError> {
+        process_user_id()
+            .map(|user_id| Self { user_id })
+            .map_err(CommandError::ProcessUserUnknown)
+    }
+}
 
 static STAGING_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -333,20 +342,20 @@ impl Files for OperatingSystemFiles {
         }
     }
 
-    fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
-        Ok(fs::metadata(path)?.uid())
+    fn user_id(&self) -> u32 {
+        self.user_id
     }
 
     fn entry_facts(&self, path: &Path) -> io::Result<EntryFacts> {
         EntryFacts::at(path)
     }
 
-    fn read_state_text(&self, path: &Path, user_id: u32) -> io::Result<String> {
-        read_state_file(path, user_id)
+    fn read_state_text(&self, path: &Path) -> io::Result<String> {
+        read_state_file(path, self.user_id)
     }
 
     fn write_text_atomically(&self, path: &Path, text: &str) -> io::Result<()> {
-        write_state_file(path, &unique_staging_path(path), text)
+        write_state_file(self.user_id, path, &unique_staging_path(path), text)
     }
 }
 
@@ -379,23 +388,13 @@ fn create_config_directory(
         })
 }
 
-/// Names the runtime directory inputs, taking the user id from the owner of the config directory core resolves.
-fn runtime_inputs(
-    environment: &Environment,
-    files: &impl Files,
-) -> Result<RuntimeDirectoryInputs, CommandError> {
-    let config_directory = core_config_directory(environment)?;
-    let user_id = files.owner_user_id(&config_directory).map_err(|source| {
-        CommandError::ConfigDirectoryOwnerUnreadable {
-            path: config_directory.clone(),
-            source,
-        }
-    })?;
-    Ok(RuntimeDirectoryInputs {
+/// Names the runtime directory inputs, taking the user id from the user the process runs as.
+fn runtime_inputs(environment: &Environment, files: &impl Files) -> RuntimeDirectoryInputs {
+    RuntimeDirectoryInputs {
         xdg_runtime_dir: environment.xdg_runtime_dir.clone(),
         temporary_dir: environment.temporary_dir.clone(),
-        user_id,
-    })
+        user_id: files.user_id(),
+    }
 }
 
 /// Refuses the runtime directory when it exists and is not a directory of the user that grants nothing to group or other; a missing one holds no socket to connect to.
@@ -743,7 +742,7 @@ fn bridge_effects<F: Files>(
     let started = environment.started;
     Ok(BridgeEffects {
         own_pid: environment.own_pid,
-        runtime_inputs: runtime_inputs(environment, &files)?,
+        runtime_inputs: runtime_inputs(environment, &files),
         session_connector: UnixSocketConnector::new(socket),
         session_token,
         claude_config_directory: claude_config_directory(environment)
@@ -954,14 +953,13 @@ fn run_doctor_command(
         messaging_socket: messaging_socket_state(environment, files),
         settings_files,
         unreadable_settings: managed.unreadable,
-        runtime_inputs: runtime_inputs(environment, files)?,
+        runtime_inputs: runtime_inputs(environment, files),
     };
-    let user_id = inputs.runtime_inputs.user_id;
     let report = run_doctor(
         &inputs,
         processes,
         &|path: &Path| files.read_text(path).ok(),
-        &|path: &Path| files.read_state_text(path, user_id).ok(),
+        &|path: &Path| files.read_state_text(path).ok(),
         &|path: &Path| files.entry_facts(path),
     )
     .map_err(CommandError::ProcessTable)?;
@@ -1074,24 +1072,25 @@ fn main() -> ExitCode {
         Some(Command::Run {
             harness_pid,
             tracing,
-        }) => run_command(
-            harness_pid,
-            tracing,
-            &TraceInputs {
-                environment: &non_empty_variable,
-                draw_run_id: &secure_random_run_id,
-                create_private_directory: &|path| {
-                    OperatingSystemFiles.create_private_directory(path)
+        }) => match OperatingSystemFiles::of_this_process() {
+            Err(error) => exit_code_of(Err(error), &record),
+            Ok(files) => run_command(
+                harness_pid,
+                tracing,
+                &TraceInputs {
+                    environment: &non_empty_variable,
+                    draw_run_id: &secure_random_run_id,
+                    create_private_directory: &|path| files.create_private_directory(path),
+                    effects: TraceEffects::of_the_operating_system(trace_clocks_since(
+                        environment.started,
+                    )),
+                    bounds: TraceBounds::SPEC,
                 },
-                effects: TraceEffects::of_the_operating_system(trace_clocks_since(
-                    environment.started,
-                )),
-                bounds: TraceBounds::SPEC,
-            },
-            errors,
-            |record| bridge_effects(&environment, OperatingSystemFiles, record),
-            &PsProcessTable,
-        ),
+                errors,
+                |record| bridge_effects(&environment, files, record),
+                &PsProcessTable,
+            ),
+        },
         Some(Command::RunHelp) => {
             let outcome = writeln!(std::io::stdout(), "{}", run_help())
                 .map(|()| true)
@@ -1099,12 +1098,14 @@ fn main() -> ExitCode {
             exit_code_of(outcome, &record)
         }
         Some(Command::Doctor) => {
-            let outcome = run_doctor_command(
-                &environment,
-                &OperatingSystemFiles,
-                &PsProcessTable,
-                &mut std::io::stdout(),
-            );
+            let outcome = OperatingSystemFiles::of_this_process().and_then(|files| {
+                run_doctor_command(
+                    &environment,
+                    &files,
+                    &PsProcessTable,
+                    &mut std::io::stdout(),
+                )
+            });
             exit_code_of(outcome, &record)
         }
         None => {
@@ -1121,7 +1122,7 @@ mod tests {
     use estafette_bridge_claude::owned_entry::EntryKind;
     use std::cell::{Cell, RefCell};
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::os::unix::net::UnixStream;
 
     fn silent_record() -> RunRecord {
@@ -1370,25 +1371,7 @@ mod tests {
         assert_ne!(first, [0; RUN_ID_BYTES]);
     }
 
-    const CORE_OWNER_OF_CONFIG_BASE: u32 = 4242;
-    const CORE_OWNER_OF_HOME_CONFIG: u32 = 77;
-    const OWNER_OF_HOME: u32 = 55;
-
-    fn files_owned_as_core_reads_them() -> StandInFiles {
-        let mut files = StandInFiles::default();
-        files.owners.insert(
-            PathBuf::from("/cfg/estafette"),
-            Ok(CORE_OWNER_OF_CONFIG_BASE),
-        );
-        files.owners.insert(
-            PathBuf::from("/home/ana/.config/estafette"),
-            Ok(CORE_OWNER_OF_HOME_CONFIG),
-        );
-        files
-            .owners
-            .insert(PathBuf::from("/home/ana"), Ok(OWNER_OF_HOME));
-        files
-    }
+    const USER_THE_PROCESS_RUNS_AS: u32 = 4242;
 
     fn runtime_user_id_for(environment: Environment) -> Result<u32, String> {
         let environment = Environment {
@@ -1397,42 +1380,33 @@ mod tests {
             claude_config_dir: Some(PathBuf::from(CLAUDE_CONFIG_DIRECTORY)),
             ..environment
         };
-        bridge_effects(
-            &environment,
-            files_owned_as_core_reads_them(),
-            silent_record(),
-        )
-        .map(|effects| effects.runtime_inputs.user_id)
-        .map_err(|error| error.to_string())
+        let files = StandInFiles {
+            user: Some(USER_THE_PROCESS_RUNS_AS),
+            ..StandInFiles::default()
+        };
+        bridge_effects(&environment, files, silent_record())
+            .map(|effects| effects.runtime_inputs.user_id)
+            .map_err(|error| error.to_string())
     }
 
     #[test]
-    fn spec_3_3_the_runtime_directory_user_id_is_the_owner_of_the_config_directory_core_resolves() {
+    fn spec_3_3_the_runtime_directory_user_id_is_the_user_the_process_runs_as_whatever_directory_core_resolves()
+     {
         let with_config_base = Environment {
             xdg_config_home: Some(PathBuf::from("/cfg")),
             home: Some(PathBuf::from("/home/ana")),
             ..bare_environment()
         };
-        assert_eq!(
-            runtime_user_id_for(with_config_base),
-            Ok(CORE_OWNER_OF_CONFIG_BASE)
-        );
         let under_home = Environment {
             home: Some(PathBuf::from("/home/ana")),
             ..bare_environment()
         };
-        assert_eq!(
-            runtime_user_id_for(under_home),
-            Ok(CORE_OWNER_OF_HOME_CONFIG)
-        );
-        let without_home = Environment {
-            xdg_config_home: Some(PathBuf::from("/cfg")),
-            ..bare_environment()
-        };
-        assert_eq!(
-            runtime_user_id_for(without_home),
-            Ok(CORE_OWNER_OF_CONFIG_BASE)
-        );
+        for environment in [with_config_base, under_home] {
+            assert_eq!(
+                runtime_user_id_for(environment),
+                Ok(USER_THE_PROCESS_RUNS_AS)
+            );
+        }
     }
 
     #[test]
@@ -1459,8 +1433,12 @@ mod tests {
             xdg_config_home: Some(scratch.join("missing-base")),
             ..bare_environment()
         };
-        let effects = bridge_effects(&environment, OperatingSystemFiles, silent_record())
-            .unwrap_or_else(|error| panic!("the bridge refused to start: {error}"));
+        let effects = bridge_effects(
+            &environment,
+            OperatingSystemFiles::of_this_process().unwrap(),
+            silent_record(),
+        )
+        .unwrap_or_else(|error| panic!("the bridge refused to start: {error}"));
         let metadata = fs::metadata(&config_directory).expect("config directory created");
         assert_eq!(
             metadata.permissions().mode() & 0o777,
@@ -1494,27 +1472,6 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_3_a_config_directory_whose_owner_cannot_be_read_is_refused_naming_it() {
-        let environment = Environment {
-            messaging_socket: Some(PathBuf::from("/tmp/session.sock")),
-            messaging_token: Some("token".to_owned()),
-            claude_config_dir: Some(PathBuf::from(CLAUDE_CONFIG_DIRECTORY)),
-            xdg_config_home: Some(PathBuf::from("/cfg")),
-            ..bare_environment()
-        };
-        let mut files = StandInFiles::default();
-        files.owners.insert(
-            PathBuf::from("/cfg/estafette"),
-            Err(io::ErrorKind::PermissionDenied),
-        );
-        let outcome = bridge_effects(&environment, files, silent_record());
-        assert_eq!(
-            outcome.err().map(|error| error.to_string()),
-            Some("cannot read the owner of /cfg/estafette: permission denied".to_owned())
-        );
-    }
-
-    #[test]
     fn spec_3_12_a_bridge_with_the_socket_but_no_token_names_the_token_variable() {
         let environment = Environment {
             messaging_socket: Some(PathBuf::from("/tmp/session.sock")),
@@ -1529,7 +1486,11 @@ mod tests {
     #[test]
     fn spec_3_12_the_bridge_needs_the_session_socket_and_token_before_it_starts() {
         assert!(matches!(
-            bridge_effects(&bare_environment(), OperatingSystemFiles, silent_record()),
+            bridge_effects(
+                &bare_environment(),
+                OperatingSystemFiles::of_this_process().unwrap(),
+                silent_record()
+            ),
             Err(CommandError::MissingVariable(MESSAGING_SOCKET_VARIABLE))
         ));
     }
@@ -2178,7 +2139,8 @@ mod tests {
         let directory = scratch_directory("tail");
         let file = directory.join("transcript.jsonl");
         fs::write(&file, "first line\nsecond line\nthird line\n").expect("write");
-        let window = OperatingSystemFiles
+        let window = OperatingSystemFiles::of_this_process()
+            .unwrap()
             .read_tail_text(&file, 12)
             .expect("read tail");
         assert_eq!(window, "\nthird line\n");
@@ -2386,7 +2348,7 @@ mod tests {
         tail_reads: Mutex<Vec<PathBuf>>,
         listings: Mutex<usize>,
         writes: Arc<Mutex<Vec<(PathBuf, String)>>>,
-        owners: BTreeMap<PathBuf, Result<u32, io::ErrorKind>>,
+        user: Option<u32>,
         entries: Arc<Mutex<BTreeMap<PathBuf, EntryFacts>>>,
         entry_failures: Mutex<BTreeMap<PathBuf, io::ErrorKind>>,
         creation_failures: BTreeMap<PathBuf, io::ErrorKind>,
@@ -2443,12 +2405,8 @@ mod tests {
             Ok(())
         }
 
-        fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
-            match self.owners.get(path) {
-                Some(Ok(user_id)) => Ok(*user_id),
-                Some(Err(kind)) => Err(io::Error::from(*kind)),
-                None => Ok(1000),
-            }
+        fn user_id(&self) -> u32 {
+            self.user.unwrap_or(USER_OF_WIRING)
         }
 
         fn entry_facts(&self, path: &Path) -> io::Result<EntryFacts> {
@@ -2461,7 +2419,7 @@ mod tests {
                 .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))
         }
 
-        fn read_state_text(&self, path: &Path, _user_id: u32) -> io::Result<String> {
+        fn read_state_text(&self, path: &Path) -> io::Result<String> {
             self.text_of(path)
         }
 
@@ -2626,7 +2584,8 @@ mod tests {
         let write_repeatedly = |text: &String| -> Vec<io::Error> {
             (0..WRITES_PER_THREAD)
                 .filter_map(|_| {
-                    OperatingSystemFiles
+                    OperatingSystemFiles::of_this_process()
+                        .unwrap()
                         .write_text_atomically(&target, text)
                         .err()
                 })
@@ -2649,10 +2608,12 @@ mod tests {
     fn spec_3_12_the_operating_system_writes_the_count_by_staging_then_renaming() {
         let directory = scratch_directory("atomic");
         let target = directory.join("count");
-        OperatingSystemFiles
+        OperatingSystemFiles::of_this_process()
+            .unwrap()
             .write_text_atomically(&target, "3")
             .expect("first write");
-        OperatingSystemFiles
+        OperatingSystemFiles::of_this_process()
+            .unwrap()
             .write_text_atomically(&target, "12")
             .expect("second write");
         assert_eq!(fs::read_to_string(&target).expect("count"), "12");
