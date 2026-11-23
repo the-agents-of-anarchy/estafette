@@ -32,7 +32,6 @@ uuid = { version = "1", features = ["v7"] }
 tokio = { version = "1", features = ["rt", "macros", "net", "time", "sync", "io-util", "signal"] }
 toml = "*"
 yaml-rust2 = "*"
-libc = "0.2"
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["registry"] }
 

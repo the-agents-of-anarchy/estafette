@@ -820,7 +820,6 @@ dependencies = [
  "iroh",
  "iroh-gossip",
  "iroh-relay",
- "libc",
  "n0-future",
  "notify",
  "postcard",
