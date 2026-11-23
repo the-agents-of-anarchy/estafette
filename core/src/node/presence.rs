@@ -5223,6 +5223,14 @@ pub(super) mod tests {
         drop(scratch);
     }
 
+    /// A member's run on the standing clock whose relay map gained the relay of a host record and lost the relay of a configured host, with every event the member recorded from its start to the removal.
+    #[cfg(feature = "relay")]
+    struct RelayMapGainedAndLostARelay {
+        added_relay: RelayUrl,
+        removed_relay: RelayUrl,
+        events: Vec<RecordedEvent>,
+    }
+
     /// Appends to `taken` every event recorded until the next of that name meeting the condition, that one included, failing by name when none comes within the wait.
     #[cfg(feature = "relay")]
     async fn take_until_recorded(
@@ -5237,18 +5245,21 @@ pub(super) mod tests {
         taken.push((name, found));
     }
 
-    /// Runs a member whose configured host owns the local relay it is bound to, adds the relay of a witnessed host record, then stops the local relay and moves the clock past the relay loss wait, returning every event the member recorded from its start to the removal.
+    /// Runs a member whose configured host owns the local relay it is bound to, adds the relay of a witnessed host record, then stops the local relay and moves the clock past the relay loss wait.
     #[cfg(feature = "relay")]
-    async fn relay_map_gaining_and_losing_a_relay(scratch: &Scratch) -> Vec<RecordedEvent> {
+    async fn relay_map_gaining_and_losing_a_relay(
+        scratch: &Scratch,
+    ) -> RelayMapGainedAndLostARelay {
         let clock = StandingClock::standing_an_hour_ahead();
-        let (relay, local_relay_address) = local_relay().await;
+        let (relay, removed_relay) = local_relay().await;
+        let added_relay = relay_url(SECOND_HOST_RELAY);
         let (record, mut events) = recorded_events();
-        let endpoint = endpoint_recording_to(vec![local_relay_address.clone()], &record).await;
+        let endpoint = endpoint_recording_to(vec![removed_relay.clone()], &record).await;
         let member_endpoint = endpoint.endpoint().clone();
         let starting = tokio::spawn(start_member(
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
                 .with_monotonic(clock.monotonic())
-                .with_host_relays(&[(HOST_SEED, local_relay_address.as_str())])
+                .with_host_relays(&[(HOST_SEED, removed_relay.as_str())])
                 .with_report(record),
             endpoint,
             (
@@ -5281,7 +5292,11 @@ pub(super) mod tests {
         witness
             .broadcast_as(
                 SECOND_HOST_SEED,
-                infrastructure_of(SECOND_HOST_SEED, SECOND_HOST_RELAY, wall_clock_ms() / 1000),
+                infrastructure_of(
+                    SECOND_HOST_SEED,
+                    added_relay.as_str(),
+                    wall_clock_ms() / 1000,
+                ),
             )
             .await;
         take_until_recorded(
@@ -5324,7 +5339,11 @@ pub(super) mod tests {
             RELAY_LOSS_REMOVAL_SLACK,
         )
         .await;
-        recorded
+        RelayMapGainedAndLostARelay {
+            added_relay,
+            removed_relay,
+            events: recorded,
+        }
     }
 
     #[cfg(feature = "relay")]
@@ -5333,7 +5352,8 @@ pub(super) mod tests {
     {
         let scratch = Scratch::new("loss-host").await;
 
-        let events = relay_map_gaining_and_losing_a_relay(&scratch).await;
+        let RelayMapGainedAndLostARelay { events, .. } =
+            relay_map_gaining_and_losing_a_relay(&scratch).await;
 
         let removal = events
             .iter()
@@ -5349,6 +5369,43 @@ pub(super) mod tests {
             )),
             "{removal:?}"
         );
+        drop(scratch);
+    }
+
+    #[cfg(feature = "relay")]
+    #[tokio::test]
+    async fn observability_decision_6_no_event_of_a_run_that_adds_and_removes_a_relay_writes_the_relay_host_in_clear()
+     {
+        let scratch = Scratch::new("loss-clear").await;
+
+        let RelayMapGainedAndLostARelay {
+            added_relay,
+            removed_relay,
+            events,
+        } = relay_map_gaining_and_losing_a_relay(&scratch).await;
+
+        let edits: Vec<&serde_json::Value> = events
+            .iter()
+            .filter(|(name, _fields)| *name == RELAY_MAP_EDITED)
+            .filter_map(|(_name, fields)| fields.iter().find(|(key, _value)| *key == "edit"))
+            .map(|(_key, value)| value)
+            .collect();
+        assert_eq!(
+            edits,
+            [
+                &serde_json::Value::from("added"),
+                &serde_json::Value::from("removed")
+            ]
+        );
+        for relay in [&added_relay, &removed_relay] {
+            let host = relay.host_str().unwrap();
+            for (name, fields) in &events {
+                assert!(
+                    !format!("{fields:?}").contains(host),
+                    "{name} writes the relay host {host} in clear: {fields:?}"
+                );
+            }
+        }
         drop(scratch);
     }
 
