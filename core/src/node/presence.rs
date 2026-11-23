@@ -1610,14 +1610,25 @@ impl PresenceLoop {
 
     /// Announces a changed address now, or once the re-announce interval since the last Presence has passed.
     async fn reconsider_own_address(&mut self) {
-        match self
-            .announcer
-            .reannounce_step(&self.state.own_addr(), self.monotonic.now())
-        {
+        let now = self.monotonic.now();
+        match self.announcer.reannounce_step(&self.state.own_addr(), now) {
             ReannounceStep::Unchanged => {}
             ReannounceStep::AnnounceNow => self.announce_presence().await,
-            ReannounceStep::AnnounceAt(due) => self.reannounce_due = Some(due),
+            ReannounceStep::AnnounceAt(due) => self.put_off_announcement_until(due, now),
         }
+    }
+
+    /// Takes the re-announce wake to `due`, recording the put-off once, when it moves the wake.
+    fn put_off_announcement_until(&mut self, due: Instant, now: Instant) {
+        if self.reannounce_due != Some(due) {
+            (self.report)(
+                crate::event::GossipEvent::PresenceDeferred {
+                    deferred_ms: milliseconds_between(now, due),
+                }
+                .into(),
+            );
+        }
+        self.reannounce_due = Some(due);
     }
 
     /// Removes every home relay still disconnected the relay-loss wait after it was lost.
@@ -1642,6 +1653,11 @@ pub const fn presence_request(requester: wire::PublicKey, seq: u64) -> Payload {
         mac: ZERO_MAC,
         sig: ZERO_SIGNATURE,
     })
+}
+
+/// The whole milliseconds from `earlier` to `later`, none when `later` is not after `earlier`.
+fn milliseconds_between(earlier: Instant, later: Instant) -> u64 {
+    u64::try_from(later.saturating_duration_since(earlier).as_millis()).unwrap_or(u64::MAX)
 }
 
 /// When a node of any kind next records its counters after `now`, so its events file is written at least every state snapshot interval.
@@ -4340,7 +4356,9 @@ pub(super) mod tests {
     }
 
     pub(in crate::node) const PROPERTY_CASES: u64 = 500;
-    const SPEC_REANNOUNCE_INTERVAL: Duration = Duration::from_millis(2000);
+    const SPEC_REANNOUNCE_INTERVAL_MILLIS: u64 = 2000;
+    const SPEC_REANNOUNCE_INTERVAL: Duration =
+        Duration::from_millis(SPEC_REANNOUNCE_INTERVAL_MILLIS);
     pub(in crate::node) const SPEC_RELAY_LOSS_WAIT: Duration = Duration::from_millis(500);
     pub(in crate::node) const RELAY_POOL: [&str; 3] = [
         "https://relay-a.estafette.invalid/",
@@ -4918,6 +4936,8 @@ pub(super) mod tests {
     const HOME_RELAY: &str = "transport.home_relay";
     #[cfg(feature = "relay")]
     const RELAY_MAP_EDITED: &str = "transport.relay_map_edited";
+    #[cfg(feature = "relay")]
+    const PRESENCE_DEFERRED: &str = "gossip.presence_deferred";
     /// The longest a member takes to announce once its handed clock reads the end of the reannounce interval, which the runtime's timer would never reach on a clock an hour ahead.
     #[cfg(feature = "relay")]
     const ANNOUNCED_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
@@ -5149,13 +5169,22 @@ pub(super) mod tests {
         drop(scratch);
     }
 
+    /// A member alone on the standing clock whose init is done and whose Presence went out once a client attached to its inbox, with the local relay it may gain and the events it records.
     #[cfg(feature = "relay")]
-    #[tokio::test]
-    async fn spec_3_8_an_address_changed_inside_the_reannounce_interval_is_announced_once_the_handed_clock_reads_its_end()
-     {
-        let scratch = Scratch::new("reannounce-on-clock").await;
-        let clock = StandingClock::standing_an_hour_ahead();
-        let (_relay, relay_address) = local_relay().await;
+    struct AnnouncedMember {
+        member: Member,
+        _client: tokio::net::UnixStream,
+        relay_address: RelayUrl,
+        events: UnboundedReceiver<RecordedEvent>,
+        _relay: iroh_relay::server::Server,
+    }
+
+    #[cfg(feature = "relay")]
+    async fn member_announced_on_the_standing_clock(
+        scratch: &Scratch,
+        clock: &StandingClock,
+    ) -> AnnouncedMember {
+        let (relay, relay_address) = local_relay().await;
         let (record, mut events) = recorded_events();
         let endpoint = endpoint_recording_to(Vec::new(), &record).await;
         let (member, ()) = tokio::join!(
@@ -5183,7 +5212,7 @@ pub(super) mod tests {
                 .await;
             }
         );
-        let _client = tokio::net::UnixStream::connect(&member.inbox_path)
+        let client = tokio::net::UnixStream::connect(&member.inbox_path)
             .await
             .unwrap();
         next_recorded_meeting(
@@ -5193,6 +5222,28 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await;
+        AnnouncedMember {
+            member,
+            _client: client,
+            relay_address,
+            events,
+            _relay: relay,
+        }
+    }
+
+    #[cfg(feature = "relay")]
+    #[tokio::test]
+    async fn spec_3_8_an_address_changed_inside_the_reannounce_interval_is_announced_once_the_handed_clock_reads_its_end()
+     {
+        let scratch = Scratch::new("reannounce-on-clock").await;
+        let clock = StandingClock::standing_an_hour_ahead();
+        let AnnouncedMember {
+            member,
+            relay_address,
+            mut events,
+            _client,
+            _relay,
+        } = member_announced_on_the_standing_clock(&scratch, &clock).await;
         member
             .endpoint
             .insert_relay(
@@ -5222,6 +5273,66 @@ pub(super) mod tests {
         assert_eq!(
             broadcasts_of(&before_the_interval_ends, PRESENCE_KIND),
             Vec::<crate::event::EventFields>::new()
+        );
+        drop(scratch);
+    }
+
+    #[cfg(feature = "relay")]
+    #[tokio::test]
+    async fn spec_3_8_an_announcement_put_off_by_the_reannounce_interval_is_recorded_once_with_the_milliseconds_it_is_put_off()
+     {
+        let scratch = Scratch::new("deferral-record").await;
+        let clock = StandingClock::standing_an_hour_ahead();
+        let AnnouncedMember {
+            member,
+            relay_address,
+            mut events,
+            _client,
+            _relay,
+        } = member_announced_on_the_standing_clock(&scratch, &clock).await;
+
+        member
+            .endpoint
+            .insert_relay(
+                relay_address.clone(),
+                Arc::new(iroh::RelayConfig::from(relay_address)),
+            )
+            .await;
+        let first_deferral = next_recorded_meeting(
+            &mut events,
+            PRESENCE_DEFERRED,
+            |_fields| true,
+            HOME_RELAY_STATUS_WITHIN,
+        )
+        .await;
+        clock
+            .asked_to_wake(
+                "the end of the reannounce interval",
+                clock.now().checked_add(SPEC_REANNOUNCE_INTERVAL).unwrap(),
+            )
+            .await;
+        clock.move_forward(SPEC_REANNOUNCE_INTERVAL);
+        let (recorded_before_the_announcement, _announcement) = recorded_until(
+            &mut events,
+            PAYLOAD_BROADCAST,
+            |fields| fields.contains(&(KIND, serde_json::Value::from(PRESENCE_KIND))),
+            ANNOUNCED_ONCE_THE_CLOCK_READS_IT_WITHIN,
+        )
+        .await;
+
+        assert_eq!(
+            first_deferral,
+            [(
+                "deferred_ms",
+                serde_json::Value::from(SPEC_REANNOUNCE_INTERVAL_MILLIS)
+            )]
+        );
+        assert_eq!(
+            recorded_before_the_announcement
+                .iter()
+                .filter(|(name, _fields)| *name == PRESENCE_DEFERRED)
+                .count(),
+            0
         );
         drop(scratch);
     }

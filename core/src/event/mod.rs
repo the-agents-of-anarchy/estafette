@@ -236,7 +236,7 @@ mod tests {
         Name::ALL.iter().map(|name| name.as_str())
     }
 
-    const PINNED_EVENT_NAMES: [&str; 68] = [
+    const PINNED_EVENT_NAMES: [&str; 69] = [
         "process.command_failed",
         "process.network_created",
         "process.clock_before_unix_epoch",
@@ -268,6 +268,7 @@ mod tests {
         "gossip.payload_accepted",
         "gossip.payload_dropped",
         "gossip.payload_broadcast",
+        "gossip.presence_deferred",
         "peers.entry_created",
         "peers.entry_changed",
         "peers.entry_removed",

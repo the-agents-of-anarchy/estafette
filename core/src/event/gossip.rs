@@ -13,6 +13,7 @@ const HANDLE_FIELD: &str = "handle";
 const SEQ_FIELD: &str = "seq";
 const TS_FIELD: &str = "ts";
 const RULE_FIELD: &str = "rule";
+const DEFERRED_FIELD: &str = "deferred_ms";
 
 super::event_names! {
     /// The names of the gossip events.
@@ -27,6 +28,7 @@ super::event_names! {
         PayloadAccepted => "gossip.payload_accepted",
         PayloadDropped => "gossip.payload_dropped",
         PayloadBroadcast => "gossip.payload_broadcast",
+        PresenceDeferred => "gossip.presence_deferred",
     }
 }
 
@@ -160,6 +162,8 @@ pub enum GossipEvent {
     },
     /// The node broadcast a payload on the topic.
     PayloadBroadcast(SentPayload),
+    /// The node put off the Presence it owes for a changed address until the re-announce interval ends, by this many milliseconds of its monotonic clock.
+    PresenceDeferred { deferred_ms: u64 },
 }
 
 impl AreaEvent for GossipEvent {
@@ -177,6 +181,7 @@ impl AreaEvent for GossipEvent {
             Self::PayloadAccepted(_) => GossipEventName::PayloadAccepted,
             Self::PayloadDropped { .. } => GossipEventName::PayloadDropped,
             Self::PayloadBroadcast(_) => GossipEventName::PayloadBroadcast,
+            Self::PresenceDeferred { .. } => GossipEventName::PresenceDeferred,
         }
     }
 
@@ -195,7 +200,8 @@ impl AreaEvent for GossipEvent {
             | Self::NeighborDown(_)
             | Self::PayloadAccepted(_)
             | Self::PayloadDropped { .. }
-            | Self::PayloadBroadcast(_) => None,
+            | Self::PayloadBroadcast(_)
+            | Self::PresenceDeferred { .. } => None,
         }
     }
 
@@ -214,6 +220,9 @@ impl AreaEvent for GossipEvent {
                     .map_or_else(Vec::new, ReceivedPayload::fields);
                 fields.push((RULE_FIELD, Value::from(rule_name(*rule))));
                 fields
+            }
+            Self::PresenceDeferred { deferred_ms } => {
+                vec![(DEFERRED_FIELD, Value::from(*deferred_ms))]
             }
             Self::PayloadBroadcast(sent) => vec![
                 (KIND_FIELD, Value::from(kind_name(sent.kind))),
@@ -242,7 +251,7 @@ mod tests {
 
     #[test]
     fn observability_decision_3_the_topic_and_payload_events_add_no_line_to_standard_error() {
-        let events: [Event; 6] = [
+        let events: [Event; 7] = [
             GossipEvent::TopicJoined.into(),
             GossipEvent::NeighborUp(ShortId::from(&PEER_ID)).into(),
             GossipEvent::NeighborDown(ShortId::from(&PEER_ID)).into(),
@@ -253,6 +262,7 @@ mod tests {
             }
             .into(),
             GossipEvent::PayloadBroadcast(facts().into()).into(),
+            GossipEvent::PresenceDeferred { deferred_ms: 2000 }.into(),
         ];
 
         for event in events {
