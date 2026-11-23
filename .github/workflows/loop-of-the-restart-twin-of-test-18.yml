@@ -13,55 +13,43 @@ jobs:
     loop:
         name: ${{ matrix.mode }}-${{ matrix.shard }}
         runs-on: ubuntu-latest
-        timeout-minutes: 150
+        timeout-minutes: 200
         strategy:
             fail-fast: false
             matrix:
                 include:
-                    - { mode: single, shard: 1, iterations: 120 }
-                    - { mode: single, shard: 2, iterations: 120 }
-                    - { mode: single, shard: 3, iterations: 120 }
-                    - { mode: single, shard: 4, iterations: 120 }
-                    - { mode: single, shard: 5, iterations: 120 }
-                    - { mode: single, shard: 6, iterations: 120 }
-                    - { mode: single, shard: 7, iterations: 120 }
-                    - { mode: single, shard: 8, iterations: 120 }
-                    - { mode: single, shard: 9, iterations: 120 }
-                    - { mode: single, shard: 10, iterations: 120 }
-                    - { mode: single, shard: 11, iterations: 120 }
-                    - { mode: single, shard: 12, iterations: 120 }
-                    - { mode: single, shard: 13, iterations: 120 }
-                    - { mode: single, shard: 14, iterations: 120 }
-                    - { mode: single, shard: 15, iterations: 120 }
-                    - { mode: single, shard: 16, iterations: 120 }
-                    - { mode: single, shard: 17, iterations: 120 }
-                    - { mode: single, shard: 18, iterations: 120 }
-                    - { mode: single, shard: 19, iterations: 120 }
-                    - { mode: single, shard: 20, iterations: 120 }
-                    - { mode: whole, shard: 1, iterations: 6 }
-                    - { mode: whole, shard: 2, iterations: 6 }
-                    - { mode: whole, shard: 3, iterations: 6 }
-                    - { mode: whole, shard: 4, iterations: 6 }
-                    - { mode: whole, shard: 5, iterations: 6 }
-                    - { mode: whole, shard: 6, iterations: 6 }
-                    - { mode: whole, shard: 7, iterations: 6 }
-                    - { mode: whole, shard: 8, iterations: 6 }
-                    - { mode: whole, shard: 9, iterations: 6 }
-                    - { mode: whole, shard: 10, iterations: 6 }
-                    - { mode: whole, shard: 11, iterations: 6 }
-                    - { mode: whole, shard: 12, iterations: 6 }
+                    - { mode: workspace, shard: 1, iterations: 8 }
+                    - { mode: workspace, shard: 2, iterations: 8 }
+                    - { mode: workspace, shard: 3, iterations: 8 }
+                    - { mode: workspace, shard: 4, iterations: 8 }
+                    - { mode: workspace, shard: 5, iterations: 8 }
+                    - { mode: workspace, shard: 6, iterations: 8 }
+                    - { mode: workspace, shard: 7, iterations: 8 }
+                    - { mode: workspace, shard: 8, iterations: 8 }
+                    - { mode: workspace, shard: 9, iterations: 8 }
+                    - { mode: workspace, shard: 10, iterations: 8 }
+                    - { mode: workspace, shard: 11, iterations: 8 }
+                    - { mode: workspace, shard: 12, iterations: 8 }
+                    - { mode: workspace, shard: 13, iterations: 8 }
+                    - { mode: workspace, shard: 14, iterations: 8 }
+                    - { mode: workspace, shard: 15, iterations: 8 }
+                    - { mode: workspace, shard: 16, iterations: 8 }
+                    - { mode: workspace, shard: 17, iterations: 8 }
+                    - { mode: workspace, shard: 18, iterations: 8 }
+                    - { mode: workspace, shard: 19, iterations: 8 }
+                    - { mode: workspace, shard: 20, iterations: 8 }
         env:
             ITERATIONS: ${{ matrix.iterations }}
             MODE: ${{ matrix.mode }}
             SHARD: ${{ matrix.shard }}
             TEST_NAME: spec_3_15_restart_and_departure_on_one_machine::spec_3_15_test_18_a_killed_member_restarted_with_its_card_is_delivered_to_within_1_s_of_its_new_presence_while_the_sender_still_holds_a_gossip_connection_to_its_killed_process
-            WALL_BUDGET_MINUTES: 130
+            WALL_BUDGET_MINUTES: 170
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
             - run: rustup toolchain install
             - run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
             - name: Build the test target once, with the features the gate uses
-              run: cargo test --workspace --features estafette/relay --test acceptance_one_machine --no-run
+              run: cargo test --workspace --features estafette/relay --no-run
             - name: Loop
               id: loop
               shell: bash
@@ -80,11 +68,7 @@ jobs:
                       kept="$RUNNER_TEMP/kept/$i"
                       mkdir -p "$kept"
                       log="$RUNNER_TEMP/iteration-$i.log"
-                      if [ "$MODE" = single ]; then
-                          ESTAFETTE_ACCEPTANCE_RUN_RECORDS="$kept" cargo test --workspace --features estafette/relay --test acceptance_one_machine -- --exact "$TEST_NAME" > "$log" 2>&1
-                      else
-                          ESTAFETTE_ACCEPTANCE_RUN_RECORDS="$kept" cargo test --workspace --features estafette/relay --test acceptance_one_machine > "$log" 2>&1
-                      fi
+                      ESTAFETTE_ACCEPTANCE_RUN_RECORDS="$kept" cargo test --workspace --features estafette/relay > "$log" 2>&1
                       code=$?
                       iterations_run=$i
                       echo "iteration $i exit $code"
@@ -100,11 +84,9 @@ jobs:
                       cp "$RUNNER_TEMP/iteration-$i.log" "$out/full-output.log"
                       kept="$RUNNER_TEMP/kept/$i"
                       # The failing tests' names as the harness printed them; a kept directory is the test's name with each colon a hyphen.
-                      if [ "$MODE" = single ]; then
-                          failing_names="$TEST_NAME"
-                      else
-                          failing_names="$(sed -n 's/^test \(.*\) \.\.\. FAILED$/\1/p' "$RUNNER_TEMP/iteration-$i.log")"
-                      fi
+                      failing_names="$(sed -n 's/^test \(.*\) \.\.\. FAILED$/\1/p' "$RUNNER_TEMP/iteration-$i.log")"
+                      echo "FAILED TESTS:"
+                      printf '%s\n' "$failing_names"
                       printf '%s\n' "$failing_names" > "$out/failing-tests.txt"
                       while IFS= read -r name; do
                           [ -n "$name" ] || continue
