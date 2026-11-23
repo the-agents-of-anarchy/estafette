@@ -89,9 +89,6 @@ pub enum ObserverCommand {
     ShowPeers {
         /// The network whose members to list
         network: Handle,
-        /// The cards directory, replacing the default one
-        #[arg(long)]
-        cards_dir: Option<PathBuf>,
         #[command(flatten)]
         debug: DebugArgs,
     },
@@ -100,9 +97,6 @@ pub enum ObserverCommand {
     Tail {
         /// The network whose gossip to print
         network: Handle,
-        /// The cards directory, replacing the default one
-        #[arg(long)]
-        cards_dir: Option<PathBuf>,
         #[command(flatten)]
         debug: DebugArgs,
     },
@@ -143,13 +137,12 @@ impl ObserverCommand {
         }
     }
 
-    /// The cards directory override the command was given.
+    /// The cards directory override the command was given, none for the commands that read no card.
     #[must_use]
     pub fn cards_dir(&self) -> Option<PathBuf> {
         match self {
-            Self::ShowPeers { cards_dir, .. }
-            | Self::Tail { cards_dir, .. }
-            | Self::TestSend { cards_dir, .. } => cards_dir.clone(),
+            Self::ShowPeers { .. } | Self::Tail { .. } => None,
+            Self::TestSend { cards_dir, .. } => cards_dir.clone(),
         }
     }
 
@@ -1485,7 +1478,6 @@ mod tests {
         run(
             &ObserverCommand::ShowPeers {
                 network: NETWORK_NAME.parse().unwrap(),
-                cards_dir: None,
                 debug: DebugArgs::default(),
             },
             &lab.directories,
@@ -1588,7 +1580,6 @@ mod tests {
         );
         let tail = ObserverCommand::Tail {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
             debug: DebugArgs::default(),
         };
 
@@ -1662,7 +1653,6 @@ mod tests {
         let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
         let tail = ObserverCommand::Tail {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
             debug: DebugArgs::default(),
         };
 
@@ -2100,7 +2090,6 @@ mod tests {
         let mut output = Vec::new();
         let show_peers = ObserverCommand::ShowPeers {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
             debug: DebugArgs::default(),
         };
 
@@ -2141,7 +2130,6 @@ mod tests {
         let (record, mut recorded) = recorded_events();
         let show_peers = ObserverCommand::ShowPeers {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
             debug: DebugArgs::default(),
         };
 
@@ -2247,7 +2235,6 @@ mod tests {
         lab.write_network_config(&[NEIGHBOR_SEED]);
         let show_peers = ObserverCommand::ShowPeers {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
             debug: DebugArgs::default(),
         };
         let (record, mut recorded) = recorded_events();
@@ -2455,7 +2442,6 @@ mod tests {
         let wanted_lines = whole_payload_lines();
         let tail = ObserverCommand::Tail {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
             debug: DebugArgs::default(),
         };
 
@@ -2591,7 +2577,6 @@ mod tests {
         effects.report = record;
         let tail = ObserverCommand::Tail {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
             debug: DebugArgs::default(),
         };
         let expected = vec![
@@ -2679,7 +2664,6 @@ mod tests {
         effects.report = record;
         let tail = ObserverCommand::Tail {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
             debug: DebugArgs::default(),
         };
         let mut printed = Vec::new();
@@ -2743,7 +2727,6 @@ mod tests {
         effects.monotonic = clock.monotonic();
         let tail = ObserverCommand::Tail {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
             debug: DebugArgs::default(),
         };
         let mut printed = Vec::new();
@@ -2840,7 +2823,6 @@ mod tests {
         effects.monotonic = clock.monotonic();
         let show_peers = ObserverCommand::ShowPeers {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
             debug: DebugArgs::default(),
         };
         let mut printed = Vec::new();
@@ -2954,7 +2936,6 @@ mod tests {
         effects.monotonic = clock_moving_past_any_silence_at_each_reading();
         let tail = ObserverCommand::Tail {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
             debug: DebugArgs::default(),
         };
         let mut tail_output = Vec::new();
@@ -3571,7 +3552,6 @@ mod tests {
         let mut output = Vec::new();
         let show_peers = ObserverCommand::ShowPeers {
             network: NETWORK_NAME.parse().unwrap(),
-            cards_dir: None,
             debug: DebugArgs::default(),
         };
 

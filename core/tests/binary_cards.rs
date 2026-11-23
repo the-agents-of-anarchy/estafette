@@ -555,13 +555,35 @@ fn binary_test_send_creates_its_operator_card_in_the_cards_dir_of_spec_3_3() {
     );
 }
 
+const COMMANDS_THAT_READ_CARDS: [&str; 2] = ["test-send", "doctor"];
+const COMMANDS_THAT_READ_NO_CARD: [&str; 2] = ["show-peers", "tail"];
+
 #[test]
-fn binary_help_of_every_observer_command_names_the_cards_dir_flag_of_spec_3_3() {
+fn binary_help_names_the_cards_dir_flag_of_the_commands_that_read_cards_alone_of_spec_3_3() {
     let root = common::scratch_root(SCRATCH_PREFIX, "observer_help").unwrap();
-    for subcommand in ["show-peers", "tail", "test-send", "doctor"] {
+    for subcommand in COMMANDS_THAT_READ_CARDS {
         let output = run_binary(&root, &[subcommand, "--help"]).unwrap();
         let help = String::from_utf8(output.stdout).unwrap();
         assert!(help.contains("--cards-dir"), "{subcommand}: {help}");
+    }
+    for subcommand in COMMANDS_THAT_READ_NO_CARD {
+        let output = run_binary(&root, &[subcommand, "--help"]).unwrap();
+        let help = String::from_utf8(output.stdout).unwrap();
+        assert!(!help.contains("cards-dir"), "{subcommand}: {help}");
+    }
+}
+
+#[test]
+fn binary_show_peers_and_tail_refuse_the_cards_dir_flag_as_a_usage_error_of_spec_3_3() {
+    let root = common::scratch_root(SCRATCH_PREFIX, "observer_flag_refused").unwrap();
+    for subcommand in COMMANDS_THAT_READ_NO_CARD {
+        let output = run_binary(&root, &[subcommand, "acme", "--cards-dir", "/nowhere"]).unwrap();
+        assert_eq!(output.status.code(), Some(USAGE_ERROR_CODE), "{subcommand}");
+        assert!(
+            stderr_text(&output).contains("unexpected argument '--cards-dir'"),
+            "{subcommand}: {}",
+            stderr_text(&output)
+        );
     }
 }
 
