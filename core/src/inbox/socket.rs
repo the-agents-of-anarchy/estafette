@@ -302,7 +302,7 @@ fn remove_stale_sockets(
         }
     }
     for path in stale_sockets {
-        fs::remove_file(&path).map_err(clear_failure)?;
+        remove_file_if_present(&path).map_err(clear_failure)?;
     }
     Ok(())
 }
@@ -699,6 +699,64 @@ mod tests {
         assert!(live.exists());
         assert!(unrelated.iter().all(|path| path.exists()));
         UnixStream::connect(&own).await.unwrap();
+    }
+
+    struct TableWhoseQueryLetsAnotherStartRemoveTheSocket {
+        socket_removed_by_the_other_start: PathBuf,
+    }
+
+    impl ProcessTable for TableWhoseQueryLetsAnotherStartRemoveTheSocket {
+        fn is_running(&self, _process_id: u32) -> io::Result<bool> {
+            fs::remove_file(&self.socket_removed_by_the_other_start)?;
+            Ok(false)
+        }
+    }
+
+    #[tokio::test]
+    async fn spec_3_3_start_goes_on_and_binds_when_another_start_already_removed_the_stale_socket()
+    {
+        const DEAD: u32 = 7_001;
+        let directories = scratch_directories("stale-gone");
+        let dead = directories.inbox_socket_file(DEAD);
+        fs::write(&dead, b"").unwrap();
+        let table = TableWhoseQueryLetsAnotherStartRemoveTheSocket {
+            socket_removed_by_the_other_start: dead.clone(),
+        };
+        let _socket =
+            InboxSocket::start(&directories, OWN_PROCESS_ID, &table, |_failure| {}).unwrap();
+        assert!(!dead.exists());
+        UnixStream::connect(directories.inbox_socket_file(OWN_PROCESS_ID))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn spec_3_3_start_refuses_with_the_clear_failure_when_a_stale_socket_cannot_be_removed() {
+        const DEAD: u32 = 7_001;
+        let directories = scratch_directories("stale-dir");
+        let runtime = directories.runtime_directory().to_path_buf();
+        let unremovable = directories.inbox_socket_file(DEAD);
+        fs::create_dir(&unremovable).unwrap();
+        let refusal = InboxSocket::start(
+            &directories,
+            OWN_PROCESS_ID,
+            &RunningProcesses(vec![OWN_PROCESS_ID]),
+            |_failure| {},
+        )
+        .err()
+        .unwrap();
+        let InboxSocketError::ClearStaleSockets { path, source } = &refusal else {
+            panic!("expected ClearStaleSockets, got {refusal:?}");
+        };
+        assert_eq!(path, &runtime);
+        assert_eq!(
+            refusal.to_string(),
+            format!(
+                "cannot clear stale sockets in {}: {source}",
+                runtime.display()
+            )
+        );
+        assert!(unremovable.exists());
     }
 
     struct FailingAcceptor(io::ErrorKind);
