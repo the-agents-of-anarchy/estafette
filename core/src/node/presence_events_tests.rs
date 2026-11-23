@@ -25,10 +25,12 @@ use crate::net::direct::{
 use crate::net::endpoint::{DIRECT_ALPN, LocationHash, TransportRecord};
 use crate::net::gossip::{GossipEvent, NetworkTopic};
 use crate::node::addresses::wire_addr;
-use crate::payload::{ZERO_MAC, ZERO_SIGNATURE, seal_payload, seal_response, sealed_by_any_key};
+use crate::payload::{
+    ZERO_MAC, ZERO_SIGNATURE, open_request, seal_payload, seal_response, sealed_by_any_key,
+};
 use crate::wire::{
-    Addr, Departure, Introduce, Payload, Presence, PresenceRequest, ProbeAck, Response,
-    Unreachable, Version, WIRE_LIMIT_BYTES,
+    Addr, Departure, Introduce, IntroduceAck, Payload, Presence, PresenceRequest, ProbeAck,
+    Request, Response, Unreachable, Version, WIRE_LIMIT_BYTES,
 };
 
 const EVENT_WAIT: Duration = Duration::from_secs(10);
@@ -1440,17 +1442,42 @@ enum DirectAnswer {
     Reset,
 }
 
+/// What a scripted peer answers to a Probe and to any other direct request.
+#[derive(Debug, Clone)]
+struct ScriptedAnswers {
+    probe: DirectAnswer,
+    other: DirectAnswer,
+}
+
+impl ScriptedAnswers {
+    /// The same answer to every request.
+    fn to_every_request(answer: DirectAnswer) -> Self {
+        Self {
+            probe: answer.clone(),
+            other: answer,
+        }
+    }
+
+    /// The answer to the request, which the handler opens to tell a Probe from the rest.
+    fn to(&self, request: &[u8]) -> DirectAnswer {
+        match open_request(&keys(), request) {
+            Ok(Request::Probe(_)) => self.probe.clone(),
+            Ok(Request::Message(_) | Request::Introduce(_)) | Err(_) => self.other.clone(),
+        }
+    }
+}
+
 /// A direct protocol handler that reads each request whole and answers as scripted.
 #[derive(Debug)]
-struct ScriptedDirectHost(DirectAnswer);
+struct ScriptedDirectHost(ScriptedAnswers);
 
 impl ProtocolHandler for ScriptedDirectHost {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         while let Ok((mut send, mut recv)) = connection.accept_bi().await {
-            let answer = self.0.clone();
+            let answers = self.0.clone();
             tokio::spawn(async move {
-                recv.read_to_end(WIRE_LIMIT_BYTES).await.unwrap();
-                match answer {
+                let request = recv.read_to_end(WIRE_LIMIT_BYTES).await.unwrap();
+                match answers.to(&request) {
                     DirectAnswer::Reply(bytes) => {
                         send.write_all(&bytes).await.unwrap();
                         send.finish().unwrap();
@@ -1466,19 +1493,24 @@ impl ProtocolHandler for ScriptedDirectHost {
     }
 }
 
-/// A peer that joins the topic through the member and answers every direct request as scripted, kept alive by its router.
+/// A peer that joins the topic through the member and answers its direct requests as scripted, kept alive by its router.
 struct ScriptedWitness {
     _router: Router,
-    _topic: NetworkTopic,
+    topic: Option<NetworkTopic>,
 }
 
 impl ScriptedWitness {
-    async fn joined_through(through: &iroh::Endpoint, answer: DirectAnswer) -> Self {
+    /// Joins through the endpoint, answering as the scripts say, which are given the address the peer is reached at.
+    async fn joined_through(
+        through: &iroh::Endpoint,
+        answers: impl FnOnce(Addr) -> ScriptedAnswers,
+    ) -> Self {
         let node_endpoint = bind(WITNESS_SEED).await;
         node_endpoint.replace_address(through.addr());
         let gossip = Gossip::builder().spawn(node_endpoint.endpoint().clone());
+        let own_address = wire_addr(&node_endpoint.endpoint().addr());
         let router = Router::builder(node_endpoint.endpoint().clone())
-            .accept(DIRECT_ALPN, ScriptedDirectHost(answer))
+            .accept(DIRECT_ALPN, ScriptedDirectHost(answers(own_address)))
             .accept(GOSSIP_ALPN, gossip.clone())
             .spawn();
         let mut topic = NetworkTopic::join(
@@ -1497,8 +1529,13 @@ impl ScriptedWitness {
         .unwrap();
         Self {
             _router: router,
-            _topic: topic,
+            topic: Some(topic),
         }
+    }
+
+    /// Leaves the topic while still answering direct requests, so its neighbors see it go.
+    fn leaves_the_topic(&mut self) {
+        self.topic = None;
     }
 }
 
@@ -1514,7 +1551,10 @@ async fn contact_failed_by_introduce_answered(
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
     )
     .await;
-    let _witness = ScriptedWitness::joined_through(&endpoint, answer).await;
+    let _witness = ScriptedWitness::joined_through(&endpoint, |_address| {
+        ScriptedAnswers::to_every_request(answer)
+    })
+    .await;
     let _member = starting.await.unwrap();
 
     let fields = recorded
@@ -1529,6 +1569,64 @@ fn contact_failed_fields(error_word: &str) -> EventFields {
         ("peer", short_id(WITNESS_SEED)),
         ("error", Value::from(error_word)),
     ]
+}
+
+const WITNESS_PUBLIC: &[u8] = br#"{"role":"witness"}"#;
+const NONCE_THE_MEMBER_DID_NOT_SEND: [u8; 16] = [0; 16];
+
+#[tokio::test]
+async fn observability_decision_9_a_probe_answered_with_another_nonce_is_recorded_with_the_word_probe_nonce_mismatch()
+ {
+    let scratch = Scratch::new("ev-cf-prb").await;
+    let (report, mut recorded) = recording();
+    let (endpoint, starting) = spawn_member(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
+    )
+    .await;
+    let mut witness = ScriptedWitness::joined_through(&endpoint, |address| {
+        let introduce_ack = seal_response(
+            &keys(),
+            Response::IntroduceAck(IntroduceAck {
+                v: Version::CURRENT,
+                handle: Some(WITNESS_HANDLE.to_owned()),
+                public: WITNESS_PUBLIC.to_vec(),
+                attached: false,
+                addr: address,
+                mac: ZERO_MAC,
+            }),
+        )
+        .unwrap();
+        let probe_ack = seal_response(
+            &keys(),
+            Response::ProbeAck(ProbeAck {
+                v: Version::CURRENT,
+                nonce: NONCE_THE_MEMBER_DID_NOT_SEND,
+                attached: false,
+                mac: ZERO_MAC,
+            }),
+        )
+        .unwrap();
+        ScriptedAnswers {
+            other: DirectAnswer::Reply(introduce_ack),
+            probe: DirectAnswer::Reply(probe_ack),
+        }
+    })
+    .await;
+    let _member = starting.await.unwrap();
+    recorded
+        .next_named_within("peers.entry_created", CONTACT_FAILURE_WAIT)
+        .await;
+
+    witness.leaves_the_topic();
+
+    assert_eq!(
+        recorded
+            .next_named_within("direct.contact_failed", CONTACT_FAILURE_WAIT)
+            .await,
+        contact_failed_fields("probe_nonce_mismatch")
+    );
+    drop(scratch);
 }
 
 #[tokio::test]
