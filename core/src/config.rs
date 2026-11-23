@@ -18,6 +18,7 @@ pub const OWNER_ONLY_FILE_MODE: u32 = 0o600;
 pub const PERMISSION_BITS_MASK: u32 = 0o777;
 const TEMPORARY_FILE_SUFFIX: &str = "tmp";
 const HEX_KEY_LENGTH: usize = 64;
+const HIDDEN_SECRET_DEBUG_TEXT: &str = "..";
 const RELAY_URL_SCHEME: &str = "https";
 const HOST_RELAY_FIELD: &str = "host relay";
 const HOST_ID_FIELD: &str = "host id";
@@ -104,12 +105,23 @@ impl From<Host> for WireHost {
 }
 
 /// The durable state of one network: its secret, its owner key, and its hosts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NetworkConfig {
     pub secret: String,
     pub owner: String,
     pub hosts: Vec<Host>,
+}
+
+impl fmt::Debug for NetworkConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("NetworkConfig")
+            .field("secret", &format_args!("{HIDDEN_SECRET_DEBUG_TEXT}"))
+            .field("owner", &self.owner)
+            .field("hosts", &self.hosts)
+            .finish()
+    }
 }
 
 /// The set of values a configuration field accepts, rendered from the limits that enforce it.
@@ -1305,5 +1317,43 @@ mod tests {
         .unwrap();
 
         assert_eq!(NetworkConfig::load(&path).unwrap(), written);
+    }
+
+    const SECRET_DEBUG_CASES: u64 = 40;
+
+    /// Spec 3.3: no `Debug` text of a network secret or of the configuration that holds it carries the secret, in hexadecimal of either case or as a list of byte values.
+    #[test]
+    fn the_debug_text_of_a_network_secret_and_of_its_configuration_never_carries_the_secret_spec_3_3()
+     {
+        for case in 0..SECRET_DEBUG_CASES {
+            let mut draws = crate::seeded_draws::Draws::seeded(case);
+            let secret_bytes: [u8; KEY_LEN] =
+                std::array::from_fn(|_| u8::try_from(draws.below(u64::from(u8::MAX) + 1)).unwrap());
+            let secret_hex = data_encoding::HEXLOWER.encode(&secret_bytes);
+            let configuration = NetworkConfig {
+                secret: secret_hex.clone(),
+                owner: host_id(b'o'),
+                hosts: Vec::new(),
+            };
+            let debug_texts = [
+                format!("{configuration:?}"),
+                format!("{:?}", crate::keys::NetworkSecret::from_bytes(secret_bytes)),
+                format!(
+                    "{:?}",
+                    crate::crypto::NetworkSecret::from_bytes(secret_bytes)
+                ),
+            ];
+            let carried_forms = [
+                secret_hex.clone(),
+                secret_hex.to_uppercase(),
+                format!("{secret_bytes:?}"),
+            ];
+
+            for text in &debug_texts {
+                for form in &carried_forms {
+                    assert!(!text.contains(form), "case {case}: {text}");
+                }
+            }
+        }
     }
 }
