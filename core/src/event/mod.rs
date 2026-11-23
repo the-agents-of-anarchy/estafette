@@ -203,22 +203,6 @@ fn answered(code: &ErrorCode) -> EventFields {
     vec![(CODE_FIELD, Value::from(code.code()))]
 }
 
-/// Every name an event of the binary can carry, area by area.
-pub fn every_event_name() -> impl Iterator<Item = &'static str> {
-    names_of::<ProcessEventName>()
-        .chain(names_of::<GossipEventName>())
-        .chain(names_of::<DirectEventName>())
-        .chain(names_of::<PeerTableEventName>())
-        .chain(names_of::<TransportEventName>())
-        .chain(names_of::<InboxEventName>())
-        .chain(names_of::<StateEventName>())
-}
-
-/// Every name of one group.
-pub fn names_of<Name: EventName>() -> impl Iterator<Item = &'static str> {
-    Name::ALL.iter().map(|name| name.as_str())
-}
-
 /// Writes the event's run-record line to standard error, writing nothing for an event of the events file alone.
 ///
 /// # Errors
@@ -236,6 +220,22 @@ mod tests {
     use super::*;
 
     const SPEC_FORMAT_VERSION: u64 = 1;
+    /// Every name an event of the binary can carry, area by area.
+    fn every_event_name() -> impl Iterator<Item = &'static str> {
+        names_of::<ProcessEventName>()
+            .chain(names_of::<GossipEventName>())
+            .chain(names_of::<DirectEventName>())
+            .chain(names_of::<PeerTableEventName>())
+            .chain(names_of::<TransportEventName>())
+            .chain(names_of::<InboxEventName>())
+            .chain(names_of::<StateEventName>())
+    }
+
+    /// Every name of one group.
+    fn names_of<Name: EventName>() -> impl Iterator<Item = &'static str> {
+        Name::ALL.iter().map(|name| name.as_str())
+    }
+
     const PINNED_EVENT_NAMES: [&str; 67] = [
         "process.command_failed",
         "process.network_created",

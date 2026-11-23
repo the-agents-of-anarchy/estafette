@@ -56,8 +56,9 @@ pub struct DoctorReport {
 
 impl DoctorReport {
     /// Gives the verdict of one check.
+    #[cfg(test)]
     #[must_use]
-    pub const fn verdict(&self, check: Check) -> &Verdict {
+    const fn verdict(&self, check: Check) -> &Verdict {
         match check {
             Check::HookInstalled => &self.hook_installed,
             Check::BridgeRunning => &self.bridge_running,

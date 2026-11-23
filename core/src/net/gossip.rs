@@ -121,11 +121,12 @@ impl NetworkTopic {
     }
 
     /// The next event of the topic, an error naming why the topic failed, or none once the topic has closed cleanly.
-    pub async fn next_event(&mut self) -> Option<Result<GossipEvent, GossipError>> {
+    #[cfg(test)]
+    pub(crate) async fn next_event(&mut self) -> Option<Result<GossipEvent, GossipError>> {
         self.next_event_recording_drops(&|_dropped| {}).await
     }
 
-    /// The next event of the topic as `next_event` gives it, handing each payload the payload layer drops on the way to `record_drop`.
+    /// The next event of the topic, an error naming why the topic failed, or none once the topic has closed cleanly, handing each payload the payload layer drops on the way to `record_drop`.
     pub async fn next_event_recording_drops(
         &mut self,
         record_drop: &(dyn Fn(PayloadRefusal) + Send + Sync),
