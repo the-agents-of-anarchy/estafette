@@ -8,8 +8,10 @@ use crate::net::endpoint::{
     Close, CloseReason, ConnectionId, Direction, GateFailure, GateFailureReason, Location,
     LocationKind, PathChange, Protocol, RebindCause, RelayMapEdit,
 };
+use crate::node::{HostUnparsed, SkippedHost};
 
 const EDIT_FIELD: &str = "edit";
+const INDEX_FIELD: &str = "index";
 const HOST_FIELD: &str = "host";
 const CAUSE_FIELD: &str = "cause";
 const CONNECTION_FIELD: &str = "connection";
@@ -42,6 +44,7 @@ super::event_names! {
         HomeRelay => "transport.home_relay",
         RelayProbed => "transport.relay_probed",
         RelayMapEdited => "transport.relay_map_edited",
+        KnownHostSkipped => "transport.known_host_skipped",
         RouterShutdownFailed => "transport.router_shutdown_failed",
         RebindFailed => "transport.rebind_failed",
         GateClosed => "transport.gate_closed",
@@ -94,6 +97,8 @@ pub enum TransportEvent {
         host: Option<ShortId>,
         location: Location,
     },
+    /// A rebind left out a configured host because its id or relay does not parse, naming its place in the configuration and the part.
+    KnownHostSkipped(SkippedHost),
     /// The old endpoint's listeners did not shut down cleanly before the rebind.
     RouterShutdownFailed(JoinError),
     /// The endpoint was not bound again, so the node announces nothing more.
@@ -120,6 +125,7 @@ impl AreaEvent for TransportEvent {
             Self::HomeRelay { .. } => TransportEventName::HomeRelay,
             Self::RelayProbed { .. } => TransportEventName::RelayProbed,
             Self::RelayMapEdited { .. } => TransportEventName::RelayMapEdited,
+            Self::KnownHostSkipped(_) => TransportEventName::KnownHostSkipped,
             Self::RouterShutdownFailed(_) => TransportEventName::RouterShutdownFailed,
             Self::RebindFailed(_) => TransportEventName::RebindFailed,
             Self::GateClosed(_) => TransportEventName::GateClosed,
@@ -135,7 +141,8 @@ impl AreaEvent for TransportEvent {
             | Self::PathEventsMissed { .. }
             | Self::HomeRelay { .. }
             | Self::RelayProbed { .. }
-            | Self::RelayMapEdited { .. } => return None,
+            | Self::RelayMapEdited { .. }
+            | Self::KnownHostSkipped(_) => return None,
             Self::Rebinding(_) => "rebinding the endpoint: no gossip payload was heard for the deaf timeout, or the join gained no neighbor".to_owned(),
             Self::RouterShutdownFailed(source) => format!(
                 "the old endpoint's listeners did not shut down cleanly before the rebind: {source}"
@@ -229,6 +236,13 @@ impl AreaEvent for TransportEvent {
                 vec![(ANSWERED_FIELD, Value::from(*answered))],
             ]
             .concat(),
+            Self::KnownHostSkipped(skipped) => vec![
+                (INDEX_FIELD, Value::from(skipped.index)),
+                (
+                    REASON_FIELD,
+                    Value::from(host_unparsed_text(skipped.reason)),
+                ),
+            ],
             Self::RelayMapEdited {
                 edit,
                 host,
@@ -242,6 +256,14 @@ impl AreaEvent for TransportEvent {
             ]
             .concat(),
         }
+    }
+}
+
+/// The part of a configured host that did not parse, as the events file writes it.
+const fn host_unparsed_text(reason: HostUnparsed) -> &'static str {
+    match reason {
+        HostUnparsed::Id => "id",
+        HostUnparsed::Relay => "relay",
     }
 }
 
@@ -348,6 +370,7 @@ mod tests {
     const DIRECT_PORT: u16 = 7842;
     const RELAY_PORT: u16 = 443;
     const RELAY_HOST_BYTE: u8 = 9;
+    const SKIPPED_HOST_INDEX: usize = 7;
 
     #[test]
     fn observability_decision_9_each_protocol_a_connection_carries_is_written_as_a_word_of_its_own()
@@ -434,6 +457,36 @@ mod tests {
         assert_each_arm(
             &cases,
             |reason| gate_failure_reason_text(reason),
+            cases.len(),
+        );
+    }
+
+    #[test]
+    fn observability_decision_9_each_part_of_a_configured_host_that_does_not_parse_is_written_as_a_word_of_its_own()
+     {
+        let cases = [
+            (
+                SkippedHost {
+                    index: 0,
+                    reason: HostUnparsed::Id,
+                },
+                vec![("index", Value::from(0)), ("reason", Value::from("id"))],
+            ),
+            (
+                SkippedHost {
+                    index: SKIPPED_HOST_INDEX,
+                    reason: HostUnparsed::Relay,
+                },
+                vec![
+                    ("index", Value::from(SKIPPED_HOST_INDEX)),
+                    ("reason", Value::from("relay")),
+                ],
+            ),
+        ];
+
+        assert_each_arm(
+            &cases,
+            |skipped| TransportEvent::KnownHostSkipped(*skipped).fields(),
             cases.len(),
         );
     }

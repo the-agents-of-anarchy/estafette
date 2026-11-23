@@ -8,7 +8,8 @@ mod send;
 
 pub(crate) use addresses::{replace_lookup_entry, wire_addr};
 pub(crate) use known_hosts::{
-    KnownHostAddress, KnownHosts, RelayOfRecord, known_host_addresses, seed_lookup_with_known_hosts,
+    HostUnparsed, KnownHostAddress, KnownHosts, RelayOfRecord, SkippedHost, known_host_addresses,
+    seed_lookup_with_known_hosts,
 };
 pub use lifecycle::{
     ClaimedCard, DEPARTURE_WAIT, Exit, RuntimeShutdown, Session, ShutdownSignal,

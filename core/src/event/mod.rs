@@ -236,7 +236,9 @@ mod tests {
         Name::ALL.iter().map(|name| name.as_str())
     }
 
-    const PINNED_EVENT_NAMES: [&str; 69] = [
+    const RELAY_PORT: u16 = 443;
+    const DEFERRED_MS: u64 = 2000;
+    const PINNED_EVENT_NAMES: [&str; 70] = [
         "process.command_failed",
         "process.network_created",
         "process.clock_before_unix_epoch",
@@ -291,6 +293,7 @@ mod tests {
         "transport.home_relay",
         "transport.relay_probed",
         "transport.relay_map_edited",
+        "transport.known_host_skipped",
         "state.counters",
         "inbox.accept_failed",
         "inbox.frame_delivered",
@@ -318,5 +321,46 @@ mod tests {
         assert_eq!(distinct.len(), named.len(), "{named:?}");
         assert_eq!(distinct, BTreeSet::from(PINNED_EVENT_NAMES));
         assert_eq!(crate::trace::FORMAT_VERSION, SPEC_FORMAT_VERSION);
+    }
+
+    #[test]
+    fn observability_decision_3_the_relay_map_edit_the_deferral_and_the_skipped_host_add_no_line_to_standard_error()
+     {
+        let relay = crate::net::endpoint::Location {
+            kind: crate::net::endpoint::LocationKind::Relay,
+            port: Some(RELAY_PORT),
+            hash: crate::net::endpoint::LocationHash::of(
+                &crate::net::direct::tests::test_salt(),
+                "https://relay.example/",
+            ),
+        };
+        let events: [Event; 3] = [
+            TransportEvent::RelayMapEdited {
+                edit: crate::net::endpoint::RelayMapEdit::Added,
+                host: None,
+                location: relay,
+            }
+            .into(),
+            TransportEvent::KnownHostSkipped(crate::node::SkippedHost {
+                index: 0,
+                reason: crate::node::HostUnparsed::Id,
+            })
+            .into(),
+            GossipEvent::PresenceDeferred {
+                deferred_ms: DEFERRED_MS,
+            }
+            .into(),
+        ];
+
+        for event in events {
+            let mut standard_error = Vec::new();
+            write_run_record(&mut standard_error, &event).unwrap();
+            assert_eq!(
+                String::from_utf8(standard_error).unwrap(),
+                "",
+                "{}",
+                event.name()
+            );
+        }
     }
 }

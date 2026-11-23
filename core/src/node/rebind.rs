@@ -242,6 +242,7 @@ impl PresenceLoop {
     /// Rebinds by spec 3.8, stopping the loop when no endpoint or topic comes of it.
     pub(super) async fn rebind(&mut self, cause: RebindCause) -> ControlFlow<()> {
         (self.report)(TransportEvent::Rebinding(cause).into());
+        self.record_skipped_known_hosts();
         self.record_state(SnapshotMoment::Rebind);
         self.rebinding.rebound(self.monotonic.now());
         self.close_endpoint().await;
@@ -253,6 +254,13 @@ impl PresenceLoop {
         }
         self.client.follow(self.endpoint.endpoint().clone()).await;
         self.subscribe_through_known_nodes().await
+    }
+
+    /// Records each configured host this rebind leaves out because its id or relay does not parse.
+    fn record_skipped_known_hosts(&self) {
+        for skipped in self.known_hosts.skipped() {
+            (self.report)(TransportEvent::KnownHostSkipped(skipped).into());
+        }
     }
 
     /// Asks the gossip layer to join the Online and Unreachable members, stopping the asks when there are none or one of them is a gossip neighbor already.
@@ -412,8 +420,10 @@ mod tests {
     use tokio::time::Instant;
 
     use super::{MemberJoins, RebindSchedule, RelayProbe, relay_answers};
+    use crate::config::{Host, HostOrigin};
     use crate::event::EventFields;
     use crate::event::{Event, RunRecord, TransportEvent};
+    use crate::keys::render_public_key;
     use crate::net::direct::tests::{ShiftedClock, StandingClock, test_salt};
     use crate::net::direct::{
         ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock, MonotonicTime,
@@ -423,15 +433,16 @@ mod tests {
         DIRECT_ALPN, LocationHash, NodeEndpoint, RebindCause, TransportRecord,
     };
     use crate::net::gossip::{GossipEvent, NetworkTopic};
+    use crate::node::known_hosts::KnownHosts;
     use crate::node::presence::acknowledgement_of;
     use crate::node::presence::tests::{
         FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, KIND, MARKER_SEED, Member, MemberPlan,
         OWNER_SEED, PAYLOAD_ACCEPTED, PAYLOAD_WAIT, PEER, PRESENCE_KIND, PRESENCE_REQUEST_KIND,
         SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, SEQ, SPEC_OBSERVER_WAIT, Scratch, WITNESS_SEED,
-        Witness, bind, card, entry_meeting_within, frozen_clock, joined_and_asked_for_presence,
-        keys, presence_from, presence_request_by, relay_url, secret_key, short_peer_id,
-        spawn_member, start_members, start_members_reaching, status_within, unreachable_about,
-        wall_clock_ms,
+        Witness, bind, card, config_with_hosts, entry_meeting_within, frozen_clock,
+        idle_presence_loop, joined_and_asked_for_presence, keys, presence_from,
+        presence_request_by, relay_url, secret_key, short_peer_id, spawn_member, start_members,
+        start_members_reaching, status_within, unreachable_about, wall_clock_ms,
     };
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
@@ -1097,6 +1108,60 @@ mod tests {
         assert_eq!(
             probes,
             vec![probe_of(STRIPPED_RELAY, false), probe_of(KEPT_RELAY, true)]
+        );
+        drop(scratch);
+    }
+
+    const NOT_A_NODE_ID: &str = "not a node id";
+    const NOT_A_RELAY_URL: &str = "not a relay url";
+
+    fn configured_host_of(id: String, relay: &str) -> Host {
+        Host {
+            id,
+            relay: relay.to_owned(),
+            ts: None,
+            origin: HostOrigin::Configured,
+        }
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_rebind_records_each_known_host_it_skips_by_its_place_and_the_part_that_did_not_parse_and_goes_on()
+     {
+        let scratch = Scratch::new("rb-skip").await;
+        let (record, mut events) = recorded_events();
+        let mut presence_loop = idle_presence_loop(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(record),
+        )
+        .await;
+        let live_id = render_public_key(&secret_key(LIVE_HOST_SEED).public());
+        presence_loop.known_hosts = KnownHosts::new(
+            config_with_hosts(vec![
+                configured_host_of(NOT_A_NODE_ID.to_owned(), LIVE_RELAY),
+                configured_host_of(live_id.clone(), LIVE_RELAY),
+                configured_host_of(live_id, NOT_A_RELAY_URL),
+            ]),
+            std::path::PathBuf::new(),
+        );
+
+        let flow = presence_loop.rebind(RebindCause::Deaf).await;
+        let first_skipped = next_recorded(&mut events, "transport.known_host_skipped").await;
+        let second_skipped = next_recorded(&mut events, "transport.known_host_skipped").await;
+
+        assert_eq!(flow, std::ops::ControlFlow::Continue(()));
+        assert_eq!(
+            first_skipped,
+            vec![
+                ("index", serde_json::Value::from(0)),
+                ("reason", serde_json::Value::from("id")),
+            ]
+        );
+        assert_eq!(
+            second_skipped,
+            vec![
+                ("index", serde_json::Value::from(2)),
+                ("reason", serde_json::Value::from("relay")),
+            ]
         );
         drop(scratch);
     }

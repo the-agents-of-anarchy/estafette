@@ -2457,6 +2457,58 @@ pub(super) mod tests {
         }
     }
 
+    /// A member's presence loop, built as `Node::start` builds it and not yet running, on the endpoint and effects of the plan and the network file of its seed with no host.
+    pub(in crate::node) async fn idle_presence_loop(
+        scratch: &Scratch,
+        plan: MemberPlan,
+    ) -> PresenceLoop {
+        let node_endpoint = bind_holding(plan.seed, plan.register.clone()).await;
+        let network = Network::new(
+            config_with_hosts(Vec::new()),
+            scratch.network_file(plan.seed),
+        )
+        .unwrap();
+        let identity = Identity {
+            card_key: secret_key(plan.seed),
+            requested_handle: plan.handle.parse::<AnnouncedHandle>().unwrap(),
+            public: plan.public.to_vec(),
+        };
+        let effects = NodeEffects {
+            clock: plan.clock,
+            monotonic: plan.monotonic,
+            fill_probe_nonce: Arc::new(|nonce: &mut crate::wire::Nonce| *nonce = PROBE_NONCE),
+            report: plan.report,
+            inbox: scratch.inbox(plan.seed),
+            probe_relay: plan.probe_relay,
+        };
+        let client = Arc::new(DirectClient::new(
+            node_endpoint.endpoint().clone(),
+            network.keys.clone(),
+            ClientTimeouts::SPEC,
+            node_endpoint.held_connections(),
+        ));
+        let (to_loop, from_hosts) = mpsc::unbounded_channel();
+        let state = Arc::new(NodeState::new(
+            &identity,
+            Arc::clone(&client),
+            &effects,
+            to_loop,
+            node_endpoint.held_connections(),
+        ));
+        let (presence_loop, _own_handle) = PresenceLoop::join(
+            node_endpoint,
+            identity,
+            network,
+            effects,
+            state,
+            client,
+            from_hosts,
+        )
+        .await
+        .unwrap();
+        presence_loop
+    }
+
     pub(in crate::node) async fn start_pair(scratch: &Scratch) -> (Member, Member) {
         let mut members = start_members(
             scratch,

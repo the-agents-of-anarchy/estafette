@@ -26,17 +26,39 @@ pub struct KnownHostAddress {
 
 /// The node id and relay of every host of the configuration, refusing a host whose id or relay does not parse.
 pub fn known_host_addresses(config: &NetworkConfig) -> Result<Vec<KnownHostAddress>, NodeError> {
-    config.hosts.iter().map(known_host_address).collect()
+    config
+        .hosts
+        .iter()
+        .map(|host| {
+            known_host_address(host).map_err(|_unparsed| NodeError::KnownHostInvalid {
+                id: host.id.clone(),
+            })
+        })
+        .collect()
 }
 
-/// The host's node id and relay, refusing a host whose id or relay does not parse.
-fn known_host_address(host: &Host) -> Result<KnownHostAddress, NodeError> {
-    let invalid = || NodeError::KnownHostInvalid {
-        id: host.id.clone(),
-    };
+/// The part of a configured host that did not parse: its node id, or its relay when the id did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostUnparsed {
+    Id,
+    Relay,
+}
+
+/// A configured host a rebind leaves out because a part of it does not parse: its place in the configuration and that part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SkippedHost {
+    pub index: usize,
+    pub reason: HostUnparsed,
+}
+
+/// The host's node id and relay, or the part that does not parse.
+fn known_host_address(host: &Host) -> Result<KnownHostAddress, HostUnparsed> {
     Ok(KnownHostAddress {
-        id: parse_public_key(&host.id).map_err(|_unparsed| invalid())?,
-        relay: host.relay.parse().map_err(|_unparsed| invalid())?,
+        id: parse_public_key(&host.id).map_err(|_unparsed| HostUnparsed::Id)?,
+        relay: host
+            .relay
+            .parse()
+            .map_err(|_unparsed| HostUnparsed::Relay)?,
     })
 }
 
@@ -112,6 +134,20 @@ impl KnownHosts {
             .hosts
             .iter()
             .filter_map(|host| known_host_address(host).ok())
+            .collect()
+    }
+
+    /// Every configured host a rebind leaves out because its id or relay does not parse.
+    pub(super) fn skipped(&self) -> Vec<SkippedHost> {
+        self.config
+            .hosts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, host)| {
+                known_host_address(host)
+                    .err()
+                    .map(|reason| SkippedHost { index, reason })
+            })
             .collect()
     }
 
@@ -235,6 +271,10 @@ mod tests {
     use crate::seeded_draws::Draws;
 
     const UNHELD_RELAY: &str = "https://relay-unheld.estafette.invalid/";
+    const NOT_A_NODE_ID: &str = "not a node id";
+    const NOT_A_RELAY_URL: &str = "not a relay url";
+    const SPEC_REFUSAL_ACCEPTED: &str =
+        "64 lowercase hexadecimal characters and a relay of an https URL of at most 128 bytes";
 
     const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
     const SPEC_INFRASTRUCTURE_RECORD_EXPIRY_DAYS: u64 = 30;
@@ -303,6 +343,43 @@ mod tests {
             Some(ShortId::from(&card(HOST_SEED)))
         );
         assert_eq!(known_hosts.host_with_relay(&relay_url(UNHELD_RELAY)), None);
+    }
+
+    /// Spec 3.5 and 3.8: a configuration with a host whose id or relay does not parse refuses the start, naming the host by its configured id.
+    #[test]
+    fn spec_3_8_a_configured_host_that_does_not_parse_refuses_the_start_with_one_text_for_either_part()
+     {
+        let live_id = crate::keys::render_public_key(&secret_key(HOST_SEED).public());
+        let unparsed_id = Host {
+            id: NOT_A_NODE_ID.to_owned(),
+            relay: HOST_RELAY.to_owned(),
+            ts: None,
+            origin: HostOrigin::Configured,
+        };
+        let unparsed_relay = Host {
+            id: live_id.clone(),
+            relay: NOT_A_RELAY_URL.to_owned(),
+            ts: None,
+            origin: HostOrigin::Configured,
+        };
+
+        let refusals: Vec<String> = [unparsed_id, unparsed_relay]
+            .into_iter()
+            .map(|host| {
+                known_host_addresses(&config_with_hosts(vec![host]))
+                    .err()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+
+        assert_eq!(
+            refusals,
+            [
+                format!("known host {NOT_A_NODE_ID} needs a node id of {SPEC_REFUSAL_ACCEPTED}"),
+                format!("known host {live_id} needs a node id of {SPEC_REFUSAL_ACCEPTED}"),
+            ]
+        );
     }
 
     /// Spec 3.3 and 3.8: a host learned from its record leaves the file at a later save exactly when more than 30 days have passed since it was heard.
