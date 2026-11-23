@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use iroh::RelayUrl;
 use serde::{Deserialize, Serialize};
 
-use crate::wire::{self, MAX_RELAY_URL_BYTES};
+use crate::wire::{self, HIDDEN_SECRET_DEBUG_TEXT, MAX_RELAY_URL_BYTES};
 
 const MILLIS_PER_SECOND: u64 = 1000;
 const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * MILLIS_PER_SECOND;
@@ -18,7 +18,6 @@ pub const OWNER_ONLY_FILE_MODE: u32 = 0o600;
 pub const PERMISSION_BITS_MASK: u32 = 0o777;
 const TEMPORARY_FILE_SUFFIX: &str = "tmp";
 const HEX_KEY_LENGTH: usize = 64;
-const HIDDEN_SECRET_DEBUG_TEXT: &str = "..";
 const RELAY_URL_SCHEME: &str = "https";
 const HOST_RELAY_FIELD: &str = "host relay";
 const HOST_ID_FIELD: &str = "host id";
@@ -1335,8 +1334,20 @@ mod tests {
                 owner: host_id(b'o'),
                 hosts: Vec::new(),
             };
+            let invitation = wire::Invitation {
+                v: wire::Version::CURRENT,
+                network: String::new(),
+                secret: secret_bytes,
+                owner: [0; KEY_LEN],
+                hosts: Vec::new(),
+            };
+            let join_command = crate::cli::network::NetworkCommand::Join {
+                invitation: invitation.clone(),
+            };
             let debug_texts = [
                 format!("{configuration:?}"),
+                format!("{invitation:?}"),
+                format!("{join_command:?}"),
                 format!("{:?}", crate::keys::NetworkSecret::from_bytes(secret_bytes)),
                 format!(
                     "{:?}",

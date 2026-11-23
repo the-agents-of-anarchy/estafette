@@ -2227,4 +2227,48 @@ mod tests {
         );
         crate::remove_scratch::remove_scratch(&root).unwrap();
     }
+
+    const SECRET_DEBUG_CASES: u64 = 40;
+    const JOINED_HOST_RELAY: &str = "https://relay-one.example/";
+
+    /// Spec 3.3: the `Debug` text of a parsed `network join` command line never carries the invitation's secret, in hexadecimal of either case or as a list of byte values.
+    #[test]
+    fn the_debug_text_of_a_parsed_network_join_command_line_never_carries_the_secret_spec_3_3() {
+        for case in 0..SECRET_DEBUG_CASES {
+            let mut draws = Draws::seeded(case);
+            let secret_bytes: [u8; 32] =
+                std::array::from_fn(|_| u8::try_from(draws.below(u64::from(u8::MAX) + 1)).unwrap());
+            let invitation = estafette::wire::Invitation {
+                v: estafette::wire::Version::CURRENT,
+                network: "lab".to_owned(),
+                secret: secret_bytes,
+                owner: [1; 32],
+                hosts: vec![estafette::wire::HostAddr {
+                    v: estafette::wire::Version::CURRENT,
+                    id: [2; 32],
+                    relay: estafette::wire::RelayUrl::try_from(JOINED_HOST_RELAY.to_owned())
+                        .unwrap(),
+                }],
+            };
+            let invitation_text = estafette::invite::render_invitation(&invitation).unwrap();
+
+            let parsed = EstafetteArguments::try_parse_from([
+                "estafette",
+                "network",
+                "join",
+                invitation_text.as_str(),
+            ])
+            .unwrap();
+            let debug_text = format!("{parsed:?}");
+
+            let secret_hex = data_encoding::HEXLOWER.encode(&secret_bytes);
+            for form in [
+                secret_hex.clone(),
+                secret_hex.to_uppercase(),
+                format!("{secret_bytes:?}"),
+            ] {
+                assert!(!debug_text.contains(&form), "case {case}: {debug_text}");
+            }
+        }
+    }
 }

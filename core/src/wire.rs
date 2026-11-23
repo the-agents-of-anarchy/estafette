@@ -19,6 +19,7 @@ const PROBE_NONCE_BYTES: usize = 16;
 const MESSAGE_ID_BYTES: usize = 16;
 const PUBLIC_KEY_BYTES: usize = 32;
 const SECRET_BYTES: usize = 32;
+pub(crate) const HIDDEN_SECRET_DEBUG_TEXT: &str = "..";
 
 pub type Mac = [u8; MAC_BYTES];
 pub type Nonce = [u8; PROBE_NONCE_BYTES];
@@ -316,9 +317,9 @@ macro_rules! wire_enum {
     };
 }
 
-macro_rules! wire_struct {
-    (pub struct $name:ident { $(pub $field:ident: $type:ty),+ $(,)? }) => {
-        #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+macro_rules! wire_struct_deriving {
+    (#[derive($($derived:ident),+)] pub struct $name:ident { $(pub $field:ident: $type:ty),+ $(,)? }) => {
+        #[derive($($derived),+)]
         pub struct $name {
             $(pub $field: $type),+
         }
@@ -332,6 +333,15 @@ macro_rules! wire_struct {
                     $($field: <$type as Checked>::check($field)?),+
                 })
             }
+        }
+    };
+}
+
+macro_rules! wire_struct {
+    (pub struct $name:ident { $(pub $field:ident: $type:ty),+ $(,)? }) => {
+        wire_struct_deriving! {
+            #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+            pub struct $name { $(pub $field: $type),+ }
         }
     };
 }
@@ -490,13 +500,27 @@ wire_struct! {
     }
 }
 
-wire_struct! {
+wire_struct_deriving! {
+    #[derive(Clone, PartialEq, Eq, Serialize)]
     pub struct Invitation {
         pub v: Version,
         pub network: String,
         pub secret: Secret,
         pub owner: PublicKey,
         pub hosts: Vec<HostAddr>,
+    }
+}
+
+impl fmt::Debug for Invitation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Invitation")
+            .field("v", &self.v)
+            .field("network", &self.network)
+            .field("secret", &format_args!("{HIDDEN_SECRET_DEBUG_TEXT}"))
+            .field("owner", &self.owner)
+            .field("hosts", &self.hosts)
+            .finish()
     }
 }
 
