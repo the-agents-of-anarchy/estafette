@@ -54,6 +54,7 @@ jobs:
               id: loop
               shell: bash
               run: |
+                  set +e
                   set -u
                   out="$RUNNER_TEMP/out"
                   mkdir -p "$out"
