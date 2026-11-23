@@ -1,5 +1,5 @@
 use std::fmt;
-use std::fs::{File, TryLockError};
+use std::fs::{File, TryLockError, remove_file};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -8,7 +8,7 @@ use std::time::Duration;
 use crate::card::{HANDLE_FIELD, PUBLIC_KEY_FIELD};
 use crate::config::{
     OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK, create_new_owner_only_file, remove_file_if_present,
-    write_new_file_atomically,
+    with_cleanup_outcome, write_new_file_atomically,
 };
 use crate::handle::Handle;
 use data_encoding::{HEXLOWER, HEXLOWER_PERMISSIVE};
@@ -144,8 +144,9 @@ pub fn create_card(
     handle: &Handle,
     seed: [u8; SEED_BYTES],
 ) -> Result<PublicKey, SidecarError> {
-    create_card_removing_temporary_with(
+    create_card_removing_files_with(
         remove_file_if_present,
+        |path: &Path| remove_file(path),
         card_path,
         sidecar_path,
         handle.as_str(),
@@ -153,9 +154,10 @@ pub fn create_card(
     )
 }
 
-/// Creates a card as `create_card` does, removing the card's temporary file through the given remover.
-fn create_card_removing_temporary_with(
+/// Creates a card as `create_card` does, removing the card's temporary file and, when the card write fails, the sidecar through the given removers.
+fn create_card_removing_files_with(
     remove_temporary: impl FnOnce(&Path) -> io::Result<()>,
+    remove_sidecar: impl FnOnce(&Path) -> io::Result<()>,
     card_path: &Path,
     sidecar_path: &Path,
     handle: &str,
@@ -166,13 +168,29 @@ fn create_card_removing_temporary_with(
     refuse_existing_card(card_path)?;
     let public_key = SecretKey::from_bytes(&seed).public();
     write_sidecar_durably(sidecar_path, sidecar_directory, &seed)?;
-    write_card(card_path, handle, public_key.as_bytes(), remove_temporary).or_else(|error| {
-        if !card_path.try_exists()? {
-            std::fs::remove_file(sidecar_path)?;
-        }
-        Err(error)
-    })?;
+    write_card(card_path, handle, public_key.as_bytes(), remove_temporary)
+        .map_err(|failure| failed_card_write(failure, card_path, sidecar_path, remove_sidecar))?;
     Ok(public_key)
+}
+
+/// The card write's failure, naming the sidecar left behind and why its removal failed when the card is absent and the removal failed too.
+fn failed_card_write(
+    failure: io::Error,
+    card_path: &Path,
+    sidecar_path: &Path,
+    remove_sidecar: impl FnOnce(&Path) -> io::Result<()>,
+) -> SidecarError {
+    let cleanup = card_path.try_exists().and_then(|card_exists| {
+        if card_exists {
+            Ok(())
+        } else {
+            remove_sidecar(sidecar_path)
+        }
+    });
+    match cleanup {
+        Ok(()) => creation_failure(failure),
+        Err(_) => SidecarError::Io(with_cleanup_outcome(failure, sidecar_path, cleanup)),
+    }
 }
 
 fn refuse_existing_card(card_path: &Path) -> Result<(), SidecarError> {
@@ -211,13 +229,12 @@ fn write_card(
     handle: &str,
     public_key: &[u8; PUBLIC_KEY_BYTES],
     remove_temporary: impl FnOnce(&Path) -> io::Result<()>,
-) -> Result<(), SidecarError> {
+) -> io::Result<()> {
     let contents = format!(
         "{HANDLE_FIELD}: {handle}{LINE_TERMINATOR}{PUBLIC_KEY_FIELD}: {}{LINE_TERMINATOR}",
         HEXLOWER.encode(public_key)
     );
     write_new_file_atomically(card_path, &contents, CARD_FILE_MODE, remove_temporary)
-        .map_err(creation_failure)
 }
 
 fn creation_failure(error: io::Error) -> SidecarError {
@@ -748,8 +765,9 @@ mod tests {
                 .saturating_add(Draws::seeded(case).below(OVERSIZED_HANDLE_BYTES_SPREAD));
             let handle = "h".repeat(usize::try_from(oversized_bytes).unwrap());
 
-            let outcome = create_card_removing_temporary_with(
+            let outcome = create_card_removing_files_with(
                 remove_file_if_present,
+                |path: &Path| remove_file(path),
                 &card,
                 &sidecar,
                 &handle,
@@ -837,8 +855,9 @@ mod tests {
             let failing_removal =
                 |_leftover: &Path| Err(io::Error::new(failure_kind, removal_reason.clone()));
 
-            let outcome = create_card_removing_temporary_with(
+            let outcome = create_card_removing_files_with(
                 failing_removal,
+                |path: &Path| remove_file(path),
                 &card,
                 &sidecar,
                 handle.as_str(),
@@ -859,6 +878,46 @@ mod tests {
                     HEXLOWER.encode(&public_key_of(&seed))
                 ),
                 "case {case}"
+            );
+            assert!(sidecar.exists(), "case {case}");
+        }
+    }
+
+    #[test]
+    fn a_card_write_failure_and_a_failed_sidecar_removal_are_both_named_for_any_handle_and_failure_spec_3_5()
+     {
+        for case in 0..LEFTOVER_REMOVAL_CASES {
+            let mut draws = Draws::seeded(case);
+            let handle = handle_drawn_by(&mut draws);
+            let failure_kind = LEFTOVER_REMOVAL_FAILURE_KINDS[usize::try_from(
+                draws.below(u64::try_from(LEFTOVER_REMOVAL_FAILURE_KINDS.len()).unwrap()),
+            )
+            .unwrap()];
+            let removal_reason = format!("sidecar removal refused in case {case}");
+            let directory = fresh_directory(&format!("create_card_orphaned_sidecar_{case}"));
+            let card = directory.join("no-such-directory").join("t.yaml");
+            let sidecar = directory.join("t.key");
+            let failing_sidecar_removal =
+                |_sidecar: &Path| Err(io::Error::new(failure_kind, removal_reason.clone()));
+
+            let outcome = create_card_removing_files_with(
+                remove_file_if_present,
+                failing_sidecar_removal,
+                &card,
+                &sidecar,
+                handle.as_str(),
+                seed_of(u8::try_from(case).unwrap()),
+            );
+
+            let failure = outcome.unwrap_err().to_string();
+            assert!(failure.contains(&removal_reason), "case {case}: {failure}");
+            assert!(
+                failure.contains(&File::create(&card).unwrap_err().to_string()),
+                "case {case}: {failure}"
+            );
+            assert!(
+                failure.contains("was left behind"),
+                "case {case}: {failure}"
             );
             assert!(sidecar.exists(), "case {case}");
         }
