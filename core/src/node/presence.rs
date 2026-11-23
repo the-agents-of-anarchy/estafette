@@ -18,7 +18,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use super::addresses::{endpoint_id, replace_lookup_entry, wire_addr};
+use super::addresses::{endpoint_id, lookup_replaced_event, replace_lookup_entry, wire_addr};
 use super::known_hosts::{
     KnownHosts, RelayOfRecord, known_host_addresses, seed_lookup_with_known_hosts,
 };
@@ -1136,7 +1136,7 @@ impl PresenceLoop {
         from_hosts: mpsc::UnboundedReceiver<LoopEvent>,
     ) -> Result<(Self, oneshot::Receiver<LocalHandle>), NodeError> {
         let hosts = known_host_addresses(&network.config)?;
-        seed_lookup_with_known_hosts(&endpoint, &hosts);
+        let seeded = seed_lookup_with_known_hosts(&endpoint, &hosts);
         let (router, gossip) = serve(&endpoint, &network.keys, &state);
         let subscribed = effects.monotonic.now();
         let topic = NetworkTopic::join(
@@ -1185,6 +1185,9 @@ impl PresenceLoop {
             #[cfg(test)]
             cause: None,
         };
+        for card in seeded {
+            presence_loop.record_lookup_of(&card);
+        }
         Ok((presence_loop, own_handle))
     }
 
@@ -1449,20 +1452,11 @@ impl PresenceLoop {
     }
 
     /// Records what the lookup entry of `card` now holds, naming the card by the handle the table holds for it: how many direct addresses and whether a relay, never where.
-    fn record_lookup_of(&self, card: &wire::PublicKey) {
-        let Some(held) = endpoint_id(card).and_then(|id| self.endpoint.address_of(id)) else {
-            return;
-        };
+    pub(super) fn record_lookup_of(&self, card: &wire::PublicKey) {
         let handle = self.state.table().handle_of(*card, self.state.now_ms());
-        (self.report)(
-            PeerTableEvent::lookup_replaced(
-                card,
-                handle,
-                held.ip_addrs().count(),
-                held.relay_urls().next().is_some(),
-            )
-            .into(),
-        );
+        if let Some(event) = lookup_replaced_event(&self.endpoint, card, handle) {
+            (self.report)(event);
+        }
     }
 
     /// Records whether a received payload was taken or dropped by the rule named, naming its signer by the handle the table holds for it, if any.

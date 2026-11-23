@@ -1266,6 +1266,63 @@ async fn observability_decision_9_an_introduce_to_a_card_that_cannot_be_reached_
 
 const SCRIPTED_WITNESS_JOIN_WAIT: Duration = Duration::from_secs(8);
 const CONTACT_FAILURE_WAIT: Duration = Duration::from_secs(20);
+
+#[tokio::test]
+async fn observability_decision_9_a_member_records_the_lookup_it_points_at_the_address_of_a_host_record()
+ {
+    let scratch = Scratch::new("ev-lk-rec").await;
+    let (report, mut recorded) = recording();
+    let (_member, witness) = start_witnessed(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
+        None,
+    )
+    .await;
+
+    witness
+        .broadcast_as(
+            HOST_SEED,
+            infrastructure_of(HOST_SEED, HOST_RELAY, wall_clock_ms() / 1000),
+        )
+        .await;
+
+    assert_eq!(
+        recorded.lookup_replaced_of(HOST_SEED).await,
+        [
+            ("peer", short_id(HOST_SEED)),
+            ("direct_addresses", Value::from(0)),
+            ("relay", Value::from(true)),
+        ]
+    );
+    drop(scratch);
+}
+
+#[tokio::test]
+async fn observability_decision_9_a_member_records_the_lookup_it_seeds_with_the_relay_of_a_configured_host()
+ {
+    let scratch = Scratch::new("ev-lk-seed").await;
+    let (report, mut recorded) = recording();
+
+    let _members = start_members(
+        &scratch,
+        vec![
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                .with_host_relays(&[(HOST_SEED, HOST_RELAY)])
+                .with_report(report),
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        recorded.lookup_replaced_of(HOST_SEED).await,
+        [
+            ("peer", short_id(HOST_SEED)),
+            ("direct_addresses", Value::from(0)),
+            ("relay", Value::from(true)),
+        ]
+    );
+    drop(scratch);
+}
 const UNANSWERED_RESET_CODE: u32 = 3;
 const OVERSIZED_ACK_BYTES: usize = WIRE_LIMIT_BYTES + 1;
 const NOT_AN_ACK: &[u8] = b"not a sealed response";

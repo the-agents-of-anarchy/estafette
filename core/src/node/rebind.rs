@@ -345,7 +345,9 @@ impl PresenceLoop {
     /// Serves the fresh endpoint, records its counters and the fresh gossip's without moving the next interval snapshot, and subscribes to the topic through every known host and every Online peer whose address the lookup holds.
     async fn subscribe_through_known_nodes(&mut self) -> ControlFlow<()> {
         let hosts = self.known_hosts.addresses();
-        seed_lookup_with_known_hosts(&self.endpoint, &hosts);
+        for card in seed_lookup_with_known_hosts(&self.endpoint, &hosts) {
+            self.record_lookup_of(&card);
+        }
         let mut bootstrap: Vec<EndpointId> = hosts.iter().map(|host| host.id).collect();
         bootstrap.extend(
             self.peers_with_status(Status::Online)

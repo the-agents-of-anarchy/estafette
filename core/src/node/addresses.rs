@@ -2,6 +2,8 @@
 
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 
+use crate::event::{Event, PeerTableEvent};
+use crate::handle::LocalHandle;
 use crate::net::endpoint::NodeEndpoint;
 use crate::wire::{self, Addr};
 
@@ -10,6 +12,24 @@ pub fn replace_lookup_entry(endpoint: &NodeEndpoint, card: &wire::PublicKey, add
     if let Some(id) = endpoint_id(card) {
         endpoint.replace_address(endpoint_addr(id, addr));
     }
+}
+
+/// The event of the card's lookup entry as the endpoint now holds it, naming the card by the handle given, or none when the endpoint holds no address for the card.
+pub fn lookup_replaced_event(
+    endpoint: &NodeEndpoint,
+    card: &wire::PublicKey,
+    handle: Option<LocalHandle>,
+) -> Option<Event> {
+    let held = endpoint_id(card).and_then(|id| endpoint.address_of(id))?;
+    Some(
+        PeerTableEvent::lookup_replaced(
+            card,
+            handle,
+            held.ip_addrs().count(),
+            held.relay_urls().next().is_some(),
+        )
+        .into(),
+    )
 }
 
 /// The card as an iroh node id, or none when its bytes are not a valid key.

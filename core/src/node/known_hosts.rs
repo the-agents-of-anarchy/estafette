@@ -5,13 +5,14 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 
-use super::addresses::replace_lookup_entry;
+use super::addresses::{lookup_replaced_event, replace_lookup_entry};
 use super::presence::{NodeError, admission_record};
 use crate::config::{ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
 use crate::event::{Event, GossipEvent};
 use crate::keys::parse_public_key;
 use crate::net::endpoint::NodeEndpoint;
 use crate::payload::{DescribedPayload, PayloadDropRule, ValidInfrastructure};
+use crate::wire;
 
 /// How far ahead of this node's clock a host record's ts may be and still be held (spec:779, spec:1013).
 const INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS: u64 = 300;
@@ -39,16 +40,22 @@ fn known_host_address(host: &Host) -> Result<KnownHostAddress, NodeError> {
     })
 }
 
-/// Gives each known host whose lookup entry holds no address its relay as its only address (spec 3.8).
-pub fn seed_lookup_with_known_hosts(endpoint: &NodeEndpoint, hosts: &[KnownHostAddress]) {
+/// Gives each known host whose lookup entry holds no address its relay as its only address (spec 3.8), returning the cards it seeded.
+pub fn seed_lookup_with_known_hosts(
+    endpoint: &NodeEndpoint,
+    hosts: &[KnownHostAddress],
+) -> Vec<wire::PublicKey> {
+    let mut seeded = Vec::new();
     for host in hosts {
         if endpoint.address_of(host.id).is_none() {
             endpoint.replace_address(EndpointAddr::from_parts(
                 host.id,
                 [TransportAddr::Relay(host.relay.clone())],
             ));
+            seeded.push(*host.id.as_bytes());
         }
     }
+    seeded
 }
 
 /// What a valid Infrastructure record the node holds does to the known hosts.
@@ -123,6 +130,9 @@ impl KnownHosts {
             return;
         };
         replace_lookup_entry(endpoint, &valid.record().host, &valid.record().addr);
+        if let Some(event) = lookup_replaced_event(endpoint, &valid.record().host, None) {
+            report(event);
+        }
         match relay {
             RelayOfRecord::AddToRelayMap => endpoint.add_relay(valid.relay().clone()).await,
             RelayOfRecord::LeaveOutOfRelayMap => {}
