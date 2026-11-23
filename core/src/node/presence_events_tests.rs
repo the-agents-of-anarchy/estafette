@@ -12,15 +12,17 @@ use super::tests::{
     FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_SEED,
     MemberPlan, OWNER_SEED, SECOND_EFFECTIVE_FIRST_HANDLE, SECOND_HANDLE, SECOND_PUBLIC,
     SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_PUBLIC, THIRD_SEED, WITNESS_SEED,
-    bind, card, entry_meeting_within, infrastructure_of, keys, message_to, secret_key,
+    bind, card, entry_meeting_within, infrastructure_of, keys, message_to, relay_url, secret_key,
     settable_clock, settled_direct_answers, spawn_member, start_members, start_members_reaching,
     start_pair, start_witnessed, wall_clock_ms,
 };
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{Event, EventFields, RunRecord};
-use crate::net::direct::tests::unrecorded_register;
-use crate::net::direct::{ClientTimeouts, DirectClient, RequestSummary, RuntimeClock};
-use crate::net::endpoint::DIRECT_ALPN;
+use crate::net::direct::tests::{test_salt, unrecorded_register};
+use crate::net::direct::{
+    ClientTimeouts, DirectClient, HeldConnections, RequestSummary, RuntimeClock,
+};
+use crate::net::endpoint::{DIRECT_ALPN, LocationHash, TransportRecord};
 use crate::net::gossip::{GossipEvent, NetworkTopic};
 use crate::node::addresses::wire_addr;
 use crate::payload::{ZERO_MAC, ZERO_SIGNATURE, seal_payload, seal_response, sealed_by_any_key};
@@ -1266,6 +1268,109 @@ async fn observability_decision_9_an_introduce_to_a_card_that_cannot_be_reached_
 
 const SCRIPTED_WITNESS_JOIN_WAIT: Duration = Duration::from_secs(8);
 const CONTACT_FAILURE_WAIT: Duration = Duration::from_secs(20);
+const RELAY_MAP_EDITED: &str = "transport.relay_map_edited";
+const HTTPS_DEFAULT_PORT: u16 = 443;
+
+/// A member whose register hands its transport events to the report, with the salt of the tests.
+fn member_plan_recording_transport(report: &RunRecord) -> MemberPlan {
+    MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+        .with_register(HeldConnections::new(
+            Arc::new(RuntimeClock),
+            TransportRecord::new(Arc::clone(report), test_salt()),
+        ))
+        .with_report(Arc::clone(report))
+}
+
+/// The fields of the relay map edit a member records once a witnessed host record, newer than any held, reaches it.
+async fn relay_map_edit_of_a_host_record(scratch_name: &str) -> EventFields {
+    let scratch = Scratch::new(scratch_name).await;
+    let (report, mut recorded) = recording();
+    let (_member, witness) =
+        start_witnessed(&scratch, member_plan_recording_transport(&report), None).await;
+
+    witness
+        .broadcast_as(
+            HOST_SEED,
+            infrastructure_of(HOST_SEED, HOST_RELAY, wall_clock_ms() / 1000),
+        )
+        .await;
+    let edit = recorded.next_named(RELAY_MAP_EDITED).await;
+    drop(scratch);
+    edit
+}
+
+#[tokio::test]
+async fn spec_3_8_a_host_relay_added_to_the_relay_map_is_recorded_with_its_host_and_salted_location()
+ {
+    let relay = relay_url(HOST_RELAY);
+    let expected_hash = LocationHash::of(&test_salt(), relay.as_str()).hex();
+
+    assert_eq!(
+        relay_map_edit_of_a_host_record("ev-rm-add").await,
+        [
+            ("edit", Value::from("added")),
+            ("host", short_id(HOST_SEED)),
+            ("kind", Value::from("relay")),
+            ("port", Value::from(HTTPS_DEFAULT_PORT)),
+            ("location", Value::from(expected_hash)),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn observability_decision_6_a_relay_map_edit_never_writes_the_relay_in_clear() {
+    let edit = relay_map_edit_of_a_host_record("ev-rm-clear").await;
+
+    let written = format!("{edit:?}");
+    assert!(
+        !written.contains("relay-host.estafette.invalid"),
+        "{written}"
+    );
+}
+
+#[tokio::test]
+async fn spec_3_8_a_host_record_whose_relay_the_map_already_holds_records_no_relay_map_edit() {
+    let scratch = Scratch::new("ev-rm-held").await;
+    let (report, mut recorded) = recording();
+    let (_member, witness) =
+        start_witnessed(&scratch, member_plan_recording_transport(&report), None).await;
+    let first_ts = wall_clock_ms() / 1000;
+
+    witness
+        .broadcast_as(
+            HOST_SEED,
+            infrastructure_of(HOST_SEED, HOST_RELAY, first_ts),
+        )
+        .await;
+    witness
+        .broadcast_as(
+            HOST_SEED,
+            infrastructure_of(HOST_SEED, HOST_RELAY, first_ts + 1),
+        )
+        .await;
+    let mut names = Vec::new();
+    let mut infrastructure_taken = 0;
+    while infrastructure_taken < 2 {
+        let (name, fields) = recorded
+            .next_of(&[RELAY_MAP_EDITED, "gossip.payload_accepted"])
+            .await;
+        names.push(name);
+        infrastructure_taken += usize::from(
+            name == "gossip.payload_accepted"
+                && fields.contains(&("kind", Value::from("infrastructure"))),
+        );
+    }
+
+    assert_eq!(
+        names
+            .iter()
+            .filter(|name| **name == RELAY_MAP_EDITED)
+            .count(),
+        1,
+        "{names:?}"
+    );
+    drop(scratch);
+}
 
 #[tokio::test]
 async fn observability_decision_9_a_member_records_the_lookup_it_points_at_the_address_of_a_host_record()

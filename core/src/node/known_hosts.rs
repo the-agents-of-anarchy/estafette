@@ -8,7 +8,7 @@ use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 use super::addresses::{lookup_replaced_event, replace_lookup_entry};
 use super::presence::{NodeError, admission_record};
 use crate::config::{ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
-use crate::event::{Event, GossipEvent};
+use crate::event::{Event, GossipEvent, ShortId};
 use crate::keys::parse_public_key;
 use crate::net::endpoint::NodeEndpoint;
 use crate::payload::{DescribedPayload, PayloadDropRule, ValidInfrastructure};
@@ -115,6 +115,14 @@ impl KnownHosts {
             .collect()
     }
 
+    /// The known host whose relay is `relay`, if any parses to it.
+    pub(super) fn host_with_relay(&self, relay: &RelayUrl) -> Option<ShortId> {
+        self.addresses()
+            .into_iter()
+            .find(|host| host.relay == *relay)
+            .map(|host| ShortId::from(host.id))
+    }
+
     /// Applies the Infrastructure rows of spec 3.8, recording whether the record was taken: holds a record newer than its host's last, points the lookup at its address, adds its relay as `relay` says, and saves a host not known before, recording a save that failed.
     pub(crate) async fn take_infrastructure(
         &self,
@@ -134,7 +142,11 @@ impl KnownHosts {
             report(event);
         }
         match relay {
-            RelayOfRecord::AddToRelayMap => endpoint.add_relay(valid.relay().clone()).await,
+            RelayOfRecord::AddToRelayMap => {
+                endpoint
+                    .add_relay(valid.relay().clone(), ShortId::from(&valid.record().host))
+                    .await;
+            }
             RelayOfRecord::LeaveOutOfRelayMap => {}
         }
         if verdict == RecordVerdict::FromNewHost
@@ -216,10 +228,13 @@ mod tests {
     use super::*;
     use crate::node::presence::tests::{
         FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, NETWORK_FILE_NAME, OWNER_SEED,
-        PROPERTY_CASES, bind, config_with_hosts, infrastructure_of, keys, secret_key,
+        PROPERTY_CASES, bind, card, config_with_hosts, infrastructure_of, keys, relay_url,
+        secret_key,
     };
     use crate::payload::OpenedPayload;
     use crate::seeded_draws::Draws;
+
+    const UNHELD_RELAY: &str = "https://relay-unheld.estafette.invalid/";
 
     const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
     const SPEC_INFRASTRUCTURE_RECORD_EXPIRY_DAYS: u64 = 30;
@@ -268,6 +283,26 @@ mod tests {
             | OpenedPayload::Unreachable(_)
             | OpenedPayload::PresenceRequest(_) => panic!("an infrastructure record was sealed"),
         }
+    }
+
+    /// Spec 3.8: the known host whose relay a relay map edit concerns is named by its five-byte id, and a relay no known host has names none.
+    #[test]
+    fn spec_3_8_the_known_host_with_a_relay_is_found_by_that_relay_alone() {
+        let known_hosts = KnownHosts::new(
+            config_with_hosts(vec![Host {
+                id: crate::keys::render_public_key(&secret_key(HOST_SEED).public()),
+                relay: HOST_RELAY.to_owned(),
+                ts: None,
+                origin: HostOrigin::Configured,
+            }]),
+            PathBuf::new(),
+        );
+
+        assert_eq!(
+            known_hosts.host_with_relay(&relay_url(HOST_RELAY)),
+            Some(ShortId::from(&card(HOST_SEED)))
+        );
+        assert_eq!(known_hosts.host_with_relay(&relay_url(UNHELD_RELAY)), None);
     }
 
     /// Spec 3.3 and 3.8: a host learned from its record leaves the file at a later save exactly when more than 30 days have passed since it was heard.

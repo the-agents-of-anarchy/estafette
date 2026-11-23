@@ -236,7 +236,7 @@ mod tests {
         Name::ALL.iter().map(|name| name.as_str())
     }
 
-    const PINNED_EVENT_NAMES: [&str; 67] = [
+    const PINNED_EVENT_NAMES: [&str; 68] = [
         "process.command_failed",
         "process.network_created",
         "process.clock_before_unix_epoch",
@@ -289,6 +289,7 @@ mod tests {
         "transport.path_events_missed",
         "transport.home_relay",
         "transport.relay_probed",
+        "transport.relay_map_edited",
         "state.counters",
         "inbox.accept_failed",
         "inbox.frame_delivered",

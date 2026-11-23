@@ -1627,7 +1627,8 @@ impl PresenceLoop {
             .relay_loss
             .lost_relays(&home_relays(&statuses), self.monotonic.now())
         {
-            self.endpoint.remove_relay(&relay).await;
+            let host = self.known_hosts.host_with_relay(&relay);
+            self.endpoint.remove_relay(&relay, host).await;
         }
     }
 }
@@ -4915,6 +4916,8 @@ pub(super) mod tests {
 
     #[cfg(feature = "relay")]
     const HOME_RELAY: &str = "transport.home_relay";
+    #[cfg(feature = "relay")]
+    const RELAY_MAP_EDITED: &str = "transport.relay_map_edited";
     /// The longest a member takes to announce once its handed clock reads the end of the reannounce interval, which the runtime's timer would never reach on a clock an hour ahead.
     #[cfg(feature = "relay")]
     const ANNOUNCED_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
@@ -5085,6 +5088,63 @@ pub(super) mod tests {
         assert!(
             removed.is_some(),
             "the relay map still holds the lost home relay {RELAY_LOSS_REMOVAL_SLACK:?} after the clock read the relay loss wait"
+        );
+        drop(scratch);
+    }
+
+    #[cfg(feature = "relay")]
+    #[tokio::test]
+    async fn spec_3_8_a_home_relay_the_relay_loss_wait_removes_is_recorded_as_a_removal_at_its_salted_location()
+     {
+        use crate::net::endpoint::LocationHash;
+
+        let scratch = Scratch::new("loss-record").await;
+        let clock = StandingClock::standing_an_hour_ahead();
+        let MemberOnALocalRelay {
+            member: _member,
+            relay,
+            relay_address,
+            mut events,
+            ..
+        } = member_on_a_local_relay(&scratch, &clock).await;
+        relay.shutdown().await.unwrap();
+        home_relay_taken_for_lost(&mut events).await;
+        clock
+            .asked_to_wake(
+                "the relay loss wait",
+                clock.now().checked_add(SPEC_RELAY_LOSS_WAIT).unwrap(),
+            )
+            .await;
+
+        clock.move_forward(SPEC_RELAY_LOSS_WAIT);
+        let removal = next_recorded_meeting(
+            &mut events,
+            RELAY_MAP_EDITED,
+            |_fields| true,
+            RELAY_LOSS_REMOVAL_SLACK,
+        )
+        .await;
+
+        assert_eq!(
+            removal,
+            [
+                ("edit", serde_json::Value::from("removed")),
+                ("kind", serde_json::Value::from("relay")),
+                (
+                    "port",
+                    serde_json::Value::from(relay_address.port_or_known_default())
+                ),
+                (
+                    "location",
+                    serde_json::Value::from(
+                        LocationHash::of(
+                            &crate::net::direct::tests::test_salt(),
+                            relay_address.as_str()
+                        )
+                        .hex()
+                    )
+                ),
+            ]
         );
         drop(scratch);
     }

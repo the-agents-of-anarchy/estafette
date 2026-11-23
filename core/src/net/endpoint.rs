@@ -17,7 +17,7 @@ use super::gate::{
     FillGateNonce, GATE_REFUSAL_REASON, GateNonce, NetworkSecretGate, ReportGateClosing,
 };
 use crate::crypto::GateKey;
-use crate::event::{RunRecord, TransportEvent};
+use crate::event::{RunRecord, ShortId, TransportEvent};
 use crate::trace::LocationSalt;
 
 pub use super::gate::{GateFailure, GateFailureReason};
@@ -131,17 +131,30 @@ impl NodeEndpoint {
             .map(EndpointAddr::from)
     }
 
-    /// Adds the relay to the relay map unless the map already holds it, so a held relay keeps its entry.
-    pub async fn add_relay(&self, relay: RelayUrl) {
+    /// Adds the relay of the known host to the relay map unless the map already holds it, so a held relay keeps its entry, recording an addition.
+    pub async fn add_relay(&self, relay: RelayUrl, host: ShortId) {
         if !self.relay_map.contains(&relay) {
             let entry = Arc::new(RelayConfig::from(relay.clone()));
-            self.endpoint.insert_relay(relay, entry).await;
+            self.endpoint.insert_relay(relay.clone(), entry).await;
+            self.record_relay_map_edit(RelayMapEdit::Added, Some(host), &relay);
         }
     }
 
-    /// Removes the relay from the relay map.
-    pub async fn remove_relay(&self, relay: &RelayUrl) {
-        self.endpoint.remove_relay(relay).await;
+    /// Removes the relay from the relay map, recording a removal when the map held it and naming the known host it belongs to, if any.
+    pub async fn remove_relay(&self, relay: &RelayUrl, host: Option<ShortId>) {
+        if self.relay_map.contains(relay) {
+            self.endpoint.remove_relay(relay).await;
+            self.record_relay_map_edit(RelayMapEdit::Removed, host, relay);
+        }
+    }
+
+    /// Records an edit of the relay map: what it did, the known host the relay belongs to, and where the relay is.
+    fn record_relay_map_edit(&self, edit: RelayMapEdit, host: Option<ShortId>, relay: &RelayUrl) {
+        self.record(|transport| TransportEvent::RelayMapEdited {
+            edit,
+            host,
+            location: transport.locate(&TransportAddr::Relay(relay.clone())),
+        });
     }
 
     /// The relay map the endpoint dials through, shared, so a test reads each relay it gains or loses without editing it.
@@ -427,6 +440,13 @@ pub enum PathChange {
 pub enum RebindCause {
     Deaf,
     JoinGainedNoNeighbor,
+}
+
+/// What an edit did to the relay map: it added a relay the map did not hold, or removed one it held.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelayMapEdit {
+    Added,
+    Removed,
 }
 
 /// When a snapshot of the counters was taken: at start, at a rebind before its old endpoint closes, once a rebind's fresh endpoint and gossip are in place, at an interval, or at stop.
@@ -1024,13 +1044,17 @@ mod tests {
         let member =
             bind_node_with_relays(MEMBER_SEED, MEMBER_SECRET, vec![first_relay.clone()]).await;
 
-        member.remove_relay(&first_relay).await;
+        member.remove_relay(&first_relay, None).await;
         assert!(member.endpoint().remove_relay(&first_relay).await.is_none());
 
-        member.add_relay(first_relay.clone()).await;
+        member
+            .add_relay(first_relay.clone(), ShortId::from(tested_peer()))
+            .await;
         assert!(member.endpoint().remove_relay(&first_relay).await.is_some());
 
-        member.add_relay(second_relay.clone()).await;
+        member
+            .add_relay(second_relay.clone(), ShortId::from(tested_peer()))
+            .await;
         assert!(
             member
                 .endpoint()
@@ -1051,7 +1075,9 @@ mod tests {
             .insert_relay(first_relay.clone(), entry_without_address_discovery)
             .await;
 
-        member.add_relay(first_relay.clone()).await;
+        member
+            .add_relay(first_relay.clone(), ShortId::from(tested_peer()))
+            .await;
 
         let entry = member.endpoint().remove_relay(&first_relay).await.unwrap();
         assert_eq!(entry.quic, None);
@@ -1066,7 +1092,9 @@ mod tests {
         let peer = bind_node(SECOND_MEMBER_SEED, MEMBER_SECRET).await;
         let outsider = bind_plain_endpoint(OUTSIDER_SEED).await;
         member.replace_address(peer.endpoint().addr());
-        member.add_relay(added_relay.clone()).await;
+        member
+            .add_relay(added_relay.clone(), ShortId::from(tested_peer()))
+            .await;
         let before = member.endpoint().clone();
 
         member.rebind().await.unwrap();

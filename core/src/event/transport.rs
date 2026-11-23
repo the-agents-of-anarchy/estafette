@@ -6,9 +6,11 @@ use super::peer::ShortId;
 use super::{AreaEvent, EventFields};
 use crate::net::endpoint::{
     Close, CloseReason, ConnectionId, Direction, GateFailure, GateFailureReason, Location,
-    LocationKind, PathChange, Protocol, RebindCause,
+    LocationKind, PathChange, Protocol, RebindCause, RelayMapEdit,
 };
 
+const EDIT_FIELD: &str = "edit";
+const HOST_FIELD: &str = "host";
 const CAUSE_FIELD: &str = "cause";
 const CONNECTION_FIELD: &str = "connection";
 const DIRECTION_FIELD: &str = "direction";
@@ -39,6 +41,7 @@ super::event_names! {
         PathEventsMissed => "transport.path_events_missed",
         HomeRelay => "transport.home_relay",
         RelayProbed => "transport.relay_probed",
+        RelayMapEdited => "transport.relay_map_edited",
         RouterShutdownFailed => "transport.router_shutdown_failed",
         RebindFailed => "transport.rebind_failed",
         GateClosed => "transport.gate_closed",
@@ -85,6 +88,12 @@ pub enum TransportEvent {
     HomeRelay { location: Location, connected: bool },
     /// A rebind probed a known host's relay, which answered within the relay probe timeout or did not.
     RelayProbed { location: Location, answered: bool },
+    /// The relay map this node dials through gained or lost a relay, naming the known host it belongs to when one has it, and where it is.
+    RelayMapEdited {
+        edit: RelayMapEdit,
+        host: Option<ShortId>,
+        location: Location,
+    },
     /// The old endpoint's listeners did not shut down cleanly before the rebind.
     RouterShutdownFailed(JoinError),
     /// The endpoint was not bound again, so the node announces nothing more.
@@ -110,6 +119,7 @@ impl AreaEvent for TransportEvent {
             Self::PathEventsMissed { .. } => TransportEventName::PathEventsMissed,
             Self::HomeRelay { .. } => TransportEventName::HomeRelay,
             Self::RelayProbed { .. } => TransportEventName::RelayProbed,
+            Self::RelayMapEdited { .. } => TransportEventName::RelayMapEdited,
             Self::RouterShutdownFailed(_) => TransportEventName::RouterShutdownFailed,
             Self::RebindFailed(_) => TransportEventName::RebindFailed,
             Self::GateClosed(_) => TransportEventName::GateClosed,
@@ -124,7 +134,8 @@ impl AreaEvent for TransportEvent {
             | Self::PathChanged { .. }
             | Self::PathEventsMissed { .. }
             | Self::HomeRelay { .. }
-            | Self::RelayProbed { .. } => return None,
+            | Self::RelayProbed { .. }
+            | Self::RelayMapEdited { .. } => return None,
             Self::Rebinding(_) => "rebinding the endpoint: no gossip payload was heard for the deaf timeout, or the join gained no neighbor".to_owned(),
             Self::RouterShutdownFailed(source) => format!(
                 "the old endpoint's listeners did not shut down cleanly before the rebind: {source}"
@@ -218,7 +229,27 @@ impl AreaEvent for TransportEvent {
                 vec![(ANSWERED_FIELD, Value::from(*answered))],
             ]
             .concat(),
+            Self::RelayMapEdited {
+                edit,
+                host,
+                location,
+            } => [
+                vec![(EDIT_FIELD, Value::from(relay_map_edit_text(*edit)))],
+                host.map(|host| (HOST_FIELD, Value::from(host.text())))
+                    .into_iter()
+                    .collect(),
+                location_fields(*location),
+            ]
+            .concat(),
         }
+    }
+}
+
+/// The relay map edit as the events file writes it.
+const fn relay_map_edit_text(edit: RelayMapEdit) -> &'static str {
+    match edit {
+        RelayMapEdit::Added => "added",
+        RelayMapEdit::Removed => "removed",
     }
 }
 
@@ -316,6 +347,7 @@ mod tests {
     const STOP_CODE: u32 = 59;
     const DIRECT_PORT: u16 = 7842;
     const RELAY_PORT: u16 = 443;
+    const RELAY_HOST_BYTE: u8 = 9;
 
     #[test]
     fn observability_decision_9_each_protocol_a_connection_carries_is_written_as_a_word_of_its_own()
@@ -414,6 +446,64 @@ mod tests {
         ];
 
         assert_each_arm(&cases, |cause| cause_text(*cause), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_each_relay_map_edit_is_written_as_a_word_with_its_host_when_it_has_one()
+     {
+        let relay_hash = LocationHash::of(&test_salt(), "https://relay.example/");
+        let relay = Location {
+            kind: LocationKind::Relay,
+            port: Some(RELAY_PORT),
+            hash: relay_hash,
+        };
+        let host = ShortId::from(&[RELAY_HOST_BYTE; 32]);
+        let relay_fields = vec![
+            ("kind", Value::from("relay")),
+            ("port", Value::from(RELAY_PORT)),
+            ("location", Value::from(relay_hash.hex())),
+        ];
+        let cases = [
+            (
+                (RelayMapEdit::Added, Some(host)),
+                [
+                    vec![
+                        ("edit", Value::from("added")),
+                        ("host", Value::from(host.text())),
+                    ],
+                    relay_fields.clone(),
+                ]
+                .concat(),
+            ),
+            (
+                (RelayMapEdit::Removed, Some(host)),
+                [
+                    vec![
+                        ("edit", Value::from("removed")),
+                        ("host", Value::from(host.text())),
+                    ],
+                    relay_fields.clone(),
+                ]
+                .concat(),
+            ),
+            (
+                (RelayMapEdit::Removed, None),
+                [vec![("edit", Value::from("removed"))], relay_fields].concat(),
+            ),
+        ];
+
+        assert_each_arm(
+            &cases,
+            |(edit, host)| {
+                TransportEvent::RelayMapEdited {
+                    edit: *edit,
+                    host: *host,
+                    location: relay,
+                }
+                .fields()
+            },
+            cases.len(),
+        );
     }
 
     #[test]
