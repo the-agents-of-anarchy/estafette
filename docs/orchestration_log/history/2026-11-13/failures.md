@@ -119,3 +119,11 @@ What happened: Seven implementers of the close-review fix units ran from launch 
 Mechanism: The implementer agent has no SendMessage tool, so its binding is a file and no message wakes the lead; the launch text named no binding path and the lead set no wake to read it, and the briefs' Stack block lists tdd and systematic-debugging as skills, which agents loaded through the Skill tool or passed over.
 
 Correction: Every implementer launch text now names the binding file, orders each source read with the Read tool at its path with its wc -l count and one commitment sentence, tdd and systematic-debugging by name, and the lead sets a one-shot wake minutes after each launch to read the file against the Stack block and stop a deficient agent before it works.
+
+## A sentence written into the conversation under silence
+
+What happened: After a nudge that asked for visible output, the lead ended one turn with a sentence saying it was leaving the conversation empty, where the turn had to end with no text at all.
+
+Mechanism: A nudge is no owner's word, and the lead answered its wording with a statement about the silence itself, which the standing ruling forbids as much as any other text.
+
+Correction: Every turn not started by the owner's typed word ends with a message of zero characters, a nudge's request for visible output included; nothing about the silence is written to the conversation.
