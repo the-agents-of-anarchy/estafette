@@ -2269,7 +2269,7 @@ pub(super) mod tests {
         handle: &'static str,
         public: &'static [u8],
         hosts: Vec<u8>,
-        host_relays: BTreeMap<u8, &'static str>,
+        host_relays: BTreeMap<u8, String>,
         reachable: Vec<u8>,
         clock: Clock,
         monotonic: MonotonicClock,
@@ -2304,10 +2304,13 @@ pub(super) mod tests {
             Self { register, ..self }
         }
 
-        pub(in crate::node) fn with_host_relays(self, hosts: &[(u8, &'static str)]) -> Self {
+        pub(in crate::node) fn with_host_relays(self, hosts: &[(u8, &str)]) -> Self {
             Self {
                 hosts: hosts.iter().map(|(seed, _)| *seed).collect(),
-                host_relays: hosts.iter().copied().collect(),
+                host_relays: hosts
+                    .iter()
+                    .map(|(seed, relay)| (*seed, (*relay).to_owned()))
+                    .collect(),
                 ..self
             }
         }
@@ -2429,8 +2432,7 @@ pub(super) mod tests {
                                 seed,
                                 plan.host_relays
                                     .get(&seed)
-                                    .copied()
-                                    .unwrap_or(UNREACHABLE_RELAY),
+                                    .map_or(UNREACHABLE_RELAY, String::as_str),
                             )
                         })
                         .collect(),
@@ -5217,6 +5219,135 @@ pub(super) mod tests {
                     )
                 ),
             ]
+        );
+        drop(scratch);
+    }
+
+    /// Appends to `taken` every event recorded until the next of that name meeting the condition, that one included, failing by name when none comes within the wait.
+    #[cfg(feature = "relay")]
+    async fn take_until_recorded(
+        events: &mut UnboundedReceiver<RecordedEvent>,
+        taken: &mut Vec<RecordedEvent>,
+        name: &'static str,
+        meets: impl Fn(&crate::event::EventFields) -> bool + Send + Sync,
+        within: Duration,
+    ) {
+        let (before, found) = recorded_until(events, name, meets, within).await;
+        taken.extend(before);
+        taken.push((name, found));
+    }
+
+    /// Runs a member whose configured host owns the local relay it is bound to, adds the relay of a witnessed host record, then stops the local relay and moves the clock past the relay loss wait, returning every event the member recorded from its start to the removal.
+    #[cfg(feature = "relay")]
+    async fn relay_map_gaining_and_losing_a_relay(scratch: &Scratch) -> Vec<RecordedEvent> {
+        let clock = StandingClock::standing_an_hour_ahead();
+        let (relay, local_relay_address) = local_relay().await;
+        let (record, mut events) = recorded_events();
+        let endpoint = endpoint_recording_to(vec![local_relay_address.clone()], &record).await;
+        let member_endpoint = endpoint.endpoint().clone();
+        let starting = tokio::spawn(start_member(
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                .with_monotonic(clock.monotonic())
+                .with_host_relays(&[(HOST_SEED, local_relay_address.as_str())])
+                .with_report(record),
+            endpoint,
+            (
+                scratch.inbox(FIRST_SEED),
+                scratch.directories.inbox_socket_file(u32::from(FIRST_SEED)),
+            ),
+            scratch.network_file(FIRST_SEED),
+        ));
+        let witness = Witness::joined_through(WITNESS_SEED, None, &member_endpoint).await;
+        let mut recorded = Vec::new();
+        let (_member, ()) = tokio::join!(async { starting.await.unwrap() }, async {
+            take_until_recorded(
+                &mut events,
+                &mut recorded,
+                STATE_COUNTERS,
+                |_fields| true,
+                PAYLOAD_WAIT,
+            )
+            .await;
+            clock.move_forward(SPEC_JOIN_TIMEOUT);
+            take_until_recorded(
+                &mut events,
+                &mut recorded,
+                OWN_HANDLE_ASSIGNED,
+                |_fields| true,
+                PAYLOAD_WAIT,
+            )
+            .await;
+        });
+        witness
+            .broadcast_as(
+                SECOND_HOST_SEED,
+                infrastructure_of(SECOND_HOST_SEED, SECOND_HOST_RELAY, wall_clock_ms() / 1000),
+            )
+            .await;
+        take_until_recorded(
+            &mut events,
+            &mut recorded,
+            RELAY_MAP_EDITED,
+            |fields| fields.contains(&("edit", serde_json::Value::from("added"))),
+            HOME_RELAY_STATUS_WITHIN,
+        )
+        .await;
+        take_until_recorded(
+            &mut events,
+            &mut recorded,
+            HOME_RELAY,
+            |fields| fields.contains(&("connected", serde_json::Value::from(true))),
+            HOME_RELAY_STATUS_WITHIN,
+        )
+        .await;
+        relay.shutdown().await.unwrap();
+        take_until_recorded(
+            &mut events,
+            &mut recorded,
+            HOME_RELAY,
+            |fields| fields.contains(&("connected", serde_json::Value::from(false))),
+            HOME_RELAY_STATUS_WITHIN,
+        )
+        .await;
+        clock
+            .asked_to_wake(
+                "the relay loss wait",
+                clock.now().checked_add(SPEC_RELAY_LOSS_WAIT).unwrap(),
+            )
+            .await;
+        clock.move_forward(SPEC_RELAY_LOSS_WAIT);
+        take_until_recorded(
+            &mut events,
+            &mut recorded,
+            RELAY_MAP_EDITED,
+            |fields| fields.contains(&("edit", serde_json::Value::from("removed"))),
+            RELAY_LOSS_REMOVAL_SLACK,
+        )
+        .await;
+        recorded
+    }
+
+    #[cfg(feature = "relay")]
+    #[tokio::test]
+    async fn spec_3_8_a_removed_relay_a_known_host_owns_is_recorded_with_that_host_as_its_short_id()
+    {
+        let scratch = Scratch::new("loss-host").await;
+
+        let events = relay_map_gaining_and_losing_a_relay(&scratch).await;
+
+        let removal = events
+            .iter()
+            .rfind(|(name, _fields)| *name == RELAY_MAP_EDITED)
+            .map(|(_name, fields)| fields.clone())
+            .unwrap();
+        assert!(
+            removal.contains(&(
+                "host",
+                serde_json::Value::from(
+                    crate::event::ShortId::from(secret_key(HOST_SEED).public()).text()
+                )
+            )),
+            "{removal:?}"
         );
         drop(scratch);
     }
