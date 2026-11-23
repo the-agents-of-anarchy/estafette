@@ -103,3 +103,19 @@ What happened: on 2026-11-18, in the turns ended near 00:28, 00:34 and 00:47, ea
 Mechanism: the owner's typed question of 2026-11-17T19:02 was answered in the conversation on his word that the lead stays silent unless spoken to; the turns that followed were started by notifications, and the lead carried the answering register over to them as though the question still stood, without checking who had started the turn.
 
 Correction: one typed question licenses one answer. Every turn started by a notification, a heartbeat, an agent's message or a nudge ends with a message of zero characters; the state those paragraphs held stands in the status line and the journal.
+
+## Hours typed by hand into a status line and a journal line after the resume
+
+What happened: On 2026-11-23, in the turn that resumed after the weekly reset, lead-alpha wrote two hours it never read from the clock: the status file's governing line and one journal decision line say the disk held 66 GiB free at 22:45, and the status line says usage was read at 22:50; the clock read 22:44 after both were written, so both hours are false, and the readings were taken between 22:37 and 22:43.
+
+Mechanism: The rule that a stamp comes from date in the command that writes it was applied to the leading stamp of each line and not to hours quoted inside the line's text, which were typed from a guess of elapsed time.
+
+Correction: The status line is corrected in place with the bound the clock gives; a journal line states the correction beside the false one; from now every hour inside a record's text is either read by date in the writing command or left out.
+
+## Implementer bindings read at the report and not at the start
+
+What happened: Seven implementers of the close-review fix units ran from launch without the lead reading their binding files; five bindings were deficient (elements missing, a partial oath read, counts missing or wrong, commitment sentences missing), one unit reached a failed spec review and two more had committed or begun their heavy gate before the audit refused them.
+
+Mechanism: The implementer agent has no SendMessage tool, so its binding is a file and no message wakes the lead; the launch text named no binding path and the lead set no wake to read it, and the briefs' Stack block lists tdd and systematic-debugging as skills, which agents loaded through the Skill tool or passed over.
+
+Correction: Every implementer launch text now names the binding file, orders each source read with the Read tool at its path with its wc -l count and one commitment sentence, tdd and systematic-debugging by name, and the lead sets a one-shot wake minutes after each launch to read the file against the Stack block and stop a deficient agent before it works.
