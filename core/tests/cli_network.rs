@@ -14,7 +14,9 @@ mod network_commands {
     use estafette::cli::network::{NetworkCommand, NetworkFilesystem, run};
     use estafette::config::{HostOrigin, NetworkConfig};
     use estafette::crypto::verify_host_certificate;
-    use estafette::dirs::{Directories, DirectoryFilesystem, OperatingSystemFilesystem};
+    use estafette::dirs::{
+        CardsDirectoryOverride, Directories, DirectoryFilesystem, OperatingSystemFilesystem,
+    };
     use estafette::handle::Handle;
     use estafette::invite::{parse_invitation, render_host_line, render_invitation};
     use estafette::keys::{parse_public_key, parse_secret_key, render_public_key};
@@ -179,7 +181,7 @@ mod network_commands {
                 _ => None,
             },
             &OperatingSystemFilesystem::of_this_process().unwrap(),
-            None,
+            CardsDirectoryOverride::Offered(None),
         )
         .unwrap();
         run(
@@ -640,7 +642,7 @@ mod network_commands {
                 _ => None,
             },
             &OperatingSystemFilesystem::of_this_process().unwrap(),
-            None,
+            CardsDirectoryOverride::Offered(None),
         )
         .unwrap();
         let command = NetworkCommand::ShowInvitation {

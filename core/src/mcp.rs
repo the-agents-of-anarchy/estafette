@@ -1030,7 +1030,7 @@ mod tests {
 
     use super::*;
     use crate::config::{Host, HostOrigin};
-    use crate::dirs::OperatingSystemFilesystem;
+    use crate::dirs::{CardsDirectoryOverride, OperatingSystemFilesystem};
     use crate::event::Event;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
@@ -1108,7 +1108,7 @@ mod tests {
             Directories::establish(
                 environment,
                 &OperatingSystemFilesystem::of_this_process().unwrap(),
-                None,
+                CardsDirectoryOverride::Offered(None),
             )
             .unwrap()
         }

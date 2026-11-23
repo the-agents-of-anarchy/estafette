@@ -11,7 +11,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
 use estafette::dirs::{
-    Directories, DirectoryFilesystem, OperatingSystemFilesystem, TraceDirectory, trace_file_of,
+    CardsDirectoryOverride, Directories, DirectoryFilesystem, OperatingSystemFilesystem,
+    TraceDirectory, trace_file_of,
 };
 use estafette::keys::parse_public_key;
 use iroh::EndpointId;
@@ -361,7 +362,7 @@ impl ScratchMachine {
         Directories::establish(
             |name: &str| variable_of(&environment, name),
             &OperatingSystemFilesystem::of_this_process().unwrap(),
-            None,
+            CardsDirectoryOverride::Offered(None),
         )
         .unwrap()
     }
@@ -448,7 +449,7 @@ impl ScratchMachine {
         Directories::establish(
             |name: &str| variable_of(&environment, name),
             &OperatingSystemFilesystem::of_this_process().unwrap(),
-            None,
+            CardsDirectoryOverride::Offered(None),
         )
         .unwrap();
         OperatingSystemFilesystem::of_this_process()

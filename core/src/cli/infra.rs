@@ -917,7 +917,7 @@ mod tests {
     use crate::crypto::{
         NetworkKeys, NetworkSecret, render_host_certificate, sign_host_certificate,
     };
-    use crate::dirs::{DirectoryFilesystem, OperatingSystemFilesystem};
+    use crate::dirs::{CardsDirectoryOverride, DirectoryFilesystem, OperatingSystemFilesystem};
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::invite::render_host_line;
     use crate::keys::{render_public_key, render_secret_key};
@@ -1029,7 +1029,7 @@ mod tests {
             let directories = Directories::establish(
                 environment,
                 &OperatingSystemFilesystem::of_this_process().unwrap(),
-                None,
+                CardsDirectoryOverride::Offered(None),
             )
             .unwrap();
             Self { root, directories }

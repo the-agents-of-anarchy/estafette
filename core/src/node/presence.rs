@@ -1939,7 +1939,7 @@ pub(super) mod tests {
     use super::*;
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
-    use crate::dirs::{Directories, OperatingSystemFilesystem};
+    use crate::dirs::{CardsDirectoryOverride, Directories, OperatingSystemFilesystem};
     use crate::event::Event;
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
@@ -2124,7 +2124,7 @@ pub(super) mod tests {
             let directories = Directories::establish(
                 environment,
                 &OperatingSystemFilesystem::of_this_process().unwrap(),
-                None,
+                CardsDirectoryOverride::Offered(None),
             )
             .unwrap();
             Self {

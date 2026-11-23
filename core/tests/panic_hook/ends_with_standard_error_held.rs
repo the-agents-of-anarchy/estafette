@@ -57,7 +57,7 @@ fn after_a_panic_raised_while_standard_error_is_held() -> AfterThePanic {
         TRACED_COMMAND,
         Tracing::Debug,
         environment,
-        None,
+        CardsDirectoryOverride::Offered(None),
         StandardErrorPanickingWhenArmed {
             record: standard_error.clone(),
             armed: Arc::clone(&armed),

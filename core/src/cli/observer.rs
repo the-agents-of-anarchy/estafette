@@ -22,7 +22,7 @@ use crate::cli::lines::tab_separated_line;
 use crate::cli::network::NetworkFilesystem;
 use crate::config::{ConfigError, NetworkConfig};
 use crate::crypto::GateKey;
-use crate::dirs::{Directories, DirectoriesError};
+use crate::dirs::{CardsDirectoryOverride, Directories, DirectoriesError};
 use crate::errors::ErrorCode;
 use crate::event::{Event, RunRecord};
 use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
@@ -137,12 +137,12 @@ impl ObserverCommand {
         }
     }
 
-    /// The cards directory override the command was given, none for the commands that read no card.
+    /// The cards directory override of the command: not offered by the commands that read no card, the flag when `test-send` was given one.
     #[must_use]
-    pub fn cards_dir(&self) -> Option<PathBuf> {
+    pub fn cards_directory_override(&self) -> CardsDirectoryOverride {
         match self {
-            Self::ShowPeers { .. } | Self::Tail { .. } => None,
-            Self::TestSend { cards_dir, .. } => cards_dir.clone(),
+            Self::ShowPeers { .. } | Self::Tail { .. } => CardsDirectoryOverride::NotOffered,
+            Self::TestSend { cards_dir, .. } => CardsDirectoryOverride::Offered(cards_dir.clone()),
         }
     }
 
@@ -1169,8 +1169,12 @@ mod tests {
                 "XDG_RUNTIME_DIR" => Some(base.join("r").into_os_string()),
                 _ => None::<OsString>,
             };
-            let directories =
-                Directories::establish(environment, operating_system_filesystem(), None).unwrap();
+            let directories = Directories::establish(
+                environment,
+                operating_system_filesystem(),
+                CardsDirectoryOverride::Offered(None),
+            )
+            .unwrap();
             Self {
                 root,
                 directories: Arc::new(directories),

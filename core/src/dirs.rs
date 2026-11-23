@@ -291,6 +291,13 @@ impl From<BaseDirectoryUnresolvable> for DirectoriesError {
     }
 }
 
+/// Whether the command being run takes a cards directory, and the `--cards-dir` flag it was given when it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CardsDirectoryOverride {
+    Offered(Option<PathBuf>),
+    NotOffered,
+}
+
 /// The three base directories and the cards directory of one run, and every path derived from them.
 #[derive(Debug)]
 pub struct Directories {
@@ -301,7 +308,7 @@ pub struct Directories {
 }
 
 impl Directories {
-    /// Resolves the base directories, creates them with mode 0700, and applies the cards directory override.
+    /// Resolves the base directories, creates them with mode 0700, and applies the cards directory override of a command that offers one.
     ///
     /// # Errors
     ///
@@ -309,7 +316,7 @@ impl Directories {
     pub fn establish(
         environment: impl Fn(&str) -> Option<OsString>,
         filesystem: &impl DirectoryFilesystem,
-        cards_directory_flag: Option<PathBuf>,
+        cards_directory_override: CardsDirectoryOverride,
     ) -> Result<Self, DirectoriesError> {
         let config =
             xdg_base_directory(&environment, CONFIG_HOME_VARIABLE, CONFIG_HOME_UNDER_HOME)?
@@ -325,9 +332,13 @@ impl Directories {
         })?;
         let runtime = runtime_parent(&environment).join(format!("{PRODUCT_NAME}-{user_id}"));
         create_base_directory(filesystem, &runtime)?;
-        let cards = cards_directory_flag
-            .or_else(|| non_empty_variable(&environment, CARDS_DIRECTORY_VARIABLE))
-            .unwrap_or_else(|| data.join(CARDS_SUBDIRECTORY));
+        let cards = match cards_directory_override {
+            CardsDirectoryOverride::Offered(flag) => {
+                flag.or_else(|| non_empty_variable(&environment, CARDS_DIRECTORY_VARIABLE))
+            }
+            CardsDirectoryOverride::NotOffered => None,
+        }
+        .unwrap_or_else(|| data.join(CARDS_SUBDIRECTORY));
         Ok(Self {
             config,
             data,
@@ -616,7 +627,12 @@ mod tests {
 
     fn established(pairs: &[(&str, &str)]) -> (Directories, Vec<PathBuf>) {
         let filesystem = RecordingFilesystem::new();
-        let directories = Directories::establish(environment_of(pairs), &filesystem, None).unwrap();
+        let directories = Directories::establish(
+            environment_of(pairs),
+            &filesystem,
+            CardsDirectoryOverride::Offered(None),
+        )
+        .unwrap();
         (directories, filesystem.created.into_inner())
     }
 
@@ -762,7 +778,7 @@ mod tests {
         let failure = Directories::establish(
             environment_of(&[(DATA_HOME_VARIABLE, "/xd")]),
             &filesystem,
-            None,
+            CardsDirectoryOverride::Offered(None),
         )
         .unwrap_err();
         assert_eq!(
@@ -778,7 +794,7 @@ mod tests {
         let failure = Directories::establish(
             environment_of(&[(CONFIG_HOME_VARIABLE, "/xc"), (DATA_HOME_VARIABLE, "")]),
             &filesystem,
-            None,
+            CardsDirectoryOverride::Offered(None),
         )
         .unwrap_err();
         assert_eq!(
@@ -851,7 +867,7 @@ mod tests {
                 (HOME_VARIABLE, "/h"),
             ]),
             &filesystem,
-            Some(PathBuf::from("/from-flag")),
+            CardsDirectoryOverride::Offered(Some(PathBuf::from("/from-flag"))),
         )
         .unwrap();
         assert_eq!(
@@ -867,6 +883,25 @@ mod tests {
                 .created
                 .borrow()
                 .contains(&PathBuf::from("/from-flag"))
+        );
+    }
+
+    #[test]
+    fn a_command_that_offers_no_cards_directory_ignores_the_environment_spec_3_3() {
+        let directories = Directories::establish(
+            environment_of(&[
+                (DATA_HOME_VARIABLE, "/d"),
+                (CARDS_DIRECTORY_VARIABLE, "/from-environment"),
+                (HOME_VARIABLE, "/h"),
+            ]),
+            &RecordingFilesystem::new(),
+            CardsDirectoryOverride::NotOffered,
+        )
+        .unwrap();
+
+        assert_eq!(
+            directories.card_file("net", "alice").unwrap(),
+            Path::new("/d/estafette/cards/net/alice.yaml")
         );
     }
 
@@ -889,7 +924,7 @@ mod tests {
         let directories = Directories::establish(
             scratch_environment(&root),
             &OperatingSystemFilesystem::of_this_process().unwrap(),
-            None,
+            CardsDirectoryOverride::Offered(None),
         )
         .unwrap();
         assert_eq!(
@@ -943,7 +978,7 @@ mod tests {
         Directories::establish(
             scratch_environment(&root),
             &OperatingSystemFilesystem::of_this_process().unwrap(),
-            None,
+            CardsDirectoryOverride::Offered(None),
         )
         .unwrap();
         for directory in &existing {
@@ -964,7 +999,7 @@ mod tests {
             let failure = Directories::establish(
                 scratch_environment(&root),
                 &OperatingSystemFilesystem::of_this_process().unwrap(),
-                None,
+                CardsDirectoryOverride::Offered(None),
             )
             .unwrap_err();
 
@@ -1076,7 +1111,7 @@ mod tests {
         let failure = Directories::establish(
             scratch_environment(&root),
             &OperatingSystemFilesystem::of_this_process().unwrap(),
-            None,
+            CardsDirectoryOverride::Offered(None),
         )
         .unwrap_err();
         assert!(matches!(failure, DirectoriesError::CreationFailed { .. }));
@@ -1135,7 +1170,7 @@ mod tests {
         let failure = Directories::establish(
             environment_of(&[(HOME_VARIABLE, "/h")]),
             &OwnerlessFilesystem,
-            None,
+            CardsDirectoryOverride::Offered(None),
         )
         .unwrap_err();
         assert!(matches!(failure, DirectoriesError::OwnerUnreadable { .. }));
@@ -1153,7 +1188,7 @@ mod tests {
         let failure = Directories::establish(
             scratch_environment(&root),
             &OperatingSystemFilesystem::of_this_process().unwrap(),
-            None,
+            CardsDirectoryOverride::Offered(None),
         )
         .unwrap_err();
         assert!(failure.to_string().starts_with(&format!(

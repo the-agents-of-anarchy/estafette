@@ -417,6 +417,7 @@ mod tests {
     use crate::cli::observer::ObserverEffects;
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
+    use crate::dirs::CardsDirectoryOverride;
     use crate::event::Event;
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
@@ -547,7 +548,7 @@ mod tests {
             let directories = Directories::establish(
                 environment,
                 &OperatingSystemFilesystem::of_this_process().unwrap(),
-                None,
+                CardsDirectoryOverride::Offered(None),
             )
             .unwrap();
             let lab = Self {

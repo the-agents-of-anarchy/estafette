@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::fmt;
 use std::future::Future;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::pin::Pin;
 use std::process::ExitCode;
 use std::ptr::NonNull;
@@ -26,7 +26,8 @@ use estafette::cli::observer::{
 use estafette::config::{ConfigError, NetworkConfig};
 use estafette::crypto::GateKey;
 use estafette::dirs::{
-    Directories, DirectoriesError, OperatingSystemFilesystem, ProcessUserUnknown, TraceDirectory,
+    CardsDirectoryOverride, Directories, DirectoriesError, OperatingSystemFilesystem,
+    ProcessUserUnknown, TraceDirectory,
 };
 use estafette::errors::ExitStatus;
 use estafette::event::{
@@ -237,7 +238,7 @@ fn run_command(
             command.name(),
             command.debug().tracing(),
             &environment,
-            command.cards_dir(),
+            command.cards_directory_override(),
             io::stderr(),
             setup,
             |directories, process| {
@@ -255,7 +256,7 @@ fn run_command(
             MCP_COMMAND,
             debug.tracing(),
             &environment,
-            registry.cards_dir.clone(),
+            CardsDirectoryOverride::Offered(registry.cards_dir.clone()),
             io::stderr(),
             setup,
             |directories, process| serve_mcp(registry, directories, process, filesystem),
@@ -264,7 +265,7 @@ fn run_command(
             DOCTOR_COMMAND,
             debug.tracing(),
             &environment,
-            arguments.registry.cards_dir.clone(),
+            CardsDirectoryOverride::Offered(arguments.registry.cards_dir.clone()),
             io::stderr(),
             setup,
             |directories, process| {
@@ -292,7 +293,7 @@ fn run_traced<StandardError: Write + Send + 'static>(
     command_name: &'static str,
     tracing: Tracing,
     environment: impl Fn(&str) -> Option<OsString>,
-    cards_dir: Option<PathBuf>,
+    cards_directory_override: CardsDirectoryOverride,
     stderr: StandardError,
     setup: ProcessSetup<'_>,
     command: impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure>,
@@ -329,7 +330,7 @@ fn run_traced<StandardError: Write + Send + 'static>(
         }
         .into(),
     );
-    let outcome = Directories::establish(environment, &setup.filesystem, cards_dir)
+    let outcome = Directories::establish(environment, &setup.filesystem, cards_directory_override)
         .map_err(CommandLineFailure::Directories)
         .and_then(|directories| {
             if let Some(trace) = &process.trace {
@@ -707,8 +708,9 @@ fn run_network_command(
     result: &mut impl Write,
     record: &mut impl Write,
 ) -> Result<(), CommandLineFailure> {
-    let directories = Directories::establish(environment, &filesystem, None)
-        .map_err(CommandLineFailure::Directories)?;
+    let directories =
+        Directories::establish(environment, &filesystem, CardsDirectoryOverride::NotOffered)
+            .map_err(CommandLineFailure::Directories)?;
     let now_unix_seconds = unix_seconds_of(SystemTime::now())?;
     network::run(
         command,
@@ -885,7 +887,7 @@ fn run_infrastructure_command(
         infra::RUN_INFRASTRUCTURE_COMMAND,
         command.debug().tracing(),
         environment,
-        None,
+        CardsDirectoryOverride::NotOffered,
         stderr,
         setup,
         |directories, process| {
@@ -1017,6 +1019,7 @@ mod seeded_draws;
 #[cfg(test)]
 mod tests {
     use std::ffi::OsStr;
+    use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
     use std::sync::atomic::AtomicBool;
@@ -1500,7 +1503,7 @@ mod tests {
             TRACED_COMMAND,
             Tracing::Debug,
             environment,
-            None,
+            CardsDirectoryOverride::Offered(None),
             io::sink(),
             ProcessSetup {
                 filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
@@ -1554,7 +1557,7 @@ mod tests {
             TRACED_COMMAND,
             Tracing::Debug,
             environment,
-            None,
+            CardsDirectoryOverride::Offered(None),
             standard_error.clone(),
             ProcessSetup {
                 filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
@@ -1696,7 +1699,7 @@ mod tests {
             TRACED_COMMAND,
             Tracing::Debug,
             environment,
-            None,
+            CardsDirectoryOverride::Offered(None),
             standard_error.clone(),
             ProcessSetup {
                 filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
@@ -1740,7 +1743,7 @@ mod tests {
             TRACED_COMMAND,
             Tracing::Debug,
             environment,
-            None,
+            CardsDirectoryOverride::Offered(None),
             standard_error.clone(),
             ProcessSetup {
                 filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
@@ -1781,7 +1784,7 @@ mod tests {
             TRACED_COMMAND,
             Tracing::Debug,
             environment,
-            None,
+            CardsDirectoryOverride::Offered(None),
             standard_error.clone(),
             ProcessSetup {
                 filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
@@ -1822,7 +1825,7 @@ mod tests {
             TRACED_COMMAND,
             Tracing::Debug,
             environment,
-            None,
+            CardsDirectoryOverride::Offered(None),
             standard_error.clone(),
             ProcessSetup {
                 filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
@@ -1863,7 +1866,7 @@ mod tests {
             TRACED_COMMAND,
             Tracing::Debug,
             environment,
-            None,
+            CardsDirectoryOverride::Offered(None),
             standard_error.clone(),
             ProcessSetup {
                 filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
@@ -1924,7 +1927,7 @@ mod tests {
             SPEC_COMMAND,
             Tracing::Debug,
             &environment,
-            None,
+            CardsDirectoryOverride::Offered(None),
             io::sink(),
             ProcessSetup {
                 filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
@@ -2109,7 +2112,7 @@ mod tests {
                 TRACED_COMMAND,
                 tracing,
                 &environment,
-                None,
+                CardsDirectoryOverride::Offered(None),
                 io::sink(),
                 ProcessSetup {
                     filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
@@ -2173,7 +2176,7 @@ mod tests {
         let directories = Directories::establish(
             &environment,
             &OperatingSystemFilesystem::of_this_process().unwrap(),
-            None,
+            CardsDirectoryOverride::Offered(None),
         )
         .unwrap();
         network::run(
@@ -2226,6 +2229,76 @@ mod tests {
                 .contains("holds no certificate")
         );
         crate::remove_scratch::remove_scratch(&root).unwrap();
+    }
+
+    const CARDS_DIRECTORY_VARIABLE_NAME: &str = "ESTAFETTE_CARDS_DIR";
+
+    /// Runs the command line on a scratch machine and returns the environment variable names the process looked up.
+    fn variables_looked_up_by(arguments: &[&str]) -> Vec<String> {
+        const SCRATCH_PREFIX: &str = "estafette-variables-looked-up";
+        let root = crate::fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("{SCRATCH_PREFIX}-{}", std::process::id()),
+        )
+        .unwrap();
+        let _scratch_removed_when_the_test_ends = ScratchRoot(root.clone());
+        let looked_up = Mutex::new(Vec::new());
+        let environment = |name: &str| {
+            looked_up.lock().unwrap().push(name.to_owned());
+            match name {
+                "XDG_CONFIG_HOME" => Some(root.join("c").into_os_string()),
+                "XDG_DATA_HOME" => Some(root.join("d").into_os_string()),
+                "XDG_RUNTIME_DIR" => Some(root.join("r").into_os_string()),
+                CARDS_DIRECTORY_VARIABLE_NAME => {
+                    Some(root.join("cards-that-refuse").into_os_string())
+                }
+                _ => None,
+            }
+        };
+        let command = EstafetteArguments::try_parse_from(arguments)
+            .unwrap()
+            .command;
+
+        run_command(
+            command,
+            environment,
+            ProcessSetup {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
+                effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
+                bounds: TraceBounds::SPEC,
+                install_iroh_lines: IROH_LINES_LEFT_OUT,
+                record_panics: PANICS_LEFT_UNRECORDED,
+            },
+        );
+
+        looked_up.into_inner().unwrap()
+    }
+
+    /// Spec 3.3: `show-peers` and `tail` read no cards directory, so a process running either never looks up the cards directory variable.
+    #[test]
+    fn spec_3_3_show_peers_and_tail_never_look_up_the_cards_directory_variable() {
+        for arguments in [
+            ["estafette", "show-peers", "lab"],
+            ["estafette", "tail", "lab"],
+        ] {
+            let looked_up = variables_looked_up_by(&arguments);
+
+            assert!(
+                !looked_up.contains(&CARDS_DIRECTORY_VARIABLE_NAME.to_owned()),
+                "{arguments:?} looked up {looked_up:?}"
+            );
+        }
+    }
+
+    /// Spec 3.3, spec:534: a command that takes `--cards-dir` still looks up the cards directory variable.
+    #[test]
+    fn spec_3_3_a_command_that_takes_the_cards_dir_flag_still_looks_up_the_variable() {
+        let looked_up = variables_looked_up_by(&["estafette", "list-cards", "lab"]);
+
+        assert!(
+            looked_up.contains(&CARDS_DIRECTORY_VARIABLE_NAME.to_owned()),
+            "looked up {looked_up:?}"
+        );
     }
 
     const SECRET_DEBUG_CASES: u64 = 40;

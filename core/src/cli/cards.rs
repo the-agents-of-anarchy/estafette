@@ -11,8 +11,8 @@ use clap::{Args, Subcommand};
 use crate::card::{Card, CardInvalid, CardUnusable};
 use crate::cli::lines::tab_separated_line;
 use crate::dirs::{
-    CARD_EXTENSION, CARDS_DIRECTORY_VARIABLE, CARDS_SUBDIRECTORY, Directories, DirectoriesError,
-    DirectoryFilesystem, OperatingSystemFilesystem,
+    CARD_EXTENSION, CARDS_DIRECTORY_VARIABLE, CARDS_SUBDIRECTORY, CardsDirectoryOverride,
+    Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem,
 };
 use crate::errors::ExitStatus;
 use crate::event::{ProcessEvent, write_run_record};
@@ -210,8 +210,12 @@ fn establish_directories(
     filesystem: &impl DirectoryFilesystem,
     cards_dir: Option<PathBuf>,
 ) -> Result<Directories, CardCommandError> {
-    Directories::establish(environment, filesystem, cards_dir)
-        .map_err(CardCommandError::Directories)
+    Directories::establish(
+        environment,
+        filesystem,
+        CardsDirectoryOverride::Offered(cards_dir),
+    )
+    .map_err(CardCommandError::Directories)
 }
 
 fn create_card_with_fresh_key(

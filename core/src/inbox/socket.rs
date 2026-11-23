@@ -393,7 +393,7 @@ async fn wait_for_disconnect(reader: &mut BufReader<impl AsyncRead + Unpin>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dirs::OperatingSystemFilesystem;
+    use crate::dirs::{CardsDirectoryOverride, OperatingSystemFilesystem};
     use crate::event::{Event, EventFields};
     use serde_json::Value;
     use std::ffi::OsString;
@@ -445,7 +445,7 @@ mod tests {
         Directories::establish(
             environment,
             &OperatingSystemFilesystem::of_this_process().unwrap(),
-            None,
+            CardsDirectoryOverride::Offered(None),
         )
         .unwrap()
     }

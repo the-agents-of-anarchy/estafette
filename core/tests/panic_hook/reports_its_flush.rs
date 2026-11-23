@@ -13,7 +13,7 @@ fn standard_error_after_a_survived_panic(trace_effects: &TraceEffects) -> Vec<St
         TRACED_COMMAND,
         Tracing::Debug,
         environment,
-        None,
+        CardsDirectoryOverride::Offered(None),
         standard_error.clone(),
         ProcessSetup {
             filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
