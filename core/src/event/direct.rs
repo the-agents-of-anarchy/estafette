@@ -28,7 +28,7 @@ super::event_names! {
 
 /// What a process records of the direct requests it sends and serves.
 pub enum DirectEvent {
-    /// A direct request got no valid acknowledgement, naming the node it went to and why.
+    /// A direct request got no valid acknowledgement, naming the node it went to and why, both written to the events file.
     ContactFailed {
         peer: EndpointId,
         reason: DirectError,
@@ -58,7 +58,10 @@ impl AreaEvent for DirectEvent {
 
     fn fields(&self) -> EventFields {
         match self {
-            Self::ContactFailed { .. } => Vec::new(),
+            Self::ContactFailed { peer, reason } => vec![
+                super::ShortId::from(*peer).field(),
+                (ERROR_FIELD, Value::from(failure_text(reason))),
+            ],
             Self::RequestSent(sent) => [
                 request_fields(sent.request),
                 vec![sent.peer.field()],
@@ -175,7 +178,7 @@ mod tests {
 
     use super::*;
     use crate::crypto::KEY_LEN;
-    use crate::event::{Event, write_run_record};
+    use crate::event::{Event, ShortId, write_run_record};
     use crate::net::direct::tests::assert_each_arm;
     use crate::payload::PayloadError;
 
@@ -216,6 +219,48 @@ mod tests {
         ];
 
         assert_each_arm(&cases, |failure| failure_text(failure), cases.len());
+    }
+
+    #[test]
+    fn observability_decision_9_a_failed_contact_writes_its_peer_and_a_word_for_each_error_variant()
+    {
+        let peer = SecretKey::from_bytes(&[PEER_KEY_BYTE; KEY_LEN]).public();
+        let peer_field = ShortId::from(peer).field();
+        let cases = [
+            (DirectError::Unreachable, "unreachable"),
+            (DirectError::Timeout, "timeout"),
+            (DirectError::Refused, "refused"),
+            (
+                DirectError::UnsealableRequest(PayloadError::SignerIsNotThePayloadSigner),
+                "unsealable_request",
+            ),
+            (
+                DirectError::InvalidAck(PayloadError::SignerIsNotThePayloadSigner),
+                "invalid_ack",
+            ),
+            (DirectError::OversizedAck, "oversized_ack"),
+            (DirectError::UnexpectedAck, "unexpected_ack"),
+            (DirectError::MessageAckIdMismatch, "message_ack_id_mismatch"),
+            (DirectError::ProbeNonceMismatch, "probe_nonce_mismatch"),
+        ]
+        .map(|(reason, word)| {
+            (
+                reason,
+                vec![peer_field.clone(), (ERROR_FIELD, Value::from(word))],
+            )
+        });
+
+        assert_each_arm(
+            &cases,
+            |reason| {
+                DirectEvent::ContactFailed {
+                    peer,
+                    reason: reason.clone(),
+                }
+                .fields()
+            },
+            cases.len(),
+        );
     }
 
     #[test]

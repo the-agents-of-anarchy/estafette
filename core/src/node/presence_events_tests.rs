@@ -2,25 +2,31 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use iroh::endpoint::{Connection, VarInt};
+use iroh::protocol::{AcceptError, ProtocolHandler, Router};
+use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::tests::{
     FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_SEED,
-    MemberPlan, SECOND_EFFECTIVE_FIRST_HANDLE, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED,
-    SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_PUBLIC, THIRD_SEED, WITNESS_SEED, bind, card,
-    entry_meeting_within, infrastructure_of, keys, message_to, secret_key, settable_clock,
-    settled_direct_answers, start_members, start_members_reaching, start_pair, start_witnessed,
-    wall_clock_ms,
+    MemberPlan, OWNER_SEED, SECOND_EFFECTIVE_FIRST_HANDLE, SECOND_HANDLE, SECOND_PUBLIC,
+    SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_PUBLIC, THIRD_SEED, WITNESS_SEED,
+    bind, card, entry_meeting_within, infrastructure_of, keys, message_to, secret_key,
+    settable_clock, settled_direct_answers, spawn_member, start_members, start_members_reaching,
+    start_pair, start_witnessed, wall_clock_ms,
 };
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{Event, EventFields, RunRecord};
 use crate::net::direct::tests::unrecorded_register;
-use crate::net::direct::{ClientTimeouts, DirectClient, RequestSummary};
+use crate::net::direct::{ClientTimeouts, DirectClient, RequestSummary, RuntimeClock};
+use crate::net::endpoint::DIRECT_ALPN;
+use crate::net::gossip::{GossipEvent, NetworkTopic};
 use crate::node::addresses::wire_addr;
-use crate::payload::{ZERO_MAC, ZERO_SIGNATURE, seal_payload, sealed_by_any_key};
+use crate::payload::{ZERO_MAC, ZERO_SIGNATURE, seal_payload, seal_response, sealed_by_any_key};
 use crate::wire::{
-    Addr, Departure, Introduce, Payload, Presence, PresenceRequest, Unreachable, Version,
+    Addr, Departure, Introduce, Payload, Presence, PresenceRequest, ProbeAck, Response,
+    Unreachable, Version, WIRE_LIMIT_BYTES,
 };
 
 const EVENT_WAIT: Duration = Duration::from_secs(10);
@@ -47,12 +53,26 @@ struct RecordedEvents(mpsc::UnboundedReceiver<(&'static str, EventFields)>);
 impl RecordedEvents {
     /// The fields of the next event of that name, failing with the name when none is recorded within the wait.
     async fn next_named(&mut self, name: &str) -> EventFields {
-        self.next_of(&[name]).await.1
+        self.next_named_within(name, EVENT_WAIT).await
+    }
+
+    /// The fields of the next event of that name, failing with the name when none is recorded within the given wait.
+    async fn next_named_within(&mut self, name: &str, within: Duration) -> EventFields {
+        self.next_of_within(&[name], within).await.1
     }
 
     /// The name and fields of the next event of one of those names, failing with the names when none is recorded within the wait.
     async fn next_of(&mut self, names: &[&str]) -> (&'static str, EventFields) {
-        tokio::time::timeout(EVENT_WAIT, async {
+        self.next_of_within(names, EVENT_WAIT).await
+    }
+
+    /// The name and fields of the next event of one of those names, failing with the names when none is recorded within the given wait.
+    async fn next_of_within(
+        &mut self,
+        names: &[&str],
+        within: Duration,
+    ) -> (&'static str, EventFields) {
+        tokio::time::timeout(within, async {
             loop {
                 let (recorded, fields) = self.0.recv().await.unwrap();
                 if names.contains(&recorded) {
@@ -61,7 +81,7 @@ impl RecordedEvents {
             }
         })
         .await
-        .unwrap_or_else(|_elapsed| panic!("no event of {names:?} within {EVENT_WAIT:?}"))
+        .unwrap_or_else(|_elapsed| panic!("no event of {names:?} within {within:?}"))
     }
 
     /// The fields of the next lookup replaced for the seed's card, failing with the name when none is recorded within the wait.
@@ -1213,4 +1233,198 @@ async fn observability_decision_9_a_broadcast_the_topic_refuses_is_recorded_as_f
         names.push(name);
     }
     assert_eq!(names, ["gossip.broadcast_failed"]);
+}
+
+#[tokio::test]
+async fn observability_decision_9_an_introduce_to_a_card_that_cannot_be_reached_is_recorded_with_its_peer_and_the_word_unreachable()
+ {
+    let scratch = Scratch::new("ev-cf-unr").await;
+    let (report, mut recorded) = recording();
+    let (_member, witness) = start_witnessed(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
+        None,
+    )
+    .await;
+
+    witness
+        .broadcast_as(
+            MARKER_SEED,
+            presence_of(MARKER_SEED, MARKER_HANDLE, wall_clock_ms()),
+        )
+        .await;
+
+    assert_eq!(
+        recorded.next_named("direct.contact_failed").await,
+        [
+            ("peer", short_id(MARKER_SEED)),
+            ("error", Value::from("unreachable")),
+        ]
+    );
+    drop(scratch);
+}
+
+const SCRIPTED_WITNESS_JOIN_WAIT: Duration = Duration::from_secs(8);
+const CONTACT_FAILURE_WAIT: Duration = Duration::from_secs(20);
+const UNANSWERED_RESET_CODE: u32 = 3;
+const OVERSIZED_ACK_BYTES: usize = WIRE_LIMIT_BYTES + 1;
+const NOT_AN_ACK: &[u8] = b"not a sealed response";
+
+/// What a scripted peer does with every direct request stream it is handed.
+#[derive(Debug, Clone)]
+enum DirectAnswer {
+    Silence,
+    Reply(Vec<u8>),
+    Reset,
+}
+
+/// A direct protocol handler that reads each request whole and answers as scripted.
+#[derive(Debug)]
+struct ScriptedDirectHost(DirectAnswer);
+
+impl ProtocolHandler for ScriptedDirectHost {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+            let answer = self.0.clone();
+            tokio::spawn(async move {
+                recv.read_to_end(WIRE_LIMIT_BYTES).await.unwrap();
+                match answer {
+                    DirectAnswer::Reply(bytes) => {
+                        send.write_all(&bytes).await.unwrap();
+                        send.finish().unwrap();
+                    }
+                    DirectAnswer::Reset => {
+                        send.reset(VarInt::from_u32(UNANSWERED_RESET_CODE)).unwrap();
+                    }
+                    DirectAnswer::Silence => std::future::pending().await,
+                }
+            });
+        }
+        Ok(())
+    }
+}
+
+/// A peer that joins the topic through the member and answers every direct request as scripted, kept alive by its router.
+struct ScriptedWitness {
+    _router: Router,
+    _topic: NetworkTopic,
+}
+
+impl ScriptedWitness {
+    async fn joined_through(through: &iroh::Endpoint, answer: DirectAnswer) -> Self {
+        let node_endpoint = bind(WITNESS_SEED).await;
+        node_endpoint.replace_address(through.addr());
+        let gossip = Gossip::builder().spawn(node_endpoint.endpoint().clone());
+        let router = Router::builder(node_endpoint.endpoint().clone())
+            .accept(DIRECT_ALPN, ScriptedDirectHost(answer))
+            .accept(GOSSIP_ALPN, gossip.clone())
+            .spawn();
+        let mut topic = NetworkTopic::join(
+            &gossip,
+            keys(),
+            secret_key(OWNER_SEED).public(),
+            vec![through.id()],
+            Arc::new(RuntimeClock),
+        )
+        .await
+        .unwrap();
+        tokio::time::timeout(SCRIPTED_WITNESS_JOIN_WAIT, async {
+            while topic.next_event().await.unwrap().unwrap() != GossipEvent::Joined {}
+        })
+        .await
+        .unwrap();
+        Self {
+            _router: router,
+            _topic: topic,
+        }
+    }
+}
+
+/// The fields of the `direct.contact_failed` a member records for the Introduce it sends a peer that answers as scripted.
+async fn contact_failed_by_introduce_answered(
+    scratch_name: &str,
+    answer: DirectAnswer,
+) -> EventFields {
+    let scratch = Scratch::new(scratch_name).await;
+    let (report, mut recorded) = recording();
+    let (endpoint, starting) = spawn_member(
+        &scratch,
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
+    )
+    .await;
+    let _witness = ScriptedWitness::joined_through(&endpoint, answer).await;
+    let _member = starting.await.unwrap();
+
+    let fields = recorded
+        .next_named_within("direct.contact_failed", CONTACT_FAILURE_WAIT)
+        .await;
+    drop(scratch);
+    fields
+}
+
+fn contact_failed_fields(error_word: &str) -> EventFields {
+    vec![
+        ("peer", short_id(WITNESS_SEED)),
+        ("error", Value::from(error_word)),
+    ]
+}
+
+#[tokio::test]
+async fn observability_decision_9_an_introduce_the_peer_resets_is_recorded_with_the_word_refused() {
+    assert_eq!(
+        contact_failed_by_introduce_answered("ev-cf-ref", DirectAnswer::Reset).await,
+        contact_failed_fields("refused")
+    );
+}
+
+#[tokio::test]
+async fn observability_decision_9_an_introduce_the_peer_leaves_unanswered_is_recorded_with_the_word_timeout()
+ {
+    assert_eq!(
+        contact_failed_by_introduce_answered("ev-cf-tim", DirectAnswer::Silence).await,
+        contact_failed_fields("timeout")
+    );
+}
+
+#[tokio::test]
+async fn observability_decision_9_an_introduce_answered_with_bytes_that_do_not_open_is_recorded_with_the_word_invalid_ack()
+ {
+    assert_eq!(
+        contact_failed_by_introduce_answered("ev-cf-inv", DirectAnswer::Reply(NOT_AN_ACK.to_vec()))
+            .await,
+        contact_failed_fields("invalid_ack")
+    );
+}
+
+#[tokio::test]
+async fn observability_decision_9_an_introduce_answered_past_the_wire_limit_is_recorded_with_the_word_oversized_ack()
+ {
+    assert_eq!(
+        contact_failed_by_introduce_answered(
+            "ev-cf-ovr",
+            DirectAnswer::Reply(vec![0; OVERSIZED_ACK_BYTES])
+        )
+        .await,
+        contact_failed_fields("oversized_ack")
+    );
+}
+
+#[tokio::test]
+async fn observability_decision_9_an_introduce_answered_with_a_probe_ack_is_recorded_with_the_word_unexpected_ack()
+ {
+    let probe_ack = seal_response(
+        &keys(),
+        Response::ProbeAck(ProbeAck {
+            v: Version::CURRENT,
+            nonce: [0; 16],
+            attached: false,
+            mac: ZERO_MAC,
+        }),
+    )
+    .unwrap();
+
+    assert_eq!(
+        contact_failed_by_introduce_answered("ev-cf-unx", DirectAnswer::Reply(probe_ack)).await,
+        contact_failed_fields("unexpected_ack")
+    );
 }
