@@ -1,0 +1,123 @@
+name: loop-of-the-restart-twin-of-test-18
+
+on:
+    push:
+        branches:
+            - ci/loop-of-the-restart-twin-of-test-18-on-linux
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    loop:
+        name: ${{ matrix.mode }}-${{ matrix.shard }}
+        runs-on: ubuntu-latest
+        timeout-minutes: 150
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - { mode: single, shard: 1, iterations: 120 }
+                    - { mode: single, shard: 2, iterations: 120 }
+                    - { mode: single, shard: 3, iterations: 120 }
+                    - { mode: single, shard: 4, iterations: 120 }
+                    - { mode: single, shard: 5, iterations: 120 }
+                    - { mode: single, shard: 6, iterations: 120 }
+                    - { mode: single, shard: 7, iterations: 120 }
+                    - { mode: single, shard: 8, iterations: 120 }
+                    - { mode: single, shard: 9, iterations: 120 }
+                    - { mode: single, shard: 10, iterations: 120 }
+                    - { mode: single, shard: 11, iterations: 120 }
+                    - { mode: single, shard: 12, iterations: 120 }
+                    - { mode: single, shard: 13, iterations: 120 }
+                    - { mode: single, shard: 14, iterations: 120 }
+                    - { mode: single, shard: 15, iterations: 120 }
+                    - { mode: single, shard: 16, iterations: 120 }
+                    - { mode: single, shard: 17, iterations: 120 }
+                    - { mode: single, shard: 18, iterations: 120 }
+                    - { mode: single, shard: 19, iterations: 120 }
+                    - { mode: single, shard: 20, iterations: 120 }
+                    - { mode: whole, shard: 1, iterations: 6 }
+                    - { mode: whole, shard: 2, iterations: 6 }
+                    - { mode: whole, shard: 3, iterations: 6 }
+                    - { mode: whole, shard: 4, iterations: 6 }
+                    - { mode: whole, shard: 5, iterations: 6 }
+                    - { mode: whole, shard: 6, iterations: 6 }
+                    - { mode: whole, shard: 7, iterations: 6 }
+                    - { mode: whole, shard: 8, iterations: 6 }
+                    - { mode: whole, shard: 9, iterations: 6 }
+                    - { mode: whole, shard: 10, iterations: 6 }
+                    - { mode: whole, shard: 11, iterations: 6 }
+                    - { mode: whole, shard: 12, iterations: 6 }
+        env:
+            ITERATIONS: ${{ matrix.iterations }}
+            MODE: ${{ matrix.mode }}
+            SHARD: ${{ matrix.shard }}
+            TEST_NAME: spec_3_15_restart_and_departure_on_one_machine::spec_3_15_test_18_a_killed_member_restarted_with_its_card_is_delivered_to_within_1_s_of_its_new_presence_while_the_sender_still_holds_a_gossip_connection_to_its_killed_process
+            WALL_BUDGET_MINUTES: 130
+        steps:
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+            - run: rustup toolchain install
+            - run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
+            - name: Build the test target once, with the features the gate uses
+              run: cargo test --workspace --features estafette/relay --test acceptance_one_machine --no-run
+            - name: Loop
+              id: loop
+              shell: bash
+              run: |
+                  set -u
+                  out="$RUNNER_TEMP/out"
+                  mkdir -p "$out"
+                  deadline=$((SECONDS + WALL_BUDGET_MINUTES * 60))
+                  iterations_run=0
+                  failed_iteration=0
+                  for i in $(seq 1 "$ITERATIONS"); do
+                      if [ "$SECONDS" -ge "$deadline" ]; then
+                          echo "wall budget reached before iteration $i"
+                          break
+                      fi
+                      kept="$RUNNER_TEMP/kept/$i"
+                      mkdir -p "$kept"
+                      log="$RUNNER_TEMP/iteration-$i.log"
+                      if [ "$MODE" = single ]; then
+                          ESTAFETTE_ACCEPTANCE_RUN_RECORDS="$kept" cargo test --workspace --features estafette/relay --test acceptance_one_machine -- --exact "$TEST_NAME" > "$log" 2>&1
+                      else
+                          ESTAFETTE_ACCEPTANCE_RUN_RECORDS="$kept" cargo test --workspace --features estafette/relay --test acceptance_one_machine > "$log" 2>&1
+                      fi
+                      code=$?
+                      iterations_run=$i
+                      echo "iteration $i exit $code"
+                      if [ "$code" -ne 0 ]; then
+                          failed_iteration=$i
+                          break
+                      fi
+                  done
+                  printf 'mode %s shard %s\niterations run %s\nfailed iteration %s\n' "$MODE" "$SHARD" "$iterations_run" "$failed_iteration" | tee "$out/iterations.txt"
+                  if [ "$failed_iteration" -ne 0 ]; then
+                      i=$failed_iteration
+                      echo "FAILED ITERATION: $i"
+                      cp "$RUNNER_TEMP/iteration-$i.log" "$out/full-output.log"
+                      kept="$RUNNER_TEMP/kept/$i"
+                      # The failing tests' names as the harness printed them; a kept directory is the test's name with each colon a hyphen.
+                      if [ "$MODE" = single ]; then
+                          failing_names="$TEST_NAME"
+                      else
+                          failing_names="$(sed -n 's/^test \(.*\) \.\.\. FAILED$/\1/p' "$RUNNER_TEMP/iteration-$i.log")"
+                      fi
+                      printf '%s\n' "$failing_names" > "$out/failing-tests.txt"
+                      while IFS= read -r name; do
+                          [ -n "$name" ] || continue
+                          dir="${name//:/-}"
+                          [ -d "$kept/$dir" ] || { echo "no kept directory for $name" >> "$out/failing-tests.txt"; continue; }
+                          # Trace files only: the events file, the raw file, their rolled-over .1, and the note a redaction leaves beside one.
+                          (cd "$kept" && find "$dir" -type f -path '*/traces/*' \( -name '*.events.jsonl' -o -name '*.raw.jsonl' -o -name '*.events.jsonl.1' -o -name '*.raw.jsonl.1' -o -name '*.jsonl.redacted' -o -name '*.jsonl.1.redacted' \) -exec cp --parents {} "$out/" \;)
+                      done <<< "$failing_names"
+                      exit 1
+                  fi
+            - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+              if: always()
+              with:
+                  name: ${{ matrix.mode }}-${{ matrix.shard }}
+                  path: ${{ runner.temp }}/out
+                  if-no-files-found: warn
