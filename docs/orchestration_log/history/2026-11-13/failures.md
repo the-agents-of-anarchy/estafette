@@ -135,3 +135,11 @@ What happened: The brief of lab-tests-assert-what-their-rows-state, made by the 
 Mechanism: The brief maker builds every fix unit's brief from the brief of stale-inbox-socket-removal-race as its template, and the lead appended that fix order to the template brief after the maker was written, so each brief made later copied the order whole; no check of the made brief for a foreign section ran before launch.
 
 Correction: The maker now cuts the template at its first later order (prompts/_mkfixbrief.py); the spec reviewer of lab-tests is told the section is foreign; the lead reads the headings of each made brief before launch.
+
+## The lead made a call that advanced nothing
+
+What happened: At 21:30 on 2026-11-24, with nothing to do until a notification, the lead called a stop of a self-paced loop that did not exist, in place of ending the turn.
+
+Mechanism: An ending put off by habit: a turn that had recorded everything still reached for one more call.
+
+Correction: A turn with nothing left to do ends at once, with no call after its last record.
