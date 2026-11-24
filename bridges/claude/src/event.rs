@@ -14,7 +14,7 @@ const VERSION_FIELD: &str = "version";
 const BRIDGE_PID_FIELD: &str = "bridge_pid";
 const HARNESS_PID_FIELD: &str = "harness_pid";
 const BINARY_PID_FIELD: &str = "binary_pid";
-const MESSAGE_ID_FIELD: &str = "message_id";
+const MESSAGE_FIELD: &str = "message";
 const FRAME_FIELD: &str = "frame";
 const REASON_FIELD: &str = "reason";
 const CLASS_FIELD: &str = "class";
@@ -74,7 +74,7 @@ bridge_event_names! {
 /// What names one inbox frame in the events file: its message id and its number on its socket, never its sender or body.
 #[derive(Debug)]
 pub struct FrameIds {
-    message_id: String,
+    message: String,
     seq: u64,
 }
 
@@ -82,7 +82,7 @@ impl FrameIds {
     /// The ids of the frame.
     pub fn of(frame: &InboxFrame) -> Self {
         Self {
-            message_id: frame.id.clone(),
+            message: frame.id.clone(),
             seq: frame.seq,
         }
     }
@@ -90,7 +90,7 @@ impl FrameIds {
     /// The frame's message id and number as fields of the events file.
     fn fields(&self) -> EventFields {
         vec![
-            (MESSAGE_ID_FIELD, Value::from(self.message_id.as_str())),
+            (MESSAGE_FIELD, Value::from(self.message.as_str())),
             (FRAME_FIELD, Value::from(self.seq)),
         ]
     }

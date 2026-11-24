@@ -3341,20 +3341,19 @@ mod tests {
             class_read.to_owned(),
             "\"event\":\"permission_class.attested\",\"class\":\"bypass\"".to_owned(),
             "\"event\":\"inbox.connected\",\"binary_pid\":101".to_owned(),
-            "\"event\":\"frame.received\",\"binary_pid\":101,\"message_id\":\"id-1\",\"frame\":1"
+            "\"event\":\"frame.received\",\"binary_pid\":101,\"message\":\"id-1\",\"frame\":1"
                 .to_owned(),
             class_read.to_owned(),
-            "\"event\":\"notice.written\",\"message_id\":\"id-1\",\"frame\":1,\"class\":\"bypass\""
+            "\"event\":\"notice.written\",\"message\":\"id-1\",\"frame\":1,\"class\":\"bypass\""
                 .to_owned(),
-            "\"event\":\"frame.received\",\"binary_pid\":101,\"message_id\":\"id-2\",\"frame\":2"
-                .to_owned(),
-            class_read.to_owned(),
-            "\"event\":\"frame.dropped_by_rate_limit\",\"message_id\":\"id-2\",\"frame\":2"
-                .to_owned(),
-            "\"event\":\"frame.received\",\"binary_pid\":101,\"message_id\":\"id-3\",\"frame\":3"
+            "\"event\":\"frame.received\",\"binary_pid\":101,\"message\":\"id-2\",\"frame\":2"
                 .to_owned(),
             class_read.to_owned(),
-            "\"event\":\"frame.dropped_sender_name_refused\",\"message_id\":\"id-3\",\"frame\":3"
+            "\"event\":\"frame.dropped_by_rate_limit\",\"message\":\"id-2\",\"frame\":2".to_owned(),
+            "\"event\":\"frame.received\",\"binary_pid\":101,\"message\":\"id-3\",\"frame\":3"
+                .to_owned(),
+            class_read.to_owned(),
+            "\"event\":\"frame.dropped_sender_name_refused\",\"message\":\"id-3\",\"frame\":3"
                 .to_owned(),
             "\"event\":\"inbox.closed\",\"binary_pid\":101".to_owned(),
             "\"event\":\"inbox.lost\",\"binary_pid\":101,\"reason\":\"connect_failed\"".to_owned(),
@@ -3536,7 +3535,7 @@ mod tests {
         for (line, seq) in notice_events.iter().zip(1_u64..) {
             assert!(
                 line.contains(&format!(
-                    "\"event\":\"{unwritten_notice_event}\",\"message_id\":\"id-{seq}\",\"frame\":{seq}"
+                    "\"event\":\"{unwritten_notice_event}\",\"message\":\"id-{seq}\",\"frame\":{seq}"
                 )),
                 "{line}"
             );
