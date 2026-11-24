@@ -33,21 +33,21 @@ pub(crate) use event_names;
 mod direct;
 mod gossip;
 mod inbox;
-mod peer;
 mod peer_table;
 mod process;
+mod short_id;
 mod state;
 mod transport;
 
 pub use direct::{DirectEvent, DirectEventName};
 pub use gossip::{GossipEvent, GossipEventName};
 pub use inbox::{InboxEvent, InboxEventName, ListCardsFailure};
-pub(crate) use peer::ShortId;
 pub use peer_table::{PeerTableEvent, PeerTableEventName};
 pub use process::{
     CLOCK_BEFORE_UNIX_EPOCH, ClaimFailure, ConfigurationRewrite, PanicLocation, ProcessEvent,
     ProcessEventName,
 };
+pub(crate) use short_id::ShortId;
 pub use state::{StateEvent, StateEventName};
 pub use transport::{TransportEvent, TransportEventName};
 

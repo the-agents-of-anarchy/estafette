@@ -2,7 +2,7 @@ use iroh::endpoint::{BindError, PathId};
 use serde_json::Value;
 use tokio::task::JoinError;
 
-use super::peer::ShortId;
+use super::short_id::ShortId;
 use super::{AreaEvent, EventFields};
 use crate::net::endpoint::{
     Close, CloseReason, ConnectionId, Direction, GateFailure, GateFailureReason, Location,

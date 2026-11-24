@@ -1,6 +1,6 @@
 use serde_json::Value;
 
-use super::peer::ShortId;
+use super::short_id::ShortId;
 use super::{AreaEvent, EventFields};
 use crate::config::ConfigError;
 use crate::crypto::SignedPayloadKind;
