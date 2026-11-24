@@ -462,7 +462,7 @@ impl IntroduceAnswersInFlight {
     }
 
     /// Takes one Introduce answer to the card out of flight, leaving the card absent once none is in flight.
-    fn released(&self, card: wire::PublicKey) {
+    fn take_one_out_of_flight(&self, card: wire::PublicKey) {
         self.0.send_modify(|in_flight| {
             if let Entry::Occupied(mut answers) = in_flight.entry(card) {
                 match NonZeroUsize::new(answers.get().get().saturating_sub(1)) {
@@ -497,7 +497,7 @@ impl IntroduceAnswerInFlight {
 
 impl Drop for IntroduceAnswerInFlight {
     fn drop(&mut self) {
-        self.in_flight.released(self.card);
+        self.in_flight.take_one_out_of_flight(self.card);
     }
 }
 
