@@ -41,6 +41,9 @@ mod live_network;
 #[path = "support/mcp_server.rs"]
 mod mcp_server;
 #[cfg(test)]
+#[path = "support/member_ended_at_its_peer.rs"]
+mod member_ended_at_its_peer;
+#[cfg(test)]
 #[path = "support/member_events.rs"]
 mod member_events;
 #[cfg(test)]
@@ -778,6 +781,7 @@ mod spec_3_15_two_members_through_the_live_host {
         INIT_TOOL, McpServer, PRESENCE_WAIT, SEND_TOOL, call_succeeded, gone, init_arguments,
         online, send_arguments,
     };
+    use crate::member_ended_at_its_peer::assert_stopped_member_is_gone_then_unreachable;
     use crate::member_events::MemberEvents;
     use crate::message_body::BODY;
     use crate::new_presence_window::{acknowledged_after, new_presence_accepted};
@@ -794,8 +798,6 @@ mod spec_3_15_two_members_through_the_live_host {
     /// A relay a test's presence line prints that is no relay URL.
     const NOT_A_RELAY_URL: &str = "not a relay url";
 
-    /// Spec 3.15 test 4: a member lists a peer that stopped cleanly gone within this long.
-    const SPEC_GONE_WITHIN: Duration = Duration::from_millis(1000);
     /// The QUIC idle timeout of spec 3.14, after which a killed peer's gossip neighbor-down event comes (spec 3.15 test 5).
     const SPEC_QUIC_IDLE_TIMEOUT: Duration = Duration::from_millis(10_000);
     /// The probe timeout of spec 3.14, the second part of the bound of spec 3.15 test 5.
@@ -1206,23 +1208,6 @@ mod spec_3_15_two_members_through_the_live_host {
         assert_eq!(messages[0]["body"], json!(BODY));
     }
 
-    /// Requires bob, whose standard input closed at that instant, listed gone by amy within the spec bound, exited cleanly, and unreachable to amy's send.
-    #[track_caller]
-    fn assert_stopped_member_is_gone_then_unreachable(
-        amy: &mut LabMember,
-        bob: &mut LabMember,
-        input_closed: Instant,
-    ) {
-        amy.member.peer_within(&bob.handle, SPEC_GONE_WITHIN, gone);
-        let gone_after = input_closed.elapsed();
-        let exit = bob.member.wait_for_exit();
-        let sent = send(amy, &bob.handle.clone(), BODY);
-
-        assert!(gone_after <= SPEC_GONE_WITHIN, "{gone_after:?}");
-        assert!(exit.success(), "{exit:?}");
-        assert_eq!(sent["error"]["code"], json!("unreachable"), "{sent}");
-    }
-
     #[test]
     fn spec_3_15_test_4_a_member_stopped_by_the_end_of_input_is_gone_at_its_peer_within_1000_ms_and_unreachable()
      {
@@ -1235,7 +1220,12 @@ mod spec_3_15_two_members_through_the_live_host {
         let input_closed = Instant::now();
         bob.member.close_standard_input();
 
-        assert_stopped_member_is_gone_then_unreachable(&mut amy, &mut bob, input_closed);
+        assert_stopped_member_is_gone_then_unreachable(
+            &mut amy.member,
+            &mut bob.member,
+            &bob.handle,
+            input_closed,
+        );
     }
 
     #[test]
@@ -1252,7 +1242,12 @@ mod spec_3_15_two_members_through_the_live_host {
         let input_closed = Instant::now();
         bob.member.close_standard_input();
 
-        assert_stopped_member_is_gone_then_unreachable(&mut amy, &mut bob, input_closed);
+        assert_stopped_member_is_gone_then_unreachable(
+            &mut amy.member,
+            &mut bob.member,
+            &bob.handle,
+            input_closed,
+        );
     }
 
     #[test]
