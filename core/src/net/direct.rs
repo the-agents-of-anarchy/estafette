@@ -3434,7 +3434,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_8_closing_a_restarted_cards_gone_connections_also_closes_its_new_one_that_reports_no_selected_path_so_the_next_dial_reaches_the_new_process()
+    async fn spec_3_8_closing_a_restarted_cards_gone_connections_closes_its_new_one_exactly_when_that_reports_no_selected_path_so_the_next_dial_reaches_the_new_process()
      {
         let clock = StandingClock::standing_now();
         let Rig { link, .. } = rig_over(
