@@ -127,3 +127,11 @@ What happened: After a nudge that asked for visible output, the lead ended one t
 Mechanism: A nudge is no owner's word, and the lead answered its wording with a statement about the silence itself, which the standing ruling forbids as much as any other text.
 
 Correction: Every turn not started by the owner's typed word ends with a message of zero characters, a nudge's request for visible output included; nothing about the silence is written to the conversation.
+
+## A unit's brief carried another unit's fix order
+
+What happened: The brief of lab-tests-assert-what-their-rows-state, made by the lead's brief maker on 2026-11-24, ended with the section 'Order of 23:08, 2026-11-23', a fix order written for stale-inbox-socket-removal-race; its implementer met it, judged it foreign to its unit, did nothing for it and reported it as a concern.
+
+Mechanism: The brief maker builds every fix unit's brief from the brief of stale-inbox-socket-removal-race as its template, and the lead appended that fix order to the template brief after the maker was written, so each brief made later copied the order whole; no check of the made brief for a foreign section ran before launch.
+
+Correction: The maker now cuts the template at its first later order (prompts/_mkfixbrief.py); the spec reviewer of lab-tests is told the section is foreign; the lead reads the headings of each made brief before launch.
