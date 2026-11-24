@@ -11,43 +11,44 @@ permissions:
 
 jobs:
     loop:
-        name: instrumented-${{ matrix.shard }}
+        name: ${{ matrix.mode }}-${{ matrix.shard }}
         runs-on: ubuntu-latest
         timeout-minutes: 200
         strategy:
             fail-fast: false
             matrix:
                 include:
-                    - { shard: 1, iterations: 8 }
-                    - { shard: 2, iterations: 8 }
-                    - { shard: 3, iterations: 8 }
-                    - { shard: 4, iterations: 8 }
-                    - { shard: 5, iterations: 8 }
-                    - { shard: 6, iterations: 8 }
-                    - { shard: 7, iterations: 8 }
-                    - { shard: 8, iterations: 8 }
-                    - { shard: 9, iterations: 8 }
-                    - { shard: 10, iterations: 8 }
-                    - { shard: 11, iterations: 8 }
-                    - { shard: 12, iterations: 8 }
-                    - { shard: 13, iterations: 8 }
-                    - { shard: 14, iterations: 8 }
-                    - { shard: 15, iterations: 8 }
-                    - { shard: 16, iterations: 8 }
-                    - { shard: 17, iterations: 8 }
-                    - { shard: 18, iterations: 8 }
-                    - { shard: 19, iterations: 8 }
-                    - { shard: 20, iterations: 8 }
+                    - { mode: library, shard: 1, test_args: "--lib" }
+                    - { mode: library, shard: 2, test_args: "--lib" }
+                    - { mode: library, shard: 3, test_args: "--lib" }
+                    - { mode: library, shard: 4, test_args: "--lib" }
+                    - { mode: library, shard: 5, test_args: "--lib" }
+                    - { mode: library, shard: 6, test_args: "--lib" }
+                    - { mode: library, shard: 7, test_args: "--lib" }
+                    - { mode: library, shard: 8, test_args: "--lib" }
+                    - { mode: library, shard: 9, test_args: "--lib" }
+                    - { mode: library, shard: 10, test_args: "--lib" }
+                    - { mode: library, shard: 11, test_args: "--lib" }
+                    - { mode: library, shard: 12, test_args: "--lib" }
+                    - { mode: acceptance, shard: 1, test_args: "--test acceptance_one_machine" }
+                    - { mode: acceptance, shard: 2, test_args: "--test acceptance_one_machine" }
+                    - { mode: acceptance, shard: 3, test_args: "--test acceptance_one_machine" }
+                    - { mode: acceptance, shard: 4, test_args: "--test acceptance_one_machine" }
+                    - { mode: acceptance, shard: 5, test_args: "--test acceptance_one_machine" }
+                    - { mode: acceptance, shard: 6, test_args: "--test acceptance_one_machine" }
+                    - { mode: acceptance, shard: 7, test_args: "--test acceptance_one_machine" }
+                    - { mode: acceptance, shard: 8, test_args: "--test acceptance_one_machine" }
         env:
-            ITERATIONS: ${{ matrix.iterations }}
+            MODE: ${{ matrix.mode }}
             SHARD: ${{ matrix.shard }}
-            WALL_BUDGET_MINUTES: 170
+            TEST_ARGS: ${{ matrix.test_args }}
+            LOOP_BUDGET_MINUTES: 150
         steps:
             - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
             - run: rustup toolchain install
             - run: sudo sysctl -w net.ipv4.ip_unprivileged_port_start=0
             - name: Build the test target once, with the features the gate uses
-              run: cargo test --workspace --features estafette/relay --no-run
+              run: cargo test -p estafette --features relay ${{ matrix.test_args }} --no-run
             - name: Loop
               id: loop
               shell: bash
@@ -57,12 +58,12 @@ jobs:
                   out="$RUNNER_TEMP/out"
                   instruments="$RUNNER_TEMP/instrument-b"
                   mkdir -p "$out/ports" "$instruments"
-                  deadline=$((SECONDS + WALL_BUDGET_MINUTES * 60))
+                  deadline=$((SECONDS + LOOP_BUDGET_MINUTES * 60))
                   iterations_run=0
                   failed_iteration=0
-                  for i in $(seq 1 "$ITERATIONS"); do
+                  for i in $(seq 1 100000); do
                       if [ "$SECONDS" -ge "$deadline" ]; then
-                          echo "wall budget reached before iteration $i"
+                          echo "loop budget reached before iteration $i"
                           break
                       fi
                       kept="$RUNNER_TEMP/kept/$i"
@@ -71,7 +72,7 @@ jobs:
                       INSTRUMENT_B_PORTS_FILE="$out/ports/iteration-$i.ports.txt" \
                       INSTRUMENT_B_IROH_LINES_FILE="$instruments/iteration-$i.iroh-lines.jsonl" \
                       ESTAFETTE_ACCEPTANCE_RUN_RECORDS="$kept" \
-                      cargo test --workspace --features estafette/relay > "$log" 2>&1
+                      cargo test -p estafette --features relay $TEST_ARGS > "$log" 2>&1
                       code=$?
                       iterations_run=$i
                       echo "iteration $i exit $code"
@@ -80,7 +81,7 @@ jobs:
                           break
                       fi
                   done
-                  printf 'shard %s\niterations run %s\nfailed iteration %s\n' "$SHARD" "$iterations_run" "$failed_iteration" | tee "$out/iterations.txt"
+                  printf 'mode %s shard %s\niterations run %s\nfailed iteration %s\n' "$MODE" "$SHARD" "$iterations_run" "$failed_iteration" | tee "$out/iterations.txt"
                   if [ "$failed_iteration" -ne 0 ]; then
                       i=$failed_iteration
                       echo "FAILED ITERATION: $i"
@@ -110,6 +111,6 @@ jobs:
             - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
               if: always()
               with:
-                  name: instrumented-${{ matrix.shard }}
+                  name: ${{ matrix.mode }}-${{ matrix.shard }}
                   path: ${{ runner.temp }}/out
                   if-no-files-found: warn
