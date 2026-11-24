@@ -7,7 +7,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::stream_items::join_all;
 use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
@@ -23,6 +22,7 @@ use crate::node::presence::{
 };
 use crate::node::relay_loss::RelayLossWatch;
 use crate::peers::Status;
+use crate::stream_items::join_all;
 use crate::wire;
 
 /// Silence after which a member that knows another node is deaf and rebinds (spec:781, spec:1016, D46).
@@ -86,12 +86,6 @@ impl RebindSchedule {
     const fn rebound(&mut self, now: Instant) {
         self.last_rebind = Some(now);
         self.unjoined_since = None;
-    }
-
-    /// When the next rebind is due, for a member that may rebind.
-    #[cfg(test)]
-    fn due(&self) -> Instant {
-        self.next_rebind().0
     }
 
     /// When the next rebind is due and why: after the deaf timeout of silence or at a join that gained no neighbor, never sooner than the rebind interval after the last rebind.
@@ -254,6 +248,15 @@ impl PresenceLoop {
             return ControlFlow::Break(());
         }
         self.client.follow(self.endpoint.endpoint().clone()).await;
+        self.seed_lookup_recording_each_entry();
+        self.serve_fresh_endpoint();
+        record_counters(
+            SnapshotMoment::Rebound,
+            self.endpoint.endpoint(),
+            &self.gossip,
+            &*self.report,
+        );
+        self.watch_fresh_endpoint();
         self.subscribe_through_known_nodes().await
     }
 
@@ -357,30 +360,40 @@ impl PresenceLoop {
         }
     }
 
-    /// Serves the fresh endpoint, records its counters and the fresh gossip's without moving the next interval snapshot, and subscribes to the topic through every known host and every Online peer whose address the lookup holds.
-    async fn subscribe_through_known_nodes(&mut self) -> ControlFlow<()> {
-        let hosts = self.known_hosts.addresses();
-        for card in seed_lookup_with_known_hosts(&self.endpoint, &hosts) {
+    /// Gives each known host whose lookup entry holds no address its relay, recording each entry it seeds.
+    fn seed_lookup_recording_each_entry(&self) {
+        for card in seed_lookup_with_known_hosts(&self.endpoint, &self.known_hosts.addresses()) {
             self.record_lookup_of(&card);
         }
-        let mut bootstrap: Vec<EndpointId> = hosts.iter().map(|host| host.id).collect();
+    }
+
+    /// Serves the fresh endpoint with a fresh gossip instance.
+    fn serve_fresh_endpoint(&mut self) {
+        let (router, gossip) = serve(&self.endpoint, &self.keys, &self.state);
+        self.router = router;
+        self.gossip = gossip;
+    }
+
+    /// Follows the fresh endpoint's own addresses and home relays, and starts the relay loss watch afresh.
+    fn watch_fresh_endpoint(&mut self) {
+        self.own_addresses = own_address_changes(self.endpoint.endpoint());
+        self.relay_statuses = home_relay_changes(self.endpoint.endpoint());
+        self.relay_loss = RelayLossWatch::default();
+    }
+
+    /// Subscribes to the topic through every known host and every Online peer whose address the lookup holds.
+    async fn subscribe_through_known_nodes(&mut self) -> ControlFlow<()> {
+        let mut bootstrap: Vec<EndpointId> = self
+            .known_hosts
+            .addresses()
+            .iter()
+            .map(|host| host.id)
+            .collect();
         bootstrap.extend(
             self.peers_with_status(Status::Online)
                 .into_iter()
                 .filter(|peer| self.endpoint.address_of(*peer).is_some()),
         );
-        let (router, gossip) = serve(&self.endpoint, &self.keys, &self.state);
-        self.router = router;
-        self.gossip = gossip;
-        record_counters(
-            SnapshotMoment::Rebound,
-            self.endpoint.endpoint(),
-            &self.gossip,
-            &*self.report,
-        );
-        self.own_addresses = own_address_changes(self.endpoint.endpoint());
-        self.relay_statuses = home_relay_changes(self.endpoint.endpoint());
-        self.relay_loss = RelayLossWatch::default();
         match NetworkTopic::join(
             &self.gossip,
             self.keys.clone(),
@@ -418,7 +431,6 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use crate::stream_items::StreamExt;
     use iroh::protocol::Router;
     use iroh::{EndpointAddr, EndpointId, RelayUrl};
     use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
@@ -454,6 +466,7 @@ mod tests {
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
+    use crate::stream_items::StreamExt;
     use crate::test_waits::{
         RecordedEvent, found_within, next_recorded, next_recorded_meeting, recorded_events,
         recorded_until,
@@ -1288,6 +1301,13 @@ mod tests {
     /// Whether the counters were recorded after the start: at the interval, at a rebind or at a stop.
     fn is_snapshot_after_the_start(fields: &EventFields) -> bool {
         fields.first() != Some(&(MOMENT, serde_json::Value::from(START_MOMENT)))
+    }
+
+    impl RebindSchedule {
+        /// When the next rebind is due, for a member that may rebind.
+        fn due(&self) -> Instant {
+            self.next_rebind().0
+        }
     }
 
     /// How many rebinds the events hold.
