@@ -7,7 +7,7 @@ use std::process::{Child, Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
-use common::{Fixture, bridge_alive_line_stamped_from};
+use common::{BRIDGE_ALIVE_EVENT, Fixture, bridge_alive_line_stamped_from};
 use estafette_bridge_claude::discover::Pid;
 use estafette_bridge_claude::doctor::dropped_frames_path;
 use estafette_trace::{TraceDirectory, events_trace_file_name};
@@ -197,13 +197,13 @@ fn observability_decision_13_the_bridge_lab_window_ends_on_a_bridge_alive_line_s
     let bridge_events = traces.join(events_trace_file_name(BRIDGE_RUN));
     let lines_before_the_end = [
         events_line("process.started", before_the_end),
-        events_line("process.alive", before_the_end),
+        events_line(BRIDGE_ALIVE_EVENT, before_the_end),
         events_line("notice.written", after_the_end),
     ];
     write_events_file(&bridge_events, &lines_before_the_end).unwrap();
     write_events_file(
         &traces.join(events_trace_file_name(MEMBER_RUN)),
-        &[events_line("process.alive", after_the_end)],
+        &[events_line(BRIDGE_ALIVE_EVENT, after_the_end)],
     )
     .unwrap();
 
@@ -213,7 +213,7 @@ fn observability_decision_13_the_bridge_lab_window_ends_on_a_bridge_alive_line_s
         &bridge_events,
         &[
             lines_before_the_end.concat(),
-            events_line("process.alive", WINDOW_ENDS_WALL_MS),
+            events_line(BRIDGE_ALIVE_EVENT, WINDOW_ENDS_WALL_MS),
         ],
     )
     .unwrap();
