@@ -29,6 +29,9 @@ mod inbox_client;
 #[path = "lab/killable_host.rs"]
 mod killable_host;
 #[cfg(test)]
+#[path = "support/killed_member_at_its_peer.rs"]
+mod killed_member_at_its_peer;
+#[cfg(test)]
 #[path = "lab/lab_machine.rs"]
 mod lab_machine;
 #[cfg(test)]
@@ -773,6 +776,9 @@ mod spec_3_15_two_members_through_the_live_host {
     use crate::forger::Forger;
     use crate::handles::{HANDLE_TAG_LETTERS, unique_handle};
     use crate::inbox_client::{FRAME_WAIT, InboxClient, NO_FURTHER_FRAME_WINDOW};
+    use crate::killed_member_at_its_peer::{
+        SPEC_NEIGHBOR_DOWN_AND_PROBE_WITHIN, assert_killed_member_is_unreachable_then_unsendable,
+    };
     use crate::lab_machine::LabMachine;
     use crate::live_host::live_host_to_itself;
     use crate::live_network::LiveNetwork;
@@ -780,10 +786,7 @@ mod spec_3_15_two_members_through_the_live_host {
         INIT_TOOL, McpServer, PRESENCE_WAIT, SEND_TOOL, call_succeeded, gone, init_arguments,
         online, send_arguments,
     };
-    use crate::member_ended_at_its_peer::{
-        SPEC_NEIGHBOR_DOWN_AND_PROBE_WITHIN, assert_killed_member_is_unreachable_then_unsendable,
-        assert_stopped_member_is_gone_then_unreachable,
-    };
+    use crate::member_ended_at_its_peer::assert_stopped_member_is_gone_then_unreachable;
     use crate::member_events::MemberEvents;
     use crate::message_body::BODY;
     use crate::new_presence_window::{acknowledged_after, new_presence_accepted};

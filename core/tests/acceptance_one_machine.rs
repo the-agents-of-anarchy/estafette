@@ -77,6 +77,32 @@ fn send(from: &mut member::Member, to: &str) -> serde_json::Value {
     from.send(to, message_body::BODY)
 }
 
+/// The run every line built by `built_trace_line` belongs to.
+#[cfg(test)]
+const BUILT_RUN: &str = "fixture-run";
+
+/// A trace line of the run, written as number `n`, naming the event and holding the fields.
+#[cfg(test)]
+fn built_trace_line(
+    run: &str,
+    n: u64,
+    event: &str,
+    fields: &serde_json::Value,
+) -> trace_reader::TraceLine {
+    let mut object = serde_json::json!({
+        "v": 1, "run": run, "n": n, "mono_ms": n, "wall_ms": n, "node": "fixture", "event": event,
+    });
+    if let (Some(members), Some(extra)) = (object.as_object_mut(), fields.as_object()) {
+        members.extend(extra.clone());
+    }
+    let mut text = serde_json::to_string(&object).unwrap();
+    text.push('\n');
+    let mut lines =
+        trace_reader::parse_trace_lines(text.as_bytes(), trace_reader::WritingProcess::Ended)
+            .unwrap();
+    lines.pop().unwrap()
+}
+
 #[cfg(test)]
 mod spec_3_15_restart_and_departure_on_one_machine {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -94,11 +120,10 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
     use crate::dropped_payloads::short_id_of_node;
     use crate::local_network::{AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, LocalNetwork, MetPair};
-    use crate::mcp_server::{PRESENCE_WAIT, SEND_TOOL, gone, online, send_arguments};
+    use crate::mcp_server::{PRESENCE_WAIT, SEND_TOOL, gone, online, send_arguments, unreachable};
     use crate::member::{Member, loopback_address, loopback_address_of};
     use crate::member_ended_at_its_peer::{
-        SPEC_NEIGHBOR_DOWN_AND_PROBE_WITHIN, assert_killed_member_is_unreachable_then_unsendable,
-        assert_stopped_member_is_gone_then_unreachable,
+        UNREACHABLE_CODE, assert_stopped_member_is_gone_then_unreachable,
     };
     use crate::message_body::BODY;
     use crate::new_presence_window::{acknowledged_after, new_presence_accepted};
@@ -140,8 +165,14 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
     /// The event a member records when it replaces a peer's lookup entry, the last step of applying a Presence.
     const LOOKUP_REPLACED_EVENT: &str = "peers.lookup_replaced";
-    /// What detecting a killed peer on one machine may take beyond the bound of spec 3.15 test 5, which its idle timeout and probe timeout leave no room for.
-    const LOOPBACK_DETECTION_SLACK: Duration = Duration::from_secs(1);
+    /// How long the wait for a killed peer's entry to change lasts, a wait's bound that decides no run in which the counts of spec 3.15 test 5 hold.
+    const KILLED_MEMBER_ENTRY_CHANGE_WAIT: Duration = Duration::from_secs(30);
+    /// The event a member records when gossip reports a neighbor down.
+    const NEIGHBOR_DOWN_EVENT: &str = "gossip.neighbor_down";
+    /// The kind of a direct request that probes a peer's liveness.
+    const PROBE_KIND: &str = "probe";
+    /// The outcome of a request that failed, as an events line names it.
+    const FAILED_OUTCOME: &str = "failed";
     /// The event a member records when gossip reports a neighbor up.
     const NEIGHBOR_UP_EVENT: &str = "gossip.neighbor_up";
     /// The status of an entry whose probe or request failed (spec 3.8).
@@ -370,26 +401,72 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         );
     }
 
-    /// Requires the member's table to have set bob unreachable by a failed probe, the cause a neighbor-down event gives (spec 3.8).
+    /// The numbers of the lines of one run that record bob's neighbor-downs and failed probes before the line that sets bob unreachable by a failed probe, and the number of that line.
+    #[derive(Debug, PartialEq, Eq)]
+    struct DetectionOfBob {
+        neighbor_downs: Vec<u64>,
+        failed_probes: Vec<u64>,
+        change: u64,
+    }
+
+    impl DetectionOfBob {
+        /// Whether one neighbor-down came first, then one failed probe, then the change, and no other of either stands before the change (spec 3.15 test 5).
+        fn is_one_neighbor_down_then_one_failed_probe_then_the_change(&self) -> bool {
+            matches!(
+                (self.neighbor_downs.as_slice(), self.failed_probes.as_slice()),
+                (&[neighbor_down], &[probe]) if neighbor_down < probe && probe < self.change
+            )
+        }
+    }
+
+    /// What the member's lines hold of bob's detection, once a line sets bob unreachable by a failed probe.
+    fn detection_of_bob(lines: &[TraceLine], bob: &str) -> Option<DetectionOfBob> {
+        let is_bob = |line: &TraceLine| line.value("peer") == Some(&json!(bob));
+        let change = lines.iter().find(|line| {
+            line.event == ENTRY_CHANGED_EVENT
+                && is_bob(line)
+                && line.value("to") == Some(&json!(UNREACHABLE_STATUS))
+                && line.value("cause") == Some(&json!(PROBE_FAILED_CAUSE))
+        })?;
+        let before_the_change = || {
+            lines
+                .iter()
+                .filter(|line| line.run == change.run && line.n < change.n && is_bob(line))
+        };
+        Some(DetectionOfBob {
+            neighbor_downs: before_the_change()
+                .filter(|line| line.event == NEIGHBOR_DOWN_EVENT)
+                .map(|line| line.n)
+                .collect(),
+            failed_probes: before_the_change()
+                .filter(|line| {
+                    line.event == REQUEST_SENT_EVENT
+                        && line.value("kind") == Some(&json!(PROBE_KIND))
+                        && line.value("outcome") == Some(&json!(FAILED_OUTCOME))
+                })
+                .map(|line| line.n)
+                .collect(),
+            change: change.n,
+        })
+    }
+
+    /// Requires the member's lines to show one neighbor-down of bob, one failed probe to him, then the change of his entry to unreachable by that probe, none of them twice (spec 3.15 test 5).
     #[track_caller]
-    fn require_bob_set_unreachable_by_a_failed_probe(member: &Member, bob_card: &Card) {
+    fn require_one_neighbor_down_and_one_failed_probe_before_bob_is_unreachable(
+        member: &Member,
+        bob_card: &Card,
+    ) {
         let bob = short_id_of_node(bob_card.id);
-        member.wait_until(
+        let detection = member.wait_until(
             &format!(
                 "{ENTRY_CHANGED_EVENT} of {bob} to {UNREACHABLE_STATUS} by {PROBE_FAILED_CAUSE}"
             ),
-            EVENTS_OF_AN_ENDED_MEMBER_WITHIN,
-            |lines| {
-                lines
-                    .iter()
-                    .find(|line| {
-                        line.event == ENTRY_CHANGED_EVENT
-                            && line.value("peer") == Some(&json!(bob))
-                            && line.value("to") == Some(&json!(UNREACHABLE_STATUS))
-                            && line.value("cause") == Some(&json!(PROBE_FAILED_CAUSE))
-                    })
-                    .map(|_| ())
-            },
+            KILLED_MEMBER_ENTRY_CHANGE_WAIT,
+            |lines| detection_of_bob(&lines, &bob),
+        );
+        assert!(
+            detection.is_one_neighbor_down_then_one_failed_probe_then_the_change(),
+            "{detection:?}"
         );
     }
 
@@ -699,16 +776,143 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         } = network.amy_and_bob_met(&host);
         wait_until_bob_is_a_neighbor_with_no_request_to_it_in_flight(&amy, &bob_card);
 
-        let killed = Instant::now();
         bob.kill();
 
-        assert_killed_member_is_unreachable_then_unsendable(
-            &mut amy,
-            BOB_HANDLE,
-            killed,
-            SPEC_NEIGHBOR_DOWN_AND_PROBE_WITHIN.saturating_add(LOOPBACK_DETECTION_SLACK),
+        require_one_neighbor_down_and_one_failed_probe_before_bob_is_unreachable(&amy, &bob_card);
+        amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, unreachable);
+        let sent = amy.send(BOB_HANDLE, BODY);
+        assert_eq!(sent["error"]["code"], json!(UNREACHABLE_CODE), "{sent}");
+    }
+
+    #[test]
+    fn spec_3_15_test_5_one_neighbor_down_then_one_failed_probe_then_the_change_meets_the_count() {
+        let lines = [
+            neighbor_down_line(1, BOB_FIXTURE),
+            failed_probe_line(2, BOB_FIXTURE),
+            probe_failed_change_line(3, BOB_FIXTURE),
+        ];
+
+        let detection = detection_of_bob(&lines, BOB_FIXTURE).unwrap();
+
+        assert_eq!(
+            detection,
+            DetectionOfBob {
+                neighbor_downs: vec![1],
+                failed_probes: vec![2],
+                change: 3
+            }
         );
-        require_bob_set_unreachable_by_a_failed_probe(&amy, &bob_card);
+        assert!(detection.is_one_neighbor_down_then_one_failed_probe_then_the_change());
+    }
+
+    #[test]
+    fn spec_3_15_test_5_a_second_neighbor_down_before_the_change_fails_the_count() {
+        let lines = [
+            neighbor_down_line(1, BOB_FIXTURE),
+            neighbor_down_line(2, BOB_FIXTURE),
+            failed_probe_line(3, BOB_FIXTURE),
+            probe_failed_change_line(4, BOB_FIXTURE),
+        ];
+
+        let detection = detection_of_bob(&lines, BOB_FIXTURE).unwrap();
+
+        assert!(!detection.is_one_neighbor_down_then_one_failed_probe_then_the_change());
+    }
+
+    #[test]
+    fn spec_3_15_test_5_a_second_failed_probe_before_the_change_fails_the_count() {
+        let lines = [
+            neighbor_down_line(1, BOB_FIXTURE),
+            failed_probe_line(2, BOB_FIXTURE),
+            failed_probe_line(3, BOB_FIXTURE),
+            probe_failed_change_line(4, BOB_FIXTURE),
+        ];
+
+        let detection = detection_of_bob(&lines, BOB_FIXTURE).unwrap();
+
+        assert!(!detection.is_one_neighbor_down_then_one_failed_probe_then_the_change());
+    }
+
+    #[test]
+    fn spec_3_15_test_5_a_change_that_precedes_the_probe_fails_the_count() {
+        let lines = [
+            neighbor_down_line(1, BOB_FIXTURE),
+            probe_failed_change_line(2, BOB_FIXTURE),
+            failed_probe_line(3, BOB_FIXTURE),
+        ];
+
+        let detection = detection_of_bob(&lines, BOB_FIXTURE).unwrap();
+
+        assert!(!detection.is_one_neighbor_down_then_one_failed_probe_then_the_change());
+    }
+
+    #[test]
+    fn spec_3_15_test_5_a_probe_that_precedes_the_neighbor_down_fails_the_count() {
+        let lines = [
+            failed_probe_line(1, BOB_FIXTURE),
+            neighbor_down_line(2, BOB_FIXTURE),
+            probe_failed_change_line(3, BOB_FIXTURE),
+        ];
+
+        let detection = detection_of_bob(&lines, BOB_FIXTURE).unwrap();
+
+        assert!(!detection.is_one_neighbor_down_then_one_failed_probe_then_the_change());
+    }
+
+    #[test]
+    fn spec_3_15_test_5_lines_of_another_peer_and_no_change_are_not_counted() {
+        let lines = [
+            neighbor_down_line(1, HOST_FIXTURE),
+            neighbor_down_line(2, BOB_FIXTURE),
+            failed_probe_line(3, HOST_FIXTURE),
+            failed_probe_line(4, BOB_FIXTURE),
+        ];
+
+        assert_eq!(detection_of_bob(&lines, BOB_FIXTURE), None);
+        let with_the_change = [
+            neighbor_down_line(1, HOST_FIXTURE),
+            neighbor_down_line(2, BOB_FIXTURE),
+            failed_probe_line(3, HOST_FIXTURE),
+            failed_probe_line(4, BOB_FIXTURE),
+            probe_failed_change_line(5, BOB_FIXTURE),
+        ];
+        let detection = detection_of_bob(&with_the_change, BOB_FIXTURE).unwrap();
+        assert!(detection.is_one_neighbor_down_then_one_failed_probe_then_the_change());
+    }
+
+    /// The peer of the fixture lines the count is asked about.
+    const BOB_FIXTURE: &str = "b0b0b0b0b0";
+    /// A peer of the fixture lines the count is not asked about.
+    const HOST_FIXTURE: &str = "4057404057";
+
+    /// A line recording gossip's neighbor-down of the peer.
+    fn neighbor_down_line(n: u64, peer: &str) -> TraceLine {
+        crate::built_trace_line(
+            crate::BUILT_RUN,
+            n,
+            NEIGHBOR_DOWN_EVENT,
+            &json!({ "peer": peer }),
+        )
+    }
+
+    /// A line recording a failed probe request to the peer.
+    fn failed_probe_line(n: u64, peer: &str) -> TraceLine {
+        crate::built_trace_line(
+            crate::BUILT_RUN,
+            n,
+            REQUEST_SENT_EVENT,
+            &json!({ "peer": peer, "kind": PROBE_KIND, "outcome": FAILED_OUTCOME }),
+        )
+    }
+
+    /// A line recording the peer's entry set unreachable by a failed probe.
+    fn probe_failed_change_line(n: u64, peer: &str) -> TraceLine {
+        crate::built_trace_line(
+            crate::BUILT_RUN,
+            n,
+            ENTRY_CHANGED_EVENT,
+            &json!({ "peer": peer, "to": UNREACHABLE_STATUS, "cause": PROBE_FAILED_CAUSE }),
+        )
     }
 
     #[test]
@@ -1400,21 +1604,103 @@ mod spec_3_15_with_one_member {
         member.wait_until(
             &format!("a {GATE_CLOSED_EVENT} of the {direction} connection of {peer}{after}"),
             within,
-            |lines| {
-                lines
-                    .iter()
-                    .any(|line| {
-                        is_gate_closing_of(line, peer, direction)
-                            && written_after.is_none_or(|earlier| is_written_after(line, earlier))
-                    })
-                    .then_some(())
-            },
+            |lines| holds_gate_closing_of(&lines, peer, direction, written_after).then_some(()),
         );
+    }
+
+    /// Whether the lines hold a gate closing of a connection of the peer that the side opened, written after the earlier line when one is given.
+    fn holds_gate_closing_of(
+        lines: &[TraceLine],
+        peer: &str,
+        direction: &str,
+        written_after: Option<&TraceLine>,
+    ) -> bool {
+        lines.iter().any(|line| {
+            is_gate_closing_of(line, peer, direction)
+                && written_after.is_none_or(|earlier| is_written_after(line, earlier))
+        })
     }
 
     /// Whether the events line was written after the earlier line of the same run.
     fn is_written_after(line: &TraceLine, earlier: &TraceLine) -> bool {
         line.run == earlier.run && line.n > earlier.n
+    }
+
+    /// A gate closing line of the peer and direction.
+    fn gate_closing_line(run: &str, n: u64, peer: &str, direction: &str) -> TraceLine {
+        crate::built_trace_line(
+            run,
+            n,
+            GATE_CLOSED_EVENT,
+            &json!({ PEER_FIELD: peer, DIRECTION_FIELD: direction }),
+        )
+    }
+
+    /// The counters line of the rebound moment, numbered `n` in the run.
+    fn rebound_line(run: &str, n: u64) -> TraceLine {
+        crate::built_trace_line(
+            run,
+            n,
+            COUNTERS_EVENT,
+            &json!({ MOMENT_FIELD: REBOUND_MOMENT }),
+        )
+    }
+
+    #[test]
+    fn spec_3_15_test_21_a_dialed_closing_written_only_before_the_rebound_line_does_not_meet_the_bound()
+     {
+        let rebound = rebound_line(crate::BUILT_RUN, 10);
+        let lines = [
+            gate_closing_line(crate::BUILT_RUN, 9, "feedfeedfe", DIALED_DIRECTION),
+            rebound_line(crate::BUILT_RUN, 10),
+        ];
+
+        assert!(!holds_gate_closing_of(
+            &lines,
+            "feedfeedfe",
+            DIALED_DIRECTION,
+            Some(&rebound)
+        ));
+        assert!(holds_gate_closing_of(
+            &lines,
+            "feedfeedfe",
+            DIALED_DIRECTION,
+            None
+        ));
+    }
+
+    #[test]
+    fn spec_3_15_test_21_a_dialed_closing_written_after_the_rebound_line_meets_the_bound() {
+        let rebound = rebound_line(crate::BUILT_RUN, 10);
+        let lines = [
+            gate_closing_line(crate::BUILT_RUN, 9, "feedfeedfe", DIALED_DIRECTION),
+            rebound_line(crate::BUILT_RUN, 10),
+            gate_closing_line(crate::BUILT_RUN, 11, "feedfeedfe", DIALED_DIRECTION),
+        ];
+
+        assert!(holds_gate_closing_of(
+            &lines,
+            "feedfeedfe",
+            DIALED_DIRECTION,
+            Some(&rebound)
+        ));
+    }
+
+    #[test]
+    fn spec_3_15_test_21_a_closing_of_another_peer_side_or_run_after_the_bound_does_not_meet_it() {
+        let rebound = rebound_line(crate::BUILT_RUN, 10);
+        let lines = [
+            gate_closing_line(crate::BUILT_RUN, 11, "0000000000", DIALED_DIRECTION),
+            gate_closing_line(crate::BUILT_RUN, 12, "feedfeedfe", ACCEPTED_DIRECTION),
+            gate_closing_line("another-run", 13, "feedfeedfe", DIALED_DIRECTION),
+        ];
+
+        assert!(!holds_gate_closing_of(
+            &lines,
+            "feedfeedfe",
+            DIALED_DIRECTION,
+            Some(&rebound)
+        ));
     }
 
     /// Whether the events line records the member's gate closing a connection of the peer that the side opened.
