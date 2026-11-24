@@ -540,7 +540,7 @@ mod tests {
         }
     }
 
-    /// No shorter than the two hundred polls the tree was once given to start.
+    /// The longest the fake process tree is given to show up in the process table before its harness is stopped.
     const TREE_STARTUP_WAIT: Duration = Duration::from_secs(30);
     fn executable_table(pid: u32, executable: &str) -> BTreeMap<Pid, String> {
         BTreeMap::from([(Pid(pid), executable.to_owned())])
