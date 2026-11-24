@@ -645,7 +645,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
         _observer: LabMachine,
     }
 
-    /// Starts a member whose only host is the doomed one and a `tail` joined through it, returning them once its first announced relays, required to be the doomed host's alone, are followed at the tail by the live host's record, and the one read of the member's own raw trace then names the doomed host's relay as its home.
+    /// Starts a member whose only host is the doomed one and a `tail` joined through it, returning them once its first announced relays, required to be the doomed host's alone, are followed at the tail by the live host's record and the member's own raw trace records its acceptance of that record, and the one read of that trace then names the doomed host's relay as its home.
     #[track_caller]
     fn start_member_homed_on(network: &LiveNetwork, doomed: &KillableHost) -> HomedMember {
         let machine = LabMachine::fresh(MEMBER_CARD, network);
@@ -856,15 +856,21 @@ mod spec_3_15_two_members_through_the_live_host {
     const TAIL_COMMAND: &str = "tail";
     /// The event a member records for each gossip payload it accepts, and the fields naming the payload's kind and signer (spec/observability.md decisions 6 and 9).
     const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
+    /// The field of an events line naming a payload's kind.
     const KIND_FIELD: &str = "kind";
+    /// The field of an events line naming a payload's signer.
     const PEER_FIELD: &str = "peer";
     /// The event a member records for each inbox frame it delivers, and its field naming the frame's message id (spec/observability.md decision 9).
     const FRAME_DELIVERED_EVENT: &str = "inbox.frame_delivered";
+    /// The field of an events line naming a message's id.
     const MESSAGE_FIELD: &str = "message";
     /// The event a member records for each direct request it sends, the field naming how it ended, and the words for an Introduce and for an acknowledged request (spec/observability.md decision 9).
     const REQUEST_SENT_EVENT: &str = "direct.request_sent";
+    /// The field of an events line naming how a direct request ended.
     const OUTCOME_FIELD: &str = "outcome";
+    /// The kind word of an Introduce in an events line.
     const INTRODUCE_KIND: &str = "introduce";
+    /// The outcome word of an acknowledged request in an events line.
     const ACKNOWLEDGED_OUTCOME: &str = "acknowledged";
     /// How long a member may take to have its Introduce to the sender of a Message acknowledged after it recorded the Message's frame: chosen, not measured, above the 5000 ms connect and 10000 ms ack timeouts of spec 3.14 together.
     const INTRODUCE_ACKNOWLEDGED_WAIT: Duration = Duration::from_secs(30);
