@@ -9,12 +9,15 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 
 use super::tests::{
-    FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_SEED,
-    MemberPlan, OWNER_SEED, SECOND_EFFECTIVE_FIRST_HANDLE, SECOND_HANDLE, SECOND_PUBLIC,
-    SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_PUBLIC, THIRD_SEED, WITNESS_SEED,
-    bind, card, entry_meeting_within, infrastructure_of, keys, message_to, relay_url, secret_key,
-    settable_clock, settled_direct_answers, spawn_member, start_members, start_members_reaching,
-    start_pair, start_witnessed, wall_clock_ms,
+    FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_HANDLE,
+    MARKER_PUBLIC, MARKER_SEED, MemberPlan, NOT_AN_ANNOUNCED_HANDLE, OWNER_SEED, REPLAYED_PUBLIC,
+    SECOND_EFFECTIVE_FIRST_HANDLE, SECOND_HANDLE, SECOND_MARKER_SEED, SECOND_PUBLIC, SECOND_SEED,
+    SPEC_ANNOUNCEMENT_MAX_AGE_MS, SPEC_INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS,
+    SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_PUBLIC, THIRD_SEED, WITNESS_HANDLE,
+    WITNESS_PUBLIC, WITNESS_SEED, bind, card, entry_meeting_within, infrastructure_of, keys,
+    message_to, relay_url, secret_key, settable_clock, settled_direct_answers, short_peer_id,
+    spawn_member, start_members, start_members_reaching, start_pair, start_witnessed,
+    wall_clock_ms,
 };
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{Event, EventFields, RunRecord};
@@ -34,13 +37,8 @@ use crate::wire::{
 };
 
 const EVENT_WAIT: Duration = Duration::from_secs(10);
-const SPEC_SHORT_ID_BYTES: usize = 5;
-const SPEC_ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
+const SECOND_EFFECTIVE_MARKER_HANDLE: &str = "mark-2";
 const STALE_SEQ: u64 = FROZEN_CLOCK_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1;
-const SECOND_MARKER_SEED: u8 = 82;
-const MARKER_HANDLE: &str = "mark";
-const MARKER_PUBLIC: &[u8] = br#"{"role":"marker"}"#;
-const REPLAYED_PUBLIC: &[u8] = br#"{"role":"replayed"}"#;
 const MARKER_RELAY: &str = "https://relay.marker.invalid/";
 const MARKER_DIRECT_ADDRESS: SocketAddr = SocketAddr::new(
     std::net::IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 7)),
@@ -92,7 +90,7 @@ impl RecordedEvents {
     async fn lookup_replaced_of(&mut self, seed: u8) -> EventFields {
         loop {
             let fields = self.next_named("peers.lookup_replaced").await;
-            if fields.first() == Some(&("peer", short_id(seed))) {
+            if fields.first() == Some(&("peer", short_peer_id(seed))) {
                 return fields;
             }
         }
@@ -100,7 +98,7 @@ impl RecordedEvents {
 
     /// The fields of the next event of that name naming the seed's card as its peer, failing with the name and the events seen when none is recorded within the wait.
     async fn next_named_from(&mut self, name: &str, seed: u8) -> EventFields {
-        let peer = ("peer", short_id(seed));
+        let peer = ("peer", short_peer_id(seed));
         crate::test_waits::next_recorded_meeting(
             &mut self.0,
             name,
@@ -118,11 +116,6 @@ fn recording() -> (RunRecord, RecordedEvents) {
         drop(sender.send((event.name(), event.fields())));
     });
     (report, RecordedEvents(receiver))
-}
-
-/// The five-byte id of the seed's card as the events file writes it.
-fn short_id(seed: u8) -> Value {
-    Value::from(data_encoding::HEXLOWER.encode(card(seed).get(..SPEC_SHORT_ID_BYTES).unwrap()))
 }
 
 #[tokio::test]
@@ -145,7 +138,7 @@ async fn observability_decision_9_a_member_records_the_topic_joined_and_the_neig
     assert_eq!(recorded.next_named("gossip.topic_joined").await, []);
     assert_eq!(
         recorded.next_named("gossip.neighbor_up").await,
-        [("peer", short_id(SECOND_SEED))]
+        [("peer", short_peer_id(SECOND_SEED))]
     );
     drop(scratch);
 }
@@ -172,7 +165,7 @@ async fn observability_decision_9_a_member_records_a_neighbor_down_by_its_five_b
 
     assert_eq!(
         recorded.next_named("gossip.neighbor_down").await,
-        [("peer", short_id(SECOND_SEED))]
+        [("peer", short_peer_id(SECOND_SEED))]
     );
     drop(scratch);
 }
@@ -223,7 +216,7 @@ async fn observability_decision_9_a_member_records_a_payload_it_accepted_with_it
         recorded.next_named("gossip.payload_accepted").await,
         [
             ("kind", Value::from("presence")),
-            ("peer", short_id(MARKER_SEED)),
+            ("peer", short_peer_id(MARKER_SEED)),
             ("handle", Value::from(MARKER_HANDLE)),
             ("seq", Value::from(seq)),
         ]
@@ -277,7 +270,7 @@ async fn observability_decision_9_a_member_records_a_payload_its_admission_dropp
         replay,
         [
             ("kind", Value::from("presence")),
-            ("peer", short_id(MARKER_SEED)),
+            ("peer", short_peer_id(MARKER_SEED)),
             ("handle", Value::from(MARKER_HANDLE)),
             ("seq", Value::from(FROZEN_CLOCK_MS)),
             ("rule", Value::from("not_newer_than_held")),
@@ -287,7 +280,7 @@ async fn observability_decision_9_a_member_records_a_payload_its_admission_dropp
         stale,
         [
             ("kind", Value::from("presence")),
-            ("peer", short_id(SECOND_MARKER_SEED)),
+            ("peer", short_peer_id(SECOND_MARKER_SEED)),
             ("seq", Value::from(STALE_SEQ)),
             ("rule", Value::from("older_than_max_age")),
         ]
@@ -348,7 +341,7 @@ fn admission_fields(
     (stamp_key, stamp): (&'static str, u64),
     rule: Option<&str>,
 ) -> EventFields {
-    let mut fields = vec![("kind", Value::from(kind)), ("peer", short_id(signer))];
+    let mut fields = vec![("kind", Value::from(kind)), ("peer", short_peer_id(signer))];
     fields.extend(handle.map(|handle| ("handle", Value::from(handle))));
     fields.push((stamp_key, Value::from(stamp)));
     fields.extend(rule.map(|rule| ("rule", Value::from(rule))));
@@ -358,15 +351,14 @@ fn admission_fields(
 const ACCEPTED: &str = "gossip.payload_accepted";
 const DROPPED: &str = "gossip.payload_dropped";
 const MILLIS_PER_SECOND: u64 = 1000;
-const SPEC_INFRASTRUCTURE_FUTURE_BOUND_SECONDS: u64 = 300;
 const PIN_SEED: u8 = 84;
 const UNKNOWN_SEED: u8 = 83;
 const PIN_HANDLE: &str = "pin";
-const NOT_AN_ANNOUNCED_HANDLE: &str = "Bob";
 const OLDER_THAN_MAX_AGE: u64 = FROZEN_CLOCK_MS - SPEC_ANNOUNCEMENT_MAX_AGE_MS - 1;
 const AHEAD_OF_MAX_AGE: u64 = FROZEN_CLOCK_MS + SPEC_ANNOUNCEMENT_MAX_AGE_MS + 1;
 const NOW_SECONDS: u64 = FROZEN_CLOCK_MS / MILLIS_PER_SECOND;
-const PAST_FUTURE_BOUND_SECONDS: u64 = NOW_SECONDS + SPEC_INFRASTRUCTURE_FUTURE_BOUND_SECONDS + 1;
+const PAST_FUTURE_BOUND_SECONDS: u64 =
+    NOW_SECONDS + SPEC_INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS + 1;
 
 /// One step of an admission script: the signer's seed, the payload it broadcasts, and the event the member records for it.
 type AdmissionStep = (u8, Payload, &'static str, EventFields);
@@ -774,7 +766,6 @@ const ENTRY_CREATED: &str = "peers.entry_created";
 const ENTRY_CHANGED: &str = "peers.entry_changed";
 const ENTRY_REMOVED: &str = "peers.entry_removed";
 const SPEC_GONE_ENTRY_RETENTION_MS: u64 = 3_600_000;
-const WITNESS_HANDLE: &str = "wit";
 const SENT_BODY: &str = "ping";
 
 /// The fields of an entry created at the table, as the events file writes them.
@@ -785,7 +776,7 @@ fn created_fields(
     cause: &str,
 ) -> EventFields {
     vec![
-        ("peer", short_id(seed)),
+        ("peer", short_peer_id(seed)),
         ("handle", Value::from(assigned)),
         ("requested", Value::from(requested)),
         ("status", Value::from(status)),
@@ -796,7 +787,7 @@ fn created_fields(
 /// The fields of an entry whose status moved, as the events file writes them.
 fn changed_fields(seed: u8, handle: &str, (from, to): (&str, &str), cause: &str) -> EventFields {
     vec![
-        ("peer", short_id(seed)),
+        ("peer", short_peer_id(seed)),
         ("handle", Value::from(handle)),
         ("from", Value::from(from)),
         ("to", Value::from(to)),
@@ -862,7 +853,7 @@ async fn observability_decision_9_a_member_records_each_entry_its_payloads_creat
         second,
         created_fields(
             SECOND_MARKER_SEED,
-            (MARKER_HANDLE, "mark-2"),
+            (MARKER_HANDLE, SECOND_EFFECTIVE_MARKER_HANDLE),
             "online",
             "presence"
         )
@@ -875,7 +866,7 @@ async fn observability_decision_9_a_member_records_each_entry_its_payloads_creat
         reported,
         changed_fields(
             SECOND_MARKER_SEED,
-            "mark-2",
+            SECOND_EFFECTIVE_MARKER_HANDLE,
             ("online", "unreachable"),
             "unreachable"
         )
@@ -883,7 +874,7 @@ async fn observability_decision_9_a_member_records_each_entry_its_payloads_creat
     assert_eq!(
         expired,
         [
-            ("peer", short_id(MARKER_SEED)),
+            ("peer", short_peer_id(MARKER_SEED)),
             ("handle", Value::from(MARKER_HANDLE)),
             ("status", Value::from("gone")),
             ("cause", Value::from("expiry")),
@@ -969,7 +960,7 @@ async fn observability_decision_9_a_member_records_a_lookup_replaced_by_its_coun
     assert_eq!(
         relayed,
         [
-            ("peer", short_id(MARKER_SEED)),
+            ("peer", short_peer_id(MARKER_SEED)),
             ("handle", Value::from(MARKER_HANDLE)),
             ("direct_addresses", Value::from(2)),
             ("relay", Value::from(true)),
@@ -978,8 +969,8 @@ async fn observability_decision_9_a_member_records_a_lookup_replaced_by_its_coun
     assert_eq!(
         unrelayed,
         [
-            ("peer", short_id(SECOND_MARKER_SEED)),
-            ("handle", Value::from("mark-2")),
+            ("peer", short_peer_id(SECOND_MARKER_SEED)),
+            ("handle", Value::from(SECOND_EFFECTIVE_MARKER_HANDLE)),
             ("direct_addresses", Value::from(1)),
             ("relay", Value::from(false)),
         ]
@@ -1219,24 +1210,27 @@ async fn observability_decision_9_a_broadcast_the_topic_refuses_is_recorded_as_f
     )
     .await
     .unwrap();
-    let (report, mut recorded) = recording();
-    let request_named_for_another_card =
-        super::presence_request(card(SECOND_SEED), FROZEN_CLOCK_MS);
+    let payloads_naming_another_card = [
+        presence_of(SECOND_SEED, SECOND_HANDLE, FROZEN_CLOCK_MS),
+        departure_of(SECOND_SEED, FROZEN_CLOCK_MS),
+        unreachable_of(SECOND_SEED, MARKER_SEED, FROZEN_CLOCK_MS),
+        infrastructure_of(HOST_SEED, HOST_RELAY, FROZEN_CLOCK_MS),
+        super::presence_request(card(SECOND_SEED), FROZEN_CLOCK_MS),
+    ];
 
-    super::broadcast_recording_outcome(
-        &topic,
-        &secret_key(FIRST_SEED),
-        request_named_for_another_card,
-        &*report,
-    )
-    .await;
-    drop(report);
+    for payload in payloads_naming_another_card {
+        let (report, mut recorded) = recording();
 
-    let mut names = Vec::new();
-    while let Some((name, _fields)) = recorded.0.recv().await {
-        names.push(name);
+        super::broadcast_recording_outcome(&topic, &secret_key(FIRST_SEED), payload, &*report)
+            .await;
+        drop(report);
+
+        let mut names = Vec::new();
+        while let Some((name, _fields)) = recorded.0.recv().await {
+            names.push(name);
+        }
+        assert_eq!(names, ["gossip.broadcast_failed"]);
     }
-    assert_eq!(names, ["gossip.broadcast_failed"]);
 }
 
 #[tokio::test]
@@ -1261,7 +1255,7 @@ async fn observability_decision_9_an_introduce_to_a_card_that_cannot_be_reached_
     assert_eq!(
         recorded.next_named("direct.contact_failed").await,
         [
-            ("peer", short_id(MARKER_SEED)),
+            ("peer", short_peer_id(MARKER_SEED)),
             ("error", Value::from("unreachable")),
         ]
     );
@@ -1311,7 +1305,7 @@ async fn spec_3_8_a_host_relay_added_to_the_relay_map_is_recorded_with_its_host_
         relay_map_edit_of_a_host_record("ev-rm-add").await,
         [
             ("edit", Value::from("added")),
-            ("host", short_id(HOST_SEED)),
+            ("host", short_peer_id(HOST_SEED)),
             ("kind", Value::from("relay")),
             ("port", Value::from(HTTPS_DEFAULT_PORT)),
             ("location", Value::from(expected_hash)),
@@ -1396,7 +1390,7 @@ async fn observability_decision_9_a_member_records_the_lookup_it_points_at_the_a
     assert_eq!(
         recorded.lookup_replaced_of(HOST_SEED).await,
         [
-            ("peer", short_id(HOST_SEED)),
+            ("peer", short_peer_id(HOST_SEED)),
             ("direct_addresses", Value::from(0)),
             ("relay", Value::from(true)),
         ]
@@ -1423,7 +1417,7 @@ async fn observability_decision_9_a_member_records_the_lookup_it_seeds_with_the_
     assert_eq!(
         recorded.lookup_replaced_of(HOST_SEED).await,
         [
-            ("peer", short_id(HOST_SEED)),
+            ("peer", short_peer_id(HOST_SEED)),
             ("direct_addresses", Value::from(0)),
             ("relay", Value::from(true)),
         ]
@@ -1566,12 +1560,11 @@ async fn contact_failed_by_introduce_answered(
 
 fn contact_failed_fields(error_word: &str) -> EventFields {
     vec![
-        ("peer", short_id(WITNESS_SEED)),
+        ("peer", short_peer_id(WITNESS_SEED)),
         ("error", Value::from(error_word)),
     ]
 }
 
-const WITNESS_PUBLIC: &[u8] = br#"{"role":"witness"}"#;
 const NONCE_THE_MEMBER_DID_NOT_SEND: [u8; 16] = [0; 16];
 
 #[tokio::test]

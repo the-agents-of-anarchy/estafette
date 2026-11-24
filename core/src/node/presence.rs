@@ -2009,7 +2009,7 @@ pub(super) mod tests {
     const SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT: Duration = Duration::from_millis(8000);
     pub(in crate::node) const NETWORK_FILE_NAME: &str = "network.toml";
     const NOT_A_KEY: &str = "not a key";
-    /// A third of the observer wait, which the runtime's timer would take whole.
+    /// A third of the observer wait, the span in which a handle is assigned once the handed clock reads the wait.
     const ASSIGNED_ONCE_THE_CLOCK_READS_THE_WAIT_WITHIN: Duration = Duration::from_millis(1000);
     pub(in crate::node) const SPEC_OBSERVER_WAIT: Duration = Duration::from_millis(3000);
     #[cfg(feature = "relay")]
@@ -2035,14 +2035,14 @@ pub(super) mod tests {
     pub(in crate::node) const WITNESS_PUBLIC: &[u8] = br#"{"role":"witness"}"#;
     const WITNESS_JOIN_WAIT: Duration = Duration::from_secs(8);
     pub(in crate::node) const MARKER_SEED: u8 = 80;
-    const SECOND_MARKER_SEED: u8 = 81;
-    const MARKER_HANDLE: &str = "mark";
-    const MARKER_PUBLIC: &[u8] = br#"{"role":"marker"}"#;
-    const REPLAYED_PUBLIC: &[u8] = br#"{"role":"replayed"}"#;
+    pub(in crate::node) const SECOND_MARKER_SEED: u8 = 81;
+    pub(in crate::node) const MARKER_HANDLE: &str = "mark";
+    pub(in crate::node) const MARKER_PUBLIC: &[u8] = br#"{"role":"marker"}"#;
+    pub(in crate::node) const REPLAYED_PUBLIC: &[u8] = br#"{"role":"replayed"}"#;
     pub(in crate::node) const PAYLOAD_WAIT: Duration = Duration::from_secs(3);
     pub(in crate::node) const MOVED_HOST_RELAY: &str =
         "https://relay-moved-host.estafette.invalid/";
-    const NOT_AN_ANNOUNCED_HANDLE: &str = "Bob";
+    pub(in crate::node) const NOT_AN_ANNOUNCED_HANDLE: &str = "Bob";
     const LATER_MESSAGE_BODY: &str = "a message under the announced handle";
     const MISMATCHED_MESSAGE_BODY: &str = "a message under a handle that does not match";
     const IMPOSTOR_HANDLE: &str = "imp";
@@ -2054,8 +2054,8 @@ pub(super) mod tests {
     const SECOND_HOST_RELAY: &str = "https://relay-second-host.estafette.invalid/";
     const THIRD_HOST_RELAY: &str = "https://relay-third-host.estafette.invalid/";
     const SPEC_HOST_ADDED_WITHIN: Duration = Duration::from_millis(1000);
-    const SPEC_INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS: u64 = 300;
-    const SPEC_ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
+    pub(in crate::node) const SPEC_INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS: u64 = 300;
+    pub(in crate::node) const SPEC_ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     pub(in crate::node) const FROZEN_CLOCK_MS: u64 = 1_800_000_000_000;
     const CLOCK_AFTER_MAX_AGE_MS: u64 = FROZEN_CLOCK_MS + 400_000;
@@ -2083,7 +2083,7 @@ pub(super) mod tests {
     const INTERVAL_MOMENT: &str = "interval";
     /// The longest a member's counters snapshot at the interval takes: the snapshot interval since its start, then a second.
     const INTERVAL_SNAPSHOT_WITHIN: Duration = Duration::from_secs(61);
-    /// The span after a request or report in which the base's tests looked for an answer that must not come.
+    /// The span after a request or report that a test waits out to show that no answer comes.
     const ANSWER_WINDOW: Duration = Duration::from_millis(1000);
     const TOPIC_JOINED: &str = "gossip.topic_joined";
     const UNREACHABLE_KIND: &str = "unreachable";
@@ -2101,6 +2101,7 @@ pub(super) mod tests {
         SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT.saturating_add(INTRODUCE_ROUND_TRIP);
     const OWN_HANDLE_ASSIGNED: &str = "peers.own_handle_assigned";
     const REQUEST_SENT: &str = "direct.request_sent";
+    const CONTACT_FAILED: &str = "direct.contact_failed";
     const INTRODUCE_KIND: &str = "introduce";
     const SPEC_SHORT_PEER_ID_BYTES: usize = 5;
 
@@ -3053,7 +3054,7 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap();
+        .expect("the first member listing the second as gone");
         witness
             .broadcast_as(
                 SECOND_SEED,
@@ -3264,7 +3265,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, HOST_SEED, PAYLOAD_WAIT)
             .await
-            .unwrap();
+            .expect("the network file holding the first host");
         member
             .endpoint
             .remove_relay(&relay_url(HOST_RELAY))
@@ -3291,7 +3292,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, SECOND_HOST_SEED, PAYLOAD_WAIT)
             .await
-            .unwrap();
+            .expect("the network file holding the second host");
         assert!(!relay_map_holds(&member.endpoint, HOST_RELAY).await);
         assert_eq!(
             saved_host(&member.config_path, HOST_SEED).unwrap().ts,
@@ -3312,7 +3313,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, THIRD_HOST_SEED, PAYLOAD_WAIT)
             .await
-            .unwrap();
+            .expect("the network file holding the third host");
         assert!(relay_map_holds(&member.endpoint, HOST_RELAY).await);
         assert_eq!(
             saved_host(&member.config_path, HOST_SEED).unwrap().ts,
@@ -3349,7 +3350,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, SECOND_HOST_SEED, PAYLOAD_WAIT)
             .await
-            .unwrap();
+            .expect("the network file holding the second host");
 
         assert!(saved_host(&member.config_path, HOST_SEED).is_none());
         assert!(!relay_map_holds(&member.endpoint, HOST_RELAY).await);
@@ -3550,13 +3551,13 @@ pub(super) mod tests {
         witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
-            .unwrap();
+            .expect("a Presence from the first member on the witness's topic");
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
         let answer = witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
-            .unwrap();
+            .expect("a Presence from the first member on the witness's topic");
         announced_address_still_held(&member, &answer).await;
         recorded_until_request_taken_from(&mut recorded, FIRST_REQUESTER_SEED).await;
         let asked = Instant::now();
@@ -3586,7 +3587,7 @@ pub(super) mod tests {
         witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
-            .unwrap();
+            .expect("a Presence from the first member on the witness's topic");
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
         let first_answer = witness
@@ -3618,12 +3619,12 @@ pub(super) mod tests {
         witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
-            .unwrap();
+            .expect("a Presence from the first member on the witness's topic");
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
         let answered = witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
-            .unwrap();
+            .expect("a Presence from the first member on the witness's topic");
         announced_address_still_held(&member, &answered).await;
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, REPLAYED_REQUEST_SEQ).await;
@@ -3673,7 +3674,7 @@ pub(super) mod tests {
         witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
-            .unwrap();
+            .expect("a Presence from the first member on the witness's topic");
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FAR_FUTURE_REQUEST_SEQ).await;
         recorded_until_request_dropped_by(&mut recorded, AHEAD_OF_MAX_AGE_RULE).await;
@@ -3711,14 +3712,14 @@ pub(super) mod tests {
         witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
-            .unwrap();
+            .expect("a Presence from the first member on the witness's topic");
         member.node.start_stopping();
         witness
             .payload_where(PAYLOAD_WAIT, |payload| {
                 matches!(payload, Payload::Departure(departure) if departure.card == card(FIRST_SEED))
             })
             .await
-            .unwrap();
+            .expect("a Departure from the first member on the witness's topic");
 
         ask_for_presence(&witness, FIRST_REQUESTER_SEED, FROZEN_CLOCK_MS).await;
         recorded_until_request_taken_from(&mut recorded, FIRST_REQUESTER_SEED).await;
@@ -3794,7 +3795,7 @@ pub(super) mod tests {
         witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
-            .unwrap();
+            .expect("a Presence from the first member on the witness's topic");
         recorded_until_presence_broadcast(&mut recorded, FROZEN_CLOCK_MS).await;
 
         witness
@@ -3868,13 +3869,13 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap();
+        .expect("the member listing the witness as online");
         settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
         next_recorded_meeting(
             &mut recorded,
             PAYLOAD_ACCEPTED,
             |fields| fields.contains(&(KIND, serde_json::Value::from(PRESENCE_KIND))),
-            INTRODUCE_ROUND_TRIP,
+            PAYLOAD_WAIT,
         )
         .await;
 
@@ -3892,7 +3893,7 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap();
+        .expect("the member listing the witness as unreachable");
         drop(scratch);
     }
 
@@ -3956,7 +3957,7 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap();
+        .expect("the member listing the witness as online");
         settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
         let probe_answers_before =
             settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Probe).await;
@@ -4055,6 +4056,11 @@ pub(super) mod tests {
         (report, failures)
     }
 
+    /// Discards every item already waiting in the receiver.
+    fn discard_waiting<Item>(receiver: &mut mpsc::UnboundedReceiver<Item>) {
+        while receiver.try_recv().is_ok() {}
+    }
+
     #[tokio::test]
     async fn observability_decision_9_an_introduce_that_fails_is_recorded_naming_the_node_and_why()
     {
@@ -4105,10 +4111,10 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap();
+        .expect("the member listing the witness as online");
         settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
         settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Probe).await;
-        while failures.try_recv().is_ok() {}
+        discard_waiting(&mut failures);
 
         witness.close().await;
         let recorded = tokio::time::timeout(
@@ -4265,7 +4271,7 @@ pub(super) mod tests {
             mac: ZERO_MAC,
             sig: ZERO_SIGNATURE,
         });
-        let (report, mut failures) = recorded_contact_failures();
+        let (report, mut events) = recorded_events();
         let running = [(WITNESS_SEED, witness_address)];
 
         let (_joining, ()) = tokio::join!(
@@ -4282,8 +4288,18 @@ pub(super) mod tests {
                 witness
                     .payload_where(PAYLOAD_WAIT, presence_request_by(SECOND_SEED))
                     .await
-                    .unwrap();
+                    .expect("a presence request by the second member on the witness's topic");
                 witness.broadcast_as(WITNESS_SEED, witness_presence).await;
+                next_recorded_meeting(
+                    &mut events,
+                    PAYLOAD_ACCEPTED,
+                    |fields| {
+                        fields.contains(&(KIND, serde_json::Value::from(PRESENCE_KIND)))
+                            && fields.contains(&(PEER, short_peer_id(WITNESS_SEED)))
+                    },
+                    PAYLOAD_WAIT,
+                )
+                .await;
                 witness
                     .broadcast_as(
                         MARKER_SEED,
@@ -4303,19 +4319,14 @@ pub(super) mod tests {
                     .await;
             }
         );
-        let last_held_introduce_failed =
-            tokio::time::timeout(TWO_UNREACHABLE_INTRODUCES_FAIL_WITHIN, async {
-                while let Some((peer, _reason)) = failures.recv().await {
-                    if peer == secret_key(SECOND_MARKER_SEED).public() {
-                        return true;
-                    }
-                }
-                false
-            })
-            .await
-            .unwrap_or(false);
+        next_recorded_meeting(
+            &mut events,
+            CONTACT_FAILED,
+            |fields| fields.contains(&(PEER, short_peer_id(SECOND_MARKER_SEED))),
+            TWO_UNREACHABLE_INTRODUCES_FAIL_WITHIN,
+        )
+        .await;
 
-        assert!(last_held_introduce_failed);
         assert_eq!(witness.introduces_taken_from(SECOND_SEED), 1);
         drop(scratch);
     }
@@ -4384,8 +4395,8 @@ pub(super) mod tests {
             REQUEST_SENT,
             |fields| {
                 (
-                    crate::net::direct::tests::field(fields, "kind").cloned(),
-                    crate::net::direct::tests::field(fields, "peer").cloned(),
+                    crate::net::direct::tests::field(fields, KIND).cloned(),
+                    crate::net::direct::tests::field(fields, PEER).cloned(),
                 ) == introduce_to_the_card
             },
             HELD_INTRODUCE_SENT_WITHIN,
@@ -4751,7 +4762,7 @@ pub(super) mod tests {
         witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
             .await
-            .unwrap();
+            .expect("a Presence from the first member on the witness's topic");
         recorded_until_presence_broadcast(&mut recorded, FROZEN_CLOCK_MS).await;
 
         witness
@@ -4806,7 +4817,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, HOST_SEED, PAYLOAD_WAIT)
             .await
-            .unwrap();
+            .expect("the network file holding the first host");
 
         witness
             .broadcast_as(
@@ -4822,7 +4833,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, SECOND_HOST_SEED, PAYLOAD_WAIT)
             .await
-            .unwrap();
+            .expect("the network file holding the second host");
 
         let saved = saved_host(&member.config_path, HOST_SEED).unwrap();
         assert_eq!(saved.relay, MOVED_HOST_RELAY);
@@ -4886,7 +4897,7 @@ pub(super) mod tests {
                 before_the_wait.extend(joined_and_asked_for_presence(&mut second_events).await);
                 clock
                     .asked_to_wake(
-                        "each member's observer wait",
+                        "a member's observer wait",
                         clock.now().checked_add(SPEC_OBSERVER_WAIT).unwrap(),
                     )
                     .await;
@@ -4953,16 +4964,8 @@ pub(super) mod tests {
     #[cfg(feature = "relay")]
     #[tokio::test]
     async fn spec_3_8_a_home_relay_lost_for_the_relay_loss_wait_leaves_the_relay_map() {
-        use iroh_relay::server::{RelayConfig, Server, ServerConfig};
-
         let scratch = Scratch::new("relay-loss").await;
-        let mut relay_config = ServerConfig::default();
-        relay_config.relay = Some(RelayConfig::new(std::net::SocketAddr::from((
-            std::net::Ipv4Addr::LOCALHOST,
-            0,
-        ))));
-        let relay = Server::spawn(relay_config).await.unwrap();
-        let relay_address = relay_url(&format!("http://{}/", relay.http_addr().unwrap()));
+        let (relay, relay_address) = local_relay().await;
         let endpoint = NodeEndpoint::bind(
             secret_key(FIRST_SEED),
             *keys().gate_key(),
@@ -5009,7 +5012,7 @@ pub(super) mod tests {
     const RELAY_MAP_EDITED: &str = "transport.relay_map_edited";
     #[cfg(feature = "relay")]
     const PRESENCE_DEFERRED: &str = "gossip.presence_deferred";
-    /// The longest a member takes to announce once its handed clock reads the end of the reannounce interval, which the runtime's timer would never reach on a clock an hour ahead.
+    /// The longest a member takes to announce once its handed clock reads the end of the reannounce interval.
     #[cfg(feature = "relay")]
     const ANNOUNCED_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
 
@@ -5599,32 +5602,13 @@ pub(super) mod tests {
     async fn observability_decision_9_the_home_relays_status_is_recorded_by_port_and_salted_hash_connected_then_lost()
      {
         use crate::net::direct::tests::test_salt;
-        use crate::net::endpoint::{LocationHash, TransportRecord};
+        use crate::net::endpoint::LocationHash;
         use crate::test_waits::next_recorded;
-        use iroh_relay::server::{RelayConfig, Server, ServerConfig};
 
         let scratch = Scratch::new("home-relay-record").await;
-        let mut relay_config = ServerConfig::default();
-        relay_config.relay = Some(RelayConfig::new(std::net::SocketAddr::from((
-            std::net::Ipv4Addr::LOCALHOST,
-            0,
-        ))));
-        let relay = Server::spawn(relay_config).await.unwrap();
-        let relay_address = relay_url(&format!("http://{}/", relay.http_addr().unwrap()));
+        let (relay, relay_address) = local_relay().await;
         let (record, mut events) = recorded_events();
-        let endpoint = NodeEndpoint::bind(
-            secret_key(FIRST_SEED),
-            *keys().gate_key(),
-            vec![relay_address.clone()],
-            move |nonce: &mut [u8; KEY_LEN]| *nonce = [FIRST_SEED; KEY_LEN],
-            |_ignored| {},
-            HeldConnections::new(
-                Arc::new(RuntimeClock),
-                TransportRecord::new(record, test_salt()),
-            ),
-        )
-        .await
-        .unwrap();
+        let endpoint = endpoint_recording_to(vec![relay_address.clone()], &record).await;
         let _member = start_member(
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC),
             endpoint,
@@ -5669,8 +5653,6 @@ pub(super) mod tests {
     const RESTARTED_SECOND_INBOX: u8 = 162;
     const FIRST_TO_THE_RESTARTED_SECOND: &str = "amy to the restarted bob";
     const THE_RESTARTED_SECOND_TO_FIRST: &str = "the restarted bob to amy";
-    const GONE_PROCESS_SILENCE: Duration = Duration::from_millis(1500);
-    const HEARING_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
     const RESTARTED_LISTED_WAIT: Duration = Duration::from_secs(5);
 
     /// A member running on a runtime of its own, as a process does, until it vanishes.
