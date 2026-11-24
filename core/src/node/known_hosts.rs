@@ -1,6 +1,7 @@
 //! The known hosts of spec 3.8: the hosts the configuration names and the Infrastructure records that add or move them, kept in the network file.
 
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 
@@ -64,8 +65,12 @@ pub enum RelayOfRecord {
     LeaveOutOfRelayMap,
 }
 
-/// The known hosts of spec 3.8, with the newest record `ts` held for each and the file that keeps them.
+/// The known hosts of spec 3.8, with the newest record `ts` held for each and the file that keeps them, shared by the presence loop and the stopping session.
 pub struct KnownHosts {
+    held: Mutex<HeldHosts>,
+}
+
+struct HeldHosts {
     config: NetworkConfig,
     path: PathBuf,
     newer_than_file: bool,
@@ -75,20 +80,28 @@ impl KnownHosts {
     /// The known hosts as the file holds them.
     pub(super) const fn new(config: NetworkConfig, path: PathBuf) -> Self {
         Self {
-            config,
-            path,
-            newer_than_file: false,
+            held: Mutex::new(HeldHosts {
+                config,
+                path,
+                newer_than_file: false,
+            }),
         }
     }
 
+    /// The hosts held, locked for one operation.
+    fn held(&self) -> MutexGuard<'_, HeldHosts> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// Whether no host is known.
-    pub(super) const fn is_empty(&self) -> bool {
-        self.config.hosts.is_empty()
+    pub(super) fn is_empty(&self) -> bool {
+        self.held().config.hosts.is_empty()
     }
 
     /// The node id and relay of every known host whose id and relay parse.
     pub(super) fn addresses(&self) -> Vec<KnownHostAddress> {
-        self.config
+        self.held()
+            .config
             .hosts
             .iter()
             .filter_map(|host| known_host_address(host).ok())
@@ -97,14 +110,14 @@ impl KnownHosts {
 
     /// Applies the Infrastructure rows of spec 3.8, recording whether the record was taken: holds a record newer than its host's last, points the lookup at its address, adds its relay as `relay` says, and saves a host not known before, recording a save that failed.
     pub(crate) async fn take_infrastructure(
-        &mut self,
+        &self,
         valid: &ValidInfrastructure,
         now_ms: u64,
         endpoint: &NodeEndpoint,
         relay: RelayOfRecord,
         report: &(dyn Fn(Event) + Send + Sync),
     ) {
-        let admitted = self.take_record(valid, now_ms);
+        let admitted = self.held().take_record(valid, now_ms);
         report(admission_record(valid.record().facts(), None, &admitted));
         let Ok(verdict) = admitted else {
             return;
@@ -121,6 +134,23 @@ impl KnownHosts {
         }
     }
 
+    /// Rewrites the network configuration with the known hosts (spec 3.3).
+    pub(crate) fn save(&self, now_ms: u64) -> Result<(), ConfigError> {
+        self.held().save(now_ms)
+    }
+
+    /// Rewrites the network configuration only when a held record is newer than the file's (spec 3.3), returning whether it did.
+    pub(crate) fn save_if_newer_than_file(&self, now_ms: u64) -> Result<bool, ConfigError> {
+        let mut held = self.held();
+        if held.newer_than_file {
+            held.save(now_ms).map(|()| true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+impl HeldHosts {
     /// Holds the relay and `ts` of a record newer than the newest held for its host and within the future bound, adding a host never known before, or names the rule that drops the record.
     fn take_record(
         &mut self,
@@ -159,19 +189,10 @@ impl KnownHosts {
     }
 
     /// Rewrites the network configuration with the known hosts (spec 3.3).
-    pub(crate) fn save(&mut self, now_ms: u64) -> Result<(), ConfigError> {
+    fn save(&mut self, now_ms: u64) -> Result<(), ConfigError> {
         self.config.rewrite(&self.path, seconds_of(now_ms))?;
         self.newer_than_file = false;
         Ok(())
-    }
-
-    /// Rewrites the network configuration only when a held record is newer than the file's (spec 3.3), returning whether it did.
-    pub(crate) fn save_if_newer_than_file(&mut self, now_ms: u64) -> Result<bool, ConfigError> {
-        if self.newer_than_file {
-            self.save(now_ms).map(|()| true)
-        } else {
-            Ok(false)
-        }
     }
 }
 
@@ -256,7 +277,7 @@ mod tests {
             let mut draws = Draws::seeded(case);
             let seconds_since_heard = drawn_seconds_since_heard(&mut draws);
             let path = root.join(format!("{case}-{NETWORK_FILE_NAME}"));
-            let mut known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), path.clone());
+            let known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), path.clone());
             known_hosts
                 .take_infrastructure(
                     &record,

@@ -190,7 +190,7 @@ impl Session {
         }
     }
 
-    /// Enters Stopping, handing the Departure over, releasing the lock, dropping held connections, then waits the departure wait, recording each step as it ends.
+    /// Enters Stopping, handing the Departure over, releasing the lock, rewriting the network configuration, dropping held connections, then waits the departure wait, recording each step as it ends.
     async fn stop(&self, departure_wait: Duration) {
         let Some(claimed) = self.enter_stopping() else {
             return;
@@ -199,6 +199,7 @@ impl Session {
         self.record(ProcessEvent::DepartureHandedOver);
         drop(claimed.lock);
         self.record(ProcessEvent::LockReleased);
+        claimed.node.rewrite_configuration_if_newer();
         claimed.node.drop_held_connections().await;
         self.record(ProcessEvent::HeldConnectionsDropped);
         sleep(departure_wait).await;
@@ -290,23 +291,26 @@ mod tests {
     use std::time::Instant;
 
     use tokio::io::ReadBuf;
+    use tokio::sync::Notify;
     use tokio::task::JoinHandle;
 
     use super::*;
-    use crate::config::HostOrigin;
+    use crate::config::{Host, HostOrigin};
     use crate::event::{Event, EventFields, RunRecord};
+    use crate::net::direct::tests::StandingClock;
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
         FIRST_SEED, HOST_RELAY, HOST_SEED, MARKER_SEED, MOVED_HOST_RELAY, Member, MemberPlan,
         PAYLOAD_WAIT, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, WITNESS_HANDLE,
-        WITNESS_SEED, Witness, bind, card, host_saved_within, infrastructure_of, keys,
-        listed_within, marker_reaches, saved_host, start_pair, start_witnessed, status_within,
-        wall_clock_ms,
+        WITNESS_SEED, Witness, bind, card, host_saved_within, infrastructure_of,
+        joined_and_asked_for_presence, keys, listed_within, marker_reaches, saved_host, start_pair,
+        start_witnessed, status_within, wall_clock_ms,
     };
+    use crate::node::rebind::RelayProbe;
     use crate::peers::Status;
     use crate::sidecar;
-    use crate::test_waits::found_within;
+    use crate::test_waits::{found_within, recorded_until};
     use crate::wire::{Introduce, Nonce, Version};
 
     const FIRST_CARD: &str = "first-card";
@@ -848,6 +852,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spec_3_9_a_second_signal_exits_at_once_while_the_node_loop_is_held_in_a_rebind() {
+        let scratch = Scratch::new("signal-loop-held").await;
+        let (record, mut recorded) = recording_events();
+        let mut held = member_on_a_standing_clock(&scratch, &record, &mut recorded).await;
+        let (_, lock) = scratch.locked_card(FIRST_SEED);
+        let session = Arc::new(Session::new(record));
+        session
+            .claim(card_named(FIRST_CARD), held.member.node, lock)
+            .unwrap();
+        hold_the_node_loop_in_a_rebind(&held.clock, &mut held.probe_asked, &mut recorded).await;
+        let stopping = run(&session, LONG_DEPARTURE_WAIT);
+
+        stopping.signals.send(ShutdownSignal::Interrupt).unwrap();
+        recorded_named(
+            &mut recorded,
+            HELD_CONNECTIONS_DROPPED,
+            |_fields| true,
+            CONNECTION_WAIT,
+        )
+        .await;
+        stopping.signals.send(ShutdownSignal::Hangup).unwrap();
+
+        let exit = tokio::time::timeout(EXITS_AT_ONCE_WITHIN, stopping.exit)
+            .await
+            .unwrap_or_else(|_elapsed| {
+                panic!(
+                    "the process did not exit within {EXITS_AT_ONCE_WITHIN:?} of the second signal"
+                )
+            })
+            .unwrap();
+        assert_eq!(exit, Exit::AtOnce);
+        held.release_probe.notify_one();
+        drop(held.witness);
+        drop(scratch);
+    }
+
+    #[tokio::test]
     async fn spec_3_8_the_process_exits_no_sooner_than_the_departure_wait_after_stopping_began() {
         let scratch = Scratch::new("wait-before-exit").await;
         let second = claimed_second(&scratch).await;
@@ -1150,6 +1191,183 @@ mod tests {
         .await;
 
         assert_eq!(rewrites, rewritten_once("failed"));
+    }
+
+    const REBINDING: &str = "transport.rebinding";
+    const DEAF_TIMEOUT: Duration = Duration::from_secs(15);
+
+    /// A relay probe that notes each relay it is asked about and answers yes only once the release is notified.
+    fn relay_probe_held_until(
+        release: Arc<Notify>,
+        asked: mpsc::UnboundedSender<()>,
+    ) -> RelayProbe {
+        Arc::new(move |_relay| {
+            match asked.send(()) {
+                Ok(()) | Err(_) => {}
+            }
+            let release = Arc::clone(&release);
+            Box::pin(async move {
+                release.notified().await;
+                true
+            })
+        })
+    }
+
+    /// A member of a witnessed network whose clock stands until the test moves it, joined and past its observer wait, whose relay probe is held until released.
+    struct MemberOnAStandingClock {
+        member: Member,
+        witness: Witness,
+        clock: StandingClock,
+        release_probe: Arc<Notify>,
+        probe_asked: mpsc::UnboundedReceiver<()>,
+    }
+
+    /// The member started on a standing clock and moved past its observer wait once it has joined and asked for presence.
+    async fn member_on_a_standing_clock(
+        scratch: &Scratch,
+        record: &RunRecord,
+        recorded: &mut mpsc::UnboundedReceiver<RecordedEvent>,
+    ) -> MemberOnAStandingClock {
+        let clock = StandingClock::standing_now();
+        let release_probe = Arc::new(Notify::new());
+        let (asked, probe_asked) = mpsc::unbounded_channel();
+        let ((member, witness), ()) = tokio::join!(
+            start_witnessed(
+                scratch,
+                MemberPlan::new(FIRST_SEED, SECOND_HANDLE, FIRST_MEMBER_PUBLIC)
+                    .with_hosts(&[HOST_SEED])
+                    .with_monotonic(clock.monotonic())
+                    .with_relay_probe(relay_probe_held_until(Arc::clone(&release_probe), asked))
+                    .with_report(Arc::clone(record)),
+                None,
+            ),
+            async {
+                drop(joined_and_asked_for_presence(recorded).await);
+                clock.move_forward(SPEC_OBSERVER_WAIT);
+            }
+        );
+        MemberOnAStandingClock {
+            member,
+            witness,
+            clock,
+            release_probe,
+            probe_asked,
+        }
+    }
+
+    /// Moves the member's clock past the deaf timeout and waits until its node loop is in the rebind, asking its relay probe.
+    async fn hold_the_node_loop_in_a_rebind(
+        clock: &StandingClock,
+        probe_asked: &mut mpsc::UnboundedReceiver<()>,
+        recorded: &mut mpsc::UnboundedReceiver<RecordedEvent>,
+    ) {
+        clock.move_forward(DEAF_TIMEOUT);
+        recorded_until(recorded, REBINDING, |_fields| true, CONNECTION_WAIT).await;
+        tokio::time::timeout(CONNECTION_WAIT, probe_asked.recv())
+            .await
+            .unwrap_or_else(|_elapsed| {
+                panic!("the relay probe was not asked within {CONNECTION_WAIT:?} of the rebind")
+            })
+            .expect("the probe stand-in holds the sender of its asks");
+    }
+
+    /// A run record that hands every event to the record given and, when the drop of held connections is recorded, reads the host of the network file into the cell.
+    fn record_reading_the_file_at_the_drop(
+        record: RunRecord,
+        config_path: PathBuf,
+        read_at_drop: Arc<Mutex<Option<Host>>>,
+    ) -> RunRecord {
+        Arc::new(move |event: Event| {
+            if event.name() == HELD_CONNECTIONS_DROPPED {
+                *read_at_drop.lock().unwrap() = saved_host(&config_path, HOST_SEED);
+            }
+            record(event);
+        })
+    }
+
+    /// The lock, rewrite and drop events a stop records in order, and the host the network file held when the drop was recorded, for a node that heard a newer host record, its loop held in a rebind or not.
+    async fn lock_rewrite_and_drop_events_with_the_file_at_the_drop(
+        tag: &str,
+        loop_held: bool,
+    ) -> (Vec<&'static str>, Option<Host>) {
+        let scratch = Scratch::new(tag).await;
+        let (record, mut recorded) = recording_events();
+        let mut held = member_on_a_standing_clock(&scratch, &record, &mut recorded).await;
+        let read_at_drop = Arc::new(Mutex::new(None));
+        let session = Arc::new(Session::new(record_reading_the_file_at_the_drop(
+            Arc::clone(&record),
+            held.member.config_path.clone(),
+            Arc::clone(&read_at_drop),
+        )));
+        let (_, lock) = scratch.locked_card(FIRST_SEED);
+        session
+            .claim(card_named(FIRST_CARD), held.member.node, lock)
+            .unwrap();
+        let record_ts = wall_clock_ms() / MILLIS_PER_SECOND;
+        held.witness
+            .broadcast_as(
+                HOST_SEED,
+                infrastructure_of(HOST_SEED, MOVED_HOST_RELAY, record_ts),
+            )
+            .await;
+        recorded_named(
+            &mut recorded,
+            PAYLOAD_ACCEPTED,
+            |fields| fields.contains(&(TS_FIELD, serde_json::Value::from(record_ts))),
+            PAYLOAD_WAIT,
+        )
+        .await;
+        if loop_held {
+            hold_the_node_loop_in_a_rebind(&held.clock, &mut held.probe_asked, &mut recorded).await;
+        }
+
+        let stopping = run(&session, TEST_DEPARTURE_WAIT);
+        stopping.input_ended.send(()).unwrap();
+        let (before_drop, _fields) = recorded_until(
+            &mut recorded,
+            HELD_CONNECTIONS_DROPPED,
+            |_fields| true,
+            CONNECTION_WAIT,
+        )
+        .await;
+        held.release_probe.notify_one();
+        stopping.exit.await.unwrap();
+        drop(held.witness);
+        drop(scratch);
+        let names = before_drop
+            .into_iter()
+            .map(|(name, _fields)| name)
+            .filter(|name| [LOCK_RELEASED, CONFIGURATION_REWRITE_DECIDED].contains(name))
+            .chain([HELD_CONNECTIONS_DROPPED])
+            .collect();
+        let host_at_drop = read_at_drop.lock().unwrap().take();
+        (names, host_at_drop)
+    }
+
+    const LOCK_REWRITE_AND_DROP_IN_ORDER: [&str; 3] = [
+        LOCK_RELEASED,
+        CONFIGURATION_REWRITE_DECIDED,
+        HELD_CONNECTIONS_DROPPED,
+    ];
+
+    #[tokio::test]
+    async fn spec_3_8_a_stop_rewrites_the_configuration_before_it_drops_the_held_connections() {
+        let (names, host_at_drop) =
+            lock_rewrite_and_drop_events_with_the_file_at_the_drop("rewrite-before-drop", false)
+                .await;
+
+        assert_eq!(names, LOCK_REWRITE_AND_DROP_IN_ORDER);
+        assert!(host_at_drop.is_some());
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_a_stop_rewrites_the_configuration_before_the_drop_while_the_node_loop_is_held_in_a_rebind()
+     {
+        let (names, host_at_drop) =
+            lock_rewrite_and_drop_events_with_the_file_at_the_drop("rewrite-loop-held", true).await;
+
+        assert_eq!(names, LOCK_REWRITE_AND_DROP_IN_ORDER);
+        assert!(host_at_drop.is_some());
     }
 
     async fn stopping_closes_the_connection_held_to_a_witness(

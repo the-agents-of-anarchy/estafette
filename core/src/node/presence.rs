@@ -196,6 +196,8 @@ pub struct Node {
     pub(super) client: Arc<DirectClient>,
     pub(super) fill_random_bytes: ProbeNonceSource,
     own_handle: LocalHandle,
+    known_hosts: Arc<KnownHosts>,
+    report: RunRecord,
     presence_loop: JoinHandle<()>,
 }
 
@@ -225,6 +227,7 @@ impl Node {
             endpoint.held_connections(),
         ));
         let fill_random_bytes = Arc::clone(&effects.fill_probe_nonce);
+        let report = Arc::clone(&effects.report);
         let (presence_loop, own_handle) = PresenceLoop::join(
             endpoint,
             identity,
@@ -235,6 +238,7 @@ impl Node {
             from_hosts,
         )
         .await?;
+        let known_hosts = Arc::clone(&presence_loop.known_hosts);
         let presence_loop = tokio::spawn(presence_loop.run());
         let own_handle = own_handle
             .await
@@ -244,6 +248,8 @@ impl Node {
             client,
             fill_random_bytes,
             own_handle,
+            known_hosts,
+            report,
             presence_loop,
         })
     }
@@ -270,6 +276,22 @@ impl Node {
     /// Drops every direct connection the client holds, whether or not its card is in the table.
     pub(super) async fn drop_held_connections(&self) {
         self.client.drop_all_held_connections().await;
+    }
+
+    /// Rewrites the network configuration when a held host record is newer than the file's, and records what the rewrite did.
+    pub(super) fn rewrite_configuration_if_newer(&self) {
+        let rewrite = match self
+            .known_hosts
+            .save_if_newer_than_file(self.state.now_ms())
+        {
+            Ok(true) => ConfigurationRewrite::Saved,
+            Ok(false) => ConfigurationRewrite::NotNeeded,
+            Err(failure) => {
+                (self.report)(crate::event::GossipEvent::KnownHostsNotSaved(failure).into());
+                ConfigurationRewrite::Failed
+            }
+        };
+        (self.report)(ProcessEvent::ConfigurationRewriteDecided(rewrite).into());
     }
 }
 
@@ -1092,7 +1114,7 @@ pub(super) struct PresenceLoop {
     heard_requests: HeardPresenceRequests,
     request_seqs: RequestSeqs,
     pub(super) relay_loss: RelayLossWatch,
-    pub(super) known_hosts: KnownHosts,
+    pub(super) known_hosts: Arc<KnownHosts>,
     pub(super) rebinding: Rebinding,
     fill_probe_nonce: ProbeNonceSource,
     pub(super) monotonic: MonotonicClock,
@@ -1154,7 +1176,7 @@ impl PresenceLoop {
             heard_requests: HeardPresenceRequests::default(),
             request_seqs: RequestSeqs::default(),
             relay_loss: RelayLossWatch::default(),
-            known_hosts: KnownHosts::new(network.config, network.config_path),
+            known_hosts: Arc::new(KnownHosts::new(network.config, network.config_path)),
             rebinding: Rebinding::new(subscribed, effects.probe_relay),
             fill_probe_nonce: effects.fill_probe_nonce,
             monotonic: effects.monotonic,
@@ -1524,7 +1546,7 @@ impl PresenceLoop {
         self.send_requests(requests);
     }
 
-    /// Broadcasts the Departure, announces nothing after it, saves the known hosts when a record is newer than the file, and records what the save did.
+    /// Broadcasts the Departure and announces nothing after it, then records the stop's counters.
     async fn depart(&mut self, now_ms: u64) {
         let seq = self.announcer.next_seq(now_ms);
         self.broadcast(Payload::Departure(Departure {
@@ -1535,15 +1557,6 @@ impl PresenceLoop {
             sig: ZERO_SIGNATURE,
         }))
         .await;
-        let rewrite = match self.known_hosts.save_if_newer_than_file(now_ms) {
-            Ok(true) => ConfigurationRewrite::Saved,
-            Ok(false) => ConfigurationRewrite::NotNeeded,
-            Err(failure) => {
-                (self.report)(crate::event::GossipEvent::KnownHostsNotSaved(failure).into());
-                ConfigurationRewrite::Failed
-            }
-        };
-        (self.report)(ProcessEvent::ConfigurationRewriteDecided(rewrite).into());
         self.record_state(SnapshotMoment::Stop);
     }
 

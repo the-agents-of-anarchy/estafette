@@ -773,7 +773,7 @@ impl BootstrapNode {
     }
 
     /// Learns from another host's record without adding its relay (spec 3.14), and records every other payload as taken without a row, since a host holds no peer table.
-    async fn take_payload(&mut self, payload: OpenedPayload) {
+    async fn take_payload(&self, payload: OpenedPayload) {
         let now_ms = (self.clock)();
         match payload {
             OpenedPayload::Infrastructure(record)
@@ -832,7 +832,7 @@ impl BootstrapNode {
     }
 
     /// Saves the known hosts when a held record is newer than the file's, and shuts the endpoint's listeners down.
-    async fn stop(mut self) {
+    async fn stop(self) {
         if let Err(failure) = self.known_hosts.save_if_newer_than_file((self.clock)()) {
             (self.report)(crate::event::GossipEvent::KnownHostsNotSaved(failure).into());
         }
