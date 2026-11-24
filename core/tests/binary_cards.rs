@@ -10,6 +10,7 @@ mod remove_scratch;
 
 const SCRATCH_PREFIX: &str = "estafette-binary-cards";
 const BINARY: &str = env!("CARGO_BIN_EXE_estafette");
+const NETWORK: &str = "acme";
 const USAGE_ERROR_CODE: i32 = 2;
 const PUBLIC_KEY_HEX_LINE_LENGTH: usize = 65;
 const PERMISSION_BITS: u32 = 0o777;
@@ -29,14 +30,21 @@ const KEY_FILE_UMASKS: [&str; 2] = [READ_BLOCKING_UMASK, PERMISSIVE_UMASK];
 /// The umasks a program directory must come out of owner-only (spec 3.3).
 const DIRECTORY_UMASKS: [&str; 2] = [SEARCH_BLOCKING_UMASK, PERMISSIVE_UMASK];
 
-fn run_binary_under_umask(root: &Path, umask: &str, arguments: &[&str]) -> io::Result<Output> {
-    Command::new("sh")
-        .args(["-c", &format!("umask {umask}; exec \"$0\" \"$@\""), BINARY])
-        .args(arguments)
+/// The program run with the environment of a scratch root alone: its configuration, data and runtime homes.
+fn command_in_scratch_environment(program: &str, root: &Path) -> Command {
+    let mut command = Command::new(program);
+    command
         .env_clear()
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_RUNTIME_DIR", root.join("runtime"))
+        .env("XDG_RUNTIME_DIR", root.join("runtime"));
+    command
+}
+
+fn run_binary_under_umask(root: &Path, umask: &str, arguments: &[&str]) -> io::Result<Output> {
+    command_in_scratch_environment("sh", root)
+        .args(["-c", &format!("umask {umask}; exec \"$0\" \"$@\""), BINARY])
+        .args(arguments)
         .output()
 }
 
@@ -56,26 +64,22 @@ fn mode_of(path: &Path) -> io::Result<u32> {
     Ok(std::fs::metadata(path)?.permissions().mode() & PERMISSION_BITS)
 }
 
-fn run_binary(root: &std::path::Path, arguments: &[&str]) -> io::Result<Output> {
-    Command::new(BINARY)
+fn run_binary(root: &Path, arguments: &[&str]) -> io::Result<Output> {
+    command_in_scratch_environment(BINARY, root)
         .args(arguments)
-        .env_clear()
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_RUNTIME_DIR", root.join("runtime"))
         .output()
 }
 
 #[test]
 fn binary_create_card_then_list_cards_round_trips_of_spec_3_13() {
     let root = common::scratch_root(SCRATCH_PREFIX, "round_trip").unwrap();
-    let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
+    let created = run_binary(&root, &["create-card", NETWORK, "ana-card", "ana"]).unwrap();
     assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
     let printed_key = String::from_utf8(created.stdout).unwrap();
     assert_eq!(printed_key.len(), PUBLIC_KEY_HEX_LINE_LENGTH);
     assert_eq!(created.stderr, Vec::<u8>::new());
 
-    let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
+    let listed = run_binary(&root, &["list-cards", NETWORK]).unwrap();
     assert_eq!(listed.status.code(), Some(0), "{}", stderr_text(&listed));
     assert_eq!(
         String::from_utf8(listed.stdout).unwrap(),
@@ -86,8 +90,8 @@ fn binary_create_card_then_list_cards_round_trips_of_spec_3_13() {
 #[test]
 fn binary_create_card_twice_exits_one_with_the_message_alone_of_spec_3_13() {
     let root = common::scratch_root(SCRATCH_PREFIX, "twice").unwrap();
-    run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
-    let second = run_binary(&root, &["create-card", "acme", "ana-card", "bob"]).unwrap();
+    run_binary(&root, &["create-card", NETWORK, "ana-card", "ana"]).unwrap();
+    let second = run_binary(&root, &["create-card", NETWORK, "ana-card", "bob"]).unwrap();
     assert_eq!(second.status.code(), Some(1), "{}", stderr_text(&second));
     assert_eq!(second.stdout, Vec::<u8>::new());
     assert_eq!(
@@ -104,7 +108,7 @@ fn binary_cards_dir_flag_places_the_card_there_of_spec_3_3() {
         &root,
         &[
             "create-card",
-            "acme",
+            NETWORK,
             "ana-card",
             "ana",
             "--cards-dir",
@@ -119,7 +123,7 @@ fn binary_cards_dir_flag_places_the_card_there_of_spec_3_3() {
 #[test]
 fn binary_usage_error_exits_two_of_spec_3_13() {
     let root = common::scratch_root(SCRATCH_PREFIX, "usage").unwrap();
-    let missing_arguments = run_binary(&root, &["create-card", "acme"]).unwrap();
+    let missing_arguments = run_binary(&root, &["create-card", NETWORK]).unwrap();
     assert_eq!(
         missing_arguments.status.code(),
         Some(USAGE_ERROR_CODE),
@@ -140,9 +144,9 @@ fn binary_usage_error_exits_two_of_spec_3_13() {
 fn binary_names_outside_the_handle_grammar_are_usage_errors_before_any_write_of_spec_3_3() {
     let root = common::scratch_root(SCRATCH_PREFIX, "bad_names").unwrap();
     let refused_arguments: [&[&str]; 5] = [
-        &["create-card", "acme", "Ana", "ana"],
-        &["create-card", "acme", "../up", "ana"],
-        &["create-card", "acme", "ana", "Ana"],
+        &["create-card", NETWORK, "Ana", "ana"],
+        &["create-card", NETWORK, "../up", "ana"],
+        &["create-card", NETWORK, "ana", "Ana"],
         &["create-card", "Net", "ana", "ana"],
         &["list-cards", "Net"],
     ];
@@ -199,7 +203,7 @@ fn binary_help_of_each_card_command_states_what_it_does_reads_produces_and_refus
 fn binary_create_card_creates_the_program_directories_and_two_files_with_the_modes_its_help_states()
 {
     let root = common::scratch_root(SCRATCH_PREFIX, "created").unwrap();
-    let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"]).unwrap();
+    let created = run_binary(&root, &["create-card", NETWORK, "ana-card", "ana"]).unwrap();
     assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
     assert_eq!(
         mode_of(&root.join("config/estafette")).unwrap(),
@@ -229,7 +233,7 @@ fn binary_create_card_creates_the_program_directories_and_two_files_with_the_mod
 #[test]
 fn binary_list_cards_creates_the_program_directories_as_its_help_states() {
     let root = common::scratch_root(SCRATCH_PREFIX, "list_creates_directories").unwrap();
-    let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
+    let listed = run_binary(&root, &["list-cards", NETWORK]).unwrap();
     assert_eq!(listed.status.code(), Some(0), "{}", stderr_text(&listed));
     assert_eq!(listed.stdout, Vec::<u8>::new());
     for created in ["config/estafette", "data/estafette"] {
@@ -248,7 +252,7 @@ fn binary_create_card_sets_exact_file_modes_under_a_restrictive_umask_of_spec_3_
     let created = run_binary_under_umask(
         &root,
         RESTRICTIVE_UMASK,
-        &["create-card", "acme", "ana-card", "ana"],
+        &["create-card", NETWORK, "ana-card", "ana"],
     )
     .unwrap();
     assert_eq!(created.status.code(), Some(0), "{}", stderr_text(&created));
@@ -264,7 +268,8 @@ fn binary_create_card_sets_exact_file_modes_under_a_restrictive_umask_of_spec_3_
 fn binary_owner_key_is_owner_read_write_under_any_umask_of_spec_3_3() {
     for umask in KEY_FILE_UMASKS {
         let root = common::scratch_root(SCRATCH_PREFIX, &format!("key_modes_{umask}")).unwrap();
-        let network = run_binary_under_umask(&root, umask, &["network", "create", "acme"]).unwrap();
+        let network =
+            run_binary_under_umask(&root, umask, &["network", "create", NETWORK]).unwrap();
         assert_eq!(
             network.status.code(),
             Some(0),
@@ -418,7 +423,7 @@ fn binary_program_directories_are_owner_only_under_any_umask_of_spec_3_3() {
         for base in ["config", "data", "runtime"] {
             std::fs::create_dir(root.join(base)).unwrap();
         }
-        let listed = run_binary_under_umask(&root, umask, &["list-cards", "acme"]).unwrap();
+        let listed = run_binary_under_umask(&root, umask, &["list-cards", NETWORK]).unwrap();
         assert_eq!(
             listed.status.code(),
             Some(0),
@@ -457,11 +462,12 @@ const MISSING_CERTIFICATE_EXIT_CODE: i32 = 1;
 
 #[cfg(feature = "relay")]
 #[test]
-fn binary_host_key_is_owner_read_write_under_any_umask_of_spec_3_14() {
+fn binary_host_key_is_owner_read_write_under_any_umask_of_spec_3_3() {
     for umask in KEY_FILE_UMASKS {
         let root =
             common::scratch_root(SCRATCH_PREFIX, &format!("host_key_modes_{umask}")).unwrap();
-        let network = run_binary_under_umask(&root, umask, &["network", "create", "acme"]).unwrap();
+        let network =
+            run_binary_under_umask(&root, umask, &["network", "create", NETWORK]).unwrap();
         require_success(&network).unwrap();
 
         let started = run_binary_under_umask(
@@ -469,7 +475,7 @@ fn binary_host_key_is_owner_read_write_under_any_umask_of_spec_3_14() {
             umask,
             &[
                 "run-infrastructure",
-                "acme",
+                NETWORK,
                 HOST_KEY_BIND_ADDRESS,
                 HOST_KEY_RELAY_DOMAIN,
             ],
@@ -483,7 +489,7 @@ fn binary_host_key_is_owner_read_write_under_any_umask_of_spec_3_14() {
             stderr_text(&started)
         );
         assert_eq!(
-            mode_of(&root.join("data/estafette/infra/acme.key")).unwrap(),
+            mode_of(&root.join(format!("data/estafette/infra/{NETWORK}.key"))).unwrap(),
             KEY_FILE_MODE,
             "host key, umask {umask}"
         );
@@ -494,13 +500,13 @@ const CARDS_DIRECTORY_VARIABLE: &str = "ESTAFETTE_CARDS_DIR";
 const CARDS_CHECK_LINE: &str = "cards\tpass\tcards valid: 1";
 
 fn create_network_and_card_in(root: &Path, cards_directory: &str) -> io::Result<()> {
-    let network = run_binary(root, &["network", "create", "acme"])?;
+    let network = run_binary(root, &["network", "create", NETWORK])?;
     require_success(&network)?;
     let card = run_binary(
         root,
         &[
             "create-card",
-            "acme",
+            NETWORK,
             "ana",
             "ana",
             "--cards-dir",
@@ -518,7 +524,7 @@ fn binary_doctor_reads_the_cards_of_the_cards_dir_flag_of_spec_3_3() {
 
     let diagnosed = run_binary(
         &root,
-        &["doctor", "acme", "--cards-dir", flagged.to_str().unwrap()],
+        &["doctor", NETWORK, "--cards-dir", flagged.to_str().unwrap()],
     )
     .unwrap();
 
@@ -533,12 +539,8 @@ fn binary_doctor_reads_the_cards_of_the_cards_dir_flag_over_the_variable_of_spec
     let cardless = root.join("cardless");
     create_network_and_card_in(&root, flagged.to_str().unwrap()).unwrap();
 
-    let diagnosed = Command::new(BINARY)
-        .args(["doctor", "acme", "--cards-dir", flagged.to_str().unwrap()])
-        .env_clear()
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_RUNTIME_DIR", root.join("runtime"))
+    let diagnosed = command_in_scratch_environment(BINARY, &root)
+        .args(["doctor", NETWORK, "--cards-dir", flagged.to_str().unwrap()])
         .env(CARDS_DIRECTORY_VARIABLE, &cardless)
         .output()
         .unwrap();
@@ -553,12 +555,8 @@ fn binary_doctor_reads_the_cards_of_the_cards_dir_variable_without_the_flag_of_s
     let variable_directory = root.join("variable");
     create_network_and_card_in(&root, variable_directory.to_str().unwrap()).unwrap();
 
-    let diagnosed = Command::new(BINARY)
-        .args(["doctor", "acme"])
-        .env_clear()
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_RUNTIME_DIR", root.join("runtime"))
+    let diagnosed = command_in_scratch_environment(BINARY, &root)
+        .args(["doctor", NETWORK])
         .env(CARDS_DIRECTORY_VARIABLE, &variable_directory)
         .output()
         .unwrap();
@@ -577,7 +575,7 @@ fn binary_test_send_creates_its_operator_card_in_the_cards_dir_of_spec_3_3() {
         &root,
         &[
             "test-send",
-            "acme",
+            NETWORK,
             "ana",
             "hello",
             "--cards-dir",
@@ -616,7 +614,7 @@ fn binary_help_names_the_cards_dir_flag_of_the_commands_that_read_cards_alone_of
 fn binary_show_peers_and_tail_refuse_the_cards_dir_flag_as_a_usage_error_of_spec_3_3() {
     let root = common::scratch_root(SCRATCH_PREFIX, "observer_flag_refused").unwrap();
     for subcommand in COMMANDS_THAT_READ_NO_CARD {
-        let output = run_binary(&root, &[subcommand, "acme", "--cards-dir", "/nowhere"]).unwrap();
+        let output = run_binary(&root, &[subcommand, NETWORK, "--cards-dir", "/nowhere"]).unwrap();
         assert_eq!(output.status.code(), Some(USAGE_ERROR_CODE), "{subcommand}");
         assert!(
             stderr_text(&output).contains("unexpected argument '--cards-dir'"),
@@ -635,7 +633,7 @@ const BLOCK_MAPPING_DEPTHS: [usize; 2] = [3000, 10_000];
 /// A scratch root named for the test holding the card `ana-card` the binary created, its file extended by the YAML text.
 fn root_with_card_extended_by(name: &str, extra_yaml: &str) -> io::Result<PathBuf> {
     let root = common::scratch_root(SCRATCH_PREFIX, name)?;
-    let created = run_binary(&root, &["create-card", "acme", "ana-card", "ana"])?;
+    let created = run_binary(&root, &["create-card", NETWORK, "ana-card", "ana"])?;
     require_success(&created)?;
     let card_file = root.join("data/estafette/cards/acme").join(CARD_FILE_NAME);
     let mut text = std::fs::read_to_string(&card_file)?;
@@ -687,7 +685,7 @@ fn binary_list_cards_refuses_a_public_nested_too_deep_for_the_parser_as_an_inval
             )
             .unwrap();
 
-            let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
+            let listed = run_binary(&root, &["list-cards", NETWORK]).unwrap();
 
             let refusal = stderr_text(&listed);
             assert_eq!(
@@ -710,10 +708,10 @@ const CARDS_CHECK_FAILED: &str = "cards\tfail\t";
 fn binary_doctor_fails_the_cards_check_for_a_public_nested_too_deep_for_the_parser_of_spec_3_5() {
     let root = root_with_card_extended_by("doctor_deep", &block_sequence_public(NESTING_DEPTHS[0]))
         .unwrap();
-    let network = run_binary(&root, &["network", "create", "acme"]).unwrap();
+    let network = run_binary(&root, &["network", "create", NETWORK]).unwrap();
     require_success(&network).unwrap();
 
-    let diagnosed = run_binary(&root, &["doctor", "acme"]).unwrap();
+    let diagnosed = run_binary(&root, &["doctor", NETWORK]).unwrap();
 
     let report = String::from_utf8(diagnosed.stdout).unwrap();
     assert!(report.contains(CARDS_CHECK_FAILED), "{report}");
@@ -732,7 +730,7 @@ fn binary_list_cards_lists_a_card_whose_ignored_key_nests_beyond_the_parser_boun
         )
         .unwrap();
 
-        let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
+        let listed = run_binary(&root, &["list-cards", NETWORK]).unwrap();
 
         assert_eq!(
             listed.status.code(),
@@ -759,7 +757,7 @@ fn binary_list_cards_lists_a_card_whose_public_aliases_a_container_anchored_beyo
     )
     .unwrap();
 
-    let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
+    let listed = run_binary(&root, &["list-cards", NETWORK]).unwrap();
 
     assert_eq!(listed.status.code(), Some(0), "{}", stderr_text(&listed));
     assert!(String::from_utf8_lossy(&listed.stdout).starts_with("ana-card\tana\t"));
@@ -784,7 +782,7 @@ fn binary_refuses_an_existing_runtime_directory_that_grants_access_to_group_and_
     )
     .unwrap();
 
-    let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
+    let listed = run_binary(&root, &["list-cards", NETWORK]).unwrap();
 
     assert_eq!(listed.status.code(), Some(1), "{}", stderr_text(&listed));
     assert_eq!(listed.stdout, Vec::<u8>::new());
@@ -812,7 +810,7 @@ fn binary_refuses_a_symbolic_link_in_place_of_the_runtime_directory_runtime_dire
     std::fs::create_dir_all(runtime.parent().unwrap()).unwrap();
     std::os::unix::fs::symlink(&target, &runtime).unwrap();
 
-    let listed = run_binary(&root, &["list-cards", "acme"]).unwrap();
+    let listed = run_binary(&root, &["list-cards", NETWORK]).unwrap();
 
     assert_eq!(listed.status.code(), Some(1), "{}", stderr_text(&listed));
     assert_eq!(listed.stdout, Vec::<u8>::new());
@@ -836,7 +834,7 @@ fn binary_refuses_to_start_when_it_cannot_make_a_pipe_to_learn_its_user_runtime_
  {
     let root = common::scratch_root(SCRATCH_PREFIX, "no_descriptor_for_a_pipe").unwrap();
 
-    let listed = Command::new("sh")
+    let listed = command_in_scratch_environment("sh", &root)
         .args([
             "-c",
             &format!(
@@ -844,12 +842,8 @@ fn binary_refuses_to_start_when_it_cannot_make_a_pipe_to_learn_its_user_runtime_
             ),
             BINARY,
             "list-cards",
-            "acme",
+            NETWORK,
         ])
-        .env_clear()
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_RUNTIME_DIR", root.join("runtime"))
         .output()
         .unwrap();
 
@@ -866,12 +860,8 @@ fn run_binary_with_temporary_directory(
     temporary_directory: &Path,
     arguments: &[&str],
 ) -> io::Result<Output> {
-    Command::new(BINARY)
+    command_in_scratch_environment(BINARY, root)
         .args(arguments)
-        .env_clear()
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_RUNTIME_DIR", root.join("runtime"))
         .env("TMPDIR", temporary_directory)
         .output()
 }
@@ -880,13 +870,13 @@ fn run_binary_with_temporary_directory(
 fn binary_starts_over_existing_private_directories_when_the_temporary_directory_is_missing_runtime_directory_is_private_or_refused()
  {
     let root = common::scratch_root(SCRATCH_PREFIX, "temporary_directory_missing").unwrap();
-    let first = run_binary(&root, &["list-cards", "acme"]).unwrap();
+    let first = run_binary(&root, &["list-cards", NETWORK]).unwrap();
     assert_eq!(first.status.code(), Some(0), "{}", stderr_text(&first));
 
     let listed = run_binary_with_temporary_directory(
         &root,
         &root.join("no-such-temporary-directory"),
-        &["list-cards", "acme"],
+        &["list-cards", NETWORK],
     )
     .unwrap();
 
@@ -898,7 +888,7 @@ fn binary_starts_over_existing_private_directories_when_the_temporary_directory_
 fn binary_starts_over_existing_private_directories_when_the_temporary_directory_is_not_writable_runtime_directory_is_private_or_refused()
  {
     let root = common::scratch_root(SCRATCH_PREFIX, "temporary_directory_0500").unwrap();
-    let first = run_binary(&root, &["list-cards", "acme"]).unwrap();
+    let first = run_binary(&root, &["list-cards", NETWORK]).unwrap();
     assert_eq!(first.status.code(), Some(0), "{}", stderr_text(&first));
     let temporary_directory = root.join("read-only-temporary-directory");
     std::fs::create_dir(&temporary_directory).unwrap();
@@ -909,7 +899,7 @@ fn binary_starts_over_existing_private_directories_when_the_temporary_directory_
     .unwrap();
 
     let listed =
-        run_binary_with_temporary_directory(&root, &temporary_directory, &["list-cards", "acme"])
+        run_binary_with_temporary_directory(&root, &temporary_directory, &["list-cards", NETWORK])
             .unwrap();
 
     assert_eq!(listed.status.code(), Some(0), "{}", stderr_text(&listed));
