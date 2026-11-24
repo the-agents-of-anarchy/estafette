@@ -10,6 +10,7 @@ use estafette::net::direct::{DirectHost, DirectServer};
 use estafette::wire::{self, Addr, HostAddr, Introduce, IntroduceAck, Message, RelayUrl, Version};
 use iroh::SecretKey;
 use iroh_gossip::TopicId;
+use serde_json::Value;
 
 use crate::mcp_server::{PRESENCE_WAIT, online};
 use crate::member::Member;
@@ -38,12 +39,13 @@ pub struct LocalNetwork {
     keys: NetworkKeys,
 }
 
-/// Two members, amy and bob, joined through a host, each listing the other online.
+/// Two members, amy and bob, joined through a host, each listing the other online, with the envelope of bob's claim.
 pub struct MetPair {
     pub amy: Member,
     pub amy_card: Card,
     pub bob: Member,
     pub bob_card: Card,
+    pub bob_claim: Value,
 }
 
 impl LocalNetwork {
@@ -150,7 +152,7 @@ impl LocalNetwork {
         let mut amy = self.start_member();
         amy.init_through(&amy_card, host);
         let mut bob = self.start_member();
-        bob.init_through(&bob_card, host);
+        let bob_claim = bob.init_through(&bob_card, host);
         amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, online);
         bob.peer_within(AMY_HANDLE, PRESENCE_WAIT, online);
         MetPair {
@@ -158,6 +160,7 @@ impl LocalNetwork {
             amy_card,
             bob,
             bob_card,
+            bob_claim,
         }
     }
 

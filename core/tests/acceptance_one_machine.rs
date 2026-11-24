@@ -8,6 +8,9 @@ mod dropped_payloads;
 #[path = "support/file_growth.rs"]
 mod file_growth;
 #[cfg(test)]
+#[path = "support/inbox_client.rs"]
+mod inbox_client;
+#[cfg(test)]
 #[cfg(test)]
 #[path = "one_machine/local_network.rs"]
 mod local_network;
@@ -391,6 +394,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             amy_card,
             mut bob,
             bob_card,
+            ..
         } = timed("amy and bob list each other online", || {
             network.amy_and_bob_met(&first_host)
         });
@@ -794,6 +798,47 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 }
 
 #[cfg(test)]
+mod spec_3_15_test_1_on_one_machine {
+    use serde_json::json;
+
+    use crate::inbox_client::{FRAME_WAIT, InboxClient, NO_FURTHER_FRAME_WINDOW};
+    use crate::local_network::{AMY_HANDLE, BOB_HANDLE, LocalNetwork, MetPair};
+    use crate::message_body::BODY;
+    use crate::payload_placeholders::wall_clock_ms;
+    use crate::scratch_machine::RunRecordKeeping;
+    use crate::send;
+
+    #[test]
+    fn spec_3_15_test_1_a_message_to_a_member_whose_inbox_socket_has_a_client_is_delivered_attached_as_one_frame()
+     {
+        let network = LocalNetwork::create("t1", &RunRecordKeeping::from_environment());
+        let host = network.stand_in_host();
+        let MetPair {
+            mut amy,
+            bob,
+            bob_claim,
+            ..
+        } = network.amy_and_bob_met(&host);
+        let mut inbox = InboxClient::connect(&bob_claim["result"]["inbox_path"], 0);
+
+        let sent = send(&mut amy, BOB_HANDLE);
+
+        let id = sent["result"]["id"].as_str().unwrap();
+        assert_eq!(
+            sent["result"],
+            json!({ "id": id, "delivered": true, "attached": true })
+        );
+        let frame = inbox.next_frame(FRAME_WAIT);
+        bob.wait_for_time_to_pass(wall_clock_ms(), NO_FURTHER_FRAME_WINDOW);
+        assert_eq!(frame["seq"], json!(1));
+        assert_eq!(frame["id"], json!(id));
+        assert_eq!(frame["from"], json!(AMY_HANDLE));
+        assert_eq!(frame["body"], json!(BODY));
+        assert_eq!(inbox.frame_already_emitted(), None);
+    }
+}
+
+#[cfg(test)]
 mod spec_3_15_test_19_on_one_machine {
     use std::collections::BTreeSet;
     use std::time::Instant;
@@ -999,6 +1044,7 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
             amy_card,
             mut bob,
             bob_card,
+            ..
         } = timed("amy and bob list each other online", || {
             network.amy_and_bob_met(&first_host)
         });
@@ -1020,6 +1066,7 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
             amy_card,
             mut bob,
             bob_card,
+            ..
         } = timed("amy and bob list each other online", || {
             network.amy_and_bob_met(&first_host)
         });
@@ -1583,6 +1630,7 @@ mod spec_3_16_absences_on_one_machine {
             amy_card,
             mut bob,
             bob_card,
+            ..
         } = network.amy_and_bob_met(&host);
         bob.close_standard_input();
         assert!(bob.wait_for_exit().success());
