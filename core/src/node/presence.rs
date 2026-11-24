@@ -1716,12 +1716,9 @@ fn payload_dropped_record(
     .into()
 }
 
-/// The handle the peer table holds for the signer of the facts at that instant in milliseconds, when the node keeps a table.
-fn held_signer_handle(
-    table_at: Option<(&PeerRows, u64)>,
-    facts: &PayloadFacts,
-) -> Option<LocalHandle> {
-    table_at.and_then(|(rows, now_ms)| rows.table().handle_of(facts.signer, now_ms))
+/// The handle `table` holds for the signer of the facts at `now_ms`, if any.
+fn held_signer_handle(table: &PeerTable, facts: &PayloadFacts, now_ms: u64) -> Option<LocalHandle> {
+    table.handle_of(facts.signer, now_ms)
 }
 
 /// The record of a received payload the node took, or dropped by the rule the admission named, naming its signer by the handle `table` holds for it at `now_ms`, if any.
@@ -1731,7 +1728,7 @@ fn signer_admission_record<Taken>(
     admission: &Result<Taken, PayloadDropRule>,
     now_ms: u64,
 ) -> Event {
-    let signer_handle = table.handle_of(facts.signer, now_ms);
+    let signer_handle = held_signer_handle(table, &facts, now_ms);
     admission_record(facts, signer_handle, admission)
 }
 
@@ -1741,7 +1738,8 @@ fn named_admission_record<Taken>(
     facts: PayloadFacts,
     admission: &Result<Taken, PayloadDropRule>,
 ) -> Event {
-    let signer_handle = held_signer_handle(table_at, &facts);
+    let signer_handle =
+        table_at.and_then(|(rows, now_ms)| held_signer_handle(&rows.table(), &facts, now_ms));
     admission_record(facts, signer_handle, admission)
 }
 
@@ -1754,7 +1752,8 @@ fn refusal_record(table_at: Option<(&PeerRows, u64)>, refusal: PayloadRefusal) -
         }
         .into();
     };
-    let signer_handle = held_signer_handle(table_at, &facts);
+    let signer_handle =
+        table_at.and_then(|(rows, now_ms)| held_signer_handle(&rows.table(), &facts, now_ms));
     payload_dropped_record(facts, signer_handle, refusal.rule)
 }
 
