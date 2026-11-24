@@ -5,6 +5,7 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::closing_tag::escape_closing_tags;
+use crate::dropped_frames::DroppedFrames;
 use crate::inbox_client::{InboxConnector, InboxFrame};
 use crate::permission_class::PermissionClass;
 use crate::ratelimit::{Admission, SenderRateLimit};
@@ -148,6 +149,7 @@ pub struct SessionNotifier<C: InboxConnector> {
     class: PermissionClass,
     rate_limit: SenderRateLimit,
     refused_frames: u64,
+    unwritten_notices: u64,
 }
 
 impl<C: InboxConnector> SessionNotifier<C> {
@@ -159,6 +161,7 @@ impl<C: InboxConnector> SessionNotifier<C> {
             class,
             rate_limit: SenderRateLimit::default(),
             refused_frames: 0,
+            unwritten_notices: 0,
         }
     }
 
@@ -185,6 +188,7 @@ impl<C: InboxConnector> SessionNotifier<C> {
             Admission::Dropped => Ok(NoticeOutcome::DroppedByRateLimit),
             Admission::Admitted => self
                 .write_peer_line(frame, &name)
+                .inspect_err(|_| self.unwritten_notices = self.unwritten_notices.saturating_add(1))
                 .map(|()| NoticeOutcome::Written { class: self.class }),
         }
     }
@@ -213,12 +217,14 @@ impl<C: InboxConnector> SessionNotifier<C> {
             .map_err(InjectError::WriteFailed)
     }
 
-    /// Counts the frames the rate limit has dropped and the frames whose sender name was refused.
+    /// Counts the frames not injected, by the reason each was dropped.
     #[must_use]
-    pub const fn dropped_frames(&self) -> u64 {
-        self.rate_limit
-            .dropped_frames()
-            .saturating_add(self.refused_frames)
+    pub const fn dropped_frames(&self) -> DroppedFrames {
+        DroppedFrames {
+            rate_limit: self.rate_limit.dropped_frames(),
+            sender_name_refused: self.refused_frames,
+            notice_not_written: self.unwritten_notices,
+        }
     }
 }
 
@@ -400,7 +406,14 @@ mod tests {
                 "{name:?}"
             );
             assert!(connections.borrow().is_empty(), "{name:?}");
-            assert_eq!(notifier.dropped_frames(), 1, "{name:?}");
+            assert_eq!(
+                notifier.dropped_frames(),
+                DroppedFrames {
+                    sender_name_refused: 1,
+                    ..DroppedFrames::default()
+                },
+                "{name:?}"
+            );
         }
     }
 
@@ -427,7 +440,7 @@ mod tests {
             "{}",
             connections.borrow()[0]
         );
-        assert_eq!(notifier.dropped_frames(), 0);
+        assert_eq!(notifier.dropped_frames(), DroppedFrames::default());
     }
 
     /// The longest announced handle spec 3.1 allows, the announced-handle row at spec:465.
@@ -578,7 +591,13 @@ mod tests {
         }
         notify_at(&mut notifier, "ana", "body 10", 59);
         assert_eq!(connections.borrow().len(), 10);
-        assert_eq!(notifier.dropped_frames(), 1);
+        assert_eq!(
+            notifier.dropped_frames(),
+            DroppedFrames {
+                rate_limit: 1,
+                ..DroppedFrames::default()
+            }
+        );
     }
 
     #[test]
@@ -589,7 +608,7 @@ mod tests {
         }
         notify_at(&mut notifier, "ana", "body 10", 60);
         assert_eq!(connections.borrow().len(), 11);
-        assert_eq!(notifier.dropped_frames(), 0);
+        assert_eq!(notifier.dropped_frames(), DroppedFrames::default());
     }
 
     #[test]
@@ -600,7 +619,7 @@ mod tests {
         }
         notify_at(&mut notifier, "bo", "body 0", 10);
         assert_eq!(connections.borrow().len(), 11);
-        assert_eq!(notifier.dropped_frames(), 0);
+        assert_eq!(notifier.dropped_frames(), DroppedFrames::default());
     }
 
     #[test]
@@ -609,7 +628,13 @@ mod tests {
         notify_at(&mut notifier, "ana", "same", 0);
         notify_at(&mut notifier, "ana", "same", 29);
         assert_eq!(injected_bodies(&connections), vec!["same"]);
-        assert_eq!(notifier.dropped_frames(), 1);
+        assert_eq!(
+            notifier.dropped_frames(),
+            DroppedFrames {
+                rate_limit: 1,
+                ..DroppedFrames::default()
+            }
+        );
     }
 
     #[test]
@@ -618,7 +643,7 @@ mod tests {
         notify_at(&mut notifier, "ana", "same", 0);
         notify_at(&mut notifier, "ana", "same", 30);
         assert_eq!(injected_bodies(&connections), vec!["same", "same"]);
-        assert_eq!(notifier.dropped_frames(), 0);
+        assert_eq!(notifier.dropped_frames(), DroppedFrames::default());
     }
 
     #[test]
@@ -632,7 +657,7 @@ mod tests {
             injected_bodies(&connections),
             vec!["first", "second", "first", "first"]
         );
-        assert_eq!(notifier.dropped_frames(), 0);
+        assert_eq!(notifier.dropped_frames(), DroppedFrames::default());
     }
 
     #[test]
@@ -642,7 +667,13 @@ mod tests {
             notify_at(&mut notifier, "ana", "same", seconds);
         }
         assert_eq!(injected_bodies(&connections), vec!["same", "same"]);
-        assert_eq!(notifier.dropped_frames(), 4);
+        assert_eq!(
+            notifier.dropped_frames(),
+            DroppedFrames {
+                rate_limit: 4,
+                ..DroppedFrames::default()
+            }
+        );
     }
 
     struct BrokenConnector(Option<io::ErrorKind>);
@@ -683,6 +714,13 @@ mod tests {
         );
         let outcome = notifier.notify(&frame_from("ana", "x"), Duration::ZERO);
         assert!(matches!(outcome, Err(InjectError::ConnectFailed(_))));
+        assert_eq!(
+            notifier.dropped_frames(),
+            DroppedFrames {
+                notice_not_written: 1,
+                ..DroppedFrames::default()
+            }
+        );
     }
 
     #[test]
@@ -694,6 +732,13 @@ mod tests {
         );
         let outcome = notifier.notify(&frame_from("ana", "x"), Duration::ZERO);
         assert!(matches!(outcome, Err(InjectError::WriteFailed(_))));
+        assert_eq!(
+            notifier.dropped_frames(),
+            DroppedFrames {
+                notice_not_written: 1,
+                ..DroppedFrames::default()
+            }
+        );
     }
 
     #[test]

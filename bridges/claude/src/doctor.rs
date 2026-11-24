@@ -10,6 +10,7 @@ use crate::discover::{
     Pid, ProcessEntry, ProcessTable, ProcessTableError, RuntimeDirectoryInputs,
     binary_sockets_under, runtime_directory,
 };
+use crate::dropped_frames::DroppedFrames;
 use crate::owned_entry::{EntryFacts, check_runtime_directory};
 use crate::permission_class::PermissionClass;
 
@@ -51,7 +52,7 @@ pub struct DoctorReport {
     no_refuse_applies: Verdict,
     binary_process_found: Verdict,
     pub attested_class: Option<PermissionClass>,
-    pub dropped_frames: Option<u64>,
+    pub dropped_frames: Option<DroppedFrames>,
 }
 
 impl DoctorReport {
@@ -124,7 +125,7 @@ impl fmt::Display for DoctorReport {
             None => writeln!(formatter, "attested permission class: unknown")?,
         }
         match self.dropped_frames {
-            Some(count) => write!(formatter, "dropped frames: {count}"),
+            Some(dropped) => write!(formatter, "dropped frames: {dropped}"),
             None => write!(formatter, "dropped frames: unknown"),
         }
     }
@@ -212,7 +213,7 @@ pub fn run_doctor(
                     pid,
                 ))
             })
-            .and_then(|text| text.trim().parse().ok()),
+            .and_then(|text| DroppedFrames::from_state_file_text(&text)),
     })
 }
 
@@ -518,7 +519,7 @@ mod tests {
 
     fn read_only_the_state_files_of_harness_100(path: &Path) -> Option<String> {
         if path == Path::new(DROPPED_FRAMES_FILE_OF_HARNESS_100) {
-            Some("7\n".to_owned())
+            Some("3 1 2\n".to_owned())
         } else if path == Path::new(PERMISSION_CLASS_FILE_OF_HARNESS_100) {
             Some("bypass\n".to_owned())
         } else {
@@ -726,7 +727,14 @@ mod tests {
     fn spec_3_12_doctor_passes_every_check_of_a_wired_session_and_reports_dropped_frames() {
         let report = report_of_healthy_session_after(|_, _| {});
         assert!(report.all_passed(), "{report}");
-        assert_eq!(report.dropped_frames, Some(7));
+        assert_eq!(
+            report.dropped_frames,
+            Some(DroppedFrames {
+                rate_limit: 3,
+                sender_name_refused: 1,
+                notice_not_written: 2
+            })
+        );
         assert_eq!(report.attested_class, Some(PermissionClass::Bypass));
     }
 
@@ -935,13 +943,13 @@ mod tests {
              ok    no refuse applies\n\
              ok    binary process found\n\
              attested permission class: bypass\n\
-             dropped frames: 7"
+             dropped frames: 6 (rate limit 3, sender name refused 1, notice not written 2)"
         );
     }
 
     #[test]
-    fn spec_3_12_doctor_reports_unknown_dropped_frames_when_the_file_is_unreadable_or_not_a_count()
-    {
+    fn spec_3_12_doctor_reports_unknown_dropped_frames_when_the_file_is_unreadable_or_not_the_three_counts()
+     {
         let (inputs, processes) = healthy_session();
         let count_after_reading = |text: Option<&str>| {
             run_doctor(
@@ -956,7 +964,18 @@ mod tests {
         };
         assert_eq!(count_after_reading(None), None);
         assert_eq!(count_after_reading(Some("many")), None);
-        assert_eq!(count_after_reading(Some(" 12 ")), Some(12));
+        assert_eq!(count_after_reading(Some("12")), None);
+        assert_eq!(count_after_reading(Some("1 2")), None);
+        assert_eq!(count_after_reading(Some("1 2 3 4")), None);
+        assert_eq!(count_after_reading(Some("1 2 x")), None);
+        assert_eq!(
+            count_after_reading(Some(" 4 5 6\n")),
+            Some(DroppedFrames {
+                rate_limit: 4,
+                sender_name_refused: 5,
+                notice_not_written: 6
+            })
+        );
     }
 
     #[test]

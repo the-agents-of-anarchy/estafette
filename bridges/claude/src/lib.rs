@@ -1,6 +1,7 @@
 mod closing_tag;
 pub mod discover;
 pub mod doctor;
+pub mod dropped_frames;
 #[cfg(test)]
 #[path = "../tests/common/fresh_directory.rs"]
 mod fresh_directory;

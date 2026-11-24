@@ -18,6 +18,7 @@ use estafette_bridge_claude::doctor::{
     DoctorInputs, MESSAGING_SOCKET_VARIABLE, MessagingSocket, RUN_SUBCOMMAND, SettingsFile,
     dropped_frames_path, permission_class_path, run_doctor, running_bridge_for,
 };
+use estafette_bridge_claude::dropped_frames::DroppedFrames;
 use estafette_bridge_claude::inbox_client::{
     InboxConnection, InboxConnector, InboxFrame, UnixSocketConnector, follow_inbox,
 };
@@ -610,10 +611,10 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
     }
 
     /// Writes the dropped-frame count where the doctor reads it, reporting a failed write.
-    fn record_dropped_frames(&self, count: u64) {
+    fn record_dropped_frames(&self, dropped: DroppedFrames) {
         if let Err(error) = self
             .files
-            .write_text_atomically(&self.dropped_frames_file, &count.to_string())
+            .write_text_atomically(&self.dropped_frames_file, &dropped.as_state_file_text())
         {
             (self.record)(BridgeEvent::DroppedFramesNotWritten(error));
         }
@@ -783,7 +784,7 @@ where
     if let Some(class) = session.read_live_permission_class() {
         lock(&session.notifier).attest(class);
     }
-    session.record_dropped_frames(0);
+    session.record_dropped_frames(DroppedFrames::default());
     follow_binary_sockets(
         harness_pid,
         &effects.runtime_inputs,
@@ -1304,6 +1305,13 @@ mod tests {
             .collect()
     }
 
+    fn rate_limit_drops_counted(writes: &Mutex<Vec<(PathBuf, String)>>) -> u64 {
+        written_counts(writes)
+            .last()
+            .and_then(|text| DroppedFrames::from_state_file_text(text))
+            .map_or(0, |dropped| dropped.rate_limit)
+    }
+
     #[test]
     fn spec_3_12_a_second_start_for_the_same_harness_leaves_the_running_bridge_alone() {
         let running = FixedProcessTable(vec![
@@ -1521,7 +1529,7 @@ mod tests {
             ]
         );
         assert_eq!(lock(&wiring.spawned).len(), 2);
-        assert_eq!(written_counts(&wiring.writes), ["0"]);
+        assert_eq!(written_counts(&wiring.writes), ["0 0 0"]);
     }
 
     #[test]
@@ -1961,10 +1969,16 @@ mod tests {
             within_one_window.errors.first().map(String::as_str),
             Some("cannot connect to the messaging socket: down")
         );
-        assert_eq!(within_one_window.counts, ["1"]);
+        assert_eq!(
+            within_one_window.counts.last().map(String::as_str),
+            Some("1 0 10")
+        );
         let across_windows = deliver_eleven_frames(61);
         assert_eq!(across_windows.errors.len(), 11);
-        assert_eq!(across_windows.counts, Vec::<String>::new());
+        assert_eq!(
+            across_windows.counts.last().map(String::as_str),
+            Some("0 0 11")
+        );
     }
 
     #[test]
@@ -1978,7 +1992,7 @@ mod tests {
         ))
         .expect("two binaries under the harness");
         let mut delivered_from_first_socket = 0_usize;
-        while written_counts(&session.files.writes).is_empty()
+        while rate_limit_drops_counted(&session.files.writes) == 0
             && delivered_from_first_socket < MOST_FRAMES_BEFORE_A_DROP
         {
             session.deliver_from_socket(
@@ -1987,14 +2001,14 @@ mod tests {
             );
             delivered_from_first_socket = delivered_from_first_socket.saturating_add(1);
         }
-        assert_eq!(written_counts(&session.files.writes), ["1"]);
+        assert_eq!(rate_limit_drops_counted(&session.files.writes), 1);
         let injected_before_second_socket = connect_errors(&wiring).len();
         session.deliver_from_socket(
             &second_socket,
             &frame_from("ana", "body from the second socket"),
         );
         assert_eq!(connect_errors(&wiring).len(), injected_before_second_socket);
-        assert_eq!(written_counts(&session.files.writes), ["1", "2"]);
+        assert_eq!(rate_limit_drops_counted(&session.files.writes), 2);
     }
 
     fn class_files_written(session: &BridgeSession<DownConnector, StandInFiles>) -> Vec<String> {
@@ -2211,7 +2225,7 @@ mod tests {
                 .iter()
                 .any(|message| message.starts_with("frame from \"an\\\"a\" dropped"))
         );
-        assert_eq!(written_counts(&session.files.writes), ["1"]);
+        assert_eq!(written_counts(&session.files.writes), ["0 1 0"]);
     }
 
     fn scratch_directory(label: &str) -> PathBuf {
@@ -3232,7 +3246,15 @@ mod tests {
         session_token: String,
         runtime_directory: PathBuf,
         session_files: StandInFiles,
-        frames: String,
+        inbox_connections: Vec<ScriptedInboxConnection>,
+        since_lines: SinceLines,
+    }
+
+    fn one_inbox_connection_replying(frames: String) -> Vec<ScriptedInboxConnection> {
+        vec![ScriptedInboxConnection {
+            replies: frames,
+            fails_after_replies: false,
+        }]
     }
 
     fn run_scripted_session<S: InboxConnector + Send + 'static>(
@@ -3244,10 +3266,8 @@ mod tests {
             move |name: &str| (name == DATA_HOME_VARIABLE).then(|| OsString::from(&data_home));
         let errors: Arc<Mutex<Vec<u8>>> = Arc::default();
         let wiring = wiring();
-        let connections = Arc::new(Mutex::new(VecDeque::from([ScriptedInboxConnection {
-            replies: session.frames,
-            fails_after_replies: false,
-        }])));
+        let polls_that_see_the_binary = session.inbox_connections.len().saturating_add(1);
+        let connections = Arc::new(Mutex::new(VecDeque::from(session.inbox_connections)));
         let status = run_command(
             HARNESS_PID,
             Tracing::Debug,
@@ -3271,7 +3291,7 @@ mod tests {
                     claude_config_directory: wiring.effects.claude_config_directory,
                     connect_binary_socket: move |_socket_path| ScriptedInboxSocket {
                         connections: Arc::clone(&connections),
-                        since_lines: SinceLines::default(),
+                        since_lines: Arc::clone(&session.since_lines),
                     },
                     files: session.session_files,
                     elapsed: wiring.effects.elapsed,
@@ -3280,11 +3300,11 @@ mod tests {
                     wait: Arc::new(|_| {}),
                 })
             },
-            &SnapshotSequence(RefCell::new(vec![
-                harness_with_one_binary(),
-                harness_with_one_binary(),
-                Vec::new(),
-            ])),
+            &SnapshotSequence(RefCell::new(
+                std::iter::repeat_n(harness_with_one_binary(), polls_that_see_the_binary)
+                    .chain([Vec::new()])
+                    .collect(),
+            )),
         );
         let written = String::from_utf8(lock(&errors).clone()).expect("utf8 standard error");
         let events = fs::read_to_string(probe.events_file()).expect("events file");
@@ -3309,7 +3329,8 @@ mod tests {
                 session_token: "token".to_owned(),
                 runtime_directory: PathBuf::from("/run/user/1000"),
                 session_files: files_of_live_session("bypassPermissions"),
-                frames,
+                inbox_connections: one_inbox_connection_replying(frames),
+                since_lines: SinceLines::default(),
             },
         );
 
@@ -3357,6 +3378,209 @@ mod tests {
         );
     }
 
+    #[derive(Clone, Copy)]
+    enum SessionSocketFailure {
+        RefusesTheConnection,
+        ClosesAfterTheAuthLine,
+    }
+
+    struct ClosedAfterTheAuthLine {
+        flushed_lines: usize,
+    }
+
+    impl Read for ClosedAfterTheAuthLine {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for ClosedAfterTheAuthLine {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if self.flushed_lines == 0 {
+                Ok(bytes.len())
+            } else {
+                Err(io::Error::from(io::ErrorKind::BrokenPipe))
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushed_lines = self.flushed_lines.saturating_add(1);
+            Ok(())
+        }
+    }
+
+    struct FailingSessionSocket {
+        failure: SessionSocketFailure,
+        connection_attempts: Arc<Mutex<usize>>,
+    }
+
+    impl InboxConnector for FailingSessionSocket {
+        type Stream = ClosedAfterTheAuthLine;
+
+        fn connect(&mut self) -> io::Result<ClosedAfterTheAuthLine> {
+            {
+                let mut attempts = lock(&self.connection_attempts);
+                *attempts = attempts.saturating_add(1);
+            }
+            match self.failure {
+                SessionSocketFailure::RefusesTheConnection => {
+                    Err(io::Error::from(io::ErrorKind::ConnectionRefused))
+                }
+                SessionSocketFailure::ClosesAfterTheAuthLine => {
+                    Ok(ClosedAfterTheAuthLine { flushed_lines: 0 })
+                }
+            }
+        }
+    }
+
+    struct RunOverAFailingSessionSocket {
+        events: String,
+        count_file_texts: Vec<String>,
+        since_lines: Vec<String>,
+        connection_attempts: usize,
+    }
+
+    fn run_two_frames_over_a_session_socket_that(
+        failure: SessionSocketFailure,
+        label: &str,
+    ) -> RunOverAFailingSessionSocket {
+        let probe = TraceProbe::new(label);
+        let session_files = files_of_live_session("bypassPermissions");
+        let writes = Arc::clone(&session_files.writes);
+        let connection_attempts = Arc::new(Mutex::new(0));
+        let since_lines = SinceLines::default();
+        let frames = [
+            scripted_frame_line(1, "ana", "one"),
+            scripted_frame_line(2, "bo", "two"),
+        ]
+        .concat();
+        let (status, _written, events) = run_scripted_session(
+            &probe,
+            ScriptedSession {
+                session_connector: FailingSessionSocket {
+                    failure,
+                    connection_attempts: Arc::clone(&connection_attempts),
+                },
+                session_token: "token".to_owned(),
+                runtime_directory: PathBuf::from("/run/user/1000"),
+                session_files,
+                inbox_connections: vec![
+                    ScriptedInboxConnection {
+                        replies: frames,
+                        fails_after_replies: true,
+                    },
+                    ScriptedInboxConnection {
+                        replies: String::new(),
+                        fails_after_replies: false,
+                    },
+                ],
+                since_lines: Arc::clone(&since_lines),
+            },
+        );
+        assert_eq!(status, ExitCode::SUCCESS);
+        let count_file_texts = written_counts(&writes);
+        let since_lines = lock(&since_lines).clone();
+        let connection_attempts = *lock(&connection_attempts);
+        RunOverAFailingSessionSocket {
+            events,
+            count_file_texts,
+            since_lines,
+            connection_attempts,
+        }
+    }
+
+    fn doctor_dropped_frames_line_for(count_file_text: &str) -> String {
+        let mut files = StandInFiles::default();
+        files.texts.insert(
+            dropped_frames_path(&PathBuf::from(TEST_TEMPORARY_DIR), HARNESS_PID),
+            Ok(count_file_text.to_owned()),
+        );
+        let environment = Environment {
+            temporary_dir: PathBuf::from(TEST_TEMPORARY_DIR),
+            ..doctor_environment()
+        };
+        let mut output = Vec::new();
+        run_doctor_command(
+            &environment,
+            &files,
+            &FixedProcessTable(vec![
+                ProcessEntry {
+                    pid: environment.own_pid,
+                    parent_pid: HARNESS_PID,
+                    executable: Some("/opt/bin/estafette-bridge-claude".to_owned()),
+                    arguments: vec!["doctor".to_owned()],
+                },
+                bridge_process(700, &HARNESS_PID.to_string()),
+            ]),
+            &mut output,
+        )
+        .expect("the doctor runs");
+        String::from_utf8(output)
+            .expect("utf8 report")
+            .lines()
+            .last()
+            .expect("a report line")
+            .to_owned()
+    }
+
+    fn assert_two_frames_counted_as_unwritten_notices_and_never_injected_again(
+        run: &RunOverAFailingSessionSocket,
+        unwritten_notice_event: &str,
+    ) {
+        let notice_events: Vec<&str> = run
+            .events
+            .lines()
+            .filter(|line| line.contains("\"event\":\"notice."))
+            .collect();
+        assert_eq!(notice_events.len(), 2, "{}", run.events);
+        for (line, seq) in notice_events.iter().zip(1_u64..) {
+            assert!(
+                line.contains(&format!(
+                    "\"event\":\"{unwritten_notice_event}\",\"message_id\":\"id-{seq}\",\"frame\":{seq}"
+                )),
+                "{line}"
+            );
+        }
+        assert!(!run.events.contains("frame.dropped_by_rate_limit"));
+        assert_eq!(run.count_file_texts, ["0 0 0", "0 0 1", "0 0 2"]);
+        assert_eq!(
+            doctor_dropped_frames_line_for(
+                run.count_file_texts.last().expect("a count was written")
+            ),
+            "dropped frames: 2 (rate limit 0, sender name refused 0, notice not written 2)"
+        );
+        assert_eq!(run.since_lines, ["{\"since\":0}\n", "{\"since\":2}\n"]);
+        assert_eq!(run.connection_attempts, 2);
+    }
+
+    #[test]
+    fn spec_3_12_step_4_frames_whose_notice_cannot_connect_to_the_session_count_as_dropped_with_a_reason_of_their_own_and_are_not_injected_again()
+     {
+        let run = run_two_frames_over_a_session_socket_that(
+            SessionSocketFailure::RefusesTheConnection,
+            "refused-session-socket",
+        );
+
+        assert_two_frames_counted_as_unwritten_notices_and_never_injected_again(
+            &run,
+            "notice.connect_failed",
+        );
+    }
+
+    #[test]
+    fn spec_3_12_step_4_frames_whose_notice_write_fails_count_as_dropped_with_a_reason_of_their_own_and_are_not_injected_again()
+     {
+        let run = run_two_frames_over_a_session_socket_that(
+            SessionSocketFailure::ClosesAfterTheAuthLine,
+            "closing-session-socket",
+        );
+
+        assert_two_frames_counted_as_unwritten_notices_and_never_injected_again(
+            &run,
+            "notice.write_failed",
+        );
+    }
+
     const MARKER: &str = "PLANTED-MARKER-7f3a";
 
     struct CapturedSessionStream(Arc<Mutex<Vec<u8>>>);
@@ -3401,7 +3625,12 @@ mod tests {
                 session_token: format!("{MARKER}-token"),
                 runtime_directory: PathBuf::from(format!("/run/{MARKER}-runtime")),
                 session_files: files_of_live_session("bypassPermissions"),
-                frames: scripted_frame_line(1, "ana", &format!("{MARKER}-body")),
+                inbox_connections: one_inbox_connection_replying(scripted_frame_line(
+                    1,
+                    "ana",
+                    &format!("{MARKER}-body"),
+                )),
+                since_lines: SinceLines::default(),
             },
         );
 
@@ -3438,11 +3667,14 @@ mod tests {
                 session_token: "token".to_owned(),
                 runtime_directory: PathBuf::from("/run/user/1000"),
                 session_files,
-                frames: [
-                    scripted_frame_line(1, "ana", "one"),
-                    scripted_frame_line(2, "ana", "two"),
-                ]
-                .concat(),
+                inbox_connections: one_inbox_connection_replying(
+                    [
+                        scripted_frame_line(1, "ana", "one"),
+                        scripted_frame_line(2, "ana", "two"),
+                    ]
+                    .concat(),
+                ),
+                since_lines: SinceLines::default(),
             },
         );
 
