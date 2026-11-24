@@ -1006,9 +1006,12 @@ mod tests {
 
     use super::owned_process::{
         FAILED_TEST_EXIT_CODE, FIXTURE_ENDED_WITHIN, FIXTURE_STANDARD_ERROR, FIXTURE_VARIABLE,
-        fixture_run_within,
+        fixture_run_within, reaped_within,
     };
     use super::*;
+
+    /// How long a member whose input ended before any card exists may take to end: chosen, not measured, far above the exit of a process with nothing to serve.
+    const MEMBER_ENDED_WITHIN: Duration = Duration::from_secs(10);
 
     /// The network the tests of this module configure their machines for.
     const NETWORK: &str = "lab";
@@ -1246,7 +1249,13 @@ mod tests {
 
         let mut member = machine.spawn_mcp_server();
         drop(member.stdin.take());
-        member.wait().unwrap();
+        reaped_within(&mut member, MEMBER_ENDED_WITHIN)
+            .unwrap()
+            .unwrap_or_else(|| {
+                panic!(
+                    "the member did not end within {MEMBER_ENDED_WITHIN:?} of the end of its input"
+                )
+            });
 
         let data_directory = machine
             .traces_directory_of_member(0)

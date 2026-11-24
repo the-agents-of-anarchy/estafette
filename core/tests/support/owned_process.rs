@@ -205,7 +205,7 @@ fn exited_within(mut child: Child, named: &str, within: Duration) -> ExitStatus 
 }
 
 /// The child's exit once its handle reaps it within the bound, none when the bound runs out first, the thread yielding between two asks and never sleeping.
-fn reaped_within(child: &mut Child, within: Duration) -> io::Result<Option<ExitStatus>> {
+pub fn reaped_within(child: &mut Child, within: Duration) -> io::Result<Option<ExitStatus>> {
     let asked = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {
