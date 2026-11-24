@@ -37,7 +37,7 @@ use crate::server_member::ServerMember;
 use crate::tail::{
     COLUMN_SEPARATOR, INFRASTRUCTURE_KIND, PEER_STATUS_COLUMN, PRESENCE_ADDR_COLUMN,
     PRESENCE_CARD_COLUMN, PRESENCE_KIND, PRESENCE_SEQ_COLUMN, RECORD_HOST_COLUMN, RECORD_TS_COLUMN,
-    RELAYS_KEY, Tail,
+    Tail, announced_relays, columns_of_kind,
 };
 use crate::time_passing::wait_for_time_to_pass;
 use crate::timed_step::timed;
@@ -348,10 +348,8 @@ fn host_id(host: &HostAddr) -> String {
 
 /// The `ts` of a `tail` line when it is an infrastructure record of the host.
 fn record_ts_of(line: &str, host: &str) -> Option<u64> {
-    let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
-    if columns.first() != Some(&INFRASTRUCTURE_KIND)
-        || columns.get(RECORD_HOST_COLUMN) != Some(&host)
-    {
+    let columns = columns_of_kind(line, INFRASTRUCTURE_KIND)?;
+    if columns.get(RECORD_HOST_COLUMN) != Some(&host) {
         return None;
     }
     columns.get(RECORD_TS_COLUMN)?.parse().ok()
@@ -567,17 +565,8 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
 
 /// The card and the announced relays of a `tail` line when it is a presence.
 fn presence_of(line: &str) -> Option<(String, Vec<String>)> {
-    let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
-    if columns.first() != Some(&PRESENCE_KIND) {
-        return None;
-    }
-    let addr: Value = serde_json::from_str(columns.get(PRESENCE_ADDR_COLUMN)?).ok()?;
-    let relays = addr
-        .get(RELAYS_KEY)?
-        .as_array()?
-        .iter()
-        .map(|relay| relay.as_str().map(str::to_owned))
-        .collect::<Option<Vec<String>>>()?;
+    let columns = columns_of_kind(line, PRESENCE_KIND)?;
+    let relays = announced_relays(columns.get(PRESENCE_ADDR_COLUMN)?)?;
     Some(((*columns.get(PRESENCE_CARD_COLUMN)?).to_owned(), relays))
 }
 
@@ -756,8 +745,8 @@ fn live_host_id(network: &LiveNetwork) -> String {
 
 /// The seq of a `tail` line when it is a presence of the card, the sender's clock in milliseconds at the send for a card's first Presence (spec 3.8).
 fn presence_seq_of(line: &str, card: &str) -> Option<u64> {
-    let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
-    if columns.first() != Some(&PRESENCE_KIND) || columns.get(PRESENCE_CARD_COLUMN) != Some(&card) {
+    let columns = columns_of_kind(line, PRESENCE_KIND)?;
+    if columns.get(PRESENCE_CARD_COLUMN) != Some(&card) {
         return None;
     }
     columns.get(PRESENCE_SEQ_COLUMN)?.parse().ok()

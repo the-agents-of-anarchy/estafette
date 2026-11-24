@@ -554,8 +554,8 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     use crate::member_events::COUNTERS_EVENT;
     use crate::relay_placement::placement_held;
     use crate::tail::{
-        COLUMN_SEPARATOR, HOST_RELAY_COLUMN, INFRASTRUCTURE_KIND, PRESENCE_ADDR_COLUMN,
-        PRESENCE_CARD_COLUMN, PRESENCE_KIND, RELAYS_KEY, Tail,
+        HOST_RELAY_COLUMN, INFRASTRUCTURE_KIND, PRESENCE_ADDR_COLUMN, PRESENCE_CARD_COLUMN,
+        PRESENCE_KIND, Tail, announced_relays, columns_of_kind,
     };
     use crate::time_passing::SNAPSHOT_PROVING_A_SPAN_WITHIN;
     use crate::trace_reader::TraceLine;
@@ -601,25 +601,17 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
 
     /// The relay URLs a `tail` line announces for the card, when it is a presence of that card.
     fn relays_announced_by(line: &str, card: &str) -> Option<Vec<String>> {
-        let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
-        if columns.first() != Some(&PRESENCE_KIND)
-            || columns.get(PRESENCE_CARD_COLUMN) != Some(&card)
-        {
+        let columns = columns_of_kind(line, PRESENCE_KIND)?;
+        if columns.get(PRESENCE_CARD_COLUMN) != Some(&card) {
             return None;
         }
-        let addr: Value = serde_json::from_str(columns.get(PRESENCE_ADDR_COLUMN)?).ok()?;
-        addr.get(RELAYS_KEY)?
-            .as_array()?
-            .iter()
-            .map(|relay| relay.as_str().map(str::to_owned))
-            .collect()
+        announced_relays(columns.get(PRESENCE_ADDR_COLUMN)?)
     }
 
     /// Whether a `tail` line is an infrastructure record of the host whose relay is the one given.
     fn is_a_record_of_the_host_relaying_through(line: &str, relay: &str) -> bool {
-        let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
-        columns.first() == Some(&INFRASTRUCTURE_KIND)
-            && columns.get(HOST_RELAY_COLUMN) == Some(&relay)
+        columns_of_kind(line, INFRASTRUCTURE_KIND)
+            .is_some_and(|columns| columns.get(HOST_RELAY_COLUMN) == Some(&relay))
     }
 
     /// The member as a node to join the topic through, so the observer is its gossip neighbor whichever other neighbors the topic gives it.
@@ -760,6 +752,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
 
 #[cfg(test)]
 mod spec_3_15_two_members_through_the_live_host {
+    use std::cell::RefCell;
     use std::fs;
     use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
     use std::time::{Duration, Instant};
@@ -796,7 +789,9 @@ mod spec_3_15_two_members_through_the_live_host {
     use crate::payloads::{presence_signed_by, presence_signed_by_at};
     use crate::scratch_machine::Card;
     use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
-    use crate::tail::{COLUMN_SEPARATOR, PRESENCE_ADDR_COLUMN, PRESENCE_CARD_COLUMN, Tail};
+    use crate::tail::{
+        COLUMN_SEPARATOR, PRESENCE_ADDR_COLUMN, PRESENCE_CARD_COLUMN, Tail, columns_of_kind,
+    };
     use crate::time_passing::wait_for_time_to_pass;
     use crate::timed_step::timed;
     use crate::trace_reader::TraceLine;
@@ -972,22 +967,19 @@ mod spec_3_15_two_members_through_the_live_host {
         let mut command = observer.command();
         command.args([TAIL_COMMAND, network.name()]);
         let tail = Tail::start(&observer, command);
-        let printed = tail.lines_until(&format!("presence of {card}"), PRESENCE_WAIT, |line| {
-            address_announced_by(line, card).is_some()
+        let announced = RefCell::new(None);
+        tail.lines_until(&format!("presence of {card}"), PRESENCE_WAIT, |line| {
+            *announced.borrow_mut() = address_announced_by(line, card);
+            announced.borrow().is_some()
         });
-        printed
-            .last()
-            .and_then(|line| address_announced_by(line, card))
-            .unwrap()
+        announced.into_inner().unwrap()
     }
 
     /// The address a presence line of `tail` announces for the card, none when the line is no presence of that card, failing the test, naming the place and the reason, when a presence of that card announces an address or a relay that does not parse.
     #[track_caller]
     fn address_announced_by(line: &str, card: EndpointId) -> Option<EndpointAddr> {
-        let columns: Vec<&str> = line.split(COLUMN_SEPARATOR).collect();
-        if columns.first() != Some(&crate::tail::PRESENCE_KIND)
-            || columns.get(PRESENCE_CARD_COLUMN) != Some(&render_public_key(&card).as_str())
-        {
+        let columns = columns_of_kind(line, PRESENCE_KIND)?;
+        if columns.get(PRESENCE_CARD_COLUMN) != Some(&render_public_key(&card).as_str()) {
             return None;
         }
         let addr = columns
