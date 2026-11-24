@@ -43,10 +43,24 @@ const BODY_HOLDING_THE_CLOSING_TAG_AS_STORED: &str =
 const ATTACHED_WAIT_ATTEMPTS: u32 = 60;
 const TEST_SEND_ATTEMPTS: u32 = 10;
 const RETRY_PAUSE: Duration = Duration::from_secs(1);
+const SPEC_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+const SPEC_OBSERVER_WAIT: Duration = Duration::from_secs(3);
+const SPEC_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const SPEC_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+const SPEC_DEPARTURE_WAIT: Duration = Duration::from_secs(5);
+/// The trace's two stop waits together (spec/observability.md decision 12).
+const TRACE_STOP_WAITS: Duration = Duration::from_secs(2);
 /// What one `show-peers` run takes at most: the join timeout, the observer wait, and the trace's two stop waits (spec 3.14, spec/observability.md decision 12).
-const SHOW_PEERS_RUN_TAKES_AT_MOST: Duration = Duration::from_secs(5 + 3 + 2);
+const SHOW_PEERS_RUN_TAKES_AT_MOST: Duration = SPEC_JOIN_TIMEOUT
+    .saturating_add(SPEC_OBSERVER_WAIT)
+    .saturating_add(TRACE_STOP_WAITS);
 /// What one `test-send` run takes at most: init's join timeout and observer wait, the send's connect and ack timeouts, the departure wait, and the trace's two stop waits (spec 3.10, 3.14, spec/observability.md decision 12).
-const TEST_SEND_RUN_TAKES_AT_MOST: Duration = Duration::from_secs(5 + 3 + 5 + 10 + 5 + 2);
+const TEST_SEND_RUN_TAKES_AT_MOST: Duration = SPEC_JOIN_TIMEOUT
+    .saturating_add(SPEC_OBSERVER_WAIT)
+    .saturating_add(SPEC_CONNECT_TIMEOUT)
+    .saturating_add(SPEC_ACK_TIMEOUT)
+    .saturating_add(SPEC_DEPARTURE_WAIT)
+    .saturating_add(TRACE_STOP_WAITS);
 /// How long the bridge has to attach: every attempt the wait once made, with its pause and its `show-peers` run.
 const BRIDGE_ATTACHED_WITHIN: Duration = RETRY_PAUSE
     .saturating_add(SHOW_PEERS_RUN_TAKES_AT_MOST)
