@@ -4,6 +4,11 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+/// How long an inbox socket may take to emit the frame of a delivered message.
+pub const FRAME_WAIT: Duration = Duration::from_secs(10);
+/// How long after a frame an inbox socket is watched for one that must not come, ended by the member's own counters snapshot past it.
+pub const NO_FURTHER_FRAME_WINDOW: Duration = Duration::from_millis(1000);
+
 /// A client of a member's inbox socket, reading its frames from the `since` it connected with.
 pub struct InboxClient {
     frames: BufReader<UnixStream>,

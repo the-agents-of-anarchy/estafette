@@ -15,7 +15,7 @@ use crate::home_relays::{
     every_member_homed_at_the_kill_on, every_member_homed_on, live_host_record_accepted,
     raw_lines_of_running_member, raw_lines_once_stamped_past,
 };
-use crate::inbox_client::InboxClient;
+use crate::inbox_client::{FRAME_WAIT, InboxClient, NO_FURTHER_FRAME_WINDOW};
 use crate::killable_host::KillableHost;
 use crate::lab_machine::LabMachine;
 use crate::lab_server::LabServer;
@@ -40,10 +40,6 @@ use crate::timed_step::timed;
 const PRESENCE_WAIT: Duration = Duration::from_secs(30);
 /// The column of a `show-peers` line holding the peer's status, after its handle (spec 3.13).
 const PEER_STATUS_COLUMN: usize = 1;
-/// How long an inbox socket may take to emit the frame of a delivered message.
-const FRAME_WAIT: Duration = Duration::from_secs(10);
-/// How long after a frame an inbox socket is watched for one that must not come, ended by the member's own counters snapshot past it.
-const NO_FURTHER_FRAME_WINDOW: Duration = Duration::from_millis(1000);
 /// The handle base of the first member a test starts.
 const AMY: &str = "amy";
 /// The handle base of the second member a test starts.

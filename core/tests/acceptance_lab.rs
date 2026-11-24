@@ -23,7 +23,7 @@ mod handles;
 #[path = "lab/home_relays.rs"]
 mod home_relays;
 #[cfg(test)]
-#[path = "lab/inbox_client.rs"]
+#[path = "support/inbox_client.rs"]
 mod inbox_client;
 #[cfg(test)]
 #[path = "lab/killable_host.rs"]
@@ -770,7 +770,7 @@ mod spec_3_15_two_members_through_the_live_host {
     };
     use crate::forger::Forger;
     use crate::handles::{HANDLE_TAG_LETTERS, unique_handle};
-    use crate::inbox_client::InboxClient;
+    use crate::inbox_client::{FRAME_WAIT, InboxClient, NO_FURTHER_FRAME_WINDOW};
     use crate::lab_machine::LabMachine;
     use crate::live_host::live_host_to_itself;
     use crate::live_network::LiveNetwork;
@@ -830,10 +830,6 @@ mod spec_3_15_two_members_through_the_live_host {
     const PUBLIC_NOTES_KEY: &str = "notes";
     /// The bytes compact JSON spends on a mapping of one string key and one string value beyond the two strings.
     const COMPACT_JSON_MAPPING_FRAME_BYTES: usize = r#"{"":""}"#.len();
-    /// How long an inbox socket may take to emit the frame of a delivered message.
-    const FRAME_WAIT: Duration = Duration::from_secs(10);
-    /// How long after a frame a client is watched for a further one, ended by the member's own counters snapshot past it.
-    const NO_FURTHER_FRAME_WINDOW: Duration = Duration::from_millis(1000);
     /// The kind of payload a presence is, as an events line names it.
     const PRESENCE_KIND: &str = "presence";
     /// The description a member's first session gives at init.
