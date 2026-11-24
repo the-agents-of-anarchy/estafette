@@ -1353,14 +1353,19 @@ mod spec_3_15_with_one_member {
         wire::encode(&Payload::Presence(presence)).unwrap()
     }
 
-    /// The UDP ports the member holds once it has recorded the counters of the endpoint its rebind bound, requiring that record within the wait, so the fresh endpoint's port is among them even where it takes a port a socket held before the rebind.
+    /// The counters line the member records once the endpoint its rebind bound is in place, awaited within the wait.
     #[track_caller]
-    fn rebound_ports(member: &Member, within: Duration) -> Vec<u16> {
+    fn rebound_snapshot(member: &Member, within: Duration) -> TraceLine {
         member.wait_until(
             &format!("{COUNTERS_EVENT} of its rebind's {REBOUND_MOMENT} endpoint"),
             within,
-            |lines| lines.iter().any(is_rebound_snapshot).then_some(()),
-        );
+            |lines| lines.into_iter().find(is_rebound_snapshot),
+        )
+    }
+
+    /// The UDP ports the member holds now that it has recorded its rebound counters, so the fresh endpoint's port is among them even where it takes a port a socket held before the rebind.
+    #[track_caller]
+    fn ports_held_once_rebound(member: &Member) -> Vec<u16> {
         let held = member.ipv4_udp_ports();
         assert!(
             !held.is_empty(),
@@ -1369,19 +1374,39 @@ mod spec_3_15_with_one_member {
         held
     }
 
-    /// Requires the member to record, within the wait, that its gate closed a connection of the peer that the side opened.
+    /// Requires the member to record, within the wait, that its gate closed a connection of the peer that the side opened, in a line written after the one given when one is given.
     #[track_caller]
-    fn gate_closed_connection_of(member: &Member, peer: &str, direction: &str, within: Duration) {
+    fn gate_closed_connection_of(
+        member: &Member,
+        peer: &str,
+        direction: &str,
+        written_after: Option<&TraceLine>,
+        within: Duration,
+    ) {
+        let after = written_after.map_or_else(String::new, |earlier| {
+            format!(
+                " written after its line {} of run {}",
+                earlier.n, earlier.run
+            )
+        });
         member.wait_until(
-            &format!("a {GATE_CLOSED_EVENT} of the {direction} connection of {peer}"),
+            &format!("a {GATE_CLOSED_EVENT} of the {direction} connection of {peer}{after}"),
             within,
             |lines| {
                 lines
                     .iter()
-                    .any(|line| is_gate_closing_of(line, peer, direction))
+                    .any(|line| {
+                        is_gate_closing_of(line, peer, direction)
+                            && written_after.is_none_or(|earlier| is_written_after(line, earlier))
+                    })
                     .then_some(())
             },
         );
+    }
+
+    /// Whether the events line was written after the earlier line of the same run.
+    fn is_written_after(line: &TraceLine, earlier: &TraceLine) -> bool {
+        line.run == earlier.run && line.n > earlier.n
     }
 
     /// Whether the events line records the member's gate closing a connection of the peer that the side opened.
@@ -1603,6 +1628,7 @@ mod spec_3_15_with_one_member {
             &amy,
             &outsider_peer,
             ACCEPTED_DIRECTION,
+            None,
             SPEC_GATE_TIMEOUT_WITH_SLACK,
         );
         host.broadcast(presence_signed_by(
@@ -1612,12 +1638,14 @@ mod spec_3_15_with_one_member {
             &outsider.endpoint().addr(),
         ));
         amy.peer_within(OUTSIDER_HANDLE, PRESENCE_WAIT, |_outsider| true);
-        let rebound = rebound_ports(&amy, SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK);
+        let rebound_line = rebound_snapshot(&amy, SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK);
+        let rebound = ports_held_once_rebound(&amy);
         host.admit(loopback_address(card.id, &rebound));
         gate_closed_connection_of(
             &amy,
             &outsider_peer,
             DIALED_DIRECTION,
+            Some(&rebound_line),
             SPEC_MEMBER_JOIN_WAIT_WITH_SLACK,
         );
 
