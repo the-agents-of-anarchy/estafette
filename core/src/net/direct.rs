@@ -687,12 +687,13 @@ enum AckDue {
 }
 
 impl AckDue {
-    /// How long a request may take to hold a connection, never longer than the connect timeout allows.
-    fn connection_timeout(self, connect_timeout: Duration) -> Duration {
-        match self {
+    /// When getting a connection for a request called at `called` is due, never later than the connect timeout allows, none past the clock's reach.
+    fn connection_due(self, called: Instant, connect_timeout: Duration) -> Option<Instant> {
+        let connection_timeout = match self {
             Self::FromTheConnection(_) => connect_timeout,
             Self::FromTheCall(ack_timeout) => ack_timeout.min(connect_timeout),
-        }
+        };
+        called.checked_add(connection_timeout)
     }
 
     /// When the acknowledgement of a request called at `called`, holding its connection since `connected`, is due, none past the clock's reach.
@@ -1161,10 +1162,7 @@ impl DirectClient {
         };
         let called = self.register.monotonic.now();
         let (connection, source) = match self
-            .connection_to(
-                to,
-                called.checked_add(due.connection_timeout(self.timeouts.connect)),
-            )
+            .connection_to(to, due.connection_due(called, self.timeouts.connect))
             .await
         {
             Ok(held_or_dialed) => held_or_dialed,
