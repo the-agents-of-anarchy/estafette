@@ -334,11 +334,13 @@ mod tests {
         }
     }
 
-    struct UnreadableListing;
+    const MALFORMED_PS_LISTING: &str = "not-a-pid 1 /bin/sh\n";
 
-    impl ProcessTable for UnreadableListing {
+    struct MalformedPsListing;
+
+    impl ProcessTable for MalformedPsListing {
         fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
-            Err(ProcessTableError::MalformedListingLine)
+            entries_from_command_lines(MALFORMED_PS_LISTING, &BTreeMap::new())
         }
     }
 
@@ -371,7 +373,7 @@ mod tests {
         let following = follow_binary_sockets(
             Pid(100),
             &runtime_inputs(),
-            &UnreadableListing,
+            &MalformedPsListing,
             &mut |_| {},
             &mut |_| reported = true,
         );
