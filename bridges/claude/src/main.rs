@@ -45,10 +45,10 @@ use crate::event::{BridgeEvent, FrameIds};
 mod debug_trace;
 mod event;
 #[cfg(test)]
-#[path = "../tests/common/fresh_directory.rs"]
+#[path = "../../../core/tests/common/fresh_directory.rs"]
 mod fresh_directory;
 #[cfg(test)]
-#[path = "../tests/common/remove_scratch.rs"]
+#[path = "../../../core/tests/common/remove_scratch.rs"]
 mod remove_scratch;
 
 const DOCTOR_SUBCOMMAND: &str = "doctor";

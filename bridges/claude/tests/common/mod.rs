@@ -39,7 +39,9 @@ const MISSING_PIPE: &str = "the spawned member has no piped standard stream";
 type Outcome<T> = Result<T, Box<dyn std::error::Error>>;
 type MemberLine = Result<Value, String>;
 
+#[path = "../../../../core/tests/common/fresh_directory.rs"]
 mod fresh_directory;
+#[path = "../../../../core/tests/common/remove_scratch.rs"]
 mod remove_scratch;
 
 pub struct Fixture {
