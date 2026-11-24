@@ -235,7 +235,7 @@ mod tests {
     const OVERSIZE_PUBLIC_BYTES: usize = 4000;
     const EVENT_WAIT: Duration = Duration::from_millis(8000);
     /// The bound of the look for the drop and the next good Presence, as long as the wait for that Presence and the half second of silence after it that the look replaces.
-    const DROPPED_AND_ARRIVED_WITHIN: Duration = Duration::from_millis(8500);
+    const DROPPED_AND_ARRIVED_WITHIN: Duration = EVENT_WAIT.saturating_add(NOTHING_MORE_WITHIN);
     const GATE_CLOSED_EVENT: &str = "transport.gate_closed";
     const FORGED_DEPARTURE_SEQ: u64 = 3;
     const UNCERTIFIED_RECORD_TS: u64 = 1_700_000_000;
@@ -425,10 +425,17 @@ mod tests {
         }
     }
 
-    async fn at_least_received_data_messages(member: &Member, data_messages: u64) {
-        while member.gossip.metrics().msgs_data_recv.get() < data_messages {
-            tokio::task::yield_now().await;
-        }
+    /// Whether the member has received the data messages within the bound.
+    async fn received_data_messages_within(
+        member: &Member,
+        data_messages: u64,
+        within: Duration,
+    ) -> bool {
+        found_within(within, async || {
+            (member.gossip.metrics().msgs_data_recv.get() >= data_messages).then_some(())
+        })
+        .await
+        .is_some()
     }
 
     /// What the payload layer records when it drops the forged Departure under the rule.
@@ -732,12 +739,15 @@ mod tests {
                 .unwrap();
         }
 
-        timeout(
-            DELIVERY_WAIT,
-            at_least_received_data_messages(&first, EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY),
-        )
-        .await
-        .expect("every broadcast reaches the node that falls behind");
+        assert!(
+            received_data_messages_within(
+                &first,
+                EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY,
+                DELIVERY_WAIT
+            )
+            .await,
+            "not every broadcast reached the node that falls behind within {DELIVERY_WAIT:?}"
+        );
 
         let first_error = timeout(LAG_WAIT, async {
             loop {
