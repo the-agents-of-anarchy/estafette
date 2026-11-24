@@ -1,5 +1,5 @@
 use std::fs::Permissions;
-use std::io;
+use std::io::{self, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -309,31 +309,47 @@ fn clear_planted_leftover(leftover: &Path) -> io::Result<()> {
     remove_scratch::remove_scratch(leftover)
 }
 
+/// A planted leftover cleared when this value drops, so a failing assertion leaves nothing in the temp directory, a clearing that fails failing the test unless it is already failing.
+struct PlantedLeftover {
+    path: PathBuf,
+}
+
+impl Drop for PlantedLeftover {
+    fn drop(&mut self) {
+        if let Err(failure) = clear_planted_leftover(&self.path) {
+            let report = format!("planted leftover not cleared: {failure}");
+            assert!(std::thread::panicking(), "{report}");
+            drop(writeln!(io::stderr(), "{report}"));
+        }
+    }
+}
+
 #[test]
 fn scratch_root_hands_out_an_empty_root_though_an_earlier_run_left_an_unremovable_one_under_its_name()
  {
-    let leftover = std::env::temp_dir().join(format!(
-        "{LEFTOVER_PREFIX}-{LEFTOVER_TEST_NAME}-{}",
-        std::process::id()
-    ));
-    plant_leftover_that_cannot_be_listed_or_removed(&leftover).unwrap();
+    let leftover = PlantedLeftover {
+        path: std::env::temp_dir().join(format!(
+            "{LEFTOVER_PREFIX}-{LEFTOVER_TEST_NAME}-{}",
+            std::process::id()
+        )),
+    };
+    plant_leftover_that_cannot_be_listed_or_removed(&leftover.path).unwrap();
 
     let root = common::scratch_root(LEFTOVER_PREFIX, LEFTOVER_TEST_NAME).unwrap();
 
-    assert_eq!(root.parent(), leftover.parent());
+    assert_eq!(root.parent(), leftover.path.parent());
+    let leftover_name = leftover.path.file_name().unwrap().to_string_lossy();
+    let root_name = root.file_name().unwrap().to_string_lossy();
     assert!(
-        root.file_name()
-            .unwrap()
-            .to_string_lossy()
-            .starts_with(&*leftover.file_name().unwrap().to_string_lossy()),
-        "{} was not handed out under the leftover's name {}",
+        root_name
+            .strip_prefix(&format!("{leftover_name}-"))
+            .is_some_and(|number| number.parse::<u32>().is_ok()),
+        "{} was not handed out as the leftover's name {} and a number",
         root.display(),
-        leftover.display()
+        leftover.path.display()
     );
-    assert_ne!(root, leftover);
     assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
     remove_scratch::remove_scratch(&root).unwrap();
-    clear_planted_leftover(&leftover).unwrap();
 }
 
 #[test]
