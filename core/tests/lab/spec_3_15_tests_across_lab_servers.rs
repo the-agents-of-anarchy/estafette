@@ -35,16 +35,15 @@ use crate::relay_placement::placement_held;
 use crate::scratch_machine::{Card, ScratchMachine};
 use crate::server_member::ServerMember;
 use crate::tail::{
-    COLUMN_SEPARATOR, INFRASTRUCTURE_KIND, PRESENCE_ADDR_COLUMN, PRESENCE_CARD_COLUMN,
-    PRESENCE_KIND, RELAYS_KEY, Tail,
+    COLUMN_SEPARATOR, INFRASTRUCTURE_KIND, PEER_STATUS_COLUMN, PRESENCE_ADDR_COLUMN,
+    PRESENCE_CARD_COLUMN, PRESENCE_KIND, PRESENCE_SEQ_COLUMN, RECORD_HOST_COLUMN, RECORD_TS_COLUMN,
+    RELAYS_KEY, Tail,
 };
 use crate::time_passing::wait_for_time_to_pass;
 use crate::timed_step::timed;
 
 /// How long a member may take to list a peer that just started as online.
 const PRESENCE_WAIT: Duration = Duration::from_secs(30);
-/// The column of a `show-peers` line holding the peer's status, after its handle (spec 3.13).
-const PEER_STATUS_COLUMN: usize = 1;
 /// The handle base of the first member a test starts.
 const AMY: &str = "amy";
 /// The handle base of the second member a test starts.
@@ -69,10 +68,6 @@ const SPEC_QUIET_RUN: Duration = Duration::from_secs(180);
 const REBIND_RECORD_START: &str = "rebinding the endpoint";
 /// How long the killable host may take to send a record after its start began, the recipe's checks of the server included; chosen, not measured.
 const HOST_START_WAIT: Duration = Duration::from_secs(300);
-/// The column of an infrastructure line holding the host's node id.
-const RECORD_HOST_COLUMN: usize = 2;
-/// The column of an infrastructure line holding the record's ts.
-const RECORD_TS_COLUMN: usize = 5;
 /// How soon after the added host's first record every member's configuration must name it (spec 3.15 test 22).
 const SPEC_HOST_ADDED_WITHIN: Duration = Duration::from_millis(1000);
 /// How long every member may take to answer a fresh `tail`'s presence request, its join included.
@@ -81,8 +76,6 @@ const ANNOUNCEMENT_WAIT: Duration = Duration::from_secs(60);
 const SPEC_DELIVERED_WITHIN_OF_THE_KILL: Duration = Duration::from_secs(60);
 /// How many rebinds a member may record after the kill: none twice (spec 3.15 test 23).
 const SPEC_MOST_REBINDS_AFTER_THE_KILL: usize = 1;
-/// The column of a presence line holding its seq.
-const PRESENCE_SEQ_COLUMN: usize = 7;
 /// How soon after its own first Presence a new member must list every present member, in milliseconds (spec 3.15 test 25, the observer wait of spec 3.14).
 const SPEC_OBSERVER_WAIT_MS: u64 = 3000;
 

@@ -554,8 +554,8 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     use crate::member_events::COUNTERS_EVENT;
     use crate::relay_placement::placement_held;
     use crate::tail::{
-        COLUMN_SEPARATOR, INFRASTRUCTURE_KIND, PRESENCE_ADDR_COLUMN, PRESENCE_CARD_COLUMN,
-        PRESENCE_KIND, RELAYS_KEY, Tail,
+        COLUMN_SEPARATOR, HOST_RELAY_COLUMN, INFRASTRUCTURE_KIND, PRESENCE_ADDR_COLUMN,
+        PRESENCE_CARD_COLUMN, PRESENCE_KIND, RELAYS_KEY, Tail,
     };
     use crate::time_passing::SNAPSHOT_PROVING_A_SPAN_WITHIN;
     use crate::trace_reader::TraceLine;
@@ -572,8 +572,6 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     const MEMBER_CARD: &str = "u40-relay-loss";
     /// The scratch tag of the machine whose `tail` observes the member.
     const OBSERVER_TAG: &str = "u40-relay-tail";
-    /// The column of an infrastructure line holding its `relay`, after the kind, `v` and `host` (spec 3.7 order).
-    const HOST_RELAY_COLUMN: usize = 3;
     /// The event a member records for each payload it broadcasts, and its field naming the payload's kind (spec/observability.md decision 9).
     const PAYLOAD_BROADCAST_EVENT: &str = "gossip.payload_broadcast";
     /// The field of an events line naming a payload's kind (spec/observability.md decision 9).

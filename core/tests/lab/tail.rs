@@ -13,8 +13,18 @@ pub const PRESENCE_KIND: &str = "presence";
 pub const PRESENCE_CARD_COLUMN: usize = 2;
 /// The column of a presence line holding its `addr` as JSON (spec 3.7 order).
 pub const PRESENCE_ADDR_COLUMN: usize = 6;
+/// The column of a presence line holding its seq.
+pub const PRESENCE_SEQ_COLUMN: usize = 7;
+/// The column of a `show-peers` line holding the peer's status, after its handle (spec 3.13).
+pub const PEER_STATUS_COLUMN: usize = 1;
 /// The kind word that opens an infrastructure line of `tail` (spec 3.13).
 pub const INFRASTRUCTURE_KIND: &str = "infrastructure";
+/// The column of an infrastructure line holding the host's node id.
+pub const RECORD_HOST_COLUMN: usize = 2;
+/// The column of an infrastructure line holding its `relay`, after the kind, `v` and `host` (spec 3.7 order).
+pub const HOST_RELAY_COLUMN: usize = 3;
+/// The column of an infrastructure line holding the record's ts.
+pub const RECORD_TS_COLUMN: usize = 5;
 /// The key of the relay list in a printed `addr`.
 pub const RELAYS_KEY: &str = "relays";
 
