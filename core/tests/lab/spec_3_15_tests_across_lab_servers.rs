@@ -26,7 +26,8 @@ use crate::mcp_server::{
     INIT_TOOL, McpServer, ONLINE, RESULT_KEY, call_succeeded, init_arguments, online,
 };
 use crate::member_transport_events::{
-    message_rode_a_relay_path, no_member_rebound, relay_added_within,
+    acknowledged_message_rode_a_relay_path, message_rode_a_relay_path, no_member_rebound,
+    relay_added_within,
 };
 use crate::message_body::BODY;
 use crate::payload_placeholders::wall_clock_ms;
@@ -138,7 +139,7 @@ fn spec_3_15_test_15_show_peers_on_a_machine_with_no_session_lists_the_members_o
     );
 }
 
-/// Spec 3.15 test 3, with the result of test 1: a member on the killable host's server, its UDP to and from this machine dropped, sends to a member on this machine through a relay alone; the receiver's inbox socket emits one frame and the send answers delivered and attached, and the receiver's own events show every path selected for the connection that carried the send, up to its serving, to be a relay path.
+/// Spec 3.15 test 3, with the result of test 1: a member on the killable host's server, its UDP to and from this machine dropped, sends to a member on this machine through a relay alone; the receiver's inbox socket emits one frame and the send answers delivered and attached, and both the receiver's events up to its serving line and the sender's events up to its acknowledged line show every path selected for the connection that carried the send to be a relay path.
 #[test]
 fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_one_frame_attached()
 {
@@ -185,7 +186,14 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
         json!({ (ID_KEY): id, (DELIVERED_KEY): true, (ATTACHED_KEY): true }),
         "{sent}"
     );
+    let sender_events = timed("amy's trace files fetched while she runs", || {
+        amy.events_so_far()
+    });
+    let sender_path_rode = timed("amy's events name the path the send rode", || {
+        acknowledged_message_rode_a_relay_path(&sender_events, id)
+    });
     assert_eq!(path_rode, Ok(()));
+    assert_eq!(sender_path_rode, Ok(()));
     assert_eq!(frame["seq"], json!(1), "{frame}");
     assert_eq!(frame["id"], json!(id), "{frame}");
     assert_eq!(frame["from"], json!(amy.handle()), "{frame}");
@@ -458,7 +466,7 @@ fn hosts_first_read(
     }
 }
 
-/// Spec 3.15 test 22: the killable host, stopped before the members start, is started while they run, and within 1000 ms of its first record reaching this machine's `tail` every member's network configuration names it with its relay, that record or a later one being the first each member accepted, and every member's own events record the addition of that host's relay to its relay map stamped within the same 1000 ms, the stamp and the record's arrival both read on this machine's clock.
+/// Spec 3.15 test 22: the killable host, stopped before the members start, is started while they run, and within 1000 ms of its first record reaching this machine's `tail` every member's network configuration names it with its relay, that record or a later one being the first each member accepted, and every member's own events record the addition of that host's relay to its relay map stamped neither before the host was started nor more than 1000 ms after its first record, the stamp and the record's arrival both read on this machine's clock.
 #[test]
 fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configuration_within_1000_ms_of_its_first_record()
  {
@@ -525,6 +533,7 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
                     relay_added_within(
                         member.server.events(),
                         &added_short_id,
+                        starting_wall_ms,
                         first_record_wall_ms,
                         SPEC_HOST_ADDED_WITHIN,
                     )

@@ -7,7 +7,7 @@ use crate::trace_reader::TraceLine;
 
 /// How long a member may take to record the addition of the added host's relay to its relay map after the host's first record: chosen, not measured, so only a line never written fails the wait and a late one fails by its stamp.
 const RELAY_MAP_EDIT_WAIT: Duration = Duration::from_secs(30);
-/// How long a member may take to write the line of a Message it served, which its test already holds the answer of: chosen, not measured.
+/// How long a member may take to write the line of a Message it served or sent, which its test already holds the answer of: chosen, not measured.
 const SERVED_MESSAGE_LINE_WAIT: Duration = Duration::from_secs(10);
 /// How long reading a member's events files once may take, the first look finding them: chosen, not measured.
 const EVENTS_READ_WAIT: Duration = Duration::from_secs(10);
@@ -22,6 +22,8 @@ const PATH_EVENTS_MISSED_EVENT: &str = "transport.path_events_missed";
 const REBINDING_EVENT: &str = "transport.rebinding";
 /// The event a member records for each direct request it serves.
 const REQUEST_SERVED_EVENT: &str = "direct.request_served";
+/// The event a member records for each direct request it sends, with how it ended.
+const REQUEST_SENT_EVENT: &str = "direct.request_sent";
 
 /// The fields of those events naming the edit, the known host a relay belongs to, the kind of a location or of a request, the connection and the Message.
 const EDIT_FIELD: &str = "edit";
@@ -29,16 +31,19 @@ const HOST_FIELD: &str = "host";
 const KIND_FIELD: &str = "kind";
 const CONNECTION_FIELD: &str = "connection";
 const MESSAGE_FIELD: &str = "message";
+const OUTCOME_FIELD: &str = "outcome";
 /// How the events file words an edit that adds a relay, a location that is a relay, and a request that is a Message.
 const ADDED_EDIT: &str = "added";
 const RELAY_KIND: &str = "relay";
 const MESSAGE_KIND: &str = "message";
+const ACKNOWLEDGED_OUTCOME: &str = "acknowledged";
 
-/// Waits for the member's own line adding the relay of the host to its relay map, and requires its stamp to lie within `within` after the first record's wall-clock instant, both read on one machine's clock (spec 3.15 test 22).
+/// Waits for the member's own line adding the relay of the host to its relay map, and requires its stamp to lie neither before the instant the test started the host nor more than `within` after the host's first record, all read on one machine's clock (spec 3.15 test 22).
 #[track_caller]
 pub fn relay_added_within(
     events: &MemberEvents,
     host: &str,
+    host_started_wall_ms: u64,
     first_record_wall_ms: u64,
     within: Duration,
 ) -> Result<(), String> {
@@ -46,9 +51,15 @@ pub fn relay_added_within(
         &format!("{RELAY_MAP_EDITED_EVENT} {ADDED_EDIT} of the relay of host {host}"),
         RELAY_MAP_EDIT_WAIT,
         |lines| {
-            first_relay_added_for(&lines, host)
-                .is_some()
-                .then(|| relay_added_verdict(&lines, host, first_record_wall_ms, within))
+            first_relay_added_for(&lines, host).is_some().then(|| {
+                relay_added_verdict(
+                    &lines,
+                    host,
+                    host_started_wall_ms,
+                    first_record_wall_ms,
+                    within,
+                )
+            })
         },
     )
 }
@@ -61,6 +72,22 @@ pub fn message_rode_a_relay_path(events: &MemberEvents, message: &str) -> Result
         SERVED_MESSAGE_LINE_WAIT,
         |lines| {
             served_message_position(&lines, message).map(|_| relay_path_verdict(&lines, message))
+        },
+    )
+}
+
+/// Waits for the sender's own line recording that the Message was acknowledged, and requires every path selected for the connection that carried it before the line to be a relay path, at least one having been selected (spec 3.15 test 3).
+#[track_caller]
+pub fn acknowledged_message_rode_a_relay_path(
+    events: &MemberEvents,
+    message: &str,
+) -> Result<(), String> {
+    events.wait_until(
+        &format!("{REQUEST_SENT_EVENT} of the {MESSAGE_KIND} {message} {ACKNOWLEDGED_OUTCOME}"),
+        SERVED_MESSAGE_LINE_WAIT,
+        |lines| {
+            acknowledged_message_position(&lines, message)
+                .map(|_| acknowledged_path_verdict(&lines, message))
         },
     )
 }
@@ -99,16 +126,24 @@ fn first_relay_added_for<'line>(lines: &'line [TraceLine], host: &str) -> Option
     })
 }
 
-/// Whether the first line adding the host's relay is stamped no later than `within` after the first record, refusing with what was found when it is not or when no line adds it.
+/// Whether the first line adding the host's relay is stamped no earlier than the host's start and no later than `within` after the first record, refusing with what was found when it is not or when no line adds it.
 fn relay_added_verdict(
     lines: &[TraceLine],
     host: &str,
+    host_started_wall_ms: u64,
     first_record_wall_ms: u64,
     within: Duration,
 ) -> Result<(), String> {
     let added = first_relay_added_for(lines, host).ok_or_else(|| {
         format!("no {RELAY_MAP_EDITED_EVENT} {ADDED_EDIT} of the relay of host {host}")
     })?;
+    if added.wall_ms < host_started_wall_ms {
+        return Err(format!(
+            "the relay of host {host} was added to the relay map at {} ms, {} ms before the test started the host at {host_started_wall_ms} ms, so that line is not of the host's record",
+            added.wall_ms,
+            host_started_wall_ms.saturating_sub(added.wall_ms)
+        ));
+    }
     let bound_ms = u128::from(first_record_wall_ms).saturating_add(within.as_millis());
     if u128::from(added.wall_ms) <= bound_ms {
         Ok(())
@@ -123,29 +158,70 @@ fn relay_added_verdict(
 
 /// The position of the line recording that the member served the Message.
 fn served_message_position(lines: &[TraceLine], message: &str) -> Option<usize> {
-    lines.iter().position(|line| {
-        line.event == REQUEST_SERVED_EVENT
-            && line.value(KIND_FIELD) == Some(&Value::from(MESSAGE_KIND))
-            && line.value(MESSAGE_FIELD) == Some(&Value::from(message))
-    })
+    lines
+        .iter()
+        .position(|line| is_message_served(line, message))
+}
+
+/// Whether the line records that the member served the Message.
+fn is_message_served(line: &TraceLine, message: &str) -> bool {
+    line.event == REQUEST_SERVED_EVENT
+        && line.value(KIND_FIELD) == Some(&Value::from(MESSAGE_KIND))
+        && line.value(MESSAGE_FIELD) == Some(&Value::from(message))
+}
+
+/// The position of the line recording that the sender's Message was acknowledged.
+fn acknowledged_message_position(lines: &[TraceLine], message: &str) -> Option<usize> {
+    lines
+        .iter()
+        .position(|line| is_message_acknowledged(line, message))
+}
+
+/// Whether the line records that the member sent the Message and its recipient acknowledged it.
+fn is_message_acknowledged(line: &TraceLine, message: &str) -> bool {
+    line.event == REQUEST_SENT_EVENT
+        && line.value(KIND_FIELD) == Some(&Value::from(MESSAGE_KIND))
+        && line.value(MESSAGE_FIELD) == Some(&Value::from(message))
+        && line.value(OUTCOME_FIELD) == Some(&Value::from(ACKNOWLEDGED_OUTCOME))
 }
 
 /// Whether every path selected for the connection of the served Message before the serving line is a relay path, refusing when none was selected, one was not a relay path, or path events of the connection were lost.
 fn relay_path_verdict(lines: &[TraceLine], message: &str) -> Result<(), String> {
-    let served_at = served_message_position(lines, message)
-        .ok_or_else(|| format!("no {REQUEST_SERVED_EVENT} of the {MESSAGE_KIND} {message}"))?;
-    let (before_serving, from_serving) = lines.split_at(served_at);
-    let connection = from_serving
+    relay_paths_before_the_line_at(
+        lines,
+        served_message_position(lines, message),
+        &format!("{REQUEST_SERVED_EVENT} of the {MESSAGE_KIND} {message}"),
+    )
+}
+
+/// Whether every path selected for the connection that carried the acknowledged Message before the sender's acknowledged line is a relay path, with the same refusals.
+fn acknowledged_path_verdict(lines: &[TraceLine], message: &str) -> Result<(), String> {
+    relay_paths_before_the_line_at(
+        lines,
+        acknowledged_message_position(lines, message),
+        &format!("{REQUEST_SENT_EVENT} of the {MESSAGE_KIND} {message} {ACKNOWLEDGED_OUTCOME}"),
+    )
+}
+
+/// Whether every path selected for the connection the line at the position names, before that line, is a relay path, refusing when there is no such line, none was selected, one was not a relay path, or path events of the connection were lost.
+fn relay_paths_before_the_line_at(
+    lines: &[TraceLine],
+    position: Option<usize>,
+    line_named: &str,
+) -> Result<(), String> {
+    let at = position.ok_or_else(|| format!("no {line_named}"))?;
+    let (before, from) = lines.split_at(at);
+    let connection = from
         .first()
-        .and_then(|serving| serving.value(CONNECTION_FIELD));
+        .and_then(|anchor| anchor.value(CONNECTION_FIELD));
     let of_the_connection = |event: &'static str| {
-        before_serving
+        before
             .iter()
             .filter(move |line| line.event == event && line.value(CONNECTION_FIELD) == connection)
     };
     if of_the_connection(PATH_EVENTS_MISSED_EVENT).next().is_some() {
         return Err(format!(
-            "path events of connection {connection:?} were lost before the {message} was served, so its selected paths are not all known"
+            "path events of connection {connection:?} were lost before the {line_named}, so its selected paths are not all known"
         ));
     }
     let selected_kinds: Vec<Option<&str>> = of_the_connection(PATH_SELECTED_EVENT)
@@ -153,12 +229,12 @@ fn relay_path_verdict(lines: &[TraceLine], message: &str) -> Result<(), String> 
         .collect();
     if selected_kinds.is_empty() {
         return Err(format!(
-            "no {PATH_SELECTED_EVENT} for connection {connection:?}, which served the {message}"
+            "no {PATH_SELECTED_EVENT} for connection {connection:?} before the {line_named}"
         ));
     }
     if selected_kinds.iter().any(|kind| *kind != Some(RELAY_KIND)) {
         return Err(format!(
-            "paths selected for connection {connection:?} before it served the {message}: {selected_kinds:?}, and each must be a relay path"
+            "paths selected for connection {connection:?} before the {line_named}: {selected_kinds:?}, and each must be a relay path"
         ));
     }
     Ok(())
@@ -179,7 +255,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        message_rode_a_relay_path, no_member_rebound, rebinding_lines_in, relay_added_verdict,
+        acknowledged_message_rode_a_relay_path, message_rode_a_relay_path, no_member_rebound,
+        rebinding_lines_in, relay_added_verdict,
     };
     use crate::member_events::MemberEvents;
     use crate::trace_reader::{TraceLine, WritingProcess, parse_trace_lines};
@@ -191,6 +268,7 @@ mod tests {
     const OTHER_CONNECTION: u64 = 9;
     const WITHIN: Duration = Duration::from_millis(1000);
     const FIRST_RECORD_WALL_MS: u64 = 1_794_524_400_000;
+    const HOST_STARTED_WALL_MS: u64 = FIRST_RECORD_WALL_MS - 3000;
     const WALL_MS_OF_LINE_ZERO: u64 = 1_794_524_353_720;
     const EVENTS_FILE_NAME: &str = "20261112T225914Z-6c935f82c118f7b3-estafette.events.jsonl";
     const AMY: &str = "amyhzqv";
@@ -268,7 +346,13 @@ mod tests {
     }
 
     fn relay_added_for_the_added_host(lines: &[String]) -> Result<(), String> {
-        relay_added_verdict(&parsed(lines), ADDED_HOST, FIRST_RECORD_WALL_MS, WITHIN)
+        relay_added_verdict(
+            &parsed(lines),
+            ADDED_HOST,
+            HOST_STARTED_WALL_MS,
+            FIRST_RECORD_WALL_MS,
+            WITHIN,
+        )
     }
 
     fn path_verdict_of(test: &str, lines: &[String]) -> Result<(), String> {
@@ -345,6 +429,35 @@ mod tests {
         let stamped_inside = relay_map_edit_at(FIRST_RECORD_WALL_MS + 100, "added", ADDED_HOST);
 
         assert!(relay_added_for_the_added_host(&[late, stamped_inside]).is_err());
+    }
+
+    #[test]
+    fn spec_3_15_test_22_a_line_adding_the_relay_before_the_test_started_the_host_fails_naming_the_start()
+     {
+        let before_the_start = relay_map_edit_at(HOST_STARTED_WALL_MS - 1, "added", ADDED_HOST);
+
+        let refusal = relay_added_for_the_added_host(&[before_the_start]).unwrap_err();
+
+        assert!(
+            refusal.contains("1 ms before the test started the host"),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn spec_3_15_test_22_a_line_adding_the_relay_at_the_instant_the_test_started_the_host_passes() {
+        let at_the_start = relay_map_edit_at(HOST_STARTED_WALL_MS, "added", ADDED_HOST);
+
+        assert_eq!(relay_added_for_the_added_host(&[at_the_start]), Ok(()));
+    }
+
+    #[test]
+    fn spec_3_15_test_22_the_first_line_adding_the_relay_decides_so_a_later_one_after_the_start_does_not_pass_an_early_first()
+     {
+        let before_the_start = relay_map_edit_at(HOST_STARTED_WALL_MS - 500, "added", ADDED_HOST);
+        let after_the_start = relay_map_edit_at(FIRST_RECORD_WALL_MS + 100, "added", ADDED_HOST);
+
+        assert!(relay_added_for_the_added_host(&[before_the_start, after_the_start]).is_err());
     }
 
     #[test]
@@ -445,6 +558,134 @@ mod tests {
         );
 
         assert!(verdict.is_err());
+    }
+
+    /// The line a sender writes when the Message it sent on the connection was acknowledged.
+    fn message_acknowledged(n: u64, message: &str, connection: u64) -> String {
+        line(
+            n,
+            "direct.request_sent",
+            &format!(
+                r#","kind":"message","message":"{message}","peer":"8f43abc249","connection":{connection},"connection_source":"dialed","outcome":"acknowledged","elapsed_ms":3"#
+            ),
+        )
+    }
+
+    fn sender_path_verdict_of(test: &str, lines: &[String]) -> Result<(), String> {
+        let (events, traces) = events_holding(test, lines);
+        let verdict = acknowledged_message_rode_a_relay_path(&events, MESSAGE);
+        remove_traces(&traces);
+        verdict
+    }
+
+    #[test]
+    fn spec_3_15_test_3_a_sender_whose_connection_selected_a_relay_path_alone_up_to_the_acknowledged_line_passes()
+     {
+        let verdict = sender_path_verdict_of(
+            "sender-relay-alone",
+            &[
+                path_selected(1, SERVING_CONNECTION, "relay"),
+                message_acknowledged(2, MESSAGE, SERVING_CONNECTION),
+            ],
+        );
+
+        assert_eq!(verdict, Ok(()));
+    }
+
+    #[test]
+    fn spec_3_15_test_3_a_direct_path_selected_at_the_sender_before_its_acknowledged_line_fails() {
+        let verdict = sender_path_verdict_of(
+            "sender-direct-selected",
+            &[
+                path_selected(1, SERVING_CONNECTION, "relay"),
+                path_selected(2, SERVING_CONNECTION, "direct"),
+                message_acknowledged(3, MESSAGE, SERVING_CONNECTION),
+            ],
+        );
+
+        assert!(verdict.unwrap_err().contains(r#"Some("direct")"#));
+    }
+
+    #[test]
+    fn spec_3_15_test_3_a_direct_path_selected_at_the_sender_after_its_acknowledged_line_does_not_fail_it()
+     {
+        let verdict = sender_path_verdict_of(
+            "sender-direct-after",
+            &[
+                path_selected(1, SERVING_CONNECTION, "relay"),
+                message_acknowledged(2, MESSAGE, SERVING_CONNECTION),
+                path_selected(3, SERVING_CONNECTION, "direct"),
+            ],
+        );
+
+        assert_eq!(verdict, Ok(()));
+    }
+
+    #[test]
+    fn spec_3_15_test_3_a_direct_path_of_another_connection_at_the_sender_does_not_fail_it() {
+        let verdict = sender_path_verdict_of(
+            "sender-other-connection",
+            &[
+                path_selected(1, OTHER_CONNECTION, "direct"),
+                path_selected(2, SERVING_CONNECTION, "relay"),
+                message_acknowledged(3, MESSAGE, SERVING_CONNECTION),
+            ],
+        );
+
+        assert_eq!(verdict, Ok(()));
+    }
+
+    #[test]
+    fn spec_3_15_test_3_no_selected_path_recorded_at_the_sender_for_the_connection_fails() {
+        let verdict = sender_path_verdict_of(
+            "sender-none-selected",
+            &[
+                path_selected(1, OTHER_CONNECTION, "relay"),
+                message_acknowledged(2, MESSAGE, SERVING_CONNECTION),
+            ],
+        );
+
+        assert!(verdict.unwrap_err().contains("no transport.path_selected"));
+    }
+
+    #[test]
+    fn spec_3_15_test_3_lost_path_events_of_the_senders_connection_fail_it_as_unknown() {
+        let verdict = sender_path_verdict_of(
+            "sender-events-lost",
+            &[
+                path_selected(1, SERVING_CONNECTION, "relay"),
+                line(
+                    2,
+                    "transport.path_events_missed",
+                    &format!(r#","connection":{SERVING_CONNECTION},"missed":4"#),
+                ),
+                message_acknowledged(3, MESSAGE, SERVING_CONNECTION),
+            ],
+        );
+
+        assert!(verdict.unwrap_err().contains("were lost"));
+    }
+
+    #[test]
+    fn spec_3_15_test_3_a_failed_attempt_of_the_message_is_not_the_acknowledged_line_the_paths_are_counted_up_to()
+     {
+        let sent_but_failed = line(
+            2,
+            "direct.request_sent",
+            &format!(
+                r#","kind":"message","message":"{MESSAGE}","peer":"8f43abc249","connection":{SERVING_CONNECTION},"outcome":"failed","error":"timeout","elapsed_ms":3"#
+            ),
+        );
+        let lines = [
+            path_selected(1, SERVING_CONNECTION, "relay"),
+            sent_but_failed,
+            path_selected(3, SERVING_CONNECTION, "direct"),
+            message_acknowledged(4, MESSAGE, SERVING_CONNECTION),
+        ];
+
+        let verdict = sender_path_verdict_of("sender-failed-then-acknowledged", &lines);
+
+        assert!(verdict.unwrap_err().contains(r#"Some("direct")"#));
     }
 
     /// The events a member records while it runs with no rebind: a path and a counters snapshot.
