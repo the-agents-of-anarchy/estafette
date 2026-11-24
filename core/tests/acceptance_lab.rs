@@ -796,6 +796,8 @@ mod spec_3_15_two_members_through_the_live_host {
 
     /// A relay a test's presence line prints that is no relay URL.
     const NOT_A_RELAY_URL: &str = "not a relay url";
+    /// The byte every byte of the key of the card whose presence announces that relay is made of.
+    const RELAY_REFUSAL_CARD_SEED: u8 = 8;
 
     /// Spec 3.15 test 17: the encoded size of the largest Presence, its worst case summed field by field.
     const SPEC_LARGEST_PRESENCE_BYTES: usize = 3951;
@@ -1000,7 +1002,7 @@ mod spec_3_15_two_members_through_the_live_host {
     #[test]
     fn spec_3_15_test_8_a_presence_of_the_card_whose_relay_does_not_parse_fails_naming_the_relays_place_and_why()
      {
-        let card = SecretKey::from_bytes(&[OFF_TOPIC_MESSAGE_ID[0]; 32]).public();
+        let card = SecretKey::from_bytes(&[RELAY_REFUSAL_CARD_SEED; 32]).public();
         let line = [
             PRESENCE_KIND,
             "1",
