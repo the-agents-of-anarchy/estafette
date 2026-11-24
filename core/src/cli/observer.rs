@@ -3213,67 +3213,61 @@ mod tests {
         let observer_host = Arc::clone(&observation.host);
         let mut tail_output = Vec::new();
 
-        let (
-            tail_result,
-            (
-                introduction,
-                recorded_past_the_acks,
-                recorded_before_the_close,
-                closed_at_the_presence,
-            ),
-        ) = tokio::join!(observation.tail(&mut tail_output), async {
-            let introduced_on = first_connection_accepted(&neighbor, PAYLOAD_WAIT).await;
-            neighbor_listed_by(&observer_host, PAYLOAD_WAIT).await;
-            let introduction = next_recorded_meeting(
-                &mut recorded,
-                CONNECTION_OPENED_EVENT,
-                |fields| {
-                    field(fields, PROTOCOL_FIELD) == Some(&serde_json::Value::from(DIRECT_PROTOCOL))
-                        && field(fields, PEER_FIELD) == Some(&neighbor_short_id())
-                },
-                PAYLOAD_WAIT,
-            )
-            .await;
-            let recorded_past_the_acks = recorded_once_the_clock_moves_past_every_ack(
-                &neighbor,
-                &mut recorded,
-                &observer_clock,
-            )
-            .await;
-            neighbor
-                .topic
-                .broadcast(
-                    &secret_key(NEIGHBOR_SEED),
-                    neighbor_presence_announcing(neighbor_address()),
+        let (tail_result, (recorded_before_the_close, closed_at_the_presence)) = tokio::join!(
+            observation.tail(&mut tail_output),
+            async {
+                let introduced_on = first_connection_accepted(&neighbor, PAYLOAD_WAIT).await;
+                neighbor_listed_by(&observer_host, PAYLOAD_WAIT).await;
+                let introduction = next_recorded_meeting(
+                    &mut recorded,
+                    CONNECTION_OPENED_EVENT,
+                    |fields| {
+                        field(fields, PROTOCOL_FIELD)
+                            == Some(&serde_json::Value::from(DIRECT_PROTOCOL))
+                            && field(fields, PEER_FIELD) == Some(&neighbor_short_id())
+                    },
+                    PAYLOAD_WAIT,
                 )
-                .await
-                .unwrap();
-            let closed_at_the_presence =
-                tokio::time::timeout(SUPERSEDED_CLOSE_WAIT, introduced_on.closed()).await;
-            let (recorded_before_the_close, _closed) = recorded_until(
-                &mut recorded,
-                CONNECTION_CLOSED_EVENT,
-                |fields| field(fields, CONNECTION_FIELD) == field(&introduction, CONNECTION_FIELD),
-                SUPERSEDED_CLOSE_WAIT,
-            )
-            .await;
-            interrupt.send(()).unwrap_or_default();
-            (
-                introduction,
-                recorded_past_the_acks,
-                recorded_before_the_close,
-                closed_at_the_presence,
-            )
-        });
+                .await;
+                let recorded_past_the_acks = recorded_once_the_clock_moves_past_every_ack(
+                    &neighbor,
+                    &mut recorded,
+                    &observer_clock,
+                )
+                .await;
+                assert!(
+                    !recorded_past_the_acks.iter().any(|(name, fields)| {
+                        *name == CONNECTION_CLOSED_EVENT
+                            && field(fields, CONNECTION_FIELD)
+                                == field(&introduction, CONNECTION_FIELD)
+                    }),
+                    "the observer closed the introduction's connection once its clock read {ACK_DROP_WOULD_SHOW_WITHIN:?} past every IntroduceAck, before any Presence: {recorded_past_the_acks:?}"
+                );
+                neighbor
+                    .topic
+                    .broadcast(
+                        &secret_key(NEIGHBOR_SEED),
+                        neighbor_presence_announcing(neighbor_address()),
+                    )
+                    .await
+                    .unwrap();
+                let closed_at_the_presence =
+                    tokio::time::timeout(SUPERSEDED_CLOSE_WAIT, introduced_on.closed()).await;
+                let (recorded_before_the_close, _closed) = recorded_until(
+                    &mut recorded,
+                    CONNECTION_CLOSED_EVENT,
+                    |fields| {
+                        field(fields, CONNECTION_FIELD) == field(&introduction, CONNECTION_FIELD)
+                    },
+                    SUPERSEDED_CLOSE_WAIT,
+                )
+                .await;
+                interrupt.send(()).unwrap_or_default();
+                (recorded_before_the_close, closed_at_the_presence)
+            }
+        );
 
         tail_result.unwrap();
-        assert!(
-            !recorded_past_the_acks.iter().any(|(name, fields)| {
-                *name == CONNECTION_CLOSED_EVENT
-                    && field(fields, CONNECTION_FIELD) == field(&introduction, CONNECTION_FIELD)
-            }),
-            "the observer closed the introduction's connection once its clock read {ACK_DROP_WOULD_SHOW_WITHIN:?} past every IntroduceAck, before any Presence: {recorded_past_the_acks:?}"
-        );
         assert!(
             kinds_and_peers_recorded_as(&recorded_before_the_close, PAYLOAD_ACCEPTED_EVENT)
                 .contains(&(
