@@ -3858,6 +3858,16 @@ pub(crate) mod tests {
         }
     }
 
+    /// Asserts that no connection from the card reported a selected path once the Introduce's connection opened.
+    #[track_caller]
+    fn assert_the_gone_path_was_not_kept(reported_after_the_introduce: &[bool]) {
+        assert_eq!(
+            reported_after_the_introduce,
+            [false],
+            "iroh did not keep the gone process's path selected once the introduce's connection opened"
+        );
+    }
+
     #[tokio::test]
     async fn spec_3_15_test_18_a_request_a_member_starts_after_a_restarted_processs_introduce_and_before_its_presence_is_answered_without_waiting_on_the_gone_processs_path()
      {
@@ -3870,21 +3880,10 @@ pub(crate) mod tests {
             "{:?}",
             restart.introduced
         );
-        assert_eq!(
-            restart.reported_after_the_introduce,
-            vec![false],
-            "iroh did not keep the gone process's path selected once the introduce's connection opened"
-        );
+        assert_the_gone_path_was_not_kept(&restart.reported_after_the_introduce);
 
         let started = Instant::now();
-        let probed = answered_within(
-            DIRECT_ANSWER_WAIT,
-            "the member's probe of the restarted process",
-            restart
-                .member
-                .probe(restart.link.client_node.endpoint().id(), PROBE_NONCE),
-        )
-        .await;
+        let probed = members_probe_of_the_restarted(&restart).await;
         let took = started.elapsed();
 
         assert_eq!(probed.unwrap().nonce, PROBE_NONCE);
@@ -3936,11 +3935,7 @@ pub(crate) mod tests {
             RecordingHost::with_card(card_of(SERVER_SEED))
         })
         .await;
-        assert_eq!(
-            restart.reported_after_the_introduce,
-            vec![false],
-            "iroh did not keep the gone process's path selected once the introduce's connection opened"
-        );
+        assert_the_gone_path_was_not_kept(&restart.reported_after_the_introduce);
         let register = restart.link.server_node.held_connections();
         let gone_port = gone_processs_port_bound_again(&restart).await;
 
@@ -3985,11 +3980,7 @@ pub(crate) mod tests {
             RecordingHost::with_card(card_of(SERVER_SEED))
         })
         .await;
-        assert_eq!(
-            restart.reported_after_the_introduce,
-            vec![false],
-            "iroh did not keep the gone process's path selected once the introduce's connection opened"
-        );
+        assert_the_gone_path_was_not_kept(&restart.reported_after_the_introduce);
 
         let answered_by_the_restarted = members_probe_of_the_restarted(&restart).await;
         let answered_by_the_member = restarted_processs_probe_of_the_member(&restart).await;
@@ -4005,11 +3996,7 @@ pub(crate) mod tests {
             RecordingHost::with_card(card_of(SERVER_SEED))
         })
         .await;
-        assert_eq!(
-            restart.reported_after_the_introduce,
-            vec![false],
-            "iroh did not keep the gone process's path selected once the introduce's connection opened"
-        );
+        assert_the_gone_path_was_not_kept(&restart.reported_after_the_introduce);
 
         let answered_by_the_member = restarted_processs_probe_of_the_member(&restart).await;
         let answered_by_the_restarted = members_probe_of_the_restarted(&restart).await;
@@ -4027,11 +4014,7 @@ pub(crate) mod tests {
             |_member| RecordingHost::with_card(card_of(SERVER_SEED)),
         )
         .await;
-        assert_eq!(
-            restart.reported_after_the_introduce,
-            vec![false],
-            "iroh did not keep the gone process's path selected once the introduce's connection opened"
-        );
+        assert_the_gone_path_was_not_kept(&restart.reported_after_the_introduce);
         let introduces_connection =
             connections_held_open_from(&restart.link.server_node, card_of(CLIENT_SEED));
         drop(recorded_so_far(&mut recorded));
@@ -4138,14 +4121,12 @@ pub(crate) mod tests {
                 ..own_introduction(false)
             }
         );
-        assert_eq!(
-            reported_before_the_probe_is_polled
+        assert_the_gone_path_was_not_kept(
+            &reported_before_the_probe_is_polled
                 .lock()
                 .unwrap()
                 .take()
                 .unwrap(),
-            vec![false],
-            "iroh did not keep the gone process's path selected once the introduce's connection opened"
         );
         let probe = started_probe.lock().unwrap().take().unwrap();
 
