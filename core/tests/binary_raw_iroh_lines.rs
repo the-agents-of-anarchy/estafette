@@ -49,13 +49,13 @@ mod raw_iroh_lines {
         "the message was not delivered: No present member has that handle.\n";
     const SPEC_RAW_FILE_OPENED_EVENT: &str = "raw_file_opened";
     const SPEC_IROH_LINE_EVENT: &str = "iroh_line";
+    const SPEC_IROH_EVENTS_TARGET: &str = "iroh::_events";
     const SPEC_IROH_TARGETS: [&str; 4] = [
-        "iroh::_events",
+        SPEC_IROH_EVENTS_TARGET,
         "iroh::socket::remote_map",
         "iroh_gossip::proto::hyparview",
         "iroh_gossip::net",
     ];
-    const IROH_EVENTS_TARGET: &str = "iroh::_events";
     const TARGET_SEPARATOR: &str = "::";
 
     /// A scratch root under `/tmp` with a network created in it.
@@ -141,8 +141,8 @@ mod raw_iroh_lines {
         assert!(
             targets
                 .iter()
-                .any(|target| falls_under(target, IROH_EVENTS_TARGET)),
-            "no line of {IROH_EVENTS_TARGET} among {targets:?}"
+                .any(|target| falls_under(target, SPEC_IROH_EVENTS_TARGET)),
+            "no line of {SPEC_IROH_EVENTS_TARGET} among {targets:?}"
         );
         for target in &targets {
             assert!(
