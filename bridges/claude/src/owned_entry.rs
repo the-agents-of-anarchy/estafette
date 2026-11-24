@@ -212,7 +212,13 @@ fn make_directory_private_opened_by(
     path: &Path,
     open: impl FnOnce(&Path) -> io::Result<File>,
 ) -> io::Result<()> {
-    let directory = open(path)?;
+    let directory = match open(path) {
+        Ok(directory) => directory,
+        Err(denied) if denied.kind() == io::ErrorKind::PermissionDenied => {
+            return make_unreadable_directory_private_by_name(user_id, path);
+        }
+        Err(failure) => return Err(failure),
+    };
     let opened = directory.metadata()?;
     let named = fs::symlink_metadata(path)?;
     require_private_directory_of(user_id, path, EntryFacts::of(&named))
@@ -224,6 +230,13 @@ fn make_directory_private_opened_by(
         }));
     }
     directory.set_permissions(Permissions::from_mode(PRIVATE_DIRECTORY_MODE))
+}
+
+fn make_unreadable_directory_private_by_name(user_id: u32, path: &Path) -> io::Result<()> {
+    let named = fs::symlink_metadata(path)?;
+    require_private_directory_of(user_id, path, EntryFacts::of(&named))
+        .map_err(directory_refusal_of)?;
+    fs::set_permissions(path, Permissions::from_mode(PRIVATE_DIRECTORY_MODE))
 }
 
 /// What stops the runtime directory from being used: it cannot be inspected, or it exists and is refused.
@@ -801,6 +814,50 @@ mod tests {
             DirectoryFinding::ReplacedWhileOpened
         );
         assert_eq!(mode_of(&swapped_in), LOOSE_DIRECTORY_MODE);
+        crate::remove_scratch::remove_scratch(&directory).unwrap();
+    }
+
+    const OWNER_WRITE_AND_SEARCH_ONLY_MODE: u32 = 0o300;
+
+    #[test]
+    fn bridge_directories_are_private_or_refused_a_directory_made_unreadable_by_the_umask_is_still_made_private()
+     {
+        let directory = scratch_directory("unreadable-made-private");
+        let unreadable = directory.join("unreadable");
+        fs::create_dir(&unreadable).unwrap();
+        fs::set_permissions(
+            &unreadable,
+            Permissions::from_mode(OWNER_WRITE_AND_SEARCH_ONLY_MODE),
+        )
+        .unwrap();
+
+        make_directory_private_opened_by(this_user(), &unreadable, |path: &Path| File::open(path))
+            .unwrap();
+
+        assert_eq!(mode_of(&unreadable), PRIVATE_DIRECTORY_MODE);
+        crate::remove_scratch::remove_scratch(&directory).unwrap();
+    }
+
+    #[test]
+    fn bridge_directories_are_private_or_refused_a_mode_is_never_set_through_a_symbolic_link_when_the_open_is_denied()
+     {
+        let directory = scratch_directory("denied-open-link");
+        let target = directory.join("target");
+        let named = directory.join("named");
+        fs::create_dir(&target).unwrap();
+        fs::set_permissions(&target, Permissions::from_mode(LOOSE_DIRECTORY_MODE)).unwrap();
+        symlink(&target, &named).unwrap();
+
+        let failure = make_directory_private_opened_by(this_user(), &named, |_named: &Path| {
+            Err(io::Error::from(io::ErrorKind::PermissionDenied))
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            directory_refusal_inside(&failure).found,
+            DirectoryFinding::SymbolicLink
+        );
+        assert_eq!(mode_of(&target), LOOSE_DIRECTORY_MODE);
         crate::remove_scratch::remove_scratch(&directory).unwrap();
     }
 }

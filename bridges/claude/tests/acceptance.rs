@@ -502,6 +502,8 @@ fn spec_3_3_the_bridge_refuses_to_start_when_it_cannot_make_a_pipe_to_learn_its_
 
 const PRODUCT_DIRECTORY: &str = "estafette";
 const STRIPS_OWNER_WRITE_AND_ALL_OTHER_ACCESS_UMASK: &str = "0277";
+const STRIPS_OWNER_READ_AND_ALL_OTHER_ACCESS_UMASK: &str = "0477";
+const STRIPS_OWNER_SEARCH_AND_ALL_OTHER_ACCESS_UMASK: &str = "0177";
 const LOOSE_DIRECTORY_REFUSAL: &str = "mode 0755, which grants access to group or other";
 const SYMBOLIC_LINK_REFUSAL: &str = "a symbolic link";
 const REFUSAL_CONSEQUENCE: &str =
@@ -651,24 +653,35 @@ fn observability_decision_4_the_bridge_refuses_a_symbolic_link_in_place_of_the_t
     assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
 }
 
-#[test]
-fn spec_3_3_the_bridge_creates_its_directories_private_under_a_umask_that_strips_the_owners_write_bit_bridge_directories_are_private_or_refused()
- {
-    let fixture = Fixture::new().unwrap();
+struct StartUnderUmask {
+    exit_code: Option<i32>,
+    errors: String,
+    created_modes: Vec<(PathBuf, u32)>,
+}
+
+fn start_bridge_under_umask(umask: &str) -> io::Result<StartUnderUmask> {
+    let fixture = Fixture::new()?;
     let config = config_directory_of(&fixture);
-    let traces = fixture.traces_directory().unwrap();
-    for parent in [config.parent().unwrap(), fixture.data_home().as_path()] {
-        fs::create_dir_all(parent).unwrap();
+    let traces = fixture.traces_directory()?;
+    let data_base = traces
+        .parent()
+        .ok_or_else(|| io::Error::other("the trace directory has no parent"))?
+        .to_path_buf();
+    let config_base = config
+        .parent()
+        .ok_or_else(|| io::Error::other("the config directory has no parent"))?;
+    for parent in [config_base, fixture.data_home().as_path()] {
+        fs::create_dir_all(parent)?;
     }
     let configured = fixture.bridge();
     let mut under_umask = Command::new("sh");
     under_umask
         .args([
             "-c",
-            &format!("umask {STRIPS_OWNER_WRITE_AND_ALL_OTHER_ACCESS_UMASK}; exec \"$0\" \"$@\""),
+            &format!("umask {umask}; exec \"$0\" \"$@\""),
             common::BRIDGE,
             "run",
-            &exited_harness_pid().unwrap(),
+            &exited_harness_pid()?,
         ])
         .env_clear()
         .envs(
@@ -678,16 +691,51 @@ fn spec_3_3_the_bridge_creates_its_directories_private_under_a_umask_that_strips
         )
         .current_dir(&fixture.root);
 
-    let output = under_umask.output().unwrap();
+    let output = under_umask.output()?;
 
-    let errors = String::from_utf8(output.stderr).unwrap();
-    assert_eq!(output.status.code(), Some(0), "{errors}");
-    for created in [&config, traces.parent().unwrap(), &traces] {
+    let created_modes = [config, data_base, traces]
+        .into_iter()
+        .map(|created| mode_of(&created).map(|mode| (created, mode)))
+        .collect::<io::Result<Vec<_>>>()?;
+    Ok(StartUnderUmask {
+        exit_code: output.status.code(),
+        errors: String::from_utf8_lossy(&output.stderr).into_owned(),
+        created_modes,
+    })
+}
+
+fn assert_started_with_private_directories(start: &StartUnderUmask, umask: &str) {
+    assert_eq!(start.exit_code, Some(0), "umask {umask}: {}", start.errors);
+    for (created, mode) in &start.created_modes {
         assert_eq!(
-            mode_of(created).unwrap(),
+            *mode,
             PRIVATE_DIRECTORY_MODE,
-            "{}",
+            "umask {umask}: {}",
             created.display()
         );
     }
+}
+
+#[test]
+fn spec_3_3_the_bridge_creates_its_directories_private_under_a_umask_that_strips_the_owners_write_bit_bridge_directories_are_private_or_refused()
+ {
+    let start = start_bridge_under_umask(STRIPS_OWNER_WRITE_AND_ALL_OTHER_ACCESS_UMASK).unwrap();
+
+    assert_started_with_private_directories(&start, STRIPS_OWNER_WRITE_AND_ALL_OTHER_ACCESS_UMASK);
+}
+
+#[test]
+fn spec_3_3_the_bridge_creates_its_directories_private_under_a_umask_that_strips_the_owners_read_bit_bridge_directories_are_private_or_refused()
+ {
+    let start = start_bridge_under_umask(STRIPS_OWNER_READ_AND_ALL_OTHER_ACCESS_UMASK).unwrap();
+
+    assert_started_with_private_directories(&start, STRIPS_OWNER_READ_AND_ALL_OTHER_ACCESS_UMASK);
+}
+
+#[test]
+fn spec_3_3_the_bridge_creates_its_directories_private_under_a_umask_that_strips_the_owners_search_bit_bridge_directories_are_private_or_refused()
+ {
+    let start = start_bridge_under_umask(STRIPS_OWNER_SEARCH_AND_ALL_OTHER_ACCESS_UMASK).unwrap();
+
+    assert_started_with_private_directories(&start, STRIPS_OWNER_SEARCH_AND_ALL_OTHER_ACCESS_UMASK);
 }
