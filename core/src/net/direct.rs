@@ -3491,20 +3491,6 @@ pub(crate) mod tests {
         );
     }
 
-    /// Takes the card's first held connection as last heard from as long ago as a gone process is silent, as a connection of a live process that stalled reads.
-    fn stall_the_first_held_of(register: &HeldConnections, card: wire::PublicKey) {
-        let stalled_since = tokio::time::Instant::now()
-            .checked_sub(SILENCE_OF_A_GONE_PROCESS)
-            .unwrap();
-        register
-            .held()
-            .get_mut(&card)
-            .unwrap()
-            .first_mut()
-            .unwrap()
-            .last_heard = stalled_since;
-    }
-
     #[tokio::test]
     async fn spec_3_8_a_live_card_whose_other_connection_reports_a_selected_path_keeps_it_when_its_stalled_connection_closes()
      {
@@ -3513,6 +3499,8 @@ pub(crate) mod tests {
         raw_exchange(&stalled, &sealed_message_to_server(&keys()))
             .await
             .unwrap();
+        let accepted_stalled =
+            connections_held_open_from(&rig.link.server_node, card_of(CLIENT_SEED)).swap_remove(0);
         let healthy = raw_connection(&rig).await;
         raw_exchange(&healthy, &sealed_message_to_server(&keys()))
             .await
@@ -3521,7 +3509,7 @@ pub(crate) mod tests {
         let reported_before =
             selected_path_reported_by_each_held_of(&register, card_of(CLIENT_SEED));
 
-        stall_the_first_held_of(&register, card_of(CLIENT_SEED));
+        stall_the_held(&register, card_of(CLIENT_SEED), &accepted_stalled);
         register.close_silent_of(card_of(CLIENT_SEED));
         let stalled_closed = timeout(DIRECT_ANSWER_WAIT, stalled.closed()).await;
         let healthy_still_answers = still_answers(&healthy).await;
