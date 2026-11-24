@@ -2985,6 +2985,7 @@ mod tests {
 
     const HARNESS_EXITS_AT: Duration = Duration::from_secs(125);
     const SPEC_LIVE_PROCESS_WRITES_AT_LEAST_EVERY_MS: u64 = 60_000;
+    const SPEC_ALIVE_EVENT: &str = "process.alive";
 
     struct HarnessRunsUntil {
         clock: Arc<Mutex<Duration>>,
@@ -3014,14 +3015,24 @@ mod tests {
             clock: Arc::clone(&clock),
             harness_exits_at: HARNESS_EXITS_AT,
         };
-        run_over_a_clock_only_its_waits_move(probe, tracing, &clock, wiring().effects, &harness)
+        run_over_a_clock_only_its_waits_move(
+            probe,
+            tracing,
+            &clock,
+            |elapsed, wait| BridgeEffects {
+                elapsed,
+                wait,
+                ..wiring().effects
+            },
+            &harness,
+        )
     }
 
     fn run_over_a_clock_only_its_waits_move<S, B, C>(
         probe: &TraceProbe,
         tracing: Tracing,
         clock: &Arc<Mutex<Duration>>,
-        serving: BridgeEffects<S, C, StandInFiles>,
+        serving: impl FnOnce(Elapsed, Pause) -> BridgeEffects<S, C, StandInFiles>,
         processes: &impl ProcessTable,
     ) -> (ExitCode, String)
     where
@@ -3042,14 +3053,13 @@ mod tests {
                 }),
             }),
             TraceBounds::SPEC,
-            BridgeEffects {
-                elapsed: Arc::new(move || *lock(&bridge_clock)),
-                wait: Arc::new(move |pause| {
+            serving(
+                Arc::new(move || *lock(&bridge_clock)),
+                Arc::new(move |pause| {
                     let mut now = lock(&moved_clock);
                     *now = now.saturating_add(pause);
                 }),
-                ..serving
-            },
+            ),
             processes,
         )
     }
@@ -3083,11 +3093,11 @@ mod tests {
                 ("process.started".into(), 0.into()),
                 ("permission_class.unreadable".into(), 0.into()),
                 (
-                    "process.alive".into(),
+                    SPEC_ALIVE_EVENT.into(),
                     SPEC_LIVE_PROCESS_WRITES_AT_LEAST_EVERY_MS.into()
                 ),
                 (
-                    "process.alive".into(),
+                    SPEC_ALIVE_EVENT.into(),
                     SPEC_LIVE_PROCESS_WRITES_AT_LEAST_EVERY_MS
                         .saturating_mul(2)
                         .into()
@@ -3096,7 +3106,7 @@ mod tests {
         );
         for alive in events
             .iter()
-            .filter(|line| line["event"] == "process.alive")
+            .filter(|line| line["event"] == SPEC_ALIVE_EVENT)
         {
             assert_eq!(
                 alive
@@ -3124,7 +3134,6 @@ mod tests {
         assert!(!probe.data_home.exists());
     }
 
-    const SPEC_ALIVE_EVENT: &str = "process.alive";
     const SPEC_NOTICE_WRITTEN_EVENT: &str = "notice.written";
     const FRAME_DELIVERED_AT_MS: u64 = 90_000;
     const HARNESS_EXITS_AFTER_THE_FRAME_AT: Duration = Duration::from_secs(155);
@@ -3164,7 +3173,7 @@ mod tests {
             &probe,
             Tracing::Debug,
             &clock,
-            BridgeEffects {
+            |elapsed, wait| BridgeEffects {
                 own_pid: wiring.effects.own_pid,
                 runtime_inputs: wiring.effects.runtime_inputs,
                 session_connector: WritableSessionSocket,
@@ -3175,10 +3184,10 @@ mod tests {
                     since_lines: SinceLines::default(),
                 },
                 files: files_of_live_session("bypassPermissions"),
-                elapsed: wiring.effects.elapsed,
+                elapsed,
                 record: wiring.effects.record,
                 spawn: Arc::new(|task| task()),
-                wait: wiring.effects.wait,
+                wait,
             },
             &HarnessListsItsBinaryAtOnePollFrom {
                 harness: HarnessRunsUntil {
