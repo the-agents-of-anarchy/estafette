@@ -24,6 +24,14 @@ mod raw_iroh_lines_spans {
     use super::remove_scratch::remove_scratch;
 
     const SPEC_IROH_LINE: &str = "iroh_line";
+    const GOSSIP_TARGET: &str = "iroh_gossip::net";
+    const GOSSIP_SPAN_NAME: &str = "gossip";
+    const GOSSIP_SPAN_ME: &str = "ab12c";
+    const CONNECTION_SPAN_NAME: &str = "conn";
+    const CONNECTION_SPAN_PEER: &str = "cd34e";
+    const CONNECTION_SPAN_STREAM: u64 = 2;
+    const ESTABLISHED_MESSAGE: &str = "connection established";
+    const OUTSIDE_MESSAGE: &str = "outside every span";
 
     /// How iroh-gossip's `Origin` reads in its lines.
     #[derive(Debug)]
@@ -45,19 +53,20 @@ mod raw_iroh_lines_spans {
         let of_a_target_the_raw_file_refuses =
             tracing::info_span!(target: "iroh::endpoint", "connect", remote = %"ef56a");
         of_a_target_the_raw_file_refuses.in_scope(|| {
-            let gossip = tracing::error_span!(target: "iroh_gossip::net", "gossip", me = %"ab12c");
+            let gossip =
+                tracing::error_span!(target: GOSSIP_TARGET, GOSSIP_SPAN_NAME, me = %GOSSIP_SPAN_ME);
             gossip.in_scope(|| {
-                let connection = tracing::error_span!(target: "iroh_gossip::net", "conn", peer = %"cd34e", stream = 2_u64);
+                let connection = tracing::error_span!(target: GOSSIP_TARGET, CONNECTION_SPAN_NAME, peer = %CONNECTION_SPAN_PEER, stream = CONNECTION_SPAN_STREAM);
                 connection.in_scope(|| {
                     tracing::debug!(
-                        target: "iroh_gossip::net",
+                        target: GOSSIP_TARGET,
                         origin = ?Origin::Accept,
-                        "connection established"
+                        "{ESTABLISHED_MESSAGE}"
                     );
                 });
             });
         });
-        tracing::debug!(target: "iroh_gossip::net", "outside every span");
+        tracing::debug!(target: GOSSIP_TARGET, "{OUTSIDE_MESSAGE}");
         assert!(matches!(
             trace.finish(),
             [TraceStop::Drained, TraceStop::Drained]
@@ -67,8 +76,8 @@ mod raw_iroh_lines_spans {
             fs::read_to_string(&trace.files().raw).unwrap(),
             format!(
                 "{}\
-                 {},\"target\":\"iroh_gossip::net\",\"level\":\"DEBUG\",\"message\":\"connection established\",\"fields\":{{\"origin\":\"Accept\"}},\"spans\":[{{\"fields\":{{\"me\":\"ab12c\"}},\"name\":\"gossip\"}},{{\"fields\":{{\"peer\":\"cd34e\",\"stream\":\"2\"}},\"name\":\"conn\"}}]}}\n\
-                 {},\"target\":\"iroh_gossip::net\",\"level\":\"DEBUG\",\"message\":\"outside every span\",\"fields\":{{}}}}\n",
+                 {},\"target\":\"{GOSSIP_TARGET}\",\"level\":\"DEBUG\",\"message\":\"{ESTABLISHED_MESSAGE}\",\"fields\":{{\"origin\":\"Accept\"}},\"spans\":[{{\"fields\":{{\"me\":\"{GOSSIP_SPAN_ME}\"}},\"name\":\"{GOSSIP_SPAN_NAME}\"}},{{\"fields\":{{\"peer\":\"{CONNECTION_SPAN_PEER}\",\"stream\":\"{CONNECTION_SPAN_STREAM}\"}},\"name\":\"{CONNECTION_SPAN_NAME}\"}}]}}\n\
+                 {},\"target\":\"{GOSSIP_TARGET}\",\"level\":\"DEBUG\",\"message\":\"{OUTSIDE_MESSAGE}\",\"fields\":{{}}}}\n",
                 raw_file_opened_line(),
                 header(1, None, SPEC_IROH_LINE),
                 header(2, None, SPEC_IROH_LINE),
