@@ -8,6 +8,9 @@ mod dropped_payloads;
 #[path = "support/file_growth.rs"]
 mod file_growth;
 #[cfg(test)]
+#[path = "support/instrument_b.rs"]
+mod instrument_b;
+#[cfg(test)]
 #[cfg(test)]
 #[path = "one_machine/local_network.rs"]
 mod local_network;
@@ -1390,6 +1393,8 @@ mod spec_3_15_with_one_member {
     #[test]
     fn spec_3_15_test_21_a_node_with_the_topic_id_but_not_the_secret_gets_no_neighbor_and_no_payload_dialing_or_dialed()
      {
+        crate::instrument_b::install_iroh_lines_subscriber();
+        let _outcome_note = crate::instrument_b::OutcomeNote("spec_3_15_test_21");
         let network = LocalNetwork::create("t21", &RunRecordKeeping::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         network.add_host_that_never_answers();
@@ -1399,6 +1404,20 @@ mod spec_3_15_with_one_member {
         let ports_before_rebind = amy.bound_udp_ports();
         let outsider_key = SecretKey::generate();
         let outsider = ScriptedNode::start_without_gate(outsider_key.clone(), network.topic());
+        let instrument_ids = format!(
+            "host={} member={} outsider={}",
+            host.endpoint().id().fmt_short(),
+            card.id.fmt_short(),
+            outsider.endpoint().id().fmt_short()
+        );
+        crate::instrument_b::note_ports(&format!(
+            "{instrument_ids} ports_before_rebind={ports_before_rebind:?}"
+        ));
+        eprintln!("INSTRUMENT-B ports_before_rebind={ports_before_rebind:?} {instrument_ids}");
+        crate::instrument_b::append_line(
+            false,
+            &format!("INSTRUMENT-B marker (not a line of iroh) {instrument_ids}"),
+        );
 
         outsider.admit(loopback_address(card.id, &ports_before_rebind));
         let outsider_peer = short_id_text(&outsider_key);
@@ -1416,6 +1435,15 @@ mod spec_3_15_with_one_member {
         ));
         amy.peer_within(OUTSIDER_HANDLE, PRESENCE_WAIT, |_outsider| true);
         let rebound = rebound_ports(&amy, SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK);
+        crate::instrument_b::note_ports(&format!(
+            "{instrument_ids} handed_set={rebound:?} handed_set_len={}",
+            rebound.len()
+        ));
+        eprintln!("INSTRUMENT-B handed_set={rebound:?} {instrument_ids}");
+        crate::instrument_b::append_line(
+            false,
+            &format!("INSTRUMENT-B marker (not a line of iroh) the host is handed {rebound:?}"),
+        );
         host.admit(loopback_address(card.id, &rebound));
         gate_closed_connection_of(
             &amy,
