@@ -4632,27 +4632,29 @@ pub(crate) mod tests {
     /// The longest a probe call or its stand-in server takes to act on a clock reading it waits for, well inside the probe timeout, so a probe timed on the runtime's clock cannot end within it.
     const ACTED_ON_THE_READING_WITHIN: Duration = Duration::from_secs(1);
 
-    /// How far a stand-in server has gone with the one probe it answers.
-    #[derive(Default)]
-    struct ProbeServed {
-        dialed: AtomicBool,
-        read: AtomicBool,
+    /// How far a stand-in server has gone with the one probe it answers, each step reached after the one before.
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    enum ProbeServed {
+        NotYetDialed,
+        Dialed,
+        ProbeRead,
     }
 
     /// Notes the dial, holds the handshake until the clock reads the release, notes that it has read the probe, then holds the probe's ack until the probe call has returned.
     async fn answer_one_probe_after_the_call_returned(
         server: Endpoint,
-        (clock, handshake_released_at): (MonotonicClock, tokio::time::Instant),
-        seen: Arc<ProbeServed>,
+        clock: MonotonicClock,
+        handshake_released_at: tokio::time::Instant,
+        seen: Arc<watch::Sender<ProbeServed>>,
         call_returned: tokio::sync::oneshot::Receiver<()>,
     ) {
         let incoming = server.accept().await.unwrap();
-        seen.dialed.store(true, Ordering::SeqCst);
+        seen.send_replace(ProbeServed::Dialed);
         clock.reached(handshake_released_at).await;
         let connection = incoming.accept().unwrap().await.unwrap();
         let (mut send, mut recv) = connection.accept_bi().await.unwrap();
         recv.read_to_end(WIRE_LIMIT_BYTES).await.unwrap();
-        seen.read.store(true, Ordering::SeqCst);
+        seen.send_replace(ProbeServed::ProbeRead);
         let _returned_or_dropped = call_returned.await;
         if send.write_all(&sealed_probe_ack(PROBE_NONCE)).await.is_ok() {
             let _finished_after_the_probe_timeout = send.finish();
@@ -4673,11 +4675,12 @@ pub(crate) mod tests {
             HeldConnections::new(clock.monotonic(), dropping_transport()),
         );
         let called = clock.now();
-        let seen = Arc::new(ProbeServed::default());
+        let seen = Arc::new(watch::Sender::new(ProbeServed::NotYetDialed));
         let (call_returned, answer_after_the_call) = tokio::sync::oneshot::channel();
         let _answering = tokio::spawn(answer_one_probe_after_the_call_returned(
             server_node.endpoint().clone(),
-            (clock.monotonic(), called + HANDSHAKE_HELD_FOR),
+            clock.monotonic(),
+            called + HANDSHAKE_HELD_FOR,
             Arc::clone(&seen),
             answer_after_the_call,
         ));
@@ -4685,7 +4688,7 @@ pub(crate) mod tests {
         let probing = tokio::spawn(async move { client.probe(peer, PROBE_NONCE).await });
 
         let dialed = found_within(DIAL_ARRIVED_WITHIN, async || {
-            seen.dialed.load(Ordering::SeqCst).then_some(())
+            (*seen.borrow() >= ProbeServed::Dialed).then_some(())
         })
         .await;
         assert!(
@@ -4694,7 +4697,7 @@ pub(crate) mod tests {
         );
         clock.move_forward(HANDSHAKE_HELD_FOR);
         let read = found_within(ACTED_ON_THE_READING_WITHIN, async || {
-            seen.read.load(Ordering::SeqCst).then_some(())
+            (*seen.borrow() >= ProbeServed::ProbeRead).then_some(())
         })
         .await;
         assert!(
