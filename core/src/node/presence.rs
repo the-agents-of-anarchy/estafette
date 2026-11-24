@@ -2095,6 +2095,9 @@ pub(super) mod tests {
     pub(in crate::node) const PEER: &str = "peer";
     pub(in crate::node) const SEQ: &str = "seq";
     pub(in crate::node) const TS: &str = "ts";
+    const NEIGHBOR_UP: &str = "gossip.neighbor_up";
+    /// The longest the member takes to record a peer a gossip neighbor once the peer joined the topic through it.
+    const NEIGHBOR_UP_RECORDED_WITHIN: Duration = Duration::from_secs(5);
 
     const FIRST_REQUESTER_SEED: u8 = 72;
     const SECOND_REQUESTER_SEED: u8 = 73;
@@ -2535,10 +2538,16 @@ pub(super) mod tests {
     }
 
     pub(in crate::node) async fn start_pair(scratch: &Scratch) -> (Member, Member) {
+        start_pair_reporting_first(scratch, Arc::new(|_event: Event| {})).await
+    }
+
+    async fn start_pair_reporting_first(scratch: &Scratch, report: RunRecord) -> (Member, Member) {
         let mut members = start_members(
             scratch,
             vec![
-                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_hosts(&[SECOND_SEED]),
+                MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                    .with_hosts(&[SECOND_SEED])
+                    .with_report(report),
                 MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
                     .with_hosts(&[FIRST_SEED]),
             ],
@@ -3517,6 +3526,49 @@ pub(super) mod tests {
         )
     }
 
+    /// The peers a member recorded as gossip neighbors, read without consuming any event of the member's run record.
+    pub(in crate::node) struct NeighborsRecorded(
+        tokio::sync::watch::Receiver<Vec<serde_json::Value>>,
+    );
+
+    impl NeighborsRecorded {
+        /// Waits until the member recorded the seed's node a gossip neighbor, failing with that condition when the bound runs out.
+        pub(in crate::node) async fn until_recorded(&mut self, seed: u8) {
+            let peer = short_peer_id(seed);
+            tokio::time::timeout(
+                NEIGHBOR_UP_RECORDED_WITHIN,
+                self.0.wait_for(|peers| peers.contains(&peer)),
+            )
+            .await
+            .unwrap_or_else(|_elapsed| {
+                panic!("no {NEIGHBOR_UP} of seed {seed} within {NEIGHBOR_UP_RECORDED_WITHIN:?}")
+            })
+            .unwrap_or_else(|_closed| {
+                panic!("the run record closed before any {NEIGHBOR_UP} of seed {seed}")
+            });
+        }
+    }
+
+    /// A run record that hands every event to the report and notes each peer recorded a gossip neighbor, with the notes' reader.
+    pub(in crate::node) fn noting_neighbors(report: RunRecord) -> (RunRecord, NeighborsRecorded) {
+        let (noted, recorded) = tokio::sync::watch::channel(Vec::new());
+        let record: RunRecord = Arc::new(move |event: Event| {
+            if event.name() == NEIGHBOR_UP {
+                noted.send_modify(|peers| {
+                    peers.extend(
+                        event
+                            .fields()
+                            .into_iter()
+                            .filter(|(field, _peer)| *field == PEER)
+                            .map(|(_field, peer)| peer),
+                    );
+                });
+            }
+            report(event);
+        });
+        (record, NeighborsRecorded(recorded))
+    }
+
     /// Waits until the member's own address is the one the Presence announced, so no re-announce of a changed address is pending, failing with both addresses when it is not within the wait for a payload.
     async fn announced_address_still_held(member: &Member, announced: &Payload) {
         let Payload::Presence(presence) = announced else {
@@ -3914,11 +3966,13 @@ pub(super) mod tests {
     #[tokio::test]
     async fn test_5_logic_a_neighbor_down_whose_probe_fails_is_set_unreachable_and_announced() {
         let scratch = Scratch::new("down").await;
-        let (first, second) = start_pair(&scratch).await;
+        let (report, mut neighbors) = noting_neighbors(Arc::new(|_event: Event| {}));
+        let (first, second) = start_pair_reporting_first(&scratch, report).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
             .unwrap();
         let mut witness = Witness::joined_through(WITNESS_SEED, None, &first.endpoint).await;
+        neighbors.until_recorded(SECOND_SEED).await;
         let killed = tokio::time::Instant::now();
 
         drop(second.node);
@@ -3949,9 +4003,10 @@ pub(super) mod tests {
     async fn spec_3_8_a_neighbor_down_whose_probe_is_acknowledged_stays_online_on_the_connection_the_introduce_ack_came_on()
      {
         let scratch = Scratch::new("probe-ack").await;
+        let (report, mut neighbors) = noting_neighbors(Arc::new(|_event: Event| {}));
         let (member, witness) = start_witnessed(
             &scratch,
-            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC),
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
             Some(WITNESS_HANDLE),
         )
         .await;
@@ -3963,6 +4018,7 @@ pub(super) mod tests {
         )
         .await
         .expect("the member listing the witness as online");
+        neighbors.until_recorded(WITNESS_SEED).await;
         settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
         let probe_answers_before =
             settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Probe).await;
@@ -4103,6 +4159,7 @@ pub(super) mod tests {
     async fn observability_decision_9_a_probe_that_fails_is_recorded_naming_the_node() {
         let scratch = Scratch::new("probe-fail-record").await;
         let (report, mut failures) = recorded_contact_failures();
+        let (report, mut neighbors) = noting_neighbors(report);
         let (member, witness) = start_witnessed(
             &scratch,
             MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
@@ -4121,6 +4178,7 @@ pub(super) mod tests {
         settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Probe).await;
         discard_waiting(&mut failures);
 
+        neighbors.until_recorded(WITNESS_SEED).await;
         witness.close().await;
         let recorded = tokio::time::timeout(
             SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT + PAYLOAD_WAIT,

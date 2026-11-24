@@ -15,9 +15,9 @@ use super::tests::{
     SPEC_ANNOUNCEMENT_MAX_AGE_MS, SPEC_INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS,
     SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_PUBLIC, THIRD_SEED, WITNESS_HANDLE,
     WITNESS_PUBLIC, WITNESS_SEED, bind, card, entry_meeting_within, infrastructure_of, keys,
-    message_to, relay_url, secret_key, settable_clock, settled_direct_answers, short_peer_id,
-    spawn_member, start_members, start_members_reaching, start_pair, start_witnessed,
-    wall_clock_ms,
+    message_to, noting_neighbors, relay_url, secret_key, settable_clock, settled_direct_answers,
+    short_peer_id, spawn_member, start_members, start_members_reaching, start_pair,
+    start_witnessed, wall_clock_ms,
 };
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{Event, EventFields, RunRecord};
@@ -983,6 +983,7 @@ async fn observability_decision_9_a_member_records_entries_its_direct_answers_an
  {
     let scratch = Scratch::new("events-direct-table").await;
     let (report, mut recorded) = recording();
+    let (report, mut neighbors) = noting_neighbors(report);
     let (member, witness) = start_witnessed(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
@@ -1003,6 +1004,7 @@ async fn observability_decision_9_a_member_records_entries_its_direct_answers_an
 
     member.node.send(WITNESS_HANDLE, SENT_BODY).await.unwrap();
     let acknowledged = recorded.next_named(ENTRY_CHANGED).await;
+    neighbors.until_recorded(WITNESS_SEED).await;
     witness.close().await;
     let probed = recorded.next_named(ENTRY_CHANGED).await;
 
@@ -1050,6 +1052,7 @@ async fn observability_decision_9_a_member_records_an_entry_a_probe_answer_and_a
  {
     let scratch = Scratch::new("ev-probe-send").await;
     let (report, mut recorded) = recording();
+    let (report, mut neighbors) = noting_neighbors(report);
     let (member, witness) = start_witnessed(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
@@ -1068,6 +1071,7 @@ async fn observability_decision_9_a_member_records_an_entry_a_probe_answer_and_a
         .await;
     recorded.next_named(ENTRY_CHANGED).await;
 
+    neighbors.until_recorded(WITNESS_SEED).await;
     let answering = witness.leave_topic();
     let answered = recorded.next_named(ENTRY_CHANGED).await;
     answering.shutdown().await.unwrap();
