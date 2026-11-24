@@ -1145,14 +1145,14 @@ mod tests {
         )
         .await;
         let live_id = render_public_key(&secret_key(LIVE_HOST_SEED).public());
-        presence_loop.known_hosts = KnownHosts::new(
+        presence_loop.known_hosts = Arc::new(KnownHosts::new(
             config_with_hosts(vec![
                 configured_host_of(NOT_A_NODE_ID.to_owned(), LIVE_RELAY),
                 configured_host_of(live_id.clone(), LIVE_RELAY),
                 configured_host_of(live_id, NOT_A_RELAY_URL),
             ]),
             std::path::PathBuf::new(),
-        );
+        ));
 
         let flow = presence_loop.rebind(RebindCause::Deaf).await;
         let first_skipped = next_recorded(&mut events, "transport.known_host_skipped").await;

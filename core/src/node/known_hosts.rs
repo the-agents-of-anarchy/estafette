@@ -139,7 +139,8 @@ impl KnownHosts {
 
     /// Every configured host a rebind leaves out because its id or relay does not parse.
     pub(super) fn skipped(&self) -> Vec<SkippedHost> {
-        self.config
+        self.held()
+            .config
             .hosts
             .iter()
             .enumerate()
