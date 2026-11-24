@@ -4065,11 +4065,12 @@ pub(crate) mod tests {
     /// The member's probe of the introducing process, running.
     type StartedProbe = tokio::task::JoinHandle<Result<ProbeAck, DirectError>>;
 
-    /// A host that, as it applies an Introduce, polls the member's probe of the introducing process once, before the answer is written, and leaves the probe running.
+    /// A host that, as it applies an Introduce, reads whether each connection of the introducer reports a selected path, then polls the member's probe of the introducing process once, before the answer is written, and leaves the probe running.
     struct HostProbingTheIntroducerWhileAnswering {
         recording: RecordingHost,
         member: Arc<DirectClient>,
         started_probe: Arc<Mutex<Option<StartedProbe>>>,
+        reported_before_the_probe_is_polled: Arc<Mutex<Option<Vec<bool>>>>,
     }
 
     impl DirectHost for HostProbingTheIntroducerWhileAnswering {
@@ -4094,6 +4095,9 @@ pub(crate) mod tests {
             sender: wire::PublicKey,
             introduce: wire::Introduce,
         ) -> IntroduceAck {
+            *self.reported_before_the_probe_is_polled.lock().unwrap() = Some(
+                selected_path_reported_by_each_held_of(&self.member.register, sender),
+            );
             let member = Arc::clone(&self.member);
             let introducer = EndpointId::from_bytes(&sender).unwrap();
             let mut probe = Box::pin(async move { member.probe(introducer, PROBE_NONCE).await });
@@ -4114,11 +4118,15 @@ pub(crate) mod tests {
      {
         let recording = RecordingHost::with_card(card_of(SERVER_SEED));
         let started_probe = Arc::new(Mutex::new(None));
+        let reported_before_the_probe_is_polled = Arc::new(Mutex::new(None));
         let restart = restarted_process_introduced_to_a_member(dropping_transport(), |member| {
             HostProbingTheIntroducerWhileAnswering {
                 recording: recording.clone(),
                 member,
                 started_probe: Arc::clone(&started_probe),
+                reported_before_the_probe_is_polled: Arc::clone(
+                    &reported_before_the_probe_is_polled,
+                ),
             }
         })
         .await;
@@ -4133,7 +4141,11 @@ pub(crate) mod tests {
             }
         );
         assert_eq!(
-            restart.reported_after_the_introduce,
+            reported_before_the_probe_is_polled
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap(),
             vec![false],
             "iroh did not keep the gone process's path selected once the introduce's connection opened"
         );
