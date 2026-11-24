@@ -13,6 +13,8 @@ use estafette_bridge_claude::doctor::dropped_frames_path;
 use estafette_trace::{TraceDirectory, events_trace_file_name};
 
 mod common;
+#[path = "../src/seeded.rs"]
+mod seeded;
 
 const NETWORK: &str = "lab";
 const CARD: &str = "ana-card";
@@ -219,6 +221,81 @@ fn observability_decision_13_the_bridge_lab_window_ends_on_a_bridge_alive_line_s
     .unwrap();
 
     assert!(bridge_alive_line_stamped_from(&traces, window_ends).unwrap());
+}
+
+const GENERATED_WINDOW_CASES: usize = 200;
+const LINES_PER_GENERATED_FILE: usize = 6;
+const LONGEST_STAMP_OFFSET_MS: u64 = 2;
+const MINIMUM_SEEDS_OF_EACH_OUTCOME: usize = 20;
+const EVENTS_AROUND_THE_WINDOW: [&str; 3] =
+    ["process.started", BRIDGE_ALIVE_EVENT, "notice.written"];
+
+fn generated_lines_around_the_window_end(seed: usize) -> Vec<(&'static str, u64)> {
+    let mut state = u64::try_from(seed).unwrap_or(0);
+    let offset_choices =
+        usize::try_from(LONGEST_STAMP_OFFSET_MS.saturating_mul(2).saturating_add(1)).unwrap_or(1);
+    (0..LINES_PER_GENERATED_FILE)
+        .map(|_| {
+            let event = EVENTS_AROUND_THE_WINDOW
+                .get(seeded::next_below(
+                    &mut state,
+                    EVENTS_AROUND_THE_WINDOW.len(),
+                ))
+                .copied()
+                .unwrap_or(BRIDGE_ALIVE_EVENT);
+            let offset = u64::try_from(seeded::next_below(&mut state, offset_choices)).unwrap_or(0);
+            let wall_ms = WINDOW_ENDS_WALL_MS
+                .saturating_sub(LONGEST_STAMP_OFFSET_MS)
+                .saturating_add(offset);
+            (event, wall_ms)
+        })
+        .collect()
+}
+
+#[test]
+fn observability_decision_13_the_bridge_lab_window_ends_exactly_when_the_bridge_events_file_holds_an_alive_line_stamped_from_its_end()
+ {
+    let fixture = Fixture::new().unwrap();
+    let traces = fixture.traces_directory().unwrap();
+    fs::create_dir_all(&traces).unwrap();
+    let window_ends = UNIX_EPOCH
+        .checked_add(Duration::from_millis(WINDOW_ENDS_WALL_MS))
+        .unwrap();
+    write_events_file(
+        &traces.join(events_trace_file_name(MEMBER_RUN)),
+        &[events_line(
+            BRIDGE_ALIVE_EVENT,
+            WINDOW_ENDS_WALL_MS.saturating_add(LATER_BY_MS),
+        )],
+    )
+    .unwrap();
+    let bridge_events = traces.join(events_trace_file_name(BRIDGE_RUN));
+    let mut seeds_that_ended_the_window = 0;
+    for seed in 0..GENERATED_WINDOW_CASES {
+        let lines = generated_lines_around_the_window_end(seed);
+        let rendered: Vec<String> = lines
+            .iter()
+            .map(|(event, wall_ms)| events_line(event, *wall_ms))
+            .collect();
+        write_events_file(&bridge_events, &rendered).unwrap();
+        let ends_the_window = lines.iter().any(|(event, wall_ms)| {
+            *event == BRIDGE_ALIVE_EVENT && *wall_ms >= WINDOW_ENDS_WALL_MS
+        });
+
+        assert_eq!(
+            bridge_alive_line_stamped_from(&traces, window_ends).unwrap(),
+            ends_the_window,
+            "seed {seed}: {lines:?}"
+        );
+        seeds_that_ended_the_window += usize::from(ends_the_window);
+    }
+    let seeds_that_left_it_open =
+        GENERATED_WINDOW_CASES.saturating_sub(seeds_that_ended_the_window);
+    assert!(
+        seeds_that_ended_the_window >= MINIMUM_SEEDS_OF_EACH_OUTCOME
+            && seeds_that_left_it_open >= MINIMUM_SEEDS_OF_EACH_OUTCOME,
+        "{seeds_that_ended_the_window} ended it, {seeds_that_left_it_open} left it open"
+    );
 }
 
 const GROUP_OTHER_READABLE_DIRECTORY_MODE: u32 = 0o755;
