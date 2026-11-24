@@ -1,4 +1,3 @@
-use crate::stream_items::join_all;
 use iroh::EndpointId;
 
 use crate::errors::ErrorCode;
@@ -8,9 +7,8 @@ use crate::node::addresses::endpoint_id;
 use crate::node::presence::Node;
 use crate::payload::ZERO_MAC;
 use crate::peers::Peer;
+use crate::stream_items::join_all;
 use crate::wire::{self, MESSAGE_BODY_LIMIT_BYTES, Message, MessageAck, MessageId, Nonce, Version};
-
-const UUID_V7_RANDOM_BYTES: usize = 10;
 
 /// What a delivered message reports: its id and whether the recipient's inbox has a client attached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,9 +47,7 @@ impl Undelivered {
 
 impl From<Undelivered> for ErrorCode {
     fn from(undelivered: Undelivered) -> Self {
-        match undelivered {
-            Undelivered::BeforeMint(code) | Undelivered::AfterMint { code, .. } => code,
-        }
+        undelivered.code().clone()
     }
 }
 
@@ -108,11 +104,7 @@ impl Node {
     fn message_id_stamped(&self, now_ms: u64) -> MessageId {
         let mut draw = Nonce::default();
         (self.fill_random_bytes)(&mut draw);
-        let mut random = [0; UUID_V7_RANDOM_BYTES];
-        random
-            .iter_mut()
-            .zip(draw)
-            .for_each(|(byte, drawn)| *byte = drawn);
+        let [random @ .., _, _, _, _, _, _] = draw;
         uuid::Builder::from_unix_timestamp_millis(now_ms, &random)
             .into_uuid()
             .into_bytes()
@@ -483,8 +475,7 @@ mod tests {
             (sent_from..=sent_until).contains(&stamped),
             "stamped {stamped}, sent between {sent_from} and {sent_until}"
         );
-        let drawn_by_the_node: [u8; UUID_V7_RANDOM_BYTES] =
-            PROBE_NONCE[..UUID_V7_RANDOM_BYTES].try_into().unwrap();
+        let [drawn_by_the_node @ .., _, _, _, _, _, _] = PROBE_NONCE;
         assert_eq!(
             stored,
             uuid::Builder::from_unix_timestamp_millis(stamped, &drawn_by_the_node).into_uuid()
@@ -520,20 +511,25 @@ mod tests {
         attached_recorded: std::sync::Mutex<Option<serde_json::Value>>,
     }
 
+    const CLIENT_CONNECTED: &str = "inbox.client_connected";
+    const CLIENT_GONE: &str = "inbox.client_gone";
+    const FRAME_DELIVERED: &str = "inbox.frame_delivered";
+    const ATTACHED_FIELD: &str = "attached";
+
     impl DetachingOnDelivery {
         /// Takes one inbox event: notes a client connected or gone, and on a delivered frame keeps its attached field, drops the client and waits until it is counted gone.
         fn take(&self, event: crate::event::InboxEvent) {
             let event = crate::event::Event::from(event);
             match event.name() {
-                "inbox.client_connected" => {
+                CLIENT_CONNECTED => {
                     self.connected.send_replace(true);
                 }
-                "inbox.client_gone" => self.gone.store(true, Ordering::SeqCst),
-                "inbox.frame_delivered" => {
+                CLIENT_GONE => self.gone.store(true, Ordering::SeqCst),
+                FRAME_DELIVERED => {
                     *self.attached_recorded.lock().unwrap() = event
                         .fields()
                         .into_iter()
-                        .find_map(|(field, value)| (field == "attached").then_some(value));
+                        .find_map(|(field, value)| (field == ATTACHED_FIELD).then_some(value));
                     drop(self.client.lock().unwrap().take());
                     self.wait_until_the_client_is_gone();
                 }
