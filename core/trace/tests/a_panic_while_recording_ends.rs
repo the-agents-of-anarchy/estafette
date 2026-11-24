@@ -30,6 +30,7 @@ mod observability {
     const NUMBER_FIELD: &str = "n";
     const STAND_IN_CLOCK_PANIC: &str = "the stand-in clock panics while a line is stamped";
     const PANIC_ENDS_WITHIN: Duration = Duration::from_secs(10);
+    const HELD_FILE_STEP_REACHED_WITHIN: Duration = Duration::from_secs(10);
     static PANIC_HOOK_HELD: Mutex<()> = Mutex::new(());
 
     /// Frozen clocks whose monotonic reading panics once, on the first reading after the test armed it, so a line's stamp panics under the queue's lock.
@@ -261,7 +262,7 @@ mod observability {
         stamp_held.store(true, Ordering::SeqCst);
         let holder = thread::spawn(move || holder_events.write(ONE_EVENT, &[]));
         other_thread_holds_the_lock
-            .recv_timeout(PANIC_ENDS_WITHIN)
+            .recv_timeout(HELD_FILE_STEP_REACHED_WITHIN)
             .expect("the other thread holds the held file's lock within its bound");
         let (ended, panicking_thread_ended) = mpsc::channel();
         let recorder = Arc::clone(&panicking_events);
@@ -273,7 +274,7 @@ mod observability {
             }));
             ended.send(stamped.is_err()).unwrap();
         });
-        let hook_reached_the_held_file = hook_records.recv_timeout(PANIC_ENDS_WITHIN);
+        let hook_reached_the_held_file = hook_records.recv_timeout(HELD_FILE_STEP_REACHED_WITHIN);
         release.send(()).unwrap();
 
         let ended_within_the_bound = panicking_thread_ended.recv_timeout(PANIC_ENDS_WITHIN);
