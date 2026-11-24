@@ -1823,10 +1823,13 @@ pub(crate) mod tests {
         0x51, 0x62, 0x73, 0x84, 0x95, 0xA6, 0xB7, 0xC8, 0xD9, 0xEA, 0xFB, 0x0C, 0x1D, 0x2E, 0x3F,
         0x40,
     ];
-    const PROBE_NONCE_REVERSED: Nonce = [
-        0x40, 0x3F, 0x2E, 0x1D, 0x0C, 0xFB, 0xEA, 0xD9, 0xC8, 0xB7, 0xA6, 0x95, 0x84, 0x73, 0x62,
-        0x51,
-    ];
+    const PROBE_NONCE_REVERSED: Nonce = reversed(PROBE_NONCE);
+
+    /// The bytes in the opposite order.
+    const fn reversed<const LENGTH: usize>(mut bytes: [u8; LENGTH]) -> [u8; LENGTH] {
+        bytes.reverse();
+        bytes
+    }
     const SENDER_DIRECT_ADDRESS: &str = "127.0.0.1:4000";
     const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
     const SPEC_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -4439,10 +4442,7 @@ pub(crate) mod tests {
         .unwrap()
     }
 
-    const MESSAGE_ID_REVERSED: [u8; 16] = [
-        0x0F, 0xFE, 0xED, 0xDC, 0xCB, 0xBA, 0xA9, 0x98, 0x87, 0x76, 0x65, 0x54, 0x43, 0x32, 0x21,
-        0x10,
-    ];
+    const MESSAGE_ID_REVERSED: [u8; 16] = reversed(MESSAGE_ID);
 
     fn sealed_accepting_message_ack(id: wire::MessageId) -> Vec<u8> {
         seal_response(
