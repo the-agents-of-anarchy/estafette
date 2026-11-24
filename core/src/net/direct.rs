@@ -3760,7 +3760,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_8_a_presence_after_an_introduce_that_left_its_card_on_a_gone_processs_path_closes_the_introduces_connection_so_the_next_dial_reaches_the_new_process()
+    async fn spec_3_8_a_presence_after_an_introduce_holds_the_introduces_connection_exactly_when_it_reported_a_selected_path_and_the_next_dial_reaches_the_new_process()
      {
         let clock = StandingClock::standing_now();
         let Rig { link, .. } = rig_over(
