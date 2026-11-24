@@ -2162,7 +2162,7 @@ pub(crate) mod tests {
     const SALT_BYTE: u8 = 0x5a;
     const SPEC_SUPERSEDED_CLOSE_CODE: u64 = 410;
 
-    use crate::test_waits::{RecordedEvent, next_recorded, recorded_events};
+    use crate::test_waits::{RecordedEvent, next_recorded, next_recorded_meeting, recorded_events};
 
     /// Every event the run record has handed the receiver so far, in order.
     pub fn recorded_so_far(
@@ -2179,7 +2179,7 @@ pub(crate) mod tests {
     pub async fn next_counters_snapshot(
         receiver: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
     ) -> (tokio::time::Instant, crate::event::EventFields) {
-        let fields = crate::test_waits::next_recorded_meeting(
+        let fields = next_recorded_meeting(
             receiver,
             COUNTERS_SNAPSHOT_EVENT,
             |_fields| true,
@@ -2442,7 +2442,7 @@ pub(crate) mod tests {
             .map(|(_, value)| value)
     }
 
-    const LONGEST_DRAWN_TEXT: u64 = 24;
+    const LONGEST_DRAWN_UNITS: u64 = 24;
     const SIDES_TO_PAD: u64 = 2;
     const BYTE_VALUES: u64 = 256;
     const ASCII_WHITESPACE: &[u8] = b" \t\n\x0c\r";
@@ -2573,7 +2573,7 @@ pub(crate) mod tests {
 
     /// Any drawn units, the named ones aside.
     fn any_units<Unit: DrawnUnit>(_named: Vec<Unit>, draws: &mut Draws) -> Vec<Unit> {
-        (0..draws.below(LONGEST_DRAWN_TEXT))
+        (0..draws.below(LONGEST_DRAWN_UNITS))
             .map(|_| Unit::drawn(draws))
             .collect()
     }
@@ -3119,9 +3119,9 @@ pub(crate) mod tests {
     }
 
     const SILENCE_OF_A_GONE_PROCESS: Duration = Duration::from_millis(1500);
-    const JUST_BEFORE: Duration = Duration::from_millis(1);
+    const SILENCE_UNDERSHOT_BY: Duration = Duration::from_millis(1);
     const JUST_UNDER_THE_SILENCE_OF_A_GONE_PROCESS: Duration =
-        SILENCE_OF_A_GONE_PROCESS.saturating_sub(JUST_BEFORE);
+        SILENCE_OF_A_GONE_PROCESS.saturating_sub(SILENCE_UNDERSHOT_BY);
     const SPEC_HEARING_SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
     const HEARING_SAMPLES_ON_THE_MOVED_CLOCK: u32 = 20;
     /// How much later than its due instant each step's move wakes a hearing sample, times the step's index, so the reading at a wake and the instant it was due disagree.
@@ -3251,7 +3251,7 @@ pub(crate) mod tests {
         clock.move_forward(JUST_UNDER_THE_SILENCE_OF_A_GONE_PROCESS);
         register.close_silent_of(card_of(CLIENT_SEED));
         let closed_just_before_the_bound = dialed.close_reason();
-        clock.move_forward(JUST_BEFORE);
+        clock.move_forward(SILENCE_UNDERSHOT_BY);
         register.close_silent_of(card_of(CLIENT_SEED));
 
         assert_eq!(closed_just_before_the_bound, None);
