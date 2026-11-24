@@ -21,6 +21,9 @@ mod mcp_server;
 #[path = "one_machine/member.rs"]
 mod member;
 #[cfg(test)]
+#[path = "support/member_ended_at_its_peer.rs"]
+mod member_ended_at_its_peer;
+#[cfg(test)]
 #[path = "support/member_events.rs"]
 mod member_events;
 #[cfg(test)]
@@ -90,8 +93,10 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use serde_json::{Value, json};
 
     use crate::local_network::{AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, LocalNetwork, MetPair};
-    use crate::mcp_server::{PRESENCE_WAIT, gone, online};
+    use crate::mcp_server::{PRESENCE_WAIT, SEND_TOOL, gone, online, send_arguments};
     use crate::member::{Member, loopback_address, loopback_address_of};
+    use crate::member_ended_at_its_peer::assert_stopped_member_is_gone_then_unreachable;
+    use crate::message_body::BODY;
     use crate::new_presence_window::{acknowledged_after, new_presence_accepted};
     use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
     use crate::payloads::presence_signed_by;
@@ -146,6 +151,13 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const DEPARTURE_CAUSE: &str = "departure";
     /// The status of a departed entry (spec 3.8).
     const GONE_STATUS: &str = "gone";
+    /// The event a member records when its standard input ends (spec/observability.md decision 9).
+    const INPUT_ENDED_EVENT: &str = "process.input_ended";
+    /// The event a member records for each tool call it answers, and the field naming the tool (spec/observability.md decision 9).
+    const TOOL_ANSWERED_EVENT: &str = "tool.answered";
+    const TOOL_FIELD: &str = "tool";
+    /// How long a member that has exited may take to be read for lines it wrote before: chosen, not measured, far above a read of a written file.
+    const EVENTS_OF_AN_ENDED_MEMBER_WITHIN: Duration = Duration::from_secs(10);
     /// The card name of the witness, a member started only to take the observer wait of its own claim.
     const WITNESS_CARD: &str = "witness-card";
     /// The handle the witness's card requests.
@@ -537,7 +549,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     }
 
     #[test]
-    fn spec_3_15_test_4_a_send_to_a_member_gone_by_the_end_of_input_after_an_earlier_send_is_unreachable()
+    fn spec_3_15_test_4_a_member_stopped_by_the_end_of_input_is_gone_at_its_peer_within_1000_ms_and_unreachable()
      {
         let network =
             LocalNetwork::create("gone-by-input-end", &RunRecordKeeping::from_environment());
@@ -547,18 +559,56 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         } = network.amy_and_bob_met(&host);
         let first_send = send(&mut amy, BOB_HANDLE);
 
+        let input_closed = Instant::now();
         bob.close_standard_input();
-        amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, gone);
-        let exit = bob.wait_for_exit();
-        let sent = send(&mut amy, BOB_HANDLE);
 
+        assert_stopped_member_is_gone_then_unreachable(
+            &mut amy,
+            &mut bob,
+            BOB_HANDLE,
+            input_closed,
+        );
         assert_eq!(
             first_send["result"]["delivered"],
             json!(true),
             "{first_send}"
         );
-        assert!(exit.success(), "{exit:?}");
-        assert_eq!(sent["error"]["code"], json!("unreachable"), "{sent}");
+    }
+
+    #[test]
+    fn spec_3_15_test_4_a_member_stopped_with_a_tool_call_in_flight_is_gone_at_its_peer_within_1000_ms_and_unreachable()
+     {
+        let network = LocalNetwork::create(
+            "gone-with-call-in-flight",
+            &RunRecordKeeping::from_environment(),
+        );
+        let host = network.stand_in_host();
+        let MetPair {
+            mut amy, mut bob, ..
+        } = network.amy_and_bob_met(&host);
+
+        bob.start_call(SEND_TOOL, &send_arguments(AMY_HANDLE, BODY));
+        let input_closed = Instant::now();
+        bob.close_standard_input();
+
+        assert_stopped_member_is_gone_then_unreachable(
+            &mut amy,
+            &mut bob,
+            BOB_HANDLE,
+            input_closed,
+        );
+        bob.wait_until(
+            &format!("{TOOL_ANSWERED_EVENT} of {SEND_TOOL} after {INPUT_ENDED_EVENT}"),
+            EVENTS_OF_AN_ENDED_MEMBER_WITHIN,
+            |lines| {
+                let input_ended = lines.iter().find(|line| line.event == INPUT_ENDED_EVENT)?.n;
+                lines.into_iter().find(|line| {
+                    line.event == TOOL_ANSWERED_EVENT
+                        && line.value(TOOL_FIELD) == Some(&json!(SEND_TOOL))
+                        && line.n > input_ended
+                })
+            },
+        );
     }
 
     #[test]
