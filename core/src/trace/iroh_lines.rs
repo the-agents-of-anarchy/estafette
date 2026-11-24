@@ -13,13 +13,18 @@ use tracing_subscriber::registry::{LookupSpan, Scope};
 
 use super::Trace;
 
-/// The four targets of iroh's own whose lines the raw file holds, each with the most detailed level it takes (`spec/observability.md` decision 7).
-const IROH_TARGETS: [(&str, LevelFilter); 4] = [
+/// The targets of iroh's own whose lines the raw file holds, each with the most detailed level it takes (`spec/observability.md` decision 7).
+// Instrument (branch ci/instrumented-loop-of-the-two-linux-failures only, never merged): the last three entries admit the transmit lines of the QUIC connection and endpoint (DEBUG) and of iroh's transports, the IP send lines among them (TRACE, the level of iroh's "sent transmit" line).
+const IROH_TARGETS: [(&str, LevelFilter); 7] = [
     ("iroh::_events", LevelFilter::DEBUG),
     ("iroh::socket::remote_map", LevelFilter::TRACE),
     ("iroh_gossip::proto::hyparview", LevelFilter::DEBUG),
     ("iroh_gossip::net", LevelFilter::DEBUG),
+    ("noq_proto::connection", LevelFilter::DEBUG),
+    ("noq_proto::endpoint", LevelFilter::DEBUG),
+    ("iroh::socket::transports", LevelFilter::TRACE),
 ];
+
 /// The name `tracing` gives the field that holds a line's message.
 const TRACING_MESSAGE_FIELD: &str = "message";
 const TARGET_KEY: &str = "target";
