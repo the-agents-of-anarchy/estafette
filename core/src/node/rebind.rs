@@ -23,6 +23,7 @@ use crate::node::presence::{
 };
 use crate::node::relay_loss::RelayLossWatch;
 use crate::peers::Status;
+use crate::wire;
 
 /// Silence after which a member that knows another node is deaf and rebinds (spec:781, spec:1016, D46).
 const DEAF_TIMEOUT: Duration = Duration::from_secs(15);
@@ -335,17 +336,23 @@ impl PresenceLoop {
         down
     }
 
-    /// Strips the relays found down from the lookup entry of every other member.
+    /// Strips the relays found down from the lookup entry of every other member, recording each entry it changes.
     fn strip_relays_from_members(&self, down: &BTreeSet<RelayUrl>) {
-        let members: Vec<EndpointId> = self
+        let members: Vec<wire::PublicKey> = self
             .state
             .table()
             .peers(self.state.now_ms())
-            .filter_map(|peer| endpoint_id(&peer.card))
+            .map(|peer| peer.card)
             .collect();
-        for member in members {
-            if let Some(address) = self.endpoint.address_of(member) {
-                self.endpoint.replace_address(without_relays(address, down));
+        for card in members {
+            let Some(address) = endpoint_id(&card).and_then(|id| self.endpoint.address_of(id))
+            else {
+                continue;
+            };
+            let stripped = without_relays(address.clone(), down);
+            if stripped != address {
+                self.endpoint.replace_address(stripped);
+                self.record_lookup_of(&card);
             }
         }
     }
@@ -472,6 +479,9 @@ mod tests {
     const LIVE_HOST_SEED: u8 = 93;
     const DEAD_HOST_SEED: u8 = 94;
     const PEER_SEED: u8 = 95;
+    const KEPT_PEER_SEED: u8 = 96;
+    const BARE_PEER_SEED: u8 = 97;
+    const LOOKUP_REPLACED: &str = "peers.lookup_replaced";
     const PEER_HANDLE: &str = "pat";
     const PEER_PUBLIC: &[u8] = br#"{"role":"peer"}"#;
     const SENT_BODY: &str = "a send that reaches the peer";
@@ -1819,6 +1829,57 @@ mod tests {
                 .peers()
                 .iter()
                 .any(|listed| listed.card == card(PEER_SEED))
+        );
+        drop(scratch);
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_rebind_records_each_member_lookup_entry_it_strips_of_a_relay_found_down_and_none_it_leaves_as_it_was()
+     {
+        let scratch = Scratch::new("strip-record").await;
+        let (record, mut events) = recorded_events();
+        let stripped_peer = QuietNode::answering(PEER_SEED, &[STRIPPED_RELAY]).await;
+        let kept_peer = QuietNode::answering(KEPT_PEER_SEED, &[KEPT_RELAY]).await;
+        let bare_peer = QuietNode::answering(BARE_PEER_SEED, &[]).await;
+        let (member_endpoint, starting) = spawn_member(
+            &scratch,
+            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+                .with_host_relays(&[
+                    (LIVE_HOST_SEED, KEPT_RELAY),
+                    (DEAD_HOST_SEED, STRIPPED_RELAY),
+                ])
+                .with_relay_probe(answering_only(KEPT_RELAY))
+                .with_report(record),
+        )
+        .await;
+        for peer in [&stripped_peer, &kept_peer, &bare_peer] {
+            peer.introduce_to(&member_endpoint).await;
+        }
+        let _member = starting.await.unwrap();
+
+        next_recorded(&mut events, REBINDING).await;
+        next_recorded(&mut events, COUNTERS).await;
+        let (between_the_snapshots, _at_the_fresh_bind) = recorded_until(
+            &mut events,
+            COUNTERS,
+            |_fields| true,
+            SNAPSHOT_AT_THE_REBIND_WITHIN,
+        )
+        .await;
+
+        let replaced: Vec<&EventFields> = between_the_snapshots
+            .iter()
+            .filter(|(name, _fields)| *name == LOOKUP_REPLACED)
+            .map(|(_name, fields)| fields)
+            .collect();
+        assert_eq!(replaced.len(), 1, "{between_the_snapshots:?}");
+        assert_eq!(
+            replaced[0].first(),
+            Some(&("peer", short_peer_id(PEER_SEED)))
+        );
+        assert_eq!(
+            replaced[0].last(),
+            Some(&("relay", serde_json::Value::from(false)))
         );
         drop(scratch);
     }
