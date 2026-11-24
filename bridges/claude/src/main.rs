@@ -92,7 +92,7 @@ const HIDDEN_FILE_PREFIX: char = '.';
 const STAGING_SUFFIX: &str = ".staging";
 /// How often a serving bridge writes its alive line, on its own clock: `spec/observability.md` decision 13 has a live process write its events file at least this often.
 const ALIVE_LINE_PERIOD: Duration = Duration::from_secs(60);
-/// The loop that writes each alive line falling due inside one pause between polls ends, on a clock that never runs back, only while that pause is shorter than the period.
+/// At most one alive line falls due inside one pause between polls, on a clock that never runs back, while that pause is shorter than the period.
 const _: () = assert!(POLL_INTERVAL.as_nanos() < ALIVE_LINE_PERIOD.as_nanos());
 
 #[derive(Debug, Eq, PartialEq)]
@@ -620,11 +620,11 @@ impl<S: InboxConnector, F: Files> BridgeSession<S, F> {
         }
     }
 
-    /// Waits out the pause before the next poll, writing the alive line at each reading of the clock it falls due at inside the pause, and gives the reading the next one falls due at.
+    /// Waits out the pause before the next poll, writing the alive line when it falls due inside the pause, and gives the reading the next one falls due at.
     fn wait_between_polls(&self, pause: Duration, alive_line_due: Duration) -> Duration {
         let pause_ends = (self.elapsed)().saturating_add(pause);
         let mut next_alive_line_due = alive_line_due;
-        while next_alive_line_due <= pause_ends {
+        if next_alive_line_due <= pause_ends {
             (self.wait)(next_alive_line_due.saturating_sub((self.elapsed)()));
             (self.record)(BridgeEvent::Alive);
             next_alive_line_due = alive_line_due_after((self.elapsed)());
