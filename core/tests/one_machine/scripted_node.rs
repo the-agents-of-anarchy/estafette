@@ -26,8 +26,24 @@ use crate::driven_runtime::DrivenRuntime;
 type Admitted = Arc<Mutex<BTreeSet<EndpointId>>>;
 type Events = Arc<watch::Sender<Vec<Event>>>;
 
-/// The longest a direct request waits for its answer and a send for its ack: the server read timeout and the ack timeout of spec 3.14, both 10000 ms, with slack.
-pub const SPEC_DIRECT_TIMEOUT_WITH_SLACK: Duration = Duration::from_secs(15);
+/// The longest a server of a direct request reads it for (spec 3.14, 10000 ms).
+const SPEC_SERVER_READ_TIMEOUT: Duration = Duration::from_millis(10_000);
+/// The longest a sender of a direct request waits for its ack (spec 3.14, 10000 ms).
+const SPEC_ACK_TIMEOUT: Duration = Duration::from_millis(10_000);
+/// What a test allows beyond a spec timeout before it judges the timeout broken.
+const SPEC_TIMEOUT_SLACK: Duration = Duration::from_secs(5);
+/// The longest a direct request waits for its answer and a send for its ack: the longer of the two spec timeouts, with slack.
+pub const SPEC_DIRECT_TIMEOUT_WITH_SLACK: Duration =
+    longer(SPEC_SERVER_READ_TIMEOUT, SPEC_ACK_TIMEOUT).saturating_add(SPEC_TIMEOUT_SLACK);
+/// The longer of the two durations.
+const fn longer(first: Duration, second: Duration) -> Duration {
+    if first.as_millis() >= second.as_millis() {
+        first
+    } else {
+        second
+    }
+}
+
 /// How long a node joined to another may take to report it up as a gossip neighbor.
 const GOSSIP_NEIGHBOR_WAIT: Duration = Duration::from_secs(10);
 
