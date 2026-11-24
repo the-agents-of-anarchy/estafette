@@ -596,8 +596,9 @@ mod tests {
     const SPEC_GATE_TIMEOUT: Duration = Duration::from_millis(3000);
     const SPEC_GATE_TIMEOUT_WITH_SLACK: Duration = Duration::from_millis(4000);
     const KEEP_ALIVES_SENT_WHILE_THE_PEER_LIVES: u32 = 12;
-    const PEER_LIFE_WAIT: Duration =
-        QUIC_KEEP_ALIVE_INTERVAL.saturating_mul(KEEP_ALIVES_SENT_WHILE_THE_PEER_LIVES * 2);
+    const PEER_LIFE_WAIT_MARGIN_FACTOR: u32 = 2;
+    const PEER_LIFE_WAIT: Duration = QUIC_KEEP_ALIVE_INTERVAL
+        .saturating_mul(KEEP_ALIVES_SENT_WHILE_THE_PEER_LIVES * PEER_LIFE_WAIT_MARGIN_FACTOR);
 
     const SPEC_QUIC_IDLE_TIMEOUT_EARLIEST: Duration = Duration::from_secs(9);
     const SPEC_QUIC_IDLE_TIMEOUT_LATEST: Duration = Duration::from_secs(11);
@@ -626,12 +627,16 @@ mod tests {
     const RELAY_MAP_EDITED_EVENT: &str = "transport.relay_map_edited";
     const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
     const LOCAL_DIAL_WAIT: Duration = Duration::from_millis(2000);
+    const QUIC_IDLE_TIMEOUT: Duration =
+        Duration::from_millis(QUIC_IDLE_TIMEOUT_MILLIS.into_inner());
+    const UNANSWERED_DIAL_IDLE_TIMEOUTS: u32 = 2;
     /// Past the QUIC idle timeout, which ends a dial whose handshake no packet answers.
-    const UNANSWERED_DIAL_ENDS_WITHIN: Duration = Duration::from_secs(20);
+    const UNANSWERED_DIAL_ENDS_WITHIN: Duration =
+        QUIC_IDLE_TIMEOUT.saturating_mul(UNANSWERED_DIAL_IDLE_TIMEOUTS);
     const PEER_STOP_CODE: VarInt = VarInt::from_u32(59);
 
     /// The nonce a node's source fills at its `draw`-th gate challenge: no two bytes alike, and no two draws alike.
-    fn drawn_nonce(draw: u8) -> [u8; KEY_LEN] {
+    fn drawn_nonce(draw: u8) -> GateNonce {
         std::array::from_fn(|index| {
             u8::try_from(index).unwrap() ^ draw.wrapping_mul(NONCE_DRAW_SPREAD)
         })
@@ -946,7 +951,7 @@ mod tests {
 
         let accepted = accept_next(member.endpoint()).await.unwrap();
         let keep_alives_before = accepted.stats().frame_tx.ping;
-        let keep_alives_answered = found_within(PEER_LIFE_WAIT, async || {
+        let keep_alives_sent = found_within(PEER_LIFE_WAIT, async || {
             (accepted.stats().frame_tx.ping
                 >= keep_alives_before + u64::from(KEEP_ALIVES_SENT_WHILE_THE_PEER_LIVES))
             .then_some(())
@@ -954,7 +959,7 @@ mod tests {
         .await
         .is_some();
         assert!(
-            keep_alives_answered,
+            keep_alives_sent,
             "the member did not send {KEEP_ALIVES_SENT_WHILE_THE_PEER_LIVES} keep-alives to the live peer within {PEER_LIFE_WAIT:?}"
         );
         vanish.send(()).unwrap();
@@ -1541,6 +1546,8 @@ mod tests {
     }
 
     const SPEC_RELAY_PORT: u16 = 443;
+    const TESTED_DIRECT_HOST: &str = "192.0.2.7";
+    const TESTED_DIRECT_PORT: u16 = 7842;
     const CUSTOM_TRANSPORT_ID: u64 = 7;
     const CUSTOM_TRANSPORT_DATA: &[u8] = b"custom transport data";
     const TESTED_CONNECTION: usize = 7;
@@ -1566,13 +1573,14 @@ mod tests {
      {
         let salt = crate::net::direct::tests::test_salt();
         let custom = TransportAddr::Custom((CUSTOM_TRANSPORT_ID, CUSTOM_TRANSPORT_DATA).into());
+        let direct_address_text = format!("{TESTED_DIRECT_HOST}:{TESTED_DIRECT_PORT}");
         let cases = [
             (
-                TransportAddr::Ip("192.0.2.7:7842".parse().unwrap()),
+                TransportAddr::Ip(direct_address_text.parse().unwrap()),
                 Location {
                     kind: LocationKind::Direct,
-                    port: Some(7842),
-                    hash: LocationHash::of(&salt, "192.0.2.7:7842"),
+                    port: Some(TESTED_DIRECT_PORT),
+                    hash: LocationHash::of(&salt, &direct_address_text),
                 },
             ),
             (
@@ -1600,18 +1608,22 @@ mod tests {
         );
     }
 
+    /// A custom transport address whose id has a drawn number of its high bits cleared and whose data is drawn.
+    fn drawn_custom_address(draws: &mut Draws) -> TransportAddr {
+        let cleared_high_bits = u32::try_from(draws.below(u64::from(u64::BITS))).unwrap();
+        let transport = draws.below(u64::MAX.checked_shr(cleared_high_bits).unwrap());
+        let data: Vec<u8> = (0..draws.below(LONGEST_DRAWN_CUSTOM_DATA))
+            .map(|_| u8::drawn(draws))
+            .collect();
+        TransportAddr::Custom((transport, data.as_slice()).into())
+    }
+
     #[test]
     fn observability_decision_6_every_address_neither_ip_nor_relay_is_located_as_another_kind_with_no_port_by_the_salted_hash_of_its_text()
      {
         let salt = crate::net::direct::tests::test_salt();
         for case in 0..CATCH_ALL_CASES {
-            let mut draws = Draws::seeded(case);
-            let id_width = u32::try_from(draws.below(u64::from(u64::BITS))).unwrap();
-            let transport = draws.below(u64::MAX.checked_shr(id_width).unwrap());
-            let data: Vec<u8> = (0..draws.below(LONGEST_DRAWN_CUSTOM_DATA))
-                .map(|_| u8::drawn(&mut draws))
-                .collect();
-            let address = TransportAddr::Custom((transport, data.as_slice()).into());
+            let address = drawn_custom_address(&mut Draws::seeded(case));
             assert_eq!(
                 Location::of(&address, &salt),
                 Location {
@@ -1621,6 +1633,29 @@ mod tests {
                 },
                 "address {address:?}"
             );
+        }
+    }
+
+    #[test]
+    fn observability_decision_6_two_addresses_of_another_kind_are_located_by_different_hashes_and_one_address_by_the_same_hash_each_time()
+     {
+        let salt = crate::net::direct::tests::test_salt();
+        for case in 0..CATCH_ALL_CASES {
+            let mut draws = Draws::seeded(case);
+            let first = drawn_custom_address(&mut draws);
+            let second = drawn_custom_address(&mut draws);
+            assert_eq!(
+                Location::of(&first, &salt).hash,
+                Location::of(&first, &salt).hash,
+                "address {first:?}"
+            );
+            if first != second {
+                assert_ne!(
+                    Location::of(&first, &salt).hash,
+                    Location::of(&second, &salt).hash,
+                    "addresses {first:?} and {second:?}"
+                );
+            }
         }
     }
 
