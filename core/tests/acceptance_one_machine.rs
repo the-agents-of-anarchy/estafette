@@ -949,6 +949,8 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
 #[cfg(test)]
 mod spec_3_15_test_1_on_one_machine {
+    use std::time::Duration;
+
     use serde_json::json;
 
     use crate::inbox_client::{FRAME_WAIT, InboxClient, NO_FURTHER_FRAME_WINDOW};
@@ -957,6 +959,11 @@ mod spec_3_15_test_1_on_one_machine {
     use crate::payload_placeholders::wall_clock_ms;
     use crate::scratch_machine::RunRecordKeeping;
     use crate::send;
+
+    /// The event a member records when a client connects to its inbox socket (spec/observability.md decision 9).
+    const CLIENT_CONNECTED_EVENT: &str = "inbox.client_connected";
+    /// How long an inbox socket may take to record a client that connected: chosen, not measured, far above a socket's accept.
+    const CLIENT_CONNECTED_WITHIN: Duration = Duration::from_secs(10);
 
     #[test]
     fn spec_3_15_test_1_a_message_to_a_member_whose_inbox_socket_has_a_client_is_delivered_attached_as_one_frame()
@@ -970,6 +977,7 @@ mod spec_3_15_test_1_on_one_machine {
             ..
         } = network.amy_and_bob_met(&host);
         let mut inbox = InboxClient::connect(&bob_claim["result"]["inbox_path"], 0);
+        bob.wait_for_event(CLIENT_CONNECTED_EVENT, CLIENT_CONNECTED_WITHIN);
 
         let sent = send(&mut amy, BOB_HANDLE);
 
