@@ -21,14 +21,15 @@ mod observability {
     use super::remove_scratch::remove_scratch;
     use estafette_trace::{
         BridgeRun, RUN_ID_BYTES, RunId, TraceAction, TraceBounds, TraceClocks, TraceDirectory,
-        TraceEffects, TraceStop,
+        TraceEffects, TraceRefused, TraceStop,
     };
 
     const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
     const READ_WITHOUT_SEARCH_MODE: u32 = 0o400;
     const OWNER_ONLY_DIRECTORY_MODE: u32 = 0o700;
     const LISTING_RACE_STARTS: u32 = 20_000;
-    const RACING_ENTRY_NAMES: u64 = 64;
+    const CHURNING_ENTRY_NAMES: u64 = 64;
+    const CHURNING_ENTRY_CONTENT: &[u8] = b"x";
     const RUN_BYTES: [u8; RUN_ID_BYTES] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
     const RUN_HEX: &str = "a1b2c3d4e5f60718";
     const FROZEN_MONOTONIC_MS: u64 = 7;
@@ -63,16 +64,29 @@ mod observability {
         }
     }
 
+    /// A bridge run begun on the effects within the bounds, its trace directory created on the operating system's files, or the refusal to begin it.
+    fn try_begin_bridge_run(
+        directory: &TraceDirectory,
+        effects: &TraceEffects,
+        bounds: TraceBounds,
+    ) -> Result<BridgeRun, TraceRefused> {
+        BridgeRun::begin(
+            directory,
+            &|path: &Path| fs::create_dir_all(path),
+            RunId::from_random_bytes(RUN_BYTES),
+            effects,
+            bounds,
+        )
+    }
+
     /// A bridge run begun on the operating system's files with its wall clock frozen at `wall_ms`.
     fn begun_bridge_run(
         directory: &TraceDirectory,
         wall_ms: u64,
         bounds: TraceBounds,
     ) -> BridgeRun {
-        BridgeRun::begin(
+        try_begin_bridge_run(
             directory,
-            &|path: &Path| fs::create_dir_all(path),
-            RunId::from_random_bytes(RUN_BYTES),
             &TraceEffects::of_the_operating_system(frozen_clocks(wall_ms)),
             bounds,
         )
@@ -258,10 +272,8 @@ mod observability {
             ..effects
         };
 
-        let run = BridgeRun::begin(
+        let run = try_begin_bridge_run(
             &directory,
-            &|path: &Path| fs::create_dir_all(path),
-            RunId::from_random_bytes(RUN_BYTES),
             &effects_with_a_concurrent_start_removing_after_the_listing,
             TraceBounds {
                 directory_bytes: SMALL_DIRECTORY_BYTES,
@@ -277,19 +289,19 @@ mod observability {
     }
 
     #[test]
-    fn observability_decision_13_a_start_listing_a_directory_whose_entries_a_concurrent_start_keeps_removing_goes_on()
+    fn observability_decision_13_a_start_listing_a_directory_whose_entries_come_and_go_while_it_lists_goes_on()
      {
-        let (root, directory) = scratch_trace_directory("concurrent-listing");
+        let (root, directory) = scratch_trace_directory("churning-listing");
         let traces = directory.path();
         fs::create_dir_all(&traces).unwrap();
-        let removing_stop = Arc::new(AtomicBool::new(false));
-        let concurrent_start = thread::spawn({
-            let removing_stop = Arc::clone(&removing_stop);
+        let churn_stop = Arc::new(AtomicBool::new(false));
+        let entry_churn = thread::spawn({
+            let churn_stop = Arc::clone(&churn_stop);
             move || {
                 let mut round: u64 = 0;
-                while !removing_stop.load(Ordering::Relaxed) {
-                    let entry = traces.join(format!("racing-{}", round % RACING_ENTRY_NAMES));
-                    fs::write(&entry, b"x").unwrap();
+                while !churn_stop.load(Ordering::Relaxed) {
+                    let entry = traces.join(format!("churning-{}", round % CHURNING_ENTRY_NAMES));
+                    fs::write(&entry, CHURNING_ENTRY_CONTENT).unwrap();
                     remove_scratch(&entry).unwrap();
                     round += 1;
                 }
@@ -297,18 +309,10 @@ mod observability {
         });
         let effects = TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS));
 
-        let refusal = (0..LISTING_RACE_STARTS).find_map(|_| {
-            BridgeRun::begin(
-                &directory,
-                &|path: &Path| fs::create_dir_all(path),
-                RunId::from_random_bytes(RUN_BYTES),
-                &effects,
-                TraceBounds::SPEC,
-            )
-            .err()
-        });
-        removing_stop.store(true, Ordering::Relaxed);
-        concurrent_start.join().unwrap();
+        let refusal = (0..LISTING_RACE_STARTS)
+            .find_map(|_| try_begin_bridge_run(&directory, &effects, TraceBounds::SPEC).err());
+        churn_stop.store(true, Ordering::Relaxed);
+        entry_churn.join().unwrap();
 
         assert!(
             refusal.is_none(),
@@ -326,10 +330,8 @@ mod observability {
         stored_run_file(&traces, "unreadable-entry", OLD_FILE_BYTES, NOW_MS);
         fs::set_permissions(&traces, Permissions::from_mode(READ_WITHOUT_SEARCH_MODE)).unwrap();
 
-        let refusal = BridgeRun::begin(
+        let refusal = try_begin_bridge_run(
             &directory,
-            &|path: &Path| fs::create_dir_all(path),
-            RunId::from_random_bytes(RUN_BYTES),
             &TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS)),
             TraceBounds::SPEC,
         )
