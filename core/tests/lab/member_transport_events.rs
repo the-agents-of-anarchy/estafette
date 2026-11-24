@@ -95,7 +95,7 @@ pub fn acknowledged_message_rode_a_relay_path(
     )
 }
 
-/// Reads each member's events files once and requires none to hold a rebinding line, naming each member that does (spec 3.15 test 24).
+/// Reads each member's events files once and requires none to hold a rebinding line, naming each member that does or whose files hold a report of lines lost (spec 3.15 test 24).
 #[track_caller]
 pub fn no_member_rebound<'member>(
     members: impl IntoIterator<Item = (&'member str, &'member MemberEvents)>,
@@ -103,11 +103,17 @@ pub fn no_member_rebound<'member>(
     let rebound: Vec<String> = members
         .into_iter()
         .filter_map(|(member, events)| {
-            let rebinds =
-                events.wait_until("its events files, read once", EVENTS_READ_WAIT, |lines| {
-                    Some(rebinding_lines_in(&lines))
-                });
-            (rebinds > 0).then(|| format!("{member} recorded {rebinds} {REBINDING_EVENT} lines"))
+            match events.wait_until("its events files, read once", EVENTS_READ_WAIT, |lines| {
+                Some(rebinds_read_from(&lines))
+            }) {
+                RebindsRead::Counted(0) => None,
+                RebindsRead::Counted(rebinds) => Some(format!(
+                    "{member} recorded {rebinds} {REBINDING_EVENT} lines"
+                )),
+                RebindsRead::LinesLost => Some(format!(
+                    "{member}'s trace lost lines, so its {REBINDING_EVENT} lines are not all known"
+                )),
+            }
         })
         .collect();
     if rebound.is_empty() {
@@ -254,6 +260,21 @@ fn relay_paths_before_the_line_at(
         ));
     }
     Ok(())
+}
+
+/// What reading a member's events files tells of its rebinds: how many lines record one, or that the trace lost lines which could have.
+enum RebindsRead {
+    Counted(usize),
+    LinesLost,
+}
+
+/// The rebinds the lines tell of, none being known when a report of lost lines stands among them.
+fn rebinds_read_from(lines: &[TraceLine]) -> RebindsRead {
+    if lines.iter().any(is_dropped_report) {
+        RebindsRead::LinesLost
+    } else {
+        RebindsRead::Counted(rebinding_lines_in(lines))
+    }
 }
 
 /// How many lines record a rebind of the member's endpoint.
@@ -880,5 +901,34 @@ mod tests {
         ));
 
         assert_eq!(rebinding_lines_in(&parsed(&lines)), 2);
+    }
+
+    #[test]
+    fn spec_3_15_test_24_a_dropped_report_anywhere_in_a_members_files_refuses_naming_it_as_lines_lost()
+     {
+        let mut lost_lines = quiet_member_lines();
+        lost_lines.push(dropped_report(3));
+        lost_lines.push(line(4, "state.counters", r#","moment":"interval""#));
+
+        let verdict = rebind_verdict_of(
+            "dropped-in-one-member",
+            &[
+                (AMY, quiet_member_lines()),
+                (BOB, lost_lines),
+                (CID, quiet_member_lines()),
+            ],
+        );
+
+        let refusal = verdict.unwrap_err();
+        assert!(
+            refusal.contains(&format!(
+                "{BOB}'s trace lost lines, so its transport.rebinding lines are not all known"
+            )),
+            "{refusal}"
+        );
+        assert!(
+            !refusal.contains(AMY) && !refusal.contains(CID),
+            "{refusal}"
+        );
     }
 }
