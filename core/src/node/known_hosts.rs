@@ -135,7 +135,7 @@ impl KnownHosts {
     }
 
     /// Rewrites the network configuration with the known hosts (spec 3.3).
-    pub(crate) fn save(&self, now_ms: u64) -> Result<(), ConfigError> {
+    fn save(&self, now_ms: u64) -> Result<(), ConfigError> {
         self.held().save(now_ms)
     }
 
