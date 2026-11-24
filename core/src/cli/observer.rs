@@ -1578,8 +1578,8 @@ mod tests {
         let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
         let (record, mut recorded) = recorded_events();
         let first_presence_line_start = format!(
-            "presence\t1\t{}\t{FIRST_HANDLE}\t{}\ttrue\t",
-            render_public_key(&secret_key(FIRST_SEED).public()),
+            "{}{}\ttrue\t",
+            presence_line_start(FIRST_SEED, FIRST_HANDLE),
             String::from_utf8_lossy(FIRST_PUBLIC)
         );
         let tail = ObserverCommand::Tail {
@@ -2155,35 +2155,21 @@ mod tests {
         .await
         .unwrap();
 
-        let neighbor_short =
-            data_encoding::HEXLOWER.encode(&secret_key(NEIGHBOR_SEED).public().as_bytes()[..5]);
         let introduce_to_neighbor = (
-            Some(serde_json::Value::from("introduce")),
-            Some(serde_json::Value::from(neighbor_short)),
+            Some(serde_json::Value::from(INTRODUCE_KIND)),
+            Some(neighbor_short_id()),
         );
-        let mut other_requests_sent = Vec::new();
-        let introduce_recorded = tokio::time::timeout(SENT_INTRODUCE_WITHIN, async {
-            while let Some((name, fields)) = recorded.recv().await {
-                if name != "direct.request_sent" {
-                    continue;
-                }
-                let request = (
-                    crate::net::direct::tests::field(&fields, "kind").cloned(),
-                    crate::net::direct::tests::field(&fields, "peer").cloned(),
-                );
-                if request == introduce_to_neighbor {
-                    return true;
-                }
-                other_requests_sent.push(request);
-            }
-            false
-        })
-        .await
-        .unwrap_or(false);
-        assert!(
-            introduce_recorded,
-            "no direct.request_sent of kind introduce to the neighbor within {SENT_INTRODUCE_WITHIN:?}; other requests sent: {other_requests_sent:?}"
-        );
+        next_recorded_meeting(
+            &mut recorded,
+            REQUEST_SENT_EVENT,
+            |fields| {
+                kind_and_peer_of(fields) == introduce_to_neighbor
+                    && field(fields, OUTCOME_FIELD)
+                        == Some(&serde_json::Value::from(ACKNOWLEDGED_OUTCOME))
+            },
+            SENT_INTRODUCE_WITHIN,
+        )
+        .await;
         drop(lab);
     }
 
@@ -2214,6 +2200,16 @@ mod tests {
             })
     }
 
+    /// The `kind` and `peer` fields of an event's fields.
+    fn kind_and_peer_of(
+        fields: &crate::event::EventFields,
+    ) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
+        (
+            field(fields, KIND_FIELD).cloned(),
+            field(fields, PEER_FIELD).cloned(),
+        )
+    }
+
     /// The `kind` and `peer` fields of each recorded event of the name, in the order recorded.
     fn kinds_and_peers_recorded_as(
         recorded: &[RecordedEvent],
@@ -2222,12 +2218,7 @@ mod tests {
         recorded
             .iter()
             .filter(|(recorded_name, _)| *recorded_name == name)
-            .map(|(_, fields)| {
-                (
-                    crate::net::direct::tests::field(fields, "kind").cloned(),
-                    crate::net::direct::tests::field(fields, "peer").cloned(),
-                )
-            })
+            .map(|(_, fields)| kind_and_peer_of(fields))
             .collect()
     }
 
@@ -2280,7 +2271,7 @@ mod tests {
 
         outcome.unwrap();
         let recorded_through_the_end = crate::net::direct::tests::recorded_so_far(&mut recorded);
-        let presence_request = Some(serde_json::Value::from("presence_request"));
+        let presence_request = Some(serde_json::Value::from(PRESENCE_REQUEST_EVENT_KIND));
         assert_eq!(
             sent.map(|request| request.requester),
             Some(*secret_key(OBSERVER_SEED).public().as_bytes())
@@ -2594,7 +2585,7 @@ mod tests {
             ),
             ("gossip.neighbor_up", vec![("peer", neighbor_short_id())]),
             (
-                "gossip.payload_accepted",
+                PAYLOAD_ACCEPTED_EVENT,
                 neighbor_payload_fields("presence", ("seq", OBSERVER_CLOCK_MS - 1)),
             ),
             ("gossip.payload_dropped", {
@@ -2606,11 +2597,11 @@ mod tests {
                 fields
             }),
             (
-                "gossip.payload_accepted",
+                PAYLOAD_ACCEPTED_EVENT,
                 neighbor_payload_fields("infrastructure", ("ts", NEIGHBOR_RECORD_TS)),
             ),
             (
-                "gossip.payload_accepted",
+                PAYLOAD_ACCEPTED_EVENT,
                 neighbor_payload_fields("presence_request", ("seq", NEIGHBOR_REQUEST_SEQ)),
             ),
             (
@@ -2697,9 +2688,9 @@ mod tests {
             SPEC_STATE_SNAPSHOT_INTERVAL
         );
         for ((_at, fields), moment) in [
-            (&at_start, "start"),
-            (&first, "interval"),
-            (&second, "interval"),
+            (&at_start, START_MOMENT),
+            (&first, INTERVAL_MOMENT),
+            (&second, INTERVAL_MOMENT),
         ] {
             assert_eq!(
                 fields.first(),
@@ -2716,6 +2707,8 @@ mod tests {
     const ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     const STATE_COUNTERS: &str = "state.counters";
+    const START_MOMENT: &str = "start";
+    const INTERVAL_MOMENT: &str = "interval";
 
     #[tokio::test]
     async fn observability_decisions_9_and_13_tail_records_its_counters_once_its_handed_clock_reads_60_s_past_its_start_and_again_60_s_past_that_reading()
@@ -2881,7 +2874,10 @@ mod tests {
     const DIRECT_PROTOCOL: &str = "direct";
     const INTRODUCE_KIND: &str = "introduce";
     const HELD_CONNECTION_SOURCE: &str = "held";
+    const PRESENCE_EVENT_KIND: &str = "presence";
     const PRESENCE_REQUEST_EVENT_KIND: &str = "presence_request";
+    const OUTCOME_FIELD: &str = "outcome";
+    const ACKNOWLEDGED_OUTCOME: &str = "acknowledged";
     /// The seq of the neighbor's presence request the observer takes once it has the answers of both its Introduces, before its clock moves.
     const REQUEST_SEQ_BEFORE_THE_MOVE: u64 = 1_000_006;
     /// The seq of the neighbor's presence request the observer takes once its clock has moved past every ack.
@@ -3217,65 +3213,71 @@ mod tests {
         let observer_host = Arc::clone(&observation.host);
         let mut tail_output = Vec::new();
 
-        let (tail_result, (recorded_before_the_close, closed_at_the_presence)) = tokio::join!(
-            observation.tail(&mut tail_output),
-            async {
-                let introduced_on = first_connection_accepted(&neighbor, PAYLOAD_WAIT).await;
-                neighbor_listed_by(&observer_host, PAYLOAD_WAIT).await;
-                let introduction = next_recorded_meeting(
-                    &mut recorded,
-                    CONNECTION_OPENED_EVENT,
-                    |fields| {
-                        field(fields, PROTOCOL_FIELD)
-                            == Some(&serde_json::Value::from(DIRECT_PROTOCOL))
-                            && field(fields, PEER_FIELD) == Some(&neighbor_short_id())
-                    },
-                    PAYLOAD_WAIT,
+        let (
+            tail_result,
+            (
+                introduction,
+                recorded_past_the_acks,
+                recorded_before_the_close,
+                closed_at_the_presence,
+            ),
+        ) = tokio::join!(observation.tail(&mut tail_output), async {
+            let introduced_on = first_connection_accepted(&neighbor, PAYLOAD_WAIT).await;
+            neighbor_listed_by(&observer_host, PAYLOAD_WAIT).await;
+            let introduction = next_recorded_meeting(
+                &mut recorded,
+                CONNECTION_OPENED_EVENT,
+                |fields| {
+                    field(fields, PROTOCOL_FIELD) == Some(&serde_json::Value::from(DIRECT_PROTOCOL))
+                        && field(fields, PEER_FIELD) == Some(&neighbor_short_id())
+                },
+                PAYLOAD_WAIT,
+            )
+            .await;
+            let recorded_past_the_acks = recorded_once_the_clock_moves_past_every_ack(
+                &neighbor,
+                &mut recorded,
+                &observer_clock,
+            )
+            .await;
+            neighbor
+                .topic
+                .broadcast(
+                    &secret_key(NEIGHBOR_SEED),
+                    neighbor_presence_announcing(neighbor_address()),
                 )
-                .await;
-                let recorded_past_the_acks = recorded_once_the_clock_moves_past_every_ack(
-                    &neighbor,
-                    &mut recorded,
-                    &observer_clock,
-                )
-                .await;
-                assert!(
-                    !recorded_past_the_acks.iter().any(|(name, fields)| {
-                        *name == CONNECTION_CLOSED_EVENT
-                            && field(fields, CONNECTION_FIELD)
-                                == field(&introduction, CONNECTION_FIELD)
-                    }),
-                    "the observer closed the introduction's connection once its clock read {ACK_DROP_WOULD_SHOW_WITHIN:?} past every IntroduceAck, before any Presence: {recorded_past_the_acks:?}"
-                );
-                neighbor
-                    .topic
-                    .broadcast(
-                        &secret_key(NEIGHBOR_SEED),
-                        neighbor_presence_announcing(neighbor_address()),
-                    )
-                    .await
-                    .unwrap();
-                let closed_at_the_presence =
-                    tokio::time::timeout(SUPERSEDED_CLOSE_WAIT, introduced_on.closed()).await;
-                let (recorded_before_the_close, _closed) = recorded_until(
-                    &mut recorded,
-                    CONNECTION_CLOSED_EVENT,
-                    |fields| {
-                        field(fields, CONNECTION_FIELD) == field(&introduction, CONNECTION_FIELD)
-                    },
-                    SUPERSEDED_CLOSE_WAIT,
-                )
-                .await;
-                interrupt.send(()).unwrap_or_default();
-                (recorded_before_the_close, closed_at_the_presence)
-            }
-        );
+                .await
+                .unwrap();
+            let closed_at_the_presence =
+                tokio::time::timeout(SUPERSEDED_CLOSE_WAIT, introduced_on.closed()).await;
+            let (recorded_before_the_close, _closed) = recorded_until(
+                &mut recorded,
+                CONNECTION_CLOSED_EVENT,
+                |fields| field(fields, CONNECTION_FIELD) == field(&introduction, CONNECTION_FIELD),
+                SUPERSEDED_CLOSE_WAIT,
+            )
+            .await;
+            interrupt.send(()).unwrap_or_default();
+            (
+                introduction,
+                recorded_past_the_acks,
+                recorded_before_the_close,
+                closed_at_the_presence,
+            )
+        });
 
         tail_result.unwrap();
         assert!(
+            !recorded_past_the_acks.iter().any(|(name, fields)| {
+                *name == CONNECTION_CLOSED_EVENT
+                    && field(fields, CONNECTION_FIELD) == field(&introduction, CONNECTION_FIELD)
+            }),
+            "the observer closed the introduction's connection once its clock read {ACK_DROP_WOULD_SHOW_WITHIN:?} past every IntroduceAck, before any Presence: {recorded_past_the_acks:?}"
+        );
+        assert!(
             kinds_and_peers_recorded_as(&recorded_before_the_close, PAYLOAD_ACCEPTED_EVENT)
                 .contains(&(
-                    Some(serde_json::Value::from(PRESENCE_KIND)),
+                    Some(serde_json::Value::from(PRESENCE_EVENT_KIND)),
                     Some(neighbor_short_id())
                 )),
             "the observer closed the introduction's connection before it took the member's next Presence, sent once its clock read {ACK_DROP_WOULD_SHOW_WITHIN:?} past every IntroduceAck: {recorded_before_the_close:?}"
@@ -3290,7 +3292,7 @@ mod tests {
         drop(lab);
     }
 
-    /// Every event the observer records from the answer to its second Introduce until it takes a presence request after its clock has moved past every ack, the clock moved only once it has taken a request sent after that answer.
+    /// Every event the observer records after the introduction's connection opened until it takes a presence request after its clock has moved past every ack, the clock moved only once it has taken a request sent after the answer to its second Introduce.
     async fn recorded_once_the_clock_moves_past_every_ack(
         neighbor: &SilentNeighbor,
         recorded: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
