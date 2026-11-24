@@ -52,15 +52,17 @@ pub fn relay_added_within(
         &format!("{RELAY_MAP_EDITED_EVENT} {ADDED_EDIT} of the relay of host {host}"),
         RELAY_MAP_EDIT_WAIT,
         |lines| {
-            first_relay_added_for(&lines, host).is_some().then(|| {
-                relay_added_verdict(
-                    &lines,
-                    host,
-                    host_started_wall_ms,
-                    first_record_wall_ms,
-                    within,
-                )
-            })
+            first_relay_added_position_for(&lines, host)
+                .is_some()
+                .then(|| {
+                    relay_added_verdict(
+                        &lines,
+                        host,
+                        host_started_wall_ms,
+                        first_record_wall_ms,
+                        within,
+                    )
+                })
         },
     )
 }
@@ -118,16 +120,19 @@ pub fn no_member_rebound<'member>(
     }
 }
 
-/// The first line adding the relay of the host to the member's relay map.
-fn first_relay_added_for<'line>(lines: &'line [TraceLine], host: &str) -> Option<&'line TraceLine> {
-    lines.iter().find(|line| {
+/// The position and the line of the first line adding the relay of the host to the member's relay map.
+fn first_relay_added_position_for<'line>(
+    lines: &'line [TraceLine],
+    host: &str,
+) -> Option<(usize, &'line TraceLine)> {
+    lines.iter().enumerate().find(|(_position, line)| {
         line.event == RELAY_MAP_EDITED_EVENT
             && line.value(EDIT_FIELD) == Some(&Value::from(ADDED_EDIT))
             && line.value(HOST_FIELD) == Some(&Value::from(host))
     })
 }
 
-/// Whether the first line adding the host's relay is stamped no earlier than the host's start and no later than `within` after the first record, refusing with what was found when it is not or when no line adds it.
+/// Whether the first line adding the host's relay is stamped no earlier than the host's start and no later than `within` after the first record, refusing with what was found when it is not, when no line adds it, or when the trace lost lines before it.
 fn relay_added_verdict(
     lines: &[TraceLine],
     host: &str,
@@ -135,9 +140,14 @@ fn relay_added_verdict(
     first_record_wall_ms: u64,
     within: Duration,
 ) -> Result<(), String> {
-    let added = first_relay_added_for(lines, host).ok_or_else(|| {
+    let (position, added) = first_relay_added_position_for(lines, host).ok_or_else(|| {
         format!("no {RELAY_MAP_EDITED_EVENT} {ADDED_EDIT} of the relay of host {host}")
     })?;
+    if lines.iter().take(position).any(is_dropped_report) {
+        return Err(format!(
+            "lines of the trace holding the relay of host {host} were lost before the line adding it, so it may not be the first"
+        ));
+    }
     if added.wall_ms < host_started_wall_ms {
         return Err(format!(
             "the relay of host {host} was added to the relay map at {} ms, {} ms before the test started the host at {host_started_wall_ms} ms, so that line is not of the host's record",
@@ -262,7 +272,7 @@ mod tests {
 
     use super::{
         acknowledged_message_rode_a_relay_path, message_rode_a_relay_path, no_member_rebound,
-        rebinding_lines_in, relay_added_verdict,
+        rebinding_lines_in, relay_added_verdict, relay_added_within,
     };
     use crate::member_events::MemberEvents;
     use crate::trace_reader::{TraceLine, WritingProcess, parse_trace_lines};
@@ -764,6 +774,46 @@ mod tests {
                 dropped_report(3),
             ],
         );
+
+        assert_eq!(verdict, Ok(()));
+    }
+
+    fn relay_added_within_of(test: &str, lines: &[String]) -> Result<(), String> {
+        let (events, traces) = events_holding(test, lines);
+        let verdict = relay_added_within(
+            &events,
+            ADDED_HOST,
+            HOST_STARTED_WALL_MS,
+            FIRST_RECORD_WALL_MS,
+            WITHIN,
+        );
+        remove_traces(&traces);
+        verdict
+    }
+
+    #[test]
+    fn spec_3_15_test_22_a_dropped_report_before_the_line_adding_the_relay_refuses_naming_the_host_and_the_lost_lines()
+     {
+        let added = relay_map_edit_at(FIRST_RECORD_WALL_MS + 400, "added", ADDED_HOST);
+
+        let verdict =
+            relay_added_within_of("relay-dropped-before-added", &[dropped_report(1), added]);
+
+        let refusal = verdict.unwrap_err();
+        assert!(
+            refusal.contains(&format!(
+                "lines of the trace holding the relay of host {ADDED_HOST} were lost"
+            )),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn spec_3_15_test_22_a_dropped_report_after_the_line_adding_the_relay_does_not_refuse() {
+        let added = relay_map_edit_at(FIRST_RECORD_WALL_MS + 400, "added", ADDED_HOST);
+
+        let verdict =
+            relay_added_within_of("relay-dropped-after-added", &[added, dropped_report(1)]);
 
         assert_eq!(verdict, Ok(()));
     }
