@@ -3157,6 +3157,42 @@ pub(crate) mod tests {
             .map(|held_connection| held_connection.last_heard)
     }
 
+    /// Waits until the peer's datagram count at the register's one connection to the card passes the count it last heard, failing by the hearing sample's number when none passes within the step's wait.
+    async fn a_datagram_from_the_peer_is_past_the_heard_count(
+        register: &HeldConnections,
+        peer: wire::PublicKey,
+        step: u32,
+    ) {
+        found_within(HEARING_STEP_WAIT, async || {
+            datagrams_received_and_heard(register, peer)
+                .filter(|(received, heard)| received > heard)
+        })
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "no datagram from the peer past the count the register last heard before hearing sample {step} within {HEARING_STEP_WAIT:?}"
+            )
+        });
+    }
+
+    /// Waits until the register last heard from the peer at the clock's reading, failing by the hearing sample's number when no hearing is noted there within the step's wait.
+    async fn the_hearing_is_noted_at_the_reading(
+        register: &HeldConnections,
+        peer: wire::PublicKey,
+        reading: tokio::time::Instant,
+        step: u32,
+    ) {
+        found_within(HEARING_STEP_WAIT, async || {
+            (last_heard_on_the_one_of(register, peer) == Some(reading)).then_some(())
+        })
+        .await
+        .unwrap_or_else(|| {
+            panic!(
+                "no hearing noted at the clock's reading by hearing sample {step} within {HEARING_STEP_WAIT:?}"
+            )
+        });
+    }
+
     #[tokio::test]
     async fn spec_3_8_a_held_connection_is_next_sampled_one_hearing_sample_interval_after_each_reading_of_its_handed_clock()
      {
@@ -3195,31 +3231,14 @@ pub(crate) mod tests {
                 "deadlines asked of the clock by hearing sample {step}"
             );
             from_the_peer.write_all(&[0]).await.unwrap();
-            found_within(HEARING_STEP_WAIT, async || {
-                datagrams_received_and_heard(&register, peer)
-                    .filter(|(received, heard)| received > heard)
-            })
-            .await
-            .unwrap_or_else(|| {
-                panic!(
-                    "no datagram from the peer past the count the register last heard before hearing sample {step} within {HEARING_STEP_WAIT:?}"
-                )
-            });
+            a_datagram_from_the_peer_is_past_the_heard_count(&register, peer, step).await;
             clock.move_forward(
                 SPEC_HEARING_SAMPLE_INTERVAL
                     .checked_add(SAMPLE_WOKEN_LATE_PER_STEP.checked_mul(step).unwrap())
                     .unwrap(),
             );
             let reading = clock.now();
-            found_within(HEARING_STEP_WAIT, async || {
-                (last_heard_on_the_one_of(&register, peer) == Some(reading)).then_some(())
-            })
-            .await
-            .unwrap_or_else(|| {
-                panic!(
-                    "no hearing noted at the clock's reading by hearing sample {step} within {HEARING_STEP_WAIT:?}"
-                )
-            });
+            the_hearing_is_noted_at_the_reading(&register, peer, reading, step).await;
             sample_due = reading.checked_add(SPEC_HEARING_SAMPLE_INTERVAL).unwrap();
         }
     }
