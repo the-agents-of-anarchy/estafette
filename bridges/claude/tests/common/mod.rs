@@ -194,8 +194,13 @@ pub struct Spawned(Child);
 
 impl Drop for Spawned {
     fn drop(&mut self) {
-        drop(self.0.kill());
-        drop(self.0.wait());
+        for failure in [self.0.kill(), self.0.wait().map(drop)]
+            .into_iter()
+            .filter_map(Result::err)
+        {
+            assert!(thread::panicking(), "{failure}");
+            eprintln!("{failure}");
+        }
     }
 }
 
