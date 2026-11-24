@@ -732,6 +732,21 @@ const MCP_INIT_TOOL_CALL_ID: u64 = 2;
 const MCP_INIT_TOOL: &str = "init";
 const CARD_INVALID_CODE: &str = "card_invalid";
 
+/// A directory removed when this value drops, so a failing assertion leaves nothing under the temp directory, a removal that fails failing the test unless it is already failing.
+struct RemovedOnDrop {
+    path: PathBuf,
+}
+
+impl Drop for RemovedOnDrop {
+    fn drop(&mut self) {
+        if let Err(failure) = remove_scratch::remove_scratch(&self.path) {
+            let report = format!("directory not removed: {failure}");
+            assert!(std::thread::panicking(), "{report}");
+            drop(writeln!(io::stderr(), "{report}"));
+        }
+    }
+}
+
 /// A child process killed and reaped when this value drops, whether the test passed or failed.
 struct KilledOnDrop(Child);
 
@@ -802,19 +817,20 @@ fn binary_mcp_init_refuses_a_public_nested_too_deep_for_the_parser_as_card_inval
             .unwrap();
     let network = run_binary(&root, &["network", "create", NETWORK]).unwrap();
     require_success(&network).unwrap();
-    let short_runtime = common::fresh_directory::fresh_directory_in(
-        Path::new(SHORT_RUNTIME_PARENT),
-        SHORT_RUNTIME_NAME,
-    )
-    .unwrap();
+    let short_runtime = RemovedOnDrop {
+        path: common::fresh_directory::fresh_directory_in(
+            Path::new(SHORT_RUNTIME_PARENT),
+            SHORT_RUNTIME_NAME,
+        )
+        .unwrap(),
+    };
 
-    let answer = mcp_answer_to_init_of(&root, &short_runtime, "ana-card").unwrap();
+    let answer = mcp_answer_to_init_of(&root, &short_runtime.path, "ana-card").unwrap();
 
     assert_eq!(
         answer["result"]["structuredContent"]["error"]["code"], CARD_INVALID_CODE,
         "{answer}"
     );
-    remove_scratch::remove_scratch(&short_runtime).unwrap();
 }
 
 const DEEPEST_IGNORED_KEY_DEPTH: usize = 2000;
