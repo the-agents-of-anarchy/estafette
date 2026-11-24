@@ -1294,11 +1294,11 @@ mod tests {
             >= SPEC_DEAF_TIMEOUT.saturating_add(REBIND_SLACK).as_millis()
     );
 
-    /// Whether the counters snapshot was taken at the moment, read from its moment field.
+    /// Whether the counters snapshot was taken at the moment, named by its first field.
     fn was_taken_at(snapshot: &EventFields, moment: &str) -> bool {
         snapshot
-            .iter()
-            .any(|(name, value)| *name == MOMENT && *value == moment)
+            .first()
+            .is_some_and(|(name, value)| *name == MOMENT && *value == moment)
     }
 
     /// Whether the counters were recorded after the start: at the interval, at a rebind or at a stop.
