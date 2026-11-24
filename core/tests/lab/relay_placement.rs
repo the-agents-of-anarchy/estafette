@@ -108,6 +108,16 @@ mod tests {
 
     const KILLED_RELAY: &str = "https://killed.example/";
     const LIVING_RELAY: &str = "https://living.example/";
+    /// How many reading sets the property is held over, case numbers from zero.
+    const GENERATED_CASES: u64 = 500;
+    /// The base figure of the killed relay's readings, in milliseconds.
+    const KILLED_BASE_MILLIS: u64 = 100;
+    /// The exclusive bound of the noise added to a base figure, in milliseconds: prime, so that stepping the noise by `NOISE_STEP_PER_PLACE_MS` per place gives each of the ten readings its own figure.
+    const NOISE_SPAN_MS: u64 = 11;
+    /// How much the noise grows from one reading's place to the next, in milliseconds.
+    const NOISE_STEP_PER_PLACE_MS: u64 = 3;
+    /// The exclusive bound of how far above the killed relay's base the living relay's base lies, in milliseconds.
+    const LIVING_OFFSET_SPAN_MS: u64 = 20;
 
     /// Readings of the relay, one per millisecond figure.
     fn times(relay: &str, millis: [u64; CONNECTS_PER_RELAY]) -> RelayConnectTimes {
@@ -115,6 +125,53 @@ mod tests {
             relay: relay.to_owned(),
             readings: millis.map(Duration::from_millis),
         }
+    }
+
+    /// Readings of the relay, each the base figure plus a noise fixed by the case, the stream and the reading's place alone.
+    fn generated_times(relay: &str, base_millis: u64, case: u64, stream: u64) -> RelayConnectTimes {
+        times(
+            relay,
+            std::array::from_fn(|place| {
+                let place = u64::try_from(place).unwrap();
+                let noise = case
+                    .wrapping_mul(37)
+                    .wrapping_add(stream.wrapping_mul(5))
+                    .wrapping_add(place.wrapping_mul(NOISE_STEP_PER_PLACE_MS))
+                    .rem_euclid(NOISE_SPAN_MS);
+                base_millis.saturating_add(noise)
+            }),
+        )
+    }
+
+    #[test]
+    fn spec_3_15_test_23_holds_exactly_when_every_connection_to_the_killed_relay_beats_every_connection_to_the_living_one()
+     {
+        let held: Vec<bool> = (0..GENERATED_CASES)
+            .map(|case| {
+                let killed = generated_times(KILLED_RELAY, KILLED_BASE_MILLIS, case, 0);
+                let living = generated_times(
+                    LIVING_RELAY,
+                    KILLED_BASE_MILLIS.saturating_add(case.rem_euclid(LIVING_OFFSET_SPAN_MS)),
+                    case,
+                    1,
+                );
+                let every_pair_beats = killed
+                    .readings
+                    .iter()
+                    .all(|slow_or_fast| living.readings.iter().all(|other| slow_or_fast < other));
+
+                assert_eq!(
+                    killed_relay_answers_faster(&killed, &living).is_ok(),
+                    every_pair_beats,
+                    "case {case}: killed {:?}, living {:?}",
+                    killed.readings,
+                    living.readings
+                );
+                every_pair_beats
+            })
+            .collect();
+
+        assert!(held.contains(&true) && held.contains(&false), "{held:?}");
     }
 
     #[test]
