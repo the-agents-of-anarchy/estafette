@@ -98,7 +98,7 @@ pub trait TraceFile: Write + Send {
 pub type CreateTraceFile = Arc<dyn Fn(&Path) -> io::Result<Box<dyn TraceFile>> + Send + Sync>;
 /// Renames a file onto another path, replacing any file there.
 pub type RenameFile = Arc<dyn Fn(&Path, &Path) -> io::Result<()> + Send + Sync>;
-/// Every file in a directory with its size and when it was last written.
+/// Every file in a directory with its size and when it was last written, leaving out an entry removed while the directory is listed.
 pub type ListFiles = Arc<dyn Fn(&Path) -> io::Result<Vec<StoredFile>> + Send + Sync>;
 /// Removes a file.
 pub type RemoveFile = Arc<dyn Fn(&Path) -> io::Result<()> + Send + Sync>;
