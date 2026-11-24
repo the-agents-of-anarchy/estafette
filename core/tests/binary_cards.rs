@@ -283,6 +283,8 @@ const LEFTOVER_PREFIX: &str = "estafette-scratch-root-leftover";
 const LEFTOVER_TEST_NAME: &str = "planted";
 const MADE_NOWHERE_TEST_NAME: &str = "made_nowhere";
 const REMOVED_NOWHERE_TEST_NAME: &str = "removed_nowhere";
+const EXHAUSTED_TEST_NAME: &str = "exhausted";
+const TAKEN_CHILD_NAME: &str = "taken";
 const UNLISTABLE_PARENT: &str = "config";
 const PLANTED_FILE: &str = "config/estafette/networks/acme.toml";
 const PLANTED_FILE_TEXT: &str = "an earlier run's network";
@@ -367,6 +369,27 @@ fn scratch_directory_that_cannot_be_made_fails_naming_its_path_and_the_cause() {
             absent_parent.join(UNMADE_CHILD_NAME).display()
         )),
         "{failure}"
+    );
+    remove_scratch::remove_scratch(&root).unwrap();
+}
+
+#[test]
+fn scratch_directory_whose_every_numbered_name_is_taken_fails_naming_its_parent_and_the_name() {
+    let root = common::scratch_root(LEFTOVER_PREFIX, EXHAUSTED_TEST_NAME).unwrap();
+    std::fs::create_dir(root.join(TAKEN_CHILD_NAME)).unwrap();
+    for number in 1..=common::fresh_directory::NUMBERED_NAMES_TRIED {
+        std::fs::create_dir(root.join(format!("{TAKEN_CHILD_NAME}-{number}"))).unwrap();
+    }
+
+    let failure = common::fresh_directory::fresh_directory_in(&root, TAKEN_CHILD_NAME).unwrap_err();
+
+    assert_eq!(failure.kind(), io::ErrorKind::AlreadyExists);
+    assert_eq!(
+        failure.to_string(),
+        format!(
+            "{}: every numbered name of {TAKEN_CHILD_NAME} is taken",
+            root.display()
+        )
     );
     remove_scratch::remove_scratch(&root).unwrap();
 }
