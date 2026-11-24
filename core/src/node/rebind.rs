@@ -510,7 +510,7 @@ mod tests {
     const REBIND_SLACK: Duration = Duration::from_secs(2);
 
     const ATTACHED_ONLY_IN_THE_PEERS_ACK: bool = true;
-    const SPEC_REBINDS_JOIN_ONCE_DEAF_WITHIN: Duration = IROH_DOCUMENTED_CLOSE_LATENCY
+    const REBINDS_JOIN_ONCE_DEAF_WITHIN: Duration = IROH_DOCUMENTED_CLOSE_LATENCY
         .saturating_add(SPEC_RELAY_PROBE_TIMEOUT)
         .saturating_add(REBIND_SLACK);
 
@@ -970,6 +970,20 @@ mod tests {
         drop(scratch);
     }
 
+    /// A member plan whose two known hosts hold the kept and the stripped relay, recording its events and the transport of its held connections to the record.
+    fn plan_with_kept_and_stripped_host_relays(record: &RunRecord) -> MemberPlan {
+        MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
+            .with_host_relays(&[
+                (LIVE_HOST_SEED, KEPT_RELAY),
+                (DEAD_HOST_SEED, STRIPPED_RELAY),
+            ])
+            .with_report(Arc::clone(record))
+            .with_register(crate::net::direct::HeldConnections::new(
+                Arc::new(RuntimeClock),
+                TransportRecord::new(Arc::clone(record), test_salt()),
+            ))
+    }
+
     #[tokio::test]
     async fn spec_3_14_a_relay_answering_within_the_1000_ms_probe_timeout_is_kept_and_one_answering_after_it_is_stripped()
      {
@@ -983,21 +997,12 @@ mod tests {
             ],
         );
         let (record, mut events) = recorded_events();
-        let peer = QuietNode::answering(PEER_SEED, &[KEPT_RELAY, STRIPPED_RELAY]).await;
+        let peer = QuietNode::answering(PEER_SEED, &KNOWN_HOST_RELAYS).await;
         let (member_endpoint, starting) = spawn_member(
             &scratch,
-            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
-                .with_host_relays(&[
-                    (LIVE_HOST_SEED, KEPT_RELAY),
-                    (DEAD_HOST_SEED, STRIPPED_RELAY),
-                ])
+            plan_with_kept_and_stripped_host_relays(&record)
                 .with_relay_probe(relays.probe())
-                .with_monotonic(clock.monotonic())
-                .with_report(Arc::clone(&record))
-                .with_register(crate::net::direct::HeldConnections::new(
-                    Arc::new(RuntimeClock),
-                    TransportRecord::new(record, test_salt()),
-                )),
+                .with_monotonic(clock.monotonic()),
         )
         .await;
         peer.introduce_to(&member_endpoint).await;
@@ -1013,13 +1018,14 @@ mod tests {
         )
         .await;
         let asked = found_within(RELAYS_ASKED_WITHIN, async || {
-            (relays.asked() == RELAYS_OF_THE_KNOWN_HOSTS).then_some(())
+            (relays.asked() == KNOWN_HOST_RELAYS.len()).then_some(())
         })
         .await;
         assert!(
             asked.is_some(),
-            "the rebind asked {} of the {RELAYS_OF_THE_KNOWN_HOSTS} relays within {RELAYS_ASKED_WITHIN:?}",
-            relays.asked()
+            "the rebind asked {} of the {} relays within {RELAYS_ASKED_WITHIN:?}",
+            relays.asked(),
+            KNOWN_HOST_RELAYS.len()
         );
         clock.move_forward(ANSWER_WITHIN_THE_PROBE_TIMEOUT);
         let kept_answered = found_within(RELAY_ANSWER_TAKEN_WITHIN, async || {
@@ -1060,20 +1066,11 @@ mod tests {
      {
         let scratch = Scratch::new("probe-record").await;
         let (record, mut events) = recorded_events();
-        let peer = QuietNode::answering(PEER_SEED, &[KEPT_RELAY, STRIPPED_RELAY]).await;
+        let peer = QuietNode::answering(PEER_SEED, &KNOWN_HOST_RELAYS).await;
         let (member_endpoint, starting) = spawn_member(
             &scratch,
-            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
-                .with_host_relays(&[
-                    (LIVE_HOST_SEED, KEPT_RELAY),
-                    (DEAD_HOST_SEED, STRIPPED_RELAY),
-                ])
-                .with_relay_probe(answering_only(KEPT_RELAY))
-                .with_report(Arc::clone(&record))
-                .with_register(crate::net::direct::HeldConnections::new(
-                    Arc::new(RuntimeClock),
-                    TransportRecord::new(record, test_salt()),
-                )),
+            plan_with_kept_and_stripped_host_relays(&record)
+                .with_relay_probe(answering_only(KEPT_RELAY)),
         )
         .await;
         peer.introduce_to(&member_endpoint).await;
@@ -1093,8 +1090,8 @@ mod tests {
                 .any(|(name, _fields)| SHOWS_THE_OLD_ENDPOINT_CLOSED.contains(name)),
             "the counters are read before the old endpoint closes: {before_the_snapshot:?}"
         );
-        let first_probe = next_recorded(&mut events, "transport.relay_probed").await;
-        let second_probe = next_recorded(&mut events, "transport.relay_probed").await;
+        let first_probe = next_recorded(&mut events, RELAY_PROBED).await;
+        let second_probe = next_recorded(&mut events, RELAY_PROBED).await;
 
         assert_eq!(
             rebinding,
@@ -1115,14 +1112,14 @@ mod tests {
                 ("answered", serde_json::Value::from(answered)),
             ]
         };
-        assert_eq!(
-            at_the_rebind.first(),
-            Some(&("moment", serde_json::Value::from("rebind")))
+        assert!(
+            was_taken_at(&at_the_rebind, REBIND_MOMENT),
+            "{at_the_rebind:?}"
         );
         assert!(
             at_the_rebind
                 .iter()
-                .any(|(name, count)| *name == "socket.recv_datagrams"
+                .any(|(name, count)| *name == RECEIVED_DATAGRAMS
                     && count.as_u64().is_some_and(|count| count > 0)),
             "the old endpoint's datagrams are counted: {at_the_rebind:?}"
         );
@@ -1194,20 +1191,11 @@ mod tests {
      {
         let scratch = Scratch::new("rebound-record").await;
         let (record, mut events) = recorded_events();
-        let peer = QuietNode::answering(PEER_SEED, &[KEPT_RELAY, STRIPPED_RELAY]).await;
+        let peer = QuietNode::answering(PEER_SEED, &KNOWN_HOST_RELAYS).await;
         let (member_endpoint, starting) = spawn_member(
             &scratch,
-            MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
-                .with_host_relays(&[
-                    (LIVE_HOST_SEED, KEPT_RELAY),
-                    (DEAD_HOST_SEED, STRIPPED_RELAY),
-                ])
-                .with_relay_probe(answering_only(KEPT_RELAY))
-                .with_report(Arc::clone(&record))
-                .with_register(crate::net::direct::HeldConnections::new(
-                    Arc::new(RuntimeClock),
-                    TransportRecord::new(record, test_salt()),
-                )),
+            plan_with_kept_and_stripped_host_relays(&record)
+                .with_relay_probe(answering_only(KEPT_RELAY)),
         )
         .await;
         peer.introduce_to(&member_endpoint).await;
@@ -1223,16 +1211,16 @@ mod tests {
         )
         .await;
 
-        assert_eq!(
-            at_the_fresh_bind.first(),
-            Some(&(MOMENT, serde_json::Value::from(REBOUND_MOMENT)))
+        assert!(
+            was_taken_at(&at_the_fresh_bind, REBOUND_MOMENT),
+            "{at_the_fresh_bind:?}"
         );
         assert_eq!(
             before_the_fresh_snapshot
                 .iter()
                 .filter(|(name, _fields)| *name == RELAY_PROBED)
                 .count(),
-            RELAYS_OF_THE_KNOWN_HOSTS,
+            KNOWN_HOST_RELAYS.len(),
             "the fresh endpoint's counters follow every relay probe: {before_the_fresh_snapshot:?}"
         );
         assert!(
@@ -1267,7 +1255,7 @@ mod tests {
     const SHOWS_THE_OLD_ENDPOINT_CLOSED: [&str; 3] = [
         "transport.connection_closed",
         "transport.path_closed",
-        "transport.relay_probed",
+        RELAY_PROBED,
     ];
     const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
     const SNAPSHOT_WAIT: Duration = Duration::from_secs(61);
@@ -1276,7 +1264,7 @@ mod tests {
     const DROPPED_PAYLOAD: &str = "gossip.payload_dropped";
     const RELAY_PROBED: &str = "transport.relay_probed";
     /// The relays of the two known hosts a rebind probes.
-    const RELAYS_OF_THE_KNOWN_HOSTS: usize = 2;
+    const KNOWN_HOST_RELAYS: [&str; 2] = [KEPT_RELAY, STRIPPED_RELAY];
     /// The longest a rebind takes from its start to ask every relay: the old endpoint's close, then the asks.
     const RELAYS_ASKED_WITHIN: Duration =
         IROH_DOCUMENTED_CLOSE_LATENCY.saturating_add(REBIND_SLACK);
@@ -1285,7 +1273,13 @@ mod tests {
     const PROBE_TIMEOUT_LEFT_AFTER_THE_ANSWER_WITHIN_IT: Duration =
         SPEC_RELAY_PROBE_TIMEOUT.saturating_sub(ANSWER_WITHIN_THE_PROBE_TIMEOUT);
     const MOMENT: &str = "moment";
+    const SOCKET_COUNTERS: usize = 35;
+    const GOSSIP_COUNTERS: usize = 18;
+    /// The fields of a counters snapshot: its moment, then the counters iroh keeps for the socket and for the gossip.
+    const SNAPSHOT_FIELDS: usize = 1 + SOCKET_COUNTERS + GOSSIP_COUNTERS;
     const START_MOMENT: &str = "start";
+    const REBIND_MOMENT: &str = "rebind";
+    const STOP_MOMENT: &str = "stop";
     const INTERVAL_MOMENT: &str = "interval";
     /// The longest a host's report takes to reach the member that hears it.
     const REPORT_HEARD_WITHIN: Duration = Duration::from_secs(10);
@@ -1298,9 +1292,16 @@ mod tests {
             >= SPEC_DEAF_TIMEOUT.saturating_add(REBIND_SLACK).as_millis()
     );
 
+    /// Whether the counters snapshot was taken at the moment, read from its moment field.
+    fn was_taken_at(snapshot: &EventFields, moment: &str) -> bool {
+        snapshot
+            .iter()
+            .any(|(name, value)| *name == MOMENT && *value == moment)
+    }
+
     /// Whether the counters were recorded after the start: at the interval, at a rebind or at a stop.
     fn is_snapshot_after_the_start(fields: &EventFields) -> bool {
-        fields.first() != Some(&(MOMENT, serde_json::Value::from(START_MOMENT)))
+        !was_taken_at(fields, START_MOMENT)
     }
 
     impl RebindSchedule {
@@ -1363,13 +1364,10 @@ mod tests {
         let (first_interval, at_first_interval) = next_snapshot(&mut events).await;
         let (second_interval, _) = next_snapshot(&mut events).await;
 
-        assert_eq!(
-            at_start.first(),
-            Some(&("moment", serde_json::Value::from("start")))
-        );
-        assert_eq!(
-            at_first_interval.first(),
-            Some(&("moment", serde_json::Value::from("interval")))
+        assert!(was_taken_at(&at_start, START_MOMENT), "{at_start:?}");
+        assert!(
+            was_taken_at(&at_first_interval, INTERVAL_MOMENT),
+            "{at_first_interval:?}"
         );
         assert_eq!(first_interval - started, SPEC_STATE_SNAPSHOT_INTERVAL);
         assert_eq!(
@@ -1377,9 +1375,9 @@ mod tests {
             SPEC_STATE_SNAPSHOT_INTERVAL
         );
         let names: Vec<&str> = at_start.iter().map(|(name, _)| *name).collect();
-        assert!(names.contains(&"socket.recv_datagrams"), "{names:?}");
+        assert!(names.contains(&RECEIVED_DATAGRAMS), "{names:?}");
         assert!(names.contains(&"gossip.neighbor_up"), "{names:?}");
-        assert_eq!(names.len(), 1 + 35 + 18, "{names:?}");
+        assert_eq!(names.len(), SNAPSHOT_FIELDS, "{names:?}");
         drop(scratch);
     }
 
@@ -1432,9 +1430,9 @@ mod tests {
         );
 
         for at_the_interval in at_the_intervals {
-            assert_eq!(
-                at_the_interval.first(),
-                Some(&(MOMENT, serde_json::Value::from(INTERVAL_MOMENT)))
+            assert!(
+                was_taken_at(&at_the_interval, INTERVAL_MOMENT),
+                "{at_the_interval:?}"
             );
         }
         drop(scratch);
@@ -1582,14 +1580,8 @@ mod tests {
         members.first().unwrap().node.start_stopping();
         let at_stop = next_recorded(&mut events, "state.counters").await;
 
-        assert_eq!(
-            at_start.first(),
-            Some(&("moment", serde_json::Value::from("start")))
-        );
-        assert_eq!(
-            at_stop.first(),
-            Some(&("moment", serde_json::Value::from("stop")))
-        );
+        assert!(was_taken_at(&at_start, START_MOMENT), "{at_start:?}");
+        assert!(was_taken_at(&at_stop, STOP_MOMENT), "{at_stop:?}");
         drop(scratch);
     }
 
@@ -1704,7 +1696,7 @@ mod tests {
         let ask_at_the_rebinds_join = request_seq(
             witness
                 .payload_where(
-                    SPEC_REBINDS_JOIN_ONCE_DEAF_WITHIN,
+                    REBINDS_JOIN_ONCE_DEAF_WITHIN,
                     presence_request_by(SECOND_SEED),
                 )
                 .await,
