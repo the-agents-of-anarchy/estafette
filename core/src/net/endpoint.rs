@@ -23,10 +23,10 @@ use crate::trace::LocationSalt;
 pub use super::gate::{GateFailure, GateFailureReason};
 
 pub const DIRECT_ALPN: &[u8] = b"estafette/direct/1";
-const SPEC_3_14_QUIC_IDLE_TIMEOUT_MILLIS: VarInt = VarInt::from_u32(10_000);
+const QUIC_IDLE_TIMEOUT_MILLIS: VarInt = VarInt::from_u32(10_000);
 const QUIC_KEEP_ALIVES_PER_IDLE_TIMEOUT: u64 = 20;
 pub const QUIC_KEEP_ALIVE_INTERVAL: Duration = Duration::from_millis(
-    SPEC_3_14_QUIC_IDLE_TIMEOUT_MILLIS.into_inner() / QUIC_KEEP_ALIVES_PER_IDLE_TIMEOUT,
+    QUIC_IDLE_TIMEOUT_MILLIS.into_inner() / QUIC_KEEP_ALIVES_PER_IDLE_TIMEOUT,
 );
 const LOCATION_HASH_BYTES: usize = 8;
 
@@ -192,7 +192,7 @@ async fn bind_endpoint(
 fn quic_transport_config() -> QuicTransportConfig {
     QuicTransportConfig::builder()
         .keep_alive_interval(QUIC_KEEP_ALIVE_INTERVAL)
-        .max_idle_timeout(Some(SPEC_3_14_QUIC_IDLE_TIMEOUT_MILLIS.into()))
+        .max_idle_timeout(Some(QUIC_IDLE_TIMEOUT_MILLIS.into()))
         .build()
 }
 
