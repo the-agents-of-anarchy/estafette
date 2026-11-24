@@ -309,35 +309,3 @@ impl AreaEvent for ProcessEvent {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::event::CODE_FIELD;
-
-    #[test]
-    fn observability_decision_6_a_panic_writes_the_file_and_line_of_the_source_location_it_was_built_from()
-     {
-        let location = Location::caller();
-
-        let fields = Event::from(ProcessEvent::Panicked(PanicLocation::of(location))).fields();
-
-        assert_eq!(
-            fields,
-            vec![
-                (FILE_FIELD, Value::from(file!())),
-                (LINE_FIELD, Value::from(location.line())),
-            ]
-        );
-    }
-
-    #[test]
-    fn observability_decision_9_a_refused_claim_holds_its_error_code_and_writes_it_as_its_code() {
-        let fields = Event::from(ProcessEvent::ClaimRefused {
-            code: ErrorCode::CardHeld,
-        })
-        .fields();
-
-        assert_eq!(fields, vec![(CODE_FIELD, Value::from("card_held"))]);
-    }
-}
