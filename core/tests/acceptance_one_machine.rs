@@ -92,10 +92,14 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use iroh::{EndpointId, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
+    use crate::dropped_payloads::short_id_of_node;
     use crate::local_network::{AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, LocalNetwork, MetPair};
     use crate::mcp_server::{PRESENCE_WAIT, SEND_TOOL, gone, online, send_arguments};
     use crate::member::{Member, loopback_address, loopback_address_of};
-    use crate::member_ended_at_its_peer::assert_stopped_member_is_gone_then_unreachable;
+    use crate::member_ended_at_its_peer::{
+        SPEC_NEIGHBOR_DOWN_AND_PROBE_WITHIN, assert_killed_member_is_unreachable_then_unsendable,
+        assert_stopped_member_is_gone_then_unreachable,
+    };
     use crate::message_body::BODY;
     use crate::new_presence_window::{acknowledged_after, new_presence_accepted};
     use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
@@ -104,6 +108,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use crate::scripted_node::{SPEC_DIRECT_TIMEOUT_WITH_SLACK, ScriptedNode};
     use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
     use crate::timed_step::timed;
+    use crate::trace_reader::TraceLine;
     use crate::{MESSAGE_ID, send};
 
     /// The body of bob's Message stamped just before his Departure's seq (spec 3.8).
@@ -135,12 +140,24 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
     /// The event a member records when it replaces a peer's lookup entry, the last step of applying a Presence.
     const LOOKUP_REPLACED_EVENT: &str = "peers.lookup_replaced";
+    /// What detecting a killed peer on one machine may take beyond the bound of spec 3.15 test 5, which its idle timeout and probe timeout leave no room for.
+    const LOOPBACK_DETECTION_SLACK: Duration = Duration::from_secs(1);
+    /// The event a member records when gossip reports a neighbor up.
+    const NEIGHBOR_UP_EVENT: &str = "gossip.neighbor_up";
+    /// The status of an entry whose probe or request failed (spec 3.8).
+    const UNREACHABLE_STATUS: &str = "unreachable";
+    /// The cause an events line gives an entry a failed probe moved.
+    const PROBE_FAILED_CAUSE: &str = "probe_failed";
     /// The event a member records when its table gains an entry.
     const ENTRY_CREATED_EVENT: &str = "peers.entry_created";
     /// The event a member records when an entry's status changes.
     const ENTRY_CHANGED_EVENT: &str = "peers.entry_changed";
     /// The event a member records for each direct request it serves.
     const REQUEST_SERVED_EVENT: &str = "direct.request_served";
+    /// The event a member records for each direct request it sends, with how it ended.
+    const REQUEST_SENT_EVENT: &str = "direct.request_sent";
+    /// The outcome of a request its recipient acknowledged, as an events line names it.
+    const ACKNOWLEDGED_OUTCOME: &str = "acknowledged";
     /// The kind of payload a presence is, as an events line names it.
     const PRESENCE_KIND: &str = "presence";
     /// The kind of direct request a Message is, as an events line names it.
@@ -318,6 +335,62 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     /// Whether the response is a `MessageAck` that accepted the Message.
     fn is_accepted_message_ack(response: &Response) -> bool {
         matches!(response, Response::MessageAck(ack) if ack.accepted)
+    }
+
+    /// Waits until the member has bob as a gossip neighbor and has had an Introduce to bob acknowledged since its table listed bob, so that killing bob leaves no request to it in flight and only a neighbor-down event and a failed probe can set it unreachable.
+    #[track_caller]
+    fn wait_until_bob_is_a_neighbor_with_no_request_to_it_in_flight(
+        member: &Member,
+        bob_card: &Card,
+    ) {
+        let bob = short_id_of_node(bob_card.id);
+        member.wait_until(
+            &format!(
+                "{NEIGHBOR_UP_EVENT} of {bob} and an {INTRODUCE_KIND} to it {ACKNOWLEDGED_OUTCOME} after the {ENTRY_CREATED_EVENT}"
+            ),
+            PRESENCE_WAIT,
+            |lines| {
+                let is_bob = |line: &TraceLine| line.value("peer") == Some(&json!(bob));
+                let listed = lines
+                    .iter()
+                    .find(|line| line.event == ENTRY_CREATED_EVENT && is_bob(line))?
+                    .n;
+                let is_neighbor = lines
+                    .iter()
+                    .any(|line| line.event == NEIGHBOR_UP_EVENT && is_bob(line));
+                let is_acknowledged_since = lines.iter().any(|line| {
+                    line.event == REQUEST_SENT_EVENT
+                        && line.n > listed
+                        && line.value("kind") == Some(&json!(INTRODUCE_KIND))
+                        && is_bob(line)
+                        && line.value("outcome") == Some(&json!(ACKNOWLEDGED_OUTCOME))
+                });
+                (is_neighbor && is_acknowledged_since).then_some(())
+            },
+        );
+    }
+
+    /// Requires the member's table to have set bob unreachable by a failed probe, the cause a neighbor-down event gives (spec 3.8).
+    #[track_caller]
+    fn require_bob_set_unreachable_by_a_failed_probe(member: &Member, bob_card: &Card) {
+        let bob = short_id_of_node(bob_card.id);
+        member.wait_until(
+            &format!(
+                "{ENTRY_CHANGED_EVENT} of {bob} to {UNREACHABLE_STATUS} by {PROBE_FAILED_CAUSE}"
+            ),
+            EVENTS_OF_AN_ENDED_MEMBER_WITHIN,
+            |lines| {
+                lines
+                    .iter()
+                    .find(|line| {
+                        line.event == ENTRY_CHANGED_EVENT
+                            && line.value("peer") == Some(&json!(bob))
+                            && line.value("to") == Some(&json!(UNREACHABLE_STATUS))
+                            && line.value("cause") == Some(&json!(PROBE_FAILED_CAUSE))
+                    })
+                    .map(|_| ())
+            },
+        );
     }
 
     /// Each status the member's table gave the handle from its Departure on, in order, once the member has served a direct request of that kind after the Departure: the Departure's own and every later one (spec 3.8).
@@ -609,6 +682,33 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                 })
             },
         );
+    }
+
+    #[test]
+    fn spec_3_15_test_5_a_killed_member_is_unreachable_at_its_peer_within_one_neighbor_down_and_one_probe_timeout()
+     {
+        let network =
+            LocalNetwork::create("killed-unreachable", &RunRecordKeeping::from_environment());
+        let host = network.stand_in_host();
+        network.add_stand_in_host_to_the_configuration(&host);
+        let MetPair {
+            mut amy,
+            mut bob,
+            bob_card,
+            ..
+        } = network.amy_and_bob_met(&host);
+        wait_until_bob_is_a_neighbor_with_no_request_to_it_in_flight(&amy, &bob_card);
+
+        let killed = Instant::now();
+        bob.kill();
+
+        assert_killed_member_is_unreachable_then_unsendable(
+            &mut amy,
+            BOB_HANDLE,
+            killed,
+            SPEC_NEIGHBOR_DOWN_AND_PROBE_WITHIN.saturating_add(LOOPBACK_DETECTION_SLACK),
+        );
+        require_bob_set_unreachable_by_a_failed_probe(&amy, &bob_card);
     }
 
     #[test]

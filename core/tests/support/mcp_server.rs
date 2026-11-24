@@ -49,6 +49,8 @@ pub const PRESENCE_WAIT: Duration = Duration::from_secs(20);
 pub const ONLINE: &str = "online";
 /// The status the peers tool gives a peer whose Departure arrived (spec 3.1).
 const GONE: &str = "gone";
+/// The status the peers tool gives a peer that failed its probe (spec 3.1).
+const UNREACHABLE: &str = "unreachable";
 
 /// A running `estafette mcp` process driven as an MCP client over its standard streams, with the events it records, stopped when dropped.
 pub struct McpServer {
@@ -266,6 +268,11 @@ pub fn online(peer: &Value) -> bool {
 /// Whether the peers tool lists the peer gone.
 pub fn gone(peer: &Value) -> bool {
     peer[STATUS_KEY] == json!(GONE)
+}
+
+/// Whether the peers tool lists the peer unreachable.
+pub fn unreachable(peer: &Value) -> bool {
+    peer[STATUS_KEY] == json!(UNREACHABLE)
 }
 
 #[cfg(test)]

@@ -761,7 +761,6 @@ mod spec_3_15_two_members_through_the_live_host {
     use std::time::{Duration, Instant};
 
     use estafette::keys::{parse_secret_key, render_public_key};
-    use estafette::net::endpoint::QUIC_KEEP_ALIVE_INTERVAL;
     use estafette::wire::{
         self, Addr, Message, MessageId, Payload, Presence, SignatureBytes, Version,
     };
@@ -781,7 +780,10 @@ mod spec_3_15_two_members_through_the_live_host {
         INIT_TOOL, McpServer, PRESENCE_WAIT, SEND_TOOL, call_succeeded, gone, init_arguments,
         online, send_arguments,
     };
-    use crate::member_ended_at_its_peer::assert_stopped_member_is_gone_then_unreachable;
+    use crate::member_ended_at_its_peer::{
+        SPEC_NEIGHBOR_DOWN_AND_PROBE_WITHIN, assert_killed_member_is_unreachable_then_unsendable,
+        assert_stopped_member_is_gone_then_unreachable,
+    };
     use crate::member_events::MemberEvents;
     use crate::message_body::BODY;
     use crate::new_presence_window::{acknowledged_after, new_presence_accepted};
@@ -798,10 +800,6 @@ mod spec_3_15_two_members_through_the_live_host {
     /// A relay a test's presence line prints that is no relay URL.
     const NOT_A_RELAY_URL: &str = "not a relay url";
 
-    /// The QUIC idle timeout of spec 3.14, after which a killed peer's gossip neighbor-down event comes (spec 3.15 test 5).
-    const SPEC_QUIC_IDLE_TIMEOUT: Duration = Duration::from_millis(10_000);
-    /// The probe timeout of spec 3.14, the second part of the bound of spec 3.15 test 5.
-    const SPEC_PROBE_TIMEOUT: Duration = Duration::from_millis(3000);
     /// Spec 3.15 test 17: the encoded size of the largest Presence, its worst case summed field by field.
     const SPEC_LARGEST_PRESENCE_BYTES: usize = 3951;
     /// The gossip frame limit of spec 3.14.
@@ -1258,25 +1256,16 @@ mod spec_3_15_two_members_through_the_live_host {
         let mut amy = lab_member(&network, "t5-amy", &unique_handle("amy"), FIRST_SESSION);
         let mut bob = lab_member(&network, "t5-bob", &unique_handle("bob"), FIRST_SESSION);
         meet(&mut amy, &mut bob);
-        let neighbor_down_and_probe = SPEC_QUIC_IDLE_TIMEOUT
-            .checked_add(QUIC_KEEP_ALIVE_INTERVAL)
-            .and_then(|neighbor_down| neighbor_down.checked_add(SPEC_PROBE_TIMEOUT))
-            .unwrap();
 
         let killed = Instant::now();
         bob.member.kill();
-        amy.member
-            .peer_within(&bob.handle, neighbor_down_and_probe, |bob| {
-                bob["status"] == json!("unreachable")
-            });
-        let unreachable_after = killed.elapsed();
-        let sent = send(&mut amy, &bob.handle.clone(), BODY);
 
-        assert!(
-            unreachable_after <= neighbor_down_and_probe,
-            "{unreachable_after:?}"
+        assert_killed_member_is_unreachable_then_unsendable(
+            &mut amy.member,
+            &bob.handle,
+            killed,
+            SPEC_NEIGHBOR_DOWN_AND_PROBE_WITHIN,
         );
-        assert_eq!(sent["error"]["code"], json!("unreachable"), "{sent}");
     }
 
     #[test]

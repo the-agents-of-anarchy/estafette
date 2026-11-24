@@ -96,9 +96,19 @@ impl LocalNetwork {
 
     /// Adds by the binary's own command a configured host whose relay never answers, so a member always knows a host and may rebind.
     pub fn add_host_that_never_answers(&self) {
+        self.add_host_named(*SecretKey::generate().public().as_bytes());
+    }
+
+    /// Adds by the binary's own command the stand-in host as a configured host whose relay never answers, so every member sends it its join.
+    pub fn add_stand_in_host_to_the_configuration(&self, host: &ScriptedNode) {
+        self.add_host_named(*host.endpoint().id().as_bytes());
+    }
+
+    /// Adds by the binary's own command a configured host of that node id whose relay never answers.
+    fn add_host_named(&self, id: wire::PublicKey) {
         let host_line = render_host_line(&HostAddr {
             v: Version::CURRENT,
-            id: *SecretKey::generate().public().as_bytes(),
+            id,
             relay: RelayUrl::try_from(SILENT_RELAY.to_owned()).unwrap(),
         })
         .unwrap();
