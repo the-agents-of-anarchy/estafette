@@ -16,7 +16,7 @@ use crate::net::direct::{DirectHost, before_deadline, later_by};
 use crate::net::endpoint::{RebindCause, SnapshotMoment};
 use crate::net::gossip::NetworkTopic;
 use crate::node::addresses::endpoint_id;
-use crate::node::known_hosts::seed_lookup_with_known_hosts;
+use crate::node::known_hosts::{KnownHostAddress, seed_lookup_with_known_hosts};
 use crate::node::presence::{
     PresenceLoop, home_relay_changes, own_address_changes, record_counters, serve,
 };
@@ -248,7 +248,9 @@ impl PresenceLoop {
             return ControlFlow::Break(());
         }
         self.client.follow(self.endpoint.endpoint().clone()).await;
-        self.seed_lookup_recording_each_entry();
+        let hosts = self.known_hosts.addresses();
+        self.seed_lookup_recording_each_entry(&hosts);
+        let bootstrap = self.bootstrap_nodes(&hosts);
         self.serve_fresh_endpoint();
         record_counters(
             SnapshotMoment::Rebound,
@@ -257,7 +259,7 @@ impl PresenceLoop {
             &*self.report,
         );
         self.watch_fresh_endpoint();
-        self.subscribe_through_known_nodes().await
+        self.subscribe_through(bootstrap).await
     }
 
     /// Records each configured host this rebind leaves out because its id or relay does not parse.
@@ -361,10 +363,21 @@ impl PresenceLoop {
     }
 
     /// Gives each known host whose lookup entry holds no address its relay, recording each entry it seeds.
-    fn seed_lookup_recording_each_entry(&self) {
-        for card in seed_lookup_with_known_hosts(&self.endpoint, &self.known_hosts.addresses()) {
+    fn seed_lookup_recording_each_entry(&self, hosts: &[KnownHostAddress]) {
+        for card in seed_lookup_with_known_hosts(&self.endpoint, hosts) {
             self.record_lookup_of(&card);
         }
+    }
+
+    /// The nodes the join goes through: every known host, then every Online peer whose address the lookup holds.
+    fn bootstrap_nodes(&self, hosts: &[KnownHostAddress]) -> Vec<EndpointId> {
+        let mut bootstrap: Vec<EndpointId> = hosts.iter().map(|host| host.id).collect();
+        bootstrap.extend(
+            self.peers_with_status(Status::Online)
+                .into_iter()
+                .filter(|peer| self.endpoint.address_of(*peer).is_some()),
+        );
+        bootstrap
     }
 
     /// Serves the fresh endpoint with a fresh gossip instance.
@@ -381,19 +394,8 @@ impl PresenceLoop {
         self.relay_loss = RelayLossWatch::default();
     }
 
-    /// Subscribes to the topic through every known host and every Online peer whose address the lookup holds.
-    async fn subscribe_through_known_nodes(&mut self) -> ControlFlow<()> {
-        let mut bootstrap: Vec<EndpointId> = self
-            .known_hosts
-            .addresses()
-            .iter()
-            .map(|host| host.id)
-            .collect();
-        bootstrap.extend(
-            self.peers_with_status(Status::Online)
-                .into_iter()
-                .filter(|peer| self.endpoint.address_of(*peer).is_some()),
-        );
+    /// Subscribes to the topic through the nodes, stopping the loop when the join fails.
+    async fn subscribe_through(&mut self, bootstrap: Vec<EndpointId>) -> ControlFlow<()> {
         match NetworkTopic::join(
             &self.gossip,
             self.keys.clone(),
