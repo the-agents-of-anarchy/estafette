@@ -39,17 +39,18 @@ fn whole_lines_of_a_run_file_read_as(path: &Path, writing: WritingProcess) -> Ve
             !written.contains(&0),
             "{name}: a zero byte before the file's last byte that is not one"
         );
-        let unended = written
-            .rsplit(|byte| *byte == b'\n')
-            .next()
-            .unwrap_or_default();
-        assert!(
-            unended.starts_with(own_line_start.as_bytes())
-                || own_line_start.as_bytes().starts_with(unended),
-            "{name}: the {} bytes after its last whole line are not the start of this run's own line",
-            unended.len()
-        );
     }
+    let unended = writing
+        .landed_part(written)
+        .rsplit(|byte| *byte == b'\n')
+        .next()
+        .unwrap_or_default();
+    assert!(
+        unended.starts_with(own_line_start.as_bytes())
+            || own_line_start.as_bytes().starts_with(unended),
+        "{name}: the {} bytes after its last whole line are not the start of this run's own line",
+        unended.len()
+    );
     let lines =
         parse_trace_lines(written, writing).unwrap_or_else(|failure| panic!("{name}: {failure}"));
     for line in &lines {
@@ -156,6 +157,25 @@ mod tests {
                 "{}: line 2 is not a trace line: ",
                 run_file_name()
             )),
+            "{refusal_text}"
+        );
+    }
+
+    #[test]
+    fn observability_decision_12_the_wait_on_a_live_file_refuses_an_unended_tail_that_is_no_start_of_the_runs_own_line()
+     {
+        let mut bytes = MEMBER_LINE.as_bytes().to_vec();
+        bytes.extend_from_slice(b"junk that is no start of a line");
+        bytes.resize(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, 0);
+        let run_file = fresh_run_file("junk-tail", &bytes);
+
+        let refusal = std::panic::catch_unwind(|| holds_within_the_wait(&run_file, |_lines| true))
+            .map_err(|payload| payload.downcast_ref::<String>().cloned());
+        fs::remove_dir_all(run_file.parent().unwrap()).unwrap();
+
+        let refusal_text = refusal.unwrap_err().unwrap();
+        assert!(
+            refusal_text.ends_with("are not the start of this run's own line"),
             "{refusal_text}"
         );
     }
