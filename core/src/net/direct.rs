@@ -2242,14 +2242,14 @@ pub(crate) mod tests {
                 .send_modify(|now| *now = now.checked_add(by).unwrap());
         }
 
-        /// Moves the clock to a reading a few milliseconds past the deadline, so its waiter wakes at a reading later than the deadline it asked.
+        /// Moves the clock to a reading a few milliseconds past the deadline, so its waiter wakes at a reading later than the deadline it asked, and leaves a later reading where it stands.
         pub fn move_late_past(&self, deadline: tokio::time::Instant) {
             self.reading.send_modify(|now| {
                 *now = (*now).max(deadline.checked_add(WOKEN_LATE_BY).unwrap());
             });
         }
 
-        /// Waits until the named waiter has asked the clock to wake it at the deadline, failing with that name when it has not within the wait.
+        /// Waits until any waiter has asked the clock to wake it at the deadline, failing with the name of the waiter the test expects when none has within the wait.
         pub async fn asked_to_wake(&self, waiter: &str, deadline: tokio::time::Instant) {
             let mut asked_deadlines = self.asked_deadlines.subscribe();
             answered_within(
@@ -2980,7 +2980,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// The longest a send takes on the runtime's clock: the connection timeout, then the ack timeout.
+    /// The longest the test waits, on the runtime's clock, for a send whose own timeouts stand on the register's standing clock: the connection timeout, then the ack timeout.
     const SEND_ANSWERED_WITHIN: Duration = CONNECT_TIMEOUT.saturating_add(ACK_TIMEOUT);
 
     /// What a slow-host send awaits, named in the failure when it does not come.
