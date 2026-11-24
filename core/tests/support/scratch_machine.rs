@@ -666,6 +666,14 @@ impl ScratchMachine {
             CARDS_DIRECTORY_VARIABLE,
             cards.parent().unwrap().as_os_str().to_owned(),
         ));
+        // Instrument (branch ci/instrumented-loop-of-the-two-linux-failures only, never merged): the members of the machine of spec 3.15 test 21 (tag t21) also write the transmit lines to their raw trace file.
+        if self
+            .root
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().ends_with("-t21"))
+        {
+            variables.push(("INSTRUMENT_B_RAW_EXTRA_TARGETS", OsString::from("1")));
+        }
         variables
     }
 

@@ -14,12 +14,16 @@ use tracing_subscriber::registry::{LookupSpan, Scope};
 use super::Trace;
 
 /// The targets of iroh's own whose lines the raw file holds, each with the most detailed level it takes (`spec/observability.md` decision 7).
-// Instrument (branch ci/instrumented-loop-of-the-two-linux-failures only, never merged): the last three entries admit the transmit lines of the QUIC connection and endpoint (DEBUG) and of iroh's transports, the IP send lines among them (TRACE, the level of iroh's "sent transmit" line).
-const IROH_TARGETS: [(&str, LevelFilter); 7] = [
+const IROH_TARGETS: [(&str, LevelFilter); 4] = [
     ("iroh::_events", LevelFilter::DEBUG),
     ("iroh::socket::remote_map", LevelFilter::TRACE),
     ("iroh_gossip::proto::hyparview", LevelFilter::DEBUG),
     ("iroh_gossip::net", LevelFilter::DEBUG),
+];
+
+// Instrument (branch ci/instrumented-loop-of-the-two-linux-failures only, never merged): when the process finds this variable set, the raw file also admits the transmit lines of the QUIC connection and endpoint (DEBUG) and of iroh's transports, the IP send lines among them (TRACE, the level of iroh's "sent transmit" line).
+const INSTRUMENT_EXTRA_TARGETS_VARIABLE: &str = "INSTRUMENT_B_RAW_EXTRA_TARGETS";
+const INSTRUMENT_EXTRA_TARGETS: [(&str, LevelFilter); 3] = [
     ("noq_proto::connection", LevelFilter::DEBUG),
     ("noq_proto::endpoint", LevelFilter::DEBUG),
     ("iroh::socket::transports", LevelFilter::TRACE),
@@ -44,8 +48,12 @@ pub fn install(trace: Arc<Trace>) -> Result<(), IrohLinesRefused> {
 
 /// A subscriber that hands each line of the four targets to the trace's raw file and drops every other line.
 fn raw_file_subscriber(trace: Arc<Trace>) -> impl Subscriber + Send + Sync {
+    let mut targets = Targets::new().with_targets(IROH_TARGETS);
+    if std::env::var_os(INSTRUMENT_EXTRA_TARGETS_VARIABLE).is_some() {
+        targets = targets.with_targets(INSTRUMENT_EXTRA_TARGETS);
+    }
     Registry::default()
-        .with(Targets::new().with_targets(IROH_TARGETS))
+        .with(targets)
         .with(RawFileLines { trace })
 }
 
