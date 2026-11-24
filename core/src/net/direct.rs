@@ -2500,11 +2500,7 @@ pub(crate) mod tests {
         }
 
         fn case_swapped(self) -> Self {
-            if self.is_ascii_lowercase() {
-                self.to_ascii_uppercase()
-            } else {
-                self.to_ascii_lowercase()
-            }
+            u8::try_from(self).map_or(self, |byte| Self::from(byte.case_swapped()))
         }
     }
 
