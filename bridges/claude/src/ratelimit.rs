@@ -188,21 +188,66 @@ mod tests {
         );
     }
 
+    const SENDER_POOL: usize = 6;
+    const BODY_POOL: usize = 2;
+    const LONGEST_QUIET_GAP_SECONDS: usize = 40;
+    const MINIMUM_SEEDS_THAT_FORGOT_A_SENDER: usize = 50;
+
+    struct WhatASenderLastDid {
+        received_at: Duration,
+        injected_at: Option<Duration>,
+    }
+
+    impl WhatASenderLastDid {
+        fn still_limits_at(&self, now: Duration) -> bool {
+            self.injected_at
+                .is_some_and(|injected_at| now.saturating_sub(injected_at) < INJECTION_WINDOW)
+                || now.saturating_sub(self.received_at) < REPEATED_BODY_QUIET_PERIOD
+        }
+    }
+
     #[test]
     fn spec_3_12_memory_bound_read_from_the_private_map_a_sender_is_forgotten_once_nothing_limits_it()
      {
-        const SENDER_COUNT: usize = 20;
-        let mut limit = SenderRateLimit::default();
-        for index in 0..SENDER_COUNT {
-            limit.admit(&format!("sender-{index}"), "hello", Duration::ZERO);
+        let mut seeds_that_forgot_a_sender = 0;
+        for seed in 0..GENERATED_CASES {
+            let mut state = seed;
+            let mut now = Duration::ZERO;
+            let mut limit = SenderRateLimit::default();
+            let mut senders_met: HashMap<usize, WhatASenderLastDid> = HashMap::new();
+            let mut forgot_a_sender = false;
+            for index in 0..EVENTS_PER_CASE {
+                let gap_seconds =
+                    u64::try_from(next_below(&mut state, LONGEST_QUIET_GAP_SECONDS)).unwrap_or(0);
+                now = now.saturating_add(Duration::from_secs(gap_seconds));
+                let sender = next_below(&mut state, SENDER_POOL);
+                let body = next_below(&mut state, BODY_POOL);
+                let admission =
+                    limit.admit(&format!("sender-{sender}"), &format!("body {body}"), now);
+                let others_still_limiting = senders_met
+                    .iter()
+                    .filter(|(other, last_did)| **other != sender && last_did.still_limits_at(now))
+                    .count();
+                let last_did = senders_met.entry(sender).or_insert(WhatASenderLastDid {
+                    received_at: now,
+                    injected_at: None,
+                });
+                last_did.received_at = now;
+                if matches!(admission, Admission::Admitted) {
+                    last_did.injected_at = Some(now);
+                }
+                assert_eq!(
+                    limit.history_by_sender.len(),
+                    others_still_limiting.saturating_add(1),
+                    "seed {seed} event {index}"
+                );
+                forgot_a_sender |= senders_met.len() > limit.history_by_sender.len();
+            }
+            seeds_that_forgot_a_sender += usize::from(forgot_a_sender);
         }
-        let just_inside_the_window = INJECTION_WINDOW.saturating_sub(Duration::from_secs(1));
-        limit.admit("early", "hello", just_inside_the_window);
-        assert_eq!(
-            limit.history_by_sender.len(),
-            SENDER_COUNT.saturating_add(1)
+        assert!(
+            seeds_that_forgot_a_sender > MINIMUM_SEEDS_THAT_FORGOT_A_SENDER,
+            "{seeds_that_forgot_a_sender}"
         );
-        limit.admit("late", "hello", INJECTION_WINDOW);
-        assert_eq!(limit.history_by_sender.len(), 2);
     }
 }
