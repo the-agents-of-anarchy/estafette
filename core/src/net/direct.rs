@@ -4114,13 +4114,15 @@ pub(crate) mod tests {
      {
         let recording = RecordingHost::with_card(card_of(SERVER_SEED));
         let started_probe = Arc::new(Mutex::new(None));
-        let restart = restarted_process_introduced_to_a_member(dropping_transport(), |member| {
-            HostProbingTheIntroducerWhileAnswering {
+        let (member_record, mut member_recorded) = recorded_events();
+        let restart = restarted_process_introduced_to_a_member(
+            TransportRecord::new(member_record, test_salt()),
+            |member| HostProbingTheIntroducerWhileAnswering {
                 recording: recording.clone(),
                 member,
                 started_probe: Arc::clone(&started_probe),
-            }
-        })
+            },
+        )
         .await;
         let ack = restart.introduced.unwrap_or_else(|failure| {
             panic!("the restarted process read no answer to its introduce: {failure:?}")
@@ -4131,6 +4133,39 @@ pub(crate) mod tests {
                 mac: ack.mac,
                 ..own_introduction(false)
             }
+        );
+        // Instrument: the member's transport records, in the order recorded, and the register as the assertion below reads it.
+        for (index, (name, fields)) in recorded_so_far(&mut member_recorded).iter().enumerate() {
+            if matches!(
+                *name,
+                "transport.connection_opened"
+                    | "transport.connection_closing"
+                    | "transport.connection_closed"
+            ) {
+                eprintln!("INSTRUMENT-A record {index} {name} {fields:?}");
+            }
+        }
+        eprintln!(
+            "INSTRUMENT-A register.reports_a_selected_path_of_each_held_of_client_card (value the assertion reads, computed when the introduce returned) = {:?}",
+            restart.reported_after_the_introduce
+        );
+        eprintln!(
+            "INSTRUMENT-A register.held_of_client_card_now (stable ids, selected-path report) = {:?}",
+            restart
+                .link
+                .server_node
+                .held_connections()
+                .held()
+                .get(&card_of(CLIENT_SEED))
+                .into_iter()
+                .flatten()
+                .map(|held| (
+                    held.connection
+                        .upgrade()
+                        .map(|connection| connection.stable_id()),
+                    held.reports_a_selected_path()
+                ))
+                .collect::<Vec<_>>()
         );
         assert_eq!(
             restart.reported_after_the_introduce,
