@@ -960,6 +960,8 @@ mod tests {
     const KIND_FIELD: &str = "kind";
     const PEER_FIELD: &str = "peer";
     const INFRASTRUCTURE_KIND: &str = "infrastructure";
+    const PRESENCE_REQUEST_KIND: &str = "presence_request";
+    const TIMESTAMP_FIELD: &str = "ts";
     /// The second record a host takes from another: the one its record interval brings after the one it learned the host from.
     const SECOND_RECORD: usize = 2;
     const PEER_JOIN_WAIT: Duration = Duration::from_secs(8);
@@ -1105,8 +1107,7 @@ mod tests {
     #[derive(Clone, Default)]
     struct Seen {
         relay_sites: Arc<Mutex<Vec<(RelaySite, u32)>>>,
-        bound: Arc<Mutex<Vec<Bound>>>,
-        bound_count: tokio::sync::watch::Sender<usize>,
+        bound: tokio::sync::watch::Sender<Vec<Bound>>,
         relay_shut_down_after_endpoint_closed: Arc<Mutex<Vec<bool>>>,
     }
 
@@ -1116,6 +1117,7 @@ mod tests {
         gate_key: GateKey,
         relay: RelayUrl,
         endpoint: iroh::Endpoint,
+        relay_map: iroh::RelayMap,
     }
 
     struct Plan {
@@ -1158,9 +1160,8 @@ mod tests {
                 monotonic,
             } = self;
             let relay_sites = Arc::clone(&seen.relay_sites);
-            let bound = Arc::clone(&seen.bound);
-            let bound_count = seen.bound_count.clone();
-            let bound_at_shutdown = Arc::clone(&seen.bound);
+            let bound = seen.bound.clone();
+            let bound_at_shutdown = seen.bound.clone();
             let shut_down = Arc::clone(&seen.relay_shut_down_after_endpoint_closed);
             InfrastructureEffects {
                 fill_from_secure_source: Box::new(move |bytes| *bytes = [seed; KEY_LEN]),
@@ -1180,15 +1181,15 @@ mod tests {
                         for address in reachable {
                             endpoint.replace_address(address);
                         }
-                        let mut bound_so_far = bound.lock().unwrap();
-                        bound_so_far.push(Bound {
-                            host,
-                            gate_key,
-                            relay,
-                            endpoint: endpoint.endpoint().clone(),
+                        bound.send_modify(|bound_so_far| {
+                            bound_so_far.push(Bound {
+                                host,
+                                gate_key,
+                                relay,
+                                endpoint: endpoint.endpoint().clone(),
+                                relay_map: endpoint.relay_map(),
+                            });
                         });
-                        bound_count.send_replace(bound_so_far.len());
-                        drop(bound_so_far);
                         Ok(endpoint)
                     })
                 }),
@@ -1200,8 +1201,7 @@ mod tests {
                         let serving: RunningRelay = Box::new(move || {
                             Box::pin(async move {
                                 let endpoint_closed = bound_at_shutdown
-                                    .lock()
-                                    .unwrap()
+                                    .borrow()
                                     .iter()
                                     .all(|bound| bound.endpoint.is_closed());
                                 shut_down.lock().unwrap().push(endpoint_closed);
@@ -1257,21 +1257,21 @@ mod tests {
     }
 
     async fn bound_endpoint(seen: &Seen, index: usize) -> iroh::Endpoint {
-        let mut bound_count = seen.bound_count.subscribe();
-        drop(
-            tokio::time::timeout(BIND_WAIT, bound_count.wait_for(|count| *count > index))
-                .await
-                .unwrap_or_else(|_elapsed| {
-                    panic!("endpoint {index} of the host not bound within {BIND_WAIT:?}")
-                })
-                .unwrap(),
-        );
-        seen.bound
-            .lock()
-            .unwrap()
-            .get(index)
-            .map(|bound| bound.endpoint.clone())
-            .unwrap()
+        bound_host(seen, index).await.endpoint
+    }
+
+    async fn bound_host(seen: &Seen, index: usize) -> Bound {
+        let mut bound_receiver = seen.bound.subscribe();
+        let bound = tokio::time::timeout(
+            BIND_WAIT,
+            bound_receiver.wait_for(|bound| bound.len() > index),
+        )
+        .await
+        .unwrap_or_else(|_elapsed| {
+            panic!("endpoint {index} of the host not bound within {BIND_WAIT:?}")
+        })
+        .unwrap();
+        bound.get(index).cloned().unwrap()
     }
 
     fn network_keys() -> NetworkKeys {
@@ -1335,11 +1335,11 @@ mod tests {
             }
         }
 
-        /// The payloads the peer hears before the next host record, with that record, failing by name when no host record comes within the wait.
-        async fn payloads_before_the_next_host_record(
+        /// The payloads the peer hears before the next host record, and that record unless the wait runs out first.
+        async fn hearing_until_the_next_host_record(
             &mut self,
             within: Duration,
-        ) -> (Vec<Payload>, Infrastructure) {
+        ) -> (Vec<Payload>, Option<Infrastructure>) {
             let mut heard_before = Vec::new();
             let next_record = found_within(within, async || {
                 let Some(Ok(GossipEvent::Payload(payload))) = self.topic.next_event().await else {
@@ -1354,6 +1354,15 @@ mod tests {
                 }
             })
             .await;
+            (heard_before, next_record)
+        }
+
+        /// The payloads the peer hears before the next host record, with that record, failing by name when no host record comes within the wait.
+        async fn payloads_before_the_next_host_record(
+            &mut self,
+            within: Duration,
+        ) -> (Vec<Payload>, Infrastructure) {
+            let (heard_before, next_record) = self.hearing_until_the_next_host_record(within).await;
             let Some(next_record) = next_record else {
                 panic!("the peer heard no host record within {within:?}; heard {heard_before:?}")
             };
@@ -1362,17 +1371,7 @@ mod tests {
 
         #[must_use]
         async fn next_host_record(&mut self, within: Duration) -> Option<Infrastructure> {
-            tokio::time::timeout(within, async {
-                loop {
-                    if let Some(Ok(GossipEvent::Payload(payload))) = self.topic.next_event().await
-                        && let Payload::Infrastructure(record) = Payload::from(*payload)
-                    {
-                        return record;
-                    }
-                }
-            })
-            .await
-            .ok()
+            self.hearing_until_the_next_host_record(within).await.1
         }
     }
 
@@ -1508,7 +1507,7 @@ mod tests {
             assert!(outcome.unwrap_err().to_string().contains(refusal_names));
         }
         assert!(seen.relay_sites.lock().unwrap().is_empty());
-        assert!(seen.bound.lock().unwrap().is_empty());
+        assert!(seen.bound.borrow().is_empty());
     }
 
     fn spec_gate_key() -> GateKey {
@@ -1543,7 +1542,7 @@ mod tests {
             *seen.relay_sites.lock().unwrap(),
             vec![(expected_site, SPEC_PRIVATE_DIRECTORY_MODE)]
         );
-        let bound = seen.bound.lock().unwrap();
+        let bound = seen.bound.borrow();
         assert_eq!(bound.len(), 1);
         assert_eq!(bound[0].host, secret_key(HOST_SEED).public());
         assert_eq!(bound[0].gate_key.as_bytes(), spec_gate_key().as_bytes());
@@ -1714,13 +1713,13 @@ mod tests {
         let request_taken_at = recorded_through_the_end.iter().position(|(name, fields)| {
             *name == PAYLOAD_ACCEPTED_EVENT
                 && crate::net::direct::tests::field(fields, KIND_FIELD)
-                    == Some(&serde_json::Value::from("presence_request"))
+                    == Some(&serde_json::Value::from(PRESENCE_REQUEST_KIND))
                 && crate::net::direct::tests::field(fields, PEER_FIELD)
                     == Some(&short_id(PEER_SEED))
         });
         let next_record_sent_at = recorded_through_the_end.iter().position(|(name, fields)| {
             *name == BROADCAST_EVENT
-                && crate::net::direct::tests::field(fields, "ts")
+                && crate::net::direct::tests::field(fields, TIMESTAMP_FIELD)
                     == Some(&serde_json::Value::from(next_record.ts))
         });
         assert!(
@@ -1800,15 +1799,13 @@ mod tests {
         });
 
         outcome.unwrap();
-        let member_short =
-            data_encoding::HEXLOWER.encode(&secret_key(PEER_SEED).public().as_bytes()[..5]);
+        let member_short = short_id(PEER_SEED);
         let opened_with_the_member: Vec<_> =
             crate::net::direct::tests::recorded_so_far(&mut recorded)
                 .into_iter()
                 .filter(|(name, fields)| {
                     *name == "transport.connection_opened"
-                        && crate::net::direct::tests::field(fields, "peer")
-                            == Some(&serde_json::Value::from(member_short.as_str()))
+                        && crate::net::direct::tests::field(fields, "peer") == Some(&member_short)
                 })
                 .map(|(_, fields)| {
                     (
@@ -1978,13 +1975,9 @@ mod tests {
         }
     }
 
-    async fn relay_map_holds(endpoint: &iroh::Endpoint, relay: &str) -> bool {
+    fn relay_map_holds(relay_map: &iroh::RelayMap, relay: &str) -> bool {
         let relay: RelayUrl = relay.parse().unwrap();
-        let removed = endpoint.remove_relay(&relay).await;
-        if let Some(entry) = &removed {
-            endpoint.insert_relay(relay, Arc::clone(entry)).await;
-        }
-        removed.is_some()
+        relay_map.contains(&relay)
     }
 
     async fn lookup_relays(endpoint: &iroh::Endpoint, seed: u8) -> Vec<String> {
@@ -2037,11 +2030,11 @@ mod tests {
         let ((_printed, first_outcome), observed) = tokio::join!(
             run_planned(&first_scratch, first_plan, &first_seen),
             async {
-                let first = bound_endpoint(&first_seen, 0).await;
+                let first = bound_host(&first_seen, 0).await;
                 let (stop_second, second_stopped) = stopped_on_signal();
                 let second_plan = Plan {
                     domain: SECOND_DOMAIN,
-                    reachable: vec![first.addr()],
+                    reachable: vec![first.endpoint.addr()],
                     stopped: second_stopped,
                     ..Plan::new(SECOND_HOST_SEED)
                 };
@@ -2060,10 +2053,10 @@ mod tests {
                             )
                             .await;
                         }
-                        let first_holds_own = relay_map_holds(&first, SPEC_RELAY_URL).await;
+                        let first_holds_own = relay_map_holds(&first.relay_map, SPEC_RELAY_URL);
                         let first_holds_second =
-                            relay_map_holds(&first, SPEC_SECOND_RELAY_URL).await;
-                        let looked_up = lookup_relays(&first, SECOND_HOST_SEED).await;
+                            relay_map_holds(&first.relay_map, SPEC_SECOND_RELAY_URL);
+                        let looked_up = lookup_relays(&first.endpoint, SECOND_HOST_SEED).await;
                         stop_second.send(()).unwrap();
                         (learned, first_holds_own, first_holds_second, looked_up)
                     }
@@ -2158,10 +2151,11 @@ mod tests {
         relay: &str,
         within: Duration,
     ) -> bool {
-        let relay: RelayUrl = relay.parse().unwrap();
-        found_within(within, async || relay_map.contains(&relay).then_some(()))
-            .await
-            .is_some()
+        found_within(within, async || {
+            relay_map_holds(relay_map, relay).then_some(())
+        })
+        .await
+        .is_some()
     }
 
     #[tokio::test]
