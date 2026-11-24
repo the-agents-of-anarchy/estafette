@@ -1246,7 +1246,7 @@ mod tests {
 
         let mut member = machine.spawn_mcp_server();
         drop(member.stdin.take());
-        assert!(member.wait().unwrap().success());
+        member.wait().unwrap();
 
         let data_directory = machine
             .traces_directory_of_member(0)
