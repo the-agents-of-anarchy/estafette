@@ -9,6 +9,7 @@ use estafette::wire::HostAddr;
 use iroh::PublicKey;
 use serde_json::{Value, json};
 
+use crate::dropped_payloads::short_id_of_node;
 use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use crate::handles::unique_handle;
 use crate::home_relays::{
@@ -23,6 +24,9 @@ use crate::live_host::live_host_to_itself;
 use crate::live_network::LiveNetwork;
 use crate::mcp_server::{
     INIT_TOOL, McpServer, ONLINE, RESULT_KEY, call_succeeded, init_arguments, online,
+};
+use crate::member_transport_events::{
+    message_rode_a_relay_path, no_member_rebound, relay_added_within,
 };
 use crate::message_body::BODY;
 use crate::payload_placeholders::wall_clock_ms;
@@ -134,7 +138,7 @@ fn spec_3_15_test_15_show_peers_on_a_machine_with_no_session_lists_the_members_o
     );
 }
 
-/// Spec 3.15 test 3, with the result of test 1: a member on the killable host's server, its UDP to and from this machine dropped, sends to a member on this machine through a relay alone; the receiver's inbox socket emits one frame and the send answers delivered and attached.
+/// Spec 3.15 test 3, with the result of test 1: a member on the killable host's server, its UDP to and from this machine dropped, sends to a member on this machine through a relay alone; the receiver's inbox socket emits one frame and the send answers delivered and attached, and the receiver's own events show every path selected for the connection that carried the send, up to its serving, to be a relay path.
 #[test]
 fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_one_frame_attached()
 {
@@ -173,11 +177,15 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
     });
 
     let id = sent[RESULT_KEY][ID_KEY].as_str().unwrap();
+    let path_rode = timed("bob's events name the path the send rode", || {
+        message_rode_a_relay_path(bob.events(), id)
+    });
     assert_eq!(
         sent[RESULT_KEY],
         json!({ (ID_KEY): id, (DELIVERED_KEY): true, (ATTACHED_KEY): true }),
         "{sent}"
     );
+    assert_eq!(path_rode, Ok(()));
     assert_eq!(frame["seq"], json!(1), "{frame}");
     assert_eq!(frame["id"], json!(id), "{frame}");
     assert_eq!(frame["from"], json!(amy.handle()), "{frame}");
@@ -327,11 +335,15 @@ fn tail_of(observer: &LabMachine, network: &LiveNetwork) -> Tail {
     Tail::start(observer, command)
 }
 
+/// The host's node id.
+fn host_node(host: &HostAddr) -> PublicKey {
+    PublicKey::from_bytes(&host.id)
+        .unwrap_or_else(|refusal| panic!("host id {:?} is no node id: {refusal}", host.id))
+}
+
 /// The host's node id as `tail` and the network configuration write it.
 fn host_id(host: &HostAddr) -> String {
-    let node_id = PublicKey::from_bytes(&host.id)
-        .unwrap_or_else(|refusal| panic!("host id {:?} is no node id: {refusal}", host.id));
-    render_public_key(&node_id)
+    render_public_key(&host_node(host))
 }
 
 /// The `ts` of a `tail` line when it is an infrastructure record of the host.
@@ -361,7 +373,7 @@ fn killable_host_serving(killable: &KillableHost, tail: &Tail) {
     );
 }
 
-/// Spec 3.15 test 24: three members joined by the invitation run 180 s with both hosts serving and none killed; by the end each still lists the other two online and no member's run record names a rebind.
+/// Spec 3.15 test 24: three members joined by the invitation run 180 s with both hosts serving and none killed, each recording a counters snapshot at least 180 s after the run began; by the end each still lists the other two online and no member's events file holds a rebinding line.
 #[test]
 fn spec_3_15_test_24_three_members_running_180_s_with_no_host_killed_never_rebind() {
     let _live_host = live_host_to_itself();
@@ -382,7 +394,9 @@ fn spec_3_15_test_24_three_members_running_180_s_with_no_host_killed_never_rebin
 
     let quiet_run_began_ms = wall_clock_ms();
     timed("three members run for 180 s with no host killed", || {
-        wait_for_time_to_pass(trio[0].server.events(), quiet_run_began_ms, SPEC_QUIET_RUN);
+        for member in &trio {
+            wait_for_time_to_pass(member.server.events(), quiet_run_began_ms, SPEC_QUIET_RUN);
+        }
     });
     let handles: Vec<String> = trio.iter().map(|member| member.handle.clone()).collect();
     for member in &mut trio {
@@ -392,15 +406,12 @@ fn spec_3_15_test_24_three_members_running_180_s_with_no_host_killed_never_rebin
             });
         }
     }
-    let rebinds: Vec<(String, usize)> = trio
-        .iter()
-        .map(|member| (member.handle.clone(), member.rebinds_recorded()))
-        .collect();
-
-    assert!(
-        rebinds.iter().all(|(_handle, count)| *count == 0),
-        "{rebinds:?}"
+    let rebound = no_member_rebound(
+        trio.iter()
+            .map(|member| (member.handle.as_str(), member.server.events())),
     );
+
+    assert_eq!(rebound, Ok(()));
 }
 
 /// Each member's saved entry for the host with the instant it was first read, every configuration read at once and again on each change in a member's configuration directory until each names the host or the deadline passed; a member that did not name it by then has none.
@@ -447,7 +458,7 @@ fn hosts_first_read(
     }
 }
 
-/// Spec 3.15 test 22: the killable host, stopped before the members start, is started while they run, and within 1000 ms of its first record reaching this machine's `tail` every member's network configuration names it with its relay, that record or a later one being the first each member accepted.
+/// Spec 3.15 test 22: the killable host, stopped before the members start, is started while they run, and within 1000 ms of its first record reaching this machine's `tail` every member's network configuration names it with its relay, that record or a later one being the first each member accepted, and every member's own events record the addition of that host's relay to its relay map stamped within the same 1000 ms, the stamp and the record's arrival both read on this machine's clock.
 #[test]
 fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configuration_within_1000_ms_of_its_first_record()
  {
@@ -457,6 +468,7 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
     let _host_back = killable.started_when_dropped();
     let added = killable.address();
     let added_id = host_id(added);
+    let added_short_id = short_id_of_node(host_node(added));
     timed("the killable host stopped before any member starts", || {
         killable.stop();
     });
@@ -481,6 +493,7 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
         .collect();
 
     let starting = Instant::now();
+    let starting_wall_ms = wall_clock_ms();
     timed("the killable host started while the members run", || {
         killable.start();
     });
@@ -493,6 +506,8 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
         )
     });
     let first_record_ts = record_ts_of(&first_record, &added_id).unwrap();
+    let first_record_wall_ms =
+        starting_wall_ms.saturating_add(u64::try_from(after.as_millis()).unwrap());
     let deadline = starting
         .checked_add(after)
         .and_then(|arrived| arrived.checked_add(SPEC_HOST_ADDED_WITHIN))
@@ -501,7 +516,25 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
         hosts_first_read(&members, &added_id, deadline)
     });
 
+    let relay_added = timed(
+        "every member's events record the added host's relay",
+        || {
+            members
+                .iter()
+                .map(|member| {
+                    relay_added_within(
+                        member.server.events(),
+                        &added_short_id,
+                        first_record_wall_ms,
+                        SPEC_HOST_ADDED_WITHIN,
+                    )
+                })
+                .collect::<Vec<_>>()
+        },
+    );
+
     assert_eq!(named_before, [false, false]);
+    assert_eq!(relay_added, [Ok(()), Ok(())]);
     for (member, read) in members.iter().zip(&first_read) {
         let Some((host, read_at)) = read else {
             panic!(

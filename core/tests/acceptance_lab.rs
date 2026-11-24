@@ -50,6 +50,9 @@ mod member_ended_at_its_peer;
 #[path = "support/member_events.rs"]
 mod member_events;
 #[cfg(test)]
+#[path = "lab/member_transport_events.rs"]
+mod member_transport_events;
+#[cfg(test)]
 #[path = "support/message_body.rs"]
 mod message_body;
 #[cfg(test)]
