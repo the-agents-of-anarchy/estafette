@@ -1,8 +1,12 @@
 use std::fs::Permissions;
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
+use std::sync::mpsc;
+use std::time::Duration;
+
+use serde_json::{Value, json};
 
 mod common;
 #[path = "common/remove_scratch.rs"]
@@ -716,6 +720,101 @@ fn binary_doctor_fails_the_cards_check_for_a_public_nested_too_deep_for_the_pars
     let report = String::from_utf8(diagnosed.stdout).unwrap();
     assert!(report.contains(CARDS_CHECK_FAILED), "{report}");
     assert!(report.contains(CARD_FILE_NAME), "{report}");
+}
+
+const MCP_COMMAND: &str = "mcp";
+/// The parent of the runtime directory the MCP server needs, short enough for its inbox socket's path to fit a socket address.
+const SHORT_RUNTIME_PARENT: &str = "/tmp";
+const SHORT_RUNTIME_NAME: &str = "ebc-mcp-runtime";
+const MCP_ANSWERS_WITHIN: Duration = Duration::from_secs(20);
+const MCP_INITIALIZE_ID: u64 = 1;
+const MCP_INIT_TOOL_CALL_ID: u64 = 2;
+const MCP_INIT_TOOL: &str = "init";
+const CARD_INVALID_CODE: &str = "card_invalid";
+
+/// A child process killed and reaped when this value drops, whether the test passed or failed.
+struct KilledOnDrop(Child);
+
+impl Drop for KilledOnDrop {
+    fn drop(&mut self) {
+        drop(self.0.kill());
+        drop(self.0.wait());
+    }
+}
+
+/// The answer of the MCP server of the network to the init tool call naming the card, its inbox socket in the short runtime directory, read within `MCP_ANSWERS_WITHIN`, failing with the condition's name when the server ends or stays silent first.
+fn mcp_answer_to_init_of(root: &Path, short_runtime: &Path, card: &str) -> io::Result<Value> {
+    let mut server = KilledOnDrop(
+        command_in_scratch_environment(BINARY, root)
+            .env("XDG_RUNTIME_DIR", short_runtime)
+            .args([MCP_COMMAND, NETWORK])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()?,
+    );
+    let mut requests = server
+        .0
+        .stdin
+        .take()
+        .ok_or_else(|| io::Error::other("the server's standard input is not piped"))?;
+    let answers = BufReader::new(
+        server
+            .0
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("the server's standard output is not piped"))?,
+    );
+    let (answered, answer_lines) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in answers.lines() {
+            if answered.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    for request in [
+        json!({"jsonrpc": "2.0", "id": MCP_INITIALIZE_ID, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "probe", "version": "0"}}}),
+        json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        json!({"jsonrpc": "2.0", "id": MCP_INIT_TOOL_CALL_ID, "method": "tools/call", "params": {"name": MCP_INIT_TOOL, "arguments": {"card": card}}}),
+    ] {
+        writeln!(requests, "{request}")?;
+    }
+    loop {
+        let line = answer_lines
+            .recv_timeout(MCP_ANSWERS_WITHIN)
+            .map_err(|failure| {
+                io::Error::other(format!(
+                    "an answer to the init call within {MCP_ANSWERS_WITHIN:?}, the server ending or staying silent first: {failure}"
+                ))
+            })??;
+        let answer: Value = serde_json::from_str(&line).map_err(io::Error::other)?;
+        if answer.get("id").and_then(Value::as_u64) == Some(MCP_INIT_TOOL_CALL_ID) {
+            return Ok(answer);
+        }
+    }
+}
+
+#[test]
+fn binary_mcp_init_refuses_a_public_nested_too_deep_for_the_parser_as_card_invalid_of_spec_3_5() {
+    let root =
+        root_with_card_extended_by("mcp_deep", &block_mapping_public(BLOCK_MAPPING_DEPTHS[1]))
+            .unwrap();
+    let network = run_binary(&root, &["network", "create", NETWORK]).unwrap();
+    require_success(&network).unwrap();
+    let short_runtime = common::fresh_directory::fresh_directory_in(
+        Path::new(SHORT_RUNTIME_PARENT),
+        SHORT_RUNTIME_NAME,
+    )
+    .unwrap();
+
+    let answer = mcp_answer_to_init_of(&root, &short_runtime, "ana-card").unwrap();
+
+    assert_eq!(
+        answer["result"]["structuredContent"]["error"]["code"], CARD_INVALID_CODE,
+        "{answer}"
+    );
+    remove_scratch::remove_scratch(&short_runtime).unwrap();
 }
 
 const DEEPEST_IGNORED_KEY_DEPTH: usize = 2000;
