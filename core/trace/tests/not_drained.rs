@@ -1,4 +1,7 @@
 #[cfg(test)]
+#[path = "support/frozen_run.rs"]
+mod frozen_run;
+#[cfg(test)]
 #[path = "support/stuck_files.rs"]
 mod stuck_files;
 
@@ -11,17 +14,14 @@ mod observability {
     use std::sync::mpsc;
     use std::time::Duration;
 
+    use super::frozen_run::{DATA_HOME_VARIABLE, NOW_MS, RUN_BYTES, frozen_clocks_at};
     use super::stuck_files::stuck_files;
     use estafette_trace::{
-        EstafetteRun, ListFiles, RUN_ID_BYTES, RunId, TraceBounds, TraceClocks, TraceDirectory,
-        TraceEffects, TraceFileKind, TraceStop,
+        EstafetteRun, ListFiles, RunId, TraceBounds, TraceDirectory, TraceEffects, TraceFileKind,
+        TraceStop,
     };
 
-    const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
     const DATA_HOME_NEVER_CREATED: &str = "/estafette-trace-test-never-created";
-    const RUN_BYTES: [u8; RUN_ID_BYTES] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
-    const FROZEN_MONOTONIC_MS: u64 = 7;
-    const NOW_MS: u64 = 2_000_000_000_000;
     const ONE_EVENT: &str = "process.clock_before_unix_epoch";
     const SHORT_DRAIN: Duration = Duration::from_millis(20);
 
@@ -33,10 +33,7 @@ mod observability {
         let effects = TraceEffects {
             create_file: stuck_files(to_the_test),
             list_files: list_nothing,
-            ..TraceEffects::of_the_operating_system(TraceClocks {
-                monotonic_ms: Arc::new(|| FROZEN_MONOTONIC_MS),
-                wall_ms: Arc::new(|| NOW_MS),
-            })
+            ..TraceEffects::of_the_operating_system(frozen_clocks_at(NOW_MS))
         };
         let directory = TraceDirectory::resolve(&|name: &str| {
             (name == DATA_HOME_VARIABLE).then(|| OsString::from(DATA_HOME_NEVER_CREATED))

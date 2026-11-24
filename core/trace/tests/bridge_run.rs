@@ -5,6 +5,10 @@ mod fresh_directory;
 #[path = "../../tests/common/remove_scratch.rs"]
 mod remove_scratch;
 
+#[cfg(test)]
+#[path = "support/frozen_run.rs"]
+mod frozen_run;
+
 /// The bridge's run of spec/observability.md decisions 4, 5 and 13, through the package's public surface.
 #[cfg(test)]
 mod observability {
@@ -18,24 +22,23 @@ mod observability {
     use std::time::{Duration, UNIX_EPOCH};
 
     use super::fresh_directory::fresh_directory_in;
+    use super::frozen_run::{
+        DATA_HOME_VARIABLE, FROZEN_MONOTONIC_MS, NOW_MS, RUN_BYTES, frozen_clocks_at,
+    };
     use super::remove_scratch::remove_scratch;
     use estafette_trace::{
-        BridgeRun, RUN_ID_BYTES, RunId, TraceAction, TraceBounds, TraceClocks, TraceDirectory,
-        TraceEffects, TraceRefused, TraceStop,
+        BridgeRun, RunId, TraceAction, TraceBounds, TraceDirectory, TraceEffects, TraceRefused,
+        TraceStop,
     };
 
-    const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
     const READ_WITHOUT_SEARCH_MODE: u32 = 0o400;
     const OWNER_ONLY_DIRECTORY_MODE: u32 = 0o700;
     const LISTING_RACE_STARTS: u32 = 20_000;
     const CHURNING_ENTRY_NAMES: u64 = 64;
     const CHURNING_ENTRY_CONTENT: &[u8] = b"x";
-    const RUN_BYTES: [u8; RUN_ID_BYTES] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
     const RUN_HEX: &str = "a1b2c3d4e5f60718";
-    const FROZEN_MONOTONIC_MS: u64 = 7;
     const START_WALL_MS: u64 = 951_868_799_123;
     const START_STAMP: &str = "20000229T235959Z";
-    const NOW_MS: u64 = 2_000_000_000_000;
     const SMALL_FRESHNESS_MS: u64 = 10_000;
     const SMALL_DIRECTORY_BYTES: u64 = 150;
     const OLD_FILE_BYTES: u64 = 100;
@@ -54,14 +57,6 @@ mod observability {
         })
         .unwrap();
         (root, directory)
-    }
-
-    /// Clocks that always read `FROZEN_MONOTONIC_MS` and `wall_ms`.
-    fn frozen_clocks(wall_ms: u64) -> TraceClocks {
-        TraceClocks {
-            monotonic_ms: Arc::new(|| FROZEN_MONOTONIC_MS),
-            wall_ms: Arc::new(move || wall_ms),
-        }
     }
 
     /// A bridge run begun on the effects within the bounds, its trace directory created on the operating system's files, or the refusal to begin it.
@@ -87,7 +82,7 @@ mod observability {
     ) -> BridgeRun {
         try_begin_bridge_run(
             directory,
-            &TraceEffects::of_the_operating_system(frozen_clocks(wall_ms)),
+            &TraceEffects::of_the_operating_system(frozen_clocks_at(wall_ms)),
             bounds,
         )
         .unwrap()
@@ -259,7 +254,7 @@ mod observability {
             let name = file.file_name().unwrap().to_str().unwrap();
             stored_run_file(&traces, name, OLD_FILE_BYTES, stale);
         }
-        let effects = TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS));
+        let effects = TraceEffects::of_the_operating_system(frozen_clocks_at(NOW_MS));
         let listed_by_the_system = Arc::clone(&effects.list_files);
         let effects_with_a_concurrent_start_removing_after_the_listing = TraceEffects {
             list_files: Arc::new(move |listed_directory: &Path| {
@@ -307,7 +302,7 @@ mod observability {
                 }
             }
         });
-        let effects = TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS));
+        let effects = TraceEffects::of_the_operating_system(frozen_clocks_at(NOW_MS));
 
         let refusal = (0..LISTING_RACE_STARTS)
             .find_map(|_| try_begin_bridge_run(&directory, &effects, TraceBounds::SPEC).err());
@@ -332,7 +327,7 @@ mod observability {
 
         let refusal = try_begin_bridge_run(
             &directory,
-            &TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS)),
+            &TraceEffects::of_the_operating_system(frozen_clocks_at(NOW_MS)),
             TraceBounds::SPEC,
         )
         .err();

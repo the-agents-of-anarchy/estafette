@@ -2,6 +2,9 @@
 #[path = "../../tests/common/fresh_directory.rs"]
 mod fresh_directory;
 #[cfg(test)]
+#[path = "support/frozen_run.rs"]
+mod frozen_run;
+#[cfg(test)]
 #[path = "../../tests/common/remove_scratch.rs"]
 mod remove_scratch;
 #[cfg(test)]
