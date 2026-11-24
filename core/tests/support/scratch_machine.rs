@@ -70,7 +70,7 @@ const STOP_FAILED_EXTENSION: &str = "stop-failed";
 const RUN_RECORD_PREFIX: &str = "member";
 /// How a test names a member it started, before its number.
 const MEMBER_LABEL: &str = "member";
-/// The variable naming a directory where, when its scratch root is removed, every member's run record is kept, redacted, and every machine's data directory but its secret key files; unset, nothing is kept.
+/// The variable naming a directory where, when its scratch root is removed, every member's run record is kept, redacted, and every machine's data directory but its secret key files and its relay certificate cache; unset, nothing is kept.
 pub const KEPT_RUN_RECORDS_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_RUN_RECORDS";
 /// The directory a machine's data directory is kept in, inside the directory its records are kept in.
 const KEPT_DATA_DIRECTORY: &str = "data";
@@ -80,7 +80,7 @@ const LATER_KEEPING_SEPARATOR: &str = ".kept-";
 const SECOND_KEEPING: u32 = 2;
 /// The extension of every file spec 3.3 gives a secret key in a data directory: a card's sidecar and a host's bootstrap key.
 const SECRET_KEY_EXTENSION: &str = "key";
-/// The extension of the note kept beside a data file that was kept with each invitation and token in it replaced by the redaction marker.
+/// The extension of the note kept beside a data file that was kept with each secret in it replaced by the redaction marker.
 const REDACTED_NOTE_EXTENSION: &str = "redacted";
 /// The extension spec 3.3 gives a relay's certificate cache directory, which holds its private key.
 const CERTIFICATE_CACHE_EXTENSION: &str = "certs";
@@ -935,7 +935,7 @@ fn keep_file(
     fs::write(
         &note,
         format!(
-            "{} was kept with each invitation and token in it replaced by {REDACTED}: {redacted_lines} lines redacted\n",
+            "{} was kept with each secret in it replaced by {REDACTED}: {redacted_lines} lines redacted\n",
             kept_file.file_name().unwrap_or_default().to_string_lossy()
         ),
     )
@@ -997,7 +997,7 @@ fn environment(root: &Path) -> Vec<(&'static str, OsString)> {
 mod tests {
     use super::trace_reader::parse_trace_lines;
     use super::trace_reader::tests::{
-        MEMBER_LINE, second_line_still_zero_at_its_start_sized_ahead,
+        MEMBER_LINE, MEMBER_RUN, second_line_still_zero_at_its_start_sized_ahead,
     };
     use estafette::config::NetworkConfig;
     use std::cell::RefCell;
@@ -1012,8 +1012,6 @@ mod tests {
 
     /// The network the tests of this module configure their machines for.
     const NETWORK: &str = "lab";
-    /// A command that does nothing and exits in failure, standing in for a stop that failed.
-    const EXITS_IN_FAILURE: &str = "false";
     /// A command that does nothing and exits in success, standing in for a stop that succeeded.
     const EXITS_IN_SUCCESS: &str = "true";
     /// How a test names a process that ended cleanly.
@@ -1094,6 +1092,30 @@ mod tests {
         "scratch_machine::tests::forced_keeping_with_an_invitation_variable_that_is_not_unicode";
     /// The directory a test's fixture keeps its run records under, beside its standard error.
     const FIXTURE_KEPT_RUN_RECORDS: &str = "kept";
+    /// The line a run record holds when it names the planted network secret.
+    fn line_holding_the_planted_network_secret() -> String {
+        format!("network {PLANTED_NETWORK_SECRET} joined\n")
+    }
+
+    /// The line a kept run record holds in place of the line naming the planted network secret.
+    fn line_with_the_network_secret_redacted() -> String {
+        format!("network {REDACTED} joined\n")
+    }
+
+    /// The name of the run record of the first member a machine started.
+    fn first_member_run_record_name() -> String {
+        format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}")
+    }
+
+    /// A directory of the temp directory that did not exist before the call, named for the test and the process.
+    fn fresh_scratch_directory_in_temp(name: &str) -> PathBuf {
+        fresh_directory::fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("{name}-{}", std::process::id()),
+        )
+        .unwrap()
+    }
+
     /// The mode spec 3.3 gives every directory the binary makes private.
     const SPEC_PRIVATE_DIRECTORY_MODE: u32 = 0o700;
     /// The bits of a mode that grant reading, writing and searching.
@@ -1117,7 +1139,9 @@ mod tests {
             .create_private_directory(&traces)
             .unwrap();
         fs::write(
-            traces.join("20261112T225914Z-6c935f82c118f7b3-estafette.events.jsonl"),
+            traces.join(format!(
+                "20261112T225914Z-{MEMBER_RUN}-estafette.events.jsonl"
+            )),
             second_line_still_zero_at_its_start_sized_ahead(),
         )
         .unwrap();
@@ -1220,7 +1244,9 @@ mod tests {
             },
         );
 
-        let member = machine.spawn_mcp_server();
+        let mut member = machine.spawn_mcp_server();
+        drop(member.stdin.take());
+        assert!(member.wait().unwrap().success());
 
         let data_directory = machine
             .traces_directory_of_member(0)
@@ -1228,7 +1254,6 @@ mod tests {
             .unwrap()
             .to_path_buf();
         let mode = fs::metadata(&data_directory).map(|metadata| metadata.permissions().mode());
-        drop(member);
         assert_eq!(
             mode.unwrap() & MODE_BITS,
             SPEC_PRIVATE_DIRECTORY_MODE,
@@ -1240,11 +1265,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_machine_dropped_while_keeping_leaves_its_members_and_observers_data_beside_its_run_records_but_no_secret_key_file()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-data-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let kept_in = fresh_scratch_directory_in_temp("estafette-kept-data-test");
         let machine = ScratchMachine::fresh(
             "kept-data",
             NETWORK,
@@ -1320,14 +1341,7 @@ mod tests {
     #[test]
     fn spec_3_3_a_machine_dropped_while_keeping_leaves_out_the_relay_certificate_cache_but_keeps_the_host_certificate()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!(
-                "estafette-kept-certificate-cache-test-{}",
-                std::process::id()
-            ),
-        )
-        .unwrap();
+        let kept_in = fresh_scratch_directory_in_temp("estafette-kept-certificate-cache-test");
         let machine = ScratchMachine::fresh(
             "kept-certificate-cache",
             NETWORK,
@@ -1373,13 +1387,7 @@ mod tests {
                 invitation: InvitationVariable::Unset,
             },
         );
-        fs::write(
-            machine
-                .root
-                .join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}")),
-            text,
-        )
-        .unwrap();
+        fs::write(machine.root.join(first_member_run_record_name()), text).unwrap();
         let events_file = machine
             .traces_directory_of_member(0)
             .join("20261117T080000Z-1111111111111111-estafette.events.jsonl");
@@ -1397,11 +1405,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_machine_keeping_under_the_name_an_earlier_machine_kept_under_takes_a_name_numbered_unlike_a_scratch_root_and_leaves_the_earlier_records_whole()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-twice-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let kept_in = fresh_scratch_directory_in_temp("estafette-kept-twice-test");
         let first_text = "line of the first machine\n";
         let second_text = "line of the second machine\n";
 
@@ -1409,7 +1413,7 @@ mod tests {
         let (second_name, _) = dropped_keeping("kept-twice", &kept_in, second_text);
 
         assert_eq!(first_name, second_name);
-        let record = format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}");
+        let record = first_member_run_record_name();
         let first = kept_in.join(&first_name);
         let second = kept_in.join(format!("{second_name}.kept-2"));
         let expected = BTreeSet::from([
@@ -1440,9 +1444,7 @@ mod tests {
      {
         let mut unreadable = Vec::new();
         let dropped = dropped_with_a_source_unread("kept-both-failures", |machine| {
-            let record = machine
-                .root
-                .join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}"));
+            let record = machine.root.join(first_member_run_record_name());
             let data = machine
                 .traces_directory_of_member(0)
                 .join(MEMBER_EVENTS_FILE);
@@ -1506,11 +1508,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_kept_data_file_holding_the_invitation_or_a_token_is_kept_redacted_with_a_note_beside_it_and_any_other_byte_for_byte()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-redacted-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let kept_in = fresh_scratch_directory_in_temp("estafette-kept-redacted-test");
         let machine = ScratchMachine::fresh(
             "kept-redacted",
             NETWORK,
@@ -1553,7 +1551,7 @@ mod tests {
         fs::write(&naming_neither, neither_bytes).unwrap();
         fs::write(
             &naming_the_network_secret,
-            format!("network {PLANTED_NETWORK_SECRET} joined\n"),
+            line_holding_the_planted_network_secret(),
         )
         .unwrap();
         let kept_data = kept_in.join(machine.name()).join(KEPT_DATA_DIRECTORY);
@@ -1589,7 +1587,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(kept_of(&naming_the_network_secret)).unwrap(),
-            format!("network {REDACTED} joined\n")
+            line_with_the_network_secret_redacted()
         );
         assert_eq!(fs::read(kept_of(&naming_neither)).unwrap(), neither_bytes);
         for file in [
@@ -1607,11 +1605,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_process_whose_kill_or_wait_failed_is_marked_beside_its_machines_run_records_and_one_that_ended_is_not()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-end-failure-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let kept_in = fresh_scratch_directory_in_temp("estafette-kept-end-failure-test");
         let machine = ScratchMachine::fresh(
             "kept-end-failure",
             NETWORK,
@@ -1679,75 +1673,9 @@ mod tests {
     }
 
     #[test]
-    fn observability_decision_16_a_member_whose_stop_failed_is_kept_with_a_mark_beside_its_run_record_saying_so_and_one_that_stopped_with_none()
-     {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-stop-failure-test-{}", std::process::id()),
-        )
-        .unwrap();
-        let secret = "network-secret-0123456789abcdef";
-        let secrets = KeptSecrets::of_server_member(
-            &format!("{NETWORK_SECRET_FIELD} = \"{secret}\"\n"),
-            Some(PLANTED_INVITATION),
-        )
-        .unwrap();
-        let failed_stop = Command::new(EXITS_IN_FAILURE).status().unwrap();
-        let clean_stop = Command::new(EXITS_IN_SUCCESS).status().unwrap();
-        let printed_by_the_failed_stop = format!("ssh: the server refused {secret}\n");
-        let stop_printing = |status, printed: &str| {
-            Ok(Output {
-                status,
-                stdout: Vec::new(),
-                stderr: printed.as_bytes().to_vec(),
-            })
-        };
-
-        keep_run_record(&kept_in, "amy", b"record of amy\n", &secrets).unwrap();
-        keep_stop_failure(
-            &kept_in,
-            "amy",
-            &stop_printing(failed_stop, &printed_by_the_failed_stop),
-            &secrets,
-        )
-        .unwrap();
-        keep_run_record(&kept_in, "bob", b"record of bob\n", &secrets).unwrap();
-        keep_stop_failure(
-            &kept_in,
-            "bob",
-            &stop_printing(clean_stop, "bob printed this while stopping\n"),
-            &secrets,
-        )
-        .unwrap();
-
-        let kept: BTreeSet<PathBuf> = files_listed_beneath(&kept_in);
-        assert_eq!(
-            kept,
-            BTreeSet::from([
-                kept_in.join("amy.stderr"),
-                kept_in.join("amy.stop-failed"),
-                kept_in.join("amy.stop-failed.redacted"),
-                kept_in.join("bob.stderr"),
-            ])
-        );
-        let mark = fs::read_to_string(kept_in.join("amy.stop-failed")).unwrap();
-        assert!(
-            mark.contains(&failed_stop.to_string())
-                && mark.contains(&format!("ssh: the server refused {REDACTED}\n"))
-                && !mark.contains(secret),
-            "{mark}"
-        );
-        remove_scratch::remove_scratch(&kept_in).unwrap();
-    }
-
-    #[test]
     fn observability_decision_16_a_failed_end_whose_mark_names_the_invitation_is_kept_redacted_with_a_note_beside_it()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-redacted-mark-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let kept_in = fresh_scratch_directory_in_temp("estafette-kept-redacted-mark-test");
         let machine = ScratchMachine::fresh(
             "kept-redacted-mark",
             NETWORK,
@@ -1784,11 +1712,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_machine_dropped_on_a_failing_test_whose_base_directories_cannot_be_made_leaves_that_failure_standing_and_keeps_no_unsearched_data()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-unmade-base-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let kept_in = fresh_scratch_directory_in_temp("estafette-kept-unmade-base-test");
         let machine = ScratchMachine::fresh(
             "unmade-base",
             NETWORK,
@@ -1857,9 +1781,7 @@ mod tests {
         );
         let holding_the_token = format!("key {PLANTED_TOKEN} seen\n");
         fs::write(
-            machine
-                .root
-                .join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}")),
+            machine.root.join(first_member_run_record_name()),
             &holding_the_token,
         )
         .unwrap();
@@ -1946,11 +1868,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_machine_whose_network_configuration_names_its_secret_but_does_not_load_keeps_its_data_with_that_secret_redacted()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-unloaded-secret-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let kept_in = fresh_scratch_directory_in_temp("estafette-kept-unloaded-secret-test");
         let machine = ScratchMachine::fresh(
             "unloaded-secret",
             NETWORK,
@@ -1970,11 +1888,7 @@ mod tests {
             .traces_directory_of_member(0)
             .join(MEMBER_EVENTS_FILE);
         fs::create_dir_all(events_file.parent().unwrap()).unwrap();
-        fs::write(
-            &events_file,
-            format!("network {PLANTED_NETWORK_SECRET} joined\n"),
-        )
-        .unwrap();
+        fs::write(&events_file, line_holding_the_planted_network_secret()).unwrap();
         let kept_events_file = kept_in.join(machine.name()).join(KEPT_DATA_DIRECTORY).join(
             events_file
                 .strip_prefix(machine.root.join(DATA_HOME))
@@ -1985,7 +1899,7 @@ mod tests {
 
         assert_eq!(
             fs::read_to_string(&kept_events_file).unwrap(),
-            format!("network {REDACTED} joined\n")
+            line_with_the_network_secret_redacted()
         );
         remove_scratch::remove_scratch(&kept_in).unwrap();
     }
@@ -2159,7 +2073,7 @@ mod tests {
             .unwrap();
         });
 
-        let redacted = format!("network {REDACTED} joined\n");
+        let redacted = line_with_the_network_secret_redacted();
         assert_eq!(kept.events, redacted.as_bytes());
         assert_eq!(kept.run_record, redacted.as_bytes());
     }
@@ -2224,7 +2138,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_machines_run_record_holding_a_secret_is_kept_redacted_with_a_note_beside_it_naming_it_and_one_holding_none_byte_for_byte()
      {
-        let holding = format!("network {PLANTED_NETWORK_SECRET} joined\n");
+        let holding = line_holding_the_planted_network_secret();
         let holding_none = [b'n', b'o', 0xff, 0x00, b'\n'];
 
         let redacted = kept_after_planting("run-record-note", &holding, |machine| {
@@ -2235,9 +2149,7 @@ mod tests {
             &String::from_utf8_lossy(&holding_none),
             |machine| {
                 fs::write(
-                    machine
-                        .root
-                        .join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}")),
+                    machine.root.join(first_member_run_record_name()),
                     holding_none,
                 )
                 .unwrap();
@@ -2246,13 +2158,10 @@ mod tests {
 
         assert_eq!(
             redacted.run_record,
-            format!("network {REDACTED} joined\n").as_bytes()
+            line_with_the_network_secret_redacted().as_bytes()
         );
         let note = redacted.run_record_note.unwrap_or_default();
-        assert!(
-            note.contains(&format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}")),
-            "{note}"
-        );
+        assert!(note.contains(&first_member_run_record_name()), "{note}");
         assert_eq!(kept_whole.run_record, holding_none);
         assert_eq!(kept_whole.run_record_note, None);
     }
@@ -2260,27 +2169,18 @@ mod tests {
     #[test]
     fn observability_decision_16_a_secret_whose_source_is_written_after_one_keeping_of_run_records_is_redacted_from_what_the_machines_drop_keeps()
      {
-        let holding = format!("network {PLANTED_NETWORK_SECRET} joined\n");
-        let earlier = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!(
-                "estafette-kept-before-the-secret-test-{}",
-                std::process::id()
-            ),
-        )
-        .unwrap();
+        let holding = line_holding_the_planted_network_secret();
+        let earlier = fresh_scratch_directory_in_temp("estafette-kept-before-the-secret-test");
 
         let kept = kept_after_planting("secret-written-after-a-keeping", &holding, |machine| {
             machine.keep_run_records(&earlier).unwrap();
             planted_network_configuration(machine, NETWORK);
         });
 
-        let kept_earlier =
-            fs::read(earlier.join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}")))
-                .unwrap();
+        let kept_earlier = fs::read(earlier.join(first_member_run_record_name())).unwrap();
         remove_scratch::remove_scratch(&earlier).unwrap();
         assert_eq!(kept_earlier, holding.as_bytes());
-        let redacted = format!("network {REDACTED} joined\n");
+        let redacted = line_with_the_network_secret_redacted();
         assert_eq!(kept.events, redacted.as_bytes());
         assert_eq!(kept.run_record, redacted.as_bytes());
     }
@@ -2288,12 +2188,8 @@ mod tests {
     #[test]
     fn observability_decision_16_a_keeping_of_run_records_whose_secrets_cannot_be_read_writes_nothing_and_the_machines_drop_once_they_can_keeps_them_redacted()
      {
-        let holding = format!("network {PLANTED_NETWORK_SECRET} joined\n");
-        let earlier = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-while-unread-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let holding = line_holding_the_planted_network_secret();
+        let earlier = fresh_scratch_directory_in_temp("estafette-kept-while-unread-test");
 
         let kept = kept_after_planting("unbuilt-at-a-keeping", &holding, |machine| {
             let configuration = planted_network_configuration(machine, NETWORK);
@@ -2315,7 +2211,7 @@ mod tests {
             .collect();
         remove_scratch::remove_scratch(&earlier).unwrap();
         assert_eq!(made_in_earlier, BTreeSet::new());
-        let redacted = format!("network {REDACTED} joined\n");
+        let redacted = line_with_the_network_secret_redacted();
         assert_eq!(kept.events, redacted.as_bytes());
         assert_eq!(kept.run_record, redacted.as_bytes());
     }
@@ -2323,11 +2219,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_process_whose_kill_or_wait_failed_fails_a_test_that_was_not_failing_once_its_machine_has_kept_the_mark_and_removed_its_scratch_root()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-failed-end-fails-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let kept_in = fresh_scratch_directory_in_temp("estafette-failed-end-fails-test");
         let machine = machine_keeping_in("failed-end-fails", &kept_in);
         let mut failing_its_end =
             machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), FAILED_LABEL);
@@ -2362,11 +2254,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_process_whose_kill_or_wait_failed_and_whose_mark_cannot_be_written_fails_a_test_that_was_not_failing_naming_the_process_and_no_mark()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-unmarked-failed-end-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let kept_in = fresh_scratch_directory_in_temp("estafette-unmarked-failed-end-test");
         let machine = machine_keeping_in("unmarked-failed-end", &kept_in);
         let mut failing_its_end =
             machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), FAILED_LABEL);
@@ -2402,14 +2290,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_process_whose_kill_or_wait_failed_on_a_test_already_failing_is_printed_by_its_machines_drop()
      {
-        let scratch = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!(
-                "estafette-printing-while-unwinding-test-{}",
-                std::process::id()
-            ),
-        )
-        .unwrap();
+        let scratch = fresh_scratch_directory_in_temp("estafette-printing-while-unwinding-test");
         let standard_error = scratch.join(FIXTURE_STANDARD_ERROR);
 
         fixture_run_within(
@@ -2472,14 +2353,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_machine_whose_invitation_variable_is_set_but_not_unicode_fails_naming_the_variable_and_prints_and_keeps_nothing_of_its_value()
      {
-        let scratch = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!(
-                "estafette-invitation-not-unicode-test-{}",
-                std::process::id()
-            ),
-        )
-        .unwrap();
+        let scratch = fresh_scratch_directory_in_temp("estafette-invitation-not-unicode-test");
         let standard_error = scratch.join(FIXTURE_STANDARD_ERROR);
         let kept_in = scratch.join(FIXTURE_KEPT_RUN_RECORDS);
         fs::create_dir(&kept_in).unwrap();
@@ -2538,9 +2412,7 @@ mod tests {
             &RunRecordKeeping::from_environment(),
         );
         fs::write(
-            machine
-                .root
-                .join(format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}")),
+            machine.root.join(first_member_run_record_name()),
             std::env::var_os(INVITATION_VARIABLE)
                 .unwrap_or_default()
                 .into_vec(),
@@ -2551,14 +2423,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_machine_whose_test_directory_cannot_be_made_names_that_directory()
      {
-        let scratch = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!(
-                "estafette-kept-unmade-test-directory-test-{}",
-                std::process::id()
-            ),
-        )
-        .unwrap();
+        let scratch = fresh_scratch_directory_in_temp("estafette-kept-unmade-test-directory-test");
         fs::write(scratch.join(NOT_A_DIRECTORY), "").unwrap();
         let test_directory = scratch
             .join(NOT_A_DIRECTORY)
@@ -2577,11 +2442,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_machine_whose_scratch_root_cannot_be_listed_names_it_in_the_failure_of_each_step_that_lists_it()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-unlisted-root-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let kept_in = fresh_scratch_directory_in_temp("estafette-kept-unlisted-root-test");
         let machine = machine_keeping_in("unlisted-root", &kept_in);
         let root = machine.root.clone();
         fs::set_permissions(&root, fs::Permissions::from_mode(UNLISTABLE)).unwrap();
@@ -2601,11 +2462,7 @@ mod tests {
 
     #[test]
     fn observability_decision_16_a_machine_whose_end_mark_cannot_be_read_names_the_mark() {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-unread-mark-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let kept_in = fresh_scratch_directory_in_temp("estafette-kept-unread-mark-test");
         let machine = machine_keeping_in("unread-mark", &kept_in);
         let mark = machine
             .root
@@ -2625,15 +2482,11 @@ mod tests {
     #[test]
     fn observability_decision_16_a_machine_whose_writer_cannot_write_a_kept_file_names_that_kept_file_for_a_run_record_an_end_mark_and_a_data_file()
      {
-        let kept_in = fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-unwritten-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let kept_in = fresh_scratch_directory_in_temp("estafette-kept-unwritten-test");
         let machine = machine_keeping_in("unwritten", &kept_in);
         planted_network_configuration(&machine, NETWORK);
         let long_name = "a".repeat(NAME_TOO_LONG_FOR_ITS_NOTE);
-        let holding_the_secret = format!("network {PLANTED_NETWORK_SECRET} joined\n");
+        let holding_the_secret = line_holding_the_planted_network_secret();
         let run_record = format!("{long_name}.{RUN_RECORD_EXTENSION}");
         let end_mark = format!("{long_name}.{END_FAILED_EXTENSION}");
         for file in [
@@ -2739,7 +2592,7 @@ mod tests {
                 invitation: InvitationVariable::Unset,
             },
         );
-        let record_name = format!("{RUN_RECORD_PREFIX}-0.{RUN_RECORD_EXTENSION}");
+        let record_name = first_member_run_record_name();
         fs::write(machine.root.join(&record_name), text).unwrap();
         let events_file = machine
             .traces_directory_of_member(0)

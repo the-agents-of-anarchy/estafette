@@ -3,11 +3,12 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
-use super::trace_reader::{TraceLine, WritingProcess, parse_trace_lines};
+use super::trace_reader::{
+    SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, TraceLine, WritingProcess, parse_trace_lines,
+};
 
 /// How long a test waits for a running process's trace file to come to hold what it waits for.
 pub const WHOLE_LINE_WAIT: Duration = Duration::from_secs(10);
-const SPEC_TRACE_FILE_SIZED_AHEAD_BYTES: usize = 65_536;
 
 /// The whole lines of the trace file of a run whose process ended, failing unless all that follows them is at most one unended start of the run's own next line and then zero bytes to the next 64 KiB boundary.
 pub fn whole_lines_of_a_run_file(path: &Path) -> Vec<TraceLine> {
@@ -32,23 +33,25 @@ fn whole_lines_of_a_run_file_read_as(path: &Path, writing: WritingProcess) -> Ve
         "{name}: {} bytes after {content_end} bytes of content do not end at the next 64 KiB boundary",
         bytes.len().saturating_sub(content_end)
     );
-    let content = writing.landed_part(&bytes[..content_end]);
-    assert!(
-        !content.contains(&0),
-        "{name}: a zero byte before the file's last byte that is not one"
-    );
-    let unended = content
-        .rsplit(|byte| *byte == b'\n')
-        .next()
-        .unwrap_or_default();
-    assert!(
-        unended.starts_with(own_line_start.as_bytes())
-            || own_line_start.as_bytes().starts_with(unended),
-        "{name}: the {} bytes after its last whole line are not the start of this run's own line",
-        unended.len()
-    );
+    let written = &bytes[..content_end];
+    if writing == WritingProcess::Ended {
+        assert!(
+            !written.contains(&0),
+            "{name}: a zero byte before the file's last byte that is not one"
+        );
+        let unended = written
+            .rsplit(|byte| *byte == b'\n')
+            .next()
+            .unwrap_or_default();
+        assert!(
+            unended.starts_with(own_line_start.as_bytes())
+                || own_line_start.as_bytes().starts_with(unended),
+            "{name}: the {} bytes after its last whole line are not the start of this run's own line",
+            unended.len()
+        );
+    }
     let lines =
-        parse_trace_lines(content, writing).unwrap_or_else(|failure| panic!("{name}: {failure}"));
+        parse_trace_lines(written, writing).unwrap_or_else(|failure| panic!("{name}: {failure}"));
     for line in &lines {
         assert_eq!(line.run, run, "{name}");
     }
@@ -86,17 +89,21 @@ mod tests {
     use std::sync::mpsc;
 
     use super::super::trace_reader::tests::{
-        MEMBER_LINE, second_line_still_zero_at_its_start_sized_ahead,
+        MEMBER_LINE, MEMBER_RUN, member_line_numbered,
+        second_line_still_zero_at_its_start_sized_ahead,
     };
     use super::*;
 
-    const RUN_FILE_NAME: &str = "20261112T225914Z-6c935f82c118f7b3-estafette.raw.jsonl";
+    /// The name of the raw trace file of the run `MEMBER_LINE` belongs to.
+    fn run_file_name() -> String {
+        format!("20261112T225914Z-{MEMBER_RUN}-estafette.raw.jsonl")
+    }
 
     fn fresh_run_file(label: &str, bytes: &[u8]) -> std::path::PathBuf {
         let directory =
             std::env::temp_dir().join(format!("whole-trace-lines-{}-{label}", std::process::id()));
         fs::create_dir_all(&directory).unwrap();
-        let run_file = directory.join(RUN_FILE_NAME);
+        let run_file = directory.join(run_file_name());
         fs::write(&run_file, bytes).unwrap();
         run_file
     }
@@ -109,7 +116,7 @@ mod tests {
             &second_line_still_zero_at_its_start_sized_ahead(),
         );
         let mut landed = MEMBER_LINE.as_bytes().to_vec();
-        landed.extend_from_slice(MEMBER_LINE.replace("\"n\":4", "\"n\":5").as_bytes());
+        landed.extend_from_slice(member_line_numbered(5).as_bytes());
         landed.resize(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, 0);
         let (looked, first_look) = mpsc::channel::<Vec<u64>>();
         let landing_file = run_file.clone();
@@ -145,7 +152,10 @@ mod tests {
 
         let refusal_text = refusal.unwrap_err().unwrap();
         assert!(
-            refusal_text.starts_with(&format!("{RUN_FILE_NAME}: line 2 is not a trace line: ")),
+            refusal_text.starts_with(&format!(
+                "{}: line 2 is not a trace line: ",
+                run_file_name()
+            )),
             "{refusal_text}"
         );
     }

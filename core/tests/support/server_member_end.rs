@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::fresh_directory::fresh_directory_in;
 use super::remove_scratch::remove_scratch;
-use super::trace_reader::timeline_in;
+use super::trace_reader::{WritingProcess, timeline_read_as};
 use super::{
     KeptAs, KeptSecrets, fail_unless_panicking, files_beneath_for_keeping, fresh_kept_directory,
     keep_file, keep_mark, keep_run_record, keep_stop_failure, naming, print_to_standard_error,
@@ -185,7 +185,7 @@ pub fn ended_server_member(
         keep_staged_trace_files(member, server, kept, secrets, &staged, &mut failures);
     }
     let timeline_read = timeline_to_print(
-        &timeline_of_fetched(staged.whole().as_deref()),
+        &timeline_of_fetched(staged.whole().as_deref(), writing_process_after(&stop)),
         secrets.as_ref(),
     );
     if let Err(failure) = staged.removed() {
@@ -302,21 +302,7 @@ fn keep_staged_trace_files(
         files_beneath_for_keeping(&fetched_into)
             .into_iter()
             .filter_map(|listed| {
-                listed
-                    .and_then(|file| {
-                        let in_fetch = file.strip_prefix(&fetched_into).unwrap_or(&file);
-                        fs::read(&file)
-                            .map_err(|failure| naming(&file, &failure))
-                            .and_then(|content| {
-                                keep_file(
-                                    secrets,
-                                    KeptAs::Evidence,
-                                    &kept_trace_files.join(in_fetch),
-                                    &content,
-                                )
-                            })
-                    })
-                    .err()
+                keep_fetched_file(secrets, &fetched_into, &kept_trace_files, listed).err()
             })
             .map(|failure| failure.to_string())
             .collect()
@@ -368,9 +354,40 @@ fn keep_staged_trace_files(
     }
 }
 
-/// The member's timeline read from the directory its trace files were fetched into, or, when they were not fetched, that its timeline is unknown.
-fn timeline_of_fetched(fetched_into: Option<&Path>) -> String {
-    fetched_into.map_or_else(|| TRACE_FILES_NOT_FETCHED.to_owned(), timeline_in)
+/// Keeps the listed file of a fetch, at its place in the fetched directory, in the trace files' kept directory, or fails with why it could not be listed, read or kept.
+fn keep_fetched_file(
+    secrets: &KeptSecrets,
+    fetched_into: &Path,
+    kept_trace_files: &Path,
+    listed: io::Result<PathBuf>,
+) -> io::Result<()> {
+    let file = listed?;
+    let in_fetch = file.strip_prefix(fetched_into).unwrap_or(&file);
+    let content = fs::read(&file).map_err(|failure| naming(&file, &failure))?;
+    keep_file(
+        secrets,
+        KeptAs::Evidence,
+        &kept_trace_files.join(in_fetch),
+        &content,
+    )
+    .map(drop)
+}
+
+/// The member's timeline read from the directory its trace files were fetched into as its writing process stands, or, when they were not fetched, that its timeline is unknown.
+fn timeline_of_fetched(fetched_into: Option<&Path>, writing: WritingProcess) -> String {
+    fetched_into.map_or_else(
+        || TRACE_FILES_NOT_FETCHED.to_owned(),
+        |directory| timeline_read_as(directory, writing),
+    )
+}
+
+/// Whether the member's process had ended when its trace files were fetched: only a stop that succeeded says so, and the process of a member whose stop failed may still be writing.
+fn writing_process_after(stop: &io::Result<Output>) -> WritingProcess {
+    if succeeded(stop).is_ok() {
+        WritingProcess::Ended
+    } else {
+        WritingProcess::Running
+    }
 }
 
 /// The names printed one a line before a last line giving their count, none when the print is no text, has no such last line, or counts otherwise.
@@ -437,13 +454,13 @@ mod tests {
         KEPT_BENEATH_NOT_A_DIRECTORY, NOT_A_DIRECTORY, READABLE, UNWRITABLE, files_listed_beneath,
         member_line_naming,
     };
-    use crate::scratch_machine::trace_reader::tests::MEMBER_LINE;
-    use crate::scratch_machine::trace_reader::{
-        NO_EVENT_RECORDED, WritingProcess, parse_trace_lines,
+    use crate::scratch_machine::trace_reader::tests::{
+        MEMBER_LINE, second_line_still_zero_at_its_start_sized_ahead,
     };
+    use crate::scratch_machine::trace_reader::{NO_EVENT_RECORDED, parse_trace_lines};
     use crate::scratch_machine::{
-        CONFIGURATION_NOT_TOML, INVITATION_VARIABLE, REDACTED, REDACTED_NOTE_EXTENSION,
-        STOP_FAILED_EXTENSION, TIMELINE_NOT_PRINTED,
+        CONFIGURATION_NOT_TOML, INVITATION_VARIABLE, NETWORK_SECRET_FIELD, REDACTED,
+        REDACTED_NOTE_EXTENSION, STOP_FAILED_EXTENSION, TIMELINE_NOT_PRINTED,
     };
 
     /// The card a test's member serves.
@@ -454,6 +471,8 @@ mod tests {
     const EXITED_WITH_ONE: i32 = 1 << 8;
     /// What a failed stop of a test's member printed.
     const STOP_REFUSAL: &str = "ssh: the stop was refused";
+    /// What a test's recipe prints before the planted token when it refuses.
+    const RECIPE_REFUSAL: &str = "ssh: refused";
     /// What a failed read of a test's member's run record printed.
     const RUN_RECORD_REFUSAL: &str = "ssh: the run record was refused";
     /// The file a test's stand-in fetch writes as a trace file.
@@ -493,8 +512,6 @@ mod tests {
     const FETCHED_NAMING_A_KEY: &str = "20261117T120003Z-4444444444444444-estafette.raw.jsonl";
     /// What a test writes as the network configuration a member wrote to its server, naming no secret.
     const CONFIGURATION_NAMING_NO_SECRET: &str = "owner = \"0e0e0e0e\"\n";
-    /// The field of a network configuration naming its secret, as spec 3.3 names it.
-    const NETWORK_SECRET_FIELD: &str = "secret";
     /// The mode of a fetched file nobody can read, so keeping it fails.
     const UNREADABLE: u32 = 0o000;
     /// A marker a test plants in the `secret` line of a network configuration that does not parse, no real secret.
@@ -651,6 +668,67 @@ mod tests {
     }
 
     #[test]
+    fn observability_decision_16_a_member_whose_stop_failed_is_kept_with_a_mark_beside_its_run_record_saying_so_and_one_that_stopped_with_none()
+     {
+        let kept_in = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!(
+                "estafette-server-member-kept-stop-failure-test-{}",
+                std::process::id()
+            ),
+        )
+        .unwrap();
+        let secrets = secrets_of_the_member();
+        let failed_stop = failed_run(&format!("ssh: the server refused {PLANTED_TOKEN}\n"));
+        let clean_stop_that_printed = Output {
+            stderr: b"bob printed this while stopping\n".to_vec(),
+            ..succeeded_run("")
+        };
+        let end_after = |member: &str, stop: &Output| {
+            ended_server_member(
+                member,
+                SERVER,
+                Some(&kept_in),
+                &secrets,
+                TestSoFar::NotFailing,
+                |step: ServerMemberStep<'_>| match step {
+                    ServerMemberStep::Stop => Ok(stop.clone()),
+                    ServerMemberStep::PrintRunRecord => {
+                        Ok(succeeded_run(&format!("record of {member}\n")))
+                    }
+                    ServerMemberStep::FetchTraceFiles(_) => {
+                        Ok(fetched_with_none_left_on_the_server())
+                    }
+                },
+            )
+        };
+
+        end_after("amy", &failed_stop);
+        end_after("bob", &clean_stop_that_printed);
+
+        let kept: BTreeSet<PathBuf> = files_listed_beneath(&kept_in);
+        let amy_kept = kept_in.join(kept_name(SERVER, "amy"));
+        let bob_kept = kept_in.join(kept_name(SERVER, "bob"));
+        let mark = fs::read_to_string(amy_kept.join("amy.stop-failed")).unwrap();
+        remove_scratch(&kept_in).unwrap();
+        assert_eq!(
+            kept,
+            BTreeSet::from([
+                amy_kept.join("amy.stderr"),
+                amy_kept.join("amy.stop-failed"),
+                amy_kept.join("amy.stop-failed.redacted"),
+                bob_kept.join("bob.stderr"),
+            ])
+        );
+        assert!(
+            mark.contains(&ExitStatus::from_raw(EXITED_WITH_ONE).to_string())
+                && mark.contains(&format!("ssh: the server refused {REDACTED}\n"))
+                && !mark.contains(PLANTED_TOKEN),
+            "{mark}"
+        );
+    }
+
+    #[test]
     fn observability_decision_16_a_server_member_whose_failed_stop_cannot_be_marked_names_the_mark()
     {
         let kept_in = fresh_directory_in(
@@ -662,7 +740,7 @@ mod tests {
         )
         .unwrap();
         let card = "a".repeat(LONGEST_FILE_NAME.saturating_sub(kept_name(SERVER, "").len()));
-        let refusal = format!("ssh: refused {PLANTED_TOKEN}");
+        let refusal = format!("{RECIPE_REFUSAL} {PLANTED_TOKEN}");
         let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
             ServerMemberStep::Stop => Ok(failed_run(&refusal)),
             ServerMemberStep::PrintRunRecord => Ok(succeeded_run("")),
@@ -801,7 +879,7 @@ mod tests {
             ),
         )
         .unwrap();
-        let refusal = format!("ssh: refused {PLANTED_TOKEN}");
+        let refusal = format!("{RECIPE_REFUSAL} {PLANTED_TOKEN}");
         let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
             ServerMemberStep::Stop | ServerMemberStep::PrintRunRecord => Ok(failed_run(&refusal)),
             ServerMemberStep::FetchTraceFiles(into) => {
@@ -842,7 +920,7 @@ mod tests {
         for (mark, (marked, noted)) in marks.iter().zip(&read_marks) {
             let name = mark.file_name().unwrap().to_string_lossy();
             assert!(
-                marked.contains(&format!("ssh: refused {REDACTED}"))
+                marked.contains(&format!("{RECIPE_REFUSAL} {REDACTED}"))
                     && !marked.contains(PLANTED_TOKEN)
                     && noted.contains(name.as_ref()),
                 "{}: {marked} / {noted}",
@@ -1544,21 +1622,68 @@ mod tests {
         );
     }
 
+    /// The timeline a failing test prints for a member that stopped cleanly and whose fetch the stand-in runs as handed.
+    fn timeline_printed_after_the_fetch(
+        fetch: impl Fn(&Path) -> io::Result<Output>,
+    ) -> Option<String> {
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop | ServerMemberStep::PrintRunRecord => Ok(succeeded_run("")),
+            ServerMemberStep::FetchTraceFiles(into) => fetch(into),
+        };
+        ended_server_member(
+            MEMBER,
+            SERVER,
+            None,
+            &secrets_of_the_member(),
+            TestSoFar::Failing,
+            stand_in_for_the_recipes,
+        )
+        .timeline
+    }
+
     #[test]
     fn observability_decision_15_a_member_whose_trace_files_were_not_fetched_is_printed_as_not_fetched_not_as_recording_nothing()
      {
-        let fetched_into = fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("server-member-{}-fetched-into", std::process::id()),
-        )
-        .unwrap();
+        let not_fetched = timeline_printed_after_the_fetch(|_into| Ok(failed_run(RECIPE_REFUSAL)));
+        let fetched_with_no_event = timeline_printed_after_the_fetch(|into| {
+            fs::create_dir_all(into).unwrap();
+            Ok(fetched_with_none_left_on_the_server())
+        });
 
-        let not_fetched = timeline_of_fetched(None);
-        let fetched_with_no_event = timeline_of_fetched(Some(&fetched_into));
+        assert_eq!(not_fetched.as_deref(), Some(TRACE_FILES_NOT_FETCHED));
+        assert_eq!(fetched_with_no_event.as_deref(), Some(NO_EVENT_RECORDED));
+    }
 
-        assert_eq!(not_fetched, TRACE_FILES_NOT_FETCHED);
-        assert_eq!(fetched_with_no_event, NO_EVENT_RECORDED);
-        remove_scratch(&fetched_into).unwrap();
+    #[test]
+    fn observability_decision_12_a_member_whose_stop_failed_prints_the_lines_of_its_fetched_trace_before_one_still_zero_filled()
+     {
+        let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
+            ServerMemberStep::Stop => Ok(failed_run(STOP_REFUSAL)),
+            ServerMemberStep::PrintRunRecord => Ok(succeeded_run("")),
+            ServerMemberStep::FetchTraceFiles(into) => {
+                fs::create_dir_all(into).unwrap();
+                fs::write(
+                    into.join(FETCHED_TRACE_FILE),
+                    second_line_still_zero_at_its_start_sized_ahead(),
+                )
+                .unwrap();
+                Ok(fetched_with_none_left_on_the_server())
+            }
+        };
+        let expected_row = parse_trace_lines(MEMBER_LINE.as_bytes(), WritingProcess::Ended)
+            .unwrap()[0]
+            .to_string();
+
+        let ended = ended_server_member(
+            MEMBER,
+            SERVER,
+            None,
+            &secrets_of_the_member(),
+            TestSoFar::NotFailing,
+            stand_in_for_the_recipes,
+        );
+
+        assert_eq!(ended.timeline, Some(expected_row));
     }
 
     /// A value that, when dropped, reports a recipe run from its drop that could not run, as a lab fixture's drop does.
@@ -1605,7 +1730,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_server_members_failure_lines_carry_a_recipes_standard_error_with_its_secrets_redacted()
      {
-        let refusal = format!("ssh: refused {PLANTED_TOKEN}");
+        let refusal = format!("{RECIPE_REFUSAL} {PLANTED_TOKEN}");
         let stand_in_for_the_recipes = |_step: ServerMemberStep<'_>| Ok(failed_run(&refusal));
 
         let ended = ended_server_member(
@@ -1620,7 +1745,7 @@ mod tests {
         assert_eq!(ended.failures.len(), 2, "{:?}", ended.failures);
         for failure in &ended.failures {
             assert!(
-                failure.contains(&format!("ssh: refused {REDACTED}"))
+                failure.contains(&format!("{RECIPE_REFUSAL} {REDACTED}"))
                     && !failure.contains(PLANTED_TOKEN),
                 "{failure}"
             );
@@ -1630,7 +1755,7 @@ mod tests {
     #[test]
     fn observability_decision_16_a_server_member_whose_secrets_were_not_read_prints_that_its_recipe_failed_leaving_out_its_standard_error()
      {
-        let refusal = format!("ssh: refused {PLANTED_TOKEN}");
+        let refusal = format!("{RECIPE_REFUSAL} {PLANTED_TOKEN}");
         let stand_in_for_the_recipes = |_step: ServerMemberStep<'_>| Ok(failed_run(&refusal));
 
         let ended = ended_server_member(
@@ -1646,7 +1771,7 @@ mod tests {
         for failure in &ended.failures {
             assert!(
                 failure.contains(&ExitStatus::from_raw(EXITED_WITH_ONE).to_string())
-                    && !failure.contains("ssh: refused"),
+                    && !failure.contains(RECIPE_REFUSAL),
                 "{failure}"
             );
         }

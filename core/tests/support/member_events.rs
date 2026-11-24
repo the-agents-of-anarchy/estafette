@@ -99,7 +99,7 @@ mod tests {
     use super::*;
     use crate::trace_reader::parse_trace_lines;
     use crate::trace_reader::tests::{
-        MEMBER_LINE, second_line_still_zero_at_its_start_sized_ahead,
+        MEMBER_LINE, MEMBER_RUN, second_line_still_zero_at_its_start_sized_ahead,
     };
 
     const LABEL: &str = "the member";
@@ -113,7 +113,9 @@ mod tests {
             std::env::temp_dir().join(format!("member-events-{}-still-zero", std::process::id()));
         fs::create_dir_all(&traces).unwrap();
         fs::write(
-            traces.join("20261112T225914Z-6c935f82c118f7b3-estafette.events.jsonl"),
+            traces.join(format!(
+                "20261112T225914Z-{MEMBER_RUN}-estafette.events.jsonl"
+            )),
             second_line_still_zero_at_its_start_sized_ahead(),
         )
         .unwrap();

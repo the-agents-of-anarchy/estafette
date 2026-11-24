@@ -26,6 +26,8 @@ const EVENT_KEY: &str = "event";
 pub const NO_EVENT_RECORDED: &str = "no event recorded";
 /// The byte a trace file holds where it was sized ahead and no line has landed yet, which no line of JSON text holds (spec/observability.md decision 12).
 const SIZED_AHEAD_FILL: u8 = 0;
+/// The size a trace file is sized ahead to, so its length is a multiple of it (spec/observability.md decision 12).
+pub const SPEC_TRACE_FILE_SIZED_AHEAD_BYTES: usize = 65_536;
 /// The byte that ends every trace line.
 const LINE_END: u8 = b'\n';
 
@@ -396,11 +398,6 @@ pub fn lines_of_files_still_present(files: &[PathBuf]) -> Result<Vec<TraceLine>,
     Ok(lines)
 }
 
-/// The events lines of the trace directory of a process that ended one to a row, or the reason they cannot be read, for a test that prints a member's timeline as it fails.
-pub fn timeline_in(traces_directory: &Path) -> String {
-    timeline_read_as(traces_directory, WritingProcess::Ended)
-}
-
 /// The events lines of the trace directory one to a row, read as the caller states its writing process, or the reason they cannot be read, for a test that prints a member's timeline as it fails.
 pub fn timeline_read_as(traces_directory: &Path, writing: WritingProcess) -> String {
     match events_lines_read_as(traces_directory, writing) {
@@ -432,15 +429,24 @@ pub mod tests {
 
     pub const MEMBER_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":4,\"mono_ms\":17,\"wall_ms\":1794524353720,\"node\":\"8f43abc249\",\"event\":\"process.command_failed\",\"code\":\"unreachable\",\"handle\":\"bob\"}\n";
 
+    /// The run of every line `MEMBER_LINE` is built on.
+    pub const MEMBER_RUN: &str = "6c935f82c118f7b3";
+
+    /// How many leading bytes of a line a test leaves zero to show it still landing.
+    const LEADING_BYTES_STILL_ZERO: usize = 64;
+
+    /// `MEMBER_LINE` with the number it is written as replaced.
+    pub fn member_line_numbered(number: impl std::fmt::Display) -> String {
+        MEMBER_LINE.replace("\"n\":4", &format!("\"n\":{number}"))
+    }
+
     /// The bytes a read of a live trace file sized ahead to 64 KiB gives while its second line is landing: `MEMBER_LINE` whole, then the same line numbered 5 still zero in its first 64 bytes.
     pub fn second_line_still_zero_at_its_start_sized_ahead() -> Vec<u8> {
-        const SIZED_AHEAD_BYTES: usize = 65_536;
-        const LEADING_BYTES_STILL_ZERO: usize = 64;
-        let mut second_line = MEMBER_LINE.replace("\"n\":4", "\"n\":5").into_bytes();
+        let mut second_line = member_line_numbered(5).into_bytes();
         second_line[..LEADING_BYTES_STILL_ZERO].fill(0);
         let mut bytes = MEMBER_LINE.as_bytes().to_vec();
         bytes.extend_from_slice(&second_line);
-        bytes.resize(SIZED_AHEAD_BYTES, 0);
+        bytes.resize(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, 0);
         bytes
     }
 
@@ -452,7 +458,7 @@ pub mod tests {
         let [line] = lines.as_slice() else {
             panic!("one line: {lines:?}");
         };
-        assert_eq!(line.run, "6c935f82c118f7b3");
+        assert_eq!(line.run, MEMBER_RUN);
         assert_eq!(line.n, 4);
         assert_eq!(line.mono_ms, 17);
         assert_eq!(line.wall_ms, 1_794_524_353_720);
@@ -554,14 +560,12 @@ pub mod tests {
     #[test]
     fn observability_decision_12_a_first_line_read_while_it_still_shows_the_zeros_the_file_was_sized_ahead_with_is_no_line_until_it_is_whole()
      {
-        const SIZED_AHEAD_BYTES: usize = 65_536;
-        const LEADING_BYTES_STILL_ZERO: usize = 64;
         let directory = fresh_scratch_directory("first-line-still-zero");
         let events_file =
             directory.join("20261116T210036Z-e8e6b01fdb8dbfa0-estafette.events.jsonl");
         let sized_ahead = |line: &[u8]| {
             let mut bytes = line.to_vec();
-            bytes.resize(SIZED_AHEAD_BYTES, 0);
+            bytes.resize(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, 0);
             bytes
         };
         let mut first_line_still_zero_at_its_start = MEMBER_LINE.as_bytes().to_vec();
@@ -612,12 +616,11 @@ pub mod tests {
     #[test]
     fn observability_decision_12_a_stopped_process_file_whose_line_holds_a_zero_byte_before_a_whole_line_fails_the_test_reading_it()
      {
-        const LEADING_BYTES_ZERO: usize = 64;
         let stopped_directory = fresh_scratch_directory("stopped-zero-line");
         let stopped_file = stopped_directory.join("stopped.events.jsonl");
         let mut bytes = MEMBER_LINE.as_bytes().to_vec();
-        bytes[..LEADING_BYTES_ZERO].fill(0);
-        bytes.extend_from_slice(MEMBER_LINE.replace("\"n\":4", "\"n\":5").as_bytes());
+        bytes[..LEADING_BYTES_STILL_ZERO].fill(0);
+        bytes.extend_from_slice(member_line_numbered(5).as_bytes());
         fs::write(&stopped_file, bytes).unwrap();
 
         let failure = std::panic::catch_unwind(|| stopped_trace_lines_of(&stopped_file))
@@ -637,7 +640,7 @@ pub mod tests {
     fn observability_decision_4_a_trace_directory_reads_as_its_events_files_in_run_order_leaving_out_raw_files()
      {
         let directory = fresh_scratch_directory("directory");
-        let later = MEMBER_LINE.replace("\"n\":4", "\"n\":9");
+        let later = member_line_numbered(9);
         fs::write(
             directory.join("20261112T225914Z-aaaaaaaaaaaaaaaa-estafette.events.jsonl"),
             &later,
@@ -669,10 +672,13 @@ pub mod tests {
             9
         );
         assert_eq!(
-            timeline_in(&directory),
+            timeline_read_as(&directory, WritingProcess::Ended),
             "        17 ms  #4    process.command_failed code=\"unreachable\" handle=\"bob\"\n        17 ms  #9    process.command_failed code=\"unreachable\" handle=\"bob\""
         );
-        assert_eq!(timeline_in(&directory.join("absent")), NO_EVENT_RECORDED);
+        assert_eq!(
+            timeline_read_as(&directory.join("absent"), WritingProcess::Ended),
+            NO_EVENT_RECORDED
+        );
         remove_scratch(&directory).unwrap();
     }
 
@@ -685,7 +691,7 @@ pub mod tests {
         fs::write(&not_a_directory, MEMBER_LINE).unwrap();
 
         let read = events_lines_in(&not_a_directory).map(|lines| lines.len());
-        let timeline = timeline_in(&not_a_directory);
+        let timeline = timeline_read_as(&not_a_directory, WritingProcess::Ended);
 
         assert_eq!(
             read,
@@ -709,7 +715,7 @@ pub mod tests {
      {
         let directory = fresh_scratch_directory("rolled-over");
         let run = "20261112T225913Z-bbbbbbbbbbbbbbbb-estafette.events.jsonl";
-        let after_rollover = MEMBER_LINE.replace("\"n\":4", "\"n\":7");
+        let after_rollover = member_line_numbered(7);
         fs::write(directory.join(format!("{run}.1")), MEMBER_LINE).unwrap();
         fs::write(directory.join(run), &after_rollover).unwrap();
 
@@ -729,19 +735,15 @@ pub mod tests {
         let directory = fresh_scratch_directory("raw-files");
         let earlier_run = "20261112T225913Z-bbbbbbbbbbbbbbbb-estafette.raw.jsonl";
         fs::write(directory.join(format!("{earlier_run}.1")), MEMBER_LINE).unwrap();
-        fs::write(
-            directory.join(earlier_run),
-            MEMBER_LINE.replace("\"n\":4", "\"n\":7"),
-        )
-        .unwrap();
+        fs::write(directory.join(earlier_run), member_line_numbered(7)).unwrap();
         fs::write(
             directory.join("20261112T225914Z-aaaaaaaaaaaaaaaa-estafette.raw.jsonl"),
-            MEMBER_LINE.replace("\"n\":4", "\"n\":9"),
+            member_line_numbered(9),
         )
         .unwrap();
         fs::write(
             directory.join("20261112T225913Z-bbbbbbbbbbbbbbbb-estafette.events.jsonl"),
-            MEMBER_LINE.replace("\"n\":4", "\"n\":2"),
+            member_line_numbered(2),
         )
         .unwrap();
 
@@ -772,7 +774,7 @@ pub mod tests {
                     directory.join(format!(
                         "20261112T22591{index}Z-aaaaaaaaaaaaaaaa-estafette.events.jsonl"
                     )),
-                    MEMBER_LINE.replace("\"n\":4", &format!("\"n\":{index}")),
+                    member_line_numbered(index),
                 )
                 .unwrap();
             }
