@@ -1,7 +1,9 @@
 use estafette::crypto::NetworkKeys;
 use estafette::net::direct::{ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer};
 use estafette::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
-use estafette::wire::{self, Addr, Introduce, IntroduceAck, Message, MessageAck, Version};
+use estafette::wire::{
+    self, Addr, Introduce, IntroduceAck, Message, MessageAck, MessageId, Version,
+};
 use iroh::protocol::Router;
 use iroh::{EndpointAddr, RelayUrl, SecretKey};
 
@@ -18,6 +20,7 @@ pub struct OffTopicSender {
     endpoint: NodeEndpoint,
     router: Router,
     client: DirectClient,
+    handle: String,
 }
 
 impl OffTopicSender {
@@ -61,12 +64,29 @@ impl OffTopicSender {
             endpoint,
             router,
             client,
+            handle: handle.to_owned(),
         }
     }
 
-    /// Sends the message over the direct protocol to the node at the address and returns its acknowledgement.
-    pub fn send(&self, to: EndpointAddr, message: Message) -> Result<MessageAck, DirectError> {
+    /// Sends a Message of that id, stamped sent at that time, with that body, from this card to the node at the address over the direct protocol and returns its acknowledgement.
+    pub fn send(
+        &self,
+        to: EndpointAddr,
+        id: MessageId,
+        sent_at: u64,
+        body: &str,
+    ) -> Result<MessageAck, DirectError> {
         let recipient = to.id;
+        let message = Message {
+            v: Version::CURRENT,
+            id,
+            to: *recipient.as_bytes(),
+            handle: self.handle.clone(),
+            attached: false,
+            sent_at,
+            body: body.to_owned(),
+            mac: UNSET_MAC,
+        };
         self.endpoint.replace_address(to);
         self.runtime
             .handle()

@@ -758,9 +758,7 @@ mod spec_3_15_two_members_through_the_live_host {
     use std::time::{Duration, Instant};
 
     use estafette::keys::{parse_secret_key, render_public_key};
-    use estafette::wire::{
-        self, Addr, Message, MessageId, Payload, Presence, SignatureBytes, Version,
-    };
+    use estafette::wire::{self, Addr, MessageId, Payload, Presence, SignatureBytes, Version};
     use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
@@ -1363,22 +1361,13 @@ mod spec_3_15_two_members_through_the_live_host {
                 )
             },
         );
-        let message = Message {
-            v: Version::CURRENT,
-            id: OFF_TOPIC_MESSAGE_ID,
-            to: *amy.card.id.as_bytes(),
-            handle: bob_handle.clone(),
-            attached: false,
-            sent_at: wall_clock_ms(),
-            body: BODY.to_owned(),
-            mac: UNSET_MAC,
-        };
+        let sent_at = wall_clock_ms();
 
         let unseen_before = timed("amy's peers tool answers before bob's send", || {
             listed_peer(&mut amy.member, &bob_handle)
         });
         let sent = timed("bob's direct send to amy", || {
-            bob.send(amy_address, message)
+            bob.send(amy_address, OFF_TOPIC_MESSAGE_ID, sent_at, BODY)
         });
         let listed_after = timed("amy's peers tool answers after bob's send", || {
             listed_peer(&mut amy.member, &bob_handle)
