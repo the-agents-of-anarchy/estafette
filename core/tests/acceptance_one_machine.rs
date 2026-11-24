@@ -126,7 +126,9 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         UNREACHABLE_CODE, assert_stopped_member_is_gone_then_unreachable,
     };
     use crate::message_body::BODY;
-    use crate::new_presence_window::{acknowledged_after, new_presence_accepted};
+    use crate::new_presence_window::{
+        NewPresenceAccepted, acknowledged_after, new_presence_accepted,
+    };
     use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
     use crate::payloads::presence_signed_by;
     use crate::scratch_machine::{Card, RunRecordKeeping};
@@ -321,14 +323,14 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
     /// Broadcasts bob's Presence from the scripted node once its topic reports the member up, and requires the member to list bob as last seen in or after the millisecond of the broadcast.
     #[track_caller]
-    fn announce_until_seen(
+    fn announce_once_neighbor_up_until_seen(
         network: &LocalNetwork,
         node: &ScriptedNode,
         key: &SecretKey,
         address: &iroh::EndpointAddr,
-        member: (&mut Member, EndpointId),
+        member: &mut Member,
+        member_card: EndpointId,
     ) -> u64 {
-        let (member, member_card) = member;
         node.wait_for_neighbor_up(member_card);
         let sent_ms = wall_clock_ms();
         node.broadcast(presence_signed_by(network.keys(), key, BOB_HANDLE, address));
@@ -509,6 +511,27 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         )
     }
 
+    /// Requires the send before the kill and the send to the restarted bob delivered, and the second acknowledged within 1 s of the new Presence reaching the sender (spec 3.15 test 18).
+    #[track_caller]
+    fn require_both_sends_delivered_the_second_within_1_s_of_the_new_presence(
+        amy: &Member,
+        first_send: &Value,
+        sent: &Value,
+        new_presence: &NewPresenceAccepted,
+    ) {
+        assert_eq!(
+            first_send["result"]["delivered"],
+            json!(true),
+            "{first_send}"
+        );
+        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
+        let delivered_after = acknowledged_after(amy.events(), new_presence, sent);
+        assert!(
+            delivered_after < SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
+            "acknowledged {delivered_after:?} after the new presence, not under {SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE:?}"
+        );
+    }
+
     /// Restarts bob's card through a second host that links amy, bob's first process gone since `killed_ms`, and requires amy's send before the kill delivered and her send to the restarted bob delivered within 1 s of its new Presence reaching her (spec 3.15 test 18).
     #[track_caller]
     fn restarted_bob_is_delivered_to_within_1_s_of_its_new_presence(
@@ -531,17 +554,11 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             new_presence_accepted(amy.events(), bob_card.id, killed_ms)
         });
         let sent = timed("amy's send to the restarted bob", || send(amy, BOB_HANDLE));
-
-        assert_eq!(
-            first_send["result"]["delivered"],
-            json!(true),
-            "{first_send}"
-        );
-        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
-        let delivered_after = acknowledged_after(amy.events(), &new_presence, &sent);
-        assert!(
-            delivered_after < SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
-            "acknowledged {delivered_after:?} after the new presence, not under {SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE:?}"
+        require_both_sends_delivered_the_second_within_1_s_of_the_new_presence(
+            amy,
+            first_send,
+            &sent,
+            &new_presence,
         );
     }
 
@@ -685,16 +702,11 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             send(&mut amy, BOB_HANDLE)
         });
 
-        assert_eq!(
-            first_send["result"]["delivered"],
-            json!(true),
-            "{first_send}"
-        );
-        assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
-        let delivered_after = acknowledged_after(amy.events(), &new_presence, &sent);
-        assert!(
-            delivered_after < SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
-            "acknowledged {delivered_after:?} after the new presence, not under {SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE:?}"
+        require_both_sends_delivered_the_second_within_1_s_of_the_new_presence(
+            &amy,
+            &first_send,
+            &sent,
+            &new_presence,
         );
     }
 
@@ -1032,12 +1044,13 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             )
         });
         let sent_ms = timed("amy lists the restarted bob's new presence", || {
-            announce_until_seen(
+            announce_once_neighbor_up_until_seen(
                 &network,
                 &restarted,
                 &bob_key,
                 &loopback_address_of(&restarted),
-                (&mut amy, amy_card.id),
+                &mut amy,
+                amy_card.id,
             )
         });
         timed("amy applies the new presence", || {
@@ -1118,12 +1131,13 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         );
 
         let sent_ms = timed("amy lists bob's presence omitting the held path", || {
-            announce_until_seen(
+            announce_once_neighbor_up_until_seen(
                 &network,
                 &bob,
                 &bob_key,
                 &address_on_a_host_no_connection_runs_over(&bob),
-                (&mut amy, amy_card.id),
+                &mut amy,
+                amy_card.id,
             )
         });
         timed("amy applies the presence", || {
@@ -1278,13 +1292,14 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
 
     /// Spec 3.15 test 7: the handle the first member holds and the second member's card requests too.
     const TAKEN: &str = AMY_HANDLE;
-    /// Spec 3.15 test 7: the effective handle `<h>-2` every node gives the second member that requests the taken handle (spec 3.1).
-    const SECOND_EFFECTIVE: &str = "amy-2";
+    /// Spec 3.15 test 7: what follows the taken handle in the effective handle `<h>-2` every node gives the second member that requests it (spec 3.1).
+    const SECOND_MEMBER_HANDLE_SUFFIX: &str = "-2";
 
     #[test]
     fn spec_3_15_test_7_a_second_member_joining_through_a_host_without_a_card_after_the_first_spread_is_h_2_at_every_node_and_keeps_it_after_the_first_restarts()
      {
         let network = LocalNetwork::create("t7c", &RunRecordKeeping::from_environment());
+        let second_effective = format!("{TAKEN}{SECOND_MEMBER_HANDLE_SUFFIX}");
         let host = network.stand_in_host();
         let amy_card = network.create_card(AMY_CARD, TAKEN);
         let bob_card = network.create_card(BOB_CARD, BOB_HANDLE);
@@ -1310,10 +1325,10 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
             || ann.init_through(&ann_card, &host),
         );
         let at_amy = timed("amy lists ann online as <h>-2", || {
-            amy.peer_within(SECOND_EFFECTIVE, PRESENCE_WAIT, online)
+            amy.peer_within(&second_effective, PRESENCE_WAIT, online)
         });
         let at_bob = timed("bob lists ann online as <h>-2", || {
-            bob.peer_within(SECOND_EFFECTIVE, PRESENCE_WAIT, online)
+            bob.peer_within(&second_effective, PRESENCE_WAIT, online)
         });
         amy.close_standard_input();
         assert!(timed("amy exits after the end of input", || amy.wait_for_exit()).success());
@@ -1336,22 +1351,22 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
             bob.peer_within(TAKEN, PRESENCE_WAIT, online)
         });
         let ann_at_restarted = timed("the restarted amy lists ann online as <h>-2", || {
-            restarted.peer_within(SECOND_EFFECTIVE, PRESENCE_WAIT, online)
+            restarted.peer_within(&second_effective, PRESENCE_WAIT, online)
         });
         let ann_at_bob_after_restart = timed(
             "bob still lists ann online as <h>-2 after the restart",
-            || bob.peer_within(SECOND_EFFECTIVE, PRESENCE_WAIT, online),
+            || bob.peer_within(&second_effective, PRESENCE_WAIT, online),
         );
 
-        assert_eq!(ann_claim["result"]["handle"], json!(SECOND_EFFECTIVE));
-        assert_eq!(at_amy["handle"], json!(SECOND_EFFECTIVE));
-        assert_eq!(at_bob["handle"], json!(SECOND_EFFECTIVE));
+        assert_eq!(ann_claim["result"]["handle"], json!(second_effective));
+        assert_eq!(at_amy["handle"], json!(second_effective));
+        assert_eq!(at_bob["handle"], json!(second_effective));
         assert_eq!(restarted_claim["result"]["handle"], json!(TAKEN));
         assert_eq!(restarted_at_ann["handle"], json!(TAKEN));
         assert_eq!(restarted_at_bob["handle"], json!(TAKEN));
-        assert_eq!(ann_at_restarted["handle"], json!(SECOND_EFFECTIVE));
-        assert_eq!(ann_at_bob_after_restart["handle"], json!(SECOND_EFFECTIVE));
-        assert_eq!(own_after_restart["you"]["handle"], json!(SECOND_EFFECTIVE));
+        assert_eq!(ann_at_restarted["handle"], json!(second_effective));
+        assert_eq!(ann_at_bob_after_restart["handle"], json!(second_effective));
+        assert_eq!(own_after_restart["you"]["handle"], json!(second_effective));
     }
 
     /// Restarts bob's card through a second host that links amy alone, bob's first process gone since `gone_ms`, and requires the restarted bob to list amy online within the observer wait of its init returning (spec 3.15 test 26).
@@ -1465,7 +1480,7 @@ mod spec_3_15_with_one_member {
     use crate::member::{Member, loopback_address};
     use crate::member_events::COUNTERS_EVENT;
     use crate::message_body::BODY;
-    use crate::node_start::MOMENT_FIELD;
+    use crate::node_start::{MOMENT_FIELD, is_counters_snapshot_of_moment};
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::{presence_signed_by, presence_signed_by_at};
     use crate::scratch_machine::RunRecordKeeping;
@@ -1571,7 +1586,11 @@ mod spec_3_15_with_one_member {
         member.wait_until(
             &format!("{COUNTERS_EVENT} of its rebind's {REBOUND_MOMENT} endpoint"),
             within,
-            |lines| lines.into_iter().find(is_rebound_snapshot),
+            |lines| {
+                lines
+                    .into_iter()
+                    .find(|line| is_counters_snapshot_of_moment(line, REBOUND_MOMENT))
+            },
         )
     }
 
@@ -1708,11 +1727,6 @@ mod spec_3_15_with_one_member {
         line.event == GATE_CLOSED_EVENT
             && line.value(PEER_FIELD) == Some(&json!(peer))
             && line.value(DIRECTION_FIELD) == Some(&json!(direction))
-    }
-
-    /// Whether the events line is the counters snapshot a member records once its rebind's fresh endpoint is bound.
-    fn is_rebound_snapshot(line: &TraceLine) -> bool {
-        line.event == COUNTERS_EVENT && line.value(MOMENT_FIELD) == Some(&json!(REBOUND_MOMENT))
     }
 
     #[test]
@@ -1888,7 +1902,8 @@ mod spec_3_15_with_one_member {
     }
 
     #[test]
-    fn spec_3_5_a_card_whose_public_key_is_upper_case_hex_is_claimed_through_init() {
+    fn spec_3_5_a_card_whose_public_key_decodes_from_upper_case_hex_is_claimed_through_init_though_spec_3_1_writes_it_lowercase()
+     {
         let network = LocalNetwork::create("upper-key", &RunRecordKeeping::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         network.uppercase_public_key(&card);
@@ -2402,6 +2417,7 @@ mod observability_decision_6_on_one_machine {
 
     use crate::local_network::{AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, LocalNetwork, MetPair};
     use crate::mcp_server::{PRESENCE_WAIT, call_succeeded, online};
+    use crate::member::LOOPBACK;
     use crate::scratch_machine::RunRecordKeeping;
 
     /// The body amy sends bob, planted so an events file that holds it is found to write a body (decision 6).
@@ -2499,21 +2515,25 @@ mod observability_decision_6_on_one_machine {
             .is_some_and(|extension| extension == SOCKET_EXTENSION)
     }
 
-    /// What no events file may hold: the body, a URL, the IPv6 loopback, and every path and every long run of letters and digits of the machine's files but the trace files.
-    fn planted_markers(files: &[PathBuf]) -> Vec<String> {
-        let mut markers = vec![
-            BODY_MARKER.to_owned(),
-            URL_SCHEME_SEPARATOR.to_owned(),
-            IPV6_LOOPBACK.to_owned(),
-        ];
+    /// The long runs of letters and digits in every readable file outside the traces, with every such file's path: the secrets, the sidecar paths and the inbox sockets the run holds.
+    fn secrets_and_paths_of(files: &[PathBuf]) -> BTreeSet<String> {
+        let mut markers = BTreeSet::new();
         for file in files.iter().filter(|file| !is_trace_file(file)) {
-            markers.push(file.to_string_lossy().into_owned());
-            if let Ok(content) = fs::read(file) {
-                markers.extend(
-                    long_alphanumeric_runs(&String::from_utf8_lossy(&content)).map(str::to_owned),
-                );
-            }
+            let content = fs::read(file).unwrap_or_default();
+            markers.extend(
+                long_alphanumeric_runs(&String::from_utf8_lossy(&content)).map(str::to_owned),
+            );
+            markers.insert(file.to_string_lossy().into_owned());
         }
+        markers
+    }
+
+    /// What no events file may hold: the body, a URL, the IPv6 loopback, and every path and every long run of letters and digits of the machine's files but the trace files.
+    fn planted_markers(files: &[PathBuf]) -> BTreeSet<String> {
+        let mut markers: BTreeSet<String> = [BODY_MARKER, URL_SCHEME_SEPARATOR, IPV6_LOOPBACK]
+            .map(str::to_owned)
+            .into();
+        markers.extend(secrets_and_paths_of(files));
         markers
     }
 
@@ -2591,22 +2611,6 @@ mod observability_decision_6_on_one_machine {
             .collect()
     }
 
-    /// The long runs of letters and digits in every readable base directory file outside the traces, with every such file's path: the secrets, the sidecar paths and the inbox sockets the run holds.
-    fn secrets_and_paths_of(network: &LocalNetwork) -> BTreeSet<String> {
-        let mut markers = BTreeSet::new();
-        for file in network.base_directory_files() {
-            if is_trace_file(&file) {
-                continue;
-            }
-            let content = fs::read(&file).unwrap_or_default();
-            markers.extend(
-                long_alphanumeric_runs(&String::from_utf8_lossy(&content)).map(str::to_owned),
-            );
-            markers.insert(file.to_string_lossy().into_owned());
-        }
-        markers
-    }
-
     /// The text of every socket address and its address alone.
     fn address_markers(addresses: impl IntoIterator<Item = SocketAddr>) -> BTreeSet<String> {
         addresses
@@ -2673,14 +2677,14 @@ mod observability_decision_6_on_one_machine {
         bob.peer_within(AMY_HANDLE, PRESENCE_WAIT, online);
         let host_address = host.endpoint().addr();
         let host_ports: BTreeSet<u16> = host_address.ip_addrs().map(SocketAddr::port).collect();
-        let mut markers = secrets_and_paths_of(&network);
+        let mut markers = secrets_and_paths_of(&network.base_directory_files());
         markers.extend(address_markers(host_address.ip_addrs().copied()));
         markers.extend(address_markers(
             amy.bound_udp_ports()
                 .into_iter()
                 .chain(bob.bound_udp_ports())
                 .chain(host_ports.iter().copied())
-                .map(|port| SocketAddr::from(([127, 0, 0, 1], port))),
+                .map(|port| SocketAddr::new(LOOPBACK, port)),
         ));
         for claim in [&amy_claim, &bob_claim] {
             markers.insert(claim["result"]["inbox_path"].as_str().unwrap().to_owned());

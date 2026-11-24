@@ -1,14 +1,18 @@
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 use estafette::dirs::{DirectoryFilesystem, OperatingSystemFilesystem};
 
 use crate::local_network::{LocalNetwork, NETWORK};
-use crate::member::first_line_named;
+use crate::member::{first_line_named, wait_for_first_line_named};
 use crate::member_events::MemberEvents;
+use crate::scratch_machine::fresh_directory::fresh_directory_in;
+use crate::scratch_machine::owned_process::{
+    FIXTURE_ENDED_WITHIN, FIXTURE_STANDARD_ERROR, FIXTURE_VARIABLE, fixture_run_within,
+};
+use crate::scratch_machine::remove_scratch::remove_scratch;
 use crate::scratch_machine::{RunRecordKeeping, ScratchMachine, TIMELINE_HEADING};
 use crate::trace_reader::{NO_EVENT_RECORDED, events_lines_in};
 
@@ -33,7 +37,6 @@ const NETWORK_CREATED_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":
 const COMMAND_FAILED_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":1,\"mono_ms\":9,\"wall_ms\":1794524353724,\"event\":\"process.command_failed\",\"message\":\"stopped\"}\n";
 const HANDSHAKE_FAILED_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":2,\"mono_ms\":12,\"wall_ms\":1794524353727,\"event\":\"tool.handshake_failed\"}\n";
 const EVENTS_FILE_NAME: &str = "20261112T225913Z-6c935f82c118f7b3-estafette.events.jsonl";
-const FORCED_FAILURE_VARIABLE: &str = "ESTAFETTE_FORCED_FAILURE";
 const FORCED_FAILURE_TEST: &str =
     "trace_events::forced_failure_after_two_members_for_the_timeline_print";
 const FORCED_FAILURE_MESSAGE: &str = "the failure the timeline print follows";
@@ -119,11 +122,7 @@ fn observability_decision_14_an_event_already_in_the_file_is_found_without_a_fur
         "member 0",
         &machine.traces_directory_of_member(FIRST_MEMBER),
     );
-    let line = member.wait_until(
-        COMMAND_FAILED_EVENT,
-        EVENT_BOUND,
-        first_line_named(COMMAND_FAILED_EVENT),
-    );
+    let line = wait_for_first_line_named(&member, COMMAND_FAILED_EVENT, EVENT_BOUND);
 
     assert_eq!(line.event, COMMAND_FAILED_EVENT);
 }
@@ -171,11 +170,7 @@ fn observability_decision_14_a_wait_whose_bound_runs_out_fails_naming_the_event_
     let member = MemberEvents::new("member 0", &traces);
 
     let failure = failure_text_of(|| {
-        member.wait_until(
-            COMMAND_FAILED_EVENT,
-            EXHAUSTED_BOUND,
-            first_line_named(COMMAND_FAILED_EVENT),
-        );
+        wait_for_first_line_named(&member, COMMAND_FAILED_EVENT, EXHAUSTED_BOUND);
     });
 
     assert_eq!(
@@ -301,17 +296,9 @@ fn observability_decision_14_a_second_members_event_of_the_same_name_is_not_take
     );
 
     let first_failure = failure_text_of(|| {
-        first.wait_until(
-            COMMAND_FAILED_EVENT,
-            EXHAUSTED_BOUND,
-            first_line_named(COMMAND_FAILED_EVENT),
-        );
+        wait_for_first_line_named(&first, COMMAND_FAILED_EVENT, EXHAUSTED_BOUND);
     });
-    let second_line = second.wait_until(
-        COMMAND_FAILED_EVENT,
-        EVENT_BOUND,
-        first_line_named(COMMAND_FAILED_EVENT),
-    );
+    let second_line = wait_for_first_line_named(&second, COMMAND_FAILED_EVENT, EVENT_BOUND);
 
     assert!(first_failure.starts_with("member 0: no process.command_failed"));
     assert_eq!(second_line.event, COMMAND_FAILED_EVENT);
@@ -319,14 +306,23 @@ fn observability_decision_14_a_second_members_event_of_the_same_name_is_not_take
 
 #[test]
 fn observability_decision_15_a_failing_test_prints_the_timeline_of_each_member_it_started() {
-    let forced = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", FORCED_FAILURE_TEST, "--ignored", "--nocapture"])
-        .env(FORCED_FAILURE_VARIABLE, "1")
-        .output()
-        .unwrap();
+    let scratch = fresh_directory_in(
+        &std::env::temp_dir(),
+        &format!("estafette-timeline-print-test-{}", std::process::id()),
+    )
+    .unwrap();
+    let standard_error = scratch.join(FIXTURE_STANDARD_ERROR);
 
-    let printed = String::from_utf8_lossy(&forced.stderr);
-    assert!(!forced.status.success(), "{printed}");
+    let forced = fixture_run_within(
+        FORCED_FAILURE_TEST,
+        &[],
+        File::create(&standard_error).unwrap().into(),
+        FIXTURE_ENDED_WITHIN,
+    );
+
+    let printed = String::from_utf8_lossy(&fs::read(&standard_error).unwrap()).into_owned();
+    remove_scratch(&scratch).unwrap();
+    assert!(!forced.exit.success(), "{printed}");
     let [_before, first, second] = printed.split(TIMELINE_HEADING).collect::<Vec<_>>()[..] else {
         panic!("one timeline for each of the two members: {printed}");
     };
@@ -337,13 +333,14 @@ fn observability_decision_15_a_failing_test_prints_the_timeline_of_each_member_i
     assert!(!second.contains(HANDSHAKE_FAILED_EVENT), "{printed}");
 }
 
-/// Starts two members, the second killed before it records anything, then fails: with the forced failure under the variable the test of the timeline print sets in the child process it runs this fixture in, and naming that test without it; ignored in the suite.
+/// Starts two members, the second killed before it records anything, then fails; run as the child process of the test of the timeline print, which sets the fixture variable naming it, and refusing to run without it; ignored in the suite.
 #[test]
 #[ignore = "a fixture: the child process of observability_decision_15_a_failing_test_prints_the_timeline_of_each_member_it_started"]
 fn forced_failure_after_two_members_for_the_timeline_print() {
-    assert!(
-        std::env::var_os(FORCED_FAILURE_VARIABLE).is_some(),
-        "{FORCED_FAILURE_TEST} is a fixture of {TIMELINE_PRINT_TEST}, which runs it with {FORCED_FAILURE_VARIABLE} set"
+    assert_eq!(
+        std::env::var(FIXTURE_VARIABLE).ok().as_deref(),
+        Some(FORCED_FAILURE_TEST),
+        "{FORCED_FAILURE_TEST} is a fixture of {TIMELINE_PRINT_TEST}, which runs it with {FIXTURE_VARIABLE} naming it"
     );
     let network = LocalNetwork::create("f1", &RunRecordKeeping::from_environment());
     let machine = network.machine();

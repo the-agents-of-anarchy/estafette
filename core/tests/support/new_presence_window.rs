@@ -12,11 +12,15 @@ use crate::trace_reader::TraceLine;
 const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
 /// The event a member records for each direct request it sends, with how it ended (spec/observability.md decision 9).
 const REQUEST_SENT_EVENT: &str = "direct.request_sent";
-/// The fields of an events line naming a payload's or a request's kind, a payload's signer and seq, a Message's id and a request's outcome (spec/observability.md decision 6).
+/// The field of an events line naming a payload's or a request's kind (spec/observability.md decision 6).
 const KIND_FIELD: &str = "kind";
+/// The field of an events line naming a payload's signer (spec/observability.md decision 6).
 const PEER_FIELD: &str = "peer";
+/// The field of an events line naming a payload's seq (spec/observability.md decision 6).
 const SEQ_FIELD: &str = "seq";
+/// The field of an events line naming a Message's id (spec/observability.md decision 6).
 const MESSAGE_FIELD: &str = "message";
+/// The field of an events line naming a request's outcome (spec/observability.md decision 6).
 const OUTCOME_FIELD: &str = "outcome";
 /// The kind of payload a Presence is, as an events line names it.
 const PRESENCE_KIND: &str = "presence";
@@ -29,11 +33,20 @@ const MESSAGE_ID_KEY: &str = "id";
 /// How long a member may take to write the line of a request whose answer the test already holds: chosen, not measured, far above a queued line's write, so only a line never written fails it.
 const ANSWERED_REQUEST_LINE_WAIT: Duration = Duration::from_secs(10);
 
+/// The sender's acceptance of a Presence the card stamped after the kill, the instant spec 3.15 test 18 counts its second from, held as the sender's monotonic reading of it.
+pub struct NewPresenceAccepted {
+    mono_ms: u64,
+}
+
 /// The sender's line recording its acceptance of a Presence the card stamped after the kill, written after the kill: the instant spec 3.15 test 18 counts its second from, awaited within the presence wait.
 #[track_caller]
-pub fn new_presence_accepted(sender: &MemberEvents, card: EndpointId, killed_ms: u64) -> TraceLine {
+pub fn new_presence_accepted(
+    sender: &MemberEvents,
+    card: EndpointId,
+    killed_ms: u64,
+) -> NewPresenceAccepted {
     let peer = short_id_of_node(card);
-    sender.wait_until(
+    let accepted = sender.wait_until(
         &format!(
             "{PAYLOAD_ACCEPTED_EVENT} of a {PRESENCE_KIND} from {peer} stamped and written after the kill at {killed_ms} ms"
         ),
@@ -43,14 +56,17 @@ pub fn new_presence_accepted(sender: &MemberEvents, card: EndpointId, killed_ms:
                 .into_iter()
                 .find(|line| is_presence_accepted_after(line, &peer, killed_ms))
         },
-    )
+    );
+    NewPresenceAccepted {
+        mono_ms: accepted.mono_ms,
+    }
 }
 
 /// How long after the sender accepted the new Presence its recipient acknowledged the Message the send result names, both read on the sender's monotonic clock from its own events (spec 3.15 test 18).
 #[track_caller]
 pub fn acknowledged_after(
     sender: &MemberEvents,
-    new_presence: &TraceLine,
+    new_presence: &NewPresenceAccepted,
     sent: &Value,
 ) -> Duration {
     let message = &sent[RESULT_KEY][MESSAGE_ID_KEY];
@@ -67,7 +83,12 @@ pub fn acknowledged_after(
         acknowledged
             .mono_ms
             .checked_sub(new_presence.mono_ms)
-            .unwrap(),
+            .unwrap_or_else(|| {
+                panic!(
+                    "the {REQUEST_SENT_EVENT} of the {MESSAGE_KIND} {message} {ACKNOWLEDGED_OUTCOME} is stamped {} ms, before the new {PRESENCE_KIND}'s {} ms",
+                    acknowledged.mono_ms, new_presence.mono_ms
+                )
+            }),
     )
 }
 

@@ -29,7 +29,8 @@ const IPV4_SOCKET_TYPE: &str = "IPv4";
 const LSOF_TYPE_FIELD: char = 't';
 const LSOF_NAME_FIELD: char = 'n';
 const PORT_SEPARATOR: char = ':';
-const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+/// The address of this machine that its members reach one another on.
+pub const LOOPBACK: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
 /// A running `estafette mcp` process driven as an MCP client, with the process id its UDP sockets are listed by and the events it records awaited in its trace directory.
 pub struct Member {
@@ -81,9 +82,7 @@ impl Member {
     /// The first line of the member's events files that names the event, found already written or awaited until it is written, failing with the member's timeline so far when the bound runs out.
     #[track_caller]
     pub fn wait_for_event(&self, event: &str, within: Duration) -> TraceLine {
-        self.server
-            .events()
-            .wait_until(event, within, first_line_named(event))
+        wait_for_first_line_named(self.server.events(), event, within)
     }
 
     /// The first value `found_in` makes of every line of the member's events files, awaited as `MemberEvents::wait_until` awaits it.
@@ -158,6 +157,16 @@ impl Member {
 /// What finds the first events line that names the event.
 pub fn first_line_named(event: &str) -> impl FnMut(Vec<TraceLine>) -> Option<TraceLine> + '_ {
     move |lines| lines.into_iter().find(|line| line.event == event)
+}
+
+/// The first line of the events that names the event, found already written or awaited until it is written, failing with the member's timeline so far when the bound runs out.
+#[track_caller]
+pub fn wait_for_first_line_named(
+    events: &MemberEvents,
+    event: &str,
+    within: Duration,
+) -> TraceLine {
+    events.wait_until(event, within, first_line_named(event))
 }
 
 /// The bodies of the messages an inbox tool envelope returns, in its order.
