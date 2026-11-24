@@ -833,6 +833,37 @@ fn binary_mcp_init_refuses_a_public_nested_too_deep_for_the_parser_as_card_inval
     );
 }
 
+const OPERATOR_CARD_FILE_NAME: &str = "operator.yaml";
+
+#[test]
+fn binary_test_send_refuses_an_operator_card_whose_public_nests_too_deep_for_the_parser_as_an_invalid_card_of_spec_3_5()
+ {
+    let root =
+        root_with_card_extended_by("test_send_deep", &block_sequence_public(NESTING_DEPTHS[2]))
+            .unwrap();
+    let network = run_binary(&root, &["network", "create", NETWORK]).unwrap();
+    require_success(&network).unwrap();
+    let cards_directory = root.join("data/estafette/cards/acme");
+    std::fs::copy(
+        cards_directory.join(CARD_FILE_NAME),
+        cards_directory.join(OPERATOR_CARD_FILE_NAME),
+    )
+    .unwrap();
+
+    let sent = run_binary(&root, &["test-send", NETWORK, "ana", "hello"]).unwrap();
+
+    let refusal = stderr_text(&sent);
+    assert_eq!(
+        sent.status.code(),
+        Some(REFUSED_CARD_EXIT_CODE),
+        "{refusal}"
+    );
+    assert!(
+        refusal.contains(&format!("{OPERATOR_CARD_FILE_NAME} is not a valid card")),
+        "{refusal}"
+    );
+}
+
 const DEEPEST_IGNORED_KEY_DEPTH: usize = 2000;
 const IGNORED_KEY_DEPTHS: [usize; 2] = [300, DEEPEST_IGNORED_KEY_DEPTH];
 
