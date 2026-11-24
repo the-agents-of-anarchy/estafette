@@ -36,14 +36,7 @@ impl AreaEvent for StateEvent {
     fn fields(&self) -> EventFields {
         match self {
             Self::Counters(snapshot) => {
-                let moment = match snapshot.moment() {
-                    SnapshotMoment::Start => "start",
-                    SnapshotMoment::Rebind => "rebind",
-                    SnapshotMoment::Rebound => "rebound",
-                    SnapshotMoment::Interval => "interval",
-                    SnapshotMoment::Stop => "stop",
-                };
-                std::iter::once((MOMENT_FIELD, Value::from(moment)))
+                std::iter::once((MOMENT_FIELD, Value::from(moment_text(snapshot.moment()))))
                     .chain(
                         snapshot
                             .counters()
@@ -53,6 +46,17 @@ impl AreaEvent for StateEvent {
                     .collect()
             }
         }
+    }
+}
+
+/// The moment of a counters snapshot as the events file writes it.
+const fn moment_text(moment: SnapshotMoment) -> &'static str {
+    match moment {
+        SnapshotMoment::Start => "start",
+        SnapshotMoment::Rebind => "rebind",
+        SnapshotMoment::Rebound => "rebound",
+        SnapshotMoment::Interval => "interval",
+        SnapshotMoment::Stop => "stop",
     }
 }
 
