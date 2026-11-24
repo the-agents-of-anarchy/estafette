@@ -189,15 +189,15 @@ fn execute(
             create_card_with_fresh_key(
                 &directories,
                 filesystem,
-                registry.network.as_str(),
-                card.as_str(),
+                &registry.network,
+                &card,
                 &handle,
                 fill_seed,
             )?
         }
         CardCommand::ListCards { registry } => {
             let directories = establish_directories(environment, filesystem, registry.cards_dir)?;
-            list_registry_cards(filesystem, &directories, registry.network.as_str())?
+            list_registry_cards(filesystem, &directories, &registry.network)?
         }
     };
     stdout
@@ -221,13 +221,13 @@ fn establish_directories(
 fn create_card_with_fresh_key(
     directories: &Directories,
     filesystem: &impl DirectoryFilesystem,
-    network: &str,
-    card: &str,
+    network: &Handle,
+    card: &Handle,
     handle: &Handle,
     fill_seed: impl FnOnce(&mut [u8; SEED_BYTES]),
 ) -> Result<String, CardCommandError> {
     let cards_directory = directories
-        .cards_directory(network)
+        .cards_directory(network.as_str())
         .map_err(CardCommandError::Directories)?;
     filesystem
         .create_private_directory(&cards_directory)
@@ -239,10 +239,10 @@ fn create_card_with_fresh_key(
     fill_seed(&mut seed);
     let public_key = create_card(
         &directories
-            .card_file(network, card)
+            .card_file(network.as_str(), card.as_str())
             .map_err(CardCommandError::Directories)?,
         &directories
-            .card_sidecar_file(network, card)
+            .card_sidecar_file(network.as_str(), card.as_str())
             .map_err(CardCommandError::Directories)?,
         handle,
         seed,
@@ -254,10 +254,10 @@ fn create_card_with_fresh_key(
 fn list_registry_cards(
     filesystem: &impl CardRegistryReader,
     directories: &Directories,
-    network: &str,
+    network: &Handle,
 ) -> Result<String, CardCommandError> {
     let cards_directory = directories
-        .cards_directory(network)
+        .cards_directory(network.as_str())
         .map_err(CardCommandError::Directories)?;
     let mut lines_by_card_name = BTreeMap::new();
     let card_files = card_files_in(filesystem, &cards_directory).map_err(|source| {
@@ -299,7 +299,7 @@ pub(crate) fn card_files_in(
 fn describe_card_file(
     filesystem: &impl CardRegistryReader,
     card_file: &Path,
-    network: &str,
+    network: &Handle,
 ) -> Result<(String, String), CardCommandError> {
     let name = card_name_of(card_file).map_err(|source| CardCommandError::CardNameRefused {
         path: card_file.to_owned(),
@@ -315,7 +315,7 @@ fn describe_card_file(
         path: card_file.to_owned(),
         reason,
     })?;
-    card.check_usable_on(network)
+    card.check_usable_on(network.as_str())
         .map_err(|reason| CardCommandError::CardUnusable {
             path: card_file.to_owned(),
             reason,
