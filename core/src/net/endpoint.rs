@@ -623,6 +623,7 @@ mod tests {
     const FIRST_HOST_RELAY: &str = "https://relay-one.estafette.invalid/";
     const SECOND_HOST_RELAY: &str = "https://relay-two.estafette.invalid/";
     const UNKNOWN_HOST_RELAY: &str = "https://relay-unknown.estafette.invalid/";
+    const RELAY_MAP_EDITED_EVENT: &str = "transport.relay_map_edited";
     const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
     const LOCAL_DIAL_WAIT: Duration = Duration::from_millis(2000);
     /// Past the QUIC idle timeout, which ends a dial whose handshake no packet answers.
@@ -658,6 +659,23 @@ mod tests {
         relays: Vec<RelayUrl>,
         report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
     ) -> NodeEndpoint {
+        bind_node_holding(
+            seed,
+            secret,
+            relays,
+            report_gate_closing,
+            crate::net::direct::tests::unrecorded_register(),
+        )
+        .await
+    }
+
+    async fn bind_node_holding(
+        seed: u8,
+        secret: [u8; KEY_LEN],
+        relays: Vec<RelayUrl>,
+        report_gate_closing: impl Fn(GateFailure) + Send + Sync + 'static,
+        connections: HeldConnections,
+    ) -> NodeEndpoint {
         let draws = AtomicU8::new(0);
         NodeEndpoint::bind(
             SecretKey::from_bytes(&[seed; KEY_LEN]),
@@ -667,7 +685,7 @@ mod tests {
                 *nonce = drawn_nonce(draws.fetch_add(1, Ordering::SeqCst));
             },
             report_gate_closing,
-            crate::net::direct::tests::unrecorded_register(),
+            connections,
         )
         .await
         .unwrap()
@@ -1062,6 +1080,46 @@ mod tests {
                 .await
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_removing_a_relay_the_map_does_not_hold_records_no_relay_map_edit_and_a_held_one_records_one()
+     {
+        let held_relay = relay_url(FIRST_HOST_RELAY);
+        let (record, mut recorded) = crate::test_waits::recorded_events();
+        let connections = HeldConnections::new(
+            Arc::new(crate::net::direct::RuntimeClock),
+            TransportRecord::new(record, crate::net::direct::tests::test_salt()),
+        );
+        let member = bind_node_holding(
+            MEMBER_SEED,
+            MEMBER_SECRET,
+            vec![held_relay.clone()],
+            |_ignored_reason: GateFailure| {},
+            connections,
+        )
+        .await;
+        crate::net::direct::tests::recorded_so_far(&mut recorded);
+
+        member
+            .remove_relay(&relay_url(UNKNOWN_HOST_RELAY), None)
+            .await;
+        let after_the_absent_relay = crate::net::direct::tests::recorded_so_far(&mut recorded);
+        member.remove_relay(&held_relay, None).await;
+        let after_the_held_relay = crate::net::direct::tests::recorded_so_far(&mut recorded);
+
+        let edits = |events: &[crate::test_waits::RecordedEvent]| {
+            events
+                .iter()
+                .filter(|(name, _fields)| *name == RELAY_MAP_EDITED_EVENT)
+                .count()
+        };
+        assert_eq!(
+            edits(&after_the_absent_relay),
+            0,
+            "{after_the_absent_relay:?}"
+        );
+        assert_eq!(edits(&after_the_held_relay), 1, "{after_the_held_relay:?}");
     }
 
     #[tokio::test]
