@@ -296,7 +296,7 @@ mod tests {
 
     use super::*;
     use crate::config::{Host, HostOrigin};
-    use crate::event::{Event, EventFields, RunRecord};
+    use crate::event::{Event, RunRecord};
     use crate::net::direct::tests::StandingClock;
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::node::addresses::wire_addr;
@@ -310,7 +310,9 @@ mod tests {
     use crate::node::rebind::RelayProbe;
     use crate::peers::Status;
     use crate::sidecar;
-    use crate::test_waits::{found_within, recorded_until};
+    use crate::test_waits::{
+        RecordedEvent, found_within, next_recorded_meeting, recorded_events, recorded_until,
+    };
     use crate::wire::{Introduce, Nonce, Version};
 
     const FIRST_CARD: &str = "first-card";
@@ -323,7 +325,8 @@ mod tests {
     const SPEC_GONE_WITHIN: Duration = Duration::from_millis(1000);
     const STOPPING_STEP_RECORDED_WITHIN: Duration = Duration::from_millis(300);
     const EXITS_AT_ONCE_WITHIN: Duration = Duration::from_millis(1000);
-    const SHORT_DEPARTURE_WAIT: Duration = Duration::from_millis(800);
+    const SHORT_DEPARTURE_WAIT_MS: u64 = 800;
+    const SHORT_DEPARTURE_WAIT: Duration = Duration::from_millis(SHORT_DEPARTURE_WAIT_MS);
     const DEPARTURE_HANDED_OVER: &str = "process.departure_handed_over";
     const LOCK_RELEASED: &str = "process.lock_released";
     const HELD_CONNECTIONS_DROPPED: &str = "process.held_connections_dropped";
@@ -406,19 +409,9 @@ mod tests {
         }
     }
 
-    type RecordedEvent = (&'static str, EventFields);
-
-    /// A run record handing each event's name and fields to the receiver, and that receiver.
+    /// A run record that drops every event.
     fn record_dropping_every_event() -> RunRecord {
         Arc::new(|_event: Event| {})
-    }
-
-    fn recording_events() -> (RunRecord, mpsc::UnboundedReceiver<RecordedEvent>) {
-        let (recorded, received) = mpsc::unbounded_channel();
-        let record: RunRecord = Arc::new(move |event: Event| {
-            drop(recorded.send((event.name(), event.fields())));
-        });
-        (record, received)
     }
 
     /// Every event recorded so far that the receiver has not handed out yet.
@@ -432,7 +425,7 @@ mod tests {
     async fn observability_decision_9_each_step_of_the_stopping_sequence_is_recorded_once_in_the_order_of_spec_3_8()
      {
         let scratch = Scratch::new("stop-steps").await;
-        let (record, mut recorded) = recording_events();
+        let (record, mut recorded) = recorded_events();
         let second = claimed_second_recording_to(&scratch, record).await;
         recorded_so_far(&mut recorded);
         let stopping = run(&second.session, SHORT_DEPARTURE_WAIT);
@@ -449,24 +442,11 @@ mod tests {
                 ("process.held_connections_dropped", vec![]),
                 (
                     "process.departure_wait_over",
-                    vec![("wait_ms", serde_json::Value::from(800))]
+                    vec![("wait_ms", serde_json::Value::from(SHORT_DEPARTURE_WAIT_MS))]
                 ),
             ]
         );
         drop(scratch);
-    }
-
-    /// The next event recorded, failing with its name when none is recorded within the wait.
-    async fn next_recorded(
-        received: &mut mpsc::UnboundedReceiver<RecordedEvent>,
-        awaited: &str,
-    ) -> RecordedEvent {
-        tokio::time::timeout(EXITS_AT_ONCE_WITHIN, received.recv())
-            .await
-            .unwrap_or_else(|_elapsed| {
-                panic!("{awaited} not recorded within {EXITS_AT_ONCE_WITHIN:?}")
-            })
-            .unwrap()
     }
 
     #[tokio::test]
@@ -491,7 +471,7 @@ mod tests {
             (None, "process.input_ended", vec![]),
         ];
         for (signal, name, fields) in causes {
-            let (record, mut recorded) = recording_events();
+            let (record, mut recorded) = recorded_events();
             let session = Arc::new(Session::new(record));
             let stopping = run(&session, LONG_DEPARTURE_WAIT);
 
@@ -516,7 +496,7 @@ mod tests {
     async fn observability_decision_9_a_second_signal_that_ends_the_stop_at_once_is_recorded_after_the_steps_already_taken_spec_3_9()
      {
         let scratch = Scratch::new("second-signal-event").await;
-        let (record, mut recorded) = recording_events();
+        let (record, mut recorded) = recorded_events();
         let second = claimed_second_recording_to(&scratch, record).await;
         recorded_so_far(&mut recorded);
         let stopping = run(&second.session, LONG_DEPARTURE_WAIT);
@@ -529,7 +509,10 @@ mod tests {
             "process.lock_released",
             "process.held_connections_dropped",
         ] {
-            steps.push(next_recorded(&mut recorded, awaited).await);
+            let (before, fields) =
+                recorded_until(&mut recorded, awaited, |_fields| true, EXITS_AT_ONCE_WITHIN).await;
+            steps.extend(before);
+            steps.push((awaited, fields));
         }
         stopping.signals.send(ShutdownSignal::Hangup).unwrap();
         let exit = tokio::time::timeout(EXITS_AT_ONCE_WITHIN, stopping.exit)
@@ -565,7 +548,7 @@ mod tests {
         let (first, second) = start_pair(&scratch).await;
         let (_, first_lock) = scratch.locked_card(FIRST_SEED);
         let (_, second_lock) = scratch.locked_card(SECOND_SEED);
-        let (record, mut recorded) = recording_events();
+        let (record, mut recorded) = recorded_events();
         let session = Session::new(record);
         let claimed_handle = first.node.own_handle().as_str().to_owned();
 
@@ -825,12 +808,12 @@ mod tests {
     #[tokio::test]
     async fn spec_3_9_a_second_signal_exits_at_once_whatever_the_departure_wait() {
         let scratch = Scratch::new("second-signal").await;
-        let (record, mut recorded) = recording_events();
+        let (record, mut recorded) = recorded_events();
         let second = claimed_second_recording_to(&scratch, record).await;
         let stopping = run(&second.session, LONG_DEPARTURE_WAIT);
 
         stopping.signals.send(ShutdownSignal::Interrupt).unwrap();
-        recorded_named(
+        next_recorded_meeting(
             &mut recorded,
             HELD_CONNECTIONS_DROPPED,
             |_fields| true,
@@ -854,7 +837,7 @@ mod tests {
     #[tokio::test]
     async fn spec_3_9_a_second_signal_exits_at_once_while_the_node_loop_is_held_in_a_rebind() {
         let scratch = Scratch::new("signal-loop-held").await;
-        let (record, mut recorded) = recording_events();
+        let (record, mut recorded) = recorded_events();
         let mut held = member_on_a_standing_clock(&scratch, &record, &mut recorded).await;
         let (_, lock) = scratch.locked_card(FIRST_SEED);
         let session = Arc::new(Session::new(record));
@@ -865,7 +848,7 @@ mod tests {
         let stopping = run(&session, LONG_DEPARTURE_WAIT);
 
         stopping.signals.send(ShutdownSignal::Interrupt).unwrap();
-        recorded_named(
+        next_recorded_meeting(
             &mut recorded,
             HELD_CONNECTIONS_DROPPED,
             |_fields| true,
@@ -920,7 +903,7 @@ mod tests {
     async fn spec_3_8_while_stopping_a_message_is_refused_and_a_probe_and_an_introduce_go_unanswered()
      {
         let scratch = Scratch::new("stopping-answers").await;
-        let (record, mut recorded) = recording_events();
+        let (record, mut recorded) = recorded_events();
         let second = claimed_second_recording_to(&scratch, record).await;
         let caller = bind(WITNESS_SEED).await;
         caller.replace_address(second.endpoint.addr());
@@ -945,7 +928,7 @@ mod tests {
         let stopping = run(&second.session, TEST_DEPARTURE_WAIT);
 
         stopping.input_ended.send(()).unwrap();
-        recorded_named(
+        next_recorded_meeting(
             &mut recorded,
             DEPARTURE_HANDED_OVER,
             |_fields| true,
@@ -977,13 +960,13 @@ mod tests {
     #[tokio::test]
     async fn spec_3_8_the_sidecar_lock_is_released_while_the_departure_wait_runs() {
         let scratch = Scratch::new("lock-released").await;
-        let (record, mut recorded) = recording_events();
+        let (record, mut recorded) = recorded_events();
         let second = claimed_second_recording_to(&scratch, record).await;
         assert!(sidecar::is_held(&second.sidecar_path).unwrap());
         let stopping = run(&second.session, TEST_DEPARTURE_WAIT);
 
         stopping.input_ended.send(()).unwrap();
-        recorded_named(
+        next_recorded_meeting(
             &mut recorded,
             LOCK_RELEASED,
             |_fields| true,
@@ -1006,7 +989,7 @@ mod tests {
     async fn spec_3_3_stopping_rewrites_the_configuration_when_a_held_record_is_newer_than_the_file()
      {
         let scratch = Scratch::new("config-on-stop").await;
-        let (node_record, mut node_events) = recording_events();
+        let (node_record, mut node_events) = recorded_events();
         let (member, witness) = start_witnessed(
             &scratch,
             MemberPlan::new(FIRST_SEED, SECOND_HANDLE, FIRST_MEMBER_PUBLIC)
@@ -1034,7 +1017,7 @@ mod tests {
                 infrastructure_of(HOST_SEED, MOVED_HOST_RELAY, moved_record_ts),
             )
             .await;
-        recorded_named(
+        next_recorded_meeting(
             &mut node_events,
             PAYLOAD_ACCEPTED,
             |fields| fields.contains(&(TS_FIELD, serde_json::Value::from(moved_record_ts))),
@@ -1063,25 +1046,6 @@ mod tests {
     const READ_ONLY_DIRECTORY_MODE: u32 = 0o555;
     const MILLIS_PER_SECOND: u64 = 1000;
 
-    /// The first event of the name whose fields match that the receiver hands out within the bound, failing with the name when none comes.
-    async fn recorded_named(
-        received: &mut mpsc::UnboundedReceiver<RecordedEvent>,
-        name: &str,
-        matching: impl Fn(&EventFields) -> bool + Send + Sync,
-        within: Duration,
-    ) -> RecordedEvent {
-        tokio::time::timeout(within, async {
-            loop {
-                let event = received.recv().await.unwrap();
-                if event.0 == name && matching(&event.1) {
-                    return event;
-                }
-            }
-        })
-        .await
-        .unwrap_or_else(|_elapsed| panic!("{name} not recorded within {within:?}"))
-    }
-
     /// Sets the directory's permission bits to the mode.
     fn set_mode(directory: &std::path::Path, mode: u32) {
         use std::os::unix::fs::PermissionsExt;
@@ -1095,7 +1059,7 @@ mod tests {
         directory_mode_while_stopping: u32,
     ) -> Vec<RecordedEvent> {
         let scratch = Scratch::new(tag).await;
-        let (node_record, mut node_events) = recording_events();
+        let (node_record, mut node_events) = recorded_events();
         let (member, witness) = start_witnessed(
             &scratch,
             MemberPlan::new(FIRST_SEED, SECOND_HANDLE, FIRST_MEMBER_PUBLIC)
@@ -1116,7 +1080,7 @@ mod tests {
                     infrastructure_of(HOST_SEED, MOVED_HOST_RELAY, record_ts),
                 )
                 .await;
-            recorded_named(
+            next_recorded_meeting(
                 &mut node_events,
                 PAYLOAD_ACCEPTED,
                 |fields| fields.contains(&(TS_FIELD, serde_json::Value::from(record_ts))),
@@ -1129,13 +1093,14 @@ mod tests {
 
         let stopping = run(&session, TEST_DEPARTURE_WAIT);
         stopping.input_ended.send(()).unwrap();
-        let first_rewrite = recorded_named(
+        let first_rewrite_outcome = next_recorded_meeting(
             &mut node_events,
             CONFIGURATION_REWRITE_DECIDED,
             |_fields| true,
             CONFIG_SAVED_WITHIN,
         )
         .await;
+        let first_rewrite = (CONFIGURATION_REWRITE_DECIDED, first_rewrite_outcome);
         stopping.exit.await.unwrap();
         set_mode(&config_directory, WRITABLE_DIRECTORY_MODE);
         drop(witness);
@@ -1291,7 +1256,7 @@ mod tests {
         loop_held: bool,
     ) -> (Vec<&'static str>, Option<Host>) {
         let scratch = Scratch::new(tag).await;
-        let (record, mut recorded) = recording_events();
+        let (record, mut recorded) = recorded_events();
         let mut held = member_on_a_standing_clock(&scratch, &record, &mut recorded).await;
         let read_at_drop = Arc::new(Mutex::new(None));
         let session = Arc::new(Session::new(record_reading_the_file_at_the_drop(
@@ -1310,7 +1275,7 @@ mod tests {
                 infrastructure_of(HOST_SEED, MOVED_HOST_RELAY, record_ts),
             )
             .await;
-        recorded_named(
+        next_recorded_meeting(
             &mut recorded,
             PAYLOAD_ACCEPTED,
             |fields| fields.contains(&(TS_FIELD, serde_json::Value::from(record_ts))),
@@ -1439,11 +1404,11 @@ mod tests {
     #[tokio::test]
     async fn spec_3_8_a_stopping_node_introduces_itself_to_no_one() {
         let scratch = Scratch::new("no-introduce").await;
-        let (record, mut recorded) = recording_events();
+        let (record, mut recorded) = recorded_events();
         let second = claimed_second_recording_to(&scratch, record).await;
         let stopping = run(&second.session, WITNESSED_DEPARTURE_WAIT);
         stopping.input_ended.send(()).unwrap();
-        recorded_named(
+        next_recorded_meeting(
             &mut recorded,
             DEPARTURE_HANDED_OVER,
             |_fields| true,
@@ -1454,7 +1419,7 @@ mod tests {
         let witness =
             Witness::joined_through(WITNESS_SEED, Some(WITNESS_HANDLE), &second.endpoint).await;
         let witness_joined = Instant::now();
-        recorded_named(
+        next_recorded_meeting(
             &mut recorded,
             DEPARTURE_WAIT_OVER,
             |_fields| true,
@@ -1503,7 +1468,7 @@ mod tests {
     #[tokio::test]
     async fn spec_3_8_a_stopping_node_announces_no_presence_after_its_departure() {
         let scratch = Scratch::new("no-presence-after").await;
-        let (record, mut recorded) = recording_events();
+        let (record, mut recorded) = recorded_events();
         let second = claimed_second_recording_to(&scratch, record).await;
         let stopping = run(&second.session, WITNESSED_DEPARTURE_WAIT);
         stopping.input_ended.send(()).unwrap();
@@ -1516,7 +1481,7 @@ mod tests {
             .await
             .unwrap();
         let attached = Instant::now();
-        recorded_named(
+        next_recorded_meeting(
             &mut recorded,
             DEPARTURE_WAIT_OVER,
             |_fields| true,
