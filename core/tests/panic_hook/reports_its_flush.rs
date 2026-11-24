@@ -1,4 +1,8 @@
+use std::sync::mpsc;
+
 use super::*;
+
+const PANICKING_THREAD_ENDS_WITHIN: Duration = Duration::from_secs(20);
 
 /// The standard error lines a traced command holds once a panic it survives went through the trace's panic hook, the announcement left out.
 fn standard_error_after_a_survived_panic(trace_effects: &TraceEffects) -> Vec<String> {
@@ -6,6 +10,7 @@ fn standard_error_after_a_survived_panic(trace_effects: &TraceEffects) -> Vec<St
     let (_scratch_removed_when_the_test_ends, environment) = scratch_environment(SCRATCH_PREFIX);
     let standard_error = SharedRecord::default();
     let mut after_the_panic = Vec::new();
+    let mut panicking_thread_ended = Ok(());
     let hook_before = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_panic| {}));
 
@@ -26,14 +31,23 @@ fn standard_error_after_a_survived_panic(trace_effects: &TraceEffects) -> Vec<St
             record_panics: record_panic_locations,
         },
         |_directories, _process| {
-            let panicked = std::thread::spawn(|| panic!("a panic the process survives")).join();
-            assert!(panicked.is_err());
+            let (ends_with_the_thread, thread_ended) = mpsc::channel::<()>();
+            std::thread::spawn(move || {
+                let _kept_until_the_thread_ends = ends_with_the_thread;
+                panic!("a panic the process survives")
+            });
+            panicking_thread_ended = thread_ended.recv_timeout(PANICKING_THREAD_ENDS_WITHIN);
             after_the_panic = lines_after_the_announcement(&standard_error);
             Ok(ExitStatus::Success)
         },
     );
 
     std::panic::set_hook(hook_before);
+    assert_eq!(
+        panicking_thread_ended,
+        Err(mpsc::RecvTimeoutError::Disconnected),
+        "the panicking thread ends, its sender dropped by the panic, within {PANICKING_THREAD_ENDS_WITHIN:?}"
+    );
     after_the_panic
 }
 
