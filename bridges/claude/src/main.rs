@@ -3,7 +3,6 @@ use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,7 +24,7 @@ use estafette_bridge_claude::inbox_client::{
 use estafette_bridge_claude::inject::SessionNotifier;
 use estafette_bridge_claude::owned_entry::{
     EntryFacts, ProcessUserUnknown, RuntimeDirectoryProblem, check_runtime_directory,
-    process_user_id, read_state_file, write_state_file,
+    create_private_directory, process_user_id, read_state_file, write_state_file,
 };
 use estafette_bridge_claude::permission_class::PermissionClass;
 use estafette_bridge_claude::session_files::{
@@ -69,7 +68,6 @@ const HOME_VARIABLE: &str = "HOME";
 const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
 const CONFIG_HOME_UNDER_HOME: &str = ".config";
 const PRODUCT_DIRECTORY: &str = "estafette";
-const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 const CLAUDE_CONFIG_DIR_VARIABLE: &str = "CLAUDE_CONFIG_DIR";
 const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
 const TEMPORARY_DIRECTORY_VARIABLE: &str = "TMPDIR";
@@ -261,7 +259,7 @@ trait Files {
     fn list_directory(&self, path: &Path) -> io::Result<Vec<PathBuf>>;
     /// Tells whether anything exists at the path.
     fn exists(&self, path: &Path) -> bool;
-    /// Creates the directory with the private mode and its missing parents, leaving an existing directory untouched.
+    /// Creates the directory with the private mode and its missing parents, refusing an existing directory that is not a private directory of the user.
     fn create_private_directory(&self, path: &Path) -> io::Result<()>;
     /// Gives the numeric id of the user this process runs as, learned once at the entry.
     fn user_id(&self) -> u32;
@@ -323,19 +321,7 @@ impl Files for OperatingSystemFiles {
     }
 
     fn create_private_directory(&self, path: &Path) -> io::Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        match fs::DirBuilder::new()
-            .mode(PRIVATE_DIRECTORY_MODE)
-            .create(path)
-        {
-            Ok(()) => fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_DIRECTORY_MODE)),
-            Err(failure) if failure.kind() == io::ErrorKind::AlreadyExists && path.is_dir() => {
-                Ok(())
-            }
-            Err(failure) => Err(failure),
-        }
+        create_private_directory(self.user_id, path)
     }
 
     fn user_id(&self) -> u32 {

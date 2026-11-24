@@ -2,9 +2,10 @@ use std::fmt;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 const PRIVATE_FILE_MODE: u32 = 0o600;
 const PERMISSION_BITS: u32 = 0o777;
 const GROUP_AND_OTHER_PERMISSION_BITS: u32 = 0o077;
@@ -101,6 +102,7 @@ enum DirectoryFinding {
     NotADirectory,
     OwnedByAnotherUser { owner: u32, user: u32 },
     GrantsAccessBeyondOwner { permission_bits: u32 },
+    ReplacedWhileOpened,
 }
 
 impl fmt::Display for DirectoryFinding {
@@ -115,6 +117,7 @@ impl fmt::Display for DirectoryFinding {
                 formatter,
                 "mode {permission_bits:04o}, which grants access to group or other"
             ),
+            Self::ReplacedWhileOpened => write!(formatter, "replaced while it was opened"),
         }
     }
 }
@@ -176,6 +179,51 @@ pub fn require_private_directory_of(
             found,
         })
     })
+}
+
+fn directory_refusal_of(refusal: ExistingDirectoryRefused) -> io::Error {
+    io::Error::new(io::ErrorKind::PermissionDenied, refusal)
+}
+
+/// Creates the directory with its missing parents, private to the user, or refuses an existing directory the user may not trust.
+///
+/// # Errors
+///
+/// Fails when a directory cannot be created or inspected, or with an `ExistingDirectoryRefused` inside the error when the entry already there is not a private directory of the user.
+pub fn create_private_directory(user_id: u32, path: &Path) -> io::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::DirBuilder::new()
+        .mode(PRIVATE_DIRECTORY_MODE)
+        .create(path)
+    {
+        Ok(()) => make_directory_private_opened_by(user_id, path, |path: &Path| File::open(path)),
+        Err(failure) if failure.kind() == io::ErrorKind::AlreadyExists => {
+            require_private_directory_of(user_id, path, EntryFacts::at(path)?)
+                .map_err(directory_refusal_of)
+        }
+        Err(failure) => Err(failure),
+    }
+}
+
+fn make_directory_private_opened_by(
+    user_id: u32,
+    path: &Path,
+    open: impl FnOnce(&Path) -> io::Result<File>,
+) -> io::Result<()> {
+    let directory = open(path)?;
+    let opened = directory.metadata()?;
+    let named = fs::symlink_metadata(path)?;
+    require_private_directory_of(user_id, path, EntryFacts::of(&named))
+        .map_err(directory_refusal_of)?;
+    if (opened.dev(), opened.ino()) != (named.dev(), named.ino()) {
+        return Err(directory_refusal_of(ExistingDirectoryRefused {
+            path: path.to_path_buf(),
+            found: DirectoryFinding::ReplacedWhileOpened,
+        }));
+    }
+    directory.set_permissions(Permissions::from_mode(PRIVATE_DIRECTORY_MODE))
 }
 
 /// What stops the runtime directory from being used: it cannot be inspected, or it exists and is refused.
@@ -373,6 +421,7 @@ mod tests {
     const VICTIM_TEXT: &str = "the file a planted link points at";
     const STATE_TEXT: &str = "3";
     const LOOSE_FILE_MODE: u32 = 0o644;
+    const LOOSE_DIRECTORY_MODE: u32 = 0o755;
 
     fn every_entry_around_the_user() -> impl Iterator<Item = EntryFacts> {
         ENTRY_KINDS.into_iter().flat_map(|kind| {
@@ -640,6 +689,118 @@ mod tests {
             refusal_inside(&not_a_file).found,
             StateFileFinding::NotARegularFile
         );
+        crate::remove_scratch::remove_scratch(&directory).unwrap();
+    }
+
+    fn directory_refusal_inside(failure: &io::Error) -> &ExistingDirectoryRefused {
+        failure
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<ExistingDirectoryRefused>())
+            .unwrap()
+    }
+
+    fn mode_of(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & PERMISSION_BITS
+    }
+
+    #[test]
+    fn bridge_directories_are_private_or_refused_a_directory_made_with_its_missing_parents_is_private_to_the_user()
+     {
+        let directory = scratch_directory("create-private");
+        let created = directory.join("missing").join("created");
+
+        create_private_directory(this_user(), &created).unwrap();
+
+        assert_eq!(mode_of(&created), PRIVATE_DIRECTORY_MODE);
+        crate::remove_scratch::remove_scratch(&directory).unwrap();
+    }
+
+    #[test]
+    fn bridge_directories_are_private_or_refused_an_existing_private_directory_is_used_as_it_stands()
+     {
+        let directory = scratch_directory("create-existing-private");
+        let existing = directory.join("existing");
+        fs::create_dir(&existing).unwrap();
+        fs::set_permissions(&existing, Permissions::from_mode(PRIVATE_DIRECTORY_MODE)).unwrap();
+
+        create_private_directory(this_user(), &existing).unwrap();
+
+        assert_eq!(mode_of(&existing), PRIVATE_DIRECTORY_MODE);
+        crate::remove_scratch::remove_scratch(&directory).unwrap();
+    }
+
+    #[test]
+    fn bridge_directories_are_private_or_refused_an_existing_loose_or_foreign_directory_is_refused_and_left_as_it_stands()
+     {
+        let directory = scratch_directory("create-existing-loose");
+        let loose = directory.join("loose");
+        fs::create_dir(&loose).unwrap();
+        fs::set_permissions(&loose, Permissions::from_mode(LOOSE_DIRECTORY_MODE)).unwrap();
+        let another_user_id = this_user().wrapping_add(1);
+
+        let loose_failure = create_private_directory(this_user(), &loose).unwrap_err();
+        let foreign_failure = create_private_directory(another_user_id, &loose).unwrap_err();
+
+        assert_eq!(
+            directory_refusal_inside(&loose_failure).found,
+            DirectoryFinding::GrantsAccessBeyondOwner {
+                permission_bits: LOOSE_DIRECTORY_MODE
+            }
+        );
+        assert_eq!(
+            directory_refusal_inside(&foreign_failure).found,
+            DirectoryFinding::OwnedByAnotherUser {
+                owner: this_user(),
+                user: another_user_id
+            }
+        );
+        assert_eq!(mode_of(&loose), LOOSE_DIRECTORY_MODE);
+        crate::remove_scratch::remove_scratch(&directory).unwrap();
+    }
+
+    #[test]
+    fn bridge_directories_are_private_or_refused_a_mode_is_never_set_through_a_symbolic_link() {
+        let directory = scratch_directory("mode-through-link");
+        let target = directory.join("target");
+        let named = directory.join("named");
+        fs::create_dir(&target).unwrap();
+        fs::set_permissions(&target, Permissions::from_mode(LOOSE_DIRECTORY_MODE)).unwrap();
+        symlink(&target, &named).unwrap();
+
+        let failure =
+            make_directory_private_opened_by(this_user(), &named, |path: &Path| File::open(path))
+                .unwrap_err();
+
+        assert_eq!(
+            directory_refusal_inside(&failure).found,
+            DirectoryFinding::SymbolicLink
+        );
+        assert_eq!(mode_of(&target), LOOSE_DIRECTORY_MODE);
+        crate::remove_scratch::remove_scratch(&directory).unwrap();
+    }
+
+    #[test]
+    fn bridge_directories_are_private_or_refused_a_mode_is_never_set_on_a_directory_swapped_in_after_the_inspection()
+     {
+        let directory = scratch_directory("mode-on-swapped");
+        let inspected = directory.join("inspected");
+        let swapped_in = directory.join("swapped-in");
+        fs::create_dir(&inspected).unwrap();
+        fs::create_dir(&swapped_in).unwrap();
+        fs::set_permissions(&inspected, Permissions::from_mode(PRIVATE_DIRECTORY_MODE)).unwrap();
+        fs::set_permissions(&swapped_in, Permissions::from_mode(LOOSE_DIRECTORY_MODE)).unwrap();
+
+        let failure =
+            make_directory_private_opened_by(this_user(), &inspected, |_inspected: &Path| {
+                File::open(&swapped_in)
+            })
+            .unwrap_err();
+
+        assert_eq!(
+            directory_refusal_inside(&failure).found,
+            DirectoryFinding::ReplacedWhileOpened
+        );
+        assert_eq!(mode_of(&swapped_in), LOOSE_DIRECTORY_MODE);
         crate::remove_scratch::remove_scratch(&directory).unwrap();
     }
 }

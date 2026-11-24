@@ -499,3 +499,195 @@ fn spec_3_3_the_bridge_refuses_to_start_when_it_cannot_make_a_pipe_to_learn_its_
         "cannot learn the user this process runs as: it could not make a pipe: Too many open files (os error 24)\n"
     );
 }
+
+const PRODUCT_DIRECTORY: &str = "estafette";
+const STRIPS_OWNER_WRITE_AND_ALL_OTHER_ACCESS_UMASK: &str = "0277";
+const LOOSE_DIRECTORY_REFUSAL: &str = "mode 0755, which grants access to group or other";
+const SYMBOLIC_LINK_REFUSAL: &str = "a symbolic link";
+const REFUSAL_CONSEQUENCE: &str =
+    "it must be a directory of yours with no access for group or other";
+
+fn config_directory_of(fixture: &Fixture) -> PathBuf {
+    fixture
+        .root
+        .join(common::CONFIG_HOME)
+        .join(PRODUCT_DIRECTORY)
+}
+
+fn traces_directory_with_private_parents(fixture: &Fixture) -> io::Result<PathBuf> {
+    let traces = fixture.traces_directory()?;
+    let data_base = traces
+        .parent()
+        .ok_or_else(|| io::Error::other("the trace directory has no parent"))?;
+    fs::create_dir_all(data_base)?;
+    fs::set_permissions(
+        data_base,
+        fs::Permissions::from_mode(PRIVATE_DIRECTORY_MODE),
+    )?;
+    Ok(traces)
+}
+
+fn loose_directory_at(directory: &Path) -> io::Result<()> {
+    fs::create_dir_all(directory)?;
+    fs::set_permissions(
+        directory,
+        fs::Permissions::from_mode(GROUP_OTHER_READABLE_DIRECTORY_MODE),
+    )
+}
+
+fn symbolic_link_at(directory: &Path, fixture: &Fixture) -> io::Result<PathBuf> {
+    let target = fixture.root.join("elsewhere");
+    fs::create_dir_all(&target)?;
+    fs::set_permissions(&target, fs::Permissions::from_mode(PRIVATE_DIRECTORY_MODE))?;
+    std::os::unix::fs::symlink(&target, directory)?;
+    Ok(target)
+}
+
+#[test]
+fn spec_3_3_the_bridge_refuses_an_existing_config_directory_that_grants_access_to_group_and_other_bridge_directories_are_private_or_refused()
+ {
+    let fixture = Fixture::new().unwrap();
+    let config = config_directory_of(&fixture);
+    loose_directory_at(&config).unwrap();
+
+    let output = run_bridge(
+        &fixture,
+        &["run", &exited_harness_pid().unwrap(), "--no-debug"],
+    )
+    .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(REFUSED_RUNTIME_DIRECTORY_EXIT_CODE)
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "cannot create {path}: {path} already exists and is {LOOSE_DIRECTORY_REFUSAL}; {REFUSAL_CONSEQUENCE}\n",
+            path = config.display()
+        )
+    );
+    assert_eq!(
+        mode_of(&config).unwrap(),
+        GROUP_OTHER_READABLE_DIRECTORY_MODE
+    );
+}
+
+#[test]
+fn spec_3_3_the_bridge_refuses_a_symbolic_link_in_place_of_the_config_directory_bridge_directories_are_private_or_refused()
+ {
+    let fixture = Fixture::new().unwrap();
+    let config = config_directory_of(&fixture);
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    let target = symbolic_link_at(&config, &fixture).unwrap();
+
+    let output = run_bridge(
+        &fixture,
+        &["run", &exited_harness_pid().unwrap(), "--no-debug"],
+    )
+    .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(REFUSED_RUNTIME_DIRECTORY_EXIT_CODE)
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "cannot create {path}: {path} already exists and is {SYMBOLIC_LINK_REFUSAL}; {REFUSAL_CONSEQUENCE}\n",
+            path = config.display()
+        )
+    );
+    assert_eq!(mode_of(&target).unwrap(), PRIVATE_DIRECTORY_MODE);
+}
+
+#[test]
+fn observability_decision_4_the_bridge_refuses_an_existing_trace_directory_that_grants_access_to_group_and_other_bridge_directories_are_private_or_refused()
+ {
+    let fixture = Fixture::new().unwrap();
+    let traces = traces_directory_with_private_parents(&fixture).unwrap();
+    loose_directory_at(&traces).unwrap();
+
+    let output = run_bridge(&fixture, &["run", &exited_harness_pid().unwrap()]).unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(REFUSED_RUNTIME_DIRECTORY_EXIT_CODE)
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "cannot create the trace directory {path}: {path} already exists and is {LOOSE_DIRECTORY_REFUSAL}; {REFUSAL_CONSEQUENCE}; run with --no-debug to write no trace\n",
+            path = traces.display()
+        )
+    );
+    assert_eq!(
+        mode_of(&traces).unwrap(),
+        GROUP_OTHER_READABLE_DIRECTORY_MODE
+    );
+}
+
+#[test]
+fn observability_decision_4_the_bridge_refuses_a_symbolic_link_in_place_of_the_trace_directory_bridge_directories_are_private_or_refused()
+ {
+    let fixture = Fixture::new().unwrap();
+    let traces = traces_directory_with_private_parents(&fixture).unwrap();
+    let target = symbolic_link_at(&traces, &fixture).unwrap();
+
+    let output = run_bridge(&fixture, &["run", &exited_harness_pid().unwrap()]).unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(REFUSED_RUNTIME_DIRECTORY_EXIT_CODE)
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "cannot create the trace directory {path}: {path} already exists and is {SYMBOLIC_LINK_REFUSAL}; {REFUSAL_CONSEQUENCE}; run with --no-debug to write no trace\n",
+            path = traces.display()
+        )
+    );
+    assert_eq!(mode_of(&target).unwrap(), PRIVATE_DIRECTORY_MODE);
+    assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
+}
+
+#[test]
+fn spec_3_3_the_bridge_creates_its_directories_private_under_a_umask_that_strips_the_owners_write_bit_bridge_directories_are_private_or_refused()
+ {
+    let fixture = Fixture::new().unwrap();
+    let config = config_directory_of(&fixture);
+    let traces = fixture.traces_directory().unwrap();
+    for parent in [config.parent().unwrap(), fixture.data_home().as_path()] {
+        fs::create_dir_all(parent).unwrap();
+    }
+    let configured = fixture.bridge();
+    let mut under_umask = Command::new("sh");
+    under_umask
+        .args([
+            "-c",
+            &format!("umask {STRIPS_OWNER_WRITE_AND_ALL_OTHER_ACCESS_UMASK}; exec \"$0\" \"$@\""),
+            common::BRIDGE,
+            "run",
+            &exited_harness_pid().unwrap(),
+        ])
+        .env_clear()
+        .envs(
+            configured
+                .get_envs()
+                .filter_map(|(name, value)| value.map(|value| (name, value))),
+        )
+        .current_dir(&fixture.root);
+
+    let output = under_umask.output().unwrap();
+
+    let errors = String::from_utf8(output.stderr).unwrap();
+    assert_eq!(output.status.code(), Some(0), "{errors}");
+    for created in [&config, traces.parent().unwrap(), &traces] {
+        assert_eq!(
+            mode_of(created).unwrap(),
+            PRIVATE_DIRECTORY_MODE,
+            "{}",
+            created.display()
+        );
+    }
+}
