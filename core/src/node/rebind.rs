@@ -1940,6 +1940,10 @@ mod tests {
 
     /// The longest the member takes to ask to join the members once its handed clock reads the member join wait past its rebind's join, which the runtime's timer would never reach on a clock an hour ahead.
     const MEMBER_JOIN_ASKED_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
+    const NEIGHBOR_UP: &str = "gossip.neighbor_up";
+    /// The longest the member takes to record a peer a gossip neighbor once that peer recorded the member one.
+    const NEIGHBOR_UP_RECORDED_WITHIN: Duration =
+        IROH_DOCUMENTED_CLOSE_LATENCY.saturating_add(REBIND_SLACK);
     const NEIGHBOR_DOWN: &str = "gossip.neighbor_down";
     /// The longest the member takes to record a gossip neighbor gone once that neighbor's endpoint closed.
     const NEIGHBOR_DOWN_RECORDED_WITHIN: Duration =
@@ -1997,6 +2001,13 @@ mod tests {
             met.is_some(),
             "the unreachable member met no ask to join within {MEMBER_JOIN_ASKED_ONCE_THE_CLOCK_READS_IT_WITHIN:?} of the clock reading the member join wait"
         );
+        recorded_until(
+            &mut events,
+            NEIGHBOR_UP,
+            |fields| fields.contains(&(PEER, short_peer_id(PEER_SEED))),
+            NEIGHBOR_UP_RECORDED_WITHIN,
+        )
+        .await;
         unreachable_member.endpoint.endpoint().close().await;
         recorded_until(
             &mut events,
