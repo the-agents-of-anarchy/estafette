@@ -3,11 +3,11 @@ use std::time::{Duration, Instant};
 
 use estafette::dirs::TraceFileKind;
 use estafette_trace::DROPPED_LINE_NAME;
+use iroh::EndpointId;
 use serde_json::Value;
 
 use crate::dropped_payloads::short_id_of_node;
 use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
-use crate::live_network::LiveNetwork;
 use crate::member_events::MemberEvents;
 use crate::trace_reader::{TraceLine, lines_of_files_still_present, trace_files_in};
 
@@ -39,8 +39,8 @@ const RAW_LINE_PAST_THE_KILL_WAIT: Duration = Duration::from_secs(60);
 
 /// Waits until the member's own events record a record of the live host accepted, after which iroh ranks the live host's relay among the relays it may home on (spec 3.15 tests 23 and 28).
 #[track_caller]
-pub fn live_host_record_accepted(member_events: &MemberEvents, network: &LiveNetwork) {
-    let live_host = short_id_of_node(network.host_address().id);
+pub fn live_host_record_accepted(member_events: &MemberEvents, live_host_id: EndpointId) {
+    let live_host = short_id_of_node(live_host_id);
     member_events.wait_until(
         &format!("{PAYLOAD_ACCEPTED_EVENT} of an {INFRASTRUCTURE_PAYLOAD_KIND} record of the live host {live_host}"),
         LIVE_HOST_RECORD_WAIT,
@@ -75,13 +75,22 @@ pub fn every_member_homed_on<'member>(
             })
         })
         .collect();
-    if homed_elsewhere.is_empty() {
+    refused_naming_each(&homed_elsewhere, || {
+        format!(
+            "spec 3.15 tests 23 and 28 kill the host every member is homed on, and every member's own raw trace, read once, must name its relay {relay} as the home relay"
+        )
+    })
+}
+
+/// Accepts when no member is refused, else refuses with the rule the members broke, then each refused member.
+fn refused_naming_each(
+    refused_members: &[String],
+    rule_broken: impl FnOnce() -> String,
+) -> Result<(), String> {
+    if refused_members.is_empty() {
         Ok(())
     } else {
-        Err(format!(
-            "spec 3.15 tests 23 and 28 kill the host every member is homed on, and every member's own raw trace, read once, must name its relay {relay} as the home relay: {}",
-            homed_elsewhere.join("; ")
-        ))
+        Err(format!("{}: {}", rule_broken(), refused_members.join("; ")))
     }
 }
 
@@ -105,14 +114,11 @@ pub fn every_member_homed_at_the_kill_on<'member>(
             },
         )
         .collect();
-    if homed_elsewhere.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "spec 3.15 tests 23 and 28 kill the host every member is homed on, and every member's own raw trace must name the killed relay {killed_relay} as the home relay by its home changes stamped at or before the kill's {kill_wall_ms} ms: {}",
-            homed_elsewhere.join("; ")
-        ))
-    }
+    refused_naming_each(&homed_elsewhere, || {
+        format!(
+            "spec 3.15 tests 23 and 28 kill the host every member is homed on, and every member's own raw trace must name the killed relay {killed_relay} as the home relay by its home changes stamped at or before the kill's {kill_wall_ms} ms"
+        )
+    })
 }
 
 /// Where a member's own raw trace leaves its home at the kill.
@@ -174,12 +180,13 @@ fn raw_lines_once_stamped_past_read_by(
         clock,
         || {},
         |watch| {
-            for file in raw_files_of_running_member(traces) {
+            let files = raw_files_of_running_member(traces);
+            for file in &files {
                 watch
-                    .watch_file(&file)
+                    .watch_file(file)
                     .unwrap_or_else(|failure| panic!("{}: {failure}", traces.display()));
             }
-            let lines = raw_lines_of_running_member(traces);
+            let lines = raw_lines_of_files(traces, &files);
             lines
                 .iter()
                 .any(|line| is_queued_after_the_kill(line, kill_wall_ms))
@@ -209,7 +216,13 @@ fn raw_files_of_running_member(traces: &Path) -> Vec<PathBuf> {
 /// Every whole line of the raw files a running member wrote in its trace directory so far, failing the test naming the directory when they cannot be read.
 #[track_caller]
 pub fn raw_lines_of_running_member(traces: &Path) -> Vec<TraceLine> {
-    lines_of_files_still_present(&raw_files_of_running_member(traces))
+    raw_lines_of_files(traces, &raw_files_of_running_member(traces))
+}
+
+/// Every whole line of the given raw files of a running member's trace directory, failing the test naming the directory when they cannot be read.
+#[track_caller]
+fn raw_lines_of_files(traces: &Path, files: &[PathBuf]) -> Vec<TraceLine> {
+    lines_of_files_still_present(files)
         .unwrap_or_else(|failure| panic!("{}: {failure}", traces.display()))
 }
 
@@ -255,8 +268,8 @@ mod tests {
     use estafette_trace::DROPPED_LINE_NAME;
 
     use super::{
-        RAW_LINE_PAST_THE_KILL_WAIT, every_member_homed_at_the_kill_on, every_member_homed_on,
-        raw_lines_once_stamped_past, raw_lines_once_stamped_past_read_by,
+        HOME_CHANGED_TARGET, RAW_LINE_PAST_THE_KILL_WAIT, every_member_homed_at_the_kill_on,
+        every_member_homed_on, raw_lines_once_stamped_past, raw_lines_once_stamped_past_read_by,
     };
     use crate::trace_reader::{TraceLine, WritingProcess, parse_trace_lines};
 
@@ -269,12 +282,22 @@ mod tests {
     const WALL_MS_OF_LINE_ZERO: u64 = 1_794_524_353_720;
     /// The line whose stamp is the kill's instant in the fixtures of the home at the kill: lines 1 to 4 come before it, 6 and 7 after.
     const KILL_LINE: u64 = 5;
+    /// The run every fixture's lines and raw file name.
+    const RUN_ID: &str = "6c935f82c118f7b3";
 
     /// A raw line of iroh's own, of the target, with the relay URL and the home flag as iroh words them.
     fn relay_line(n: u64, target: &str, url: &str, home: &str) -> String {
+        let head = head_of_line(n);
+        format!(
+            r#"{head},"event":"iroh_line","target":"{target}","level":"DEBUG","fields":{{"home_relay":"{home}","url":"{url}"}}}}"#
+        )
+    }
+
+    /// The opening of a fixture's raw line `n` up to its node, which every line of the run shares, the object left open.
+    fn head_of_line(n: u64) -> String {
         let wall_ms = stamp_of_line(n);
         format!(
-            r#"{{"v":1,"run":"6c935f82c118f7b3","n":{n},"mono_ms":{n},"wall_ms":{wall_ms},"node":"8f43abc249","event":"iroh_line","target":"{target}","level":"DEBUG","fields":{{"home_relay":"{home}","url":"{url}"}}}}"#
+            r#"{{"v":1,"run":"{RUN_ID}","n":{n},"mono_ms":{n},"wall_ms":{wall_ms},"node":"8f43abc249""#
         )
     }
 
@@ -285,12 +308,7 @@ mod tests {
 
     /// The raw line iroh writes when a relay becomes or stops being the home relay.
     fn home_changed(n: u64, url: &str, home: bool) -> String {
-        relay_line(
-            n,
-            "iroh::_events::relay::home_changed",
-            url,
-            &home.to_string(),
-        )
+        relay_line(n, HOME_CHANGED_TARGET, url, &home.to_string())
     }
 
     /// The raw line iroh writes when it connects to a relay, which says nothing of the home.
@@ -543,8 +561,30 @@ mod tests {
         );
     }
 
+    /// Requires the refusal to end by naming the member's raw trace as having lost lines that could hold a home change at or before the kill.
+    #[track_caller]
+    fn assert_refused_for_lost_lines(homed: &Result<(), String>, member: &str) {
+        assert!(
+            homed.as_ref().is_err_and(|refusal| refusal.ends_with(&format!(
+                "{member}'s raw trace lost lines that could hold a home change at or before the kill"
+            ))),
+            "{homed:?}"
+        );
+    }
+
+    /// The text the wait fails with when no raw line other than a `dropped` one stamped after the kill line comes in the trace directory.
+    fn no_raw_line_past_the_kill_refusal(traces: &Path) -> String {
+        format!(
+            "{}: no raw line other than a {DROPPED_LINE_NAME} line stamped after the kill's {} ms came within {RAW_LINE_PAST_THE_KILL_WAIT:?}",
+            traces.display(),
+            stamp_of_line(KILL_LINE)
+        )
+    }
+
     /// A raw trace file's name, as a member's run names its raw file.
-    const RAW_FILE_NAME: &str = "20261112T225914Z-6c935f82c118f7b3-estafette.raw.jsonl";
+    fn raw_file_name() -> String {
+        format!("20261112T225914Z-{RUN_ID}-estafette.raw.jsonl")
+    }
 
     /// A fresh trace directory named for the test, holding one raw file of the lines given.
     fn traces_holding(test: &str, lines: &[String]) -> PathBuf {
@@ -552,7 +592,7 @@ mod tests {
             std::env::temp_dir().join(format!("home-relays-{}-{test}", std::process::id()));
         fs::create_dir_all(&traces).unwrap();
         fs::write(
-            traces.join(RAW_FILE_NAME),
+            traces.join(raw_file_name()),
             format!("{}\n", lines.join("\n")),
         )
         .unwrap();
@@ -589,32 +629,20 @@ mod tests {
         );
         let started = Instant::now();
         let past_the_bound = started.checked_add(RAW_LINE_PAST_THE_KILL_WAIT).unwrap();
-        let mut readings = std::iter::once(started);
 
-        let ran_out = std::panic::catch_unwind(|| {
-            raw_lines_once_stamped_past_read_by(&traces, stamp_of_line(KILL_LINE), move || {
-                readings.next().unwrap_or(past_the_bound)
-            });
-        })
-        .map_err(|payload| payload.downcast_ref::<String>().cloned());
+        let ran_out = wait_past_the_kill_line(&traces, started, past_the_bound);
         fs::remove_dir_all(&traces).unwrap();
 
         assert_eq!(
             ran_out,
-            Err(Some(format!(
-                "{}: no raw line other than a {DROPPED_LINE_NAME} line stamped after the kill's {} ms came within {RAW_LINE_PAST_THE_KILL_WAIT:?}",
-                traces.display(),
-                stamp_of_line(KILL_LINE)
-            )))
+            Err(Some(no_raw_line_past_the_kill_refusal(&traces)))
         );
     }
 
     /// The line a member's raw trace writes, stamped as it is written, for lines its full queue lost before then.
     fn dropped(n: u64) -> String {
-        let wall_ms = stamp_of_line(n);
-        format!(
-            r#"{{"v":1,"run":"6c935f82c118f7b3","n":{n},"mono_ms":{n},"wall_ms":{wall_ms},"node":"8f43abc249","event":"{DROPPED_LINE_NAME}","count":3}}"#
-        )
+        let head = head_of_line(n);
+        format!(r#"{head},"event":"{DROPPED_LINE_NAME}","count":3}}"#)
     }
 
     /// The numbers of the raw lines the wait past a kill at the kill line returns from the trace directory, its clock reading `started` and then `past_the_bound`, or the text it fails with.
@@ -662,10 +690,8 @@ mod tests {
 
         assert_eq!(
             ended_by_the_dropped_line,
-            Err(Some(format!(
-                "{}: no raw line other than a {DROPPED_LINE_NAME} line stamped after the kill's {} ms came within {RAW_LINE_PAST_THE_KILL_WAIT:?}",
-                only_dropped_past_the_kill.display(),
-                stamp_of_line(KILL_LINE)
+            Err(Some(no_raw_line_past_the_kill_refusal(
+                &only_dropped_past_the_kill
             )))
         );
         assert_eq!(ended_by_the_ordinary_line, Ok(vec![1, 6, 7]));
@@ -707,14 +733,7 @@ mod tests {
             ],
         )]);
 
-        assert!(
-            homed.as_ref().is_err_and(|refusal| {
-                refusal.ends_with(&format!(
-                "{AMY}'s raw trace lost lines that could hold a home change at or before the kill"
-            ))
-            }),
-            "{homed:?}"
-        );
+        assert_refused_for_lost_lines(&homed, AMY);
     }
 
     #[test]
@@ -744,14 +763,7 @@ mod tests {
             ],
         )]);
 
-        assert!(
-            homed.as_ref().is_err_and(|refusal| {
-                refusal.ends_with(&format!(
-                "{AMY}'s raw trace lost lines that could hold a home change at or before the kill"
-            ))
-            }),
-            "{homed:?}"
-        );
+        assert_refused_for_lost_lines(&homed, AMY);
     }
 
     #[test]
@@ -766,13 +778,6 @@ mod tests {
             ],
         )]);
 
-        assert!(
-            homed.as_ref().is_err_and(|refusal| {
-                refusal.ends_with(&format!(
-                "{AMY}'s raw trace lost lines that could hold a home change at or before the kill"
-            ))
-            }),
-            "{homed:?}"
-        );
+        assert_refused_for_lost_lines(&homed, AMY);
     }
 }

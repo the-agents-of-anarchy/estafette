@@ -18,7 +18,7 @@ use crate::home_relays::{
 };
 use crate::inbox_client::{FRAME_WAIT, InboxClient, NO_FURTHER_FRAME_WINDOW};
 use crate::killable_host::KillableHost;
-use crate::lab_machine::LabMachine;
+use crate::lab_machine::{LabMachine, traces_directory_of_latest_member};
 use crate::lab_server::LabServer;
 use crate::live_host::live_host_to_itself;
 use crate::live_network::LiveNetwork;
@@ -276,8 +276,7 @@ impl Member {
 
     /// The trace directory of the server the member runs, the last its machine started.
     fn own_traces(&self) -> PathBuf {
-        let serving = self.machine.members_started().checked_sub(1).unwrap();
-        self.machine.traces_directory_of_member(serving)
+        traces_directory_of_latest_member(&self.machine)
     }
 
     /// How many rebinds the member's run records name so far.
@@ -640,7 +639,7 @@ fn trio_homed_on(
         .map(|base| Member::joined_through(network, base, std::slice::from_ref(doomed)))
         .collect();
     for member in &trio {
-        live_host_record_accepted(member.server.events(), network);
+        live_host_record_accepted(member.server.events(), network.host_address().id);
     }
     let announced = relays_announced_now(network, &trio);
     let own_traces: Vec<PathBuf> = trio.iter().map(Member::own_traces).collect();
@@ -694,7 +693,7 @@ fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_othe
         killable_host_serving(&doomed, &tail);
     });
     timed("connections to both hosts' relays timed", || {
-        placement_held(&doomed, &network);
+        placement_held(doomed.relay(), network.host_relay());
     });
     let (mut trio, announced) = timed("three members homed on the killable host", || {
         trio_homed_on(&network, doomed.address())

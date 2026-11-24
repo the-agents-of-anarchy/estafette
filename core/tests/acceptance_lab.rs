@@ -685,7 +685,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
             ANNOUNCEMENT_WAIT,
             |line| is_a_record_of_the_host_relaying_through(line, network.host_relay()),
         );
-        live_host_record_accepted(member.events(), network);
+        live_host_record_accepted(member.events(), network.host_address().id);
         let own_traces = member.own_traces();
         if let Err(refusal) = every_member_homed_on(
             doomed.relay(),
@@ -708,7 +708,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
         let _live_host = live_host_to_itself();
         let network = LiveNetwork::from_environment();
         let doomed = KillableHost::from_environment(&network);
-        placement_held(&doomed, &network);
+        placement_held(doomed.relay(), network.host_relay());
         let homed = start_member_homed_on(&network, &doomed);
         let (last_presence_ms, quiet_proved_ms) = homed.member.events().wait_until(
             &format!(

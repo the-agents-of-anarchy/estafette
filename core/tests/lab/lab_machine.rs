@@ -12,6 +12,12 @@ use crate::mcp_server::{INIT_TOOL, McpServer, call_succeeded, init_arguments};
 use crate::member_events::MemberEvents;
 use crate::scratch_machine::ScratchMachine;
 
+/// The trace directory of the server the machine started last.
+pub fn traces_directory_of_latest_member(machine: &ScratchMachine) -> PathBuf {
+    let latest = machine.members_started().checked_sub(1).unwrap();
+    machine.traces_directory_of_member(latest)
+}
+
 /// One machine's worth of estafette state under a scratch root of its own, joined to the live lab network.
 pub struct LabMachine {
     scratch: ScratchMachine,
@@ -42,8 +48,7 @@ impl ClaimedMember {
 
     /// The trace directory of the server the member runs, the last its machine started.
     pub fn own_traces(&self) -> PathBuf {
-        let serving = self.machine.members_started().checked_sub(1).unwrap();
-        self.machine.traces_directory_of_member(serving)
+        traces_directory_of_latest_member(&self.machine)
     }
 }
 

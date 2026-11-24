@@ -3,38 +3,36 @@ use std::time::{Duration, Instant};
 
 use iroh::RelayUrl;
 
-use crate::killable_host::KillableHost;
-use crate::live_network::LiveNetwork;
 use crate::scratch_machine::print_to_standard_error;
 
 /// How many connections from this machine to each host's relay spec 3.15 tests 23 and 28 time before any member starts.
-pub const CONNECTS_PER_RELAY: usize = 10;
+const CONNECTS_PER_RELAY: usize = 10;
 /// How long one timed connection to a relay may take before the reading fails the test: chosen, not measured, far above a round trip between two continents.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long this machine took to open each of its timed TCP connections to one relay.
 #[derive(Debug)]
-pub struct RelayConnectTimes {
-    pub relay: String,
-    pub readings: [Duration; CONNECTS_PER_RELAY],
+struct RelayConnectTimes {
+    relay: String,
+    readings: [Duration; CONNECTS_PER_RELAY],
 }
 
 /// Times the connections from this machine to the doomed host's relay and to the live host's, prints every reading, and fails the test unless the placement spec 3.15 tests 23 and 28 stand on holds.
 #[track_caller]
-pub fn placement_held(doomed: &KillableHost, network: &LiveNetwork) {
-    let killed = connect_times_to(doomed.relay());
-    let living = connect_times_to(network.host_relay());
+pub fn placement_held(doomed_relay: &str, live_relay: &str) {
+    let doomed_times = connect_times_to(doomed_relay);
+    let live_times = connect_times_to(live_relay);
     print_to_standard_error(&format!(
-        "connect times to the doomed host's relay: {killed:?}; to the live host's relay: {living:?}"
+        "connect times to the doomed host's relay: {doomed_times:?}; to the live host's relay: {live_times:?}"
     ));
-    if let Err(refusal) = killed_relay_answers_faster(&killed, &living) {
+    if let Err(refusal) = killed_relay_answers_faster(&doomed_times, &live_times) {
         panic!("{refusal}");
     }
 }
 
 /// Times TCP connections from this machine to the relay's port one after another, its name resolved once before the first, each from the start of the connect to the open connection, failing the test naming the relay when its name does not resolve or a connection is not open within the connect timeout.
 #[track_caller]
-pub fn connect_times_to(relay: &str) -> RelayConnectTimes {
+fn connect_times_to(relay: &str) -> RelayConnectTimes {
     let address = address_of(relay);
     RelayConnectTimes {
         relay: relay.to_owned(),
@@ -70,7 +68,7 @@ fn connect_time(relay: &str, address: SocketAddr) -> Duration {
 }
 
 /// Whether the placement spec 3.15 tests 23 and 28 stand on holds: the slowest connection to the relay of the host that will be killed is faster than the fastest to the relay of the host that lives, the refusal naming that precondition and every reading.
-pub fn killed_relay_answers_faster(
+fn killed_relay_answers_faster(
     killed: &RelayConnectTimes,
     living: &RelayConnectTimes,
 ) -> Result<(), String> {
