@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
-use crate::stream_items::{Stream, StreamExt};
 use iroh::endpoint::RelayStatus;
 use iroh::protocol::Router;
 use iroh::{EndpointAddr, EndpointId, SecretKey, Watcher};
@@ -49,6 +48,7 @@ use crate::peers::{
     ContactFailed, ContactSucceeded, Effect, Operated, Peer, PeerTable, TableChange,
     announced_sender_handle, is_within_announcement_max_age, is_within_announcement_max_age_ahead,
 };
+use crate::stream_items::{Stream, StreamExt};
 use crate::wire::{
     self, Addr, Departure, Introduce, IntroduceAck, Message, Nonce, Payload, Presence,
     PresenceRequest, Unreachable, Version,
@@ -140,7 +140,7 @@ impl Network {
 pub struct NodeEffects {
     /// Milliseconds since the Unix epoch by this machine's clock.
     pub clock: Clock,
-    /// The monotonic clock every wait and interval of the node is measured on, the runtime's own in production.
+    /// The monotonic clock every timed arm of the presence loop is measured on, the runtime's own in production.
     pub monotonic: MonotonicClock,
     /// A cryptographically secure source of 16 random bytes: the nonce of each probe and the id of each message.
     pub fill_probe_nonce: ProbeNonceSource,
@@ -351,7 +351,7 @@ pub struct PeerRows {
     direct_exchanges: Mutex<Vec<DirectExchange>>,
 }
 
-/// A direct request a node made, or the answer to one that it applied, each with the cause of the request, as a test of the node reads them.
+/// A direct request the loop queued, which a stopping node skips before sending it, or the answer to one that it applied, each with the cause of the request, as a test of the node reads them.
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DirectExchange {
@@ -1227,7 +1227,7 @@ impl PresenceLoop {
             () = deadline_reached(&*self.monotonic, observer_wait_over) => Wake::ObserverWaitOver,
             () = deadline_reached(&*self.monotonic, self.reannounce_due) => Wake::ReannounceDue,
             () = deadline_reached(&*self.monotonic, relay_loss_due) => Wake::RelayLossDue,
-            cause = sleep_until_rebind(&*self.monotonic, next_rebind) => Wake::RebindDue(cause),
+            cause = rebind_cause_once_due(&*self.monotonic, next_rebind) => Wake::RebindDue(cause),
             () = deadline_reached(&*self.monotonic, member_join_due) => Wake::MemberJoinDue,
             () = self.monotonic.reached(self.snapshot_due) => Wake::SnapshotDue,
         }
@@ -1695,15 +1695,33 @@ pub(super) fn admission_record<Taken>(
     signer_handle: Option<LocalHandle>,
     admission: &Result<Taken, PayloadDropRule>,
 ) -> Event {
-    let payload = (facts, signer_handle).into();
     match admission {
-        Ok(_taken) => crate::event::GossipEvent::PayloadAccepted(payload),
-        Err(rule) => crate::event::GossipEvent::PayloadDropped {
-            payload: Some(payload),
-            rule: *rule,
-        },
+        Ok(_taken) => {
+            crate::event::GossipEvent::PayloadAccepted((facts, signer_handle).into()).into()
+        }
+        Err(rule) => payload_dropped_record(facts, signer_handle, *rule),
+    }
+}
+
+/// The record of a payload dropped by the rule, naming its signer by the handle given, if any.
+fn payload_dropped_record(
+    facts: PayloadFacts,
+    signer_handle: Option<LocalHandle>,
+    rule: PayloadDropRule,
+) -> Event {
+    crate::event::GossipEvent::PayloadDropped {
+        payload: Some((facts, signer_handle).into()),
+        rule,
     }
     .into()
+}
+
+/// The handle the peer table holds for the signer of the facts at that instant in milliseconds, when the node keeps a table.
+fn held_signer_handle(
+    table_at: Option<(&PeerRows, u64)>,
+    facts: &PayloadFacts,
+) -> Option<LocalHandle> {
+    table_at.and_then(|(rows, now_ms)| rows.table().handle_of(facts.signer, now_ms))
 }
 
 /// The record of a received payload the node took, or dropped by the rule the admission named, naming its signer by the handle `table` holds for it at `now_ms`, if any.
@@ -1723,10 +1741,8 @@ fn named_admission_record<Taken>(
     facts: PayloadFacts,
     admission: &Result<Taken, PayloadDropRule>,
 ) -> Event {
-    table_at.map_or_else(
-        || admission_record(facts, None, admission),
-        |(rows, now_ms)| signer_admission_record(&rows.table(), facts, admission, now_ms),
-    )
+    let signer_handle = held_signer_handle(table_at, &facts);
+    admission_record(facts, signer_handle, admission)
 }
 
 /// The record of bytes the payload layer dropped, naming the signer they named by the handle its peer table holds for it at that instant in milliseconds when the node keeps one.
@@ -1738,7 +1754,8 @@ fn refusal_record(table_at: Option<(&PeerRows, u64)>, refusal: PayloadRefusal) -
         }
         .into();
     };
-    named_admission_record(table_at, facts, &Err::<(), _>(refusal.rule))
+    let signer_handle = held_signer_handle(table_at, &facts);
+    payload_dropped_record(facts, signer_handle, refusal.rule)
 }
 
 /// The record of a verified payload a node takes without a row of spec 3.8 to apply to it, naming its signer by the handle its peer table holds for it at that instant in milliseconds when the node keeps one.
@@ -1808,7 +1825,7 @@ pub async fn broadcast_recording_outcome(
 }
 
 /// Waits until the clock reads the instant the rebind is due and answers why, or forever when none is.
-async fn sleep_until_rebind(
+async fn rebind_cause_once_due(
     clock: &dyn MonotonicTime,
     next_rebind: Option<(Instant, RebindCause)>,
 ) -> RebindCause {
