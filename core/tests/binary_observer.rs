@@ -3,8 +3,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 mod common;
 #[cfg(test)]
@@ -45,8 +44,6 @@ const COMMAND_LABEL: &str = "the command";
 const SIGNAL_COMMAND: &str = "kill";
 /// The `kill` flag of SIGINT, the signal whose prompt end spec 3.13 asks of an interrupted command.
 const INTERRUPT_SIGNAL_FLAG: &str = "-INT";
-/// The `kill` flag of SIGKILL, which ends a command that outlived its bound.
-const KILL_SIGNAL_FLAG: &str = "-KILL";
 
 fn binary(root: &Path) -> Command {
     let mut command = Command::new(BINARY);
@@ -69,7 +66,7 @@ fn short_scratch_root(test_name: &str) -> io::Result<PathBuf> {
     )
 }
 
-/// A scratch root removed on every way out of the scope that holds it, a removal that fails reported on standard error.
+/// A scratch root removed on every way out of the scope that holds it, a removal that fails failing the test unless it is already failing, and then reported on standard error.
 struct ScratchRemovedOnDrop {
     path: PathBuf,
 }
@@ -77,7 +74,9 @@ struct ScratchRemovedOnDrop {
 impl Drop for ScratchRemovedOnDrop {
     fn drop(&mut self) {
         if let Err(failure) = remove_scratch::remove_scratch(&self.path) {
-            drop(writeln!(io::stderr(), "scratch not removed: {failure}"));
+            let report = format!("scratch not removed: {failure}");
+            assert!(std::thread::panicking(), "{report}");
+            drop(writeln!(io::stderr(), "{report}"));
         }
     }
 }
@@ -180,13 +179,11 @@ fn binary_tail_runs_until_interrupted_then_exits_zero_of_spec_3_13() {
     })
     .unwrap();
     assert!(tail.try_wait().unwrap().is_none());
-    let interrupt = Command::new("kill")
-        .args(["-INT", &tail.id().to_string()])
-        .status()
+    let tail_id = tail.id();
+    ended_when_the_wait_fails(&mut tail, || signal_process(INTERRUPT_SIGNAL_FLAG, tail_id))
         .unwrap();
     let output = tail.wait_with_output().unwrap();
 
-    assert!(interrupt.success());
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(output.stdout, Vec::<u8>::new());
 }
@@ -282,7 +279,10 @@ fn status_after_sigint(
     if let Some(ended_first) = command.try_wait()? {
         return Ok(Some(ended_first));
     }
-    signal_process(INTERRUPT_SIGNAL_FLAG, command.id())?;
+    let command_id = command.id();
+    ended_when_the_wait_fails(&mut command, || {
+        signal_process(INTERRUPT_SIGNAL_FLAG, command_id)
+    })?;
     let ended = exit_within(command, INTERRUPTED_COMMAND_ENDS_WITHIN)?;
     drop(errors);
     Ok(ended)
@@ -320,18 +320,19 @@ fn binary_doctor_interrupted_by_sigint_ends_at_once_by_that_signal_of_spec_3_13(
     );
 }
 
-/// How the command exited when it exits within the bound, none when it outlives it and is killed.
+/// How the command exited when its handle reaps it within the bound, none when it outlives it and is killed through that handle, the thread yielding between two asks and never sleeping.
 fn exit_within(mut command: Child, bound: Duration) -> io::Result<Option<ExitStatus>> {
-    let process_id = command.id();
-    let (exited, exit) = mpsc::channel();
-    std::thread::spawn(move || drop(exited.send(command.wait())));
-    match exit.recv_timeout(bound) {
-        Ok(status) => status.map(Some),
-        Err(_outlived) => {
-            signal_process(KILL_SIGNAL_FLAG, process_id)?;
-            drop(exit.recv());
-            Ok(None)
+    let asked = Instant::now();
+    loop {
+        if let Some(status) = command.try_wait()? {
+            return Ok(Some(status));
         }
+        if asked.elapsed() >= bound {
+            command.kill()?;
+            command.wait()?;
+            return Ok(None);
+        }
+        std::thread::yield_now();
     }
 }
 
