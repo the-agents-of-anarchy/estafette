@@ -525,10 +525,13 @@ mod tests {
         );
     }
 
+    const CORE_MESSAGE_BODY_LIMIT_BYTES: usize = 1_048_576;
+
     #[test]
-    fn spec_3_11_a_frame_the_core_writer_can_emit_at_its_largest_is_delivered() {
+    fn spec_3_11_a_frame_whose_body_is_core_s_message_body_limit_of_bytes_each_escaped_to_six_is_delivered()
+     {
         let escaped_control_byte = '\u{1}';
-        let largest_text_bytes = usize::try_from(WIRE_STRUCTURE_MAX_BYTES).unwrap_or_default();
+        let largest_text_bytes = CORE_MESSAGE_BODY_LIMIT_BYTES;
         let body: String = std::iter::repeat_n(escaped_control_byte, largest_text_bytes).collect();
         let line = format!(
             "{{\"seq\":1,\"id\":\"\",\"from\":\"\",\"body\":{},\"sent_at\":1,\"received_at\":1}}\n",
@@ -536,7 +539,7 @@ mod tests {
         );
         assert!(
             u64::try_from(line.len()).unwrap_or(u64::MAX) <= MAX_FRAME_LINE_BYTES,
-            "the largest writable line is {} bytes",
+            "the largest line of a body at core's body limit is {} bytes",
             line.len()
         );
         let (_, followed) = follow_scripted(&[line]);
@@ -563,15 +566,30 @@ mod tests {
         assert_eq!(followed.delivered.len(), 1);
     }
 
+    fn core_wire_limit(constant_name: &str) -> Option<u64> {
+        let core_wire = include_str!("../../../core/src/wire.rs");
+        let declaration = format!("pub const {constant_name}: usize = ");
+        core_wire
+            .lines()
+            .find_map(|line| line.strip_prefix(declaration.as_str()))
+            .map(|rest| rest.trim_end_matches(';').replace('_', ""))
+            .and_then(|digits| digits.parse::<u64>().ok())
+    }
+
     #[test]
     fn spec_3_11_the_wire_limit_restated_here_is_the_one_core_enforces() {
-        let core_wire = include_str!("../../../core/src/wire.rs");
-        let core_limit = core_wire
-            .lines()
-            .find_map(|line| line.strip_prefix("pub const WIRE_LIMIT_BYTES: usize = "))
-            .map(|rest| rest.trim_end_matches(';').replace('_', ""))
-            .and_then(|digits| digits.parse::<u64>().ok());
-        assert_eq!(core_limit, Some(WIRE_STRUCTURE_MAX_BYTES));
+        assert_eq!(
+            core_wire_limit("WIRE_LIMIT_BYTES"),
+            Some(WIRE_STRUCTURE_MAX_BYTES)
+        );
+    }
+
+    #[test]
+    fn spec_3_11_the_message_body_limit_restated_here_is_the_one_core_enforces() {
+        assert_eq!(
+            core_wire_limit("MESSAGE_BODY_LIMIT_BYTES"),
+            u64::try_from(CORE_MESSAGE_BODY_LIMIT_BYTES).ok()
+        );
     }
 
     #[test]
