@@ -140,12 +140,17 @@ fn lost_lines_could_hold_a_change_by_the_kill(lines: &[TraceLine], kill_wall_ms:
     lines
         .iter()
         .take(through_the_first_queued_after_the_kill)
-        .any(|line| line.event == DROPPED_LINE_NAME)
+        .any(is_dropped_report)
+}
+
+/// Whether the line is the report a trace writes, before the next line it writes, of the lines it lost (`estafette_trace`'s `dropped` line).
+pub fn is_dropped_report(line: &TraceLine) -> bool {
+    line.event == DROPPED_LINE_NAME
 }
 
 /// Whether the raw line was stamped as it was queued, which every line but a `dropped` one is, at a wall-clock instant after the kill's.
 fn is_queued_after_the_kill(line: &TraceLine, kill_wall_ms: u64) -> bool {
-    line.event != DROPPED_LINE_NAME && line.wall_ms > kill_wall_ms
+    !is_dropped_report(line) && line.wall_ms > kill_wall_ms
 }
 
 /// Every whole line of the member's own raw trace once it holds a line other than a `dropped` one stamped after the kill's wall-clock instant, which its writer puts on disk only after every line stamped at or before it, failing the test naming that condition when none comes within the bound.

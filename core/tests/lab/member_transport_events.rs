@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use serde_json::Value;
 
+use crate::home_relays::is_dropped_report;
 use crate::member_events::MemberEvents;
 use crate::trace_reader::TraceLine;
 
@@ -219,6 +220,11 @@ fn relay_paths_before_the_line_at(
             .iter()
             .filter(move |line| line.event == event && line.value(CONNECTION_FIELD) == connection)
     };
+    if before.iter().any(is_dropped_report) {
+        return Err(format!(
+            "lines of the trace holding connection {connection:?} were lost before the {line_named}, so its selected paths are not all known"
+        ));
+    }
     if of_the_connection(PATH_EVENTS_MISSED_EVENT).next().is_some() {
         return Err(format!(
             "path events of connection {connection:?} were lost before the {line_named}, so its selected paths are not all known"
@@ -547,6 +553,45 @@ mod tests {
         assert!(verdict.unwrap_err().contains("were lost"));
     }
 
+    /// The line a member's trace writes before the next line it writes after it lost lines.
+    fn dropped_report(n: u64) -> String {
+        line(n, "dropped", r#","count":3"#)
+    }
+
+    #[test]
+    fn spec_3_15_test_3_a_dropped_report_before_the_serving_line_refuses_the_receiver_as_lines_lost()
+     {
+        let verdict = path_verdict_of(
+            "dropped-before-served",
+            &[
+                path_selected(1, SERVING_CONNECTION, "relay"),
+                dropped_report(2),
+                message_served(3, MESSAGE, SERVING_CONNECTION),
+            ],
+        );
+
+        let refusal = verdict.unwrap_err();
+        assert!(
+            refusal.contains("lines of the trace holding connection")
+                && refusal.contains(&SERVING_CONNECTION.to_string()),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn spec_3_15_test_3_a_dropped_report_after_the_serving_line_does_not_refuse_the_receiver() {
+        let verdict = path_verdict_of(
+            "dropped-after-served",
+            &[
+                path_selected(1, SERVING_CONNECTION, "relay"),
+                message_served(2, MESSAGE, SERVING_CONNECTION),
+                dropped_report(3),
+            ],
+        );
+
+        assert_eq!(verdict, Ok(()));
+    }
+
     #[test]
     fn spec_3_15_test_3_a_path_of_neither_relay_nor_direct_kind_fails_the_send() {
         let verdict = path_verdict_of(
@@ -686,6 +731,41 @@ mod tests {
         let verdict = sender_path_verdict_of("sender-failed-then-acknowledged", &lines);
 
         assert!(verdict.unwrap_err().contains(r#"Some("direct")"#));
+    }
+
+    #[test]
+    fn spec_3_15_test_3_a_dropped_report_before_the_senders_acknowledged_line_refuses_the_sender_as_lines_lost()
+     {
+        let verdict = sender_path_verdict_of(
+            "sender-dropped-before-acknowledged",
+            &[
+                path_selected(1, SERVING_CONNECTION, "relay"),
+                dropped_report(2),
+                message_acknowledged(3, MESSAGE, SERVING_CONNECTION),
+            ],
+        );
+
+        let refusal = verdict.unwrap_err();
+        assert!(
+            refusal.contains("lines of the trace holding connection")
+                && refusal.contains(&SERVING_CONNECTION.to_string()),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn spec_3_15_test_3_a_dropped_report_after_the_senders_acknowledged_line_does_not_refuse_the_sender()
+     {
+        let verdict = sender_path_verdict_of(
+            "sender-dropped-after-acknowledged",
+            &[
+                path_selected(1, SERVING_CONNECTION, "relay"),
+                message_acknowledged(2, MESSAGE, SERVING_CONNECTION),
+                dropped_report(3),
+            ],
+        );
+
+        assert_eq!(verdict, Ok(()));
     }
 
     /// The events a member records while it runs with no rebind: a path and a counters snapshot.
