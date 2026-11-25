@@ -448,8 +448,8 @@ mod tests {
     use crate::net::direct::tests::{
         INTERVAL_MOMENT, INTERVAL_SNAPSHOT_WITHIN, IROH_DOCUMENTED_CLOSE_LATENCY, PAYLOAD_ACCEPTED,
         SPEC_STATE_SNAPSHOT_INTERVAL, START_MOMENT, STATE_COUNTERS, ShiftedClock, StandingClock,
-        closed_within_the_documented_latency, counters_snapshot_one_interval_on, test_salt,
-        was_taken_at,
+        closed_within_the_documented_latency, counters_snapshot_one_interval_on,
+        deadline_of_the_gossip_join_timeout, test_salt, was_taken_at,
     };
     use crate::net::direct::{
         ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock, MonotonicTime,
@@ -1394,11 +1394,13 @@ mod tests {
             async {
                 next_recorded(&mut events, STATE_COUNTERS).await;
                 let mut at_the_intervals = Vec::new();
+                let mut asked = deadline_of_the_gossip_join_timeout(&clock);
                 for interval in ["first", "second"] {
                     let (_, snapshot) = counters_snapshot_one_interval_on(
                         &clock,
                         &mut events,
                         &format!("the quiet member's {interval} interval counters"),
+                        &mut asked,
                         is_snapshot_after_the_start,
                     )
                     .await;

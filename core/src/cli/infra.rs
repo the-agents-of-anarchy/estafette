@@ -917,7 +917,7 @@ mod tests {
     use crate::keys::{render_public_key, render_secret_key};
     use crate::net::direct::tests::{
         INTERVAL_MOMENT, PAYLOAD_ACCEPTED, SPEC_STATE_SNAPSHOT_INTERVAL, STATE_COUNTERS,
-        counters_snapshot_one_interval_on, was_taken_at,
+        counters_snapshot_one_interval_on, deadline_of_the_gossip_join_timeout, was_taken_at,
     };
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::net::direct::{MonotonicClock, MonotonicTime, RuntimeClock};
@@ -2458,10 +2458,12 @@ mod tests {
 
         let ((_printed, outcome), (before_the_first, snapshots)) =
             tokio::join!(run_planned(&scratch, plan, &seen), async {
+                let mut asked = deadline_of_the_gossip_join_timeout(&clock);
                 let (before_the_first, first) = counters_snapshot_one_interval_on(
                     &clock,
                     &mut recorded,
                     "the host's first counters snapshot",
+                    &mut asked,
                     |_fields| true,
                 )
                 .await;
@@ -2469,6 +2471,7 @@ mod tests {
                     &clock,
                     &mut recorded,
                     "the host's second counters snapshot",
+                    &mut asked,
                     |_fields| true,
                 )
                 .await;

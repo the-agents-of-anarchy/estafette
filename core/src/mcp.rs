@@ -1010,6 +1010,7 @@ fn object_schema(properties: Vec<(&str, Value)>, required: &[&str]) -> JsonObjec
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::ffi::OsString;
     use std::fs;
     use std::io;
@@ -1687,10 +1688,12 @@ mod tests {
             },
         );
         client.initialize().await;
+        let mut asked = BTreeSet::new();
         let (_, first) = counters_snapshot_one_interval_on(
             &clock,
             &mut recorded,
             "the unclaimed server's first counters snapshot",
+            &mut asked,
             |_fields| true,
         )
         .await;
@@ -1698,6 +1701,7 @@ mod tests {
             &clock,
             &mut recorded,
             "the unclaimed server's second counters snapshot",
+            &mut asked,
             |_fields| true,
         )
         .await;
@@ -2641,6 +2645,31 @@ mod tests {
         assert_eq!(claimed["ok"], json!(true));
         assert_eq!(before["tools"].as_array().unwrap().len(), SPEC_TOOL_COUNT);
         assert_eq!(after, before);
+    }
+
+    #[test]
+    fn spec_3_10_every_tool_variant_is_in_the_list_the_server_lists() {
+        let every_variant = [
+            ToolName::ListCards,
+            ToolName::Init,
+            ToolName::Peers,
+            ToolName::Send,
+            ToolName::Broadcast,
+            ToolName::Inbox,
+        ];
+        for tool in every_variant {
+            match tool {
+                ToolName::ListCards
+                | ToolName::Init
+                | ToolName::Peers
+                | ToolName::Send
+                | ToolName::Broadcast
+                | ToolName::Inbox => assert!(
+                    ToolName::ALL.contains(&tool),
+                    "{tool:?} is not in ToolName::ALL"
+                ),
+            }
+        }
     }
 
     fn every_tool_call() -> Vec<(&'static str, Value)> {

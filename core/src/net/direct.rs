@@ -2176,6 +2176,8 @@ pub(crate) mod tests {
     /// The longest a test waits for a counters snapshot: two of the 60 s between snapshots of `spec/observability.md` decision 9, so a start that moved the paused clock still meets the first.
     const COUNTERS_SNAPSHOT_WITHIN: Duration = Duration::from_secs(120);
     pub const STATE_COUNTERS: &str = "state.counters";
+    /// The 5 s a gossip topic waits for a neighbor before its join timeout (spec 3.14).
+    const SPEC_GOSSIP_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     /// The 60 s between two counters snapshots of `spec/observability.md` decision 9.
     pub const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
     /// The longest a test waits for a counters snapshot once its handed clock reads it due, which the runtime's timer would never reach on a clock an hour ahead.
@@ -2216,11 +2218,19 @@ pub(crate) mod tests {
     /// The event a direct request a client sent is recorded under.
     pub const REQUEST_SENT: &str = "direct.request_sent";
 
-    /// The events recorded before the clock was moved to read a counters snapshot due one interval past its reading, and the fields of the snapshot meeting the condition recorded once it was, failing by the waiter's name when it never asks to be woken.
+    /// The deadline the gossip join timeout asks a clock standing at its reading to wake it at.
+    pub fn deadline_of_the_gossip_join_timeout(
+        clock: &StandingClock,
+    ) -> BTreeSet<tokio::time::Instant> {
+        BTreeSet::from([clock.now().checked_add(SPEC_GOSSIP_JOIN_TIMEOUT).unwrap()])
+    }
+
+    /// The events recorded before the clock was moved to read a counters snapshot due one interval past its reading, and the fields of the snapshot meeting the condition recorded once it was, failing by the waiter's name when it never asks to be woken or when the clock holds any deadline beyond those the caller expected and this snapshot's own, which the call then adds to them.
     pub async fn counters_snapshot_one_interval_on(
         clock: &StandingClock,
         receiver: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
         waiter: &str,
+        expected_asked: &mut BTreeSet<tokio::time::Instant>,
         meets: impl Fn(&crate::event::EventFields) -> bool + Send + Sync,
     ) -> (Vec<RecordedEvent>, crate::event::EventFields) {
         let snapshot_due = clock
@@ -2228,10 +2238,11 @@ pub(crate) mod tests {
             .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
             .unwrap();
         clock.asked_to_wake(waiter, snapshot_due).await;
+        expected_asked.insert(snapshot_due);
         assert_eq!(
-            clock.asked_deadlines().last(),
-            Some(&snapshot_due),
-            "{waiter} asked a wake later than its snapshot's due instant"
+            &clock.asked_deadlines(),
+            expected_asked,
+            "the deadlines asked of the clock when {waiter} asked for its snapshot"
         );
         let before_the_clock_moved = recorded_so_far(receiver);
         clock.move_late_past(snapshot_due);

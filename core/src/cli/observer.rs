@@ -1045,7 +1045,8 @@ mod tests {
     use crate::net::direct::tests::{
         INTERVAL_MOMENT, INTRODUCE_KIND, LeapingClock, PAYLOAD_ACCEPTED, REQUEST_SENT,
         SPEC_STATE_SNAPSHOT_INTERVAL, START_MOMENT, STATE_COUNTERS, StandingClock,
-        counters_snapshot_one_interval_on, field, recorded_until_introduce_sent_to, was_taken_at,
+        counters_snapshot_one_interval_on, deadline_of_the_gossip_join_timeout, field,
+        recorded_until_introduce_sent_to, was_taken_at,
     };
     use crate::net::direct::{DirectServer, MonotonicTime, RuntimeClock};
     use crate::node::{Identity, Network, Node, NodeEffects};
@@ -2735,10 +2736,12 @@ mod tests {
                     ONCE_THE_CLOCK_READS_IT_WITHIN,
                 )
                 .await;
+                let mut asked = deadline_of_the_gossip_join_timeout(&clock);
                 let (before_the_first, at_the_first_interval) = counters_snapshot_one_interval_on(
                     &clock,
                     &mut recorded,
                     "tail's first interval counters",
+                    &mut asked,
                     |_fields| true,
                 )
                 .await;
@@ -2746,6 +2749,7 @@ mod tests {
                     &clock,
                     &mut recorded,
                     "tail's second interval counters",
+                    &mut asked,
                     |_fields| true,
                 )
                 .await;
