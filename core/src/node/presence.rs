@@ -1991,8 +1991,8 @@ pub(super) mod tests {
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
     use crate::net::direct::tests::{
-        INTERVAL_MOMENT, INTERVAL_SNAPSHOT_WITHIN, PAYLOAD_ACCEPTED, REQUEST_SENT, STATE_COUNTERS,
-        ShiftedClock, StandingClock, was_taken_at,
+        INTERVAL_MOMENT, INTERVAL_SNAPSHOT_WITHIN, PAYLOAD_ACCEPTED, STATE_COUNTERS, ShiftedClock,
+        StandingClock, recorded_until_introduce_sent_to, was_taken_at,
     };
     use crate::net::direct::{RequestSummary, RuntimeClock};
     use crate::net::endpoint::NodeEndpoint;
@@ -2106,7 +2106,6 @@ pub(super) mod tests {
         SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT.saturating_add(INTRODUCE_ROUND_TRIP);
     const OWN_HANDLE_ASSIGNED: &str = "peers.own_handle_assigned";
     const CONTACT_FAILED: &str = "direct.contact_failed";
-    const INTRODUCE_KIND: &str = "introduce";
     const SPEC_SHORT_PEER_ID_BYTES: usize = 5;
 
     fn network_secret() -> NetworkSecret {
@@ -4423,7 +4422,7 @@ pub(super) mod tests {
         )
         .await;
         let (recorded_before, sent) =
-            recorded_until_introduce_sent_to(&mut events, WITNESS_SEED).await;
+            recorded_names_until_introduce_sent_to(&mut events, WITNESS_SEED).await;
 
         assert!(
             recorded_before.contains(&OWN_HANDLE_ASSIGNED),
@@ -4441,23 +4440,14 @@ pub(super) mod tests {
     }
 
     /// The names of the events recorded before this node's next sent Introduce to the card of the seed, within the bound, and that event's fields.
-    async fn recorded_until_introduce_sent_to(
+    async fn recorded_names_until_introduce_sent_to(
         events: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
         seed: u8,
     ) -> (Vec<&'static str>, crate::event::EventFields) {
-        let introduce_to_the_card = (
-            Some(serde_json::Value::from(INTRODUCE_KIND)),
-            Some(short_peer_id(seed)),
-        );
-        let (before, sent) = recorded_until(
+        let (before, sent) = recorded_until_introduce_sent_to(
             events,
-            REQUEST_SENT,
-            |fields| {
-                (
-                    crate::net::direct::tests::field(fields, KIND).cloned(),
-                    crate::net::direct::tests::field(fields, PEER).cloned(),
-                ) == introduce_to_the_card
-            },
+            &short_peer_id(seed),
+            |_fields| true,
             HELD_INTRODUCE_SENT_WITHIN,
         )
         .await;

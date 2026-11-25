@@ -1043,9 +1043,9 @@ mod tests {
     use crate::inbox::socket::ProcessTable;
     use crate::keys::render_public_key;
     use crate::net::direct::tests::{
-        INTERVAL_MOMENT, LeapingClock, PAYLOAD_ACCEPTED, REQUEST_SENT,
+        INTERVAL_MOMENT, INTRODUCE_KIND, LeapingClock, PAYLOAD_ACCEPTED, REQUEST_SENT,
         SPEC_STATE_SNAPSHOT_INTERVAL, START_MOMENT, STATE_COUNTERS, StandingClock,
-        counters_snapshot_one_interval_on, field, was_taken_at,
+        counters_snapshot_one_interval_on, field, recorded_until_introduce_sent_to, was_taken_at,
     };
     use crate::net::direct::{DirectServer, MonotonicTime, RuntimeClock};
     use crate::node::{Identity, Network, Node, NodeEffects};
@@ -2159,17 +2159,11 @@ mod tests {
         .await
         .unwrap();
 
-        let introduce_to_neighbor = (
-            Some(serde_json::Value::from(INTRODUCE_KIND)),
-            Some(neighbor_short_id()),
-        );
-        next_recorded_meeting(
+        recorded_until_introduce_sent_to(
             &mut recorded,
-            REQUEST_SENT,
+            &neighbor_short_id(),
             |fields| {
-                kind_and_peer_of(fields) == introduce_to_neighbor
-                    && field(fields, OUTCOME_FIELD)
-                        == Some(&serde_json::Value::from(ACKNOWLEDGED_OUTCOME))
+                field(fields, OUTCOME_FIELD) == Some(&serde_json::Value::from(ACKNOWLEDGED_OUTCOME))
             },
             SENT_INTRODUCE_WITHIN,
         )
@@ -2848,7 +2842,6 @@ mod tests {
     const SEQ_FIELD: &str = "seq";
     const CONNECTION_SOURCE_FIELD: &str = "connection_source";
     const DIRECT_PROTOCOL: &str = "direct";
-    const INTRODUCE_KIND: &str = "introduce";
     const HELD_CONNECTION_SOURCE: &str = "held";
     const PRESENCE_EVENT_KIND: &str = "presence";
     const PRESENCE_REQUEST_EVENT_KIND: &str = "presence_request";

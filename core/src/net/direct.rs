@@ -2162,7 +2162,9 @@ pub(crate) mod tests {
     const SALT_BYTE: u8 = 0x5a;
     const SPEC_SUPERSEDED_CLOSE_CODE: u64 = 410;
 
-    use crate::test_waits::{RecordedEvent, next_recorded, next_recorded_meeting, recorded_events};
+    use crate::test_waits::{
+        RecordedEvent, next_recorded, next_recorded_meeting, recorded_events, recorded_until,
+    };
 
     /// Every event the run record has handed the receiver so far, in order.
     pub fn recorded_so_far(
@@ -2236,6 +2238,31 @@ pub(crate) mod tests {
         )
         .await;
         (before_the_clock_moved, snapshot)
+    }
+
+    /// The kind a direct request that introduces its sender is recorded under.
+    pub const INTRODUCE_KIND: &str = "introduce";
+    const KIND_FIELD: &str = "kind";
+    const PEER_FIELD: &str = "peer";
+
+    /// Every event recorded before the next `direct.request_sent` of an Introduce to the peer whose fields also meet the condition, in order, and that event's fields, failing with the name and the events seen when none comes within the bound.
+    pub async fn recorded_until_introduce_sent_to(
+        receiver: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+        peer: &serde_json::Value,
+        also: impl Fn(&crate::event::EventFields) -> bool + Send + Sync,
+        within: Duration,
+    ) -> (Vec<RecordedEvent>, crate::event::EventFields) {
+        recorded_until(
+            receiver,
+            REQUEST_SENT,
+            |fields| {
+                field(fields, KIND_FIELD) == Some(&serde_json::Value::from(INTRODUCE_KIND))
+                    && field(fields, PEER_FIELD) == Some(peer)
+                    && also(fields)
+            },
+            within,
+        )
+        .await
     }
 
     /// The salt every test register hashes locations under.
