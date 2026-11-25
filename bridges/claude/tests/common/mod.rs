@@ -43,6 +43,8 @@ type MemberLine = Result<Value, String>;
 mod fresh_directory;
 #[path = "../../../../core/tests/common/remove_scratch.rs"]
 mod remove_scratch;
+#[path = "../../../../core/src/scratch_removal.rs"]
+mod scratch_removal;
 
 pub struct Fixture {
     pub root: PathBuf,
@@ -176,10 +178,7 @@ impl Fixture {
 
 impl Drop for Fixture {
     fn drop(&mut self) {
-        if let Err(failure) = remove_scratch::remove_scratch(&self.root) {
-            assert!(thread::panicking(), "{failure}");
-            eprintln!("{failure}");
-        }
+        scratch_removal::remove_when_the_test_ends(&self.root);
     }
 }
 
@@ -198,8 +197,7 @@ impl Drop for Spawned {
             .into_iter()
             .filter_map(Result::err)
         {
-            assert!(thread::panicking(), "{failure}");
-            eprintln!("{failure}");
+            scratch_removal::fail_the_test_unless_already_failing(&failure);
         }
     }
 }

@@ -50,6 +50,9 @@ mod fresh_directory;
 #[cfg(test)]
 #[path = "../../../core/tests/common/remove_scratch.rs"]
 mod remove_scratch;
+#[cfg(test)]
+#[path = "../../../core/src/scratch_removal.rs"]
+mod scratch_removal;
 
 const DOCTOR_SUBCOMMAND: &str = "doctor";
 const BRIDGE_PROGRAM: &str = "estafette-bridge-claude";
@@ -2735,10 +2738,7 @@ mod tests {
 
     impl Drop for TraceProbe {
         fn drop(&mut self) {
-            if let Err(failure) = crate::remove_scratch::remove_scratch(&self.root) {
-                assert!(thread::panicking(), "{failure}");
-                eprintln!("{failure}");
-            }
+            crate::scratch_removal::remove_when_the_test_ends(&self.root);
         }
     }
 
