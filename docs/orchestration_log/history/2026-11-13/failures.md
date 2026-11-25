@@ -143,3 +143,11 @@ What happened: At 21:30 on 2026-11-24, with nothing to do until a notification, 
 Mechanism: An ending put off by habit: a turn that had recorded everything still reached for one more call.
 
 Correction: A turn with nothing left to do ends at once, with no call after its last record.
+
+## The lead removed a running implementer's scratch directory on a cleaner's word
+
+What happened: At about 01:42 of 2026-11-25 the lead ran rm -r on two directories the cleaner of the ended sweep-one-machine worktree listed as left behind. One of them, tmp.BwLasjtj0I under the user's temporary directory, was the first scratch directory of the implementer a3a217bd9fd8bc77f, then at work on the fix of sweep-one-machine-tests-and-support. The implementer found it gone, made a second directory and reported it; the log of its red run for row absence-quality-26 went with the directory, and that run now stands in its report's pasted output alone. No commit, evidence file or gate was touched.
+
+Mechanism: The cleaner's report said of that directory that it was identified as the newest entry in the temp directory after its rescan: it had not kept the name its own mktemp printed and took another agent's newest directory for its own. The lead read the line cut at 200 characters, passed over the words identified as, and deleted on a list it had not checked, against its own rule to destroy only what is shown to be the lister's.
+
+Correction: The lead clears a listed scratch directory only where the report gives it as the output of the lister's own mktemp, reads the whole line of each listed path before deleting, and leaves any path a report gives as found, newest or identified. The cleaner brief gains an order to keep the path its mktemp printed and to list that path alone. The spec delta reviewer of the unit was told that the red run's log is gone and runs the fixture against the cure edited out itself.
