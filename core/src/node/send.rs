@@ -216,6 +216,7 @@ mod tests {
     use iroh::endpoint::Connection;
     use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 
+    use crate::net::direct::tests::closed_within_the_documented_latency;
     use crate::net::direct::{
         ClientTimeouts, DirectClient, DirectServer, RequestSummary, message_id_text,
     };
@@ -628,7 +629,7 @@ mod tests {
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
             .unwrap();
-        second.endpoint.close().await;
+        closed_within_the_documented_latency(second.endpoint.close()).await;
         let oversized = "x".repeat(MESSAGE_BODY_LIMIT_BYTES + 1);
 
         let refused = first.node.send(SECOND_HANDLE, &oversized).await;

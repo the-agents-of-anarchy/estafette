@@ -1992,7 +1992,8 @@ pub(super) mod tests {
     use crate::keys::render_public_key;
     use crate::net::direct::tests::{
         INTERVAL_MOMENT, INTERVAL_SNAPSHOT_WITHIN, PAYLOAD_ACCEPTED, STATE_COUNTERS, ShiftedClock,
-        StandingClock, recorded_until_introduce_sent_to, was_taken_at,
+        StandingClock, closed_within_the_documented_latency, recorded_until_introduce_sent_to,
+        was_taken_at,
     };
     use crate::net::direct::{RequestSummary, RuntimeClock};
     use crate::net::endpoint::NodeEndpoint;
@@ -3971,7 +3972,7 @@ pub(super) mod tests {
         let killed = tokio::time::Instant::now();
 
         drop(second.node);
-        second.endpoint.close().await;
+        closed_within_the_documented_latency(second.endpoint.close()).await;
         let unreachable = status_within(
             &first,
             SECOND_SEED,

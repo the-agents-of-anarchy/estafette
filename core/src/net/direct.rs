@@ -2240,6 +2240,22 @@ pub(crate) mod tests {
         (before_the_clock_moved, snapshot)
     }
 
+    /// How long iroh documents an endpoint to take to close.
+    pub const IROH_DOCUMENTED_CLOSE_LATENCY: Duration = Duration::from_secs(3);
+
+    /// What a close may take beyond the latency iroh documents, since a close that waits on a peer's connection ends just past it.
+    const CLOSE_SLACK: Duration = Duration::from_secs(2);
+
+    /// Waits for the endpoint's close to finish, failing by name when it takes longer than iroh documents plus the slack.
+    pub async fn closed_within_the_documented_latency(close: impl Future<Output = ()>) {
+        answered_within(
+            IROH_DOCUMENTED_CLOSE_LATENCY.saturating_add(CLOSE_SLACK),
+            "endpoint close",
+            close,
+        )
+        .await;
+    }
+
     /// The kind a direct request that introduces its sender is recorded under.
     pub const INTRODUCE_KIND: &str = "introduce";
     const KIND_FIELD: &str = "kind";
@@ -4917,7 +4933,7 @@ pub(crate) mod tests {
         let peer = link.server_node.endpoint().id();
         link.client.probe(peer, PROBE_NONCE).await.unwrap();
 
-        link.server_node.endpoint().close().await;
+        closed_within_the_documented_latency(link.server_node.endpoint().close()).await;
         let known_closed =
             held_connection_known_closed_within(&link.client, peer, CLOSE_KNOWN_WAIT).await;
         let started = tokio::time::Instant::now();

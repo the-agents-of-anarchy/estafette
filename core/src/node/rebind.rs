@@ -446,9 +446,10 @@ mod tests {
     use crate::event::{Event, RunRecord, TransportEvent};
     use crate::keys::render_public_key;
     use crate::net::direct::tests::{
-        INTERVAL_MOMENT, INTERVAL_SNAPSHOT_WITHIN, PAYLOAD_ACCEPTED, SPEC_STATE_SNAPSHOT_INTERVAL,
-        START_MOMENT, STATE_COUNTERS, ShiftedClock, StandingClock,
-        counters_snapshot_one_interval_on, test_salt, was_taken_at,
+        INTERVAL_MOMENT, INTERVAL_SNAPSHOT_WITHIN, IROH_DOCUMENTED_CLOSE_LATENCY, PAYLOAD_ACCEPTED,
+        SPEC_STATE_SNAPSHOT_INTERVAL, START_MOMENT, STATE_COUNTERS, ShiftedClock, StandingClock,
+        closed_within_the_documented_latency, counters_snapshot_one_interval_on, test_salt,
+        was_taken_at,
     };
     use crate::net::direct::{
         ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock, MonotonicTime,
@@ -482,7 +483,6 @@ mod tests {
     const SPEC_REBIND_INTERVAL: Duration = Duration::from_secs(20);
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     const SPEC_RELAY_PROBE_TIMEOUT: Duration = Duration::from_millis(1000);
-    const IROH_DOCUMENTED_CLOSE_LATENCY: Duration = Duration::from_secs(3);
     const SPEC_MEMBER_JOIN_WAIT: Duration = Duration::from_millis(1500);
     const SPEC_MEMBER_JOIN_INTERVAL: Duration = Duration::from_millis(3000);
     const SPEC_MEMBER_JOIN_TRIES: u32 = 10;
@@ -1985,7 +1985,7 @@ mod tests {
             NEIGHBOR_UP_RECORDED_WITHIN,
         )
         .await;
-        unreachable_member.endpoint.endpoint().close().await;
+        closed_within_the_documented_latency(unreachable_member.endpoint.endpoint().close()).await;
         recorded_until(
             &mut events,
             NEIGHBOR_DOWN,
