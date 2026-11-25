@@ -1990,7 +1990,10 @@ pub(super) mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
-    use crate::net::direct::tests::{ShiftedClock, StandingClock};
+    use crate::net::direct::tests::{
+        INTERVAL_MOMENT, INTERVAL_SNAPSHOT_WITHIN, PAYLOAD_ACCEPTED, REQUEST_SENT, STATE_COUNTERS,
+        ShiftedClock, StandingClock, was_taken_at,
+    };
     use crate::net::direct::{RequestSummary, RuntimeClock};
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
@@ -2073,7 +2076,6 @@ pub(super) mod tests {
         .saturating_add(PAYLOAD_WAIT);
     const PROBE_ANSWERED_WAIT: Duration = Duration::from_secs(5);
     const AFTER_PROBE_ACK: Duration = Duration::from_millis(300);
-    pub(in crate::node) const PAYLOAD_ACCEPTED: &str = "gossip.payload_accepted";
     pub(in crate::node) const KIND: &str = "kind";
     pub(in crate::node) const PRESENCE_KIND: &str = "presence";
     pub(in crate::node) const PRESENCE_REQUEST_KIND: &str = "presence_request";
@@ -2083,11 +2085,6 @@ pub(super) mod tests {
     const OLDER_THAN_MAX_AGE_RULE: &str = "older_than_max_age";
     const AHEAD_OF_MAX_AGE_RULE: &str = "ahead_of_max_age";
     const PAYLOAD_BROADCAST: &str = "gossip.payload_broadcast";
-    const STATE_COUNTERS: &str = "state.counters";
-    const MOMENT: &str = "moment";
-    const INTERVAL_MOMENT: &str = "interval";
-    /// The longest a member's counters snapshot at the interval takes: the snapshot interval since its start, then a second.
-    const INTERVAL_SNAPSHOT_WITHIN: Duration = Duration::from_secs(61);
     /// The span after a request or report that a test waits out to show that no answer comes.
     const ANSWER_WINDOW: Duration = Duration::from_millis(1000);
     const TOPIC_JOINED: &str = "gossip.topic_joined";
@@ -2108,7 +2105,6 @@ pub(super) mod tests {
     const HELD_INTRODUCE_SENT_WITHIN: Duration =
         SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT.saturating_add(INTRODUCE_ROUND_TRIP);
     const OWN_HANDLE_ASSIGNED: &str = "peers.own_handle_assigned";
-    const REQUEST_SENT: &str = "direct.request_sent";
     const CONTACT_FAILED: &str = "direct.contact_failed";
     const INTRODUCE_KIND: &str = "introduce";
     const SPEC_SHORT_PEER_ID_BYTES: usize = 5;
@@ -3491,7 +3487,7 @@ pub(super) mod tests {
         recorded_until(
             recorded,
             STATE_COUNTERS,
-            |fields| fields.first() == Some(&(MOMENT, serde_json::Value::from(INTERVAL_MOMENT))),
+            |fields| was_taken_at(fields, INTERVAL_MOMENT),
             INTERVAL_SNAPSHOT_WITHIN,
         )
         .await

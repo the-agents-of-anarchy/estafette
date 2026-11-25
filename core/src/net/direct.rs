@@ -2173,7 +2173,24 @@ pub(crate) mod tests {
 
     /// The longest a test waits for a counters snapshot: two of the 60 s between snapshots of `spec/observability.md` decision 9, so a start that moved the paused clock still meets the first.
     const COUNTERS_SNAPSHOT_WITHIN: Duration = Duration::from_secs(120);
-    const COUNTERS_SNAPSHOT_EVENT: &str = "state.counters";
+    pub const STATE_COUNTERS: &str = "state.counters";
+    /// The 60 s between two counters snapshots of `spec/observability.md` decision 9.
+    pub const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
+    /// The longest a test waits for a counters snapshot once its handed clock reads it due, which the runtime's timer would never reach on a clock an hour ahead.
+    const SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
+    /// The name of the first field of a counters snapshot, which holds the moment it was taken.
+    pub const MOMENT: &str = "moment";
+    /// The moment a process takes its first counters snapshot.
+    pub const START_MOMENT: &str = "start";
+    /// The moment a process takes the counters snapshot due one interval after its last.
+    pub const INTERVAL_MOMENT: &str = "interval";
+
+    /// Whether the counters snapshot was taken at the moment, named by its first field.
+    pub fn was_taken_at(snapshot: &crate::event::EventFields, moment: &str) -> bool {
+        snapshot
+            .first()
+            .is_some_and(|(name, value)| *name == MOMENT && *value == moment)
+    }
 
     /// The instant on the test's clock at which the next `state.counters` event reached the receiver, with its fields, failing by name when none comes within the wait.
     pub async fn next_counters_snapshot(
@@ -2181,12 +2198,44 @@ pub(crate) mod tests {
     ) -> (tokio::time::Instant, crate::event::EventFields) {
         let fields = next_recorded_meeting(
             receiver,
-            COUNTERS_SNAPSHOT_EVENT,
+            STATE_COUNTERS,
             |_fields| true,
             COUNTERS_SNAPSHOT_WITHIN,
         )
         .await;
         (tokio::time::Instant::now(), fields)
+    }
+
+    /// The longest a test waits for a member's counters snapshot at the interval: the snapshot interval since its start, then a second.
+    pub const INTERVAL_SNAPSHOT_WITHIN: Duration =
+        SPEC_STATE_SNAPSHOT_INTERVAL.saturating_add(Duration::from_secs(1));
+    /// The event a gossip payload the node took is recorded under.
+    pub const PAYLOAD_ACCEPTED: &str = "gossip.payload_accepted";
+    /// The event a direct request a client sent is recorded under.
+    pub const REQUEST_SENT: &str = "direct.request_sent";
+
+    /// The events recorded before the clock was moved to read a counters snapshot due one interval past its reading, and the fields of the snapshot meeting the condition recorded once it was, failing by the waiter's name when it never asks to be woken.
+    pub async fn counters_snapshot_one_interval_on(
+        clock: &StandingClock,
+        receiver: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+        waiter: &str,
+        meets: impl Fn(&crate::event::EventFields) -> bool + Send + Sync,
+    ) -> (Vec<RecordedEvent>, crate::event::EventFields) {
+        let snapshot_due = clock
+            .now()
+            .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
+            .unwrap();
+        clock.asked_to_wake(waiter, snapshot_due).await;
+        let before_the_clock_moved = recorded_so_far(receiver);
+        clock.move_late_past(snapshot_due);
+        let snapshot = next_recorded_meeting(
+            receiver,
+            STATE_COUNTERS,
+            meets,
+            SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN,
+        )
+        .await;
+        (before_the_clock_moved, snapshot)
     }
 
     /// The salt every test register hashes locations under.
@@ -3005,7 +3054,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        let first_sent = next_recorded(&mut sent, "direct.request_sent").await;
+        let first_sent = next_recorded(&mut sent, REQUEST_SENT).await;
         let first_served = next_recorded(&mut served, "direct.request_served").await;
         answered_within(
             SEND_ANSWERED_WITHIN,
@@ -3014,7 +3063,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        let refused_sent = next_recorded(&mut sent, "direct.request_sent").await;
+        let refused_sent = next_recorded(&mut sent, REQUEST_SENT).await;
         let refused_served = next_recorded(&mut served, "direct.request_served").await;
 
         let connection = field(&first_sent, "connection").cloned().unwrap();
@@ -3098,7 +3147,7 @@ pub(crate) mod tests {
         let unknown = SecretKey::from_bytes(&[SERVER_SEED; KEY_LEN]).public();
 
         let probed = client.probe(unknown, Nonce::default()).await;
-        let recorded = next_recorded(&mut sent, "direct.request_sent").await;
+        let recorded = next_recorded(&mut sent, REQUEST_SENT).await;
 
         assert_eq!(probed.unwrap_err(), DirectError::Unreachable);
         assert_eq!(

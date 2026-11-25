@@ -1042,7 +1042,11 @@ mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::ProcessTable;
     use crate::keys::render_public_key;
-    use crate::net::direct::tests::{LeapingClock, StandingClock, field};
+    use crate::net::direct::tests::{
+        INTERVAL_MOMENT, LeapingClock, PAYLOAD_ACCEPTED, REQUEST_SENT,
+        SPEC_STATE_SNAPSHOT_INTERVAL, START_MOMENT, STATE_COUNTERS, StandingClock,
+        counters_snapshot_one_interval_on, field, was_taken_at,
+    };
     use crate::net::direct::{DirectServer, MonotonicTime, RuntimeClock};
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
@@ -2161,7 +2165,7 @@ mod tests {
         );
         next_recorded_meeting(
             &mut recorded,
-            REQUEST_SENT_EVENT,
+            REQUEST_SENT,
             |fields| {
                 kind_and_peer_of(fields) == introduce_to_neighbor
                     && field(fields, OUTCOME_FIELD)
@@ -2277,7 +2281,7 @@ mod tests {
             Some(*secret_key(OBSERVER_SEED).public().as_bytes())
         );
         assert!(
-            kinds_and_peers_recorded_as(&recorded_through_the_end, "gossip.payload_accepted")
+            kinds_and_peers_recorded_as(&recorded_through_the_end, PAYLOAD_ACCEPTED)
                 .contains(&(presence_request.clone(), Some(neighbor_short_id()))),
             "show-peers ended before it took the neighbor's presence request: {recorded_through_the_end:?}"
         );
@@ -2585,7 +2589,7 @@ mod tests {
             ),
             ("gossip.neighbor_up", vec![("peer", neighbor_short_id())]),
             (
-                PAYLOAD_ACCEPTED_EVENT,
+                PAYLOAD_ACCEPTED,
                 neighbor_payload_fields("presence", ("seq", OBSERVER_CLOCK_MS - 1)),
             ),
             ("gossip.payload_dropped", {
@@ -2597,11 +2601,11 @@ mod tests {
                 fields
             }),
             (
-                PAYLOAD_ACCEPTED_EVENT,
+                PAYLOAD_ACCEPTED,
                 neighbor_payload_fields("infrastructure", ("ts", NEIGHBOR_RECORD_TS)),
             ),
             (
-                PAYLOAD_ACCEPTED_EVENT,
+                PAYLOAD_ACCEPTED,
                 neighbor_payload_fields("presence_request", ("seq", NEIGHBOR_REQUEST_SEQ)),
             ),
             (
@@ -2644,8 +2648,6 @@ mod tests {
         assert_eq!(gossip, expected);
         drop(lab);
     }
-
-    const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
 
     #[tokio::test(start_paused = true)]
     async fn observability_decisions_9_and_13_tail_records_its_socket_and_gossip_counters_at_its_start_then_every_60_s_while_it_runs()
@@ -2692,10 +2694,7 @@ mod tests {
             (&first, INTERVAL_MOMENT),
             (&second, INTERVAL_MOMENT),
         ] {
-            assert_eq!(
-                fields.first(),
-                Some(&("moment", serde_json::Value::from(moment)))
-            );
+            assert!(was_taken_at(fields, moment), "{fields:?}");
             let names: Vec<&str> = fields.iter().map(|(name, _)| *name).collect();
             assert!(names.contains(&"socket.recv_datagrams"), "{names:?}");
             assert!(names.contains(&"gossip.neighbor_up"), "{names:?}");
@@ -2706,9 +2705,6 @@ mod tests {
     /// The longest an observer takes to act once its handed clock reads a deadline, which the runtime's timer would never reach on a clock an hour ahead.
     const ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
-    const STATE_COUNTERS: &str = "state.counters";
-    const START_MOMENT: &str = "start";
-    const INTERVAL_MOMENT: &str = "interval";
 
     #[tokio::test]
     async fn observability_decisions_9_and_13_tail_records_its_counters_once_its_handed_clock_reads_60_s_past_its_start_and_again_60_s_past_that_reading()
@@ -2745,36 +2741,18 @@ mod tests {
                     ONCE_THE_CLOCK_READS_IT_WITHIN,
                 )
                 .await;
-                let first_snapshot_due = clock
-                    .now()
-                    .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
-                    .unwrap();
-                clock
-                    .asked_to_wake("tail's first interval counters", first_snapshot_due)
-                    .await;
-                let before_the_first: Vec<RecordedEvent> =
-                    std::iter::from_fn(|| recorded.try_recv().ok()).collect();
-                clock.move_late_past(first_snapshot_due);
-                let at_the_first_interval = next_recorded_meeting(
+                let (before_the_first, at_the_first_interval) = counters_snapshot_one_interval_on(
+                    &clock,
                     &mut recorded,
-                    STATE_COUNTERS,
+                    "tail's first interval counters",
                     |_fields| true,
-                    ONCE_THE_CLOCK_READS_IT_WITHIN,
                 )
                 .await;
-                let second_snapshot_due = clock
-                    .now()
-                    .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
-                    .unwrap();
-                clock
-                    .asked_to_wake("tail's second interval counters", second_snapshot_due)
-                    .await;
-                clock.move_late_past(second_snapshot_due);
-                let at_the_second_interval = next_recorded_meeting(
+                let (_, at_the_second_interval) = counters_snapshot_one_interval_on(
+                    &clock,
                     &mut recorded,
-                    STATE_COUNTERS,
+                    "tail's second interval counters",
                     |_fields| true,
-                    ONCE_THE_CLOCK_READS_IT_WITHIN,
                 )
                 .await;
                 interrupt.send(()).unwrap_or_default();
@@ -2795,9 +2773,9 @@ mod tests {
             "counters recorded before the clock read the first interval due: {counters_before_the_first:?}"
         );
         for at_the_interval in at_the_intervals {
-            assert_eq!(
-                at_the_interval.first(),
-                Some(&("moment", serde_json::Value::from("interval")))
+            assert!(
+                was_taken_at(&at_the_interval, INTERVAL_MOMENT),
+                "{at_the_interval:?}"
             );
         }
         drop(lab);
@@ -2863,8 +2841,6 @@ mod tests {
     const ACK_DROP_WOULD_SHOW_WITHIN: Duration = Duration::from_millis(500);
     const CONNECTION_OPENED_EVENT: &str = "transport.connection_opened";
     const CONNECTION_CLOSED_EVENT: &str = "transport.connection_closed";
-    const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
-    const REQUEST_SENT_EVENT: &str = "direct.request_sent";
     const CONNECTION_FIELD: &str = "connection";
     const PEER_FIELD: &str = "peer";
     const PROTOCOL_FIELD: &str = "protocol";
@@ -3269,11 +3245,10 @@ mod tests {
 
         tail_result.unwrap();
         assert!(
-            kinds_and_peers_recorded_as(&recorded_before_the_close, PAYLOAD_ACCEPTED_EVENT)
-                .contains(&(
-                    Some(serde_json::Value::from(PRESENCE_EVENT_KIND)),
-                    Some(neighbor_short_id())
-                )),
+            kinds_and_peers_recorded_as(&recorded_before_the_close, PAYLOAD_ACCEPTED).contains(&(
+                Some(serde_json::Value::from(PRESENCE_EVENT_KIND)),
+                Some(neighbor_short_id())
+            )),
             "the observer closed the introduction's connection before it took the member's next Presence, sent once its clock read {ACK_DROP_WOULD_SHOW_WITHIN:?} past every IntroduceAck: {recorded_before_the_close:?}"
         );
         assert!(
@@ -3294,7 +3269,7 @@ mod tests {
     ) -> Vec<RecordedEvent> {
         let (mut recorded_past_the_acks, _second_ack) = recorded_until(
             recorded,
-            REQUEST_SENT_EVENT,
+            REQUEST_SENT,
             |fields| {
                 field(fields, KIND_FIELD) == Some(&serde_json::Value::from(INTRODUCE_KIND))
                     && field(fields, CONNECTION_SOURCE_FIELD)
@@ -3337,7 +3312,7 @@ mod tests {
             .unwrap();
         let (before, _taken) = recorded_until(
             recorded,
-            PAYLOAD_ACCEPTED_EVENT,
+            PAYLOAD_ACCEPTED,
             |fields| {
                 field(fields, KIND_FIELD)
                     == Some(&serde_json::Value::from(PRESENCE_REQUEST_EVENT_KIND))

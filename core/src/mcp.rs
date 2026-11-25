@@ -1034,12 +1034,15 @@ mod tests {
     use crate::event::Event;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
-    use crate::net::direct::tests::StandingClock;
-    use crate::net::direct::{MonotonicTime, RuntimeClock};
+    use crate::net::direct::RuntimeClock;
+    use crate::net::direct::tests::{
+        INTERVAL_MOMENT, MOMENT, REQUEST_SENT, SPEC_STATE_SNAPSHOT_INTERVAL, StandingClock,
+        counters_snapshot_one_interval_on, was_taken_at,
+    };
     use crate::node::RuntimeShutdown;
     use crate::seeded_draws::Draws;
     use crate::sidecar;
-    use crate::test_waits::{RecordedEvent, found_within, next_recorded_meeting, recorded_events};
+    use crate::test_waits::{RecordedEvent, found_within, recorded_events};
 
     const NETWORK: &str = "acme";
     const NETWORK_SECRET_BYTE: u8 = 44;
@@ -1644,7 +1647,6 @@ mod tests {
         );
     }
 
-    const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
     /// The node's second interval snapshot is due strictly after the server's first unclaimed one, since the node starts no earlier than the server.
     const NODE_INTERVAL_SNAPSHOTS_AFTER_THE_FIRST_UNCLAIMED_DUE_TIME: usize = 2;
 
@@ -1670,23 +1672,15 @@ mod tests {
             SPEC_STATE_SNAPSHOT_INTERVAL
         );
         for (_at, fields) in [first, second] {
-            assert_eq!(fields, vec![("moment", Value::from("interval"))]);
+            assert_eq!(fields, vec![(MOMENT, Value::from(INTERVAL_MOMENT))]);
         }
     }
-
-    /// The longest the snapshot of no counters takes once the handed clock reads the snapshot interval past the server's reading, which the runtime's timer would never reach on a clock an hour ahead.
-    const UNCLAIMED_SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
-    const STATE_COUNTERS: &str = "state.counters";
 
     #[tokio::test]
     async fn observability_decisions_9_and_13_a_server_not_yet_claimed_records_its_snapshot_once_its_handed_clock_reads_60_s_on_and_again_60_s_past_that_reading()
      {
         let machine = Machine::new("unclaimed-on-clock");
         let clock = StandingClock::standing_an_hour_ahead();
-        let first_snapshot_due = clock
-            .now()
-            .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
-            .unwrap();
         let (record, mut recorded) = recorded_events();
         let mut client = start_server(
             &machine,
@@ -1697,42 +1691,23 @@ mod tests {
             },
         );
         client.initialize().await;
-        clock
-            .asked_to_wake(
-                "the unclaimed server's first counters snapshot",
-                first_snapshot_due,
-            )
-            .await;
-
-        clock.move_late_past(first_snapshot_due);
-        let first = next_recorded_meeting(
+        let (_, first) = counters_snapshot_one_interval_on(
+            &clock,
             &mut recorded,
-            STATE_COUNTERS,
+            "the unclaimed server's first counters snapshot",
             |_fields| true,
-            UNCLAIMED_SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN,
         )
         .await;
-        let second_snapshot_due = clock
-            .now()
-            .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
-            .unwrap();
-        clock
-            .asked_to_wake(
-                "the unclaimed server's second counters snapshot",
-                second_snapshot_due,
-            )
-            .await;
-        clock.move_late_past(second_snapshot_due);
-        let second = next_recorded_meeting(
+        let (_, second) = counters_snapshot_one_interval_on(
+            &clock,
             &mut recorded,
-            STATE_COUNTERS,
+            "the unclaimed server's second counters snapshot",
             |_fields| true,
-            UNCLAIMED_SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN,
         )
         .await;
 
         for snapshot in [first, second] {
-            assert_eq!(snapshot, vec![("moment", Value::from("interval"))]);
+            assert_eq!(snapshot, vec![(MOMENT, Value::from(INTERVAL_MOMENT))]);
         }
     }
 
@@ -1756,7 +1731,7 @@ mod tests {
         assert_eq!(claim["ok"], json!(true), "{claim}");
 
         let is_node_interval = |fields: &crate::event::EventFields| {
-            fields.len() > 1 && fields.first() == Some(&("moment", Value::from("interval")))
+            fields.len() > 1 && was_taken_at(fields, INTERVAL_MOMENT)
         };
         let mut snapshots = Vec::new();
         while snapshots
@@ -2607,7 +2582,6 @@ mod tests {
     async fn observability_decision_9_a_send_that_fails_after_its_message_was_minted_is_recorded_with_the_id_its_request_carried()
      {
         const SEND_ANSWERED: &str = "tool.send_answered";
-        const REQUEST_SENT: &str = "direct.request_sent";
         let _slot = node_slot().await;
         let machine = Machine::new("send-failed-answered");
         let (recorded, mut received) = mpsc::unbounded_channel();

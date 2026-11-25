@@ -921,6 +921,10 @@ mod tests {
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::invite::render_host_line;
     use crate::keys::{render_public_key, render_secret_key};
+    use crate::net::direct::tests::{
+        INTERVAL_MOMENT, PAYLOAD_ACCEPTED, SPEC_STATE_SNAPSHOT_INTERVAL, STATE_COUNTERS,
+        counters_snapshot_one_interval_on, was_taken_at,
+    };
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::net::direct::{MonotonicClock, MonotonicTime, RuntimeClock};
     use crate::net::endpoint::NodeEndpoint;
@@ -956,7 +960,6 @@ mod tests {
     const PEER_SEED: u8 = 125;
     const SECOND_PEER_SEED: u8 = 126;
     const BIND_WAIT: Duration = Duration::from_secs(5);
-    const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
     const KIND_FIELD: &str = "kind";
     const PEER_FIELD: &str = "peer";
     const INFRASTRUCTURE_KIND: &str = "infrastructure";
@@ -1711,7 +1714,7 @@ mod tests {
         outcome.unwrap();
         let recorded_through_the_end = crate::net::direct::tests::recorded_so_far(&mut recorded);
         let request_taken_at = recorded_through_the_end.iter().position(|(name, fields)| {
-            *name == PAYLOAD_ACCEPTED_EVENT
+            *name == PAYLOAD_ACCEPTED
                 && crate::net::direct::tests::field(fields, KIND_FIELD)
                     == Some(&serde_json::Value::from(PRESENCE_REQUEST_KIND))
                 && crate::net::direct::tests::field(fields, PEER_FIELD)
@@ -2047,7 +2050,7 @@ mod tests {
                         for _ in 0..SECOND_RECORD {
                             next_recorded_meeting(
                                 &mut first_recorded,
-                                PAYLOAD_ACCEPTED_EVENT,
+                                PAYLOAD_ACCEPTED,
                                 is_the_second_hosts_record,
                                 second_record_due.saturating_duration_since(Instant::now()),
                             )
@@ -2376,15 +2379,15 @@ mod tests {
                 ("gossip.topic_joined", Vec::new()),
                 ("gossip.neighbor_up", vec![("peer", short_id(PEER_SEED))]),
                 (
-                    "gossip.payload_accepted",
+                    PAYLOAD_ACCEPTED,
                     received_fields("presence", PEER_SEED, ("seq", PEER_PRESENCE_SEQ)),
                 ),
                 (
-                    "gossip.payload_accepted",
+                    PAYLOAD_ACCEPTED,
                     received_fields("infrastructure", HOST_SEED, ("ts", REPLAYED_OWN_TS)),
                 ),
                 (
-                    "gossip.payload_accepted",
+                    PAYLOAD_ACCEPTED,
                     received_fields(
                         "infrastructure",
                         OTHER_HOST_SEED,
@@ -2405,8 +2408,6 @@ mod tests {
             ))
         );
     }
-
-    const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
 
     #[tokio::test(start_paused = true)]
     async fn observability_decisions_9_and_13_the_host_records_its_socket_and_gossip_counters_every_60_s_while_it_serves()
@@ -2437,19 +2438,12 @@ mod tests {
             SPEC_STATE_SNAPSHOT_INTERVAL
         );
         for (_at, fields) in [&first, &second] {
-            assert_eq!(
-                fields.first(),
-                Some(&("moment", serde_json::Value::from("interval")))
-            );
+            assert!(was_taken_at(fields, INTERVAL_MOMENT), "{fields:?}");
             let names: Vec<&str> = fields.iter().map(|(name, _)| *name).collect();
             assert!(names.contains(&"socket.recv_datagrams"), "{names:?}");
             assert!(names.contains(&"gossip.neighbor_up"), "{names:?}");
         }
     }
-
-    /// The longest the host takes to record its counters once its handed clock reads them due, which the runtime's timer would never reach on a clock an hour ahead.
-    const SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
-    const STATE_COUNTERS: &str = "state.counters";
 
     #[tokio::test]
     async fn observability_decisions_9_and_13_the_host_records_its_counters_once_its_handed_clock_reads_60_s_past_its_join_and_again_60_s_past_that_reading()
@@ -2461,10 +2455,6 @@ mod tests {
         let (stop, stopped) = stopped_on_signal();
         let (record, mut recorded) = recorded_events();
         let clock = crate::net::direct::tests::StandingClock::standing_an_hour_ahead();
-        let first_snapshot_due = clock
-            .now()
-            .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
-            .unwrap();
         let plan = Plan {
             stopped,
             report: record,
@@ -2474,32 +2464,18 @@ mod tests {
 
         let ((_printed, outcome), (before_the_first, snapshots)) =
             tokio::join!(run_planned(&scratch, plan, &seen), async {
-                clock
-                    .asked_to_wake("the host's first counters snapshot", first_snapshot_due)
-                    .await;
-                let before_the_first: Vec<RecordedEvent> =
-                    std::iter::from_fn(|| recorded.try_recv().ok()).collect();
-                clock.move_late_past(first_snapshot_due);
-                let first = next_recorded_meeting(
+                let (before_the_first, first) = counters_snapshot_one_interval_on(
+                    &clock,
                     &mut recorded,
-                    STATE_COUNTERS,
+                    "the host's first counters snapshot",
                     |_fields| true,
-                    SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN,
                 )
                 .await;
-                let second_snapshot_due = clock
-                    .now()
-                    .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
-                    .unwrap();
-                clock
-                    .asked_to_wake("the host's second counters snapshot", second_snapshot_due)
-                    .await;
-                clock.move_late_past(second_snapshot_due);
-                let second = next_recorded_meeting(
+                let (_, second) = counters_snapshot_one_interval_on(
+                    &clock,
                     &mut recorded,
-                    STATE_COUNTERS,
+                    "the host's second counters snapshot",
                     |_fields| true,
-                    SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN,
                 )
                 .await;
                 stop.send(()).unwrap();
@@ -2516,10 +2492,7 @@ mod tests {
             "counters recorded before the clock read the first snapshot due: {counters_before_the_first:?}"
         );
         for snapshot in snapshots {
-            assert_eq!(
-                snapshot.first(),
-                Some(&("moment", serde_json::Value::from("interval")))
-            );
+            assert!(was_taken_at(&snapshot, INTERVAL_MOMENT), "{snapshot:?}");
         }
     }
 

@@ -445,7 +445,11 @@ mod tests {
     use crate::event::EventFields;
     use crate::event::{Event, RunRecord, TransportEvent};
     use crate::keys::render_public_key;
-    use crate::net::direct::tests::{ShiftedClock, StandingClock, test_salt};
+    use crate::net::direct::tests::{
+        INTERVAL_MOMENT, INTERVAL_SNAPSHOT_WITHIN, PAYLOAD_ACCEPTED, SPEC_STATE_SNAPSHOT_INTERVAL,
+        START_MOMENT, STATE_COUNTERS, ShiftedClock, StandingClock,
+        counters_snapshot_one_interval_on, test_salt, was_taken_at,
+    };
     use crate::net::direct::{
         ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock, MonotonicTime,
         RuntimeClock,
@@ -458,20 +462,19 @@ mod tests {
     use crate::node::presence::acknowledgement_of;
     use crate::node::presence::tests::{
         FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, KIND, MARKER_SEED, Member, MemberPlan,
-        OWNER_SEED, PAYLOAD_ACCEPTED, PAYLOAD_WAIT, PEER, PRESENCE_KIND, PRESENCE_REQUEST_KIND,
-        SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED, SEQ, SPEC_OBSERVER_WAIT, Scratch, WITNESS_SEED,
-        Witness, bind, card, config_with_hosts, entry_meeting_within, frozen_clock,
-        idle_presence_loop, joined_and_asked_for_presence, keys, presence_from,
-        presence_request_by, relay_url, secret_key, short_peer_id, spawn_member, start_members,
-        start_members_reaching, status_within, unreachable_about, wall_clock_ms,
+        OWNER_SEED, PAYLOAD_WAIT, PEER, PRESENCE_KIND, PRESENCE_REQUEST_KIND, SECOND_HANDLE,
+        SECOND_PUBLIC, SECOND_SEED, SEQ, SPEC_OBSERVER_WAIT, Scratch, WITNESS_SEED, Witness, bind,
+        card, config_with_hosts, entry_meeting_within, frozen_clock, idle_presence_loop,
+        joined_and_asked_for_presence, keys, presence_from, presence_request_by, relay_url,
+        secret_key, short_peer_id, spawn_member, start_members, start_members_reaching,
+        status_within, unreachable_about, wall_clock_ms,
     };
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
-        RecordedEvent, found_within, next_recorded, next_recorded_meeting, recorded_events,
-        recorded_until,
+        RecordedEvent, found_within, next_recorded, recorded_events, recorded_until,
     };
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
 
@@ -1008,7 +1011,7 @@ mod tests {
         )
         .await;
         peer.introduce_to(&member_endpoint).await;
-        next_recorded(&mut events, COUNTERS).await;
+        next_recorded(&mut events, STATE_COUNTERS).await;
         clock.move_forward(SPEC_JOIN_TIMEOUT);
         let member = starting.await.unwrap();
 
@@ -1081,7 +1084,7 @@ mod tests {
         let rebinding = next_recorded(&mut events, "transport.rebinding").await;
         let (before_the_snapshot, at_the_rebind) = recorded_until(
             &mut events,
-            "state.counters",
+            STATE_COUNTERS,
             |_fields| true,
             SNAPSHOT_AT_THE_REBIND_WITHIN,
         )
@@ -1204,10 +1207,10 @@ mod tests {
         let _member = starting.await.unwrap();
 
         next_recorded(&mut events, REBINDING).await;
-        let at_the_rebind = next_recorded(&mut events, COUNTERS).await;
+        let at_the_rebind = next_recorded(&mut events, STATE_COUNTERS).await;
         let (before_the_fresh_snapshot, at_the_fresh_bind) = recorded_until(
             &mut events,
-            COUNTERS,
+            STATE_COUNTERS,
             |_fields| true,
             SNAPSHOT_AT_THE_REBIND_WITHIN,
         )
@@ -1259,9 +1262,6 @@ mod tests {
         "transport.path_closed",
         RELAY_PROBED,
     ];
-    const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
-    const SNAPSHOT_WAIT: Duration = Duration::from_secs(61);
-    const COUNTERS: &str = "state.counters";
     const REBINDING: &str = "transport.rebinding";
     const DROPPED_PAYLOAD: &str = "gossip.payload_dropped";
     const RELAY_PROBED: &str = "transport.relay_probed";
@@ -1274,15 +1274,12 @@ mod tests {
     const RELAY_ANSWER_TAKEN_WITHIN: Duration = Duration::from_secs(5);
     const PROBE_TIMEOUT_LEFT_AFTER_THE_ANSWER_WITHIN_IT: Duration =
         SPEC_RELAY_PROBE_TIMEOUT.saturating_sub(ANSWER_WITHIN_THE_PROBE_TIMEOUT);
-    const MOMENT: &str = "moment";
     const SOCKET_COUNTERS: usize = 35;
     const GOSSIP_COUNTERS: usize = 18;
     /// The fields of a counters snapshot: its moment, then the counters iroh keeps for the socket and for the gossip.
     const SNAPSHOT_FIELDS: usize = 1 + SOCKET_COUNTERS + GOSSIP_COUNTERS;
-    const START_MOMENT: &str = "start";
     const REBIND_MOMENT: &str = "rebind";
     const STOP_MOMENT: &str = "stop";
-    const INTERVAL_MOMENT: &str = "interval";
     /// The longest a host's report takes to reach the member that hears it.
     const REPORT_HEARD_WITHIN: Duration = Duration::from_secs(10);
     /// How many reports, an interval apart on the clock, move it past the deaf timeout and its slack.
@@ -1293,13 +1290,6 @@ mod tests {
             .as_millis()
             >= SPEC_DEAF_TIMEOUT.saturating_add(REBIND_SLACK).as_millis()
     );
-
-    /// Whether the counters snapshot was taken at the moment, named by its first field.
-    fn was_taken_at(snapshot: &EventFields, moment: &str) -> bool {
-        snapshot
-            .first()
-            .is_some_and(|(name, value)| *name == MOMENT && *value == moment)
-    }
 
     /// Whether the counters were recorded after the start: at the interval, at a rebind or at a stop.
     fn is_snapshot_after_the_start(fields: &EventFields) -> bool {
@@ -1339,16 +1329,18 @@ mod tests {
     async fn next_snapshot(
         events: &mut tokio::sync::mpsc::UnboundedReceiver<StampedEvent>,
     ) -> (Instant, crate::event::EventFields) {
-        let found = tokio::time::timeout(SNAPSHOT_WAIT, async {
+        let found = tokio::time::timeout(INTERVAL_SNAPSHOT_WITHIN, async {
             loop {
                 let (at, name, fields) = events.recv().await.unwrap();
-                if name == "state.counters" {
+                if name == STATE_COUNTERS {
                     return (at, fields);
                 }
             }
         })
         .await;
-        found.unwrap_or_else(|_elapsed| panic!("no state.counters within {SNAPSHOT_WAIT:?}"))
+        found.unwrap_or_else(|_elapsed| {
+            panic!("no {STATE_COUNTERS} within {INTERVAL_SNAPSHOT_WITHIN:?}")
+        })
     }
 
     #[tokio::test(start_paused = true)]
@@ -1383,9 +1375,6 @@ mod tests {
         drop(scratch);
     }
 
-    /// The longest the counters snapshot takes once the handed clock reads the snapshot interval past the last, which the runtime's timer would never reach on a clock an hour ahead.
-    const SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
-
     #[tokio::test]
     async fn observability_decision_9_a_quiet_member_records_its_counters_once_its_handed_clock_reads_60_s_past_its_start_and_again_60_s_past_that_reading()
      {
@@ -1403,29 +1392,17 @@ mod tests {
                 ],
             ),
             async {
-                next_recorded(&mut events, COUNTERS).await;
+                next_recorded(&mut events, STATE_COUNTERS).await;
                 let mut at_the_intervals = Vec::new();
                 for interval in ["first", "second"] {
-                    let snapshot_due = clock
-                        .now()
-                        .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
-                        .unwrap();
-                    clock
-                        .asked_to_wake(
-                            &format!("the quiet member's {interval} interval counters"),
-                            snapshot_due,
-                        )
-                        .await;
-                    clock.move_late_past(snapshot_due);
-                    at_the_intervals.push(
-                        next_recorded_meeting(
-                            &mut events,
-                            COUNTERS,
-                            is_snapshot_after_the_start,
-                            SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN,
-                        )
-                        .await,
-                    );
+                    let (_, snapshot) = counters_snapshot_one_interval_on(
+                        &clock,
+                        &mut events,
+                        &format!("the quiet member's {interval} interval counters"),
+                        is_snapshot_after_the_start,
+                    )
+                    .await;
+                    at_the_intervals.push(snapshot);
                 }
                 at_the_intervals
             }
@@ -1577,10 +1554,10 @@ mod tests {
             vec![MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(record)],
         )
         .await;
-        let at_start = next_recorded(&mut events, "state.counters").await;
+        let at_start = next_recorded(&mut events, STATE_COUNTERS).await;
 
         members.first().unwrap().node.start_stopping();
-        let at_stop = next_recorded(&mut events, "state.counters").await;
+        let at_stop = next_recorded(&mut events, STATE_COUNTERS).await;
 
         assert!(was_taken_at(&at_start, START_MOMENT), "{at_start:?}");
         assert!(was_taken_at(&at_stop, STOP_MOMENT), "{at_stop:?}");
@@ -1748,9 +1725,9 @@ mod tests {
         .await;
         let (before_the_next_snapshot, _snapshot) = recorded_until(
             &mut events,
-            COUNTERS,
+            STATE_COUNTERS,
             is_snapshot_after_the_start,
-            SNAPSHOT_WAIT,
+            INTERVAL_SNAPSHOT_WITHIN,
         )
         .await;
 
@@ -1872,10 +1849,10 @@ mod tests {
         let _member = starting.await.unwrap();
 
         next_recorded(&mut events, REBINDING).await;
-        next_recorded(&mut events, COUNTERS).await;
+        next_recorded(&mut events, STATE_COUNTERS).await;
         let (between_the_snapshots, _at_the_fresh_bind) = recorded_until(
             &mut events,
-            COUNTERS,
+            STATE_COUNTERS,
             |_fields| true,
             SNAPSHOT_AT_THE_REBIND_WITHIN,
         )
@@ -2079,9 +2056,9 @@ mod tests {
         let no_peer_online_since = Instant::now();
         let (while_no_peer_was_online, _snapshot) = recorded_until(
             &mut events,
-            COUNTERS,
+            STATE_COUNTERS,
             is_snapshot_after_the_start,
-            SNAPSHOT_WAIT,
+            INTERVAL_SNAPSHOT_WITHIN,
         )
         .await;
         assert_eq!(
