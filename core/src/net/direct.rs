@@ -2228,6 +2228,11 @@ pub(crate) mod tests {
             .checked_add(SPEC_STATE_SNAPSHOT_INTERVAL)
             .unwrap();
         clock.asked_to_wake(waiter, snapshot_due).await;
+        assert_eq!(
+            clock.asked_deadlines().last(),
+            Some(&snapshot_due),
+            "{waiter} asked a wake later than its snapshot's due instant"
+        );
         let before_the_clock_moved = recorded_so_far(receiver);
         clock.move_late_past(snapshot_due);
         let snapshot = next_recorded_meeting(
