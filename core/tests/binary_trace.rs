@@ -35,9 +35,7 @@ mod observability {
         traces_directory,
     };
     use super::trace_reader::{TraceLine, stopped_trace_lines_of};
-    use super::whole_trace_lines::{
-        WHOLE_LINE_WAIT, holds_within_the_wait, whole_lines_of_a_run_file,
-    };
+    use super::whole_trace_lines::{wait_for_whole_lines, whole_lines_of_a_run_file};
     use estafette::event::{EventName, TraceLineName};
     use serde_json::json;
 
@@ -651,9 +649,11 @@ mod observability {
         remove_scratch(&root).unwrap();
     }
 
-    /// Whether the trace file of a running process comes to hold a whole line within `WHOLE_LINE_WAIT`.
-    fn holds_a_whole_line_within_the_wait(path: &Path) -> bool {
-        holds_within_the_wait(path, |lines| !lines.is_empty())
+    const A_WHOLE_NUMBERED_LINE: &str = "whole numbered line";
+
+    /// Waits until the trace file of a running process holds a whole line, answering the lines it held when the wait ran out.
+    fn wait_for_a_whole_line(path: &Path) -> Result<(), String> {
+        wait_for_whole_lines(path, A_WHOLE_NUMBERED_LINE, |lines| !lines.is_empty())
     }
 
     #[test]
@@ -685,17 +685,15 @@ mod observability {
             .take(KILLED_AFTER_ANSWERS + 1)
             .count();
         let (events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
-        let held_whole_lines = [&events, &raw].map(|path| holds_a_whole_line_within_the_wait(path));
+        let waited_for_whole_lines = [&events, &raw].map(|path| wait_for_a_whole_line(path));
 
         child.kill().unwrap();
         child.wait().unwrap();
         drop(input);
-        for (path, held) in [&events, &raw].into_iter().zip(held_whole_lines) {
-            assert!(
-                held,
-                "{}: the process wrote none of its whole numbered lines within {WHOLE_LINE_WAIT:?}",
-                path.display()
-            );
+        for waited in waited_for_whole_lines {
+            if let Err(timeline) = waited {
+                panic!("{timeline}");
+            }
         }
 
         assert_eq!(answers, KILLED_AFTER_ANSWERS + 1);

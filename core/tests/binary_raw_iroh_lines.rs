@@ -33,9 +33,7 @@ mod raw_iroh_lines {
     use super::remove_scratch::remove_scratch;
     use super::trace_files::{announcement_of_one_run, trace_files_of_one_run};
     use super::trace_reader::TraceLine;
-    use super::whole_trace_lines::{
-        WHOLE_LINE_WAIT, holds_within_the_wait, whole_lines_of_a_run_file,
-    };
+    use super::whole_trace_lines::{wait_for_whole_lines, whole_lines_of_a_run_file};
 
     const SHORT_SCRATCH_PARENT: &str = "/tmp";
     const SCRATCH_PREFIX: &str = "eri";
@@ -48,6 +46,7 @@ mod raw_iroh_lines {
     const RUNTIME_DIRECTORY: &str = "runtime";
     const BASE_TEST_SEND_FAILURE: &str =
         "the message was not delivered: No present member has that handle.\n";
+    const A_WHOLE_LINE_OF_IROH: &str = "whole line of iroh";
     const SPEC_IROH_EVENTS_TARGET: &str = "iroh::_events";
     const SPEC_IROH_TARGETS: [&str; 4] = [
         SPEC_IROH_EVENTS_TARGET,
@@ -178,7 +177,8 @@ mod raw_iroh_lines {
             .read_line(&mut announcement)
             .unwrap();
         let (_events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
-        let wrote_lines_of_iroh = holds_within_the_wait(&raw, hold_a_line_of_iroh);
+        let waited_for_a_line_of_iroh =
+            wait_for_whole_lines(&raw, A_WHOLE_LINE_OF_IROH, hold_a_line_of_iroh);
 
         assert!(
             child.0.try_wait().unwrap().is_none(),
@@ -187,11 +187,9 @@ mod raw_iroh_lines {
         );
         drop(child);
 
-        assert!(
-            wrote_lines_of_iroh,
-            "{}: the process wrote no whole line of iroh within {WHOLE_LINE_WAIT:?}",
-            raw.display()
-        );
+        if let Err(timeline) = waited_for_a_line_of_iroh {
+            panic!("{timeline}");
+        }
         let lines = whole_lines_of_a_run_file(&raw);
         let numbers: Vec<u64> = lines.iter().map(|line| line.n).collect();
         let consecutive: Vec<u64> = (0..).take(numbers.len()).collect();

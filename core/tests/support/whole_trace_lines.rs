@@ -4,7 +4,8 @@ use std::time::{Duration, Instant};
 
 use super::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use super::trace_reader::{
-    SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, TraceLine, WritingProcess, parse_trace_lines,
+    NO_EVENT_RECORDED, SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, TraceLine, WritingProcess,
+    parse_trace_lines,
 };
 
 /// How long a test waits for a running process's trace file to come to hold what it waits for.
@@ -60,13 +61,28 @@ fn whole_lines_of_a_run_file_read_as(path: &Path, writing: WritingProcess) -> Ve
     lines
 }
 
-/// Whether the whole lines of a running process's trace file come to satisfy `holds` within `WHOLE_LINE_WAIT`, looking at once and again each time the file may have grown.
-pub fn holds_within_the_wait(path: &Path, holds: impl Fn(&[TraceLine]) -> bool) -> bool {
-    let mut watch = GrowthWatch::of_path(path).unwrap_or_else(|failure| panic!("{failure}"));
+/// Waits until the whole lines of a running process's trace file come to satisfy `holds` within `WHOLE_LINE_WAIT`, looking at once and again each time the file may have grown, and otherwise answers what was awaited and the lines the file held when the wait ran out.
+pub fn wait_for_whole_lines(
+    path: &Path,
+    awaited: &str,
+    holds: impl Fn(&[TraceLine]) -> bool,
+) -> Result<(), String> {
+    wait_for_whole_lines_within(path, awaited, WHOLE_LINE_WAIT, Instant::now, holds)
+}
+
+/// As `wait_for_whole_lines`, within the bound the caller gives, reading the time from `clock`.
+fn wait_for_whole_lines_within(
+    path: &Path,
+    awaited: &str,
+    bound: Duration,
+    clock: impl FnMut() -> Instant,
+    holds: impl Fn(&[TraceLine]) -> bool,
+) -> Result<(), String> {
+    let mut watch = GrowthWatch::of_path(path)?;
     let held = first_found_as_files_grow(
         &mut watch,
-        WHOLE_LINE_WAIT,
-        Instant::now,
+        bound,
+        clock,
         || {},
         |_watch| {
             holds(&whole_lines_of_a_run_file_read_as(
@@ -77,12 +93,31 @@ pub fn holds_within_the_wait(path: &Path, holds: impl Fn(&[TraceLine]) -> bool) 
         },
     );
     match held {
-        Ok(()) => true,
-        Err(WaitEnded::RanOut) => false,
-        Err(WaitEnded::WatcherFailed(failure)) => {
-            panic!("{}: the file watcher failed: {failure}", path.display())
-        }
-        Err(WaitEnded::WatcherEnded) => panic!("{}: the file watcher ended", path.display()),
+        Ok(()) => Ok(()),
+        Err(WaitEnded::RanOut) => Err(format!(
+            "{}: no {awaited} within {bound:?}; its lines so far:\n{}",
+            path.display(),
+            lines_held_so_far(path)
+        )),
+        Err(WaitEnded::WatcherFailed(failure)) => Err(format!(
+            "{}: the file watcher failed: {failure}",
+            path.display()
+        )),
+        Err(WaitEnded::WatcherEnded) => Err(format!("{}: the file watcher ended", path.display())),
+    }
+}
+
+/// The whole lines of a running process's trace file one to a row, or the words saying it holds none.
+fn lines_held_so_far(path: &Path) -> String {
+    let lines = whole_lines_of_a_run_file_read_as(path, WritingProcess::Running);
+    if lines.is_empty() {
+        NO_EVENT_RECORDED.to_owned()
+    } else {
+        lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 
@@ -98,6 +133,11 @@ mod tests {
         second_line_still_zero_at_its_start_sized_ahead,
     };
     use super::*;
+
+    const SECOND_LINE_LANDED: &str = "a second line to land";
+    const ANY_LINE: &str = "any line";
+    const NEVER_WRITTEN: &str = "a line never written";
+    const WAIT_BOUND: Duration = Duration::from_secs(10);
 
     /// The name of the raw trace file of the run `MEMBER_LINE` belongs to.
     fn run_file_name() -> String {
@@ -133,7 +173,7 @@ mod tests {
             numbers_at_the_first_look
         });
 
-        let held = holds_within_the_wait(&run_file, |lines| {
+        let held = wait_for_whole_lines(&run_file, SECOND_LINE_LANDED, |lines| {
             let numbers: Vec<u64> = lines.iter().map(|line| line.n).collect();
             drop(looked.send(numbers.clone()));
             numbers == [4, 5]
@@ -142,7 +182,7 @@ mod tests {
         remove_scratch(run_file.parent().unwrap()).unwrap();
 
         assert_eq!(numbers_at_the_first_look, Ok(vec![4]));
-        assert!(held);
+        assert_eq!(held, Ok(()));
     }
 
     #[test]
@@ -153,8 +193,9 @@ mod tests {
         bytes.resize(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, 0);
         let run_file = fresh_run_file("no-trace-line", &bytes);
 
-        let refusal = std::panic::catch_unwind(|| holds_within_the_wait(&run_file, |_lines| true))
-            .map_err(|payload| payload.downcast_ref::<String>().cloned());
+        let refusal =
+            std::panic::catch_unwind(|| wait_for_whole_lines(&run_file, ANY_LINE, |_lines| true))
+                .map_err(|payload| payload.downcast_ref::<String>().cloned());
         remove_scratch(run_file.parent().unwrap()).unwrap();
 
         let refusal_text = refusal.unwrap_err().unwrap();
@@ -175,14 +216,47 @@ mod tests {
         bytes.resize(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, 0);
         let run_file = fresh_run_file("junk-tail", &bytes);
 
-        let refusal = std::panic::catch_unwind(|| holds_within_the_wait(&run_file, |_lines| true))
-            .map_err(|payload| payload.downcast_ref::<String>().cloned());
+        let refusal =
+            std::panic::catch_unwind(|| wait_for_whole_lines(&run_file, ANY_LINE, |_lines| true))
+                .map_err(|payload| payload.downcast_ref::<String>().cloned());
         remove_scratch(run_file.parent().unwrap()).unwrap();
 
         let refusal_text = refusal.unwrap_err().unwrap();
         assert!(
             refusal_text.ends_with("are not the start of this run's own line"),
             "{refusal_text}"
+        );
+    }
+
+    #[test]
+    fn observability_decision_12_a_wait_on_a_live_file_that_runs_out_answers_what_it_awaited_and_the_lines_so_far()
+     {
+        let run_file = fresh_run_file(
+            "runs-out",
+            &second_line_still_zero_at_its_start_sized_ahead(),
+        );
+        let started = Instant::now();
+        let past_the_bound = started.checked_add(WAIT_BOUND).unwrap();
+        let mut readings = std::iter::once(started);
+        let expected_row = parse_trace_lines(MEMBER_LINE.as_bytes(), WritingProcess::Ended)
+            .unwrap()[0]
+            .to_string();
+
+        let ran_out = wait_for_whole_lines_within(
+            &run_file,
+            NEVER_WRITTEN,
+            WAIT_BOUND,
+            move || readings.next().unwrap_or(past_the_bound),
+            |_lines| false,
+        );
+        remove_scratch(run_file.parent().unwrap()).unwrap();
+
+        assert_eq!(
+            ran_out,
+            Err(format!(
+                "{}: no {NEVER_WRITTEN} within {WAIT_BOUND:?}; its lines so far:\n{expected_row}",
+                run_file.display()
+            ))
         );
     }
 }
