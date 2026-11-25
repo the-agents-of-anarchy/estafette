@@ -91,7 +91,7 @@ mod observability {
     const SPEC_FILE_MODE: u32 = 0o600;
     const PERMISSIVE_UMASK: &str = "0000";
     const SPEC_HEADER_FIELDS: [&str; 5] = ["v", "run", "n", "mono_ms", "wall_ms"];
-    const SPEC_FORMAT_VERSION: u64 = 1;
+    const SPEC_FORMAT_VERSION: u64 = 2;
     const SPEC_RUN_HEX_CHARS: usize = 16;
     const SPEC_NODE_HEX_CHARS: usize = 10;
     const SPEC_START_STAMP_CHARS: usize = 16;

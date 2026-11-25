@@ -2765,7 +2765,7 @@ mod tests {
     const EVENTS_FILE_NAME: &str = "20000229T235959Z-a1b2c3d4e5f60718-bridge.events.jsonl";
     fn trace_line(n: u64, rest: &str) -> String {
         format!(
-            "{{\"v\":1,\"run\":\"a1b2c3d4e5f60718\",\"n\":{n},\"mono_ms\":7,\"wall_ms\":951868799123,{rest}}}\n"
+            "{{\"v\":2,\"run\":\"a1b2c3d4e5f60718\",\"n\":{n},\"mono_ms\":7,\"wall_ms\":951868799123,{rest}}}\n"
         )
     }
 

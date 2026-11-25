@@ -23,7 +23,7 @@ pub fn frozen_clocks() -> TraceClocks {
 /// The line a run on the frozen clocks writes for `ONE_EVENT` as its line `n`.
 pub fn one_event_line(n: u64) -> String {
     format!(
-        "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS},\"event\":\"{ONE_EVENT}\"}}\n"
+        "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS},\"event\":\"{ONE_EVENT}\"}}\n"
     )
 }
 

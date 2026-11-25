@@ -7,7 +7,7 @@ const SPEC_RAW_FILE_OPENED: &str = "raw_file_opened";
 pub fn header(n: u64, node: Option<&str>, event: &str) -> String {
     let node = node.map_or_else(String::new, |node| format!(",\"node\":\"{node}\""));
     format!(
-        "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}{node},\"event\":\"{event}\""
+        "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}{node},\"event\":\"{event}\""
     )
 }
 

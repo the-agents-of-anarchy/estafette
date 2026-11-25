@@ -253,7 +253,7 @@ mod tests {
         assert_eq!(
             fs::read_to_string(traces.join(format!("{run_name}.raw.jsonl"))).unwrap(),
             format!(
-                "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":0,\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{LEAP_DAY_LAST_SECOND_MS}{SPEC_RAW_FIRST_LINE_AFTER_HEADER}"
+                "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":0,\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{LEAP_DAY_LAST_SECOND_MS}{SPEC_RAW_FIRST_LINE_AFTER_HEADER}"
             )
         );
         assert_eq!(
@@ -279,7 +279,7 @@ mod tests {
     fn clock_line(n: u64, node: Option<&str>) -> String {
         let node = node.map_or_else(String::new, |node| format!(",\"node\":\"{node}\""));
         format!(
-            "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}{node},\"event\":\"process.clock_before_unix_epoch\"}}\n"
+            "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}{node},\"event\":\"process.clock_before_unix_epoch\"}}\n"
         )
     }
 
@@ -324,7 +324,7 @@ mod tests {
 
         let header = |n: u64| {
             format!(
-                "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}"
+                "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}"
             )
         };
         assert_eq!(
@@ -376,7 +376,7 @@ mod tests {
     /// The raw line numbered `n` of the test raw event.
     fn raw_line(n: u64) -> String {
         format!(
-            "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS},\"event\":\"{RAW_EVENT}\"}}\n"
+            "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS},\"event\":\"{RAW_EVENT}\"}}\n"
         )
     }
 
@@ -408,7 +408,7 @@ mod tests {
         const MOST_LINES_WRITTEN: u64 = 12;
         const EXACT_FILL_SLACK_BYTES: u64 = 0;
         let not_safe_to_post = format!(
-            "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":0,\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}{SPEC_RAW_FIRST_LINE_AFTER_HEADER}"
+            "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":0,\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}{SPEC_RAW_FIRST_LINE_AFTER_HEADER}"
         );
         let line_bytes = u64::try_from(raw_line(1).len()).unwrap();
         let first_line_bytes = u64::try_from(not_safe_to_post.len()).unwrap();

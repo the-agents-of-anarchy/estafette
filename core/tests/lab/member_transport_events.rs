@@ -315,7 +315,7 @@ mod tests {
     /// An events line of the member at the wall-clock stamp, with the fields given after the event's name.
     fn line_at(wall_ms: u64, event: &str, fields: &str) -> String {
         format!(
-            r#"{{"v":1,"run":"6c935f82c118f7b3","n":0,"mono_ms":0,"wall_ms":{wall_ms},"node":"8f43abc249","event":"{event}"{fields}}}"#
+            r#"{{"v":2,"run":"6c935f82c118f7b3","n":0,"mono_ms":0,"wall_ms":{wall_ms},"node":"8f43abc249","event":"{event}"{fields}}}"#
         )
     }
 

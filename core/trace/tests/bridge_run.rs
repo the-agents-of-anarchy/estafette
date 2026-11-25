@@ -135,7 +135,7 @@ mod observability {
     /// The line a bridge run writes for `ONE_EVENT` as its line `n`: the header in its order and no node.
     fn one_event_line(n: u64) -> String {
         format!(
-            "{{\"v\":1,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{START_WALL_MS},\"event\":\"{ONE_EVENT}\"}}\n"
+            "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{START_WALL_MS},\"event\":\"{ONE_EVENT}\"}}\n"
         )
     }
 

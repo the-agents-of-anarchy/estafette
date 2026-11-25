@@ -19,7 +19,7 @@ pub fn whole_lines_of_a_run_file(path: &Path) -> Vec<TraceLine> {
 fn whole_lines_of_a_run_file_read_as(path: &Path, writing: WritingProcess) -> Vec<TraceLine> {
     let name = path.file_name().unwrap().to_str().unwrap();
     let run = name.split('-').nth(1).unwrap();
-    let own_line_start = format!("{{\"v\":1,\"run\":\"{run}\"");
+    let own_line_start = format!("{{\"v\":2,\"run\":\"{run}\"");
     let bytes = fs::read(path).unwrap();
     let content_end = bytes
         .iter()

@@ -7,7 +7,7 @@ use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
 use serde_json::Value;
 
 /// The format version of every trace line this reader understands (spec/observability.md decision 5).
-const KNOWN_FORMAT_VERSION: u64 = 1;
+const KNOWN_FORMAT_VERSION: u64 = estafette::trace::FORMAT_VERSION;
 /// The header key holding the format version.
 const VERSION_KEY: &str = "v";
 /// The header key holding the run id.
@@ -427,7 +427,7 @@ pub mod tests {
         .unwrap()
     }
 
-    pub const MEMBER_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":4,\"mono_ms\":17,\"wall_ms\":1794524353720,\"node\":\"8f43abc249\",\"event\":\"process.command_failed\",\"code\":\"unreachable\",\"handle\":\"bob\"}\n";
+    pub const MEMBER_LINE: &str = "{\"v\":2,\"run\":\"6c935f82c118f7b3\",\"n\":4,\"mono_ms\":17,\"wall_ms\":1794524353720,\"node\":\"8f43abc249\",\"event\":\"process.command_failed\",\"code\":\"unreachable\",\"handle\":\"bob\"}\n";
 
     /// The run of every line `MEMBER_LINE` is built on.
     pub const MEMBER_RUN: &str = "6c935f82c118f7b3";
@@ -483,7 +483,7 @@ pub mod tests {
     #[test]
     fn observability_decision_11_a_line_of_a_format_version_the_reader_does_not_know_is_refused_naming_both_versions()
      {
-        let future_line = MEMBER_LINE.replace("{\"v\":1", "{\"v\":2");
+        let future_line = MEMBER_LINE.replace("{\"v\":2", "{\"v\":3");
         let bytes = format!("{MEMBER_LINE}{future_line}");
 
         let refusal = parse_trace_lines(bytes.as_bytes(), WritingProcess::Ended).unwrap_err();
@@ -492,13 +492,13 @@ pub mod tests {
             refusal,
             TraceLineError::UnknownFormatVersion {
                 line: 2,
-                found: 2,
-                known: 1
+                found: 3,
+                known: 2
             }
         );
         assert_eq!(
             refusal.to_string(),
-            "line 2 has format version 2; this reader knows version 1"
+            "line 2 has format version 3; this reader knows version 2"
         );
     }
 

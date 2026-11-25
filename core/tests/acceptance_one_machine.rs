@@ -90,7 +90,7 @@ fn built_trace_line(
     fields: &serde_json::Value,
 ) -> trace_reader::TraceLine {
     let mut object = serde_json::json!({
-        "v": 1, "run": run, "n": n, "mono_ms": n, "wall_ms": n, "node": "fixture", "event": event,
+        "v": 2, "run": run, "n": n, "mono_ms": n, "wall_ms": n, "node": "fixture", "event": event,
     });
     if let (Some(members), Some(extra)) = (object.as_object_mut(), fields.as_object()) {
         members.extend(extra.clone());

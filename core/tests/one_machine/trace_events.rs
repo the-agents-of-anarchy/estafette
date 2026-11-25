@@ -33,9 +33,9 @@ const FIRST_MEMBER: u32 = 0;
 const SECOND_MEMBER: u32 = 1;
 const UNKNOWN_HANDLE: &str = "bob";
 const BODY: &str = "hello";
-const NETWORK_CREATED_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":0,\"mono_ms\":5,\"wall_ms\":1794524353720,\"event\":\"process.network_created\",\"network\":\"acme\"}\n";
-const COMMAND_FAILED_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":1,\"mono_ms\":9,\"wall_ms\":1794524353724,\"event\":\"process.command_failed\",\"message\":\"stopped\"}\n";
-const HANDSHAKE_FAILED_LINE: &str = "{\"v\":1,\"run\":\"6c935f82c118f7b3\",\"n\":2,\"mono_ms\":12,\"wall_ms\":1794524353727,\"event\":\"tool.handshake_failed\"}\n";
+const NETWORK_CREATED_LINE: &str = "{\"v\":2,\"run\":\"6c935f82c118f7b3\",\"n\":0,\"mono_ms\":5,\"wall_ms\":1794524353720,\"event\":\"process.network_created\",\"network\":\"acme\"}\n";
+const COMMAND_FAILED_LINE: &str = "{\"v\":2,\"run\":\"6c935f82c118f7b3\",\"n\":1,\"mono_ms\":9,\"wall_ms\":1794524353724,\"event\":\"process.command_failed\",\"message\":\"stopped\"}\n";
+const HANDSHAKE_FAILED_LINE: &str = "{\"v\":2,\"run\":\"6c935f82c118f7b3\",\"n\":2,\"mono_ms\":12,\"wall_ms\":1794524353727,\"event\":\"tool.handshake_failed\"}\n";
 const EVENTS_FILE_NAME: &str = "20261112T225913Z-6c935f82c118f7b3-estafette.events.jsonl";
 const FORCED_FAILURE_TEST: &str =
     "trace_events::forced_failure_after_two_members_for_the_timeline_print";

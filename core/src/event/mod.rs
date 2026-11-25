@@ -219,7 +219,7 @@ mod tests {
 
     use super::*;
 
-    const SPEC_FORMAT_VERSION: u64 = 1;
+    const SPEC_FORMAT_VERSION: u64 = 2;
     /// Every name an event of the binary can carry, area by area.
     fn every_event_name() -> impl Iterator<Item = &'static str> {
         names_of::<ProcessEventName>()
@@ -312,7 +312,7 @@ mod tests {
     ];
 
     #[test]
-    fn observability_decision_11_every_event_name_is_pinned_and_the_format_version_is_1() {
+    fn observability_decision_11_every_event_name_is_pinned_and_the_format_version_is_2() {
         let named: Vec<&str> = every_event_name()
             .chain(names_of::<TraceLineName>())
             .collect();

@@ -174,7 +174,7 @@ const LATER_BY_MS: u64 = 1000;
 
 fn events_line(event: &str, wall_ms: u64) -> String {
     format!(
-        "{{\"v\":1,\"run\":\"a1b2c3d4e5f60718\",\"n\":0,\"mono_ms\":0,\"wall_ms\":{wall_ms},\"event\":\"{event}\"}}\n"
+        "{{\"v\":2,\"run\":\"a1b2c3d4e5f60718\",\"n\":0,\"mono_ms\":0,\"wall_ms\":{wall_ms},\"event\":\"{event}\"}}\n"
     )
 }
 

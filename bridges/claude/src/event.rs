@@ -345,7 +345,7 @@ mod tests {
 
     use super::*;
 
-    const SPEC_FORMAT_VERSION: u64 = 1;
+    const SPEC_FORMAT_VERSION: u64 = 2;
     const SPEC_DROPPED_LINE_NAME: &str = "dropped";
     const PINNED_EVENT_NAMES: [&str; 21] = [
         "process.started",
@@ -372,7 +372,7 @@ mod tests {
     ];
 
     #[test]
-    fn observability_decision_11_every_bridge_event_name_is_pinned_apart_from_the_writers_own_line_and_the_format_version_is_1()
+    fn observability_decision_11_every_bridge_event_name_is_pinned_apart_from_the_writers_own_line_and_the_format_version_is_2()
      {
         let named: Vec<&str> = BridgeEventName::ALL
             .iter()

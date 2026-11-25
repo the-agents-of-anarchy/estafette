@@ -298,7 +298,7 @@ mod tests {
     fn head_of_line(n: u64) -> String {
         let wall_ms = stamp_of_line(n);
         format!(
-            r#"{{"v":1,"run":"{RUN_ID}","n":{n},"mono_ms":{n},"wall_ms":{wall_ms},"node":"8f43abc249""#
+            r#"{{"v":2,"run":"{RUN_ID}","n":{n},"mono_ms":{n},"wall_ms":{wall_ms},"node":"8f43abc249""#
         )
     }
 
