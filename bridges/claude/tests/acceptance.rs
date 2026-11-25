@@ -11,8 +11,12 @@ use common::{BRIDGE_ALIVE_EVENT, Fixture, bridge_alive_line_stamped_from};
 use estafette_bridge_claude::discover::Pid;
 use estafette_bridge_claude::doctor::dropped_frames_path;
 use estafette_trace::{TraceDirectory, events_trace_file_name};
+use file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 
 mod common;
+#[cfg(test)]
+#[path = "../../../core/tests/support/file_growth.rs"]
+mod file_growth;
 #[path = "../src/seeded.rs"]
 mod seeded;
 
@@ -22,17 +26,27 @@ const HANDLE: &str = "ana";
 const DOCTOR_CHECK_COUNT: usize = 5;
 const BRIDGE_START_DEADLINE: Duration = Duration::from_secs(30);
 
-fn wait_until_the_bridge_has_started(fixture: &Fixture) {
-    let dropped_frames_file =
-        dropped_frames_path(&fixture.temporary_directory(), Pid(std::process::id()));
-    let started_waiting = Instant::now();
-    while !dropped_frames_file.exists() {
-        assert!(
-            started_waiting.elapsed() < BRIDGE_START_DEADLINE,
+fn wait_until_the_bridge_has_started(fixture: &Fixture) -> Result<(), String> {
+    let temporary_directory = fixture.temporary_directory();
+    let dropped_frames_file = dropped_frames_path(&temporary_directory, Pid(std::process::id()));
+    let mut watch = GrowthWatch::of_path(&temporary_directory)?;
+    let started = first_found_as_files_grow(
+        &mut watch,
+        BRIDGE_START_DEADLINE,
+        Instant::now,
+        || {},
+        |_watch| dropped_frames_file.exists().then_some(()),
+    );
+    match started {
+        Ok(()) => Ok(()),
+        Err(WaitEnded::RanOut) => Err(format!(
             "the bridge wrote no dropped-frames file {} within {BRIDGE_START_DEADLINE:?}",
             dropped_frames_file.display()
-        );
-        thread::yield_now();
+        )),
+        Err(WaitEnded::WatcherFailed(failure)) => {
+            Err(format!("the file watcher failed: {failure}"))
+        }
+        Err(WaitEnded::WatcherEnded) => Err("the file watcher ended".to_owned()),
     }
 }
 
@@ -55,7 +69,7 @@ fn spec_3_12_doctor_passes_every_check_for_a_bridge_beside_a_real_binary_serving
     );
     let _bridge = fixture.spawn_bridge().unwrap();
 
-    wait_until_the_bridge_has_started(&fixture);
+    wait_until_the_bridge_has_started(&fixture).unwrap();
     let doctor = fixture.bridge().arg("doctor").output().unwrap();
     let report = String::from_utf8(doctor.stdout).unwrap();
     assert_eq!(doctor.status.code(), Some(0), "{report}");

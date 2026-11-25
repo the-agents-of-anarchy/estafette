@@ -3,14 +3,17 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use common::{CONFIG_HOME, Fixture, bridge_alive_line_stamped_from};
 use estafette_bridge_claude::permission_class::PermissionClass;
+use file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use serde_json::Value;
 
 mod common;
+#[cfg(test)]
+#[path = "../../../core/tests/support/file_growth.rs"]
+mod file_growth;
 
 type Outcome<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -152,23 +155,46 @@ fn either_marker_logged(debug_log: &Path, offset: u64) -> io::Result<bool> {
         || lines_with_marker(&appended, HELD_LINE_MARKER) > 0)
 }
 
-/// Waits until the condition holds, failing with its name once the bound passes without it.
+/// Waits until the condition holds, asked at once and again each time the watched path or a file the condition added to the watch changes, failing with its name once the bound passes without it.
 fn wait_until(
     condition: &str,
     bound: Duration,
-    mut holds: impl FnMut() -> io::Result<bool>,
+    watched: &Path,
+    mut holds: impl FnMut(&mut GrowthWatch) -> io::Result<bool>,
 ) -> io::Result<()> {
-    let started = Instant::now();
-    while started.elapsed() < bound {
-        if holds()? {
-            return Ok(());
-        }
-        thread::yield_now();
+    let mut watch = GrowthWatch::of_path(watched).map_err(io::Error::other)?;
+    let mut failure = None;
+    let held = first_found_as_files_grow(
+        &mut watch,
+        bound,
+        Instant::now,
+        || {},
+        |watch| match holds(watch) {
+            Ok(false) => None,
+            Ok(true) => Some(()),
+            Err(error) => {
+                failure = Some(error);
+                Some(())
+            }
+        },
+    );
+    match (held, failure) {
+        (_, Some(error)) => Err(error),
+        (Ok(()), None) => Ok(()),
+        (Err(WaitEnded::RanOut), None) => Err(io::Error::new(
+            io::ErrorKind::TimedOut,
+            format!("not within {bound:?}: {condition}"),
+        )),
+        (Err(WaitEnded::WatcherFailed(error)), None) => Err(io::Error::other(error)),
+        (Err(WaitEnded::WatcherEnded), None) => Err(io::Error::other("the file watcher ended")),
     }
-    Err(io::Error::new(
-        io::ErrorKind::TimedOut,
-        format!("not within {bound:?}: {condition}"),
-    ))
+}
+
+fn watch_each_file_in(directory: &Path, watch: &mut GrowthWatch) -> io::Result<()> {
+    for entry in fs::read_dir(directory)? {
+        watch.watch_file(&entry?.path()).map_err(io::Error::other)?;
+    }
+    Ok(())
 }
 
 fn peer_records_with_body(transcript_text: &str, body: &str) -> Vec<Value> {
@@ -312,9 +338,12 @@ fn deliver_through_bridge(body: &str, stored_body: &str) -> Outcome<Scenario> {
         return Err(format!("the test send was not delivered: {result_line}").into());
     }
 
-    wait_until(EITHER_MARKER_LOGGED, DELIVERY_TIMEOUT, || {
-        either_marker_logged(&session.debug_log, debug_log_offset)
-    })?;
+    wait_until(
+        EITHER_MARKER_LOGGED,
+        DELIVERY_TIMEOUT,
+        &session.debug_log,
+        |_watch| either_marker_logged(&session.debug_log, debug_log_offset),
+    )?;
     let window_ends = SystemTime::now()
         .checked_add(NO_SECOND_DELIVERY_WINDOW)
         .ok_or("the window ends past the wall clock's range")?;
@@ -322,7 +351,11 @@ fn deliver_through_bridge(body: &str, stored_body: &str) -> Outcome<Scenario> {
     wait_until(
         NO_SECOND_DELIVERY_WINDOW_ENDED,
         NO_SECOND_DELIVERY_WINDOW_ENDS_WITHIN,
-        || bridge_alive_line_stamped_from(&traces, window_ends),
+        &traces,
+        |watch| {
+            watch_each_file_in(&traces, watch)?;
+            bridge_alive_line_stamped_from(&traces, window_ends)
+        },
     )?;
     let transcript = text_appended_since(&session.transcript, transcript_offset)?;
     Ok(Scenario {
