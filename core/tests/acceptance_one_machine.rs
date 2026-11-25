@@ -119,7 +119,9 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use serde_json::{Value, json};
 
     use crate::dropped_payloads::short_id_of_node;
-    use crate::local_network::{AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, LocalNetwork, MetPair};
+    use crate::local_network::{
+        AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, CAROL_HANDLE, LocalNetwork, MetPair,
+    };
     use crate::mcp_server::{PRESENCE_WAIT, SEND_TOOL, gone, online, send_arguments, unreachable};
     use crate::member::{Member, loopback_address, loopback_address_of};
     use crate::member_ended_at_its_peer::{
@@ -208,6 +210,8 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const TOOL_FIELD: &str = "tool";
     /// How long a member that has exited may take to be read for lines it wrote before: chosen, not measured, far above a read of a written file.
     const EVENTS_OF_AN_ENDED_MEMBER_WITHIN: Duration = Duration::from_secs(10);
+    /// How long the recipient that holds a call's connection unserved may take to receive it: chosen, not measured, far above a loopback dial and below the 10 s a send waits for its ack.
+    const CONNECTION_HELD_WITHIN: Duration = Duration::from_secs(5);
     /// The card name of the witness, a member started only to take the observer wait of its own claim.
     const WITNESS_CARD: &str = "witness-card";
     /// The handle the witness's card requests.
@@ -746,12 +750,28 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         );
         let host = network.stand_in_host();
         let MetPair {
-            mut amy, mut bob, ..
+            mut amy,
+            mut bob,
+            bob_card,
+            ..
         } = network.amy_and_bob_met(&host);
+        let carol_key = SecretKey::generate();
+        let (carol, held_from_bob) =
+            network.scripted_member_holding_connections_of(&carol_key, CAROL_HANDLE, bob_card.id);
+        host.broadcast(presence_signed_by(
+            network.keys(),
+            &carol_key,
+            CAROL_HANDLE,
+            &loopback_address_of(&carol),
+        ));
+        bob.peer_within(CAROL_HANDLE, PRESENCE_WAIT, online);
 
-        bob.start_call(SEND_TOOL, &send_arguments(AMY_HANDLE, BODY));
+        bob.start_call(SEND_TOOL, &send_arguments(CAROL_HANDLE, BODY));
+        held_from_bob.wait_for_one(&carol, CONNECTION_HELD_WITHIN);
         let input_closed = Instant::now();
         bob.close_standard_input();
+        bob.wait_for_event(INPUT_ENDED_EVENT, EVENTS_OF_AN_ENDED_MEMBER_WITHIN);
+        held_from_bob.release();
 
         assert_stopped_member_is_gone_then_unreachable(
             &mut amy,
@@ -759,17 +779,24 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             BOB_HANDLE,
             input_closed,
         );
-        bob.wait_until(
-            &format!("{TOOL_ANSWERED_EVENT} of {SEND_TOOL} after {INPUT_ENDED_EVENT}"),
+        let (input_ended, answered) = bob.wait_until(
+            &format!("{TOOL_ANSWERED_EVENT} of {SEND_TOOL} and {INPUT_ENDED_EVENT}"),
             EVENTS_OF_AN_ENDED_MEMBER_WITHIN,
             |lines| {
                 let input_ended = lines.iter().find(|line| line.event == INPUT_ENDED_EVENT)?.n;
-                lines.into_iter().find(|line| {
-                    line.event == TOOL_ANSWERED_EVENT
-                        && line.value(TOOL_FIELD) == Some(&json!(SEND_TOOL))
-                        && line.n > input_ended
-                })
+                let answered = lines
+                    .iter()
+                    .find(|line| {
+                        line.event == TOOL_ANSWERED_EVENT
+                            && line.value(TOOL_FIELD) == Some(&json!(SEND_TOOL))
+                    })?
+                    .n;
+                Some((input_ended, answered))
             },
+        );
+        assert!(
+            answered > input_ended,
+            "the test's own setup failed, not the member: the call was answered at line {answered}, before the input ended at line {input_ended}, though the recipient held it unanswered"
         );
     }
 

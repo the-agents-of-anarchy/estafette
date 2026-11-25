@@ -1,16 +1,21 @@
 use std::fs::{self, Permissions};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use estafette::config::NetworkConfig;
 use estafette::crypto::{NetworkKeys, NetworkSecret};
 use estafette::invite::render_host_line;
 use estafette::keys::{parse_network_secret, parse_secret_key};
 use estafette::net::direct::{DirectHost, DirectServer};
+use estafette::net::endpoint::NodeEndpoint;
 use estafette::wire::{self, Addr, HostAddr, Introduce, IntroduceAck, Message, RelayUrl, Version};
-use iroh::SecretKey;
+use iroh::endpoint::Connection;
+use iroh::protocol::{AcceptError, ProtocolHandler};
+use iroh::{EndpointId, SecretKey};
 use iroh_gossip::TopicId;
 use serde_json::Value;
+use tokio::sync::watch;
 
 use crate::mcp_server::{PRESENCE_WAIT, online};
 use crate::member::Member;
@@ -180,17 +185,95 @@ impl LocalNetwork {
             key.clone(),
             *self.keys.gate_key(),
             self.topic(),
-            |endpoint| {
-                DirectServer::new(
-                    NetworkKeys::clone(&self.keys),
-                    ScriptedMemberHost {
-                        card: *key.public().as_bytes(),
-                        handle: handle.to_owned(),
-                    },
-                    endpoint,
-                )
-            },
+            |endpoint| self.scripted_member_server(key, handle, endpoint),
         )
+    }
+
+    /// Starts a scripted member as `scripted_member` does, except that it leaves each connection of the dialer unserved until the returned handle releases them, so a request the dialer writes stays unanswered.
+    pub fn scripted_member_holding_connections_of(
+        &self,
+        key: &SecretKey,
+        handle: &str,
+        dialer: EndpointId,
+    ) -> (ScriptedNode, HeldConnections) {
+        let (arrived, arrivals) = watch::channel(false);
+        let (release, released) = watch::channel(false);
+        let node = ScriptedNode::start_answering_direct(
+            key.clone(),
+            *self.keys.gate_key(),
+            self.topic(),
+            |endpoint| HoldingConnectionsOf {
+                dialer,
+                arrived,
+                released,
+                served: self.scripted_member_server(key, handle, endpoint),
+            },
+        );
+        (node, HeldConnections { arrivals, release })
+    }
+
+    /// The direct server of a scripted member holding the key's card under the handle.
+    fn scripted_member_server(
+        &self,
+        key: &SecretKey,
+        handle: &str,
+        endpoint: &NodeEndpoint,
+    ) -> DirectServer<ScriptedMemberHost> {
+        DirectServer::new(
+            NetworkKeys::clone(&self.keys),
+            ScriptedMemberHost {
+                card: *key.public().as_bytes(),
+                handle: handle.to_owned(),
+            },
+            endpoint,
+        )
+    }
+}
+
+/// The connections of one dialer that a scripted member leaves unserved, and the way to serve them.
+pub struct HeldConnections {
+    arrivals: watch::Receiver<bool>,
+    release: watch::Sender<bool>,
+}
+
+impl HeldConnections {
+    /// Waits until the node holds a connection of the dialer, failing when none arrives within the bound.
+    #[track_caller]
+    pub fn wait_for_one(&self, node: &ScriptedNode, within: Duration) {
+        let arrived = node.runtime().block_on(async {
+            let mut arrivals = self.arrivals.clone();
+            tokio::time::timeout(within, arrivals.wait_for(|arrived| *arrived))
+                .await
+                .is_ok_and(|seen| seen.is_ok())
+        });
+        assert!(
+            arrived,
+            "no connection of the dialer reached the holding member within {within:?}"
+        );
+    }
+
+    /// Has the node serve every connection of the dialer it holds, and each later one at once.
+    pub fn release(&self) {
+        self.release.send_replace(true);
+    }
+}
+
+/// The direct protocol of a scripted member that serves a connection of one dialer only once released, and every other connection at once.
+#[derive(Debug)]
+struct HoldingConnectionsOf {
+    dialer: EndpointId,
+    arrived: watch::Sender<bool>,
+    released: watch::Receiver<bool>,
+    served: DirectServer<ScriptedMemberHost>,
+}
+
+impl ProtocolHandler for HoldingConnectionsOf {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        if connection.remote_id() == self.dialer {
+            self.arrived.send_replace(true);
+            drop(self.released.clone().wait_for(|released| *released).await);
+        }
+        self.served.accept(connection).await
     }
 }
 
