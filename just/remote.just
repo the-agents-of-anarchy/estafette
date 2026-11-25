@@ -341,7 +341,7 @@ merge-events directory:
     import pathlib
     import sys
 
-    KNOWN_FORMAT_VERSION = 1
+    KNOWN_FORMAT_VERSION = 2
     EVENTS_FILE_ENDINGS = (".events.jsonl", ".events.jsonl.1")
 
     def whole_lines(events_file):
