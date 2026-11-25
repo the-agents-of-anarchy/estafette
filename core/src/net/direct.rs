@@ -2127,7 +2127,7 @@ pub(crate) mod tests {
 
     /// A clock that moves a gone process's silence forward at every reading, so every held connection reads as gone when judged.
     fn clock_reading_every_connection_as_gone() -> MonotonicClock {
-        LeapingClock::leaping_by(GONE_PROCESS_SILENCE)
+        LeapingClock::leaping_by(GONE_PROCESS_SILENCE).monotonic()
     }
 
     #[tokio::test]
@@ -2301,14 +2301,19 @@ pub(crate) mod tests {
     }
 
     impl LeapingClock {
-        /// The clock leaping by the step, as a node or a register takes it.
-        pub fn leaping_by(step: Duration) -> MonotonicClock {
-            Arc::new(Self {
+        /// A clock first reading the runtime's now and leaping forward by the step at every reading.
+        pub fn leaping_by(step: Duration) -> Self {
+            Self {
                 step,
                 next_reading: Arc::new(
                     tokio::sync::watch::Sender::new(tokio::time::Instant::now()),
                 ),
-            })
+            }
+        }
+
+        /// The clock as a node or a register takes it.
+        pub fn monotonic(&self) -> MonotonicClock {
+            Arc::new(self.clone())
         }
     }
 

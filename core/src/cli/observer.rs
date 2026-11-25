@@ -2892,7 +2892,7 @@ mod tests {
 
     /// A monotonic clock that moves an hour on at every reading, so every connection the observer holds reads as long silent whenever it is judged.
     fn clock_moving_past_any_silence_at_each_reading() -> MonotonicClock {
-        LeapingClock::leaping_by(CLOCK_STEP_PAST_ANY_SILENCE)
+        LeapingClock::leaping_by(CLOCK_STEP_PAST_ANY_SILENCE).monotonic()
     }
 
     async fn answer_on(connection: &iroh::endpoint::Connection, request: wire::Request) -> Vec<u8> {
