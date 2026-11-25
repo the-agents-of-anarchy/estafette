@@ -1,4 +1,6 @@
 use std::io::{self, BufRead, BufReader, Write};
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -318,6 +320,88 @@ fn binary_doctor_interrupted_by_sigint_ends_at_once_by_that_signal_of_spec_3_13(
         Some(Some(SIGINT_NUMBER)),
         "the command did not end by SIGINT within {INTERRUPTED_COMMAND_ENDS_WITHIN:?} of it: {ended:?}"
     );
+}
+
+/// The event the server records for each client its inbox socket accepts (spec/observability.md decision 9).
+const CLIENT_CONNECTED_EVENT: &str = "inbox.client_connected";
+/// The event the server records when a card is claimed (spec/observability.md decision 9).
+const CLAIMED_EVENT: &str = "process.claimed";
+/// The first line an inbox client writes to read every frame from the first (spec 3.11).
+const SPEC_SINCE_EVERY_FRAME: &str = "{\"since\": 0}\n";
+/// How long the server may take to bind its inbox socket once it starts.
+const INBOX_SOCKET_BOUND_WITHIN: Duration = Duration::from_secs(10);
+/// How long a server with no card claimed may take to end once its standard input ends.
+const UNCLAIMED_SERVER_ENDS_WITHIN: Duration = Duration::from_secs(10);
+
+/// The inbox socket of the process, `<runtime>/estafette-<user>/<pid>.sock`, under a scratch root the current user owns (spec 3.3).
+fn inbox_socket_of(root: &Path, process_id: u32) -> io::Result<PathBuf> {
+    let user_id = std::fs::metadata(root)?.uid();
+    Ok(root
+        .join("runtime")
+        .join(format!("estafette-{user_id}"))
+        .join(format!("{process_id}.sock")))
+}
+
+/// Connects to the socket as soon as it listens, the thread yielding between two tries and never sleeping, failing with the socket and the bound when it never does.
+fn connect_once_listening(socket: &Path, within: Duration) -> io::Result<UnixStream> {
+    let tried = Instant::now();
+    loop {
+        match UnixStream::connect(socket) {
+            Ok(client) => return Ok(client),
+            Err(failure) if tried.elapsed() >= within => {
+                return Err(io::Error::other(format!(
+                    "nothing listened on {} within {within:?}: {failure}",
+                    socket.display()
+                )));
+            }
+            Err(_) => std::thread::yield_now(),
+        }
+    }
+}
+
+#[test]
+fn binary_mcp_inbox_socket_accepts_a_client_before_any_card_is_claimed_of_spec_3_11() {
+    let scratch = ScratchRemovedOnDrop {
+        path: short_scratch_root("mcp_inbox_before_init").unwrap(),
+    };
+    let root = scratch.path.as_path();
+    assert_eq!(create_network(root).unwrap().status.code(), Some(0));
+    let mut server = binary(root)
+        .args(["mcp", NETWORK])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut errors = BufReader::new(server.stderr.take().unwrap());
+    let socket = inbox_socket_of(root, server.id()).unwrap();
+    let mut events_when_connected = Vec::new();
+
+    ended_when_the_wait_fails(&mut server, || {
+        read_the_announcement(&mut errors)?;
+        let mut client = connect_once_listening(&socket, INBOX_SOCKET_BOUND_WITHIN)?;
+        client.write_all(SPEC_SINCE_EVERY_FRAME.as_bytes())?;
+        events_when_connected = MemberEvents::new(
+            COMMAND_LABEL,
+            &trace_files::traces_directory(&root.join(DATA_HOME)),
+        )
+        .wait_until(CLIENT_CONNECTED_EVENT, NODE_RUNS_WITHIN, |lines| {
+            lines
+                .iter()
+                .any(|line| line.event == CLIENT_CONNECTED_EVENT)
+                .then(|| lines.into_iter().map(|line| line.event).collect())
+        });
+        Ok(())
+    })
+    .unwrap();
+    drop(server.stdin.take());
+    let ended = exit_within(server, UNCLAIMED_SERVER_ENDS_WITHIN).unwrap();
+
+    assert!(
+        !events_when_connected.contains(&CLAIMED_EVENT.to_owned()),
+        "{events_when_connected:?}"
+    );
+    assert_eq!(ended.map(|status| status.code()), Some(Some(0)));
 }
 
 /// How the command exited when its handle reaps it within the bound, none when it outlives it and is killed through that handle, the thread yielding between two asks and never sleeping.

@@ -216,3 +216,110 @@ fn ipv4_udp_ports_of(process_id: u32) -> Vec<u16> {
     }
     ports
 }
+
+#[cfg(test)]
+mod stopping_a_claimed_member {
+    use std::time::Duration;
+
+    use serde_json::json;
+
+    use super::{INBOX_TOOL, Member};
+    use crate::local_network::{AMY_CARD, AMY_HANDLE, LocalNetwork};
+    use crate::scratch_machine::RunRecordKeeping;
+
+    /// How long a member may take to record a step of its stopping once it is signalled.
+    const STEP_WAIT: Duration = Duration::from_secs(20);
+    /// The event a member records when it has handed its Departure over (spec 3.8).
+    const DEPARTURE_HANDED_OVER_EVENT: &str = "process.departure_handed_over";
+    /// The event a member records when it has released its sidecar lock (spec 3.8).
+    const LOCK_RELEASED_EVENT: &str = "process.lock_released";
+    /// The event a member records when it has decided whether to save its network configuration (spec 3.8).
+    const CONFIGURATION_REWRITE_DECIDED_EVENT: &str = "process.configuration_rewrite_decided";
+    /// The event a member records when it has dropped its held connections (spec 3.8).
+    const HELD_CONNECTIONS_DROPPED_EVENT: &str = "process.held_connections_dropped";
+    /// The event a member records for each signal it receives (spec 3.9).
+    const SIGNAL_RECEIVED_EVENT: &str = "process.signal_received";
+    /// The event a member records when its departure wait ends (spec 3.8).
+    const DEPARTURE_WAIT_OVER_EVENT: &str = "process.departure_wait_over";
+    /// The event a member records when its process exits.
+    const EXITED_EVENT: &str = "process.exited";
+    /// The stopping steps of spec:784 in the order the member does them.
+    const STOPPING_STEPS_IN_ORDER: [&str; 4] = [
+        DEPARTURE_HANDED_OVER_EVENT,
+        LOCK_RELEASED_EVENT,
+        CONFIGURATION_REWRITE_DECIDED_EVENT,
+        HELD_CONNECTIONS_DROPPED_EVENT,
+    ];
+    /// The code an inbox call is answered with once the member is stopping (spec 3.8).
+    const REFUSED_CODE: &str = "refused";
+
+    /// A member that claimed a card through a stand-in host, with the network it lives in kept alive beside it.
+    fn claimed_member(test_tag: &str) -> (Member, LocalNetwork) {
+        let network = LocalNetwork::create(test_tag, &RunRecordKeeping::from_environment());
+        let card = network.create_card(AMY_CARD, AMY_HANDLE);
+        let host = network.stand_in_host();
+        let mut member = network.start_member();
+        member.init_through(&card, &host);
+        (member, network)
+    }
+
+    #[test]
+    fn spec_3_8_a_claimed_member_releases_its_lock_before_it_decides_the_configuration_rewrite() {
+        let (member, _network) = claimed_member("stopping-order");
+
+        member.terminate();
+        let steps = member.wait_until("every stopping step", STEP_WAIT, |lines| {
+            let steps: Vec<String> = lines
+                .into_iter()
+                .map(|line| line.event)
+                .filter(|event| STOPPING_STEPS_IN_ORDER.contains(&event.as_str()))
+                .collect();
+            steps
+                .iter()
+                .any(|step| step == HELD_CONNECTIONS_DROPPED_EVENT)
+                .then_some(steps)
+        });
+
+        assert_eq!(steps, STOPPING_STEPS_IN_ORDER);
+    }
+
+    #[test]
+    fn spec_3_9_a_second_signal_while_stopping_exits_the_member_before_its_departure_wait_ends() {
+        let (mut member, _network) = claimed_member("second-signal");
+
+        member.terminate();
+        member.wait_for_event(DEPARTURE_HANDED_OVER_EVENT, STEP_WAIT);
+        member.terminate();
+        member.wait_for_exit();
+        let events = member.wait_until("the exit", STEP_WAIT, |lines| {
+            lines
+                .iter()
+                .any(|line| line.event == EXITED_EVENT)
+                .then(|| lines.into_iter().map(|line| line.event).collect::<Vec<_>>())
+        });
+
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| *event == SIGNAL_RECEIVED_EVENT)
+                .count(),
+            2,
+            "{events:?}"
+        );
+        assert!(
+            !events.contains(&DEPARTURE_WAIT_OVER_EVENT.to_owned()),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn spec_3_8_the_inbox_tool_of_a_stopping_member_is_refused() {
+        let (mut member, _network) = claimed_member("inbox-while-stopping");
+
+        member.terminate();
+        member.wait_for_event(DEPARTURE_HANDED_OVER_EVENT, STEP_WAIT);
+        let answer = member.call(INBOX_TOOL, &json!({}));
+
+        assert_eq!(answer["error"]["code"], json!(REFUSED_CODE), "{answer}");
+    }
+}
