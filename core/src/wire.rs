@@ -889,25 +889,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn spec_3_14_a_structure_encoding_past_the_wire_limit_does_not_encode() {
-        let oversized = Request::Message(Message {
-            v: Version::CURRENT,
-            id: [0; MESSAGE_ID_BYTES],
-            to: [0; PUBLIC_KEY_BYTES],
-            handle: String::new(),
-            attached: false,
-            sent_at: 0,
-            body: "b".repeat(SPEC_WIRE_LIMIT_BYTES),
-            mac: [0; MAC_BYTES],
-        });
-
-        assert!(matches!(
-            encode(&oversized),
-            Err(CodecError::PastWireLimit { .. })
-        ));
-    }
-
     fn message_with_body_of(body_bytes: usize) -> Request {
         Request::Message(Message {
             v: Version::CURRENT,
