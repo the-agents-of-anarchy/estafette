@@ -710,7 +710,7 @@ const CARDS_CHECK_FAILED: &str = "cards\tfail\t";
 
 #[test]
 fn binary_doctor_fails_the_cards_check_for_a_public_nested_too_deep_for_the_parser_of_spec_3_5() {
-    let root = root_with_card_extended_by("doctor_deep", &block_sequence_public(NESTING_DEPTHS[0]))
+    let root = root_with_card_extended_by("doctor_deep", &block_sequence_public(NESTING_DEPTHS[2]))
         .unwrap();
     let network = run_binary(&root, &["network", "create", NETWORK]).unwrap();
     require_success(&network).unwrap();
