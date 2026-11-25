@@ -530,7 +530,7 @@ pub mod tests {
     #[test]
     fn observability_decision_11_a_line_that_is_no_json_object_is_refused_with_the_parsers_reason()
     {
-        let unended_object = "{\"v\":1,\"run\":\n";
+        let unended_object = "{\"v\":2,\"run\":\n";
 
         let refusal = parse_trace_lines(
             format!("{MEMBER_LINE}{unended_object}").as_bytes(),
