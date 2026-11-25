@@ -28,11 +28,11 @@ const STAGED_DIRECTORY: &str = "fetched";
 /// What a failing test prints in place of a member's timeline when its trace files could not be fetched.
 const TRACE_FILES_NOT_FETCHED: &str =
     "its trace files were not fetched, so what it recorded is unknown";
-/// What begins the last line a whole fetch prints, before the count of the trace files it left on the server for holding the text of a key file of the member, each named on a line before it.
+/// What begins the last line a whole fetch prints, after one line for each pair of a trace file it left on the server and a key file of the member whose text that file holds, before the count of those lines.
 const WITHHELD_COUNT_PREFIX: &str = "withheld: ";
 /// What the mark beside a member's trace files says, after a file's name and before the member's, of a file the fetch left on the server.
 const HOLDS_A_KEY_FILES_TEXT: &str = "holds the text of a key file of";
-/// What a failure and the mark beside a member's trace files say when a whole fetch's print does not end in the count of the files it left on the server.
+/// What a failure and the mark beside a member's trace files say when a whole fetch's print does not end in the count of its lines naming a trace file it left on the server.
 const LEFT_ON_THE_SERVER_UNCOUNTED: &str = "what the fetch printed does not end in the count of the trace files it left on the server for holding the text of a key file, so which it left is unknown";
 
 /// A step of the end of a member serving on a server, each a recipe run on that server.
@@ -42,7 +42,7 @@ pub enum ServerMemberStep<'into> {
     Stop,
     /// Prints the member's run record.
     PrintRunRecord,
-    /// Fetches both trace files of each of the member's runs into the directory, but each that holds the text of a key file of the member, printing the names of those it left and their count.
+    /// Fetches both trace files of each of the member's runs into the directory, but each that holds the text of a key file of the member, printing one line for each pair of a trace file it left and a key file whose text it holds, and the count of those lines.
     FetchTraceFiles(&'into Path),
 }
 
@@ -123,7 +123,7 @@ impl StagedFetch {
             .map_or_else(|| self.fetched_into(), |_failure| None)
     }
 
-    /// The names a whole fetch printed of the trace files it left on the server for holding the text of a key file, nothing unless the fetch was whole, or none when its print does not end in their count.
+    /// The lines a whole fetch printed, one for each pair of a trace file it left on the server and a key file whose text it holds, nothing unless the fetch was whole, or none when its print does not end in their count.
     fn withheld(&self) -> Option<Vec<String>> {
         match self {
             Self::Staged {
@@ -288,7 +288,7 @@ fn staged_fetch(
     }
 }
 
-/// Keeps every file of the staged fetch in the trace files' directory inside the directory through the writer of kept files, adding a failure for each file that cannot be read or kept and for a whole fetch whose print does not count the files it left on the server, and marks beside that directory, with each failure, a fetch that is not whole, a file not kept, or a file the fetch left on the server for holding the text of a key file.
+/// Keeps every file of the staged fetch in the trace files' directory inside the directory through the writer of kept files, adding a failure for each file that cannot be read or kept and for a whole fetch whose print does not count its lines naming a trace file it left on the server, and marks beside that directory, with each failure, a fetch that is not whole, a file not kept, or a file the fetch left on the server for holding the text of a key file.
 fn keep_staged_trace_files(
     member: &str,
     server: &str,
