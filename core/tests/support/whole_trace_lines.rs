@@ -90,6 +90,9 @@ pub fn holds_within_the_wait(path: &Path, holds: impl Fn(&[TraceLine]) -> bool) 
 mod tests {
     use std::sync::mpsc;
 
+    use crate::fresh_directory::fresh_directory_in;
+    use crate::remove_scratch::remove_scratch;
+
     use super::super::trace_reader::tests::{
         MEMBER_LINE, MEMBER_RUN, member_line_numbered,
         second_line_still_zero_at_its_start_sized_ahead,
@@ -102,9 +105,11 @@ mod tests {
     }
 
     fn fresh_run_file(label: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let directory =
-            std::env::temp_dir().join(format!("whole-trace-lines-{}-{label}", std::process::id()));
-        fs::create_dir_all(&directory).unwrap();
+        let directory = fresh_directory_in(
+            &std::env::temp_dir(),
+            &format!("whole-trace-lines-{}-{label}", std::process::id()),
+        )
+        .unwrap();
         let run_file = directory.join(run_file_name());
         fs::write(&run_file, bytes).unwrap();
         run_file
@@ -134,7 +139,7 @@ mod tests {
             numbers == [4, 5]
         });
         let numbers_at_the_first_look = landing.join().unwrap();
-        fs::remove_dir_all(run_file.parent().unwrap()).unwrap();
+        remove_scratch(run_file.parent().unwrap()).unwrap();
 
         assert_eq!(numbers_at_the_first_look, Ok(vec![4]));
         assert!(held);
@@ -150,7 +155,7 @@ mod tests {
 
         let refusal = std::panic::catch_unwind(|| holds_within_the_wait(&run_file, |_lines| true))
             .map_err(|payload| payload.downcast_ref::<String>().cloned());
-        fs::remove_dir_all(run_file.parent().unwrap()).unwrap();
+        remove_scratch(run_file.parent().unwrap()).unwrap();
 
         let refusal_text = refusal.unwrap_err().unwrap();
         assert!(
@@ -172,7 +177,7 @@ mod tests {
 
         let refusal = std::panic::catch_unwind(|| holds_within_the_wait(&run_file, |_lines| true))
             .map_err(|payload| payload.downcast_ref::<String>().cloned());
-        fs::remove_dir_all(run_file.parent().unwrap()).unwrap();
+        remove_scratch(run_file.parent().unwrap()).unwrap();
 
         let refusal_text = refusal.unwrap_err().unwrap();
         assert!(
