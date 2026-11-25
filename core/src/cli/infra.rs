@@ -32,6 +32,7 @@ use crate::event::{RunRecord, TransportEvent};
 use crate::handle::Handle;
 use crate::invite::{InviteError, render_host_line};
 use crate::keys::{KeyError, generate_secret_key, parse_secret_key, render_secret_key};
+use crate::mcp::EndpointBinding;
 use crate::net::direct::{DirectHost, MonotonicClock};
 use crate::net::endpoint::{NodeEndpoint, SnapshotMoment};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
@@ -80,15 +81,8 @@ pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 pub type StopRequested = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 /// Binds the host's endpoint under its key and the network's gate key, with its own relay alone in the relay map.
-pub type BindHostEndpoint = Box<
-    dyn FnOnce(
-            SecretKey,
-            GateKey,
-            RelayUrl,
-            MonotonicClock,
-        ) -> Pin<Box<dyn Future<Output = Result<NodeEndpoint, BindError>> + Send>>
-        + Send,
->;
+pub type BindHostEndpoint =
+    Box<dyn FnOnce(SecretKey, GateKey, RelayUrl, MonotonicClock) -> EndpointBinding + Send>;
 
 /// What the relay library reported when the embedded relay did not start or did not shut down cleanly.
 pub type RelayFailure = Box<dyn std::error::Error + Send + Sync>;

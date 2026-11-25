@@ -28,6 +28,7 @@ use crate::event::{Event, RunRecord};
 use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
 use crate::inbox::socket::{InboxSocket, InboxSocketError};
 use crate::keys::parse_public_key;
+use crate::mcp::EndpointBinding;
 use crate::net::direct::{
     ClientTimeouts, DirectClient, DirectHost, MonotonicClock, message_id_text,
 };
@@ -66,7 +67,6 @@ const OWNER_FIELD: &str = "owner";
 type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
 type SeedSource = Arc<dyn Fn(&mut [u8; SEED_BYTES]) + Send + Sync>;
-type EndpointBinding = Pin<Box<dyn Future<Output = Result<NodeEndpoint, BindError>> + Send>>;
 type BindEndpoint = Box<
     dyn FnOnce(SecretKey, GateKey, Vec<iroh::RelayUrl>, MonotonicClock) -> EndpointBinding + Send,
 >;

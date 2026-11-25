@@ -82,17 +82,13 @@ const BODY_ARGUMENT: &str = "body";
 /// The argument naming the sequence after which the inbox is read, spec 3.10.
 const SINCE_ARGUMENT: &str = "since";
 
+/// What binding a node's endpoint yields, which every command that binds one awaits.
+pub(crate) type EndpointBinding =
+    Pin<Box<dyn Future<Output = Result<NodeEndpoint, BindError>> + Send>>;
+
 /// Binds the node's endpoint under the card key, the gate key and the relays of the known hosts, as the composition root binds it.
-pub type BindEndpoint = Arc<
-    dyn Fn(
-            SecretKey,
-            GateKey,
-            Vec<RelayUrl>,
-            MonotonicClock,
-        ) -> Pin<Box<dyn Future<Output = Result<NodeEndpoint, BindError>> + Send>>
-        + Send
-        + Sync,
->;
+pub type BindEndpoint =
+    Arc<dyn Fn(SecretKey, GateKey, Vec<RelayUrl>, MonotonicClock) -> EndpointBinding + Send + Sync>;
 
 /// The network this process serves: where its cards and its inbox socket live, and its configuration with the file that keeps it.
 pub struct ServedNetwork {
