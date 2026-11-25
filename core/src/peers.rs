@@ -875,10 +875,8 @@ impl Peer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Value;
 
     use crate::card::tests::{SPEC_PUBLIC_CAP_BYTES, public_mapping_of_bytes};
-    use crate::event::{Event, EventFields, PeerTableEvent};
     use crate::seeded_draws::Draws;
     use crate::wire::{
         Departure, Introduce, IntroduceAck, Message, MessageId, Presence, SignatureBytes,
@@ -2297,24 +2295,7 @@ mod tests {
         );
     }
 
-    const ENTRY_CHANGED_EVENT: &str = "peers.entry_changed";
-    const ENTRY_CREATED_EVENT: &str = "peers.entry_created";
-    const PEER_CARD_SHORT_ID: &str = "0202020202";
     const PEER_HANDLE_ASSIGNED_AFTER_A_CLASH: &str = "bob-2";
-    const PEER_FIELD: &str = "peer";
-    const HANDLE_FIELD: &str = "handle";
-    const REQUESTED_FIELD: &str = "requested";
-    const STATUS_FIELD: &str = "status";
-    const FROM_FIELD: &str = "from";
-    const TO_FIELD: &str = "to";
-    const CAUSE_FIELD: &str = "cause";
-    const UNREACHABLE_WORD: &str = "unreachable";
-    const ONLINE_WORD: &str = "online";
-    const GONE_WORD: &str = "gone";
-    const PRESENCE_CAUSE_WORD: &str = "presence";
-    const MESSAGE_CAUSE_WORD: &str = "message";
-    const INTRODUCE_CAUSE_WORD: &str = "introduce";
-    const INTRODUCE_ACK_CAUSE_WORD: &str = "introduce_ack";
 
     fn table_with_peer_unreachable_since_now() -> PeerTable {
         let mut table = PeerTable::new(OWN_CARD);
@@ -2333,29 +2314,14 @@ mod tests {
         table
     }
 
-    fn written_lines(changes: Vec<TableChange>) -> Vec<(&'static str, EventFields)> {
-        changes
-            .into_iter()
-            .map(|change| {
-                let event = Event::from(PeerTableEvent::of_change(change));
-                (event.name(), event.fields())
-            })
-            .collect()
-    }
-
-    fn peer_moved_online_from_unreachable_by(
-        cause_word: &'static str,
-    ) -> (&'static str, EventFields) {
-        (
-            ENTRY_CHANGED_EVENT,
-            vec![
-                (PEER_FIELD, Value::from(PEER_CARD_SHORT_ID)),
-                (HANDLE_FIELD, Value::from(PEER_HANDLE)),
-                (FROM_FIELD, Value::from(UNREACHABLE_WORD)),
-                (TO_FIELD, Value::from(ONLINE_WORD)),
-                (CAUSE_FIELD, Value::from(cause_word)),
-            ],
-        )
+    fn peer_moved_online_from_unreachable_by(cause: TableCause) -> TableChange {
+        TableChange::Moved {
+            card: PEER_CARD,
+            handle: PEER_HANDLE.parse().unwrap(),
+            from: Status::Unreachable,
+            to: Status::Online,
+            cause,
+        }
     }
 
     #[test]
@@ -2366,8 +2332,8 @@ mod tests {
         let moved = table.admit_presence(&presence(PEER_CARD, PEER_HANDLE, SECOND_SEQ), LATER_MS);
 
         assert_eq!(
-            written_lines(moved.changes),
-            [peer_moved_online_from_unreachable_by(PRESENCE_CAUSE_WORD)]
+            moved.changes,
+            [peer_moved_online_from_unreachable_by(TableCause::Presence)]
         );
     }
 
@@ -2379,8 +2345,8 @@ mod tests {
         let moved = table.receive_message(PEER_CARD, &message_from(PEER_HANDLE, true), LATER_MS);
 
         assert_eq!(
-            written_lines(moved.changes),
-            [peer_moved_online_from_unreachable_by(MESSAGE_CAUSE_WORD)]
+            moved.changes,
+            [peer_moved_online_from_unreachable_by(TableCause::Message)]
         );
     }
 
@@ -2392,8 +2358,8 @@ mod tests {
         let moved = table.receive_introduce(PEER_CARD, &introduce(Some(PEER_HANDLE)), LATER_MS);
 
         assert_eq!(
-            written_lines(moved.changes),
-            [peer_moved_online_from_unreachable_by(INTRODUCE_CAUSE_WORD)]
+            moved.changes,
+            [peer_moved_online_from_unreachable_by(TableCause::Introduce)]
         );
     }
 
@@ -2406,9 +2372,9 @@ mod tests {
             table.receive_introduce_ack(PEER_CARD, &introduce_ack(Some(PEER_HANDLE)), LATER_MS);
 
         assert_eq!(
-            written_lines(moved.changes),
+            moved.changes,
             [peer_moved_online_from_unreachable_by(
-                INTRODUCE_ACK_CAUSE_WORD
+                TableCause::IntroduceAck
             )]
         );
     }
@@ -2554,20 +2520,14 @@ mod tests {
         let created = table.receive_message(PEER_CARD, &message_from(PEER_HANDLE, true), LATER_MS);
 
         assert_eq!(
-            written_lines(created.changes),
-            [(
-                ENTRY_CREATED_EVENT,
-                vec![
-                    (PEER_FIELD, Value::from(PEER_CARD_SHORT_ID)),
-                    (
-                        HANDLE_FIELD,
-                        Value::from(PEER_HANDLE_ASSIGNED_AFTER_A_CLASH)
-                    ),
-                    (REQUESTED_FIELD, Value::from(PEER_HANDLE)),
-                    (STATUS_FIELD, Value::from(GONE_WORD)),
-                    (CAUSE_FIELD, Value::from(MESSAGE_CAUSE_WORD)),
-                ],
-            )]
+            created.changes,
+            [TableChange::Created {
+                card: PEER_CARD,
+                requested: announced(PEER_HANDLE),
+                handle: PEER_HANDLE_ASSIGNED_AFTER_A_CLASH.parse().unwrap(),
+                status: Status::Gone { since_ms: LATER_MS },
+                cause: TableCause::Message,
+            }]
         );
     }
 }

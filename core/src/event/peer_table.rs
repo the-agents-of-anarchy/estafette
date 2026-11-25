@@ -251,10 +251,11 @@ impl AreaEvent for PeerTableEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{Event, write_run_record};
+    use crate::event::{Event, EventName, write_run_record};
 
     const PEER_ID: wire::PublicKey = [7; 32];
     const HANDLE: &str = "bob";
+    const HANDLE_ASSIGNED_AFTER_A_CLASH: &str = "bob-2";
 
     #[test]
     fn observability_decision_3_the_peer_table_events_add_no_line_to_standard_error() {
@@ -374,6 +375,59 @@ mod tests {
         assert!(
             words.windows(2).all(|pair| pair.first() != pair.last()),
             "{words:?}"
+        );
+    }
+
+    #[test]
+    fn observability_decision_9_a_changed_entry_writes_its_peer_handle_from_to_and_cause_in_that_order()
+     {
+        let event: Event = PeerTableEvent::of_change(TableChange::Moved {
+            card: PEER_ID,
+            handle: HANDLE.parse().unwrap(),
+            from: Status::Unreachable,
+            to: Status::Online,
+            cause: TableCause::Presence,
+        })
+        .into();
+
+        assert_eq!(event.name(), PeerTableEventName::EntryChanged.as_str());
+        assert_eq!(
+            event.fields(),
+            vec![
+                ShortId::from(&PEER_ID).field(),
+                (HANDLE_FIELD, Value::from(HANDLE)),
+                (FROM_FIELD, Value::from(Status::Unreachable.wire_word())),
+                (TO_FIELD, Value::from(Status::Online.wire_word())),
+                (CAUSE_FIELD, Value::from(cause_name(TableCause::Presence))),
+            ]
+        );
+    }
+
+    #[test]
+    fn observability_decision_9_a_created_entry_writes_its_peer_handle_requested_status_and_cause_in_that_order()
+     {
+        let event: Event = PeerTableEvent::of_change(TableChange::Created {
+            card: PEER_ID,
+            requested: HANDLE.parse().unwrap(),
+            handle: HANDLE_ASSIGNED_AFTER_A_CLASH.parse().unwrap(),
+            status: Status::Gone { since_ms: 0 },
+            cause: TableCause::Message,
+        })
+        .into();
+
+        assert_eq!(event.name(), PeerTableEventName::EntryCreated.as_str());
+        assert_eq!(
+            event.fields(),
+            vec![
+                ShortId::from(&PEER_ID).field(),
+                (HANDLE_FIELD, Value::from(HANDLE_ASSIGNED_AFTER_A_CLASH)),
+                (REQUESTED_FIELD, Value::from(HANDLE)),
+                (
+                    STATUS_FIELD,
+                    Value::from(Status::Gone { since_ms: 0 }.wire_word())
+                ),
+                (CAUSE_FIELD, Value::from(cause_name(TableCause::Message))),
+            ]
         );
     }
 }
