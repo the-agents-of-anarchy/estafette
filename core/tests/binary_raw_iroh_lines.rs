@@ -26,6 +26,7 @@ mod raw_iroh_lines {
     use std::path::{Path, PathBuf};
     use std::process::{Child, Command, Stdio};
 
+    use estafette::event::{EventName, TraceLineName};
     use serde_json::Value;
 
     use super::fresh_directory::fresh_directory_in;
@@ -47,8 +48,6 @@ mod raw_iroh_lines {
     const RUNTIME_DIRECTORY: &str = "runtime";
     const BASE_TEST_SEND_FAILURE: &str =
         "the message was not delivered: No present member has that handle.\n";
-    const SPEC_RAW_FILE_OPENED_EVENT: &str = "raw_file_opened";
-    const SPEC_IROH_LINE_EVENT: &str = "iroh_line";
     const SPEC_IROH_EVENTS_TARGET: &str = "iroh::_events";
     const SPEC_IROH_TARGETS: [&str; 4] = [
         SPEC_IROH_EVENTS_TARGET,
@@ -133,7 +132,7 @@ mod raw_iroh_lines {
         let (_events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
         let lines = lines_of(&raw);
         let (first, iroh_lines) = lines.split_first().unwrap();
-        assert_eq!(first["event"], SPEC_RAW_FILE_OPENED_EVENT);
+        assert_eq!(first["event"], TraceLineName::RawFileOpened.as_str());
         let targets: Vec<&str> = iroh_lines
             .iter()
             .map(|line| line["target"].as_str().unwrap_or_default())
@@ -157,7 +156,9 @@ mod raw_iroh_lines {
 
     /// Whether the whole lines hold at least one line of iroh.
     fn hold_a_line_of_iroh(lines: &[TraceLine]) -> bool {
-        lines.iter().any(|line| line.event == SPEC_IROH_LINE_EVENT)
+        lines
+            .iter()
+            .any(|line| line.event == TraceLineName::IrohLine.as_str())
     }
 
     #[test]

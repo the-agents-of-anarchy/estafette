@@ -149,8 +149,6 @@ mod tests {
     use crate::node::NodeError;
     use crate::seeded_draws::Draws;
 
-    const SPEC_RAW_FIRST_LINE_AFTER_HEADER: &str =
-        ",\"event\":\"raw_file_opened\",\"safe_to_post\":false}\n";
     const LEAP_DAY_LAST_SECOND_MS: u64 = 951_868_799_123;
     const FROZEN_MONOTONIC_MS: u64 = 7;
     const RUN_BYTES: [u8; RUN_ID_BYTES] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
@@ -171,7 +169,6 @@ mod tests {
     const NOW_RUN_NAME: &str = "20330518T033320Z-a1b2c3d4e5f60718-estafette";
     const SMALL_FRESHNESS_MS: u64 = 10_000;
     const SMALL_DIRECTORY_BYTES: u64 = 1000;
-    const RAW_EVENT: &str = "iroh_line";
     const CLOCK_EVENT: &str = "process.clock_before_unix_epoch";
     const SMALL_QUEUE_LINES: usize = 2;
     const WRITER_STEP_BOUND: Duration = Duration::from_secs(10);
@@ -180,6 +177,19 @@ mod tests {
     const EVENTS_FILE_SUFFIX: &str = ".events.jsonl";
     const STAND_IN_FAILURE: &str = "a stand-in failure";
     const STALE_EVENTS_FILE: &str = "20000101T000000Z-0000000000000001-estafette.events.jsonl";
+
+    /// The raw file's first line after its header: the event saying the file is not safe to post.
+    fn raw_first_line_after_header() -> String {
+        format!(
+            ",\"event\":\"{}\",\"safe_to_post\":false}}\n",
+            TraceLineName::RawFileOpened.as_str()
+        )
+    }
+
+    /// The event name of a line iroh wrote.
+    fn iroh_line_event() -> &'static str {
+        TraceLineName::IrohLine.as_str()
+    }
 
     /// A fresh scratch root for the test and the trace directory under its data home.
     fn scratch_trace_directory(test_name: &str) -> (PathBuf, TraceDirectory) {
@@ -253,7 +263,8 @@ mod tests {
         assert_eq!(
             fs::read_to_string(traces.join(format!("{run_name}.raw.jsonl"))).unwrap(),
             format!(
-                "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":0,\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{LEAP_DAY_LAST_SECOND_MS}{SPEC_RAW_FIRST_LINE_AFTER_HEADER}"
+                "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":0,\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{LEAP_DAY_LAST_SECOND_MS}{}",
+                raw_first_line_after_header()
             )
         );
         assert_eq!(
@@ -376,7 +387,8 @@ mod tests {
     /// The raw line numbered `n` of the test raw event.
     fn raw_line(n: u64) -> String {
         format!(
-            "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS},\"event\":\"{RAW_EVENT}\"}}\n"
+            "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":{n},\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS},\"event\":\"{}\"}}\n",
+            iroh_line_event()
         )
     }
 
@@ -408,7 +420,8 @@ mod tests {
         const MOST_LINES_WRITTEN: u64 = 12;
         const EXACT_FILL_SLACK_BYTES: u64 = 0;
         let not_safe_to_post = format!(
-            "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":0,\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}{SPEC_RAW_FIRST_LINE_AFTER_HEADER}"
+            "{{\"v\":2,\"run\":\"{RUN_HEX}\",\"n\":0,\"mono_ms\":{FROZEN_MONOTONIC_MS},\"wall_ms\":{NOW_MS}{}",
+            raw_first_line_after_header()
         );
         let line_bytes = u64::try_from(raw_line(1).len()).unwrap();
         let first_line_bytes = u64::try_from(not_safe_to_post.len()).unwrap();
@@ -442,7 +455,7 @@ mod tests {
             );
 
             for _line in 0..lines_written {
-                trace.raw.write(RAW_EVENT, &[]);
+                trace.raw.write(iroh_line_event(), &[]);
             }
             assert!(
                 matches!(trace.finish(), [TraceStop::Drained, TraceStop::Drained]),

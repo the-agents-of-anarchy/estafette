@@ -16,6 +16,7 @@ mod raw_iroh_lines_full_queue {
     use std::time::Duration;
 
     use estafette::dirs::TraceDirectory;
+    use estafette::event::{EventName, TraceLineName};
     use estafette::trace::iroh_lines::install;
     use estafette::trace::{Trace, TraceBounds, TraceEffects, TraceFile, TraceStop};
     use serde_json::Value;
@@ -23,8 +24,6 @@ mod raw_iroh_lines_full_queue {
     use super::raw_iroh_lines_trace::{frozen_clocks, scratch_trace_directory, started};
     use super::remove_scratch::remove_scratch;
 
-    const SPEC_RAW_FILE_OPENED: &str = "raw_file_opened";
-    const SPEC_IROH_LINE: &str = "iroh_line";
     const SPEC_DROPPED: &str = "dropped";
     const RAW_FILE_SUFFIX: &str = ".raw.jsonl";
     const SMALL_QUEUE_LINES: usize = 2;
@@ -172,13 +171,16 @@ mod raw_iroh_lines_full_queue {
         assert_eq!(
             held,
             [
-                (0, SPEC_RAW_FILE_OPENED.to_owned(), None),
-                (1, SPEC_IROH_LINE.to_owned(), None),
-                (2, SPEC_IROH_LINE.to_owned(), None),
+                (0, TraceLineName::RawFileOpened.as_str().to_owned(), None),
+                (1, TraceLineName::IrohLine.as_str().to_owned(), None),
+                (2, TraceLineName::IrohLine.as_str().to_owned(), None),
             ]
         );
         assert_eq!(released_line(&raw), (5, SPEC_DROPPED.to_owned(), Some(2)));
-        assert_eq!(released_line(&raw), (6, SPEC_IROH_LINE.to_owned(), None));
+        assert_eq!(
+            released_line(&raw),
+            (6, TraceLineName::IrohLine.as_str().to_owned(), None)
+        );
         drop(raw.release);
         assert!(matches!(
             trace.finish(),

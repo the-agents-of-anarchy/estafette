@@ -38,6 +38,7 @@ mod observability {
     use super::whole_trace_lines::{
         WHOLE_LINE_WAIT, holds_within_the_wait, whole_lines_of_a_run_file,
     };
+    use estafette::event::{EventName, TraceLineName};
     use serde_json::json;
 
     const SHORT_SCRATCH_PARENT: &str = "/tmp";
@@ -80,7 +81,6 @@ mod observability {
         "process.input_ended",
         EXITED_EVENT,
     ];
-    const RAW_FILE_OPENED_EVENT: &str = "raw_file_opened";
     const INITIALIZED_NOTIFICATION: &str =
         "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
     const CONFIG_HOME: &str = "config";
@@ -278,7 +278,7 @@ mod observability {
         );
         assert_eq!(line.value("v"), Some(&json!(SPEC_FORMAT_VERSION)));
         assert_eq!(line.n, 0);
-        assert_eq!(line.event, RAW_FILE_OPENED_EVENT);
+        assert_eq!(line.event, TraceLineName::RawFileOpened.as_str());
         assert_eq!(line.value("safe_to_post"), Some(&json!(false)));
         let run = line.run.as_str();
         assert!(
@@ -716,7 +716,7 @@ mod observability {
             .into_iter()
             .map(|line| line.event)
             .collect();
-        assert_eq!(raw_events, [RAW_FILE_OPENED_EVENT]);
+        assert_eq!(raw_events, [TraceLineName::RawFileOpened.as_str()]);
         remove_scratch(&root).unwrap();
     }
 
