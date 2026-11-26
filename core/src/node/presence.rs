@@ -1,7 +1,6 @@
 //! The presence half of the node of spec 3.8: init, the peer table fed by gossip and direct contact, and every announcement.
 
 use std::collections::BTreeMap;
-use std::fmt;
 use std::ops::ControlFlow;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -21,9 +20,11 @@ use super::addresses::{endpoint_id, lookup_replaced_event, replace_lookup_entry,
 use super::known_hosts::{
     KnownHosts, RelayOfRecord, known_host_addresses, seed_lookup_with_known_hosts,
 };
+use super::node_error::NodeError;
+use super::payload_records::{admission_record, payload_dropped_record};
 use super::rebind::{Rebinding, RelayProbe};
 use super::relay_loss::{RelayLossWatch, home_relays};
-use crate::config::{AcceptedValue, NetworkConfig};
+use crate::config::NetworkConfig;
 use crate::crypto::{NetworkKeys, NetworkSecret};
 use crate::event::{
     ConfigurationRewrite, DirectEvent, Event, PeerTableEvent, ProcessEvent, RunRecord,
@@ -31,7 +32,7 @@ use crate::event::{
 use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::inbox::buffer::ReceivedMessage;
 use crate::inbox::socket::{Attached, InboxSocket};
-use crate::keys::{KeyError, parse_network_secret, parse_public_key};
+use crate::keys::{parse_network_secret, parse_public_key};
 use crate::net::direct::{
     ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, GONE_PROCESS_SILENCE,
     HEARING_SAMPLE_INTERVAL, HeldConnections, MonotonicClock, MonotonicTime, later_by,
@@ -155,44 +156,6 @@ pub struct NodeEffects {
     /// Whether a TCP connect to a relay's host and port succeeds, `relay_answers` in production; the node gives it the relay probe timeout.
     pub probe_relay: RelayProbe,
 }
-
-/// Why the node did not start.
-#[derive(Debug)]
-pub enum NodeError {
-    NetworkKeyInvalid {
-        field: &'static str,
-        source: KeyError,
-    },
-    KnownHostInvalid {
-        id: String,
-    },
-    Topic(GossipError),
-    TopicClosedBeforeHandle,
-}
-
-impl fmt::Display for NodeError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NetworkKeyInvalid { field, source } => write!(
-                formatter,
-                "the network configuration's {field} is refused: {source}"
-            ),
-            Self::KnownHostInvalid { id } => write!(
-                formatter,
-                "known host {id} needs a node id of {} and a relay of {}",
-                AcceptedValue::HexKey,
-                AcceptedValue::RelayUrl
-            ),
-            Self::Topic(source) => {
-                write!(formatter, "cannot subscribe to the gossip topic: {source}")
-            }
-            Self::TopicClosedBeforeHandle => formatter
-                .write_str("the gossip topic closed before this node assigned its own handle"),
-        }
-    }
-}
-
-impl std::error::Error for NodeError {}
 
 /// A running member: joined to the topic, serving the direct protocol, keeping its peer table by spec 3.8, and rebinding when it falls deaf.
 pub struct Node {
@@ -1681,33 +1644,6 @@ pub async fn deadline_reached(clock: &dyn MonotonicTime, deadline: Option<Instan
         Some(deadline) => clock.reached(deadline).await,
         None => std::future::pending().await,
     }
-}
-
-/// The record of a received payload the node took, or dropped by the rule the admission named, naming its signer by the handle the table holds for it, if any.
-pub(super) fn admission_record<Taken>(
-    facts: PayloadFacts,
-    signer_handle: Option<LocalHandle>,
-    admission: &Result<Taken, PayloadDropRule>,
-) -> Event {
-    match admission {
-        Ok(_taken) => {
-            crate::event::GossipEvent::PayloadAccepted((facts, signer_handle).into()).into()
-        }
-        Err(rule) => payload_dropped_record(facts, signer_handle, *rule),
-    }
-}
-
-/// The record of a payload dropped by the rule, naming its signer by the handle given, if any.
-fn payload_dropped_record(
-    facts: PayloadFacts,
-    signer_handle: Option<LocalHandle>,
-    rule: PayloadDropRule,
-) -> Event {
-    crate::event::GossipEvent::PayloadDropped {
-        payload: Some((facts, signer_handle).into()),
-        rule,
-    }
-    .into()
 }
 
 /// The handle `table` holds for the signer of the facts at `now_ms`, if any.

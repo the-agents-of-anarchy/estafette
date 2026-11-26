@@ -6,7 +6,8 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 
 use super::addresses::{lookup_replaced_event, replace_lookup_entry};
-use super::presence::{NodeError, admission_record};
+use super::node_error::NodeError;
+use super::payload_records::admission_record;
 use crate::config::{ConfigError, Host, HostOrigin, MILLIS_PER_SECOND, NetworkConfig, UnixMillis};
 use crate::event::{ConfigurationRewrite, Event, GossipEvent, ShortId};
 use crate::keys::parse_public_key;

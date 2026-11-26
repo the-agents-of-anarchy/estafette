@@ -1,6 +1,8 @@
 mod addresses;
 mod known_hosts;
 mod lifecycle;
+mod node_error;
+mod payload_records;
 mod presence;
 mod rebind;
 mod relay_loss;
@@ -15,12 +17,13 @@ pub use lifecycle::{
     ClaimedCard, DEPARTURE_WAIT, Exit, RuntimeShutdown, Session, ShutdownSignal,
     forward_standard_input,
 };
+pub use node_error::NodeError;
 pub(crate) use presence::{
     Clock, DirectAnswer, DirectRequest, DirectRequester, PeerRows, ProbeNonceSource,
     broadcast_recorded, broadcast_recording_outcome, deadline_reached, next_recorded_gossip_event,
     observer_wait_over_at, presence_request, record_counters, send_in_background, serve,
     snapshot_due_after, taken_without_a_row_record,
 };
-pub use presence::{Identity, Network, Node, NodeEffects, NodeError};
+pub use presence::{Identity, Network, Node, NodeEffects};
 pub use rebind::{RelayProbe, relay_answers};
 pub use send::{BroadcastResult, Delivery, Undelivered};
