@@ -151,3 +151,11 @@ What happened: On 2026-11-26 the lead launched the spec review of endpoint-narro
 Mechanism: The lead took a note in a brief to be able to set aside a rule of the reviewer's own definition, and counted the wall time of the replay without the whole run the review needs. The stricter reading was known and not taken.
 
 Correction: The verdict stands. The unit gets its whole run at the head that merges and a fresh verdict from the same reviewer. From now on a replay ordered before a first spec review carries its whole run in the same order, or the review reads the head the whole run stands at.
+
+## A turn in silence ended with a line of text
+
+What happened: On 2026-11-27 near 00:41 the lead ended a turn with a sentence in the conversation, while the silence marker stood. The sentence said the turn was finished and named itself a breach.
+
+Mechanism: After the last tool call of the turn the lead wrote a closing line where the ending had to be a message of zero characters. It is the third such breach of this span; the two before it were recorded on 2026-11-26.
+
+Correction: No text was owed and none is written now. Before ending any turn the lead checks that the final message has zero characters, and a turn whose last act is a tool call ends there, with nothing after it.
