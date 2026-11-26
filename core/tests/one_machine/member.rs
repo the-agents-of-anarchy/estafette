@@ -1,5 +1,4 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::ops::{Deref, DerefMut};
 use std::process::Command;
 use std::time::Duration;
 
@@ -38,21 +37,17 @@ pub struct Member {
     process_id: u32,
 }
 
-impl Deref for Member {
-    type Target = McpServer;
-
-    fn deref(&self) -> &McpServer {
+impl Member {
+    /// The MCP server the member drives.
+    pub const fn server(&self) -> &McpServer {
         &self.server
     }
-}
 
-impl DerefMut for Member {
-    fn deref_mut(&mut self) -> &mut McpServer {
+    /// The MCP server the member drives, for the calls that write to it.
+    pub const fn server_mut(&mut self) -> &mut McpServer {
         &mut self.server
     }
-}
 
-impl Member {
     /// Takes the spawned MCP server over, completes the MCP handshake, and answers for its events through the reader handed in.
     #[track_caller]
     pub fn start(process: OwnedProcess, events: MemberEvents) -> Self {
@@ -66,15 +61,17 @@ impl Member {
     /// The bodies of the messages the inbox tool returns, in the order it returns them.
     #[track_caller]
     pub fn inbox_bodies(&mut self) -> Vec<Value> {
-        bodies_in(&self.call(INBOX_TOOL, &json!({})))
+        bodies_in(&self.server_mut().call(INBOX_TOOL, &json!({})))
     }
 
     /// Claims the card while the node admits this process's endpoint, requiring the claim to succeed, and returns the init envelope.
     #[track_caller]
     pub fn init_through(&mut self, card: &Card, node: &ScriptedNode) -> Value {
-        let init = self.start_call(INIT_TOOL, &init_arguments(&card.name));
+        let init = self
+            .server_mut()
+            .start_call(INIT_TOOL, &init_arguments(&card.name));
         node.admit(loopback_address(card.id, &self.bound_udp_ports()));
-        let claim = self.answer(&init);
+        let claim = self.server().answer(&init);
         assert!(call_succeeded(&claim), "{claim}");
         claim
     }
@@ -306,7 +303,7 @@ mod stopping_a_claimed_member {
         member.terminate();
         member.wait_for_event(DEPARTURE_HANDED_OVER_EVENT, STEP_WAIT);
         member.terminate();
-        member.wait_for_exit();
+        member.server_mut().wait_for_exit();
         let events = member.wait_until("the exit", STEP_WAIT, |lines| {
             lines
                 .iter()
@@ -334,7 +331,7 @@ mod stopping_a_claimed_member {
 
         member.terminate();
         member.wait_for_event(DEPARTURE_HANDED_OVER_EVENT, STEP_WAIT);
-        let answer = member.call(INBOX_TOOL, &json!({}));
+        let answer = member.server_mut().call(INBOX_TOOL, &json!({}));
 
         assert_eq!(answer["error"]["code"], json!(REFUSED_CODE), "{answer}");
     }

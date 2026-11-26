@@ -1,5 +1,4 @@
 use std::ffi::OsStr;
-use std::ops::Deref;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -48,19 +47,16 @@ impl ClaimedMember {
 
     /// The trace directory of the server the member runs, the last its machine started.
     pub fn own_traces(&self) -> PathBuf {
-        traces_directory_of_latest_member(&self.machine)
-    }
-}
-
-impl Deref for LabMachine {
-    type Target = ScratchMachine;
-
-    fn deref(&self) -> &ScratchMachine {
-        &self.scratch
+        traces_directory_of_latest_member(self.machine.scratch())
     }
 }
 
 impl LabMachine {
+    /// The scratch machine the lab machine's files and commands belong to.
+    pub const fn scratch(&self) -> &ScratchMachine {
+        &self.scratch
+    }
+
     /// An empty scratch root named for the test, for the live network, its members' run records kept as the test asks.
     pub fn fresh(test_tag: &str, network: &LiveNetwork) -> Self {
         Self {
@@ -71,13 +67,13 @@ impl LabMachine {
     /// A fresh machine named for the test, joined to the live network as its invitation describes.
     pub fn joined(test_tag: &str, network: &LiveNetwork) -> Self {
         let machine = Self::fresh(test_tag, network);
-        network.join(&machine.directories());
+        network.join(&machine.scratch().directories());
         machine
     }
 
     /// The events an observer command run on this machine records, in the trace directory the binary derives from the machine's own environment.
     pub fn observer_events(&self, label: &str) -> MemberEvents {
-        let command = self.command();
+        let command = self.scratch().command();
         let traces = TraceDirectory::resolve(&|name: &str| {
             command
                 .get_envs()
@@ -112,6 +108,7 @@ impl LabMachine {
     #[track_caller]
     pub fn hosts_once_named(&self, id: &str, within: Duration) -> Vec<Host> {
         let config_file = self
+            .scratch()
             .directories()
             .network_config_file(self.scratch.network())
             .unwrap();

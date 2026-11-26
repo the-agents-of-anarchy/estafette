@@ -112,6 +112,7 @@ fn spec_3_15_test_15_show_peers_on_a_machine_with_no_session_lists_the_members_o
 
     let shown = timed("show-peers on this machine, which runs no session", || {
         observer
+            .scratch()
             .command()
             .args(["show-peers", network.name()])
             .output()
@@ -148,7 +149,7 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
     });
     let bob_machine = LabMachine::joined("t3-bob", &network);
     let bob_handle = unique_handle(BOB);
-    let bob_card = bob_machine.create_card(&bob_handle, &bob_handle);
+    let bob_card = bob_machine.scratch().create_card(&bob_handle, &bob_handle);
     let mut bob = bob_machine.start_server();
     let claim = timed("bob claims his card on this machine", || {
         bob.call(INIT_TOOL, &init_arguments(&bob_card.name))
@@ -330,9 +331,9 @@ fn config_file_of(machine: &ScratchMachine) -> PathBuf {
 /// A `tail` of the network on the observer's machine, returned once it printed its first payload.
 #[track_caller]
 fn tail_of(observer: &LabMachine, network: &LiveNetwork) -> Tail {
-    let mut command = observer.command();
+    let mut command = observer.scratch().command();
     command.args(["tail", network.name()]);
-    Tail::start(observer, command)
+    Tail::start(observer.scratch(), command)
 }
 
 /// The host's node id.

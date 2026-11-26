@@ -168,8 +168,10 @@ impl LocalNetwork {
         amy.init_through(&amy_card, host);
         let mut bob = self.start_member();
         let bob_claim = bob.init_through(&bob_card, host);
-        amy.peer_within(BOB_HANDLE, PRESENCE_WAIT, online);
-        bob.peer_within(AMY_HANDLE, PRESENCE_WAIT, online);
+        amy.server_mut()
+            .peer_within(BOB_HANDLE, PRESENCE_WAIT, online);
+        bob.server_mut()
+            .peer_within(AMY_HANDLE, PRESENCE_WAIT, online);
         MetPair {
             amy,
             amy_card,

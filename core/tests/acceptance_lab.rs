@@ -211,7 +211,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
             let live_host = live_host_to_itself();
             let network = LiveNetwork::from_environment();
             let machine = LabMachine::joined(card, &network);
-            let created = machine.create_card(card, card);
+            let created = machine.scratch().create_card(card, card);
             let member = machine.start_member(&created.name);
             let forger = Forger::join_through(
                 key(forger_seed),
@@ -366,10 +366,10 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
         let _live_host = live_host_to_itself();
         let network = LiveNetwork::from_environment();
         let observer = LabMachine::fresh("u40-tail", &network);
-        network.join(&observer.directories());
-        let mut tail_command = observer.command();
+        network.join(&observer.scratch().directories());
+        let mut tail_command = observer.scratch().command();
         tail_command.args(["tail", network.name()]);
-        let tail = Tail::start(&observer, tail_command);
+        let tail = Tail::start(observer.scratch(), tail_command);
         let requester = key(TAMPERED_REQUESTER_SEED);
         let forger = Forger::join_through(
             key(TAMPERED_REQUESTER_SEED),
@@ -639,20 +639,20 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     fn start_member_homed_on(network: &LiveNetwork, doomed: &KillableHost) -> HomedMember {
         let machine = LabMachine::fresh(MEMBER_CARD, network);
         network.join_through(
-            &machine.directories(),
+            &machine.scratch().directories(),
             std::slice::from_ref(doomed.address()),
         );
-        let card = render_public_key(&machine.create_card(MEMBER_CARD, MEMBER_CARD).id);
+        let card = render_public_key(&machine.scratch().create_card(MEMBER_CARD, MEMBER_CARD).id);
         let started = Instant::now();
         let member = machine.start_member(MEMBER_CARD);
         let observer = LabMachine::fresh(OBSERVER_TAG, network);
         network.join_through(
-            &observer.directories(),
+            &observer.scratch().directories(),
             &[member_reached_through_its_home_relay(&card, doomed)],
         );
-        let mut tail_command = observer.command();
+        let mut tail_command = observer.scratch().command();
         tail_command.args(["tail", network.name()]);
-        let tail = Tail::start(&observer, tail_command);
+        let tail = Tail::start(observer.scratch(), tail_command);
         let (first_homed, _) = tail.first_line_after(
             &format!("presence of {card} naming a relay"),
             started,
@@ -885,7 +885,9 @@ mod spec_3_15_two_members_through_the_live_host {
         description: &str,
     ) -> LabMember {
         let machine = LabMachine::joined(machine_tag, network);
-        let card = machine.create_card(&format!("{machine_tag}-card"), handle);
+        let card = machine
+            .scratch()
+            .create_card(&format!("{machine_tag}-card"), handle);
         let mut member = machine.start_server();
         let claim = member.call(
             INIT_TOOL,
@@ -929,9 +931,9 @@ mod spec_3_15_two_members_through_the_live_host {
     #[track_caller]
     fn address_tail_prints_for(network: &LiveNetwork, card: EndpointId) -> EndpointAddr {
         let observer = LabMachine::joined(TAIL_MACHINE_TAG, network);
-        let mut command = observer.command();
+        let mut command = observer.scratch().command();
         command.args([TAIL_COMMAND, network.name()]);
-        let tail = Tail::start(&observer, command);
+        let tail = Tail::start(observer.scratch(), command);
         let announced = RefCell::new(None);
         tail.lines_until(&format!("presence of {card}"), PRESENCE_WAIT, |line| {
             *announced.borrow_mut() = address_announced_by(line, card);
@@ -1056,6 +1058,7 @@ mod spec_3_15_two_members_through_the_live_host {
         public_yaml: &str,
     ) {
         let card_file = machine
+            .scratch()
             .directories()
             .card_file(network.name(), &card.name)
             .unwrap();
@@ -1066,6 +1069,7 @@ mod spec_3_15_two_members_through_the_live_host {
     /// The card's secret key, read from the sidecar the binary wrote beside it.
     fn card_key(network: &LiveNetwork, machine: &LabMachine, card: &Card) -> SecretKey {
         let sidecar = machine
+            .scratch()
             .directories()
             .card_sidecar_file(network.name(), &card.name)
             .unwrap();
@@ -1447,7 +1451,9 @@ mod spec_3_15_two_members_through_the_live_host {
             SPEC_PUBLIC_MAX_BYTES - COMPACT_JSON_MAPPING_FRAME_BYTES - PUBLIC_NOTES_KEY.len(),
         );
         let machine = LabMachine::joined("t17-amy", &network);
-        let card = machine.create_card("t17-amy-card", &longest_handle);
+        let card = machine
+            .scratch()
+            .create_card("t17-amy-card", &longest_handle);
         add_public_mapping(
             &network,
             &machine,
@@ -1523,7 +1529,9 @@ mod spec_3_15_two_members_through_the_live_host {
         let mut amy = lab_member(&network, "t20-amy", &unique_handle("amy"), FIRST_SESSION);
         let bob_handle = unique_handle("bob");
         let bob_machine = LabMachine::joined("t20-bob", &network);
-        let bob_card = bob_machine.create_card("t20-bob-card", &bob_handle);
+        let bob_card = bob_machine
+            .scratch()
+            .create_card("t20-bob-card", &bob_handle);
         let bob_key = card_key(&network, &bob_machine, &bob_card);
         let earlier_seq = wall_clock_ms();
         let earlier_through_the_host_seq = earlier_seq + 1;

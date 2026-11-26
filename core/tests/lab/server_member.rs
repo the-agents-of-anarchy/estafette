@@ -254,6 +254,7 @@ fn invitation_configuration(network: &LiveNetwork, handle: &str) -> String {
     let configured = LabMachine::joined(handle, network);
     fs::read_to_string(
         configured
+            .scratch()
             .directories()
             .network_config_file(network.name())
             .unwrap(),
