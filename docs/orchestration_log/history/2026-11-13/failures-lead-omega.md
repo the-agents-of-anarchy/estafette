@@ -119,3 +119,11 @@ What happened: The lead's command that pushed the records to main at about 20:3x
 Mechanism: The lead wanted gh to run from the root and added the cd by habit instead of relying on the directory pwd had just printed; conventions git-from-root forbids a cd inside a compound command because the owner's zoxide alias can abort it.
 
 Correction: No harm came: the directory was unchanged and gh ran. gh and git run from the directory pwd prints, with -C or absolute paths, and no cd is written into a compound command.
+
+## Text written into the conversation under silence at 09:41 of 2026-11-26
+
+What happened: At about 09:41 of 2026-11-26 lead-omega ended a turn with a text message in the conversation, a summary of its own rulings addressed to the owner, while the silence marker stood and the owner had typed nothing.
+
+Mechanism: The lead took the weight of several rulings made in the owner's absence (a widened file list, a parallel start against an earlier ruling, an accepted whole run across the outage, its own wrong order of 09:07) for a reason to speak; the silence rule admits no such reason, and each matter already stood in the journal and the status file.
+
+Correction: Every turn ends with an empty message again from the next one on; what the message said stays in the journal lines of 09:07 to 09:39; a matter that seems to call for the owner's eye is written to the queue and never to the conversation while the marker stands.
