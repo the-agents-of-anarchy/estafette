@@ -6,7 +6,7 @@ use iroh::endpoint::{Connection, VarInt};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::tests::{
     FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_HANDLE,
@@ -20,7 +20,7 @@ use super::tests::{
     start_witnessed, wall_clock_ms,
 };
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
-use crate::event::{Event, EventFields, RunRecord};
+use crate::event::{EventFields, RunRecord};
 use crate::net::direct::tests::{test_salt, unrecorded_register};
 use crate::net::direct::{
     ClientTimeouts, DirectClient, HeldConnections, RequestSummary, RuntimeClock,
@@ -30,6 +30,10 @@ use crate::net::gossip::{GossipEvent, NetworkTopic};
 use crate::node::addresses::wire_addr;
 use crate::payload::{
     ZERO_MAC, ZERO_SIGNATURE, open_request, seal_payload, seal_response, sealed_by_any_key,
+};
+use crate::test_waits::{
+    RecordedEvent, next_recorded, next_recorded_among, next_recorded_meeting, next_recorded_within,
+    recorded_events,
 };
 use crate::wire::{
     Addr, Departure, Introduce, IntroduceAck, Payload, Presence, PresenceRequest, ProbeAck,
@@ -49,80 +53,36 @@ const SECOND_MARKER_DIRECT_ADDRESS: SocketAddr = SocketAddr::new(
     4433,
 );
 
-/// The events a member records, each as its name and the fields the events file writes for it, in the order recorded.
-struct RecordedEvents(mpsc::UnboundedReceiver<(&'static str, EventFields)>);
-
-impl RecordedEvents {
-    /// The fields of the next event of that name, failing with the name when none is recorded within the wait.
-    async fn next_named(&mut self, name: &str) -> EventFields {
-        self.next_named_within(name, EVENT_WAIT).await
-    }
-
-    /// The fields of the next event of that name, failing with the name when none is recorded within the given wait.
-    async fn next_named_within(&mut self, name: &str, within: Duration) -> EventFields {
-        self.next_of_within(&[name], within).await.1
-    }
-
-    /// The name and fields of the next event of one of those names, failing with the names when none is recorded within the wait.
-    async fn next_of(&mut self, names: &[&str]) -> (&'static str, EventFields) {
-        self.next_of_within(names, EVENT_WAIT).await
-    }
-
-    /// The name and fields of the next event of one of those names, failing with the names when none is recorded within the given wait.
-    async fn next_of_within(
-        &mut self,
-        names: &[&str],
-        within: Duration,
-    ) -> (&'static str, EventFields) {
-        tokio::time::timeout(within, async {
-            loop {
-                let (recorded, fields) = self.0.recv().await.unwrap();
-                if names.contains(&recorded) {
-                    return (recorded, fields);
-                }
-            }
-        })
-        .await
-        .unwrap_or_else(|_elapsed| panic!("no event of {names:?} within {within:?}"))
-    }
-
-    /// The fields of the next lookup replaced for the seed's card, failing with the name when none is recorded within the wait.
-    async fn lookup_replaced_of(&mut self, seed: u8) -> EventFields {
-        loop {
-            let fields = self.next_named("peers.lookup_replaced").await;
-            if fields.first() == Some(&("peer", short_peer_id(seed))) {
-                return fields;
-            }
-        }
-    }
-
-    /// The fields of the next event of that name naming the seed's card as its peer, failing with the name and the events seen when none is recorded within the wait.
-    async fn next_named_from(&mut self, name: &str, seed: u8) -> EventFields {
-        let peer = ("peer", short_peer_id(seed));
-        crate::test_waits::next_recorded_meeting(
-            &mut self.0,
-            name,
-            |fields| fields.contains(&peer),
-            EVENT_WAIT,
-        )
-        .await
-    }
+/// The fields of the next lookup replaced for the seed's card, failing with the name and the events seen when none is recorded within the wait.
+async fn lookup_replaced_of(
+    recorded: &mut UnboundedReceiver<RecordedEvent>,
+    seed: u8,
+) -> EventFields {
+    let peer = ("peer", short_peer_id(seed));
+    next_recorded_meeting(
+        recorded,
+        "peers.lookup_replaced",
+        |fields| fields.first() == Some(&peer),
+        EVENT_WAIT,
+    )
+    .await
 }
 
-/// A run record that hands every event to the test, and the test's end of it.
-fn recording() -> (RunRecord, RecordedEvents) {
-    let (sender, receiver) = mpsc::unbounded_channel();
-    let report: RunRecord = Arc::new(move |event: Event| {
-        drop(sender.send((event.name(), event.fields())));
-    });
-    (report, RecordedEvents(receiver))
+/// The fields of the next event of that name naming the seed's card as its peer, failing with the name and the events seen when none is recorded within the wait.
+async fn next_named_from(
+    recorded: &mut UnboundedReceiver<RecordedEvent>,
+    name: &str,
+    seed: u8,
+) -> EventFields {
+    let peer = ("peer", short_peer_id(seed));
+    next_recorded_meeting(recorded, name, |fields| fields.contains(&peer), EVENT_WAIT).await
 }
 
 #[tokio::test]
 async fn observability_decision_9_a_member_records_the_topic_joined_and_the_neighbor_up_by_its_five_byte_id()
  {
     let scratch = Scratch::new("events-join").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
 
     let _members = start_members(
         &scratch,
@@ -135,9 +95,12 @@ async fn observability_decision_9_a_member_records_the_topic_joined_and_the_neig
     )
     .await;
 
-    assert_eq!(recorded.next_named("gossip.topic_joined").await, []);
     assert_eq!(
-        recorded.next_named("gossip.neighbor_up").await,
+        next_recorded(&mut recorded, "gossip.topic_joined").await,
+        []
+    );
+    assert_eq!(
+        next_recorded(&mut recorded, "gossip.neighbor_up").await,
         [("peer", short_peer_id(SECOND_SEED))]
     );
     drop(scratch);
@@ -146,7 +109,7 @@ async fn observability_decision_9_a_member_records_the_topic_joined_and_the_neig
 #[tokio::test]
 async fn observability_decision_9_a_member_records_a_neighbor_down_by_its_five_byte_id() {
     let scratch = Scratch::new("events-down").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let mut members = start_members(
         &scratch,
         vec![
@@ -157,14 +120,14 @@ async fn observability_decision_9_a_member_records_a_neighbor_down_by_its_five_b
         ],
     )
     .await;
-    recorded.next_named("gossip.neighbor_up").await;
+    next_recorded(&mut recorded, "gossip.neighbor_up").await;
     let second = members.pop().unwrap();
 
     drop(second.node);
     second.endpoint.close().await;
 
     assert_eq!(
-        recorded.next_named("gossip.neighbor_down").await,
+        next_recorded(&mut recorded, "gossip.neighbor_down").await,
         [("peer", short_peer_id(SECOND_SEED))]
     );
     drop(scratch);
@@ -199,7 +162,7 @@ fn presence_carrying(seed: u8, handle: &str, seq: u64, addr: Addr) -> Payload {
 async fn observability_decision_9_a_member_records_a_payload_it_accepted_with_its_kind_sender_handle_and_seq()
  {
     let scratch = Scratch::new("events-accepted").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (_member, witness) = start_witnessed(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
@@ -213,7 +176,7 @@ async fn observability_decision_9_a_member_records_a_payload_it_accepted_with_it
         .await;
 
     assert_eq!(
-        recorded.next_named("gossip.payload_accepted").await,
+        next_recorded(&mut recorded, "gossip.payload_accepted").await,
         [
             ("kind", Value::from("presence")),
             ("peer", short_peer_id(MARKER_SEED)),
@@ -228,7 +191,7 @@ async fn observability_decision_9_a_member_records_a_payload_it_accepted_with_it
 async fn observability_decision_9_a_member_records_a_payload_its_admission_dropped_with_the_rule_that_dropped_it()
  {
     let scratch = Scratch::new("events-dropped").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (_member, witness) = start_witnessed(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
@@ -243,9 +206,7 @@ async fn observability_decision_9_a_member_records_a_payload_its_admission_dropp
             presence_of(MARKER_SEED, MARKER_HANDLE, FROZEN_CLOCK_MS),
         )
         .await;
-    recorded
-        .next_named_from("gossip.payload_accepted", MARKER_SEED)
-        .await;
+    next_named_from(&mut recorded, "gossip.payload_accepted", MARKER_SEED).await;
 
     witness
         .broadcast_as(
@@ -253,18 +214,14 @@ async fn observability_decision_9_a_member_records_a_payload_its_admission_dropp
             replayed(presence_of(MARKER_SEED, MARKER_HANDLE, FROZEN_CLOCK_MS)),
         )
         .await;
-    let replay = recorded
-        .next_named_from("gossip.payload_dropped", MARKER_SEED)
-        .await;
+    let replay = next_named_from(&mut recorded, "gossip.payload_dropped", MARKER_SEED).await;
     witness
         .broadcast_as(
             SECOND_MARKER_SEED,
             presence_of(SECOND_MARKER_SEED, MARKER_HANDLE, STALE_SEQ),
         )
         .await;
-    let stale = recorded
-        .next_named_from("gossip.payload_dropped", SECOND_MARKER_SEED)
-        .await;
+    let stale = next_named_from(&mut recorded, "gossip.payload_dropped", SECOND_MARKER_SEED).await;
 
     assert_eq!(
         replay,
@@ -577,7 +534,7 @@ fn request_and_record_steps() -> Vec<AdmissionStep> {
 async fn observability_decision_9_a_member_records_the_admission_of_every_payload_kind_with_the_rule_of_each_drop()
  {
     let scratch = Scratch::new("events-admission").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (_member, witness) = start_witnessed(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
@@ -597,7 +554,7 @@ async fn observability_decision_9_a_member_records_the_admission_of_every_payloa
     for (step, (signer, payload, name, fields)) in script.into_iter().enumerate() {
         witness.broadcast_as(signer, payload).await;
         assert_eq!(
-            recorded.next_of(&[ACCEPTED, DROPPED]).await,
+            next_recorded_among(&mut recorded, &[ACCEPTED, DROPPED]).await,
             (name, fields),
             "step {step}"
         );
@@ -632,7 +589,7 @@ async fn observability_decision_9_a_member_records_a_payload_the_payload_layer_d
     let now = FROZEN_CLOCK_MS;
     let other_network = NetworkKeys::derive(&NetworkSecret::from_bytes(OTHER_NETWORK_SECRET));
     let scratch = Scratch::new("events-refused").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (_member, witness) = start_witnessed(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
@@ -644,7 +601,7 @@ async fn observability_decision_9_a_member_records_a_payload_the_payload_layer_d
     witness
         .broadcast_as(MARKER_SEED, presence_of(MARKER_SEED, MARKER_HANDLE, now))
         .await;
-    recorded.next_named(ACCEPTED).await;
+    next_recorded(&mut recorded, ACCEPTED).await;
     let marker = |seq: u64, rule: &str| {
         admission_fields(
             "presence",
@@ -708,7 +665,11 @@ async fn observability_decision_9_a_member_records_a_payload_the_payload_layer_d
 
     for (step, (bytes, fields)) in script.into_iter().enumerate() {
         witness.broadcast_bytes(bytes).await;
-        assert_eq!(recorded.next_named(DROPPED).await, fields, "step {step}");
+        assert_eq!(
+            next_recorded(&mut recorded, DROPPED).await,
+            fields,
+            "step {step}"
+        );
     }
     drop(scratch);
 }
@@ -717,7 +678,7 @@ async fn observability_decision_9_a_member_records_a_payload_the_payload_layer_d
 async fn observability_decision_9_a_member_records_each_payload_it_broadcast_with_its_kind_and_seq()
 {
     let scratch = Scratch::new("events-broadcast").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (_member, mut witness) = start_witnessed(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
@@ -727,8 +688,8 @@ async fn observability_decision_9_a_member_records_each_payload_it_broadcast_wit
     )
     .await;
 
-    let requested = recorded.next_named("gossip.payload_broadcast").await;
-    let broadcast = recorded.next_named("gossip.payload_broadcast").await;
+    let requested = next_recorded(&mut recorded, "gossip.payload_broadcast").await;
+    let broadcast = next_recorded(&mut recorded, "gossip.payload_broadcast").await;
     let heard = witness
         .payload_where(EVENT_WAIT, |payload| {
             matches!(payload, Payload::Presence(_))
@@ -799,7 +760,7 @@ fn changed_fields(seed: u8, handle: &str, (from, to): (&str, &str), cause: &str)
 async fn observability_decision_9_a_member_records_each_entry_its_payloads_create_change_and_expire_with_the_cause()
  {
     let scratch = Scratch::new("events-table").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (clock, reading) = settable_clock(FROZEN_CLOCK_MS);
     let (_member, witness) = start_witnessed(
         &scratch,
@@ -815,30 +776,30 @@ async fn observability_decision_9_a_member_records_each_entry_its_payloads_creat
     witness
         .broadcast_as(MARKER_SEED, presence_of(MARKER_SEED, MARKER_HANDLE, now))
         .await;
-    let first = recorded.next_named(ENTRY_CREATED).await;
+    let first = next_recorded(&mut recorded, ENTRY_CREATED).await;
     witness
         .broadcast_as(
             SECOND_MARKER_SEED,
             presence_of(SECOND_MARKER_SEED, MARKER_HANDLE, now),
         )
         .await;
-    let second = recorded.next_named(ENTRY_CREATED).await;
+    let second = next_recorded(&mut recorded, ENTRY_CREATED).await;
     witness
         .broadcast_as(MARKER_SEED, departure_of(MARKER_SEED, now + 1))
         .await;
-    let departed = recorded.next_named(ENTRY_CHANGED).await;
+    let departed = next_recorded(&mut recorded, ENTRY_CHANGED).await;
     witness
         .broadcast_as(
             WITNESS_SEED,
             unreachable_of(WITNESS_SEED, SECOND_MARKER_SEED, now),
         )
         .await;
-    let reported = recorded.next_named(ENTRY_CHANGED).await;
+    let reported = next_recorded(&mut recorded, ENTRY_CHANGED).await;
     reading.store(later, std::sync::atomic::Ordering::SeqCst);
     witness
         .broadcast_as(PIN_SEED, presence_of(PIN_SEED, PIN_HANDLE, later))
         .await;
-    let expired = recorded.next_named(ENTRY_REMOVED).await;
+    let expired = next_recorded(&mut recorded, ENTRY_REMOVED).await;
 
     assert_eq!(
         first,
@@ -886,7 +847,7 @@ async fn observability_decision_9_a_member_records_each_entry_its_payloads_creat
 #[tokio::test]
 async fn observability_decision_9_a_member_records_its_own_handle_requested_and_assigned() {
     let scratch = Scratch::new("events-own-handle").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (first, second) = start_pair(&scratch).await;
     entry_meeting_within(&first, SECOND_SEED, |_listed| true, SPEC_OBSERVER_WAIT)
         .await
@@ -906,7 +867,7 @@ async fn observability_decision_9_a_member_records_its_own_handle_requested_and_
     .await;
 
     assert_eq!(
-        recorded.next_named("peers.own_handle_assigned").await,
+        next_recorded(&mut recorded, "peers.own_handle_assigned").await,
         [
             ("requested", Value::from(FIRST_HANDLE)),
             ("handle", Value::from(SECOND_EFFECTIVE_FIRST_HANDLE)),
@@ -919,7 +880,7 @@ async fn observability_decision_9_a_member_records_its_own_handle_requested_and_
 async fn observability_decision_9_a_member_records_a_lookup_replaced_by_its_count_of_direct_addresses_and_relay()
  {
     let scratch = Scratch::new("events-lookup").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (_member, witness) = start_witnessed(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
@@ -943,7 +904,7 @@ async fn observability_decision_9_a_member_records_a_lookup_replaced_by_its_coun
             ),
         )
         .await;
-    let relayed = recorded.lookup_replaced_of(MARKER_SEED).await;
+    let relayed = lookup_replaced_of(&mut recorded, MARKER_SEED).await;
     witness
         .broadcast_as(
             SECOND_MARKER_SEED,
@@ -955,7 +916,7 @@ async fn observability_decision_9_a_member_records_a_lookup_replaced_by_its_coun
             ),
         )
         .await;
-    let unrelayed = recorded.lookup_replaced_of(SECOND_MARKER_SEED).await;
+    let unrelayed = lookup_replaced_of(&mut recorded, SECOND_MARKER_SEED).await;
 
     assert_eq!(
         relayed,
@@ -982,7 +943,7 @@ async fn observability_decision_9_a_member_records_a_lookup_replaced_by_its_coun
 async fn observability_decision_9_a_member_records_entries_its_direct_answers_and_send_outcomes_move_with_the_cause()
  {
     let scratch = Scratch::new("events-direct-table").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (report, mut neighbors) = noting_neighbors(report);
     let (member, witness) = start_witnessed(
         &scratch,
@@ -992,7 +953,7 @@ async fn observability_decision_9_a_member_records_entries_its_direct_answers_an
         Some(WITNESS_HANDLE),
     )
     .await;
-    let introduced = recorded.next_named(ENTRY_CREATED).await;
+    let introduced = next_recorded(&mut recorded, ENTRY_CREATED).await;
     settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
     witness
         .broadcast_as(
@@ -1000,13 +961,13 @@ async fn observability_decision_9_a_member_records_entries_its_direct_answers_an
             unreachable_of(MARKER_SEED, WITNESS_SEED, FROZEN_CLOCK_MS),
         )
         .await;
-    let reported = recorded.next_named(ENTRY_CHANGED).await;
+    let reported = next_recorded(&mut recorded, ENTRY_CHANGED).await;
 
     member.node.send(WITNESS_HANDLE, SENT_BODY).await.unwrap();
-    let acknowledged = recorded.next_named(ENTRY_CHANGED).await;
+    let acknowledged = next_recorded(&mut recorded, ENTRY_CHANGED).await;
     neighbors.until_recorded(WITNESS_SEED).await;
     witness.close().await;
-    let probed = recorded.next_named(ENTRY_CHANGED).await;
+    let probed = next_recorded(&mut recorded, ENTRY_CHANGED).await;
 
     assert_eq!(
         introduced,
@@ -1051,7 +1012,7 @@ async fn observability_decision_9_a_member_records_entries_its_direct_answers_an
 async fn observability_decision_9_a_member_records_an_entry_a_probe_answer_and_a_failed_send_move_with_the_cause()
  {
     let scratch = Scratch::new("ev-probe-send").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (report, mut neighbors) = noting_neighbors(report);
     let (member, witness) = start_witnessed(
         &scratch,
@@ -1061,7 +1022,7 @@ async fn observability_decision_9_a_member_records_an_entry_a_probe_answer_and_a
         Some(WITNESS_HANDLE),
     )
     .await;
-    recorded.next_named(ENTRY_CREATED).await;
+    next_recorded(&mut recorded, ENTRY_CREATED).await;
     settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
     witness
         .broadcast_as(
@@ -1069,18 +1030,18 @@ async fn observability_decision_9_a_member_records_an_entry_a_probe_answer_and_a
             unreachable_of(MARKER_SEED, WITNESS_SEED, FROZEN_CLOCK_MS),
         )
         .await;
-    recorded.next_named(ENTRY_CHANGED).await;
+    next_recorded(&mut recorded, ENTRY_CHANGED).await;
 
     neighbors.until_recorded(WITNESS_SEED).await;
     let answering = witness.leave_topic();
-    let answered = recorded.next_named(ENTRY_CHANGED).await;
+    let answered = next_recorded(&mut recorded, ENTRY_CHANGED).await;
     answering.shutdown().await.unwrap();
     member
         .node
         .send(WITNESS_HANDLE, SENT_BODY)
         .await
         .unwrap_err();
-    let failed = recorded.next_named(ENTRY_CHANGED).await;
+    let failed = next_recorded(&mut recorded, ENTRY_CHANGED).await;
 
     assert_eq!(
         answered,
@@ -1107,7 +1068,7 @@ async fn observability_decision_9_a_member_records_an_entry_a_probe_answer_and_a
 async fn observability_decision_9_a_member_records_an_entry_its_failed_introduce_moves_with_the_cause()
  {
     let scratch = Scratch::new("ev-intro-fail").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (_member, witness) = start_witnessed(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC)
@@ -1123,10 +1084,10 @@ async fn observability_decision_9_a_member_records_an_entry_its_failed_introduce
             presence_of(MARKER_SEED, MARKER_HANDLE, FROZEN_CLOCK_MS),
         )
         .await;
-    recorded.next_named(ENTRY_CREATED).await;
+    next_recorded(&mut recorded, ENTRY_CREATED).await;
 
     assert_eq!(
-        recorded.next_named(ENTRY_CHANGED).await,
+        next_recorded(&mut recorded, ENTRY_CHANGED).await,
         changed_fields(
             MARKER_SEED,
             MARKER_HANDLE,
@@ -1141,7 +1102,7 @@ async fn observability_decision_9_a_member_records_an_entry_its_failed_introduce
 async fn observability_decision_9_a_member_records_entries_an_introduce_and_a_message_from_unseen_cards_create_with_the_cause()
  {
     let scratch = Scratch::new("ev-requests").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (member, _witness) = start_witnessed(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
@@ -1172,7 +1133,7 @@ async fn observability_decision_9_a_member_records_entries_an_introduce_and_a_me
     )
     .await
     .unwrap();
-    let created_by_introduce = recorded.next_named(ENTRY_CREATED).await;
+    let created_by_introduce = next_recorded(&mut recorded, ENTRY_CREATED).await;
     DirectClient::new(
         sender.endpoint().clone(),
         keys(),
@@ -1182,7 +1143,7 @@ async fn observability_decision_9_a_member_records_entries_an_introduce_and_a_me
     .send_message(member.endpoint.id(), message_to(FIRST_SEED, PIN_HANDLE))
     .await
     .unwrap();
-    let created_by_message = recorded.next_named(ENTRY_CREATED).await;
+    let created_by_message = next_recorded(&mut recorded, ENTRY_CREATED).await;
 
     assert_eq!(
         created_by_introduce,
@@ -1223,14 +1184,14 @@ async fn observability_decision_9_a_broadcast_the_topic_refuses_is_recorded_as_f
     ];
 
     for payload in payloads_naming_another_card {
-        let (report, mut recorded) = recording();
+        let (report, mut recorded) = recorded_events();
 
         super::broadcast_recording_outcome(&topic, &secret_key(FIRST_SEED), payload, &*report)
             .await;
         drop(report);
 
         let mut names = Vec::new();
-        while let Some((name, _fields)) = recorded.0.recv().await {
+        while let Some((name, _fields)) = recorded.recv().await {
             names.push(name);
         }
         assert_eq!(names, ["gossip.broadcast_failed"]);
@@ -1241,7 +1202,7 @@ async fn observability_decision_9_a_broadcast_the_topic_refuses_is_recorded_as_f
 async fn observability_decision_9_an_introduce_to_a_card_that_cannot_be_reached_is_recorded_with_its_peer_and_the_word_unreachable()
  {
     let scratch = Scratch::new("ev-cf-unr").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (_member, witness) = start_witnessed(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
@@ -1257,7 +1218,7 @@ async fn observability_decision_9_an_introduce_to_a_card_that_cannot_be_reached_
         .await;
 
     assert_eq!(
-        recorded.next_named("direct.contact_failed").await,
+        next_recorded(&mut recorded, "direct.contact_failed").await,
         [
             ("peer", short_peer_id(MARKER_SEED)),
             ("error", Value::from("unreachable")),
@@ -1284,7 +1245,7 @@ fn member_plan_recording_transport(report: &RunRecord) -> MemberPlan {
 /// The fields of the relay map edit a member records once a witnessed host record, newer than any held, reaches it.
 async fn relay_map_edit_of_a_host_record(scratch_name: &str) -> EventFields {
     let scratch = Scratch::new(scratch_name).await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (_member, witness) =
         start_witnessed(&scratch, member_plan_recording_transport(&report), None).await;
 
@@ -1294,7 +1255,7 @@ async fn relay_map_edit_of_a_host_record(scratch_name: &str) -> EventFields {
             infrastructure_of(HOST_SEED, HOST_RELAY, wall_clock_ms() / 1000),
         )
         .await;
-    let edit = recorded.next_named(RELAY_MAP_EDITED).await;
+    let edit = next_recorded(&mut recorded, RELAY_MAP_EDITED).await;
     drop(scratch);
     edit
 }
@@ -1331,7 +1292,7 @@ async fn observability_decision_6_a_relay_map_edit_never_writes_the_relay_in_cle
 #[tokio::test]
 async fn spec_3_8_a_host_record_whose_relay_the_map_already_holds_records_no_relay_map_edit() {
     let scratch = Scratch::new("ev-rm-held").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (_member, witness) =
         start_witnessed(&scratch, member_plan_recording_transport(&report), None).await;
     let first_ts = wall_clock_ms() / 1000;
@@ -1351,9 +1312,11 @@ async fn spec_3_8_a_host_record_whose_relay_the_map_already_holds_records_no_rel
     let mut names = Vec::new();
     let mut infrastructure_taken = 0;
     while infrastructure_taken < 2 {
-        let (name, fields) = recorded
-            .next_of(&[RELAY_MAP_EDITED, "gossip.payload_accepted"])
-            .await;
+        let (name, fields) = next_recorded_among(
+            &mut recorded,
+            &[RELAY_MAP_EDITED, "gossip.payload_accepted"],
+        )
+        .await;
         names.push(name);
         infrastructure_taken += usize::from(
             name == "gossip.payload_accepted"
@@ -1376,7 +1339,7 @@ async fn spec_3_8_a_host_record_whose_relay_the_map_already_holds_records_no_rel
 async fn observability_decision_9_a_member_records_the_lookup_it_points_at_the_address_of_a_host_record()
  {
     let scratch = Scratch::new("ev-lk-rec").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (_member, witness) = start_witnessed(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
@@ -1392,7 +1355,7 @@ async fn observability_decision_9_a_member_records_the_lookup_it_points_at_the_a
         .await;
 
     assert_eq!(
-        recorded.lookup_replaced_of(HOST_SEED).await,
+        lookup_replaced_of(&mut recorded, HOST_SEED).await,
         [
             ("peer", short_peer_id(HOST_SEED)),
             ("direct_addresses", Value::from(0)),
@@ -1406,7 +1369,7 @@ async fn observability_decision_9_a_member_records_the_lookup_it_points_at_the_a
 async fn observability_decision_9_a_member_records_the_lookup_it_seeds_with_the_relay_of_a_configured_host()
  {
     let scratch = Scratch::new("ev-lk-seed").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
 
     let _members = start_members(
         &scratch,
@@ -1419,7 +1382,7 @@ async fn observability_decision_9_a_member_records_the_lookup_it_seeds_with_the_
     .await;
 
     assert_eq!(
-        recorded.lookup_replaced_of(HOST_SEED).await,
+        lookup_replaced_of(&mut recorded, HOST_SEED).await,
         [
             ("peer", short_peer_id(HOST_SEED)),
             ("direct_addresses", Value::from(0)),
@@ -1543,7 +1506,7 @@ async fn contact_failed_by_introduce_answered(
     answer: DirectAnswer,
 ) -> EventFields {
     let scratch = Scratch::new(scratch_name).await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (endpoint, starting) = spawn_member(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
@@ -1555,9 +1518,8 @@ async fn contact_failed_by_introduce_answered(
     .await;
     let _member = starting.await.unwrap();
 
-    let fields = recorded
-        .next_named_within("direct.contact_failed", CONTACT_FAILURE_WAIT)
-        .await;
+    let fields =
+        next_recorded_within(&mut recorded, "direct.contact_failed", CONTACT_FAILURE_WAIT).await;
     drop(scratch);
     fields
 }
@@ -1575,7 +1537,7 @@ const NONCE_THE_MEMBER_DID_NOT_SEND: [u8; 16] = [0; 16];
 async fn observability_decision_9_a_probe_answered_with_another_nonce_is_recorded_with_the_word_probe_nonce_mismatch()
  {
     let scratch = Scratch::new("ev-cf-prb").await;
-    let (report, mut recorded) = recording();
+    let (report, mut recorded) = recorded_events();
     let (endpoint, starting) = spawn_member(
         &scratch,
         MemberPlan::new(FIRST_SEED, FIRST_HANDLE, FIRST_PUBLIC).with_report(report),
@@ -1611,16 +1573,12 @@ async fn observability_decision_9_a_probe_answered_with_another_nonce_is_recorde
     })
     .await;
     let _member = starting.await.unwrap();
-    recorded
-        .next_named_within("peers.entry_created", CONTACT_FAILURE_WAIT)
-        .await;
+    next_recorded_within(&mut recorded, "peers.entry_created", CONTACT_FAILURE_WAIT).await;
 
     witness.leaves_the_topic();
 
     assert_eq!(
-        recorded
-            .next_named_within("direct.contact_failed", CONTACT_FAILURE_WAIT)
-            .await,
+        next_recorded_within(&mut recorded, "direct.contact_failed", CONTACT_FAILURE_WAIT).await,
         contact_failed_fields("probe_nonce_mismatch")
     );
     drop(scratch);
