@@ -1147,10 +1147,20 @@ mod tests {
             let mut arguments = vec!["--model", "opus", SETTINGS_FLAG];
             arguments.extend(words.iter().map(String::as_str));
             arguments.extend(["--verbose", "trailing"]);
+            let paths_asked = std::sync::Mutex::new(Vec::new());
             let verdict = refuse_verdict_with_harness_arguments(&arguments, &|path: &Path| {
+                paths_asked
+                    .lock()
+                    .expect("no panic holds the lock")
+                    .push(path.to_owned());
                 (path == Path::new(&settings_path)).then(|| REFUSE_JSON.to_owned())
             });
             assert!(matches!(verdict, Verdict::Failed(_)), "seed {seed}");
+            assert_eq!(
+                *paths_asked.lock().expect("no panic holds the lock"),
+                [PathBuf::from(&settings_path)],
+                "seed {seed}"
+            );
         }
     }
 
