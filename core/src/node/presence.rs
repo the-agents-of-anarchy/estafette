@@ -2927,11 +2927,7 @@ pub(super) mod tests {
         })
     }
 
-    pub(in crate::node) async fn marker_reaches(
-        member: &Member,
-        witness: &Witness,
-        marker_seed: u8,
-    ) {
+    async fn marker_reaches(member: &Member, witness: &Witness, marker_seed: u8) {
         witness
             .broadcast_as(
                 marker_seed,

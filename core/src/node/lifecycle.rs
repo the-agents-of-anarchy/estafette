@@ -301,11 +301,10 @@ mod tests {
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
-        FIRST_SEED, HOST_RELAY, HOST_SEED, MARKER_SEED, MOVED_HOST_RELAY, Member, MemberPlan,
-        PAYLOAD_WAIT, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, WITNESS_HANDLE,
-        WITNESS_SEED, Witness, bind, card, host_saved_within, infrastructure_of,
-        joined_and_asked_for_presence, keys, listed_within, marker_reaches, saved_host, start_pair,
-        start_witnessed, status_within, wall_clock_ms,
+        FIRST_SEED, HOST_RELAY, HOST_SEED, MOVED_HOST_RELAY, Member, MemberPlan, PAYLOAD_WAIT,
+        SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, WITNESS_HANDLE, WITNESS_SEED,
+        Witness, bind, card, host_saved_within, infrastructure_of, joined_and_asked_for_presence,
+        keys, listed_within, saved_host, start_pair, start_witnessed, status_within, wall_clock_ms,
     };
     use crate::node::rebind::RelayProbe;
     use crate::peers::Status;
@@ -313,7 +312,7 @@ mod tests {
     use crate::test_waits::{
         RecordedEvent, found_within, next_recorded_meeting, recorded_events, recorded_until,
     };
-    use crate::wire::{Introduce, Nonce, Version};
+    use crate::wire::{Introduce, Nonce, Payload, Version};
 
     const FIRST_CARD: &str = "first-card";
     const SECOND_CARD: &str = "second-card";
@@ -1391,11 +1390,16 @@ mod tests {
     async fn spec_3_8_the_gossip_broadcast_stays_alive_while_stopping() {
         let scratch = Scratch::new("gossip-alive").await;
         let second = claimed_second(&scratch).await;
-        let witness = Witness::joined_through(WITNESS_SEED, None, &second.endpoint).await;
+        let mut witness = Witness::joined_through(WITNESS_SEED, None, &second.endpoint).await;
         let stopping = run(&second.session, TEST_DEPARTURE_WAIT);
 
         stopping.input_ended.send(()).unwrap();
-        marker_reaches(&second.first, &witness, MARKER_SEED).await;
+        witness
+            .payload_where(PAYLOAD_WAIT, |payload| {
+                matches!(payload, Payload::Departure(departure) if departure.card == card(SECOND_SEED))
+            })
+            .await
+            .expect("a Departure from the stopping second on the witness's topic");
 
         assert!(!stopping.exit.is_finished());
         drop(scratch);
