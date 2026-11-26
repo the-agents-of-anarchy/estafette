@@ -1586,11 +1586,11 @@ mod tests {
         let first = rebinds
             .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
             .await
-            .unwrap();
+            .expect("rebind number 0 started within SPEC_DEAF_TIMEOUT + REBIND_SLACK");
         let second = rebinds
             .nth_within(1, SPEC_REBIND_INTERVAL + REBIND_SLACK)
             .await
-            .unwrap();
+            .expect("rebind number 1 started within SPEC_REBIND_INTERVAL + REBIND_SLACK");
 
         assert!(first.duration_since(started) >= SPEC_DEAF_TIMEOUT);
         assert!(second.duration_since(first) >= SPEC_REBIND_INTERVAL);
@@ -1619,7 +1619,7 @@ mod tests {
         let rebound = rebinds
             .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
             .await
-            .unwrap();
+            .expect("rebind number 0 started within SPEC_DEAF_TIMEOUT + REBIND_SLACK");
         let announced_after = host.first_seq_after(rebound, SPEC_JOIN_TIMEOUT).await;
 
         assert_eq!(host.last_seq_before(rebound), Some(FROZEN_CLOCK_MS));
@@ -1759,11 +1759,13 @@ mod tests {
         let rebound = rebinds
             .nth_within(0, SPEC_JOIN_TIMEOUT + REBIND_SLACK)
             .await
-            .unwrap();
+            .expect("rebind number 0 started within SPEC_JOIN_TIMEOUT + REBIND_SLACK");
         let joined_through_the_peer = peer
             .first_neighbor_up_of(FIRST_SEED, IROH_DOCUMENTED_CLOSE_LATENCY + REBIND_SLACK)
             .await
-            .unwrap();
+            .expect(
+                "FIRST_SEED up as a neighbor within IROH_DOCUMENTED_CLOSE_LATENCY + REBIND_SLACK",
+            );
 
         assert!(rebound.duration_since(started) >= SPEC_JOIN_TIMEOUT);
         assert!(joined_through_the_peer > rebound);
@@ -1900,7 +1902,7 @@ mod tests {
         let rebound = rebinds
             .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
             .await
-            .unwrap();
+            .expect("rebind number 0 started within SPEC_DEAF_TIMEOUT + REBIND_SLACK");
         let met = unreachable_member
             .first_neighbor_up_of(
                 FIRST_SEED,
@@ -1910,7 +1912,12 @@ mod tests {
                     + REBIND_SLACK,
             )
             .await
-            .unwrap();
+            .expect(
+                "FIRST_SEED up as a neighbor within IROH_DOCUMENTED_CLOSE_LATENCY
+                    + SPEC_MEMBER_JOIN_WAIT
+                    + SPEC_MEMBER_JOIN_INTERVAL
+                    + REBIND_SLACK",
+            );
 
         assert!(met.duration_since(rebound) >= SPEC_MEMBER_JOIN_WAIT);
         drop(scratch);

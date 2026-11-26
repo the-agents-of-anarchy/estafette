@@ -2505,10 +2505,10 @@ pub(super) mod tests {
         assert_eq!(second.node.own_handle().as_str(), SECOND_HANDLE);
         let seen_by_first = listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
         let seen_by_second = listed_within(&second, FIRST_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of FIRST_SEED listed at second within SPEC_OBSERVER_WAIT");
         assert_eq!(seen_by_first.effective_handle.as_str(), SECOND_HANDLE);
         assert_eq!(seen_by_first.public.as_deref(), Some(SECOND_PUBLIC));
         assert_eq!(seen_by_first.status, Status::Online);
@@ -2593,7 +2593,7 @@ pub(super) mod tests {
         assert!(ack.accepted);
         let listed = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within Duration::ZERO");
         assert_eq!(listed.effective_handle.as_str(), SECOND_HANDLE);
         assert_eq!(listed.status, Status::Online);
         assert!(listed.attached);
@@ -2614,7 +2614,7 @@ pub(super) mod tests {
         .await;
         let after_introduce = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within Duration::ZERO");
         assert_eq!(after_introduce.status, Status::Online);
         assert_eq!(after_introduce.public.as_deref(), Some(SECOND_PUBLIC));
         drop(scratch);
@@ -2857,7 +2857,7 @@ pub(super) mod tests {
         witness.broadcast_marker(marker_seed).await;
         listed_within(member, marker_seed, PAYLOAD_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of marker_seed listed at member within PAYLOAD_WAIT");
     }
 
     pub(in crate::node) async fn start_third_through_second(
@@ -2883,7 +2883,7 @@ pub(super) mod tests {
         let (first, second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
 
         let _third = start_third_through_second(&scratch, &second, THIRD_HANDLE).await;
         let third_presence_sent = tokio::time::Instant::now();
@@ -2904,7 +2904,7 @@ pub(super) mod tests {
         let (first, second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
 
         let third = start_third_through_second(&scratch, &second, FIRST_HANDLE).await;
 
@@ -2914,10 +2914,10 @@ pub(super) mod tests {
         );
         let at_first = listed_within(&first, THIRD_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of THIRD_SEED listed at first within SPEC_OBSERVER_WAIT");
         let at_second = listed_within(&second, THIRD_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of THIRD_SEED listed at second within SPEC_OBSERVER_WAIT");
         assert_eq!(
             at_first.effective_handle.as_str(),
             SECOND_EFFECTIVE_FIRST_HANDLE
@@ -2957,7 +2957,7 @@ pub(super) mod tests {
         let (first, _second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
         let witness = Witness::joined_through(WITNESS_SEED, None, &first.endpoint).await;
 
         witness
@@ -2974,7 +2974,7 @@ pub(super) mod tests {
         marker_reaches(&first, &witness, MARKER_SEED).await;
         let after_replay = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within Duration::ZERO");
         assert_eq!(after_replay.public.as_deref(), Some(SECOND_PUBLIC));
         assert_eq!(after_replay.status, Status::Online);
 
@@ -3004,7 +3004,7 @@ pub(super) mod tests {
 
         let after_departure = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within Duration::ZERO");
         assert!(matches!(after_departure.status, Status::Gone { .. }));
         assert_eq!(after_departure.public.as_deref(), Some(SECOND_PUBLIC));
         drop(scratch);
@@ -3165,9 +3165,9 @@ pub(super) mod tests {
                 infrastructure_of(HOST_SEED, HOST_RELAY, record_ts),
             )
             .await;
-        let saved = host_saved_within(&member.config_path, HOST_SEED, SPEC_HOST_ADDED_WITHIN).await;
-
-        let saved = saved.unwrap();
+        let saved = host_saved_within(&member.config_path, HOST_SEED, SPEC_HOST_ADDED_WITHIN)
+            .await
+            .expect("the network file holding the host within SPEC_HOST_ADDED_WITHIN");
         assert_eq!(saved.relay, HOST_RELAY);
         assert_eq!(saved.ts, Some(record_ts));
         assert!(matches!(saved.origin, HostOrigin::Learned { .. }));
@@ -3887,7 +3887,7 @@ pub(super) mod tests {
         let (first, second) = start_pair_reporting_first(&scratch, report).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
         let mut witness = Witness::joined_through(WITNESS_SEED, None, &first.endpoint).await;
         neighbors.until_recorded(SECOND_SEED).await;
         let killed = tokio::time::Instant::now();
@@ -3975,7 +3975,7 @@ pub(super) mod tests {
 
         let after = listed_within(&member, WITNESS_SEED, Duration::ZERO)
             .await
-            .unwrap();
+            .expect("the entry of WITNESS_SEED listed at member within Duration::ZERO");
         assert_eq!(after.status, Status::Online);
         assert_eq!(after.effective_handle.as_str(), WITNESS_HANDLE);
         assert_eq!(
@@ -4016,7 +4016,7 @@ pub(super) mod tests {
         );
         let listed = listed_within(&member, MARKER_SEED, Duration::ZERO)
             .await
-            .unwrap();
+            .expect("the entry of MARKER_SEED listed at member within Duration::ZERO");
         assert_eq!(listed.status, Status::Unreachable);
         drop(scratch);
     }
@@ -4675,7 +4675,7 @@ pub(super) mod tests {
         );
         let listed = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within Duration::ZERO");
         assert_eq!(listed.public, Some(at_bound));
         drop(scratch);
     }
