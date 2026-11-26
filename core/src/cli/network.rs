@@ -12,7 +12,7 @@ use crate::config::{
 use crate::crypto::{
     HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, render_host_certificate, sign_host_certificate,
 };
-use crate::dirs::{Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem};
+use crate::dirs::{Directories, DirectoryFilesystem, OperatingSystemFilesystem};
 use crate::event::{ProcessEvent, write_run_record};
 use crate::handle::{Handle, HandleError};
 use crate::invite::{
@@ -137,7 +137,6 @@ impl NetworkFilesystem for OperatingSystemFilesystem {
 
 #[derive(Debug)]
 enum Failure {
-    Directories(DirectoriesError),
     Config(ConfigError),
     Io {
         path: PathBuf,
@@ -178,7 +177,6 @@ enum Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Directories(source) => write!(formatter, "{source}"),
             Self::Config(source) => write!(formatter, "{source}"),
             Self::Io { path, source } => write!(formatter, "{}: {source}", path.display()),
             Self::Output(source) => write!(formatter, "cannot write the result: {source}"),
@@ -249,12 +247,6 @@ impl fmt::Display for NetworkCommandError {
 }
 
 impl std::error::Error for NetworkCommandError {}
-
-impl From<DirectoriesError> for Failure {
-    fn from(source: DirectoriesError) -> Self {
-        Self::Directories(source)
-    }
-}
 
 impl From<ConfigError> for Failure {
     fn from(source: ConfigError) -> Self {

@@ -26,7 +26,7 @@ use crate::card::Card;
 use crate::cli::cards::CardRegistryReader;
 use crate::config::{NetworkConfig, host_relay_url};
 use crate::crypto::GateKey;
-use crate::dirs::{CARD_EXTENSION, Directories, DirectoriesError};
+use crate::dirs::{CARD_EXTENSION, Directories};
 use crate::errors::{Envelope, ErrorCode, You};
 use crate::event::{
     AnsweredFailure, ClaimFailure, Event, InboxEvent, ListCardsFailure, ProcessEvent, RunRecord,
@@ -118,16 +118,12 @@ pub struct ServerEffects {
 /// Why the card registry of the network could not be read.
 #[derive(Debug)]
 pub enum RegistryFailure {
-    NoDirectory(DirectoriesError),
     Unreadable { path: PathBuf, source: io::Error },
 }
 
 impl fmt::Display for RegistryFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NoDirectory(source) => {
-                write!(formatter, "the card registry has no directory: {source}")
-            }
             Self::Unreadable { path, source } => write!(
                 formatter,
                 "the card registry at {} could not be read: {source}",

@@ -28,7 +28,7 @@ use crate::config::{ConfigError, MILLIS_PER_SECOND, NetworkConfig, write_atomica
 use crate::crypto::{
     GateKey, HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, parse_host_certificate, verify_host_certificate,
 };
-use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
+use crate::dirs::{Directories, OperatingSystemFilesystem};
 use crate::event::{RunRecord, TransportEvent};
 use crate::handle::Handle;
 use crate::invite::{InviteError, render_host_line};
@@ -204,7 +204,6 @@ impl InfrastructureFilesystem for OperatingSystemFilesystem {
 
 #[derive(Debug)]
 enum Failure {
-    Directories(DirectoriesError),
     NetworkNotConfigured { network: String },
     Config(ConfigError),
     Node(NodeError),
@@ -225,7 +224,6 @@ enum Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Directories(source) => write!(formatter, "{source}"),
             Self::NetworkNotConfigured { network } => write!(
                 formatter,
                 "network {network} has no configuration file here: copy it from the owner's machine, never with the owner key file"
@@ -279,12 +277,6 @@ impl fmt::Display for Failure {
                 formatter.write_str("the gossip topic closed, so this host announces nothing more")
             }
         }
-    }
-}
-
-impl From<DirectoriesError> for Failure {
-    fn from(source: DirectoriesError) -> Self {
-        Self::Directories(source)
     }
 }
 
