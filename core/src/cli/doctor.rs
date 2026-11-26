@@ -409,7 +409,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
 
     use iroh::{EndpointAddr, SecretKey};
 
@@ -426,6 +426,7 @@ mod tests {
     use crate::net::endpoint::NodeEndpoint;
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::sidecar::{SEED_BYTES, create_card};
+    use crate::test_waits::{secret_key, wall_clock_ms};
     use crate::wire::Nonce;
 
     const SPEC_FIELD_SEPARATOR: char = '\t';
@@ -472,20 +473,6 @@ mod tests {
         directories: Arc<Directories>,
         member: Option<(Node, EndpointAddr)>,
         _slot: tokio::sync::SemaphorePermit<'static>,
-    }
-
-    fn secret_key(seed: u8) -> SecretKey {
-        SecretKey::from_bytes(&[seed; KEY_LEN])
-    }
-
-    fn wall_clock_ms() -> u64 {
-        u64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
-        )
-        .unwrap()
     }
 
     fn network_keys() -> NetworkKeys {

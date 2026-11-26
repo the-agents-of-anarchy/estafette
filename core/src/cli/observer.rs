@@ -1028,7 +1028,7 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
     use std::sync::{Mutex, PoisonError};
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
 
     use iroh::EndpointAddr;
 
@@ -1053,7 +1053,8 @@ mod tests {
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
         RecordedEvent, answered_within, found_within, gossip_events_recorded_until,
-        next_recorded_meeting, recorded_events, recorded_until, short_id_field,
+        next_recorded_meeting, recorded_events, recorded_until, secret_key, short_id_field,
+        wall_clock_ms,
     };
     use crate::wire::{Addr, Nonce, Payload};
 
@@ -1125,20 +1126,6 @@ mod tests {
         seed: u8,
         handle: &'static str,
         public: &'static [u8],
-    }
-
-    fn secret_key(seed: u8) -> SecretKey {
-        SecretKey::from_bytes(&[seed; KEY_LEN])
-    }
-
-    fn wall_clock_ms() -> u64 {
-        u64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
-        )
-        .unwrap()
     }
 
     fn network_keys() -> NetworkKeys {

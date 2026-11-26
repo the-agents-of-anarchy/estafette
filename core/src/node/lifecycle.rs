@@ -305,13 +305,14 @@ mod tests {
         PAYLOAD_WAIT, PROBE_NONCE, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch,
         WITNESS_HANDLE, WITNESS_SEED, Witness, bind, card, host_saved_within, infrastructure_of,
         joined_and_asked_for_presence, keys, listed_within, saved_host, short_peer_id, start_pair,
-        start_witnessed, status_within, wall_clock_ms,
+        start_witnessed, status_within,
     };
     use crate::node::rebind::RelayProbe;
     use crate::peers::Status;
     use crate::sidecar;
     use crate::test_waits::{
         RecordedEvent, found_within, next_recorded_meeting, recorded_events, recorded_until,
+        wall_clock_ms,
     };
     use crate::wire::{Introduce, Payload, Version};
 

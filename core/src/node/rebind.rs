@@ -467,15 +467,16 @@ mod tests {
         SECOND_PUBLIC, SECOND_SEED, SEQ, SPEC_OBSERVER_WAIT, Scratch, WITNESS_SEED, Witness, bind,
         card, config_with_hosts, entry_meeting_within, frozen_clock, idle_presence_loop,
         joined_and_asked_for_presence, keys, presence_from, presence_request_by, relay_url,
-        secret_key, short_peer_id, spawn_member, start_members, start_members_reaching,
-        status_within, unreachable_about, wall_clock_ms,
+        short_peer_id, spawn_member, start_members, start_members_reaching, status_within,
+        unreachable_about,
     };
     use crate::payload::ZERO_MAC;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
-        RecordedEvent, found_within, next_recorded, recorded_events, recorded_until,
+        RecordedEvent, found_within, next_recorded, recorded_events, recorded_until, secret_key,
+        wall_clock_ms,
     };
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
 

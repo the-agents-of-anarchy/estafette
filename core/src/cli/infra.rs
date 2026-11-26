@@ -913,7 +913,7 @@ mod tests {
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
         RecordedEvent, answered_within, found_within, gossip_events_recorded_until,
-        next_recorded_meeting, recorded_events, short_id_field,
+        next_recorded_meeting, recorded_events, secret_key, short_id_field,
     };
     use crate::wire::{HostAddr, Version};
 
@@ -980,10 +980,6 @@ mod tests {
         "The network whose configuration file this host reads and joins";
     const BIND_ADDRESS_INPUT_HELP: &str = "The IP address the embedded relay binds for HTTPS (which also answers the ACME challenge) and QUIC address discovery";
     const DOMAIN_INPUT_HELP: &str = "The domain name of the relay, whose Let's Encrypt certificate it obtains and whose URL https://<domain>/ it announces";
-
-    fn secret_key(seed: u8) -> SecretKey {
-        SecretKey::from_bytes(&[seed; KEY_LEN])
-    }
 
     struct Scratch {
         root: PathBuf,

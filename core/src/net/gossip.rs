@@ -205,7 +205,9 @@ mod tests {
     use crate::net::direct::tests::StandingClock;
     use crate::net::endpoint::NodeEndpoint;
     use crate::payload::{PayloadDropRule, PayloadFacts, PayloadStamp};
-    use crate::test_waits::{answered_within, found_within, next_recorded, recorded_events};
+    use crate::test_waits::{
+        answered_within, found_within, next_recorded, recorded_events, secret_key,
+    };
     use crate::wire::{
         Addr, Departure, Infrastructure, Presence, RelayUrl, SignatureBytes, Version, encode,
     };
@@ -242,10 +244,6 @@ mod tests {
 
     fn keys() -> NetworkKeys {
         NetworkKeys::derive(&NETWORK_SECRET)
-    }
-
-    fn secret_key(seed: u8) -> SecretKey {
-        SecretKey::from_bytes(&[seed; KEY_LEN])
     }
 
     struct Member {

@@ -1,11 +1,12 @@
 //! The bounded waits a test of an in-process node uses in place of a sleep, on the events its run record was handed and on a condition it can look at, and the field those events name a card by.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use iroh::PublicKey;
+use iroh::{PublicKey, SecretKey};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
+use crate::crypto::KEY_LEN;
 use crate::event::{Event, EventFields, RunRecord};
 
 /// The longest a test waits for an event when it names no bound of its own.
@@ -16,6 +17,22 @@ const SPEC_SHORT_ID_BYTES: usize = 5;
 
 /// The prefix of the name of every gossip event.
 const GOSSIP_EVENT_PREFIX: &str = "gossip.";
+
+/// The secret key a test derives from a seed, every byte of it the seed.
+pub fn secret_key(seed: u8) -> SecretKey {
+    SecretKey::from_bytes(&[seed; KEY_LEN])
+}
+
+/// The wall clock's reading, in milliseconds since the Unix epoch.
+pub fn wall_clock_ms() -> u64 {
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis(),
+    )
+    .unwrap()
+}
 
 /// The name and fields of one event a run record was handed.
 pub type RecordedEvent = (&'static str, EventFields);

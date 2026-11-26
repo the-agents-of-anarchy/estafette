@@ -15,9 +15,8 @@ use super::tests::{
     SPEC_ANNOUNCEMENT_MAX_AGE_MS, SPEC_INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS,
     SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_PUBLIC, THIRD_SEED, WITNESS_HANDLE,
     WITNESS_PUBLIC, WITNESS_SEED, bind, card, entry_meeting_within, infrastructure_of, keys,
-    message_to, noting_neighbors, relay_url, secret_key, settable_clock, settled_direct_answers,
-    short_peer_id, spawn_member, start_members, start_members_reaching, start_pair,
-    start_witnessed, wall_clock_ms,
+    message_to, noting_neighbors, relay_url, settable_clock, settled_direct_answers, short_peer_id,
+    spawn_member, start_members, start_members_reaching, start_pair, start_witnessed,
 };
 use crate::config::MILLIS_PER_SECOND;
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
@@ -34,7 +33,7 @@ use crate::payload::{
 };
 use crate::test_waits::{
     RecordedEvent, next_recorded, next_recorded_among, next_recorded_meeting, next_recorded_within,
-    recorded_events,
+    recorded_events, secret_key, wall_clock_ms,
 };
 use crate::wire::{
     Addr, Departure, Introduce, IntroduceAck, Payload, Presence, PresenceRequest, ProbeAck,

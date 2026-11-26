@@ -269,10 +269,10 @@ mod tests {
     use crate::node::presence::tests::{
         FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, NETWORK_FILE_NAME, OWNER_SEED,
         PROPERTY_CASES, bind, card, config_with_hosts, infrastructure_of, keys, relay_url,
-        secret_key,
     };
     use crate::payload::OpenedPayload;
     use crate::seeded_draws::Draws;
+    use crate::test_waits::secret_key;
 
     const UNHELD_RELAY: &str = "https://relay-unheld.estafette.invalid/";
     const NOT_A_NODE_ID: &str = "not a node id";

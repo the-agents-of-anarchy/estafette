@@ -1000,7 +1000,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::time::{Instant, SystemTime, UNIX_EPOCH};
+    use std::time::Instant;
 
     use serde_json::{Value, json};
     use tokio::io::{
@@ -1023,7 +1023,7 @@ mod tests {
     use crate::node::RuntimeShutdown;
     use crate::seeded_draws::Draws;
     use crate::sidecar;
-    use crate::test_waits::{RecordedEvent, found_within, recorded_events};
+    use crate::test_waits::{RecordedEvent, found_within, recorded_events, wall_clock_ms};
 
     const NETWORK: &str = "acme";
     const NETWORK_SECRET_BYTE: u8 = 44;
@@ -1138,16 +1138,6 @@ mod tests {
         fn drop(&mut self) {
             crate::scratch_removal::remove_when_the_test_ends(&self.root);
         }
-    }
-
-    fn wall_clock_ms() -> u64 {
-        u64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
-        )
-        .unwrap()
     }
 
     fn network_config(hosts: Vec<Host>) -> NetworkConfig {

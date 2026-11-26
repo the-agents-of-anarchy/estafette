@@ -228,12 +228,12 @@ mod tests {
         SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_SEED, WITNESS_HANDLE,
         WITNESS_SEED, bind, card, direct_answer_after, inbox_frames, keys, listed_within,
         message_to, settled_direct_answers, start_members, start_members_reaching, start_pair,
-        start_third_through_second, wall_clock_ms,
+        start_third_through_second,
     };
     use crate::node::presence::{DirectOutcome, RequestCause};
     use crate::payload::{PayloadError, open_request, seal_response};
     use crate::peers::Status;
-    use crate::test_waits::found_within;
+    use crate::test_waits::{found_within, wall_clock_ms};
     use crate::wire::{
         Addr, Introduce, IntroduceAck, ProbeAck, Request, Response, WIRE_LIMIT_BYTES,
     };

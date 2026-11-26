@@ -599,6 +599,7 @@ mod tests {
     use super::*;
     use crate::card::tests::{SPEC_PUBLIC_CAP_BYTES, public_mapping_of_bytes};
     use crate::crypto::{KEY_LEN, NetworkSecret, sign_host_certificate};
+    use crate::test_waits::secret_key;
     use crate::wire::{
         Addr, Departure, Infrastructure, Introduce, IntroduceAck, Message, MessageAck, Presence,
         PresenceRequest, Probe, ProbeAck, RelayUrl, Unreachable, Version,
@@ -613,10 +614,6 @@ mod tests {
 
     fn other_network() -> NetworkKeys {
         NetworkKeys::derive(&OTHER_NETWORK_SECRET)
-    }
-
-    fn secret_key(seed: u8) -> SecretKey {
-        SecretKey::from_bytes(&[seed; KEY_LEN])
     }
 
     fn public_bytes(seed: u8) -> wire::PublicKey {

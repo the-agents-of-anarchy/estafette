@@ -1909,9 +1909,9 @@ pub(super) mod tests {
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
 
-    use iroh::{RelayUrl, SecretKey};
+    use iroh::RelayUrl;
     use tokio::sync::mpsc::UnboundedReceiver;
 
     use super::*;
@@ -1933,7 +1933,7 @@ pub(super) mod tests {
     use crate::seeded_draws::Draws;
     use crate::test_waits::{
         RecordedEvent, found_within, next_recorded_meeting, recorded_events, recorded_until,
-        short_id_field,
+        secret_key, short_id_field, wall_clock_ms,
     };
     use crate::wire::{Infrastructure, SignatureBytes};
 
@@ -2047,22 +2047,8 @@ pub(super) mod tests {
         NetworkKeys::derive(&network_secret())
     }
 
-    pub(in crate::node) fn secret_key(seed: u8) -> SecretKey {
-        SecretKey::from_bytes(&[seed; KEY_LEN])
-    }
-
     pub(in crate::node) fn card(seed: u8) -> crate::wire::PublicKey {
         *secret_key(seed).public().as_bytes()
-    }
-
-    pub(in crate::node) fn wall_clock_ms() -> u64 {
-        u64::try_from(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
-        )
-        .unwrap()
     }
 
     struct EveryProcessRuns;
