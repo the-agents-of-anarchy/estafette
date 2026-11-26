@@ -8,6 +8,7 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::crypto::KEY_LEN;
 use crate::event::{Event, EventFields, RunRecord};
+use crate::wire::Nonce;
 
 /// The longest a test waits for an event when it names no bound of its own.
 const RECORDED_EVENT_WITHIN: Duration = Duration::from_secs(10);
@@ -17,6 +18,9 @@ const SPEC_SHORT_ID_BYTES: usize = 5;
 
 /// The prefix of the name of every gossip event.
 const GOSSIP_EVENT_PREFIX: &str = "gossip.";
+
+/// The probe nonce every in-process node of a test fills its probes with.
+pub const PROBE_NONCE: Nonce = *b"0123456789abcdef";
 
 /// The secret key a test derives from a seed, every byte of it the seed.
 pub fn secret_key(seed: u8) -> SecretKey {

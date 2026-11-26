@@ -302,8 +302,8 @@ mod tests {
     use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
         FIRST_SEED, HOST_RELAY, HOST_SEED, MARKER_SEED, MOVED_HOST_RELAY, Member, MemberPlan,
-        PAYLOAD_WAIT, PROBE_NONCE, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch,
-        WITNESS_HANDLE, WITNESS_SEED, Witness, bind, card, host_saved_within, infrastructure_of,
+        PAYLOAD_WAIT, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, WITNESS_HANDLE,
+        WITNESS_SEED, Witness, bind, card, host_saved_within, infrastructure_of,
         joined_and_asked_for_presence, keys, listed_within, saved_host, short_peer_id, start_pair,
         start_witnessed, status_within,
     };
@@ -311,8 +311,8 @@ mod tests {
     use crate::peers::Status;
     use crate::sidecar;
     use crate::test_waits::{
-        RecordedEvent, found_within, next_recorded_meeting, recorded_events, recorded_until,
-        wall_clock_ms,
+        PROBE_NONCE, RecordedEvent, found_within, next_recorded_meeting, recorded_events,
+        recorded_until, wall_clock_ms,
     };
     use crate::wire::{Introduce, Payload, Version};
 

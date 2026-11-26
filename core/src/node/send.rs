@@ -223,16 +223,16 @@ mod tests {
     use crate::node::presence::DirectContact;
     use crate::node::presence::tests::{
         DUPLICATE_KEY_PUBLIC, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTEGER_PAST_64_BITS_PUBLIC,
-        INTRODUCE_ROUND_TRIP, Member, MemberPlan, PROBE_NONCE, SECOND_HANDLE, SECOND_PUBLIC,
-        SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_SEED, WITNESS_HANDLE,
-        WITNESS_SEED, bind, card, direct_answer_after, inbox_frames, keys, listed_within,
-        message_to, settled_direct_answers, start_members, start_members_reaching, start_pair,
+        INTRODUCE_ROUND_TRIP, Member, MemberPlan, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED,
+        SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_SEED, WITNESS_HANDLE, WITNESS_SEED, bind,
+        card, direct_answer_after, inbox_frames, keys, listed_within, message_to,
+        settled_direct_answers, start_members, start_members_reaching, start_pair,
         start_third_through_second,
     };
     use crate::node::presence::{DirectOutcome, RequestCause};
     use crate::payload::{PayloadError, open_request, seal_response};
     use crate::peers::Status;
-    use crate::test_waits::{found_within, wall_clock_ms};
+    use crate::test_waits::{PROBE_NONCE, found_within, wall_clock_ms};
     use crate::wire::{
         Addr, Introduce, IntroduceAck, ProbeAck, Request, Response, WIRE_LIMIT_BYTES,
     };
@@ -429,7 +429,7 @@ mod tests {
         let (first, second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
 
         let delivery = first.node.send(SECOND_HANDLE, BODY).await.unwrap();
 
@@ -459,7 +459,7 @@ mod tests {
         let (first, second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
 
         let sent_from = wall_clock_ms();
         let delivery = first.node.send(SECOND_HANDLE, BODY).await.unwrap();
@@ -489,7 +489,7 @@ mod tests {
         let (first, second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
         let inbox_client = tokio::net::UnixStream::connect(&second.inbox_path)
             .await
             .unwrap();
@@ -578,7 +578,7 @@ mod tests {
         let first = members.pop().unwrap();
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
         let mut connected = detaching.connected.subscribe();
         *detaching.client.lock().unwrap() = Some(
             tokio::net::UnixStream::connect(&second.inbox_path)
@@ -610,7 +610,7 @@ mod tests {
         let (first, _second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
 
         let refused = first.node.send(NO_ONE, BODY).await;
 
@@ -627,7 +627,7 @@ mod tests {
         let (first, second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
         closed_within_the_documented_latency(second.endpoint.close()).await;
         let oversized = "x".repeat(MESSAGE_BODY_LIMIT_BYTES + 1);
 
@@ -643,7 +643,7 @@ mod tests {
         let (first, second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
         let at_limit = "x".repeat(MESSAGE_BODY_LIMIT_BYTES);
 
         let delivery = first.node.send(SECOND_HANDLE, &at_limit).await;
@@ -670,7 +670,7 @@ mod tests {
         assert_eq!(failed.map_err(ErrorCode::from), Err(ErrorCode::Unreachable));
         let status = listed_within(&first, WITNESS_SEED, Duration::ZERO)
             .await
-            .unwrap()
+            .expect("the entry of WITNESS_SEED listed at first within Duration::ZERO")
             .status;
         assert_eq!(status, Status::Unreachable);
         drop(scratch);
@@ -772,7 +772,7 @@ mod tests {
         );
         let status = listed_within(&first, WITNESS_SEED, Duration::ZERO)
             .await
-            .unwrap()
+            .expect("the entry of WITNESS_SEED listed at first within Duration::ZERO")
             .status;
         assert_eq!(status, Status::Unreachable);
         drop(scratch);
@@ -803,7 +803,7 @@ mod tests {
 
             let listed = listed_within(&first, WITNESS_SEED, Duration::ZERO)
                 .await
-                .unwrap();
+                .expect("the entry of WITNESS_SEED listed at first within Duration::ZERO");
 
             assert_eq!(listed.public, None, "{}", String::from_utf8_lossy(public));
             drop(scratch);
@@ -817,7 +817,7 @@ mod tests {
             first_member_listing_a_scripted_peer(&scratch, PeerPhase::Stopping).await;
         let before = listed_within(&first, WITNESS_SEED, Duration::ZERO)
             .await
-            .unwrap()
+            .expect("the entry of WITNESS_SEED listed at first within Duration::ZERO")
             .status;
 
         let refused = first.node.send(WITNESS_HANDLE, BODY).await;
@@ -826,7 +826,7 @@ mod tests {
         assert_eq!(refused.map_err(ErrorCode::from), Err(ErrorCode::Refused));
         let after = listed_within(&first, WITNESS_SEED, Duration::ZERO)
             .await
-            .unwrap()
+            .expect("the entry of WITNESS_SEED listed at first within Duration::ZERO")
             .status;
         assert_eq!(after, Status::Online);
         drop(scratch);
@@ -840,10 +840,10 @@ mod tests {
         let third = start_third_through_second(&scratch, &second, THIRD_HANDLE).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
         listed_within(&first, THIRD_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap();
+            .expect("the entry of THIRD_SEED listed at first within SPEC_OBSERVER_WAIT");
         let handles = [
             THIRD_HANDLE.to_owned(),
             NO_ONE.to_owned(),

@@ -1940,8 +1940,8 @@ pub(super) mod tests {
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
     use crate::test_waits::{
-        RecordedEvent, found_within, next_recorded_meeting, recorded_events, recorded_until,
-        secret_key, short_id_field, wall_clock_ms,
+        PROBE_NONCE, RecordedEvent, found_within, next_recorded_meeting, recorded_events,
+        recorded_until, secret_key, short_id_field, wall_clock_ms,
     };
     use crate::wire::{Infrastructure, SignatureBytes};
 
@@ -1964,7 +1964,6 @@ pub(super) mod tests {
     const HOME_RELAY_STATUS_WITHIN: Duration = Duration::from_secs(10);
     #[cfg(feature = "relay")]
     const RELAY_LOSS_REMOVAL_SLACK: Duration = Duration::from_millis(1500);
-    pub(in crate::node) const PROBE_NONCE: crate::wire::Nonce = *b"0123456789abcdef";
     const NODE_TESTS_AT_ONCE: usize = 2;
     const INBOX_FRAME_WAIT: Duration = Duration::from_secs(2);
     const MESSAGE_ID: crate::wire::MessageId = [
