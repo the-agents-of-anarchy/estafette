@@ -39,7 +39,7 @@ use crate::tail::{
     PRESENCE_CARD_COLUMN, PRESENCE_KIND, PRESENCE_SEQ_COLUMN, RECORD_HOST_COLUMN, RECORD_TS_COLUMN,
     Tail, announced_relays, columns_of_kind, columns_of_presence_of,
 };
-use crate::time_passing::wait_for_time_to_pass;
+use crate::time_passing::{wait_for_time_to_pass, wall_after};
 use crate::timed_step::timed;
 use crate::trace_reader::WallMs;
 
@@ -510,11 +510,7 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
         )
     });
     let first_record_ts = record_ts_of(&first_record, &added_id).unwrap();
-    let first_record_wall = WallMs(
-        starting_wall
-            .0
-            .saturating_add(u64::try_from(after.as_millis()).unwrap()),
-    );
+    let first_record_wall = wall_after(starting_wall, after);
     let deadline = starting
         .checked_add(after)
         .and_then(|arrived| arrived.checked_add(SPEC_HOST_ADDED_WITHIN))

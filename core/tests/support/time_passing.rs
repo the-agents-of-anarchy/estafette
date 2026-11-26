@@ -11,14 +11,19 @@ const SNAPSHOT_SLACK: Duration = Duration::from_secs(15);
 pub const SNAPSHOT_PROVING_A_SPAN_WITHIN: Duration =
     SPEC_COUNTERS_INTERVAL.saturating_add(SNAPSHOT_SLACK);
 
-/// Waits until the member records a counters snapshot at least `span` after the wall-clock instant, the event its own time produces, proof that much of it passed.
-#[track_caller]
-pub fn wait_for_time_to_pass(events: &MemberEvents, since: WallMs, span: Duration) {
-    let due = WallMs(
+/// The wall-clock reading a span after the one given.
+pub fn wall_after(since: WallMs, span: Duration) -> WallMs {
+    WallMs(
         since
             .0
             .saturating_add(u64::try_from(span.as_millis()).unwrap()),
-    );
+    )
+}
+
+/// Waits until the member records a counters snapshot at least `span` after the wall-clock instant, the event its own time produces, proof that much of it passed.
+#[track_caller]
+pub fn wait_for_time_to_pass(events: &MemberEvents, since: WallMs, span: Duration) {
+    let due = wall_after(since, span);
     let within = span.saturating_add(SNAPSHOT_PROVING_A_SPAN_WITHIN);
     events.wait_until(
         &format!("{COUNTERS_EVENT} at or after {due} ms"),
