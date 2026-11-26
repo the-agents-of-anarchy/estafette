@@ -45,7 +45,7 @@ use crate::payload::{
     ZERO_SIGNATURE,
 };
 use crate::peers::{
-    ContactFailed, ContactSucceeded, Effect, Operated, Peer, PeerTable, TableChange,
+    ContactSucceeded, Effect, FailedContactKind, Operated, Peer, PeerTable, TableChange,
     announced_sender_handle, is_within_announcement_max_age, is_within_announcement_max_age_ahead,
 };
 use crate::stream_items::{Stream, StreamExt};
@@ -620,14 +620,14 @@ impl PeerRows {
                 card,
                 answer: Err(_),
             } => self.change(|table| {
-                table.direct_contact_failed(card, now_ms, ContactFailed::Introduce)
+                table.direct_contact_failed(card, now_ms, FailedContactKind::Introduce)
             }),
             DirectAnswer::Probe {
                 card,
                 answer: Err(_),
-            } => {
-                self.change(|table| table.direct_contact_failed(card, now_ms, ContactFailed::Probe))
-            }
+            } => self.change(|table| {
+                table.direct_contact_failed(card, now_ms, FailedContactKind::Probe)
+            }),
             DirectAnswer::Probe {
                 card,
                 answer: Ok(()),
@@ -675,7 +675,7 @@ impl NodeState {
         let now_ms = self.now_ms();
         let effects = self
             .rows
-            .change(|table| table.direct_contact_failed(card, now_ms, ContactFailed::Send));
+            .change(|table| table.direct_contact_failed(card, now_ms, FailedContactKind::Send));
         self.hand_to_loop(LoopEvent::Effects {
             effects,
             #[cfg(test)]

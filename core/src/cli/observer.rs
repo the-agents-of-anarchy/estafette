@@ -1049,7 +1049,7 @@ mod tests {
     use crate::net::direct::{DirectServer, MonotonicTime, RuntimeClock, later_by};
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
-    use crate::peers::{ContactFailed, Status};
+    use crate::peers::{FailedContactKind, Status};
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
         RecordedEvent, answered_within, found_within, gossip_events_recorded_until,
@@ -3592,7 +3592,7 @@ mod tests {
                 LINE_CLOCK_MS,
             ));
         }
-        drop(table.direct_contact_failed(card_of(2), LINE_CLOCK_MS, ContactFailed::Send));
+        drop(table.direct_contact_failed(card_of(2), LINE_CLOCK_MS, FailedContactKind::Send));
         table
             .admit_departure(
                 &wire::Departure {

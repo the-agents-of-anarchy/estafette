@@ -141,13 +141,13 @@ pub enum TableCause {
     Introduce,
     IntroduceAck,
     Message,
-    ContactFailed(ContactFailed),
+    ContactFailed(FailedContactKind),
     ContactSucceeded(ContactSucceeded),
 }
 
 /// A direct contact with a card that failed: an Introduce, a Probe or the send of a Message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContactFailed {
+pub enum FailedContactKind {
     Introduce,
     Probe,
     Send,
@@ -202,7 +202,7 @@ impl MovesTheTable for Message {
     }
 }
 
-impl MovesTheTable for ContactFailed {
+impl MovesTheTable for FailedContactKind {
     fn cause(&self) -> TableCause {
         TableCause::ContactFailed(*self)
     }
@@ -402,7 +402,7 @@ impl PeerTable {
         &mut self,
         card: PublicKey,
         now_ms: u64,
-        failed: ContactFailed,
+        failed: FailedContactKind,
     ) -> Operated<Vec<Effect>> {
         self.operate_after_forgetting_expired(now_ms, |table, changes| {
             table
@@ -2011,14 +2011,14 @@ mod tests {
         );
         assert_eq!(
             table
-                .direct_contact_failed(PEER_CARD, LATER_MS, ContactFailed::Probe)
+                .direct_contact_failed(PEER_CARD, LATER_MS, FailedContactKind::Probe)
                 .value,
             vec![Effect::BroadcastUnreachable(PEER_CARD)]
         );
         assert_eq!(only_peer(&table, LATER_MS).status, Status::Unreachable);
         assert_eq!(
             table
-                .direct_contact_failed(THIRD_NODE_CARD, LATER_MS, ContactFailed::Send)
+                .direct_contact_failed(THIRD_NODE_CARD, LATER_MS, FailedContactKind::Send)
                 .value,
             vec![]
         );
@@ -2035,7 +2035,7 @@ mod tests {
         );
         assert_eq!(
             table
-                .direct_contact_failed(PEER_CARD, NOW_MS, ContactFailed::Send)
+                .direct_contact_failed(PEER_CARD, NOW_MS, FailedContactKind::Send)
                 .value,
             vec![Effect::BroadcastUnreachable(PEER_CARD)]
         );
@@ -2148,7 +2148,7 @@ mod tests {
         let mut table = table_with_peer_gone_since_now();
         assert_eq!(
             table
-                .direct_contact_failed(PEER_CARD, LATER_MS, ContactFailed::Probe)
+                .direct_contact_failed(PEER_CARD, LATER_MS, FailedContactKind::Probe)
                 .value,
             vec![]
         );
@@ -2249,8 +2249,8 @@ mod tests {
         let handle: LocalHandle = PEER_HANDLE.parse().unwrap();
 
         let created = table.admit_presence(&presence(PEER_CARD, PEER_HANDLE, FIRST_SEQ), NOW_MS);
-        let moved = table.direct_contact_failed(PEER_CARD, NOW_MS, ContactFailed::Probe);
-        let unmoved = table.direct_contact_failed(PEER_CARD, NOW_MS, ContactFailed::Probe);
+        let moved = table.direct_contact_failed(PEER_CARD, NOW_MS, FailedContactKind::Probe);
+        let unmoved = table.direct_contact_failed(PEER_CARD, NOW_MS, FailedContactKind::Probe);
         let departed = table.admit_departure(&departure(PEER_CARD, DEPARTURE_SEQ), NOW_MS);
         let removed = table.neighbor_down(THIRD_NODE_CARD, GONE_REMOVED_MS);
 
@@ -2271,7 +2271,7 @@ mod tests {
                 handle: handle.clone(),
                 from: Status::Online,
                 to: Status::Unreachable,
-                cause: TableCause::ContactFailed(ContactFailed::Probe),
+                cause: TableCause::ContactFailed(FailedContactKind::Probe),
             }]
         );
         assert_eq!(unmoved.changes, []);
@@ -2306,7 +2306,7 @@ mod tests {
         );
         assert_eq!(
             table
-                .direct_contact_failed(PEER_CARD, NOW_MS, ContactFailed::Send)
+                .direct_contact_failed(PEER_CARD, NOW_MS, FailedContactKind::Send)
                 .value,
             vec![Effect::BroadcastUnreachable(PEER_CARD)],
             "the table did not set the setup peer unreachable"
@@ -2468,7 +2468,7 @@ mod tests {
                     3 => table.neighbor_down(card, now_ms).changes,
                     4 => {
                         table
-                            .direct_contact_failed(card, now_ms, ContactFailed::Probe)
+                            .direct_contact_failed(card, now_ms, FailedContactKind::Probe)
                             .changes
                     }
                     5 => {

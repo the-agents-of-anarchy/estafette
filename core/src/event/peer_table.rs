@@ -3,7 +3,7 @@ use serde_json::Value;
 use super::short_id::ShortId;
 use super::{AreaEvent, EventFields};
 use crate::handle::{AnnouncedHandle, LocalHandle};
-use crate::peers::{ContactFailed, ContactSucceeded, Status, TableCause, TableChange};
+use crate::peers::{ContactSucceeded, FailedContactKind, Status, TableCause, TableChange};
 use crate::wire;
 
 const HANDLE_FIELD: &str = "handle";
@@ -152,12 +152,12 @@ const fn cause_name(cause: TableCause) -> &'static str {
         TableCause::Unreachable => "unreachable",
         TableCause::Introduce => "introduce",
         TableCause::IntroduceAck => "introduce_ack",
-        TableCause::ContactFailed(ContactFailed::Introduce) => "introduce_failed",
+        TableCause::ContactFailed(FailedContactKind::Introduce) => "introduce_failed",
         TableCause::Message => "message",
         TableCause::ContactSucceeded(ContactSucceeded::Probe) => "probe_answered",
-        TableCause::ContactFailed(ContactFailed::Probe) => "probe_failed",
+        TableCause::ContactFailed(FailedContactKind::Probe) => "probe_failed",
         TableCause::ContactSucceeded(ContactSucceeded::Send) => "send_acknowledged",
-        TableCause::ContactFailed(ContactFailed::Send) => "send_failed",
+        TableCause::ContactFailed(FailedContactKind::Send) => "send_failed",
     }
 }
 
@@ -282,7 +282,7 @@ mod tests {
                 handle: handle.clone(),
                 from: Status::Online,
                 to: Status::Unreachable,
-                cause: TableCause::ContactFailed(ContactFailed::Send),
+                cause: TableCause::ContactFailed(FailedContactKind::Send),
             })
             .into(),
             PeerTableEvent::of_change(TableChange::Removed {
@@ -318,7 +318,7 @@ mod tests {
         (TableCause::Introduce, "introduce"),
         (TableCause::IntroduceAck, "introduce_ack"),
         (
-            TableCause::ContactFailed(ContactFailed::Introduce),
+            TableCause::ContactFailed(FailedContactKind::Introduce),
             "introduce_failed",
         ),
         (TableCause::Message, "message"),
@@ -327,7 +327,7 @@ mod tests {
             "probe_answered",
         ),
         (
-            TableCause::ContactFailed(ContactFailed::Probe),
+            TableCause::ContactFailed(FailedContactKind::Probe),
             "probe_failed",
         ),
         (
@@ -335,7 +335,7 @@ mod tests {
             "send_acknowledged",
         ),
         (
-            TableCause::ContactFailed(ContactFailed::Send),
+            TableCause::ContactFailed(FailedContactKind::Send),
             "send_failed",
         ),
     ];
