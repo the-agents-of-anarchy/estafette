@@ -10,7 +10,7 @@ use crate::lab_server::LabServer;
 use crate::live_network::LiveNetwork;
 use crate::payload_placeholders::wall_clock_ms;
 use crate::scratch_machine::KeptSecrets;
-use crate::scratch_machine::server_member_end::{fail_unless_succeeded, recipe_failure};
+use crate::scratch_machine::recipe_run::{fail_unless_succeeded, recipe_failure};
 
 /// The variable the acceptance gate names the lab server in whose host the test may kill.
 const SERVER_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_KILLABLE_SERVER";

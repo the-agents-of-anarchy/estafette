@@ -13,7 +13,7 @@ use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use iroh_gossip::TopicId;
 
 use crate::forgeries::wall_clock_seconds;
-use crate::scratch_machine::server_member_end::recipe_failure;
+use crate::scratch_machine::recipe_run::recipe_failure;
 use crate::scratch_machine::{BINARY, INVITATION_VARIABLE, KeptFilesPolicy, KeptSecrets};
 
 /// The task runner every project task runs through.

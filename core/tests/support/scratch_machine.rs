@@ -21,6 +21,8 @@ use iroh::EndpointId;
 pub mod fresh_directory;
 #[path = "owned_process.rs"]
 pub mod owned_process;
+#[path = "recipe_run.rs"]
+pub mod recipe_run;
 #[path = "../common/remove_scratch.rs"]
 pub mod remove_scratch;
 #[path = "server_member_end.rs"]
@@ -29,7 +31,7 @@ pub mod server_member_end;
 pub mod trace_reader;
 
 use owned_process::{END_FAILED_EXTENSION, EndMarks, FailedEnd, OwnedProcess};
-use server_member_end::succeeded;
+use recipe_run::succeeded;
 use trace_reader::{WritingProcess, timeline_read_as};
 
 use crate::member_events::MemberEvents;

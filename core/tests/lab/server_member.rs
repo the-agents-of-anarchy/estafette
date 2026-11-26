@@ -12,9 +12,8 @@ use crate::live_network::LiveNetwork;
 use crate::mcp_server::{HANDLE_KEY, PEERS_KEY, PEERS_TOOL, RESULT_KEY, SEND_TOOL, send_arguments};
 use crate::member_events::MemberEvents;
 use crate::scratch_machine::fresh_directory::fresh_directory_in;
-use crate::scratch_machine::server_member_end::{
-    ServerMemberStep, TestSoFar, ended_server_member, recipe_failure,
-};
+use crate::scratch_machine::recipe_run::recipe_failure;
+use crate::scratch_machine::server_member_end::{ServerMemberStep, TestSoFar, ended_server_member};
 use crate::scratch_machine::{
     KeptSecrets, TIMELINE_HEADING, fail_unless_panicking, print_to_standard_error,
 };

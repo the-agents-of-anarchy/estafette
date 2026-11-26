@@ -2,7 +2,7 @@ use std::io::{self, Write};
 use std::process::{Command, Output, Stdio};
 
 use crate::live_network::{LAB_BINARY_VARIABLE, TASK_RUNNER};
-use crate::scratch_machine::server_member_end::{fail_unless_succeeded, recipe_failure, succeeded};
+use crate::scratch_machine::recipe_run::{fail_unless_succeeded, recipe_failure, succeeded};
 use crate::scratch_machine::{BINARY, KeptSecrets, print_to_standard_error};
 
 /// The variable the remote recipes take the server's name from; left as the gate left it, they reach the live host's server.
