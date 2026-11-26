@@ -299,10 +299,7 @@ pub fn parse_trace_lines(
 /// # Errors
 ///
 /// Fails when the file cannot be read, and as `parse_trace_lines` does, naming the file.
-pub fn read_trace_file(
-    path: &Path,
-    writing: WritingProcess,
-) -> Result<Vec<TraceLine>, TraceReadError> {
+fn read_trace_file(path: &Path, writing: WritingProcess) -> Result<Vec<TraceLine>, TraceReadError> {
     let bytes = fs::read(path).map_err(|failure| TraceReadError::Unreadable {
         path: path.to_path_buf(),
         kind: failure.kind(),

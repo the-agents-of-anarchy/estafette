@@ -10,7 +10,7 @@ const LEADING_BYTES_STILL_ZERO: usize = 64;
 
 /// The bytes of the line as a read shows it while its write is landing: its first 64 bytes still zero.
 #[must_use]
-pub fn line_still_zero_at_its_start(line: &str) -> Vec<u8> {
+pub(crate) fn line_still_zero_at_its_start(line: &str) -> Vec<u8> {
     let mut bytes = line.as_bytes().to_vec();
     bytes
         .get_mut(..LEADING_BYTES_STILL_ZERO)
