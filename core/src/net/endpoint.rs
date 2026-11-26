@@ -1097,7 +1097,7 @@ mod tests {
         let held_relay = relay_url(FIRST_HOST_RELAY);
         let (record, mut recorded) = crate::test_waits::recorded_events();
         let connections = HeldConnections::new(
-            Arc::new(crate::net::direct::RuntimeClock),
+            Arc::new(crate::clock::RuntimeClock),
             TransportRecord::new(record, crate::net::direct::tests::test_salt()),
         );
         let member = bind_node_holding(

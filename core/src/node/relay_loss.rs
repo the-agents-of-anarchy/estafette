@@ -7,7 +7,7 @@ use iroh::RelayUrl;
 use iroh::endpoint::RelayStatus;
 use tokio::time::Instant;
 
-use crate::net::direct::later_by;
+use crate::clock::later_by;
 
 /// How long a home relay stays disconnected before it leaves the relay map (spec:778, spec:1010).
 const RELAY_LOSS_WAIT: Duration = Duration::from_millis(500);

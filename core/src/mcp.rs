@@ -24,6 +24,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::card::Card;
 use crate::cli::cards::CardRegistryReader;
+use crate::clock::MonotonicClock;
 use crate::config::{NetworkConfig, host_relay_url};
 use crate::crypto::GateKey;
 use crate::dirs::{CARD_EXTENSION, Directories};
@@ -34,7 +35,7 @@ use crate::event::{
 };
 use crate::handle::{AnnouncedHandle, Handle, MAX_LOCAL_LENGTH};
 use crate::inbox::buffer::InboxFrame;
-use crate::net::direct::{MonotonicClock, message_id_text};
+use crate::net::direct::message_id_text;
 use crate::net::endpoint::{CounterSnapshot, NodeEndpoint, SnapshotMoment};
 use crate::node::{
     BroadcastResult, DEPARTURE_WAIT, Delivery, Exit, Identity, Network, Node, NodeEffects, Session,
@@ -998,12 +999,12 @@ mod tests {
 
     use super::*;
     use crate::card::tests::SPEC_PUBLIC_CAP_BYTES;
+    use crate::clock::RuntimeClock;
     use crate::config::{Host, HostOrigin};
     use crate::dirs::{CardsDirectoryOverride, OperatingSystemFilesystem};
     use crate::event::Event;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
-    use crate::net::direct::RuntimeClock;
     use crate::net::direct::tests::{
         INTERVAL_MOMENT, MOMENT, REQUEST_SENT, SPEC_STATE_SNAPSHOT_INTERVAL, StandingClock,
         counters_snapshot_one_interval_on, was_taken_at,

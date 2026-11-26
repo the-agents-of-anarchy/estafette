@@ -20,6 +20,7 @@ use crate::card::{Card, CardInvalid, CardUnusable};
 use crate::cli::debug::DebugArgs;
 use crate::cli::lines::tab_separated_line;
 use crate::cli::network::NetworkFilesystem;
+use crate::clock::MonotonicClock;
 use crate::config::{ConfigError, NetworkConfig};
 use crate::crypto::GateKey;
 use crate::dirs::{CardsDirectoryOverride, Directories};
@@ -29,9 +30,7 @@ use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
 use crate::inbox::socket::{InboxSocket, InboxSocketError};
 use crate::keys::parse_public_key;
 use crate::mcp::EndpointBinding;
-use crate::net::direct::{
-    ClientTimeouts, DirectClient, DirectHost, MonotonicClock, message_id_text,
-};
+use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, message_id_text};
 use crate::net::endpoint::{NodeEndpoint, SnapshotMoment};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
@@ -1019,6 +1018,7 @@ mod tests {
     use iroh::EndpointAddr;
 
     use super::*;
+    use crate::clock::{MonotonicTime, RuntimeClock, later_by};
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
     use crate::dirs::OperatingSystemFilesystem;
@@ -1026,13 +1026,13 @@ mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::ProcessTable;
     use crate::keys::render_public_key;
+    use crate::net::direct::DirectServer;
     use crate::net::direct::tests::{
         INTERVAL_MOMENT, INTRODUCE_KIND, LeapingClock, PAYLOAD_ACCEPTED, REQUEST_SENT,
         SPEC_STATE_SNAPSHOT_INTERVAL, START_MOMENT, STATE_COUNTERS, StandingClock,
         counters_snapshot_one_interval_on, deadline_of_the_gossip_join_timeout, field,
         recorded_until_introduce_sent_to, was_taken_at,
     };
-    use crate::net::direct::{DirectServer, MonotonicTime, RuntimeClock, later_by};
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
     use crate::peers::{FailedContactKind, Status};

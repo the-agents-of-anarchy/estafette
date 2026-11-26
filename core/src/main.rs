@@ -23,6 +23,7 @@ use estafette::cli::network::{self, NetworkCommand, NetworkCommandError};
 use estafette::cli::observer::{
     self, Interruption, ObserverCommand, ObserverCommandError, ObserverEffects, OperatorEffects,
 };
+use estafette::clock::{MonotonicClock, RuntimeClock};
 use estafette::config::{ConfigError, NetworkConfig};
 use estafette::crypto::GateKey;
 use estafette::dirs::{
@@ -36,7 +37,7 @@ use estafette::event::{
 };
 use estafette::inbox::socket::{InboxSocket, InboxSocketError, OperatingSystemProcessTable};
 use estafette::mcp::{self, ServedNetwork, ServerEffects};
-use estafette::net::direct::{HeldConnections, MonotonicClock, RuntimeClock};
+use estafette::net::direct::HeldConnections;
 use estafette::net::endpoint::{GateFailure, NodeEndpoint, TransportRecord};
 use estafette::node::{
     Exit, Network, NodeEffects, NodeError, RuntimeShutdown, ShutdownSignal, relay_answers,

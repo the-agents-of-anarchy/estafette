@@ -6,8 +6,8 @@ use iroh_gossip::api::{ApiError, Event, GossipReceiver, GossipSender, JoinOption
 use iroh_gossip::{Gossip, TopicId};
 use tokio::time::Instant;
 
+use crate::clock::{MonotonicClock, later_by};
 use crate::crypto::NetworkKeys;
-use crate::net::direct::{MonotonicClock, later_by};
 use crate::payload::{
     OpenedPayload, PayloadError, PayloadRefusal, open_described_payload, seal_payload,
 };
@@ -197,11 +197,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
+    use crate::clock::RuntimeClock;
     use crate::crypto::{
         KEY_LEN, MAC_LEN, NetworkSecret, SignedPayloadKind, sign_host_certificate,
     };
     use crate::event::{RunRecord, TransportEvent};
-    use crate::net::direct::RuntimeClock;
     use crate::net::direct::tests::StandingClock;
     use crate::net::endpoint::NodeEndpoint;
     use crate::payload::{PayloadDropRule, PayloadFacts, PayloadStamp};

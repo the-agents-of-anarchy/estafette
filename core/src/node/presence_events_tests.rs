@@ -19,11 +19,12 @@ use super::tests::{
     message_to, noting_neighbors, relay_url, settable_clock, settled_direct_answers, short_peer_id,
     spawn_member, start_members, start_members_reaching, start_pair, start_witnessed,
 };
+use crate::clock::RuntimeClock;
 use crate::config::MILLIS_PER_SECOND;
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{EventFields, RunRecord};
 use crate::net::direct::tests::{test_salt, unrecorded_register};
-use crate::net::direct::{ClientTimeouts, DirectClient, HeldConnections, RuntimeClock};
+use crate::net::direct::{ClientTimeouts, DirectClient, HeldConnections};
 use crate::net::endpoint::{DIRECT_ALPN, LocationHash, TransportRecord};
 use crate::net::gossip::{GossipEvent, NetworkTopic};
 use crate::node::addresses::wire_addr;
@@ -1169,7 +1170,7 @@ async fn observability_decision_9_a_broadcast_the_topic_refuses_is_recorded_as_f
         keys(),
         secret_key(HOST_SEED).public(),
         Vec::new(),
-        Arc::new(crate::net::direct::RuntimeClock),
+        Arc::new(crate::clock::RuntimeClock),
     )
     .await
     .unwrap();

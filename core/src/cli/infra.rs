@@ -24,6 +24,7 @@ use tokio::time::{Instant, Interval, MissedTickBehavior, interval};
 
 use super::debug::DebugArgs;
 use super::network::NetworkFilesystem;
+use crate::clock::MonotonicClock;
 use crate::config::{ConfigError, MILLIS_PER_SECOND, NetworkConfig, write_atomically};
 use crate::crypto::{
     GateKey, HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, parse_host_certificate, verify_host_certificate,
@@ -34,7 +35,7 @@ use crate::handle::Handle;
 use crate::invite::{InviteError, render_host_line};
 use crate::keys::{KeyError, generate_secret_key, parse_secret_key, render_secret_key};
 use crate::mcp::EndpointBinding;
-use crate::net::direct::{DirectHost, MonotonicClock};
+use crate::net::direct::DirectHost;
 use crate::net::endpoint::{NodeEndpoint, SnapshotMoment};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
@@ -885,6 +886,7 @@ mod tests {
     use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 
     use super::*;
+    use crate::clock::{MonotonicClock, MonotonicTime, RuntimeClock};
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{
         NetworkKeys, NetworkSecret, render_host_certificate, sign_host_certificate,
@@ -898,7 +900,6 @@ mod tests {
         counters_snapshot_one_interval_on, deadline_of_the_gossip_join_timeout, was_taken_at,
     };
     use crate::net::direct::{ClientTimeouts, DirectClient};
-    use crate::net::direct::{MonotonicClock, MonotonicTime, RuntimeClock};
     use crate::net::endpoint::NodeEndpoint;
     use crate::node::{Identity, Node, NodeEffects};
     use crate::stream_items::StreamExt;

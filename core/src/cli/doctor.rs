@@ -405,6 +405,7 @@ mod tests {
 
     use super::*;
     use crate::cli::observer::ObserverEffects;
+    use crate::clock::RuntimeClock;
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
     use crate::dirs::CardsDirectoryOverride;
@@ -412,7 +413,6 @@ mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
-    use crate::net::direct::RuntimeClock;
     use crate::net::endpoint::NodeEndpoint;
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::sidecar::{SEED_BYTES, create_card};

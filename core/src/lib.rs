@@ -1,5 +1,6 @@
 pub mod card;
 pub mod cli;
+pub mod clock;
 pub mod config;
 pub mod crypto;
 pub mod dirs;

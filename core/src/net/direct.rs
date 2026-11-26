@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::future::Future;
 use std::num::NonZeroUsize;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -15,12 +14,13 @@ use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{Endpoint, EndpointId};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::watch;
-use tokio::time::{Instant, sleep_until, timeout};
+use tokio::time::{Instant, timeout};
 
 use super::endpoint::{
     Close, CloseReason, ConnectionId, DIRECT_ALPN, Direction, NodeEndpoint, PathChange, Protocol,
     QUIC_KEEP_ALIVE_INTERVAL, TransportRecord,
 };
+use crate::clock::{MonotonicClock, before_deadline, later_by};
 use crate::crypto::NetworkKeys;
 use crate::errors::ErrorCode;
 use crate::event::{DirectEvent, Event, ShortId, TransportEvent};
@@ -75,52 +75,6 @@ pub trait DirectHost: Send + Sync + 'static {
         sender: wire::PublicKey,
         introduce: wire::Introduce,
     ) -> IntroduceAck;
-}
-
-/// A monotonic clock, read for the instant now and waited on until it reads a deadline.
-pub trait MonotonicTime: Send + Sync {
-    /// The instant the clock reads now.
-    fn now(&self) -> Instant;
-
-    /// Waits until the clock reads the deadline or a later instant.
-    fn reached(&self, deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send>>;
-}
-
-/// The runtime's own clock, read with the runtime's `Instant::now` and waited on with the runtime's timer.
-pub struct RuntimeClock;
-
-impl MonotonicTime for RuntimeClock {
-    fn now(&self) -> Instant {
-        Instant::now()
-    }
-
-    fn reached(&self, deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(sleep_until(deadline))
-    }
-}
-
-/// The monotonic clock the composition root hands down.
-pub type MonotonicClock = Arc<dyn MonotonicTime>;
-
-/// The instant a span after `at`, or `at` itself past the clock's range.
-pub(crate) fn later_by(at: Instant, span: Duration) -> Instant {
-    at.checked_add(span).unwrap_or(at)
-}
-
-/// What the work ends with, or none once the clock reads the deadline first; work with no deadline is waited for whole.
-pub(crate) async fn before_deadline<Ended>(
-    clock: &dyn MonotonicTime,
-    deadline: Option<Instant>,
-    work: impl Future<Output = Ended>,
-) -> Option<Ended> {
-    let Some(deadline) = deadline else {
-        return Some(work.await);
-    };
-    tokio::select! {
-        biased;
-        ended = work => Some(ended),
-        () = clock.reached(deadline) => None,
-    }
 }
 
 /// Every connection the endpoint's gate let through and has not seen close, of any protocol, dialed or accepted, by the card at its other end, the cards whose spared connection still leaves iroh on a gone process's path, how many Introduce answers to each card its peer has yet to acknowledge, and the clock their silence is measured on.
@@ -1306,6 +1260,7 @@ pub(crate) mod tests {
     use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
+    use std::pin::Pin;
     use std::time::Instant;
 
     use iroh::SecretKey;
@@ -1315,6 +1270,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::card::tests::{SPEC_PUBLIC_CAP_BYTES, public_mapping_of_bytes};
+    use crate::clock::{MonotonicTime, RuntimeClock};
     use crate::crypto::{KEY_LEN, NetworkSecret};
     use crate::drawn_units::{CATCH_ALL_CASES, text_beside};
     use crate::each_arm::assert_each_arm;

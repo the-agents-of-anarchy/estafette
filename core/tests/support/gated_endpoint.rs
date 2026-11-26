@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
+use estafette::clock::RuntimeClock;
 use estafette::crypto::GateKey;
-use estafette::net::direct::{HeldConnections, RuntimeClock};
+use estafette::net::direct::HeldConnections;
 use estafette::net::endpoint::{GateFailure, NodeEndpoint, TransportRecord};
 use estafette::trace::{LOCATION_SALT_BYTES, LocationSalt};
 use iroh::{RelayUrl, SecretKey};

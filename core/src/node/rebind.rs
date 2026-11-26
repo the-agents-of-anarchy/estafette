@@ -11,8 +11,9 @@ use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 use tokio::net::TcpStream;
 use tokio::time::Instant;
 
+use crate::clock::{before_deadline, later_by};
 use crate::event::{GossipEvent, TransportEvent};
-use crate::net::direct::{DirectHost, before_deadline, later_by};
+use crate::net::direct::DirectHost;
 use crate::net::endpoint::{RebindCause, SnapshotMoment};
 use crate::net::gossip::NetworkTopic;
 use crate::node::addresses::endpoint_id;
@@ -442,6 +443,7 @@ mod tests {
     use tokio::time::Instant;
 
     use super::{MemberJoins, RebindSchedule, RelayProbe, relay_answers};
+    use crate::clock::{MonotonicClock, MonotonicTime, RuntimeClock, later_by};
     use crate::config::{Host, HostOrigin};
     use crate::event::{Event, EventFields, RunRecord, TransportEvent};
     use crate::keys::render_public_key;
@@ -452,10 +454,7 @@ mod tests {
         counters_snapshot_one_interval_on, deadline_of_the_gossip_join_timeout, test_salt,
         was_taken_at,
     };
-    use crate::net::direct::{
-        ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock, MonotonicTime,
-        RuntimeClock, later_by,
-    };
+    use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, DirectServer};
     use crate::net::endpoint::{
         DIRECT_ALPN, LocationHash, NodeEndpoint, RebindCause, TransportRecord,
     };

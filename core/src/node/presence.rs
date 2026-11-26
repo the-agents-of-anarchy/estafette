@@ -24,6 +24,7 @@ use super::node_error::NodeError;
 use super::payload_records::{admission_record, payload_dropped_record};
 use super::rebind::{Rebinding, RelayProbe};
 use super::relay_loss::{RelayLossWatch, home_relays};
+use crate::clock::{MonotonicClock, MonotonicTime, later_by};
 use crate::config::NetworkConfig;
 use crate::crypto::{NetworkKeys, NetworkSecret};
 use crate::event::{
@@ -35,7 +36,7 @@ use crate::inbox::socket::{Attached, InboxSocket};
 use crate::keys::{parse_network_secret, parse_public_key};
 use crate::net::direct::{
     ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, GONE_PROCESS_SILENCE,
-    HEARING_SAMPLE_INTERVAL, HeldConnections, MonotonicClock, MonotonicTime, later_by,
+    HEARING_SAMPLE_INTERVAL, HeldConnections,
 };
 use crate::net::endpoint::{
     CounterSnapshot, DIRECT_ALPN, NodeEndpoint, RebindCause, SnapshotMoment,
@@ -1923,6 +1924,7 @@ pub(super) mod tests {
     use tokio::sync::mpsc::UnboundedReceiver;
 
     use super::*;
+    use crate::clock::{RuntimeClock, later_by};
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
     use crate::dirs::{CardsDirectoryOverride, Directories, OperatingSystemFilesystem};
@@ -1935,7 +1937,6 @@ pub(super) mod tests {
         SPEC_STATE_SNAPSHOT_INTERVAL, STATE_COUNTERS, ShiftedClock, StandingClock,
         closed_within_the_documented_latency, recorded_until_introduce_sent_to, was_taken_at,
     };
-    use crate::net::direct::{RuntimeClock, later_by};
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
