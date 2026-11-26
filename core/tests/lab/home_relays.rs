@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::events_lines::{PAYLOAD_ACCEPTED_EVENT, is_accepted_payload_of, short_id_of_node};
 use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
+use crate::killable_host::KillInstant;
 use crate::member_events::MemberEvents;
 use crate::trace_reader::{TraceLine, lines_of_files_still_present, trace_files_in};
 
@@ -89,14 +90,14 @@ fn refused_naming_each(
 /// Requires every member's home at the kill, by the home changes its own raw trace stamps at or before the kill's wall-clock instant, to be the killed host's relay, reading each member's trace once by the reader handed in, the refusal naming each member homed elsewhere and the home it held, or whose trace lost lines that could hold such a change (spec 3.15 tests 23 and 28).
 pub fn every_member_homed_at_the_kill_on<'member>(
     killed_relay: &str,
-    kill_wall_ms: u64,
+    kill: KillInstant,
     members: impl IntoIterator<Item = (&'member str, &'member Path)>,
     mut own_raw_lines: impl FnMut(&Path) -> Vec<TraceLine>,
 ) -> Result<(), String> {
     let homed_elsewhere: Vec<String> = members
         .into_iter()
         .filter_map(
-            |(member, traces)| match home_at_the_kill(&own_raw_lines(traces), kill_wall_ms) {
+            |(member, traces)| match home_at_the_kill(&own_raw_lines(traces), kill) {
                 HomeAtTheKill::On(relay) if relay == killed_relay => None,
                 HomeAtTheKill::On(relay) => Some(format!("{member} was homed on {relay} at the kill")),
                 HomeAtTheKill::Nowhere => Some(format!("{member} was homed on {NO_HOME} at the kill")),
@@ -108,7 +109,8 @@ pub fn every_member_homed_at_the_kill_on<'member>(
         .collect();
     refused_naming_each(&homed_elsewhere, || {
         format!(
-            "spec 3.15 tests 23 and 28 kill the host every member is homed on, and every member's own raw trace must name the killed relay {killed_relay} as the home relay by its home changes stamped at or before the kill's {kill_wall_ms} ms"
+            "spec 3.15 tests 23 and 28 kill the host every member is homed on, and every member's own raw trace must name the killed relay {killed_relay} as the home relay by its home changes stamped at or before the kill's {} ms",
+            kill.wall_ms()
         )
     })
 }
@@ -121,19 +123,19 @@ enum HomeAtTheKill {
 }
 
 /// The home the raw lines leave by the home changes stamped at or before the kill's wall-clock instant, unless the trace lost lines that could hold one.
-fn home_at_the_kill(lines: &[TraceLine], kill_wall_ms: u64) -> HomeAtTheKill {
-    if lost_lines_could_hold_a_change_by_the_kill(lines, kill_wall_ms) {
+fn home_at_the_kill(lines: &[TraceLine], kill: KillInstant) -> HomeAtTheKill {
+    if lost_lines_could_hold_a_change_by_the_kill(lines, kill) {
         return HomeAtTheKill::LinesLost;
     }
-    home_relay_named_by(lines.iter().filter(|line| line.wall_ms <= kill_wall_ms))
+    home_relay_named_by(lines.iter().filter(|line| line.wall_ms <= kill.wall_ms()))
         .map_or(HomeAtTheKill::Nowhere, HomeAtTheKill::On)
 }
 
 /// Whether a `dropped` line stands in file order up to and including the first queued line stamped after the kill, since a `dropped` line is stamped as written and can report lines queued before the kill.
-fn lost_lines_could_hold_a_change_by_the_kill(lines: &[TraceLine], kill_wall_ms: u64) -> bool {
+fn lost_lines_could_hold_a_change_by_the_kill(lines: &[TraceLine], kill: KillInstant) -> bool {
     let through_the_first_queued_after_the_kill = lines
         .iter()
-        .position(|line| is_queued_after_the_kill(line, kill_wall_ms))
+        .position(|line| is_queued_after_the_kill(line, kill))
         .map_or(lines.len(), |first| first.saturating_add(1));
     lines
         .iter()
@@ -147,21 +149,21 @@ pub fn is_dropped_report(line: &TraceLine) -> bool {
 }
 
 /// Whether the raw line was stamped as it was queued, which every line but a `dropped` one is, at a wall-clock instant after the kill's.
-fn is_queued_after_the_kill(line: &TraceLine, kill_wall_ms: u64) -> bool {
-    !is_dropped_report(line) && line.wall_ms > kill_wall_ms
+fn is_queued_after_the_kill(line: &TraceLine, kill: KillInstant) -> bool {
+    !is_dropped_report(line) && line.wall_ms > kill.wall_ms()
 }
 
 /// Every whole line of the member's own raw trace once it holds a line other than a `dropped` one stamped after the kill's wall-clock instant, which its writer puts on disk only after every line stamped at or before it, failing the test naming that condition when none comes within the bound.
 #[track_caller]
-pub fn raw_lines_once_stamped_past(traces: &Path, kill_wall_ms: u64) -> Vec<TraceLine> {
-    raw_lines_once_stamped_past_read_by(traces, kill_wall_ms, Instant::now)
+pub fn raw_lines_once_stamped_past(traces: &Path, kill: KillInstant) -> Vec<TraceLine> {
+    raw_lines_once_stamped_past_read_by(traces, kill, Instant::now)
 }
 
 /// As `raw_lines_once_stamped_past`, reading the time from `clock`.
 #[track_caller]
 fn raw_lines_once_stamped_past_read_by(
     traces: &Path,
-    kill_wall_ms: u64,
+    kill: KillInstant,
     clock: impl FnMut() -> Instant,
 ) -> Vec<TraceLine> {
     let mut watch = GrowthWatch::of_path(traces)
@@ -181,15 +183,16 @@ fn raw_lines_once_stamped_past_read_by(
             let lines = raw_lines_of_files(traces, &files);
             lines
                 .iter()
-                .any(|line| is_queued_after_the_kill(line, kill_wall_ms))
+                .any(|line| is_queued_after_the_kill(line, kill))
                 .then_some(lines)
         },
     );
     match past_the_kill {
         Ok(lines) => lines,
         Err(WaitEnded::RanOut) => panic!(
-            "{}: no raw line other than a {DROPPED_LINE_NAME} line stamped after the kill's {kill_wall_ms} ms came within {RAW_LINE_PAST_THE_KILL_WAIT:?}",
-            traces.display()
+            "{}: no raw line other than a {DROPPED_LINE_NAME} line stamped after the kill's {} ms came within {RAW_LINE_PAST_THE_KILL_WAIT:?}",
+            traces.display(),
+            kill.wall_ms()
         ),
         Err(WaitEnded::WatcherFailed(failure)) => {
             panic!("{}: the file watcher failed: {failure}", traces.display())
@@ -263,6 +266,7 @@ mod tests {
         HOME_CHANGED_TARGET, RAW_LINE_PAST_THE_KILL_WAIT, every_member_homed_at_the_kill_on,
         every_member_homed_on, raw_lines_once_stamped_past, raw_lines_once_stamped_past_read_by,
     };
+    use crate::killable_host::KillInstant;
     use crate::scratch_machine::fresh_directory::fresh_directory_in;
     use crate::trace_reader::{TraceLine, WritingProcess, parse_trace_lines};
 
@@ -294,9 +298,14 @@ mod tests {
         )
     }
 
-    /// The wall-clock stamp of a fixture's line `n`, the kill's instant of a fixture that kills at that stamp.
+    /// The wall-clock stamp of a fixture's line `n`.
     const fn stamp_of_line(n: u64) -> u64 {
         WALL_MS_OF_LINE_ZERO.saturating_add(n)
+    }
+
+    /// The kill's instant of a fixture that kills at the stamp of its kill line.
+    const fn kill_instant() -> KillInstant {
+        KillInstant::at_wall_ms(stamp_of_line(KILL_LINE))
     }
 
     /// The raw line iroh writes when a relay becomes or stops being the home relay.
@@ -473,7 +482,7 @@ mod tests {
         );
         every_member_homed_at_the_kill_on(
             DOOMED_RELAY,
-            stamp_of_line(KILL_LINE),
+            kill_instant(),
             names.iter().map(|member| (*member, Path::new(member))),
             |traces| handed.read(traces),
         )
@@ -604,7 +613,7 @@ mod tests {
         ];
         let traces = traces_holding("past-the-kill", &lines);
 
-        let read = raw_lines_once_stamped_past(&traces, stamp_of_line(KILL_LINE));
+        let read = raw_lines_once_stamped_past(&traces, kill_instant());
         fs::remove_dir_all(&traces).unwrap();
 
         assert_eq!(
@@ -648,7 +657,7 @@ mod tests {
     ) -> Result<Vec<u64>, Option<String>> {
         let mut readings = std::iter::once(started);
         std::panic::catch_unwind(|| {
-            raw_lines_once_stamped_past_read_by(traces, stamp_of_line(KILL_LINE), move || {
+            raw_lines_once_stamped_past_read_by(traces, kill_instant(), move || {
                 readings.next().unwrap_or(past_the_bound)
             })
             .iter()

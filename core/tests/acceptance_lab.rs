@@ -727,9 +727,9 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
         let own_traces = homed.member.own_traces();
         if let Err(refusal) = every_member_homed_at_the_kill_on(
             doomed.relay(),
-            kill.wall_ms,
+            kill.instant,
             [(MEMBER_CARD, own_traces.as_path())],
-            |traces| raw_lines_once_stamped_past(traces, kill.wall_ms),
+            |traces| raw_lines_once_stamped_past(traces, kill.instant),
         ) {
             panic!("{refusal}");
         }

@@ -38,9 +38,27 @@ pub struct KillableHost {
     secrets: io::Result<KeptSecrets>,
 }
 
-/// When the kill was sent over the open session, on this machine's wall clock in milliseconds since the Unix epoch, as a member's trace stamps `wall_ms`, and on its monotonic clock, and when its command returned.
+/// The instant the kill was sent, on this machine's wall clock in milliseconds since the Unix epoch, as a member's trace stamps `wall_ms`, which no monotonic reading converts into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KillInstant {
+    wall_ms: u64,
+}
+
+impl KillInstant {
+    /// The kill's instant as a wall-clock reading in milliseconds since the Unix epoch.
+    pub const fn at_wall_ms(wall_ms: u64) -> Self {
+        Self { wall_ms }
+    }
+
+    /// The kill's instant in milliseconds since the Unix epoch on the wall clock.
+    pub const fn wall_ms(self) -> u64 {
+        self.wall_ms
+    }
+}
+
+/// When the kill was sent over the open session, on this machine's wall clock, and on its monotonic clock, and when its command returned.
 pub struct KillStamps {
-    pub wall_ms: u64,
+    pub instant: KillInstant,
     pub sent: Instant,
     pub returned: Instant,
 }
@@ -137,7 +155,7 @@ impl KillableHost {
             );
         }
         let mut trigger = session.stdin.take().unwrap();
-        let wall_ms = wall_clock_ms();
+        let instant = KillInstant::at_wall_ms(wall_clock_ms());
         let sent = Instant::now();
         trigger.write_all(b"\n").unwrap();
         drop(trigger);
@@ -150,7 +168,7 @@ impl KillableHost {
             recipe_failure(&killed, self.secrets())
         );
         KillStamps {
-            wall_ms,
+            instant,
             sent,
             returned,
         }

@@ -717,11 +717,11 @@ fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_othe
     let own_traces: Vec<PathBuf> = trio.iter().map(Member::own_traces).collect();
     if let Err(refusal) = every_member_homed_at_the_kill_on(
         doomed.relay(),
-        kill.wall_ms,
+        kill.instant,
         trio.iter()
             .map(|member| member.handle.as_str())
             .zip(own_traces.iter().map(PathBuf::as_path)),
-        |traces| raw_lines_once_stamped_past(traces, kill.wall_ms),
+        |traces| raw_lines_once_stamped_past(traces, kill.instant),
     ) {
         panic!("{refusal}");
     }
