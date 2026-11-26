@@ -31,10 +31,10 @@ pub const SPEC_TRACE_FILE_SIZED_AHEAD_BYTES: usize = 65_536;
 /// The byte that ends every trace line.
 const LINE_END: u8 = b'\n';
 
-/// Whether the process writing a trace file was still writing it when the test read it, as the caller states.
+/// What the test knows of the process writing a trace file when it reads it: that the process ended, or that it may still be writing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WritingProcess {
-    Running,
+    MayStillBeWriting,
     Ended,
 }
 
@@ -42,7 +42,7 @@ impl WritingProcess {
     /// The bytes before the first line not yet landed whole: all of them once the process ended, and while it runs those before the first line that still shows the zeros the file was sized ahead with.
     pub fn landed_part(self, bytes: &[u8]) -> &[u8] {
         match self {
-            Self::Running => {
+            Self::MayStillBeWriting => {
                 let landed_end = bytes
                     .iter()
                     .position(|byte| *byte == SIZED_AHEAD_FILL)
@@ -383,7 +383,7 @@ fn events_lines_read_as(
 pub fn lines_of_files_still_present(files: &[PathBuf]) -> Result<Vec<TraceLine>, TraceReadError> {
     let mut lines = Vec::new();
     for file in files {
-        match read_trace_file(file, WritingProcess::Running) {
+        match read_trace_file(file, WritingProcess::MayStillBeWriting) {
             Ok(read) => lines.extend(read),
             Err(TraceReadError::Unreadable {
                 kind: std::io::ErrorKind::NotFound,
@@ -577,7 +577,7 @@ pub mod tests {
             directory.join("20261116T210036Z-e8e6b01fdb8dbfa0-estafette.events.jsonl");
         let first_line_still_zero_at_its_start = line_still_zero_at_its_start(MEMBER_LINE);
         let lines_numbered_in = |file: &Path| {
-            read_trace_file(file, WritingProcess::Running)
+            read_trace_file(file, WritingProcess::MayStillBeWriting)
                 .map(|lines| lines.iter().map(|line| line.n).collect::<Vec<_>>())
         };
 

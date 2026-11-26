@@ -402,7 +402,7 @@ impl ScratchMachine {
             .map(|number| {
                 let timeline = timeline_read_as(
                     &self.traces_directory_of_member(number),
-                    WritingProcess::Running,
+                    WritingProcess::MayStillBeWriting,
                 );
                 format!(
                     "{TIMELINE_HEADING} {number} on {}:\n{}",

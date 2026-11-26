@@ -87,7 +87,7 @@ fn wait_for_whole_lines_within(
         |_watch| {
             holds(&whole_lines_of_a_run_file_read_as(
                 path,
-                WritingProcess::Running,
+                WritingProcess::MayStillBeWriting,
             ))
             .then_some(())
         },
@@ -109,7 +109,7 @@ fn wait_for_whole_lines_within(
 
 /// The whole lines of a running process's trace file one to a row, or the words saying it holds none.
 fn lines_held_so_far(path: &Path) -> String {
-    let lines = whole_lines_of_a_run_file_read_as(path, WritingProcess::Running);
+    let lines = whole_lines_of_a_run_file_read_as(path, WritingProcess::MayStillBeWriting);
     if lines.is_empty() {
         NO_EVENT_RECORDED.to_owned()
     } else {

@@ -386,7 +386,7 @@ fn writing_process_after(stop: &io::Result<Output>) -> WritingProcess {
     if succeeded(stop).is_ok() {
         WritingProcess::Ended
     } else {
-        WritingProcess::Running
+        WritingProcess::MayStillBeWriting
     }
 }
 

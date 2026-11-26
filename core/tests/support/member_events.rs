@@ -67,7 +67,7 @@ impl MemberEvents {
         format!(
             "{}: no {awaited} within {within:?}; its timeline so far:\n{}",
             self.label,
-            timeline_read_as(&self.traces_directory, WritingProcess::Running)
+            timeline_read_as(&self.traces_directory, WritingProcess::MayStillBeWriting)
         )
     }
 
