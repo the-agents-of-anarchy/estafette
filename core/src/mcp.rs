@@ -1047,6 +1047,12 @@ mod tests {
     const AMY_SEED: u8 = 51;
     const BOB_SEED: u8 = 52;
     const ZED_SEED: u8 = 53;
+    const FIRST_HOST_SEED: u8 = 61;
+    const SECOND_HOST_SEED: u8 = 62;
+    const THIRD_HOST_SEED: u8 = 63;
+    const FIRST_HOST_RELAY: &str = "https://relay.first.invalid/";
+    const PLAIN_HTTP_HOST_RELAY: &str = "http://relay.plain.invalid/";
+    const THIRD_HOST_RELAY: &str = "https://relay.third.invalid/";
     const LOOSE_SIDECAR_MODE: u32 = 0o644;
     const SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT: Duration = Duration::from_millis(8000);
     const NODE_TESTS_AT_ONCE: usize = 1;
@@ -1157,6 +1163,17 @@ mod tests {
         let bind = bind_alone();
         Arc::new(move |card_key, gate_key, relays, monotonic| {
             binds.fetch_add(1, Ordering::SeqCst);
+            bind(card_key, gate_key, relays, monotonic)
+        })
+    }
+
+    fn bind_recording_relays(
+        bound_with: &Arc<std::sync::Mutex<Vec<Vec<RelayUrl>>>>,
+    ) -> BindEndpoint {
+        let bound_with = Arc::clone(bound_with);
+        let bind = bind_alone();
+        Arc::new(move |card_key, gate_key, relays, monotonic| {
+            bound_with.lock().unwrap().push(relays.clone());
             bind(card_key, gate_key, relays, monotonic)
         })
     }
@@ -2170,6 +2187,42 @@ mod tests {
             listed["result"],
             json!({ "cards": [{ "name": "amy-card", "handle": "amy", "held": true }] })
         );
+    }
+
+    #[tokio::test]
+    async fn spec_3_8_an_init_binds_its_endpoint_with_the_relays_of_the_configured_hosts_that_parse_as_relays()
+     {
+        let _slot = node_slot().await;
+        let machine = Machine::new("host-relays");
+        machine.create_card("amy-card", "amy", AMY_SEED);
+        let bound_with = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let host_with_relay = |seed: u8, relay: &str| Host {
+            id: render_public_key(&SecretKey::from_bytes(&[seed; KEY_BYTES]).public()),
+            relay: relay.to_owned(),
+            ts: None,
+            origin: HostOrigin::Configured,
+        };
+        let mut client = start_server(
+            &machine,
+            ServerPlan {
+                config: network_config(vec![
+                    host_with_relay(FIRST_HOST_SEED, FIRST_HOST_RELAY),
+                    host_with_relay(SECOND_HOST_SEED, PLAIN_HTTP_HOST_RELAY),
+                    host_with_relay(THIRD_HOST_SEED, THIRD_HOST_RELAY),
+                ]),
+                bind_endpoint: bind_recording_relays(&bound_with),
+                ..ServerPlan::alone(FIRST_PROCESS_ID)
+            },
+        );
+        client.initialize().await;
+
+        client.envelope("init", json!({ "card": "amy-card" })).await;
+
+        let expected: Vec<RelayUrl> = vec![
+            FIRST_HOST_RELAY.parse().unwrap(),
+            THIRD_HOST_RELAY.parse().unwrap(),
+        ];
+        assert_eq!(*bound_with.lock().unwrap(), vec![expected]);
     }
 
     #[tokio::test]
