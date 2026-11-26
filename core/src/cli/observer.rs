@@ -1026,6 +1026,7 @@ fn public_text(public: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use crate::peers::{ContactFailed, Status};
+    use std::collections::BTreeSet;
     use std::ffi::OsString;
     use std::fs;
     use std::path::PathBuf;
@@ -1048,7 +1049,7 @@ mod tests {
         counters_snapshot_one_interval_on, deadline_of_the_gossip_join_timeout, field,
         recorded_until_introduce_sent_to, was_taken_at,
     };
-    use crate::net::direct::{DirectServer, MonotonicTime, RuntimeClock};
+    use crate::net::direct::{DirectServer, MonotonicTime, RuntimeClock, later_by};
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
     use crate::stream_items::StreamExt;
@@ -2785,11 +2786,9 @@ mod tests {
         let lab = Lab::new("show-peers-on-the-clock").await;
         lab.write_network_config(&[NEIGHBOR_SEED]);
         let clock = StandingClock::standing_an_hour_ahead();
-        let observer_wait_over = clock
-            .now()
-            .checked_add(SPEC_JOIN_TIMEOUT)
-            .and_then(|join_timed_out| join_timed_out.checked_add(SPEC_OBSERVER_WAIT))
-            .unwrap();
+        let started = clock.now();
+        let join_timed_out = later_by(started, SPEC_JOIN_TIMEOUT);
+        let observer_wait_over = later_by(join_timed_out, SPEC_OBSERVER_WAIT);
         let (record, mut recorded) = recorded_events();
         let (mut effects, operator_effects) = lab.effects(Vec::new(), never_interrupted());
         effects.report = record;
@@ -2823,7 +2822,14 @@ mod tests {
                 .await;
                 clock.move_forward(SPEC_JOIN_TIMEOUT);
                 clock
-                    .asked_to_wake("show-peers' observer wait", observer_wait_over)
+                    .asked_exactly(
+                        "show-peers' observer wait",
+                        &BTreeSet::from([
+                            join_timed_out,
+                            observer_wait_over,
+                            later_by(started, SPEC_STATE_SNAPSHOT_INTERVAL),
+                        ]),
+                    )
                     .await;
                 clock.move_forward(SPEC_OBSERVER_WAIT);
             }

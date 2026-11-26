@@ -1975,6 +1975,7 @@ mod events_tests;
 
 #[cfg(test)]
 pub(super) mod tests {
+    use std::collections::BTreeSet;
     use std::ffi::OsString;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -1991,11 +1992,11 @@ pub(super) mod tests {
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
     use crate::net::direct::tests::{
-        INTERVAL_MOMENT, INTERVAL_SNAPSHOT_WITHIN, PAYLOAD_ACCEPTED, STATE_COUNTERS, ShiftedClock,
-        StandingClock, closed_within_the_documented_latency, recorded_until_introduce_sent_to,
-        was_taken_at,
+        INTERVAL_MOMENT, INTERVAL_SNAPSHOT_WITHIN, PAYLOAD_ACCEPTED, SPEC_DEAF_TIMEOUT,
+        SPEC_STATE_SNAPSHOT_INTERVAL, STATE_COUNTERS, ShiftedClock, StandingClock,
+        closed_within_the_documented_latency, recorded_until_introduce_sent_to, was_taken_at,
     };
-    use crate::net::direct::{RequestSummary, RuntimeClock};
+    use crate::net::direct::{RequestSummary, RuntimeClock, later_by};
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
@@ -4925,6 +4926,7 @@ pub(super) mod tests {
     {
         let scratch = Scratch::new("monotonic").await;
         let clock = StandingClock::standing_an_hour_ahead();
+        let started = clock.now();
         let (first_record, mut first_events) = recorded_events();
         let (second_record, mut second_events) = recorded_events();
 
@@ -4946,9 +4948,14 @@ pub(super) mod tests {
                 let mut before_the_wait = joined_and_asked_for_presence(&mut first_events).await;
                 before_the_wait.extend(joined_and_asked_for_presence(&mut second_events).await);
                 clock
-                    .asked_to_wake(
+                    .asked_exactly(
                         "a member's observer wait",
-                        clock.now().checked_add(SPEC_OBSERVER_WAIT).unwrap(),
+                        &BTreeSet::from([
+                            later_by(started, SPEC_OBSERVER_WAIT),
+                            later_by(started, SPEC_JOIN_TIMEOUT),
+                            later_by(started, SPEC_DEAF_TIMEOUT),
+                            later_by(started, SPEC_STATE_SNAPSHOT_INTERVAL),
+                        ]),
                     )
                     .await;
                 for events in [&mut first_events, &mut second_events] {
@@ -5113,6 +5120,51 @@ pub(super) mod tests {
     }
 
     /// Starts a member alone on the clock whose only relay is a local one, ending its init by moving the clock past the join timeout once the relay is its home relay.
+    /// The deadlines a member alone on a standing clock with a local home relay holds once the clock has read the join timeout and the member took its relay for lost: the relay loss wait of the start, the join timeout, the relay loss wait now asked, and the snapshot.
+    #[cfg(feature = "relay")]
+    fn deadlines_of_a_member_on_a_local_relay(
+        started: tokio::time::Instant,
+        now: tokio::time::Instant,
+    ) -> BTreeSet<tokio::time::Instant> {
+        BTreeSet::from([
+            later_by(started, SPEC_RELAY_LOSS_WAIT),
+            later_by(started, SPEC_JOIN_TIMEOUT),
+            later_by(now, SPEC_RELAY_LOSS_WAIT),
+            later_by(started, SPEC_STATE_SNAPSHOT_INTERVAL),
+        ])
+    }
+
+    /// The deadlines a member alone with a configured host on a standing clock holds once the clock has read the join timeout, a witness has spoken and the member took its relay for lost: the observer wait, the join timeout, the relay loss wait now asked, the end of the reannounce interval, the deaf timeout from the start and from now, and the snapshot.
+    #[cfg(feature = "relay")]
+    fn deadlines_of_a_member_with_a_host_relay(
+        started: tokio::time::Instant,
+        now: tokio::time::Instant,
+    ) -> BTreeSet<tokio::time::Instant> {
+        BTreeSet::from([
+            later_by(started, SPEC_OBSERVER_WAIT),
+            later_by(started, SPEC_JOIN_TIMEOUT),
+            later_by(now, SPEC_RELAY_LOSS_WAIT),
+            later_by(now, SPEC_REANNOUNCE_INTERVAL),
+            later_by(started, SPEC_DEAF_TIMEOUT),
+            later_by(now, SPEC_DEAF_TIMEOUT),
+            later_by(started, SPEC_STATE_SNAPSHOT_INTERVAL),
+        ])
+    }
+
+    /// The deadlines an announced member alone on a standing clock holds once its address changed: the join timeout, the relay loss wait now asked, the end of the reannounce interval, and the snapshot.
+    #[cfg(feature = "relay")]
+    fn deadlines_of_an_announced_member(
+        started: tokio::time::Instant,
+        now: tokio::time::Instant,
+    ) -> BTreeSet<tokio::time::Instant> {
+        BTreeSet::from([
+            later_by(started, SPEC_JOIN_TIMEOUT),
+            later_by(now, SPEC_RELAY_LOSS_WAIT),
+            later_by(now, SPEC_REANNOUNCE_INTERVAL),
+            later_by(started, SPEC_STATE_SNAPSHOT_INTERVAL),
+        ])
+    }
+
     #[cfg(feature = "relay")]
     async fn member_on_a_local_relay(
         scratch: &Scratch,
@@ -5207,6 +5259,7 @@ pub(super) mod tests {
      {
         let scratch = Scratch::new("loss-on-clock").await;
         let clock = StandingClock::standing_an_hour_ahead();
+        let started = clock.now();
         let MemberOnALocalRelay {
             member: _member,
             relay,
@@ -5218,9 +5271,9 @@ pub(super) mod tests {
         relay.shutdown().await.unwrap();
         home_relay_taken_for_lost(&mut events).await;
         clock
-            .asked_to_wake(
+            .asked_exactly(
                 "the relay loss wait",
-                clock.now().checked_add(SPEC_RELAY_LOSS_WAIT).unwrap(),
+                &deadlines_of_a_member_on_a_local_relay(started, clock.now()),
             )
             .await;
         clock.move_forward(SPEC_RELAY_LOSS_WAIT);
@@ -5244,6 +5297,7 @@ pub(super) mod tests {
 
         let scratch = Scratch::new("loss-record").await;
         let clock = StandingClock::standing_an_hour_ahead();
+        let started = clock.now();
         let MemberOnALocalRelay {
             member: _member,
             relay,
@@ -5254,9 +5308,9 @@ pub(super) mod tests {
         relay.shutdown().await.unwrap();
         home_relay_taken_for_lost(&mut events).await;
         clock
-            .asked_to_wake(
+            .asked_exactly(
                 "the relay loss wait",
-                clock.now().checked_add(SPEC_RELAY_LOSS_WAIT).unwrap(),
+                &deadlines_of_a_member_on_a_local_relay(started, clock.now()),
             )
             .await;
 
@@ -5321,6 +5375,7 @@ pub(super) mod tests {
         scratch: &Scratch,
     ) -> RelayMapGainedAndLostARelay {
         let clock = StandingClock::standing_an_hour_ahead();
+        let started = clock.now();
         let (relay, removed_relay) = local_relay().await;
         let added_relay = relay_url(SECOND_HOST_RELAY);
         let (record, mut events) = recorded_events();
@@ -5395,9 +5450,9 @@ pub(super) mod tests {
         )
         .await;
         clock
-            .asked_to_wake(
+            .asked_exactly(
                 "the relay loss wait",
-                clock.now().checked_add(SPEC_RELAY_LOSS_WAIT).unwrap(),
+                &deadlines_of_a_member_with_a_host_relay(started, clock.now()),
             )
             .await;
         clock.move_forward(SPEC_RELAY_LOSS_WAIT);
@@ -5547,6 +5602,7 @@ pub(super) mod tests {
      {
         let scratch = Scratch::new("reannounce-on-clock").await;
         let clock = StandingClock::standing_an_hour_ahead();
+        let started = clock.now();
         let AnnouncedMember {
             member,
             relay_address,
@@ -5563,9 +5619,9 @@ pub(super) mod tests {
             .await;
         own_address_change_taken_by_the_loop(&mut events).await;
         clock
-            .asked_to_wake(
+            .asked_exactly(
                 "the end of the reannounce interval",
-                clock.now().checked_add(SPEC_REANNOUNCE_INTERVAL).unwrap(),
+                &deadlines_of_an_announced_member(started, clock.now()),
             )
             .await;
         let before_the_interval_ends: Vec<RecordedEvent> =
@@ -5593,6 +5649,7 @@ pub(super) mod tests {
      {
         let scratch = Scratch::new("deferral-record").await;
         let clock = StandingClock::standing_an_hour_ahead();
+        let started = clock.now();
         let AnnouncedMember {
             member,
             relay_address,
@@ -5616,9 +5673,9 @@ pub(super) mod tests {
         )
         .await;
         clock
-            .asked_to_wake(
+            .asked_exactly(
                 "the end of the reannounce interval",
-                clock.now().checked_add(SPEC_REANNOUNCE_INTERVAL).unwrap(),
+                &deadlines_of_an_announced_member(started, clock.now()),
             )
             .await;
         clock.move_forward(SPEC_REANNOUNCE_INTERVAL);

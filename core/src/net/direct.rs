@@ -2180,6 +2180,8 @@ pub(crate) mod tests {
     const SPEC_GOSSIP_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     /// The 60 s between two counters snapshots of `spec/observability.md` decision 9.
     pub const SPEC_STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
+    /// How long a member hears no payload before it takes itself for deaf, as spec 3.8 gives it.
+    pub const SPEC_DEAF_TIMEOUT: Duration = Duration::from_secs(15);
     /// The longest a test waits for a counters snapshot once its handed clock reads it due, which the runtime's timer would never reach on a clock an hour ahead.
     const SNAPSHOT_ONCE_THE_CLOCK_READS_IT_WITHIN: Duration = Duration::from_secs(5);
     /// The name of the first field of a counters snapshot, which holds the moment it was taken.
@@ -2367,6 +2369,22 @@ pub(crate) mod tests {
             )
             .await
             .expect("the clock holds the sender of its asked deadlines");
+        }
+
+        /// Waits until the deadlines asked of the clock are exactly the expected ones, failing with the waiter's name and the deadlines the clock holds when they are not within the wait.
+        pub async fn asked_exactly(&self, waiter: &str, expected: &BTreeSet<tokio::time::Instant>) {
+            let mut asked_deadlines = self.asked_deadlines.subscribe();
+            let reached = tokio::time::timeout(
+                WAKE_ASKED_WAIT,
+                asked_deadlines.wait_for(|asked| asked == expected),
+            )
+            .await
+            .is_ok();
+            assert!(
+                reached,
+                "the deadlines asked of the clock for {waiter} are not {expected:?} within {WAKE_ASKED_WAIT:?}; it holds {:?}",
+                self.asked_deadlines()
+            );
         }
 
         /// Every deadline any waiter has asked the clock to wake it at.

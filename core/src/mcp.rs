@@ -2647,29 +2647,55 @@ mod tests {
         assert_eq!(after, before);
     }
 
+    #[derive(Default)]
+    struct ToolsListed {
+        list_cards: u8,
+        init: u8,
+        peers: u8,
+        send: u8,
+        broadcast: u8,
+        inbox: u8,
+    }
+
+    impl ToolsListed {
+        fn marking(mut self, tool: ToolName) -> Self {
+            let slot = match tool {
+                ToolName::ListCards => &mut self.list_cards,
+                ToolName::Init => &mut self.init,
+                ToolName::Peers => &mut self.peers,
+                ToolName::Send => &mut self.send,
+                ToolName::Broadcast => &mut self.broadcast,
+                ToolName::Inbox => &mut self.inbox,
+            };
+            *slot = slot.saturating_add(1);
+            self
+        }
+
+        fn every_variant_named_by_the_match_listed_once(&self) -> bool {
+            let Self {
+                list_cards,
+                init,
+                peers,
+                send,
+                broadcast,
+                inbox,
+            } = self;
+            [list_cards, init, peers, send, broadcast, inbox]
+                .into_iter()
+                .all(|times_listed| *times_listed == 1)
+        }
+    }
+
     #[test]
     fn spec_3_10_every_tool_variant_is_in_the_list_the_server_lists() {
-        let every_variant = [
-            ToolName::ListCards,
-            ToolName::Init,
-            ToolName::Peers,
-            ToolName::Send,
-            ToolName::Broadcast,
-            ToolName::Inbox,
-        ];
-        for tool in every_variant {
-            match tool {
-                ToolName::ListCards
-                | ToolName::Init
-                | ToolName::Peers
-                | ToolName::Send
-                | ToolName::Broadcast
-                | ToolName::Inbox => assert!(
-                    ToolName::ALL.contains(&tool),
-                    "{tool:?} is not in ToolName::ALL"
-                ),
-            }
-        }
+        let listed = ToolName::ALL
+            .into_iter()
+            .fold(ToolsListed::default(), ToolsListed::marking);
+
+        assert!(
+            listed.every_variant_named_by_the_match_listed_once(),
+            "a variant the match of ToolsListed::marking names is not in ToolName::ALL"
+        );
     }
 
     fn every_tool_call() -> Vec<(&'static str, Value)> {

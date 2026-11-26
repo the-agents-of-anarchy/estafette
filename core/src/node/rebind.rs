@@ -430,6 +430,7 @@ fn without_relays(address: EndpointAddr, down: &BTreeSet<RelayUrl>) -> EndpointA
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -447,13 +448,14 @@ mod tests {
     use crate::keys::render_public_key;
     use crate::net::direct::tests::{
         INTERVAL_MOMENT, INTERVAL_SNAPSHOT_WITHIN, IROH_DOCUMENTED_CLOSE_LATENCY, PAYLOAD_ACCEPTED,
-        SPEC_STATE_SNAPSHOT_INTERVAL, START_MOMENT, STATE_COUNTERS, ShiftedClock, StandingClock,
-        closed_within_the_documented_latency, counters_snapshot_one_interval_on,
-        deadline_of_the_gossip_join_timeout, test_salt, was_taken_at,
+        SPEC_DEAF_TIMEOUT, SPEC_STATE_SNAPSHOT_INTERVAL, START_MOMENT, STATE_COUNTERS,
+        ShiftedClock, StandingClock, closed_within_the_documented_latency,
+        counters_snapshot_one_interval_on, deadline_of_the_gossip_join_timeout, test_salt,
+        was_taken_at,
     };
     use crate::net::direct::{
         ClientTimeouts, DirectClient, DirectHost, DirectServer, MonotonicClock, MonotonicTime,
-        RuntimeClock,
+        RuntimeClock, later_by,
     };
     use crate::net::endpoint::{
         DIRECT_ALPN, LocationHash, NodeEndpoint, RebindCause, TransportRecord,
@@ -479,7 +481,6 @@ mod tests {
     };
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
 
-    const SPEC_DEAF_TIMEOUT: Duration = Duration::from_secs(15);
     const SPEC_REBIND_INTERVAL: Duration = Duration::from_secs(20);
     const SPEC_JOIN_TIMEOUT: Duration = Duration::from_millis(5000);
     const SPEC_RELAY_PROBE_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -1935,6 +1936,7 @@ mod tests {
         let host = QuietNode::start(HOST_SEED).await;
         let unreachable_member = QuietNode::start(PEER_SEED).await;
         let clock = StandingClock::standing_an_hour_ahead();
+        let started = clock.now();
         let (record, mut events) = recorded_events();
         let running_host = [(HOST_SEED, host.addr())];
 
@@ -1965,12 +1967,22 @@ mod tests {
         .await
         .unwrap();
         clock.move_forward(SPEC_DEAF_TIMEOUT);
+        let rebound_at = clock.now();
         recorded_until(&mut events, REBINDING, |_fields| true, PAYLOAD_WAIT).await;
         joined_and_asked_for_presence(&mut events).await;
-        let first_ask_due = clock.now().checked_add(SPEC_MEMBER_JOIN_WAIT).unwrap();
-        clock
-            .asked_to_wake("the member join wait", first_ask_due)
-            .await;
+        let first_ask_due = later_by(clock.now(), SPEC_MEMBER_JOIN_WAIT);
+        let mut asked = BTreeSet::from([
+            later_by(started, SPEC_OBSERVER_WAIT),
+            later_by(started, SPEC_JOIN_TIMEOUT),
+            later_by(started, SPEC_DEAF_TIMEOUT),
+            later_by(started, SPEC_STATE_SNAPSHOT_INTERVAL),
+            later_by(rebound_at, SPEC_RELAY_PROBE_TIMEOUT),
+            first_ask_due,
+            later_by(rebound_at, SPEC_JOIN_TIMEOUT),
+            later_by(rebound_at, SPEC_REBIND_INTERVAL),
+            later_by(rebound_at, SPEC_STATE_SNAPSHOT_INTERVAL),
+        ]);
+        clock.asked_exactly("the member join wait", &asked).await;
         clock.move_late_past(first_ask_due);
         let first_ask_reading = clock.now();
         let met = unreachable_member
@@ -1995,21 +2007,21 @@ mod tests {
             NEIGHBOR_DOWN_RECORDED_WITHIN,
         )
         .await;
-        let second_ask_due = first_ask_reading
-            .checked_add(SPEC_MEMBER_JOIN_INTERVAL)
-            .unwrap();
+        let second_ask_due = later_by(first_ask_reading, SPEC_MEMBER_JOIN_INTERVAL);
+        asked.insert(second_ask_due);
         clock
-            .asked_to_wake(
+            .asked_exactly(
                 "the second ask, one member join interval after the first ask's reading",
-                second_ask_due,
+                &asked,
             )
             .await;
         clock.move_late_past(second_ask_due);
 
+        asked.insert(later_by(clock.now(), SPEC_MEMBER_JOIN_INTERVAL));
         clock
-            .asked_to_wake(
+            .asked_exactly(
                 "the third ask, one member join interval after the second ask's reading",
-                clock.now().checked_add(SPEC_MEMBER_JOIN_INTERVAL).unwrap(),
+                &asked,
             )
             .await;
         drop(scratch);
