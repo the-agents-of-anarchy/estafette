@@ -799,26 +799,14 @@ fn fresh_kept_directory(directory: &Path, name: &str) -> io::Result<PathBuf> {
     fs::create_dir_all(directory).map_err(|failure| naming(directory, &failure))?;
     let later_keepings =
         (SECOND_KEEPING..).map(|number| format!("{name}{LATER_KEEPING_SEPARATOR}{number}"));
-    for candidate in std::iter::once(name.to_owned()).chain(later_keepings) {
-        let kept = directory.join(candidate);
-        match fs::create_dir(&kept) {
-            Ok(()) => return Ok(kept),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => {
-                return Err(io::Error::new(
-                    error.kind(),
-                    format!("{}: {error}", kept.display()),
-                ));
-            }
-        }
-    }
-    Err(io::Error::new(
-        io::ErrorKind::AlreadyExists,
-        format!(
+    fresh_directory::first_free_directory_in(
+        directory,
+        std::iter::once(name.to_owned()).chain(later_keepings),
+        &format!(
             "{}: every later keeping of {name} is taken",
             directory.display()
         ),
-    ))
+    )
 }
 
 /// Writes the member's run record into the directory, named for the member, through the writer of kept files, and returns the kept file.

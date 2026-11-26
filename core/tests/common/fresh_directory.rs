@@ -9,8 +9,24 @@ pub const NUMBERED_NAMES_TRIED: u32 = 100;
 pub fn fresh_directory_in(parent: &Path, name: &str) -> io::Result<PathBuf> {
     let candidates = std::iter::once(name.to_owned())
         .chain((1..=NUMBERED_NAMES_TRIED).map(|number| format!("{name}-{number}")));
-    for candidate in candidates {
-        let path = parent.join(candidate);
+    first_free_directory_in(
+        parent,
+        candidates,
+        &format!(
+            "{}: every numbered name of {name} is taken",
+            parent.display()
+        ),
+    )
+}
+
+/// Creates a directory under `parent` named by the first of the names that did not exist before the call, failing with the path and the cause, or with `every_name_taken` when none is free.
+pub fn first_free_directory_in(
+    parent: &Path,
+    names: impl IntoIterator<Item = String>,
+    every_name_taken: &str,
+) -> io::Result<PathBuf> {
+    for name in names {
+        let path = parent.join(name);
         match fs::create_dir(&path) {
             Ok(()) => return Ok(path),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
@@ -24,9 +40,6 @@ pub fn fresh_directory_in(parent: &Path, name: &str) -> io::Result<PathBuf> {
     }
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        format!(
-            "{}: every numbered name of {name} is taken",
-            parent.display()
-        ),
+        every_name_taken,
     ))
 }
