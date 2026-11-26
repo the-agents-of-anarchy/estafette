@@ -124,6 +124,10 @@ pub enum TraceReadError {
         path: PathBuf,
         failure: TraceLineError,
     },
+    BytesAfterLastLine {
+        path: PathBuf,
+        bytes: usize,
+    },
 }
 
 impl fmt::Display for TraceLineError {
@@ -148,6 +152,13 @@ impl fmt::Display for TraceReadError {
             }
             Self::UnreadableLine { path, failure } => {
                 write!(formatter, "{}: {failure}", path.display())
+            }
+            Self::BytesAfterLastLine { path, bytes } => {
+                write!(
+                    formatter,
+                    "{}: {bytes} bytes after its last whole line",
+                    path.display()
+                )
             }
         }
     }
@@ -312,29 +323,30 @@ fn read_trace_file(path: &Path, writing: WritingProcess) -> Result<Vec<TraceLine
 
 /// Every line of the trace file of a stopped process.
 ///
-/// # Panics
+/// # Errors
 ///
-/// Fails the test when the file cannot be read, keeps any byte after its last newline, or holds a line that is no trace line.
-#[expect(
-    clippy::panic,
-    reason = "this helper fails the test that reads a trace file which is not whole"
-)]
-#[must_use]
-#[track_caller]
-pub fn stopped_trace_lines_of(path: &Path) -> Vec<TraceLine> {
-    let bytes = fs::read(path).unwrap_or_else(|failure| panic!("{}: {failure}", path.display()));
+/// Fails as `read_trace_file` does, and with `TraceReadError::BytesAfterLastLine` when any byte follows the last newline.
+pub fn stopped_trace_lines_of(path: &Path) -> Result<Vec<TraceLine>, TraceReadError> {
+    let bytes = fs::read(path).map_err(|failure| TraceReadError::Unreadable {
+        path: path.to_path_buf(),
+        kind: failure.kind(),
+    })?;
     let unended = bytes
-        .rsplit(|byte| *byte == b'\n')
+        .rsplit(|byte| *byte == LINE_END)
         .next()
         .unwrap_or_default();
-    assert!(
-        unended.is_empty(),
-        "{}: {} bytes after its last whole line",
-        path.display(),
-        unended.len()
-    );
-    parse_trace_lines(&bytes, WritingProcess::Ended)
-        .unwrap_or_else(|failure| panic!("{}: {failure}", path.display()))
+    if !unended.is_empty() {
+        return Err(TraceReadError::BytesAfterLastLine {
+            path: path.to_path_buf(),
+            bytes: unended.len(),
+        });
+    }
+    parse_trace_lines(&bytes, WritingProcess::Ended).map_err(|failure| {
+        TraceReadError::UnreadableLine {
+            path: path.to_path_buf(),
+            failure,
+        }
+    })
 }
 
 /// The events files in the trace directory, oldest run first and each run's earlier lines first; none when the directory does not exist.
@@ -434,7 +446,8 @@ pub fn lines_of_files_still_present(files: &[PathBuf]) -> Result<Vec<TraceLine>,
             }) => {}
             Err(
                 failure @ (TraceReadError::Unreadable { .. }
-                | TraceReadError::UnreadableLine { .. }),
+                | TraceReadError::UnreadableLine { .. }
+                | TraceReadError::BytesAfterLastLine { .. }),
             ) => return Err(failure),
         }
     }
@@ -460,7 +473,8 @@ mod tests {
 
     use super::*;
     use crate::line_fixtures::{
-        MEMBER_LINE, MEMBER_RUN, line_still_zero_at_its_start, member_line_numbered, sized_ahead,
+        LineShorterThanZeroedSpan, MEMBER_LINE, MEMBER_RUN, line_still_zero_at_its_start,
+        member_line_numbered, sized_ahead,
     };
     use crate::remove_scratch::remove_scratch;
     use crate::this_process_directory::fresh_directory_of_this_process_in;
@@ -583,7 +597,7 @@ mod tests {
         let directory = fresh_scratch_directory("first-line-still-zero");
         let events_file =
             directory.join("20261116T210036Z-e8e6b01fdb8dbfa0-estafette.events.jsonl");
-        let first_line_still_zero_at_its_start = line_still_zero_at_its_start(MEMBER_LINE);
+        let first_line_still_zero_at_its_start = line_still_zero_at_its_start(MEMBER_LINE).unwrap();
         let lines_numbered_in = |file: &Path| {
             read_trace_file(file, WritingProcess::MayStillBeWriting)
                 .map(|lines| lines.iter().map(|line| line.n).collect::<Vec<_>>())
@@ -604,6 +618,21 @@ mod tests {
     }
 
     #[test]
+    fn observability_decision_12_a_line_shorter_than_the_span_a_test_zeroes_is_refused_not_left_whole()
+     {
+        const SHORT_LINE: &str = "short\n";
+
+        let refusal = line_still_zero_at_its_start(SHORT_LINE);
+
+        assert_eq!(
+            refusal,
+            Err(LineShorterThanZeroedSpan {
+                line_bytes: SHORT_LINE.len()
+            })
+        );
+    }
+
+    #[test]
     fn observability_decision_12_a_stopped_process_file_keeping_bytes_after_its_last_line_fails_the_test_reading_it()
      {
         const UNENDED_BYTES: usize = 40;
@@ -614,15 +643,14 @@ mod tests {
         bytes.extend_from_slice(&MEMBER_LINE.as_bytes()[..UNENDED_BYTES]);
         fs::write(&stopped_file, bytes).unwrap();
 
-        let failure = std::panic::catch_unwind(|| stopped_trace_lines_of(&stopped_file))
-            .map(|lines| lines.len());
+        let failure = stopped_trace_lines_of(&stopped_file).map(|lines| lines.len());
 
         assert_eq!(
-            failure.map_err(|payload| payload.downcast_ref::<String>().cloned()),
-            Err(Some(format!(
+            failure.map_err(|failure| failure.to_string()),
+            Err(format!(
                 "{}: {UNENDED_BYTES} bytes after its last whole line",
                 stopped_file.display()
-            )))
+            ))
         );
         remove_scratch(&stopped_directory).unwrap();
     }
@@ -632,19 +660,18 @@ mod tests {
      {
         let stopped_directory = fresh_scratch_directory("stopped-zero-line");
         let stopped_file = stopped_directory.join("stopped.events.jsonl");
-        let mut bytes = line_still_zero_at_its_start(MEMBER_LINE);
+        let mut bytes = line_still_zero_at_its_start(MEMBER_LINE).unwrap();
         bytes.extend_from_slice(member_line_numbered(5).as_bytes());
         fs::write(&stopped_file, bytes).unwrap();
 
-        let failure = std::panic::catch_unwind(|| stopped_trace_lines_of(&stopped_file))
-            .map(|lines| lines.len());
+        let failure = stopped_trace_lines_of(&stopped_file).map(|lines| lines.len());
 
         assert_eq!(
-            failure.map_err(|payload| payload.downcast_ref::<String>().cloned()),
-            Err(Some(format!(
+            failure.map_err(|failure| failure.to_string()),
+            Err(format!(
                 "{}: line 1 is not a trace line: expected value at line 1 column 1",
                 stopped_file.display()
-            )))
+            ))
         );
         remove_scratch(&stopped_directory).unwrap();
     }
@@ -680,8 +707,9 @@ mod tests {
         assert_eq!(
             stopped_trace_lines_of(
                 &directory.join("20261112T225914Z-aaaaaaaaaaaaaaaa-estafette.events.jsonl")
-            )[0]
-            .n,
+            )
+            .unwrap()[0]
+                .n,
             9
         );
         assert_eq!(

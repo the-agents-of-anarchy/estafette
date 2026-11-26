@@ -257,7 +257,7 @@ mod observability {
 
         assert!(output.status.success(), "{output:?}");
         let (events, raw) = trace_files_of_one_run(&root.join(DATA_HOME));
-        let lines = stopped_trace_lines_of(&raw);
+        let lines = stopped_trace_lines_of(&raw).unwrap_or_else(|failure| panic!("{failure}"));
         let [line] = lines.as_slice() else {
             panic!("the raw file holds one line: {lines:?}");
         };
@@ -305,7 +305,7 @@ mod observability {
         let [run] = runs.as_slice() else {
             panic!("one test-send run: {runs:?}");
         };
-        let lines = stopped_trace_lines_of(run);
+        let lines = stopped_trace_lines_of(run).unwrap_or_else(|failure| panic!("{failure}"));
         let claimed: Vec<&TraceLine> = lines
             .iter()
             .filter(|line| line.event == CLAIMED_EVENT)
@@ -349,7 +349,7 @@ mod observability {
         runs.sort();
         let (test_send_lines, mcp_lines): (Vec<_>, Vec<_>) = runs
             .iter()
-            .map(|path| stopped_trace_lines_of(path))
+            .map(|path| stopped_trace_lines_of(path).unwrap_or_else(|failure| panic!("{failure}")))
             .partition(|lines| lines.iter().any(|line| line.event == COMMAND_FAILED_EVENT));
         let [test_send_lines] = test_send_lines.as_slice() else {
             panic!("one test-send run: {runs:?}");
@@ -637,7 +637,12 @@ mod observability {
         runs.sort();
         let last_lines: Vec<TraceLine> = runs
             .iter()
-            .map(|path| stopped_trace_lines_of(path).pop().unwrap())
+            .map(|path| {
+                stopped_trace_lines_of(path)
+                    .unwrap_or_else(|failure| panic!("{failure}"))
+                    .pop()
+                    .unwrap()
+            })
             .collect();
         let [first, second] = last_lines.as_slice() else {
             panic!("two starts: {runs:?}");
@@ -732,7 +737,7 @@ mod observability {
             !fs::read(&events).unwrap().contains(&0),
             "the stopped process left its events file sized ahead of the line of its last event"
         );
-        let lines = stopped_trace_lines_of(&events);
+        let lines = stopped_trace_lines_of(&events).unwrap_or_else(|failure| panic!("{failure}"));
         let events_written: Vec<&str> = lines.iter().map(|line| line.event.as_str()).collect();
         assert!(
             events_written.ends_with(&LAST_EVENTS_OF_A_FAILED_COMMAND),

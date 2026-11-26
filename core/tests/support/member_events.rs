@@ -118,7 +118,7 @@ mod tests {
             traces.join(format!(
                 "20261112T225914Z-{MEMBER_RUN}-estafette.events.jsonl"
             )),
-            second_line_still_zero_at_its_start_sized_ahead(),
+            second_line_still_zero_at_its_start_sized_ahead().unwrap(),
         )
         .unwrap();
         let started = Instant::now();

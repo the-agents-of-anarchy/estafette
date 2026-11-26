@@ -8,15 +8,26 @@ pub const MEMBER_RUN: &str = "6c935f82c118f7b3";
 /// How many leading bytes of a line a test leaves zero to show it still landing.
 const LEADING_BYTES_STILL_ZERO: usize = 64;
 
+/// The refusal of a line too short to have the span a test zeroes at its start.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LineShorterThanZeroedSpan {
+    pub line_bytes: usize,
+}
+
 /// The bytes of the line as a read shows it while its write is landing: its first 64 bytes still zero.
-#[must_use]
-pub(crate) fn line_still_zero_at_its_start(line: &str) -> Vec<u8> {
+///
+/// # Errors
+///
+/// Fails with `LineShorterThanZeroedSpan` when the line is shorter than the 64 bytes to zero.
+pub fn line_still_zero_at_its_start(line: &str) -> Result<Vec<u8>, LineShorterThanZeroedSpan> {
     let mut bytes = line.as_bytes().to_vec();
     bytes
         .get_mut(..LEADING_BYTES_STILL_ZERO)
-        .unwrap_or_default()
+        .ok_or(LineShorterThanZeroedSpan {
+            line_bytes: line.len(),
+        })?
         .fill(0);
-    bytes
+    Ok(bytes)
 }
 
 /// `MEMBER_LINE` with the number it is written as replaced.
@@ -25,12 +36,16 @@ pub fn member_line_numbered(number: impl std::fmt::Display) -> String {
 }
 
 /// The bytes a read of a live trace file sized ahead to 64 KiB gives while its second line is landing: `MEMBER_LINE` whole, then the same line numbered 5 still zero in its first 64 bytes.
-#[must_use]
-pub fn second_line_still_zero_at_its_start_sized_ahead() -> Vec<u8> {
-    let second_line = line_still_zero_at_its_start(&member_line_numbered(5));
+///
+/// # Errors
+///
+/// Fails with `LineShorterThanZeroedSpan` when the second line is shorter than the 64 bytes to zero.
+pub fn second_line_still_zero_at_its_start_sized_ahead()
+-> Result<Vec<u8>, LineShorterThanZeroedSpan> {
+    let second_line = line_still_zero_at_its_start(&member_line_numbered(5))?;
     let mut bytes = MEMBER_LINE.as_bytes().to_vec();
     bytes.extend_from_slice(&second_line);
-    sized_ahead(&bytes)
+    Ok(sized_ahead(&bytes))
 }
 
 /// The bytes a live trace file holds when `landed` is all that has been written to it: `landed` zero-filled to the 64 KiB the file was sized ahead to.

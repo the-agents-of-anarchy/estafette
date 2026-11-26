@@ -1569,7 +1569,7 @@ mod tests {
                 fs::create_dir_all(into).unwrap();
                 fs::write(
                     into.join(FETCHED_TRACE_FILE),
-                    second_line_still_zero_at_its_start_sized_ahead(),
+                    second_line_still_zero_at_its_start_sized_ahead().unwrap(),
                 )
                 .unwrap();
                 Ok(fetched_with_none_left_on_the_server())

@@ -160,7 +160,7 @@ mod tests {
      {
         let run_file = fresh_run_file(
             "still-zero",
-            &second_line_still_zero_at_its_start_sized_ahead(),
+            &second_line_still_zero_at_its_start_sized_ahead().unwrap(),
         );
         let mut landed = MEMBER_LINE.as_bytes().to_vec();
         landed.extend_from_slice(member_line_numbered(5).as_bytes());
@@ -231,7 +231,7 @@ mod tests {
      {
         let run_file = fresh_run_file(
             "runs-out",
-            &second_line_still_zero_at_its_start_sized_ahead(),
+            &second_line_still_zero_at_its_start_sized_ahead().unwrap(),
         );
         let started = Instant::now();
         let past_the_bound = started.checked_add(WAIT_BOUND).unwrap();
