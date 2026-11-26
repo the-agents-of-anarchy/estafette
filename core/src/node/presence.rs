@@ -2702,7 +2702,6 @@ pub(super) mod tests {
         handle: Option<&'static str>,
         addr: Addr,
         probes_answered: Arc<std::sync::atomic::AtomicUsize>,
-        introducers: Arc<std::sync::Mutex<Vec<crate::wire::PublicKey>>>,
         introductions: Introductions,
     }
 
@@ -2751,7 +2750,6 @@ pub(super) mod tests {
             sender: crate::wire::PublicKey,
             introduce: Introduce,
         ) -> IntroduceAck {
-            self.introducers.lock().unwrap().push(sender);
             self.introductions
                 .send_modify(|taken| taken.push((sender, introduce)));
             IntroduceAck {
@@ -2769,7 +2767,6 @@ pub(super) mod tests {
         gossip: Gossip,
         topic: NetworkTopic,
         probes_answered: Arc<std::sync::atomic::AtomicUsize>,
-        pub(in crate::node) introducers: Arc<std::sync::Mutex<Vec<crate::wire::PublicKey>>>,
         introductions: Introductions,
         direct_connections: Arc<std::sync::atomic::AtomicUsize>,
         pub(in crate::node) accepted: Arc<std::sync::Mutex<Vec<iroh::endpoint::Connection>>>,
@@ -2786,14 +2783,12 @@ pub(super) mod tests {
             node_endpoint.replace_address(through.addr());
             let gossip = Gossip::builder().spawn(node_endpoint.endpoint().clone());
             let probes_answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let introducers = Arc::new(std::sync::Mutex::new(Vec::new()));
             let introductions = Introductions::default();
             let host = WitnessHost {
                 own_card: card(seed),
                 handle,
                 addr: wire_addr(&node_endpoint.endpoint().addr()),
                 probes_answered: Arc::clone(&probes_answered),
-                introducers: Arc::clone(&introducers),
                 introductions: Arc::clone(&introductions),
             };
             let direct_connections = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -2825,7 +2820,6 @@ pub(super) mod tests {
                 gossip,
                 topic,
                 probes_answered,
-                introducers,
                 introductions,
                 direct_connections,
                 accepted,
@@ -2862,7 +2856,7 @@ pub(super) mod tests {
         }
 
         /// How many Introduces the witness has taken from the card of the seed.
-        fn introduces_taken_from(&self, seed: u8) -> usize {
+        pub(in crate::node) fn introduces_taken_from(&self, seed: u8) -> usize {
             self.introductions
                 .borrow()
                 .iter()

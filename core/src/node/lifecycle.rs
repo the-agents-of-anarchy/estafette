@@ -1435,12 +1435,9 @@ mod tests {
             witness_joined.elapsed() >= NOTHING_MORE_WITHIN,
             "the departure wait left the witness less than {NOTHING_MORE_WITHIN:?} to be introduced to"
         );
-        assert!(
-            !witness
-                .introducers
-                .lock()
-                .unwrap()
-                .contains(&card(SECOND_SEED)),
+        assert_eq!(
+            witness.introduces_taken_from(SECOND_SEED),
+            0,
             "the stopping member introduced itself to the witness"
         );
         drop(scratch);
