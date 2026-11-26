@@ -202,6 +202,20 @@ mod tests {
     }
 
     #[test]
+    fn spec_3_7_a_printed_addr_without_direct_addresses_yields_none() {
+        let addr = r#"{"relays":["https://first.example/"]}"#;
+
+        assert_eq!(announced_relays(addr), None);
+    }
+
+    #[test]
+    fn spec_3_7_a_printed_addr_whose_direct_entry_is_no_socket_address_yields_none() {
+        let addr = r#"{"relays":["https://first.example/"],"direct":["not a socket address"]}"#;
+
+        assert_eq!(announced_relays(addr), None);
+    }
+
+    #[test]
     fn spec_3_7_a_printed_addr_without_relays_or_without_json_yields_none() {
         assert_eq!(announced_relays(r#"{"direct":[]}"#), None);
         assert_eq!(announced_relays("not json"), None);
