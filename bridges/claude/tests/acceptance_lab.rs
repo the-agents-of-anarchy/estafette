@@ -192,7 +192,7 @@ fn wait_until(
 
 fn watch_each_file_in(directory: &Path, watch: &mut GrowthWatch) -> io::Result<()> {
     for entry in fs::read_dir(directory)? {
-        watch.watch_file(&entry?.path()).map_err(io::Error::other)?;
+        watch.watch_path(&entry?.path()).map_err(io::Error::other)?;
     }
     Ok(())
 }
