@@ -62,6 +62,8 @@ const fn moment_text(moment: SnapshotMoment) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use iroh_metrics::MetricsGroup;
+
     use super::*;
 
     const COUNT_SPREAD: u64 = 0x9E37_79B9_7F4A_7C15;
@@ -165,6 +167,27 @@ mod tests {
             .chain(set.iter().map(|(name, count)| (*name, Value::from(*count))))
             .collect();
         assert_eq!(fields, expected);
+    }
+
+    /// Observability decision 9: a snapshot names every counter iroh keeps for the socket and for gossip, so a counter an iroh upgrade adds fails here.
+    #[test]
+    fn observability_decision_9_a_snapshot_names_every_counter_iroh_keeps() {
+        let socket = iroh::metrics::SocketMetrics::default();
+        let gossip = iroh_gossip::metrics::Metrics::default();
+        let mut kept_by_iroh: Vec<String> = MetricsGroup::iter(&socket)
+            .map(|item| format!("socket.{}", item.name()))
+            .chain(MetricsGroup::iter(&gossip).map(|item| format!("gossip.{}", item.name())))
+            .collect();
+        let snapshot = CounterSnapshot::read(SnapshotMoment::Interval, &socket, &gossip);
+        let mut named_by_snapshot: Vec<String> = snapshot
+            .counters()
+            .iter()
+            .map(|(name, _count)| (*name).to_owned())
+            .collect();
+        kept_by_iroh.sort();
+        named_by_snapshot.sort();
+
+        assert_eq!(named_by_snapshot, kept_by_iroh);
     }
 
     #[test]

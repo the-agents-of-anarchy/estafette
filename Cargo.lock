@@ -819,6 +819,7 @@ dependencies = [
  "estafette-trace",
  "iroh",
  "iroh-gossip",
+ "iroh-metrics",
  "iroh-relay",
  "n0-future",
  "notify",
