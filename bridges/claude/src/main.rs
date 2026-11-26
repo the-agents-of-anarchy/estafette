@@ -2201,10 +2201,10 @@ mod tests {
         assert_eq!(class_files_written(&run), ["bypass"]);
     }
 
-    #[test]
-    fn spec_3_12_harness_2_1_319_a_cached_transcript_that_cannot_be_opened_is_resolved_again() {
+    const SECOND_FRAME_INDEX: u64 = 1;
+
+    fn files_with_a_second_transcript_of_another_class() -> StandInFiles {
         const OTHER_TRANSCRIPT: &str = "/home/ana/.claude/projects/-other/abc-1.jsonl";
-        const SECOND_FRAME_INDEX: u64 = 1;
         let mut files = files_of_live_session("bypassPermissions");
         files.existing.insert(PathBuf::from(OTHER_TRANSCRIPT));
         files.texts.insert(
@@ -2218,20 +2218,96 @@ mod tests {
                 PathBuf::from("/home/ana/.claude/projects/-other"),
             ]),
         );
+        files
+    }
+
+    fn hide_the_first_transcript_before_the_second_frame<S>(
+        bridge: &mut ScriptedBridge<S>,
+        hidden: Arc<Mutex<BTreeSet<PathBuf>>>,
+    ) {
+        bridge.before_frame = Arc::new(move |index| {
+            if index == SECOND_FRAME_INDEX {
+                lock(&hidden).insert(PathBuf::from(TRANSCRIPT_FILE));
+            }
+        });
+    }
+
+    #[test]
+    fn spec_3_12_harness_2_1_319_a_cached_transcript_that_cannot_be_opened_is_resolved_again() {
+        let files = files_with_a_second_transcript_of_another_class();
         let hidden = Arc::clone(&files.hidden);
         let mut bridge = scripted_bridge_refusing_the_session(
             files,
             one_inbox_connection_replying(frames_from("ana", ["one", "two"])),
             polls_that_see_one_binary(),
         );
-        bridge.before_frame = Arc::new(move |index| {
-            if index == SECOND_FRAME_INDEX {
-                lock(&hidden).insert(PathBuf::from(TRANSCRIPT_FILE));
-            }
-        });
+        hide_the_first_transcript_before_the_second_frame(&mut bridge, hidden);
         let run = run_scripted_bridge(bridge);
         assert_eq!(class_files_written(&run), ["bypass", "prompting"]);
         assert_eq!(*lock(&run.listings), 2);
+    }
+
+    struct RecordedSessionSocket(Arc<Mutex<Vec<u8>>>);
+
+    struct RecordedSessionConnection(Arc<Mutex<Vec<u8>>>);
+
+    impl InboxConnector for RecordedSessionSocket {
+        type Stream = RecordedSessionConnection;
+
+        fn connect(&mut self) -> io::Result<RecordedSessionConnection> {
+            Ok(RecordedSessionConnection(Arc::clone(&self.0)))
+        }
+    }
+
+    impl Read for RecordedSessionConnection {
+        fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+            Ok(0)
+        }
+    }
+
+    impl Write for RecordedSessionConnection {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            lock(&self.0).extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn spec_3_12_harness_2_1_319_each_frames_notice_carries_the_class_read_at_that_frame_not_the_one_read_at_the_start()
+     {
+        const BYPASS_NOTICE_MODE: &str = "from-mode=\\\"bypass\\\"";
+        const PROMPTING_NOTICE_MODE: &str = "from-mode=\\\"prompting\\\"";
+        let files = files_with_a_second_transcript_of_another_class();
+        let hidden = Arc::clone(&files.hidden);
+        let written = Arc::new(Mutex::new(Vec::new()));
+        let mut bridge = ScriptedBridge::over(
+            RecordedSessionSocket(Arc::clone(&written)),
+            files,
+            one_inbox_connection_replying(frames_from("ana", ["one", "two"])),
+            polls_that_see_one_binary(),
+        );
+        hide_the_first_transcript_before_the_second_frame(&mut bridge, hidden);
+        run_scripted_bridge(bridge);
+        let notices = String::from_utf8(lock(&written).clone()).expect("utf8 notices");
+        let modes_in_order: Vec<&str> = notices
+            .match_indices("from-mode=")
+            .map(|(at, _)| notices.get(at..).unwrap_or_default())
+            .map(|from_mode| {
+                [BYPASS_NOTICE_MODE, PROMPTING_NOTICE_MODE]
+                    .into_iter()
+                    .find(|mode| from_mode.starts_with(mode))
+                    .unwrap_or("unknown")
+            })
+            .collect();
+        assert_eq!(
+            modes_in_order,
+            [BYPASS_NOTICE_MODE, PROMPTING_NOTICE_MODE],
+            "{notices}"
+        );
     }
 
     #[test]
