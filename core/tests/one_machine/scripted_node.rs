@@ -8,7 +8,7 @@ use estafette::net::endpoint::{GateFailure, NodeEndpoint};
 use estafette::stream_items::StreamExt;
 use estafette::wire::WIRE_LIMIT_BYTES;
 use iroh::address_lookup::MemoryLookup;
-use iroh::endpoint::{Connection, presets};
+use iroh::endpoint::{ConnectError, Connection, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router, RouterBuilder};
 use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey};
 use iroh_gossip::api::{Event, GossipReceiver, GossipSender};
@@ -57,11 +57,43 @@ enum Reach {
 }
 
 impl Reach {
-    /// The iroh endpoint the node's gossip and direct protocols run on.
-    fn iroh(&self) -> &Endpoint {
+    /// The id the node is reached by.
+    fn id(&self) -> EndpointId {
         match self {
-            Self::Gated(node_endpoint) => node_endpoint.endpoint(),
-            Self::Ungated { endpoint, .. } => endpoint,
+            Self::Gated(node_endpoint) => node_endpoint.endpoint().id(),
+            Self::Ungated { endpoint, .. } => endpoint.id(),
+        }
+    }
+
+    /// The address the node is reached at.
+    fn addr(&self) -> EndpointAddr {
+        match self {
+            Self::Gated(node_endpoint) => node_endpoint.endpoint().addr(),
+            Self::Ungated { endpoint, .. } => endpoint.addr(),
+        }
+    }
+
+    /// Dials the id under the direct protocol's ALPN.
+    async fn connect_directly(&self, to: EndpointId) -> Result<Connection, ConnectError> {
+        match self {
+            Self::Gated(node_endpoint) => node_endpoint.endpoint().connect(to, DIRECT_ALPN).await,
+            Self::Ungated { endpoint, .. } => endpoint.connect(to, DIRECT_ALPN).await,
+        }
+    }
+
+    /// Spawns the gossip the node's topic runs on.
+    fn spawn_gossip(&self) -> Gossip {
+        match self {
+            Self::Gated(node_endpoint) => node_endpoint.endpoint().spawn_gossip(),
+            Self::Ungated { endpoint, .. } => Gossip::builder().spawn(endpoint.clone()),
+        }
+    }
+
+    /// Starts a router of the node's protocol handlers.
+    fn router_builder(&self) -> RouterBuilder {
+        match self {
+            Self::Gated(node_endpoint) => node_endpoint.endpoint().router_builder(),
+            Self::Ungated { endpoint, .. } => Router::builder(endpoint.clone()),
         }
     }
 
@@ -166,8 +198,8 @@ impl ScriptedNode {
         let admitted = Admitted::default();
         let events = Arc::new(watch::Sender::new(Vec::new()));
         let _inside_runtime = runtime.enter();
-        let gossip = Gossip::builder().spawn(reach.iroh().clone());
-        let router = extend(Router::builder(reach.iroh().clone()).accept(
+        let gossip = reach.spawn_gossip();
+        let router = extend(reach.router_builder().accept(
             GOSSIP_ALPN,
             AdmittedOnly {
                 gossip: gossip.clone(),
@@ -243,7 +275,7 @@ impl ScriptedNode {
     pub fn request_directly(&self, to: EndpointId, request: &[u8]) -> Option<Vec<u8>> {
         self.runtime().block_on(async {
             tokio::time::timeout(SPEC_DIRECT_TIMEOUT_WITH_SLACK, async {
-                let connection = self.endpoint().connect(to, DIRECT_ALPN).await.ok()?;
+                let connection = self.reach.connect_directly(to).await.ok()?;
                 let (mut send, mut receive) = connection.open_bi().await.ok()?;
                 send.write_all(request).await.ok()?;
                 send.finish().ok()?;
@@ -255,9 +287,19 @@ impl ScriptedNode {
         })
     }
 
-    /// The node's iroh endpoint.
-    pub fn endpoint(&self) -> &Endpoint {
-        self.reach.iroh()
+    /// The id the node is reached by.
+    pub fn id(&self) -> EndpointId {
+        self.reach.id()
+    }
+
+    /// The address the node is reached at.
+    pub fn addr(&self) -> EndpointAddr {
+        self.reach.addr()
+    }
+
+    /// Dials the id under the direct protocol's ALPN from the node's endpoint.
+    pub async fn connect_directly(&self, to: EndpointId) -> Result<Connection, ConnectError> {
+        self.reach.connect_directly(to).await
     }
 
     /// The runtime the node's tasks run on, which the test thread may block on.

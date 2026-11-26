@@ -4,13 +4,17 @@ use std::time::Duration;
 
 use iroh::address_lookup::MemoryLookup;
 use iroh::endpoint::{
-    BindError, Connection, ConnectionError, QuicTransportConfig, RelayStatus, Side, VarInt, presets,
+    BindError, ConnectError, Connection, ConnectionError, QuicTransportConfig, RelayStatus, Side,
+    VarInt, presets,
 };
+use iroh::metrics::SocketMetrics;
+use iroh::protocol::{Router, RouterBuilder};
 use iroh::{
     Endpoint, EndpointAddr, EndpointId, RelayConfig, RelayMap, RelayMode, RelayUrl, SecretKey,
-    TransportAddr,
+    TransportAddr, Watcher,
 };
 use iroh_gossip::ALPN as GOSSIP_ALPN;
+use iroh_gossip::Gossip;
 
 use super::direct::{HeldConnections, SUPERSEDED_CONNECTION_CLOSE_REASON};
 use super::gate::{
@@ -32,7 +36,7 @@ const LOCATION_HASH_BYTES: usize = 8;
 
 /// The node's iroh endpoint, gated on the network secret for every gossip connection, with the address lookup the node feeds and the relay map it edits, both kept across rebinds.
 pub struct NodeEndpoint {
-    endpoint: Endpoint,
+    endpoint: BoundEndpoint,
     address_lookup: MemoryLookup,
     relay_map: RelayMap,
     binding: Binding,
@@ -69,7 +73,8 @@ impl NodeEndpoint {
             report_gate_closing: Arc::new(report_gate_closing),
             connections,
         };
-        let endpoint = bind_endpoint(&binding, &relay_map, &address_lookup).await?;
+        let endpoint =
+            BoundEndpoint::of(bind_endpoint(&binding, &relay_map, &address_lookup).await?);
         Ok(Self {
             endpoint,
             address_lookup,
@@ -83,8 +88,10 @@ impl NodeEndpoint {
     /// # Errors
     /// The iroh bind error when no socket can be bound; the closed endpoint then stays in place.
     pub(crate) async fn rebind(&mut self) -> Result<(), BindError> {
-        self.endpoint.close().await;
-        self.endpoint = bind_endpoint(&self.binding, &self.relay_map, &self.address_lookup).await?;
+        self.endpoint.iroh.close().await;
+        self.endpoint = BoundEndpoint::of(
+            bind_endpoint(&self.binding, &self.relay_map, &self.address_lookup).await?,
+        );
         Ok(())
     }
 
@@ -112,9 +119,9 @@ impl NodeEndpoint {
         self.binding.connections.record(event);
     }
 
-    /// The iroh endpoint the gossip layer and the direct protocol run on.
+    /// The bound endpoint the gossip layer and the direct protocol run on, without the means to edit its relays.
     #[must_use]
-    pub const fn endpoint(&self) -> &Endpoint {
+    pub const fn endpoint(&self) -> &BoundEndpoint {
         &self.endpoint
     }
 
@@ -135,7 +142,7 @@ impl NodeEndpoint {
     pub async fn add_relay(&self, relay: RelayUrl, host: ShortId) {
         if !self.relay_map.contains(&relay) {
             let entry = Arc::new(RelayConfig::from(relay.clone()));
-            self.endpoint.insert_relay(relay.clone(), entry).await;
+            self.endpoint.iroh.insert_relay(relay.clone(), entry).await;
             self.record_relay_map_edit(RelayMapEdit::Added, Some(host), &relay);
         }
     }
@@ -143,7 +150,7 @@ impl NodeEndpoint {
     /// Removes the relay from the relay map, recording a removal when the map held it and naming the known host it belongs to, if any.
     pub async fn remove_relay(&self, relay: &RelayUrl, host: Option<ShortId>) {
         if self.relay_map.contains(relay) {
-            self.endpoint.remove_relay(relay).await;
+            self.endpoint.iroh.remove_relay(relay).await;
             self.record_relay_map_edit(RelayMapEdit::Removed, host, relay);
         }
     }
@@ -161,6 +168,117 @@ impl NodeEndpoint {
     #[cfg(test)]
     pub(crate) fn relay_map(&self) -> RelayMap {
         self.relay_map.clone()
+    }
+}
+
+/// A bound iroh endpoint as every caller outside the relay guard sees it: it dials, accepts, names itself and carries gossip and routers, and no relay of its map is edited through it.
+#[derive(Clone)]
+pub struct BoundEndpoint {
+    iroh: Endpoint,
+}
+
+impl BoundEndpoint {
+    const fn of(iroh: Endpoint) -> Self {
+        Self { iroh }
+    }
+
+    /// The id the endpoint is reached by.
+    #[must_use]
+    pub fn id(&self) -> EndpointId {
+        self.iroh.id()
+    }
+
+    /// The address the endpoint is reached at now.
+    #[must_use]
+    pub fn addr(&self) -> EndpointAddr {
+        self.iroh.addr()
+    }
+
+    /// Dials the address under the ALPN, as the endpoint's own connect does.
+    ///
+    /// # Errors
+    /// The iroh connect error when the dial fails.
+    pub async fn connect(
+        &self,
+        target: impl Into<EndpointAddr>,
+        alpn: &[u8],
+    ) -> Result<Connection, ConnectError> {
+        self.iroh.connect(target, alpn).await
+    }
+
+    /// Each change of the endpoint's own address.
+    #[must_use]
+    pub(crate) fn watch_addr(&self) -> impl Watcher<Value = EndpointAddr> + use<> {
+        self.iroh.watch_addr()
+    }
+
+    /// Each change of the endpoint's home relays and their connection status.
+    #[must_use]
+    pub(crate) fn home_relay_status(&self) -> impl Watcher<Value = Vec<RelayStatus>> + use<> {
+        self.iroh.home_relay_status()
+    }
+
+    /// The counters iroh keeps for the endpoint's socket.
+    #[must_use]
+    pub(crate) fn socket_metrics(&self) -> &SocketMetrics {
+        &self.iroh.metrics().socket
+    }
+
+    /// Whether the endpoint has been closed.
+    #[cfg(test)]
+    pub(crate) fn is_closed(&self) -> bool {
+        self.iroh.is_closed()
+    }
+
+    /// Waits for the next connection attempt a peer makes to the endpoint.
+    #[cfg(test)]
+    pub(crate) fn accept(&self) -> iroh::endpoint::Accept<'_> {
+        self.iroh.accept()
+    }
+
+    /// Closes the endpoint.
+    #[cfg(test)]
+    pub(crate) async fn close(&self) {
+        self.iroh.close().await;
+    }
+
+    /// The address lookup the endpoint dials by.
+    #[cfg(test)]
+    pub(crate) fn address_lookup(
+        &self,
+    ) -> Result<&iroh::address_lookup::AddressLookupServices, iroh::endpoint::EndpointError> {
+        self.iroh.address_lookup()
+    }
+
+    /// Puts the relay in the endpoint's map past the guard, so a test shows what the guard keeps out.
+    #[cfg(test)]
+    pub(crate) async fn insert_relay_past_the_guard(
+        &self,
+        relay: RelayUrl,
+        entry: Arc<RelayConfig>,
+    ) -> Option<Arc<RelayConfig>> {
+        self.iroh.insert_relay(relay, entry).await
+    }
+
+    /// Takes the relay out of the endpoint's map past the guard, returning its entry if the map held it.
+    #[cfg(test)]
+    pub(crate) async fn remove_relay_past_the_guard(
+        &self,
+        relay: &RelayUrl,
+    ) -> Option<Arc<RelayConfig>> {
+        self.iroh.remove_relay(relay).await
+    }
+
+    /// Spawns a gossip instance that runs on this endpoint.
+    #[must_use]
+    pub fn spawn_gossip(&self) -> Gossip {
+        Gossip::builder().spawn(self.iroh.clone())
+    }
+
+    /// Starts a router of protocol handlers on this endpoint.
+    #[must_use]
+    pub fn router_builder(&self) -> RouterBuilder {
+        Router::builder(self.iroh.clone())
     }
 }
 
@@ -736,15 +854,31 @@ mod tests {
         let member = bind_node_with_relays(MEMBER_SEED, MEMBER_SECRET, host_relays.clone()).await;
 
         for relay in &host_relays {
-            assert!(member.endpoint().remove_relay(relay).await.is_some());
+            assert!(member.endpoint.iroh.remove_relay(relay).await.is_some());
         }
         assert!(
             member
-                .endpoint()
+                .endpoint
+                .iroh
                 .remove_relay(&relay_url(UNKNOWN_HOST_RELAY))
                 .await
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn spec_3_6_a_gossip_spawned_on_the_bound_endpoint_runs_on_the_nodes_own_id() {
+        let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
+
+        let gossip = member.endpoint().spawn_gossip();
+        let router = member
+            .endpoint()
+            .router_builder()
+            .accept(GOSSIP_ALPN, gossip)
+            .spawn();
+
+        assert_eq!(router.endpoint().id(), member.endpoint().id());
+        router.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -754,10 +888,10 @@ mod tests {
 
         for (dialer, acceptor) in [(&first, &second), (&second, &first)] {
             let (dialed, accepted) =
-                dial(dialer.endpoint(), acceptor.endpoint(), GOSSIP_ALPN).await;
+                dial(&dialer.endpoint.iroh, &acceptor.endpoint.iroh, GOSSIP_ALPN).await;
             let (dialed, accepted) = (dialed.unwrap(), accepted.unwrap());
-            assert_eq!(dialed.remote_id(), acceptor.endpoint().id());
-            assert_eq!(accepted.remote_id(), dialer.endpoint().id());
+            assert_eq!(dialed.remote_id(), acceptor.endpoint.iroh.id());
+            assert_eq!(accepted.remote_id(), dialer.endpoint.iroh.id());
 
             let (mut send, _unused_recv) = dialed.open_bi().await.unwrap();
             send.write_all(FIRST_STREAM_BYTES).await.unwrap();
@@ -796,7 +930,7 @@ mod tests {
         for (dialer, acceptor) in [(&member, &outsider), (&outsider, &member)] {
             let started = Instant::now();
             let (dialed, accepted) =
-                dial(dialer.endpoint(), acceptor.endpoint(), GOSSIP_ALPN).await;
+                dial(&dialer.endpoint.iroh, &acceptor.endpoint.iroh, GOSSIP_ALPN).await;
             assert!(started.elapsed() < SPEC_GATE_TIMEOUT);
             assert!(dial_is_locally_rejected(&dialed));
             assert!(accept_is_locally_rejected(&accepted));
@@ -842,12 +976,12 @@ mod tests {
      {
         let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
         let peer = bind_plain_endpoint(SPEC_PEER_SEED).await;
-        let (member_id, peer_id) = (member.endpoint().id(), peer.id());
+        let (member_id, peer_id) = (member.endpoint.iroh.id(), peer.id());
 
         for draw in 0..CONNECTIONS_EACH_DRAWING_A_NONCE {
             let speak_the_spec_gate = async {
                 let connection = peer
-                    .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                    .connect(member.endpoint.iroh.addr(), GOSSIP_ALPN)
                     .await
                     .unwrap();
                 let (mut challenge_send, mut proof_recv) = connection.open_bi().await.unwrap();
@@ -865,7 +999,7 @@ mod tests {
                 (connection, proof_received, member_nonce)
             };
             let ((_open_connection, proof_received, member_nonce), accepted) =
-                tokio::join!(speak_the_spec_gate, accept_next(member.endpoint()));
+                tokio::join!(speak_the_spec_gate, accept_next(&member.endpoint.iroh));
 
             assert_eq!(
                 proof_received,
@@ -883,7 +1017,7 @@ mod tests {
 
         let started = Instant::now();
         let (dialed, _held_by_silent) = tokio::join!(
-            member.endpoint().connect(silent.addr(), GOSSIP_ALPN),
+            member.endpoint.iroh.connect(silent.addr(), GOSSIP_ALPN),
             accept_next(&silent)
         );
         assert!(is_the_gate_timeout(started.elapsed()));
@@ -893,12 +1027,12 @@ mod tests {
         let (closed_by_member, accepted) = tokio::join!(
             async {
                 let connection = silent
-                    .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                    .connect(member.endpoint.iroh.addr(), GOSSIP_ALPN)
                     .await
                     .unwrap();
                 connection.closed().await
             },
-            accept_next(member.endpoint())
+            accept_next(&member.endpoint.iroh)
         );
         assert!(is_the_gate_timeout(started.elapsed()));
         assert!(accept_is_locally_rejected(&accepted));
@@ -919,7 +1053,7 @@ mod tests {
         let stranger = bind_plain_endpoint(STRANGER_SEED).await;
 
         let started = Instant::now();
-        let (dialed, accepted) = dial(&stranger, member.endpoint(), DIRECT_ALPN).await;
+        let (dialed, accepted) = dial(&stranger, &member.endpoint.iroh, DIRECT_ALPN).await;
         assert!(started.elapsed() < SPEC_GATE_TIMEOUT);
         let (dialed, accepted) = (dialed.unwrap(), accepted.unwrap());
         assert_eq!(accepted.remote_id(), stranger.id());
@@ -934,7 +1068,7 @@ mod tests {
     #[tokio::test]
     async fn spec_3_14_quic_idle_timeout_closes_a_connection_whose_peer_vanished() {
         let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
-        let member_addr = member.endpoint().addr();
+        let member_addr = member.endpoint.iroh.addr();
         let (vanish, vanish_order) = tokio::sync::oneshot::channel::<()>();
         let vanishing_peer = std::thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
@@ -951,7 +1085,7 @@ mod tests {
             peer_and_connection
         });
 
-        let accepted = accept_next(member.endpoint()).await.unwrap();
+        let accepted = accept_next(&member.endpoint.iroh).await.unwrap();
         let keep_alives_before = accepted.stats().frame_tx.ping;
         let keep_alives_sent = found_within(PEER_LIFE_WAIT, async || {
             (accepted.stats().frame_tx.ping
@@ -988,10 +1122,11 @@ mod tests {
             timeout(
                 LOCAL_DIAL_WAIT,
                 dialer
-                    .endpoint()
-                    .connect(acceptor.endpoint().id(), DIRECT_ALPN)
+                    .endpoint
+                    .iroh
+                    .connect(acceptor.endpoint.iroh.id(), DIRECT_ALPN)
             ),
-            timeout(LOCAL_DIAL_WAIT, accept_next(acceptor.endpoint()))
+            timeout(LOCAL_DIAL_WAIT, accept_next(&acceptor.endpoint.iroh))
         );
         Some((dial_outcome.ok()?.ok()?, accept_outcome.ok()?.ok()?))
     }
@@ -1001,13 +1136,13 @@ mod tests {
         let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
         let peer = bind_node(SECOND_MEMBER_SEED, MEMBER_SECRET).await;
 
-        member.replace_address(peer.endpoint().addr());
+        member.replace_address(peer.endpoint.iroh.addr());
 
         let (dialed, accepted) = dial_by_card_id(&member, &peer).await.expect(
             "the member dialed the peer by its card id and the peer accepted within LOCAL_DIAL_WAIT",
         );
-        assert_eq!(dialed.remote_id(), peer.endpoint().id());
-        assert_eq!(accepted.remote_id(), member.endpoint().id());
+        assert_eq!(dialed.remote_id(), peer.endpoint.iroh.id());
+        assert_eq!(accepted.remote_id(), member.endpoint.iroh.id());
     }
 
     #[tokio::test]
@@ -1016,8 +1151,9 @@ mod tests {
         let unfed = bind_node(SECOND_MEMBER_SEED, MEMBER_SECRET).await;
 
         let dialed = member
-            .endpoint()
-            .connect(unfed.endpoint().id(), DIRECT_ALPN)
+            .endpoint
+            .iroh
+            .connect(unfed.endpoint.iroh.id(), DIRECT_ALPN)
             .await;
 
         assert!(matches!(
@@ -1027,7 +1163,7 @@ mod tests {
                 ..
             })
         ));
-        assert_eq!(member.endpoint().address_lookup().unwrap().len(), 1);
+        assert_eq!(member.endpoint.iroh.address_lookup().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -1036,19 +1172,22 @@ mod tests {
         let peer = bind_node(SECOND_MEMBER_SEED, MEMBER_SECRET).await;
         let black_hole = std::net::UdpSocket::bind(LOOPBACK_ANY_PORT).unwrap();
         let unanswered_address = EndpointAddr::from_parts(
-            peer.endpoint().id(),
+            peer.endpoint.iroh.id(),
             [TransportAddr::Ip(black_hole.local_addr().unwrap())],
         );
 
-        member.replace_address(peer.endpoint().addr());
+        member.replace_address(peer.endpoint.iroh.addr());
         member.replace_address(unanswered_address);
         let accepting = tokio::spawn({
-            let peer = peer.endpoint().clone();
+            let peer = peer.endpoint.iroh.clone();
             async move { accept_next(&peer).await }
         });
         let dialed_through_the_unanswered_address = timeout(
             UNANSWERED_DIAL_ENDS_WITHIN,
-            member.endpoint().connect(peer.endpoint().id(), DIRECT_ALPN),
+            member
+                .endpoint
+                .iroh
+                .connect(peer.endpoint.iroh.id(), DIRECT_ALPN),
         )
         .await
         .unwrap_or_else(|_elapsed| {
@@ -1060,7 +1199,7 @@ mod tests {
             "a dial by card id reached the peer though its only address is unanswered: {dialed_through_the_unanswered_address:?}"
         );
 
-        member.replace_address(peer.endpoint().addr());
+        member.replace_address(peer.endpoint.iroh.addr());
         assert!(dial_by_card_id(&member, &peer).await.is_some());
     }
 
@@ -1072,19 +1211,34 @@ mod tests {
             bind_node_with_relays(MEMBER_SEED, MEMBER_SECRET, vec![first_relay.clone()]).await;
 
         member.remove_relay(&first_relay, None).await;
-        assert!(member.endpoint().remove_relay(&first_relay).await.is_none());
+        assert!(
+            member
+                .endpoint
+                .iroh
+                .remove_relay(&first_relay)
+                .await
+                .is_none()
+        );
 
         member
             .add_relay(first_relay.clone(), ShortId::from(tested_peer()))
             .await;
-        assert!(member.endpoint().remove_relay(&first_relay).await.is_some());
+        assert!(
+            member
+                .endpoint
+                .iroh
+                .remove_relay(&first_relay)
+                .await
+                .is_some()
+        );
 
         member
             .add_relay(second_relay.clone(), ShortId::from(tested_peer()))
             .await;
         assert!(
             member
-                .endpoint()
+                .endpoint
+                .iroh
                 .remove_relay(&second_relay)
                 .await
                 .is_some()
@@ -1138,7 +1292,8 @@ mod tests {
             bind_node_with_relays(MEMBER_SEED, MEMBER_SECRET, vec![first_relay.clone()]).await;
         let entry_without_address_discovery = Arc::new(RelayConfig::new(first_relay.clone(), None));
         member
-            .endpoint()
+            .endpoint
+            .iroh
             .insert_relay(first_relay.clone(), entry_without_address_discovery)
             .await;
 
@@ -1146,7 +1301,12 @@ mod tests {
             .add_relay(first_relay.clone(), ShortId::from(tested_peer()))
             .await;
 
-        let entry = member.endpoint().remove_relay(&first_relay).await.unwrap();
+        let entry = member
+            .endpoint
+            .iroh
+            .remove_relay(&first_relay)
+            .await
+            .unwrap();
         assert_eq!(entry.quic, None);
     }
 
@@ -1158,25 +1318,32 @@ mod tests {
             bind_node_recording_gate_closings(MEMBER_SEED, MEMBER_SECRET).await;
         let peer = bind_node(SECOND_MEMBER_SEED, MEMBER_SECRET).await;
         let outsider = bind_plain_endpoint(OUTSIDER_SEED).await;
-        member.replace_address(peer.endpoint().addr());
+        member.replace_address(peer.endpoint.iroh.addr());
         member
             .add_relay(added_relay.clone(), ShortId::from(tested_peer()))
             .await;
-        let before = member.endpoint().clone();
+        let before = member.endpoint.iroh.clone();
 
         member.rebind().await.unwrap();
 
         assert!(before.is_closed());
-        assert!(!member.endpoint().is_closed());
-        assert_eq!(member.endpoint().id(), before.id());
-        assert!(member.endpoint().remove_relay(&added_relay).await.is_some());
+        assert!(!member.endpoint.iroh.is_closed());
+        assert_eq!(member.endpoint.iroh.id(), before.id());
+        assert!(
+            member
+                .endpoint
+                .iroh
+                .remove_relay(&added_relay)
+                .await
+                .is_some()
+        );
         let (dialed, accepted) = dial_by_card_id(&member, &peer).await.expect(
             "the member dialed the peer by its card id and the peer accepted within LOCAL_DIAL_WAIT",
         );
-        assert_eq!(dialed.remote_id(), peer.endpoint().id());
-        assert_eq!(accepted.remote_id(), member.endpoint().id());
+        assert_eq!(dialed.remote_id(), peer.endpoint.iroh.id());
+        assert_eq!(accepted.remote_id(), member.endpoint.iroh.id());
         let (dialed, _held_by_outsider) = tokio::join!(
-            member.endpoint().connect(outsider.addr(), GOSSIP_ALPN),
+            member.endpoint.iroh.connect(outsider.addr(), GOSSIP_ALPN),
             accept_next(&outsider)
         );
         assert!(dial_is_locally_rejected(&dialed));
@@ -1214,11 +1381,11 @@ mod tests {
         let (member, recorded) =
             bind_node_recording_gate_closings(MEMBER_SEED, MEMBER_SECRET).await;
         let outsider = bind_plain_endpoint(OUTSIDER_SEED).await;
-        let (member_id, outsider_id) = (member.endpoint().id(), outsider.id());
+        let (member_id, outsider_id) = (member.endpoint.iroh.id(), outsider.id());
 
         let answer_under_another_secret = async {
             let connection = outsider
-                .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                .connect(member.endpoint.iroh.addr(), GOSSIP_ALPN)
                 .await
                 .unwrap();
             let (mut answer_send, mut nonce_recv) = connection.accept_bi().await.unwrap();
@@ -1229,8 +1396,10 @@ mod tests {
             answer_send.finish().unwrap();
             connection
         };
-        let (_closed_connection, accepted) =
-            tokio::join!(answer_under_another_secret, accept_next(member.endpoint()));
+        let (_closed_connection, accepted) = tokio::join!(
+            answer_under_another_secret,
+            accept_next(&member.endpoint.iroh)
+        );
 
         assert!(accept_is_locally_rejected(&accepted));
         let closing = the_one_closing(&recorded);
@@ -1246,7 +1415,7 @@ mod tests {
 
         let challenge_with_a_nonce_cut_short = async {
             let connection = peer
-                .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                .connect(member.endpoint.iroh.addr(), GOSSIP_ALPN)
                 .await
                 .unwrap();
             let (mut challenge_send, _proof_recv) = connection.open_bi().await.unwrap();
@@ -1256,7 +1425,7 @@ mod tests {
         };
         let (_closed_connection, accepted) = tokio::join!(
             challenge_with_a_nonce_cut_short,
-            accept_next(member.endpoint())
+            accept_next(&member.endpoint.iroh)
         );
 
         assert!(accept_is_locally_rejected(&accepted));
@@ -1277,7 +1446,7 @@ mod tests {
 
         let challenge_then_stop_reading_the_proof = async {
             let connection = peer
-                .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                .connect(member.endpoint.iroh.addr(), GOSSIP_ALPN)
                 .await
                 .unwrap();
             let (mut challenge_send, mut proof_recv) = connection.open_bi().await.unwrap();
@@ -1288,7 +1457,7 @@ mod tests {
         };
         let (_closed_connection, accepted) = tokio::join!(
             challenge_then_stop_reading_the_proof,
-            accept_next(member.endpoint())
+            accept_next(&member.endpoint.iroh)
         );
 
         assert!(accept_is_locally_rejected(&accepted));
@@ -1307,7 +1476,7 @@ mod tests {
         let silent = bind_plain_endpoint(SILENT_PEER_SEED).await;
 
         let (dialed, _held_by_silent) = tokio::join!(
-            member.endpoint().connect(silent.addr(), GOSSIP_ALPN),
+            member.endpoint.iroh.connect(silent.addr(), GOSSIP_ALPN),
             accept_next(&silent)
         );
 
@@ -1326,14 +1495,16 @@ mod tests {
 
         let close_before_the_challenge = async {
             let connection = peer
-                .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                .connect(member.endpoint.iroh.addr(), GOSSIP_ALPN)
                 .await
                 .unwrap();
             connection.close(PEER_CLOSE_CODE, PEER_CLOSE_REASON);
             connection
         };
-        let (_closed_connection, accepted) =
-            tokio::join!(close_before_the_challenge, accept_next(member.endpoint()));
+        let (_closed_connection, accepted) = tokio::join!(
+            close_before_the_challenge,
+            accept_next(&member.endpoint.iroh)
+        );
 
         assert!(accept_is_locally_rejected(&accepted));
         let closing = the_one_closing(&recorded);
@@ -1377,14 +1548,16 @@ mod tests {
         for peer in [&first_peer, &second_peer] {
             let close_before_the_challenge = async {
                 let connection = peer
-                    .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                    .connect(member.endpoint.iroh.addr(), GOSSIP_ALPN)
                     .await
                     .unwrap();
                 connection.close(PEER_CLOSE_CODE, PEER_CLOSE_REASON);
                 connection
             };
-            let (_closed_connection, accepted) =
-                tokio::join!(close_before_the_challenge, accept_next(member.endpoint()));
+            let (_closed_connection, accepted) = tokio::join!(
+                close_before_the_challenge,
+                accept_next(&member.endpoint.iroh)
+            );
             assert!(accept_is_locally_rejected(&accepted));
         }
 
@@ -1410,14 +1583,16 @@ mod tests {
 
         let close_with_a_hostile_reason = async {
             let connection = peer
-                .connect(member.endpoint().addr(), GOSSIP_ALPN)
+                .connect(member.endpoint.iroh.addr(), GOSSIP_ALPN)
                 .await
                 .unwrap();
             connection.close(PEER_CLOSE_CODE, HOSTILE_CLOSE_REASON);
             connection
         };
-        let (_closed_connection, accepted) =
-            tokio::join!(close_with_a_hostile_reason, accept_next(member.endpoint()));
+        let (_closed_connection, accepted) = tokio::join!(
+            close_with_a_hostile_reason,
+            accept_next(&member.endpoint.iroh)
+        );
         assert!(accept_is_locally_rejected(&accepted));
 
         let closing = recorded.lock().unwrap().pop().unwrap();

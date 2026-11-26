@@ -112,7 +112,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use std::time::{Duration, Instant};
 
     use estafette::crypto::NetworkKeys;
-    use estafette::net::endpoint::{DIRECT_ALPN, QUIC_KEEP_ALIVE_INTERVAL};
+    use estafette::net::endpoint::QUIC_KEEP_ALIVE_INTERVAL;
     use estafette::payload::{open_response, seal_payload, seal_request};
     use estafette::wire::{
         Addr, Departure, Introduce, Message, Payload, Request, Response, Version, WIRE_LIMIT_BYTES,
@@ -231,7 +231,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             network.keys(),
             &bob_key,
             BOB_HANDLE,
-            &bob.endpoint().addr(),
+            &bob.addr(),
         ));
         amy.server_mut()
             .peer_within(BOB_HANDLE, PRESENCE_WAIT, |_listed| true);
@@ -290,7 +290,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
     /// The node's id with each of its socket ports on the documentation host, an address no connection of this machine runs over.
     fn address_on_a_host_no_connection_runs_over(node: &ScriptedNode) -> iroh::EndpointAddr {
-        let address = node.endpoint().addr();
+        let address = node.addr();
         let sockets: Vec<TransportAddr> = address
             .ip_addrs()
             .map(|socket| TransportAddr::Ip(SocketAddr::new(DOCUMENTATION_HOST, socket.port())))
@@ -1002,7 +1002,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         let ScriptedBobDeparted {
             amy, amy_card, bob, ..
         } = amy_after_scripted_bob_departed(&network);
-        let bob_address = bob.endpoint().addr();
+        let bob_address = bob.addr();
 
         let answer = request_directly(
             &network,
@@ -1060,7 +1060,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         let held = timed("the restarted bob connects to amy", || {
             restarted
                 .runtime()
-                .block_on(restarted.endpoint().connect(amy_card.id, DIRECT_ALPN))
+                .block_on(restarted.connect_directly(amy_card.id))
                 .unwrap()
         });
         let before_presence = timed("the restarted bob's message before its presence", || {
@@ -1133,7 +1133,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         });
         let held = timed("bob connects to amy", || {
             bob.runtime()
-                .block_on(bob.endpoint().connect(amy_card.id, DIRECT_ALPN))
+                .block_on(bob.connect_directly(amy_card.id))
                 .unwrap()
         });
         let before_presence = timed("bob's message before its presence", || {
@@ -1985,7 +1985,7 @@ mod spec_3_15_with_one_member {
             network.keys(),
             &outsider_key,
             OUTSIDER_HANDLE,
-            &outsider.endpoint().addr(),
+            &outsider.addr(),
         ));
         amy.server_mut()
             .peer_within(OUTSIDER_HANDLE, PRESENCE_WAIT, |_outsider| true);
@@ -2795,7 +2795,7 @@ mod observability_decision_6_on_one_machine {
             .peer_within(BOB_HANDLE, PRESENCE_WAIT, online);
         bob.server_mut()
             .peer_within(AMY_HANDLE, PRESENCE_WAIT, online);
-        let host_address = host.endpoint().addr();
+        let host_address = host.addr();
         let host_ports: BTreeSet<u16> = host_address.ip_addrs().map(SocketAddr::port).collect();
         let mut markers = secrets_and_paths_of(&network.base_directory_files());
         markers.extend(address_markers(host_address.ip_addrs().copied()));

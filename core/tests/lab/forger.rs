@@ -5,7 +5,7 @@ use estafette::stream_items::StreamExt;
 use iroh::protocol::Router;
 use iroh::{EndpointAddr, SecretKey};
 use iroh_gossip::api::{GossipReceiver, GossipSender};
-use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId};
+use iroh_gossip::{ALPN as GOSSIP_ALPN, TopicId};
 
 use crate::driven_runtime::DrivenRuntime;
 use crate::gated_endpoint::{bind_gated_endpoint, unrecorded_connections};
@@ -42,8 +42,10 @@ impl Forger {
         let host_id = host.id;
         endpoint.replace_address(host);
         let _inside_runtime = runtime.enter();
-        let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
-        let router = Router::builder(endpoint.endpoint().clone())
+        let gossip = endpoint.endpoint().spawn_gossip();
+        let router = endpoint
+            .endpoint()
+            .router_builder()
             .accept(GOSSIP_ALPN, gossip.clone())
             .spawn();
         let Ok(joined) = runtime.block_on(tokio::time::timeout(

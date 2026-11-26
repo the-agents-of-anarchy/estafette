@@ -108,7 +108,7 @@ impl LocalNetwork {
 
     /// Adds by the binary's own command the stand-in host as a configured host whose relay never answers, so every member sends it its join.
     pub fn add_stand_in_host_to_the_configuration(&self, host: &ScriptedNode) {
-        self.add_host_named(*host.endpoint().id().as_bytes());
+        self.add_host_named(*host.id().as_bytes());
     }
 
     /// Adds by the binary's own command a configured host of that node id whose relay never answers.

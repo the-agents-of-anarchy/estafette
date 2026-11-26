@@ -299,6 +299,7 @@ mod tests {
     use crate::event::{Event, RunRecord};
     use crate::net::direct::tests::StandingClock;
     use crate::net::direct::{ClientTimeouts, DirectClient};
+    use crate::net::endpoint::BoundEndpoint;
     use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
         FIRST_SEED, HOST_RELAY, HOST_SEED, MARKER_SEED, MOVED_HOST_RELAY, Member, MemberPlan,
@@ -380,7 +381,7 @@ mod tests {
     struct ClaimedSecond {
         first: Member,
         session: Arc<Session>,
-        endpoint: iroh::Endpoint,
+        endpoint: BoundEndpoint,
         inbox_path: PathBuf,
         sidecar_path: PathBuf,
     }

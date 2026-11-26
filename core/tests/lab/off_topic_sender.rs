@@ -47,7 +47,9 @@ impl OffTopicSender {
             card,
             handle: handle.to_owned(),
         };
-        let router = Router::builder(endpoint.endpoint().clone())
+        let router = endpoint
+            .endpoint()
+            .router_builder()
             .accept(
                 DIRECT_ALPN,
                 DirectServer::new(NetworkKeys::clone(keys), introduced, &endpoint),

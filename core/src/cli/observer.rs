@@ -31,7 +31,7 @@ use crate::inbox::socket::{InboxSocket, InboxSocketError};
 use crate::keys::parse_public_key;
 use crate::mcp::EndpointBinding;
 use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, message_id_text};
-use crate::net::endpoint::{NodeEndpoint, SnapshotMoment};
+use crate::net::endpoint::{BoundEndpoint, NodeEndpoint, SnapshotMoment};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
     Clock, DEPARTURE_WAIT, Delivery, DirectAnswer, DirectRequest, DirectRequester, Identity,
@@ -632,7 +632,7 @@ enum ObserverEvent {
 
 /// The direct protocol host of an observer: no card, no inbox, and an introduction without a handle.
 struct ObserverHost {
-    endpoint: iroh::Endpoint,
+    endpoint: BoundEndpoint,
     rows: PeerRows,
     clock: Clock,
     to_loop: mpsc::UnboundedSender<ObserverEvent>,
@@ -1105,7 +1105,7 @@ mod tests {
         inbox: Arc<InboxSocket>,
         inbox_path: PathBuf,
         address: EndpointAddr,
-        endpoint: iroh::Endpoint,
+        endpoint: BoundEndpoint,
     }
 
     struct MemberPlan {
@@ -1967,7 +1967,7 @@ mod tests {
 
     struct SilentNeighbor {
         _router: iroh::protocol::Router,
-        endpoint: iroh::Endpoint,
+        endpoint: BoundEndpoint,
         topic: NetworkTopic,
         address: EndpointAddr,
         introduces: Arc<Mutex<Vec<Introduce>>>,
@@ -1996,8 +1996,10 @@ mod tests {
         for address in bootstrap {
             endpoint.replace_address(address);
         }
-        let gossip = iroh_gossip::Gossip::builder().spawn(endpoint.endpoint().clone());
-        let router = iroh::protocol::Router::builder(endpoint.endpoint().clone())
+        let gossip = endpoint.endpoint().spawn_gossip();
+        let router = endpoint
+            .endpoint()
+            .router_builder()
             .accept(
                 crate::net::endpoint::DIRECT_ALPN,
                 WatchedServer {
@@ -3288,7 +3290,7 @@ mod tests {
     }
 
     /// What a node listing the peers and dialing through the endpoint holds for the neighbor now.
-    async fn held_neighbor(peers: &[Peer], endpoint: &iroh::Endpoint) -> HeldNeighbor {
+    async fn held_neighbor(peers: &[Peer], endpoint: &BoundEndpoint) -> HeldNeighbor {
         let neighbor = secret_key(NEIGHBOR_SEED).public();
         let entry = peers.iter().find(|peer| peer.card == *neighbor.as_bytes());
         let lookup = match endpoint.address_lookup() {

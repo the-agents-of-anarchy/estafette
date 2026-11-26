@@ -218,7 +218,7 @@ mod tests {
 
     use crate::net::direct::tests::closed_within_the_documented_latency;
     use crate::net::direct::{ClientTimeouts, DirectClient, DirectServer, message_id_text};
-    use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
+    use crate::net::endpoint::{BoundEndpoint, DIRECT_ALPN, NodeEndpoint};
     use crate::node::addresses::wire_addr;
     use crate::node::presence::DirectContact;
     use crate::node::presence::tests::{
@@ -316,7 +316,7 @@ mod tests {
     }
 
     struct ScriptedPeer {
-        endpoint: iroh::Endpoint,
+        endpoint: BoundEndpoint,
         connections: Arc<AtomicUsize>,
         _router: Router,
     }
@@ -375,7 +375,9 @@ mod tests {
         let member = members.pop().unwrap();
         endpoint.replace_address(member.endpoint.addr());
         let connections = Arc::new(AtomicUsize::new(0));
-        let router = Router::builder(endpoint.endpoint().clone())
+        let router = endpoint
+            .endpoint()
+            .router_builder()
             .accept(
                 DIRECT_ALPN,
                 CountedConnections {

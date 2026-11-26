@@ -203,7 +203,7 @@ mod tests {
     };
     use crate::event::{RunRecord, TransportEvent};
     use crate::net::direct::tests::StandingClock;
-    use crate::net::endpoint::NodeEndpoint;
+    use crate::net::endpoint::{BoundEndpoint, NodeEndpoint};
     use crate::payload::{PayloadDropRule, PayloadFacts, PayloadStamp};
     use crate::test_waits::{
         answered_within, found_within, next_recorded, recorded_events, secret_key,
@@ -272,7 +272,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let gossip = Gossip::builder().spawn(node.endpoint().clone());
+        let gossip = node.endpoint().spawn_gossip();
         let accepting = tokio::spawn(accept_gossip(node.endpoint().clone(), gossip.clone()));
         Member {
             node,
@@ -281,7 +281,7 @@ mod tests {
         }
     }
 
-    async fn accept_gossip(endpoint: iroh::Endpoint, gossip: Gossip) {
+    async fn accept_gossip(endpoint: BoundEndpoint, gossip: Gossip) {
         while let Some(incoming) = endpoint.accept().await {
             let Ok(connection) = incoming.await else {
                 continue;

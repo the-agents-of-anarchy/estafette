@@ -437,7 +437,7 @@ mod tests {
 
     use iroh::protocol::Router;
     use iroh::{EndpointAddr, EndpointId, RelayUrl};
-    use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
+    use iroh_gossip::ALPN as GOSSIP_ALPN;
     use tokio::sync::watch;
     use tokio::task::JoinHandle;
     use tokio::time::Instant;
@@ -456,7 +456,7 @@ mod tests {
     };
     use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, DirectServer};
     use crate::net::endpoint::{
-        DIRECT_ALPN, LocationHash, NodeEndpoint, RebindCause, TransportRecord,
+        BoundEndpoint, DIRECT_ALPN, LocationHash, NodeEndpoint, RebindCause, TransportRecord,
     };
     use crate::net::gossip::{GossipEvent, NetworkTopic};
     use crate::node::known_hosts::KnownHosts;
@@ -631,9 +631,11 @@ mod tests {
                     .map(|relay| (*relay).to_owned()),
                 endpoint.endpoint().addr().ip_addrs().copied(),
             );
-            let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
-            let mut router =
-                Router::builder(endpoint.endpoint().clone()).accept(GOSSIP_ALPN, gossip.clone());
+            let gossip = endpoint.endpoint().spawn_gossip();
+            let mut router = endpoint
+                .endpoint()
+                .router_builder()
+                .accept(GOSSIP_ALPN, gossip.clone());
             if introduced_with_relays.is_some() {
                 router = router.accept(
                     DIRECT_ALPN,
@@ -707,7 +709,7 @@ mod tests {
             self.endpoint.endpoint().addr()
         }
 
-        async fn introduce_to(&self, member: &iroh::Endpoint) {
+        async fn introduce_to(&self, member: &BoundEndpoint) {
             self.endpoint.replace_address(member.addr());
             DirectClient::new(
                 self.endpoint.endpoint().clone(),
@@ -818,7 +820,7 @@ mod tests {
         }
     }
 
-    async fn lookup_entry(endpoint: &iroh::Endpoint, seed: u8) -> Option<EndpointAddr> {
+    async fn lookup_entry(endpoint: &BoundEndpoint, seed: u8) -> Option<EndpointAddr> {
         let lookup = endpoint.address_lookup().ok()?;
         match lookup.resolve(secret_key(seed).public()).next().await {
             Some(Ok(Ok(item))) => Some(item.into_endpoint_addr()),

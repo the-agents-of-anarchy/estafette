@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use iroh::endpoint::{Connection, VarInt};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
+use iroh_gossip::ALPN as GOSSIP_ALPN;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -25,7 +25,7 @@ use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{EventFields, RunRecord};
 use crate::net::direct::tests::{test_salt, unrecorded_register};
 use crate::net::direct::{ClientTimeouts, DirectClient, HeldConnections};
-use crate::net::endpoint::{DIRECT_ALPN, LocationHash, TransportRecord};
+use crate::net::endpoint::{BoundEndpoint, DIRECT_ALPN, LocationHash, TransportRecord};
 use crate::net::gossip::{GossipEvent, NetworkTopic};
 use crate::node::addresses::wire_addr;
 use crate::payload::{
@@ -1164,7 +1164,7 @@ async fn observability_decision_9_a_member_records_entries_an_introduce_and_a_me
 async fn observability_decision_9_a_broadcast_the_topic_refuses_is_recorded_as_failed_and_never_as_broadcast()
  {
     let node = bind(FIRST_SEED).await;
-    let gossip = iroh_gossip::Gossip::builder().spawn(node.endpoint().clone());
+    let gossip = node.endpoint().spawn_gossip();
     let topic = crate::net::gossip::NetworkTopic::join(
         &gossip,
         keys(),
@@ -1462,14 +1462,16 @@ struct ScriptedWitness {
 impl ScriptedWitness {
     /// Joins through the endpoint, answering as the scripts say, which are given the address the peer is reached at.
     async fn joined_through(
-        through: &iroh::Endpoint,
+        through: &BoundEndpoint,
         answers: impl FnOnce(Addr) -> ScriptedAnswers,
     ) -> Self {
         let node_endpoint = bind(WITNESS_SEED).await;
         node_endpoint.replace_address(through.addr());
-        let gossip = Gossip::builder().spawn(node_endpoint.endpoint().clone());
+        let gossip = node_endpoint.endpoint().spawn_gossip();
         let own_address = wire_addr(&node_endpoint.endpoint().addr());
-        let router = Router::builder(node_endpoint.endpoint().clone())
+        let router = node_endpoint
+            .endpoint()
+            .router_builder()
             .accept(DIRECT_ALPN, ScriptedDirectHost(answers(own_address)))
             .accept(GOSSIP_ALPN, gossip.clone())
             .spawn();

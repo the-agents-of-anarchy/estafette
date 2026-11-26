@@ -36,7 +36,7 @@ use crate::invite::{InviteError, render_host_line};
 use crate::keys::{KeyError, generate_secret_key, parse_secret_key, render_secret_key};
 use crate::mcp::EndpointBinding;
 use crate::net::direct::DirectHost;
-use crate::net::endpoint::{NodeEndpoint, SnapshotMoment};
+use crate::net::endpoint::{BoundEndpoint, NodeEndpoint, SnapshotMoment};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
     Clock, KnownHostAddress, KnownHosts, Network, NodeError, RelayOfRecord,
@@ -586,7 +586,7 @@ fn relay_site(bind_address: IpAddr, domain: &RelayDomain, certificate_cache: Pat
 /// What the bootstrap node answers on the direct protocol: no card, never attached, its own relay in every address.
 #[derive(Clone)]
 struct HostAnswers {
-    endpoint: iroh::Endpoint,
+    endpoint: BoundEndpoint,
     relay: wire::RelayUrl,
 }
 
@@ -1087,7 +1087,7 @@ mod tests {
         host: iroh::PublicKey,
         gate_key: GateKey,
         relay: RelayUrl,
-        endpoint: iroh::Endpoint,
+        endpoint: BoundEndpoint,
         relay_map: iroh::RelayMap,
     }
 
@@ -1227,7 +1227,7 @@ mod tests {
         (String::from_utf8(printed).unwrap(), outcome)
     }
 
-    async fn bound_endpoint(seen: &Seen, index: usize) -> iroh::Endpoint {
+    async fn bound_endpoint(seen: &Seen, index: usize) -> BoundEndpoint {
         bound_host(seen, index).await.endpoint
     }
 
@@ -1257,7 +1257,7 @@ mod tests {
     }
 
     impl Peer {
-        async fn joined_through(seed: u8, host: &iroh::Endpoint) -> Self {
+        async fn joined_through(seed: u8, host: &BoundEndpoint) -> Self {
             let mut peer = Self::subscribed_through(seed, host).await;
             assert!(peer.joined_within(PEER_JOIN_WAIT).await);
             peer
@@ -1273,7 +1273,7 @@ mod tests {
             .is_ok()
         }
 
-        async fn subscribed_through(seed: u8, host: &iroh::Endpoint) -> Self {
+        async fn subscribed_through(seed: u8, host: &BoundEndpoint) -> Self {
             let endpoint = NodeEndpoint::bind(
                 secret_key(seed),
                 *network_keys().gate_key(),
@@ -1285,8 +1285,10 @@ mod tests {
             .await
             .unwrap();
             endpoint.replace_address(host.addr());
-            let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
-            let router = Router::builder(endpoint.endpoint().clone())
+            let gossip = endpoint.endpoint().spawn_gossip();
+            let router = endpoint
+                .endpoint()
+                .router_builder()
                 .accept(GOSSIP_ALPN, gossip.clone())
                 .spawn();
             let topic = NetworkTopic::join(
@@ -1954,7 +1956,7 @@ mod tests {
         relay_map.contains(&relay)
     }
 
-    async fn lookup_relays(endpoint: &iroh::Endpoint, seed: u8) -> Vec<String> {
+    async fn lookup_relays(endpoint: &BoundEndpoint, seed: u8) -> Vec<String> {
         let lookup = endpoint.address_lookup().unwrap();
         match lookup.resolve(secret_key(seed).public()).next().await {
             Some(Ok(Ok(item))) => item
@@ -2070,8 +2072,8 @@ mod tests {
 
     async fn member_joined_through(
         scratch: &Scratch,
-        host: &iroh::Endpoint,
-    ) -> (Node, iroh::Endpoint, iroh::RelayMap) {
+        host: &BoundEndpoint,
+    ) -> (Node, BoundEndpoint, iroh::RelayMap) {
         let endpoint = NodeEndpoint::bind(
             secret_key(MEMBER_SEED),
             *network_keys().gate_key(),

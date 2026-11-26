@@ -6,19 +6,19 @@ use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
+use iroh::EndpointId;
 use iroh::endpoint::{
     Closed, ClosedStream, Connection, ConnectionError, PathEvent, PathEventStream, ReadError,
     ReadToEndError, RecvStream, SendStream, StoppedError, VarInt, WeakConnectionHandle, WriteError,
 };
 use iroh::protocol::{AcceptError, ProtocolHandler};
-use iroh::{Endpoint, EndpointId};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::watch;
 use tokio::time::{Instant, timeout};
 
 use super::endpoint::{
-    Close, CloseReason, ConnectionId, DIRECT_ALPN, Direction, NodeEndpoint, PathChange, Protocol,
-    QUIC_KEEP_ALIVE_INTERVAL, TransportRecord,
+    BoundEndpoint, Close, CloseReason, ConnectionId, DIRECT_ALPN, Direction, NodeEndpoint,
+    PathChange, Protocol, QUIC_KEEP_ALIVE_INTERVAL, TransportRecord,
 };
 use crate::clock::{MonotonicClock, before_deadline, later_by};
 use crate::crypto::NetworkKeys;
@@ -953,7 +953,7 @@ type PeerSlot = Arc<AsyncMutex<Option<Connection>>>;
 
 /// The client half of the direct protocol, holding one connection per peer in that peer's slot, which a dial fills under the slot's lock, over the node's current endpoint.
 pub struct DirectClient {
-    endpoint: Mutex<Endpoint>,
+    endpoint: Mutex<BoundEndpoint>,
     keys: NetworkKeys,
     timeouts: ClientTimeouts,
     slots: Mutex<HashMap<EndpointId, PeerSlot>>,
@@ -964,7 +964,7 @@ impl DirectClient {
     /// Builds the client over the endpoint, macing requests and checking acknowledgements under the network keys, and recording each request it sends to the endpoint's register, on that register's monotonic clock.
     #[must_use]
     pub fn new(
-        endpoint: Endpoint,
+        endpoint: BoundEndpoint,
         keys: NetworkKeys,
         timeouts: ClientTimeouts,
         register: HeldConnections,
@@ -980,7 +980,7 @@ impl DirectClient {
 
     /// The endpoint the client dials from now.
     #[must_use]
-    pub(crate) fn endpoint(&self) -> Endpoint {
+    pub(crate) fn endpoint(&self) -> BoundEndpoint {
         self.endpoint
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -988,7 +988,7 @@ impl DirectClient {
     }
 
     /// Dials from the endpoint a rebind bound from here on, and drops every connection held on the one before it (spec 3.8, Rebind).
-    pub(crate) async fn follow(&self, endpoint: Endpoint) {
+    pub(crate) async fn follow(&self, endpoint: BoundEndpoint) {
         *self.endpoint.lock().unwrap_or_else(PoisonError::into_inner) = endpoint;
         self.drop_all_held_connections().await;
     }
@@ -1424,7 +1424,9 @@ pub(crate) mod tests {
         timeouts: ClientTimeouts,
     ) -> Link {
         let client_node = bind_node(CLIENT_SEED).await;
-        let router = Router::builder(server_node.endpoint().clone())
+        let router = server_node
+            .endpoint()
+            .router_builder()
             .accept(DIRECT_ALPN, handler)
             .spawn();
         client_node.replace_address(server_node.endpoint().addr());
@@ -2530,7 +2532,9 @@ pub(crate) mod tests {
         )
         .await;
         this_node.replace_address(peer_node.endpoint().addr());
-        let router = Router::builder(peer_node.endpoint().clone())
+        let router = peer_node
+            .endpoint()
+            .router_builder()
             .accept(
                 DIRECT_ALPN,
                 DirectServer::new(
@@ -2619,7 +2623,9 @@ pub(crate) mod tests {
         .await;
         let peer_node = bind_node(CLIENT_SEED).await;
         this_node.replace_address(peer_node.endpoint().addr());
-        let router = Router::builder(peer_node.endpoint().clone())
+        let router = peer_node
+            .endpoint()
+            .router_builder()
             .accept(
                 DIRECT_ALPN,
                 DirectServer::new(
@@ -2747,7 +2753,9 @@ pub(crate) mod tests {
             super::super::endpoint::TransportRecord::new(client_record, test_salt()),
         );
         let client_node = bind_node_holding(CLIENT_SEED, client_register.clone()).await;
-        let router = Router::builder(server_node.endpoint().clone())
+        let router = server_node
+            .endpoint()
+            .router_builder()
             .accept(
                 DIRECT_ALPN,
                 DirectServer::new(
@@ -2819,7 +2827,9 @@ pub(crate) mod tests {
             peer_node.endpoint().id(),
             [iroh::TransportAddr::Relay(relay_address.clone())],
         ));
-        let router = Router::builder(peer_node.endpoint().clone())
+        let router = peer_node
+            .endpoint()
+            .router_builder()
             .accept(
                 DIRECT_ALPN,
                 DirectServer::new(
@@ -3555,7 +3565,8 @@ pub(crate) mod tests {
 
     /// A router serving the direct protocol on the node for a host holding the card of the seed.
     fn serving_the_direct_protocol(node: &NodeEndpoint, seed: u8) -> Router {
-        Router::builder(node.endpoint().clone())
+        node.endpoint()
+            .router_builder()
             .accept(
                 DIRECT_ALPN,
                 DirectServer::new(keys(), RecordingHost::with_card(card_of(seed)), node),
@@ -4653,7 +4664,7 @@ pub(crate) mod tests {
 
     /// Notes the dial, holds the handshake until the clock reads the release, notes that it has read the probe, then holds the probe's ack until the probe call has returned.
     async fn answer_one_probe_after_the_call_returned(
-        server: Endpoint,
+        server: BoundEndpoint,
         clock: MonotonicClock,
         handshake_released_at: tokio::time::Instant,
         seen: Arc<watch::Sender<ProbeServed>>,

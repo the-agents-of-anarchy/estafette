@@ -39,7 +39,7 @@ use crate::net::direct::{
     HEARING_SAMPLE_INTERVAL, HeldConnections,
 };
 use crate::net::endpoint::{
-    CounterSnapshot, DIRECT_ALPN, NodeEndpoint, RebindCause, SnapshotMoment,
+    BoundEndpoint, CounterSnapshot, DIRECT_ALPN, NodeEndpoint, RebindCause, SnapshotMoment,
 };
 use crate::net::gossip::{GossipError, GossipEvent, JOIN_TIMEOUT, NetworkTopic};
 use crate::payload::{
@@ -274,8 +274,10 @@ pub fn serve<H: DirectHost + Clone>(
     keys: &NetworkKeys,
     host: &H,
 ) -> (Router, Gossip) {
-    let gossip = Gossip::builder().spawn(endpoint.endpoint().clone());
-    let router = Router::builder(endpoint.endpoint().clone())
+    let gossip = endpoint.endpoint().spawn_gossip();
+    let router = endpoint
+        .endpoint()
+        .router_builder()
         .accept(
             DIRECT_ALPN,
             DirectServer::new(keys.clone(), host.clone(), endpoint),
@@ -286,12 +288,12 @@ pub fn serve<H: DirectHost + Clone>(
 }
 
 /// Each change of the endpoint's own address.
-pub(super) fn own_address_changes(endpoint: &iroh::Endpoint) -> Changes<EndpointAddr> {
+pub(super) fn own_address_changes(endpoint: &BoundEndpoint) -> Changes<EndpointAddr> {
     Box::pin(endpoint.watch_addr().stream_updates_only())
 }
 
 /// Each change of the endpoint's home relays and their connection status.
-pub(super) fn home_relay_changes(endpoint: &iroh::Endpoint) -> Changes<Vec<RelayStatus>> {
+pub(super) fn home_relay_changes(endpoint: &BoundEndpoint) -> Changes<Vec<RelayStatus>> {
     Box::pin(endpoint.home_relay_status().stream_updates_only())
 }
 
@@ -1634,11 +1636,11 @@ pub fn snapshot_due_after(now: Instant) -> Instant {
 /// Records the counters iroh keeps for the endpoint's socket and for the gossip at the moment.
 pub fn record_counters(
     moment: SnapshotMoment,
-    endpoint: &iroh::Endpoint,
+    endpoint: &BoundEndpoint,
     gossip: &Gossip,
     report: &(dyn Fn(Event) + Send + Sync),
 ) {
-    let snapshot = CounterSnapshot::read(moment, &endpoint.metrics().socket, gossip.metrics());
+    let snapshot = CounterSnapshot::read(moment, endpoint.socket_metrics(), gossip.metrics());
     report(crate::event::StateEvent::Counters(snapshot).into());
 }
 
@@ -2296,7 +2298,7 @@ pub(super) mod tests {
 
     pub(in crate::node) struct Member {
         pub(in crate::node) node: Node,
-        pub(in crate::node) endpoint: iroh::Endpoint,
+        pub(in crate::node) endpoint: BoundEndpoint,
         pub(in crate::node) inbox_path: PathBuf,
         pub(in crate::node) config_path: PathBuf,
     }
@@ -2694,11 +2696,11 @@ pub(super) mod tests {
         pub(in crate::node) async fn joined_through(
             seed: u8,
             handle: Option<&'static str>,
-            through: &iroh::Endpoint,
+            through: &BoundEndpoint,
         ) -> Self {
             let node_endpoint = bind(seed).await;
             node_endpoint.replace_address(through.addr());
-            let gossip = Gossip::builder().spawn(node_endpoint.endpoint().clone());
+            let gossip = node_endpoint.endpoint().spawn_gossip();
             let probes_answered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let introductions = Introductions::default();
             let host = WitnessHost {
@@ -2715,7 +2717,9 @@ pub(super) mod tests {
                 connections: Arc::clone(&direct_connections),
                 accepted: Arc::clone(&accepted),
             };
-            let router = Router::builder(node_endpoint.endpoint().clone())
+            let router = node_endpoint
+                .endpoint()
+                .router_builder()
                 .accept(DIRECT_ALPN, counting)
                 .accept(GOSSIP_ALPN, gossip.clone())
                 .spawn();
@@ -3007,7 +3011,7 @@ pub(super) mod tests {
     pub(in crate::node) async fn spawn_member(
         scratch: &Scratch,
         plan: MemberPlan,
-    ) -> (iroh::Endpoint, JoinHandle<Member>) {
+    ) -> (BoundEndpoint, JoinHandle<Member>) {
         let node_endpoint = bind_holding(plan.seed, plan.register.clone()).await;
         let endpoint = node_endpoint.endpoint().clone();
         let inbox = plan
@@ -3131,11 +3135,13 @@ pub(super) mod tests {
         }
     }
 
-    pub(in crate::node) async fn relay_map_holds(endpoint: &iroh::Endpoint, relay: &str) -> bool {
-        let removed = endpoint.remove_relay(&relay_url(relay)).await;
+    pub(in crate::node) async fn relay_map_holds(endpoint: &BoundEndpoint, relay: &str) -> bool {
+        let removed = endpoint
+            .remove_relay_past_the_guard(&relay_url(relay))
+            .await;
         if let Some(entry) = &removed {
             endpoint
-                .insert_relay(relay_url(relay), Arc::clone(entry))
+                .insert_relay_past_the_guard(relay_url(relay), Arc::clone(entry))
                 .await;
         }
         removed.is_some()
@@ -3196,7 +3202,7 @@ pub(super) mod tests {
             .expect("the network file holding the first host");
         member
             .endpoint
-            .remove_relay(&relay_url(HOST_RELAY))
+            .remove_relay_past_the_guard(&relay_url(HOST_RELAY))
             .await
             .unwrap();
 
@@ -4902,7 +4908,7 @@ pub(super) mod tests {
 
     #[cfg(feature = "relay")]
     async fn wait_until_home_relay_is(
-        endpoint: &iroh::Endpoint,
+        endpoint: &BoundEndpoint,
         awaited: impl Fn(&RelayStatus) -> bool + Send + Sync,
         awaited_state: &str,
     ) {
@@ -4923,12 +4929,12 @@ pub(super) mod tests {
     }
 
     #[cfg(feature = "relay")]
-    async fn wait_until_home_relay_connected(endpoint: &iroh::Endpoint) {
+    async fn wait_until_home_relay_connected(endpoint: &BoundEndpoint) {
         wait_until_home_relay_is(endpoint, RelayStatus::is_connected, "connected").await;
     }
 
     #[cfg(feature = "relay")]
-    async fn wait_until_home_relay_disconnected(endpoint: &iroh::Endpoint) {
+    async fn wait_until_home_relay_disconnected(endpoint: &BoundEndpoint) {
         wait_until_home_relay_is(endpoint, |status| !status.is_connected(), "disconnected").await;
     }
 
@@ -4973,7 +4979,13 @@ pub(super) mod tests {
             )
         });
 
-        assert!(member.endpoint.remove_relay(&relay_address).await.is_none());
+        assert!(
+            member
+                .endpoint
+                .remove_relay_past_the_guard(&relay_address)
+                .await
+                .is_none()
+        );
         drop(scratch);
     }
 
@@ -5526,7 +5538,7 @@ pub(super) mod tests {
         } = member_announced_on_the_standing_clock(&scratch, &clock).await;
         member
             .endpoint
-            .insert_relay(
+            .insert_relay_past_the_guard(
                 relay_address.clone(),
                 Arc::new(iroh::RelayConfig::from(relay_address)),
             )
@@ -5574,7 +5586,7 @@ pub(super) mod tests {
 
         member
             .endpoint
-            .insert_relay(
+            .insert_relay_past_the_guard(
                 relay_address.clone(),
                 Arc::new(iroh::RelayConfig::from(relay_address)),
             )
@@ -5935,7 +5947,9 @@ pub(super) mod tests {
         .pop()
         .unwrap();
         endpoint.replace_address(first.endpoint.addr());
-        let _router = Router::builder(endpoint.endpoint().clone())
+        let _router = endpoint
+            .endpoint()
+            .router_builder()
             .accept(
                 DIRECT_ALPN,
                 DirectServer::new(
