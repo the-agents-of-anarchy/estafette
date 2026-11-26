@@ -1023,7 +1023,6 @@ fn public_text(public: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::peers::{ContactFailed, Status};
     use std::collections::BTreeSet;
     use std::ffi::OsString;
     use std::fs;
@@ -1050,6 +1049,7 @@ mod tests {
     use crate::net::direct::{DirectServer, MonotonicTime, RuntimeClock, later_by};
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::payload::ZERO_SIGNATURE;
+    use crate::peers::{ContactFailed, Status};
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
         RecordedEvent, answered_within, found_within, gossip_events_recorded_until,

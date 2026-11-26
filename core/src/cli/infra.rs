@@ -901,8 +901,6 @@ mod tests {
 
     use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 
-    use crate::stream_items::StreamExt;
-
     use super::*;
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{
@@ -920,11 +918,11 @@ mod tests {
     use crate::net::direct::{MonotonicClock, MonotonicTime, RuntimeClock};
     use crate::net::endpoint::NodeEndpoint;
     use crate::node::{Identity, Node, NodeEffects};
+    use crate::stream_items::StreamExt;
     use crate::test_waits::{
         RecordedEvent, answered_within, found_within, gossip_events_recorded_until,
         next_recorded_meeting, recorded_events, short_id_field,
     };
-
     use crate::wire::{HostAddr, Version};
 
     const NETWORK: &str = "lab";

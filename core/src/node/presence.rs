@@ -1985,6 +1985,7 @@ pub(super) mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use iroh::{RelayUrl, SecretKey};
+    use tokio::sync::mpsc::UnboundedReceiver;
 
     use super::*;
     use crate::config::{Host, HostOrigin, NetworkConfig};
@@ -2007,8 +2008,6 @@ pub(super) mod tests {
         RecordedEvent, found_within, next_recorded_meeting, recorded_events, recorded_until,
         short_id_field,
     };
-    use tokio::sync::mpsc::UnboundedReceiver;
-
     use crate::wire::{Infrastructure, SignatureBytes};
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];

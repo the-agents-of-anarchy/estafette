@@ -443,8 +443,7 @@ mod tests {
 
     use super::{MemberJoins, RebindSchedule, RelayProbe, relay_answers};
     use crate::config::{Host, HostOrigin};
-    use crate::event::EventFields;
-    use crate::event::{Event, RunRecord, TransportEvent};
+    use crate::event::{Event, EventFields, RunRecord, TransportEvent};
     use crate::keys::render_public_key;
     use crate::net::direct::tests::{
         INTERVAL_MOMENT, INTERVAL_SNAPSHOT_WITHIN, IROH_DOCUMENTED_CLOSE_LATENCY, PAYLOAD_ACCEPTED,

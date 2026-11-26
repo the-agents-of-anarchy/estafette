@@ -574,22 +574,23 @@ impl CounterSnapshot {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
-    use crate::event::ShortId;
-    use crate::net::direct::tests::{CATCH_ALL_CASES, DrawnUnit, bytes_beside};
-    use crate::seeded_draws::Draws;
-    use crate::test_waits::found_within;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU8, Ordering};
+    use std::time::{Duration, Instant};
 
     use iroh::endpoint::{
         ConnectError, ConnectWithOptsError, ConnectingError, Connection, ConnectionError,
         ReadExactError, WriteError,
     };
     use iroh::{EndpointId, TransportAddr};
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU8, Ordering};
-    use std::time::{Duration, Instant};
     use tokio::time::timeout;
+
+    use super::*;
+    use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
+    use crate::event::ShortId;
+    use crate::net::direct::tests::{CATCH_ALL_CASES, DrawnUnit, bytes_beside};
+    use crate::seeded_draws::Draws;
+    use crate::test_waits::found_within;
 
     const SPEC_DIRECT_ALPN: &[u8] = b"estafette/direct/1";
     const SPEC_GATE_KEY_CONTEXT: &str = "messaging gate v1";
