@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::home_relays::is_dropped_report;
 use crate::member_events::MemberEvents;
-use crate::trace_reader::TraceLine;
+use crate::trace_reader::{TraceLine, WallMs};
 
 /// How long a member may take to record the addition of the added host's relay to its relay map after the host's first record: chosen, not measured, so only a line never written fails the wait and a late one fails by its stamp.
 const RELAY_MAP_EDIT_WAIT: Duration = Duration::from_secs(30);
@@ -154,21 +154,21 @@ fn relay_added_verdict(
             "lines of the trace holding the relay of host {host} were lost before the line adding it, so it may not be the first"
         ));
     }
-    if added.wall_ms < host_started_wall_ms {
+    if added.wall_ms < WallMs(host_started_wall_ms) {
         return Err(format!(
             "the relay of host {host} was added to the relay map at {} ms, {} ms before the test started the host at {host_started_wall_ms} ms, so that line is not of the host's record",
             added.wall_ms,
-            host_started_wall_ms.saturating_sub(added.wall_ms)
+            host_started_wall_ms.saturating_sub(added.wall_ms.0)
         ));
     }
     let bound_ms = u128::from(first_record_wall_ms).saturating_add(within.as_millis());
-    if u128::from(added.wall_ms) <= bound_ms {
+    if u128::from(added.wall_ms.0) <= bound_ms {
         Ok(())
     } else {
         Err(format!(
             "the relay of host {host} was added to the relay map at {} ms, {} ms after the host's first record at {first_record_wall_ms} ms, beyond {within:?}",
             added.wall_ms,
-            added.wall_ms.saturating_sub(first_record_wall_ms)
+            added.wall_ms.0.saturating_sub(first_record_wall_ms)
         ))
     }
 }

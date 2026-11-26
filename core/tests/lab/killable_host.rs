@@ -11,6 +11,7 @@ use crate::live_network::LiveNetwork;
 use crate::payload_placeholders::wall_clock_ms;
 use crate::scratch_machine::KeptSecrets;
 use crate::scratch_machine::recipe_run::{fail_unless_succeeded, recipe_failure};
+use crate::trace_reader::WallMs;
 
 /// The variable the acceptance gate names the lab server in whose host the test may kill.
 const SERVER_VARIABLE: &str = "ESTAFETTE_ACCEPTANCE_KILLABLE_SERVER";
@@ -41,17 +42,19 @@ pub struct KillableHost {
 /// The instant the kill was sent, on this machine's wall clock in milliseconds since the Unix epoch, as a member's trace stamps `wall_ms`, which no monotonic reading converts into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KillInstant {
-    wall_ms: u64,
+    wall_ms: WallMs,
 }
 
 impl KillInstant {
     /// The kill's instant as a wall-clock reading in milliseconds since the Unix epoch.
     pub const fn at_wall_ms(wall_ms: u64) -> Self {
-        Self { wall_ms }
+        Self {
+            wall_ms: WallMs(wall_ms),
+        }
     }
 
     /// The kill's instant in milliseconds since the Unix epoch on the wall clock.
-    pub const fn wall_ms(self) -> u64 {
+    pub const fn wall_ms(self) -> WallMs {
         self.wall_ms
     }
 }

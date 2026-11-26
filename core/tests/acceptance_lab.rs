@@ -561,7 +561,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
         columns_of_kind, columns_of_presence_of,
     };
     use crate::time_passing::SNAPSHOT_PROVING_A_SPAN_WITHIN;
-    use crate::trace_reader::TraceLine;
+    use crate::trace_reader::{TraceLine, WallMs};
 
     /// How long the member may take to announce an address naming the doomed host's relay, and to announce after the kill at all.
     const ANNOUNCEMENT_WAIT: Duration = Duration::from_secs(60);
@@ -581,7 +581,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     /// The wall-clock stamps of the member's last Presence broadcast and of a counters snapshot it recorded at least a re-announce interval after it, once its timeline holds both.
     fn quiet_for_a_reannounce_interval_since_the_last_presence(
         lines: &[TraceLine],
-    ) -> Option<(u64, u64)> {
+    ) -> Option<(WallMs, WallMs)> {
         let last_presence_ms = lines
             .iter()
             .filter(|line| {
@@ -590,8 +590,11 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
             })
             .map(|line| line.wall_ms)
             .max()?;
-        let quiet_ends_ms = last_presence_ms
-            .saturating_add(u64::try_from(SPEC_REANNOUNCE_INTERVAL.as_millis()).unwrap());
+        let quiet_ends_ms = WallMs(
+            last_presence_ms
+                .0
+                .saturating_add(u64::try_from(SPEC_REANNOUNCE_INTERVAL.as_millis()).unwrap()),
+        );
         lines
             .iter()
             .find(|line| line.event == COUNTERS_EVENT && line.wall_ms >= quiet_ends_ms)

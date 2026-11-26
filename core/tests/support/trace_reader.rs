@@ -59,13 +59,33 @@ impl WritingProcess {
     }
 }
 
+/// A reading of a run's monotonic clock in milliseconds since the run began, which no wall-clock reading converts into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MonotonicMs(pub u64);
+
+impl fmt::Display for MonotonicMs {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+/// A reading of the wall clock in milliseconds since the Unix epoch, as a member's trace stamps `wall_ms`, which no monotonic reading converts into.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WallMs(pub u64);
+
+impl fmt::Display for WallMs {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
 /// One line of a trace file: the header every line begins with, the event's name and the event's own fields, in the order they were written.
 #[derive(Debug)]
 pub struct TraceLine {
     pub run: String,
     pub n: u64,
-    pub mono_ms: u64,
-    pub wall_ms: u64,
+    pub mono_ms: MonotonicMs,
+    pub wall_ms: WallMs,
     pub node: Option<String>,
     pub event: String,
     members: Vec<(String, Value)>,
@@ -219,8 +239,8 @@ fn trace_line_of(members: Vec<(String, Value)>, line: usize) -> Result<TraceLine
     Ok(TraceLine {
         run: text(RUN_KEY)?,
         n: number(NUMBER_KEY)?,
-        mono_ms: number(MONOTONIC_KEY)?,
-        wall_ms: number(WALL_KEY)?,
+        mono_ms: MonotonicMs(number(MONOTONIC_KEY)?),
+        wall_ms: WallMs(number(WALL_KEY)?),
         node: member(NODE_KEY).and_then(Value::as_str).map(str::to_owned),
         event: text(EVENT_KEY)?,
         members,
@@ -472,8 +492,8 @@ pub mod tests {
         };
         assert_eq!(line.run, MEMBER_RUN);
         assert_eq!(line.n, 4);
-        assert_eq!(line.mono_ms, 17);
-        assert_eq!(line.wall_ms, 1_794_524_353_720);
+        assert_eq!(line.mono_ms, MonotonicMs(17));
+        assert_eq!(line.wall_ms, WallMs(1_794_524_353_720));
         assert_eq!(line.node.as_deref(), Some("8f43abc249"));
         assert_eq!(line.event, "process.command_failed");
         assert_eq!(

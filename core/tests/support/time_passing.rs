@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use crate::member_events::{COUNTERS_EVENT, MemberEvents};
+use crate::trace_reader::WallMs;
 
 /// The longest a running node goes without a counters snapshot: one every 60 s, and one at each rebind, which starts the 60 s afresh (spec/observability.md decisions 9 and 13).
 const SPEC_COUNTERS_INTERVAL: Duration = Duration::from_secs(60);
@@ -21,7 +22,7 @@ pub fn wait_for_time_to_pass(events: &MemberEvents, since_wall_ms: u64, span: Du
         |lines| {
             lines
                 .iter()
-                .any(|line| line.event == COUNTERS_EVENT && line.wall_ms >= due_wall_ms)
+                .any(|line| line.event == COUNTERS_EVENT && line.wall_ms >= WallMs(due_wall_ms))
                 .then_some(())
         },
     );

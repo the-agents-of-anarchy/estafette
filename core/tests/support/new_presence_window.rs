@@ -11,7 +11,7 @@ use crate::events_lines::{
 use crate::mcp_server::{PRESENCE_WAIT, RESULT_KEY};
 use crate::member_events::MemberEvents;
 use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
-use crate::trace_reader::TraceLine;
+use crate::trace_reader::{MonotonicMs, TraceLine, WallMs};
 
 /// The key of a send result holding the id of the Message it sent (spec 3.10).
 const MESSAGE_ID_KEY: &str = "id";
@@ -20,7 +20,7 @@ const ANSWERED_REQUEST_LINE_WAIT: Duration = Duration::from_secs(10);
 
 /// The sender's acceptance of a Presence the card stamped after the kill, the instant spec 3.15 test 18 counts its second from, held as the sender's monotonic reading of it.
 pub struct NewPresenceAccepted {
-    mono_ms: u64,
+    mono_ms: MonotonicMs,
 }
 
 /// The sender's line recording its acceptance of a Presence the card stamped after the kill, written after the kill: the instant spec 3.15 test 18 counts its second from, awaited within the presence wait.
@@ -67,7 +67,8 @@ fn acknowledged_after(
     Duration::from_millis(
         acknowledged
             .mono_ms
-            .checked_sub(new_presence.mono_ms)
+            .0
+            .checked_sub(new_presence.mono_ms.0)
             .unwrap_or_else(|| {
                 panic!(
                     "the {REQUEST_SENT_EVENT} of the {MESSAGE_KIND} {message} {ACKNOWLEDGED_OUTCOME} is stamped {} ms, before the new {PRESENCE_KIND}'s {} ms",
@@ -94,7 +95,7 @@ pub fn assert_acknowledged_promptly_after(
 /// Whether the events line records a Presence the peer stamped after the instant, accepted and written after it.
 fn is_presence_accepted_after(line: &TraceLine, peer: &str, instant_ms: u64) -> bool {
     is_accepted_payload_of(line, PRESENCE_KIND, peer)
-        && line.wall_ms > instant_ms
+        && line.wall_ms > WallMs(instant_ms)
         && line
             .value(SEQ_FIELD)
             .and_then(Value::as_u64)
