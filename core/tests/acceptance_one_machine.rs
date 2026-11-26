@@ -1496,7 +1496,7 @@ mod spec_3_15_with_one_member {
     use crate::member::{Member, loopback_address};
     use crate::member_events::COUNTERS_EVENT;
     use crate::message_body::BODY;
-    use crate::node_start::{MOMENT_FIELD, is_counters_snapshot_of_moment};
+    use crate::node_start::MOMENT_FIELD;
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::{presence_signed_by, presence_signed_by_at};
     use crate::scratch_machine::KeptFilesPolicy;
@@ -1592,29 +1592,12 @@ mod spec_3_15_with_one_member {
         wire::encode(&Payload::Presence(presence)).unwrap()
     }
 
-    /// The counters line the member records once the endpoint its rebind bound is in place, awaited within the wait.
-    #[track_caller]
-    fn rebound_snapshot(member: &Member, within: Duration) -> TraceLine {
-        member.wait_until(
-            &format!("{COUNTERS_EVENT} of its rebind's {REBOUND_MOMENT} endpoint"),
-            within,
-            |lines| {
-                lines
-                    .into_iter()
-                    .find(|line| is_counters_snapshot_of_moment(line, REBOUND_MOMENT))
-            },
-        )
-    }
-
     /// The UDP ports the member holds now that it has recorded its rebound counters, so the fresh endpoint's port is among them even where it takes a port a socket held before the rebind.
     #[track_caller]
     fn ports_held_once_rebound(member: &Member) -> Vec<u16> {
-        let held = member.ipv4_udp_ports();
-        assert!(
-            !held.is_empty(),
-            "the member holds no IPv4 UDP port once its rebind's fresh endpoint is bound"
-        );
-        held
+        member.ipv4_udp_ports_held(
+            "the member holds no IPv4 UDP port once its rebind's fresh endpoint is bound",
+        )
     }
 
     /// Requires the member to record, within the wait, that its gate closed a connection of the peer that the side opened, in a line written after the one given when one is given.
@@ -1959,7 +1942,8 @@ mod spec_3_15_with_one_member {
             &outsider.endpoint().addr(),
         ));
         amy.peer_within(OUTSIDER_HANDLE, PRESENCE_WAIT, |_outsider| true);
-        let rebound_line = rebound_snapshot(&amy, SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK);
+        let rebound_line = amy
+            .counters_snapshot_of_moment(REBOUND_MOMENT, SPEC_DEAF_TIMEOUT_AND_REBIND_WITH_SLACK);
         let rebound = ports_held_once_rebound(&amy);
         host.admit(loopback_address(card.id, &rebound));
         gate_closed_connection_of(

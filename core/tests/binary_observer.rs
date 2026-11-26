@@ -28,7 +28,7 @@ mod trace_reader;
 
 use common::fresh_directory;
 use member_events::{COUNTERS_EVENT, MemberEvents};
-use node_start::{NODE_START_MOMENT, is_node_start_snapshot};
+use node_start::{NODE_START_MOMENT, is_counters_snapshot_of_moment};
 
 const SHORT_SCRATCH_PARENT: &str = "/tmp";
 const SCRATCH_PREFIX: &str = "estafette-binary-observer";
@@ -245,7 +245,12 @@ fn wait_for_the_node_start_snapshot(root: &Path, errors: &mut dyn BufRead) -> io
     .wait_until(
         &format!("{COUNTERS_EVENT} of its node's {NODE_START_MOMENT}"),
         NODE_RUNS_WITHIN,
-        |lines| lines.iter().any(is_node_start_snapshot).then_some(()),
+        |lines| {
+            lines
+                .iter()
+                .any(|line| is_counters_snapshot_of_moment(line, NODE_START_MOMENT))
+                .then_some(())
+        },
     );
     Ok(())
 }

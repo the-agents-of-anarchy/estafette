@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::mcp_server::{INIT_TOOL, McpServer, RESULT_KEY, call_succeeded, init_arguments};
 use crate::member_events::{COUNTERS_EVENT, MemberEvents};
-use crate::node_start::{NODE_START_MOMENT, is_node_start_snapshot};
+use crate::node_start::{NODE_START_MOMENT, is_counters_snapshot_of_moment};
 use crate::scratch_machine::Card;
 use crate::scratch_machine::owned_process::OwnedProcess;
 use crate::scripted_node::ScriptedNode;
@@ -124,14 +124,30 @@ impl Member {
     /// The loopback-reachable UDP ports this process's endpoint bound, once it records its node's start on the bound endpoint.
     #[track_caller]
     pub fn bound_udp_ports(&self) -> Vec<u16> {
+        self.counters_snapshot_of_moment(NODE_START_MOMENT, ENDPOINT_BIND_WAIT);
+        self.ipv4_udp_ports_held("no UDP socket bound")
+    }
+
+    /// The first counters line the member records at the moment, awaited within the wait.
+    #[track_caller]
+    pub fn counters_snapshot_of_moment(&self, moment: &str, within: Duration) -> TraceLine {
         self.server.events().wait_until(
-            &format!("{COUNTERS_EVENT} of its node's {NODE_START_MOMENT}"),
-            ENDPOINT_BIND_WAIT,
-            |lines| lines.iter().any(is_node_start_snapshot).then_some(()),
-        );
-        let ports = self.ipv4_udp_ports();
-        assert!(!ports.is_empty(), "no UDP socket bound");
-        ports
+            &format!("{COUNTERS_EVENT} of its node's {moment}"),
+            within,
+            |lines| {
+                lines
+                    .into_iter()
+                    .find(|line| is_counters_snapshot_of_moment(line, moment))
+            },
+        )
+    }
+
+    /// The ports of the IPv4 UDP sockets this process holds now, failing with the text given when it holds none.
+    #[track_caller]
+    pub fn ipv4_udp_ports_held(&self, none_held: &str) -> Vec<u16> {
+        let held = self.ipv4_udp_ports();
+        assert!(!held.is_empty(), "{none_held}");
+        held
     }
 
     /// The ports of the IPv4 UDP sockets this process holds now.

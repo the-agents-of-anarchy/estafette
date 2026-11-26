@@ -7,11 +7,6 @@ use crate::trace_reader::TraceLine;
 pub const MOMENT_FIELD: &str = "moment";
 pub const NODE_START_MOMENT: &str = "start";
 
-/// Whether the events line is the counters snapshot a node records at its start.
-pub fn is_node_start_snapshot(line: &TraceLine) -> bool {
-    is_counters_snapshot_of_moment(line, NODE_START_MOMENT)
-}
-
 /// Whether the events line is the counters snapshot a node records at the moment.
 pub fn is_counters_snapshot_of_moment(line: &TraceLine, moment: &str) -> bool {
     line.event == COUNTERS_EVENT && line.value(MOMENT_FIELD) == Some(&json!(moment))
