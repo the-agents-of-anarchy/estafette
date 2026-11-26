@@ -93,6 +93,8 @@ mod time_passing;
 mod timed_step;
 #[cfg(test)]
 use scratch_machine::trace_reader;
+#[cfg(test)]
+use scratch_machine::{fresh_directory, remove_scratch};
 
 #[cfg(test)]
 mod live_host {

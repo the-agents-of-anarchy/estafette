@@ -97,21 +97,22 @@ mod tests {
     use std::fs;
 
     use super::*;
+    use crate::fresh_directory::fresh_directory_in;
+    use crate::remove_scratch::remove_scratch;
     use crate::trace_reader::parse_trace_lines;
     use crate::trace_reader::tests::{
         MEMBER_LINE, MEMBER_RUN, second_line_still_zero_at_its_start_sized_ahead,
     };
 
     const LABEL: &str = "the member";
+    const SCRATCH_NAME: &str = "member-events-still-zero";
     const NEVER_WRITTEN: &str = "a line never written";
     const WAIT_BOUND: Duration = Duration::from_secs(10);
 
     #[test]
     fn observability_decision_12_a_live_wait_that_runs_out_prints_the_lines_before_one_still_zero_filled()
      {
-        let traces =
-            std::env::temp_dir().join(format!("member-events-{}-still-zero", std::process::id()));
-        fs::create_dir_all(&traces).unwrap();
+        let traces = fresh_directory_in(&std::env::temp_dir(), SCRATCH_NAME).unwrap();
         fs::write(
             traces.join(format!(
                 "20261112T225914Z-{MEMBER_RUN}-estafette.events.jsonl"
@@ -136,7 +137,7 @@ mod tests {
             );
         })
         .map_err(|payload| payload.downcast_ref::<String>().cloned());
-        fs::remove_dir_all(&traces).unwrap();
+        remove_scratch(&traces).unwrap();
 
         assert_eq!(
             ran_out,

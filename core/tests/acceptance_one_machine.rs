@@ -61,6 +61,8 @@ mod timed_step;
 mod trace_events;
 #[cfg(test)]
 use scratch_machine::trace_reader;
+#[cfg(test)]
+use scratch_machine::{fresh_directory, remove_scratch};
 
 /// The id of every Message a test builds by hand, which no check of these tests reads.
 #[cfg(test)]
