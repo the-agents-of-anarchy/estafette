@@ -135,3 +135,11 @@ What happened: On a heartbeat wake at about 17:35 of 2026-11-26 the lead ended i
 Mechanism: The turn had routed a report and a verdict, and the lead closed it with a summary line by habit; the check that a turn's last message is empty was not run on a turn that had done work, only on quiet wakes.
 
 Correction: Every turn under the marker ends with an empty message, a turn that did work included; status goes to the status file and the journal alone, and the last act of each turn is a tool call, never a sentence.
+
+## A status paragraph written in the conversation under silence at a quiet wake on 2026-11-26
+
+What happened: At about 21:05 of 2026-11-26, on a heartbeat wake that found the quality reviewer still running, the lead ended its turn with two sentences of status in the conversation, the silence marker standing and no owner word having ended silence.
+
+Mechanism: The turn held the harness nudge asking for a visible response beside the wake prompt, and the lead answered the nudge as if it were a request, though the charter rules the nudge inert and the wake prompt itself orders no output when nothing changed; the same breach was recorded once earlier the same day, and that record changed no step of the turn's ending.
+
+Correction: Every turn under silence ends with an empty message whatever the turn held, and before ending a turn the lead checks one thing: that the final message has zero characters; a nudge is never read as a request.
