@@ -302,8 +302,8 @@ mod tests {
     use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
         FIRST_SEED, HOST_RELAY, HOST_SEED, MARKER_SEED, MOVED_HOST_RELAY, Member, MemberPlan,
-        PAYLOAD_WAIT, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, WITNESS_HANDLE,
-        WITNESS_SEED, Witness, bind, card, host_saved_within, infrastructure_of,
+        PAYLOAD_WAIT, PROBE_NONCE, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch,
+        WITNESS_HANDLE, WITNESS_SEED, Witness, bind, card, host_saved_within, infrastructure_of,
         joined_and_asked_for_presence, keys, listed_within, saved_host, short_peer_id, start_pair,
         start_witnessed, status_within, wall_clock_ms,
     };
@@ -313,7 +313,7 @@ mod tests {
     use crate::test_waits::{
         RecordedEvent, found_within, next_recorded_meeting, recorded_events, recorded_until,
     };
-    use crate::wire::{Introduce, Nonce, Payload, Version};
+    use crate::wire::{Introduce, Payload, Version};
 
     const FIRST_CARD: &str = "first-card";
     const SECOND_CARD: &str = "second-card";
@@ -338,7 +338,6 @@ mod tests {
     const PEER_FIELD: &str = "peer";
     const SENT_AFTER_EXIT: &str = "a message to a stopped member";
     const SENT_WHILE_STOPPING: &str = "a message to a stopping member";
-    const PROBE_NONCE: Nonce = *b"0123456789abcdef";
     const CONFIG_SAVED_WITHIN: Duration = Duration::from_millis(1000);
     const CONNECTION_WAIT: Duration = Duration::from_secs(5);
     const CONNECTIONS_CLOSED_WITHIN: Duration = Duration::from_millis(1000);
