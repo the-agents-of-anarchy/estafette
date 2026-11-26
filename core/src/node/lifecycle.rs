@@ -301,10 +301,11 @@ mod tests {
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
-        FIRST_SEED, HOST_RELAY, HOST_SEED, MOVED_HOST_RELAY, Member, MemberPlan, PAYLOAD_WAIT,
-        SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, WITNESS_HANDLE, WITNESS_SEED,
-        Witness, bind, card, host_saved_within, infrastructure_of, joined_and_asked_for_presence,
-        keys, listed_within, saved_host, start_pair, start_witnessed, status_within, wall_clock_ms,
+        FIRST_SEED, HOST_RELAY, HOST_SEED, MARKER_SEED, MOVED_HOST_RELAY, Member, MemberPlan,
+        PAYLOAD_WAIT, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, WITNESS_HANDLE,
+        WITNESS_SEED, Witness, bind, card, host_saved_within, infrastructure_of,
+        joined_and_asked_for_presence, keys, listed_within, saved_host, short_peer_id, start_pair,
+        start_witnessed, status_within, wall_clock_ms,
     };
     use crate::node::rebind::RelayProbe;
     use crate::peers::Status;
@@ -334,6 +335,7 @@ mod tests {
     const WITNESSED_DEPARTURE_WAIT: Duration = Duration::from_secs(5);
     const PAYLOAD_ACCEPTED: &str = "gossip.payload_accepted";
     const TS_FIELD: &str = "ts";
+    const PEER_FIELD: &str = "peer";
     const SENT_AFTER_EXIT: &str = "a message to a stopped member";
     const SENT_WHILE_STOPPING: &str = "a message to a stopping member";
     const PROBE_NONCE: Nonce = *b"0123456789abcdef";
@@ -1389,9 +1391,20 @@ mod tests {
     #[tokio::test]
     async fn spec_3_8_the_gossip_broadcast_stays_alive_while_stopping() {
         let scratch = Scratch::new("gossip-alive").await;
-        let second = claimed_second(&scratch).await;
-        let mut witness = Witness::joined_through(WITNESS_SEED, None, &second.endpoint).await;
-        let stopping = run(&second.session, TEST_DEPARTURE_WAIT);
+        let (record, mut recorded) = recorded_events();
+        let (member, mut witness) = start_witnessed(
+            &scratch,
+            MemberPlan::new(SECOND_SEED, SECOND_HANDLE, FIRST_MEMBER_PUBLIC)
+                .with_report(Arc::clone(&record)),
+            None,
+        )
+        .await;
+        let (_, lock) = scratch.locked_card(SECOND_SEED);
+        let session = Arc::new(Session::new(record));
+        session
+            .claim(card_named(SECOND_CARD), member.node, lock)
+            .unwrap();
+        let stopping = run(&session, TEST_DEPARTURE_WAIT);
 
         stopping.input_ended.send(()).unwrap();
         witness
@@ -1400,6 +1413,14 @@ mod tests {
             })
             .await
             .expect("a Departure from the stopping second on the witness's topic");
+        witness.broadcast_marker(MARKER_SEED).await;
+        next_recorded_meeting(
+            &mut recorded,
+            PAYLOAD_ACCEPTED,
+            |fields| fields.contains(&(PEER_FIELD, short_peer_id(MARKER_SEED))),
+            PAYLOAD_WAIT,
+        )
+        .await;
 
         assert!(!stopping.exit.is_finished());
         drop(scratch);

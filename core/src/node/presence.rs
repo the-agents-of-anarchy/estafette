@@ -2881,6 +2881,15 @@ pub(super) mod tests {
                 .unwrap();
         }
 
+        /// Broadcasts a Presence of the marker card, which no member has met.
+        pub(in crate::node) async fn broadcast_marker(&self, marker_seed: u8) {
+            self.broadcast_as(
+                marker_seed,
+                presence_of(marker_seed, MARKER_HANDLE, MARKER_PUBLIC, wall_clock_ms()),
+            )
+            .await;
+        }
+
         /// Broadcasts the bytes on the topic as they are, sealed or not.
         pub(in crate::node) async fn broadcast_bytes(&self, bytes: Vec<u8>) {
             self.topic.broadcast_bytes(bytes).await.unwrap();
@@ -2922,12 +2931,7 @@ pub(super) mod tests {
     }
 
     async fn marker_reaches(member: &Member, witness: &Witness, marker_seed: u8) {
-        witness
-            .broadcast_as(
-                marker_seed,
-                presence_of(marker_seed, MARKER_HANDLE, MARKER_PUBLIC, wall_clock_ms()),
-            )
-            .await;
+        witness.broadcast_marker(marker_seed).await;
         listed_within(member, marker_seed, PAYLOAD_WAIT)
             .await
             .unwrap();
