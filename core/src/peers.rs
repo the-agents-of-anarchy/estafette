@@ -281,7 +281,7 @@ impl PeerTable {
         requested: &AnnouncedHandle,
         now_ms: u64,
     ) -> Operated<LocalHandle> {
-        self.operate(now_ms, |table, changes| {
+        self.operate_after_forgetting_expired(now_ms, |table, changes| {
             if let Some(own) = &table.own_handle {
                 return own.clone();
             }
@@ -301,7 +301,7 @@ impl PeerTable {
         presence: &Presence,
         now_ms: u64,
     ) -> Operated<Result<Vec<Effect>, PayloadDropRule>> {
-        self.operate(now_ms, |table, changes| {
+        self.operate_after_forgetting_expired(now_ms, |table, changes| {
             table.admit_announcement(presence.card, presence.seq, now_ms)?;
             let handle = presence
                 .handle
@@ -335,7 +335,7 @@ impl PeerTable {
         departure: &Departure,
         now_ms: u64,
     ) -> Operated<Result<Vec<Effect>, PayloadDropRule>> {
-        self.operate(now_ms, |table, changes| {
+        self.operate_after_forgetting_expired(now_ms, |table, changes| {
             table.admit_announcement(departure.card, departure.seq, now_ms)?;
             table.tombstones.insert(
                 departure.card,
@@ -358,7 +358,7 @@ impl PeerTable {
         report: &Unreachable,
         now_ms: u64,
     ) -> Operated<Result<(), PayloadDropRule>> {
-        self.operate(now_ms, |table, changes| {
+        self.operate_after_forgetting_expired(now_ms, |table, changes| {
             if !is_within_announcement_max_age(report.ts, now_ms) {
                 return Err(PayloadDropRule::OlderThanMaxAge);
             }
@@ -389,7 +389,7 @@ impl PeerTable {
 
     /// Takes a gossip report that `node` is no longer a neighbor, asking to probe it when it is in the table and not Gone.
     pub fn neighbor_down(&mut self, node: PublicKey, now_ms: u64) -> Operated<Vec<Effect>> {
-        self.operate(now_ms, |table, _changes| {
+        self.operate_after_forgetting_expired(now_ms, |table, _changes| {
             if table.present_entry(node, now_ms).is_none() {
                 return Vec::new();
             }
@@ -404,7 +404,7 @@ impl PeerTable {
         now_ms: u64,
         failed: ContactFailed,
     ) -> Operated<Vec<Effect>> {
-        self.operate(now_ms, |table, changes| {
+        self.operate_after_forgetting_expired(now_ms, |table, changes| {
             table
                 .change_present_entry(changes, card, now_ms, &failed, |peer| {
                     peer.status = Status::Unreachable;
@@ -420,7 +420,7 @@ impl PeerTable {
         now_ms: u64,
         succeeded: ContactSucceeded,
     ) -> Operated<()> {
-        self.operate(now_ms, |table, changes| {
+        self.operate_after_forgetting_expired(now_ms, |table, changes| {
             table.change_present_entry(changes, card, now_ms, &succeeded, |peer| {
                 peer.take_direct_contact(now_ms);
             });
@@ -454,7 +454,7 @@ impl PeerTable {
         message: &Message,
         now_ms: u64,
     ) -> Operated<Vec<Effect>> {
-        self.operate(now_ms, |table, changes| {
+        self.operate_after_forgetting_expired(now_ms, |table, changes| {
             let Some(handle) = announced_sender_handle(message) else {
                 return Vec::new();
             };
@@ -490,7 +490,7 @@ impl PeerTable {
         now_ms: u64,
     ) -> Operated<Vec<Effect>> {
         let introduction = request.introduction();
-        self.operate(now_ms, |table, changes| {
+        self.operate_after_forgetting_expired(now_ms, |table, changes| {
             let Ok(handle) =
                 admissible_introduction_handle(introduction.handle, introduction.public)
             else {
@@ -517,7 +517,7 @@ impl PeerTable {
     }
 
     /// Runs one operation at `now_ms` once every entry whose time ran out is removed, handing back what it gave with those removals and every change it made.
-    fn operate<Given>(
+    fn operate_after_forgetting_expired<Given>(
         &mut self,
         now_ms: u64,
         operation: impl FnOnce(&mut Self, &mut Vec<TableChange>) -> Given,

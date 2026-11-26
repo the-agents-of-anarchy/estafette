@@ -526,7 +526,10 @@ impl PeerRows {
     }
 
     /// Runs one operation on the locked table, returning what it gave once the lock is released.
-    fn operate<Given>(&self, operation: impl FnOnce(&mut PeerTable) -> Given) -> Given {
+    fn operate_on_locked_table<Given>(
+        &self,
+        operation: impl FnOnce(&mut PeerTable) -> Given,
+    ) -> Given {
         operation(&mut self.table())
     }
 
@@ -542,7 +545,7 @@ impl PeerRows {
         &self,
         operation: impl FnOnce(&mut PeerTable) -> Operated<Given>,
     ) -> Given {
-        let operated = self.operate(operation);
+        let operated = self.operate_on_locked_table(operation);
         self.record_changes(operated.changes);
         operated.value
     }
@@ -559,7 +562,7 @@ impl PeerRows {
                 changes,
             },
             record,
-        ) = self.operate(|table| {
+        ) = self.operate_on_locked_table(|table| {
             let admitted = payload.admit_to(table, now_ms);
             let record = signer_admission_record(table, payload.facts(), &admitted.value, now_ms);
             (admitted, record)
