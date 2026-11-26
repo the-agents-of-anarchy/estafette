@@ -3680,8 +3680,10 @@ pub(crate) mod tests {
     }
 
     const LIVE_CARD_HEARD_WAIT: Duration = Duration::from_secs(10);
+    const SETUPS_A_DIVERGENT_SELECTION_WAS_ONCE_GIVEN: u32 = 10;
     /// No shorter than the ten setups a divergent selection was once given, each waited on until the live card is heard.
-    const DIVERGENT_SELECTION_WAIT: Duration = Duration::from_secs(100);
+    const DIVERGENT_SELECTION_WAIT: Duration =
+        LIVE_CARD_HEARD_WAIT.saturating_mul(SETUPS_A_DIVERGENT_SELECTION_WAS_ONCE_GIVEN);
 
     /// The node's address on the loopback interface, at the port its endpoint bound.
     fn address_on_loopback(node: &NodeEndpoint) -> iroh::EndpointAddr {
