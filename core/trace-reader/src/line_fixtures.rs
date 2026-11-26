@@ -19,7 +19,9 @@ pub struct LineShorterThanZeroedSpan {
 /// # Errors
 ///
 /// Fails with `LineShorterThanZeroedSpan` when the line is shorter than the 64 bytes to zero.
-pub fn line_still_zero_at_its_start(line: &str) -> Result<Vec<u8>, LineShorterThanZeroedSpan> {
+pub(crate) fn line_still_zero_at_its_start(
+    line: &str,
+) -> Result<Vec<u8>, LineShorterThanZeroedSpan> {
     let mut bytes = line.as_bytes().to_vec();
     bytes
         .get_mut(..LEADING_BYTES_STILL_ZERO)
