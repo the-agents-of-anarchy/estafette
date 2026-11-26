@@ -43,11 +43,10 @@ impl LiveNetwork {
         let text = match run_records.invitation() {
             Ok(Some(text)) => text.to_owned(),
             Ok(None) => panic!("{INVITATION_VARIABLE} is unset: {INVITATION_EXPORTED_BY}"),
-            Err(_not_unicode) => {
-                panic!(
-                    "{INVITATION_VARIABLE} {INVITATION_NOT_UNICODE_FAILURE}: {INVITATION_EXPORTED_BY}"
-                )
-            }
+            Err(unreadable) => panic!(
+                "{INVITATION_VARIABLE} {INVITATION_NOT_UNICODE_FAILURE} ({}): {INVITATION_EXPORTED_BY}",
+                unreadable.kind()
+            ),
         };
         let invitation = parse_invitation(text.trim())
             .unwrap_or_else(|refusal| panic!("{INVITATION_VARIABLE} is refused: {refusal}"));
