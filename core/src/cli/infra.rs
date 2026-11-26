@@ -2053,7 +2053,7 @@ mod tests {
 
         first_outcome.unwrap();
         let (learned, first_holds_own, first_holds_second, looked_up) = observed;
-        let learned = learned.unwrap();
+        let learned = learned.expect("the second host saved within HOST_LEARNED_WAIT");
         assert_eq!(learned.relay, SPEC_SECOND_RELAY_URL);
         assert_eq!(learned.ts, Some(FROZEN_CLOCK_SECONDS));
         assert_eq!(
