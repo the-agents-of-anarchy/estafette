@@ -904,7 +904,7 @@ mod tests {
     use crate::node::{Identity, Node, NodeEffects};
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
-        RecordedEvent, answered_within, found_within, gossip_events_recorded_until,
+        RecordedEvent, WaitMissed, answered_within, found_within, gossip_events_recorded_until,
         next_recorded_meeting, recorded_events, secret_key, short_id_field,
     };
     use crate::wire::{HostAddr, Version};
@@ -1312,9 +1312,9 @@ mod tests {
         async fn hearing_until_the_next_host_record(
             &mut self,
             within: Duration,
-        ) -> (Vec<Payload>, Option<Infrastructure>) {
+        ) -> (Vec<Payload>, Result<Infrastructure, WaitMissed>) {
             let mut heard_before = Vec::new();
-            let next_record = found_within(within, async || {
+            let next_record = found_within(within, "host record heard at the peer", async || {
                 let Some(Ok(GossipEvent::Payload(payload))) = self.topic.next_event().await else {
                     return None;
                 };
@@ -1336,14 +1336,15 @@ mod tests {
             within: Duration,
         ) -> (Vec<Payload>, Infrastructure) {
             let (heard_before, next_record) = self.hearing_until_the_next_host_record(within).await;
-            let Some(next_record) = next_record else {
-                panic!("the peer heard no host record within {within:?}; heard {heard_before:?}")
-            };
+            let next_record =
+                next_record.unwrap_or_else(|missed| panic!("{missed}; heard {heard_before:?}"));
             (heard_before, next_record)
         }
 
-        #[must_use]
-        async fn next_host_record(&mut self, within: Duration) -> Option<Infrastructure> {
+        async fn next_host_record(
+            &mut self,
+            within: Duration,
+        ) -> Result<Infrastructure, WaitMissed> {
             self.hearing_until_the_next_host_record(within).await.1
         }
     }
@@ -1364,7 +1365,7 @@ mod tests {
                 record
             });
         outcome.unwrap();
-        record.expect("a host record heard at the peer within RECORD_AT_JOIN_WAIT")
+        record.unwrap_or_else(WaitMissed::fail_the_test)
     }
 
     fn spec_certificate_bytes(host_seed: u8) -> SignatureBytes {
@@ -1659,7 +1660,7 @@ mod tests {
             let last_record = peer
                 .next_host_record(SPEC_RECORD_INTERVAL_LATEST)
                 .await
-                .expect("a host record heard at the peer within SPEC_RECORD_INTERVAL_LATEST");
+                .unwrap_or_else(WaitMissed::fail_the_test);
             let last_record_heard = Instant::now();
             peer.topic
                 .broadcast(
@@ -1735,14 +1736,12 @@ mod tests {
                 let first = peer
                     .next_host_record(RECORD_AT_JOIN_WAIT)
                     .await
-                    .expect("a host record heard at the peer within RECORD_AT_JOIN_WAIT");
+                    .unwrap_or_else(WaitMissed::fail_the_test);
                 let first_heard = Instant::now();
                 let second = peer
                     .next_host_record(SPEC_RECORD_INTERVAL_LATEST)
                     .await
-                    .expect(
-                        "a second host record heard at the peer within SPEC_RECORD_INTERVAL_LATEST",
-                    );
+                    .unwrap_or_else(WaitMissed::fail_the_test);
                 let spacing = first_heard.elapsed();
                 stop.send(()).unwrap();
                 (first, second, spacing)
@@ -1855,7 +1854,10 @@ mod tests {
         );
 
         assert!(joined_through_the_first_endpoint);
-        assert_eq!(record.map(|record| record.ts), Some(FROZEN_CLOCK_SECONDS));
+        assert_eq!(
+            record.unwrap_or_else(WaitMissed::fail_the_test).ts,
+            FROZEN_CLOCK_SECONDS
+        );
         outcome.unwrap();
     }
 
@@ -1977,15 +1979,17 @@ mod tests {
             && fields.contains(&(PEER_FIELD, short_id(SECOND_HOST_SEED)))
     }
 
-    #[must_use]
-    async fn saved_within(scratch: &Scratch, host_seed: u8, within: Duration) -> Option<Host> {
-        let saved = found_within(within, async || scratch.saved_host(host_seed)).await;
-        if saved.is_none() {
-            eprintln!(
-                "the host's network file did not hold the host of seed {host_seed} within {within:?}"
-            );
-        }
-        saved
+    async fn saved_within(
+        scratch: &Scratch,
+        host_seed: u8,
+        within: Duration,
+    ) -> Result<Host, WaitMissed> {
+        found_within(
+            within,
+            &format!("host of seed {host_seed} in the host's network file"),
+            async || scratch.saved_host(host_seed),
+        )
+        .await
     }
 
     #[tokio::test]
@@ -2048,7 +2052,7 @@ mod tests {
 
         first_outcome.unwrap();
         let (learned, first_holds_own, first_holds_second, looked_up) = observed;
-        let learned = learned.expect("the second host saved within HOST_LEARNED_WAIT");
+        let learned = learned.unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(learned.relay, SPEC_SECOND_RELAY_URL);
         assert_eq!(learned.ts, Some(FROZEN_CLOCK_SECONDS));
         assert_eq!(
@@ -2124,17 +2128,17 @@ mod tests {
         (node, member_endpoint, member_relay_map)
     }
 
-    #[must_use]
     async fn relay_map_holds_within(
         relay_map: &iroh::RelayMap,
         relay: &str,
         within: Duration,
-    ) -> bool {
-        found_within(within, async || {
-            relay_map_holds(relay_map, relay).then_some(())
-        })
+    ) -> Result<(), WaitMissed> {
+        found_within(
+            within,
+            &format!("relay {relay} in the relay map"),
+            async || relay_map_holds(relay_map, relay).then_some(()),
+        )
         .await
-        .is_some()
     }
 
     #[tokio::test]
@@ -2167,10 +2171,7 @@ mod tests {
 
         outcome.unwrap();
         let (learned, looked_up, listed) = observed;
-        assert!(
-            learned,
-            "the member's relay map did not hold the host's relay {SPEC_RELAY_URL} within {HOST_LEARNED_WAIT:?}"
-        );
+        learned.unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(looked_up, vec![SPEC_RELAY_URL]);
         assert_eq!(listed, 0);
     }
@@ -2227,7 +2228,7 @@ mod tests {
         outcome.unwrap();
         assert_eq!(
             other_learned
-                .expect("the other host saved within HOST_LEARNED_WAIT")
+                .unwrap_or_else(WaitMissed::fail_the_test)
                 .relay,
             OTHER_HOST_RELAY_URL
         );

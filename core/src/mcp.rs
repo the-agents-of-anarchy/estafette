@@ -1475,7 +1475,8 @@ mod tests {
 
         async fn peer_listed_within(&mut self, handle: &str, within: Duration) -> Value {
             let mut listed = Value::Null;
-            let found = found_within(within, async || {
+            let awaited = format!("{handle} listed as a peer");
+            let found = found_within(within, &awaited, async || {
                 listed = self.envelope("peers", json!({})).await;
                 listed["result"]["peers"]
                     .as_array()
@@ -1485,9 +1486,7 @@ mod tests {
                     .cloned()
             })
             .await;
-            found.unwrap_or_else(|| {
-                panic!("{handle} not listed as a peer within {within:?}; last listed: {listed}")
-            })
+            found.unwrap_or_else(|missed| panic!("{missed}; last listed: {listed}"))
         }
     }
 

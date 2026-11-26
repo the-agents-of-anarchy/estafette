@@ -32,8 +32,8 @@ use crate::payload::{
     ZERO_MAC, ZERO_SIGNATURE, open_request, seal_payload, seal_response, sealed_by_any_key,
 };
 use crate::test_waits::{
-    RecordedEvent, next_recorded, next_recorded_among, next_recorded_meeting, next_recorded_within,
-    recorded_events, secret_key, wall_clock_ms,
+    RecordedEvent, WaitMissed, next_recorded, next_recorded_among, next_recorded_meeting,
+    next_recorded_within, recorded_events, secret_key, wall_clock_ms,
 };
 use crate::wire::{
     Addr, Departure, Introduce, IntroduceAck, Payload, Presence, PresenceRequest, ProbeAck,
@@ -850,9 +850,7 @@ async fn observability_decision_9_a_member_records_its_own_handle_requested_and_
     let (first, second) = start_pair(&scratch).await;
     entry_meeting_within(&first, SECOND_SEED, |_listed| true, SPEC_OBSERVER_WAIT)
         .await
-        .unwrap_or_else(|| {
-            panic!("the first member did not list the second within {SPEC_OBSERVER_WAIT:?}")
-        });
+        .unwrap_or_else(WaitMissed::fail_the_test);
 
     let _third = start_members_reaching(
         &scratch,

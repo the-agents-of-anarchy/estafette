@@ -2048,21 +2048,25 @@ mod tests {
     /// Waits until the observer lists the neighbor, which it does once it has applied the neighbor's answer to its Introduce, failing with what it holds when the wait ends first.
     async fn neighbor_listed_by(observer: &ObserverHost, within: Duration) {
         let neighbor = wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public());
-        found_within(within, async || {
-            observer
-                .table()
-                .peers(wall_clock_ms())
-                .any(|peer| peer.card == neighbor)
-                .then_some(())
-        })
+        found_within(
+            within,
+            "listing of the neighbor by the observer",
+            async || {
+                observer
+                    .table()
+                    .peers(wall_clock_ms())
+                    .any(|peer| peer.card == neighbor)
+                    .then_some(())
+            },
+        )
         .await
-        .unwrap_or_else(|| {
+        .unwrap_or_else(|missed| {
             let held: Vec<wire::PublicKey> = observer
                 .table()
                 .peers(wall_clock_ms())
                 .map(|peer| peer.card)
                 .collect();
-            panic!("the observer did not list the neighbor within {within:?}; it holds {held:?}")
+            panic!("{missed}; it holds {held:?}")
         });
     }
 
@@ -3317,7 +3321,8 @@ mod tests {
         settled: impl Fn(&HeldNeighbor) -> bool + Send + Sync,
     ) -> (HeldNeighbor, HeldNeighbor) {
         let mut last_held = None;
-        let settled_holdings = found_within(SAME_ROWS_WAIT, async || {
+        let awaited_holding = format!("member and observer both holding {awaited}");
+        let settled_holdings = found_within(SAME_ROWS_WAIT, &awaited_holding, async || {
             let by_member = held_neighbor(&member.node.peers(), &member.endpoint).await;
             let observer_peers: Vec<Peer> =
                 observer.table().peers(wall_clock_ms()).cloned().collect();
@@ -3329,18 +3334,17 @@ mod tests {
             None
         })
         .await;
-        settled_holdings.unwrap_or_else(|| {
-            panic!(
-                "the member and the observer did not both hold {awaited} within {SAME_ROWS_WAIT:?}: (member, observer) {last_held:?}"
-            )
-        })
+        settled_holdings
+            .unwrap_or_else(|missed| panic!("{missed}: (member, observer) {last_held:?}"))
     }
 
     /// Waits until the member holds the neighbor and the observer holds both, so each introduction a neighbor report started is answered, failing with what each holds when the wait ends first.
     async fn introduced_to_member_and_joined_observer(member: &Member, observer: &ObserverHost) {
+        const AWAITED_INTRODUCTION: &str =
+            "neighbor introduced to the member and the joined observer";
         let neighbor = wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public());
         let mut last_held = None;
-        let introduced_in_time = found_within(SAME_ROWS_WAIT, async || {
+        found_within(SAME_ROWS_WAIT, AWAITED_INTRODUCTION, async || {
             let member_holds_neighbor =
                 member.node.peers().iter().any(|peer| peer.card == neighbor);
             let held_by_observer: Vec<wire::PublicKey> = observer
@@ -3360,11 +3364,9 @@ mod tests {
             (held == (true, true, true)).then_some(())
         })
         .await
-        .is_some();
-        assert!(
-            introduced_in_time,
-            "the neighbor was not introduced to the member and the joined observer within {SAME_ROWS_WAIT:?}: (member holds the neighbor, observer holds the neighbor, observer holds the member) {last_held:?}"
-        );
+        .unwrap_or_else(|missed| {
+            panic!("{missed}: (member holds the neighbor, observer holds the neighbor, observer holds the member) {last_held:?}")
+        });
     }
 
     /// The address the neighbor announces: every direct address its endpoint reports, and one more when it has moved.

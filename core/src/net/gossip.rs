@@ -206,7 +206,8 @@ mod tests {
     use crate::net::endpoint::{BoundEndpoint, NodeEndpoint};
     use crate::payload::{PayloadDropRule, PayloadFacts, PayloadStamp, ZERO_MAC};
     use crate::test_waits::{
-        answered_within, found_within, next_recorded, recorded_events, secret_key,
+        WaitMissed, answered_within, found_within, next_recorded, recorded_events, secret_key,
+        unexpectedly_found_within,
     };
     use crate::wire::{
         self, Addr, Departure, Infrastructure, Presence, RelayUrl, SignatureBytes, Version, encode,
@@ -423,17 +424,17 @@ mod tests {
         }
     }
 
-    /// Whether the member has received the data messages within the bound.
+    /// Waits until the member has received the data messages, failing with what was awaited and the bound when the bound runs out first.
     async fn received_data_messages_within(
         member: &Member,
         data_messages: u64,
         within: Duration,
-    ) -> bool {
-        found_within(within, async || {
+    ) -> Result<(), WaitMissed> {
+        let awaited = format!("{data_messages} data messages received by the member");
+        found_within(within, &awaited, async || {
             (member.gossip.metrics().msgs_data_recv.get() >= data_messages).then_some(())
         })
         .await
-        .is_some()
     }
 
     /// What the payload layer records when it drops the forged Departure under the rule.
@@ -467,26 +468,31 @@ mod tests {
         let record_drop = |refusal: PayloadRefusal| drops.lock().unwrap().push(refusal);
         let mut arrived = Vec::new();
 
-        let dropped_and_arrived = found_within(DROPPED_AND_ARRIVED_WITHIN, async || {
-            if let Some(Ok(GossipEvent::Payload(payload))) =
-                first_topic.next_event_recording_drops(&record_drop).await
-            {
-                arrived.push(Payload::from(*payload));
-            }
-            let dropped = drops.lock().unwrap().contains(&dropped_as);
-            (arrived.len() > 1 || dropped && arrived.len() == 1).then_some(())
-        })
+        let dropped_and_arrived = found_within(
+            DROPPED_AND_ARRIVED_WITHIN,
+            "drop of the forged payload and arrival of the next good presence",
+            async || {
+                if let Some(Ok(GossipEvent::Payload(payload))) =
+                    first_topic.next_event_recording_drops(&record_drop).await
+                {
+                    arrived.push(Payload::from(*payload));
+                }
+                let dropped = drops.lock().unwrap().contains(&dropped_as);
+                (arrived.len() > 1 || dropped && arrived.len() == 1).then_some(())
+            },
+        )
         .await;
 
         assert!(
             arrived.len() <= 1,
             "a payload other than the next good presence reached the node: {arrived:?}"
         );
-        assert!(
-            dropped_and_arrived.is_some(),
-            "the node did not both drop {dropped_as:?} and take the next good presence within {DROPPED_AND_ARRIVED_WITHIN:?}; it took {arrived:?} and dropped {:?}",
-            drops.lock().unwrap()
-        );
+        dropped_and_arrived.unwrap_or_else(|missed| {
+            panic!(
+                "{missed}: the node was to drop {dropped_as:?}; it took {arrived:?} and dropped {:?}",
+                drops.lock().unwrap()
+            )
+        });
         assert_eq!(
             presence_in(arrived.remove(0)).card,
             wire::PublicKey::from(secret_key(SECOND_SEED).public())
@@ -623,7 +629,8 @@ mod tests {
 
         clock.move_forward(SPEC_JOIN_TIMEOUT.saturating_sub(JUST_UNDER));
         let just_before =
-            found_within(Duration::ZERO, async || Some(topic.next_event().await)).await;
+            unexpectedly_found_within(Duration::ZERO, async || Some(topic.next_event().await))
+                .await;
         clock.move_forward(JUST_UNDER);
         let at_the_timeout = answered_within(
             JOIN_TIMEOUT_SLACK,
@@ -693,7 +700,7 @@ mod tests {
         .unwrap()
         .unwrap();
         outsider_clock.move_forward(NOTHING_MORE_WITHIN);
-        let taken_past_the_join_timeout = found_within(Duration::ZERO, async || {
+        let taken_past_the_join_timeout = unexpectedly_found_within(Duration::ZERO, async || {
             Some(outsider_topic.next_event().await)
         })
         .await;
@@ -735,15 +742,9 @@ mod tests {
                 .unwrap();
         }
 
-        assert!(
-            received_data_messages_within(
-                &first,
-                EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY,
-                DELIVERY_WAIT
-            )
-            .await,
-            "not every broadcast reached the node that falls behind within {DELIVERY_WAIT:?}"
-        );
+        received_data_messages_within(&first, EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY, DELIVERY_WAIT)
+            .await
+            .unwrap_or_else(WaitMissed::fail_the_test);
 
         let first_error = timeout(LAG_WAIT, async {
             loop {

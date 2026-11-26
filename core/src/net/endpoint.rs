@@ -709,7 +709,7 @@ mod tests {
     use crate::each_arm::assert_each_arm;
     use crate::event::ShortId;
     use crate::seeded_draws::Draws;
-    use crate::test_waits::found_within;
+    use crate::test_waits::{WaitMissed, found_within};
 
     const SPEC_DIRECT_ALPN: &[u8] = b"estafette/direct/1";
     const SPEC_GATE_KEY_CONTEXT: &str = "messaging gate v1";
@@ -1087,17 +1087,15 @@ mod tests {
 
         let accepted = accept_next(&member.endpoint.iroh).await.unwrap();
         let keep_alives_before = accepted.stats().frame_tx.ping;
-        let keep_alives_sent = found_within(PEER_LIFE_WAIT, async || {
+        let awaited =
+            format!("{KEEP_ALIVES_SENT_WHILE_THE_PEER_LIVES} keep-alives sent to the live peer");
+        found_within(PEER_LIFE_WAIT, &awaited, async || {
             (accepted.stats().frame_tx.ping
                 >= keep_alives_before + u64::from(KEEP_ALIVES_SENT_WHILE_THE_PEER_LIVES))
             .then_some(())
         })
         .await
-        .is_some();
-        assert!(
-            keep_alives_sent,
-            "the member did not send {KEEP_ALIVES_SENT_WHILE_THE_PEER_LIVES} keep-alives to the live peer within {PEER_LIFE_WAIT:?}"
-        );
+        .unwrap_or_else(WaitMissed::fail_the_test);
         vanish.send(()).unwrap();
         let _silenced_peer = tokio::task::spawn_blocking(move || vanishing_peer.join())
             .await

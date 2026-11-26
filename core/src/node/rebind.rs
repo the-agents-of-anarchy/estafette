@@ -474,8 +474,8 @@ mod tests {
     use crate::seeded_draws::Draws;
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
-        RecordedEvent, found_within, next_recorded, recorded_events, recorded_until, secret_key,
-        wall_clock_ms,
+        RecordedEvent, WaitMissed, found_within, next_recorded, recorded_events, recorded_until,
+        secret_key, wall_clock_ms,
     };
     use crate::wire::{Addr, Introduce, IntroduceAck, Message, Payload, Version};
 
@@ -544,20 +544,22 @@ mod tests {
             self.0.borrow()
         }
 
-        /// What `found` first finds in the entries heard within `within`, none when it finds nothing by then.
-        #[must_use]
+        /// What `found` first finds in the entries heard within `within`, or the awaited condition and the bound when it finds nothing by then.
         async fn first_within<Found: Send>(
             &self,
             within: Duration,
+            awaited: &str,
             found: impl Fn(&[T]) -> Option<Found> + Send + Sync,
-        ) -> Option<Found> {
+        ) -> Result<Found, WaitMissed> {
+            let missed = || WaitMissed::new(awaited, within);
             let mut entries = self.0.subscribe();
             let entries =
                 tokio::time::timeout(within, entries.wait_for(|entries| found(entries).is_some()))
                     .await
-                    .ok()?
-                    .ok()?;
-            found(&entries)
+                    .ok()
+                    .and_then(Result::ok)
+                    .ok_or_else(missed)?;
+            found(&entries).ok_or_else(missed)
         }
     }
 
@@ -577,10 +579,10 @@ mod tests {
             })
         }
 
-        #[must_use]
-        async fn nth_within(&self, index: usize, within: Duration) -> Option<Instant> {
+        async fn nth_within(&self, index: usize, within: Duration) -> Result<Instant, WaitMissed> {
+            let awaited = format!("rebind number {index} started");
             self.started
-                .first_within(within, |started| started.get(index).copied())
+                .first_within(within, &awaited, |started| started.get(index).copied())
                 .await
         }
     }
@@ -722,11 +724,15 @@ mod tests {
             .unwrap();
         }
 
-        #[must_use]
-        async fn first_neighbor_up_of(&self, seed: u8, within: Duration) -> Option<Instant> {
+        async fn first_neighbor_up_of(
+            &self,
+            seed: u8,
+            within: Duration,
+        ) -> Result<Instant, WaitMissed> {
             let neighbor = secret_key(seed).public();
+            let awaited = format!("card of seed {seed} up as a neighbor");
             self.neighbors_up
-                .first_within(within, |ups| {
+                .first_within(within, &awaited, |ups| {
                     ups.iter()
                         .find(|(_, up)| *up == neighbor)
                         .map(|(at, _)| *at)
@@ -742,10 +748,9 @@ mod tests {
                 .map(|(_, seq)| *seq)
         }
 
-        #[must_use]
-        async fn first_seq_after(&self, at: Instant, within: Duration) -> Option<u64> {
+        async fn first_seq_after(&self, at: Instant, within: Duration) -> Result<u64, WaitMissed> {
             self.presences
-                .first_within(within, |presences| {
+                .first_within(within, "presence heard after the rebind", |presences| {
                     presences
                         .iter()
                         .find(|(heard, _)| *heard > at)
@@ -832,26 +837,19 @@ mod tests {
         address.relay_urls().map(ToString::to_string).collect()
     }
 
-    #[must_use]
     async fn entry_within(
         member: &Member,
         seed: u8,
         wanted: impl Fn(&EndpointAddr) -> bool + Send + Sync,
         within: Duration,
-    ) -> Option<EndpointAddr> {
-        let entry = found_within(within, async || {
+    ) -> Result<EndpointAddr, WaitMissed> {
+        let awaited = format!("lookup entry for the card of seed {seed} meeting the condition");
+        found_within(within, &awaited, async || {
             lookup_entry(&member.node.client.endpoint(), seed)
                 .await
                 .filter(|entry| wanted(entry))
         })
-        .await;
-        if entry.is_none() {
-            eprintln!(
-                "the member's lookup held no entry for the card of seed {seed} meeting the condition within {within:?}; it holds {:?}",
-                lookup_entry(&member.node.client.endpoint(), seed).await
-            );
-        }
-        entry
+        .await
     }
 
     fn answering_only(live: &'static str) -> RelayProbe {
@@ -1023,25 +1021,27 @@ mod tests {
             SPEC_JOIN_TIMEOUT + REBIND_SLACK,
         )
         .await;
-        let asked = found_within(RELAYS_ASKED_WITHIN, async || {
-            (relays.asked() == KNOWN_HOST_RELAYS.len()).then_some(())
-        })
-        .await;
-        assert!(
-            asked.is_some(),
-            "the rebind asked {} of the {} relays within {RELAYS_ASKED_WITHIN:?}",
-            relays.asked(),
-            KNOWN_HOST_RELAYS.len()
-        );
+        found_within(
+            RELAYS_ASKED_WITHIN,
+            "rebind asking every known host relay",
+            async || (relays.asked() == KNOWN_HOST_RELAYS.len()).then_some(()),
+        )
+        .await
+        .unwrap_or_else(|missed| {
+            panic!(
+                "{missed}: it asked {} of the {} relays",
+                relays.asked(),
+                KNOWN_HOST_RELAYS.len()
+            )
+        });
         clock.move_forward(ANSWER_WITHIN_THE_PROBE_TIMEOUT);
-        let kept_answered = found_within(RELAY_ANSWER_TAKEN_WITHIN, async || {
-            relays.has_answered(KEPT_RELAY).then_some(())
-        })
-        .await;
-        assert!(
-            kept_answered.is_some(),
-            "the relay answering within the probe timeout had not answered within {RELAY_ANSWER_TAKEN_WITHIN:?} of the clock reading its answer"
-        );
+        found_within(
+            RELAY_ANSWER_TAKEN_WITHIN,
+            "answer of the relay answering within the probe timeout, counted from the clock reading it",
+            async || relays.has_answered(KEPT_RELAY).then_some(()),
+        )
+        .await
+        .unwrap_or_else(WaitMissed::fail_the_test);
         let judged_early: Vec<RecordedEvent> = std::iter::from_fn(|| events.try_recv().ok())
             .filter(|(name, _fields)| *name == RELAY_PROBED)
             .collect();
@@ -1058,12 +1058,10 @@ mod tests {
             |entry| !relays_of(entry).contains(&STRIPPED_RELAY.to_owned()),
             REBIND_SLACK,
         )
-        .await;
+        .await
+        .unwrap_or_else(WaitMissed::fail_the_test);
 
-        assert_eq!(
-            stripped.as_ref().map(relays_of),
-            Some(vec![KEPT_RELAY.to_owned()])
-        );
+        assert_eq!(relays_of(&stripped), vec![KEPT_RELAY.to_owned()]);
         drop(scratch);
     }
 
@@ -1588,11 +1586,11 @@ mod tests {
         let first = rebinds
             .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
             .await
-            .expect("rebind number 0 started within SPEC_DEAF_TIMEOUT + REBIND_SLACK");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         let second = rebinds
             .nth_within(1, SPEC_REBIND_INTERVAL + REBIND_SLACK)
             .await
-            .expect("rebind number 1 started within SPEC_REBIND_INTERVAL + REBIND_SLACK");
+            .unwrap_or_else(WaitMissed::fail_the_test);
 
         assert!(first.duration_since(started) >= SPEC_DEAF_TIMEOUT);
         assert!(second.duration_since(first) >= SPEC_REBIND_INTERVAL);
@@ -1621,11 +1619,14 @@ mod tests {
         let rebound = rebinds
             .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
             .await
-            .expect("rebind number 0 started within SPEC_DEAF_TIMEOUT + REBIND_SLACK");
-        let announced_after = host.first_seq_after(rebound, SPEC_JOIN_TIMEOUT).await;
+            .unwrap_or_else(WaitMissed::fail_the_test);
+        let announced_after = host
+            .first_seq_after(rebound, SPEC_JOIN_TIMEOUT)
+            .await
+            .unwrap_or_else(WaitMissed::fail_the_test);
 
         assert_eq!(host.last_seq_before(rebound), Some(FROZEN_CLOCK_MS));
-        assert_eq!(announced_after, Some(FROZEN_CLOCK_MS + 1));
+        assert_eq!(announced_after, FROZEN_CLOCK_MS + 1);
         drop(scratch);
     }
 
@@ -1683,9 +1684,10 @@ mod tests {
                 )
                 .await,
         );
-        let answer = witness
+        witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
-            .await;
+            .await
+            .expect("a Presence from the first member on the witness's topic");
         let (before_the_answering_member_took_the_ask, _ask) = recorded_until(
             &mut answering_events,
             PAYLOAD_ACCEPTED,
@@ -1703,7 +1705,6 @@ mod tests {
             0,
             "the answering member began a rebind before the ask at the other's rebind's join reached it: {before_the_answering_member_took_the_ask:?}"
         );
-        assert!(answer.is_some());
         drop(scratch);
     }
 
@@ -1761,13 +1762,11 @@ mod tests {
         let rebound = rebinds
             .nth_within(0, SPEC_JOIN_TIMEOUT + REBIND_SLACK)
             .await
-            .expect("rebind number 0 started within SPEC_JOIN_TIMEOUT + REBIND_SLACK");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         let joined_through_the_peer = peer
             .first_neighbor_up_of(FIRST_SEED, IROH_DOCUMENTED_CLOSE_LATENCY + REBIND_SLACK)
             .await
-            .expect(
-                "FIRST_SEED up as a neighbor within IROH_DOCUMENTED_CLOSE_LATENCY + REBIND_SLACK",
-            );
+            .unwrap_or_else(WaitMissed::fail_the_test);
 
         assert!(rebound.duration_since(started) >= SPEC_JOIN_TIMEOUT);
         assert!(joined_through_the_peer > rebound);
@@ -1803,12 +1802,12 @@ mod tests {
             IROH_DOCUMENTED_CLOSE_LATENCY + SPEC_RELAY_PROBE_TIMEOUT + REBIND_SLACK,
         )
         .await
-        .expect("the peer's lookup entry without the dead relay within the close latency, the relay probe timeout and the rebind slack");
+        .unwrap_or_else(WaitMissed::fail_the_test);
         let dead_host = lookup_entry(&member.node.client.endpoint(), DEAD_HOST_SEED)
             .await
             .unwrap();
 
-        assert!(rebound.is_some());
+        rebound.unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(
             relays_of(&held_before),
             vec![DEAD_RELAY, LIVE_RELAY, PEER_ONLY_RELAY]
@@ -1904,7 +1903,7 @@ mod tests {
         let rebound = rebinds
             .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
             .await
-            .expect("rebind number 0 started within SPEC_DEAF_TIMEOUT + REBIND_SLACK");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         let met = unreachable_member
             .first_neighbor_up_of(
                 FIRST_SEED,
@@ -1914,12 +1913,7 @@ mod tests {
                     + REBIND_SLACK,
             )
             .await
-            .expect(
-                "FIRST_SEED up as a neighbor within IROH_DOCUMENTED_CLOSE_LATENCY
-                    + SPEC_MEMBER_JOIN_WAIT
-                    + SPEC_MEMBER_JOIN_INTERVAL
-                    + REBIND_SLACK",
-            );
+            .unwrap_or_else(WaitMissed::fail_the_test);
 
         assert!(met.duration_since(rebound) >= SPEC_MEMBER_JOIN_WAIT);
         drop(scratch);
@@ -1972,7 +1966,7 @@ mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .expect("the peer listed as unreachable within PAYLOAD_WAIT");
+        .unwrap_or_else(WaitMissed::fail_the_test);
         clock.move_forward(SPEC_DEAF_TIMEOUT);
         let rebound_at = clock.now();
         recorded_until(&mut events, REBINDING, |_fields| true, PAYLOAD_WAIT).await;
@@ -1992,13 +1986,12 @@ mod tests {
         clock.asked_exactly("the member join wait", &asked).await;
         clock.move_late_past(first_ask_due);
         let first_ask_reading = clock.now();
-        let met = unreachable_member
+        unreachable_member
             .first_neighbor_up_of(FIRST_SEED, MEMBER_JOIN_ASKED_ONCE_THE_CLOCK_READS_IT_WITHIN)
-            .await;
-        assert!(
-            met.is_some(),
-            "the unreachable member met no ask to join within {MEMBER_JOIN_ASKED_ONCE_THE_CLOCK_READS_IT_WITHIN:?} of the clock reading the member join wait"
-        );
+            .await
+            .unwrap_or_else(|missed| {
+                panic!("the unreachable member met no ask to join: {missed}, counted from the clock reading the member join wait")
+            });
         recorded_until(
             &mut events,
             NEIGHBOR_UP,
@@ -2048,17 +2041,16 @@ mod tests {
         .unwrap();
         let peer = QuietNode::answering(PEER_SEED, &[]).await;
         peer.introduce_to(&member.endpoint).await;
-        assert!(
-            entry_meeting_within(
-                &member,
-                PEER_SEED,
-                |listed| listed.attached == ATTACHED_ONLY_IN_THE_PEERS_ACK,
-                PAYLOAD_WAIT
-            )
-            .await
-            .is_some(),
-            "the member never applied the ack of its own Introduce to the peer"
-        );
+        entry_meeting_within(
+            &member,
+            PEER_SEED,
+            |listed| listed.attached == ATTACHED_ONLY_IN_THE_PEERS_ACK,
+            PAYLOAD_WAIT,
+        )
+        .await
+        .unwrap_or_else(|missed| {
+            panic!("the member never applied the ack of its own Introduce to the peer: {missed}")
+        });
         let witness = Witness::joined_through(WITNESS_SEED, None, &member.endpoint).await;
         witness
             .broadcast_as(
@@ -2073,7 +2065,7 @@ mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .expect("the peer listed as unreachable within PAYLOAD_WAIT");
+        .unwrap_or_else(WaitMissed::fail_the_test);
         let no_peer_online_since = Instant::now();
         let (while_no_peer_was_online, _snapshot) = recorded_until(
             &mut events,

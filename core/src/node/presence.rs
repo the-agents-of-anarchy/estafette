@@ -1944,8 +1944,8 @@ pub(super) mod tests {
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
     use crate::test_waits::{
-        PROBE_NONCE, RecordedEvent, found_within, next_recorded_meeting, recorded_events,
-        recorded_until, secret_key, short_id_field, wall_clock_ms,
+        PROBE_NONCE, RecordedEvent, WaitMissed, found_within, next_recorded_meeting,
+        recorded_events, recorded_until, secret_key, short_id_field, wall_clock_ms,
     };
     use crate::wire::{Infrastructure, SignatureBytes};
 
@@ -2484,12 +2484,11 @@ pub(super) mod tests {
         (first, second)
     }
 
-    #[must_use]
     pub(in crate::node) async fn listed_within(
         member: &Member,
         seed: u8,
         within: Duration,
-    ) -> Option<Peer> {
+    ) -> Result<Peer, WaitMissed> {
         entry_meeting_within(member, seed, |_listed| true, within).await
     }
 
@@ -2505,10 +2504,10 @@ pub(super) mod tests {
         assert_eq!(second.node.own_handle().as_str(), SECOND_HANDLE);
         let seen_by_first = listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         let seen_by_second = listed_within(&second, FIRST_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .expect("the entry of FIRST_SEED listed at second within SPEC_OBSERVER_WAIT");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(seen_by_first.effective_handle.as_str(), SECOND_HANDLE);
         assert_eq!(seen_by_first.public.as_deref(), Some(SECOND_PUBLIC));
         assert_eq!(seen_by_first.status, Status::Online);
@@ -2593,7 +2592,7 @@ pub(super) mod tests {
         assert!(ack.accepted);
         let listed = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .expect("the entry of SECOND_SEED listed at first within Duration::ZERO");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(listed.effective_handle.as_str(), SECOND_HANDLE);
         assert_eq!(listed.status, Status::Online);
         assert!(listed.attached);
@@ -2614,7 +2613,7 @@ pub(super) mod tests {
         .await;
         let after_introduce = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .expect("the entry of SECOND_SEED listed at first within Duration::ZERO");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(after_introduce.status, Status::Online);
         assert_eq!(after_introduce.public.as_deref(), Some(SECOND_PUBLIC));
         drop(scratch);
@@ -2859,7 +2858,7 @@ pub(super) mod tests {
         witness.broadcast_marker(marker_seed).await;
         listed_within(member, marker_seed, PAYLOAD_WAIT)
             .await
-            .expect("the entry of marker_seed listed at member within PAYLOAD_WAIT");
+            .unwrap_or_else(WaitMissed::fail_the_test);
     }
 
     pub(in crate::node) async fn start_third_through_second(
@@ -2885,7 +2884,7 @@ pub(super) mod tests {
         let (first, second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
+            .unwrap_or_else(WaitMissed::fail_the_test);
 
         let _third = start_third_through_second(&scratch, &second, THIRD_HANDLE).await;
         let third_presence_sent = tokio::time::Instant::now();
@@ -2906,7 +2905,7 @@ pub(super) mod tests {
         let (first, second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
+            .unwrap_or_else(WaitMissed::fail_the_test);
 
         let third = start_third_through_second(&scratch, &second, FIRST_HANDLE).await;
 
@@ -2916,10 +2915,10 @@ pub(super) mod tests {
         );
         let at_first = listed_within(&first, THIRD_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .expect("the entry of THIRD_SEED listed at first within SPEC_OBSERVER_WAIT");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         let at_second = listed_within(&second, THIRD_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .expect("the entry of THIRD_SEED listed at second within SPEC_OBSERVER_WAIT");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(
             at_first.effective_handle.as_str(),
             SECOND_EFFECTIVE_FIRST_HANDLE
@@ -2931,13 +2930,12 @@ pub(super) mod tests {
         drop(scratch);
     }
 
-    #[must_use]
     pub(in crate::node) async fn status_within(
         member: &Member,
         seed: u8,
         wanted: impl Fn(Status) -> bool + Send + Sync,
         within: Duration,
-    ) -> Option<Peer> {
+    ) -> Result<Peer, WaitMissed> {
         entry_meeting_within(member, seed, |peer| wanted(peer.status), within).await
     }
 
@@ -2959,7 +2957,7 @@ pub(super) mod tests {
         let (first, _second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         let witness = Witness::joined_through(WITNESS_SEED, None, &first.endpoint).await;
 
         witness
@@ -2976,7 +2974,7 @@ pub(super) mod tests {
         marker_reaches(&first, &witness, MARKER_SEED).await;
         let after_replay = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .expect("the entry of SECOND_SEED listed at first within Duration::ZERO");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(after_replay.public.as_deref(), Some(SECOND_PUBLIC));
         assert_eq!(after_replay.status, Status::Online);
 
@@ -2990,7 +2988,7 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .expect("the first member listing the second as gone");
+        .unwrap_or_else(WaitMissed::fail_the_test);
         witness
             .broadcast_as(
                 SECOND_SEED,
@@ -3006,7 +3004,7 @@ pub(super) mod tests {
 
         let after_departure = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .expect("the entry of SECOND_SEED listed at first within Duration::ZERO");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         assert!(matches!(after_departure.status, Status::Gone { .. }));
         assert_eq!(after_departure.public.as_deref(), Some(SECOND_PUBLIC));
         drop(scratch);
@@ -3116,19 +3114,16 @@ pub(super) mod tests {
             .find(|host| host.id == id)
     }
 
-    #[must_use]
     pub(in crate::node) async fn host_saved_within(
         config_path: &std::path::Path,
         host_seed: u8,
         within: Duration,
-    ) -> Option<Host> {
-        let saved = found_within(within, async || saved_host(config_path, host_seed)).await;
-        if saved.is_none() {
-            eprintln!(
-                "the network file did not hold the host of seed {host_seed} within {within:?}"
-            );
-        }
-        saved
+    ) -> Result<Host, WaitMissed> {
+        let awaited = format!("host of seed {host_seed} in the network file");
+        found_within(within, &awaited, async || {
+            saved_host(config_path, host_seed)
+        })
+        .await
     }
 
     async fn lookup_entry(member: &Member, seed: u8) -> Option<iroh::EndpointAddr> {
@@ -3171,7 +3166,7 @@ pub(super) mod tests {
             .await;
         let saved = host_saved_within(&member.config_path, HOST_SEED, SPEC_HOST_ADDED_WITHIN)
             .await
-            .expect("the network file holding the host within SPEC_HOST_ADDED_WITHIN");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(saved.relay, HOST_RELAY);
         assert_eq!(saved.ts, Some(record_ts));
         assert!(matches!(saved.origin, HostOrigin::Learned { .. }));
@@ -3203,7 +3198,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, HOST_SEED, PAYLOAD_WAIT)
             .await
-            .expect("the network file holding the first host");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         member
             .endpoint
             .remove_relay_past_the_guard(&relay_url(HOST_RELAY))
@@ -3230,7 +3225,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, SECOND_HOST_SEED, PAYLOAD_WAIT)
             .await
-            .expect("the network file holding the second host");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         assert!(!relay_map_holds(&member.endpoint, HOST_RELAY).await);
         assert_eq!(
             saved_host(&member.config_path, HOST_SEED).unwrap().ts,
@@ -3251,7 +3246,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, THIRD_HOST_SEED, PAYLOAD_WAIT)
             .await
-            .expect("the network file holding the third host");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         assert!(relay_map_holds(&member.endpoint, HOST_RELAY).await);
         assert_eq!(
             saved_host(&member.config_path, HOST_SEED).unwrap().ts,
@@ -3288,7 +3283,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, SECOND_HOST_SEED, PAYLOAD_WAIT)
             .await
-            .expect("the network file holding the second host");
+            .unwrap_or_else(WaitMissed::fail_the_test);
 
         assert!(saved_host(&member.config_path, HOST_SEED).is_none());
         assert!(!relay_map_holds(&member.endpoint, HOST_RELAY).await);
@@ -3495,17 +3490,19 @@ pub(super) mod tests {
         let Payload::Presence(presence) = announced else {
             panic!("the member's answer is no Presence: {announced:?}");
         };
-        let held = found_within(PAYLOAD_WAIT, async || {
-            (member.node.state.own_addr() == presence.addr).then_some(())
-        })
+        found_within(
+            PAYLOAD_WAIT,
+            "the member's address back at the one it announced",
+            async || (member.node.state.own_addr() == presence.addr).then_some(()),
+        )
         .await
-        .is_some();
-        assert!(
-            held,
-            "the member's address moved from the one it announced, {:?}, to {:?}, within {PAYLOAD_WAIT:?}",
-            presence.addr,
-            member.node.state.own_addr()
-        );
+        .unwrap_or_else(|missed| {
+            panic!(
+                "{missed}: it moved from {:?} to {:?}",
+                presence.addr,
+                member.node.state.own_addr()
+            )
+        });
     }
 
     async fn ask_for_presence(witness: &Witness, requester_seed: u8, seq: u64) {
@@ -3847,7 +3844,7 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .expect("the member listing the witness as online");
+        .unwrap_or_else(WaitMissed::fail_the_test);
         settled_direct_answers(&member, WITNESS_SEED, DirectContact::Introduce).await;
         next_recorded_meeting(
             &mut recorded,
@@ -3871,7 +3868,7 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .expect("the member listing the witness as unreachable");
+        .unwrap_or_else(WaitMissed::fail_the_test);
         drop(scratch);
     }
 
@@ -3891,7 +3888,7 @@ pub(super) mod tests {
         let (first, second) = start_pair_reporting_first(&scratch, report).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .expect("the entry of SECOND_SEED listed at first within SPEC_OBSERVER_WAIT");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         let mut witness = Witness::joined_through(WITNESS_SEED, None, &first.endpoint).await;
         neighbors.until_recorded(SECOND_SEED).await;
         let killed = tokio::time::Instant::now();
@@ -3911,7 +3908,7 @@ pub(super) mod tests {
             })
             .await;
 
-        assert!(unreachable.is_some());
+        unreachable.unwrap_or_else(WaitMissed::fail_the_test);
         assert!(killed.elapsed() < SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT + PAYLOAD_WAIT);
         assert_eq!(
             unreachable_report(announced),
@@ -3938,7 +3935,7 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .expect("the member listing the witness as online");
+        .unwrap_or_else(WaitMissed::fail_the_test);
         neighbors.until_recorded(WITNESS_SEED).await;
         settled_direct_answers(&member, WITNESS_SEED, DirectContact::Introduce).await;
         let probe_answers_before =
@@ -3954,15 +3951,19 @@ pub(super) mod tests {
             .load(std::sync::atomic::Ordering::SeqCst);
 
         witness.gossip.shutdown().await.unwrap();
-        found_within(PROBE_ANSWERED_WAIT, async || {
-            (witness
-                .probes_answered
-                .load(std::sync::atomic::Ordering::SeqCst)
-                != probes_before)
-                .then_some(())
-        })
+        found_within(
+            PROBE_ANSWERED_WAIT,
+            "probe answered by the witness",
+            async || {
+                (witness
+                    .probes_answered
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    != probes_before)
+                    .then_some(())
+            },
+        )
         .await
-        .unwrap_or_else(|| panic!("the witness answered no probe within {PROBE_ANSWERED_WAIT:?}"));
+        .unwrap_or_else(WaitMissed::fail_the_test);
         direct_answer_after(
             &member,
             WITNESS_SEED,
@@ -3979,7 +3980,7 @@ pub(super) mod tests {
 
         let after = listed_within(&member, WITNESS_SEED, Duration::ZERO)
             .await
-            .expect("the entry of WITNESS_SEED listed at member within Duration::ZERO");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(after.status, Status::Online);
         assert_eq!(after.effective_handle.as_str(), WITNESS_HANDLE);
         assert_eq!(
@@ -4020,7 +4021,7 @@ pub(super) mod tests {
         );
         let listed = listed_within(&member, MARKER_SEED, Duration::ZERO)
             .await
-            .expect("the entry of MARKER_SEED listed at member within Duration::ZERO");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(listed.status, Status::Unreachable);
         drop(scratch);
     }
@@ -4094,7 +4095,7 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .expect("the member listing the witness as online");
+        .unwrap_or_else(WaitMissed::fail_the_test);
         settled_direct_answers(&member, WITNESS_SEED, DirectContact::Introduce).await;
         settled_direct_answers(&member, WITNESS_SEED, DirectContact::Probe).await;
         discard_waiting(&mut failures);
@@ -4129,14 +4130,14 @@ pub(super) mod tests {
         let init_took = started.elapsed();
 
         let mut witness = Witness::joined_through(WITNESS_SEED, None, &lonely.endpoint).await;
-        let announced = witness
+        witness
             .payload_where(PAYLOAD_WAIT, presence_from(FIRST_SEED))
-            .await;
+            .await
+            .expect("a Presence from the first member on the witness's topic");
 
         assert!(init_took >= SPEC_JOIN_TIMEOUT);
         assert!(init_took < SPEC_JOIN_TIMEOUT + SPEC_OBSERVER_WAIT);
         assert_eq!(lonely.node.own_handle().as_str(), FIRST_HANDLE);
-        assert!(announced.is_some());
         drop(scratch);
     }
 
@@ -4153,11 +4154,10 @@ pub(super) mod tests {
         .unwrap();
 
         let mut witness = Witness::joined_through(WITNESS_SEED, None, &lonely.endpoint).await;
-        let asked = witness
+        witness
             .payload_where(PAYLOAD_WAIT, presence_request_by(FIRST_SEED))
-            .await;
-
-        assert!(asked.is_some());
+            .await
+            .expect("a presence request by the first member on the witness's topic");
         drop(scratch);
     }
 
@@ -4211,18 +4211,18 @@ pub(super) mod tests {
             &[(WITNESS_SEED, witness.address())],
         )
         .await;
-        let asked = witness
+        witness
             .payload_where(PAYLOAD_WAIT, presence_request_by(SECOND_SEED))
-            .await;
-        let announced = witness
+            .await
+            .expect("a presence request by the second member on the witness's topic");
+        witness
             .payload_where(PAYLOAD_WAIT, presence_from(SECOND_SEED))
-            .await;
+            .await
+            .expect("a Presence from the second member on the witness's topic");
         let first_introduce = witness
             .first_introduce_from(SECOND_SEED, PAYLOAD_WAIT)
             .await;
 
-        assert!(asked.is_some());
-        assert!(announced.is_some());
         assert_eq!(
             first_introduce.and_then(|introduce| introduce.handle),
             Some(SECOND_HANDLE.to_owned())
@@ -4679,7 +4679,7 @@ pub(super) mod tests {
         );
         let listed = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .expect("the entry of SECOND_SEED listed at first within Duration::ZERO");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(listed.public, Some(at_bound));
         drop(scratch);
     }
@@ -4792,7 +4792,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, HOST_SEED, PAYLOAD_WAIT)
             .await
-            .expect("the network file holding the first host");
+            .unwrap_or_else(WaitMissed::fail_the_test);
 
         witness
             .broadcast_as(
@@ -4808,7 +4808,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, SECOND_HOST_SEED, PAYLOAD_WAIT)
             .await
-            .expect("the network file holding the second host");
+            .unwrap_or_else(WaitMissed::fail_the_test);
 
         let saved = saved_host(&member.config_path, HOST_SEED).unwrap();
         assert_eq!(saved.relay, MOVED_HOST_RELAY);
@@ -4974,14 +4974,11 @@ pub(super) mod tests {
         wait_until_home_relay_disconnected(&member.endpoint).await;
         found_within(
             SPEC_RELAY_LOSS_WAIT + RELAY_LOSS_REMOVAL_SLACK,
+            "lost home relay removed from the relay map",
             async || (!relay_map.contains(&relay_address)).then_some(()),
         )
         .await
-        .unwrap_or_else(|| {
-            panic!(
-                "the relay map still holds the lost home relay {SPEC_RELAY_LOSS_WAIT:?} and {RELAY_LOSS_REMOVAL_SLACK:?} after it was lost"
-            )
-        });
+        .unwrap_or_else(WaitMissed::fail_the_test);
 
         assert!(
             member
@@ -5207,15 +5204,13 @@ pub(super) mod tests {
             )
             .await;
         clock.move_forward(SPEC_RELAY_LOSS_WAIT);
-        let removed = found_within(RELAY_LOSS_REMOVAL_SLACK, async || {
-            (!relay_map.contains(&relay_address)).then_some(())
-        })
-        .await;
-
-        assert!(
-            removed.is_some(),
-            "the relay map still holds the lost home relay {RELAY_LOSS_REMOVAL_SLACK:?} after the clock read the relay loss wait"
-        );
+        found_within(
+            RELAY_LOSS_REMOVAL_SLACK,
+            "lost home relay removed from the relay map after the clock read the relay loss wait",
+            async || (!relay_map.contains(&relay_address)).then_some(()),
+        )
+        .await
+        .unwrap_or_else(WaitMissed::fail_the_test);
         drop(scratch);
     }
 
@@ -5762,29 +5757,31 @@ pub(super) mod tests {
         }
     }
 
-    /// The member's entry for the card of the seed once it meets the condition, waited for without a sleep, or none, named on standard error, when it does not within the wait.
-    #[must_use]
+    /// The member's entry for the card of the seed once it meets the condition, waited for without a sleep, or the condition and the bound when it does not within the wait.
     pub(in crate::node) async fn entry_meeting_within(
         member: &Member,
         seed: u8,
         condition: impl Fn(&Peer) -> bool + Send + Sync,
         within: Duration,
-    ) -> Option<Peer> {
-        let entry = found_within(within, async || {
+    ) -> Result<Peer, WaitMissed> {
+        let awaited = format!("entry for the card of seed {seed} meeting the condition");
+        found_within(within, &awaited, async || {
             member
                 .node
                 .peers()
                 .into_iter()
                 .find(|peer| peer.card == card(seed) && condition(peer))
         })
-        .await;
-        if entry.is_none() {
-            eprintln!(
-                "the member held no entry for the card of seed {seed} meeting the condition within {within:?}; it holds {:?}",
-                member.node.peers()
-            );
-        }
-        entry
+        .await
+    }
+
+    /// The member's entry for the card of the seed as it stands, or none when the member holds none.
+    pub(in crate::node) fn entry_held_now(member: &Member, seed: u8) -> Option<Peer> {
+        member
+            .node
+            .peers()
+            .into_iter()
+            .find(|peer| peer.card == card(seed))
     }
 
     /// The longest a direct request waits for its answer: a connection, then the acknowledgement.
@@ -5834,14 +5831,15 @@ pub(super) mod tests {
         seed: u8,
         kind: DirectContact,
     ) -> usize {
-        found_within(DIRECT_ANSWERS_SETTLED_WITHIN, async || {
+        let awaited = format!("{kind:?} to the card of seed {seed} answered");
+        found_within(DIRECT_ANSWERS_SETTLED_WITHIN, &awaited, async || {
             let (made, answered) = exchanges_with(member, seed, kind);
             (answered.len() == made).then_some(made)
         })
         .await
-        .unwrap_or_else(|| {
+        .unwrap_or_else(|missed| {
             panic!(
-                "a {kind:?} to the card of seed {seed} still awaited its answer after {DIRECT_ANSWERS_SETTLED_WITHIN:?}; made and answered: {:?}",
+                "{missed}; made and answered: {:?}",
                 exchanges_with(member, seed, kind)
             )
         })
@@ -5857,7 +5855,10 @@ pub(super) mod tests {
         outcome: DirectOutcome,
         within: Duration,
     ) {
-        found_within(within, async || {
+        let awaited = format!(
+            "{outcome:?} answer to a {kind:?} to the card of seed {seed} made by {cause:?} after its {settled} settled answers"
+        );
+        found_within(within, &awaited, async || {
             exchanges_with(member, seed, kind)
                 .1
                 .iter()
@@ -5866,9 +5867,9 @@ pub(super) mod tests {
                 .then_some(())
         })
         .await
-        .unwrap_or_else(|| {
+        .unwrap_or_else(|missed| {
             panic!(
-                "the member applied no {outcome:?} answer to a {kind:?} to the card of seed {seed} made by {cause:?} after its {settled} settled answers within {within:?}; it applied {:?}",
+                "{missed}; it applied {:?}",
                 exchanges_with(member, seed, kind).1
             )
         });
@@ -5995,15 +5996,9 @@ pub(super) mod tests {
             first.node.send(WITNESS_HANDLE, MESSAGE_BODY),
         )
         .await;
-        let status_after_the_failure =
-            entry_meeting_within(&first, WITNESS_SEED, |_| true, Duration::ZERO)
-                .await
-                .map(|peer| peer.status);
+        let status_after_the_failure = entry_held_now(&first, WITNESS_SEED).map(|peer| peer.status);
         let resent = first.node.send(WITNESS_HANDLE, MESSAGE_BODY).await;
-        let status_after_the_resend =
-            entry_meeting_within(&first, WITNESS_SEED, |_| true, Duration::ZERO)
-                .await
-                .map(|peer| peer.status);
+        let status_after_the_resend = entry_held_now(&first, WITNESS_SEED).map(|peer| peer.status);
         let queued = queued.lock().unwrap().clone();
 
         assert_eq!(
@@ -6167,7 +6162,9 @@ pub(super) mod tests {
             .send(FIRST_HANDLE, THE_RESTARTED_SECOND_TO_FIRST)
             .await;
 
-        assert!(listed_first_session.is_some());
+        listed_first_session.unwrap_or_else(|missed| {
+            panic!("amy listing the first session of bob online: {missed}")
+        });
         assert!(
             sent_to_the_first_session.is_ok(),
             "{sent_to_the_first_session:?}"
@@ -6176,15 +6173,11 @@ pub(super) mod tests {
             silent_for >= GONE_PROCESS_SILENCE.saturating_add(HEARING_SAMPLE_INTERVAL),
             "the first session was silent only {silent_for:?} when the restarted member announced itself, under the {GONE_PROCESS_SILENCE:?} close bound plus the {HEARING_SAMPLE_INTERVAL:?} sample that judges it"
         );
-        assert!(
-            listed_restarted.is_some(),
-            "amy did not list the restarted bob online within {RESTARTED_LISTED_WAIT:?}"
-        );
+        listed_restarted
+            .unwrap_or_else(|missed| panic!("amy listing the restarted bob online: {missed}"));
         assert!(sent_to_the_restarted.is_ok(), "{sent_to_the_restarted:?}");
-        assert!(
-            listed_by_the_restarted.is_some(),
-            "the restarted bob did not list amy online within {RESTARTED_LISTED_WAIT:?}"
-        );
+        listed_by_the_restarted
+            .unwrap_or_else(|missed| panic!("the restarted bob listing amy online: {missed}"));
         assert!(sent_by_the_restarted.is_ok(), "{sent_by_the_restarted:?}");
         let received_by_the_restarted = inbox_frames(&restarted, 1).await;
         let received_by_first = inbox_frames(&first, 1).await;

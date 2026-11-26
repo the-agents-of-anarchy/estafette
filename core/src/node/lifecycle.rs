@@ -304,16 +304,16 @@ mod tests {
     use crate::node::presence::tests::{
         FIRST_SEED, HOST_RELAY, HOST_SEED, MARKER_SEED, MOVED_HOST_RELAY, Member, MemberPlan,
         PAYLOAD_WAIT, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, WITNESS_HANDLE,
-        WITNESS_SEED, Witness, bind, card, host_saved_within, infrastructure_of,
+        WITNESS_SEED, Witness, bind, card, entry_held_now, host_saved_within, infrastructure_of,
         joined_and_asked_for_presence, keys, listed_within, saved_host, short_peer_id, start_pair,
         start_witnessed, status_within,
     };
     use crate::node::rebind::RelayProbe;
-    use crate::peers::Status;
+    use crate::peers::{Peer, Status};
     use crate::sidecar;
     use crate::test_waits::{
-        PROBE_NONCE, RecordedEvent, found_within, next_recorded_meeting, recorded_events,
-        recorded_until, wall_clock_ms,
+        PROBE_NONCE, RecordedEvent, WaitMissed, found_within, next_recorded_meeting,
+        recorded_events, recorded_until, wall_clock_ms,
     };
     use crate::wire::{Introduce, Payload, Version};
 
@@ -396,7 +396,7 @@ mod tests {
         let (first, second) = start_pair(scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .expect("the first lists the second within the observer wait");
+            .unwrap_or_else(WaitMissed::fail_the_test);
         let (sidecar_path, lock) = scratch.locked_card(SECOND_SEED);
         let session = Arc::new(Session::new(record));
         session
@@ -574,7 +574,10 @@ mod tests {
         drop(scratch);
     }
 
-    async fn second_gone_at_first_within(first: &Member, within: Duration) -> bool {
+    async fn second_gone_at_first_within(
+        first: &Member,
+        within: Duration,
+    ) -> Result<Peer, WaitMissed> {
         status_within(
             first,
             SECOND_SEED,
@@ -582,7 +585,6 @@ mod tests {
             within,
         )
         .await
-        .is_some()
     }
 
     #[tokio::test]
@@ -728,7 +730,7 @@ mod tests {
         drop(second.session);
         drop(second.endpoint);
 
-        assert!(gone);
+        gone.unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(exit, Exit::Stopped(RuntimeShutdown::Awaited));
         assert_eq!(
             second
@@ -771,7 +773,9 @@ mod tests {
             .unwrap();
         drop(standard_input);
 
-        assert!(second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN).await);
+        second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN)
+            .await
+            .unwrap_or_else(WaitMissed::fail_the_test);
         drop(scratch);
     }
 
@@ -784,7 +788,7 @@ mod tests {
         stopping.signals.send(ShutdownSignal::Terminate).unwrap();
         let gone = second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN).await;
 
-        assert!(gone);
+        gone.unwrap_or_else(WaitMissed::fail_the_test);
         stopping.exit.await.unwrap();
         drop(scratch);
     }
@@ -1034,9 +1038,7 @@ mod tests {
             host_saved_within(&member.config_path, HOST_SEED, CONFIG_SAVED_WITHIN).await;
 
         assert_eq!(before_stop.and_then(|host| host.ts), None);
-        let saved = after_stop.unwrap_or_else(|| {
-            panic!("the configuration named no host {HOST_SEED} within {CONFIG_SAVED_WITHIN:?} of the stop")
-        });
+        let saved = after_stop.unwrap_or_else(WaitMissed::fail_the_test);
         assert_eq!(saved.ts, Some(moved_record_ts));
         assert!(matches!(saved.origin, HostOrigin::Configured));
         drop(witness);
@@ -1474,16 +1476,15 @@ mod tests {
         stopping.input_ended.send(()).unwrap();
         stopping.exit.await.unwrap();
 
-        found_within(SOCKET_REMOVED_WITHIN, async || {
+        let awaited = format!(
+            "inbox socket file {} removed after the exit",
+            second.inbox_path.display()
+        );
+        found_within(SOCKET_REMOVED_WITHIN, &awaited, async || {
             (!second.inbox_path.exists()).then_some(())
         })
         .await
-        .unwrap_or_else(|| {
-            panic!(
-                "the inbox socket file {} not removed within {SOCKET_REMOVED_WITHIN:?} of the exit",
-                second.inbox_path.display()
-            )
-        });
+        .unwrap_or_else(WaitMissed::fail_the_test);
         drop(scratch);
     }
 
@@ -1494,10 +1495,11 @@ mod tests {
         let second = claimed_second_recording_to(&scratch, record).await;
         let stopping = run(&second.session, WITNESSED_DEPARTURE_WAIT);
         stopping.input_ended.send(()).unwrap();
-        assert!(
-            second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN).await,
-            "the first did not list the stopping second gone within {SPEC_GONE_WITHIN:?}"
-        );
+        second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN)
+            .await
+            .unwrap_or_else(|missed| {
+                panic!("the first did not list the stopping second gone: {missed}")
+            });
 
         let _attaching_client = tokio::net::UnixStream::connect(&second.inbox_path)
             .await
@@ -1516,7 +1518,8 @@ mod tests {
             "the departure wait left less than {NOTHING_MORE_WITHIN:?} for a presence after the attach"
         );
         assert!(
-            second_gone_at_first_within(&second.first, Duration::ZERO).await,
+            entry_held_now(&second.first, SECOND_SEED)
+                .is_some_and(|peer| matches!(peer.status, Status::Gone { .. })),
             "the first lists the departed second as other than gone after the departure wait"
         );
         drop(scratch);

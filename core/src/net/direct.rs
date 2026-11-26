@@ -1278,7 +1278,7 @@ pub(crate) mod tests {
     use crate::each_arm::assert_each_arm;
     use crate::net::endpoint::NodeEndpoint;
     use crate::seeded_draws::Draws;
-    use crate::test_waits::{answered_within, found_within};
+    use crate::test_waits::{WaitMissed, answered_within, found_within};
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [7; KEY_LEN];
     const SERVER_SEED: u8 = 1;
@@ -1894,15 +1894,13 @@ pub(crate) mod tests {
         /// Waits until the register reads the clock again, which, while no connection opens or closes, is a hearing sample of a held connection, failing by name when none comes within the wait.
         async fn hearing_sampled(&self) {
             let readings_before = self.readings.load(Ordering::SeqCst);
-            let sampled = found_within(HEARING_SAMPLED_WAIT, async || {
-                (self.readings.load(Ordering::SeqCst) > readings_before).then_some(())
-            })
+            found_within(
+                HEARING_SAMPLED_WAIT,
+                "hearing sampled by the register",
+                async || (self.readings.load(Ordering::SeqCst) > readings_before).then_some(()),
+            )
             .await
-            .is_some();
-            assert!(
-                sampled,
-                "the register sampled no hearing within {HEARING_SAMPLED_WAIT:?}"
-            );
+            .unwrap_or_else(WaitMissed::fail_the_test);
         }
     }
 
@@ -1919,16 +1917,16 @@ pub(crate) mod tests {
             .unwrap();
         let register = rig.link.server_node.held_connections();
         let past_the_silence = tokio::time::Instant::now() + SILENCE_OF_A_GONE_PROCESS_JUDGED;
-        let heard_past_the_silence = found_within(SETTLED_WAIT, async || {
-            every_held_of_heard_since(&register, card_of(CLIENT_SEED), past_the_silence)
-                .then_some(())
-        })
+        found_within(
+            SETTLED_WAIT,
+            "earlier connection heard past the silence of a gone process after its exchange",
+            async || {
+                every_held_of_heard_since(&register, card_of(CLIENT_SEED), past_the_silence)
+                    .then_some(())
+            },
+        )
         .await
-        .is_some();
-        assert!(
-            heard_past_the_silence,
-            "the earlier connection was not heard {SILENCE_OF_A_GONE_PROCESS_JUDGED:?} after its exchange, within {SETTLED_WAIT:?}"
-        );
+        .unwrap_or_else(WaitMissed::fail_the_test);
 
         rig.link
             .client
@@ -3094,16 +3092,15 @@ pub(crate) mod tests {
         peer: wire::PublicKey,
         step: u32,
     ) {
-        found_within(HEARING_STEP_WAIT, async || {
+        let awaited = format!(
+            "datagram from the peer past the count the register last heard before hearing sample {step}"
+        );
+        found_within(HEARING_STEP_WAIT, &awaited, async || {
             datagrams_received_and_heard(register, peer)
                 .filter(|(received, heard)| received > heard)
         })
         .await
-        .unwrap_or_else(|| {
-            panic!(
-                "no datagram from the peer past the count the register last heard before hearing sample {step} within {HEARING_STEP_WAIT:?}"
-            )
-        });
+        .unwrap_or_else(WaitMissed::fail_the_test);
     }
 
     /// Waits until the register last heard from the peer at the clock's reading, failing by the hearing sample's number when no hearing is noted there within the step's wait.
@@ -3113,15 +3110,12 @@ pub(crate) mod tests {
         reading: tokio::time::Instant,
         step: u32,
     ) {
-        found_within(HEARING_STEP_WAIT, async || {
+        let awaited = format!("hearing noted at the clock's reading by hearing sample {step}");
+        found_within(HEARING_STEP_WAIT, &awaited, async || {
             (last_heard_on_the_one_of(register, peer) == Some(reading)).then_some(())
         })
         .await
-        .unwrap_or_else(|| {
-            panic!(
-                "no hearing noted at the clock's reading by hearing sample {step} within {HEARING_STEP_WAIT:?}"
-            )
-        });
+        .unwrap_or_else(WaitMissed::fail_the_test);
     }
 
     #[tokio::test]
@@ -3543,25 +3537,27 @@ pub(crate) mod tests {
     /// The live card once the connection this node dialed is on the path iroh selected and the one it accepted is not, set up afresh while iroh selects one path at both ends, failing by name when the wait for a divergent selection runs out first.
     async fn live_card_whose_accepted_connection_is_off_the_selected_path() -> LiveCard {
         let mut setups = 0_u32;
-        found_within(DIVERGENT_SELECTION_WAIT, async || {
-            setups = setups.saturating_add(1);
-            let live_card = live_card_dialed_on_loopback_and_accepted_from_the_network().await;
-            (held_on_a_selected_path(
-                &live_card.register,
-                card_of(CLIENT_SEED),
-                &live_card.dialed.0,
-            ) && !held_on_a_selected_path(
-                &live_card.register,
-                card_of(CLIENT_SEED),
-                &live_card.accepted.0,
-            ))
-            .then_some(live_card)
-        })
+        found_within(
+            DIVERGENT_SELECTION_WAIT,
+            "divergent selection of paths at the two ends",
+            async || {
+                setups = setups.saturating_add(1);
+                let live_card = live_card_dialed_on_loopback_and_accepted_from_the_network().await;
+                (held_on_a_selected_path(
+                    &live_card.register,
+                    card_of(CLIENT_SEED),
+                    &live_card.dialed.0,
+                ) && !held_on_a_selected_path(
+                    &live_card.register,
+                    card_of(CLIENT_SEED),
+                    &live_card.accepted.0,
+                ))
+                .then_some(live_card)
+            },
+        )
         .await
-        .unwrap_or_else(|| {
-            panic!(
-                "iroh selected one path at both ends in each of {setups} setups within {DIVERGENT_SELECTION_WAIT:?}"
-            )
+        .unwrap_or_else(|missed| {
+            panic!("{missed}: iroh selected one path at both ends in each of {setups} setups")
         })
     }
 
@@ -4711,36 +4707,33 @@ pub(crate) mod tests {
         let peer = server_node.endpoint().id();
         let probing = tokio::spawn(async move { client.probe(peer, PROBE_NONCE).await });
 
-        let dialed = found_within(DIAL_ARRIVED_WITHIN, async || {
-            (*seen.borrow() >= ProbeServed::Dialed).then_some(())
-        })
-        .await;
-        assert!(
-            dialed.is_some(),
-            "the probe's dial reached no server within {DIAL_ARRIVED_WITHIN:?}"
-        );
+        found_within(
+            DIAL_ARRIVED_WITHIN,
+            "dial of the probe reaching a server",
+            async || (*seen.borrow() >= ProbeServed::Dialed).then_some(()),
+        )
+        .await
+        .unwrap_or_else(WaitMissed::fail_the_test);
         clock.move_forward(HANDSHAKE_HELD_FOR);
-        let read = found_within(ACTED_ON_THE_READING_WITHIN, async || {
-            (*seen.borrow() >= ProbeServed::ProbeRead).then_some(())
-        })
-        .await;
-        assert!(
-            read.is_some(),
-            "the server read no probe within {ACTED_ON_THE_READING_WITHIN:?} of the clock reading the handshake's hold past the call"
-        );
+        found_within(
+            ACTED_ON_THE_READING_WITHIN,
+            "probe read by the server, counted from the clock reading the handshake's hold past the call",
+            async || (*seen.borrow() >= ProbeServed::ProbeRead).then_some(()),
+        )
+        .await
+        .unwrap_or_else(WaitMissed::fail_the_test);
         assert!(
             !probing.is_finished(),
             "the probe ended before the clock read the probe timeout past the call"
         );
         clock.move_forward(PROBE_TIMEOUT_LEFT_AFTER_THE_HANDSHAKE);
-        let ended = found_within(ACTED_ON_THE_READING_WITHIN, async || {
-            probing.is_finished().then_some(())
-        })
-        .await;
-        assert!(
-            ended.is_some(),
-            "the probe did not end within {ACTED_ON_THE_READING_WITHIN:?} of the clock reading the probe timeout past the call"
-        );
+        found_within(
+            ACTED_ON_THE_READING_WITHIN,
+            "probe ended, counted from the clock reading the probe timeout past the call",
+            async || probing.is_finished().then_some(()),
+        )
+        .await
+        .unwrap_or_else(WaitMissed::fail_the_test);
         let outcome = probing.await.unwrap();
         let _answering_gone = call_returned.send(());
 
@@ -4944,15 +4937,13 @@ pub(crate) mod tests {
                 outcome
             },
             async {
-                let first_stream_taken = found_within(FIRST_REQUEST_PROBE_TIMEOUT, async || {
-                    (server.streams_taken() >= 1).then_some(())
-                })
+                found_within(
+                    FIRST_REQUEST_PROBE_TIMEOUT,
+                    "stream of the first request taken by the server",
+                    async || (server.streams_taken() >= 1).then_some(()),
+                )
                 .await
-                .is_some();
-                assert!(
-                    first_stream_taken,
-                    "the server took no stream of the first request within {FIRST_REQUEST_PROBE_TIMEOUT:?}"
-                );
+                .unwrap_or_else(WaitMissed::fail_the_test);
                 let reset = link
                     .client
                     .send_message(peer, message_to(card_of(SERVER_SEED), BODY))
@@ -4997,16 +4988,12 @@ pub(crate) mod tests {
             let client = Arc::clone(&client);
             holding_every_stream.spawn(async move { client.probe(peer, PROBE_NONCE).await });
         }
-        let every_stream_taken = found_within(STALLED_PROBE_TIMEOUT, async || {
+        let awaited = format!("{CONCURRENT_STREAM_LIMIT} streams taken by the server");
+        found_within(STALLED_PROBE_TIMEOUT, &awaited, async || {
             (server.streams_taken() >= CONCURRENT_STREAM_LIMIT).then_some(())
         })
         .await
-        .is_some();
-        assert!(
-            every_stream_taken,
-            "the server took fewer than {CONCURRENT_STREAM_LIMIT} streams within {STALLED_PROBE_TIMEOUT:?}: {}",
-            server.streams_taken()
-        );
+        .unwrap_or_else(|missed| panic!("{missed}: {}", server.streams_taken()));
 
         let stalled = tokio::time::timeout(
             STALLED_PROBE_TIMEOUT + STALLED_PROBE_SLACK,

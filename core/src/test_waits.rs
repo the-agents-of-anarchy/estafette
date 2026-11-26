@@ -178,9 +178,35 @@ pub async fn answered_within<Answer>(
         .unwrap_or_else(|_elapsed| panic!("no {awaited} within {within:?}"))
 }
 
-/// What the look finds, looked for again each time the runtime has run its other tasks, or none when the bound runs out first.
-#[must_use]
-pub async fn found_within<Found>(
+/// What a wait that ran out of time was waiting for and for how long.
+#[derive(Debug, PartialEq, Eq)]
+pub struct WaitMissed {
+    awaited: String,
+    within: Duration,
+}
+
+impl std::fmt::Display for WaitMissed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "no {} within {:?}", self.awaited, self.within)
+    }
+}
+
+impl WaitMissed {
+    /// The miss of a wait for what was awaited that ran out of its bound.
+    pub fn new(awaited: &str, within: Duration) -> Self {
+        Self {
+            awaited: awaited.to_owned(),
+            within,
+        }
+    }
+
+    /// Fails the test with the name of what was awaited and the bound.
+    pub fn fail_the_test<Found>(self) -> Found {
+        panic!("{self}")
+    }
+}
+
+async fn looked_for_within<Found>(
     within: Duration,
     mut look: impl AsyncFnMut() -> Option<Found>,
 ) -> Option<Found> {
@@ -194,6 +220,26 @@ pub async fn found_within<Found>(
     })
     .await
     .ok()
+}
+
+/// What the look finds, looked for again each time the runtime has run its other tasks, or the awaited condition and the bound when the bound runs out first.
+pub async fn found_within<Found>(
+    within: Duration,
+    awaited: &str,
+    look: impl AsyncFnMut() -> Option<Found>,
+) -> Result<Found, WaitMissed> {
+    looked_for_within(within, look)
+        .await
+        .ok_or_else(|| WaitMissed::new(awaited, within))
+}
+
+/// What the look finds within the bound, for a test that asks for nothing to be found and fails on `Some`.
+#[must_use]
+pub async fn unexpectedly_found_within<Found>(
+    within: Duration,
+    look: impl AsyncFnMut() -> Option<Found>,
+) -> Option<Found> {
+    looked_for_within(within, look).await
 }
 
 #[cfg(test)]
@@ -303,5 +349,49 @@ mod tests {
             &["gossip.neighbor_down", "gossip.neighbor_up"],
         )
         .await;
+    }
+
+    #[tokio::test]
+    async fn a_condition_that_never_holds_fails_naming_it_and_its_bound() {
+        const AWAITED: &str = "card listed";
+        const BOUND: Duration = Duration::from_millis(50);
+
+        let missed = found_within(BOUND, AWAITED, async || None::<()>)
+            .await
+            .unwrap_err();
+
+        assert_eq!(missed.to_string(), "no card listed within 50ms");
+    }
+
+    #[tokio::test]
+    async fn a_condition_that_holds_after_other_tasks_ran_returns_what_was_found() {
+        let mut looks_made = 0_u8;
+
+        let found = found_within(RECORDED_EVENT_WITHIN, "third look", async || {
+            looks_made += 1;
+            (looks_made == 3).then_some(looks_made)
+        })
+        .await;
+
+        assert_eq!(found, Ok(3));
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "no card listed within 50ms")]
+    async fn a_missed_wait_fails_the_test_with_its_text() {
+        found_within(
+            Duration::from_millis(50),
+            "card listed",
+            async || None::<()>,
+        )
+        .await
+        .unwrap_or_else(WaitMissed::fail_the_test);
+    }
+
+    #[tokio::test]
+    async fn nothing_is_found_unexpectedly_when_the_condition_never_holds() {
+        let found = unexpectedly_found_within(Duration::from_millis(50), async || None::<()>).await;
+
+        assert_eq!(found, None);
     }
 }
