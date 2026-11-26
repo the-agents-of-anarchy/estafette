@@ -446,6 +446,29 @@ mod tests {
     }
 
     #[test]
+    fn spec_3_4_host_certificate_text_is_lowercase_hexadecimal_read_back_with_or_without_a_final_newline()
+     {
+        for case in 0..SIGNING_CASES {
+            let mut draws = Draws::seeded(case);
+            let owner = drawn_secret_key(&mut draws);
+            let host = drawn_secret_key(&mut draws).public();
+            let certificate = sign_host_certificate(&owner, &host);
+
+            let text = render_host_certificate(&certificate);
+
+            assert_eq!(text.len(), HOST_CERTIFICATE_HEX_CHARS);
+            assert_eq!(text, text.to_lowercase());
+            assert_eq!(parse_host_certificate(&text), Some(certificate));
+            assert_eq!(
+                parse_host_certificate(&format!("{text}\n")),
+                Some(certificate)
+            );
+            assert_eq!(parse_host_certificate(&text.to_uppercase()), None);
+            assert_eq!(parse_host_certificate(&format!("{text}0")), None);
+        }
+    }
+
+    #[test]
     fn spec_3_4_network_keys_debug_output_prints_no_key_bytes() {
         let keys = NetworkKeys::derive(&SECRET);
 

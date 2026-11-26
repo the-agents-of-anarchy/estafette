@@ -308,6 +308,8 @@ mod tests {
     use crate::seeded_draws::Draws;
     use data_encoding::HEXLOWER;
 
+    const SPEC_LOCK_RETRY_WINDOW: Duration = Duration::from_millis(200);
+
     struct NoPause;
 
     impl Pause for NoPause {
@@ -434,7 +436,7 @@ mod tests {
         let second = claim(&sidecar, &public_key, &recording_pause);
 
         assert!(matches!(second, Err(SidecarError::CardHeld)));
-        assert_eq!(recording_pause.paused.get(), LOCK_RETRY_WINDOW);
+        assert_eq!(recording_pause.paused.get(), SPEC_LOCK_RETRY_WINDOW);
     }
 
     #[test]
