@@ -1,7 +1,6 @@
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, PipeReader, Read};
-use std::ops::{Deref, DerefMut};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -90,6 +89,16 @@ impl FailedEnd {
 }
 
 impl OwnedProcess {
+    /// The child process owned.
+    pub const fn child(&self) -> &Child {
+        &self.child
+    }
+
+    /// The child process owned, for the calls that change it.
+    pub const fn child_mut(&mut self) -> &mut Child {
+        &mut self.child
+    }
+
     /// Spawns the command, owning the process in the value it returns, a failed end of it to be held and marked by the end marks under the label.
     #[track_caller]
     pub fn spawned(command: &mut Command, end_marks: &EndMarks, label: &str) -> Self {
@@ -117,20 +126,6 @@ impl OwnedProcess {
             };
             self.end_marks.mark(failed, &failure);
         }
-    }
-}
-
-impl Deref for OwnedProcess {
-    type Target = Child;
-
-    fn deref(&self) -> &Child {
-        &self.child
-    }
-}
-
-impl DerefMut for OwnedProcess {
-    fn deref_mut(&mut self) -> &mut Child {
-        &mut self.child
     }
 }
 

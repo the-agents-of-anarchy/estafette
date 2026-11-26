@@ -51,7 +51,7 @@ impl Member {
     /// Takes the spawned MCP server over, completes the MCP handshake, and answers for its events through the reader handed in.
     #[track_caller]
     pub fn start(process: OwnedProcess, events: MemberEvents) -> Self {
-        let process_id = process.id();
+        let process_id = process.child().id();
         Self {
             server: McpServer::handshaken(process, events),
             process_id,

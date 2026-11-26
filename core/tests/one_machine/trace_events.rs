@@ -86,8 +86,8 @@ fn observability_decision_16_each_member_starts_with_the_default_and_writes_its_
     let machine = network.machine();
     for _member in 0..MEMBERS_STARTED {
         let mut server = machine.spawn_mcp_server();
-        drop(server.stdin.take());
-        assert!(server.wait().unwrap().success());
+        drop(server.child_mut().stdin.take());
+        assert!(server.child_mut().wait().unwrap().success());
     }
 
     let events_of_member = |number: u32| {
@@ -343,10 +343,10 @@ fn forced_failure_after_two_members_for_the_timeline_print() {
     let network = LocalNetwork::create("f1", &KeptFilesPolicy::from_environment());
     let machine = network.machine();
     let mut first = machine.spawn_mcp_server();
-    drop(first.stdin.take());
-    assert!(first.wait().unwrap().success());
+    drop(first.child_mut().stdin.take());
+    assert!(first.child_mut().wait().unwrap().success());
     let mut second = machine.spawn_mcp_server();
-    second.kill().unwrap();
-    second.wait().unwrap();
+    second.child_mut().kill().unwrap();
+    second.child_mut().wait().unwrap();
     panic!("{FORCED_FAILURE_MESSAGE}");
 }

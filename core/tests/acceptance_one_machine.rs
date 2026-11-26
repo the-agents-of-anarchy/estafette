@@ -2325,7 +2325,14 @@ mod kept_run_records {
 
     /// Starts the binary's MCP server on the machine and requires it to exit refused.
     fn start_refused(machine: &ScratchMachine) {
-        assert!(!machine.spawn_mcp_server().wait().unwrap().success());
+        assert!(
+            !machine
+                .spawn_mcp_server()
+                .child_mut()
+                .wait()
+                .unwrap()
+                .success()
+        );
     }
 
     /// Appends text the test plants to every run record of the machine, as a refusal quoting the configuration would print it.

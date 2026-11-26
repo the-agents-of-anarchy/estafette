@@ -491,7 +491,7 @@ impl ScratchMachine {
         let mut process = self.spawn_owned(command.stdout(Stdio::piped()), label);
         let (forward, lines) = mpsc::channel();
         let (announce_first_line, first_line) = mpsc::sync_channel(1);
-        let output = BufReader::new(process.stdout.take().unwrap());
+        let output = BufReader::new(process.child_mut().stdout.take().unwrap());
         std::thread::spawn(move || {
             let mut announce_first_line = Some(announce_first_line);
             for line in output.lines().map_while(Result::ok) {
@@ -1237,8 +1237,8 @@ mod tests {
         );
 
         let mut member = machine.spawn_mcp_server();
-        drop(member.stdin.take());
-        reaped_within(&mut member, MEMBER_ENDED_WITHIN)
+        drop(member.child_mut().stdin.take());
+        reaped_within(member.child_mut(), MEMBER_ENDED_WITHIN)
             .unwrap()
             .unwrap_or_else(|| {
                 panic!(
@@ -1615,7 +1615,7 @@ mod tests {
         drop(machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), ENDED_LABEL));
         let mut failing_its_end =
             machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), FAILED_LABEL);
-        let failing_process_id = failing_its_end.id();
+        let failing_process_id = failing_its_end.child().id();
         failing_its_end.end_through(|_process| Err(io::Error::other(PLANTED_END_FAILURE)));
         drop(failing_its_end);
         let kept_machine = kept_in.join(machine.name());
@@ -1686,7 +1686,7 @@ mod tests {
             machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), FAILED_LABEL);
         let mark_name = format!(
             "{FAILED_LABEL}-{}.{END_FAILED_EXTENSION}",
-            failing_its_end.id()
+            failing_its_end.child().id()
         );
         failing_its_end
             .end_through(|_process| Err(io::Error::other(format!("refused {PLANTED_INVITATION}"))));
@@ -2019,7 +2019,7 @@ mod tests {
         let dropped = dropped_with_a_source_unread("unread-secrets-failed-end", |machine| {
             let mut failing_its_end =
                 machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), FAILED_LABEL);
-            failed_process.replace(failing_its_end.id());
+            failed_process.replace(failing_its_end.child().id());
             failing_its_end.end_through(|_process| Err(io::Error::other(PLANTED_END_FAILURE)));
             drop(failing_its_end);
             let configuration = planted_network_configuration(machine, NETWORK);
@@ -2223,7 +2223,7 @@ mod tests {
             machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), FAILED_LABEL);
         let mark_name = format!(
             "{FAILED_LABEL}-{}.{END_FAILED_EXTENSION}",
-            failing_its_end.id()
+            failing_its_end.child().id()
         );
         failing_its_end.end_through(|_process| Err(io::Error::other(PLANTED_END_FAILURE)));
         drop(failing_its_end);
@@ -2256,7 +2256,7 @@ mod tests {
         let machine = machine_keeping_in("unmarked-failed-end", &kept_in);
         let mut failing_its_end =
             machine.spawn_owned(&mut Command::new(EXITS_IN_SUCCESS), FAILED_LABEL);
-        let process_id = failing_its_end.id();
+        let process_id = failing_its_end.child().id();
         let root = machine.root.clone();
         fs::set_permissions(&root, fs::Permissions::from_mode(UNWRITABLE)).unwrap();
         failing_its_end.end_through(|_process| Err(io::Error::other(PLANTED_END_FAILURE)));

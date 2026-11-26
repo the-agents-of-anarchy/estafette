@@ -75,7 +75,7 @@ impl McpServer {
             next_request_id: 1,
             events,
         };
-        let output = BufReader::new(server.process.stdout.take().unwrap());
+        let output = BufReader::new(server.process.child_mut().stdout.take().unwrap());
         std::thread::spawn(move || {
             for line in output.lines().map_while(Result::ok) {
                 if let Ok(message) = serde_json::from_str(&line)
@@ -175,17 +175,17 @@ impl McpServer {
 
     /// Closes the server's standard input, the end of input that stops its session.
     pub fn close_standard_input(&mut self) {
-        drop(self.process.stdin.take());
+        drop(self.process.child_mut().stdin.take());
     }
 
     /// Kills the process with SIGKILL.
     pub fn kill(&mut self) {
-        drop(self.process.kill());
+        drop(self.process.child_mut().kill());
     }
 
     /// Waits for the process to exit and returns how it exited.
     pub fn wait_for_exit(&mut self) -> ExitStatus {
-        self.process.wait().unwrap()
+        self.process.child_mut().wait().unwrap()
     }
 
     /// Ends the process at once, its standard input closed, killed and waited for, never panicking, so nothing of it runs on once this returns unless a mark beside what its machine keeps says its end failed.
@@ -227,7 +227,7 @@ impl McpServer {
 
     /// Writes one JSON-RPC message as a line on the server's standard input.
     fn write(&mut self, message: &Value) {
-        let input = self.process.stdin.as_mut().unwrap();
+        let input = self.process.child_mut().stdin.as_mut().unwrap();
         writeln!(input, "{message}").unwrap();
         input.flush().unwrap();
     }
