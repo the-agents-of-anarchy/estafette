@@ -16,6 +16,7 @@ mod raw_iroh_lines_spans {
     use std::fs;
     use std::sync::Arc;
 
+    use estafette::event::{EventName, TraceLineName};
     use estafette::trace::iroh_lines::install;
     use estafette::trace::{TraceBounds, TraceEffects, TraceStop};
 
@@ -23,7 +24,6 @@ mod raw_iroh_lines_spans {
     use super::raw_iroh_lines_trace::{frozen_clocks, scratch_trace_directory, started};
     use super::remove_scratch::remove_scratch;
 
-    const SPEC_IROH_LINE: &str = "iroh_line";
     const GOSSIP_TARGET: &str = "iroh_gossip::net";
     const GOSSIP_SPAN_NAME: &str = "gossip";
     const GOSSIP_SPAN_ME: &str = "ab12c";
@@ -79,8 +79,8 @@ mod raw_iroh_lines_spans {
                  {},\"target\":\"{GOSSIP_TARGET}\",\"level\":\"DEBUG\",\"message\":\"{ESTABLISHED_MESSAGE}\",\"fields\":{{\"origin\":\"Accept\"}},\"spans\":[{{\"fields\":{{\"me\":\"{GOSSIP_SPAN_ME}\"}},\"name\":\"{GOSSIP_SPAN_NAME}\"}},{{\"fields\":{{\"peer\":\"{CONNECTION_SPAN_PEER}\",\"stream\":\"{CONNECTION_SPAN_STREAM}\"}},\"name\":\"{CONNECTION_SPAN_NAME}\"}}]}}\n\
                  {},\"target\":\"{GOSSIP_TARGET}\",\"level\":\"DEBUG\",\"message\":\"{OUTSIDE_MESSAGE}\",\"fields\":{{}}}}\n",
                 raw_file_opened_line(),
-                header(1, None, SPEC_IROH_LINE),
-                header(2, None, SPEC_IROH_LINE),
+                header(1, None, TraceLineName::IrohLine.as_str()),
+                header(2, None, TraceLineName::IrohLine.as_str()),
             )
         );
         remove_scratch(&root).unwrap();

@@ -17,6 +17,7 @@ mod raw_iroh_lines_rollover {
     use std::sync::Arc;
 
     use estafette::dirs::rolled_over_trace_file;
+    use estafette::event::{EventName, TraceLineName};
     use estafette::trace::iroh_lines::install;
     use estafette::trace::{TraceBounds, TraceEffects, TraceStop};
 
@@ -24,7 +25,6 @@ mod raw_iroh_lines_rollover {
     use super::raw_iroh_lines_trace::{frozen_clocks, scratch_trace_directory, started};
     use super::remove_scratch::remove_scratch;
 
-    const SPEC_IROH_LINE: &str = "iroh_line";
     const DIRECT_ADDRS_LINE_AFTER_HEADER: &str = ",\"target\":\"iroh::_events::direct_addrs\",\"level\":\"DEBUG\",\"message\":\"a line\",\"fields\":{}}\n";
 
     /// Writes one line of `iroh::_events::direct_addrs` with the message "a line".
@@ -36,7 +36,7 @@ mod raw_iroh_lines_rollover {
     fn direct_addrs_line(n: u64) -> String {
         format!(
             "{}{DIRECT_ADDRS_LINE_AFTER_HEADER}",
-            header(n, None, SPEC_IROH_LINE)
+            header(n, None, TraceLineName::IrohLine.as_str())
         )
     }
 

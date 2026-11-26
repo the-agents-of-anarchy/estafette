@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use estafette::dirs::TraceFileKind;
+use estafette::event::{EventName, TraceLineName};
 use estafette_trace::DROPPED_LINE_NAME;
 use iroh::EndpointId;
 use serde_json::Value;
@@ -17,8 +18,6 @@ const LIVE_HOST_RECORD_WAIT: Duration = Duration::from_secs(60);
 /// The kind of payload a host's infrastructure record is, as an events line names it.
 const INFRASTRUCTURE_PAYLOAD_KIND: &str = "infrastructure";
 
-/// The event of a raw line holding one of iroh's own tracing lines (spec/observability.md decision 7).
-const IROH_LINE_EVENT: &str = "iroh_line";
 /// The keys of a raw line holding its target and its fields as iroh words them.
 const TARGET_KEY: &str = "target";
 const FIELDS_KEY: &str = "fields";
@@ -240,7 +239,7 @@ fn home_relay_named_by<'line>(lines: impl IntoIterator<Item = &'line TraceLine>)
 
 /// The relay and the home flag of a raw line iroh writes when a relay becomes or stops being the home relay; none for any other line.
 fn home_change_of(line: &TraceLine) -> Option<(&str, bool)> {
-    if line.event != IROH_LINE_EVENT
+    if line.event != TraceLineName::IrohLine.as_str()
         || line.value(TARGET_KEY) != Some(&Value::from(HOME_CHANGED_TARGET))
     {
         return None;

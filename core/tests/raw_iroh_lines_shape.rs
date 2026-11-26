@@ -16,6 +16,7 @@ mod raw_iroh_lines_shape {
     use std::fs;
     use std::sync::Arc;
 
+    use estafette::event::{EventName, TraceLineName};
     use estafette::trace::iroh_lines::install;
     use estafette::trace::{TraceBounds, TraceEffects, TraceStop};
     use iroh::SecretKey;
@@ -26,7 +27,6 @@ mod raw_iroh_lines_shape {
 
     const ENDPOINT_SEED: u8 = 3;
     const SPEC_NODE_HEX_CHARS: usize = 10;
-    const SPEC_IROH_LINE: &str = "iroh_line";
 
     /// How iroh's `Side` reads in its lines.
     #[derive(Debug)]
@@ -74,8 +74,8 @@ mod raw_iroh_lines_shape {
                  {},\"target\":\"iroh::_events::conn::connected\",\"level\":\"DEBUG\",\"fields\":{{\"alpn\":\"estafette/direct/1\",\"conn_id\":\"7\",\"remote_id\":\"ab12c\",\"side\":\"Client\"}}}}\n\
                  {},\"target\":\"iroh::socket::remote_map::remote_state\",\"level\":\"TRACE\",\"message\":\"sending datagram to the selected path\",\"fields\":{{\"path_id\":\"3\"}}}}\n",
                 raw_file_opened_line(),
-                header(1, None, SPEC_IROH_LINE),
-                header(2, Some(node), SPEC_IROH_LINE),
+                header(1, None, TraceLineName::IrohLine.as_str()),
+                header(2, Some(node), TraceLineName::IrohLine.as_str()),
             )
         );
         assert_eq!(fs::read_to_string(&trace.files().events).unwrap(), "");

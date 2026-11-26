@@ -14,6 +14,7 @@ mod raw_iroh_lines_install {
     use std::sync::Arc;
 
     use estafette::dirs::{OperatingSystemFilesystem, TraceDirectory};
+    use estafette::event::{EventName, TraceLineName};
     use estafette::trace::iroh_lines::install;
     use estafette::trace::{
         RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceEffects, TraceStop,
@@ -25,7 +26,6 @@ mod raw_iroh_lines_install {
 
     const RUN_BYTES: [u8; RUN_ID_BYTES] = [0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78];
     const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
-    const SPEC_IROH_LINE: &str = "iroh_line";
     const SPEC_REFUSAL_START: &str = "cannot write iroh's own lines into the raw trace file: ";
     const SPEC_REFUSAL_END: &str = "; run with --no-debug to write no trace";
     const MARKER_TARGET: &str = "iroh::_events::direct_addrs";
@@ -83,7 +83,7 @@ mod raw_iroh_lines_install {
         let [_first_line, iroh_line] = lines.as_slice() else {
             panic!("the raw file holds its first line and one iroh line: {raw}");
         };
-        assert_eq!(iroh_line["event"], SPEC_IROH_LINE);
+        assert_eq!(iroh_line["event"], TraceLineName::IrohLine.as_str());
         assert_eq!(iroh_line["target"], MARKER_TARGET);
         assert_eq!(iroh_line["fields"]["addrs"], MARKER_ADDRS);
         remove_scratch(&root).unwrap();
