@@ -8,6 +8,7 @@ use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip};
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use super::DirectContact;
 use super::tests::{
     FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_HANDLE,
     MARKER_PUBLIC, MARKER_SEED, MemberPlan, NOT_AN_ANNOUNCED_HANDLE, OWNER_SEED, REPLAYED_PUBLIC,
@@ -22,9 +23,7 @@ use crate::config::MILLIS_PER_SECOND;
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{EventFields, RunRecord};
 use crate::net::direct::tests::{test_salt, unrecorded_register};
-use crate::net::direct::{
-    ClientTimeouts, DirectClient, HeldConnections, RequestSummary, RuntimeClock,
-};
+use crate::net::direct::{ClientTimeouts, DirectClient, HeldConnections, RuntimeClock};
 use crate::net::endpoint::{DIRECT_ALPN, LocationHash, TransportRecord};
 use crate::net::gossip::{GossipEvent, NetworkTopic};
 use crate::node::addresses::wire_addr;
@@ -953,7 +952,7 @@ async fn observability_decision_9_a_member_records_entries_its_direct_answers_an
     )
     .await;
     let introduced = next_recorded(&mut recorded, ENTRY_CREATED).await;
-    settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
+    settled_direct_answers(&member, WITNESS_SEED, DirectContact::Introduce).await;
     witness
         .broadcast_as(
             MARKER_SEED,
@@ -1022,7 +1021,7 @@ async fn observability_decision_9_a_member_records_an_entry_a_probe_answer_and_a
     )
     .await;
     next_recorded(&mut recorded, ENTRY_CREATED).await;
-    settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
+    settled_direct_answers(&member, WITNESS_SEED, DirectContact::Introduce).await;
     witness
         .broadcast_as(
             MARKER_SEED,

@@ -217,11 +217,10 @@ mod tests {
     use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 
     use crate::net::direct::tests::closed_within_the_documented_latency;
-    use crate::net::direct::{
-        ClientTimeouts, DirectClient, DirectServer, RequestSummary, message_id_text,
-    };
+    use crate::net::direct::{ClientTimeouts, DirectClient, DirectServer, message_id_text};
     use crate::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
     use crate::node::addresses::wire_addr;
+    use crate::node::presence::DirectContact;
     use crate::node::presence::tests::{
         DUPLICATE_KEY_PUBLIC, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTEGER_PAST_64_BITS_PUBLIC,
         INTRODUCE_ROUND_TRIP, Member, MemberPlan, PROBE_NONCE, SECOND_HANDLE, SECOND_PUBLIC,
@@ -397,7 +396,7 @@ mod tests {
             id: introduction.id,
         };
         let introduce_answers_before =
-            settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
+            settled_direct_answers(&member, WITNESS_SEED, DirectContact::Introduce).await;
         assert!(
             introducing
                 .send_message(member.endpoint.id(), introduction)
@@ -414,7 +413,7 @@ mod tests {
         direct_answer_after(
             &member,
             WITNESS_SEED,
-            RequestSummary::Introduce,
+            DirectContact::Introduce,
             introduce_answers_before,
             introduced_by,
             introduce_answered,

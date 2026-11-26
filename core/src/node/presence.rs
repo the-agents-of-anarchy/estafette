@@ -323,15 +323,23 @@ pub struct PeerRows {
 pub enum DirectExchange {
     Made {
         card: wire::PublicKey,
-        kind: crate::net::direct::RequestSummary,
+        kind: DirectContact,
         cause: Option<RequestCause>,
     },
     Answered {
         card: wire::PublicKey,
-        kind: crate::net::direct::RequestSummary,
+        kind: DirectContact,
         outcome: DirectOutcome,
         cause: Option<RequestCause>,
     },
+}
+
+/// The kind of a direct request the presence loop makes: an Introduce or a Probe, never a Message.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectContact {
+    Introduce,
+    Probe,
 }
 
 /// What the presence loop was taking when it made a direct request.
@@ -353,7 +361,7 @@ pub enum RequestCause {
     SendFailed(wire::PublicKey),
     Answer {
         card: wire::PublicKey,
-        kind: crate::net::direct::RequestSummary,
+        kind: DirectContact,
     },
     HandleAssigned,
 }
@@ -474,7 +482,7 @@ impl PeerRows {
                 matches!(
                     exchange,
                     DirectExchange::Made {
-                        kind: crate::net::direct::RequestSummary::Probe,
+                        kind: DirectContact::Probe,
                         cause: Some(RequestCause::NeighborDown { card: down, .. }),
                         ..
                     } if *down == card
@@ -814,12 +822,12 @@ impl DirectRequest {
             Self::DropHeldConnection(_) => None,
             Self::SendIntroduce(card) => Some(DirectExchange::Made {
                 card: *card,
-                kind: crate::net::direct::RequestSummary::Introduce,
+                kind: DirectContact::Introduce,
                 cause,
             }),
             Self::SendProbe(card, _nonce) => Some(DirectExchange::Made {
                 card: *card,
-                kind: crate::net::direct::RequestSummary::Probe,
+                kind: DirectContact::Probe,
                 cause,
             }),
         }
@@ -845,13 +853,13 @@ impl DirectAnswer {
         match self {
             Self::Introduce { card, answer } => DirectExchange::Answered {
                 card: *card,
-                kind: crate::net::direct::RequestSummary::Introduce,
+                kind: DirectContact::Introduce,
                 outcome: DirectOutcome::of(answer),
                 cause,
             },
             Self::Probe { card, answer } => DirectExchange::Answered {
                 card: *card,
-                kind: crate::net::direct::RequestSummary::Probe,
+                kind: DirectContact::Probe,
                 outcome: DirectOutcome::of(answer),
                 cause,
             },
@@ -864,11 +872,11 @@ impl DirectAnswer {
         match self {
             Self::Introduce { card, .. } => RequestCause::Answer {
                 card: *card,
-                kind: crate::net::direct::RequestSummary::Introduce,
+                kind: DirectContact::Introduce,
             },
             Self::Probe { card, .. } => RequestCause::Answer {
                 card: *card,
-                kind: crate::net::direct::RequestSummary::Probe,
+                kind: DirectContact::Probe,
             },
         }
     }
@@ -1927,7 +1935,7 @@ pub(super) mod tests {
         SPEC_STATE_SNAPSHOT_INTERVAL, STATE_COUNTERS, ShiftedClock, StandingClock,
         closed_within_the_documented_latency, recorded_until_introduce_sent_to, was_taken_at,
     };
-    use crate::net::direct::{RequestSummary, RuntimeClock, later_by};
+    use crate::net::direct::{RuntimeClock, later_by};
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
@@ -2565,7 +2573,7 @@ pub(super) mod tests {
         );
 
         let introduce_answers_before =
-            settled_direct_answers(&first, SECOND_SEED, RequestSummary::Introduce).await;
+            settled_direct_answers(&first, SECOND_SEED, DirectContact::Introduce).await;
         let message = message_to(FIRST_SEED, SECOND_HANDLE);
         let introduced_by = RequestCause::Message {
             sender: card(SECOND_SEED),
@@ -2591,7 +2599,7 @@ pub(super) mod tests {
         direct_answer_after(
             &first,
             SECOND_SEED,
-            RequestSummary::Introduce,
+            DirectContact::Introduce,
             introduce_answers_before,
             introduced_by,
             DirectOutcome::Acknowledged,
@@ -3830,7 +3838,7 @@ pub(super) mod tests {
         )
         .await
         .expect("the member listing the witness as online");
-        settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
+        settled_direct_answers(&member, WITNESS_SEED, DirectContact::Introduce).await;
         next_recorded_meeting(
             &mut recorded,
             PAYLOAD_ACCEPTED,
@@ -3922,9 +3930,9 @@ pub(super) mod tests {
         .await
         .expect("the member listing the witness as online");
         neighbors.until_recorded(WITNESS_SEED).await;
-        settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
+        settled_direct_answers(&member, WITNESS_SEED, DirectContact::Introduce).await;
         let probe_answers_before =
-            settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Probe).await;
+            settled_direct_answers(&member, WITNESS_SEED, DirectContact::Probe).await;
         marker_reaches(&member, &witness, MARKER_SEED).await;
         let probes_for_earlier_downs = member
             .node
@@ -3948,7 +3956,7 @@ pub(super) mod tests {
         direct_answer_after(
             &member,
             WITNESS_SEED,
-            RequestSummary::Probe,
+            DirectContact::Probe,
             probe_answers_before,
             RequestCause::NeighborDown {
                 card: card(WITNESS_SEED),
@@ -4077,8 +4085,8 @@ pub(super) mod tests {
         )
         .await
         .expect("the member listing the witness as online");
-        settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Introduce).await;
-        settled_direct_answers(&member, WITNESS_SEED, RequestSummary::Probe).await;
+        settled_direct_answers(&member, WITNESS_SEED, DirectContact::Introduce).await;
+        settled_direct_answers(&member, WITNESS_SEED, DirectContact::Probe).await;
         discard_waiting(&mut failures);
 
         neighbors.until_recorded(WITNESS_SEED).await;
@@ -5775,7 +5783,7 @@ pub(super) mod tests {
     fn exchanges_with(
         member: &Member,
         seed: u8,
-        kind: RequestSummary,
+        kind: DirectContact,
     ) -> (usize, Vec<(DirectOutcome, Option<RequestCause>)>) {
         let exchanges = member.node.state.rows.direct_exchanges();
         let made = exchanges
@@ -5808,7 +5816,7 @@ pub(super) mod tests {
     pub(in crate::node) async fn settled_direct_answers(
         member: &Member,
         seed: u8,
-        kind: RequestSummary,
+        kind: DirectContact,
     ) -> usize {
         found_within(DIRECT_ANSWERS_SETTLED_WITHIN, async || {
             let (made, answered) = exchanges_with(member, seed, kind);
@@ -5827,7 +5835,7 @@ pub(super) mod tests {
     pub(in crate::node) async fn direct_answer_after(
         member: &Member,
         seed: u8,
-        kind: RequestSummary,
+        kind: DirectContact,
         settled: usize,
         cause: RequestCause,
         outcome: DirectOutcome,
