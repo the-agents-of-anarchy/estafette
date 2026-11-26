@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
+use crate::events_lines::HANDLE_FIELD;
 use crate::member_events::MemberEvents;
 use crate::scratch_machine::owned_process::OwnedProcess;
 use crate::trace_reader::TraceLine;
@@ -41,8 +42,6 @@ pub const PEERS_KEY: &str = "peers";
 pub const HANDLE_KEY: &str = "handle";
 /// The key of a peers entry holding the peer's status (spec 3.10).
 const STATUS_KEY: &str = "status";
-/// The field of an events line naming a peer by the handle this member holds for it (spec/observability.md decision 6).
-const HANDLE_FIELD: &str = "handle";
 /// How long a member may take to list a peer as a test wants it, through gossip or the direct protocol.
 pub const PRESENCE_WAIT: Duration = Duration::from_secs(20);
 /// The status the peers tool and `show-peers` give a peer whose Presence arrived (spec 3.1).

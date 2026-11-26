@@ -119,9 +119,9 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use serde_json::{Value, json};
 
     use crate::events_lines::{
-        ACKNOWLEDGED_OUTCOME, INTRODUCE_KIND, KIND_FIELD, MESSAGE_KIND, OUTCOME_FIELD,
-        PAYLOAD_ACCEPTED_EVENT, PEER_FIELD, PRESENCE_KIND, REQUEST_SENT_EVENT, SEQ_FIELD,
-        short_id_of_node,
+        ACKNOWLEDGED_OUTCOME, HANDLE_FIELD, INTRODUCE_KIND, KIND_FIELD, MESSAGE_KIND,
+        OUTCOME_FIELD, PAYLOAD_ACCEPTED_EVENT, PEER_FIELD, PRESENCE_KIND, REQUEST_SENT_EVENT,
+        SEQ_FIELD, short_id_of_node,
     };
     use crate::local_network::{
         AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, CAROL_HANDLE, LocalNetwork, MetPair,
@@ -345,7 +345,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                 let accepted = lines.iter().position(|line| {
                     line.event == PAYLOAD_ACCEPTED_EVENT
                         && line.value(KIND_FIELD) == Some(&json!(PRESENCE_KIND))
-                        && line.value("handle") == Some(&json!(BOB_HANDLE))
+                        && line.value(HANDLE_FIELD) == Some(&json!(BOB_HANDLE))
                         && line.value(SEQ_FIELD).and_then(Value::as_u64) >= Some(sent_ms)
                 })?;
                 lines
@@ -353,7 +353,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                     .skip(accepted)
                     .any(|line| {
                         line.event == LOOKUP_REPLACED_EVENT
-                            && line.value("handle") == Some(&json!(BOB_HANDLE))
+                            && line.value(HANDLE_FIELD) == Some(&json!(BOB_HANDLE))
                     })
                     .then_some(())
             },
@@ -480,7 +480,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             |lines| {
                 let departed = lines.iter().position(|line| {
                     line.event == ENTRY_CHANGED_EVENT
-                        && line.value("handle") == Some(&json!(handle))
+                        && line.value(HANDLE_FIELD) == Some(&json!(handle))
                         && line.value("to") == Some(&json!(GONE_STATUS))
                         && line.value("cause") == Some(&json!(DEPARTURE_CAUSE))
                 })?;
@@ -494,7 +494,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                     .then(|| {
                         since
                             .iter()
-                            .filter(|line| line.value("handle") == Some(&json!(handle)))
+                            .filter(|line| line.value(HANDLE_FIELD) == Some(&json!(handle)))
                             .filter_map(|line| match line.event.as_str() {
                                 ENTRY_CHANGED_EVENT => line.value("to").cloned(),
                                 ENTRY_CREATED_EVENT => line.value("status").cloned(),
@@ -917,7 +917,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             crate::BUILT_RUN,
             n,
             NEIGHBOR_DOWN_EVENT,
-            &json!({ "peer": peer }),
+            &json!({ PEER_FIELD: peer }),
         )
     }
 
@@ -927,7 +927,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             crate::BUILT_RUN,
             n,
             REQUEST_SENT_EVENT,
-            &json!({ "peer": peer, "kind": PROBE_KIND, "outcome": FAILED_OUTCOME }),
+            &json!({ PEER_FIELD: peer, KIND_FIELD: PROBE_KIND, OUTCOME_FIELD: FAILED_OUTCOME }),
         )
     }
 
@@ -937,7 +937,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             crate::BUILT_RUN,
             n,
             ENTRY_CHANGED_EVENT,
-            &json!({ "peer": peer, "to": UNREACHABLE_STATUS, "cause": PROBE_FAILED_CAUSE }),
+            &json!({ PEER_FIELD: peer, "to": UNREACHABLE_STATUS, "cause": PROBE_FAILED_CAUSE }),
         )
     }
 

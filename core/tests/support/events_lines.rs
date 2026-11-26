@@ -14,6 +14,8 @@ pub const REQUEST_SENT_EVENT: &str = "direct.request_sent";
 pub const KIND_FIELD: &str = "kind";
 /// The field of an events line naming a payload's signer or a request's peer (spec/observability.md decision 6).
 pub const PEER_FIELD: &str = "peer";
+/// The field of an events line naming a peer by the handle the member holds for it (spec/observability.md decision 6).
+pub const HANDLE_FIELD: &str = "handle";
 /// The field of an events line naming a payload's seq (spec/observability.md decision 6).
 pub const SEQ_FIELD: &str = "seq";
 /// The field of an events line naming a Message's id (spec/observability.md decision 6).
