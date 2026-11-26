@@ -107,6 +107,7 @@ fn built_trace_line(
 
 #[cfg(test)]
 mod spec_3_15_restart_and_departure_on_one_machine {
+    use crate::trace_reader::WallMs;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::time::{Duration, Instant};
 
@@ -537,7 +538,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         amy_card: &Card,
         bob_card: &Card,
         first_send: &Value,
-        killed_ms: u64,
+        killed_ms: WallMs,
     ) {
         let second_host = network.stand_in_host();
         timed("a second host links amy", || {
@@ -579,7 +580,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         });
 
         bob.server_mut().kill();
-        let killed_ms = wall_clock_ms();
+        let killed_ms = WallMs(wall_clock_ms());
         restarted_bob_is_delivered_to_within_1_s_of_its_new_presence(
             &network,
             &mut amy,
@@ -623,7 +624,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         timed("the first bob is killed with its connections open", || {
             first_session.vanish();
         });
-        let killed_ms = wall_clock_ms();
+        let killed_ms = WallMs(wall_clock_ms());
         restarted_bob_is_delivered_to_within_1_s_of_its_new_presence(
             &network,
             &mut amy,
@@ -668,7 +669,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             first_session.vanish();
         });
         let killed = Instant::now();
-        let killed_ms = wall_clock_ms();
+        let killed_ms = WallMs(wall_clock_ms());
         let restarted = network.scripted_member(&bob_key, BOB_HANDLE);
         timed("the restarted bob connects to amy over gossip", || {
             restarted.admit(loopback_address(amy_card.id, &amy.bound_udp_ports()));
@@ -1194,6 +1195,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
 #[cfg(test)]
 mod spec_3_15_test_1_on_one_machine {
+    use crate::trace_reader::WallMs;
     use std::time::Duration;
 
     use serde_json::json;
@@ -1232,7 +1234,7 @@ mod spec_3_15_test_1_on_one_machine {
             json!({ "id": id, "delivered": true, "attached": true })
         );
         let frame = inbox.next_frame(FRAME_WAIT);
-        bob.wait_for_time_to_pass(wall_clock_ms(), NO_FURTHER_FRAME_WINDOW);
+        bob.wait_for_time_to_pass(WallMs(wall_clock_ms()), NO_FURTHER_FRAME_WINDOW);
         assert_eq!(frame["seq"], json!(1));
         assert_eq!(frame["id"], json!(id));
         assert_eq!(frame["from"], json!(AMY_HANDLE));
@@ -2005,6 +2007,7 @@ mod spec_3_15_with_one_member {
 
 #[cfg(test)]
 mod spec_3_16_absences_on_one_machine {
+    use crate::trace_reader::WallMs;
     use std::fs;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -2175,7 +2178,7 @@ mod spec_3_16_absences_on_one_machine {
             .peer_within(BOB_HANDLE, PRESENCE_WAIT, |bob| {
                 online(bob) && bob["last_seen"].as_u64().unwrap() > stopped_ms
             });
-        restarted.wait_for_time_to_pass(wall_clock_ms(), REDELIVERY_WATCH);
+        restarted.wait_for_time_to_pass(WallMs(wall_clock_ms()), REDELIVERY_WATCH);
 
         assert_eq!(refused["error"]["code"], json!("unreachable"), "{refused}");
         assert_eq!(restarted.inbox_bodies(), Vec::<Value>::new());
@@ -2192,10 +2195,10 @@ mod spec_3_16_absences_on_one_machine {
         host.wait_for_events("presence from amy", PRESENCE_WAIT, |events| {
             presences_of(events, *card.id.as_bytes()) > 0
         });
-        amy.wait_for_time_to_pass(wall_clock_ms(), ADDRESS_SETTLE);
+        amy.wait_for_time_to_pass(WallMs(wall_clock_ms()), ADDRESS_SETTLE);
 
         let settled = presences_received_from(&host, *card.id.as_bytes());
-        amy.wait_for_time_to_pass(wall_clock_ms(), PRESENCE_QUIET_WINDOW);
+        amy.wait_for_time_to_pass(WallMs(wall_clock_ms()), PRESENCE_QUIET_WINDOW);
         let after_window = presences_received_from(&host, *card.id.as_bytes());
 
         assert_eq!(after_window, settled);
@@ -2231,7 +2234,7 @@ mod spec_3_16_absences_on_one_machine {
         let sent_at = Instant::now();
         let sent = send(&mut amy, CAROL_HANDLE);
         let answered_after = sent_at.elapsed();
-        amy.wait_for_time_to_pass(wall_clock_ms(), RETRY_WATCH);
+        amy.wait_for_time_to_pass(WallMs(wall_clock_ms()), RETRY_WATCH);
 
         assert_eq!(messages_read.load(Ordering::SeqCst), 1);
         assert_eq!(sent["ok"], json!(false), "{sent}");

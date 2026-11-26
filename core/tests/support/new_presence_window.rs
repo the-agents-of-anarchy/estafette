@@ -28,18 +28,18 @@ pub struct NewPresenceAccepted {
 pub fn new_presence_accepted(
     sender: &MemberEvents,
     card: EndpointId,
-    killed_ms: u64,
+    killed_at: WallMs,
 ) -> NewPresenceAccepted {
     let peer = short_id_of_node(card);
     let accepted = sender.wait_until(
         &format!(
-            "{PAYLOAD_ACCEPTED_EVENT} of a {PRESENCE_KIND} from {peer} stamped and written after the kill at {killed_ms} ms"
+            "{PAYLOAD_ACCEPTED_EVENT} of a {PRESENCE_KIND} from {peer} stamped and written after the kill at {killed_at} ms"
         ),
         PRESENCE_WAIT,
         |lines| {
             lines
                 .into_iter()
-                .find(|line| is_presence_accepted_after(line, &peer, killed_ms))
+                .find(|line| is_presence_accepted_after(line, &peer, killed_at))
         },
     );
     NewPresenceAccepted {
@@ -93,13 +93,13 @@ pub fn assert_acknowledged_promptly_after(
 }
 
 /// Whether the events line records a Presence the peer stamped after the instant, accepted and written after it.
-fn is_presence_accepted_after(line: &TraceLine, peer: &str, instant_ms: u64) -> bool {
+fn is_presence_accepted_after(line: &TraceLine, peer: &str, instant: WallMs) -> bool {
     is_accepted_payload_of(line, PRESENCE_KIND, peer)
-        && line.wall_ms > WallMs(instant_ms)
+        && line.wall_ms > instant
         && line
             .value(SEQ_FIELD)
             .and_then(Value::as_u64)
-            .is_some_and(|seq| seq > instant_ms)
+            .is_some_and(|seq| seq > instant.0)
 }
 
 /// Whether the events line records the Message of that id sent and acknowledged by its recipient.

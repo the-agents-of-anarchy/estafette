@@ -751,6 +751,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
 
 #[cfg(test)]
 mod spec_3_15_two_members_through_the_live_host {
+    use crate::trace_reader::WallMs;
     use std::cell::RefCell;
     use std::fs;
     use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
@@ -1135,7 +1136,7 @@ mod spec_3_15_two_members_through_the_live_host {
         let frame = inbox.next_frame(FRAME_WAIT);
         wait_for_time_to_pass(
             bob.member.events(),
-            wall_clock_ms(),
+            WallMs(wall_clock_ms()),
             NO_FURTHER_FRAME_WINDOW,
         );
         assert_eq!(frame["seq"], json!(1));
@@ -1396,7 +1397,7 @@ mod spec_3_15_two_members_through_the_live_host {
         ];
         wait_for_time_to_pass(
             bob.member.events(),
-            wall_clock_ms(),
+            WallMs(wall_clock_ms()),
             NO_FURTHER_FRAME_WINDOW,
         );
 
@@ -1504,7 +1505,7 @@ mod spec_3_15_two_members_through_the_live_host {
         );
 
         bob.member.kill();
-        let killed_ms = wall_clock_ms();
+        let killed_ms = WallMs(wall_clock_ms());
         let mut restarted = timed("the restarted bob starts", || bob.machine.start_server());
         let claim = timed("the restarted bob claims its card", || {
             restarted.call(INIT_TOOL, &init_arguments(&bob.card.name))

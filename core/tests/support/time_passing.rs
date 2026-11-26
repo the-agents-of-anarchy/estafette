@@ -13,16 +13,20 @@ pub const SNAPSHOT_PROVING_A_SPAN_WITHIN: Duration =
 
 /// Waits until the member records a counters snapshot at least `span` after the wall-clock instant, the event its own time produces, proof that much of it passed.
 #[track_caller]
-pub fn wait_for_time_to_pass(events: &MemberEvents, since_wall_ms: u64, span: Duration) {
-    let due_wall_ms = since_wall_ms.saturating_add(u64::try_from(span.as_millis()).unwrap());
+pub fn wait_for_time_to_pass(events: &MemberEvents, since: WallMs, span: Duration) {
+    let due = WallMs(
+        since
+            .0
+            .saturating_add(u64::try_from(span.as_millis()).unwrap()),
+    );
     let within = span.saturating_add(SNAPSHOT_PROVING_A_SPAN_WITHIN);
     events.wait_until(
-        &format!("{COUNTERS_EVENT} at or after {due_wall_ms} ms"),
+        &format!("{COUNTERS_EVENT} at or after {due} ms"),
         within,
         |lines| {
             lines
                 .iter()
-                .any(|line| line.event == COUNTERS_EVENT && line.wall_ms >= WallMs(due_wall_ms))
+                .any(|line| line.event == COUNTERS_EVENT && line.wall_ms >= due)
                 .then_some(())
         },
     );

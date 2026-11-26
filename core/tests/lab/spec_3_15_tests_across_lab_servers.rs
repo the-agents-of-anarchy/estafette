@@ -41,6 +41,7 @@ use crate::tail::{
 };
 use crate::time_passing::wait_for_time_to_pass;
 use crate::timed_step::timed;
+use crate::trace_reader::WallMs;
 
 /// How long a member may take to list a peer that just started as online.
 const PRESENCE_WAIT: Duration = Duration::from_secs(30);
@@ -167,7 +168,11 @@ fn spec_3_15_test_3_two_machines_with_no_direct_path_deliver_through_a_relay_as_
         inbox.next_frame(FRAME_WAIT)
     });
     let further = timed("bob's inbox socket emits nothing more", || {
-        wait_for_time_to_pass(bob.events(), wall_clock_ms(), NO_FURTHER_FRAME_WINDOW);
+        wait_for_time_to_pass(
+            bob.events(),
+            WallMs(wall_clock_ms()),
+            NO_FURTHER_FRAME_WINDOW,
+        );
         inbox.frame_already_emitted()
     });
 
@@ -391,7 +396,7 @@ fn spec_3_15_test_24_three_members_running_180_s_with_no_host_killed_never_rebin
             .collect()
     });
 
-    let quiet_run_began_ms = wall_clock_ms();
+    let quiet_run_began_ms = WallMs(wall_clock_ms());
     timed("three members run for 180 s with no host killed", || {
         for member in &trio {
             wait_for_time_to_pass(member.server.events(), quiet_run_began_ms, SPEC_QUIET_RUN);
@@ -492,7 +497,7 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
         .collect();
 
     let starting = Instant::now();
-    let starting_wall_ms = wall_clock_ms();
+    let starting_wall = WallMs(wall_clock_ms());
     timed("the killable host started while the members run", || {
         killable.start();
     });
@@ -505,8 +510,11 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
         )
     });
     let first_record_ts = record_ts_of(&first_record, &added_id).unwrap();
-    let first_record_wall_ms =
-        starting_wall_ms.saturating_add(u64::try_from(after.as_millis()).unwrap());
+    let first_record_wall = WallMs(
+        starting_wall
+            .0
+            .saturating_add(u64::try_from(after.as_millis()).unwrap()),
+    );
     let deadline = starting
         .checked_add(after)
         .and_then(|arrived| arrived.checked_add(SPEC_HOST_ADDED_WITHIN))
@@ -524,8 +532,8 @@ fn spec_3_15_test_22_a_host_added_while_members_run_is_in_every_members_configur
                     relay_added_within(
                         member.server.events(),
                         &added_short_id,
-                        starting_wall_ms,
-                        first_record_wall_ms,
+                        starting_wall,
+                        first_record_wall,
                         SPEC_HOST_ADDED_WITHIN,
                     )
                 })
@@ -704,7 +712,7 @@ fn spec_3_15_test_23_with_their_home_host_killed_every_member_reaches_every_othe
             break None;
         }
     };
-    let window_left_ms = wall_clock_ms();
+    let window_left_ms = WallMs(wall_clock_ms());
     let window_left = window_ends.saturating_duration_since(Instant::now());
     if !window_left.is_zero() {
         timed("the 60 s after the kill run out", || {

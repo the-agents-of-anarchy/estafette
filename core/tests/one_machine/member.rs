@@ -12,7 +12,7 @@ use crate::scratch_machine::Card;
 use crate::scratch_machine::owned_process::OwnedProcess;
 use crate::scripted_node::ScriptedNode;
 use crate::time_passing::wait_for_time_to_pass;
-use crate::trace_reader::TraceLine;
+use crate::trace_reader::{TraceLine, WallMs};
 /// The event a member records for each frame it delivers to its inbox (spec/observability.md decision 9).
 const FRAME_DELIVERED_EVENT: &str = "inbox.frame_delivered";
 /// The tool a member reads its inbox with, the key of its result listing the messages, and the key of a message's body (spec 3.10).
@@ -95,8 +95,8 @@ impl Member {
 
     /// Waits until the member records a counters snapshot at least `span` after the wall-clock instant, as `time_passing::wait_for_time_to_pass` waits.
     #[track_caller]
-    pub fn wait_for_time_to_pass(&self, since_wall_ms: u64, span: Duration) {
-        wait_for_time_to_pass(self.server.events(), since_wall_ms, span);
+    pub fn wait_for_time_to_pass(&self, since: WallMs, span: Duration) {
+        wait_for_time_to_pass(self.server.events(), since, span);
     }
 
     /// Waits until the inbox tool returns the body, asked at once and again each time the member records a frame delivered.

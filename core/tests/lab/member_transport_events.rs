@@ -44,8 +44,8 @@ const ACKNOWLEDGED_OUTCOME: &str = "acknowledged";
 pub fn relay_added_within(
     events: &MemberEvents,
     host: &str,
-    host_started_wall_ms: u64,
-    first_record_wall_ms: u64,
+    host_started: WallMs,
+    first_record: WallMs,
     within: Duration,
 ) -> Result<(), String> {
     events.wait_until(
@@ -54,15 +54,7 @@ pub fn relay_added_within(
         |lines| {
             first_relay_added_position_for(&lines, host)
                 .is_some()
-                .then(|| {
-                    relay_added_verdict(
-                        &lines,
-                        host,
-                        host_started_wall_ms,
-                        first_record_wall_ms,
-                        within,
-                    )
-                })
+                .then(|| relay_added_verdict(&lines, host, host_started, first_record, within))
         },
     )
 }
@@ -142,8 +134,8 @@ fn first_relay_added_position_for<'line>(
 fn relay_added_verdict(
     lines: &[TraceLine],
     host: &str,
-    host_started_wall_ms: u64,
-    first_record_wall_ms: u64,
+    host_started: WallMs,
+    first_record: WallMs,
     within: Duration,
 ) -> Result<(), String> {
     let (position, added) = first_relay_added_position_for(lines, host).ok_or_else(|| {
@@ -154,21 +146,21 @@ fn relay_added_verdict(
             "lines of the trace holding the relay of host {host} were lost before the line adding it, so it may not be the first"
         ));
     }
-    if added.wall_ms < WallMs(host_started_wall_ms) {
+    if added.wall_ms < host_started {
         return Err(format!(
-            "the relay of host {host} was added to the relay map at {} ms, {} ms before the test started the host at {host_started_wall_ms} ms, so that line is not of the host's record",
+            "the relay of host {host} was added to the relay map at {} ms, {} ms before the test started the host at {host_started} ms, so that line is not of the host's record",
             added.wall_ms,
-            host_started_wall_ms.saturating_sub(added.wall_ms.0)
+            host_started.0.saturating_sub(added.wall_ms.0)
         ));
     }
-    let bound_ms = u128::from(first_record_wall_ms).saturating_add(within.as_millis());
+    let bound_ms = u128::from(first_record.0).saturating_add(within.as_millis());
     if u128::from(added.wall_ms.0) <= bound_ms {
         Ok(())
     } else {
         Err(format!(
-            "the relay of host {host} was added to the relay map at {} ms, {} ms after the host's first record at {first_record_wall_ms} ms, beyond {within:?}",
+            "the relay of host {host} was added to the relay map at {} ms, {} ms after the host's first record at {first_record} ms, beyond {within:?}",
             added.wall_ms,
-            added.wall_ms.0.saturating_sub(first_record_wall_ms)
+            added.wall_ms.0.saturating_sub(first_record.0)
         ))
     }
 }
@@ -287,6 +279,7 @@ fn rebinding_lines_in(lines: &[TraceLine]) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use crate::trace_reader::WallMs;
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -387,8 +380,8 @@ mod tests {
         relay_added_verdict(
             &parsed(lines),
             ADDED_HOST,
-            HOST_STARTED_WALL_MS,
-            FIRST_RECORD_WALL_MS,
+            WallMs(HOST_STARTED_WALL_MS),
+            WallMs(FIRST_RECORD_WALL_MS),
             WITHIN,
         )
     }
@@ -805,8 +798,8 @@ mod tests {
         let verdict = relay_added_within(
             &events,
             ADDED_HOST,
-            HOST_STARTED_WALL_MS,
-            FIRST_RECORD_WALL_MS,
+            WallMs(HOST_STARTED_WALL_MS),
+            WallMs(FIRST_RECORD_WALL_MS),
             WITHIN,
         );
         remove_traces(&traces);
