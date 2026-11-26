@@ -295,7 +295,7 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::*;
-    use crate::config::{Host, HostOrigin};
+    use crate::config::{Host, HostOrigin, MILLIS_PER_SECOND};
     use crate::event::{Event, RunRecord};
     use crate::net::direct::tests::StandingClock;
     use crate::net::direct::{ClientTimeouts, DirectClient};
@@ -1045,7 +1045,6 @@ mod tests {
     const CONFIGURATION_REWRITE_DECIDED: &str = "process.configuration_rewrite_decided";
     const WRITABLE_DIRECTORY_MODE: u32 = 0o755;
     const READ_ONLY_DIRECTORY_MODE: u32 = 0o555;
-    const MILLIS_PER_SECOND: u64 = 1000;
 
     /// Sets the directory's permission bits to the mode.
     fn set_mode(directory: &std::path::Path, mode: u32) {

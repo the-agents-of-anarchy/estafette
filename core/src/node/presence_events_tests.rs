@@ -19,6 +19,7 @@ use super::tests::{
     short_peer_id, spawn_member, start_members, start_members_reaching, start_pair,
     start_witnessed, wall_clock_ms,
 };
+use crate::config::MILLIS_PER_SECOND;
 use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
 use crate::event::{EventFields, RunRecord};
 use crate::net::direct::tests::{test_salt, unrecorded_register};
@@ -307,7 +308,6 @@ fn admission_fields(
 
 const ACCEPTED: &str = "gossip.payload_accepted";
 const DROPPED: &str = "gossip.payload_dropped";
-const MILLIS_PER_SECOND: u64 = 1000;
 const PIN_SEED: u8 = 84;
 const UNKNOWN_SEED: u8 = 83;
 const PIN_HANDLE: &str = "pin";
