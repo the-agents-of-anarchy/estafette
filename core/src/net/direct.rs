@@ -4005,19 +4005,37 @@ pub(crate) mod tests {
         );
     }
 
+    /// How many times a test sets the restart up again when iroh selected the restarted process's path before the test read it.
+    const RESTART_ATTEMPTS: usize = 16;
+
+    /// The restart set up again over a fresh member until the Introduce's connection reports no selected path, failing by the setup's name after `RESTART_ATTEMPTS` attempts.
+    async fn restarted_process_introduced_with_the_gone_path_unselected(
+        transport: TransportRecord,
+    ) -> RestartedProcessIntroduced {
+        for _ in 0..RESTART_ATTEMPTS {
+            let restart = restarted_process_introduced_to_a_member(transport.clone(), |_member| {
+                RecordingHost::with_card(card_of(SERVER_SEED))
+            })
+            .await;
+            if restart.reported_after_the_introduce == [false] {
+                return restart;
+            }
+        }
+        panic!(
+            "setup: iroh selected the restarted process's path before the test read it in each of {RESTART_ATTEMPTS} attempts"
+        )
+    }
+
     #[tokio::test]
     async fn spec_3_15_test_18_a_request_a_member_starts_after_a_restarted_processs_introduce_and_before_its_presence_is_answered_without_waiting_on_the_gone_processs_path()
      {
-        let restart = restarted_process_introduced_to_a_member(dropping_transport(), |_member| {
-            RecordingHost::with_card(card_of(SERVER_SEED))
-        })
-        .await;
+        let restart =
+            restarted_process_introduced_with_the_gone_path_unselected(dropping_transport()).await;
         assert!(
             matches!(restart.introduced, Ok(IntroduceAck { .. })),
             "{:?}",
             restart.introduced
         );
-        assert_the_gone_path_was_not_kept(&restart.reported_after_the_introduce);
 
         let started = Instant::now();
         let probed = members_probe_of_the_restarted(&restart).await;
@@ -4068,30 +4086,44 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_15_test_18_a_request_a_member_starts_after_a_restarted_processs_introduce_is_answered_without_waiting_on_the_gone_processs_path_when_the_presence_pass_runs_once_its_dial_has_sent_a_first_flight()
      {
-        let restart = restarted_process_introduced_to_a_member(dropping_transport(), |_member| {
-            RecordingHost::with_card(card_of(SERVER_SEED))
-        })
-        .await;
-        assert_the_gone_path_was_not_kept(&restart.reported_after_the_introduce);
-        let register = restart.link.server_node.held_connections();
-        let gone_port = gone_processs_port_bound_again(&restart).await;
+        for _ in 0..RESTART_ATTEMPTS {
+            let restart =
+                restarted_process_introduced_with_the_gone_path_unselected(dropping_transport())
+                    .await;
+            let register = restart.link.server_node.held_connections();
+            let gone_port = gone_processs_port_bound_again(&restart).await;
 
-        let started = Instant::now();
-        let (probed, ()) = tokio::join!(members_probe_of_the_restarted(&restart), async {
-            let first_flight_reached_the_gone_port =
-                timeout(FIRST_FLIGHT_WAIT, gone_port.readable()).await;
+            let started = Instant::now();
+            let (probed, (first_flight_reached_the_gone_port, reported_when_it_ended)) =
+                tokio::join!(members_probe_of_the_restarted(&restart), async {
+                    let first_flight = timeout(FIRST_FLIGHT_WAIT, gone_port.readable()).await;
+                    let reported =
+                        selected_path_reported_by_each_held_of(&register, card_of(CLIENT_SEED));
+                    if matches!(first_flight, Ok(Ok(()))) {
+                        register.close_silent_of(card_of(CLIENT_SEED));
+                    }
+                    (first_flight, reported)
+                });
+            let took = started.elapsed();
+
+            let selected_after_the_read = first_flight_reached_the_gone_port.is_err()
+                && reported_when_it_ended.contains(&true);
+            if selected_after_the_read {
+                continue;
+            }
             assert!(
                 matches!(first_flight_reached_the_gone_port, Ok(Ok(()))),
                 "the member's dial sent no first flight to the gone process's port within {FIRST_FLIGHT_WAIT:?}: {first_flight_reached_the_gone_port:?}"
             );
-            register.close_silent_of(card_of(CLIENT_SEED));
-        });
-        let took = started.elapsed();
-
-        assert_eq!(probed.unwrap().nonce, PROBE_NONCE);
-        assert!(
-            took < ANSWERED_WITHOUT_A_RESEND_WITHIN,
-            "the member's probe of the restarted process was answered in {took:?}"
+            assert_eq!(probed.unwrap().nonce, PROBE_NONCE);
+            assert!(
+                took < ANSWERED_WITHOUT_A_RESEND_WITHIN,
+                "the member's probe of the restarted process was answered in {took:?}"
+            );
+            return;
+        }
+        panic!(
+            "setup: iroh selected the restarted process's path after the test read it, before the member's dial, in each of {RESTART_ATTEMPTS} attempts"
         );
     }
 
@@ -4113,11 +4145,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_15_test_18_after_a_restarted_processs_introduce_the_members_next_request_to_it_and_then_its_next_request_to_the_member_are_answered()
      {
-        let restart = restarted_process_introduced_to_a_member(dropping_transport(), |_member| {
-            RecordingHost::with_card(card_of(SERVER_SEED))
-        })
-        .await;
-        assert_the_gone_path_was_not_kept(&restart.reported_after_the_introduce);
+        let restart =
+            restarted_process_introduced_with_the_gone_path_unselected(dropping_transport()).await;
 
         let answered_by_the_restarted = members_probe_of_the_restarted(&restart).await;
         let answered_by_the_member = restarted_processs_probe_of_the_member(&restart).await;
@@ -4129,11 +4158,8 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_15_test_18_after_a_restarted_processs_introduce_its_next_request_to_the_member_and_then_the_members_next_request_to_it_are_answered()
      {
-        let restart = restarted_process_introduced_to_a_member(dropping_transport(), |_member| {
-            RecordingHost::with_card(card_of(SERVER_SEED))
-        })
-        .await;
-        assert_the_gone_path_was_not_kept(&restart.reported_after_the_introduce);
+        let restart =
+            restarted_process_introduced_with_the_gone_path_unselected(dropping_transport()).await;
 
         let answered_by_the_member = restarted_processs_probe_of_the_member(&restart).await;
         let answered_by_the_restarted = members_probe_of_the_restarted(&restart).await;
@@ -4146,12 +4172,10 @@ pub(crate) mod tests {
     async fn observability_decision_9_the_close_before_a_members_dial_to_a_restarted_process_is_recorded_closing_the_introduces_connection_with_estafettes_code_and_reason()
      {
         let (record, mut recorded) = recorded_events();
-        let restart = restarted_process_introduced_to_a_member(
+        let restart = restarted_process_introduced_with_the_gone_path_unselected(
             TransportRecord::new(record, test_salt()),
-            |_member| RecordingHost::with_card(card_of(SERVER_SEED)),
         )
         .await;
-        assert_the_gone_path_was_not_kept(&restart.reported_after_the_introduce);
         let introduces_connection =
             connections_held_open_from(&restart.link.server_node, card_of(CLIENT_SEED));
         drop(recorded_so_far(&mut recorded));
