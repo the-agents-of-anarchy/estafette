@@ -15,14 +15,14 @@ mod network_commands {
     use data_encoding::HEXLOWER;
     use estafette::cli::network::{NetworkCommand, NetworkFilesystem, run};
     use estafette::config::{HostOrigin, NetworkConfig};
-    use estafette::crypto::verify_host_certificate;
+    use estafette::crypto::{NetworkSecret, verify_host_certificate};
     use estafette::dirs::{
         CardsDirectoryOverride, Directories, DirectoryFilesystem, OperatingSystemFilesystem,
     };
     use estafette::handle::Handle;
     use estafette::invite::{parse_invitation, render_host_line, render_invitation};
     use estafette::keys::{parse_public_key, parse_secret_key, render_public_key};
-    use estafette::wire::{HostAddr, Invitation, RelayUrl, Version};
+    use estafette::wire::{self, HostAddr, Invitation, RelayUrl, Version};
     use iroh::{PublicKey, SecretKey, Signature};
 
     const BINARY: &str = env!("CARGO_BIN_EXE_estafette");
@@ -31,11 +31,11 @@ mod network_commands {
     const NETWORK: &str = "home-lab";
     const SECRET_KEY_FILE_LENGTH: usize = 65;
     const CERTIFICATE_TEXT_LENGTH: usize = 129;
-    const NOT_A_PUBLIC_KEY: [u8; 32] = {
+    const NOT_A_PUBLIC_KEY: wire::PublicKey = wire::PublicKey::from_bytes({
         let mut bytes = [0; 32];
         bytes[0] = 2;
         bytes
-    };
+    });
 
     struct Machine {
         root: PathBuf,
@@ -84,7 +84,7 @@ mod network_commands {
     fn host_address(seed: u8, relay: &str) -> HostAddr {
         HostAddr {
             v: Version::CURRENT,
-            id: *SecretKey::from_bytes(&[seed; 32]).public().as_bytes(),
+            id: wire::PublicKey::from(SecretKey::from_bytes(&[seed; 32]).public()),
             relay: RelayUrl::try_from(relay.to_owned()).unwrap(),
         }
     }
@@ -244,10 +244,10 @@ mod network_commands {
         let invitation = parse_invitation(invitation_text.trim_end()).unwrap();
         assert!(invitation_text.ends_with('\n'));
         assert_eq!(invitation.network, NETWORK);
-        assert_eq!(HEXLOWER.encode(&invitation.secret), config.secret);
-        assert_eq!(HEXLOWER.encode(&invitation.owner), config.owner);
+        assert_eq!(HEXLOWER.encode(invitation.secret.as_bytes()), config.secret);
+        assert_eq!(HEXLOWER.encode(invitation.owner.as_bytes()), config.owner);
         let mut expected_hosts = vec![first, second];
-        expected_hosts.sort_by_key(|host| HEXLOWER.encode(&host.id));
+        expected_hosts.sort_by_key(|host| HEXLOWER.encode(host.id.as_bytes()));
         assert_eq!(invitation.hosts, expected_hosts);
     }
 
@@ -288,7 +288,7 @@ mod network_commands {
             .unwrap();
         let config = NetworkConfig::load(&machine.config_file(NETWORK)).unwrap();
         let owner = parse_public_key(&config.owner).unwrap();
-        let host_id = PublicKey::from_bytes(&host.id).unwrap();
+        let host_id = PublicKey::from_bytes(host.id.as_bytes()).unwrap();
         assert_eq!(
             verify_host_certificate(&owner, &host_id, &Signature::from_bytes(&certificate_bytes)),
             Ok(())
@@ -478,11 +478,11 @@ mod network_commands {
         }
     }
 
-    fn invitation_text(owner: [u8; 32], hosts: Vec<HostAddr>) -> String {
+    fn invitation_text(owner: wire::PublicKey, hosts: Vec<HostAddr>) -> String {
         render_invitation(&Invitation {
             v: Version::CURRENT,
             network: NETWORK.to_owned(),
-            secret: [5; 32],
+            secret: NetworkSecret::from_bytes([5; 32]),
             owner,
             hosts,
         })
@@ -523,7 +523,7 @@ mod network_commands {
     #[test]
     fn spec_3_13_join_refuses_a_host_node_id_that_is_not_a_key_and_writes_no_config() {
         let machine = Machine::fresh("join-bad-host");
-        let owner = *SecretKey::from_bytes(&[3; 32]).public().as_bytes();
+        let owner = wire::PublicKey::from(SecretKey::from_bytes(&[3; 32]).public());
         let text = invitation_text(owner, vec![host_with_node_id_that_is_not_a_key()]);
 
         let output = machine.run(&["network", "join", &text]);
@@ -578,8 +578,9 @@ mod network_commands {
         let host = host_address(7, "https://relay-one.example/");
         machine.run(&["network", "add-host", NETWORK, &host_line(&host)]);
         let config_text = fs::read_to_string(machine.config_file(NETWORK)).unwrap();
-        let stored_id = HEXLOWER.encode(&host.id);
-        let damaged = config_text.replace(&stored_id, &HEXLOWER.encode(&NOT_A_PUBLIC_KEY));
+        let stored_id = HEXLOWER.encode(host.id.as_bytes());
+        let damaged =
+            config_text.replace(&stored_id, &HEXLOWER.encode(NOT_A_PUBLIC_KEY.as_bytes()));
         fs::write(machine.config_file(NETWORK), damaged).unwrap();
 
         let output = machine.run(&["network", "show-invitation", NETWORK]);
@@ -598,7 +599,8 @@ mod network_commands {
         machine.run(&["network", "add-host", NETWORK, &host_line(&host)]);
         let config = NetworkConfig::load(&machine.config_file(NETWORK)).unwrap();
         let config_text = fs::read_to_string(machine.config_file(NETWORK)).unwrap();
-        let damaged = config_text.replace(&config.owner, &HEXLOWER.encode(&NOT_A_PUBLIC_KEY));
+        let damaged =
+            config_text.replace(&config.owner, &HEXLOWER.encode(NOT_A_PUBLIC_KEY.as_bytes()));
         fs::write(machine.config_file(NETWORK), damaged).unwrap();
 
         let output = machine.run(&["network", "show-invitation", NETWORK]);
@@ -612,12 +614,12 @@ mod network_commands {
     #[test]
     fn spec_3_1_join_refuses_an_invitation_whose_network_name_breaks_the_handle_grammar() {
         let machine = Machine::fresh("join-bad-network-name");
-        let owner = *SecretKey::from_bytes(&[3; 32]).public().as_bytes();
+        let owner = wire::PublicKey::from(SecretKey::from_bytes(&[3; 32]).public());
         let host = host_address(7, "https://relay-one.example/");
         let text = render_invitation(&Invitation {
             v: Version::CURRENT,
             network: "Bad_Name".to_owned(),
-            secret: [5; 32],
+            secret: NetworkSecret::from_bytes([5; 32]),
             owner,
             hosts: vec![host],
         })

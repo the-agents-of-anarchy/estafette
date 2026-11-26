@@ -34,7 +34,7 @@ pub fn lookup_replaced_event(
 
 /// The card as an iroh node id, or none when its bytes are not a valid key.
 pub fn endpoint_id(card: &wire::PublicKey) -> Option<EndpointId> {
-    EndpointId::from_bytes(card).ok()
+    EndpointId::from_bytes(card.as_bytes()).ok()
 }
 
 /// The wire form of an endpoint address, within the caps of spec 3.6.

@@ -16,7 +16,7 @@ use crate::wire::{
 const GOSSIP_FRAME_BYTES: usize = 4096;
 const GOSSIP_LAYER_OVERHEAD_BYTES: usize = 38;
 const LARGEST_GOSSIP_PAYLOAD_BYTES: usize = GOSSIP_FRAME_BYTES - GOSSIP_LAYER_OVERHEAD_BYTES;
-pub(crate) const ZERO_MAC: wire::Mac = [0; MAC_LEN];
+pub(crate) const ZERO_MAC: Mac = Mac::from_bytes([0; MAC_LEN]);
 pub(crate) const ZERO_SIGNATURE: SignatureBytes = SignatureBytes([0; Signature::LENGTH]);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,24 +267,24 @@ const fn signature_of(payload: &Payload) -> SignatureBytes {
 }
 
 trait MacCarrying: Wire + Clone {
-    fn mac(&self) -> Option<wire::Mac>;
+    fn mac(&self) -> Option<Mac>;
 
-    fn with_mac(self, mac: wire::Mac) -> Self;
+    fn with_mac(self, mac: Mac) -> Self;
 }
 
 impl MacCarrying for Payload {
-    fn mac(&self) -> Option<wire::Mac> {
+    fn mac(&self) -> Option<Mac> {
         Some(on_each_payload_variant!(self, inner => inner.mac))
     }
 
-    fn with_mac(mut self, mac: wire::Mac) -> Self {
+    fn with_mac(mut self, mac: Mac) -> Self {
         on_each_payload_variant!(&mut self, inner => inner.mac = mac);
         self
     }
 }
 
 impl MacCarrying for Request {
-    fn mac(&self) -> Option<wire::Mac> {
+    fn mac(&self) -> Option<Mac> {
         match self {
             Self::Message(message) => Some(message.mac),
             Self::Probe(probe) => Some(probe.mac),
@@ -292,7 +292,7 @@ impl MacCarrying for Request {
         }
     }
 
-    fn with_mac(mut self, mac: wire::Mac) -> Self {
+    fn with_mac(mut self, mac: Mac) -> Self {
         match &mut self {
             Self::Message(message) => message.mac = mac,
             Self::Probe(probe) => probe.mac = mac,
@@ -303,7 +303,7 @@ impl MacCarrying for Request {
 }
 
 impl MacCarrying for Response {
-    fn mac(&self) -> Option<wire::Mac> {
+    fn mac(&self) -> Option<Mac> {
         match self {
             Self::MessageAck(_) => None,
             Self::ProbeAck(probe_ack) => Some(probe_ack.mac),
@@ -311,7 +311,7 @@ impl MacCarrying for Response {
         }
     }
 
-    fn with_mac(mut self, mac: wire::Mac) -> Self {
+    fn with_mac(mut self, mac: Mac) -> Self {
         match &mut self {
             Self::MessageAck(_) => {}
             Self::ProbeAck(probe_ack) => probe_ack.mac = mac,
@@ -332,7 +332,7 @@ fn mac_zeroed_encoding<T: MacCarrying>(structure: &T) -> Result<Vec<u8>, CodecEr
 
 fn with_computed_mac<T: MacCarrying>(keys: &NetworkKeys, structure: T) -> Result<T, CodecError> {
     let mac = keys.mac(&mac_zeroed_encoding(&structure)?);
-    Ok(structure.with_mac(*mac.as_bytes()))
+    Ok(structure.with_mac(mac))
 }
 
 /// Checks the mac a structure carries against the network key, failing as the caller's error type with the codec or crypto error that refused it.
@@ -341,7 +341,7 @@ fn verify_mac<T: MacCarrying, Refusal: From<CodecError> + From<CryptoError>>(
     structure: &T,
 ) -> Result<(), Refusal> {
     match structure.mac() {
-        Some(mac) => Ok(keys.verify_mac(&mac_zeroed_encoding(structure)?, &Mac::from_bytes(mac))?),
+        Some(mac) => Ok(keys.verify_mac(&mac_zeroed_encoding(structure)?, &mac)?),
         None => Ok(()),
     }
 }
@@ -368,7 +368,7 @@ fn signature_zeroed_encoding(payload: &Payload) -> Result<Vec<u8>, CodecError> {
 
 fn verify_signature(payload: &Payload) -> Result<(), OpeningFailure> {
     let (kind, signer_bytes) = signer_of(payload);
-    let Ok(signer) = PublicKey::from_bytes(&signer_bytes) else {
+    let Ok(signer) = PublicKey::from_bytes(signer_bytes.as_bytes()) else {
         return Err(CryptoError::SignatureMismatch.into());
     };
     let signature = Signature::from_bytes(&signature_of(payload).0);
@@ -390,7 +390,7 @@ pub fn seal_payload(
     payload: Payload,
 ) -> Result<Vec<u8>, PayloadError> {
     let (kind, signer_bytes) = signer_of(&payload);
-    if signer.public().as_bytes() != &signer_bytes {
+    if signer.public().as_bytes() != signer_bytes.as_bytes() {
         return Err(PayloadError::SignerIsNotThePayloadSigner);
     }
     sign_then_mac(keys, kind, signer, payload)
@@ -489,7 +489,7 @@ fn validated_infrastructure(
     owner: &PublicKey,
     infrastructure: Infrastructure,
 ) -> Result<ValidInfrastructure, OpeningFailure> {
-    let certified = PublicKey::from_bytes(&infrastructure.host).is_ok_and(|host| {
+    let certified = PublicKey::from_bytes(infrastructure.host.as_bytes()).is_ok_and(|host| {
         verify_host_certificate(owner, &host, &Signature::from_bytes(&infrastructure.cert.0))
             .is_ok()
     });
@@ -617,7 +617,7 @@ mod tests {
     }
 
     fn public_bytes(seed: u8) -> wire::PublicKey {
-        *secret_key(seed).public().as_bytes()
+        wire::PublicKey::from(secret_key(seed).public())
     }
 
     fn unsealed_departure(card_seed: u8) -> Payload {
@@ -1137,7 +1137,7 @@ mod tests {
 
             assert_eq!(
                 open_request(&keys(), &sealed),
-                Ok(request.with_mac(*expected_mac.as_bytes()))
+                Ok(request.with_mac(expected_mac))
             );
         }
     }
@@ -1171,7 +1171,7 @@ mod tests {
 
             assert_eq!(
                 open_response(&keys(), &sealed),
-                Ok(response.with_mac(*expected_mac.as_bytes()))
+                Ok(response.with_mac(expected_mac))
             );
             assert_eq!(
                 open_response(&keys(), &sealed_under_other_network),
@@ -1455,8 +1455,8 @@ mod tests {
     #[test]
     fn spec_3_4_payload_whose_signer_key_is_off_the_curve_is_dropped() {
         let off_the_curve = (0..=u8::MAX)
-            .map(|byte| [byte; KEY_LEN])
-            .find(|bytes| PublicKey::from_bytes(bytes).is_err())
+            .map(|byte| wire::PublicKey::from_bytes([byte; KEY_LEN]))
+            .find(|bytes| PublicKey::from_bytes(bytes.as_bytes()).is_err())
             .unwrap();
         let Payload::Departure(departure) = unsealed_departure(REPORTED_CARD_SEED) else {
             panic!("a departure was built");

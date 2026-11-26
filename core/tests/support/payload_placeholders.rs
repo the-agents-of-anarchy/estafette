@@ -1,9 +1,10 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use estafette::wire::{self, SignatureBytes};
+use estafette::crypto::Mac;
+use estafette::wire::SignatureBytes;
 
 /// The mac a payload carries before sealing fills it.
-pub const UNSET_MAC: wire::Mac = [0; 32];
+pub const UNSET_MAC: Mac = Mac::from_bytes([0; 32]);
 /// The signature a payload carries before sealing fills it.
 pub const UNSIGNED: SignatureBytes = SignatureBytes([0; 64]);
 

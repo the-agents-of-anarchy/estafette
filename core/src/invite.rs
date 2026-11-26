@@ -98,7 +98,8 @@ fn parse_with_prefix<T: Wire>(prefix: &'static str, text: &str) -> Result<T, Inv
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wire::{MAX_RELAY_URL_BYTES, RelayUrl, Version};
+    use crate::crypto::NetworkSecret;
+    use crate::wire::{MAX_RELAY_URL_BYTES, PublicKey, RelayUrl, Version};
 
     const PINNED_HOST_LINE: &str = concat!(
         "estafette-host-1:",
@@ -121,7 +122,7 @@ mod tests {
     fn host(id_byte: u8, relay: &str) -> HostAddr {
         HostAddr {
             v: Version::CURRENT,
-            id: [id_byte; 32],
+            id: PublicKey::from_bytes([id_byte; 32]),
             relay: RelayUrl::try_from(relay.to_owned()).unwrap(),
         }
     }
@@ -130,8 +131,8 @@ mod tests {
         Invitation {
             v: Version::CURRENT,
             network: NETWORK_NAME.to_owned(),
-            secret: [SECRET_BYTE; 32],
-            owner: [OWNER_BYTE; 32],
+            secret: NetworkSecret::from_bytes([SECRET_BYTE; 32]),
+            owner: PublicKey::from_bytes([OWNER_BYTE; 32]),
             hosts: vec![
                 host(FIRST_HOST_ID_BYTE, FIRST_RELAY),
                 host(SECOND_HOST_ID_BYTE, SECOND_RELAY),

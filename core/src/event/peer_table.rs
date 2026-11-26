@@ -253,7 +253,7 @@ mod tests {
     use super::*;
     use crate::event::{Event, EventName, write_run_record};
 
-    const PEER_ID: wire::PublicKey = [0xab; 32];
+    const PEER_ID: wire::PublicKey = wire::PublicKey::from_bytes([0xab; 32]);
     const PEER_ID_TEXT: &str = "ababababab";
     const HANDLE: &str = "bob";
     const HANDLE_ASSIGNED_AFTER_A_CLASH: &str = "bob-2";

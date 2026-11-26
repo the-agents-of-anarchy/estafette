@@ -32,7 +32,7 @@ impl OffTopicSender {
         handle: &str,
     ) -> Self {
         let runtime = DrivenRuntime::start();
-        let card = *key.public().as_bytes();
+        let card = wire::PublicKey::from(key.public());
         let connections = unrecorded_connections();
         let endpoint = bind_gated_endpoint(
             runtime.handle(),
@@ -82,7 +82,7 @@ impl OffTopicSender {
         let message = Message {
             v: Version::CURRENT,
             id,
-            to: *recipient.as_bytes(),
+            to: wire::PublicKey::from(recipient),
             handle: self.handle.clone(),
             attached: false,
             sent_at,

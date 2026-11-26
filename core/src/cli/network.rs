@@ -20,11 +20,10 @@ use crate::invite::{
     render_invitation,
 };
 use crate::keys::{
-    KeyError, NetworkSecret, generate_network_secret, generate_secret_key, parse_network_secret,
-    parse_public_key, parse_secret_key, render_network_secret, render_public_key,
-    render_secret_key,
+    KeyError, generate_network_secret, generate_secret_key, parse_network_secret, parse_public_key,
+    parse_secret_key, render_network_secret, render_public_key, render_secret_key,
 };
-use crate::wire::{HostAddr, Invitation, Version};
+use crate::wire::{self, HostAddr, Invitation, Version};
 
 const CREATE_ABOUT: &str = "Create a network on this machine";
 const JOIN_ABOUT: &str = "Join a network from an invitation";
@@ -432,7 +431,7 @@ fn join_network(
         .collect::<Result<_, _>>()?;
     create_parent_directory(filesystem, &config_file)?;
     NetworkConfig {
-        secret: render_network_secret(&NetworkSecret::from_bytes(invitation.secret)),
+        secret: render_network_secret(&invitation.secret),
         owner: render_public_key(&owner),
         hosts,
     }
@@ -492,8 +491,8 @@ fn host_public_key(address: &HostAddr) -> Result<PublicKey, Failure> {
     public_key_or(&address.id, || Failure::HostNodeIdNotAKey)
 }
 
-fn public_key_or(bytes: &[u8; KEY_LEN], refusal: fn() -> Failure) -> Result<PublicKey, Failure> {
-    PublicKey::from_bytes(bytes).map_err(|_not_a_key| refusal())
+fn public_key_or(key: &wire::PublicKey, refusal: fn() -> Failure) -> Result<PublicKey, Failure> {
+    PublicKey::from_bytes(key.as_bytes()).map_err(|_not_a_key| refusal())
 }
 
 fn invitation_of(
@@ -517,8 +516,8 @@ fn invitation_of(
     Ok(Invitation {
         v: Version::CURRENT,
         network: network.as_str().to_owned(),
-        secret: *secret.as_bytes(),
-        owner: *owner.as_bytes(),
+        secret,
+        owner: wire::PublicKey::from(owner),
         hosts,
     })
 }
@@ -532,7 +531,7 @@ fn host_address_of(
     let relay = host.wire_relay(index_in_hosts, config_file)?;
     Ok(HostAddr {
         v: Version::CURRENT,
-        id: *id.as_bytes(),
+        id: wire::PublicKey::from(id),
         relay,
     })
 }

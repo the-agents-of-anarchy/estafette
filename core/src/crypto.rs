@@ -2,6 +2,7 @@ use std::fmt;
 
 use data_encoding::HEXLOWER;
 use iroh::{PublicKey, SecretKey, Signature};
+use serde::{Deserialize, Serialize};
 
 pub const KEY_LEN: usize = 32;
 pub const MAC_LEN: usize = 32;
@@ -124,7 +125,7 @@ fn verify_under_prefix(
         .map_err(|_refusal| CryptoError::SignatureMismatch)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkSecret([u8; KEY_LEN]);
 
 impl NetworkSecret {
@@ -161,7 +162,7 @@ impl TopicId {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Mac([u8; MAC_LEN]);
 
 impl Mac {

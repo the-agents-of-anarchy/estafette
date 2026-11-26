@@ -1382,8 +1382,8 @@ mod tests {
             let invitation = wire::Invitation {
                 v: wire::Version::CURRENT,
                 network: String::new(),
-                secret: secret_bytes,
-                owner: [0; KEY_LEN],
+                secret: crate::crypto::NetworkSecret::from_bytes(secret_bytes),
+                owner: wire::PublicKey::from_bytes([0; KEY_LEN]),
                 hosts: Vec::new(),
             };
             let join_command = crate::cli::network::NetworkCommand::Join {

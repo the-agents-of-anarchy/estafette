@@ -203,7 +203,7 @@ mod tests {
     use std::panic::{self, AssertUnwindSafe};
     use std::process::{ExitStatus, Output};
 
-    use estafette::wire::{RelayUrl, Version};
+    use estafette::wire::{self, RelayUrl, Version};
 
     use super::*;
     use crate::lab_server::tests::{
@@ -213,7 +213,7 @@ mod tests {
     use crate::scratch_machine::REDACTED;
 
     /// The id a test's killable host names, no real one.
-    const PLANTED_HOST_ID: [u8; 32] = [0x0f; 32];
+    const PLANTED_HOST_ID: wire::PublicKey = wire::PublicKey::from_bytes([0x0f; 32]);
     /// The relay a test's killable host names, no real one.
     const PLANTED_RELAY: &str = "https://relay.lab-server.invalid";
     /// A network secret a test plants in the live network's configuration and in what a recipe prints, no real one.

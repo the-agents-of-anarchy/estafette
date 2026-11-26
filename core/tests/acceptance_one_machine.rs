@@ -251,7 +251,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     fn departure_signed_by(keys: &NetworkKeys, signer: &SecretKey, seq: u64) -> Vec<u8> {
         let departure = Payload::Departure(Departure {
             v: Version::CURRENT,
-            card: *signer.public().as_bytes(),
+            card: estafette::wire::PublicKey::from(signer.public()),
             seq,
             mac: UNSET_MAC,
             sig: UNSIGNED,
@@ -264,7 +264,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         Request::Message(Message {
             v: Version::CURRENT,
             id: MESSAGE_ID,
-            to: *to.as_bytes(),
+            to: estafette::wire::PublicKey::from(to),
             handle: BOB_HANDLE.to_owned(),
             attached: false,
             sent_at,
@@ -1606,7 +1606,7 @@ mod spec_3_15_with_one_member {
         Request::Message(Message {
             v: Version::CURRENT,
             id: MESSAGE_ID,
-            to: *card.as_bytes(),
+            to: estafette::wire::PublicKey::from(*card),
             handle: ATTACKER_HANDLE.to_owned(),
             attached: false,
             sent_at: wall_clock_ms(),
@@ -1622,9 +1622,7 @@ mod spec_3_15_with_one_member {
         };
         handle.clone_into(&mut presence.handle);
         presence.mac = UNSET_MAC;
-        presence.mac = *keys
-            .mac(&wire::encode(&Payload::Presence(presence.clone())).unwrap())
-            .as_bytes();
+        presence.mac = keys.mac(&wire::encode(&Payload::Presence(presence.clone())).unwrap());
         wire::encode(&Payload::Presence(presence)).unwrap()
     }
 
@@ -2193,13 +2191,13 @@ mod spec_3_16_absences_on_one_machine {
         let mut amy = network.start_member();
         amy.init_through(&card, &host);
         host.wait_for_events("presence from amy", PRESENCE_WAIT, |events| {
-            presences_of(events, *card.id.as_bytes()) > 0
+            presences_of(events, wire::PublicKey::from(card.id)) > 0
         });
         amy.wait_for_time_to_pass(WallMs(wall_clock_ms()), ADDRESS_SETTLE);
 
-        let settled = presences_received_from(&host, *card.id.as_bytes());
+        let settled = presences_received_from(&host, wire::PublicKey::from(card.id));
         amy.wait_for_time_to_pass(WallMs(wall_clock_ms()), PRESENCE_QUIET_WINDOW);
-        let after_window = presences_received_from(&host, *card.id.as_bytes());
+        let after_window = presences_received_from(&host, wire::PublicKey::from(card.id));
 
         assert_eq!(after_window, settled);
     }

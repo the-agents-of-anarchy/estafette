@@ -497,7 +497,7 @@ fn print_host_line(
 ) -> Result<(), Failure> {
     let line = render_host_line(&HostAddr {
         v: Version::CURRENT,
-        id: *host.as_bytes(),
+        id: wire::PublicKey::from(*host),
         relay: domain.wire_url.clone(),
     })
     .map_err(Failure::HostLine)?;
@@ -752,7 +752,7 @@ impl BootstrapNode {
         let now_ms = (self.clock)();
         match payload {
             OpenedPayload::Infrastructure(record)
-                if record.record().host != *self.key.public().as_bytes() =>
+                if record.record().host != wire::PublicKey::from(self.key.public()) =>
             {
                 self.known_hosts
                     .take_infrastructure(
@@ -794,7 +794,7 @@ impl BootstrapNode {
         self.last_record.write(ts, filesystem)?;
         let record = Payload::Infrastructure(Infrastructure {
             v: Version::CURRENT,
-            host: *self.key.public().as_bytes(),
+            host: wire::PublicKey::from(self.key.public()),
             relay: self.answers.relay.clone(),
             addr: self.answers.address(),
             ts,
@@ -1192,7 +1192,7 @@ mod tests {
     fn spec_host_line(seed: u8) -> String {
         let host = HostAddr {
             v: Version::CURRENT,
-            id: *secret_key(seed).public().as_bytes(),
+            id: wire::PublicKey::from(secret_key(seed).public()),
             relay: wire::RelayUrl::try_from(SPEC_RELAY_URL.to_owned()).unwrap(),
         };
         format!("{}\n", render_host_line(&host).unwrap())
@@ -1395,7 +1395,10 @@ mod tests {
         assert_eq!(second_file, format!("{SECOND_RUN_TS}\n"));
         assert_eq!(mode_of(&counter_file), SPEC_OWNER_ONLY_MODE);
         for record in [first, second] {
-            assert_eq!(record.host, *secret_key(HOST_SEED).public().as_bytes());
+            assert_eq!(
+                record.host,
+                wire::PublicKey::from(secret_key(HOST_SEED).public())
+            );
             assert_eq!(record.relay.as_str(), SPEC_RELAY_URL);
             assert_eq!(
                 record
@@ -1663,7 +1666,7 @@ mod tests {
                     &secret_key(PEER_SEED),
                     Payload::PresenceRequest(wire::PresenceRequest {
                         v: Version::CURRENT,
-                        requester: *secret_key(PEER_SEED).public().as_bytes(),
+                        requester: wire::PublicKey::from(secret_key(PEER_SEED).public()),
                         seq: FROZEN_CLOCK_MS,
                         mac: ZERO_MAC,
                         sig: ZERO_SIGNATURE,
@@ -1904,12 +1907,12 @@ mod tests {
                     crate::net::direct::tests::unrecorded_register(),
                 );
                 let to_host = client
-                    .send_message(host.id(), message_to(*host.id().as_bytes()))
+                    .send_message(host.id(), message_to(wire::PublicKey::from(host.id())))
                     .await;
                 let to_peer_card = client
                     .send_message(
                         host.id(),
-                        message_to(*secret_key(PEER_SEED).public().as_bytes()),
+                        message_to(wire::PublicKey::from(secret_key(PEER_SEED).public())),
                     )
                     .await;
                 let probed = client.probe(host.id(), PROBE_NONCE).await;
@@ -2175,7 +2178,7 @@ mod tests {
     fn host_record(host_seed: u8, relay: &str, ts: u64) -> Payload {
         Payload::Infrastructure(Infrastructure {
             v: Version::CURRENT,
-            host: *secret_key(host_seed).public().as_bytes(),
+            host: wire::PublicKey::from(secret_key(host_seed).public()),
             relay: wire::RelayUrl::try_from(relay.to_owned()).unwrap(),
             addr: Addr::from_endpoint_report([relay.to_owned()], []),
             ts,
@@ -2259,7 +2262,7 @@ mod tests {
     fn peer_presence() -> Payload {
         Payload::Presence(wire::Presence {
             v: Version::CURRENT,
-            card: *secret_key(PEER_SEED).public().as_bytes(),
+            card: wire::PublicKey::from(secret_key(PEER_SEED).public()),
             handle: PEER_HANDLE.to_owned(),
             public: PEER_PUBLIC.to_vec(),
             attached: true,

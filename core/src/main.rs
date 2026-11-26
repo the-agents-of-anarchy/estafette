@@ -2307,11 +2307,11 @@ mod tests {
             let invitation = estafette::wire::Invitation {
                 v: estafette::wire::Version::CURRENT,
                 network: "lab".to_owned(),
-                secret: secret_bytes,
-                owner: [1; 32],
+                secret: estafette::crypto::NetworkSecret::from_bytes(secret_bytes),
+                owner: estafette::wire::PublicKey::from_bytes([1; 32]),
                 hosts: vec![estafette::wire::HostAddr {
                     v: estafette::wire::Version::CURRENT,
-                    id: [2; 32],
+                    id: estafette::wire::PublicKey::from_bytes([2; 32]),
                     relay: estafette::wire::RelayUrl::try_from(JOINED_HOST_RELAY.to_owned())
                         .unwrap(),
                 }],

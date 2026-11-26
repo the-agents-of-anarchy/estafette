@@ -572,13 +572,14 @@ impl PeerRows {
     /// Applies a gossip report of a new neighbor, returning the Introduce it calls for (spec 3.8).
     #[must_use]
     pub(crate) fn take_neighbor_up(&self, node: EndpointId, now_ms: u64) -> Vec<Effect> {
-        self.table().neighbor_up(*node.as_bytes(), now_ms)
+        self.table()
+            .neighbor_up(wire::PublicKey::from(node), now_ms)
     }
 
     /// Applies a gossip report of a lost neighbor, returning the Probe it calls for (spec 3.8).
     #[must_use]
     pub(crate) fn take_neighbor_down(&self, node: EndpointId, now_ms: u64) -> Vec<Effect> {
-        self.change(|table| table.neighbor_down(*node.as_bytes(), now_ms))
+        self.change(|table| table.neighbor_down(wire::PublicKey::from(node), now_ms))
     }
 
     /// Applies the answer to a direct request this node sent: an `IntroduceAck` as an introduction that spares the connection it came on, a failure as a failed contact, an acknowledged Probe as a contact that succeeded (spec 3.8).
@@ -624,7 +625,7 @@ impl NodeState {
         to_loop: mpsc::UnboundedSender<LoopEvent>,
         held_connections: HeldConnections,
     ) -> Self {
-        let own_card = *identity.card_key.public().as_bytes();
+        let own_card = wire::PublicKey::from(identity.card_key.public());
         Self {
             own_card,
             public: identity.public.clone(),
@@ -1248,7 +1249,7 @@ impl PresenceLoop {
             GossipEvent::NeighborUp(node) => {
                 #[cfg(test)]
                 {
-                    self.cause = Some(RequestCause::NeighborUp(*node.as_bytes()));
+                    self.cause = Some(RequestCause::NeighborUp(wire::PublicKey::from(node)));
                 }
                 self.rebinding.neighbor_up(node);
                 let effects = self.state.rows.take_neighbor_up(node, now_ms);
@@ -1258,11 +1259,11 @@ impl PresenceLoop {
                 #[cfg(test)]
                 {
                     self.cause = Some(RequestCause::NeighborDown {
-                        card: *node.as_bytes(),
+                        card: wire::PublicKey::from(node),
                         earlier_probes: self
                             .state
                             .rows
-                            .probes_for_neighbor_downs_of(*node.as_bytes()),
+                            .probes_for_neighbor_downs_of(wire::PublicKey::from(node)),
                     });
                 }
                 self.rebinding.neighbor_down(node);
@@ -2058,7 +2059,7 @@ pub(super) mod tests {
     }
 
     pub(in crate::node) fn card(seed: u8) -> crate::wire::PublicKey {
-        *secret_key(seed).public().as_bytes()
+        crate::wire::PublicKey::from(secret_key(seed).public())
     }
 
     struct EveryProcessRuns;
@@ -2118,9 +2119,12 @@ pub(super) mod tests {
                 [seed; KEY_LEN],
             )
             .unwrap();
-            let held =
-                crate::sidecar::claim(&sidecar_path, &card(seed), &crate::sidecar::ThreadSleep)
-                    .unwrap();
+            let held = crate::sidecar::claim(
+                &sidecar_path,
+                card(seed).as_bytes(),
+                &crate::sidecar::ThreadSleep,
+            )
+            .unwrap();
             (sidecar_path, held)
         }
 

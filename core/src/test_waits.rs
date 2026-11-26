@@ -234,7 +234,10 @@ mod tests {
         let (record, mut receiver) = recorded_events();
         record(GossipEvent::TopicJoined.into());
         record(ProcessEvent::ClockBeforeUnixEpoch.into());
-        record(GossipEvent::NeighborUp(ShortId::from(&[1; 32])).into());
+        record(
+            GossipEvent::NeighborUp(ShortId::from(&crate::wire::PublicKey::from_bytes([1; 32])))
+                .into(),
+        );
         record(GossipEvent::TopicJoined.into());
 
         let gossip = gossip_events_recorded_until(

@@ -181,7 +181,7 @@ impl HeldConnections {
 
     /// Holds a connection the gate just let through and follows what it hears until it closes, keeping it no more alive than its users do.
     pub(crate) fn hold(&self, connection: &Connection) {
-        let card = *connection.remote_id().as_bytes();
+        let card = wire::PublicKey::from(connection.remote_id());
         let weak = connection.weak_handle();
         let closed = weak.closed();
         let paths = connection.path_events();
@@ -740,7 +740,7 @@ impl<H> fmt::Debug for DirectServer<H> {
 
 impl<H: DirectHost> ProtocolHandler for DirectServer<H> {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let sender = *connection.remote_id().as_bytes();
+        let sender = wire::PublicKey::from(connection.remote_id());
         while let Ok((send, recv)) = connection.accept_bi().await {
             let shared = Arc::clone(&self.shared);
             let arrived_on = connection.clone();
@@ -1179,7 +1179,9 @@ impl DirectClient {
         if let Some(connection) = held.as_ref() {
             return Ok((connection.clone(), ConnectionSource::Held));
         }
-        self.register.close_gone_path_of(*to.as_bytes()).await;
+        self.register
+            .close_gone_path_of(wire::PublicKey::from(to))
+            .await;
         let dialed = self
             .endpoint()
             .connect(to, DIRECT_ALPN)
@@ -1294,7 +1296,7 @@ pub(crate) mod tests {
     }
 
     fn card_of(seed: u8) -> wire::PublicKey {
-        *SecretKey::from_bytes(&[seed; KEY_LEN]).public().as_bytes()
+        wire::PublicKey::from(SecretKey::from_bytes(&[seed; KEY_LEN]).public())
     }
 
     #[derive(Clone)]
@@ -2549,8 +2551,8 @@ pub(crate) mod tests {
             .connect(peer_node.endpoint().id(), DIRECT_ALPN)
             .await
             .unwrap();
-        let peer_short = data_encoding::HEXLOWER.encode(&card_of(CLIENT_SEED)[..5]);
-        let this_short = data_encoding::HEXLOWER.encode(&card_of(SERVER_SEED)[..5]);
+        let peer_short = data_encoding::HEXLOWER.encode(&card_of(CLIENT_SEED).as_bytes()[..5]);
+        let this_short = data_encoding::HEXLOWER.encode(&card_of(SERVER_SEED).as_bytes()[..5]);
 
         let opened = next_recorded(&mut this_side, "transport.connection_opened").await;
         let accepted = next_recorded(&mut peer_side, "transport.connection_opened").await;
@@ -2942,8 +2944,8 @@ pub(crate) mod tests {
         let refused_served = next_recorded(&mut served, "direct.request_served").await;
 
         let connection = field(&first_sent, "connection").cloned().unwrap();
-        let server_short = data_encoding::HEXLOWER.encode(&card_of(SERVER_SEED)[..5]);
-        let client_short = data_encoding::HEXLOWER.encode(&card_of(CLIENT_SEED)[..5]);
+        let server_short = data_encoding::HEXLOWER.encode(&card_of(SERVER_SEED).as_bytes()[..5]);
+        let client_short = data_encoding::HEXLOWER.encode(&card_of(CLIENT_SEED).as_bytes()[..5]);
         assert_eq!(
             first_sent,
             vec![
@@ -4061,7 +4063,7 @@ pub(crate) mod tests {
                 (
                     "peer",
                     serde_json::Value::from(
-                        data_encoding::HEXLOWER.encode(&card_of(CLIENT_SEED)[..5])
+                        data_encoding::HEXLOWER.encode(&card_of(CLIENT_SEED).as_bytes()[..5])
                     )
                 ),
                 ("code", serde_json::Value::from(SPEC_SUPERSEDED_CLOSE_CODE)),
@@ -4108,7 +4110,7 @@ pub(crate) mod tests {
                 selected_path_reported_by_each_held_of(&self.member.register, sender),
             );
             let member = Arc::clone(&self.member);
-            let introducer = EndpointId::from_bytes(&sender).unwrap();
+            let introducer = EndpointId::from_bytes(sender.as_bytes()).unwrap();
             let mut probe = Box::pin(async move { member.probe(introducer, PROBE_NONCE).await });
             let started = match probe
                 .as_mut()

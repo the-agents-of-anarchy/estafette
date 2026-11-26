@@ -300,7 +300,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
         )) else {
             panic!("an infrastructure record unseals as one");
         };
-        record.host = *host.public().as_bytes();
+        record.host = estafette::wire::PublicKey::from(host.public());
 
         scene.forger.broadcast(remacked(
             scene.network.keys(),
@@ -617,11 +617,13 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     fn member_reached_through_its_home_relay(card: &str, doomed: &KillableHost) -> HostAddr {
         HostAddr {
             v: Version::CURRENT,
-            id: HEXLOWER
-                .decode(card.as_bytes())
-                .unwrap()
-                .try_into()
-                .unwrap(),
+            id: estafette::wire::PublicKey::from_bytes(
+                HEXLOWER
+                    .decode(card.as_bytes())
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            ),
             relay: doomed.address().relay.clone(),
         }
     }
@@ -1100,7 +1102,7 @@ mod spec_3_15_two_members_through_the_live_host {
         });
         Payload::Presence(Presence {
             v: Version::CURRENT,
-            card: [u8::MAX; 32],
+            card: estafette::wire::PublicKey::from_bytes([u8::MAX; 32]),
             handle: "h".repeat(SPEC_ANNOUNCED_HANDLE_MAX_CHARACTERS),
             public: vec![b'p'; SPEC_PUBLIC_MAX_BYTES],
             attached: true,

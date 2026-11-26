@@ -7,6 +7,8 @@ use serde::de::{self, SeqAccess, Visitor};
 use serde::ser::SerializeTuple;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::crypto::{Mac, NetworkSecret};
+
 pub const WIRE_LIMIT_BYTES: usize = 1_114_112;
 pub const MESSAGE_BODY_LIMIT_BYTES: usize = 1_048_576;
 const PROTOCOL_VERSION: u8 = 1;
@@ -14,18 +16,37 @@ const MAX_RELAY_URLS_PER_ADDR: usize = 4;
 const MAX_DIRECT_ADDRS_PER_ADDR: usize = 8;
 pub const MAX_RELAY_URL_BYTES: usize = 128;
 const SIGNATURE_BYTES: usize = 64;
-const MAC_BYTES: usize = 32;
 const PROBE_NONCE_BYTES: usize = 16;
 const MESSAGE_ID_BYTES: usize = 16;
 const PUBLIC_KEY_BYTES: usize = 32;
-const SECRET_BYTES: usize = 32;
 pub(crate) const HIDDEN_SECRET_DEBUG_TEXT: &str = "..";
 
-pub type Mac = [u8; MAC_BYTES];
 pub type Nonce = [u8; PROBE_NONCE_BYTES];
 pub type MessageId = [u8; MESSAGE_ID_BYTES];
-pub type PublicKey = [u8; PUBLIC_KEY_BYTES];
-pub type Secret = [u8; SECRET_BYTES];
+
+/// The bytes of a card, host or owner key as they cross the wire, not yet judged a point of the curve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct PublicKey([u8; PUBLIC_KEY_BYTES]);
+
+impl PublicKey {
+    /// The key made of exactly these bytes.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; PUBLIC_KEY_BYTES]) -> Self {
+        Self(bytes)
+    }
+
+    /// The key's bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; PUBLIC_KEY_BYTES] {
+        &self.0
+    }
+}
+
+impl From<iroh::PublicKey> for PublicKey {
+    fn from(key: iroh::PublicKey) -> Self {
+        Self(*key.as_bytes())
+    }
+}
 
 /// A wire structure that failed to encode or decode, and why.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,7 +122,17 @@ macro_rules! checked_as_decoded {
     };
 }
 
-checked_as_decoded!(bool, u64, String, Option<String>, Vec<u8>, Mac, Nonce);
+checked_as_decoded!(
+    bool,
+    u64,
+    String,
+    Option<String>,
+    Vec<u8>,
+    Mac,
+    NetworkSecret,
+    PublicKey,
+    Nonce
+);
 
 impl<T: Checked> Checked for Vec<T> {
     type Raw = Vec<T::Raw>;
@@ -518,7 +549,7 @@ wire_struct_deriving! {
     pub struct Invitation {
         pub v: Version,
         pub network: String,
-        pub secret: Secret,
+        pub secret: NetworkSecret,
         pub owner: PublicKey,
         pub hosts: Vec<HostAddr>,
     }
@@ -584,6 +615,7 @@ mod tests {
 
     use super::*;
     use crate::card::tests::SPEC_PUBLIC_CAP_BYTES;
+    use crate::crypto::{KEY_LEN, MAC_LEN};
     use crate::seeded_draws::Draws;
 
     const GOSSIP_FRAME_BYTES: usize = 4096;
@@ -608,7 +640,7 @@ mod tests {
         + VERSION_BYTES
         + PUBLIC_KEY_BYTES
         + ZERO_VARINT_BYTES
-        + MAC_BYTES
+        + MAC_LEN
         + SIGNATURE_BYTES;
     const BYTE_VALUES: u64 = 256;
     const FLAG_VALUES: usize = 2;
@@ -637,7 +669,7 @@ mod tests {
     fn largest_presence() -> Payload {
         Payload::Presence(Presence {
             v: Version::CURRENT,
-            card: [0xAB; PUBLIC_KEY_BYTES],
+            card: key_of(0xAB),
             handle: "h".repeat(HANDLE_CAP_CHARACTERS),
             public: vec![0xCD; SPEC_PUBLIC_CAP_BYTES],
             attached: true,
@@ -646,7 +678,7 @@ mod tests {
                 (0..).take(MAX_DIRECT_ADDRS_PER_ADDR).map(global_v6),
             ),
             seq: u64::MAX,
-            mac: [0xEF; MAC_BYTES],
+            mac: mac_of(0xEF),
             sig: SignatureBytes([0x12; SIGNATURE_BYTES]),
         })
     }
@@ -670,7 +702,7 @@ mod tests {
         Request::Probe(Probe {
             v: Version::CURRENT,
             nonce: [7; PROBE_NONCE_BYTES],
-            mac: [9; MAC_BYTES],
+            mac: mac_of(9),
         })
     }
 
@@ -681,7 +713,7 @@ mod tests {
             public: Vec::new(),
             attached: false,
             addr,
-            mac: [3; MAC_BYTES],
+            mac: mac_of(3),
         })
     }
 
@@ -697,7 +729,7 @@ mod tests {
                     [relay_of_bytes(SHORT_RELAY_BYTES)],
                     [global_v6(4)],
                 ),
-                mac: [3; MAC_BYTES],
+                mac: mac_of(3),
             };
 
             let acknowledgement = IntroduceAck::from(introduce.clone());
@@ -714,9 +746,9 @@ mod tests {
     fn departure() -> Departure {
         Departure {
             v: Version::CURRENT,
-            card: [0xAA; PUBLIC_KEY_BYTES],
+            card: key_of(0xAA),
             seq: 0,
-            mac: [0xBB; MAC_BYTES],
+            mac: mac_of(0xBB),
             sig: SignatureBytes([0xCC; SIGNATURE_BYTES]),
         }
     }
@@ -817,7 +849,7 @@ mod tests {
     fn spec_3_13_host_addr_relay_of_129_bytes_does_not_decode() {
         let oversized = HostAddr {
             v: Version::CURRENT,
-            id: [1; PUBLIC_KEY_BYTES],
+            id: key_of(1),
             relay: RelayUrl(relay_of_bytes(MAX_RELAY_URL_BYTES + 1)),
         };
 
@@ -834,11 +866,11 @@ mod tests {
         let invitation = Invitation {
             v: Version::CURRENT,
             network: String::new(),
-            secret: [1; SECRET_BYTES],
-            owner: [2; PUBLIC_KEY_BYTES],
+            secret: secret_of(1),
+            owner: key_of(2),
             hosts: vec![HostAddr {
                 v: Version(UNSUPPORTED_VERSION),
-                id: [3; PUBLIC_KEY_BYTES],
+                id: key_of(3),
                 relay: RelayUrl(relay_of_bytes(SHORT_RELAY_BYTES)),
             }],
         };
@@ -932,12 +964,12 @@ mod tests {
         Request::Message(Message {
             v: Version::CURRENT,
             id: [0; MESSAGE_ID_BYTES],
-            to: [0; PUBLIC_KEY_BYTES],
+            to: key_of(0),
             handle: String::new(),
             attached: false,
             sent_at: 0,
             body: "b".repeat(body_bytes),
-            mac: [0; MAC_BYTES],
+            mac: mac_of(0),
         })
     }
 
@@ -990,12 +1022,12 @@ mod tests {
         let message = Request::Message(Message {
             v: Version::CURRENT,
             id: [1; MESSAGE_ID_BYTES],
-            to: [2; PUBLIC_KEY_BYTES],
+            to: key_of(2),
             handle: "h".repeat(HANDLE_CAP_CHARACTERS),
             attached: true,
             sent_at: u64::MAX,
             body: "b".repeat(MESSAGE_BODY_LIMIT_BYTES),
-            mac: [4; MAC_BYTES],
+            mac: mac_of(4),
         });
 
         assert_eq!(decode::<Request>(&encode(&message).unwrap()), Ok(message));
@@ -1036,16 +1068,16 @@ mod tests {
     const FALSE_FLAG: u8 = 0;
     const TRUE_FLAG: u8 = 1;
 
-    fn pinned_mac() -> Mac {
-        [PINNED_MAC_BYTE; MAC_BYTES]
+    fn mac_of(byte: u8) -> Mac {
+        Mac::from_bytes([byte; MAC_LEN])
     }
 
-    fn pinned_key(byte: u8) -> PublicKey {
-        [byte; PUBLIC_KEY_BYTES]
+    fn key_of(byte: u8) -> PublicKey {
+        PublicKey::from_bytes([byte; PUBLIC_KEY_BYTES])
     }
 
-    fn pinned_secret() -> Secret {
-        [PINNED_SECRET_BYTE; SECRET_BYTES]
+    fn secret_of(byte: u8) -> NetworkSecret {
+        NetworkSecret::from_bytes([byte; KEY_LEN])
     }
 
     fn assert_encodes_as<T: Wire>(structure: &T, expected_parts: &[&[u8]]) {
@@ -1057,12 +1089,12 @@ mod tests {
         let message = Request::Message(Message {
             v: Version::CURRENT,
             id: [PINNED_ID_BYTE; MESSAGE_ID_BYTES],
-            to: pinned_key(PINNED_KEY_BYTE),
+            to: key_of(PINNED_KEY_BYTE),
             handle: "h".to_owned(),
             attached: true,
             sent_at: u64::from(PINNED_SEQ),
             body: "b".to_owned(),
-            mac: pinned_mac(),
+            mac: mac_of(PINNED_MAC_BYTE),
         });
 
         assert_encodes_as(
@@ -1072,7 +1104,7 @@ mod tests {
                 &[PINNED_ID_BYTE; MESSAGE_ID_BYTES],
                 &[PINNED_KEY_BYTE; PUBLIC_KEY_BYTES],
                 &[1, b'h', TRUE_FLAG, PINNED_SEQ, 1, b'b'],
-                &[PINNED_MAC_BYTE; MAC_BYTES],
+                &[PINNED_MAC_BYTE; MAC_LEN],
             ],
         );
     }
@@ -1082,13 +1114,13 @@ mod tests {
         let probe = Request::Probe(Probe {
             v: Version::CURRENT,
             nonce: [PINNED_NONCE_BYTE; PROBE_NONCE_BYTES],
-            mac: pinned_mac(),
+            mac: mac_of(PINNED_MAC_BYTE),
         });
         let probe_ack = Response::ProbeAck(ProbeAck {
             v: Version::CURRENT,
             nonce: [PINNED_NONCE_BYTE; PROBE_NONCE_BYTES],
             attached: true,
-            mac: pinned_mac(),
+            mac: mac_of(PINNED_MAC_BYTE),
         });
 
         assert_encodes_as(
@@ -1096,7 +1128,7 @@ mod tests {
             &[
                 &[1, PROTOCOL_VERSION],
                 &[PINNED_NONCE_BYTE; PROBE_NONCE_BYTES],
-                &[PINNED_MAC_BYTE; MAC_BYTES],
+                &[PINNED_MAC_BYTE; MAC_LEN],
             ],
         );
         assert_encodes_as(
@@ -1105,7 +1137,7 @@ mod tests {
                 &[1, PROTOCOL_VERSION],
                 &[PINNED_NONCE_BYTE; PROBE_NONCE_BYTES],
                 &[TRUE_FLAG],
-                &[PINNED_MAC_BYTE; MAC_BYTES],
+                &[PINNED_MAC_BYTE; MAC_LEN],
             ],
         );
     }
@@ -1118,7 +1150,7 @@ mod tests {
             public: Vec::new(),
             attached: false,
             addr: Addr::from_endpoint_report([], []),
-            mac: pinned_mac(),
+            mac: mac_of(PINNED_MAC_BYTE),
         });
         let introduce_ack = Response::IntroduceAck(IntroduceAck {
             v: Version::CURRENT,
@@ -1126,12 +1158,12 @@ mod tests {
             public: Vec::new(),
             attached: false,
             addr: Addr::from_endpoint_report([], []),
-            mac: pinned_mac(),
+            mac: mac_of(PINNED_MAC_BYTE),
         });
         let body = [
             &[NONE_TAG, EMPTY_SEQUENCE, FALSE_FLAG][..],
             &EMPTY_ADDR,
-            &[PINNED_MAC_BYTE; MAC_BYTES],
+            &[PINNED_MAC_BYTE; MAC_LEN],
         ];
 
         assert_encodes_as(
@@ -1168,20 +1200,20 @@ mod tests {
     fn spec_3_7_presence_and_departure_encode_their_keys_as_bare_bytes() {
         let presence = Payload::Presence(Presence {
             v: Version::CURRENT,
-            card: pinned_key(PINNED_KEY_BYTE),
+            card: key_of(PINNED_KEY_BYTE),
             handle: "h".to_owned(),
             public: Vec::new(),
             attached: true,
             addr: Addr::from_endpoint_report([], []),
             seq: u64::from(PINNED_SEQ),
-            mac: pinned_mac(),
+            mac: mac_of(PINNED_MAC_BYTE),
             sig: SignatureBytes([PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES]),
         });
         let departure = Payload::Departure(Departure {
             v: Version::CURRENT,
-            card: pinned_key(PINNED_KEY_BYTE),
+            card: key_of(PINNED_KEY_BYTE),
             seq: u64::from(PINNED_SEQ),
-            mac: pinned_mac(),
+            mac: mac_of(PINNED_MAC_BYTE),
             sig: SignatureBytes([PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES]),
         });
 
@@ -1193,7 +1225,7 @@ mod tests {
                 &[1, b'h', EMPTY_SEQUENCE, TRUE_FLAG],
                 &EMPTY_ADDR,
                 &[PINNED_SEQ],
-                &[PINNED_MAC_BYTE; MAC_BYTES],
+                &[PINNED_MAC_BYTE; MAC_LEN],
                 &[PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES],
             ],
         );
@@ -1203,7 +1235,7 @@ mod tests {
                 &[1, PROTOCOL_VERSION],
                 &[PINNED_KEY_BYTE; PUBLIC_KEY_BYTES],
                 &[PINNED_SEQ],
-                &[PINNED_MAC_BYTE; MAC_BYTES],
+                &[PINNED_MAC_BYTE; MAC_LEN],
                 &[PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES],
             ],
         );
@@ -1213,17 +1245,17 @@ mod tests {
     fn spec_3_7_unreachable_and_presence_request_encode_their_keys_as_bare_bytes() {
         let unreachable = Payload::Unreachable(Unreachable {
             v: Version::CURRENT,
-            card: pinned_key(PINNED_KEY_BYTE),
-            reporter: pinned_key(PINNED_SECOND_KEY_BYTE),
+            card: key_of(PINNED_KEY_BYTE),
+            reporter: key_of(PINNED_SECOND_KEY_BYTE),
             ts: u64::from(PINNED_SEQ),
-            mac: pinned_mac(),
+            mac: mac_of(PINNED_MAC_BYTE),
             sig: SignatureBytes([PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES]),
         });
         let presence_request = Payload::PresenceRequest(PresenceRequest {
             v: Version::CURRENT,
-            requester: pinned_key(PINNED_KEY_BYTE),
+            requester: key_of(PINNED_KEY_BYTE),
             seq: u64::from(PINNED_SEQ),
-            mac: pinned_mac(),
+            mac: mac_of(PINNED_MAC_BYTE),
             sig: SignatureBytes([PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES]),
         });
 
@@ -1234,7 +1266,7 @@ mod tests {
                 &[PINNED_KEY_BYTE; PUBLIC_KEY_BYTES],
                 &[PINNED_SECOND_KEY_BYTE; PUBLIC_KEY_BYTES],
                 &[PINNED_SEQ],
-                &[PINNED_MAC_BYTE; MAC_BYTES],
+                &[PINNED_MAC_BYTE; MAC_LEN],
                 &[PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES],
             ],
         );
@@ -1244,7 +1276,7 @@ mod tests {
                 &[4, PROTOCOL_VERSION],
                 &[PINNED_KEY_BYTE; PUBLIC_KEY_BYTES],
                 &[PINNED_SEQ],
-                &[PINNED_MAC_BYTE; MAC_BYTES],
+                &[PINNED_MAC_BYTE; MAC_LEN],
                 &[PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES],
             ],
         );
@@ -1254,12 +1286,12 @@ mod tests {
     fn spec_3_7_infrastructure_encodes_its_keys_as_bare_bytes() {
         let infrastructure = Payload::Infrastructure(Infrastructure {
             v: Version::CURRENT,
-            host: pinned_key(PINNED_KEY_BYTE),
+            host: key_of(PINNED_KEY_BYTE),
             relay: RelayUrl("r".to_owned()),
             addr: Addr::from_endpoint_report([], []),
             ts: u64::from(PINNED_SEQ),
             cert: SignatureBytes([PINNED_CERTIFICATE_BYTE; SIGNATURE_BYTES]),
-            mac: pinned_mac(),
+            mac: mac_of(PINNED_MAC_BYTE),
             sig: SignatureBytes([PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES]),
         });
 
@@ -1272,7 +1304,7 @@ mod tests {
                 &EMPTY_ADDR,
                 &[PINNED_SEQ],
                 &[PINNED_CERTIFICATE_BYTE; SIGNATURE_BYTES],
-                &[PINNED_MAC_BYTE; MAC_BYTES],
+                &[PINNED_MAC_BYTE; MAC_LEN],
                 &[PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES],
             ],
         );
@@ -1282,14 +1314,14 @@ mod tests {
     fn spec_3_13_host_addr_and_invitation_encode_their_keys_as_bare_bytes() {
         let host = HostAddr {
             v: Version::CURRENT,
-            id: pinned_key(PINNED_KEY_BYTE),
+            id: key_of(PINNED_KEY_BYTE),
             relay: RelayUrl("r".to_owned()),
         };
         let invitation = Invitation {
             v: Version::CURRENT,
             network: "n".to_owned(),
-            secret: pinned_secret(),
-            owner: pinned_key(PINNED_SECOND_KEY_BYTE),
+            secret: secret_of(PINNED_SECRET_BYTE),
+            owner: key_of(PINNED_SECOND_KEY_BYTE),
             hosts: vec![host.clone()],
         };
 
@@ -1305,7 +1337,7 @@ mod tests {
             &invitation,
             &[
                 &[PROTOCOL_VERSION, 1, b'n'],
-                &[PINNED_SECRET_BYTE; SECRET_BYTES],
+                &[PINNED_SECRET_BYTE; KEY_LEN],
                 &[PINNED_SECOND_KEY_BYTE; PUBLIC_KEY_BYTES],
                 &[1, PROTOCOL_VERSION],
                 &[PINNED_KEY_BYTE; PUBLIC_KEY_BYTES],
@@ -1331,6 +1363,18 @@ mod tests {
 
         fn flag(&mut self) -> bool {
             self.below(FLAG_VALUES) == 1
+        }
+
+        fn mac(&mut self) -> Mac {
+            Mac::from_bytes(self.array())
+        }
+
+        fn public_key(&mut self) -> PublicKey {
+            PublicKey::from_bytes(self.array())
+        }
+
+        fn secret(&mut self) -> NetworkSecret {
+            NetworkSecret::from_bytes(self.array())
         }
 
         fn array<const N: usize>(&mut self) -> [u8; N] {
@@ -1384,12 +1428,12 @@ mod tests {
             Message {
                 v: Version::CURRENT,
                 id: self.array(),
-                to: self.array(),
+                to: self.public_key(),
                 handle: self.text(HANDLE_CAP_CHARACTERS),
                 attached: self.flag(),
                 sent_at: self.next_word(),
                 body: self.text(ROUND_TRIP_BODY_CAP_CHARACTERS),
-                mac: self.array(),
+                mac: self.mac(),
             }
         }
 
@@ -1397,7 +1441,7 @@ mod tests {
             Probe {
                 v: Version::CURRENT,
                 nonce: self.array(),
-                mac: self.array(),
+                mac: self.mac(),
             }
         }
 
@@ -1408,7 +1452,7 @@ mod tests {
                 public: self.blob(ROUND_TRIP_PUBLIC_CAP_BYTES),
                 attached: self.flag(),
                 addr: self.addr(),
-                mac: self.array(),
+                mac: self.mac(),
             }
         }
 
@@ -1427,7 +1471,7 @@ mod tests {
                 v: Version::CURRENT,
                 nonce: self.array(),
                 attached: self.flag(),
-                mac: self.array(),
+                mac: self.mac(),
             }
         }
 
@@ -1438,20 +1482,20 @@ mod tests {
                 public: self.blob(ROUND_TRIP_PUBLIC_CAP_BYTES),
                 attached: self.flag(),
                 addr: self.addr(),
-                mac: self.array(),
+                mac: self.mac(),
             }
         }
 
         fn presence(&mut self) -> Presence {
             Presence {
                 v: Version::CURRENT,
-                card: self.array(),
+                card: self.public_key(),
                 handle: self.text(HANDLE_CAP_CHARACTERS),
                 public: self.blob(ROUND_TRIP_PUBLIC_CAP_BYTES),
                 attached: self.flag(),
                 addr: self.addr(),
                 seq: self.next_word(),
-                mac: self.array(),
+                mac: self.mac(),
                 sig: self.signature(),
             }
         }
@@ -1459,9 +1503,9 @@ mod tests {
         fn departure(&mut self) -> Departure {
             Departure {
                 v: Version::CURRENT,
-                card: self.array(),
+                card: self.public_key(),
                 seq: self.next_word(),
-                mac: self.array(),
+                mac: self.mac(),
                 sig: self.signature(),
             }
         }
@@ -1469,10 +1513,10 @@ mod tests {
         fn unreachable(&mut self) -> Unreachable {
             Unreachable {
                 v: Version::CURRENT,
-                card: self.array(),
-                reporter: self.array(),
+                card: self.public_key(),
+                reporter: self.public_key(),
                 ts: self.next_word(),
-                mac: self.array(),
+                mac: self.mac(),
                 sig: self.signature(),
             }
         }
@@ -1480,12 +1524,12 @@ mod tests {
         fn infrastructure(&mut self) -> Infrastructure {
             Infrastructure {
                 v: Version::CURRENT,
-                host: self.array(),
+                host: self.public_key(),
                 relay: self.relay(),
                 addr: self.addr(),
                 ts: self.next_word(),
                 cert: self.signature(),
-                mac: self.array(),
+                mac: self.mac(),
                 sig: self.signature(),
             }
         }
@@ -1493,9 +1537,9 @@ mod tests {
         fn presence_request(&mut self) -> PresenceRequest {
             PresenceRequest {
                 v: Version::CURRENT,
-                requester: self.array(),
+                requester: self.public_key(),
                 seq: self.next_word(),
-                mac: self.array(),
+                mac: self.mac(),
                 sig: self.signature(),
             }
         }
@@ -1503,7 +1547,7 @@ mod tests {
         fn host_addr(&mut self) -> HostAddr {
             HostAddr {
                 v: Version::CURRENT,
-                id: self.array(),
+                id: self.public_key(),
                 relay: self.relay(),
             }
         }
@@ -1513,8 +1557,8 @@ mod tests {
             Invitation {
                 v: Version::CURRENT,
                 network: self.text(ROUND_TRIP_NETWORK_NAME_CAP_CHARACTERS),
-                secret: self.array(),
-                owner: self.array(),
+                secret: self.secret(),
+                owner: self.public_key(),
                 hosts: (0..host_count).map(|_| self.host_addr()).collect(),
             }
         }

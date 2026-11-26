@@ -511,7 +511,7 @@ mod tests {
             port: Some(RELAY_PORT),
             hash: relay_hash,
         };
-        let host = ShortId::from(&[RELAY_HOST_BYTE; 32]);
+        let host = ShortId::from(&crate::wire::PublicKey::from_bytes([RELAY_HOST_BYTE; 32]));
         let relay_fields = vec![
             ("kind", Value::from("relay")),
             ("port", Value::from(RELAY_PORT)),

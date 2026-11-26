@@ -980,7 +980,7 @@ mod tests {
         assert!(!stopping.exit.is_finished());
         sidecar::claim(
             &second.sidecar_path,
-            &card(SECOND_SEED),
+            card(SECOND_SEED).as_bytes(),
             &sidecar::ThreadSleep,
         )
         .unwrap();

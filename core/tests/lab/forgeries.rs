@@ -1,4 +1,4 @@
-use estafette::crypto::NetworkKeys;
+use estafette::crypto::{Mac, NetworkKeys};
 use estafette::payload::seal_payload;
 use estafette::wire::{
     self, Addr, Infrastructure, Payload, PresenceRequest, RelayUrl, SignatureBytes, Version,
@@ -24,7 +24,7 @@ pub fn infrastructure_record(
 ) -> Payload {
     Payload::Infrastructure(Infrastructure {
         v: Version::CURRENT,
-        host: *host.as_bytes(),
+        host: wire::PublicKey::from(*host),
         relay: RelayUrl::try_from(relay.to_owned()).unwrap(),
         addr: Addr::from_endpoint_report([relay.to_owned()], []),
         ts,
@@ -38,7 +38,7 @@ pub fn infrastructure_record(
 pub fn presence_request(requester: &iroh::PublicKey, seq: u64) -> Payload {
     Payload::PresenceRequest(PresenceRequest {
         v: Version::CURRENT,
-        requester: *requester.as_bytes(),
+        requester: wire::PublicKey::from(*requester),
         seq,
         mac: UNSET_MAC,
         sig: UNSIGNED,
@@ -58,11 +58,11 @@ pub fn unsealed(bytes: &[u8]) -> Payload {
 /// The payload as edited, its signature kept and its mac computed afresh under the network keys, as a forwarder holding the secret would send it.
 pub fn remacked(keys: &NetworkKeys, payload: Payload) -> Vec<u8> {
     let mac = keys.mac(&wire::encode(&with_mac(payload.clone(), UNSET_MAC)).unwrap());
-    wire::encode(&with_mac(payload, *mac.as_bytes())).unwrap()
+    wire::encode(&with_mac(payload, mac)).unwrap()
 }
 
 /// The payload carrying the mac.
-fn with_mac(mut payload: Payload, mac: wire::Mac) -> Payload {
+fn with_mac(mut payload: Payload, mac: Mac) -> Payload {
     match &mut payload {
         Payload::Presence(presence) => presence.mac = mac,
         Payload::Departure(departure) => departure.mac = mac,

@@ -4,11 +4,11 @@ use std::process::Command;
 
 use data_encoding::HEXLOWER;
 use estafette::config::{Host, HostOrigin, NetworkConfig};
-use estafette::crypto::{self, NetworkKeys};
+use estafette::crypto::NetworkKeys;
 use estafette::dirs::Directories;
 use estafette::invite::{parse_invitation, render_host_line};
-use estafette::keys::{NetworkSecret, render_network_secret, render_public_key};
-use estafette::wire::{HostAddr, Invitation, RelayUrl, SignatureBytes, Version};
+use estafette::keys::{render_network_secret, render_public_key};
+use estafette::wire::{self, HostAddr, Invitation, RelayUrl, SignatureBytes, Version};
 use iroh::{EndpointAddr, EndpointId, TransportAddr};
 use iroh_gossip::TopicId;
 
@@ -50,7 +50,7 @@ impl LiveNetwork {
         };
         let invitation = parse_invitation(text.trim())
             .unwrap_or_else(|refusal| panic!("{INVITATION_VARIABLE} is refused: {refusal}"));
-        let keys = NetworkKeys::derive(&crypto::NetworkSecret::from_bytes(invitation.secret));
+        let keys = NetworkKeys::derive(&invitation.secret);
         Self {
             invitation,
             keys,
@@ -87,7 +87,7 @@ impl LiveNetwork {
     pub fn host_address(&self) -> EndpointAddr {
         let host = &self.invitation.hosts[0];
         EndpointAddr::from_parts(
-            EndpointId::from_bytes(&host.id).unwrap(),
+            EndpointId::from_bytes(host.id.as_bytes()).unwrap(),
             [TransportAddr::Relay(host.relay.as_str().parse().unwrap())],
         )
     }
@@ -117,12 +117,14 @@ impl LiveNetwork {
     /// The network configuration of the invitation, naming the hosts given in place of the invitation's.
     fn configuration_through(&self, hosts: &[HostAddr]) -> NetworkConfig {
         NetworkConfig {
-            secret: render_network_secret(&NetworkSecret::from_bytes(self.invitation.secret)),
-            owner: render_public_key(&iroh::PublicKey::from_bytes(&self.invitation.owner).unwrap()),
+            secret: render_network_secret(&self.invitation.secret),
+            owner: render_public_key(
+                &iroh::PublicKey::from_bytes(self.invitation.owner.as_bytes()).unwrap(),
+            ),
             hosts: hosts
                 .iter()
                 .map(|host| Host {
-                    id: HEXLOWER.encode(&host.id),
+                    id: HEXLOWER.encode(host.id.as_bytes()),
                     relay: host.relay.as_str().to_owned(),
                     ts: None,
                     origin: HostOrigin::Configured,
@@ -135,7 +137,7 @@ impl LiveNetwork {
     pub fn certify(&self, host: &iroh::PublicKey) -> SignatureBytes {
         let host_line = render_host_line(&HostAddr {
             v: Version::CURRENT,
-            id: *host.as_bytes(),
+            id: wire::PublicKey::from(*host),
             relay: RelayUrl::try_from(self.host_relay().to_owned()).unwrap(),
         })
         .unwrap();

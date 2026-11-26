@@ -27,7 +27,7 @@ pub fn presence_signed_by_at(
 ) -> Vec<u8> {
     let presence = Payload::Presence(Presence {
         v: Version::CURRENT,
-        card: *signer.public().as_bytes(),
+        card: estafette::wire::PublicKey::from(signer.public()),
         handle: handle.to_owned(),
         public: EMPTY_PUBLIC.to_vec(),
         attached: false,

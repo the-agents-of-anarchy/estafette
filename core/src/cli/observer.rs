@@ -566,7 +566,7 @@ async fn start_observation(
     .await
     .map_err(Failure::Bind)?;
     seed_lookup_with_known_hosts(&endpoint, &setup.hosts);
-    let own_card = *secret_key.public().as_bytes();
+    let own_card = wire::PublicKey::from(secret_key.public());
     let (to_loop, from_loop) = mpsc::unbounded_channel();
     let host = Arc::new(ObserverHost {
         endpoint: endpoint.endpoint().clone(),
@@ -913,7 +913,7 @@ async fn request_presence(
     broadcast_recorded(
         topic,
         key,
-        presence_request(*key.public().as_bytes(), now_ms),
+        presence_request(wire::PublicKey::from(key.public()), now_ms),
         report,
     )
     .await
@@ -940,30 +940,30 @@ fn payload_line(payload: &OpenedPayload) -> Result<String, Failure> {
         OpenedPayload::Presence(presence) => tab_separated_line(&[
             PRESENCE_KIND,
             &json_text(PRESENCE_KIND, &presence.v)?,
-            &hex_text(&presence.card),
+            &hex_text(presence.card.as_bytes()),
             &presence.handle,
             &public_text(&presence.public),
             &presence.attached.to_string(),
             &json_text(PRESENCE_KIND, &presence.addr)?,
             &presence.seq.to_string(),
-            &hex_text(&presence.mac),
+            &hex_text(presence.mac.as_bytes()),
             &hex_text(&presence.sig.0),
         ]),
         OpenedPayload::Departure(departure) => tab_separated_line(&[
             DEPARTURE_KIND,
             &json_text(DEPARTURE_KIND, &departure.v)?,
-            &hex_text(&departure.card),
+            &hex_text(departure.card.as_bytes()),
             &departure.seq.to_string(),
-            &hex_text(&departure.mac),
+            &hex_text(departure.mac.as_bytes()),
             &hex_text(&departure.sig.0),
         ]),
         OpenedPayload::Unreachable(report) => tab_separated_line(&[
             UNREACHABLE_KIND,
             &json_text(UNREACHABLE_KIND, &report.v)?,
-            &hex_text(&report.card),
-            &hex_text(&report.reporter),
+            &hex_text(report.card.as_bytes()),
+            &hex_text(report.reporter.as_bytes()),
             &report.ts.to_string(),
-            &hex_text(&report.mac),
+            &hex_text(report.mac.as_bytes()),
             &hex_text(&report.sig.0),
         ]),
         OpenedPayload::Infrastructure(valid) => {
@@ -971,21 +971,21 @@ fn payload_line(payload: &OpenedPayload) -> Result<String, Failure> {
             tab_separated_line(&[
                 INFRASTRUCTURE_KIND,
                 &json_text(INFRASTRUCTURE_KIND, &record.v)?,
-                &hex_text(&record.host),
+                &hex_text(record.host.as_bytes()),
                 record.relay.as_str(),
                 &json_text(INFRASTRUCTURE_KIND, &record.addr)?,
                 &record.ts.to_string(),
                 &hex_text(&record.cert.0),
-                &hex_text(&record.mac),
+                &hex_text(record.mac.as_bytes()),
                 &hex_text(&record.sig.0),
             ])
         }
         OpenedPayload::PresenceRequest(request) => tab_separated_line(&[
             PRESENCE_REQUEST_KIND,
             &json_text(PRESENCE_REQUEST_KIND, &request.v)?,
-            &hex_text(&request.requester),
+            &hex_text(request.requester.as_bytes()),
             &request.seq.to_string(),
-            &hex_text(&request.mac),
+            &hex_text(request.mac.as_bytes()),
             &hex_text(&request.sig.0),
         ]),
     })
@@ -1988,7 +1988,7 @@ mod tests {
             Vec::new(),
         )));
         let neighbor = RecordingNeighbor {
-            card: *secret_key(NEIGHBOR_SEED).public().as_bytes(),
+            card: wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public()),
             introduces: Arc::clone(&introduces),
             announced: Arc::clone(&announced),
         };
@@ -2047,7 +2047,7 @@ mod tests {
 
     /// Waits until the observer lists the neighbor, which it does once it has applied the neighbor's answer to its Introduce, failing with what it holds when the wait ends first.
     async fn neighbor_listed_by(observer: &ObserverHost, within: Duration) {
-        let neighbor = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        let neighbor = wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public());
         found_within(within, async || {
             observer
                 .table()
@@ -2232,7 +2232,7 @@ mod tests {
                         &secret_key(NEIGHBOR_SEED),
                         Payload::PresenceRequest(wire::PresenceRequest {
                             v: Version::CURRENT,
-                            requester: *secret_key(NEIGHBOR_SEED).public().as_bytes(),
+                            requester: wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public()),
                             seq: wall_clock_ms(),
                             mac: ZERO_MAC,
                             sig: ZERO_SIGNATURE,
@@ -2249,7 +2249,7 @@ mod tests {
         let presence_request = Some(serde_json::Value::from(PRESENCE_REQUEST_EVENT_KIND));
         assert_eq!(
             sent.map(|request| request.requester),
-            Some(*secret_key(OBSERVER_SEED).public().as_bytes())
+            Some(wire::PublicKey::from(secret_key(OBSERVER_SEED).public()))
         );
         assert!(
             kinds_and_peers_recorded_as(&recorded_through_the_end, PAYLOAD_ACCEPTED)
@@ -2277,7 +2277,7 @@ mod tests {
     /// The seq of the neighbor's presence request.
     const NEIGHBOR_REQUEST_SEQ: u64 = 1_000_005;
     /// The card the neighbor reports unreachable.
-    const REPORTED_CARD: wire::PublicKey = [8; 32];
+    const REPORTED_CARD: wire::PublicKey = wire::PublicKey::from_bytes([8; 32]);
 
     /// The address the neighbor's presence announces: one relay and one direct address.
     fn neighbor_address() -> Addr {
@@ -2289,7 +2289,7 @@ mod tests {
 
     /// One payload of each kind the neighbor signs, every field set to a value no other field holds.
     fn neighbor_payloads() -> [Payload; 5] {
-        let card = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        let card = wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public());
         let certificate = crate::crypto::sign_host_certificate(
             &secret_key(OWNER_SEED),
             &secret_key(NEIGHBOR_SEED).public(),
@@ -2356,7 +2356,7 @@ mod tests {
             Payload::Infrastructure(record) => (record.mac, record.sig),
             Payload::PresenceRequest(request) => (request.mac, request.sig),
         };
-        (HEXLOWER.encode(&mac), HEXLOWER.encode(&sig.0))
+        (HEXLOWER.encode(mac.as_bytes()), HEXLOWER.encode(&sig.0))
     }
 
     /// The line `tail` must print for each of the neighbor's payloads, every field in its spec 3.7 order.
@@ -2385,7 +2385,7 @@ mod tests {
             ),
             format!(
                 "unreachable\t1\t{}\t{card}\t{NEIGHBOR_REPORT_TS}\t{}\t{}\n",
-                HEXLOWER.encode(&REPORTED_CARD),
+                HEXLOWER.encode(REPORTED_CARD.as_bytes()),
                 report.0,
                 report.1
             ),
@@ -2480,7 +2480,7 @@ mod tests {
     /// The neighbor's payloads the observer judges by its clock: a fresh Presence, a Departure past the announcement max age, its host record and a presence request.
     fn payloads_judged_at_the_observer_clock() -> [Payload; 4] {
         let [_, _, _, record, request] = neighbor_payloads();
-        let card = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        let card = wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public());
         [
             Payload::Presence(wire::Presence {
                 v: Version::CURRENT,
@@ -2918,7 +2918,7 @@ mod tests {
     fn neighbor_presence_announcing(addr: Addr) -> Payload {
         Payload::Presence(wire::Presence {
             v: Version::CURRENT,
-            card: *secret_key(NEIGHBOR_SEED).public().as_bytes(),
+            card: wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public()),
             handle: NEIGHBOR_HANDLE.to_owned(),
             public: NEIGHBOR_PUBLIC.to_vec(),
             attached: true,
@@ -2931,7 +2931,7 @@ mod tests {
 
     /// An Unreachable report the neighbor signs about itself, stamped now.
     fn neighbor_reporting_itself_unreachable() -> Payload {
-        let neighbor = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        let neighbor = wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public());
         Payload::Unreachable(wire::Unreachable {
             v: Version::CURRENT,
             card: neighbor,
@@ -2946,7 +2946,7 @@ mod tests {
     fn neighbor_departing() -> Payload {
         Payload::Departure(wire::Departure {
             v: Version::CURRENT,
-            card: *secret_key(NEIGHBOR_SEED).public().as_bytes(),
+            card: wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public()),
             seq: wall_clock_ms(),
             mac: ZERO_MAC,
             sig: ZERO_SIGNATURE,
@@ -3033,7 +3033,7 @@ mod tests {
         observer: &ObserverHost,
         sent_ms: u64,
     ) {
-        let neighbor = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        let neighbor = wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public());
         let taken = tokio::time::timeout(PAYLOAD_WAIT, async {
             while !observer
                 .rows
@@ -3261,7 +3261,7 @@ mod tests {
         recorded: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
         seq: u64,
     ) -> Vec<RecordedEvent> {
-        let requester = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        let requester = wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public());
         neighbor
             .topic
             .broadcast(&secret_key(NEIGHBOR_SEED), presence_request(requester, seq))
@@ -3292,7 +3292,9 @@ mod tests {
     /// What a node listing the peers and dialing through the endpoint holds for the neighbor now.
     async fn held_neighbor(peers: &[Peer], endpoint: &BoundEndpoint) -> HeldNeighbor {
         let neighbor = secret_key(NEIGHBOR_SEED).public();
-        let entry = peers.iter().find(|peer| peer.card == *neighbor.as_bytes());
+        let entry = peers
+            .iter()
+            .find(|peer| peer.card == wire::PublicKey::from(neighbor));
         let lookup = match endpoint.address_lookup() {
             Ok(lookup) => match lookup.resolve(neighbor).next().await {
                 Some(Ok(Ok(item))) => Some(item.into_endpoint_addr()),
@@ -3336,7 +3338,7 @@ mod tests {
 
     /// Waits until the member holds the neighbor and the observer holds both, so each introduction a neighbor report started is answered, failing with what each holds when the wait ends first.
     async fn introduced_to_member_and_joined_observer(member: &Member, observer: &ObserverHost) {
-        let neighbor = *secret_key(NEIGHBOR_SEED).public().as_bytes();
+        let neighbor = wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public());
         let mut last_held = None;
         let introduced_in_time = found_within(SAME_ROWS_WAIT, async || {
             let member_holds_neighbor =
@@ -3347,7 +3349,8 @@ mod tests {
                 .map(|peer| peer.card)
                 .collect();
             let observer_holds_neighbor = held_by_observer.contains(&neighbor);
-            let observer_holds_member = held_by_observer.contains(member.address.id.as_bytes());
+            let observer_holds_member =
+                held_by_observer.contains(&wire::PublicKey::from(member.address.id));
             let held = (
                 member_holds_neighbor,
                 observer_holds_neighbor,
@@ -3519,7 +3522,7 @@ mod tests {
     const PEER_FIELD_COUNT: usize = 4;
 
     fn card_of(seed: u8) -> wire::PublicKey {
-        [seed; 32]
+        wire::PublicKey::from_bytes([seed; 32])
     }
 
     fn message_from(handle: &str, attached: bool) -> Message {

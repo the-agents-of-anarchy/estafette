@@ -103,12 +103,12 @@ impl LocalNetwork {
 
     /// Adds by the binary's own command a configured host whose relay never answers, so a member always knows a host and may rebind.
     pub fn add_host_that_never_answers(&self) {
-        self.add_host_named(*SecretKey::generate().public().as_bytes());
+        self.add_host_named(wire::PublicKey::from(SecretKey::generate().public()));
     }
 
     /// Adds by the binary's own command the stand-in host as a configured host whose relay never answers, so every member sends it its join.
     pub fn add_stand_in_host_to_the_configuration(&self, host: &ScriptedNode) {
-        self.add_host_named(*host.id().as_bytes());
+        self.add_host_named(wire::PublicKey::from(host.id()));
     }
 
     /// Adds by the binary's own command a configured host of that node id whose relay never answers.
@@ -223,7 +223,7 @@ impl LocalNetwork {
         DirectServer::new(
             NetworkKeys::clone(&self.keys),
             ScriptedMemberHost {
-                card: *key.public().as_bytes(),
+                card: wire::PublicKey::from(key.public()),
                 handle: handle.to_owned(),
             },
             endpoint,

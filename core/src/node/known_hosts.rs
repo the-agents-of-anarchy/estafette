@@ -74,7 +74,7 @@ pub fn seed_lookup_with_known_hosts(
                 host.id,
                 [TransportAddr::Relay(host.relay.clone())],
             ));
-            seeded.push(*host.id.as_bytes());
+            seeded.push(wire::PublicKey::from(host.id));
         }
     }
     seeded
@@ -225,7 +225,7 @@ impl HeldHosts {
         if record.ts > latest_accepted_ts {
             return Err(PayloadDropRule::RecordPastFutureBound);
         }
-        let id = data_encoding::HEXLOWER.encode(&record.host);
+        let id = data_encoding::HEXLOWER.encode(record.host.as_bytes());
         let Some(host) = self.config.hosts.iter_mut().find(|host| host.id == id) else {
             self.config.hosts.push(Host {
                 id,

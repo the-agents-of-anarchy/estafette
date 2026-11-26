@@ -199,17 +199,17 @@ mod tests {
     use super::*;
     use crate::clock::RuntimeClock;
     use crate::crypto::{
-        KEY_LEN, MAC_LEN, NetworkSecret, SignedPayloadKind, sign_host_certificate,
+        KEY_LEN, MAC_LEN, Mac, NetworkSecret, SignedPayloadKind, sign_host_certificate,
     };
     use crate::event::{RunRecord, TransportEvent};
     use crate::net::direct::tests::StandingClock;
     use crate::net::endpoint::{BoundEndpoint, NodeEndpoint};
-    use crate::payload::{PayloadDropRule, PayloadFacts, PayloadStamp};
+    use crate::payload::{PayloadDropRule, PayloadFacts, PayloadStamp, ZERO_MAC};
     use crate::test_waits::{
         answered_within, found_within, next_recorded, recorded_events, secret_key,
     };
     use crate::wire::{
-        Addr, Departure, Infrastructure, Presence, RelayUrl, SignatureBytes, Version, encode,
+        self, Addr, Departure, Infrastructure, Presence, RelayUrl, SignatureBytes, Version, encode,
     };
     use iroh::Signature;
     use iroh_gossip::ALPN as GOSSIP_ALPN;
@@ -351,13 +351,13 @@ mod tests {
     fn presence_of(seed: u8, handle: &str, seq: u64) -> Payload {
         Payload::Presence(Presence {
             v: Version::CURRENT,
-            card: *secret_key(seed).public().as_bytes(),
+            card: wire::PublicKey::from(secret_key(seed).public()),
             handle: handle.to_owned(),
             public: b"{}".to_vec(),
             attached: true,
             addr: Addr::from_endpoint_report([HOST_RELAY.to_owned()], std::iter::empty()),
             seq,
-            mac: [0; 32],
+            mac: ZERO_MAC,
             sig: SignatureBytes([0; 64]),
         })
     }
@@ -369,12 +369,12 @@ mod tests {
         presence
     }
 
-    fn forged_departure(signature: SignatureBytes, mac_of: impl Fn(&[u8]) -> [u8; 32]) -> Vec<u8> {
+    fn forged_departure(signature: SignatureBytes, mac_of: impl Fn(&[u8]) -> Mac) -> Vec<u8> {
         let unsealed = Departure {
             v: Version::CURRENT,
-            card: *secret_key(FIRST_SEED).public().as_bytes(),
+            card: wire::PublicKey::from(secret_key(FIRST_SEED).public()),
             seq: FORGED_DEPARTURE_SEQ,
-            mac: [0; 32],
+            mac: ZERO_MAC,
             sig: signature,
         };
         let mac = mac_of(&encode(&Payload::Departure(unsealed.clone())).unwrap());
@@ -384,7 +384,7 @@ mod tests {
     fn uncertified_infrastructure() -> Payload {
         Payload::Infrastructure(Infrastructure {
             v: Version::CURRENT,
-            host: *secret_key(HOST_SEED).public().as_bytes(),
+            host: wire::PublicKey::from(secret_key(HOST_SEED).public()),
             relay: RelayUrl::try_from(HOST_RELAY.to_owned()).unwrap(),
             addr: Addr::from_endpoint_report([HOST_RELAY.to_owned()], std::iter::empty()),
             ts: UNCERTIFIED_RECORD_TS,
@@ -395,7 +395,7 @@ mod tests {
                 )
                 .to_bytes(),
             ),
-            mac: [0; 32],
+            mac: ZERO_MAC,
             sig: SignatureBytes([0; 64]),
         })
     }
@@ -441,7 +441,7 @@ mod tests {
         PayloadRefusal {
             facts: Some(PayloadFacts {
                 kind: SignedPayloadKind::Departure,
-                signer: *secret_key(FIRST_SEED).public().as_bytes(),
+                signer: wire::PublicKey::from(secret_key(FIRST_SEED).public()),
                 stamp: PayloadStamp::Seq(FORGED_DEPARTURE_SEQ),
             }),
             rule,
@@ -489,7 +489,7 @@ mod tests {
         );
         assert_eq!(
             presence_in(arrived.remove(0)).card,
-            *secret_key(SECOND_SEED).public().as_bytes()
+            wire::PublicKey::from(secret_key(SECOND_SEED).public())
         );
     }
 
@@ -497,9 +497,7 @@ mod tests {
     async fn test_10_payload_with_a_valid_mac_and_a_signature_that_does_not_verify_never_reaches_the_node()
      {
         let keys = keys();
-        let forged = forged_departure(SignatureBytes([5; 64]), |zeroed| {
-            *keys.mac(zeroed).as_bytes()
-        });
+        let forged = forged_departure(SignatureBytes([5; 64]), |zeroed| keys.mac(zeroed));
 
         dropped_while_the_next_good_presence_arrives(
             forged,
@@ -515,9 +513,9 @@ mod tests {
             &secret_key(FIRST_SEED),
             Payload::Departure(Departure {
                 v: Version::CURRENT,
-                card: *secret_key(FIRST_SEED).public().as_bytes(),
+                card: wire::PublicKey::from(secret_key(FIRST_SEED).public()),
                 seq: FORGED_DEPARTURE_SEQ,
-                mac: [0; 32],
+                mac: ZERO_MAC,
                 sig: SignatureBytes([0; 64]),
             }),
         )
@@ -546,7 +544,7 @@ mod tests {
             PayloadRefusal {
                 facts: Some(PayloadFacts {
                     kind: SignedPayloadKind::Infrastructure,
-                    signer: *secret_key(HOST_SEED).public().as_bytes(),
+                    signer: wire::PublicKey::from(secret_key(HOST_SEED).public()),
                     stamp: PayloadStamp::Ts(UNCERTIFIED_RECORD_TS),
                 }),
                 rule: PayloadDropRule::HostNotCertified,
@@ -774,7 +772,10 @@ mod tests {
             .unwrap();
         let presence = presence_in(next_payload(&mut first_topic).await);
 
-        assert_eq!(presence.card, *secret_key(SECOND_SEED).public().as_bytes());
+        assert_eq!(
+            presence.card,
+            wire::PublicKey::from(secret_key(SECOND_SEED).public())
+        );
         assert_eq!(presence.handle, "bob");
         assert_eq!(presence.seq, 7);
     }

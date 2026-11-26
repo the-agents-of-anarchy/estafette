@@ -342,7 +342,7 @@ fn tail_of(observer: &LabMachine, network: &LiveNetwork) -> Tail {
 
 /// The host's node id.
 fn host_node(host: &HostAddr) -> PublicKey {
-    PublicKey::from_bytes(&host.id)
+    PublicKey::from_bytes(host.id.as_bytes())
         .unwrap_or_else(|refusal| panic!("host id {:?} is no node id: {refusal}", host.id))
 }
 

@@ -12,14 +12,14 @@ pub struct ShortId([u8; SHORT_ID_BYTES]);
 
 impl From<&wire::PublicKey> for ShortId {
     fn from(id: &wire::PublicKey) -> Self {
-        let [first, second, third, fourth, fifth, ..] = *id;
+        let [first, second, third, fourth, fifth, ..] = *id.as_bytes();
         Self([first, second, third, fourth, fifth])
     }
 }
 
 impl From<EndpointId> for ShortId {
     fn from(id: EndpointId) -> Self {
-        Self::from(id.as_bytes())
+        Self::from(&wire::PublicKey::from(id))
     }
 }
 
