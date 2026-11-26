@@ -22,6 +22,9 @@ pub const TASK_RUNNER: &str = "just";
 const OWNER_MACHINE_RECIPE: &str = "remote::estafette";
 /// The variable that recipe takes the binary's path from.
 pub const LAB_BINARY_VARIABLE: &str = "LAB_BINARY";
+/// What a failure says of the invitation variable when it is set to a value that is not unicode, after the variable's name, never the value.
+const INVITATION_NOT_UNICODE_FAILURE: &str =
+    "is set but not valid unicode, so the live network cannot be joined";
 /// What a failure to read the invitation tells its reader to do, after why.
 const INVITATION_EXPORTED_BY: &str =
     "run `just gate::acceptance`, which exports it from the live lab host";
@@ -40,7 +43,11 @@ impl LiveNetwork {
         let text = match run_records.invitation() {
             Ok(Some(text)) => text.to_owned(),
             Ok(None) => panic!("{INVITATION_VARIABLE} is unset: {INVITATION_EXPORTED_BY}"),
-            Err(unreadable) => panic!("{unreadable}: {INVITATION_EXPORTED_BY}"),
+            Err(_not_unicode) => {
+                panic!(
+                    "{INVITATION_VARIABLE} {INVITATION_NOT_UNICODE_FAILURE}: {INVITATION_EXPORTED_BY}"
+                )
+            }
         };
         let invitation = parse_invitation(text.trim())
             .unwrap_or_else(|refusal| panic!("{INVITATION_VARIABLE} is refused: {refusal}"));
@@ -165,14 +172,14 @@ impl LiveNetwork {
 mod tests {
     use std::fs::{self, File};
 
-    use super::LiveNetwork;
+    use super::{INVITATION_NOT_UNICODE_FAILURE, LiveNetwork};
     use crate::scratch_machine::owned_process::{
         FAILED_TEST_EXIT_CODE, FIXTURE_ENDED_WITHIN, FIXTURE_STANDARD_ERROR, FIXTURE_VARIABLE,
         fixture_run_within,
     };
     use crate::scratch_machine::{
-        INVITATION_NOT_UNICODE, INVITATION_VARIABLE, PLANTED_UNREADABLE_INVITATION_MARKER,
-        fresh_directory, planted_invitation_not_unicode, remove_scratch,
+        INVITATION_VARIABLE, PLANTED_UNREADABLE_INVITATION_MARKER, fresh_directory,
+        planted_invitation_not_unicode, remove_scratch,
     };
 
     /// The fixture that reads the live network while the invitation variable is not unicode, by the name the test harness runs it by.
@@ -204,7 +211,9 @@ mod tests {
         remove_scratch::remove_scratch(&scratch).unwrap();
         assert_eq!(run.exit.code(), Some(FAILED_TEST_EXIT_CODE), "{printed}");
         assert!(
-            printed.contains(&format!("{INVITATION_VARIABLE} {INVITATION_NOT_UNICODE}")),
+            printed.contains(&format!(
+                "{INVITATION_VARIABLE} {INVITATION_NOT_UNICODE_FAILURE}"
+            )),
             "{printed}"
         );
         assert!(
