@@ -12,7 +12,7 @@ use crate::card::{Card, CardInvalid, CardUnusable};
 use crate::cli::lines::tab_separated_line;
 use crate::dirs::{
     CARD_EXTENSION, CARDS_DIRECTORY_VARIABLE, CARDS_SUBDIRECTORY, CardsDirectoryOverride,
-    Directories, DirectoriesError, DirectoryFilesystem, OperatingSystemFilesystem,
+    Directories, DirectoriesError, DirectoryFilesystem, KEY_EXTENSION, OperatingSystemFilesystem,
 };
 use crate::errors::ExitStatus;
 use crate::event::{ProcessEvent, write_run_record};
@@ -33,7 +33,7 @@ fn cards_directory_description() -> String {
 fn create_card_long_about() -> String {
     let cards_directory = cards_directory_description();
     format!(
-        "Create a card with a fresh key for a network.\n\nReads: the cards directory of the network, which is {cards_directory}; nothing of the network configuration.\nProduces: the configuration, data and runtime directories of this program, readable by you alone, when missing; the card file <card>.{CARD_EXTENSION} with mode {CARD_FILE_MODE:04o} and the key file <card>.key, readable by you alone, in that directory, created when missing; the card's public key, as lowercase hexadecimal, on stdout.\nRefuses: a network, a card or a handle that breaks this rule: {}; a card or key file of that name that already exists, overwriting neither.",
+        "Create a card with a fresh key for a network.\n\nReads: the cards directory of the network, which is {cards_directory}; nothing of the network configuration.\nProduces: the configuration, data and runtime directories of this program, readable by you alone, when missing; the card file <card>.{CARD_EXTENSION} with mode {CARD_FILE_MODE:04o} and the key file <card>.{KEY_EXTENSION}, readable by you alone, in that directory, created when missing; the card's public key, as lowercase hexadecimal, on stdout.\nRefuses: a network, a card or a handle that breaks this rule: {}; a card or key file of that name that already exists, overwriting neither.",
         HandleError::NotAHandle
     )
 }

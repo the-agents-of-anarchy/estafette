@@ -6,6 +6,7 @@ use iroh::{PublicKey, SecretKey, Signature};
 pub const KEY_LEN: usize = 32;
 pub const MAC_LEN: usize = 32;
 const HOST_CERTIFICATE_PREFIX: &[u8] = b"estafette-host-cert-v1";
+const CERTIFICATE_LINE_END: char = '\n';
 const TOPIC_CONTEXT: &str = "messaging topic v1";
 const MAC_CONTEXT: &str = "messaging mac v1";
 const GATE_CONTEXT: &str = "messaging gate v1";
@@ -86,6 +87,14 @@ pub const HOST_CERTIFICATE_HEX_CHARS: usize = Signature::LENGTH * 2;
 #[must_use]
 pub fn render_host_certificate(certificate: &Signature) -> String {
     HEXLOWER.encode(&certificate.to_bytes())
+}
+
+/// Reads a host certificate from 128 lowercase hexadecimal characters and an optional final newline.
+pub(crate) fn parse_host_certificate(text: &str) -> Option<Signature> {
+    let digits = text.strip_suffix(CERTIFICATE_LINE_END).unwrap_or(text);
+    let bytes: [u8; Signature::LENGTH] =
+        HEXLOWER.decode(digits.as_bytes()).ok()?.try_into().ok()?;
+    Some(Signature::from_bytes(&bytes))
 }
 
 /// Accepts the certificate only when the owner key signed this host's node id.

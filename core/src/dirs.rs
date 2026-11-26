@@ -18,9 +18,11 @@ pub use estafette_trace::{
 const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 const PERMISSION_BITS: u32 = 0o777;
 const GROUP_AND_OTHER_PERMISSION_BITS: u32 = 0o077;
-const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
+pub(crate) const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
+#[cfg(test)]
+pub(crate) const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
 const CONFIG_HOME_UNDER_HOME: &str = ".config";
-const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
+pub(crate) const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
 const TEMPORARY_DIRECTORY_VARIABLE: &str = "TMPDIR";
 const SYSTEM_TEMPORARY_DIRECTORY: &str = "/tmp";
 pub(crate) const CARDS_DIRECTORY_VARIABLE: &str = "ESTAFETTE_CARDS_DIR";
@@ -30,7 +32,7 @@ const INFRASTRUCTURE_SUBDIRECTORY: &str = "infra";
 const NETWORK_CONFIG_EXTENSION: &str = "toml";
 const OWNER_KEY_EXTENSION: &str = "owner.key";
 pub const CARD_EXTENSION: &str = "yaml";
-const KEY_EXTENSION: &str = "key";
+pub(crate) const KEY_EXTENSION: &str = "key";
 const CERTIFICATE_EXTENSION: &str = "cert";
 const LAST_RECORD_TIMESTAMP_EXTENSION: &str = "ts";
 const CERTIFICATE_CACHE_EXTENSION: &str = "certs";
@@ -582,7 +584,6 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
 
-    const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
     const HOME_VARIABLE: &str = "HOME";
     const FAKE_USER_ID: u32 = 4242;
     const SPEC_PRIVATE_DIRECTORY_MODE: u32 = 0o700;

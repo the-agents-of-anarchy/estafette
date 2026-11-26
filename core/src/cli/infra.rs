@@ -12,7 +12,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Subcommand;
-use data_encoding::HEXLOWER;
 use iroh::endpoint::BindError;
 use iroh::protocol::Router;
 use iroh::{RelayUrl, SecretKey, Signature};
@@ -26,7 +25,9 @@ use tokio::time::{Instant, Interval, MissedTickBehavior, interval};
 use super::debug::DebugArgs;
 use super::network::NetworkFilesystem;
 use crate::config::{ConfigError, MILLIS_PER_SECOND, NetworkConfig, write_atomically};
-use crate::crypto::{GateKey, HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, verify_host_certificate};
+use crate::crypto::{
+    GateKey, HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, parse_host_certificate, verify_host_certificate,
+};
 use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use crate::event::{RunRecord, TransportEvent};
 use crate::handle::Handle;
@@ -538,14 +539,6 @@ fn certifying_certificate(
     Ok(certificate)
 }
 
-/// Reads 128 lowercase hexadecimal characters and an optional final newline as a signature.
-fn parse_host_certificate(text: &str) -> Option<Signature> {
-    let digits = text.strip_suffix(LINE_END).unwrap_or(text);
-    let bytes: [u8; Signature::LENGTH] =
-        HEXLOWER.decode(digits.as_bytes()).ok()?.try_into().ok()?;
-    Some(Signature::from_bytes(&bytes))
-}
-
 /// The last record counter this host sent and the file that keeps it, starting from zero when the file is lost.
 struct LastRecord {
     ts: u64,
@@ -943,9 +936,7 @@ mod tests {
     const SPEC_QUIC_ADDRESS_DISCOVERY_ADDRESS: &str = "192.0.2.7:7842";
     const FROZEN_CLOCK_SECONDS: u64 = FROZEN_CLOCK_MS / MILLIS_PER_SECOND;
     const SCRATCH_PREFIX: &str = "estafette-infra";
-    const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
-    const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
-    const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
+    use crate::dirs::{CONFIG_HOME_VARIABLE, DATA_HOME_VARIABLE, RUNTIME_DIRECTORY_VARIABLE};
     const PEER_SEED: u8 = 125;
     const SECOND_PEER_SEED: u8 = 126;
     const BIND_WAIT: Duration = Duration::from_secs(5);

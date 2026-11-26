@@ -11,7 +11,7 @@ use crate::config::{
     with_cleanup_outcome, write_new_file_atomically,
 };
 use crate::handle::Handle;
-use data_encoding::{HEXLOWER, HEXLOWER_PERMISSIVE};
+use crate::keys::{parse_secret_key, render_public_key, render_secret_key};
 use iroh::{PublicKey, SecretKey};
 
 pub(crate) const CARD_FILE_MODE: u32 = 0o644;
@@ -166,9 +166,10 @@ fn create_card_removing_files_with(
     require_directory_of(card_path)?;
     let sidecar_directory = require_directory_of(sidecar_path)?;
     refuse_existing_card(card_path)?;
-    let public_key = SecretKey::from_bytes(&seed).public();
-    write_sidecar_durably(sidecar_path, sidecar_directory, &seed)?;
-    write_card(card_path, handle, public_key.as_bytes(), remove_temporary)
+    let secret_key = SecretKey::from_bytes(&seed);
+    let public_key = secret_key.public();
+    write_sidecar_durably(sidecar_path, sidecar_directory, &secret_key)?;
+    write_card(card_path, handle, &public_key, remove_temporary)
         .map_err(|failure| failed_card_write(failure, card_path, sidecar_path, remove_sidecar))?;
     Ok(public_key)
 }
@@ -215,10 +216,10 @@ fn require_directory_of(path: &Path) -> Result<&Path, SidecarError> {
 fn write_sidecar_durably(
     sidecar_path: &Path,
     sidecar_directory: &Path,
-    seed: &[u8; SEED_BYTES],
+    secret_key: &SecretKey,
 ) -> Result<(), SidecarError> {
     let mut file = create_new_owner_only_file(sidecar_path).map_err(creation_failure)?;
-    file.write_all(format!("{}{LINE_TERMINATOR}", HEXLOWER.encode(seed)).as_bytes())?;
+    file.write_all(render_secret_key(secret_key).as_bytes())?;
     file.sync_all()?;
     File::open(sidecar_directory)?.sync_all()?;
     Ok(())
@@ -227,12 +228,12 @@ fn write_sidecar_durably(
 fn write_card(
     card_path: &Path,
     handle: &str,
-    public_key: &[u8; PUBLIC_KEY_BYTES],
+    public_key: &PublicKey,
     remove_temporary: impl FnOnce(&Path) -> io::Result<()>,
 ) -> io::Result<()> {
     let contents = format!(
         "{HANDLE_FIELD}: {handle}{LINE_TERMINATOR}{PUBLIC_KEY_FIELD}: {}{LINE_TERMINATOR}",
-        HEXLOWER.encode(public_key)
+        render_public_key(public_key)
     );
     write_new_file_atomically(card_path, &contents, CARD_FILE_MODE, remove_temporary)
 }
@@ -267,17 +268,9 @@ fn read_secret_key(source: impl Read) -> Result<SecretKey, SidecarError> {
     source
         .take(u64::try_from(SIDECAR_READ_LIMIT_BYTES).map_err(io::Error::other)?)
         .read_to_end(&mut contents)?;
-    let hex = contents
-        .strip_suffix(LINE_TERMINATOR.as_bytes())
-        .unwrap_or(&contents);
-    let seed: [u8; SEED_BYTES] = HEXLOWER_PERMISSIVE
-        .decode(hex)
-        .ok()
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or(SidecarError::Invalid(
-            InvalidSidecar::SeedNotThirtyTwoHexBytes,
-        ))?;
-    Ok(SecretKey::from_bytes(&seed))
+    let not_a_seed = || SidecarError::Invalid(InvalidSidecar::SeedNotThirtyTwoHexBytes);
+    let text = std::str::from_utf8(&contents).map_err(|_not_utf8| not_a_seed())?;
+    parse_secret_key(text).map_err(|_refused| not_a_seed())
 }
 
 fn require_public_key_matches(
@@ -313,6 +306,7 @@ mod tests {
     use super::*;
     use crate::dirs::scratch::{ScratchDirectory, names_in, scratch_directory};
     use crate::seeded_draws::Draws;
+    use data_encoding::HEXLOWER;
 
     struct NoPause;
 

@@ -1039,6 +1039,9 @@ mod tests {
     const AWAITED_SHUTDOWN_ENDS_WITHIN: Duration = Duration::from_millis(2000);
     const BLOCKING_READ_THAT_NEVER_RETURNS_IN_TIME: Duration = Duration::from_secs(10);
     const SPEC_PROGRAM_PURPOSE: &str = "Messaging between agents across machines and harnesses";
+    const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
+    const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
+    const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
     /// Sends no iroh line anywhere: one test process runs many traced commands, and a process holds one global subscriber.
     const IROH_LINES_LEFT_OUT: InstallIrohLines = |_trace| Ok(());
     /// Sets no panic hook: one test process runs many traced commands, and a process holds one panic hook.
@@ -1057,9 +1060,6 @@ mod tests {
 
     /// A scratch root for the test, removed when the guard drops, and the environment naming its three base directories.
     fn scratch_environment(prefix: &str) -> (ScratchRoot, impl Fn(&str) -> Option<OsString>) {
-        const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
-        const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
-        const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
         const CONFIG_HOME_UNDER_ROOT: &str = "c";
         const DATA_HOME_UNDER_ROOT: &str = "d";
         const RUNTIME_DIRECTORY_UNDER_ROOT: &str = "r";
@@ -1337,9 +1337,6 @@ mod tests {
     #[test]
     fn spec_3_13_standard_error_stays_writable_by_another_thread_while_a_command_runs() {
         const OTHER_THREAD_WRITES_WITHIN: Duration = Duration::from_millis(2000);
-        const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
-        const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
-        const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
         const SCRATCH_PREFIX: &str = "estafette-stderr-writable";
         let root = crate::fresh_directory::fresh_directory_in(
             &std::env::temp_dir(),
@@ -2151,9 +2148,6 @@ mod tests {
     #[test]
     fn spec_3_14_run_infrastructure_without_a_certificate_prints_the_host_line_and_exits_1() {
         const SCRATCH_PREFIX: &str = "estafette-infra-main";
-        const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
-        const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
-        const RUNTIME_DIRECTORY_VARIABLE: &str = "XDG_RUNTIME_DIR";
         const SECRET_SEED_BYTE: u8 = 3;
         let root = crate::fresh_directory::fresh_directory_in(
             &std::env::temp_dir(),
