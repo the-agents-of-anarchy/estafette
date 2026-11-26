@@ -837,10 +837,7 @@ mod tests {
                     eprintln!("could not stop the fake process {pid}: {error}");
                 }
             }
-            if let Err(failure) = crate::remove_scratch::remove_scratch(&self.directory) {
-                assert!(std::thread::panicking(), "{failure}");
-                eprintln!("{failure}");
-            }
+            crate::scratch_removal::remove_when_the_test_ends(&self.directory);
         }
     }
 

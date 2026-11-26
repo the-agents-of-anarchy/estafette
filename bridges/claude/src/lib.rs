@@ -14,5 +14,8 @@ mod ratelimit;
 #[path = "../../../core/tests/common/remove_scratch.rs"]
 mod remove_scratch;
 #[cfg(test)]
+#[path = "../../../core/src/scratch_removal.rs"]
+mod scratch_removal;
+#[cfg(test)]
 mod seeded;
 pub mod session_files;
