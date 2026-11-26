@@ -1008,6 +1008,10 @@ mod fresh_directory;
 mod remove_scratch;
 
 #[cfg(test)]
+#[path = "../tests/common/this_process_directory.rs"]
+mod this_process_directory;
+
+#[cfg(test)]
 #[path = "scratch_removal.rs"]
 mod scratch_removal;
 
@@ -1062,9 +1066,9 @@ mod tests {
         const CONFIG_HOME_UNDER_ROOT: &str = "c";
         const DATA_HOME_UNDER_ROOT: &str = "d";
         const RUNTIME_DIRECTORY_UNDER_ROOT: &str = "r";
-        let root = crate::fresh_directory::fresh_directory_in(
+        let root = crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("{prefix}-{}", std::process::id()),
+            prefix,
         )
         .unwrap();
         let base = root.clone();
@@ -1337,9 +1341,9 @@ mod tests {
     fn spec_3_13_standard_error_stays_writable_by_another_thread_while_a_command_runs() {
         const OTHER_THREAD_WRITES_WITHIN: Duration = Duration::from_millis(2000);
         const SCRATCH_PREFIX: &str = "estafette-stderr-writable";
-        let root = crate::fresh_directory::fresh_directory_in(
+        let root = crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("{SCRATCH_PREFIX}-{}", std::process::id()),
+            SCRATCH_PREFIX,
         )
         .unwrap();
         let _scratch_removed_when_the_test_ends = ScratchRoot(root.clone());
@@ -2148,9 +2152,9 @@ mod tests {
     fn spec_3_14_run_infrastructure_without_a_certificate_prints_the_host_line_and_exits_1() {
         const SCRATCH_PREFIX: &str = "estafette-infra-main";
         const SECRET_SEED_BYTE: u8 = 3;
-        let root = crate::fresh_directory::fresh_directory_in(
+        let root = crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("{SCRATCH_PREFIX}-{}", std::process::id()),
+            SCRATCH_PREFIX,
         )
         .unwrap();
         let base = root.clone();
@@ -2229,9 +2233,9 @@ mod tests {
     /// Runs the command line on a scratch machine and returns the environment variable names the process looked up.
     fn variables_looked_up_by(arguments: &[&str]) -> Vec<String> {
         const SCRATCH_PREFIX: &str = "estafette-variables-looked-up";
-        let root = crate::fresh_directory::fresh_directory_in(
+        let root = crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("{SCRATCH_PREFIX}-{}", std::process::id()),
+            SCRATCH_PREFIX,
         )
         .unwrap();
         let _scratch_removed_when_the_test_ends = ScratchRoot(root.clone());

@@ -389,9 +389,9 @@ mod tests {
     /// Spec 3.3 and 3.8: a host learned from its record leaves the file at a later save exactly when more than 30 days have passed since it was heard.
     #[tokio::test]
     async fn spec_3_3_a_save_keeps_a_learned_host_exactly_while_it_was_heard_within_30_days() {
-        let root = crate::fresh_directory::fresh_directory_in(
+        let root = crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("known-hosts-expiry-{}", std::process::id()),
+            "known-hosts-expiry",
         )
         .unwrap();
         let endpoint = bind(FIRST_SEED).await;

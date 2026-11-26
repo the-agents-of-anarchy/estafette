@@ -509,9 +509,9 @@ mod tests {
 
         async fn without_peers(tag: &str) -> Self {
             let slot = LAB_SLOT.acquire().await.unwrap();
-            let root = crate::fresh_directory::fresh_directory_in(
+            let root = crate::this_process_directory::fresh_directory_of_this_process_in(
                 &std::env::temp_dir(),
-                &format!("u28-{tag}-{}", std::process::id()),
+                &format!("u28-{tag}"),
             )
             .unwrap();
             let base = root.clone();

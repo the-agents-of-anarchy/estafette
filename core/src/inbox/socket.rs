@@ -431,9 +431,9 @@ mod tests {
     }
 
     fn scratch_directories(test_name: &str) -> Directories {
-        let root = crate::fresh_directory::fresh_directory_in(
+        let root = crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("e15-{test_name}-{}", std::process::id()),
+            &format!("e15-{test_name}"),
         )
         .unwrap();
         let environment = move |name: &str| match name {

@@ -479,9 +479,9 @@ pub(crate) mod scratch {
     }
 
     pub fn scratch_directory(module: &str, test_name: &str) -> ScratchDirectory {
-        let directory = crate::fresh_directory::fresh_directory_in(
+        let directory = crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estafette-{module}-{test_name}-{}", std::process::id()),
+            &format!("estafette-{module}-{test_name}"),
         )
         .unwrap();
         ScratchDirectory(directory)

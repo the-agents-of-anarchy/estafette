@@ -987,9 +987,9 @@ mod tests {
 
     impl Scratch {
         fn new(tag: &str) -> Self {
-            let root = crate::fresh_directory::fresh_directory_in(
+            let root = crate::this_process_directory::fresh_directory_of_this_process_in(
                 &std::env::temp_dir(),
-                &format!("{SCRATCH_PREFIX}-{tag}-{}", std::process::id()),
+                &format!("{SCRATCH_PREFIX}-{tag}"),
             )
             .unwrap();
             let base = root.clone();

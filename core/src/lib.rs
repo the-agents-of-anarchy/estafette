@@ -33,5 +33,8 @@ pub mod sidecar;
 pub mod stream_items;
 #[cfg(test)]
 mod test_waits;
+#[cfg(test)]
+#[path = "../tests/common/this_process_directory.rs"]
+mod this_process_directory;
 pub mod trace;
 pub mod wire;

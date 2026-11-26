@@ -1067,9 +1067,9 @@ mod tests {
 
     impl Machine {
         fn new(tag: &str) -> Self {
-            let root = crate::fresh_directory::fresh_directory_in(
+            let root = crate::this_process_directory::fresh_directory_of_this_process_in(
                 &std::env::temp_dir(),
-                &format!("mcp-{tag}-{}", std::process::id()),
+                &format!("mcp-{tag}"),
             )
             .unwrap();
             Self { root }

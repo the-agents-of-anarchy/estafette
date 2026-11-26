@@ -1430,9 +1430,9 @@ mod tests {
 
     /// The trace directory under a fresh data home for the test.
     fn trace_directory_for(test_name: &str) -> (std::path::PathBuf, crate::dirs::TraceDirectory) {
-        let root = crate::fresh_directory::fresh_directory_in(
+        let root = crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estafette-rebind-{test_name}-{}", std::process::id()),
+            &format!("estafette-rebind-{test_name}"),
         )
         .unwrap();
         let data_home = root.join("data");

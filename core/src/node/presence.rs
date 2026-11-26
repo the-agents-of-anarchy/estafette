@@ -2082,9 +2082,9 @@ pub(super) mod tests {
     impl Scratch {
         pub(in crate::node) async fn new(tag: &str) -> Self {
             let slot = NODE_TEST_SLOTS.acquire().await.unwrap();
-            let root = crate::fresh_directory::fresh_directory_in(
+            let root = crate::this_process_directory::fresh_directory_of_this_process_in(
                 &std::env::temp_dir(),
-                &format!("u20-{tag}-{}", std::process::id()),
+                &format!("u20-{tag}"),
             )
             .unwrap();
             let base = root.clone();

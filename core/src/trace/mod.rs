@@ -193,9 +193,9 @@ mod tests {
 
     /// A fresh scratch root for the test and the trace directory under its data home.
     fn scratch_trace_directory(test_name: &str) -> (PathBuf, TraceDirectory) {
-        let root = crate::fresh_directory::fresh_directory_in(
+        let root = crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estafette-trace-{test_name}-{}", std::process::id()),
+            &format!("estafette-trace-{test_name}"),
         )
         .unwrap();
         let data_home = root.join("data");
