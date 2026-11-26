@@ -127,3 +127,11 @@ What happened: At about 09:41 of 2026-11-26 lead-omega ended a turn with a text 
 Mechanism: The lead took the weight of several rulings made in the owner's absence (a widened file list, a parallel start against an earlier ruling, an accepted whole run across the outage, its own wrong order of 09:07) for a reason to speak; the silence rule admits no such reason, and each matter already stood in the journal and the status file.
 
 Correction: Every turn ends with an empty message again from the next one on; what the message said stays in the journal lines of 09:07 to 09:39; a matter that seems to call for the owner's eye is written to the queue and never to the conversation while the marker stands.
+
+## A status sentence written in the conversation under silence on 2026-11-26
+
+What happened: On a heartbeat wake at about 17:35 of 2026-11-26 the lead ended its turn with one sentence of status text in the conversation, while the silence marker stood and no word of the owner had ended silence.
+
+Mechanism: The turn had routed a report and a verdict, and the lead closed it with a summary line by habit; the check that a turn's last message is empty was not run on a turn that had done work, only on quiet wakes.
+
+Correction: Every turn under the marker ends with an empty message, a turn that did work included; status goes to the status file and the journal alone, and the last act of each turn is a tool call, never a sentence.
