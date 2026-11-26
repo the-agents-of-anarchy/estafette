@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use super::fresh_directory::fresh_directory_in;
 use super::recipe_run::{RecipeFailure, succeeded};
 use super::remove_scratch::remove_scratch;
+use super::this_process_directory::fresh_directory_of_this_process_in;
 use super::trace_reader::{WritingProcess, timeline_read_as};
 use super::{
     KeptAs, KeptSecrets, files_beneath_for_keeping, fresh_kept_directory, keep_file, keep_mark,
@@ -242,11 +242,10 @@ fn staged_fetch(
     server: &str,
     run: &impl Fn(ServerMemberStep<'_>) -> io::Result<Output>,
 ) -> StagedFetch {
-    match fresh_directory_in(
+    match fresh_directory_of_this_process_in(
         &std::env::temp_dir(),
         &format!(
-            "{STAGING_PREFIX}-{}-{}-{server}-{member}",
-            std::process::id(),
+            "{STAGING_PREFIX}-{}-{server}-{member}",
             NEXT_STAGED_FETCH.fetch_add(1, Ordering::Relaxed)
         ),
     ) {
@@ -383,13 +382,13 @@ mod tests {
     use std::process::ExitStatus;
 
     use super::*;
-    use crate::scratch_machine::fresh_directory::fresh_directory_in;
     use crate::scratch_machine::recipe_run::fail_unless_succeeded;
     use crate::scratch_machine::remove_scratch::remove_scratch;
     use crate::scratch_machine::tests::{
         KEPT_BENEATH_NOT_A_DIRECTORY, NOT_A_DIRECTORY, READABLE, UNWRITABLE, files_listed_beneath,
         member_line_naming,
     };
+    use crate::scratch_machine::this_process_directory::fresh_directory_of_this_process_in;
     use crate::scratch_machine::trace_reader::tests::{
         MEMBER_LINE, second_line_still_zero_at_its_start_sized_ahead,
     };
@@ -475,9 +474,9 @@ mod tests {
         tag: &str,
         secrets: &io::Result<KeptSecrets>,
     ) -> (ServerMemberEnd, BTreeSet<PathBuf>) {
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estafette-server-member-{tag}-test-{}", std::process::id()),
+            &format!("estafette-server-member-{tag}-test"),
         )
         .unwrap();
         let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
@@ -606,12 +605,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_member_whose_stop_failed_is_kept_with_a_mark_beside_its_run_record_saying_so_and_one_that_stopped_with_none()
      {
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-server-member-kept-stop-failure-test-{}",
-                std::process::id()
-            ),
+            "estafette-server-member-kept-stop-failure-test",
         )
         .unwrap();
         let secrets = secrets_of_the_member();
@@ -667,12 +663,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_server_member_whose_failed_stop_cannot_be_marked_names_the_mark()
     {
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-server-member-unwritten-stop-mark-test-{}",
-                std::process::id()
-            ),
+            "estafette-server-member-unwritten-stop-mark-test",
         )
         .unwrap();
         let card = "a".repeat(LONGEST_FILE_NAME.saturating_sub(kept_name(SERVER, "").len()));
@@ -709,12 +702,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_server_member_whose_kept_directory_turns_unwritable_names_each_kept_file_not_written()
      {
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-server-member-unwritable-test-{}",
-                std::process::id()
-            ),
+            "estafette-server-member-unwritable-test",
         )
         .unwrap();
         let kept = kept_in.join(kept_name(SERVER, MEMBER));
@@ -764,12 +754,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_server_member_whose_failed_run_record_read_cannot_be_marked_names_the_mark()
      {
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-server-member-unwritten-read-mark-test-{}",
-                std::process::id()
-            ),
+            "estafette-server-member-unwritten-read-mark-test",
         )
         .unwrap();
         let kept = kept_in.join(kept_name(SERVER, MEMBER));
@@ -807,12 +794,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_server_members_mark_holding_a_recipes_secret_is_kept_redacted_with_its_note_beside_it()
      {
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-server-member-redacted-marks-test-{}",
-                std::process::id()
-            ),
+            "estafette-server-member-redacted-marks-test",
         )
         .unwrap();
         let refusal = format!("{RECIPE_REFUSAL} {PLANTED_TOKEN}");
@@ -934,12 +918,9 @@ mod tests {
     #[test]
     fn observability_decision_15_a_server_member_whose_kept_directory_cannot_be_made_on_a_test_that_was_not_failing_has_its_timeline_fetched_and_printed()
      {
-        let scratch = fresh_directory_in(
+        let scratch = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-server-member-unkept-timeline-test-{}",
-                std::process::id()
-            ),
+            "estafette-server-member-unkept-timeline-test",
         )
         .unwrap();
         let not_a_directory = scratch.join(NOT_A_DIRECTORY);
@@ -1028,12 +1009,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_server_members_trace_file_holding_the_text_of_its_key_file_is_left_on_the_server_and_named_in_the_mark_beside_its_kept_trace_files()
      {
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-server-member-left-on-server-test-{}",
-                std::process::id()
-            ),
+            "estafette-server-member-left-on-server-test",
         )
         .unwrap();
         let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
@@ -1080,12 +1058,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_server_members_fetch_whose_print_counts_no_file_left_on_the_server_fails_a_test_that_was_not_failing_and_is_marked()
      {
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-server-member-uncounted-fetch-test-{}",
-                std::process::id()
-            ),
+            "estafette-server-member-uncounted-fetch-test",
         )
         .unwrap();
         let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {
@@ -1128,12 +1103,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_server_members_fetched_trace_file_holding_its_invitation_or_a_token_is_kept_redacted_with_a_note_beside_it_and_any_other_byte_for_byte()
      {
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-server-member-redacted-test-{}",
-                std::process::id()
-            ),
+            "estafette-server-member-redacted-test",
         )
         .unwrap();
         let neither_bytes = [b'n', b'o', 0xff, 0x00, b'\n'];
@@ -1216,9 +1188,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_server_member_whose_stop_and_run_record_read_failed_still_has_its_trace_files_fetched_and_each_failure_answered()
      {
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estafette-server-member-end-test-{}", std::process::id()),
+            "estafette-server-member-end-test",
         )
         .unwrap();
         let steps_run = RefCell::new(Vec::new());
@@ -1288,9 +1260,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_server_member_whose_stop_failed_fails_a_test_that_was_not_failing_once_every_fetch_has_run_beside_its_mark()
      {
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estafette-server-member-stop-test-{}", std::process::id()),
+            "estafette-server-member-stop-test",
         )
         .unwrap();
         let steps_run = RefCell::new(Vec::new());
@@ -1345,9 +1317,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_failing_test_whose_server_members_kept_directory_cannot_be_made_answers_that_failure_and_still_fetches_its_trace_files_for_the_timeline()
      {
-        let scratch = fresh_directory_in(
+        let scratch = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estafette-server-member-unkept-test-{}", std::process::id()),
+            "estafette-server-member-unkept-test",
         )
         .unwrap();
         let not_a_directory = scratch.join(NOT_A_DIRECTORY);
@@ -1436,9 +1408,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_server_members_failed_run_record_read_and_failed_fetch_are_each_marked_beside_what_is_kept_so_a_partial_fetch_cannot_be_read_as_whole()
      {
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estafette-server-member-marked-test-{}", std::process::id()),
+            "estafette-server-member-marked-test",
         )
         .unwrap();
         let fetch_refusal = format!("ssh: the stream broke after {PLANTED_TOKEN}");
@@ -1500,12 +1472,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_server_members_fetched_file_that_cannot_be_read_is_not_kept_but_marked_and_answered_and_the_others_are_kept()
      {
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-server-member-unread-fetched-test-{}",
-                std::process::id()
-            ),
+            "estafette-server-member-unread-fetched-test",
         )
         .unwrap();
         let stand_in_for_the_recipes = |step: ServerMemberStep<'_>| match step {

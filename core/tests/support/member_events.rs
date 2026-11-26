@@ -97,8 +97,8 @@ mod tests {
     use std::fs;
 
     use super::*;
-    use crate::fresh_directory::fresh_directory_in;
     use crate::remove_scratch::remove_scratch;
+    use crate::this_process_directory::fresh_directory_of_this_process_in;
     use crate::trace_reader::parse_trace_lines;
     use crate::trace_reader::tests::{
         MEMBER_LINE, MEMBER_RUN, second_line_still_zero_at_its_start_sized_ahead,
@@ -112,7 +112,8 @@ mod tests {
     #[test]
     fn observability_decision_12_a_live_wait_that_runs_out_prints_the_lines_before_one_still_zero_filled()
      {
-        let traces = fresh_directory_in(&std::env::temp_dir(), SCRATCH_NAME).unwrap();
+        let traces =
+            fresh_directory_of_this_process_in(&std::env::temp_dir(), SCRATCH_NAME).unwrap();
         fs::write(
             traces.join(format!(
                 "20261112T225914Z-{MEMBER_RUN}-estafette.events.jsonl"

@@ -10,6 +10,8 @@ mod remove_scratch;
 #[cfg(test)]
 #[path = "support/scratch_run.rs"]
 mod scratch_run;
+#[path = "../../tests/common/this_process_directory.rs"]
+mod this_process_directory;
 
 /// A panic raised inside a trace file's record path, its queue's lock held, ends through a panic hook that records and flushes, by spec/observability.md decisions 9 and 12, through the package's public surface.
 #[cfg(test)]

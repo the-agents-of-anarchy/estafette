@@ -1,6 +1,8 @@
 #[cfg(test)]
 #[path = "common/fresh_directory.rs"]
 mod fresh_directory;
+#[path = "common/this_process_directory.rs"]
+mod this_process_directory;
 
 #[cfg(test)]
 mod network_commands {
@@ -41,9 +43,9 @@ mod network_commands {
 
     impl Machine {
         fn fresh(test_name: &str) -> Self {
-            let root = crate::fresh_directory::fresh_directory_in(
+            let root = crate::this_process_directory::fresh_directory_of_this_process_in(
                 &std::env::temp_dir(),
-                &format!("estafette-cli-network-{test_name}-{}", std::process::id()),
+                &format!("estafette-cli-network-{test_name}"),
             )
             .unwrap();
             Self { root }

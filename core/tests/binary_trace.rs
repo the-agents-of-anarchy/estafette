@@ -7,6 +7,8 @@ mod fresh_directory;
 #[cfg(test)]
 #[path = "common/remove_scratch.rs"]
 mod remove_scratch;
+#[path = "common/this_process_directory.rs"]
+mod this_process_directory;
 #[cfg(test)]
 #[path = "support/trace_files.rs"]
 mod trace_files;
@@ -28,8 +30,8 @@ mod observability {
     use std::path::{Path, PathBuf};
     use std::process::{Command, Output, Stdio};
 
-    use super::fresh_directory::fresh_directory_in;
     use super::remove_scratch::remove_scratch;
+    use super::this_process_directory::fresh_directory_of_this_process_in;
     use super::trace_files::{
         EVENTS_SUFFIX, RAW_SUFFIX, announcement_of_one_run, trace_files_of_one_run,
         traces_directory,
@@ -105,9 +107,9 @@ mod observability {
 
     /// A scratch root under `/tmp`, short enough for an inbox socket path beneath it, with a network created in it.
     fn machine_with_network(test_tag: &str) -> PathBuf {
-        let root = fresh_directory_in(
+        let root = fresh_directory_of_this_process_in(
             Path::new(SHORT_SCRATCH_PARENT),
-            &format!("{SCRATCH_PREFIX}-{}-{test_tag}", std::process::id()),
+            &format!("{SCRATCH_PREFIX}-{test_tag}"),
         )
         .unwrap();
         let created = binary(&root)
@@ -482,9 +484,9 @@ mod observability {
     #[test]
     fn observability_decision_3_a_trace_that_cannot_start_refuses_before_any_base_directory_the_trace_does_not_need()
      {
-        let root = fresh_directory_in(
+        let root = fresh_directory_of_this_process_in(
             Path::new(SHORT_SCRATCH_PARENT),
-            &format!("{SCRATCH_PREFIX}-{}-refused-first", std::process::id()),
+            &format!("{SCRATCH_PREFIX}-refused-first"),
         )
         .unwrap();
         let traces = traces_directory(&root.join(DATA_HOME));

@@ -435,16 +435,13 @@ pub fn timeline_read_as(traces_directory: &Path, writing: WritingProcess) -> Str
 pub mod tests {
     use serde_json::json;
 
-    use super::super::fresh_directory::fresh_directory_in;
     use super::super::remove_scratch::remove_scratch;
+    use super::super::this_process_directory::fresh_directory_of_this_process_in;
     use super::*;
 
     fn fresh_scratch_directory(label: &str) -> PathBuf {
-        fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("trace-reader-{}-{label}", std::process::id()),
-        )
-        .unwrap()
+        fresh_directory_of_this_process_in(&std::env::temp_dir(), &format!("trace-reader-{label}"))
+            .unwrap()
     }
 
     pub const MEMBER_LINE: &str = "{\"v\":2,\"run\":\"6c935f82c118f7b3\",\"n\":4,\"mono_ms\":17,\"wall_ms\":1794524353720,\"node\":\"8f43abc249\",\"event\":\"process.command_failed\",\"code\":\"unreachable\",\"handle\":\"bob\"}\n";

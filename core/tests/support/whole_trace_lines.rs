@@ -125,8 +125,8 @@ fn lines_held_so_far(path: &Path) -> String {
 mod tests {
     use std::sync::mpsc;
 
-    use crate::fresh_directory::fresh_directory_in;
     use crate::remove_scratch::remove_scratch;
+    use crate::this_process_directory::fresh_directory_of_this_process_in;
 
     use super::super::trace_reader::tests::{
         MEMBER_LINE, MEMBER_RUN, member_line_numbered,
@@ -145,9 +145,9 @@ mod tests {
     }
 
     fn fresh_run_file(label: &str, bytes: &[u8]) -> std::path::PathBuf {
-        let directory = fresh_directory_in(
+        let directory = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("whole-trace-lines-{}-{label}", std::process::id()),
+            &format!("whole-trace-lines-{label}"),
         )
         .unwrap();
         let run_file = directory.join(run_file_name());

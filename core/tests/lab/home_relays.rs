@@ -266,7 +266,7 @@ mod tests {
         every_member_homed_on, raw_lines_once_stamped_past, raw_lines_once_stamped_past_read_by,
     };
     use crate::killable_host::KillInstant;
-    use crate::scratch_machine::fresh_directory::fresh_directory_in;
+    use crate::scratch_machine::this_process_directory::fresh_directory_of_this_process_in;
     use crate::trace_reader::{TraceLine, WritingProcess, parse_trace_lines};
 
     const DOOMED_RELAY: &str = "https://doomed.example/";
@@ -589,9 +589,9 @@ mod tests {
 
     /// A fresh trace directory named for the test, holding one raw file of the lines given.
     fn traces_holding(test: &str, lines: &[String]) -> PathBuf {
-        let traces = fresh_directory_in(
+        let traces = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("home-relays-{}-{test}", std::process::id()),
+            &format!("home-relays-{test}"),
         )
         .unwrap();
         fs::write(

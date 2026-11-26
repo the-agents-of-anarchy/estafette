@@ -62,7 +62,7 @@ mod trace_events;
 #[cfg(test)]
 use scratch_machine::trace_reader;
 #[cfg(test)]
-use scratch_machine::{fresh_directory, remove_scratch};
+use scratch_machine::{remove_scratch, this_process_directory};
 
 /// The id of every Message a test builds by hand, which no check of these tests reads.
 #[cfg(test)]
@@ -2277,8 +2277,8 @@ mod kept_run_records {
     use serde_json::json;
 
     use crate::local_network::{BOB_HANDLE, LocalNetwork, MetPair, NETWORK};
-    use crate::scratch_machine::fresh_directory::fresh_directory_in;
     use crate::scratch_machine::remove_scratch::remove_scratch;
+    use crate::scratch_machine::this_process_directory::fresh_directory_of_this_process_in;
     use crate::scratch_machine::{KeptFilesPolicy, REDACTED, ScratchMachine};
     use crate::send;
 
@@ -2365,9 +2365,9 @@ mod kept_run_records {
         let config_file = machine.directories().network_config_file(NETWORK).unwrap();
         keep_only_the_secret_and_owner_lines(&config_file);
         start_refused(machine);
-        let kept_in = fresh_directory_in(
+        let kept_in = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estafette-kept-real-record-test-{}", std::process::id()),
+            "estafette-kept-real-record-test",
         )
         .unwrap();
 
@@ -2421,11 +2421,9 @@ mod kept_run_records {
             &machine,
             &[CHOSEN_SHORT_LINE, &secret_line, &owner_quoted_apart],
         );
-        let kept_in = fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("estafette-kept-record-test-{}", std::process::id()),
-        )
-        .unwrap();
+        let kept_in =
+            fresh_directory_of_this_process_in(&std::env::temp_dir(), "estafette-kept-record-test")
+                .unwrap();
 
         let records = kept_contents(&machine, &kept_in);
 

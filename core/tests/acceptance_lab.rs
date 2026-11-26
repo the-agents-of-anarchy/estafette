@@ -94,7 +94,7 @@ mod timed_step;
 #[cfg(test)]
 use scratch_machine::trace_reader;
 #[cfg(test)]
-use scratch_machine::{fresh_directory, remove_scratch};
+use scratch_machine::{remove_scratch, this_process_directory};
 
 #[cfg(test)]
 mod live_host {

@@ -4,6 +4,8 @@ mod fresh_directory;
 #[cfg(test)]
 #[path = "common/remove_scratch.rs"]
 mod remove_scratch;
+#[path = "common/this_process_directory.rs"]
+mod this_process_directory;
 
 /// `spec/observability.md` decision 7 through the install the composition root calls, in a process of its own.
 #[cfg(test)]
@@ -20,8 +22,8 @@ mod raw_iroh_lines_install {
         RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, TraceEffects, TraceStop,
     };
 
-    use super::fresh_directory::fresh_directory_in;
     use super::remove_scratch::remove_scratch;
+    use super::this_process_directory::fresh_directory_of_this_process_in;
     use serde_json::Value;
 
     const RUN_BYTES: [u8; RUN_ID_BYTES] = [0x0f, 0x1e, 0x2d, 0x3c, 0x4b, 0x5a, 0x69, 0x78];
@@ -33,9 +35,9 @@ mod raw_iroh_lines_install {
 
     /// A fresh scratch root for the test and the trace directory under its data home.
     fn scratch_trace_directory() -> (PathBuf, TraceDirectory) {
-        let root = fresh_directory_in(
+        let root = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estafette-raw-iroh-lines-install-{}", std::process::id()),
+            "estafette-raw-iroh-lines-install",
         )
         .unwrap();
         let data_home = root.join("data");

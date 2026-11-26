@@ -13,6 +13,8 @@ mod scratch_run;
 #[cfg(test)]
 #[path = "support/stuck_files.rs"]
 mod stuck_files;
+#[path = "../../tests/common/this_process_directory.rs"]
+mod this_process_directory;
 
 /// The stop a flush reports for each way it can leave a trace file, by spec/observability.md decision 12, through the package's public surface.
 #[cfg(test)]

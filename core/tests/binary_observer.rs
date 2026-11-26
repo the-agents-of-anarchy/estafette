@@ -26,7 +26,7 @@ mod trace_files;
 #[path = "support/trace_reader.rs"]
 mod trace_reader;
 
-use common::fresh_directory;
+use common::this_process_directory;
 use member_events::{COUNTERS_EVENT, MemberEvents};
 use node_start::{NODE_START_MOMENT, is_counters_snapshot_of_moment};
 
@@ -62,9 +62,9 @@ fn run_binary(root: &Path, arguments: &[&str]) -> io::Result<Output> {
 }
 
 fn short_scratch_root(test_name: &str) -> io::Result<PathBuf> {
-    common::fresh_directory::fresh_directory_in(
+    common::this_process_directory::fresh_directory_of_this_process_in(
         Path::new(SHORT_SCRATCH_PARENT),
-        &format!("eo-{}-{test_name}", std::process::id()),
+        &format!("eo-{test_name}"),
     )
 }
 

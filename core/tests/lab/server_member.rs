@@ -11,9 +11,9 @@ use crate::lab_server::LabServer;
 use crate::live_network::LiveNetwork;
 use crate::mcp_server::{HANDLE_KEY, PEERS_KEY, PEERS_TOOL, RESULT_KEY, SEND_TOOL, send_arguments};
 use crate::member_events::MemberEvents;
-use crate::scratch_machine::fresh_directory::fresh_directory_in;
 use crate::scratch_machine::recipe_run::recipe_failure;
 use crate::scratch_machine::server_member_end::{ServerMemberStep, TestSoFar, ended_server_member};
+use crate::scratch_machine::this_process_directory::fresh_directory_of_this_process_in;
 use crate::scratch_machine::{
     KeptSecrets, TIMELINE_HEADING, fail_unless_panicking, print_to_standard_error,
 };
@@ -121,13 +121,9 @@ impl<'server> ServerMember<'server> {
     /// The member's events as its trace files hold them now, fetched into a fresh scratch directory of this process, each file that holds the text of a key file of the member left on the server, so a line a test awaits in them must already be written.
     #[track_caller]
     pub fn events_so_far(&self) -> MemberEvents {
-        let holder = fresh_directory_in(
+        let holder = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-server-member-events-so-far-{}-{}",
-                std::process::id(),
-                self.card
-            ),
+            &format!("estafette-server-member-events-so-far-{}", self.card),
         )
         .unwrap();
         let fetched_into = holder.join(FETCHED_WHILE_RUNNING_DIRECTORY);

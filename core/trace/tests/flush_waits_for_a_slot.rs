@@ -10,6 +10,8 @@ mod remove_scratch;
 #[cfg(test)]
 #[path = "support/scratch_run.rs"]
 mod scratch_run;
+#[path = "../../tests/common/this_process_directory.rs"]
+mod this_process_directory;
 
 /// A flush that meets a full queue waits for a slot within its one drain bound, by spec/observability.md decision 12, through the package's public surface.
 #[cfg(test)]

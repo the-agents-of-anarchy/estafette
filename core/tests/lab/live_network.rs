@@ -177,8 +177,8 @@ mod tests {
         fixture_run_within,
     };
     use crate::scratch_machine::{
-        INVITATION_VARIABLE, PLANTED_UNREADABLE_INVITATION_MARKER, fresh_directory,
-        planted_invitation_not_unicode, remove_scratch,
+        INVITATION_VARIABLE, PLANTED_UNREADABLE_INVITATION_MARKER, planted_invitation_not_unicode,
+        remove_scratch, this_process_directory,
     };
 
     /// The fixture that reads the live network while the invitation variable is not unicode, by the name the test harness runs it by.
@@ -188,12 +188,9 @@ mod tests {
     #[test]
     fn observability_decision_16_a_live_network_whose_invitation_variable_is_set_but_not_unicode_fails_naming_the_variable_and_prints_nothing_of_its_value()
      {
-        let scratch = fresh_directory::fresh_directory_in(
+        let scratch = this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-live-invitation-not-unicode-test-{}",
-                std::process::id()
-            ),
+            "estafette-live-invitation-not-unicode-test",
         )
         .unwrap();
         let standard_error = scratch.join(FIXTURE_STANDARD_ERROR);

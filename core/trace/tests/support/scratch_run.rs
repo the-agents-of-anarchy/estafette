@@ -6,10 +6,10 @@ use estafette_trace::{
     EstafetteRun, RunId, TraceBounds, TraceClocks, TraceDirectory, TraceEffects,
 };
 
-use crate::fresh_directory::fresh_directory_in;
 use crate::frozen_run::{
     DATA_HOME_VARIABLE, FROZEN_MONOTONIC_MS, NOW_MS, RUN_BYTES, frozen_clocks_at,
 };
+use crate::this_process_directory::fresh_directory_of_this_process_in;
 
 const RUN_HEX: &str = "a1b2c3d4e5f60718";
 /// The one event these tests record.
@@ -35,9 +35,9 @@ pub struct ScratchRun {
 
 /// A run begun on the effects within the bounds, its trace directory created under a fresh scratch root named for the test.
 pub fn scratch_run(test_name: &str, effects: &TraceEffects, bounds: TraceBounds) -> ScratchRun {
-    let root = fresh_directory_in(
+    let root = fresh_directory_of_this_process_in(
         &std::env::temp_dir(),
-        &format!("estafette-trace-{test_name}-{}", std::process::id()),
+        &format!("estafette-trace-{test_name}"),
     )
     .unwrap();
     let data_home = root.join("data");

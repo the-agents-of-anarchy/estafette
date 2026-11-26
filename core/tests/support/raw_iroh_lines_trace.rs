@@ -7,6 +7,8 @@ use estafette::trace::{RUN_ID_BYTES, RunId, Trace, TraceBounds, TraceClocks, Tra
 
 #[path = "../common/fresh_directory.rs"]
 mod fresh_directory;
+#[path = "../common/this_process_directory.rs"]
+mod this_process_directory;
 
 /// The run id every trace of these tests starts with.
 pub const RUN_BYTES: [u8; RUN_ID_BYTES] = [0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6, 0x07, 0x18];
@@ -19,12 +21,9 @@ const DATA_HOME: &str = "data";
 
 /// A fresh scratch root for the test and the trace directory under its data home.
 pub fn scratch_trace_directory(test_name: &str) -> (PathBuf, TraceDirectory) {
-    let root = fresh_directory::fresh_directory_in(
+    let root = this_process_directory::fresh_directory_of_this_process_in(
         &std::env::temp_dir(),
-        &format!(
-            "estafette-raw-iroh-lines-{test_name}-{}",
-            std::process::id()
-        ),
+        &format!("estafette-raw-iroh-lines-{test_name}"),
     )
     .unwrap();
     let data_home = root.join(DATA_HOME);

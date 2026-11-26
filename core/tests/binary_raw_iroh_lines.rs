@@ -7,6 +7,8 @@ mod fresh_directory;
 #[cfg(test)]
 #[path = "common/remove_scratch.rs"]
 mod remove_scratch;
+#[path = "common/this_process_directory.rs"]
+mod this_process_directory;
 #[cfg(test)]
 #[path = "support/trace_files.rs"]
 mod trace_files;
@@ -29,8 +31,8 @@ mod raw_iroh_lines {
     use estafette::event::{EventName, TraceLineName};
     use serde_json::Value;
 
-    use super::fresh_directory::fresh_directory_in;
     use super::remove_scratch::remove_scratch;
+    use super::this_process_directory::fresh_directory_of_this_process_in;
     use super::trace_files::{announcement_of_one_run, trace_files_of_one_run};
     use super::trace_reader::TraceLine;
     use super::whole_trace_lines::{wait_for_whole_lines, whole_lines_of_a_run_file};
@@ -58,9 +60,9 @@ mod raw_iroh_lines {
 
     /// A scratch root under `/tmp` with a network created in it.
     fn machine_with_network(test_tag: &str) -> PathBuf {
-        let root = fresh_directory_in(
+        let root = fresh_directory_of_this_process_in(
             Path::new(SHORT_SCRATCH_PARENT),
-            &format!("{SCRATCH_PREFIX}-{}-{test_tag}", std::process::id()),
+            &format!("{SCRATCH_PREFIX}-{test_tag}"),
         )
         .unwrap();
         let created = binary(&root)

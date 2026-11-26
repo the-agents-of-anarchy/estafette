@@ -27,6 +27,8 @@ pub mod recipe_run;
 pub mod remove_scratch;
 #[path = "server_member_end.rs"]
 pub mod server_member_end;
+#[path = "../common/this_process_directory.rs"]
+pub mod this_process_directory;
 #[path = "trace_reader.rs"]
 pub mod trace_reader;
 
@@ -339,9 +341,9 @@ fn is_a_debug_trace(file: &Path) -> bool {
 impl ScratchMachine {
     /// An empty scratch root named for the test and the machine, for the network of that name, its members' run records kept as the test asks.
     pub fn fresh(test_tag: &str, network: &str, kept_files_policy: &KeptFilesPolicy) -> Self {
-        let root = fresh_directory::fresh_directory_in(
+        let root = this_process_directory::fresh_directory_of_this_process_in(
             Path::new(SHORT_SCRATCH_PARENT),
-            &format!("{SCRATCH_PREFIX}-{}-{test_tag}", std::process::id()),
+            &format!("{SCRATCH_PREFIX}-{test_tag}"),
         )
         .unwrap();
         Self {
@@ -1102,11 +1104,8 @@ mod tests {
 
     /// A directory of the temp directory that did not exist before the call, named for the test and the process.
     fn fresh_scratch_directory_in_temp(name: &str) -> PathBuf {
-        fresh_directory::fresh_directory_in(
-            &std::env::temp_dir(),
-            &format!("{name}-{}", std::process::id()),
-        )
-        .unwrap()
+        this_process_directory::fresh_directory_of_this_process_in(&std::env::temp_dir(), name)
+            .unwrap()
     }
 
     /// The mode spec 3.3 gives every directory the binary makes private.
@@ -1765,9 +1764,9 @@ mod tests {
         tag: &str,
         make_unreadable: impl FnOnce(&ScratchMachine) -> PathBuf,
     ) -> DroppedFailing {
-        let kept_in = fresh_directory::fresh_directory_in(
+        let kept_in = this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estafette-kept-{tag}-test-{}", std::process::id()),
+            &format!("estafette-kept-{tag}-test"),
         )
         .unwrap();
         let machine = ScratchMachine::fresh(
@@ -2578,9 +2577,9 @@ mod tests {
         text: &str,
         plant: impl FnOnce(&ScratchMachine),
     ) -> KeptAfterPlanting {
-        let kept_in = fresh_directory::fresh_directory_in(
+        let kept_in = this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estafette-kept-{tag}-test-{}", std::process::id()),
+            &format!("estafette-kept-{tag}-test"),
         )
         .unwrap();
         let machine = ScratchMachine::fresh(

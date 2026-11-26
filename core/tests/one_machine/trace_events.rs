@@ -8,11 +8,11 @@ use estafette::dirs::{DirectoryFilesystem, OperatingSystemFilesystem};
 use crate::local_network::{LocalNetwork, NETWORK};
 use crate::member::{first_line_named, wait_for_first_line_named};
 use crate::member_events::MemberEvents;
-use crate::scratch_machine::fresh_directory::fresh_directory_in;
 use crate::scratch_machine::owned_process::{
     FIXTURE_ENDED_WITHIN, FIXTURE_STANDARD_ERROR, FIXTURE_VARIABLE, fixture_run_within,
 };
 use crate::scratch_machine::remove_scratch::remove_scratch;
+use crate::scratch_machine::this_process_directory::fresh_directory_of_this_process_in;
 use crate::scratch_machine::{KeptFilesPolicy, ScratchMachine, TIMELINE_HEADING};
 use crate::trace_reader::{NO_EVENT_RECORDED, events_lines_in};
 
@@ -306,11 +306,9 @@ fn observability_decision_14_a_second_members_event_of_the_same_name_is_not_take
 
 #[test]
 fn observability_decision_15_a_failing_test_prints_the_timeline_of_each_member_it_started() {
-    let scratch = fresh_directory_in(
-        &std::env::temp_dir(),
-        &format!("estafette-timeline-print-test-{}", std::process::id()),
-    )
-    .unwrap();
+    let scratch =
+        fresh_directory_of_this_process_in(&std::env::temp_dir(), "estafette-timeline-print-test")
+            .unwrap();
     let standard_error = scratch.join(FIXTURE_STANDARD_ERROR);
 
     let forced = fixture_run_within(

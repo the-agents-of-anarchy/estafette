@@ -10,6 +10,8 @@ mod remove_scratch;
 #[cfg(test)]
 #[path = "support/scratch_run.rs"]
 mod scratch_run;
+#[path = "../../tests/common/this_process_directory.rs"]
+mod this_process_directory;
 
 /// The format version a written line carries, by spec/observability.md decision 11, through the package's public surface.
 #[cfg(test)]

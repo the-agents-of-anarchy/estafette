@@ -4,6 +4,8 @@ mod fresh_directory;
 #[cfg(test)]
 #[path = "../../tests/common/remove_scratch.rs"]
 mod remove_scratch;
+#[path = "../../tests/common/this_process_directory.rs"]
+mod this_process_directory;
 
 #[cfg(test)]
 #[path = "support/frozen_run.rs"]
@@ -21,11 +23,11 @@ mod observability {
     use std::thread;
     use std::time::{Duration, UNIX_EPOCH};
 
-    use super::fresh_directory::fresh_directory_in;
     use super::frozen_run::{
         DATA_HOME_VARIABLE, FROZEN_MONOTONIC_MS, NOW_MS, RUN_BYTES, frozen_clocks_at,
     };
     use super::remove_scratch::remove_scratch;
+    use super::this_process_directory::fresh_directory_of_this_process_in;
     use estafette_trace::{
         BridgeRun, RunId, TraceAction, TraceBounds, TraceDirectory, TraceEffects, TraceRefused,
         TraceStop,
@@ -46,9 +48,9 @@ mod observability {
 
     /// A fresh scratch root for the test and the trace directory under its data home.
     fn scratch_trace_directory(test_name: &str) -> (PathBuf, TraceDirectory) {
-        let root = fresh_directory_in(
+        let root = fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estafette-trace-package-{test_name}-{}", std::process::id()),
+            &format!("estafette-trace-package-{test_name}"),
         )
         .unwrap();
         let data_home = root.join("data");

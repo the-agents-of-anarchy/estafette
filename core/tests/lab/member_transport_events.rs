@@ -296,6 +296,7 @@ mod tests {
         rebinding_lines_in, relay_added_verdict, relay_added_within,
     };
     use crate::member_events::MemberEvents;
+    use crate::this_process_directory::fresh_directory_of_this_process_in;
     use crate::trace_reader::{TraceLine, WritingProcess, parse_trace_lines};
 
     const ADDED_HOST: &str = "a1b2c3d4e5";
@@ -365,11 +366,11 @@ mod tests {
 
     /// A member's events reader over a fresh directory named for the test, holding one events file of the lines given.
     fn events_holding(test: &str, lines: &[String]) -> (MemberEvents, PathBuf) {
-        let traces = std::env::temp_dir().join(format!(
-            "member-transport-events-{}-{test}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&traces).unwrap();
+        let traces = fresh_directory_of_this_process_in(
+            &std::env::temp_dir(),
+            &format!("member-transport-events-{test}"),
+        )
+        .unwrap();
         fs::write(
             traces.join(EVENTS_FILE_NAME),
             format!("{}\n", lines.join("\n")),
