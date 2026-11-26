@@ -177,7 +177,7 @@ fn raw_lines_once_stamped_past_read_by(
             let files = raw_files_of_running_member(traces);
             for file in &files {
                 watch
-                    .watch_file(file)
+                    .watch_path(file)
                     .unwrap_or_else(|failure| panic!("{}: {failure}", traces.display()));
             }
             let lines = raw_lines_of_files(traces, &files);

@@ -78,7 +78,7 @@ impl MemberEvents {
             .unwrap_or_else(|failure| panic!("{}: {failure}", self.label));
         for file in events_files {
             watch
-                .watch_file(&file)
+                .watch_path(&file)
                 .unwrap_or_else(|failure| panic!("{}: {failure}", self.label));
         }
     }

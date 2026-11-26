@@ -427,7 +427,7 @@ fn hosts_first_read(
         GrowthWatch::of_path(&directories[0]).unwrap_or_else(|failure| panic!("{failure}"));
     for directory in &directories {
         watch
-            .watch_file(directory)
+            .watch_path(directory)
             .unwrap_or_else(|failure| panic!("{failure}"));
     }
     let within = deadline.saturating_duration_since(Instant::now());

@@ -42,16 +42,16 @@ impl GrowthWatch {
             notices,
             watched_files: BTreeSet::new(),
         };
-        watch.watch_file(path)?;
+        watch.watch_path(path)?;
         Ok(watch)
     }
 
     /// Starts watching the path, a directory for the files that appear in it or a file for its growth, unless it is watched already.
-    pub fn watch_file(&mut self, file: &Path) -> Result<(), String> {
-        if self.watched_files.insert(file.to_path_buf()) {
+    pub fn watch_path(&mut self, path: &Path) -> Result<(), String> {
+        if self.watched_files.insert(path.to_path_buf()) {
             self.watcher
-                .watch(file, RecursiveMode::NonRecursive)
-                .map_err(|failure| format!("cannot watch {}: {failure}", file.display()))?;
+                .watch(path, RecursiveMode::NonRecursive)
+                .map_err(|failure| format!("cannot watch {}: {failure}", path.display()))?;
         }
         Ok(())
     }
