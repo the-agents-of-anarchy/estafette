@@ -9,8 +9,9 @@ use crate::crypto::{
     verify_host_certificate, verify_payload_signature,
 };
 use crate::wire::{
-    self, CodecError, Departure, Infrastructure, Payload, Presence, PresenceRequest, Request,
-    Response, SignatureBytes, Unreachable, Wire, decode, encode,
+    self, CodecError, Departure, Infrastructure, IntroduceAck, MessageAck, Payload, Presence,
+    PresenceRequest, ProbeAck, Request, Response, SignatureBytes, Unreachable, Wire, decode,
+    encode,
 };
 
 const GOSSIP_FRAME_BYTES: usize = 4096;
@@ -266,29 +267,41 @@ const fn signature_of(payload: &Payload) -> SignatureBytes {
     on_each_payload_variant!(payload, inner => inner.sig)
 }
 
-trait MacCarrying: Wire + Clone {
-    fn mac(&self) -> Option<Mac>;
+trait MacCarrying: Clone {
+    type Wired: Wire;
+
+    fn mac(&self) -> Mac;
 
     fn with_mac(self, mac: Mac) -> Self;
+
+    fn wired(self) -> Self::Wired;
 }
 
 impl MacCarrying for Payload {
-    fn mac(&self) -> Option<Mac> {
-        Some(on_each_payload_variant!(self, inner => inner.mac))
+    type Wired = Self;
+
+    fn mac(&self) -> Mac {
+        on_each_payload_variant!(self, inner => inner.mac)
     }
 
     fn with_mac(mut self, mac: Mac) -> Self {
         on_each_payload_variant!(&mut self, inner => inner.mac = mac);
         self
     }
+
+    fn wired(self) -> Self {
+        self
+    }
 }
 
 impl MacCarrying for Request {
-    fn mac(&self) -> Option<Mac> {
+    type Wired = Self;
+
+    fn mac(&self) -> Mac {
         match self {
-            Self::Message(message) => Some(message.mac),
-            Self::Probe(probe) => Some(probe.mac),
-            Self::Introduce(introduce) => Some(introduce.mac),
+            Self::Message(message) => message.mac,
+            Self::Probe(probe) => probe.mac,
+            Self::Introduce(introduce) => introduce.mac,
         }
     }
 
@@ -300,24 +313,53 @@ impl MacCarrying for Request {
         }
         self
     }
+
+    fn wired(self) -> Self {
+        self
+    }
 }
 
-impl MacCarrying for Response {
-    fn mac(&self) -> Option<Mac> {
+/// A direct response that carries a mac, which a `MessageAck` does not.
+#[derive(Clone)]
+enum MackedResponse {
+    ProbeAck(ProbeAck),
+    IntroduceAck(IntroduceAck),
+}
+
+impl MackedResponse {
+    /// The response as a macked one, or the `MessageAck` that carries no mac.
+    fn of(response: Response) -> Result<Self, MessageAck> {
+        match response {
+            Response::MessageAck(message_ack) => Err(message_ack),
+            Response::ProbeAck(probe_ack) => Ok(Self::ProbeAck(probe_ack)),
+            Response::IntroduceAck(introduce_ack) => Ok(Self::IntroduceAck(introduce_ack)),
+        }
+    }
+}
+
+impl MacCarrying for MackedResponse {
+    type Wired = Response;
+
+    fn mac(&self) -> Mac {
         match self {
-            Self::MessageAck(_) => None,
-            Self::ProbeAck(probe_ack) => Some(probe_ack.mac),
-            Self::IntroduceAck(introduce_ack) => Some(introduce_ack.mac),
+            Self::ProbeAck(probe_ack) => probe_ack.mac,
+            Self::IntroduceAck(introduce_ack) => introduce_ack.mac,
         }
     }
 
     fn with_mac(mut self, mac: Mac) -> Self {
         match &mut self {
-            Self::MessageAck(_) => {}
             Self::ProbeAck(probe_ack) => probe_ack.mac = mac,
             Self::IntroduceAck(introduce_ack) => introduce_ack.mac = mac,
         }
         self
+    }
+
+    fn wired(self) -> Response {
+        match self {
+            Self::ProbeAck(probe_ack) => Response::ProbeAck(probe_ack),
+            Self::IntroduceAck(introduce_ack) => Response::IntroduceAck(introduce_ack),
+        }
     }
 }
 
@@ -327,7 +369,7 @@ const fn with_signature(mut payload: Payload, signature: SignatureBytes) -> Payl
 }
 
 fn mac_zeroed_encoding<T: MacCarrying>(structure: &T) -> Result<Vec<u8>, CodecError> {
-    encode(&structure.clone().with_mac(ZERO_MAC))
+    encode(&structure.clone().with_mac(ZERO_MAC).wired())
 }
 
 fn with_computed_mac<T: MacCarrying>(keys: &NetworkKeys, structure: T) -> Result<T, CodecError> {
@@ -340,23 +382,14 @@ fn verify_mac<T: MacCarrying, Refusal: From<CodecError> + From<CryptoError>>(
     keys: &NetworkKeys,
     structure: &T,
 ) -> Result<(), Refusal> {
-    match structure.mac() {
-        Some(mac) => Ok(keys.verify_mac(&mac_zeroed_encoding(structure)?, &mac)?),
-        None => Ok(()),
-    }
+    Ok(keys.verify_mac(&mac_zeroed_encoding(structure)?, &structure.mac())?)
 }
 
 fn seal_with_mac<T: MacCarrying>(
     keys: &NetworkKeys,
     structure: T,
 ) -> Result<Vec<u8>, PayloadError> {
-    Ok(encode(&with_computed_mac(keys, structure)?)?)
-}
-
-fn open_with_mac<T: MacCarrying>(keys: &NetworkKeys, bytes: &[u8]) -> Result<T, PayloadError> {
-    let structure: T = decode(bytes)?;
-    verify_mac::<T, PayloadError>(keys, &structure)?;
-    Ok(structure)
+    Ok(encode(&with_computed_mac(keys, structure)?.wired())?)
 }
 
 fn signature_zeroed_encoding(payload: &Payload) -> Result<Vec<u8>, CodecError> {
@@ -575,7 +608,9 @@ pub fn seal_request(keys: &NetworkKeys, request: Request) -> Result<Vec<u8>, Pay
 /// # Errors
 /// `PayloadError` for bytes that do not decode and for a wrong mac.
 pub fn open_request(keys: &NetworkKeys, bytes: &[u8]) -> Result<Request, PayloadError> {
-    open_with_mac(keys, bytes)
+    let request: Request = decode(bytes)?;
+    verify_mac::<Request, PayloadError>(keys, &request)?;
+    Ok(request)
 }
 
 /// Macs and encodes a direct response, ready to write to the stream.
@@ -583,7 +618,10 @@ pub fn open_request(keys: &NetworkKeys, bytes: &[u8]) -> Result<Request, Payload
 /// # Errors
 /// `PayloadError::Codec` when the response does not encode within the wire limit.
 pub fn seal_response(keys: &NetworkKeys, response: Response) -> Result<Vec<u8>, PayloadError> {
-    seal_with_mac(keys, response)
+    match MackedResponse::of(response) {
+        Ok(macked) => seal_with_mac(keys, macked),
+        Err(message_ack) => Ok(encode(&Response::MessageAck(message_ack))?),
+    }
 }
 
 /// Decodes a direct response and accepts it only when its mac verifies.
@@ -591,7 +629,13 @@ pub fn seal_response(keys: &NetworkKeys, response: Response) -> Result<Vec<u8>, 
 /// # Errors
 /// `PayloadError` for bytes that do not decode and for a wrong mac.
 pub fn open_response(keys: &NetworkKeys, bytes: &[u8]) -> Result<Response, PayloadError> {
-    open_with_mac(keys, bytes)
+    match MackedResponse::of(decode(bytes)?) {
+        Ok(macked) => {
+            verify_mac::<MackedResponse, PayloadError>(keys, &macked)?;
+            Ok(macked.wired())
+        }
+        Err(message_ack) => Ok(Response::MessageAck(message_ack)),
+    }
 }
 
 #[cfg(test)]
@@ -1096,15 +1140,15 @@ mod tests {
         ]
     }
 
-    fn unsealed_macked_responses() -> [Response; 2] {
+    fn unsealed_macked_responses() -> [MackedResponse; 2] {
         [
-            Response::ProbeAck(ProbeAck {
+            MackedResponse::ProbeAck(ProbeAck {
                 v: Version::CURRENT,
                 nonce: NONCE,
                 attached: true,
                 mac: ZERO_MAC,
             }),
-            Response::IntroduceAck(IntroduceAck {
+            MackedResponse::IntroduceAck(IntroduceAck {
                 v: Version::CURRENT,
                 handle: None,
                 public: Vec::new(),
@@ -1163,15 +1207,15 @@ mod tests {
     #[test]
     fn spec_3_4_response_with_a_mac_field_is_sealed_and_dropped_on_a_wrong_mac() {
         for response in unsealed_macked_responses() {
-            let expected_mac = keys().mac(&encode(&response).unwrap());
+            let expected_mac = keys().mac(&encode(&response.clone().wired()).unwrap());
 
-            let sealed = seal_response(&keys(), response.clone()).unwrap();
+            let sealed = seal_response(&keys(), response.clone().wired()).unwrap();
             let sealed_under_other_network =
-                seal_response(&other_network(), response.clone()).unwrap();
+                seal_response(&other_network(), response.clone().wired()).unwrap();
 
             assert_eq!(
                 open_response(&keys(), &sealed),
-                Ok(response.with_mac(expected_mac))
+                Ok(response.with_mac(expected_mac).wired())
             );
             assert_eq!(
                 open_response(&keys(), &sealed_under_other_network),
