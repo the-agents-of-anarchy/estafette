@@ -147,6 +147,7 @@ pub fn create_card(
     create_card_removing_files_with(
         remove_file_if_present,
         |path: &Path| remove_file(path),
+        sync_to_disk,
         card_path,
         sidecar_path,
         handle.as_str(),
@@ -158,6 +159,7 @@ pub fn create_card(
 fn create_card_removing_files_with(
     remove_temporary: impl FnOnce(&Path) -> io::Result<()>,
     remove_sidecar: impl FnOnce(&Path) -> io::Result<()>,
+    sync: impl Fn(&File) -> io::Result<()>,
     card_path: &Path,
     sidecar_path: &Path,
     handle: &str,
@@ -168,7 +170,7 @@ fn create_card_removing_files_with(
     refuse_existing_card(card_path)?;
     let secret_key = SecretKey::from_bytes(&seed);
     let public_key = secret_key.public();
-    write_sidecar_durably(sidecar_path, sidecar_directory, &secret_key)?;
+    write_sidecar_durably(sidecar_path, sidecar_directory, &secret_key, sync)?;
     write_card(card_path, handle, &public_key, remove_temporary)
         .map_err(|failure| failed_card_write(failure, card_path, sidecar_path, remove_sidecar))?;
     Ok(public_key)
@@ -217,12 +219,18 @@ fn write_sidecar_durably(
     sidecar_path: &Path,
     sidecar_directory: &Path,
     secret_key: &SecretKey,
+    sync: impl Fn(&File) -> io::Result<()>,
 ) -> Result<(), SidecarError> {
     let mut file = create_new_owner_only_file(sidecar_path).map_err(creation_failure)?;
     file.write_all(render_secret_key(secret_key).as_bytes())?;
-    file.sync_all()?;
-    File::open(sidecar_directory)?.sync_all()?;
+    sync(&file)?;
+    sync(&File::open(sidecar_directory)?)?;
     Ok(())
+}
+
+/// Forces the file or directory to disk.
+fn sync_to_disk(file: &File) -> io::Result<()> {
+    file.sync_all()
 }
 
 fn write_card(
@@ -701,6 +709,35 @@ mod tests {
         assert_eq!(names_in(&directory), ["q.key", "q.yaml"]);
     }
 
+    #[test]
+    fn created_sidecar_is_synced_whole_and_then_its_directory_is_synced_spec_3_14() {
+        let directory = fresh_directory("create_syncs");
+        let card = directory.join("s.yaml");
+        let sidecar = directory.join("s.key");
+        let synced: std::cell::RefCell<Vec<Option<u64>>> = std::cell::RefCell::default();
+        let record_sync = |file: &File| {
+            let facts = file.metadata()?;
+            synced
+                .borrow_mut()
+                .push((!facts.is_dir()).then_some(facts.len()));
+            Ok(())
+        };
+
+        create_card_removing_files_with(
+            remove_file_if_present,
+            |path: &Path| remove_file(path),
+            record_sync,
+            &card,
+            &sidecar,
+            "scout",
+            seed_of(19),
+        )
+        .unwrap();
+
+        let sidecar_bytes = u64::try_from(LONGEST_VALID_SIDECAR_BYTES).unwrap();
+        assert_eq!(*synced.borrow(), [Some(sidecar_bytes), None]);
+    }
+
     struct ZeroDigits<'served> {
         remaining: u64,
         served: &'served std::cell::Cell<u64>,
@@ -764,6 +801,7 @@ mod tests {
             let outcome = create_card_removing_files_with(
                 remove_file_if_present,
                 |path: &Path| remove_file(path),
+                sync_to_disk,
                 &card,
                 &sidecar,
                 &handle,
@@ -854,6 +892,7 @@ mod tests {
             let outcome = create_card_removing_files_with(
                 failing_removal,
                 |path: &Path| remove_file(path),
+                sync_to_disk,
                 &card,
                 &sidecar,
                 handle.as_str(),
@@ -899,6 +938,7 @@ mod tests {
             let outcome = create_card_removing_files_with(
                 remove_file_if_present,
                 failing_sidecar_removal,
+                sync_to_disk,
                 &card,
                 &sidecar,
                 handle.as_str(),
