@@ -1101,7 +1101,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use estafette_bridge_claude::discover::{ProcessEntry, binary_sockets_under};
+    use estafette_bridge_claude::discover::ProcessEntry;
     use estafette_bridge_claude::owned_entry::EntryKind;
     use std::cell::{Cell, RefCell};
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -1251,7 +1251,6 @@ mod tests {
         factory_paths: Arc<Mutex<Vec<PathBuf>>>,
         spawned: SpawnedTasks,
         errors: ErrorMessages,
-        clock_seconds: Arc<Mutex<u64>>,
         writes: Arc<Mutex<Vec<(PathBuf, String)>>>,
     }
 
@@ -1261,11 +1260,9 @@ mod tests {
         let factory_paths = Arc::new(Mutex::new(Vec::new()));
         let spawned: SpawnedTasks = Arc::default();
         let errors: ErrorMessages = Arc::default();
-        let clock_seconds = Arc::new(Mutex::new(0));
         let recorded_paths = Arc::clone(&factory_paths);
         let recorded_tasks = Arc::clone(&spawned);
         let recorded_errors = Arc::clone(&errors);
-        let clock = Arc::clone(&clock_seconds);
         let files = StandInFiles::default();
         let writes = Arc::clone(&files.writes);
         Wiring {
@@ -1284,7 +1281,7 @@ mod tests {
                     DownConnector
                 }),
                 files,
-                elapsed: Arc::new(move || Duration::from_secs(*lock(&clock))),
+                elapsed: Arc::new(|| Duration::ZERO),
                 record: Arc::new(move |event| {
                     lock(&recorded_errors).extend(event.run_record_line());
                 }),
@@ -1296,7 +1293,6 @@ mod tests {
             factory_paths,
             spawned,
             errors,
-            clock_seconds,
             writes,
         }
     }
@@ -1309,13 +1305,6 @@ mod tests {
             .filter(|(path, _)| path == Path::new(DROPPED_FRAMES_FILE))
             .map(|(_, text)| text.clone())
             .collect()
-    }
-
-    fn rate_limit_drops_counted(writes: &Mutex<Vec<(PathBuf, String)>>) -> u64 {
-        written_counts(writes)
-            .last()
-            .and_then(|text| DroppedFrames::from_state_file_text(text))
-            .map_or(0, |dropped| dropped.rate_limit)
     }
 
     #[test]
@@ -1409,7 +1398,6 @@ mod tests {
 
     const CORE_PRIVATE_DIRECTORY_MODE: u32 = 0o700;
     const HARNESS_PID: Pid = Pid(100);
-    const MOST_FRAMES_BEFORE_A_DROP: usize = 100;
     const STAGED_WRITES: usize = 50;
 
     #[test]
@@ -1687,8 +1675,17 @@ mod tests {
         );
     }
 
+    type BeforeFrame = Arc<dyn Fn(u64) + Send + Sync>;
+
+    fn before_no_frame() -> BeforeFrame {
+        Arc::new(|_| {})
+    }
+
     struct ScriptedInboxStream {
-        replies: io::Cursor<Vec<u8>>,
+        current_reply: io::Cursor<Vec<u8>>,
+        later_replies: VecDeque<String>,
+        replies_started: u64,
+        before_frame: BeforeFrame,
         fails_after_replies: bool,
         since_lines: SinceLines,
         written: Vec<u8>,
@@ -1696,11 +1693,21 @@ mod tests {
 
     impl Read for ScriptedInboxStream {
         fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-            match self.replies.read(buffer)? {
-                0 if self.fails_after_replies => {
+            let read_bytes = self.current_reply.read(buffer)?;
+            if read_bytes > 0 {
+                return Ok(read_bytes);
+            }
+            match self.later_replies.pop_front() {
+                Some(reply) => {
+                    (self.before_frame)(self.replies_started);
+                    self.replies_started = self.replies_started.saturating_add(1);
+                    self.current_reply = io::Cursor::new(reply.into_bytes());
+                    self.current_reply.read(buffer)
+                }
+                None if self.fails_after_replies => {
                     Err(io::Error::from(io::ErrorKind::ConnectionReset))
                 }
-                read_bytes => Ok(read_bytes),
+                None => Ok(0),
             }
         }
     }
@@ -1726,6 +1733,7 @@ mod tests {
     struct ScriptedInboxSocket {
         connections: Arc<Mutex<VecDeque<ScriptedInboxConnection>>>,
         since_lines: SinceLines,
+        before_frame: BeforeFrame,
     }
 
     impl InboxConnector for ScriptedInboxSocket {
@@ -1736,7 +1744,14 @@ mod tests {
                 .pop_front()
                 .ok_or_else(|| io::Error::from(io::ErrorKind::ConnectionRefused))?;
             Ok(ScriptedInboxStream {
-                replies: io::Cursor::new(connection.replies.into_bytes()),
+                current_reply: io::Cursor::default(),
+                later_replies: connection
+                    .replies
+                    .split_inclusive('\n')
+                    .map(str::to_owned)
+                    .collect(),
+                replies_started: 0,
+                before_frame: Arc::clone(&self.before_frame),
                 fails_after_replies: connection.fails_after_replies,
                 since_lines: Arc::clone(&self.since_lines),
                 written: Vec::new(),
@@ -1765,40 +1780,118 @@ mod tests {
     struct ScriptedRun {
         since_lines: Vec<String>,
         injection_attempts: usize,
+        errors: Vec<String>,
+        writes: Arc<Mutex<Vec<(PathBuf, String)>>>,
+        reads: Arc<Mutex<Vec<PathBuf>>>,
+        tail_reads: Arc<Mutex<Vec<PathBuf>>>,
+        listings: Arc<Mutex<usize>>,
+    }
+
+    struct ScriptedBridge<S> {
+        session_connector: S,
+        injection_attempts: Arc<Mutex<usize>>,
+        files: StandInFiles,
+        connections: Vec<ScriptedInboxConnection>,
+        polls: Vec<Vec<ProcessEntry>>,
+        clock_seconds: Arc<Mutex<u64>>,
+        before_frame: BeforeFrame,
+    }
+
+    impl<S> ScriptedBridge<S> {
+        fn over(
+            session_connector: S,
+            files: StandInFiles,
+            connections: Vec<ScriptedInboxConnection>,
+            polls: Vec<Vec<ProcessEntry>>,
+        ) -> Self {
+            Self {
+                session_connector,
+                injection_attempts: Arc::default(),
+                files,
+                connections,
+                polls,
+                clock_seconds: Arc::default(),
+                before_frame: before_no_frame(),
+            }
+        }
+    }
+
+    fn scripted_bridge_refusing_the_session(
+        files: StandInFiles,
+        connections: Vec<ScriptedInboxConnection>,
+        polls: Vec<Vec<ProcessEntry>>,
+    ) -> ScriptedBridge<CountingDownConnector> {
+        let injection_attempts = Arc::new(Mutex::new(0));
+        ScriptedBridge {
+            injection_attempts: Arc::clone(&injection_attempts),
+            ..ScriptedBridge::over(
+                CountingDownConnector(injection_attempts),
+                files,
+                connections,
+                polls,
+            )
+        }
+    }
+
+    fn run_scripted_bridge<S: InboxConnector + Send + 'static>(
+        bridge: ScriptedBridge<S>,
+    ) -> ScriptedRun {
+        let wiring = wiring();
+        let connections = Arc::new(Mutex::new(VecDeque::from(bridge.connections)));
+        let since_lines = SinceLines::default();
+        let socket_connections = Arc::clone(&connections);
+        let socket_since_lines = Arc::clone(&since_lines);
+        let before_frame = bridge.before_frame;
+        let clock_seconds = bridge.clock_seconds;
+        let (writes, reads, tail_reads, listings) = (
+            Arc::clone(&bridge.files.writes),
+            Arc::clone(&bridge.files.reads),
+            Arc::clone(&bridge.files.tail_reads),
+            Arc::clone(&bridge.files.listings),
+        );
+        let effects = BridgeEffects {
+            own_pid: wiring.effects.own_pid,
+            runtime_inputs: wiring.effects.runtime_inputs,
+            session_connector: bridge.session_connector,
+            session_token: wiring.effects.session_token,
+            claude_config_directory: wiring.effects.claude_config_directory,
+            connect_binary_socket: move |_socket_path| ScriptedInboxSocket {
+                connections: Arc::clone(&socket_connections),
+                since_lines: Arc::clone(&socket_since_lines),
+                before_frame: Arc::clone(&before_frame),
+            },
+            files: bridge.files,
+            elapsed: Arc::new(move || Duration::from_secs(*lock(&clock_seconds))),
+            record: wiring.effects.record,
+            spawn: Arc::new(|task| task()),
+            wait: Arc::new(|_| {}),
+        };
+        run_bridge(
+            HARNESS_PID,
+            effects,
+            &SnapshotSequence(RefCell::new(bridge.polls)),
+        )
+        .expect("bridge runs");
+        ScriptedRun {
+            since_lines: lock(&since_lines).clone(),
+            injection_attempts: *lock(&bridge.injection_attempts),
+            errors: lock(&wiring.errors).clone(),
+            writes,
+            reads,
+            tail_reads,
+            listings,
+        }
     }
 
     fn run_bridge_over_scripted_sockets(
         connections: Vec<ScriptedInboxConnection>,
         polls: Vec<Vec<ProcessEntry>>,
     ) -> ScriptedRun {
-        let wiring = wiring();
-        let injection_attempts = Arc::new(Mutex::new(0));
-        let connections = Arc::new(Mutex::new(VecDeque::from(connections)));
-        let since_lines = SinceLines::default();
-        let socket_connections = Arc::clone(&connections);
-        let socket_since_lines = Arc::clone(&since_lines);
-        let effects = BridgeEffects {
-            own_pid: wiring.effects.own_pid,
-            runtime_inputs: wiring.effects.runtime_inputs,
-            session_connector: CountingDownConnector(Arc::clone(&injection_attempts)),
-            session_token: wiring.effects.session_token,
-            claude_config_directory: wiring.effects.claude_config_directory,
-            connect_binary_socket: move |_socket_path| ScriptedInboxSocket {
-                connections: Arc::clone(&socket_connections),
-                since_lines: Arc::clone(&socket_since_lines),
-            },
-            files: wiring.effects.files,
-            elapsed: wiring.effects.elapsed,
-            record: wiring.effects.record,
-            spawn: Arc::new(|task| task()),
-            wait: Arc::new(|_| {}),
-        };
-        run_bridge(HARNESS_PID, effects, &SnapshotSequence(RefCell::new(polls)))
-            .expect("bridge runs");
-        ScriptedRun {
-            since_lines: lock(&since_lines).clone(),
-            injection_attempts: *lock(&injection_attempts),
-        }
+        run_scripted_bridge(scripted_bridge_refusing_the_session(
+            StandInFiles::default(),
+            connections,
+            polls,
+        ))
     }
 
     fn harness_with_one_binary() -> Vec<ProcessEntry> {
@@ -1868,20 +1961,6 @@ mod tests {
         assert_eq!(run.injection_attempts, 2);
     }
 
-    fn frame_from(from: &str, body: &str) -> InboxFrame {
-        InboxFrame {
-            seq: 1,
-            id: "id".to_owned(),
-            from: from.to_owned(),
-            body: body.to_owned(),
-        }
-    }
-
-    struct DeliveryRun {
-        errors: Vec<String>,
-        counts: Vec<String>,
-    }
-
     const CLAUDE_CONFIG_DIRECTORY: &str = "/home/ana/.claude";
     const REGISTRY_FILE: &str = "/home/ana/.claude/sessions/100.json";
     const PROJECTS_DIRECTORY_PATH: &str = "/home/ana/.claude/projects";
@@ -1911,184 +1990,201 @@ mod tests {
         files
     }
 
-    fn bridge_session_over<S: InboxConnector, F: Files>(
-        wiring: &Wiring,
-        files: F,
-        connector: S,
-    ) -> BridgeSession<S, F> {
-        BridgeSession {
-            notifier: Mutex::new(SessionNotifier::new(
-                connector,
-                "token".to_owned(),
-                CLASS_BEFORE_THE_LIVE_MODE_IS_READ,
-            )),
-            followed_sockets: Mutex::default(),
-            handled_seqs: Mutex::default(),
-            registry_file: PathBuf::from(REGISTRY_FILE),
-            projects_directory: PathBuf::from(PROJECTS_DIRECTORY_PATH),
-            transcript_file: Mutex::default(),
-            permission_class_file: PathBuf::from(PERMISSION_CLASS_FILE),
-            attested_class: Mutex::default(),
-            dropped_frames_file: PathBuf::from(DROPPED_FRAMES_FILE),
-            files,
-            elapsed: Arc::clone(&wiring.effects.elapsed),
-            record: Arc::clone(&wiring.effects.record),
-            spawn: Arc::clone(&wiring.effects.spawn),
-            wait: Arc::new(|_| {}),
-        }
-    }
-
-    fn bridge_session(wiring: &Wiring) -> BridgeSession<DownConnector, StandInFiles> {
-        bridge_session_over(
-            wiring,
-            files_of_live_session("bypassPermissions"),
-            DownConnector,
-        )
-    }
-
-    fn connect_errors(wiring: &Wiring) -> Vec<String> {
-        lock(&wiring.errors)
-            .iter()
-            .filter(|message| message.starts_with("cannot connect"))
-            .cloned()
+    fn frames_from(sender: &str, bodies: impl IntoIterator<Item = impl AsRef<str>>) -> String {
+        bodies
+            .into_iter()
+            .zip(1_u64..)
+            .map(|(body, seq)| scripted_frame_line(seq, sender, body.as_ref()))
             .collect()
     }
 
-    fn deliver_eleven_frames(seconds_between_frames: u64) -> DeliveryRun {
-        let wiring = wiring();
-        let session = bridge_session(&wiring);
-        for index in 0..11_u64 {
-            *lock(&wiring.clock_seconds) = index.saturating_mul(seconds_between_frames);
-            session.deliver(&frame_from("ana", &format!("body {index}")));
-        }
-        DeliveryRun {
-            errors: connect_errors(&wiring),
-            counts: written_counts(&session.files.writes),
-        }
+    fn polls_that_see_one_binary() -> Vec<Vec<ProcessEntry>> {
+        vec![
+            harness_with_one_binary(),
+            harness_with_one_binary(),
+            harness_with_one_binary(),
+            Vec::new(),
+        ]
+    }
+
+    fn run_frames_over_one_binary(files: StandInFiles, frames: String) -> ScriptedRun {
+        run_scripted_bridge(scripted_bridge_refusing_the_session(
+            files,
+            one_inbox_connection_replying(frames),
+            polls_that_see_one_binary(),
+        ))
+    }
+
+    fn eleven_bodies() -> impl Iterator<Item = String> {
+        (0..11).map(|index| format!("body {index}"))
+    }
+
+    fn run_eleven_frames_seconds_apart(seconds_between_frames: u64) -> ScriptedRun {
+        let mut bridge = scripted_bridge_refusing_the_session(
+            StandInFiles::default(),
+            one_inbox_connection_replying(frames_from("ana", eleven_bodies())),
+            polls_that_see_one_binary(),
+        );
+        let clock_seconds = Arc::clone(&bridge.clock_seconds);
+        bridge.before_frame = Arc::new(move |index| {
+            *lock(&clock_seconds) = index.saturating_mul(seconds_between_frames);
+        });
+        run_scripted_bridge(bridge)
+    }
+
+    fn messaging_socket_connect_errors(run: &ScriptedRun) -> Vec<&String> {
+        run.errors
+            .iter()
+            .filter(|message| message.starts_with("cannot connect to the messaging socket"))
+            .collect()
     }
 
     #[test]
     fn spec_3_12_the_clock_handed_in_decides_the_rate_limit_and_each_drop_is_recorded() {
-        let within_one_window = deliver_eleven_frames(1);
-        assert_eq!(within_one_window.errors.len(), 10);
+        let within_one_window = run_eleven_frames_seconds_apart(1);
         assert_eq!(
-            within_one_window.errors.first().map(String::as_str),
+            messaging_socket_connect_errors(&within_one_window).len(),
+            10
+        );
+        assert_eq!(
+            messaging_socket_connect_errors(&within_one_window)
+                .first()
+                .map(|message| message.as_str()),
             Some("cannot connect to the messaging socket: down")
         );
         assert_eq!(
-            within_one_window.counts.last().map(String::as_str),
+            written_counts(&within_one_window.writes)
+                .last()
+                .map(String::as_str),
             Some("1 0 10")
         );
-        let across_windows = deliver_eleven_frames(61);
-        assert_eq!(across_windows.errors.len(), 11);
+        let across_windows = run_eleven_frames_seconds_apart(61);
+        assert_eq!(messaging_socket_connect_errors(&across_windows).len(), 11);
         assert_eq!(
-            across_windows.counts.last().map(String::as_str),
+            written_counts(&across_windows.writes)
+                .last()
+                .map(String::as_str),
             Some("0 0 11")
         );
     }
 
+    const SPEC_FRAMES_INJECTED_BEFORE_A_DROP: usize = 10;
+
     #[test]
     fn spec_3_12_frames_of_two_followed_sockets_share_one_rate_limit_per_sender() {
-        let wiring = wiring();
-        let session = bridge_session(&wiring);
-        let [first_socket, second_socket] = <[BinarySocket; 2]>::try_from(binary_sockets_under(
-            HARNESS_PID,
-            &wiring.effects.runtime_inputs,
-            &[mcp_binary(101), mcp_binary(102)],
-        ))
-        .expect("two binaries under the harness");
-        let mut delivered_from_first_socket = 0_usize;
-        while rate_limit_drops_counted(&session.files.writes) == 0
-            && delivered_from_first_socket < MOST_FRAMES_BEFORE_A_DROP
-        {
-            session.deliver_from_socket(
-                &first_socket,
-                &frame_from("ana", &format!("body {delivered_from_first_socket}")),
-            );
-            delivered_from_first_socket = delivered_from_first_socket.saturating_add(1);
-        }
-        assert_eq!(rate_limit_drops_counted(&session.files.writes), 1);
-        let injected_before_second_socket = connect_errors(&wiring).len();
-        session.deliver_from_socket(
-            &second_socket,
-            &frame_from("ana", "body from the second socket"),
+        let first_socket_frames = frames_from(
+            "ana",
+            (0..=SPEC_FRAMES_INJECTED_BEFORE_A_DROP).map(|index| format!("body {index}")),
         );
-        assert_eq!(connect_errors(&wiring).len(), injected_before_second_socket);
-        assert_eq!(rate_limit_drops_counted(&session.files.writes), 2);
+        let second_socket_frames = frames_from("ana", ["body from the second socket"]);
+        let mut both_binaries = harness_with_one_binary();
+        both_binaries.push(mcp_binary(102));
+        let run = run_scripted_bridge(scripted_bridge_refusing_the_session(
+            StandInFiles::default(),
+            vec![
+                ScriptedInboxConnection {
+                    replies: first_socket_frames,
+                    fails_after_replies: true,
+                },
+                ScriptedInboxConnection {
+                    replies: second_socket_frames,
+                    fails_after_replies: false,
+                },
+            ],
+            vec![
+                both_binaries.clone(),
+                both_binaries.clone(),
+                both_binaries,
+                Vec::new(),
+            ],
+        ));
+        assert_eq!(run.injection_attempts, SPEC_FRAMES_INJECTED_BEFORE_A_DROP);
+        assert_eq!(
+            written_counts(&run.writes).last().map(String::as_str),
+            Some("2 0 10")
+        );
     }
 
-    fn class_files_written(session: &BridgeSession<DownConnector, StandInFiles>) -> Vec<String> {
-        lock(&session.files.writes)
+    fn class_files_written(run: &ScriptedRun) -> Vec<String> {
+        lock(&run.writes)
             .iter()
             .filter(|(path, _)| path == Path::new(PERMISSION_CLASS_FILE))
             .map(|(_, text)| text.clone())
             .collect()
     }
 
+    fn reads_of(run: &ScriptedRun, file: &str) -> usize {
+        lock(&run.reads)
+            .iter()
+            .filter(|path| path.as_path() == Path::new(file))
+            .count()
+    }
+
+    fn tail_reads_of(run: &ScriptedRun, file: &str) -> usize {
+        lock(&run.tail_reads)
+            .iter()
+            .filter(|path| path.as_path() == Path::new(file))
+            .count()
+    }
+
+    const TAIL_READS_AT_THE_BRIDGE_START: usize = 1;
+
     #[test]
     fn spec_3_12_harness_2_1_319_a_session_started_by_hand_is_attested_from_its_live_transcript_on_every_frame()
      {
         for (mode, class) in [("bypassPermissions", "bypass"), ("auto", "prompting")] {
-            let wiring = wiring();
-            let session = bridge_session_over(&wiring, files_of_live_session(mode), DownConnector);
-            session.deliver(&frame_from("ana", "one"));
-            session.deliver(&frame_from("ana", "two"));
-            assert_eq!(class_files_written(&session), [class], "{mode}");
+            let run = run_frames_over_one_binary(
+                files_of_live_session(mode),
+                frames_from("ana", ["one", "two"]),
+            );
+            assert_eq!(class_files_written(&run), [class], "{mode}");
             assert_eq!(
-                lock(&wiring.errors)
+                run.errors
                     .iter()
                     .filter(|message| message.starts_with("attested permission class"))
                     .count(),
                 1,
                 "{mode}"
             );
-            let transcript_tail_reads = lock(&session.files.tail_reads)
-                .iter()
-                .filter(|path| path.as_path() == Path::new(TRANSCRIPT_FILE))
-                .count();
-            assert_eq!(transcript_tail_reads, 2, "{mode}");
+            assert_eq!(
+                tail_reads_of(&run, TRANSCRIPT_FILE),
+                TAIL_READS_AT_THE_BRIDGE_START + 2,
+                "{mode}"
+            );
         }
-    }
-
-    fn reads_of(session: &BridgeSession<DownConnector, StandInFiles>, file: &str) -> usize {
-        lock(&session.files.reads)
-            .iter()
-            .filter(|path| path.as_path() == Path::new(file))
-            .count()
     }
 
     #[test]
     fn spec_3_12_harness_2_1_319_the_transcript_path_is_resolved_once_and_only_its_tail_is_read_per_frame()
      {
-        let wiring = wiring();
-        let session = bridge_session(&wiring);
-        for body in ["one", "two", "three"] {
-            session.deliver(&frame_from("ana", body));
-        }
-        assert_eq!(reads_of(&session, REGISTRY_FILE), 1);
-        assert_eq!(*lock(&session.files.listings), 1);
-        assert_eq!(reads_of(&session, TRANSCRIPT_FILE), 0);
-        assert_eq!(lock(&session.files.tail_reads).len(), 3);
+        let run = run_frames_over_one_binary(
+            files_of_live_session("bypassPermissions"),
+            frames_from("ana", ["one", "two", "three"]),
+        );
+        assert_eq!(reads_of(&run, REGISTRY_FILE), 1);
+        assert_eq!(*lock(&run.listings), 1);
+        assert_eq!(reads_of(&run, TRANSCRIPT_FILE), 0);
+        assert_eq!(
+            lock(&run.tail_reads).len(),
+            TAIL_READS_AT_THE_BRIDGE_START + 3
+        );
     }
 
     #[test]
     fn spec_3_12_harness_2_1_319_a_tail_without_a_mode_entry_falls_back_to_one_whole_read() {
-        let wiring = wiring();
         let mut files = files_of_live_session("bypassPermissions");
         files.tails.insert(
             PathBuf::from(TRANSCRIPT_FILE),
             "{\"type\":\"user\"}\n".to_owned(),
         );
-        let session = bridge_session_over(&wiring, files, DownConnector);
-        session.deliver(&frame_from("ana", "one"));
-        assert_eq!(reads_of(&session, TRANSCRIPT_FILE), 1);
-        assert_eq!(class_files_written(&session), ["bypass"]);
+        let run = run_frames_over_one_binary(files, frames_from("ana", ["one"]));
+        assert_eq!(reads_of(&run, TRANSCRIPT_FILE), 1);
+        assert_eq!(class_files_written(&run), ["bypass"]);
     }
 
     #[test]
     fn spec_3_12_harness_2_1_319_a_mode_entry_older_than_the_tail_window_is_read_whole_once_not_per_frame()
      {
-        let wiring = wiring();
         let mut files = files_of_live_session("bypassPermissions");
         let filler_line = "{\"type\":\"user\"}\n";
         let window = usize::try_from(TRANSCRIPT_TAIL_WINDOW_BYTES).expect("window fits");
@@ -2096,19 +2192,19 @@ mod tests {
             PathBuf::from(TRANSCRIPT_FILE),
             filler_line.repeat(window / filler_line.len() + 1),
         );
-        let session = bridge_session_over(&wiring, files, DownConnector);
-        for body in ["one", "two", "three"] {
-            session.deliver(&frame_from("ana", body));
-        }
-        assert_eq!(reads_of(&session, TRANSCRIPT_FILE), 1);
-        assert_eq!(lock(&session.files.tail_reads).len(), 3);
-        assert_eq!(class_files_written(&session), ["bypass"]);
+        let run = run_frames_over_one_binary(files, frames_from("ana", ["one", "two", "three"]));
+        assert_eq!(reads_of(&run, TRANSCRIPT_FILE), 1);
+        assert_eq!(
+            lock(&run.tail_reads).len(),
+            TAIL_READS_AT_THE_BRIDGE_START + 3
+        );
+        assert_eq!(class_files_written(&run), ["bypass"]);
     }
 
     #[test]
     fn spec_3_12_harness_2_1_319_a_cached_transcript_that_cannot_be_opened_is_resolved_again() {
         const OTHER_TRANSCRIPT: &str = "/home/ana/.claude/projects/-other/abc-1.jsonl";
-        let wiring = wiring();
+        const SECOND_FRAME_INDEX: u64 = 1;
         let mut files = files_of_live_session("bypassPermissions");
         files.existing.insert(PathBuf::from(OTHER_TRANSCRIPT));
         files.texts.insert(
@@ -2122,12 +2218,20 @@ mod tests {
                 PathBuf::from("/home/ana/.claude/projects/-other"),
             ]),
         );
-        let session = bridge_session_over(&wiring, files, DownConnector);
-        session.deliver(&frame_from("ana", "one"));
-        lock(&session.files.hidden).insert(PathBuf::from(TRANSCRIPT_FILE));
-        session.deliver(&frame_from("ana", "two"));
-        assert_eq!(class_files_written(&session), ["bypass", "prompting"]);
-        assert_eq!(*lock(&session.files.listings), 2);
+        let hidden = Arc::clone(&files.hidden);
+        let mut bridge = scripted_bridge_refusing_the_session(
+            files,
+            one_inbox_connection_replying(frames_from("ana", ["one", "two"])),
+            polls_that_see_one_binary(),
+        );
+        bridge.before_frame = Arc::new(move |index| {
+            if index == SECOND_FRAME_INDEX {
+                lock(&hidden).insert(PathBuf::from(TRANSCRIPT_FILE));
+            }
+        });
+        let run = run_scripted_bridge(bridge);
+        assert_eq!(class_files_written(&run), ["bypass", "prompting"]);
+        assert_eq!(*lock(&run.listings), 2);
     }
 
     #[test]
@@ -2194,13 +2298,12 @@ mod tests {
             io::Read::read_to_string(&mut connection, &mut received).expect("read to close");
             received
         });
-        let wiring = wiring();
-        let session = bridge_session_over(
-            &wiring,
-            files_of_live_session("bypassPermissions"),
+        run_scripted_bridge(ScriptedBridge::over(
             UnixSocketConnector::new(socket_path.clone()),
-        );
-        session.deliver(&frame_from("ana", "x"));
+            files_of_live_session("bypassPermissions"),
+            one_inbox_connection_replying(frames_from("ana", ["x"])),
+            polls_that_see_one_binary(),
+        ));
         let received = server.join().expect("server thread");
         fs::remove_file(&socket_path).expect("unlink socket");
         crate::remove_scratch::remove_scratch(&socket_directory)
@@ -2211,11 +2314,9 @@ mod tests {
     #[test]
     fn spec_3_12_harness_2_1_319_a_session_whose_mode_cannot_be_read_is_reported_and_attests_nothing()
      {
-        let wiring = wiring();
-        let session = bridge_session_over(&wiring, StandInFiles::default(), DownConnector);
-        session.deliver(&frame_from("ana", "one"));
-        assert_eq!(class_files_written(&session), Vec::<String>::new());
-        assert!(lock(&wiring.errors).iter().any(|message| message.starts_with(
+        let run = run_frames_over_one_binary(StandInFiles::default(), frames_from("ana", ["one"]));
+        assert_eq!(class_files_written(&run), Vec::<String>::new());
+        assert!(run.errors.iter().any(|message| message.starts_with(
             "cannot read the session's permission mode, keeping the class attested before: cannot read /home/ana/.claude/sessions/100.json"
         )));
     }
@@ -2223,15 +2324,16 @@ mod tests {
     #[test]
     fn spec_3_12_harness_2_1_319_a_frame_whose_sender_name_is_refused_is_reported_and_recorded_as_dropped()
      {
-        let wiring = wiring();
-        let session = bridge_session(&wiring);
-        session.deliver(&frame_from("an\"a", "x"));
+        let run = run_frames_over_one_binary(
+            files_of_live_session("bypassPermissions"),
+            frames_from("an\"a", ["x"]),
+        );
         assert!(
-            lock(&wiring.errors)
+            run.errors
                 .iter()
                 .any(|message| message.starts_with("frame from \"an\\\"a\" dropped"))
         );
-        assert_eq!(written_counts(&session.files.writes), ["0 1 0"]);
+        assert_eq!(written_counts(&run.writes), ["0 0 0", "0 1 0"]);
     }
 
     fn scratch_directory(label: &str) -> PathBuf {
@@ -2322,10 +2424,10 @@ mod tests {
         directories: BTreeMap<PathBuf, Result<Vec<PathBuf>, io::ErrorKind>>,
         existing: BTreeSet<PathBuf>,
         tails: BTreeMap<PathBuf, String>,
-        hidden: Mutex<BTreeSet<PathBuf>>,
-        reads: Mutex<Vec<PathBuf>>,
-        tail_reads: Mutex<Vec<PathBuf>>,
-        listings: Mutex<usize>,
+        hidden: Arc<Mutex<BTreeSet<PathBuf>>>,
+        reads: Arc<Mutex<Vec<PathBuf>>>,
+        tail_reads: Arc<Mutex<Vec<PathBuf>>>,
+        listings: Arc<Mutex<usize>>,
         writes: Arc<Mutex<Vec<(PathBuf, String)>>>,
         user: Option<u32>,
         entries: Arc<Mutex<BTreeMap<PathBuf, EntryFacts>>>,
@@ -3165,6 +3267,7 @@ mod tests {
                 connect_binary_socket: move |_socket_path| ScriptedInboxSocket {
                     connections: Arc::clone(&connections),
                     since_lines: SinceLines::default(),
+                    before_frame: before_no_frame(),
                 },
                 files: files_of_live_session("bypassPermissions"),
                 elapsed,
@@ -3284,6 +3387,7 @@ mod tests {
                     connect_binary_socket: move |_socket_path| ScriptedInboxSocket {
                         connections: Arc::clone(&connections),
                         since_lines: Arc::clone(&session.since_lines),
+                        before_frame: before_no_frame(),
                     },
                     files: session.session_files,
                     elapsed: wiring.effects.elapsed,
