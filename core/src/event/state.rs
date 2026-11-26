@@ -212,7 +212,7 @@ mod tests {
             (SnapshotMoment::Stop, vec![("moment", Value::from("stop"))]),
         ];
 
-        crate::net::direct::tests::assert_each_arm(
+        crate::each_arm::assert_each_arm(
             &cases,
             |moment| {
                 StateEvent::Counters(CounterSnapshot::read(

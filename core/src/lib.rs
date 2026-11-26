@@ -3,6 +3,10 @@ pub mod cli;
 pub mod config;
 pub mod crypto;
 pub mod dirs;
+#[cfg(test)]
+mod drawn_units;
+#[cfg(test)]
+mod each_arm;
 pub mod errors;
 pub mod event;
 #[cfg(test)]

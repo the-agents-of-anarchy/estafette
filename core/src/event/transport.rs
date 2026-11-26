@@ -361,7 +361,8 @@ mod tests {
     use iroh::endpoint::{ClosedStream, ReadExactError, VarInt, WriteError};
 
     use super::*;
-    use crate::net::direct::tests::{assert_each_arm, test_salt};
+    use crate::each_arm::assert_each_arm;
+    use crate::net::direct::tests::test_salt;
     use crate::net::endpoint::LocationHash;
 
     const SPEC_SUPERSEDED_CLOSE_CODE: u64 = 410;

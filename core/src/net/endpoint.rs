@@ -587,8 +587,9 @@ mod tests {
 
     use super::*;
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
+    use crate::drawn_units::{CATCH_ALL_CASES, DrawnUnit, bytes_beside};
+    use crate::each_arm::assert_each_arm;
     use crate::event::ShortId;
-    use crate::net::direct::tests::{CATCH_ALL_CASES, DrawnUnit, bytes_beside};
     use crate::seeded_draws::Draws;
     use crate::test_waits::found_within;
 
@@ -1447,7 +1448,7 @@ mod tests {
             (UNLISTED_ALPN, Protocol::Other),
         ];
 
-        crate::net::direct::tests::assert_each_arm(&cases, |alpn| Protocol::of(alpn), cases.len());
+        assert_each_arm(&cases, |alpn| Protocol::of(alpn), cases.len());
     }
 
     #[test]
@@ -1496,11 +1497,7 @@ mod tests {
             ),
         ];
 
-        crate::net::direct::tests::assert_each_arm(
-            &cases,
-            |reason| CloseReason::of(reason),
-            cases.len(),
-        );
+        assert_each_arm(&cases, |reason| CloseReason::of(reason), cases.len());
     }
 
     #[test]
@@ -1543,7 +1540,7 @@ mod tests {
             (ConnectionError::CidsExhausted, Close::TransportFailure),
         ];
 
-        crate::net::direct::tests::assert_each_arm(&cases, Close::of, CLOSES_APART);
+        assert_each_arm(&cases, Close::of, CLOSES_APART);
     }
 
     const SPEC_RELAY_PORT: u16 = 443;
@@ -1602,11 +1599,7 @@ mod tests {
             ),
         ];
 
-        crate::net::direct::tests::assert_each_arm(
-            &cases,
-            |address| Location::of(address, &salt),
-            cases.len(),
-        );
+        assert_each_arm(&cases, |address| Location::of(address, &salt), cases.len());
     }
 
     /// A custom transport address whose id has a drawn number of its high bits cleared and whose data is drawn.
@@ -1773,7 +1766,7 @@ mod tests {
             ),
         ];
 
-        crate::net::direct::tests::assert_each_arm(&cases, |event| event.name(), cases.len());
+        assert_each_arm(&cases, |event| event.name(), cases.len());
     }
 
     #[test]
@@ -1811,6 +1804,6 @@ mod tests {
             ),
         ];
 
-        crate::net::direct::tests::assert_each_arm(&cases, |event| event.name(), cases.len());
+        assert_each_arm(&cases, |event| event.name(), cases.len());
     }
 }

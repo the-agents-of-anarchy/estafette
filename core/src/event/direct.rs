@@ -178,8 +178,8 @@ mod tests {
 
     use super::*;
     use crate::crypto::KEY_LEN;
+    use crate::each_arm::assert_each_arm;
     use crate::event::{Event, ShortId, write_run_record};
-    use crate::net::direct::tests::assert_each_arm;
     use crate::payload::PayloadError;
 
     const PEER_KEY_BYTE: u8 = 7;
