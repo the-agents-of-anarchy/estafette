@@ -42,8 +42,8 @@ fn whole_lines_of_a_run_file_read_as(path: &Path, writing: WritingProcess) -> Ve
             "{name}: a zero byte before the file's last byte that is not one"
         );
     }
-    let unended = writing
-        .landed_part(written)
+    let landed = writing.landed_part(written);
+    let unended = landed
         .rsplit(|byte| *byte == b'\n')
         .next()
         .unwrap_or_default();
@@ -53,8 +53,8 @@ fn whole_lines_of_a_run_file_read_as(path: &Path, writing: WritingProcess) -> Ve
         "{name}: the {} bytes after its last whole line are not the start of this run's own line",
         unended.len()
     );
-    let lines =
-        parse_trace_lines(written, writing).unwrap_or_else(|failure| panic!("{name}: {failure}"));
+    let lines = parse_trace_lines(landed, WritingProcess::Ended)
+        .unwrap_or_else(|failure| panic!("{name}: {failure}"));
     for line in &lines {
         assert_eq!(line.run, run, "{name}");
     }
