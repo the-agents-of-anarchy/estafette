@@ -4026,20 +4026,59 @@ pub(crate) mod tests {
         )
     }
 
+    /// The verdict, unless the member's probe was answered with the Introduce's connection left open, which is what iroh selecting the restarted process's path again before the dial leaves.
+    fn verdict_unless_the_dial_met_a_selected_path<Verdict>(
+        introduces_connections: &[Connection],
+        members_probe: &Result<ProbeAck, DirectError>,
+        verdict: Verdict,
+    ) -> Option<Verdict> {
+        let left_open = introduces_connections
+            .iter()
+            .any(|connection| connection.close_reason().is_none());
+        (members_probe.is_err() || !left_open).then_some(verdict)
+    }
+
+    /// The verdict of the first attempt over a fresh restart that returns one, each attempt handed the Introduce's connections the member holds, failing by the setup's name after `RESTART_ATTEMPTS` attempts.
+    async fn verdict_of_a_restart_whose_dial_met_no_selected_path<Verdict>(
+        transport: TransportRecord,
+        mut attempt: impl AsyncFnMut(&RestartedProcessIntroduced, &[Connection]) -> Option<Verdict>,
+    ) -> Verdict {
+        for _ in 0..RESTART_ATTEMPTS {
+            let restart =
+                restarted_process_introduced_with_the_gone_path_unselected(transport.clone()).await;
+            let introduces_connections =
+                connections_held_open_from(&restart.link.server_node, card_of(CLIENT_SEED));
+            if let Some(verdict) = attempt(&restart, &introduces_connections).await {
+                return verdict;
+            }
+        }
+        panic!(
+            "setup: the member's dial left the introduce's connection open in each of {RESTART_ATTEMPTS} attempts, as iroh selecting the restarted process's path again before the dial does"
+        )
+    }
+
     #[tokio::test]
     async fn spec_3_15_test_18_a_request_a_member_starts_after_a_restarted_processs_introduce_and_before_its_presence_is_answered_without_waiting_on_the_gone_processs_path()
      {
-        let restart =
-            restarted_process_introduced_with_the_gone_path_unselected(dropping_transport()).await;
-        assert!(
-            matches!(restart.introduced, Ok(IntroduceAck { .. })),
-            "{:?}",
-            restart.introduced
-        );
-
-        let started = Instant::now();
-        let probed = members_probe_of_the_restarted(&restart).await;
-        let took = started.elapsed();
+        let (probed, took) = verdict_of_a_restart_whose_dial_met_no_selected_path(
+            dropping_transport(),
+            async |restart, introduces_connections| {
+                assert!(
+                    matches!(restart.introduced, Ok(IntroduceAck { .. })),
+                    "{:?}",
+                    restart.introduced
+                );
+                let started = Instant::now();
+                let probed = members_probe_of_the_restarted(restart).await;
+                let took = started.elapsed();
+                verdict_unless_the_dial_met_a_selected_path(
+                    introduces_connections,
+                    &probed,
+                    (probed.clone(), took),
+                )
+            },
+        )
+        .await;
 
         assert_eq!(probed.unwrap().nonce, PROBE_NONCE);
         assert!(
@@ -4145,11 +4184,21 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_15_test_18_after_a_restarted_processs_introduce_the_members_next_request_to_it_and_then_its_next_request_to_the_member_are_answered()
      {
-        let restart =
-            restarted_process_introduced_with_the_gone_path_unselected(dropping_transport()).await;
-
-        let answered_by_the_restarted = members_probe_of_the_restarted(&restart).await;
-        let answered_by_the_member = restarted_processs_probe_of_the_member(&restart).await;
+        let (answered_by_the_restarted, answered_by_the_member) =
+            verdict_of_a_restart_whose_dial_met_no_selected_path(
+                dropping_transport(),
+                async |restart, introduces_connections| {
+                    let answered_by_the_restarted = members_probe_of_the_restarted(restart).await;
+                    let answered_by_the_member =
+                        restarted_processs_probe_of_the_member(restart).await;
+                    verdict_unless_the_dial_met_a_selected_path(
+                        introduces_connections,
+                        &answered_by_the_restarted,
+                        (answered_by_the_restarted.clone(), answered_by_the_member),
+                    )
+                },
+            )
+            .await;
 
         assert_eq!(answered_by_the_restarted.unwrap().nonce, PROBE_NONCE);
         assert_eq!(answered_by_the_member.unwrap().nonce, PROBE_NONCE_REVERSED);
@@ -4158,11 +4207,21 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn spec_3_15_test_18_after_a_restarted_processs_introduce_its_next_request_to_the_member_and_then_the_members_next_request_to_it_are_answered()
      {
-        let restart =
-            restarted_process_introduced_with_the_gone_path_unselected(dropping_transport()).await;
-
-        let answered_by_the_member = restarted_processs_probe_of_the_member(&restart).await;
-        let answered_by_the_restarted = members_probe_of_the_restarted(&restart).await;
+        let (answered_by_the_member, answered_by_the_restarted) =
+            verdict_of_a_restart_whose_dial_met_no_selected_path(
+                dropping_transport(),
+                async |restart, introduces_connections| {
+                    let answered_by_the_member =
+                        restarted_processs_probe_of_the_member(restart).await;
+                    let answered_by_the_restarted = members_probe_of_the_restarted(restart).await;
+                    verdict_unless_the_dial_met_a_selected_path(
+                        introduces_connections,
+                        &answered_by_the_restarted,
+                        (answered_by_the_member, answered_by_the_restarted.clone()),
+                    )
+                },
+            )
+            .await;
 
         assert_eq!(answered_by_the_member.unwrap().nonce, PROBE_NONCE_REVERSED);
         assert_eq!(answered_by_the_restarted.unwrap().nonce, PROBE_NONCE);
@@ -4172,16 +4231,23 @@ pub(crate) mod tests {
     async fn observability_decision_9_the_close_before_a_members_dial_to_a_restarted_process_is_recorded_closing_the_introduces_connection_with_estafettes_code_and_reason()
      {
         let (record, mut recorded) = recorded_events();
-        let restart = restarted_process_introduced_with_the_gone_path_unselected(
-            TransportRecord::new(record, test_salt()),
-        )
-        .await;
-        let introduces_connection =
-            connections_held_open_from(&restart.link.server_node, card_of(CLIENT_SEED));
-        drop(recorded_so_far(&mut recorded));
-
-        let probed = members_probe_of_the_restarted(&restart).await;
-        let closing = next_recorded(&mut recorded, "transport.connection_closing").await;
+        let (introduces_connection, probed, closing) =
+            verdict_of_a_restart_whose_dial_met_no_selected_path(
+                TransportRecord::new(record, test_salt()),
+                async |restart, introduces_connections| {
+                    drop(recorded_so_far(&mut recorded));
+                    let probed = members_probe_of_the_restarted(restart).await;
+                    verdict_unless_the_dial_met_a_selected_path(
+                        introduces_connections,
+                        &probed,
+                        (),
+                    )?;
+                    let closing =
+                        next_recorded(&mut recorded, "transport.connection_closing").await;
+                    Some((introduces_connections.to_vec(), probed, closing))
+                },
+            )
+            .await;
 
         assert_eq!(introduces_connection.len(), 1);
         assert_eq!(
