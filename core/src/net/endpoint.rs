@@ -610,7 +610,7 @@ mod tests {
     const SILENT_PEER_SEED: u8 = 5;
     const STRANGER_SEED: u8 = 6;
     const VANISHING_PEER_SEED: u8 = 7;
-    const SPEC_PEER_NONCE: [u8; KEY_LEN] = [44; KEY_LEN];
+    const SPEC_PEER_NONCE: [u8; KEY_LEN] = *b"0123456789abcdefghijklmnopqrstuv";
     const NONCE_DRAW_SPREAD: u8 = 0x9D;
     const CONNECTIONS_EACH_DRAWING_A_NONCE: u8 = 2;
     const GATE_CLOSE_CODE_ON_THE_WIRE: u32 = 403;
