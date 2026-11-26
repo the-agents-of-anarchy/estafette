@@ -142,7 +142,7 @@ impl std::error::Error for CardInvalid {}
 pub struct Card {
     handle: String,
     public_key: String,
-    pub network: Option<String>,
+    network: Option<String>,
     public: Map<String, Value>,
 }
 
