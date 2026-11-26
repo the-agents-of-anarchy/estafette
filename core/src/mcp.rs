@@ -387,14 +387,9 @@ impl Server {
             requested_handle,
             public,
         };
-        Node::start(
-            endpoint,
-            identity,
-            network,
-            node_effects_of(&self.effects.node),
-        )
-        .await
-        .map_err(|not_started| InitRefusal::Failed(ClaimFailure::NodeNotStarted(not_started)))
+        Node::start(endpoint, identity, network, self.effects.node.clone())
+            .await
+            .map_err(|not_started| InitRefusal::Failed(ClaimFailure::NodeNotStarted(not_started)))
     }
 
     /// Writes the failure to the run record and returns the error code the tool answers with.
@@ -588,18 +583,6 @@ fn known_host_relays(config: &NetworkConfig) -> Vec<RelayUrl> {
         .iter()
         .filter_map(|host| host_relay_url(&host.relay))
         .collect()
-}
-
-/// The node's side effects for this init, sharing every one the composition root handed the server.
-fn node_effects_of(effects: &NodeEffects) -> NodeEffects {
-    NodeEffects {
-        clock: Arc::clone(&effects.clock),
-        monotonic: Arc::clone(&effects.monotonic),
-        fill_probe_nonce: Arc::clone(&effects.fill_probe_nonce),
-        report: Arc::clone(&effects.report),
-        inbox: Arc::clone(&effects.inbox),
-        probe_relay: Arc::clone(&effects.probe_relay),
-    }
 }
 
 /// The tool's arguments read as its input, `bad_request` when they do not match its schema.

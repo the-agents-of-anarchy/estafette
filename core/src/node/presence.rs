@@ -140,6 +140,7 @@ impl Network {
 }
 
 /// The side effects the node runs on, initialized by the composition root.
+#[derive(Clone)]
 pub struct NodeEffects {
     /// Milliseconds since the Unix epoch by this machine's clock.
     pub clock: Clock,
