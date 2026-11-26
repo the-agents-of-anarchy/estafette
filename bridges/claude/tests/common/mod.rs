@@ -45,7 +45,7 @@ mod fresh_directory;
 mod remove_scratch;
 #[path = "../../../../core/src/scratch_removal.rs"]
 mod scratch_removal;
-#[path = "../../src/this_process_directory.rs"]
+#[path = "../../../../core/tests/common/this_process_directory.rs"]
 mod this_process_directory;
 
 pub struct Fixture {

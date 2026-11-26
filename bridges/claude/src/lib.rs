@@ -20,4 +20,5 @@ mod scratch_removal;
 mod seeded;
 pub mod session_files;
 #[cfg(test)]
+#[path = "../../../core/tests/common/this_process_directory.rs"]
 mod this_process_directory;

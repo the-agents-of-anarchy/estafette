@@ -54,6 +54,7 @@ mod remove_scratch;
 #[path = "../../../core/src/scratch_removal.rs"]
 mod scratch_removal;
 #[cfg(test)]
+#[path = "../../../core/tests/common/this_process_directory.rs"]
 mod this_process_directory;
 
 const DOCTOR_SUBCOMMAND: &str = "doctor";
