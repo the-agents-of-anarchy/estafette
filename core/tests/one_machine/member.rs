@@ -225,7 +225,7 @@ mod stopping_a_claimed_member {
 
     use super::{INBOX_TOOL, Member};
     use crate::local_network::{AMY_CARD, AMY_HANDLE, LocalNetwork};
-    use crate::scratch_machine::RunRecordKeeping;
+    use crate::scratch_machine::KeptFilesPolicy;
 
     /// How long a member may take to record a step of its stopping once it is signalled.
     const STEP_WAIT: Duration = Duration::from_secs(20);
@@ -255,7 +255,7 @@ mod stopping_a_claimed_member {
 
     /// A member that claimed a card through a stand-in host, with the network it lives in kept alive beside it.
     fn claimed_member(test_tag: &str) -> (Member, LocalNetwork) {
-        let network = LocalNetwork::create(test_tag, &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create(test_tag, &KeptFilesPolicy::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let host = network.stand_in_host();
         let mut member = network.start_member();

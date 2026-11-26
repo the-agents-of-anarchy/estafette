@@ -20,7 +20,7 @@ use tokio::sync::watch;
 use crate::mcp_server::{PRESENCE_WAIT, online};
 use crate::member::Member;
 use crate::payload_placeholders::UNSET_MAC;
-use crate::scratch_machine::{Card, RunRecordKeeping, ScratchMachine};
+use crate::scratch_machine::{Card, KeptFilesPolicy, ScratchMachine};
 use crate::scripted_node::ScriptedNode;
 
 /// The name of the network every local test creates.
@@ -55,8 +55,8 @@ pub struct MetPair {
 
 impl LocalNetwork {
     /// Creates the network by the binary's own command on a fresh machine named for the test, its members' run records kept as the test asks.
-    pub fn create(test_tag: &str, run_records: &RunRecordKeeping) -> Self {
-        let machine = ScratchMachine::fresh(test_tag, NETWORK, run_records);
+    pub fn create(test_tag: &str, kept_files_policy: &KeptFilesPolicy) -> Self {
+        let machine = ScratchMachine::fresh(test_tag, NETWORK, kept_files_policy);
         machine.run(&["network", "create", NETWORK]);
         let config_file = machine.directories().network_config_file(NETWORK).unwrap();
         let secret =

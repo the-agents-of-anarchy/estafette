@@ -14,7 +14,7 @@ use iroh_gossip::TopicId;
 
 use crate::forgeries::wall_clock_seconds;
 use crate::scratch_machine::server_member_end::recipe_failure;
-use crate::scratch_machine::{BINARY, INVITATION_VARIABLE, KeptSecrets, RunRecordKeeping};
+use crate::scratch_machine::{BINARY, INVITATION_VARIABLE, KeptFilesPolicy, KeptSecrets};
 
 /// The task runner every project task runs through.
 pub const TASK_RUNNER: &str = "just";
@@ -33,14 +33,14 @@ const INVITATION_EXPORTED_BY: &str =
 pub struct LiveNetwork {
     invitation: Invitation,
     keys: NetworkKeys,
-    run_records: RunRecordKeeping,
+    kept_files_policy: KeptFilesPolicy,
 }
 
 impl LiveNetwork {
-    /// Reads the invitation and the running test's run record keeping from the variables the acceptance gate exports, failing with the invitation variable's name and the kind of failure, never its value, when it is unset or not unicode.
+    /// Reads the invitation and the running test's policy for the files it keeps from the variables the acceptance gate exports, failing with the invitation variable's name and the kind of failure, never its value, when it is unset or not unicode.
     pub fn from_environment() -> Self {
-        let run_records = RunRecordKeeping::from_environment();
-        let text = match run_records.invitation() {
+        let kept_files_policy = KeptFilesPolicy::from_environment();
+        let text = match kept_files_policy.invitation() {
             Ok(Some(text)) => text.to_owned(),
             Ok(None) => panic!("{INVITATION_VARIABLE} is unset: {INVITATION_EXPORTED_BY}"),
             Err(unreadable) => panic!(
@@ -54,13 +54,13 @@ impl LiveNetwork {
         Self {
             invitation,
             keys,
-            run_records,
+            kept_files_policy,
         }
     }
 
-    /// How the running test keeps the run records of the members it starts on this network.
-    pub const fn run_records(&self) -> &RunRecordKeeping {
-        &self.run_records
+    /// How the running test keeps the files of the members it starts on this network.
+    pub const fn kept_files_policy(&self) -> &KeptFilesPolicy {
+        &self.kept_files_policy
     }
 
     /// The network's name.
@@ -110,7 +110,7 @@ impl LiveNetwork {
     pub fn kept_secrets(&self) -> io::Result<KeptSecrets> {
         let configuration = toml::to_string(&self.configuration_through(&self.invitation.hosts))
             .map_err(io::Error::other)?;
-        let invitation = self.run_records.invitation()?;
+        let invitation = self.kept_files_policy.invitation()?;
         KeptSecrets::of_server_member(&configuration, invitation)
     }
 

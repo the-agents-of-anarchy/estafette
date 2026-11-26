@@ -64,7 +64,7 @@ impl LabMachine {
     /// An empty scratch root named for the test, for the live network, its members' run records kept as the test asks.
     pub fn fresh(test_tag: &str, network: &LiveNetwork) -> Self {
         Self {
-            scratch: ScratchMachine::fresh(test_tag, network.name(), network.run_records()),
+            scratch: ScratchMachine::fresh(test_tag, network.name(), network.kept_files_policy()),
         }
     }
 

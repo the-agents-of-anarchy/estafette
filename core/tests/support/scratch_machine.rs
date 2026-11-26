@@ -118,13 +118,13 @@ pub struct ScratchMachine {
     root: PathBuf,
     network: String,
     servers_started: Cell<u32>,
-    run_records: RunRecordKeeping,
+    kept_files_policy: KeptFilesPolicy,
     end_marks: EndMarks,
 }
 
-/// What a test asks of its members' run records, as the test reads it from the environment the acceptance gate exports: the directory they are kept in, none while unset, and the invitation they must not show.
+/// What a test asks of the files it keeps of its members, run records and data alike, as the test reads it from the environment the acceptance gate exports: the directory they are kept in, none while unset, and the invitation they must not show.
 #[derive(Clone)]
-pub struct RunRecordKeeping {
+pub struct KeptFilesPolicy {
     kept_in: Option<PathBuf>,
     invitation: InvitationVariable,
 }
@@ -161,7 +161,7 @@ pub struct Card {
     pub id: EndpointId,
 }
 
-impl RunRecordKeeping {
+impl KeptFilesPolicy {
     /// The running test's keeping: a directory named for the test beneath the one the variable names, and the invitation the gate exports.
     pub fn from_environment() -> Self {
         let test = std::thread::current()
@@ -200,7 +200,7 @@ impl RunRecordKeeping {
 impl KeptSecrets {
     /// The secrets of the machine, read before anything of it is kept: the invitation when set, the `secret` of every network configuration under its configuration directory, and the text of every secret key file and every file of a certificate cache under its configuration, data and runtime directories, a run record also searched for every line of the other files it can read there but debug traces; or the first failure, naming the invitation variable when it is not unicode, or the path of the listing, read or configuration that fails.
     fn of_machine(machine: &ScratchMachine) -> io::Result<Self> {
-        let invitation = machine.run_records.invitation()?;
+        let invitation = machine.kept_files_policy.invitation()?;
         let mut secret_texts = Vec::new();
         let mut other_texts = Vec::new();
         for file in machine.base_directory_files()? {
@@ -336,7 +336,7 @@ fn is_a_debug_trace(file: &Path) -> bool {
 
 impl ScratchMachine {
     /// An empty scratch root named for the test and the machine, for the network of that name, its members' run records kept as the test asks.
-    pub fn fresh(test_tag: &str, network: &str, run_records: &RunRecordKeeping) -> Self {
+    pub fn fresh(test_tag: &str, network: &str, kept_files_policy: &KeptFilesPolicy) -> Self {
         let root = fresh_directory::fresh_directory_in(
             Path::new(SHORT_SCRATCH_PARENT),
             &format!("{SCRATCH_PREFIX}-{}-{test_tag}", std::process::id()),
@@ -345,7 +345,7 @@ impl ScratchMachine {
         Self {
             network: network.to_owned(),
             servers_started: Cell::new(0),
-            run_records: run_records.clone(),
+            kept_files_policy: kept_files_policy.clone(),
             end_marks: EndMarks::in_directory(&root),
             root,
         }
@@ -686,7 +686,7 @@ impl Drop for ScratchMachine {
             }
         }
         let keeping = self
-            .run_records
+            .kept_files_policy
             .kept_in()
             .map(|directory| self.keep_records(directory))
             .unwrap_or_default();
@@ -1130,7 +1130,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             "still-zero",
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: None,
                 invitation: InvitationVariable::Unset,
             },
@@ -1214,7 +1214,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             tag,
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: None,
                 invitation: InvitationVariable::Unset,
             },
@@ -1241,7 +1241,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             "member-first",
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: None,
                 invitation: InvitationVariable::Unset,
             },
@@ -1278,7 +1278,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             "kept-data",
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: Some(kept_in.clone()),
                 invitation: InvitationVariable::Unset,
             },
@@ -1354,7 +1354,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             "kept-certificate-cache",
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: Some(kept_in.clone()),
                 invitation: InvitationVariable::Unset,
             },
@@ -1391,7 +1391,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             tag,
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: Some(kept_in.to_path_buf()),
                 invitation: InvitationVariable::Unset,
             },
@@ -1521,7 +1521,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             "kept-redacted",
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: Some(kept_in.clone()),
                 invitation: InvitationVariable::Set(PLANTED_INVITATION.to_owned()),
             },
@@ -1618,7 +1618,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             "kept-end-failure",
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: Some(kept_in.clone()),
                 invitation: InvitationVariable::Unset,
             },
@@ -1654,7 +1654,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             "first-line",
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: None,
                 invitation: InvitationVariable::Unset,
             },
@@ -1688,7 +1688,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             "kept-redacted-mark",
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: Some(kept_in.clone()),
                 invitation: InvitationVariable::Set(PLANTED_INVITATION.to_owned()),
             },
@@ -1725,7 +1725,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             "unmade-base",
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: Some(kept_in.clone()),
                 invitation: InvitationVariable::Unset,
             },
@@ -1783,7 +1783,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             tag,
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: Some(kept_in.clone()),
                 invitation: InvitationVariable::Unset,
             },
@@ -1881,7 +1881,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             "unloaded-secret",
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: Some(kept_in.clone()),
                 invitation: InvitationVariable::Unset,
             },
@@ -2346,7 +2346,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             "printing-while-unwinding",
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: None,
                 invitation: InvitationVariable::Unset,
             },
@@ -2418,7 +2418,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             "invitation-not-unicode",
             NETWORK,
-            &RunRecordKeeping::from_environment(),
+            &KeptFilesPolicy::from_environment(),
         );
         fs::write(
             machine.root.join(first_member_run_record_name()),
@@ -2530,7 +2530,7 @@ mod tests {
         ScratchMachine::fresh(
             tag,
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: Some(kept_in.to_path_buf()),
                 invitation: InvitationVariable::Unset,
             },
@@ -2596,7 +2596,7 @@ mod tests {
         let machine = ScratchMachine::fresh(
             tag,
             NETWORK,
-            &RunRecordKeeping {
+            &KeptFilesPolicy {
                 kept_in: Some(kept_in.clone()),
                 invitation: InvitationVariable::Unset,
             },

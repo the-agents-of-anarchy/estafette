@@ -137,7 +137,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     };
     use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
     use crate::payloads::presence_signed_by;
-    use crate::scratch_machine::{Card, RunRecordKeeping};
+    use crate::scratch_machine::{Card, KeptFilesPolicy};
     use crate::scripted_node::{SPEC_DIRECT_TIMEOUT_WITH_SLACK, ScriptedNode};
     use crate::timed_step::timed;
     use crate::trace_reader::TraceLine;
@@ -557,7 +557,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     fn spec_3_15_test_18_a_killed_member_restarted_with_its_card_is_delivered_to_within_1_s_of_its_new_presence()
      {
         let network =
-            LocalNetwork::create("restarted-member", &RunRecordKeeping::from_environment());
+            LocalNetwork::create("restarted-member", &KeptFilesPolicy::from_environment());
         let first_host = network.stand_in_host();
         let MetPair {
             mut amy,
@@ -588,7 +588,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     fn spec_3_15_test_18_a_killed_member_restarted_with_its_card_is_delivered_to_within_1_s_of_its_new_presence_while_the_sender_still_holds_a_gossip_connection_to_its_killed_process()
      {
         let network =
-            LocalNetwork::create("restart-gossip-held", &RunRecordKeeping::from_environment());
+            LocalNetwork::create("restart-gossip-held", &KeptFilesPolicy::from_environment());
         let amy_card = network.create_card(AMY_CARD, AMY_HANDLE);
         let bob_card = network.create_card(BOB_CARD, BOB_HANDLE);
         let bob_key = network.card_key(&bob_card);
@@ -631,7 +631,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     fn spec_3_15_test_18_a_killed_member_restarted_with_its_card_that_connects_to_the_sender_before_its_new_presence_is_delivered_to_within_1_s_of_that_presence()
      {
         let network =
-            LocalNetwork::create("restart-dials-first", &RunRecordKeeping::from_environment());
+            LocalNetwork::create("restart-dials-first", &KeptFilesPolicy::from_environment());
         let amy_card = network.create_card(AMY_CARD, AMY_HANDLE);
         let bob_card = network.create_card(BOB_CARD, BOB_HANDLE);
         let bob_key = network.card_key(&bob_card);
@@ -705,7 +705,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     fn spec_3_15_test_4_a_member_stopped_by_the_end_of_input_is_gone_at_its_peer_within_1000_ms_and_unreachable()
      {
         let network =
-            LocalNetwork::create("gone-by-input-end", &RunRecordKeeping::from_environment());
+            LocalNetwork::create("gone-by-input-end", &KeptFilesPolicy::from_environment());
         let host = network.stand_in_host();
         let MetPair {
             mut amy, mut bob, ..
@@ -733,7 +733,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
      {
         let network = LocalNetwork::create(
             "gone-with-call-in-flight",
-            &RunRecordKeeping::from_environment(),
+            &KeptFilesPolicy::from_environment(),
         );
         let host = network.stand_in_host();
         let MetPair {
@@ -791,7 +791,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     fn spec_3_15_test_5_a_killed_member_is_unreachable_at_its_peer_within_one_neighbor_down_and_one_probe_timeout()
      {
         let network =
-            LocalNetwork::create("killed-unreachable", &RunRecordKeeping::from_environment());
+            LocalNetwork::create("killed-unreachable", &KeptFilesPolicy::from_environment());
         let host = network.stand_in_host();
         network.add_stand_in_host_to_the_configuration(&host);
         let MetPair {
@@ -944,7 +944,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     #[test]
     fn spec_3_15_test_4_a_message_sent_before_the_departure_amy_holds_reaches_her_inbox_and_leaves_its_sender_gone()
      {
-        let network = LocalNetwork::create("late-message", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("late-message", &KeptFilesPolicy::from_environment());
         let ScriptedBobDeparted {
             mut amy,
             amy_card,
@@ -985,7 +985,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
     #[test]
     fn spec_3_15_test_4_an_introduce_from_a_member_amy_holds_departed_leaves_it_gone() {
-        let network = LocalNetwork::create("late-introduce", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("late-introduce", &KeptFilesPolicy::from_environment());
         let ScriptedBobDeparted {
             amy, amy_card, bob, ..
         } = amy_after_scripted_bob_departed(&network);
@@ -1018,7 +1018,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     fn spec_3_15_test_18_a_restarted_member_whose_message_came_before_its_presence_keeps_that_connection_and_is_delivered_to()
      {
         let network =
-            LocalNetwork::create("restart-kept-link", &RunRecordKeeping::from_environment());
+            LocalNetwork::create("restart-kept-link", &KeptFilesPolicy::from_environment());
         let amy_card = network.create_card(AMY_CARD, AMY_HANDLE);
         let bob_key = SecretKey::generate();
         let first_session = network.scripted_member(&bob_key, BOB_HANDLE);
@@ -1108,7 +1108,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
      {
         let network = LocalNetwork::create(
             "live-unannounced-path",
-            &RunRecordKeeping::from_environment(),
+            &KeptFilesPolicy::from_environment(),
         );
         let amy_card = network.create_card(AMY_CARD, AMY_HANDLE);
         let bob_key = SecretKey::generate();
@@ -1189,7 +1189,7 @@ mod spec_3_15_test_1_on_one_machine {
     use crate::local_network::{AMY_HANDLE, BOB_HANDLE, LocalNetwork, MetPair};
     use crate::message_body::BODY;
     use crate::payload_placeholders::wall_clock_ms;
-    use crate::scratch_machine::RunRecordKeeping;
+    use crate::scratch_machine::KeptFilesPolicy;
     use crate::send;
 
     /// The event a member records when a client connects to its inbox socket (spec/observability.md decision 9).
@@ -1200,7 +1200,7 @@ mod spec_3_15_test_1_on_one_machine {
     #[test]
     fn spec_3_15_test_1_a_message_to_a_member_whose_inbox_socket_has_a_client_is_delivered_attached_as_one_frame()
      {
-        let network = LocalNetwork::create("t1", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("t1", &KeptFilesPolicy::from_environment());
         let host = network.stand_in_host();
         let MetPair {
             mut amy,
@@ -1241,7 +1241,7 @@ mod spec_3_15_test_19_on_one_machine {
     use crate::mcp_server::online;
     use crate::member::{loopback_address, loopback_address_of};
     use crate::payloads::presence_signed_by;
-    use crate::scratch_machine::RunRecordKeeping;
+    use crate::scratch_machine::KeptFilesPolicy;
     use crate::scripted_node::ScriptedNode;
 
     /// Every node the node's topic ever reported up as a gossip neighbor.
@@ -1261,7 +1261,7 @@ mod spec_3_15_test_19_on_one_machine {
     #[test]
     fn spec_3_15_test_19_a_member_lists_a_node_whose_only_gossip_neighbor_is_another_member_within_the_observer_wait_of_its_presence()
      {
-        let network = LocalNetwork::create("t19", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("t19", &KeptFilesPolicy::from_environment());
         let host = network.stand_in_host();
         let MetPair {
             mut amy,
@@ -1301,7 +1301,7 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
     use crate::mcp_server::{PRESENCE_WAIT, gone, online};
     use crate::member::{Member, loopback_address};
     use crate::payload_placeholders::wall_clock_ms;
-    use crate::scratch_machine::{Card, RunRecordKeeping};
+    use crate::scratch_machine::{Card, KeptFilesPolicy};
     use crate::timed_step::timed;
 
     /// Spec 3.15 test 7: the handle the first member holds and the second member's card requests too.
@@ -1312,7 +1312,7 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
     #[test]
     fn spec_3_15_test_7_a_second_member_joining_through_a_host_without_a_card_after_the_first_spread_is_h_2_at_every_node_and_keeps_it_after_the_first_restarts()
      {
-        let network = LocalNetwork::create("t7c", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("t7c", &KeptFilesPolicy::from_environment());
         let second_effective = format!("{TAKEN}{SECOND_MEMBER_HANDLE_SUFFIX}");
         let host = network.stand_in_host();
         let amy_card = network.create_card(AMY_CARD, TAKEN);
@@ -1428,7 +1428,7 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
     #[test]
     fn spec_3_15_test_26_a_member_killed_and_restarted_through_another_host_lists_every_present_member_within_the_observer_wait_of_its_init()
      {
-        let network = LocalNetwork::create("t26k", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("t26k", &KeptFilesPolicy::from_environment());
         let first_host = network.stand_in_host();
         let MetPair {
             mut amy,
@@ -1450,7 +1450,7 @@ mod spec_3_15_joining_through_a_host_without_a_card_on_one_machine {
     #[test]
     fn spec_3_15_test_26_a_member_stopped_cleanly_and_restarted_through_another_host_lists_every_present_member_within_the_observer_wait_of_its_init()
      {
-        let network = LocalNetwork::create("t26s", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("t26s", &KeptFilesPolicy::from_environment());
         let first_host = network.stand_in_host();
         let MetPair {
             mut amy,
@@ -1497,7 +1497,7 @@ mod spec_3_15_with_one_member {
     use crate::node_start::{MOMENT_FIELD, is_counters_snapshot_of_moment};
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::{presence_signed_by, presence_signed_by_at};
-    use crate::scratch_machine::RunRecordKeeping;
+    use crate::scratch_machine::KeptFilesPolicy;
     use crate::scripted_node::{SPEC_DIRECT_TIMEOUT_WITH_SLACK, ScriptedNode};
     use crate::trace_reader::TraceLine;
 
@@ -1741,7 +1741,7 @@ mod spec_3_15_with_one_member {
 
     #[test]
     fn spec_3_15_test_6_two_processes_init_one_card_within_100_ms_and_exactly_one_claims_it() {
-        let network = LocalNetwork::create("t6", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("t6", &KeptFilesPolicy::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let mut first = network.start_member();
         let mut second = network.start_member();
@@ -1771,7 +1771,7 @@ mod spec_3_15_with_one_member {
 
     #[test]
     fn spec_3_15_test_9_a_message_with_a_wrong_mac_is_dropped_with_no_response() {
-        let network = LocalNetwork::create("t9", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("t9", &KeptFilesPolicy::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let attacker = network.stand_in_host();
         let mut amy = network.start_member();
@@ -1811,7 +1811,7 @@ mod spec_3_15_with_one_member {
     #[test]
     fn spec_3_15_test_10_a_gossip_payload_whose_signature_does_not_verify_against_its_card_is_dropped()
      {
-        let network = LocalNetwork::create("t10", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("t10", &KeptFilesPolicy::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let host = network.stand_in_host();
         let mut amy = network.start_member();
@@ -1850,7 +1850,7 @@ mod spec_3_15_with_one_member {
 
     #[test]
     fn spec_3_15_test_12_the_mcp_tool_list_is_identical_before_and_after_init() {
-        let network = LocalNetwork::create("t12", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("t12", &KeptFilesPolicy::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let mut amy = network.start_member();
 
@@ -1872,7 +1872,7 @@ mod spec_3_15_with_one_member {
     #[test]
     fn spec_3_15_test_13_every_tool_response_contains_you_with_the_current_status_before_and_after_init()
      {
-        let network = LocalNetwork::create("t13", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("t13", &KeptFilesPolicy::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let mut amy = network.start_member();
         let claimed = json!({ "card": card.name, "handle": AMY_HANDLE, "status": "claimed" });
@@ -1899,7 +1899,7 @@ mod spec_3_15_with_one_member {
     #[test]
     fn spec_3_15_test_16_a_card_whose_sidecar_has_permissions_0644_fails_init_with_sidecar_invalid()
     {
-        let network = LocalNetwork::create("t16", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("t16", &KeptFilesPolicy::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         network.set_sidecar_mode(&card, LOOSE_SIDECAR_MODE);
         let mut amy = network.start_member();
@@ -1914,7 +1914,7 @@ mod spec_3_15_with_one_member {
     #[test]
     fn spec_3_5_a_card_whose_public_key_decodes_from_upper_case_hex_is_claimed_through_init_though_spec_3_1_writes_it_lowercase()
      {
-        let network = LocalNetwork::create("upper-key", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("upper-key", &KeptFilesPolicy::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         network.uppercase_public_key(&card);
         let mut amy = network.start_member();
@@ -1931,7 +1931,7 @@ mod spec_3_15_with_one_member {
     #[test]
     fn spec_3_15_test_21_a_node_with_the_topic_id_but_not_the_secret_gets_no_neighbor_and_no_payload_dialing_or_dialed()
      {
-        let network = LocalNetwork::create("t21", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("t21", &KeptFilesPolicy::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         network.add_host_that_never_answers();
         let host = network.stand_in_host();
@@ -1997,7 +1997,7 @@ mod spec_3_16_absences_on_one_machine {
     use crate::message_body::BODY;
     use crate::payload_placeholders::wall_clock_ms;
     use crate::payloads::presence_signed_by;
-    use crate::scratch_machine::RunRecordKeeping;
+    use crate::scratch_machine::KeptFilesPolicy;
     use crate::scripted_node::{SPEC_DIRECT_TIMEOUT_WITH_SLACK, ScriptedNode};
     use crate::send;
 
@@ -2069,7 +2069,7 @@ mod spec_3_16_absences_on_one_machine {
 
     #[test]
     fn spec_3_16_no_file_under_the_base_directories_announces_the_inbox_socket() {
-        let network = LocalNetwork::create("n1", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("n1", &KeptFilesPolicy::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let host = network.stand_in_host();
         let mut amy = network.start_member();
@@ -2093,7 +2093,7 @@ mod spec_3_16_absences_on_one_machine {
     #[test]
     fn spec_3_16_a_received_message_is_not_in_the_inbox_of_the_next_process_on_the_card_nor_on_disk()
      {
-        let network = LocalNetwork::create("n2", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("n2", &KeptFilesPolicy::from_environment());
         let host = network.stand_in_host();
         let MetPair {
             mut amy,
@@ -2120,7 +2120,7 @@ mod spec_3_16_absences_on_one_machine {
 
     #[test]
     fn spec_3_16_a_message_to_an_absent_member_is_not_kept_for_its_return() {
-        let network = LocalNetwork::create("n3", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("n3", &KeptFilesPolicy::from_environment());
         let host = network.stand_in_host();
         let MetPair {
             mut amy,
@@ -2151,7 +2151,7 @@ mod spec_3_16_absences_on_one_machine {
     #[test]
     fn spec_3_16_a_member_with_nothing_to_announce_sends_no_presence_for_longer_than_every_interval_of_spec_3_14()
      {
-        let network = LocalNetwork::create("n4", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("n4", &KeptFilesPolicy::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let host = network.stand_in_host();
         let mut amy = network.start_member();
@@ -2170,7 +2170,7 @@ mod spec_3_16_absences_on_one_machine {
 
     #[test]
     fn spec_3_16_a_send_whose_ack_never_comes_reaches_the_receiver_once() {
-        let network = LocalNetwork::create("n5", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("n5", &KeptFilesPolicy::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let host = network.stand_in_host();
         let mut amy = network.start_member();
@@ -2209,7 +2209,7 @@ mod spec_3_16_absences_on_one_machine {
 
     #[test]
     fn spec_3_16_thirty_sends_in_a_row_are_all_delivered() {
-        let network = LocalNetwork::create("n6", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("n6", &KeptFilesPolicy::from_environment());
         let card = network.create_card(AMY_CARD, AMY_HANDLE);
         let host = network.stand_in_host();
         let mut amy = network.start_member();
@@ -2244,7 +2244,7 @@ mod kept_run_records {
     use crate::local_network::{BOB_HANDLE, LocalNetwork, MetPair, NETWORK};
     use crate::scratch_machine::fresh_directory::fresh_directory_in;
     use crate::scratch_machine::remove_scratch::remove_scratch;
-    use crate::scratch_machine::{REDACTED, RunRecordKeeping, ScratchMachine};
+    use crate::scratch_machine::{KeptFilesPolicy, REDACTED, ScratchMachine};
     use crate::send;
 
     /// The members the real-record test starts: amy, bob and the refused one.
@@ -2313,7 +2313,7 @@ mod kept_run_records {
     #[test]
     fn run_records_of_members_that_ran_and_of_a_refused_member_are_kept_unredacted_holding_no_secret()
      {
-        let network = LocalNetwork::create("kept-real", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("kept-real", &KeptFilesPolicy::from_environment());
         let host = network.stand_in_host();
         let MetPair {
             mut amy, mut bob, ..
@@ -2369,11 +2369,8 @@ mod kept_run_records {
     #[test]
     fn a_kept_record_holds_none_of_the_configuration_lines_or_keys_the_test_planted_in_its_run_record()
      {
-        let machine = ScratchMachine::fresh(
-            "kept-record",
-            NETWORK,
-            &RunRecordKeeping::from_environment(),
-        );
+        let machine =
+            ScratchMachine::fresh("kept-record", NETWORK, &KeptFilesPolicy::from_environment());
         let secret_line = format!("secret = \"{CHOSEN_SECRET}\"");
         let owner_line = format!("owner = \"{CHOSEN_OWNER}\"");
         let owner_quoted_apart = format!("{KEY_QUOTED_APART_FROM_ITS_LINE}{CHOSEN_OWNER}");
@@ -2428,7 +2425,7 @@ mod observability_decision_6_on_one_machine {
     use crate::local_network::{AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, LocalNetwork, MetPair};
     use crate::mcp_server::{PRESENCE_WAIT, call_succeeded, online};
     use crate::member::LOOPBACK;
-    use crate::scratch_machine::RunRecordKeeping;
+    use crate::scratch_machine::KeptFilesPolicy;
 
     /// The body amy sends bob, planted so an events file that holds it is found to write a body (decision 6).
     const BODY_MARKER: &str = "body-marker-q7x2v9";
@@ -2555,7 +2552,7 @@ mod observability_decision_6_on_one_machine {
     fn observability_decision_6_the_events_files_of_a_real_exchange_hold_no_body_secret_path_or_address()
      {
         let network =
-            LocalNetwork::create("events-no-secret", &RunRecordKeeping::from_environment());
+            LocalNetwork::create("events-no-secret", &KeptFilesPolicy::from_environment());
         let host = network.stand_in_host();
         let MetPair {
             mut amy, mut bob, ..
@@ -2734,7 +2731,7 @@ mod observability_decision_6_on_one_machine {
     #[test]
     fn observability_decision_6_no_body_secret_socket_path_or_address_reaches_an_events_file_and_an_address_hashes_alike_within_a_run_and_apart_across_runs()
      {
-        let network = LocalNetwork::create("o6", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("o6", &KeptFilesPolicy::from_environment());
         let host = network.stand_in_host();
         let amy_card = network.create_card(AMY_CARD, AMY_HANDLE);
         let bob_card = network.create_card(BOB_CARD, BOB_HANDLE);
@@ -2842,7 +2839,7 @@ mod observability_decision_9_on_one_machine {
     use crate::local_network::{AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, LocalNetwork};
     use crate::mcp_server::{INIT_TOOL, PRESENCE_WAIT, call_succeeded, init_arguments, online};
     use crate::member::Member;
-    use crate::scratch_machine::RunRecordKeeping;
+    use crate::scratch_machine::KeptFilesPolicy;
     use crate::trace_reader::{TraceLine, events_lines_in};
 
     /// The body amy sends bob before bob's inbox client attaches.
@@ -3198,7 +3195,7 @@ mod observability_decision_9_on_one_machine {
     #[test]
     fn observability_decision_9_a_real_exchange_records_each_process_inbox_and_tool_event_with_its_fields()
      {
-        let network = LocalNetwork::create("o9", &RunRecordKeeping::from_environment());
+        let network = LocalNetwork::create("o9", &KeptFilesPolicy::from_environment());
 
         let exchange = recorded_exchange(&network);
 

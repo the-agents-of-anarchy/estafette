@@ -55,8 +55,8 @@ impl<'server> ServerMember<'server> {
     #[track_caller]
     pub fn started(server: &'server LabServer, network: &LiveNetwork, handle: &str) -> Self {
         let configuration = invitation_configuration(network, handle);
-        let run_records = network.run_records();
-        let secrets = run_records
+        let kept_files_policy = network.kept_files_policy();
+        let secrets = kept_files_policy
             .invitation()
             .and_then(|invitation| KeptSecrets::of_server_member(&configuration, invitation));
         server.run(
@@ -75,7 +75,7 @@ impl<'server> ServerMember<'server> {
             server,
             card: handle.to_owned(),
             secrets,
-            kept_in: run_records.kept_in().map(Path::to_path_buf),
+            kept_in: kept_files_policy.kept_in().map(Path::to_path_buf),
         };
         server.run(
             MEMBER_ON_SERVER_RECIPE,

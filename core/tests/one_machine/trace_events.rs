@@ -13,7 +13,7 @@ use crate::scratch_machine::owned_process::{
     FIXTURE_ENDED_WITHIN, FIXTURE_STANDARD_ERROR, FIXTURE_VARIABLE, fixture_run_within,
 };
 use crate::scratch_machine::remove_scratch::remove_scratch;
-use crate::scratch_machine::{RunRecordKeeping, ScratchMachine, TIMELINE_HEADING};
+use crate::scratch_machine::{KeptFilesPolicy, ScratchMachine, TIMELINE_HEADING};
 use crate::trace_reader::{NO_EVENT_RECORDED, events_lines_in};
 
 const MEMBERS_STARTED: u32 = 2;
@@ -82,7 +82,7 @@ fn failure_text_of(wait: impl FnOnce()) -> String {
 #[test]
 fn observability_decision_16_each_member_starts_with_the_default_and_writes_its_trace_in_a_data_directory_of_its_own()
  {
-    let network = LocalNetwork::create("m1", &RunRecordKeeping::from_environment());
+    let network = LocalNetwork::create("m1", &KeptFilesPolicy::from_environment());
     let machine = network.machine();
     for _member in 0..MEMBERS_STARTED {
         let mut server = machine.spawn_mcp_server();
@@ -114,7 +114,7 @@ fn observability_decision_16_each_member_starts_with_the_default_and_writes_its_
 
 #[test]
 fn observability_decision_14_an_event_already_in_the_file_is_found_without_a_further_write() {
-    let network = LocalNetwork::create("w1", &RunRecordKeeping::from_environment());
+    let network = LocalNetwork::create("w1", &KeptFilesPolicy::from_environment());
     let machine = network.machine();
     send_to_nobody_as_member(machine, FIRST_MEMBER);
 
@@ -130,7 +130,7 @@ fn observability_decision_14_an_event_already_in_the_file_is_found_without_a_fur
 #[test]
 fn observability_decision_14_a_line_appended_while_the_wait_runs_to_an_events_file_its_writer_keeps_open_is_found_when_it_is_written()
  {
-    let network = LocalNetwork::create("w2", &RunRecordKeeping::from_environment());
+    let network = LocalNetwork::create("w2", &KeptFilesPolicy::from_environment());
     let machine = network.machine();
     let traces = machine.traces_directory_of_member(FIRST_MEMBER);
     fs::create_dir_all(&traces).unwrap();
@@ -162,7 +162,7 @@ fn observability_decision_14_a_line_appended_while_the_wait_runs_to_an_events_fi
 #[test]
 fn observability_decision_14_a_wait_whose_bound_runs_out_fails_naming_the_event_and_the_members_timeline_so_far()
  {
-    let network = LocalNetwork::create("w3", &RunRecordKeeping::from_environment());
+    let network = LocalNetwork::create("w3", &KeptFilesPolicy::from_environment());
     let machine = network.machine();
     let traces = machine.traces_directory_of_member(FIRST_MEMBER);
     fs::create_dir_all(&traces).unwrap();
@@ -184,7 +184,7 @@ fn observability_decision_14_a_wait_whose_bound_runs_out_fails_naming_the_event_
 #[test]
 fn observability_decision_14_a_wait_whose_bound_ran_out_before_a_notice_was_taken_fails_though_the_line_announced_is_there()
  {
-    let network = LocalNetwork::create("w5", &RunRecordKeeping::from_environment());
+    let network = LocalNetwork::create("w5", &KeptFilesPolicy::from_environment());
     let machine = network.machine();
     let traces = machine.traces_directory_of_member(FIRST_MEMBER);
     fs::create_dir_all(&traces).unwrap();
@@ -236,7 +236,7 @@ fn observability_decision_14_a_wait_whose_bound_ran_out_before_a_notice_was_take
 #[test]
 fn observability_decision_14_a_line_a_look_finds_once_the_bound_ran_out_fails_the_wait_though_the_notice_came_inside_it()
  {
-    let network = LocalNetwork::create("w6", &RunRecordKeeping::from_environment());
+    let network = LocalNetwork::create("w6", &KeptFilesPolicy::from_environment());
     let machine = network.machine();
     let traces = machine.traces_directory_of_member(FIRST_MEMBER);
     fs::create_dir_all(&traces).unwrap();
@@ -284,7 +284,7 @@ fn observability_decision_14_a_line_a_look_finds_once_the_bound_ran_out_fails_th
 #[test]
 fn observability_decision_14_a_second_members_event_of_the_same_name_is_not_taken_for_the_first_members()
  {
-    let network = LocalNetwork::create("w4", &RunRecordKeeping::from_environment());
+    let network = LocalNetwork::create("w4", &KeptFilesPolicy::from_environment());
     let machine = network.machine();
     send_to_nobody_as_member(machine, SECOND_MEMBER);
     let traces_of_first = machine.traces_directory_of_member(FIRST_MEMBER);
@@ -342,7 +342,7 @@ fn forced_failure_after_two_members_for_the_timeline_print() {
         Some(FORCED_FAILURE_TEST),
         "{FORCED_FAILURE_TEST} is a fixture of {TIMELINE_PRINT_TEST}, which runs it with {FIXTURE_VARIABLE} naming it"
     );
-    let network = LocalNetwork::create("f1", &RunRecordKeeping::from_environment());
+    let network = LocalNetwork::create("f1", &KeptFilesPolicy::from_environment());
     let machine = network.machine();
     let mut first = machine.spawn_mcp_server();
     drop(first.stdin.take());
