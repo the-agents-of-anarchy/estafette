@@ -1053,7 +1053,7 @@ mod tests {
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
         RecordedEvent, answered_within, found_within, next_recorded_meeting, recorded_events,
-        recorded_until,
+        recorded_until, short_id_field,
     };
     use crate::wire::{Addr, Nonce, Payload};
 
@@ -2479,16 +2479,13 @@ mod tests {
     /// The wall clock of the observer in the tests that read its gossip events, in milliseconds since the Unix epoch.
     const OBSERVER_CLOCK_MS: u64 = 1_800_000_000_000;
     const SPEC_ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
-    const SPEC_SHORT_ID_BYTES: usize = 5;
     /// Bytes no payload decodes from.
     const NOT_A_PAYLOAD: &[u8] = b"not a payload";
     const GOSSIP_EVENT_PREFIX: &str = "gossip.";
 
     /// The five-byte id of the neighbor's card as the events file writes it.
     fn neighbor_short_id() -> serde_json::Value {
-        serde_json::Value::from(
-            HEXLOWER.encode(&secret_key(NEIGHBOR_SEED).public().as_bytes()[..SPEC_SHORT_ID_BYTES]),
-        )
+        short_id_field(&secret_key(NEIGHBOR_SEED).public())
     }
 
     /// The fields of a payload the neighbor signed, named by its handle, with its stamp.

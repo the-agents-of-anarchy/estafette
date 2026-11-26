@@ -922,6 +922,7 @@ mod tests {
     use crate::node::{Identity, Node, NodeEffects};
     use crate::test_waits::{
         RecordedEvent, answered_within, found_within, next_recorded_meeting, recorded_events,
+        short_id_field,
     };
 
     use crate::wire::{HostAddr, Version};
@@ -2244,7 +2245,6 @@ mod tests {
         assert_eq!(scratch.saved_host(HOST_SEED), None);
     }
 
-    const SPEC_SHORT_ID_BYTES: usize = 5;
     const PEER_PRESENCE_SEQ: u64 = FROZEN_CLOCK_MS + 3;
     /// Bytes no payload decodes from.
     const NOT_A_PAYLOAD: &[u8] = b"not a payload";
@@ -2254,10 +2254,7 @@ mod tests {
 
     /// The five-byte id of the seed's key as the events file writes it.
     fn short_id(seed: u8) -> serde_json::Value {
-        serde_json::Value::from(
-            data_encoding::HEXLOWER
-                .encode(&secret_key(seed).public().as_bytes()[..SPEC_SHORT_ID_BYTES]),
-        )
+        short_id_field(&secret_key(seed).public())
     }
 
     /// The fields of a received payload of the kind signed by the seed's key, named by no handle, with its stamp.

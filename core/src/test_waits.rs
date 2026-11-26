@@ -1,14 +1,18 @@
-//! The bounded waits a test of an in-process node uses in place of a sleep: on the events its run record was handed, and on a condition it can look at.
+//! The bounded waits a test of an in-process node uses in place of a sleep, on the events its run record was handed and on a condition it can look at, and the field those events name a card by.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use iroh::PublicKey;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::event::{Event, EventFields, RunRecord};
 
 /// The longest a test waits for an event when it names no bound of its own.
 const RECORDED_EVENT_WITHIN: Duration = Duration::from_secs(10);
+
+/// The bytes of a card's key that the events name it by, as spec observability decision 6 states.
+const SPEC_SHORT_ID_BYTES: usize = 5;
 
 /// The name and fields of one event a run record was handed.
 pub type RecordedEvent = (&'static str, EventFields);
@@ -107,6 +111,11 @@ fn names_of(events: &[RecordedEvent]) -> Vec<&'static str> {
     events.iter().map(|(name, _fields)| *name).collect()
 }
 
+/// The field the events name a card by: the first bytes of its key in lowercase hex.
+pub fn short_id_field(card: &PublicKey) -> serde_json::Value {
+    serde_json::Value::from(data_encoding::HEXLOWER.encode(&card.as_bytes()[..SPEC_SHORT_ID_BYTES]))
+}
+
 /// The answer of the request, failing with the name of what was awaited when it does not come within the bound.
 pub async fn answered_within<Answer>(
     within: Duration,
@@ -141,6 +150,8 @@ mod tests {
     use super::*;
     use crate::event::{GossipEvent, ProcessEvent};
 
+    const HEX_CHARS_PER_BYTE: usize = 2;
+
     #[tokio::test]
     #[should_panic(
         expected = "the run record closed before any process.started meeting the condition; seen []"
@@ -150,6 +161,20 @@ mod tests {
         drop(record);
 
         next_recorded(&mut receiver, "process.started").await;
+    }
+
+    #[test]
+    fn the_events_name_a_card_by_the_first_five_bytes_of_its_key_in_lowercase_hex() {
+        let card = iroh::SecretKey::from_bytes(&[7; 32]).public();
+
+        let field = short_id_field(&card);
+
+        let key_hex = data_encoding::HEXLOWER.encode(card.as_bytes());
+        let expected: String = key_hex
+            .chars()
+            .take(SPEC_SHORT_ID_BYTES * HEX_CHARS_PER_BYTE)
+            .collect();
+        assert_eq!(field, serde_json::Value::from(expected));
     }
 
     #[tokio::test]

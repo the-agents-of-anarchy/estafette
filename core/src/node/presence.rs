@@ -2005,6 +2005,7 @@ pub(super) mod tests {
     use crate::seeded_draws::Draws;
     use crate::test_waits::{
         RecordedEvent, found_within, next_recorded_meeting, recorded_events, recorded_until,
+        short_id_field,
     };
     use tokio::sync::mpsc::UnboundedReceiver;
 
@@ -2111,7 +2112,6 @@ pub(super) mod tests {
         SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT.saturating_add(INTRODUCE_ROUND_TRIP);
     const OWN_HANDLE_ASSIGNED: &str = "peers.own_handle_assigned";
     const CONTACT_FAILED: &str = "direct.contact_failed";
-    const SPEC_SHORT_PEER_ID_BYTES: usize = 5;
 
     fn network_secret() -> NetworkSecret {
         NetworkSecret::from_bytes(NETWORK_SECRET)
@@ -3520,10 +3520,7 @@ pub(super) mod tests {
 
     /// The field the events name the seed's card by: the first bytes of its key in lowercase hex.
     pub(in crate::node) fn short_peer_id(seed: u8) -> serde_json::Value {
-        serde_json::Value::from(
-            data_encoding::HEXLOWER
-                .encode(&secret_key(seed).public().as_bytes()[..SPEC_SHORT_PEER_ID_BYTES]),
-        )
+        short_id_field(&secret_key(seed).public())
     }
 
     /// The peers a member recorded as gossip neighbors, read without consuming any event of the member's run record.
