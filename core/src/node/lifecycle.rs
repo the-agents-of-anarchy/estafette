@@ -336,7 +336,7 @@ mod tests {
     const TS_FIELD: &str = "ts";
     const SENT_AFTER_EXIT: &str = "a message to a stopped member";
     const SENT_WHILE_STOPPING: &str = "a message to a stopping member";
-    const PROBE_NONCE: Nonce = [9; 16];
+    const PROBE_NONCE: Nonce = *b"0123456789abcdef";
     const CONFIG_SAVED_WITHIN: Duration = Duration::from_millis(1000);
     const CONNECTION_WAIT: Duration = Duration::from_secs(5);
     const CONNECTIONS_CLOSED_WITHIN: Duration = Duration::from_millis(1000);

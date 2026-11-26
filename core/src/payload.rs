@@ -1065,8 +1065,8 @@ mod tests {
         }
     }
 
-    const MESSAGE_ID: [u8; 16] = [0x5A; 16];
-    const NONCE: [u8; 16] = [0xC3; 16];
+    const MESSAGE_ID: [u8; 16] = *b"fedcba9876543210";
+    const NONCE: [u8; 16] = *b"0123456789abcdef";
 
     fn unsealed_requests() -> [Request; 3] {
         [

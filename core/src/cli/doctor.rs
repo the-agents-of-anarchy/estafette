@@ -443,7 +443,7 @@ mod tests {
     const THIRD_CARD_NAME: &str = "kit";
     const THIRD_CARD_SEED: [u8; SEED_BYTES] = [93; SEED_BYTES];
     const INVALID_CARD_NAME: &str = "bad";
-    const PROBE_NONCE: Nonce = [7; 16];
+    const PROBE_NONCE: Nonce = *b"0123456789abcdef";
     const LOOSE_CONFIG_MODE: u32 = 0o644;
     const CARD_NAME: &str = "zed";
     const CARD_SEED: [u8; SEED_BYTES] = [90; SEED_BYTES];
