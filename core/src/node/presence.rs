@@ -774,7 +774,7 @@ impl DirectHost for Arc<NodeState> {
             #[cfg(test)]
             cause: RequestCause::Introduce(sender),
         });
-        acknowledgement_of(self.introduction())
+        IntroduceAck::from(self.introduction())
     }
 }
 
@@ -942,18 +942,6 @@ pub trait DirectRequester: Send + Sync + 'static {
 
     /// Hands the answer of a direct request this node sent to the loop that applies it.
     fn hand_answer(&self, answer: DirectAnswer);
-}
-
-/// The `IntroduceAck` that answers an Introduce with this node's own introduction.
-pub fn acknowledgement_of(introduction: Introduce) -> IntroduceAck {
-    IntroduceAck {
-        v: introduction.v,
-        handle: introduction.handle,
-        public: introduction.public,
-        attached: introduction.attached,
-        addr: introduction.addr,
-        mac: introduction.mac,
-    }
 }
 
 /// Sends the direct requests in one task in their order, unless there are none, so no dial holds the loop.

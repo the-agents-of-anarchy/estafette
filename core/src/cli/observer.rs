@@ -37,9 +37,9 @@ use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
     Clock, DEPARTURE_WAIT, Delivery, DirectAnswer, DirectRequest, DirectRequester, Identity,
     KnownHostAddress, Network, Node, NodeEffects, NodeError, PeerRows, ProbeNonceSource,
-    RelayProbe, Session, acknowledgement_of, broadcast_recorded, deadline_reached,
-    known_host_addresses, next_recorded_gossip_event, observer_wait_over_at, presence_request,
-    record_counters, replace_lookup_entry, seed_lookup_with_known_hosts, send_in_background, serve,
+    RelayProbe, Session, broadcast_recorded, deadline_reached, known_host_addresses,
+    next_recorded_gossip_event, observer_wait_over_at, presence_request, record_counters,
+    replace_lookup_entry, seed_lookup_with_known_hosts, send_in_background, serve,
     snapshot_due_after, taken_without_a_row_record, wire_addr,
 };
 use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC};
@@ -693,7 +693,7 @@ impl DirectHost for Arc<ObserverHost> {
             .rows
             .change(|table| table.receive_introduce(sender, &introduce, now_ms));
         self.hand_to_loop(ObserverEvent::Effects(effects));
-        acknowledgement_of(self.introduction())
+        IntroduceAck::from(self.introduction())
     }
 }
 

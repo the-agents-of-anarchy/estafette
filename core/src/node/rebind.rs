@@ -461,7 +461,6 @@ mod tests {
     };
     use crate::net::gossip::{GossipEvent, NetworkTopic};
     use crate::node::known_hosts::KnownHosts;
-    use crate::node::presence::acknowledgement_of;
     use crate::node::presence::tests::{
         FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, HOST_SEED, KIND, MARKER_SEED, Member, MemberPlan,
         OWNER_SEED, PAYLOAD_WAIT, PEER, PRESENCE_KIND, PRESENCE_REQUEST_KIND, SECOND_HANDLE,
@@ -782,7 +781,7 @@ mod tests {
         ) -> IntroduceAck {
             IntroduceAck {
                 attached: ATTACHED_ONLY_IN_THE_PEERS_ACK,
-                ..acknowledgement_of(peer_introduction(self.addr.clone()))
+                ..IntroduceAck::from(peer_introduction(self.addr.clone()))
             }
         }
     }

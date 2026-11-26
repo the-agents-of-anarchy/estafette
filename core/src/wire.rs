@@ -424,6 +424,19 @@ wire_struct! {
     }
 }
 
+impl From<Introduce> for IntroduceAck {
+    fn from(introduction: Introduce) -> Self {
+        Self {
+            v: introduction.v,
+            handle: introduction.handle,
+            public: introduction.public,
+            attached: introduction.attached,
+            addr: introduction.addr,
+            mac: introduction.mac,
+        }
+    }
+}
+
 wire_enum! {
     pub enum Payload = RawPayload in payload_shape {
         Presence(Presence) as First,
@@ -670,6 +683,27 @@ mod tests {
             addr,
             mac: [3; MAC_BYTES],
         })
+    }
+
+    #[test]
+    fn an_introduce_answers_as_an_introduce_ack_with_every_field_of_it() {
+        let introduce = Introduce {
+            v: Version::CURRENT,
+            handle: Some("answerer".to_owned()),
+            public: vec![5, 6, 7],
+            attached: true,
+            addr: Addr::from_endpoint_report([relay_of_bytes(SHORT_RELAY_BYTES)], [global_v6(4)]),
+            mac: [3; MAC_BYTES],
+        };
+
+        let acknowledgement = IntroduceAck::from(introduce.clone());
+
+        assert_eq!(acknowledgement.v, introduce.v);
+        assert_eq!(acknowledgement.handle, introduce.handle);
+        assert_eq!(acknowledgement.public, introduce.public);
+        assert_eq!(acknowledgement.attached, introduce.attached);
+        assert_eq!(acknowledgement.addr, introduce.addr);
+        assert_eq!(acknowledgement.mac, introduce.mac);
     }
 
     fn departure() -> Departure {
