@@ -2883,7 +2883,7 @@ pub(super) mod tests {
         let seen = listed_within(&first, THIRD_SEED, SPEC_OBSERVER_WAIT).await;
 
         assert!(third_presence_sent.elapsed() <= SPEC_OBSERVER_WAIT);
-        let seen = seen.unwrap();
+        let seen = seen.expect("the entry of THIRD_SEED listed at first within SPEC_OBSERVER_WAIT");
         assert_eq!(seen.effective_handle.as_str(), THIRD_HANDLE);
         assert_eq!(seen.public.as_deref(), Some(THIRD_PUBLIC));
         assert_eq!(seen.status, Status::Online);

@@ -1370,7 +1370,7 @@ mod tests {
                 record
             });
         outcome.unwrap();
-        record.unwrap()
+        record.expect("a host record heard at the peer within RECORD_AT_JOIN_WAIT")
     }
 
     fn spec_certificate_bytes(host_seed: u8) -> SignatureBytes {
@@ -1664,7 +1664,7 @@ mod tests {
             let last_record = peer
                 .next_host_record(SPEC_RECORD_INTERVAL_LATEST)
                 .await
-                .unwrap();
+                .expect("a host record heard at the peer within SPEC_RECORD_INTERVAL_LATEST");
             let last_record_heard = Instant::now();
             peer.topic
                 .broadcast(
@@ -1737,12 +1737,17 @@ mod tests {
             tokio::join!(run_planned(&scratch, plan, &seen), async {
                 let host = bound_endpoint(&seen, 0).await;
                 let mut peer = Peer::joined_through(PEER_SEED, &host).await;
-                let first = peer.next_host_record(RECORD_AT_JOIN_WAIT).await.unwrap();
+                let first = peer
+                    .next_host_record(RECORD_AT_JOIN_WAIT)
+                    .await
+                    .expect("a host record heard at the peer within RECORD_AT_JOIN_WAIT");
                 let first_heard = Instant::now();
                 let second = peer
                     .next_host_record(SPEC_RECORD_INTERVAL_LATEST)
                     .await
-                    .unwrap();
+                    .expect(
+                        "a second host record heard at the peer within SPEC_RECORD_INTERVAL_LATEST",
+                    );
                 let spacing = first_heard.elapsed();
                 stop.send(()).unwrap();
                 (first, second, spacing)
@@ -2225,7 +2230,12 @@ mod tests {
             });
 
         outcome.unwrap();
-        assert_eq!(other_learned.unwrap().relay, OTHER_HOST_RELAY_URL);
+        assert_eq!(
+            other_learned
+                .expect("the other host saved within HOST_LEARNED_WAIT")
+                .relay,
+            OTHER_HOST_RELAY_URL
+        );
         assert_eq!(scratch.saved_host(HOST_SEED), None);
     }
 

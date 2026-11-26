@@ -1003,7 +1003,9 @@ mod tests {
 
         member.replace_address(peer.endpoint().addr());
 
-        let (dialed, accepted) = dial_by_card_id(&member, &peer).await.unwrap();
+        let (dialed, accepted) = dial_by_card_id(&member, &peer).await.expect(
+            "the member dialed the peer by its card id and the peer accepted within LOCAL_DIAL_WAIT",
+        );
         assert_eq!(dialed.remote_id(), peer.endpoint().id());
         assert_eq!(accepted.remote_id(), member.endpoint().id());
     }
@@ -1168,7 +1170,9 @@ mod tests {
         assert!(!member.endpoint().is_closed());
         assert_eq!(member.endpoint().id(), before.id());
         assert!(member.endpoint().remove_relay(&added_relay).await.is_some());
-        let (dialed, accepted) = dial_by_card_id(&member, &peer).await.unwrap();
+        let (dialed, accepted) = dial_by_card_id(&member, &peer).await.expect(
+            "the member dialed the peer by its card id and the peer accepted within LOCAL_DIAL_WAIT",
+        );
         assert_eq!(dialed.remote_id(), peer.endpoint().id());
         assert_eq!(accepted.remote_id(), member.endpoint().id());
         let (dialed, _held_by_outsider) = tokio::join!(
