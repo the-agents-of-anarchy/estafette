@@ -129,13 +129,16 @@ impl Trace {
 }
 
 #[cfg(test)]
+#[path = "../../tests/common/held_back_trace_file.rs"]
+mod held_back_trace_file;
+
+#[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::ffi::OsString;
     use std::fs::{self, File};
     use std::io::{self, Write};
     use std::path::{Path, PathBuf};
-    use std::sync::mpsc::{self, Receiver, Sender};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -143,6 +146,9 @@ mod tests {
     use iroh::SecretKey;
     use serde_json::Value;
 
+    use super::held_back_trace_file::{
+        HeldBackEnds, SMALL_QUEUE_LINES, effects_holding_back, small_queue_bounds, within_bound,
+    };
     use super::*;
     use crate::dirs::{OperatingSystemFilesystem, TraceFileKind};
     use crate::event::{ClaimFailure, InboxEvent, ProcessEvent};
@@ -170,9 +176,6 @@ mod tests {
     const SMALL_FRESHNESS_MS: u64 = 10_000;
     const SMALL_DIRECTORY_BYTES: u64 = 1000;
     const CLOCK_EVENT: &str = "process.clock_before_unix_epoch";
-    const SMALL_QUEUE_LINES: usize = 2;
-    const WRITER_STEP_BOUND: Duration = Duration::from_secs(10);
-    const TEST_DRAIN_BOUND: Duration = Duration::from_secs(10);
     const DROPPED_EVENT: &str = "dropped";
     const EVENTS_FILE_SUFFIX: &str = ".events.jsonl";
     const STAND_IN_FAILURE: &str = "a stand-in failure";
@@ -907,110 +910,18 @@ mod tests {
         crate::remove_scratch::remove_scratch(&root).unwrap();
     }
 
-    /// An events file the test holds back: each write announces itself, waits for the test's release, then hands the line over.
-    struct HeldBackEventsFile {
-        entered: Sender<()>,
-        released: Receiver<()>,
-        written: Sender<String>,
-    }
-
-    impl TraceFile for HeldBackEventsFile {
-        fn set_length(&mut self, _length: u64) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// A trace file that discards every byte written to it.
-    struct DiscardedFile;
-
-    impl Write for DiscardedFile {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl TraceFile for DiscardedFile {
-        fn set_length(&mut self, _length: u64) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    impl Write for HeldBackEventsFile {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.entered.send(()).map_err(io::Error::other)?;
-            self.released.recv().map_err(io::Error::other)?;
-            self.written
-                .send(String::from_utf8_lossy(bytes).into_owned())
-                .map_err(io::Error::other)?;
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// The test's ends of a held-back events file: where a write announces itself, where the test releases it, and where its line arrives.
-    struct HeldBackEvents {
-        entering: Receiver<()>,
-        release: Sender<()>,
-        written: Receiver<String>,
-    }
-
     /// A trace whose events file the test holds back and whose raw file is discarded, its queues `SMALL_QUEUE_LINES` long.
-    fn held_back_trace(directory: &TraceDirectory) -> (Trace, HeldBackEvents) {
-        let (entered, entering) = mpsc::channel();
-        let (release, released) = mpsc::channel();
-        let (written_sender, written) = mpsc::channel();
-        let events_file = Mutex::new(Some(HeldBackEventsFile {
-            entered,
-            released,
-            written: written_sender,
-        }));
-        let effects = TraceEffects {
-            create_file: Arc::new(move |path: &Path| -> io::Result<Box<dyn TraceFile>> {
-                let held_back = is_events_file(path)
-                    .then(|| events_file.lock().unwrap().take())
-                    .flatten();
-                if let Some(file) = held_back {
-                    return Ok(Box::new(file));
-                }
-                Ok(Box::new(DiscardedFile))
-            }),
-            ..TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS))
-        };
-        let trace = started_with(
-            directory,
-            &effects,
-            TraceBounds {
-                queue_lines: SMALL_QUEUE_LINES,
-                drain: TEST_DRAIN_BOUND,
-                ..TraceBounds::SPEC
-            },
+    fn held_back_trace(directory: &TraceDirectory) -> (Trace, HeldBackEnds) {
+        let (effects, events) = effects_holding_back(
+            TraceEffects::of_the_operating_system(frozen_clocks(NOW_MS)),
+            is_events_file,
         );
-        (
-            trace,
-            HeldBackEvents {
-                entering,
-                release,
-                written,
-            },
-        )
-    }
-
-    /// What the receiver gets within `WRITER_STEP_BOUND`, failing with the condition's name when it gets nothing.
-    fn within_bound<T>(receiver: &Receiver<T>, condition: &str) -> T {
-        receiver
-            .recv_timeout(WRITER_STEP_BOUND)
-            .unwrap_or_else(|failure| panic!("{condition} within {WRITER_STEP_BOUND:?}: {failure}"))
+        let trace = started_with(directory, &effects, small_queue_bounds());
+        (trace, events)
     }
 
     /// The next line the held-back events file writes once the test releases it.
-    fn written_line(events: &HeldBackEvents) -> (u64, String, Option<u64>) {
+    fn written_line(events: &HeldBackEnds) -> (u64, String, Option<u64>) {
         events.release.send(()).unwrap();
         numbered_event(&within_bound(&events.written, "a released line is written"))
     }
@@ -1050,7 +961,7 @@ mod tests {
         for _queued_or_lost in 0..4 {
             trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
         }
-        let HeldBackEvents {
+        let HeldBackEnds {
             entering,
             release,
             written,
@@ -1095,7 +1006,7 @@ mod tests {
         for _queued in 0..SMALL_QUEUE_LINES {
             trace.record(&ProcessEvent::ClockBeforeUnixEpoch.into());
         }
-        let HeldBackEvents {
+        let HeldBackEnds {
             entering,
             release,
             written,
