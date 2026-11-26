@@ -478,7 +478,7 @@ fn load_configured_network(
     let config_file = directories.network_config_file(network.as_str())?;
     match NetworkConfig::load(&config_file) {
         Ok(config) => Ok((config_file, config)),
-        Err(ConfigError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+        Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
             Err(Failure::NetworkNotConfigured {
                 network: network.as_str().to_owned(),
             })

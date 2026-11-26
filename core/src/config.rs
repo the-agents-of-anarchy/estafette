@@ -213,9 +213,13 @@ impl MalformedProblem {
 /// A refusal to load or rewrite a network configuration file.
 #[derive(Debug)]
 pub enum ConfigError {
-    Io {
+    Read {
         path: PathBuf,
-        source: std::io::Error,
+        source: io::Error,
+    },
+    Write {
+        path: PathBuf,
+        source: io::Error,
     },
     Malformed {
         path: PathBuf,
@@ -254,7 +258,9 @@ impl fmt::Display for ConfigError {
                 "{}: the {field} of entry {entry} in hosts must be {accepted}",
                 path.display()
             ),
-            Self::Io { path, source } => write!(formatter, "{}: {source}", path.display()),
+            Self::Read { path, source } | Self::Write { path, source } => {
+                write!(formatter, "{}: {source}", path.display())
+            }
             Self::Malformed {
                 path,
                 position: Some(FilePosition { line, column }),
@@ -283,7 +289,17 @@ impl fmt::Display for ConfigError {
     }
 }
 
-impl std::error::Error for ConfigError {}
+impl std::error::Error for ConfigError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Read { source, .. } | Self::Write { source, .. } => Some(source),
+            Self::Malformed { .. }
+            | Self::Unserializable(_)
+            | Self::InvalidField { .. }
+            | Self::InvalidHost { .. } => None,
+        }
+    }
+}
 
 impl Host {
     /// Reads the relay of the host at that index of `hosts` as the wire's relay URL, naming the file and the host's entry when it is refused.
@@ -360,7 +376,7 @@ impl NetworkConfig {
     /// # Errors
     /// Returns a `ConfigError` when the file cannot be read or is not a valid network configuration.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let text = fs::read_to_string(path).map_err(io_error(path))?;
+        let text = fs::read_to_string(path).map_err(read_error(path))?;
         parse(path, &text)
     }
 
@@ -374,7 +390,7 @@ impl NetworkConfig {
             .merged_with(read_current(path)?)
             .without_expired_hosts(UnixMillis::at_unix_second(now_unix_seconds));
         let text = toml::to_string(&merged).map_err(ConfigError::Unserializable)?;
-        write_atomically(path, &text).map_err(io_error(path))?;
+        write_atomically(path, &text).map_err(write_error(path))?;
         Ok(merged)
     }
 
@@ -410,8 +426,15 @@ impl NetworkConfig {
     }
 }
 
-fn io_error(path: &Path) -> impl FnOnce(io::Error) -> ConfigError {
-    |source| ConfigError::Io {
+fn read_error(path: &Path) -> impl FnOnce(io::Error) -> ConfigError {
+    |source| ConfigError::Read {
+        path: path.to_owned(),
+        source,
+    }
+}
+
+fn write_error(path: &Path) -> impl FnOnce(io::Error) -> ConfigError {
+    |source| ConfigError::Write {
         path: path.to_owned(),
         source,
     }
@@ -494,7 +517,7 @@ fn read_current(path: &Path) -> Result<Option<NetworkConfig>, ConfigError> {
     match fs::read_to_string(path) {
         Ok(text) => parse(path, &text).map(Some),
         Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(source) => Err(io_error(path)(source)),
+        Err(source) => Err(read_error(path)(source)),
     }
 }
 
@@ -888,7 +911,8 @@ mod tests {
                 ..
             } if position.line == line => Some(problem),
             ConfigError::Malformed { .. }
-            | ConfigError::Io { .. }
+            | ConfigError::Read { .. }
+            | ConfigError::Write { .. }
             | ConfigError::Unserializable(_)
             | ConfigError::InvalidField { .. }
             | ConfigError::InvalidHost { .. } => None,
@@ -1316,6 +1340,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(NetworkConfig::load(&path).unwrap(), written);
+    }
+
+    /// Spec 3.3: a refusal to read and a refusal to write each carry the file system's own error as their source.
+    #[test]
+    fn a_failed_read_and_a_failed_write_each_chain_to_the_file_systems_error() {
+        let directory = scratch_directory("io-chain");
+        let unreadable = directory.join("absent.toml");
+        let unwritable = directory.join("absent-directory").join("net.toml");
+
+        let read_refusal = NetworkConfig::load(&unreadable).unwrap_err();
+        let write_refusal = network(Vec::new())
+            .rewrite(&unwritable, NOW_SECONDS)
+            .unwrap_err();
+
+        assert!(matches!(read_refusal, ConfigError::Read { .. }));
+        assert!(matches!(write_refusal, ConfigError::Write { .. }));
+        for refusal in [&read_refusal, &write_refusal] {
+            let source = std::error::Error::source(refusal).unwrap();
+            let io_error = source.downcast_ref::<io::Error>().unwrap();
+            assert_eq!(io_error.kind(), io::ErrorKind::NotFound);
+        }
     }
 
     const SECRET_DEBUG_CASES: u64 = 40;

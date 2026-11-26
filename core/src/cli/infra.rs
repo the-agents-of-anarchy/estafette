@@ -452,7 +452,7 @@ fn read_host_files(
 /// The network's configuration, refusing a network with no configuration file here.
 fn load_configured_network(network: &Handle, config_file: &Path) -> Result<NetworkConfig, Failure> {
     NetworkConfig::load(config_file).map_err(|refusal| match refusal {
-        ConfigError::Io { source, .. } if source.kind() == io::ErrorKind::NotFound => {
+        ConfigError::Read { source, .. } if source.kind() == io::ErrorKind::NotFound => {
             Failure::NetworkNotConfigured {
                 network: network.as_str().to_owned(),
             }
