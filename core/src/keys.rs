@@ -2,8 +2,10 @@ use data_encoding::{HEXLOWER, HEXLOWER_PERMISSIVE};
 use iroh::{PublicKey, SecretKey};
 use std::fmt;
 
-const KEY_BYTES: usize = 32;
-const HEX_CHARS_PER_KEY: usize = KEY_BYTES * 2;
+use crate::crypto::KEY_LEN;
+pub use crate::crypto::NetworkSecret;
+
+const HEX_CHARS_PER_KEY: usize = KEY_LEN * 2;
 const SECRET_KEY_LINE_END: char = '\n';
 
 /// Why a key text was refused, naming the only form accepted.
@@ -33,30 +35,6 @@ impl fmt::Display for KeyError {
 }
 
 impl std::error::Error for KeyError {}
-
-/// The 32 random bytes every member of a network shares.
-#[derive(Clone, PartialEq, Eq)]
-pub struct NetworkSecret([u8; KEY_BYTES]);
-
-impl fmt::Debug for NetworkSecret {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(formatter, "NetworkSecret(..)")
-    }
-}
-
-impl NetworkSecret {
-    /// Wraps 32 bytes as a network secret.
-    #[must_use]
-    pub const fn from_bytes(bytes: [u8; KEY_BYTES]) -> Self {
-        Self(bytes)
-    }
-
-    /// The secret's 32 bytes.
-    #[must_use]
-    pub const fn as_bytes(&self) -> &[u8; KEY_BYTES] {
-        &self.0
-    }
-}
 
 /// Reads a card public key or owner public key from 64 hexadecimal characters of either case.
 ///
@@ -100,7 +78,7 @@ pub fn render_secret_key(key: &SecretKey) -> String {
 ///
 /// Refuses text that is not 64 hexadecimal characters.
 pub fn parse_network_secret(text: &str) -> Result<NetworkSecret, KeyError> {
-    decode_key_bytes(text).map(NetworkSecret)
+    decode_key_bytes(text).map(NetworkSecret::from_bytes)
 }
 
 /// Writes a network secret as 64 lowercase hexadecimal characters.
@@ -110,29 +88,27 @@ pub fn render_network_secret(secret: &NetworkSecret) -> String {
 }
 
 /// Makes an Ed25519 key from 32 bytes the secure source writes.
-pub fn generate_secret_key(
-    fill_from_secure_source: impl FnOnce(&mut [u8; KEY_BYTES]),
-) -> SecretKey {
-    let mut bytes = [0; KEY_BYTES];
+pub fn generate_secret_key(fill_from_secure_source: impl FnOnce(&mut [u8; KEY_LEN])) -> SecretKey {
+    let mut bytes = [0; KEY_LEN];
     fill_from_secure_source(&mut bytes);
     SecretKey::from_bytes(&bytes)
 }
 
 /// Makes a network secret from 32 bytes the secure source writes.
 pub fn generate_network_secret(
-    fill_from_secure_source: impl FnOnce(&mut [u8; KEY_BYTES]),
+    fill_from_secure_source: impl FnOnce(&mut [u8; KEY_LEN]),
 ) -> NetworkSecret {
-    let mut bytes = [0; KEY_BYTES];
+    let mut bytes = [0; KEY_LEN];
     fill_from_secure_source(&mut bytes);
     NetworkSecret::from_bytes(bytes)
 }
 
-fn decode_key_bytes(text: &str) -> Result<[u8; KEY_BYTES], KeyError> {
+fn decode_key_bytes(text: &str) -> Result<[u8; KEY_LEN], KeyError> {
     let found = text.chars().count();
     if found != HEX_CHARS_PER_KEY {
         return Err(KeyError::WrongLength { found });
     }
-    let mut bytes = [0; KEY_BYTES];
+    let mut bytes = [0; KEY_LEN];
     if !text.is_ascii()
         || HEXLOWER_PERMISSIVE
             .decode_mut(text.as_bytes(), &mut bytes)
@@ -150,11 +126,11 @@ mod tests {
     const SEED_HEX: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
     const PUBLIC_HEX: &str = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
 
-    fn bytes_seeded_by(index: usize) -> [u8; KEY_BYTES] {
+    fn bytes_seeded_by(index: usize) -> [u8; KEY_LEN] {
         *blake3::hash(&index.to_le_bytes()).as_bytes()
     }
 
-    fn fill_seeded_by(index: usize) -> impl FnOnce(&mut [u8; KEY_BYTES]) {
+    fn fill_seeded_by(index: usize) -> impl FnOnce(&mut [u8; KEY_LEN]) {
         move |buffer| *buffer = bytes_seeded_by(index)
     }
 
@@ -242,7 +218,7 @@ mod tests {
 
     #[test]
     fn spec_3_1_card_public_key_refuses_bytes_that_are_no_curve_point() {
-        let not_a_point = format!("02{}", "00".repeat(KEY_BYTES - 1));
+        let not_a_point = format!("02{}", "00".repeat(KEY_LEN - 1));
         assert_eq!(
             parse_public_key(&not_a_point).unwrap_err(),
             KeyError::NotAnEd25519PublicKey

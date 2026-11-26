@@ -132,6 +132,10 @@ impl NetworkSecret {
     pub const fn from_bytes(bytes: [u8; KEY_LEN]) -> Self {
         Self(bytes)
     }
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; KEY_LEN] {
+        &self.0
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

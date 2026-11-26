@@ -1393,7 +1393,6 @@ mod tests {
                 format!("{configuration:?}"),
                 format!("{invitation:?}"),
                 format!("{join_command:?}"),
-                format!("{:?}", crate::keys::NetworkSecret::from_bytes(secret_bytes)),
                 format!(
                     "{:?}",
                     crate::crypto::NetworkSecret::from_bytes(secret_bytes)
