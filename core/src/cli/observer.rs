@@ -22,7 +22,7 @@ use crate::cli::lines::tab_separated_line;
 use crate::cli::network::NetworkFilesystem;
 use crate::config::{ConfigError, NetworkConfig};
 use crate::crypto::GateKey;
-use crate::dirs::{CardsDirectoryOverride, Directories, DirectoriesError};
+use crate::dirs::{CardsDirectoryOverride, Directories};
 use crate::errors::ErrorCode;
 use crate::event::{Event, RunRecord};
 use crate::handle::{AnnouncedHandle, Handle, LocalHandle};
@@ -175,7 +175,6 @@ pub struct OperatorEffects {
 /// Why an observer command failed, printed as its message alone.
 #[derive(Debug)]
 enum Failure {
-    Directories(DirectoriesError),
     Config(ConfigError),
     Node(NodeError),
     Bind(BindError),
@@ -208,7 +207,6 @@ enum Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Directories(source) => write!(formatter, "{source}"),
             Self::Config(source) => write!(formatter, "{source}"),
             Self::Node(source) => write!(formatter, "{source}"),
             Self::Bind(source) => write!(formatter, "cannot bind an endpoint: {source}"),
@@ -425,12 +423,9 @@ fn claim_operator_card(
     network: &Handle,
     fill_seed: &SeedSource,
 ) -> Result<OperatorCard, Failure> {
-    let card_file = directories
-        .card_file(network.as_str(), OPERATOR_CARD)
-        .map_err(Failure::Directories)?;
-    let sidecar_file = directories
-        .card_sidecar_file(network.as_str(), OPERATOR_CARD)
-        .map_err(Failure::Directories)?;
+    let name = operator_name(&directories.cards_directory(network))?;
+    let card_file = directories.card_file(network, &name);
+    let sidecar_file = directories.card_sidecar_file(network, &name);
     let unreadable = |source: io::Error| Failure::Io {
         path: card_file.clone(),
         source,
@@ -440,6 +435,7 @@ fn claim_operator_card(
             directories,
             filesystem,
             network,
+            &name,
             fill_seed,
             &card_file,
             &sidecar_file,
@@ -456,7 +452,6 @@ fn claim_operator_card(
                 path: card_file.clone(),
                 reason,
             })?;
-    let name = operator_name(&card_file)?;
     let held =
         claim(&sidecar_file, usable.public_key.as_bytes(), pause).map_err(Failure::Sidecar)?;
     Ok(OperatorCard {
@@ -472,13 +467,12 @@ fn create_operator_card(
     directories: &Directories,
     filesystem: &impl NetworkFilesystem,
     network: &Handle,
+    name: &Handle,
     fill_seed: &SeedSource,
     card_file: &Path,
     sidecar_file: &Path,
 ) -> Result<(), Failure> {
-    let cards_directory = directories
-        .cards_directory(network.as_str())
-        .map_err(Failure::Directories)?;
+    let cards_directory = directories.cards_directory(network);
     filesystem
         .create_private_directory(&cards_directory)
         .map_err(|source| Failure::Io {
@@ -487,22 +481,16 @@ fn create_operator_card(
         })?;
     let mut fresh_seed = [0; SEED_BYTES];
     fill_seed(&mut fresh_seed);
-    create_card(
-        card_file,
-        sidecar_file,
-        &operator_name(card_file)?,
-        fresh_seed,
-    )
-    .map_err(Failure::Sidecar)?;
+    create_card(card_file, sidecar_file, name, fresh_seed).map_err(Failure::Sidecar)?;
     Ok(())
 }
 
-/// Returns the operator card's name as a handle, refusing it for the card file when it is no handle.
-fn operator_name(card_file: &Path) -> Result<Handle, Failure> {
+/// Returns the operator card's name as a handle, refusing it for the path when it is no handle.
+fn operator_name(path: &Path) -> Result<Handle, Failure> {
     OPERATOR_CARD
         .parse::<Handle>()
         .map_err(|source| Failure::CardUnusable {
-            path: card_file.to_path_buf(),
+            path: path.to_path_buf(),
             reason: CardUnusable::Handle(source),
         })
 }
@@ -544,9 +532,7 @@ fn load_network_setup(
     directories: &Directories,
     network: &Handle,
 ) -> Result<NetworkSetup, Failure> {
-    let path = directories
-        .network_config_file(network.as_str())
-        .map_err(Failure::Directories)?;
+    let path = directories.network_config_file(network);
     let config = NetworkConfig::load(&path).map_err(Failure::Config)?;
     let hosts = known_host_addresses(&config).map_err(Failure::Node)?;
     let owner = parse_public_key(&config.owner).map_err(|source| {
@@ -1174,7 +1160,9 @@ mod tests {
         }
 
         fn write_network_config(&self, host_seeds: &[u8]) {
-            let path = self.directories.network_config_file(NETWORK_NAME).unwrap();
+            let path = self
+                .directories
+                .network_config_file(&NETWORK_NAME.parse().unwrap());
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             NetworkConfig {
                 secret: data_encoding::HEXLOWER.encode(&NETWORK_SECRET),
@@ -1764,10 +1752,10 @@ mod tests {
         );
         assert_eq!(frame["from"], OPERATOR_CARD);
         assert_eq!(frame["body"], OPERATOR_BODY);
-        let sidecar = lab
-            .directories
-            .card_sidecar_file(NETWORK_NAME, OPERATOR_CARD)
-            .unwrap();
+        let sidecar = lab.directories.card_sidecar_file(
+            &NETWORK_NAME.parse().unwrap(),
+            &OPERATOR_CARD.parse().unwrap(),
+        );
         assert!(!crate::sidecar::is_held(&sidecar).unwrap());
         let operator = members[1]
             .node
@@ -1780,14 +1768,14 @@ mod tests {
     }
 
     fn register_operator_card(lab: &Lab) -> PathBuf {
-        let card_file = lab
-            .directories
-            .card_file(NETWORK_NAME, OPERATOR_CARD)
-            .unwrap();
-        let sidecar_file = lab
-            .directories
-            .card_sidecar_file(NETWORK_NAME, OPERATOR_CARD)
-            .unwrap();
+        let card_file = lab.directories.card_file(
+            &NETWORK_NAME.parse().unwrap(),
+            &OPERATOR_CARD.parse().unwrap(),
+        );
+        let sidecar_file = lab.directories.card_sidecar_file(
+            &NETWORK_NAME.parse().unwrap(),
+            &OPERATOR_CARD.parse().unwrap(),
+        );
         fs::create_dir_all(card_file.parent().unwrap()).unwrap();
         crate::sidecar::create_card(
             &card_file,
@@ -1849,10 +1837,10 @@ mod tests {
         let lab = Lab::new("send-other-network").await;
         lab.write_network_config(&[]);
         register_operator_card(&lab);
-        let card_file = lab
-            .directories
-            .card_file(NETWORK_NAME, OPERATOR_CARD)
-            .unwrap();
+        let card_file = lab.directories.card_file(
+            &NETWORK_NAME.parse().unwrap(),
+            &OPERATOR_CARD.parse().unwrap(),
+        );
         let mut text = fs::read_to_string(&card_file).unwrap();
         text.push_str("network: acme\n");
         fs::write(&card_file, text).unwrap();
@@ -1882,10 +1870,10 @@ mod tests {
         let lab = Lab::new("send-held").await;
         lab.write_network_config(&[]);
         let sidecar_file = register_operator_card(&lab);
-        let card_file = lab
-            .directories
-            .card_file(NETWORK_NAME, OPERATOR_CARD)
-            .unwrap();
+        let card_file = lab.directories.card_file(
+            &NETWORK_NAME.parse().unwrap(),
+            &OPERATOR_CARD.parse().unwrap(),
+        );
         let _holder = crate::sidecar::claim(
             &sidecar_file,
             secret_key(OPERATOR_SEED).public().as_bytes(),
@@ -3508,7 +3496,9 @@ mod tests {
         .await
         .unwrap_err();
 
-        let configuration_file = lab.directories.network_config_file(NETWORK_NAME).unwrap();
+        let configuration_file = lab
+            .directories
+            .network_config_file(&NETWORK_NAME.parse().unwrap());
         assert!(
             refusal
                 .to_string()

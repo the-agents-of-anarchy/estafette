@@ -226,9 +226,7 @@ fn create_card_with_fresh_key(
     handle: &Handle,
     fill_seed: impl FnOnce(&mut [u8; SEED_BYTES]),
 ) -> Result<String, CardCommandError> {
-    let cards_directory = directories
-        .cards_directory(network.as_str())
-        .map_err(CardCommandError::Directories)?;
+    let cards_directory = directories.cards_directory(network);
     filesystem
         .create_private_directory(&cards_directory)
         .map_err(|source| CardCommandError::CardsDirectoryUncreatable {
@@ -238,12 +236,8 @@ fn create_card_with_fresh_key(
     let mut seed = [0; SEED_BYTES];
     fill_seed(&mut seed);
     let public_key = create_card(
-        &directories
-            .card_file(network.as_str(), card.as_str())
-            .map_err(CardCommandError::Directories)?,
-        &directories
-            .card_sidecar_file(network.as_str(), card.as_str())
-            .map_err(CardCommandError::Directories)?,
+        &directories.card_file(network, card),
+        &directories.card_sidecar_file(network, card),
         handle,
         seed,
     )
@@ -256,9 +250,7 @@ fn list_registry_cards(
     directories: &Directories,
     network: &Handle,
 ) -> Result<String, CardCommandError> {
-    let cards_directory = directories
-        .cards_directory(network.as_str())
-        .map_err(CardCommandError::Directories)?;
+    let cards_directory = directories.cards_directory(network);
     let mut lines_by_card_name = BTreeMap::new();
     let card_files = card_files_in(filesystem, &cards_directory).map_err(|source| {
         CardCommandError::Unreadable {

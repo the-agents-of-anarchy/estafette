@@ -110,8 +110,7 @@ impl LabMachine {
         let config_file = self
             .scratch()
             .directories()
-            .network_config_file(self.scratch.network())
-            .unwrap();
+            .network_config_file(&self.scratch.network().parse().unwrap());
         let mut watch = GrowthWatch::of_path(config_file.parent().unwrap())
             .unwrap_or_else(|failure| panic!("{failure}"));
         let named = first_found_as_files_grow(

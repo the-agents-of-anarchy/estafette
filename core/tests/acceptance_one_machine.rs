@@ -2302,7 +2302,9 @@ mod kept_run_records {
 
     /// Writes the network configuration of the lines in order, with no `hosts`, which the binary refuses.
     fn write_configuration_without_hosts(machine: &ScratchMachine, lines: &[&str]) {
-        let config_file = machine.directories().network_config_file(NETWORK).unwrap();
+        let config_file = machine
+            .directories()
+            .network_config_file(&NETWORK.parse().unwrap());
         fs::create_dir_all(config_file.parent().unwrap()).unwrap();
         fs::write(&config_file, lines.join("\n")).unwrap();
     }
@@ -2372,7 +2374,9 @@ mod kept_run_records {
             bob.server_mut().wait_for_exit(),
         ];
         let machine = network.machine();
-        let config_file = machine.directories().network_config_file(NETWORK).unwrap();
+        let config_file = machine
+            .directories()
+            .network_config_file(&NETWORK.parse().unwrap());
         keep_only_the_secret_and_owner_lines(&config_file);
         start_refused(machine);
         let kept_in = fresh_directory_of_this_process_in(

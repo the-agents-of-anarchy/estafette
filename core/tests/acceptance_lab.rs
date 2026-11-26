@@ -1058,22 +1058,20 @@ mod spec_3_15_two_members_through_the_live_host {
         card: &Card,
         public_yaml: &str,
     ) {
-        let card_file = machine
-            .scratch()
-            .directories()
-            .card_file(network.name(), &card.name)
-            .unwrap();
+        let card_file = machine.scratch().directories().card_file(
+            &network.name().parse().unwrap(),
+            &card.name.parse().unwrap(),
+        );
         let text = fs::read_to_string(&card_file).unwrap();
         fs::write(card_file, format!("{text}{public_yaml}")).unwrap();
     }
 
     /// The card's secret key, read from the sidecar the binary wrote beside it.
     fn card_key(network: &LiveNetwork, machine: &LabMachine, card: &Card) -> SecretKey {
-        let sidecar = machine
-            .scratch()
-            .directories()
-            .card_sidecar_file(network.name(), &card.name)
-            .unwrap();
+        let sidecar = machine.scratch().directories().card_sidecar_file(
+            &network.name().parse().unwrap(),
+            &card.name.parse().unwrap(),
+        );
         parse_secret_key(&fs::read_to_string(sidecar).unwrap()).unwrap()
     }
 

@@ -327,8 +327,8 @@ fn create_network(
     now_unix_seconds: u64,
     record: &mut impl Write,
 ) -> Result<(), Failure> {
-    let config_file = directories.network_config_file(network.as_str())?;
-    let owner_key_file = directories.owner_key_file(network.as_str())?;
+    let config_file = directories.network_config_file(network);
+    let owner_key_file = directories.owner_key_file(network);
     refuse_existing_file(filesystem, network, &config_file)?;
     create_parent_directory(filesystem, &config_file)?;
     let owner = generate_secret_key(&mut fill_from_secure_source);
@@ -430,7 +430,7 @@ fn join_network(
         .network
         .parse::<Handle>()
         .map_err(Failure::InvitationNetworkName)?;
-    let config_file = directories.network_config_file(network.as_str())?;
+    let config_file = directories.network_config_file(&network);
     refuse_existing_file(filesystem, &network, &config_file)?;
     let owner = public_key_or(&invitation.owner, || Failure::InvitationOwnerNotAKey)?;
     let hosts = invitation
@@ -475,7 +475,7 @@ fn load_configured_network(
     network: &Handle,
     directories: &Directories,
 ) -> Result<(PathBuf, NetworkConfig), Failure> {
-    let config_file = directories.network_config_file(network.as_str())?;
+    let config_file = directories.network_config_file(network);
     match NetworkConfig::load(&config_file) {
         Ok(config) => Ok((config_file, config)),
         Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
@@ -556,7 +556,7 @@ fn certify_host(
     filesystem: &impl NetworkFilesystem,
     result: &mut impl Write,
 ) -> Result<(), Failure> {
-    let owner_key_file = directories.owner_key_file(network.as_str())?;
+    let owner_key_file = directories.owner_key_file(network);
     let owner_key_text =
         filesystem
             .read_to_string(&owner_key_file)

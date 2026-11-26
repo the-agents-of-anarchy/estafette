@@ -252,8 +252,7 @@ fn invitation_configuration(network: &LiveNetwork, handle: &str) -> String {
         configured
             .scratch()
             .directories()
-            .network_config_file(network.name())
-            .unwrap(),
+            .network_config_file(&network.name().parse().unwrap()),
     )
     .unwrap()
 }

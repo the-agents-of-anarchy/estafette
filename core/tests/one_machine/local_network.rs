@@ -58,7 +58,9 @@ impl LocalNetwork {
     pub fn create(test_tag: &str, kept_files_policy: &KeptFilesPolicy) -> Self {
         let machine = ScratchMachine::fresh(test_tag, NETWORK, kept_files_policy);
         machine.run(&["network", "create", NETWORK]);
-        let config_file = machine.directories().network_config_file(NETWORK).unwrap();
+        let config_file = machine
+            .directories()
+            .network_config_file(&NETWORK.parse().unwrap());
         let secret =
             parse_network_secret(&NetworkConfig::load(&config_file).unwrap().secret).unwrap();
         Self {
@@ -126,8 +128,7 @@ impl LocalNetwork {
         let sidecar = self
             .machine
             .directories()
-            .card_sidecar_file(NETWORK, &card.name)
-            .unwrap();
+            .card_sidecar_file(&NETWORK.parse().unwrap(), &card.name.parse().unwrap());
         parse_secret_key(&fs::read_to_string(sidecar).unwrap()).unwrap()
     }
 
@@ -136,8 +137,7 @@ impl LocalNetwork {
         let card_file = self
             .machine
             .directories()
-            .card_file(NETWORK, &card.name)
-            .unwrap();
+            .card_file(&NETWORK.parse().unwrap(), &card.name.parse().unwrap());
         let lower = card.id.to_string();
         let text = fs::read_to_string(&card_file).unwrap();
         assert!(text.contains(&lower), "the card file does not hold {lower}");
@@ -149,8 +149,7 @@ impl LocalNetwork {
         let sidecar = self
             .machine
             .directories()
-            .card_sidecar_file(NETWORK, &card.name)
-            .unwrap();
+            .card_sidecar_file(&NETWORK.parse().unwrap(), &card.name.parse().unwrap());
         fs::set_permissions(sidecar, Permissions::from_mode(mode)).unwrap();
     }
 

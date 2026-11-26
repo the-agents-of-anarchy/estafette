@@ -16,7 +16,7 @@ use crate::cli::lines::tab_separated_line;
 use crate::cli::network::NetworkFilesystem;
 use crate::cli::observer::{self, Interruption, ObserverEffects};
 use crate::config::{ConfigError, NetworkConfig, OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
-use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
+use crate::dirs::{Directories, OperatingSystemFilesystem};
 use crate::errors::ExitStatus;
 use crate::handle::{Handle, HandleError};
 
@@ -56,14 +56,12 @@ impl DoctorFilesystem for OperatingSystemFilesystem {
 
 #[derive(Debug)]
 enum Failure {
-    Directories(DirectoriesError),
     Output(io::Error),
 }
 
 impl fmt::Display for Failure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Directories(source) => write!(formatter, "{source}"),
             Self::Output(source) => write!(formatter, "cannot write the result: {source}"),
         }
     }
@@ -176,13 +174,9 @@ pub async fn run(
     probe_relay: RelayProbe,
     stdout: &mut impl Write,
 ) -> Result<ExitStatus, DoctorError> {
-    let network = arguments.registry.network.as_str();
-    let config_path = directories
-        .network_config_file(network)
-        .map_err(Failure::Directories)?;
-    let cards_directory = directories
-        .cards_directory(network)
-        .map_err(Failure::Directories)?;
+    let network = &arguments.registry.network;
+    let config_path = directories.network_config_file(network);
+    let cards_directory = directories.cards_directory(network);
     let mut report = Report::new(stdout);
     report.record(
         Check::ConfigurationFile,
@@ -192,7 +186,7 @@ pub async fn run(
     report.record(Check::Cards, &cards_verdict(&registry))?;
     report.record(
         Check::Sidecars,
-        &sidecars_verdict(directories, network, pause, &registry)?,
+        &sidecars_verdict(directories, network, pause, &registry),
     )?;
     report.record(
         Check::KnownRelays,
@@ -262,7 +256,7 @@ impl fmt::Display for RegistryUnreadable {
 fn read_registry(
     filesystem: &impl CardRegistryReader,
     cards_directory: &Path,
-    network: &str,
+    network: &Handle,
 ) -> Result<Vec<RegistryCard>, RegistryUnreadable> {
     let card_files =
         card_files_in(filesystem, cards_directory).map_err(|source| RegistryUnreadable {
@@ -283,7 +277,7 @@ fn read_registry(
 fn validate_card_file(
     filesystem: &impl CardRegistryReader,
     file: &Path,
-    network: &str,
+    network: &Handle,
 ) -> Result<ValidCard, CardProblem> {
     let name = card_name_of(file).map_err(CardProblem::NameRefused)?;
     let text = filesystem
@@ -291,7 +285,7 @@ fn validate_card_file(
         .map_err(CardProblem::Unreadable)?;
     let card = Card::from_str(&text).map_err(CardProblem::Invalid)?;
     let usable = card
-        .check_usable_on(network)
+        .check_usable_on(network.as_str())
         .map_err(CardProblem::Unusable)?;
     Ok(ValidCard {
         name,
@@ -319,14 +313,12 @@ fn cards_verdict(registry: &Result<Vec<RegistryCard>, RegistryUnreadable>) -> Ve
 
 fn sidecars_verdict(
     directories: &Directories,
-    network: &str,
+    network: &Handle,
     pause: &impl Pause,
     registry: &Result<Vec<RegistryCard>, RegistryUnreadable>,
-) -> Result<Verdict, Failure> {
+) -> Verdict {
     let Ok(cards) = registry else {
-        return Ok(Verdict::Failed(String::from(
-            "the card registry cannot be read",
-        )));
+        return Verdict::Failed(String::from("the card registry cannot be read"));
     };
     let valid_cards: Vec<&ValidCard> = cards
         .iter()
@@ -334,18 +326,16 @@ fn sidecars_verdict(
         .collect();
     let mut failures = Vec::new();
     for valid in &valid_cards {
-        let sidecar = directories
-            .card_sidecar_file(network, valid.name.as_str())
-            .map_err(Failure::Directories)?;
+        let sidecar = directories.card_sidecar_file(network, &valid.name);
         match claim(&sidecar, valid.public_key.as_bytes(), pause) {
             Ok(_) | Err(SidecarError::CardHeld) => {}
             Err(problem) => failures.push(format!("{}: {problem}", sidecar.display())),
         }
     }
-    Ok(Verdict::of_failures(
+    Verdict::of_failures(
         format!("sidecars matching: {}", valid_cards.len()),
         &failures,
-    ))
+    )
 }
 
 async fn known_relays_verdict(config_path: &Path, probe_relay: &RelayProbe) -> Verdict {
@@ -551,7 +541,8 @@ mod tests {
         }
 
         fn config_path(&self) -> PathBuf {
-            self.directories.network_config_file(NETWORK_NAME).unwrap()
+            self.directories
+                .network_config_file(&NETWORK_NAME.parse().unwrap())
         }
 
         fn write_config(&self) {
@@ -563,14 +554,17 @@ mod tests {
         }
 
         fn write_card(&self, name: &str, seed: [u8; SEED_BYTES]) {
-            let cards = self.directories.cards_directory(NETWORK_NAME).unwrap();
+            let cards = self
+                .directories
+                .cards_directory(&NETWORK_NAME.parse().unwrap());
             fs::create_dir_all(&cards).unwrap();
             create_card(
-                &self.directories.card_file(NETWORK_NAME, name).unwrap(),
                 &self
                     .directories
-                    .card_sidecar_file(NETWORK_NAME, name)
-                    .unwrap(),
+                    .card_file(&NETWORK_NAME.parse().unwrap(), &name.parse().unwrap()),
+                &self
+                    .directories
+                    .card_sidecar_file(&NETWORK_NAME.parse().unwrap(), &name.parse().unwrap()),
                 &name.parse().unwrap(),
                 seed,
             )
@@ -769,10 +763,10 @@ mod tests {
     #[tokio::test]
     async fn spec_3_13_doctor_fails_the_cards_check_naming_the_invalid_card_file_and_exits_3() {
         let lab = Lab::healthy("invalid-card").await;
-        let invalid_card = lab
-            .directories
-            .card_file(NETWORK_NAME, INVALID_CARD_NAME)
-            .unwrap();
+        let invalid_card = lab.directories.card_file(
+            &NETWORK_NAME.parse().unwrap(),
+            &INVALID_CARD_NAME.parse().unwrap(),
+        );
         fs::write(&invalid_card, "handle: [unclosed").unwrap();
 
         let (status, lines) = lab.diagnose().await;
@@ -791,7 +785,9 @@ mod tests {
     async fn spec_3_13_doctor_spells_out_a_control_character_of_a_card_file_name_as_every_line_does()
      {
         let lab = Lab::healthy("control-in-name").await;
-        let cards = lab.directories.cards_directory(NETWORK_NAME).unwrap();
+        let cards = lab
+            .directories
+            .cards_directory(&NETWORK_NAME.parse().unwrap());
         fs::write(cards.join("bad\u{1}name.yaml"), "handle: [unclosed").unwrap();
 
         let (_status, lines) = lab.diagnose().await;
@@ -808,7 +804,9 @@ mod tests {
     {
         let lab = Lab::healthy("unusable-cards").await;
         let public_key = render_public_key(&secret_key(UNRELATED_SEED[0]).public());
-        let cards = lab.directories.cards_directory(NETWORK_NAME).unwrap();
+        let cards = lab
+            .directories
+            .cards_directory(&NETWORK_NAME.parse().unwrap());
         fs::write(
             cards.join("long-handle.yaml"),
             format!("handle: abcdefghijklmnopqrstuvwxyzabcdef-2\npublic_key: {public_key}\n"),
@@ -834,10 +832,10 @@ mod tests {
     async fn spec_3_13_doctor_fails_the_sidecars_check_when_a_sidecar_belongs_to_another_key_and_exits_3()
      {
         let lab = Lab::healthy("mismatched-sidecar").await;
-        let sidecar = lab
-            .directories
-            .card_sidecar_file(NETWORK_NAME, OTHER_CARD_NAME)
-            .unwrap();
+        let sidecar = lab.directories.card_sidecar_file(
+            &NETWORK_NAME.parse().unwrap(),
+            &OTHER_CARD_NAME.parse().unwrap(),
+        );
         fs::write(
             &sidecar,
             format!("{}\n", data_encoding::HEXLOWER.encode(&UNRELATED_SEED)),
@@ -861,8 +859,7 @@ mod tests {
         let lab = Lab::healthy("held-sidecar").await;
         let sidecar = lab
             .directories
-            .card_sidecar_file(NETWORK_NAME, CARD_NAME)
-            .unwrap();
+            .card_sidecar_file(&NETWORK_NAME.parse().unwrap(), &CARD_NAME.parse().unwrap());
         let public_key = SecretKey::from_bytes(&CARD_SEED).public();
         let _session = claim(&sidecar, public_key.as_bytes(), &NoPause).unwrap();
 

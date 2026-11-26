@@ -329,8 +329,7 @@ impl Server {
         let card_path = self
             .served
             .directories
-            .card_file(self.served.network.as_str(), name.as_str())
-            .map_err(|_not_a_card_name| ErrorCode::CardNotFound)?;
+            .card_file(&self.served.network, name);
         let text = self
             .effects
             .registry
@@ -354,8 +353,7 @@ impl Server {
         let sidecar_path = self
             .served
             .directories
-            .card_sidecar_file(self.served.network.as_str(), name.as_str())
-            .map_err(|_not_a_card_name| ErrorCode::CardNotFound)?;
+            .card_sidecar_file(&self.served.network, name);
         let pause = PauseBetweenLockTries(Arc::clone(&self.effects.pause_between_lock_tries));
         tokio::task::spawn_blocking(move || {
             sidecar::claim(&sidecar_path, public_key.as_bytes(), &pause)
@@ -529,10 +527,7 @@ fn registry_cards(
     served: &ServedNetwork,
     registry: &(dyn CardRegistryReader + Send + Sync),
 ) -> Result<Vec<(Handle, Card)>, RegistryFailure> {
-    let cards_directory = served
-        .directories
-        .cards_directory(served.network.as_str())
-        .map_err(RegistryFailure::NoDirectory)?;
+    let cards_directory = served.directories.cards_directory(&served.network);
     let entries = match registry.read_directory(&cards_directory) {
         Ok(entries) => entries,
         Err(failure) if failure.kind() == io::ErrorKind::NotFound => Vec::new(),
@@ -570,10 +565,7 @@ fn is_locked(
     is_card_held: &(dyn Fn(&Path) -> bool + Send + Sync),
     card: &Handle,
 ) -> bool {
-    served
-        .directories
-        .card_sidecar_file(served.network.as_str(), card.as_str())
-        .is_ok_and(|sidecar_path| is_card_held(&sidecar_path))
+    is_card_held(&served.directories.card_sidecar_file(&served.network, card))
 }
 
 /// The relays of the configuration's hosts, which the endpoint's relay map starts from (spec 3.8).
@@ -1104,10 +1096,10 @@ mod tests {
 
         fn create_card(&self, name: &str, handle: &str, seed: u8) {
             let directories = self.directories();
-            fs::create_dir_all(directories.cards_directory(NETWORK).unwrap()).unwrap();
+            fs::create_dir_all(directories.cards_directory(&NETWORK.parse().unwrap())).unwrap();
             sidecar::create_card(
-                &directories.card_file(NETWORK, name).unwrap(),
-                &directories.card_sidecar_file(NETWORK, name).unwrap(),
+                &directories.card_file(&NETWORK.parse().unwrap(), &name.parse().unwrap()),
+                &directories.card_sidecar_file(&NETWORK.parse().unwrap(), &name.parse().unwrap()),
                 &handle.parse().unwrap(),
                 [seed; KEY_BYTES],
             )
@@ -1115,11 +1107,17 @@ mod tests {
         }
 
         fn write_card_text(&self, name: &str, text: &str) {
-            fs::write(self.directories().card_file(NETWORK, name).unwrap(), text).unwrap();
+            fs::write(
+                self.directories()
+                    .card_file(&NETWORK.parse().unwrap(), &name.parse().unwrap()),
+                text,
+            )
+            .unwrap();
         }
 
         fn sidecar_path(&self, name: &str) -> PathBuf {
-            self.directories().card_sidecar_file(NETWORK, name).unwrap()
+            self.directories()
+                .card_sidecar_file(&NETWORK.parse().unwrap(), &name.parse().unwrap())
         }
 
         fn hold_card(&self, name: &str, seed: u8) -> sidecar::HeldSidecar {
@@ -2005,7 +2003,9 @@ mod tests {
     async fn spec_3_10_list_cards_of_an_unreadable_cards_directory_answers_card_invalid_and_records_why()
      {
         let machine = Machine::new("bad-cards-dir");
-        let cards_directory = machine.directories().cards_directory(NETWORK).unwrap();
+        let cards_directory = machine
+            .directories()
+            .cards_directory(&NETWORK.parse().unwrap());
         fs::create_dir_all(cards_directory.parent().unwrap()).unwrap();
         fs::write(
             &cards_directory,

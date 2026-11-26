@@ -6,6 +6,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+use crate::handle::Handle;
 pub(crate) use estafette_trace::ROLLED_OVER_TRACE_SUFFIX;
 use estafette_trace::{
     BaseDirectoryUnresolvable, PRODUCT_NAME, non_empty_variable, xdg_base_directory,
@@ -37,9 +38,6 @@ const CERTIFICATE_EXTENSION: &str = "cert";
 const LAST_RECORD_TIMESTAMP_EXTENSION: &str = "ts";
 const CERTIFICATE_CACHE_EXTENSION: &str = "certs";
 const INBOX_SOCKET_EXTENSION: &str = "sock";
-const PATH_SEPARATOR: char = '/';
-const CURRENT_DIRECTORY_COMPONENT: &str = ".";
-const PARENT_DIRECTORY_COMPONENT: &str = "..";
 
 /// The operations on directories that `Directories::establish` performs, supplied by the composition root.
 pub trait DirectoryFilesystem {
@@ -260,7 +258,6 @@ pub enum DirectoriesError {
     BaseUnresolvable(BaseDirectoryUnresolvable),
     CreationFailed { path: PathBuf, source: io::Error },
     OwnerUnreadable { path: PathBuf, source: io::Error },
-    NameNotSinglePathComponent { name: String },
 }
 
 impl fmt::Display for DirectoriesError {
@@ -277,10 +274,6 @@ impl fmt::Display for DirectoriesError {
                     path.display()
                 )
             }
-            Self::NameNotSinglePathComponent { name } => write!(
-                formatter,
-                "name {name:?} is not a single path component: use a non-empty name without '/' that is not '.' or '..'"
-            ),
         }
     }
 }
@@ -350,104 +343,60 @@ impl Directories {
     }
 
     /// The network configuration file of a network.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the network is not a single path component.
-    pub fn network_config_file(&self, network: &str) -> Result<PathBuf, DirectoriesError> {
-        let network = single_path_component(network)?;
-        Ok(self
-            .config
+    #[must_use]
+    pub fn network_config_file(&self, network: &Handle) -> PathBuf {
+        self.config
             .join(NETWORKS_SUBDIRECTORY)
-            .join(format!("{network}.{NETWORK_CONFIG_EXTENSION}")))
+            .join(format!("{}.{NETWORK_CONFIG_EXTENSION}", network.as_str()))
     }
 
     /// The file holding the owner secret key of a network.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the network is not a single path component.
-    pub fn owner_key_file(&self, network: &str) -> Result<PathBuf, DirectoriesError> {
-        let network = single_path_component(network)?;
-        Ok(self
-            .config
+    #[must_use]
+    pub fn owner_key_file(&self, network: &Handle) -> PathBuf {
+        self.config
             .join(NETWORKS_SUBDIRECTORY)
-            .join(format!("{network}.{OWNER_KEY_EXTENSION}")))
+            .join(format!("{}.{OWNER_KEY_EXTENSION}", network.as_str()))
     }
 
     /// The directory holding the cards of a network.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the network is not a single path component.
-    pub fn cards_directory(&self, network: &str) -> Result<PathBuf, DirectoriesError> {
-        Ok(self.cards.join(single_path_component(network)?))
+    #[must_use]
+    pub fn cards_directory(&self, network: &Handle) -> PathBuf {
+        self.cards.join(network.as_str())
     }
 
     /// The file of a card.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the network or the card is not a single path component.
-    pub fn card_file(&self, network: &str, card: &str) -> Result<PathBuf, DirectoriesError> {
+    #[must_use]
+    pub fn card_file(&self, network: &Handle, card: &Handle) -> PathBuf {
         self.card_path(network, card, CARD_EXTENSION)
     }
 
     /// The sidecar key file of a card.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the network or the card is not a single path component.
-    pub fn card_sidecar_file(
-        &self,
-        network: &str,
-        card: &str,
-    ) -> Result<PathBuf, DirectoriesError> {
+    #[must_use]
+    pub fn card_sidecar_file(&self, network: &Handle, card: &Handle) -> PathBuf {
         self.card_path(network, card, KEY_EXTENSION)
     }
 
     /// The bootstrap node key file of this host for a network.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the network is not a single path component.
-    pub fn infrastructure_key_file(&self, network: &str) -> Result<PathBuf, DirectoriesError> {
+    #[must_use]
+    pub fn infrastructure_key_file(&self, network: &Handle) -> PathBuf {
         self.infrastructure_path(network, KEY_EXTENSION)
     }
 
     /// The host certificate file of this host for a network.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the network is not a single path component.
-    pub fn infrastructure_certificate_file(
-        &self,
-        network: &str,
-    ) -> Result<PathBuf, DirectoriesError> {
+    #[must_use]
+    pub fn infrastructure_certificate_file(&self, network: &Handle) -> PathBuf {
         self.infrastructure_path(network, CERTIFICATE_EXTENSION)
     }
 
     /// The file holding the last record timestamp this host sent on a network.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the network is not a single path component.
-    pub fn infrastructure_last_record_timestamp_file(
-        &self,
-        network: &str,
-    ) -> Result<PathBuf, DirectoriesError> {
+    #[must_use]
+    pub fn infrastructure_last_record_timestamp_file(&self, network: &Handle) -> PathBuf {
         self.infrastructure_path(network, LAST_RECORD_TIMESTAMP_EXTENSION)
     }
 
     /// The relay certificate cache directory of this host for a network.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the network is not a single path component.
-    pub fn infrastructure_certificate_cache_directory(
-        &self,
-        network: &str,
-    ) -> Result<PathBuf, DirectoriesError> {
+    #[must_use]
+    pub fn infrastructure_certificate_cache_directory(&self, network: &Handle) -> PathBuf {
         self.infrastructure_path(network, CERTIFICATE_CACHE_EXTENSION)
     }
 
@@ -464,42 +413,15 @@ impl Directories {
             .join(format!("{process_id}.{INBOX_SOCKET_EXTENSION}"))
     }
 
-    fn card_path(
-        &self,
-        network: &str,
-        card: &str,
-        extension: &str,
-    ) -> Result<PathBuf, DirectoriesError> {
-        let card = single_path_component(card)?;
-        Ok(self
-            .cards_directory(network)?
-            .join(format!("{card}.{extension}")))
+    fn card_path(&self, network: &Handle, card: &Handle, extension: &str) -> PathBuf {
+        self.cards_directory(network)
+            .join(format!("{}.{extension}", card.as_str()))
     }
 
-    fn infrastructure_path(
-        &self,
-        network: &str,
-        extension: &str,
-    ) -> Result<PathBuf, DirectoriesError> {
-        let network = single_path_component(network)?;
-        Ok(self
-            .data
+    fn infrastructure_path(&self, network: &Handle, extension: &str) -> PathBuf {
+        self.data
             .join(INFRASTRUCTURE_SUBDIRECTORY)
-            .join(format!("{network}.{extension}")))
-    }
-}
-
-fn single_path_component(name: &str) -> Result<&str, DirectoriesError> {
-    let is_single_component = !name.is_empty()
-        && name != CURRENT_DIRECTORY_COMPONENT
-        && name != PARENT_DIRECTORY_COMPONENT
-        && !name.contains(PATH_SEPARATOR);
-    if is_single_component {
-        Ok(name)
-    } else {
-        Err(DirectoriesError::NameNotSinglePathComponent {
-            name: name.to_owned(),
-        })
+            .join(format!("{}.{extension}", network.as_str()))
     }
 }
 
@@ -590,6 +512,10 @@ mod tests {
     const EXISTING_DIRECTORY_MODE: u32 = 0o755;
     const MODE_BITS: u32 = 0o777;
 
+    fn handle(text: &str) -> Handle {
+        text.parse().unwrap()
+    }
+
     struct RecordingFilesystem {
         created: RefCell<Vec<PathBuf>>,
     }
@@ -679,7 +605,7 @@ mod tests {
             (HOME_VARIABLE, "/h"),
         ]);
         assert_eq!(
-            directories.network_config_file("n").unwrap(),
+            directories.network_config_file(&handle("n")),
             Path::new("/xc/estafette/networks/n.toml")
         );
         assert!(created.contains(&PathBuf::from("/xc/estafette")));
@@ -689,7 +615,7 @@ mod tests {
     fn config_base_falls_back_to_home_dot_config_spec_3_3() {
         let (directories, created) = established(&[(HOME_VARIABLE, "/h")]);
         assert_eq!(
-            directories.network_config_file("n").unwrap(),
+            directories.network_config_file(&handle("n")),
             Path::new("/h/.config/estafette/networks/n.toml")
         );
         assert!(created.contains(&PathBuf::from("/h/.config/estafette")));
@@ -700,7 +626,7 @@ mod tests {
         let (directories, created) =
             established(&[(DATA_HOME_VARIABLE, "/xd"), (CONFIG_HOME_VARIABLE, "/xc")]);
         assert_eq!(
-            directories.infrastructure_key_file("n").unwrap(),
+            directories.infrastructure_key_file(&handle("n")),
             Path::new("/xd/estafette/infra/n.key")
         );
         assert!(created.contains(&PathBuf::from("/xd/estafette")));
@@ -710,7 +636,7 @@ mod tests {
     fn data_base_falls_back_to_home_local_share_spec_3_3() {
         let (directories, created) = established(&[(HOME_VARIABLE, "/h")]);
         assert_eq!(
-            directories.infrastructure_key_file("n").unwrap(),
+            directories.infrastructure_key_file(&handle("n")),
             Path::new("/h/.local/share/estafette/infra/n.key")
         );
         assert!(created.contains(&PathBuf::from("/h/.local/share/estafette")));
@@ -760,11 +686,11 @@ mod tests {
             (HOME_VARIABLE, "/h"),
         ]);
         assert_eq!(
-            directories.network_config_file("n").unwrap(),
+            directories.network_config_file(&handle("n")),
             Path::new("/h/.config/estafette/networks/n.toml")
         );
         assert_eq!(
-            directories.infrastructure_key_file("n").unwrap(),
+            directories.infrastructure_key_file(&handle("n")),
             Path::new("/h/.local/share/estafette/infra/n.key")
         );
         assert_eq!(
@@ -813,43 +739,39 @@ mod tests {
             (RUNTIME_DIRECTORY_VARIABLE, "/r"),
         ]);
         assert_eq!(
-            directories.network_config_file("net").unwrap(),
+            directories.network_config_file(&handle("net")),
             Path::new("/c/estafette/networks/net.toml")
         );
         assert_eq!(
-            directories.owner_key_file("net").unwrap(),
+            directories.owner_key_file(&handle("net")),
             Path::new("/c/estafette/networks/net.owner.key")
         );
         assert_eq!(
-            directories.cards_directory("net").unwrap(),
+            directories.cards_directory(&handle("net")),
             Path::new("/d/estafette/cards/net")
         );
         assert_eq!(
-            directories.card_file("net", "alice").unwrap(),
+            directories.card_file(&handle("net"), &handle("alice")),
             Path::new("/d/estafette/cards/net/alice.yaml")
         );
         assert_eq!(
-            directories.card_sidecar_file("net", "alice").unwrap(),
+            directories.card_sidecar_file(&handle("net"), &handle("alice")),
             Path::new("/d/estafette/cards/net/alice.key")
         );
         assert_eq!(
-            directories.infrastructure_key_file("net").unwrap(),
+            directories.infrastructure_key_file(&handle("net")),
             Path::new("/d/estafette/infra/net.key")
         );
         assert_eq!(
-            directories.infrastructure_certificate_file("net").unwrap(),
+            directories.infrastructure_certificate_file(&handle("net")),
             Path::new("/d/estafette/infra/net.cert")
         );
         assert_eq!(
-            directories
-                .infrastructure_last_record_timestamp_file("net")
-                .unwrap(),
+            directories.infrastructure_last_record_timestamp_file(&handle("net")),
             Path::new("/d/estafette/infra/net.ts")
         );
         assert_eq!(
-            directories
-                .infrastructure_certificate_cache_directory("net")
-                .unwrap(),
+            directories.infrastructure_certificate_cache_directory(&handle("net")),
             Path::new("/d/estafette/infra/net.certs")
         );
         assert_eq!(
@@ -872,11 +794,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            directories.card_file("net", "alice").unwrap(),
+            directories.card_file(&handle("net"), &handle("alice")),
             Path::new("/from-flag/net/alice.yaml")
         );
         assert_eq!(
-            directories.infrastructure_key_file("net").unwrap(),
+            directories.infrastructure_key_file(&handle("net")),
             Path::new("/d/estafette/infra/net.key")
         );
         assert!(
@@ -901,7 +823,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            directories.card_file("net", "alice").unwrap(),
+            directories.card_file(&handle("net"), &handle("alice")),
             Path::new("/d/estafette/cards/net/alice.yaml")
         );
     }
@@ -914,7 +836,7 @@ mod tests {
             (HOME_VARIABLE, "/h"),
         ]);
         assert_eq!(
-            directories.card_sidecar_file("net", "alice").unwrap(),
+            directories.card_sidecar_file(&handle("net"), &handle("alice")),
             Path::new("/from-environment/net/alice.key")
         );
     }
@@ -1120,38 +1042,6 @@ mod tests {
             "cannot create {}",
             root.join("config/estafette").display()
         )));
-    }
-
-    #[test]
-    fn every_path_method_refuses_a_name_that_is_not_a_single_component_spec_3_1_and_3_3() {
-        let (directories, _) = established(&[(HOME_VARIABLE, "/h")]);
-        for bad in ["", ".", "..", "a/b", "../x", "/abs", "x/"] {
-            let refusals = [
-                directories.network_config_file(bad),
-                directories.owner_key_file(bad),
-                directories.cards_directory(bad),
-                directories.card_file(bad, "alice"),
-                directories.card_file("net", bad),
-                directories.card_sidecar_file(bad, "alice"),
-                directories.card_sidecar_file("net", bad),
-                directories.infrastructure_key_file(bad),
-                directories.infrastructure_certificate_file(bad),
-                directories.infrastructure_last_record_timestamp_file(bad),
-                directories.infrastructure_certificate_cache_directory(bad),
-            ];
-            for refusal in refusals {
-                let failure = refusal.unwrap_err();
-                assert!(matches!(
-                    failure,
-                    DirectoriesError::NameNotSinglePathComponent { .. }
-                ));
-                assert!(
-                    failure
-                        .to_string()
-                        .starts_with(&format!("name {bad:?} is not"))
-                );
-            }
-        }
     }
 
     #[test]

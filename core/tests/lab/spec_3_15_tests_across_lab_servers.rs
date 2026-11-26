@@ -329,8 +329,7 @@ fn hosts_configured_on(machine: &ScratchMachine) -> Vec<Host> {
 fn config_file_of(machine: &ScratchMachine) -> PathBuf {
     machine
         .directories()
-        .network_config_file(machine.network())
-        .unwrap()
+        .network_config_file(&machine.network().parse().unwrap())
 }
 
 /// A `tail` of the network on the observer's machine, returned once it printed its first payload.

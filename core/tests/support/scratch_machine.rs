@@ -657,7 +657,9 @@ impl ScratchMachine {
 
     /// The environment of the member of that number: the machine's, but with a data directory of its own under the machine's data directory, and the machine's cards.
     fn member_environment(&self, number: u32) -> Vec<(&'static str, OsString)> {
-        let cards = self.directories().cards_directory(&self.network).unwrap();
+        let cards = self
+            .directories()
+            .cards_directory(&self.network.parse().unwrap());
         let mut variables: Vec<(&'static str, OsString)> = environment(&self.root)
             .into_iter()
             .filter(|(name, _)| *name != DATA_HOME_VARIABLE)
@@ -1178,7 +1180,9 @@ mod tests {
     fn observability_decision_15_a_failing_machine_whose_secrets_cannot_be_read_prints_no_timeline_and_says_so()
      {
         let machine = machine_with_a_member_naming_the_network_secret("timeline-unprinted");
-        let configuration = machine.directories().network_config_file(NETWORK).unwrap();
+        let configuration = machine
+            .directories()
+            .network_config_file(&NETWORK.parse().unwrap());
         fs::set_permissions(&configuration, fs::Permissions::from_mode(UNREADABLE)).unwrap();
 
         let timelines = machine.member_timelines();
@@ -1293,17 +1297,17 @@ mod tests {
                 "observer events line\n",
             ),
             (
-                directories.card_file(NETWORK, "amy").unwrap(),
+                directories.card_file(&NETWORK.parse().unwrap(), &"amy".parse().unwrap()),
                 "card of amy\n",
             ),
         ];
         let secret_key_files = [
             (
-                directories.card_sidecar_file(NETWORK, "amy").unwrap(),
+                directories.card_sidecar_file(&NETWORK.parse().unwrap(), &"amy".parse().unwrap()),
                 "secret key of amy\n",
             ),
             (
-                directories.infrastructure_key_file(NETWORK).unwrap(),
+                directories.infrastructure_key_file(&NETWORK.parse().unwrap()),
                 "bootstrap key of the host\n",
             ),
         ];
@@ -1350,12 +1354,10 @@ mod tests {
         );
         let data = machine.root.join(DATA_HOME);
         let directories = machine.directories();
-        let host_certificate = directories
-            .infrastructure_certificate_file(NETWORK)
-            .unwrap();
+        let host_certificate =
+            directories.infrastructure_certificate_file(&NETWORK.parse().unwrap());
         let cached_account = directories
-            .infrastructure_certificate_cache_directory(NETWORK)
-            .unwrap()
+            .infrastructure_certificate_cache_directory(&NETWORK.parse().unwrap())
             .join("acme-account.json");
         for (file, content) in [
             (&host_certificate, "certificate of the host\n"),
@@ -1519,8 +1521,7 @@ mod tests {
         let traces = machine.traces_directory_of_member(0);
         let sidecar = machine
             .directories()
-            .card_sidecar_file(NETWORK, "amy")
-            .unwrap();
+            .card_sidecar_file(&NETWORK.parse().unwrap(), &"amy".parse().unwrap());
         let naming_the_invitation =
             traces.join("20261117T080000Z-1111111111111111-estafette.events.jsonl");
         let naming_the_token = traces.join("20261117T080000Z-1111111111111111-estafette.raw.jsonl");
@@ -1528,7 +1529,9 @@ mod tests {
         let naming_the_network_secret =
             traces.join("20261117T080002Z-3333333333333333-estafette.events.jsonl");
         let neither_bytes = [b'n', b'o', 0xff, 0x00, b'\n'];
-        let network_config_file = machine.directories().network_config_file(NETWORK).unwrap();
+        let network_config_file = machine
+            .directories()
+            .network_config_file(&NETWORK.parse().unwrap());
         fs::create_dir_all(network_config_file.parent().unwrap()).unwrap();
         NetworkConfig {
             secret: PLANTED_NETWORK_SECRET.to_owned(),
@@ -1821,7 +1824,9 @@ mod tests {
     fn observability_decision_16_a_machine_whose_network_configuration_does_not_parse_keeps_nothing_and_names_the_configuration()
      {
         let dropped = dropped_with_a_source_unread("unloaded-configuration", |machine| {
-            let configuration = machine.directories().network_config_file(NETWORK).unwrap();
+            let configuration = machine
+                .directories()
+                .network_config_file(&NETWORK.parse().unwrap());
             fs::create_dir_all(configuration.parent().unwrap()).unwrap();
             fs::write(&configuration, NOT_A_NETWORK_CONFIGURATION).unwrap();
             configuration
@@ -1841,7 +1846,9 @@ mod tests {
     fn observability_decision_16_a_machine_whose_network_configurations_secret_line_does_not_parse_names_the_configuration_and_the_kind_of_failure_and_neither_prints_nor_keeps_the_line()
      {
         let dropped = dropped_with_a_source_unread("malformed-secret-line", |machine| {
-            let configuration = machine.directories().network_config_file(NETWORK).unwrap();
+            let configuration = machine
+                .directories()
+                .network_config_file(&NETWORK.parse().unwrap());
             fs::create_dir_all(configuration.parent().unwrap()).unwrap();
             fs::write(
                 &configuration,
@@ -1875,7 +1882,9 @@ mod tests {
                 invitation: InvitationVariable::Unset,
             },
         );
-        let configuration = machine.directories().network_config_file(NETWORK).unwrap();
+        let configuration = machine
+            .directories()
+            .network_config_file(&NETWORK.parse().unwrap());
         fs::create_dir_all(configuration.parent().unwrap()).unwrap();
         fs::write(
             &configuration,
@@ -1908,8 +1917,7 @@ mod tests {
         let dropped = dropped_with_a_source_unread("unread-key-file", |machine| {
             let sidecar = machine
                 .directories()
-                .card_sidecar_file(NETWORK, CARD)
-                .unwrap();
+                .card_sidecar_file(&NETWORK.parse().unwrap(), &CARD.parse().unwrap());
             fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
             fs::write(&sidecar, format!("{PLANTED_TOKEN}\n")).unwrap();
             fs::set_permissions(&sidecar, fs::Permissions::from_mode(UNREADABLE)).unwrap();
@@ -1932,8 +1940,7 @@ mod tests {
         let dropped = dropped_with_a_source_unread("unread-key-directory", |machine| {
             let sidecar = machine
                 .directories()
-                .card_sidecar_file(NETWORK, CARD)
-                .unwrap();
+                .card_sidecar_file(&NETWORK.parse().unwrap(), &CARD.parse().unwrap());
             let cards = sidecar.parent().unwrap().to_path_buf();
             fs::create_dir_all(&cards).unwrap();
             fs::write(&sidecar, format!("{PLANTED_TOKEN}\n")).unwrap();
@@ -1976,8 +1983,7 @@ mod tests {
         let dropped = dropped_with_a_source_unread("configuration-naming-no-secret", |machine| {
             let configuration = machine
                 .directories()
-                .network_config_file(OTHER_NETWORK)
-                .unwrap();
+                .network_config_file(&OTHER_NETWORK.parse().unwrap());
             fs::create_dir_all(configuration.parent().unwrap()).unwrap();
             fs::write(&configuration, CONFIGURATION_NAMING_NO_SECRET).unwrap();
             configuration
@@ -2060,8 +2066,7 @@ mod tests {
             planted_network_configuration(machine, NETWORK);
             let other = machine
                 .directories()
-                .network_config_file(OTHER_NETWORK)
-                .unwrap();
+                .network_config_file(&OTHER_NETWORK.parse().unwrap());
             NetworkConfig {
                 secret: PLANTED_OTHER_NETWORK_SECRET.to_owned(),
                 owner: PLANTED_OWNER.to_owned(),
@@ -2084,11 +2089,12 @@ mod tests {
             let directories = machine.directories();
             for (key_file, key) in [
                 (
-                    directories.owner_key_file(NETWORK).unwrap(),
+                    directories.owner_key_file(&NETWORK.parse().unwrap()),
                     PLANTED_OWNER_KEY,
                 ),
                 (
-                    directories.card_sidecar_file(NETWORK, CARD).unwrap(),
+                    directories
+                        .card_sidecar_file(&NETWORK.parse().unwrap(), &CARD.parse().unwrap()),
                     PLANTED_TOKEN,
                 ),
                 (
@@ -2535,7 +2541,9 @@ mod tests {
 
     /// Writes the network configuration of the network on the machine naming the planted secret, and returns its file.
     fn planted_network_configuration(machine: &ScratchMachine, network: &str) -> PathBuf {
-        let configuration = machine.directories().network_config_file(network).unwrap();
+        let configuration = machine
+            .directories()
+            .network_config_file(&network.parse().unwrap());
         fs::create_dir_all(configuration.parent().unwrap()).unwrap();
         NetworkConfig {
             secret: PLANTED_NETWORK_SECRET.to_owned(),
@@ -2551,8 +2559,7 @@ mod tests {
     fn planted_cached_account(machine: &ScratchMachine) -> PathBuf {
         let cached_account = machine
             .directories()
-            .infrastructure_certificate_cache_directory(NETWORK)
-            .unwrap()
+            .infrastructure_certificate_cache_directory(&NETWORK.parse().unwrap())
             .join(CACHED_ACCOUNT_FILE);
         fs::create_dir_all(cached_account.parent().unwrap()).unwrap();
         fs::write(

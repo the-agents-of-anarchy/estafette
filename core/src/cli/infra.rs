@@ -349,8 +349,7 @@ async fn serve_host(
         effects.fill_from_secure_source,
         result,
     )?;
-    let certificate_cache =
-        directories.infrastructure_certificate_cache_directory(network.as_str())?;
+    let certificate_cache = directories.infrastructure_certificate_cache_directory(network);
     filesystem
         .restrict_directory_to_owner(&certificate_cache)
         .map_err(io_failure(&certificate_cache))?;
@@ -420,21 +419,21 @@ fn read_host_files(
     fill_from_secure_source: FillFromSecureSource,
     result: &mut impl Write,
 ) -> Result<HostFiles, Failure> {
-    let config_file = directories.network_config_file(network.as_str())?;
+    let config_file = directories.network_config_file(network);
     let config = load_configured_network(network, &config_file)?;
     let known_hosts = known_host_addresses(&config).map_err(Failure::Node)?;
     let network_keys = Network::new(config, config_file).map_err(Failure::Node)?;
-    let key_file = directories.infrastructure_key_file(network.as_str())?;
+    let key_file = directories.infrastructure_key_file(network);
     let key = host_key(&key_file, filesystem, fill_from_secure_source)?;
     print_host_line(&key.public(), domain, result)?;
-    let certificate_file = directories.infrastructure_certificate_file(network.as_str())?;
+    let certificate_file = directories.infrastructure_certificate_file(network);
     let certificate = certifying_certificate(
         &certificate_file,
         filesystem,
         &network_keys.owner(),
         &key.public(),
     )?;
-    let counter_file = directories.infrastructure_last_record_timestamp_file(network.as_str())?;
+    let counter_file = directories.infrastructure_last_record_timestamp_file(network);
     let last_record = LastRecord::read(counter_file, filesystem)?;
     let other_hosts = known_hosts
         .into_iter()
@@ -1033,7 +1032,8 @@ mod tests {
         }
 
         fn config_file(&self) -> PathBuf {
-            self.directories.network_config_file(NETWORK).unwrap()
+            self.directories
+                .network_config_file(&NETWORK.parse().unwrap())
         }
 
         fn saved_host(&self, host_seed: u8) -> Option<Host> {
@@ -1046,13 +1046,13 @@ mod tests {
         }
 
         fn key_file(&self) -> PathBuf {
-            self.directories.infrastructure_key_file(NETWORK).unwrap()
+            self.directories
+                .infrastructure_key_file(&NETWORK.parse().unwrap())
         }
 
         fn certificate_file(&self) -> PathBuf {
             self.directories
-                .infrastructure_certificate_file(NETWORK)
-                .unwrap()
+                .infrastructure_certificate_file(&NETWORK.parse().unwrap())
         }
 
         fn certify(&self, host_seed: u8) {
@@ -1063,8 +1063,7 @@ mod tests {
 
         fn certificate_cache(&self) -> PathBuf {
             self.directories
-                .infrastructure_certificate_cache_directory(NETWORK)
-                .unwrap()
+                .infrastructure_certificate_cache_directory(&NETWORK.parse().unwrap())
         }
     }
 
@@ -1388,8 +1387,7 @@ mod tests {
         scratch.certify(HOST_SEED);
         let counter_file = scratch
             .directories
-            .infrastructure_last_record_timestamp_file(NETWORK)
-            .unwrap();
+            .infrastructure_last_record_timestamp_file(&NETWORK.parse().unwrap());
 
         let first = Box::pin(record_heard_in_one_run(&scratch, PEER_SEED)).await;
         let first_file = fs::read_to_string(&counter_file).unwrap();
@@ -1587,8 +1585,7 @@ mod tests {
         .unwrap();
         let counter_file = scratch
             .directories
-            .infrastructure_last_record_timestamp_file(NETWORK)
-            .unwrap();
+            .infrastructure_last_record_timestamp_file(&NETWORK.parse().unwrap());
         fs::write(&counter_file, HELD_COUNTER).unwrap();
         fs::create_dir_all(scratch.certificate_cache()).unwrap();
         let infrastructure_directory = counter_file.parent().unwrap().to_owned();
@@ -2489,8 +2486,7 @@ mod tests {
         scratch.certify(HOST_SEED);
         let counter_file = scratch
             .directories
-            .infrastructure_last_record_timestamp_file(NETWORK)
-            .unwrap();
+            .infrastructure_last_record_timestamp_file(&NETWORK.parse().unwrap());
         let seen = Seen::default();
 
         for unreadable in ["", "\n", "12", "+12\n", "12 \n", "twelve\n"] {

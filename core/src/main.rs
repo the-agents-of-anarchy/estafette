@@ -525,9 +525,7 @@ fn serve_mcp(
     process: &ProcessRecord,
     filesystem: OperatingSystemFilesystem,
 ) -> Result<ExitStatus, CommandLineFailure> {
-    let config_path = directories
-        .network_config_file(registry.network.as_str())
-        .map_err(CommandLineFailure::Directories)?;
+    let config_path = directories.network_config_file(&registry.network);
     let config = NetworkConfig::load(&config_path).map_err(CommandLineFailure::NetworkConfig)?;
     Network::new(config.clone(), config_path.clone())
         .map_err(CommandLineFailure::NetworkRefused)?;

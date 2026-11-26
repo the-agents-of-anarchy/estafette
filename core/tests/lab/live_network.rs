@@ -99,7 +99,7 @@ impl LiveNetwork {
 
     /// Writes the network configuration of the invitation on the machine of these directories, naming the hosts given in place of the invitation's.
     pub fn join_through(&self, directories: &Directories, hosts: &[HostAddr]) {
-        let config_file = directories.network_config_file(self.name()).unwrap();
+        let config_file = directories.network_config_file(&self.name().parse().unwrap());
         fs::create_dir_all(config_file.parent().unwrap()).unwrap();
         self.configuration_through(hosts)
             .rewrite(&config_file, wall_clock_seconds())
