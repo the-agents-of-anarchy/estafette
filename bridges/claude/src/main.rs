@@ -2316,20 +2316,6 @@ mod tests {
         assert_eq!((absent.files.len(), absent.unreadable.len()), (0, 0));
     }
 
-    #[test]
-    fn spec_3_12_a_failed_check_ends_the_doctor_with_exit_3_and_other_outcomes_with_0_and_1() {
-        let errors: Arc<Mutex<Vec<u8>>> = Arc::default();
-        let record = run_record_on(Arc::clone(&errors), None);
-        assert_eq!(exit_code_of(Ok(true), &record), ExitCode::SUCCESS);
-        assert_eq!(exit_code_of(Ok(false), &record), ExitCode::from(3));
-        assert_eq!(*lock(&errors), b"");
-        assert_eq!(
-            exit_code_of(Err(CommandError::MissingVariable(HOME_VARIABLE)), &record),
-            ExitCode::from(1)
-        );
-        assert_eq!(*lock(&errors), b"HOME is not set\n");
-    }
-
     #[derive(Default)]
     struct StandInFiles {
         texts: BTreeMap<PathBuf, Result<String, io::ErrorKind>>,

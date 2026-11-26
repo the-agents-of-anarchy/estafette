@@ -180,6 +180,26 @@ fn spec_3_12_the_binary_refuses_a_malformed_command_line_with_the_usage_naming_e
     assert!(!fixture.data_home().exists());
 }
 
+const MISSING_VARIABLE_EXIT_CODE: i32 = 1;
+
+#[test]
+fn spec_3_12_the_binary_run_without_a_home_for_the_harness_files_exits_1_naming_the_variable() {
+    let fixture = Fixture::new().unwrap();
+
+    let output = fixture
+        .bridge()
+        .env_remove("HOME")
+        .args(["run", &exited_harness_pid().unwrap(), "--no-debug"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(MISSING_VARIABLE_EXIT_CODE));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "HOME is not set\n"
+    );
+}
+
 const WINDOW_ENDS_WALL_MS: u64 = 1_763_400_000_123;
 const BRIDGE_RUN: &str = "20251117T172000Z-a1b2c3d4e5f60718-bridge";
 const MEMBER_RUN: &str = "20251117T172000Z-0718a1b2c3d4e5f6-estafette";
