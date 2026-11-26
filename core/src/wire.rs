@@ -686,24 +686,29 @@ mod tests {
     }
 
     #[test]
-    fn an_introduce_answers_as_an_introduce_ack_with_every_field_of_it() {
-        let introduce = Introduce {
-            v: Version::CURRENT,
-            handle: Some("answerer".to_owned()),
-            public: vec![5, 6, 7],
-            attached: true,
-            addr: Addr::from_endpoint_report([relay_of_bytes(SHORT_RELAY_BYTES)], [global_v6(4)]),
-            mac: [3; MAC_BYTES],
-        };
+    fn spec_3_6_an_introduce_ack_carries_every_field_of_the_introduce_it_answers() {
+        for attached in [false, true] {
+            let introduce = Introduce {
+                v: Version::CURRENT,
+                handle: Some("answerer".to_owned()),
+                public: vec![5, 6, 7],
+                attached,
+                addr: Addr::from_endpoint_report(
+                    [relay_of_bytes(SHORT_RELAY_BYTES)],
+                    [global_v6(4)],
+                ),
+                mac: [3; MAC_BYTES],
+            };
 
-        let acknowledgement = IntroduceAck::from(introduce.clone());
+            let acknowledgement = IntroduceAck::from(introduce.clone());
 
-        assert_eq!(acknowledgement.v, introduce.v);
-        assert_eq!(acknowledgement.handle, introduce.handle);
-        assert_eq!(acknowledgement.public, introduce.public);
-        assert_eq!(acknowledgement.attached, introduce.attached);
-        assert_eq!(acknowledgement.addr, introduce.addr);
-        assert_eq!(acknowledgement.mac, introduce.mac);
+            assert_eq!(acknowledgement.v, introduce.v);
+            assert_eq!(acknowledgement.handle, introduce.handle);
+            assert_eq!(acknowledgement.public, introduce.public);
+            assert_eq!(acknowledgement.attached, attached);
+            assert_eq!(acknowledgement.addr, introduce.addr);
+            assert_eq!(acknowledgement.mac, introduce.mac);
+        }
     }
 
     fn departure() -> Departure {
