@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use estafette::crypto::GateKey;
-use estafette::net::endpoint::NodeEndpoint;
 use estafette::stream_items::StreamExt;
 use iroh::protocol::Router;
 use iroh::{EndpointAddr, SecretKey};
@@ -9,6 +8,7 @@ use iroh_gossip::api::{GossipReceiver, GossipSender};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId};
 
 use crate::driven_runtime::DrivenRuntime;
+use crate::gated_endpoint::{bind_gated_endpoint, unrecorded_connections};
 
 /// How long the forger may take to gain the host as a gossip neighbor.
 const JOIN_WAIT: Duration = Duration::from_secs(30);
@@ -31,24 +31,14 @@ impl Forger {
     ) -> Self {
         let driven = DrivenRuntime::start();
         let runtime = driven.handle().clone();
-        let endpoint = runtime
-            .block_on(NodeEndpoint::bind(
-                key,
-                gate_key,
-                host.relay_urls().cloned(),
-                |nonce| *nonce = SecretKey::generate().to_bytes(),
-                |_closing| {},
-                estafette::net::direct::HeldConnections::new(
-                    std::sync::Arc::new(estafette::net::direct::RuntimeClock),
-                    estafette::net::endpoint::TransportRecord::new(
-                        std::sync::Arc::new(|_event| {}),
-                        estafette::trace::LocationSalt::from_random_bytes(
-                            [0; estafette::trace::LOCATION_SALT_BYTES],
-                        ),
-                    ),
-                ),
-            ))
-            .unwrap();
+        let endpoint = bind_gated_endpoint(
+            &runtime,
+            key,
+            gate_key,
+            host.relay_urls().cloned(),
+            |_closing| {},
+            unrecorded_connections(),
+        );
         let host_id = host.id;
         endpoint.replace_address(host);
         let _inside_runtime = runtime.enter();
