@@ -2033,7 +2033,7 @@ pub(super) mod tests {
     const HOME_RELAY_STATUS_WITHIN: Duration = Duration::from_secs(10);
     #[cfg(feature = "relay")]
     const RELAY_LOSS_REMOVAL_SLACK: Duration = Duration::from_millis(1500);
-    pub(in crate::node) const PROBE_NONCE: crate::wire::Nonce = [7; 16];
+    pub(in crate::node) const PROBE_NONCE: crate::wire::Nonce = *b"0123456789abcdef";
     const NODE_TESTS_AT_ONCE: usize = 2;
     const INBOX_FRAME_WAIT: Duration = Duration::from_secs(2);
     const MESSAGE_ID: crate::wire::MessageId = [
