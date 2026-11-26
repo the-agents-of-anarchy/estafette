@@ -2551,6 +2551,7 @@ mod tests {
         );
     }
 
+    /// The text of the named field, none when the event has no such field or it holds no string.
     fn field_text<'fields>(
         fields: &'fields crate::event::EventFields,
         name: &str,
