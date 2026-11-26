@@ -25,7 +25,7 @@ use tokio::time::{Instant, Interval, MissedTickBehavior, interval};
 
 use super::debug::DebugArgs;
 use super::network::NetworkFilesystem;
-use crate::config::{ConfigError, NetworkConfig, write_atomically};
+use crate::config::{ConfigError, MILLIS_PER_SECOND, NetworkConfig, write_atomically};
 use crate::crypto::{GateKey, HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, verify_host_certificate};
 use crate::dirs::{Directories, DirectoriesError, OperatingSystemFilesystem};
 use crate::event::{RunRecord, TransportEvent};
@@ -53,7 +53,6 @@ const HTTPS_PORT: u16 = 443;
 const QUIC_ADDRESS_DISCOVERY_PORT: u16 = 7842;
 const INFRASTRUCTURE_RECORD_INTERVAL: Duration = Duration::from_secs(5);
 const LOST_RECORD_COUNTER: u64 = 0;
-const MILLIS_PER_SECOND: u64 = 1000;
 const RELAY_URL_SCHEME_PREFIX: &str = "https://";
 const RELAY_URL_ROOT_PATH: &str = "/";
 const LINE_END: char = '\n';

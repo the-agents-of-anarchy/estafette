@@ -7,7 +7,7 @@ use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 
 use super::addresses::{lookup_replaced_event, replace_lookup_entry};
 use super::presence::{NodeError, admission_record};
-use crate::config::{ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
+use crate::config::{ConfigError, Host, HostOrigin, MILLIS_PER_SECOND, NetworkConfig, UnixMillis};
 use crate::event::{Event, GossipEvent, ShortId};
 use crate::keys::parse_public_key;
 use crate::net::endpoint::NodeEndpoint;
@@ -16,7 +16,6 @@ use crate::wire;
 
 /// How far ahead of this node's clock a host record's ts may be and still be held (spec:779, spec:1013).
 const INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS: u64 = 300;
-const MILLIS_PER_SECOND: u64 = 1000;
 
 /// A known host's node id and relay, as the configuration names them.
 pub struct KnownHostAddress {
