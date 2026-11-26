@@ -1021,6 +1021,299 @@ mod tests {
         );
     }
 
+    const PINNED_MAC_BYTE: u8 = 0xA1;
+    const PINNED_KEY_BYTE: u8 = 0xB2;
+    const PINNED_SECOND_KEY_BYTE: u8 = 0xB3;
+    const PINNED_SECRET_BYTE: u8 = 0xC4;
+    const PINNED_NONCE_BYTE: u8 = 0xD5;
+    const PINNED_ID_BYTE: u8 = 0xE6;
+    const PINNED_SIGNATURE_BYTE: u8 = 0xF7;
+    const PINNED_CERTIFICATE_BYTE: u8 = 0xF8;
+    const PINNED_SEQ: u8 = 5;
+    const NONE_TAG: u8 = 0;
+    const EMPTY_SEQUENCE: u8 = 0;
+    const EMPTY_ADDR: [u8; 2] = [EMPTY_SEQUENCE, EMPTY_SEQUENCE];
+    const FALSE_FLAG: u8 = 0;
+    const TRUE_FLAG: u8 = 1;
+
+    fn pinned_mac() -> Mac {
+        [PINNED_MAC_BYTE; MAC_BYTES]
+    }
+
+    fn pinned_key(byte: u8) -> PublicKey {
+        [byte; PUBLIC_KEY_BYTES]
+    }
+
+    fn pinned_secret() -> Secret {
+        [PINNED_SECRET_BYTE; SECRET_BYTES]
+    }
+
+    fn assert_encodes_as<T: Wire>(structure: &T, expected_parts: &[&[u8]]) {
+        assert_eq!(encode(structure).unwrap(), expected_parts.concat());
+    }
+
+    #[test]
+    fn spec_3_6_message_encodes_its_keys_as_bare_bytes() {
+        let message = Request::Message(Message {
+            v: Version::CURRENT,
+            id: [PINNED_ID_BYTE; MESSAGE_ID_BYTES],
+            to: pinned_key(PINNED_KEY_BYTE),
+            handle: "h".to_owned(),
+            attached: true,
+            sent_at: u64::from(PINNED_SEQ),
+            body: "b".to_owned(),
+            mac: pinned_mac(),
+        });
+
+        assert_encodes_as(
+            &message,
+            &[
+                &[0, PROTOCOL_VERSION],
+                &[PINNED_ID_BYTE; MESSAGE_ID_BYTES],
+                &[PINNED_KEY_BYTE; PUBLIC_KEY_BYTES],
+                &[1, b'h', TRUE_FLAG, PINNED_SEQ, 1, b'b'],
+                &[PINNED_MAC_BYTE; MAC_BYTES],
+            ],
+        );
+    }
+
+    #[test]
+    fn spec_3_6_probe_and_probe_ack_encode_their_mac_as_bare_bytes() {
+        let probe = Request::Probe(Probe {
+            v: Version::CURRENT,
+            nonce: [PINNED_NONCE_BYTE; PROBE_NONCE_BYTES],
+            mac: pinned_mac(),
+        });
+        let probe_ack = Response::ProbeAck(ProbeAck {
+            v: Version::CURRENT,
+            nonce: [PINNED_NONCE_BYTE; PROBE_NONCE_BYTES],
+            attached: true,
+            mac: pinned_mac(),
+        });
+
+        assert_encodes_as(
+            &probe,
+            &[
+                &[1, PROTOCOL_VERSION],
+                &[PINNED_NONCE_BYTE; PROBE_NONCE_BYTES],
+                &[PINNED_MAC_BYTE; MAC_BYTES],
+            ],
+        );
+        assert_encodes_as(
+            &probe_ack,
+            &[
+                &[1, PROTOCOL_VERSION],
+                &[PINNED_NONCE_BYTE; PROBE_NONCE_BYTES],
+                &[TRUE_FLAG],
+                &[PINNED_MAC_BYTE; MAC_BYTES],
+            ],
+        );
+    }
+
+    #[test]
+    fn spec_3_6_introduce_and_introduce_ack_encode_their_mac_as_bare_bytes() {
+        let introduce = Request::Introduce(Introduce {
+            v: Version::CURRENT,
+            handle: None,
+            public: Vec::new(),
+            attached: false,
+            addr: Addr::from_endpoint_report([], []),
+            mac: pinned_mac(),
+        });
+        let introduce_ack = Response::IntroduceAck(IntroduceAck {
+            v: Version::CURRENT,
+            handle: None,
+            public: Vec::new(),
+            attached: false,
+            addr: Addr::from_endpoint_report([], []),
+            mac: pinned_mac(),
+        });
+        let body = [
+            &[NONE_TAG, EMPTY_SEQUENCE, FALSE_FLAG][..],
+            &EMPTY_ADDR,
+            &[PINNED_MAC_BYTE; MAC_BYTES],
+        ];
+
+        assert_encodes_as(
+            &introduce,
+            &[&[2, PROTOCOL_VERSION], body[0], body[1], body[2]],
+        );
+        assert_encodes_as(
+            &introduce_ack,
+            &[&[2, PROTOCOL_VERSION], body[0], body[1], body[2]],
+        );
+    }
+
+    #[test]
+    fn spec_3_6_message_ack_encodes_without_a_mac() {
+        let message_ack = Response::MessageAck(MessageAck {
+            v: Version::CURRENT,
+            id: [PINNED_ID_BYTE; MESSAGE_ID_BYTES],
+            accepted: true,
+            attached: false,
+            reason: None,
+        });
+
+        assert_encodes_as(
+            &message_ack,
+            &[
+                &[0, PROTOCOL_VERSION],
+                &[PINNED_ID_BYTE; MESSAGE_ID_BYTES],
+                &[TRUE_FLAG, FALSE_FLAG, NONE_TAG],
+            ],
+        );
+    }
+
+    #[test]
+    fn spec_3_7_presence_and_departure_encode_their_keys_as_bare_bytes() {
+        let presence = Payload::Presence(Presence {
+            v: Version::CURRENT,
+            card: pinned_key(PINNED_KEY_BYTE),
+            handle: "h".to_owned(),
+            public: Vec::new(),
+            attached: true,
+            addr: Addr::from_endpoint_report([], []),
+            seq: u64::from(PINNED_SEQ),
+            mac: pinned_mac(),
+            sig: SignatureBytes([PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES]),
+        });
+        let departure = Payload::Departure(Departure {
+            v: Version::CURRENT,
+            card: pinned_key(PINNED_KEY_BYTE),
+            seq: u64::from(PINNED_SEQ),
+            mac: pinned_mac(),
+            sig: SignatureBytes([PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES]),
+        });
+
+        assert_encodes_as(
+            &presence,
+            &[
+                &[0, PROTOCOL_VERSION],
+                &[PINNED_KEY_BYTE; PUBLIC_KEY_BYTES],
+                &[1, b'h', EMPTY_SEQUENCE, TRUE_FLAG],
+                &EMPTY_ADDR,
+                &[PINNED_SEQ],
+                &[PINNED_MAC_BYTE; MAC_BYTES],
+                &[PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES],
+            ],
+        );
+        assert_encodes_as(
+            &departure,
+            &[
+                &[1, PROTOCOL_VERSION],
+                &[PINNED_KEY_BYTE; PUBLIC_KEY_BYTES],
+                &[PINNED_SEQ],
+                &[PINNED_MAC_BYTE; MAC_BYTES],
+                &[PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES],
+            ],
+        );
+    }
+
+    #[test]
+    fn spec_3_7_unreachable_and_presence_request_encode_their_keys_as_bare_bytes() {
+        let unreachable = Payload::Unreachable(Unreachable {
+            v: Version::CURRENT,
+            card: pinned_key(PINNED_KEY_BYTE),
+            reporter: pinned_key(PINNED_SECOND_KEY_BYTE),
+            ts: u64::from(PINNED_SEQ),
+            mac: pinned_mac(),
+            sig: SignatureBytes([PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES]),
+        });
+        let presence_request = Payload::PresenceRequest(PresenceRequest {
+            v: Version::CURRENT,
+            requester: pinned_key(PINNED_KEY_BYTE),
+            seq: u64::from(PINNED_SEQ),
+            mac: pinned_mac(),
+            sig: SignatureBytes([PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES]),
+        });
+
+        assert_encodes_as(
+            &unreachable,
+            &[
+                &[2, PROTOCOL_VERSION],
+                &[PINNED_KEY_BYTE; PUBLIC_KEY_BYTES],
+                &[PINNED_SECOND_KEY_BYTE; PUBLIC_KEY_BYTES],
+                &[PINNED_SEQ],
+                &[PINNED_MAC_BYTE; MAC_BYTES],
+                &[PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES],
+            ],
+        );
+        assert_encodes_as(
+            &presence_request,
+            &[
+                &[4, PROTOCOL_VERSION],
+                &[PINNED_KEY_BYTE; PUBLIC_KEY_BYTES],
+                &[PINNED_SEQ],
+                &[PINNED_MAC_BYTE; MAC_BYTES],
+                &[PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES],
+            ],
+        );
+    }
+
+    #[test]
+    fn spec_3_7_infrastructure_encodes_its_keys_as_bare_bytes() {
+        let infrastructure = Payload::Infrastructure(Infrastructure {
+            v: Version::CURRENT,
+            host: pinned_key(PINNED_KEY_BYTE),
+            relay: RelayUrl("r".to_owned()),
+            addr: Addr::from_endpoint_report([], []),
+            ts: u64::from(PINNED_SEQ),
+            cert: SignatureBytes([PINNED_CERTIFICATE_BYTE; SIGNATURE_BYTES]),
+            mac: pinned_mac(),
+            sig: SignatureBytes([PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES]),
+        });
+
+        assert_encodes_as(
+            &infrastructure,
+            &[
+                &[3, PROTOCOL_VERSION],
+                &[PINNED_KEY_BYTE; PUBLIC_KEY_BYTES],
+                &[1, b'r'],
+                &EMPTY_ADDR,
+                &[PINNED_SEQ],
+                &[PINNED_CERTIFICATE_BYTE; SIGNATURE_BYTES],
+                &[PINNED_MAC_BYTE; MAC_BYTES],
+                &[PINNED_SIGNATURE_BYTE; SIGNATURE_BYTES],
+            ],
+        );
+    }
+
+    #[test]
+    fn spec_3_13_host_addr_and_invitation_encode_their_keys_as_bare_bytes() {
+        let host = HostAddr {
+            v: Version::CURRENT,
+            id: pinned_key(PINNED_KEY_BYTE),
+            relay: RelayUrl("r".to_owned()),
+        };
+        let invitation = Invitation {
+            v: Version::CURRENT,
+            network: "n".to_owned(),
+            secret: pinned_secret(),
+            owner: pinned_key(PINNED_SECOND_KEY_BYTE),
+            hosts: vec![host.clone()],
+        };
+
+        assert_encodes_as(
+            &host,
+            &[
+                &[PROTOCOL_VERSION],
+                &[PINNED_KEY_BYTE; PUBLIC_KEY_BYTES],
+                &[1, b'r'],
+            ],
+        );
+        assert_encodes_as(
+            &invitation,
+            &[
+                &[PROTOCOL_VERSION, 1, b'n'],
+                &[PINNED_SECRET_BYTE; SECRET_BYTES],
+                &[PINNED_SECOND_KEY_BYTE; PUBLIC_KEY_BYTES],
+                &[1, PROTOCOL_VERSION],
+                &[PINNED_KEY_BYTE; PUBLIC_KEY_BYTES],
+                &[1, b'r'],
+            ],
+        );
+    }
+
     struct Seeded(Draws);
 
     impl Seeded {
