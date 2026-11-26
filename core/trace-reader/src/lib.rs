@@ -305,20 +305,41 @@ pub fn parse_trace_lines(
         .collect()
 }
 
+/// The bytes of the trace file.
+///
+/// # Errors
+///
+/// Fails with `TraceReadError::Unreadable` when the file cannot be read.
+fn bytes_of(path: &Path) -> Result<Vec<u8>, TraceReadError> {
+    fs::read(path).map_err(|failure| TraceReadError::Unreadable {
+        path: path.to_path_buf(),
+        kind: failure.kind(),
+    })
+}
+
+/// Every whole line of the bytes of the trace file, read as the caller states its writing process.
+///
+/// # Errors
+///
+/// Fails with `TraceReadError::UnreadableLine` as `parse_trace_lines` fails, naming the file.
+fn lines_of_bytes(
+    path: &Path,
+    bytes: &[u8],
+    writing: WritingProcess,
+) -> Result<Vec<TraceLine>, TraceReadError> {
+    parse_trace_lines(bytes, writing).map_err(|failure| TraceReadError::UnreadableLine {
+        path: path.to_path_buf(),
+        failure,
+    })
+}
+
 /// Every whole line of the trace file, read as the caller states its writing process: running or ended.
 ///
 /// # Errors
 ///
 /// Fails when the file cannot be read, and as `parse_trace_lines` does, naming the file.
 fn read_trace_file(path: &Path, writing: WritingProcess) -> Result<Vec<TraceLine>, TraceReadError> {
-    let bytes = fs::read(path).map_err(|failure| TraceReadError::Unreadable {
-        path: path.to_path_buf(),
-        kind: failure.kind(),
-    })?;
-    parse_trace_lines(&bytes, writing).map_err(|failure| TraceReadError::UnreadableLine {
-        path: path.to_path_buf(),
-        failure,
-    })
+    lines_of_bytes(path, &bytes_of(path)?, writing)
 }
 
 /// Every line of the trace file of a stopped process.
@@ -327,10 +348,7 @@ fn read_trace_file(path: &Path, writing: WritingProcess) -> Result<Vec<TraceLine
 ///
 /// Fails as `read_trace_file` does, and with `TraceReadError::BytesAfterLastLine` when any byte follows the last newline.
 pub fn stopped_trace_lines_of(path: &Path) -> Result<Vec<TraceLine>, TraceReadError> {
-    let bytes = fs::read(path).map_err(|failure| TraceReadError::Unreadable {
-        path: path.to_path_buf(),
-        kind: failure.kind(),
-    })?;
+    let bytes = bytes_of(path)?;
     let unended = bytes
         .rsplit(|byte| *byte == LINE_END)
         .next()
@@ -341,12 +359,7 @@ pub fn stopped_trace_lines_of(path: &Path) -> Result<Vec<TraceLine>, TraceReadEr
             bytes: unended.len(),
         });
     }
-    parse_trace_lines(&bytes, WritingProcess::Ended).map_err(|failure| {
-        TraceReadError::UnreadableLine {
-            path: path.to_path_buf(),
-            failure,
-        }
-    })
+    lines_of_bytes(path, &bytes, WritingProcess::Ended)
 }
 
 /// The events files in the trace directory, oldest run first and each run's earlier lines first; none when the directory does not exist.
