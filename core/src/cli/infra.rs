@@ -921,8 +921,8 @@ mod tests {
     use crate::net::endpoint::NodeEndpoint;
     use crate::node::{Identity, Node, NodeEffects};
     use crate::test_waits::{
-        RecordedEvent, answered_within, found_within, next_recorded_meeting, recorded_events,
-        short_id_field,
+        RecordedEvent, answered_within, found_within, gossip_events_recorded_until,
+        next_recorded_meeting, recorded_events, short_id_field,
     };
 
     use crate::wire::{HostAddr, Version};
@@ -2248,7 +2248,6 @@ mod tests {
     const PEER_PRESENCE_SEQ: u64 = FROZEN_CLOCK_MS + 3;
     /// Bytes no payload decodes from.
     const NOT_A_PAYLOAD: &[u8] = b"not a payload";
-    const GOSSIP_EVENT_PREFIX: &str = "gossip.";
     const BROADCAST_EVENT: &str = "gossip.payload_broadcast";
     const RECORDED_WAIT: Duration = Duration::from_secs(20);
 
@@ -2283,28 +2282,6 @@ mod tests {
             mac: ZERO_MAC,
             sig: ZERO_SIGNATURE,
         })
-    }
-
-    /// Every gossip event recorded until one equal to `last`, in order, failing with what was recorded when it does not come within the wait.
-    async fn gossip_events_through(
-        recorded: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
-        last: &RecordedEvent,
-    ) -> Vec<RecordedEvent> {
-        let mut gossip = Vec::new();
-        let arrived = tokio::time::timeout(RECORDED_WAIT, async {
-            while gossip.last() != Some(last) {
-                let (name, fields) = recorded.recv().await.unwrap();
-                if name.starts_with(GOSSIP_EVENT_PREFIX) {
-                    gossip.push((name, fields));
-                }
-            }
-        })
-        .await;
-        assert!(
-            arrived.is_ok(),
-            "no {last:?} within {RECORDED_WAIT:?}; recorded {gossip:?}"
-        );
-        gossip
     }
 
     #[tokio::test]
@@ -2352,7 +2329,12 @@ mod tests {
                     .broadcast_bytes(NOT_A_PAYLOAD.to_vec())
                     .await
                     .unwrap();
-                let gossip = gossip_events_through(&mut recorded, &malformed_dropped).await;
+                let gossip = gossip_events_recorded_until(
+                    &mut recorded,
+                    |gathered| gathered.last() == Some(&malformed_dropped),
+                    RECORDED_WAIT,
+                )
+                .await;
                 stop.send(()).unwrap();
                 gossip
             });

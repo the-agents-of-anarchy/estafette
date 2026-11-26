@@ -14,6 +14,9 @@ const RECORDED_EVENT_WITHIN: Duration = Duration::from_secs(10);
 /// The bytes of a card's key that the events name it by, as spec observability decision 6 states.
 const SPEC_SHORT_ID_BYTES: usize = 5;
 
+/// The prefix of the name of every gossip event.
+const GOSSIP_EVENT_PREFIX: &str = "gossip.";
+
 /// The name and fields of one event a run record was handed.
 pub type RecordedEvent = (&'static str, EventFields);
 
@@ -111,6 +114,33 @@ fn names_of(events: &[RecordedEvent]) -> Vec<&'static str> {
     events.iter().map(|(name, _fields)| *name).collect()
 }
 
+/// Every gossip event recorded, in order, until the gathered events meet the condition, failing with what was gathered when they do not within the bound.
+pub async fn gossip_events_recorded_until(
+    receiver: &mut UnboundedReceiver<RecordedEvent>,
+    complete: impl Fn(&[RecordedEvent]) -> bool + Send + Sync,
+    within: Duration,
+) -> Vec<RecordedEvent> {
+    let mut gossip = Vec::new();
+    let arrived = tokio::time::timeout(within, async {
+        while !complete(&gossip) {
+            let (name, fields) = receiver.recv().await.unwrap_or_else(|| {
+                panic!(
+                    "the run record closed with {gossip:?} gathered before the gossip events were complete"
+                )
+            });
+            if name.starts_with(GOSSIP_EVENT_PREFIX) {
+                gossip.push((name, fields));
+            }
+        }
+    })
+    .await;
+    assert!(
+        arrived.is_ok(),
+        "the gossip events were not complete within {within:?}; gathered {gossip:?}"
+    );
+    gossip
+}
+
 /// The field the events name a card by: the first bytes of its key in lowercase hex.
 pub fn short_id_field(card: &PublicKey) -> serde_json::Value {
     serde_json::Value::from(data_encoding::HEXLOWER.encode(&card.as_bytes()[..SPEC_SHORT_ID_BYTES]))
@@ -148,7 +178,7 @@ pub async fn found_within<Found>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{GossipEvent, ProcessEvent};
+    use crate::event::{GossipEvent, ProcessEvent, ShortId};
 
     const HEX_CHARS_PER_BYTE: usize = 2;
 
@@ -175,6 +205,48 @@ mod tests {
             .take(SPEC_SHORT_ID_BYTES * HEX_CHARS_PER_BYTE)
             .collect();
         assert_eq!(field, serde_json::Value::from(expected));
+    }
+
+    #[tokio::test]
+    async fn gossip_events_are_gathered_in_order_without_the_events_of_other_kinds_until_complete()
+    {
+        let (record, mut receiver) = recorded_events();
+        record(GossipEvent::TopicJoined.into());
+        record(ProcessEvent::ClockBeforeUnixEpoch.into());
+        record(GossipEvent::NeighborUp(ShortId::from(&[1; 32])).into());
+        record(GossipEvent::TopicJoined.into());
+
+        let gossip = gossip_events_recorded_until(
+            &mut receiver,
+            |gathered| gathered.len() == 2,
+            RECORDED_EVENT_WITHIN,
+        )
+        .await;
+
+        assert_eq!(
+            gossip
+                .iter()
+                .map(|(name, _fields)| *name)
+                .collect::<Vec<_>>(),
+            ["gossip.topic_joined", "gossip.neighbor_up"]
+        );
+    }
+
+    #[tokio::test]
+    #[should_panic(
+        expected = "the run record closed with [(\"gossip.topic_joined\", [])] gathered before the gossip events were complete"
+    )]
+    async fn a_closed_run_record_fails_naming_the_gossip_events_gathered() {
+        let (record, mut receiver) = recorded_events();
+        record(GossipEvent::TopicJoined.into());
+        drop(record);
+
+        gossip_events_recorded_until(
+            &mut receiver,
+            |gathered| gathered.len() == 2,
+            RECORDED_EVENT_WITHIN,
+        )
+        .await;
     }
 
     #[tokio::test]

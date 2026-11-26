@@ -1052,8 +1052,8 @@ mod tests {
     use crate::payload::ZERO_SIGNATURE;
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
-        RecordedEvent, answered_within, found_within, next_recorded_meeting, recorded_events,
-        recorded_until, short_id_field,
+        RecordedEvent, answered_within, found_within, gossip_events_recorded_until,
+        next_recorded_meeting, recorded_events, recorded_until, short_id_field,
     };
     use crate::wire::{Addr, Nonce, Payload};
 
@@ -2481,7 +2481,6 @@ mod tests {
     const SPEC_ANNOUNCEMENT_MAX_AGE_MS: u64 = 300_000;
     /// Bytes no payload decodes from.
     const NOT_A_PAYLOAD: &[u8] = b"not a payload";
-    const GOSSIP_EVENT_PREFIX: &str = "gossip.";
 
     /// The five-byte id of the neighbor's card as the events file writes it.
     fn neighbor_short_id() -> serde_json::Value {
@@ -2527,28 +2526,6 @@ mod tests {
             record,
             request,
         ]
-    }
-
-    /// The gossip events an observer records over the run, in order, once it has recorded that many, failing with what it recorded when they do not come within the payload wait.
-    async fn gossip_events_recorded(
-        recorded: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
-        count: usize,
-    ) -> Vec<RecordedEvent> {
-        let mut gossip = Vec::new();
-        let arrived = tokio::time::timeout(PAYLOAD_WAIT, async {
-            while gossip.len() < count {
-                let (name, fields) = recorded.recv().await.unwrap();
-                if name.starts_with(GOSSIP_EVENT_PREFIX) {
-                    gossip.push((name, fields));
-                }
-            }
-        })
-        .await;
-        assert!(
-            arrived.is_ok(),
-            "no {count} gossip events within {PAYLOAD_WAIT:?}; recorded {gossip:?}"
-        );
-        gossip
     }
 
     #[tokio::test]
@@ -2629,7 +2606,12 @@ mod tests {
                     .broadcast_bytes(NOT_A_PAYLOAD.to_vec())
                     .await
                     .unwrap();
-                let gossip = gossip_events_recorded(&mut recorded, expected.len()).await;
+                let gossip = gossip_events_recorded_until(
+                    &mut recorded,
+                    |gathered| gathered.len() >= expected.len(),
+                    PAYLOAD_WAIT,
+                )
+                .await;
                 interrupt.send(()).unwrap_or_default();
                 gossip
             }
