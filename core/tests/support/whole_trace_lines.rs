@@ -130,7 +130,7 @@ mod tests {
 
     use super::super::trace_reader::tests::{
         MEMBER_LINE, MEMBER_RUN, member_line_numbered,
-        second_line_still_zero_at_its_start_sized_ahead,
+        second_line_still_zero_at_its_start_sized_ahead, sized_ahead,
     };
     use super::*;
 
@@ -164,7 +164,7 @@ mod tests {
         );
         let mut landed = MEMBER_LINE.as_bytes().to_vec();
         landed.extend_from_slice(member_line_numbered(5).as_bytes());
-        landed.resize(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, 0);
+        let landed = sized_ahead(&landed);
         let (looked, first_look) = mpsc::channel::<Vec<u64>>();
         let landing_file = run_file.clone();
         let landing = std::thread::spawn(move || {
@@ -190,8 +190,7 @@ mod tests {
      {
         let mut bytes = MEMBER_LINE.as_bytes().to_vec();
         bytes.extend_from_slice(b"not a trace line\n");
-        bytes.resize(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, 0);
-        let run_file = fresh_run_file("no-trace-line", &bytes);
+        let run_file = fresh_run_file("no-trace-line", &sized_ahead(&bytes));
 
         let refusal =
             std::panic::catch_unwind(|| wait_for_whole_lines(&run_file, ANY_LINE, |_lines| true))
@@ -213,8 +212,7 @@ mod tests {
      {
         let mut bytes = MEMBER_LINE.as_bytes().to_vec();
         bytes.extend_from_slice(b"junk that is no start of a line");
-        bytes.resize(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, 0);
-        let run_file = fresh_run_file("junk-tail", &bytes);
+        let run_file = fresh_run_file("junk-tail", &sized_ahead(&bytes));
 
         let refusal =
             std::panic::catch_unwind(|| wait_for_whole_lines(&run_file, ANY_LINE, |_lines| true))

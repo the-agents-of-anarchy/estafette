@@ -435,6 +435,13 @@ pub mod tests {
     /// How many leading bytes of a line a test leaves zero to show it still landing.
     const LEADING_BYTES_STILL_ZERO: usize = 64;
 
+    /// The bytes of the line as a read shows it while its write is landing: its first 64 bytes still zero.
+    pub fn line_still_zero_at_its_start(line: &str) -> Vec<u8> {
+        let mut bytes = line.as_bytes().to_vec();
+        bytes[..LEADING_BYTES_STILL_ZERO].fill(0);
+        bytes
+    }
+
     /// `MEMBER_LINE` with the number it is written as replaced.
     pub fn member_line_numbered(number: impl std::fmt::Display) -> String {
         MEMBER_LINE.replace("\"n\":4", &format!("\"n\":{number}"))
@@ -442,10 +449,15 @@ pub mod tests {
 
     /// The bytes a read of a live trace file sized ahead to 64 KiB gives while its second line is landing: `MEMBER_LINE` whole, then the same line numbered 5 still zero in its first 64 bytes.
     pub fn second_line_still_zero_at_its_start_sized_ahead() -> Vec<u8> {
-        let mut second_line = member_line_numbered(5).into_bytes();
-        second_line[..LEADING_BYTES_STILL_ZERO].fill(0);
+        let second_line = line_still_zero_at_its_start(&member_line_numbered(5));
         let mut bytes = MEMBER_LINE.as_bytes().to_vec();
         bytes.extend_from_slice(&second_line);
+        sized_ahead(&bytes)
+    }
+
+    /// The bytes a live trace file holds when `landed` is all that has been written to it: `landed` zero-filled to the 64 KiB the file was sized ahead to.
+    pub fn sized_ahead(landed: &[u8]) -> Vec<u8> {
+        let mut bytes = landed.to_vec();
         bytes.resize(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, 0);
         bytes
     }
@@ -563,13 +575,7 @@ pub mod tests {
         let directory = fresh_scratch_directory("first-line-still-zero");
         let events_file =
             directory.join("20261116T210036Z-e8e6b01fdb8dbfa0-estafette.events.jsonl");
-        let sized_ahead = |line: &[u8]| {
-            let mut bytes = line.to_vec();
-            bytes.resize(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, 0);
-            bytes
-        };
-        let mut first_line_still_zero_at_its_start = MEMBER_LINE.as_bytes().to_vec();
-        first_line_still_zero_at_its_start[..LEADING_BYTES_STILL_ZERO].fill(0);
+        let first_line_still_zero_at_its_start = line_still_zero_at_its_start(MEMBER_LINE);
         let lines_numbered_in = |file: &Path| {
             read_trace_file(file, WritingProcess::Running)
                 .map(|lines| lines.iter().map(|line| line.n).collect::<Vec<_>>())
@@ -618,8 +624,7 @@ pub mod tests {
      {
         let stopped_directory = fresh_scratch_directory("stopped-zero-line");
         let stopped_file = stopped_directory.join("stopped.events.jsonl");
-        let mut bytes = MEMBER_LINE.as_bytes().to_vec();
-        bytes[..LEADING_BYTES_STILL_ZERO].fill(0);
+        let mut bytes = line_still_zero_at_its_start(MEMBER_LINE);
         bytes.extend_from_slice(member_line_numbered(5).as_bytes());
         fs::write(&stopped_file, bytes).unwrap();
 
