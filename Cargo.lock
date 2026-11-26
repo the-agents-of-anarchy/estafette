@@ -817,6 +817,7 @@ dependencies = [
  "clap",
  "data-encoding",
  "estafette-trace",
+ "estafette-trace-reader",
  "iroh",
  "iroh-gossip",
  "iroh-metrics",
@@ -851,6 +852,15 @@ name = "estafette-trace"
 version = "0.1.0"
 dependencies = [
  "data-encoding",
+ "serde_json",
+]
+
+[[package]]
+name = "estafette-trace-reader"
+version = "0.1.0"
+dependencies = [
+ "estafette-trace",
+ "serde",
  "serde_json",
 ]
 

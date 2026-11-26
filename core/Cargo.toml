@@ -39,3 +39,4 @@ tracing-subscriber = { version = "=0.3.23", default-features = false, features =
 notify = { version = "=8.2.2", default-features = false, features = ["macos_kqueue"] }
 tokio = { version = "1", features = ["test-util"] }
 iroh-metrics = "=1.0.2"
+estafette-trace-reader = { path = "trace-reader" }

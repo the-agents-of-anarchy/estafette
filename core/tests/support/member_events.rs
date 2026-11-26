@@ -99,10 +99,10 @@ mod tests {
     use super::*;
     use crate::remove_scratch::remove_scratch;
     use crate::this_process_directory::fresh_directory_of_this_process_in;
-    use crate::trace_reader::parse_trace_lines;
-    use crate::trace_reader::tests::{
+    use estafette_trace_reader::line_fixtures::{
         MEMBER_LINE, MEMBER_RUN, second_line_still_zero_at_its_start_sized_ahead,
     };
+    use estafette_trace_reader::parse_trace_lines;
 
     const LABEL: &str = "the member";
     const SCRATCH_NAME: &str = "member-events-still-zero";

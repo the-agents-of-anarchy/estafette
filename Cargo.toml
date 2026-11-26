@@ -1,5 +1,5 @@
 [workspace]
-members = ["core", "core/trace", "bridges/claude"]
+members = ["core", "core/trace", "core/trace-reader", "bridges/claude"]
 resolver = "3"
 
 [workspace.package]

@@ -60,7 +60,7 @@ mod timed_step;
 #[path = "one_machine/trace_events.rs"]
 mod trace_events;
 #[cfg(test)]
-use scratch_machine::trace_reader;
+use estafette_trace_reader as trace_reader;
 #[cfg(test)]
 use scratch_machine::{remove_scratch, this_process_directory};
 

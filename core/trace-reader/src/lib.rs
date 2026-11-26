@@ -2,12 +2,24 @@ use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use estafette::dirs::{TraceFileKind, events_trace_file_name, raw_trace_file_name, trace_file_of};
+use estafette_trace::{TraceFileKind, events_trace_file_name, raw_trace_file_name, trace_file_of};
 use serde::de::{Deserialize, Deserializer, MapAccess, Visitor};
 use serde_json::Value;
 
+pub mod line_fixtures;
+
+#[cfg(test)]
+#[path = "../../tests/common/fresh_directory.rs"]
+mod fresh_directory;
+#[cfg(test)]
+#[path = "../../tests/common/remove_scratch.rs"]
+mod remove_scratch;
+#[cfg(test)]
+#[path = "../../tests/common/this_process_directory.rs"]
+mod this_process_directory;
+
 /// The format version of every trace line this reader understands (spec/observability.md decision 5).
-const KNOWN_FORMAT_VERSION: u64 = estafette::trace::FORMAT_VERSION;
+const KNOWN_FORMAT_VERSION: u64 = estafette_trace::FORMAT_VERSION;
 /// The header key holding the format version.
 const VERSION_KEY: &str = "v";
 /// The header key holding the run id.
@@ -40,6 +52,7 @@ pub enum WritingProcess {
 
 impl WritingProcess {
     /// The bytes before the first line not yet landed whole: all of them once the process ended, and while it runs those before the first line that still shows the zeros the file was sized ahead with.
+    #[must_use]
     pub fn landed_part(self, bytes: &[u8]) -> &[u8] {
         match self {
             Self::MayStillBeWriting => {
@@ -47,12 +60,14 @@ impl WritingProcess {
                     .iter()
                     .position(|byte| *byte == SIZED_AHEAD_FILL)
                     .map_or(bytes.len(), |first_fill| {
-                        bytes[..first_fill]
+                        bytes
+                            .get(..first_fill)
+                            .unwrap_or_default()
                             .iter()
                             .rposition(|byte| *byte == LINE_END)
                             .map_or(0, |line_end| line_end.saturating_add(1))
                     });
-                &bytes[..landed_end]
+                bytes.get(..landed_end).unwrap_or_default()
             }
             Self::Ended => bytes,
         }
@@ -158,6 +173,7 @@ impl TraceLine {
     }
 
     /// The value the line holds under the key, header keys included.
+    #[must_use]
     pub fn value(&self, key: &str) -> Option<&Value> {
         self.members
             .iter()
@@ -166,6 +182,7 @@ impl TraceLine {
     }
 
     /// The fields of the event, the members after its name, in the order they were written.
+    #[must_use]
     pub fn fields(&self) -> &[(String, Value)] {
         let name_position = self
             .members
@@ -247,7 +264,7 @@ fn trace_line_of(members: Vec<(String, Value)>, line: usize) -> Result<TraceLine
     })
 }
 
-/// Every whole line of the bytes, leaving out the unended last line a killed process may leave and, while the process runs, every line from the first one that a read, made while its write was landing, still shows partly as the zeros the file was sized ahead with.
+/// Every whole line of the bytes, leaving out the unended last line and, while the process may still be writing, every line from the first that still shows zeros.
 ///
 /// # Errors
 ///
@@ -296,7 +313,16 @@ pub fn read_trace_file(
     })
 }
 
-/// Every line of the trace file of a stopped process, failing the test when the file cannot be read or keeps any byte after its last newline.
+/// Every line of the trace file of a stopped process.
+///
+/// # Panics
+///
+/// Fails the test when the file cannot be read, keeps any byte after its last newline, or holds a line that is no trace line.
+#[expect(
+    clippy::panic,
+    reason = "this helper fails the test that reads a trace file which is not whole"
+)]
+#[must_use]
 #[track_caller]
 pub fn stopped_trace_lines_of(path: &Path) -> Vec<TraceLine> {
     let bytes = fs::read(path).unwrap_or_else(|failure| panic!("{}: {failure}", path.display()));
@@ -432,51 +458,19 @@ pub fn timeline_read_as(traces_directory: &Path, writing: WritingProcess) -> Str
 }
 
 #[cfg(test)]
-pub mod tests {
+mod tests {
     use serde_json::json;
 
-    use super::super::remove_scratch::remove_scratch;
-    use super::super::this_process_directory::fresh_directory_of_this_process_in;
     use super::*;
+    use crate::line_fixtures::{
+        MEMBER_LINE, MEMBER_RUN, line_still_zero_at_its_start, member_line_numbered, sized_ahead,
+    };
+    use crate::remove_scratch::remove_scratch;
+    use crate::this_process_directory::fresh_directory_of_this_process_in;
 
     fn fresh_scratch_directory(label: &str) -> PathBuf {
         fresh_directory_of_this_process_in(&std::env::temp_dir(), &format!("trace-reader-{label}"))
             .unwrap()
-    }
-
-    pub const MEMBER_LINE: &str = "{\"v\":2,\"run\":\"6c935f82c118f7b3\",\"n\":4,\"mono_ms\":17,\"wall_ms\":1794524353720,\"node\":\"8f43abc249\",\"event\":\"process.command_failed\",\"code\":\"unreachable\",\"handle\":\"bob\"}\n";
-
-    /// The run of every line `MEMBER_LINE` is built on.
-    pub const MEMBER_RUN: &str = "6c935f82c118f7b3";
-
-    /// How many leading bytes of a line a test leaves zero to show it still landing.
-    const LEADING_BYTES_STILL_ZERO: usize = 64;
-
-    /// The bytes of the line as a read shows it while its write is landing: its first 64 bytes still zero.
-    pub fn line_still_zero_at_its_start(line: &str) -> Vec<u8> {
-        let mut bytes = line.as_bytes().to_vec();
-        bytes[..LEADING_BYTES_STILL_ZERO].fill(0);
-        bytes
-    }
-
-    /// `MEMBER_LINE` with the number it is written as replaced.
-    pub fn member_line_numbered(number: impl std::fmt::Display) -> String {
-        MEMBER_LINE.replace("\"n\":4", &format!("\"n\":{number}"))
-    }
-
-    /// The bytes a read of a live trace file sized ahead to 64 KiB gives while its second line is landing: `MEMBER_LINE` whole, then the same line numbered 5 still zero in its first 64 bytes.
-    pub fn second_line_still_zero_at_its_start_sized_ahead() -> Vec<u8> {
-        let second_line = line_still_zero_at_its_start(&member_line_numbered(5));
-        let mut bytes = MEMBER_LINE.as_bytes().to_vec();
-        bytes.extend_from_slice(&second_line);
-        sized_ahead(&bytes)
-    }
-
-    /// The bytes a live trace file holds when `landed` is all that has been written to it: `landed` zero-filled to the 64 KiB the file was sized ahead to.
-    pub fn sized_ahead(landed: &[u8]) -> Vec<u8> {
-        let mut bytes = landed.to_vec();
-        bytes.resize(SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, 0);
-        bytes
     }
 
     #[test]

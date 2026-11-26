@@ -29,12 +29,10 @@ pub mod remove_scratch;
 pub mod server_member_end;
 #[path = "../common/this_process_directory.rs"]
 pub mod this_process_directory;
-#[path = "trace_reader.rs"]
-pub mod trace_reader;
 
+use estafette_trace_reader::{WritingProcess, timeline_read_as};
 use owned_process::{END_FAILED_EXTENSION, EndMarks, FailedEnd, OwnedProcess};
 use recipe_run::succeeded;
-use trace_reader::{WritingProcess, timeline_read_as};
 
 use crate::member_events::MemberEvents;
 
@@ -989,11 +987,11 @@ fn environment(root: &Path) -> Vec<(&'static str, OsString)> {
 
 #[cfg(test)]
 mod tests {
-    use super::trace_reader::parse_trace_lines;
-    use super::trace_reader::tests::{
+    use estafette::config::NetworkConfig;
+    use estafette_trace_reader::line_fixtures::{
         MEMBER_LINE, MEMBER_RUN, second_line_still_zero_at_its_start_sized_ahead,
     };
-    use estafette::config::NetworkConfig;
+    use estafette_trace_reader::parse_trace_lines;
     use std::cell::RefCell;
     use std::os::unix::fs::PermissionsExt;
     use std::panic::{AssertUnwindSafe, catch_unwind};

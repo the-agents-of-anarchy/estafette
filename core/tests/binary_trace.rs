@@ -12,9 +12,6 @@ mod this_process_directory;
 #[cfg(test)]
 #[path = "support/trace_files.rs"]
 mod trace_files;
-#[cfg(test)]
-#[path = "support/trace_reader.rs"]
-mod trace_reader;
 
 #[cfg(test)]
 #[path = "support/whole_trace_lines.rs"]
@@ -36,9 +33,9 @@ mod observability {
         EVENTS_SUFFIX, RAW_SUFFIX, announcement_of_one_run, trace_files_of_one_run,
         traces_directory,
     };
-    use super::trace_reader::{TraceLine, stopped_trace_lines_of};
     use super::whole_trace_lines::{wait_for_whole_lines, whole_lines_of_a_run_file};
     use estafette::event::{EventName, TraceLineName};
+    use estafette_trace_reader::{TraceLine, stopped_trace_lines_of};
     use serde_json::json;
 
     const SHORT_SCRATCH_PARENT: &str = "/tmp";

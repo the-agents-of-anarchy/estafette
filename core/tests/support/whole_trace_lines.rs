@@ -3,7 +3,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use super::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
-use super::trace_reader::{
+use estafette_trace_reader::{
     NO_EVENT_RECORDED, SPEC_TRACE_FILE_SIZED_AHEAD_BYTES, TraceLine, WritingProcess,
     parse_trace_lines,
 };
@@ -128,11 +128,11 @@ mod tests {
     use crate::remove_scratch::remove_scratch;
     use crate::this_process_directory::fresh_directory_of_this_process_in;
 
-    use super::super::trace_reader::tests::{
+    use super::*;
+    use estafette_trace_reader::line_fixtures::{
         MEMBER_LINE, MEMBER_RUN, member_line_numbered,
         second_line_still_zero_at_its_start_sized_ahead, sized_ahead,
     };
-    use super::*;
 
     const SECOND_LINE_LANDED: &str = "a second line to land";
     const ANY_LINE: &str = "any line";

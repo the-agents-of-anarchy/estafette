@@ -92,7 +92,7 @@ mod time_passing;
 #[path = "support/timed_step.rs"]
 mod timed_step;
 #[cfg(test)]
-use scratch_machine::trace_reader;
+use estafette_trace_reader as trace_reader;
 #[cfg(test)]
 use scratch_machine::{remove_scratch, this_process_directory};
 

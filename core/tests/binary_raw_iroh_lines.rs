@@ -12,9 +12,6 @@ mod this_process_directory;
 #[cfg(test)]
 #[path = "support/trace_files.rs"]
 mod trace_files;
-#[cfg(test)]
-#[path = "support/trace_reader.rs"]
-mod trace_reader;
 
 #[cfg(test)]
 #[path = "support/whole_trace_lines.rs"]
@@ -34,8 +31,8 @@ mod raw_iroh_lines {
     use super::remove_scratch::remove_scratch;
     use super::this_process_directory::fresh_directory_of_this_process_in;
     use super::trace_files::{announcement_of_one_run, trace_files_of_one_run};
-    use super::trace_reader::TraceLine;
     use super::whole_trace_lines::{wait_for_whole_lines, whole_lines_of_a_run_file};
+    use estafette_trace_reader::TraceLine;
 
     const SHORT_SCRATCH_PARENT: &str = "/tmp";
     const SCRATCH_PREFIX: &str = "eri";

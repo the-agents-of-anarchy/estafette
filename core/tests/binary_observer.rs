@@ -22,11 +22,10 @@ mod remove_scratch;
 #[cfg(test)]
 #[path = "support/trace_files.rs"]
 mod trace_files;
-#[cfg(test)]
-#[path = "support/trace_reader.rs"]
-mod trace_reader;
 
 use common::this_process_directory;
+#[cfg(test)]
+use estafette_trace_reader as trace_reader;
 use member_events::{COUNTERS_EVENT, MemberEvents};
 use node_start::{NODE_START_MOMENT, is_counters_snapshot_of_moment};
 

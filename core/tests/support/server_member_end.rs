@@ -7,11 +7,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use super::recipe_run::{RecipeFailure, succeeded};
 use super::remove_scratch::remove_scratch;
 use super::this_process_directory::fresh_directory_of_this_process_in;
-use super::trace_reader::{WritingProcess, timeline_read_as};
 use super::{
     KeptAs, KeptSecrets, files_beneath_for_keeping, fresh_kept_directory, keep_file, keep_mark,
     keep_run_record, keep_stop_failure, naming, print_to_standard_error, timeline_to_print,
 };
+use estafette_trace_reader::{WritingProcess, timeline_read_as};
 
 /// The directory a member's fetched trace files are kept in, inside the directory its records are kept in.
 const KEPT_TRACE_FILES_DIRECTORY: &str = "traces";
@@ -389,14 +389,14 @@ mod tests {
         member_line_naming,
     };
     use crate::scratch_machine::this_process_directory::fresh_directory_of_this_process_in;
-    use crate::scratch_machine::trace_reader::tests::{
-        MEMBER_LINE, second_line_still_zero_at_its_start_sized_ahead,
-    };
-    use crate::scratch_machine::trace_reader::{NO_EVENT_RECORDED, parse_trace_lines};
     use crate::scratch_machine::{
         CONFIGURATION_NOT_TOML, INVITATION_VARIABLE, NETWORK_SECRET_FIELD, REDACTED,
         REDACTED_NOTE_EXTENSION, STOP_FAILED_EXTENSION, TIMELINE_NOT_PRINTED,
     };
+    use estafette_trace_reader::line_fixtures::{
+        MEMBER_LINE, second_line_still_zero_at_its_start_sized_ahead,
+    };
+    use estafette_trace_reader::{NO_EVENT_RECORDED, parse_trace_lines};
 
     /// The card a test's member serves.
     const MEMBER: &str = "amy";
