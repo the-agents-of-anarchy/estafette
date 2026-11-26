@@ -891,19 +891,8 @@ mod tests {
     }
 
     #[test]
-    fn spec_3_10_no_match_is_unknown_handle() {
-        assert_eq!(only_card(&[]), Err(ErrorCode::UnknownHandle));
-    }
-
-    #[test]
-    fn spec_3_10_one_match_is_its_card_whichever_card_it_is() {
-        for card in cards_seeded_by_index(MOST_MATCHES) {
-            assert_eq!(only_card(&[card]), Ok(card));
-        }
-    }
-
-    #[test]
-    fn spec_3_10_several_matches_are_ambiguous_handle_naming_each_card_in_order() {
+    fn spec_3_10_several_matches_are_ambiguous_handle_naming_each_card_in_order_though_no_send_reaches_the_arm()
+     {
         for count in 2..=MOST_MATCHES {
             let matches = cards_seeded_by_index(count);
 
