@@ -35,17 +35,17 @@ use crate::net::direct::{
 use crate::net::endpoint::{NodeEndpoint, SnapshotMoment};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
-    DEPARTURE_WAIT, Delivery, DirectAnswer, DirectRequest, DirectRequester, Identity,
-    KnownHostAddress, Network, Node, NodeEffects, NodeError, PeerRows, RelayProbe, Session,
-    acknowledgement_of, broadcast_recorded, deadline_reached, known_host_addresses,
-    next_recorded_gossip_event, observer_wait_over_at, presence_request, record_counters,
-    replace_lookup_entry, seed_lookup_with_known_hosts, send_in_background, serve,
+    Clock, DEPARTURE_WAIT, Delivery, DirectAnswer, DirectRequest, DirectRequester, Identity,
+    KnownHostAddress, Network, Node, NodeEffects, NodeError, PeerRows, ProbeNonceSource,
+    RelayProbe, Session, acknowledgement_of, broadcast_recorded, deadline_reached,
+    known_host_addresses, next_recorded_gossip_event, observer_wait_over_at, presence_request,
+    record_counters, replace_lookup_entry, seed_lookup_with_known_hosts, send_in_background, serve,
     snapshot_due_after, taken_without_a_row_record, wire_addr,
 };
 use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC};
 use crate::peers::{Effect, Peer, PeerTable};
 use crate::sidecar::{HeldSidecar, Pause, SEED_BYTES, SidecarError, claim, create_card};
-use crate::wire::{self, Introduce, IntroduceAck, Message, Nonce, Version};
+use crate::wire::{self, Introduce, IntroduceAck, Message, Version};
 
 /// The name the command line parses the show-peers command by and its trace writes.
 pub const SHOW_PEERS_COMMAND: &str = "show-peers";
@@ -64,8 +64,6 @@ const INFRASTRUCTURE_KIND: &str = "infrastructure";
 const PRESENCE_REQUEST_KIND: &str = "presence-request";
 const OWNER_FIELD: &str = "owner";
 
-type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
-type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
 type SeedSource = Arc<dyn Fn(&mut [u8; SEED_BYTES]) + Send + Sync>;
 type BindEndpoint = Box<
     dyn FnOnce(SecretKey, GateKey, Vec<iroh::RelayUrl>, MonotonicClock) -> EndpointBinding + Send,
@@ -1057,7 +1055,7 @@ mod tests {
         RecordedEvent, answered_within, found_within, next_recorded_meeting, recorded_events,
         recorded_until,
     };
-    use crate::wire::{Addr, Payload};
+    use crate::wire::{Addr, Nonce, Payload};
 
     const NETWORK_NAME: &str = "lab";
     const NETWORK_SECRET: [u8; KEY_LEN] = [33; KEY_LEN];

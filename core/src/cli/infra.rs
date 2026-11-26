@@ -37,8 +37,8 @@ use crate::net::direct::{DirectHost, MonotonicClock};
 use crate::net::endpoint::{NodeEndpoint, SnapshotMoment};
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::node::{
-    KnownHostAddress, KnownHosts, Network, NodeError, RelayOfRecord, broadcast_recording_outcome,
-    known_host_addresses, next_recorded_gossip_event, record_counters,
+    Clock, KnownHostAddress, KnownHosts, Network, NodeError, RelayOfRecord,
+    broadcast_recording_outcome, known_host_addresses, next_recorded_gossip_event, record_counters,
     seed_lookup_with_known_hosts, serve, snapshot_due_after, taken_without_a_row_record,
 };
 use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC, ZERO_SIGNATURE};
@@ -73,9 +73,6 @@ fn run_long_about() -> String {
 
 /// A cryptographically secure source of 32 random bytes.
 pub type FillFromSecureSource = Box<dyn FnOnce(&mut [u8; KEY_LEN]) + Send>;
-
-/// Milliseconds since the Unix epoch by this machine's clock.
-pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// Resolves when the process is to stop.
 pub type StopRequested = Pin<Box<dyn Future<Output = ()> + Send>>;

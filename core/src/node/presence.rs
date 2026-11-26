@@ -74,8 +74,11 @@ const fn outlasts_gone_process_silence(wait: Duration) -> bool {
         < wait.as_nanos()
 }
 
-type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
-type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
+/// Milliseconds since the Unix epoch by this machine's clock.
+pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// Fills a probe nonce from the random source.
+pub type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
 type Changes<T> = Pin<Box<dyn Stream<Item = T> + Send + Sync>>;
 type OwnAddress = Box<dyn Fn() -> Addr + Send + Sync>;
 
