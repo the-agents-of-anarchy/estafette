@@ -1026,6 +1026,7 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::*;
+    use crate::card::tests::SPEC_PUBLIC_CAP_BYTES;
     use crate::config::{Host, HostOrigin};
     use crate::dirs::{CardsDirectoryOverride, OperatingSystemFilesystem};
     use crate::event::Event;
@@ -1064,7 +1065,6 @@ mod tests {
     const BOB_SEED: u8 = 52;
     const ZED_SEED: u8 = 53;
     const LOOSE_SIDECAR_MODE: u32 = 0o644;
-    const PUBLIC_MAX_BYTES: usize = 3072;
     const SPEC_JOIN_TIMEOUT_PLUS_OBSERVER_WAIT: Duration = Duration::from_millis(8000);
     const NODE_TESTS_AT_ONCE: usize = 1;
 
@@ -2130,7 +2130,7 @@ mod tests {
         let _held_by_another_process = machine.hold_card("amy-card", AMY_SEED);
         let mut client = start_server(&machine, ServerPlan::alone(FIRST_PROCESS_ID));
         client.initialize().await;
-        let description = "d".repeat(PUBLIC_MAX_BYTES);
+        let description = "d".repeat(SPEC_PUBLIC_CAP_BYTES);
 
         let refused = client
             .envelope(

@@ -1115,10 +1115,10 @@ pub(crate) mod tests {
             card_with_public(&format!("  k: '{}'\n", filler.repeat(count)))
         };
         let json_overhead = br#"{"k":""}"#.len();
-        let filler_bytes_at_cap = PUBLIC_MAX_BYTES - json_overhead;
+        let filler_bytes_at_cap = SPEC_PUBLIC_CAP_BYTES - json_overhead;
 
         let card = at_cap("x", filler_bytes_at_cap).unwrap();
-        assert_eq!(card.public_json().len(), 3072);
+        assert_eq!(card.public_json().len(), SPEC_PUBLIC_CAP_BYTES);
         assert_eq!(
             at_cap("x", filler_bytes_at_cap + 1),
             Err(CardInvalid::PublicOverCap { bytes: 3073 })
@@ -1127,7 +1127,7 @@ pub(crate) mod tests {
         let two_byte_chars = filler_bytes_at_cap / 2;
         assert_eq!(
             at_cap("é", two_byte_chars).unwrap().public_json().len(),
-            3072
+            SPEC_PUBLIC_CAP_BYTES
         );
         assert_eq!(
             at_cap("é", two_byte_chars + 1),
@@ -1137,7 +1137,7 @@ pub(crate) mod tests {
         let escaped_quotes = filler_bytes_at_cap / 2;
         assert_eq!(
             at_cap("\"", escaped_quotes).unwrap().public_json().len(),
-            3072
+            SPEC_PUBLIC_CAP_BYTES
         );
         assert_eq!(
             at_cap("\"", escaped_quotes + 1),
@@ -1209,13 +1209,13 @@ pub(crate) mod tests {
     #[test]
     fn with_description_caps_public_after_insertion_at_3072_bytes_spec_3_10_init() {
         let json_overhead = br#"{"description":""}"#.len();
-        let filler_bytes_at_cap = PUBLIC_MAX_BYTES - json_overhead;
+        let filler_bytes_at_cap = SPEC_PUBLIC_CAP_BYTES - json_overhead;
         let bare = || parse_card("handle: ada\npublic_key: abc\n").unwrap();
 
         let at_cap = bare()
             .with_description(&"x".repeat(filler_bytes_at_cap))
             .unwrap();
-        assert_eq!(at_cap.public_json().len(), 3072);
+        assert_eq!(at_cap.public_json().len(), SPEC_PUBLIC_CAP_BYTES);
         assert_eq!(
             bare().with_description(&"x".repeat(filler_bytes_at_cap + 1)),
             Err(DescriptionOverCap { bytes: 3073 })

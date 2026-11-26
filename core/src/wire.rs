@@ -570,12 +570,12 @@ mod tests {
     use std::net::{IpAddr, Ipv6Addr};
 
     use super::*;
+    use crate::card::tests::SPEC_PUBLIC_CAP_BYTES;
     use crate::seeded_draws::Draws;
 
     const GOSSIP_FRAME_BYTES: usize = 4096;
     const GOSSIP_LAYER_OVERHEAD_BYTES: usize = 38;
     const SPEC_LARGEST_PRESENCE_BYTES: usize = 3951;
-    const PUBLIC_MAPPING_CAP_BYTES: usize = 3072;
     const HANDLE_CAP_CHARACTERS: usize = 53;
     const HIGH_PORT: u16 = 65535;
     const ROUND_TRIP_CASES: u64 = 200;
@@ -626,7 +626,7 @@ mod tests {
             v: Version::CURRENT,
             card: [0xAB; PUBLIC_KEY_BYTES],
             handle: "h".repeat(HANDLE_CAP_CHARACTERS),
-            public: vec![0xCD; PUBLIC_MAPPING_CAP_BYTES],
+            public: vec![0xCD; SPEC_PUBLIC_CAP_BYTES],
             attached: true,
             addr: Addr::from_endpoint_report(
                 (0..MAX_RELAY_URLS_PER_ADDR).map(|_| relay_of_bytes(MAX_RELAY_URL_BYTES)),
