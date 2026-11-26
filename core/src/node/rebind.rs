@@ -1802,7 +1802,7 @@ mod tests {
             IROH_DOCUMENTED_CLOSE_LATENCY + SPEC_RELAY_PROBE_TIMEOUT + REBIND_SLACK,
         )
         .await
-        .unwrap();
+        .expect("the peer's lookup entry without the dead relay within the close latency, the relay probe timeout and the rebind slack");
         let dead_host = lookup_entry(&member.node.client.endpoint(), DEAD_HOST_SEED)
             .await
             .unwrap();
@@ -1971,7 +1971,7 @@ mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap();
+        .expect("the peer listed as unreachable within PAYLOAD_WAIT");
         clock.move_forward(SPEC_DEAF_TIMEOUT);
         let rebound_at = clock.now();
         recorded_until(&mut events, REBINDING, |_fields| true, PAYLOAD_WAIT).await;
@@ -2072,7 +2072,7 @@ mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap();
+        .expect("the peer listed as unreachable within PAYLOAD_WAIT");
         let no_peer_online_since = Instant::now();
         let (while_no_peer_was_online, _snapshot) = recorded_until(
             &mut events,
