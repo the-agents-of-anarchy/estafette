@@ -517,7 +517,7 @@ fn listed_cards(
         .map(|(name, card)| ListedCard {
             held: claimed == Some(&name) || is_locked(served, is_card_held, &name),
             name: name.as_str().to_owned(),
-            handle: card.handle,
+            handle: card.handle().to_owned(),
         })
         .collect();
     cards.sort_by(|first, second| first.name.cmp(&second.name));

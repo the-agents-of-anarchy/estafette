@@ -320,7 +320,7 @@ fn describe_card_file(
             path: card_file.to_owned(),
             reason,
         })?;
-    let line = tab_separated_line(&[name.as_str(), &card.handle, &card.public_key]);
+    let line = tab_separated_line(&[name.as_str(), card.handle(), card.public_key()]);
     Ok((name.as_str().to_owned(), line))
 }
 

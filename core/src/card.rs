@@ -140,8 +140,8 @@ impl std::error::Error for CardInvalid {}
 /// A parsed card: the four keys the binary reads, with `public` held as a JSON mapping under the cap.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Card {
-    pub handle: String,
-    pub public_key: String,
+    handle: String,
+    public_key: String,
     pub network: Option<String>,
     public: Map<String, Value>,
 }
@@ -163,6 +163,18 @@ impl FromStr for Card {
 }
 
 impl Card {
+    /// The handle the card requests, as the card file wrote it.
+    #[must_use]
+    pub const fn handle(&self) -> &str {
+        self.handle.as_str()
+    }
+
+    /// The public key the card names, as the card file wrote it.
+    #[must_use]
+    pub const fn public_key(&self) -> &str {
+        self.public_key.as_str()
+    }
+
     /// The `public` mapping as compact JSON bytes, exactly what travels in presence.
     #[must_use]
     pub fn public_json(&self) -> Vec<u8> {
@@ -985,8 +997,8 @@ pub(crate) mod tests {
     fn parse_reads_the_four_keys_and_renders_public_as_compact_json_spec_3_5() {
         let text = "handle: ada\npublic_key: abc\nnetwork: lab\nignored: [1, 2]\npublic:\n  role: builder\n  tags: [a, 2]\n";
         let card = parse_card(text).unwrap();
-        assert_eq!(card.handle, "ada");
-        assert_eq!(card.public_key, "abc");
+        assert_eq!(card.handle(), "ada");
+        assert_eq!(card.public_key(), "abc");
         assert_eq!(card.network.as_deref(), Some("lab"));
         assert_eq!(card.public_json(), br#"{"role":"builder","tags":["a",2]}"#);
     }
@@ -1200,10 +1212,7 @@ pub(crate) mod tests {
             replaced.public_json(),
             br#"{"description":"new","role":"builder"}"#
         );
-        assert_eq!(
-            (replaced.handle.as_str(), replaced.public_key.as_str()),
-            ("ada", "abc")
-        );
+        assert_eq!((replaced.handle(), replaced.public_key()), ("ada", "abc"));
     }
 
     #[test]
