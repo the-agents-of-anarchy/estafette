@@ -53,6 +53,8 @@ mod remove_scratch;
 #[cfg(test)]
 #[path = "../../../core/src/scratch_removal.rs"]
 mod scratch_removal;
+#[cfg(test)]
+mod this_process_directory;
 
 const DOCTOR_SUBCOMMAND: &str = "doctor";
 const BRIDGE_PROGRAM: &str = "estafette-bridge-claude";
@@ -2178,9 +2180,9 @@ mod tests {
     #[test]
     fn spec_3_12_harness_2_1_319_the_class_read_live_is_the_class_written_to_the_session_socket() {
         const SOCKET_FILE: &str = "session.sock";
-        let socket_directory = crate::fresh_directory::fresh_directory_in(
+        let socket_directory = crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estf-u43-{}", std::process::id()),
+            "estf-u43",
         )
         .expect("scratch directory");
         let socket_path = socket_directory.join(SOCKET_FILE);
@@ -2232,12 +2234,9 @@ mod tests {
     }
 
     fn scratch_directory(label: &str) -> PathBuf {
-        let directory = crate::fresh_directory::fresh_directory_in(
+        let directory = crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-bridge-claude-managed-{label}-{}",
-                std::process::id()
-            ),
+            &format!("estafette-bridge-claude-managed-{label}"),
         )
         .expect("scratch directory");
         fs::create_dir_all(directory.join(MANAGED_DROP_IN_DIRECTORY)).expect("scratch directory");
@@ -2625,12 +2624,9 @@ mod tests {
 
     impl TraceProbe {
         fn new(label: &str) -> Self {
-            let root = crate::fresh_directory::fresh_directory_in(
+            let root = crate::this_process_directory::fresh_directory_of_this_process_in(
                 &std::env::temp_dir(),
-                &format!(
-                    "estafette-bridge-claude-trace-{label}-{}",
-                    std::process::id()
-                ),
+                &format!("estafette-bridge-claude-trace-{label}"),
             )
             .expect("scratch directory");
             Self {

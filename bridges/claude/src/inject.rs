@@ -746,9 +746,9 @@ mod tests {
         use crate::inbox_client::UnixSocketConnector;
         use std::os::unix::net::UnixListener;
         const SOCKET_FILE: &str = "session.sock";
-        let socket_directory = crate::fresh_directory::fresh_directory_in(
+        let socket_directory = crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estf-u32-{}", std::process::id()),
+            "estf-u32",
         )
         .expect("scratch directory");
         let socket_path = socket_directory.join(SOCKET_FILE);

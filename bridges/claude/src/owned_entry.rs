@@ -496,12 +496,9 @@ mod tests {
     }
 
     fn scratch_directory(label: &str) -> PathBuf {
-        crate::fresh_directory::fresh_directory_in(
+        crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!(
-                "estafette-bridge-claude-owned-{label}-{}",
-                std::process::id()
-            ),
+            &format!("estafette-bridge-claude-owned-{label}"),
         )
         .unwrap()
     }

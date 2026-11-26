@@ -19,3 +19,5 @@ mod scratch_removal;
 #[cfg(test)]
 mod seeded;
 pub mod session_files;
+#[cfg(test)]
+mod this_process_directory;

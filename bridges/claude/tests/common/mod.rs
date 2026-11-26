@@ -45,6 +45,8 @@ mod fresh_directory;
 mod remove_scratch;
 #[path = "../../../../core/src/scratch_removal.rs"]
 mod scratch_removal;
+#[path = "../../src/this_process_directory.rs"]
+mod this_process_directory;
 
 pub struct Fixture {
     pub root: PathBuf,
@@ -58,9 +60,9 @@ impl Fixture {
         if !Self::binary_path().exists() {
             return Err(io::Error::new(io::ErrorKind::NotFound, BINARY_NOT_BUILT));
         }
-        let root = fresh_directory::fresh_directory_in(
+        let root = this_process_directory::fresh_directory_of_this_process_in(
             Path::new(SHORT_SCRATCH_PARENT),
-            &format!("{SCRATCH_PREFIX}-{}", std::process::id()),
+            SCRATCH_PREFIX,
         )?;
         let claude_directory = root.join(HOME_DIRECTORY).join(CLAUDE_DIRECTORY);
         for directory in [

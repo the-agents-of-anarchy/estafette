@@ -699,9 +699,9 @@ mod tests {
     fn spec_3_11_a_real_unix_socket_replays_then_resumes_after_the_server_closes() {
         use std::os::unix::net::UnixListener;
         const SOCKET_FILE: &str = "session.sock";
-        let socket_directory = crate::fresh_directory::fresh_directory_in(
+        let socket_directory = crate::this_process_directory::fresh_directory_of_this_process_in(
             &std::env::temp_dir(),
-            &format!("estf-u31-{}", std::process::id()),
+            "estf-u31",
         )
         .expect("scratch directory");
         let socket_path = socket_directory.join(SOCKET_FILE);
