@@ -238,7 +238,7 @@ mod tests {
     use crate::event::{Event, write_run_record};
     use crate::wire;
 
-    const PEER_ID: wire::PublicKey = [7; 32];
+    const PEER_ID: wire::PublicKey = [0xab; 32];
     const STAMP: u64 = 1_800_000_000_000;
 
     fn facts() -> PayloadFacts {

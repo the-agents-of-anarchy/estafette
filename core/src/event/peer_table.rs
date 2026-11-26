@@ -253,9 +253,16 @@ mod tests {
     use super::*;
     use crate::event::{Event, EventName, write_run_record};
 
-    const PEER_ID: wire::PublicKey = [7; 32];
+    const PEER_ID: wire::PublicKey = [0xab; 32];
+    const PEER_ID_TEXT: &str = "ababababab";
     const HANDLE: &str = "bob";
     const HANDLE_ASSIGNED_AFTER_A_CLASH: &str = "bob-2";
+
+    #[test]
+    fn observability_decision_6_a_peer_is_written_as_the_lowercase_hexadecimal_of_its_five_byte_id()
+    {
+        assert_eq!(ShortId::from(&PEER_ID).text(), PEER_ID_TEXT);
+    }
 
     #[test]
     fn observability_decision_3_the_peer_table_events_add_no_line_to_standard_error() {
