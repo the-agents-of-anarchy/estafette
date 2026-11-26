@@ -3,31 +3,16 @@ use std::time::Duration;
 use iroh::EndpointId;
 use serde_json::Value;
 
-use crate::dropped_payloads::short_id_of_node;
+use crate::events_lines::{
+    ACKNOWLEDGED_OUTCOME, MESSAGE_FIELD, MESSAGE_KIND, PAYLOAD_ACCEPTED_EVENT, PRESENCE_KIND,
+    REQUEST_SENT_EVENT, SEQ_FIELD, is_accepted_payload_of, is_acknowledged_request_of_kind,
+    short_id_of_node,
+};
 use crate::mcp_server::{PRESENCE_WAIT, RESULT_KEY};
 use crate::member_events::MemberEvents;
+use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
 use crate::trace_reader::TraceLine;
 
-/// The event a member records for each gossip payload it accepts (spec/observability.md decision 9).
-const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
-/// The event a member records for each direct request it sends, with how it ended (spec/observability.md decision 9).
-const REQUEST_SENT_EVENT: &str = "direct.request_sent";
-/// The field of an events line naming a payload's or a request's kind (spec/observability.md decision 6).
-const KIND_FIELD: &str = "kind";
-/// The field of an events line naming a payload's signer (spec/observability.md decision 6).
-const PEER_FIELD: &str = "peer";
-/// The field of an events line naming a payload's seq (spec/observability.md decision 6).
-const SEQ_FIELD: &str = "seq";
-/// The field of an events line naming a Message's id (spec/observability.md decision 6).
-const MESSAGE_FIELD: &str = "message";
-/// The field of an events line naming a request's outcome (spec/observability.md decision 6).
-const OUTCOME_FIELD: &str = "outcome";
-/// The kind of payload a Presence is, as an events line names it.
-const PRESENCE_KIND: &str = "presence";
-/// The kind of direct request a Message is, as an events line names it.
-const MESSAGE_KIND: &str = "message";
-/// The outcome of a request its recipient acknowledged, as an events line names it.
-const ACKNOWLEDGED_OUTCOME: &str = "acknowledged";
 /// The key of a send result holding the id of the Message it sent (spec 3.10).
 const MESSAGE_ID_KEY: &str = "id";
 /// How long a member may take to write the line of a request whose answer the test already holds: chosen, not measured, far above a queued line's write, so only a line never written fails it.
@@ -64,7 +49,7 @@ pub fn new_presence_accepted(
 
 /// How long after the sender accepted the new Presence its recipient acknowledged the Message the send result names, both read on the sender's monotonic clock from its own events (spec 3.15 test 18).
 #[track_caller]
-pub fn acknowledged_after(
+fn acknowledged_after(
     sender: &MemberEvents,
     new_presence: &NewPresenceAccepted,
     sent: &Value,
@@ -92,12 +77,24 @@ pub fn acknowledged_after(
     )
 }
 
+/// Requires the recipient to have acknowledged the Message the send result names within the spec's bound of the sender's acceptance of the new Presence (spec 3.15 test 18).
+#[track_caller]
+pub fn assert_acknowledged_promptly_after(
+    sender: &MemberEvents,
+    new_presence: &NewPresenceAccepted,
+    sent: &Value,
+) {
+    let delivered_after = acknowledged_after(sender, new_presence, sent);
+    assert!(
+        delivered_after < SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
+        "acknowledged {delivered_after:?} after the new presence, not under {SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE:?}"
+    );
+}
+
 /// Whether the events line records a Presence the peer stamped after the instant, accepted and written after it.
 fn is_presence_accepted_after(line: &TraceLine, peer: &str, instant_ms: u64) -> bool {
-    line.event == PAYLOAD_ACCEPTED_EVENT
+    is_accepted_payload_of(line, PRESENCE_KIND, peer)
         && line.wall_ms > instant_ms
-        && line.value(KIND_FIELD) == Some(&Value::from(PRESENCE_KIND))
-        && line.value(PEER_FIELD) == Some(&Value::from(peer))
         && line
             .value(SEQ_FIELD)
             .and_then(Value::as_u64)
@@ -106,8 +103,6 @@ fn is_presence_accepted_after(line: &TraceLine, peer: &str, instant_ms: u64) -> 
 
 /// Whether the events line records the Message of that id sent and acknowledged by its recipient.
 fn is_message_acknowledged(line: &TraceLine, message: &Value) -> bool {
-    line.event == REQUEST_SENT_EVENT
-        && line.value(KIND_FIELD) == Some(&Value::from(MESSAGE_KIND))
+    is_acknowledged_request_of_kind(line, MESSAGE_KIND)
         && line.value(MESSAGE_FIELD) == Some(message)
-        && line.value(OUTCOME_FIELD) == Some(&Value::from(ACKNOWLEDGED_OUTCOME))
 }

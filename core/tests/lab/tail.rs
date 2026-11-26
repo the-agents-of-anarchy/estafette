@@ -1,8 +1,9 @@
+use std::net::SocketAddr;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde::Deserialize;
 
 use crate::scratch_machine::ScratchMachine;
 use crate::scratch_machine::owned_process::OwnedProcess;
@@ -27,9 +28,6 @@ pub const RECORD_HOST_COLUMN: usize = 2;
 pub const HOST_RELAY_COLUMN: usize = 3;
 /// The column of an infrastructure line holding the record's ts.
 pub const RECORD_TS_COLUMN: usize = 5;
-/// The key of the relay list in a printed `addr`.
-const RELAYS_KEY: &str = "relays";
-
 /// How long `tail` may take to print its first payload, a host record every 5 seconds once joined (spec 3.14).
 const FIRST_LINE_WAIT: Duration = Duration::from_secs(60);
 /// How a failed end of a `tail` process is marked beside what its machine keeps.
@@ -41,14 +39,24 @@ pub fn columns_of_kind<'line>(line: &'line str, kind: &str) -> Option<Vec<&'line
     (columns.first() == Some(&kind)).then_some(columns)
 }
 
-/// The relay URLs a printed `addr` column lists, none when it is no JSON object whose relays are a list of strings.
+/// The columns of a `tail` line when it is a presence of the card, none for any other line.
+pub fn columns_of_presence_of<'line>(line: &'line str, card: &str) -> Option<Vec<&'line str>> {
+    columns_of_kind(line, PRESENCE_KIND)
+        .filter(|columns| columns.get(PRESENCE_CARD_COLUMN) == Some(&card))
+}
+
+/// The `addr` of a Presence as a presence line of `tail` prints it (spec 3.7).
+#[derive(Deserialize)]
+pub struct PrintedAddr {
+    pub relays: Vec<String>,
+    pub direct: Vec<SocketAddr>,
+}
+
+/// The relay URLs a printed `addr` column lists, none when it is no printed `addr`.
 pub fn announced_relays(addr_column: &str) -> Option<Vec<String>> {
-    let addr: Value = serde_json::from_str(addr_column).ok()?;
-    addr.get(RELAYS_KEY)?
-        .as_array()?
-        .iter()
-        .map(|relay| relay.as_str().map(str::to_owned))
-        .collect()
+    serde_json::from_str::<PrintedAddr>(addr_column)
+        .ok()
+        .map(|addr| addr.relays)
 }
 
 /// A running `estafette tail`, its payload lines read as they arrive, each with the instant it arrived.
@@ -136,7 +144,10 @@ impl Tail {
 
 #[cfg(test)]
 mod tests {
-    use super::{INFRASTRUCTURE_KIND, PRESENCE_KIND, announced_relays, columns_of_kind};
+    use super::{
+        INFRASTRUCTURE_KIND, PRESENCE_KIND, announced_relays, columns_of_kind,
+        columns_of_presence_of,
+    };
 
     #[test]
     fn spec_3_13_a_line_opening_with_the_kind_word_yields_its_columns_in_order() {
@@ -153,6 +164,21 @@ mod tests {
         let line = format!("{INFRASTRUCTURE_KIND}\t1\thost");
 
         assert_eq!(columns_of_kind(&line, PRESENCE_KIND), None);
+    }
+
+    #[test]
+    fn spec_3_13_a_presence_line_of_the_card_yields_its_columns_and_that_of_another_card_none() {
+        let line = format!("{PRESENCE_KIND}\t1\tcard\thandle");
+
+        assert_eq!(
+            columns_of_presence_of(&line, "card"),
+            Some(vec![PRESENCE_KIND, "1", "card", "handle"])
+        );
+        assert_eq!(columns_of_presence_of(&line, "other"), None);
+        assert_eq!(
+            columns_of_presence_of(&format!("{INFRASTRUCTURE_KIND}\t1\tcard"), "card"),
+            None
+        );
     }
 
     #[test]

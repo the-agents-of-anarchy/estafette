@@ -9,7 +9,7 @@ use estafette::wire::HostAddr;
 use iroh::PublicKey;
 use serde_json::{Value, json};
 
-use crate::dropped_payloads::short_id_of_node;
+use crate::events_lines::short_id_of_node;
 use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use crate::handles::unique_handle;
 use crate::home_relays::{
@@ -37,7 +37,7 @@ use crate::server_member::ServerMember;
 use crate::tail::{
     COLUMN_SEPARATOR, INFRASTRUCTURE_KIND, PEER_STATUS_COLUMN, PRESENCE_ADDR_COLUMN,
     PRESENCE_CARD_COLUMN, PRESENCE_KIND, PRESENCE_SEQ_COLUMN, RECORD_HOST_COLUMN, RECORD_TS_COLUMN,
-    Tail, announced_relays, columns_of_kind,
+    Tail, announced_relays, columns_of_kind, columns_of_presence_of,
 };
 use crate::time_passing::wait_for_time_to_pass;
 use crate::timed_step::timed;
@@ -745,10 +745,7 @@ fn live_host_id(network: &LiveNetwork) -> String {
 
 /// The seq of a `tail` line when it is a presence of the card, the sender's clock in milliseconds at the send for a card's first Presence (spec 3.8).
 fn presence_seq_of(line: &str, card: &str) -> Option<u64> {
-    let columns = columns_of_kind(line, PRESENCE_KIND)?;
-    if columns.get(PRESENCE_CARD_COLUMN) != Some(&card) {
-        return None;
-    }
+    let columns = columns_of_presence_of(line, card)?;
     columns.get(PRESENCE_SEQ_COLUMN)?.parse().ok()
 }
 

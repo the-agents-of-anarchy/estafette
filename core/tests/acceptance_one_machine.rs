@@ -2,8 +2,8 @@
 #[path = "support/driven_runtime.rs"]
 mod driven_runtime;
 #[cfg(test)]
-#[path = "support/dropped_payloads.rs"]
-mod dropped_payloads;
+#[path = "support/events_lines.rs"]
+mod events_lines;
 #[cfg(test)]
 #[path = "support/file_growth.rs"]
 mod file_growth;
@@ -118,7 +118,11 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use iroh::{EndpointId, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
-    use crate::dropped_payloads::short_id_of_node;
+    use crate::events_lines::{
+        ACKNOWLEDGED_OUTCOME, INTRODUCE_KIND, KIND_FIELD, MESSAGE_KIND, OUTCOME_FIELD,
+        PAYLOAD_ACCEPTED_EVENT, PEER_FIELD, PRESENCE_KIND, REQUEST_SENT_EVENT, SEQ_FIELD,
+        short_id_of_node,
+    };
     use crate::local_network::{
         AMY_CARD, AMY_HANDLE, BOB_CARD, BOB_HANDLE, CAROL_HANDLE, LocalNetwork, MetPair,
     };
@@ -129,13 +133,12 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     };
     use crate::message_body::BODY;
     use crate::new_presence_window::{
-        NewPresenceAccepted, acknowledged_after, new_presence_accepted,
+        NewPresenceAccepted, assert_acknowledged_promptly_after, new_presence_accepted,
     };
     use crate::payload_placeholders::{UNSET_MAC, UNSIGNED, wall_clock_ms};
     use crate::payloads::presence_signed_by;
     use crate::scratch_machine::{Card, RunRecordKeeping};
     use crate::scripted_node::{SPEC_DIRECT_TIMEOUT_WITH_SLACK, ScriptedNode};
-    use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
     use crate::timed_step::timed;
     use crate::trace_reader::TraceLine;
     use crate::{MESSAGE_ID, send};
@@ -165,8 +168,6 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const HEARING_SAMPLE_INTERVAL: Duration = QUIC_KEEP_ALIVE_INTERVAL
         .checked_div(HEARING_SAMPLES_PER_KEEP_ALIVE)
         .unwrap();
-    /// The event a member records for each gossip payload it accepts (spec/observability.md decision 9).
-    const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
     /// The event a member records when it replaces a peer's lookup entry, the last step of applying a Presence.
     const LOOKUP_REPLACED_EVENT: &str = "peers.lookup_replaced";
     /// How long the wait for a killed peer's entry to change lasts, a wait's bound that decides no run in which the counts of spec 3.15 test 5 hold.
@@ -189,16 +190,6 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const ENTRY_CHANGED_EVENT: &str = "peers.entry_changed";
     /// The event a member records for each direct request it serves.
     const REQUEST_SERVED_EVENT: &str = "direct.request_served";
-    /// The event a member records for each direct request it sends, with how it ended.
-    const REQUEST_SENT_EVENT: &str = "direct.request_sent";
-    /// The outcome of a request its recipient acknowledged, as an events line names it.
-    const ACKNOWLEDGED_OUTCOME: &str = "acknowledged";
-    /// The kind of payload a presence is, as an events line names it.
-    const PRESENCE_KIND: &str = "presence";
-    /// The kind of direct request a Message is, as an events line names it.
-    const MESSAGE_KIND: &str = "message";
-    /// The kind of direct request an Introduce is, as an events line names it.
-    const INTRODUCE_KIND: &str = "introduce";
     /// The cause an events line gives an entry a Departure moved.
     const DEPARTURE_CAUSE: &str = "departure";
     /// The status of a departed entry (spec 3.8).
@@ -353,9 +344,9 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             |lines| {
                 let accepted = lines.iter().position(|line| {
                     line.event == PAYLOAD_ACCEPTED_EVENT
-                        && line.value("kind") == Some(&json!(PRESENCE_KIND))
+                        && line.value(KIND_FIELD) == Some(&json!(PRESENCE_KIND))
                         && line.value("handle") == Some(&json!(BOB_HANDLE))
-                        && line.value("seq").and_then(Value::as_u64) >= Some(sent_ms)
+                        && line.value(SEQ_FIELD).and_then(Value::as_u64) >= Some(sent_ms)
                 })?;
                 lines
                     .iter()
@@ -387,7 +378,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             ),
             PRESENCE_WAIT,
             |lines| {
-                let is_bob = |line: &TraceLine| line.value("peer") == Some(&json!(bob));
+                let is_bob = |line: &TraceLine| line.value(PEER_FIELD) == Some(&json!(bob));
                 let listed = lines
                     .iter()
                     .find(|line| line.event == ENTRY_CREATED_EVENT && is_bob(line))?
@@ -398,9 +389,9 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                 let is_acknowledged_since = lines.iter().any(|line| {
                     line.event == REQUEST_SENT_EVENT
                         && line.n > listed
-                        && line.value("kind") == Some(&json!(INTRODUCE_KIND))
+                        && line.value(KIND_FIELD) == Some(&json!(INTRODUCE_KIND))
                         && is_bob(line)
-                        && line.value("outcome") == Some(&json!(ACKNOWLEDGED_OUTCOME))
+                        && line.value(OUTCOME_FIELD) == Some(&json!(ACKNOWLEDGED_OUTCOME))
                 });
                 (is_neighbor && is_acknowledged_since).then_some(())
             },
@@ -427,7 +418,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
     /// What the member's lines hold of bob's detection, once a line sets bob unreachable by a failed probe.
     fn detection_of_bob(lines: &[TraceLine], bob: &str) -> Option<DetectionOfBob> {
-        let is_bob = |line: &TraceLine| line.value("peer") == Some(&json!(bob));
+        let is_bob = |line: &TraceLine| line.value(PEER_FIELD) == Some(&json!(bob));
         let change = lines.iter().find(|line| {
             line.event == ENTRY_CHANGED_EVENT
                 && is_bob(line)
@@ -447,8 +438,8 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             failed_probes: before_the_change()
                 .filter(|line| {
                     line.event == REQUEST_SENT_EVENT
-                        && line.value("kind") == Some(&json!(PROBE_KIND))
-                        && line.value("outcome") == Some(&json!(FAILED_OUTCOME))
+                        && line.value(KIND_FIELD) == Some(&json!(PROBE_KIND))
+                        && line.value(OUTCOME_FIELD) == Some(&json!(FAILED_OUTCOME))
                 })
                 .map(|line| line.n)
                 .collect(),
@@ -498,7 +489,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
                     .iter()
                     .any(|line| {
                         line.event == REQUEST_SERVED_EVENT
-                            && line.value("kind") == Some(&json!(kind))
+                            && line.value(KIND_FIELD) == Some(&json!(kind))
                     })
                     .then(|| {
                         since
@@ -529,11 +520,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             "{first_send}"
         );
         assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
-        let delivered_after = acknowledged_after(amy.events(), new_presence, sent);
-        assert!(
-            delivered_after < SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
-            "acknowledged {delivered_after:?} after the new presence, not under {SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE:?}"
-        );
+        assert_acknowledged_promptly_after(amy.events(), new_presence, sent);
     }
 
     /// Restarts bob's card through a second host that links amy, bob's first process gone since `killed_ms`, and requires amy's send before the kill delivered and her send to the restarted bob delivered within 1 s of its new Presence reaching her (spec 3.15 test 18).
@@ -1499,8 +1486,8 @@ mod spec_3_15_with_one_member {
     use serde_json::{Value, json};
 
     use crate::MESSAGE_ID;
-    use crate::dropped_payloads::{
-        PAYLOAD_DROPPED_EVENT, is_dropped_payload_of_seq, short_id_text,
+    use crate::events_lines::{
+        PAYLOAD_DROPPED_EVENT, PEER_FIELD, PRESENCE_KIND, is_dropped_payload_of_seq, short_id_text,
     };
     use crate::local_network::{AMY_CARD, AMY_HANDLE, LocalNetwork};
     use crate::mcp_server::{INIT_TOOL, PRESENCE_WAIT, call_succeeded, init_arguments};
@@ -1523,8 +1510,6 @@ mod spec_3_15_with_one_member {
     const SPEC_GATE_TIMEOUT_WITH_SLACK: Duration = Duration::from_secs(5);
     /// The event a member records for each gossip connection its gate closes (spec/observability.md decision 9).
     const GATE_CLOSED_EVENT: &str = "transport.gate_closed";
-    /// The field of a gate closing naming the peer of the connection.
-    const PEER_FIELD: &str = "peer";
     /// The field of a gate closing naming the side that opened the connection.
     const DIRECTION_FIELD: &str = "direction";
     /// The side of a connection the peer opened.
@@ -1549,8 +1534,6 @@ mod spec_3_15_with_one_member {
     const OUTSIDER_HANDLE: &str = "outsider";
     /// Every byte of the secret of a network other than the test's, whose keys a member refuses.
     const OUTSIDER_SECRET_BYTE: u8 = 77;
-    /// The kind of payload a presence is, as an events line names it.
-    const PRESENCE_KIND: &str = "presence";
 
     /// The `you` of spec 3.10 for a session that has claimed no card.
     fn unclaimed() -> Value {

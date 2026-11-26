@@ -2,8 +2,8 @@
 #[path = "support/driven_runtime.rs"]
 mod driven_runtime;
 #[cfg(test)]
-#[path = "support/dropped_payloads.rs"]
-mod dropped_payloads;
+#[path = "support/events_lines.rs"]
+mod events_lines;
 #[cfg(test)]
 #[path = "support/file_growth.rs"]
 mod file_growth;
@@ -120,7 +120,7 @@ mod spec_3_15_test_27_forged_payloads_on_the_live_network {
     use estafette::wire::{Payload, SignatureBytes};
     use iroh::SecretKey;
 
-    use crate::dropped_payloads::{
+    use crate::events_lines::{
         PAYLOAD_DROPPED_EVENT, is_dropped_payload_of, is_dropped_payload_of_seq, short_id_text,
     };
     use crate::forger::Forger;
@@ -543,6 +543,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     use estafette::wire::{HostAddr, Version};
     use serde_json::Value;
 
+    use crate::events_lines::{KIND_FIELD, PRESENCE_KIND as PRESENCE_PAYLOAD_KIND};
     use crate::home_relays::{
         every_member_homed_at_the_kill_on, every_member_homed_on, live_host_record_accepted,
         raw_lines_of_running_member, raw_lines_once_stamped_past,
@@ -554,8 +555,8 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     use crate::member_events::COUNTERS_EVENT;
     use crate::relay_placement::placement_held;
     use crate::tail::{
-        HOST_RELAY_COLUMN, INFRASTRUCTURE_KIND, PRESENCE_ADDR_COLUMN, PRESENCE_CARD_COLUMN,
-        PRESENCE_KIND, Tail, announced_relays, columns_of_kind,
+        HOST_RELAY_COLUMN, INFRASTRUCTURE_KIND, PRESENCE_ADDR_COLUMN, Tail, announced_relays,
+        columns_of_kind, columns_of_presence_of,
     };
     use crate::time_passing::SNAPSHOT_PROVING_A_SPAN_WITHIN;
     use crate::trace_reader::TraceLine;
@@ -574,10 +575,6 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
     const OBSERVER_TAG: &str = "u40-relay-tail";
     /// The event a member records for each payload it broadcasts, and its field naming the payload's kind (spec/observability.md decision 9).
     const PAYLOAD_BROADCAST_EVENT: &str = "gossip.payload_broadcast";
-    /// The field of an events line naming a payload's kind (spec/observability.md decision 9).
-    const KIND_FIELD: &str = "kind";
-    /// The kind word of a broadcast Presence in an events line.
-    const PRESENCE_BROADCAST_KIND: &str = "presence";
 
     /// The wall-clock stamps of the member's last Presence broadcast and of a counters snapshot it recorded at least a re-announce interval after it, once its timeline holds both.
     fn quiet_for_a_reannounce_interval_since_the_last_presence(
@@ -587,7 +584,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
             .iter()
             .filter(|line| {
                 line.event == PAYLOAD_BROADCAST_EVENT
-                    && line.value(KIND_FIELD) == Some(&Value::from(PRESENCE_BROADCAST_KIND))
+                    && line.value(KIND_FIELD) == Some(&Value::from(PRESENCE_PAYLOAD_KIND))
             })
             .map(|line| line.wall_ms)
             .max()?;
@@ -601,10 +598,7 @@ mod spec_3_15_test_28_addresses_on_the_live_network {
 
     /// The relay URLs a `tail` line announces for the card, when it is a presence of that card.
     fn relays_announced_by(line: &str, card: &str) -> Option<Vec<String>> {
-        let columns = columns_of_kind(line, PRESENCE_KIND)?;
-        if columns.get(PRESENCE_CARD_COLUMN) != Some(&card) {
-            return None;
-        }
+        let columns = columns_of_presence_of(line, card)?;
         announced_relays(columns.get(PRESENCE_ADDR_COLUMN)?)
     }
 
@@ -762,8 +756,10 @@ mod spec_3_15_two_members_through_the_live_host {
     use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr};
     use serde_json::{Value, json};
 
-    use crate::dropped_payloads::{
-        PAYLOAD_DROPPED_EVENT, is_dropped_payload_of_seq, short_id_text,
+    use crate::events_lines::{
+        ACKNOWLEDGED_OUTCOME, INTRODUCE_KIND, MESSAGE_FIELD, PAYLOAD_DROPPED_EVENT, PEER_FIELD,
+        PRESENCE_KIND, REQUEST_SENT_EVENT, is_accepted_payload_of, is_acknowledged_request_of_kind,
+        is_dropped_payload_of_seq, short_id_text,
     };
     use crate::forger::Forger;
     use crate::handles::{HANDLE_TAG_LETTERS, unique_handle};
@@ -781,14 +777,14 @@ mod spec_3_15_two_members_through_the_live_host {
     use crate::member_ended_at_its_peer::assert_stopped_member_is_gone_then_unreachable;
     use crate::member_events::MemberEvents;
     use crate::message_body::BODY;
-    use crate::new_presence_window::{acknowledged_after, new_presence_accepted};
+    use crate::new_presence_window::{assert_acknowledged_promptly_after, new_presence_accepted};
     use crate::off_topic_sender::OffTopicSender;
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::{presence_signed_by, presence_signed_by_at};
     use crate::scratch_machine::Card;
-    use crate::spec_bounds::SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE;
     use crate::tail::{
-        COLUMN_SEPARATOR, PRESENCE_ADDR_COLUMN, PRESENCE_CARD_COLUMN, Tail, columns_of_kind,
+        COLUMN_SEPARATOR, PRESENCE_ADDR_COLUMN, PRESENCE_KIND as PRESENCE_LINE_KIND, PrintedAddr,
+        Tail, columns_of_presence_of,
     };
     use crate::time_passing::wait_for_time_to_pass;
     use crate::timed_step::timed;
@@ -829,8 +825,6 @@ mod spec_3_15_two_members_through_the_live_host {
     const PUBLIC_NOTES_KEY: &str = "notes";
     /// The bytes compact JSON spends on a mapping of one string key and one string value beyond the two strings.
     const COMPACT_JSON_MAPPING_FRAME_BYTES: usize = r#"{"":""}"#.len();
-    /// The kind of payload a presence is, as an events line names it.
-    const PRESENCE_KIND: &str = "presence";
     /// The description a member's first session gives at init.
     const FIRST_SESSION: &str = "first session";
     /// The description a member's second session on the same card gives at init, so its Presence differs from the first's.
@@ -847,24 +841,8 @@ mod spec_3_15_two_members_through_the_live_host {
     const TAIL_MACHINE_TAG: &str = "t8-tail";
     /// The observer command that prints each gossip payload as it arrives (spec 3.13).
     const TAIL_COMMAND: &str = "tail";
-    /// The event a member records for each gossip payload it accepts, and the fields naming the payload's kind and signer (spec/observability.md decisions 6 and 9).
-    const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
-    /// The field of an events line naming a payload's kind.
-    const KIND_FIELD: &str = "kind";
-    /// The field of an events line naming a payload's signer.
-    const PEER_FIELD: &str = "peer";
     /// The event a member records for each inbox frame it delivers, and its field naming the frame's message id (spec/observability.md decision 9).
     const FRAME_DELIVERED_EVENT: &str = "inbox.frame_delivered";
-    /// The field of an events line naming a message's id.
-    const MESSAGE_FIELD: &str = "message";
-    /// The event a member records for each direct request it sends, the field naming how it ended, and the words for an Introduce and for an acknowledged request (spec/observability.md decision 9).
-    const REQUEST_SENT_EVENT: &str = "direct.request_sent";
-    /// The field of an events line naming how a direct request ended.
-    const OUTCOME_FIELD: &str = "outcome";
-    /// The kind word of an Introduce in an events line.
-    const INTRODUCE_KIND: &str = "introduce";
-    /// The outcome word of an acknowledged request in an events line.
-    const ACKNOWLEDGED_OUTCOME: &str = "acknowledged";
     /// How long a member may take to have its Introduce to the sender of a Message acknowledged after it recorded the Message's frame: chosen, not measured, above the 5000 ms connect and 10000 ms ack timeouts of spec 3.14 together.
     const INTRODUCE_ACKNOWLEDGED_WAIT: Duration = Duration::from_secs(30);
 
@@ -875,13 +853,6 @@ mod spec_3_15_two_members_through_the_live_host {
         handle: String,
         claim: Value,
         machine: LabMachine,
-    }
-
-    /// The `addr` of a Presence as a presence line of `tail` prints it (spec 3.7).
-    #[derive(serde::Deserialize)]
-    struct PrintedAddr {
-        relays: Vec<String>,
-        direct: Vec<SocketAddr>,
     }
 
     /// Waits until the member has recorded the replayed presence, the one signed by the key with that seq, dropped.
@@ -949,17 +920,6 @@ mod spec_3_15_two_members_through_the_live_host {
         from.member.send(to, body)
     }
 
-    /// The peer of that handle as the member's peers tool lists it now, if it lists it.
-    #[track_caller]
-    fn listed_peer(member: &mut McpServer, handle: &str) -> Option<Value> {
-        member.call("peers", &json!({}))["result"]["peers"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|peer| peer["handle"] == handle)
-            .cloned()
-    }
-
     /// The address of the card as announced by the first presence of it that a `tail` on a machine of its own prints, requiring that presence within the presence wait.
     #[track_caller]
     fn address_tail_prints_for(network: &LiveNetwork, card: EndpointId) -> EndpointAddr {
@@ -978,10 +938,7 @@ mod spec_3_15_two_members_through_the_live_host {
     /// The address a presence line of `tail` announces for the card, none when the line is no presence of that card, failing the test, naming the place and the reason, when a presence of that card announces an address or a relay that does not parse.
     #[track_caller]
     fn address_announced_by(line: &str, card: EndpointId) -> Option<EndpointAddr> {
-        let columns = columns_of_kind(line, PRESENCE_KIND)?;
-        if columns.get(PRESENCE_CARD_COLUMN) != Some(&render_public_key(&card).as_str()) {
-            return None;
-        }
+        let columns = columns_of_presence_of(line, &render_public_key(&card))?;
         let addr = columns
             .get(PRESENCE_ADDR_COLUMN)
             .unwrap_or_else(|| panic!("the presence of {card} has no addr column: {line}"));
@@ -1004,7 +961,7 @@ mod spec_3_15_two_members_through_the_live_host {
      {
         let card = SecretKey::from_bytes(&[RELAY_REFUSAL_CARD_SEED; 32]).public();
         let line = [
-            PRESENCE_KIND,
+            PRESENCE_LINE_KIND,
             "1",
             &render_public_key(&card),
             "handle",
@@ -1063,9 +1020,7 @@ mod spec_3_15_two_members_through_the_live_host {
 
     /// Whether the events line records a Presence signed by the peer accepted.
     fn is_accepted_presence_of(line: &TraceLine, peer: &str) -> bool {
-        line.event == PAYLOAD_ACCEPTED_EVENT
-            && line.value(KIND_FIELD) == Some(&Value::from(PRESENCE_KIND))
-            && line.value(PEER_FIELD) == Some(&Value::from(peer))
+        is_accepted_payload_of(line, PRESENCE_KIND, peer)
     }
 
     /// Waits until the member records an Introduce it sent to the peer acknowledged, requiring it within the introduce wait.
@@ -1080,10 +1035,8 @@ mod spec_3_15_two_members_through_the_live_host {
                 lines
                     .iter()
                     .any(|line| {
-                        line.event == REQUEST_SENT_EVENT
-                            && line.value(KIND_FIELD) == Some(&Value::from(INTRODUCE_KIND))
+                        is_acknowledged_request_of_kind(line, INTRODUCE_KIND)
                             && line.value(PEER_FIELD) == Some(&Value::from(peer))
-                            && line.value(OUTCOME_FIELD) == Some(&Value::from(ACKNOWLEDGED_OUTCOME))
                     })
                     .then_some(())
             },
@@ -1366,13 +1319,13 @@ mod spec_3_15_two_members_through_the_live_host {
         let sent_at = wall_clock_ms();
 
         let unseen_before = timed("amy's peers tool answers before bob's send", || {
-            listed_peer(&mut amy.member, &bob_handle)
+            amy.member.listed_peer(&bob_handle)
         });
         let sent = timed("bob's direct send to amy", || {
             bob.send(amy_address, OFF_TOPIC_MESSAGE_ID, sent_at, BODY)
         });
         let listed_after = timed("amy's peers tool answers after bob's send", || {
-            listed_peer(&mut amy.member, &bob_handle)
+            amy.member.listed_peer(&bob_handle)
         });
         let presences_of_bob_before_the_frame =
             timed("amy records the frame of bob's message", || {
@@ -1390,7 +1343,7 @@ mod spec_3_15_two_members_through_the_live_host {
         );
         let listed_after_the_introduce = timed(
             "amy's peers tool answers after her introduce to bob",
-            || listed_peer(&mut amy.member, &bob_handle),
+            || amy.member.listed_peer(&bob_handle),
         );
 
         assert!(call_succeeded(&amy.claim), "{}", amy.claim);
@@ -1554,11 +1507,7 @@ mod spec_3_15_two_members_through_the_live_host {
 
         assert!(call_succeeded(&claim), "{claim}");
         assert_eq!(sent["result"]["delivered"], json!(true), "{sent}");
-        let delivered_after = acknowledged_after(amy.member.events(), &new_presence, &sent);
-        assert!(
-            delivered_after < SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE,
-            "acknowledged {delivered_after:?} after the new presence, not under {SPEC_DELIVERED_WITHIN_OF_NEW_PRESENCE:?}"
-        );
+        assert_acknowledged_promptly_after(amy.member.events(), &new_presence, &sent);
     }
 
     #[test]

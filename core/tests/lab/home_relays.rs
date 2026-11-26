@@ -6,17 +6,13 @@ use estafette_trace::DROPPED_LINE_NAME;
 use iroh::EndpointId;
 use serde_json::Value;
 
-use crate::dropped_payloads::short_id_of_node;
+use crate::events_lines::{PAYLOAD_ACCEPTED_EVENT, is_accepted_payload_of, short_id_of_node};
 use crate::file_growth::{GrowthWatch, WaitEnded, first_found_as_files_grow};
 use crate::member_events::MemberEvents;
 use crate::trace_reader::{TraceLine, lines_of_files_still_present, trace_files_in};
 
 /// How long a member may take to accept a record of the live host, which sends one every 5 s: chosen, not measured.
 const LIVE_HOST_RECORD_WAIT: Duration = Duration::from_secs(60);
-/// The event a member records for each gossip payload it accepts, and the fields naming the payload's kind and signer (spec/observability.md decisions 6 and 9).
-const PAYLOAD_ACCEPTED_EVENT: &str = "gossip.payload_accepted";
-const KIND_FIELD: &str = "kind";
-const PEER_FIELD: &str = "peer";
 /// The kind of payload a host's infrastructure record is, as an events line names it.
 const INFRASTRUCTURE_PAYLOAD_KIND: &str = "infrastructure";
 
@@ -47,11 +43,7 @@ pub fn live_host_record_accepted(member_events: &MemberEvents, live_host_id: End
         |lines| {
             lines
                 .iter()
-                .any(|line| {
-                    line.event == PAYLOAD_ACCEPTED_EVENT
-                        && line.value(KIND_FIELD) == Some(&Value::from(INFRASTRUCTURE_PAYLOAD_KIND))
-                        && line.value(PEER_FIELD) == Some(&Value::from(live_host.as_str()))
-                })
+                .any(|line| is_accepted_payload_of(line, INFRASTRUCTURE_PAYLOAD_KIND, &live_host))
                 .then_some(())
         },
     );
