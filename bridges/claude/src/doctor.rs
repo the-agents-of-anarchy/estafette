@@ -1143,16 +1143,14 @@ mod tests {
             let words: Vec<String> = (0..next_below(&mut state, 5))
                 .map(|index| format!("w{}x{index}", next_below(&mut state, 1000)))
                 .collect();
-            let mut arguments = vec!["--model".to_owned(), "opus".to_owned()];
-            arguments.push(SETTINGS_FLAG.to_owned());
-            arguments.extend(words.clone());
-            arguments.push("--verbose".to_owned());
-            arguments.push("trailing".to_owned());
-            assert_eq!(
-                settings_flag_values(&arguments),
-                [words.join(" ")],
-                "seed {seed}"
-            );
+            let settings_path = words.join(" ");
+            let mut arguments = vec!["--model", "opus", SETTINGS_FLAG];
+            arguments.extend(words.iter().map(String::as_str));
+            arguments.extend(["--verbose", "trailing"]);
+            let verdict = refuse_verdict_with_harness_arguments(&arguments, &|path: &Path| {
+                (path == Path::new(&settings_path)).then(|| REFUSE_JSON.to_owned())
+            });
+            assert!(matches!(verdict, Verdict::Failed(_)), "seed {seed}");
         }
     }
 
