@@ -2436,8 +2436,12 @@ mod observability_decision_6_on_one_machine {
     const MARKER_BODY: &str = "marker body 7c1e quartz lantern 93fd";
     /// The members whose runs write an events file: amy and bob.
     const MEMBER_RUNS: usize = 2;
-    /// The start of the name of every path event of the transport area (decision 9).
-    const PATH_EVENT_PREFIX: &str = "transport.path_";
+    /// The names of the transport events that carry a connection, a path and a location (decision 9).
+    const PATH_EVENT_NAMES: [&str; 3] = [
+        "transport.path_opened",
+        "transport.path_closed",
+        "transport.path_selected",
+    ];
     /// The end of the name of a run's events file (decision 4).
     const SPEC_EVENTS_SUFFIX: &str = ".events.jsonl";
     /// The directory under the data base directory that holds the trace files (decision 4).
@@ -2634,35 +2638,53 @@ mod observability_decision_6_on_one_machine {
         lines.iter().filter(|line| line["event"] == name).collect()
     }
 
+    /// Whether the line is one of the path events that carry a path.
+    fn is_path_event(line: &Value) -> bool {
+        line["event"]
+            .as_str()
+            .is_some_and(|name| PATH_EVENT_NAMES.contains(&name))
+    }
+
+    /// The field of a path event, refusing the line by its event name and the missing field.
+    fn path_event_field<'line>(line: &'line Value, field: &str) -> &'line Value {
+        line.get(field).unwrap_or_else(|| {
+            panic!(
+                "{} line {line} has no {field}",
+                line["event"].as_str().unwrap_or_default()
+            )
+        })
+    }
+
     /// The salted location hashes the file's path events give the port.
     fn location_hashes_at_port(lines: &[Value], port: u16) -> BTreeSet<String> {
         lines
             .iter()
-            .filter(|line| {
-                line["event"]
+            .filter(|line| is_path_event(line) && line["port"] == json!(port))
+            .map(|line| {
+                path_event_field(line, "location")
                     .as_str()
-                    .is_some_and(|name| name.starts_with(PATH_EVENT_PREFIX))
-                    && line["port"] == json!(port)
+                    .unwrap()
+                    .to_owned()
             })
-            .map(|line| line["location"].as_str().unwrap().to_owned())
             .collect()
     }
 
     /// The salted location hashes the file's path events give each path of each connection.
     fn location_hashes_by_path(lines: &[Value]) -> BTreeMap<(u64, String), BTreeSet<String>> {
         let mut by_path: BTreeMap<(u64, String), BTreeSet<String>> = BTreeMap::new();
-        for line in lines.iter().filter(|line| {
-            line["event"]
-                .as_str()
-                .is_some_and(|name| name.starts_with(PATH_EVENT_PREFIX))
-        }) {
+        for line in lines.iter().filter(|line| is_path_event(line)) {
             by_path
                 .entry((
-                    line["connection"].as_u64().unwrap(),
-                    line["path"].as_str().unwrap().to_owned(),
+                    path_event_field(line, "connection").as_u64().unwrap(),
+                    path_event_field(line, "path").as_str().unwrap().to_owned(),
                 ))
                 .or_default()
-                .insert(line["location"].as_str().unwrap().to_owned());
+                .insert(
+                    path_event_field(line, "location")
+                        .as_str()
+                        .unwrap()
+                        .to_owned(),
+                );
         }
         by_path
     }
@@ -2670,6 +2692,43 @@ mod observability_decision_6_on_one_machine {
     /// The text the file holds, with its path for the failure message.
     fn file_text(path: &Path) -> String {
         fs::read_to_string(path).unwrap()
+    }
+
+    #[test]
+    fn observability_decision_6_a_missed_path_events_line_among_path_lines_is_passed_over_and_the_other_lines_are_read()
+     {
+        let lines = [
+            json!({"event": "transport.path_opened", "connection": 7, "path": "path-a", "location": "hash-a"}),
+            json!({"event": "transport.path_events_missed", "connection": 7, "missed": 3}),
+            json!({"event": "transport.path_selected", "connection": 7, "path": "path-a", "location": "hash-a"}),
+            json!({"event": "transport.path_closed", "connection": 9, "path": "path-b", "location": "hash-b"}),
+        ];
+
+        let by_path = location_hashes_by_path(&lines);
+
+        assert_eq!(
+            by_path,
+            BTreeMap::from([
+                (
+                    (7, "path-a".to_owned()),
+                    BTreeSet::from(["hash-a".to_owned()])
+                ),
+                (
+                    (9, "path-b".to_owned()),
+                    BTreeSet::from(["hash-b".to_owned()])
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "has no path")]
+    fn observability_decision_6_a_path_line_with_no_path_is_refused_by_the_name_of_the_missing_field()
+     {
+        let lines =
+            [json!({"event": "transport.path_opened", "connection": 7, "location": "hash-a"})];
+
+        location_hashes_by_path(&lines);
     }
 
     #[test]
