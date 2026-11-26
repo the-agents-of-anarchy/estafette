@@ -288,8 +288,7 @@ impl Node {
             .known_hosts
             .save_if_newer_than_file(self.state.now_ms())
         {
-            Ok(true) => ConfigurationRewrite::Saved,
-            Ok(false) => ConfigurationRewrite::NotNeeded,
+            Ok(rewrite) => rewrite,
             Err(failure) => {
                 (self.report)(crate::event::GossipEvent::KnownHostsNotSaved(failure).into());
                 ConfigurationRewrite::Failed

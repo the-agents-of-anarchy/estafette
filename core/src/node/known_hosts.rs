@@ -8,7 +8,7 @@ use iroh::{EndpointAddr, EndpointId, RelayUrl, TransportAddr};
 use super::addresses::{lookup_replaced_event, replace_lookup_entry};
 use super::presence::{NodeError, admission_record};
 use crate::config::{ConfigError, Host, HostOrigin, MILLIS_PER_SECOND, NetworkConfig, UnixMillis};
-use crate::event::{Event, GossipEvent, ShortId};
+use crate::event::{ConfigurationRewrite, Event, GossipEvent, ShortId};
 use crate::keys::parse_public_key;
 use crate::net::endpoint::NodeEndpoint;
 use crate::payload::{DescribedPayload, PayloadDropRule, ValidInfrastructure};
@@ -197,13 +197,16 @@ impl KnownHosts {
         self.held().save(now_ms)
     }
 
-    /// Rewrites the network configuration only when a held record is newer than the file's (spec 3.3), returning whether it did.
-    pub(crate) fn save_if_newer_than_file(&self, now_ms: u64) -> Result<bool, ConfigError> {
+    /// Rewrites the network configuration only when a held record is newer than the file's (spec 3.3), returning `Saved` when it did and `NotNeeded` when it did not.
+    pub(crate) fn save_if_newer_than_file(
+        &self,
+        now_ms: u64,
+    ) -> Result<ConfigurationRewrite, ConfigError> {
         let mut held = self.held();
         if held.newer_than_file {
-            held.save(now_ms).map(|()| true)
+            held.save(now_ms).map(|()| ConfigurationRewrite::Saved)
         } else {
-            Ok(false)
+            Ok(ConfigurationRewrite::NotNeeded)
         }
     }
 }
