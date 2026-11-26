@@ -1384,4 +1384,95 @@ mod tests {
             PayloadDropRule::Unencodable
         );
     }
+
+    const DEFAULT_PORT_HOST_RELAY: &str = "https://relay.example:443";
+
+    fn host_relay_of_bytes(length: usize) -> String {
+        let mut relay = format!("{HOST_RELAY}/").into_bytes();
+        relay.resize(length, RELAY_PADDING);
+        String::from_utf8(relay).unwrap()
+    }
+
+    fn sealed_infrastructure_of(relay: &str) -> Vec<u8> {
+        let payload = certified_infrastructure(relay, &[relay]);
+        seal_payload(&keys(), &secret_key(HOST_SEED), payload).unwrap()
+    }
+
+    fn with_every_relay_url_one_byte_longer(sealed: &[u8], url: &str) -> Vec<u8> {
+        let prefixed = [LENGTH_128_VARINT.as_slice(), url.as_bytes()].concat();
+        let longer = [
+            LENGTH_129_VARINT.as_slice(),
+            url.as_bytes(),
+            &[RELAY_PADDING],
+        ]
+        .concat();
+        let mut rewritten = Vec::new();
+        let mut rest = sealed;
+        while let Some(at) = rest
+            .windows(prefixed.len())
+            .position(|window| window == prefixed)
+        {
+            let (before, from_the_url) = rest.split_at(at);
+            rewritten.extend_from_slice(before);
+            rewritten.extend_from_slice(&longer);
+            rest = from_the_url.strip_prefix(prefixed.as_slice()).unwrap();
+        }
+        rewritten.extend_from_slice(rest);
+        rewritten
+    }
+
+    /// Spec 3.7: an Infrastructure record whose relay URL is exactly 128 bytes is accepted.
+    #[test]
+    fn spec_3_7_infrastructure_with_a_relay_url_at_the_cap_is_accepted() {
+        let relay = host_relay_of_bytes(SPEC_RELAY_URL_CAP_BYTES);
+
+        assert_eq!(
+            opened_or_rule(&sealed_infrastructure_of(&relay)).map(|_| ()),
+            Ok(())
+        );
+    }
+
+    /// Spec 3.7: an Infrastructure record whose relay URL is one byte past 128 is dropped for its length.
+    #[test]
+    fn spec_3_7_infrastructure_with_a_relay_url_past_the_cap_is_dropped() {
+        let relay = host_relay_of_bytes(SPEC_RELAY_URL_CAP_BYTES);
+        let past_the_cap =
+            with_every_relay_url_one_byte_longer(&sealed_infrastructure_of(&relay), &relay);
+
+        assert_eq!(
+            opened_or_rule(&past_the_cap),
+            Err(PayloadDropRule::RelayUrlTooLong)
+        );
+    }
+
+    /// Spec 3.7: an Infrastructure addr that spells the host's relay with its default port still lists exactly that relay.
+    #[test]
+    fn spec_3_7_infrastructure_addr_spelling_the_relay_with_its_default_port_is_accepted() {
+        let payload = certified_infrastructure(HOST_RELAY, &[DEFAULT_PORT_HOST_RELAY]);
+        let sealed = seal_payload(&keys(), &secret_key(HOST_SEED), payload).unwrap();
+
+        assert_eq!(opened_or_rule(&sealed).map(|_| ()), Ok(()));
+    }
+
+    /// Spec 3.4: a payload whose signer key is no point of the curve is dropped for its signature.
+    #[test]
+    fn spec_3_4_payload_whose_signer_key_is_off_the_curve_is_dropped() {
+        let off_the_curve = (0..=u8::MAX)
+            .map(|byte| [byte; KEY_LEN])
+            .find(|bytes| PublicKey::from_bytes(bytes).is_err())
+            .unwrap();
+        let Payload::Departure(departure) = unsealed_departure(REPORTED_CARD_SEED) else {
+            panic!("a departure was built");
+        };
+        let departure = Payload::Departure(Departure {
+            card: off_the_curve,
+            ..departure
+        });
+        let sealed = forged_by(FOREIGN_SEED, departure);
+
+        assert_eq!(
+            opened_or_rule(&sealed),
+            Err(PayloadDropRule::SignatureMismatch)
+        );
+    }
 }

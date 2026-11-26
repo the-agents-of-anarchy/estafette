@@ -438,4 +438,38 @@ mod tests {
         }
         crate::remove_scratch::remove_scratch(&root).unwrap();
     }
+
+    /// Spec 3.14: a member adds the relay of a host record from a new host to its relay map, and a bootstrap host leaves it out.
+    #[tokio::test]
+    async fn spec_3_14_a_host_record_adds_its_relay_to_a_members_relay_map_and_not_to_a_bootstrap_hosts()
+     {
+        let record = valid_record(
+            opened_record(HOST_SEED, HOST_RELAY, FROZEN_CLOCK_MS / MILLIS_PER_SECOND).unwrap(),
+        );
+        let cases = [
+            (RelayOfRecord::AddToRelayMap, true),
+            (RelayOfRecord::LeaveOutOfRelayMap, false),
+        ];
+
+        for (relay_of_record, relay_map_holds_the_host_relay) in cases {
+            let endpoint = bind(FIRST_SEED).await;
+            let known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), PathBuf::new());
+
+            known_hosts
+                .take_infrastructure(
+                    &record,
+                    FROZEN_CLOCK_MS,
+                    &endpoint,
+                    relay_of_record,
+                    &|_event| {},
+                )
+                .await;
+
+            assert_eq!(
+                endpoint.relay_map().contains(&relay_url(HOST_RELAY)),
+                relay_map_holds_the_host_relay,
+                "{relay_of_record:?}"
+            );
+        }
+    }
 }
