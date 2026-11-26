@@ -151,3 +151,11 @@ What happened: At about 01:42 of 2026-11-25 the lead ran rm -r on two directorie
 Mechanism: The cleaner's report said of that directory that it was identified as the newest entry in the temp directory after its rescan: it had not kept the name its own mktemp printed and took another agent's newest directory for its own. The lead read the line cut at 200 characters, passed over the words identified as, and deleted on a list it had not checked, against its own rule to destroy only what is shown to be the lister's.
 
 Correction: The lead clears a listed scratch directory only where the report gives it as the output of the lister's own mktemp, reads the whole line of each listed path before deleting, and leaves any path a report gives as found, newest or identified. The cleaner brief gains an order to keep the path its mktemp printed and to list that path alone. The spec delta reviewer of the unit was told that the red run's log is gone and runs the fixture against the cure edited out itself.
+
+## Text written to the conversation in silence after the owner's resume
+
+What happened: On 2026-11-26 about 02:49 the lead ended a turn with a summary of its night's work in the conversation, while the silence marker stood; the owner's typed words of that night were "resume" and "the sibling took some work on", which ask no answer.
+
+Mechanism: The lead read the end of its own lane as a moment owed a report and took the owner's earlier typed resume as licence for one; work-silently allows no text in silence, answers included, and puts any answer in a file.
+
+Correction: Every turn in silence ends with a message of zero characters; a report the owner may want goes into the records and the open-work file alone.
