@@ -14,7 +14,7 @@ mod network_commands {
 
     use data_encoding::HEXLOWER;
     use estafette::cli::network::{NetworkCommand, NetworkFilesystem, run};
-    use estafette::config::{HostOrigin, NetworkConfig};
+    use estafette::config::{Host, HostOrigin, NetworkConfig, UnixMillis};
     use estafette::crypto::{NetworkSecret, verify_host_certificate};
     use estafette::dirs::{
         CardsDirectoryOverride, Directories, DirectoryFilesystem, OperatingSystemFilesystem,
@@ -280,6 +280,52 @@ mod network_commands {
             fs::read_to_string(member_machine.config_file(NETWORK)).unwrap(),
             config_before
         );
+    }
+
+    /// Spec 3.13 and 3.4: add-host of a host the file holds with a `ts` keeps the relay of the larger `ts`, the file's, not the relay the operator gave.
+    #[test]
+    fn spec_3_13_add_host_of_a_learned_host_with_another_relay_leaves_the_learned_relay_in_the_file()
+     {
+        const LEARNED_RELAY: &str = "https://learned-relay.example/";
+        const OPERATOR_RELAY: &str = "https://operator-relay.example/";
+        const LEARNED_AT_MILLIS: u64 = 1_700_000_000_000;
+        const NOW_SECONDS: u64 = 1_700_000_100;
+        let machine = Machine::fresh("add-host-learned");
+        let filesystem = OperatingSystemFilesystem::of_this_process().unwrap();
+        let directories = directories_of(&machine);
+        assert!(create_network_through(&machine, &filesystem));
+        let config_file = machine.config_file(NETWORK);
+        let mut config = NetworkConfig::load(&config_file).unwrap();
+        let operator_host = host_address(7, OPERATOR_RELAY);
+        config.hosts.push(Host {
+            id: render_public_key(&PublicKey::from_bytes(operator_host.id.as_bytes()).unwrap()),
+            relay: LEARNED_RELAY.to_owned(),
+            ts: Some(LEARNED_AT_MILLIS),
+            origin: HostOrigin::Learned {
+                heard: UnixMillis(LEARNED_AT_MILLIS),
+            },
+        });
+        config.rewrite(&config_file, NOW_SECONDS).unwrap();
+
+        run(
+            &NetworkCommand::AddHost {
+                network: NETWORK.parse().unwrap(),
+                host_line: operator_host,
+            },
+            &directories,
+            &filesystem,
+            |bytes| bytes.fill(5),
+            NOW_SECONDS,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        )
+        .unwrap();
+
+        let hosts = NetworkConfig::load(&config_file).unwrap().hosts;
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].relay, LEARNED_RELAY);
+        assert_eq!(hosts[0].ts, Some(LEARNED_AT_MILLIS));
+        assert_eq!(hosts[0].origin, HostOrigin::Configured);
     }
 
     #[test]
