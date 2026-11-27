@@ -1,11 +1,9 @@
 use std::fmt;
-use std::fs::{self, Permissions};
 use std::future::Future;
 use std::io::{self, Write};
 #[cfg(feature = "relay")]
 use std::net::Ipv4Addr;
 use std::net::{IpAddr, SocketAddr};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -59,7 +57,6 @@ const LOST_RECORD_COUNTER: u64 = 0;
 const RELAY_URL_SCHEME_PREFIX: &str = "https://";
 const RELAY_URL_ROOT_PATH: &str = "/";
 const LINE_END: char = '\n';
-const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 #[cfg(feature = "relay")]
 const PORT_CHOSEN_BY_OS: u16 = 0;
 #[cfg(feature = "relay")]
@@ -184,23 +181,11 @@ pub trait InfrastructureFilesystem: NetworkFilesystem + Sync {
     ///
     /// Fails with the operating system's error when the file cannot be written or renamed.
     fn replace_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()>;
-
-    /// Creates the directory and its missing parents, and sets its mode to 0700 whatever mode it had.
-    ///
-    /// # Errors
-    ///
-    /// Fails with the operating system's error when the directory cannot be created or its mode set.
-    fn restrict_directory_to_owner(&self, path: &Path) -> io::Result<()>;
 }
 
 impl InfrastructureFilesystem for OperatingSystemFilesystem {
     fn replace_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
         write_atomically(path, contents)
-    }
-
-    fn restrict_directory_to_owner(&self, path: &Path) -> io::Result<()> {
-        fs::create_dir_all(path)?;
-        fs::set_permissions(path, Permissions::from_mode(PRIVATE_DIRECTORY_MODE))
     }
 }
 
@@ -345,7 +330,7 @@ async fn serve_host(
     )?;
     let certificate_cache = directories.infrastructure_certificate_cache_directory(network);
     filesystem
-        .restrict_directory_to_owner(&certificate_cache)
+        .create_private_directory(&certificate_cache)
         .map_err(io_failure(&certificate_cache))?;
     let relay = (effects.start_relay)(relay_site(bind_address, domain, certificate_cache))
         .await
@@ -1497,12 +1482,6 @@ mod tests {
         let scratch = Scratch::new("serving");
         scratch.configure_network();
         scratch.certify(HOST_SEED);
-        fs::create_dir_all(scratch.certificate_cache()).unwrap();
-        fs::set_permissions(
-            scratch.certificate_cache(),
-            fs::Permissions::from_mode(LOOSE_DIRECTORY_MODE),
-        )
-        .unwrap();
         let seen = Seen::default();
 
         let (printed, outcome) = run_once(&scratch, HOST_SEED, &seen).await;
@@ -1528,6 +1507,46 @@ mod tests {
             *seen.relay_shut_down_after_endpoint_closed.lock().unwrap(),
             vec![true]
         );
+    }
+
+    #[tokio::test]
+    async fn spec_3_3_a_certificate_cache_granting_access_to_group_or_other_refuses_the_start_before_the_relay_starts_or_the_endpoint_binds()
+     {
+        let scratch = Scratch::new("loose-cache");
+        scratch.configure_network();
+        scratch.certify(HOST_SEED);
+        let cache = scratch.certificate_cache();
+        fs::create_dir_all(&cache).unwrap();
+        fs::set_permissions(&cache, fs::Permissions::from_mode(LOOSE_DIRECTORY_MODE)).unwrap();
+        let seen = Seen::default();
+
+        let (_printed, outcome) = run_once(&scratch, HOST_SEED, &seen).await;
+
+        let refusal = outcome.unwrap_err().to_string();
+        assert!(refusal.contains(&cache.display().to_string()), "{refusal}");
+        assert!(
+            refusal.contains("mode 0755, which grants access to group or other"),
+            "{refusal}"
+        );
+        assert_eq!(mode_of(&cache), LOOSE_DIRECTORY_MODE);
+        assert!(seen.relay_sites.lock().unwrap().is_empty());
+        assert!(seen.bound.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn spec_3_3_a_certificate_cache_already_private_is_used_as_it_stands() {
+        let scratch = Scratch::new("private-cache");
+        scratch.configure_network();
+        scratch.certify(HOST_SEED);
+        make_private_directory(&scratch.certificate_cache());
+        let seen = Seen::default();
+
+        let (_printed, outcome) = run_once(&scratch, HOST_SEED, &seen).await;
+
+        outcome.unwrap();
+        let relay_sites = seen.relay_sites.lock().unwrap();
+        assert_eq!(relay_sites.len(), 1);
+        assert_eq!(relay_sites[0].1, SPEC_PRIVATE_DIRECTORY_MODE);
     }
 
     #[cfg(feature = "relay")]
@@ -1587,7 +1606,7 @@ mod tests {
             .directories
             .infrastructure_last_record_timestamp_file(&NETWORK.parse().unwrap());
         fs::write(&counter_file, HELD_COUNTER).unwrap();
-        fs::create_dir_all(scratch.certificate_cache()).unwrap();
+        make_private_directory(&scratch.certificate_cache());
         let infrastructure_directory = counter_file.parent().unwrap().to_owned();
         fs::set_permissions(
             &infrastructure_directory,
