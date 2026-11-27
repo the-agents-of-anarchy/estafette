@@ -4,63 +4,11 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use estafette_private_entry::{
-    DirectoryFinding, EntryFacts, EntryKind, PrivateDirectoryFailure, UntrustedEntry,
-    create_new_owner_only_file, directory_finding, same_entry,
+    EntryFacts, EntryKind, UntrustedEntry, create_new_owner_only_file, require_private_directory,
+    same_entry,
 };
 
-/// An existing directory the bridge refuses to use, with the directory and what was found.
-#[derive(Debug, Eq, PartialEq)]
-pub struct ExistingDirectoryRefused {
-    path: PathBuf,
-    found: DirectoryFinding,
-}
-
-impl fmt::Display for ExistingDirectoryRefused {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{} already exists and is {}; it must be a directory of yours with no access for group or other",
-            self.path.display(),
-            self.found
-        )
-    }
-}
-
-impl std::error::Error for ExistingDirectoryRefused {}
-
-/// Refuses the entry the facts describe unless it is a private directory of the user, naming the path.
-fn require_private_directory_of(
-    user_id: u32,
-    path: &Path,
-    facts: EntryFacts,
-) -> Result<(), ExistingDirectoryRefused> {
-    directory_finding(facts, user_id).map_or(Ok(()), |found| {
-        Err(ExistingDirectoryRefused {
-            path: path.to_path_buf(),
-            found,
-        })
-    })
-}
-
-/// Creates the directory with its missing parents, private to the user, or refuses an existing directory the user may not trust.
-///
-/// # Errors
-///
-/// Fails when a directory cannot be created or inspected, or with an `ExistingDirectoryRefused` inside the error when the entry already there is not a private directory of the user.
-pub fn create_private_directory(user_id: u32, path: &Path) -> io::Result<()> {
-    estafette_private_entry::create_private_directory(user_id, path).map_err(
-        |failure| match failure {
-            PrivateDirectoryFailure::Io(source) => source,
-            PrivateDirectoryFailure::Refused(found) => io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                ExistingDirectoryRefused {
-                    path: path.to_path_buf(),
-                    found,
-                },
-            ),
-        },
-    )
-}
+pub use estafette_private_entry::{ExistingDirectoryRefused, create_private_directory};
 
 /// What stops the runtime directory from being used: it cannot be inspected, or it exists and is refused.
 #[derive(Debug)]
@@ -98,7 +46,7 @@ pub fn check_runtime_directory(
             path: directory.to_path_buf(),
             source,
         }),
-        Ok(facts) => require_private_directory_of(user_id, directory, facts)
+        Ok(facts) => require_private_directory(user_id, directory, facts)
             .map_err(RuntimeDirectoryProblem::Refused),
     }
 }
@@ -234,6 +182,7 @@ fn require_replaceable(path: &Path, user_id: u32) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use estafette_private_entry::DirectoryFinding;
     use estafette_private_entry::{OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK, process_user_id};
     use std::fs::Permissions;
     use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
@@ -280,7 +229,7 @@ mod tests {
     #[test]
     fn spec_3_3_a_directory_of_another_user_names_both_users_runtime_directory_is_private_or_refused()
      {
-        let refusal = require_private_directory_of(
+        let refusal = require_private_directory(
             THE_USER,
             Path::new("/tmp/estafette-1000"),
             EntryFacts {

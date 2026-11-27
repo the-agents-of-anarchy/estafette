@@ -13,7 +13,8 @@ mod remove_scratch;
 mod this_process_directory;
 
 pub use directory::{
-    DirectoryFinding, PrivateDirectoryFailure, create_private_directory, directory_finding,
+    DirectoryFinding, ExistingDirectoryRefused, create_private_directory, directory_finding,
+    require_private_directory,
 };
 pub use entry::{
     EntryFacts, EntryKind, ProcessUserUnknown, UntrustedEntry, process_user_id, same_entry,

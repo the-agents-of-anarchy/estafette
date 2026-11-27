@@ -2,7 +2,7 @@ use std::fmt;
 use std::fs::{self, File, Permissions};
 use std::io;
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::entry::{EntryFacts, EntryKind, UntrustedEntry, same_entry};
 use crate::modes::{GROUP_AND_OTHER_PERMISSION_BITS, OWNER_ONLY_DIRECTORY_MODE};
@@ -49,9 +49,53 @@ pub const fn directory_finding(facts: EntryFacts, user_id: u32) -> Option<Direct
     }
 }
 
+/// An existing directory that is refused, with the directory and what was found.
+#[derive(Debug, Eq, PartialEq)]
+pub struct ExistingDirectoryRefused {
+    pub path: PathBuf,
+    pub found: DirectoryFinding,
+}
+
+impl fmt::Display for ExistingDirectoryRefused {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} already exists and is {}; it must be a directory of yours with no access for group or other",
+            self.path.display(),
+            self.found
+        )
+    }
+}
+
+impl std::error::Error for ExistingDirectoryRefused {}
+
+impl From<ExistingDirectoryRefused> for io::Error {
+    fn from(refusal: ExistingDirectoryRefused) -> Self {
+        Self::new(io::ErrorKind::PermissionDenied, refusal)
+    }
+}
+
+/// Refuses the entry the facts describe unless it is a private directory of the user, naming the path.
+///
+/// # Errors
+///
+/// `ExistingDirectoryRefused` naming the path and what was found.
+pub fn require_private_directory(
+    user_id: u32,
+    path: &Path,
+    facts: EntryFacts,
+) -> Result<(), ExistingDirectoryRefused> {
+    directory_finding(facts, user_id).map_or(Ok(()), |found| {
+        Err(ExistingDirectoryRefused {
+            path: path.to_path_buf(),
+            found,
+        })
+    })
+}
+
 /// Why a private directory was not made: the file system failed, or an entry already there is refused.
 #[derive(Debug)]
-pub enum PrivateDirectoryFailure {
+enum PrivateDirectoryFailure {
     Io(io::Error),
     Refused(DirectoryFinding),
 }
@@ -72,8 +116,23 @@ fn refuse_unless_private(user_id: u32, facts: EntryFacts) -> Result<(), PrivateD
 ///
 /// # Errors
 ///
-/// `PrivateDirectoryFailure` when a directory cannot be created or inspected, or when the entry already there is not a private directory of the user.
-pub fn create_private_directory(user_id: u32, path: &Path) -> Result<(), PrivateDirectoryFailure> {
+/// Fails when a directory cannot be created or inspected, or with an `ExistingDirectoryRefused` inside the error when the entry already there is not a private directory of the user.
+pub fn create_private_directory(user_id: u32, path: &Path) -> io::Result<()> {
+    create_private_directory_or_refuse(user_id, path).map_err(|failure| match failure {
+        PrivateDirectoryFailure::Io(source) => source,
+        PrivateDirectoryFailure::Refused(found) => ExistingDirectoryRefused {
+            path: path.to_path_buf(),
+            found,
+        }
+        .into(),
+    })
+}
+
+/// Creates the directory as `create_private_directory` does, reporting a refusal by what was found.
+fn create_private_directory_or_refuse(
+    user_id: u32,
+    path: &Path,
+) -> Result<(), PrivateDirectoryFailure> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -272,7 +331,7 @@ mod tests {
         let directory = scratch_directory("create-private");
         let created = directory.join("missing").join("created");
 
-        create_private_directory(this_user(), &created).unwrap();
+        create_private_directory_or_refuse(this_user(), &created).unwrap();
 
         assert_eq!(mode_of(&created), OWNER_ONLY_DIRECTORY_MODE);
         crate::remove_scratch::remove_scratch(&directory).unwrap();
@@ -286,7 +345,7 @@ mod tests {
         fs::create_dir(&existing).unwrap();
         fs::set_permissions(&existing, Permissions::from_mode(OWNER_ONLY_DIRECTORY_MODE)).unwrap();
 
-        create_private_directory(this_user(), &existing).unwrap();
+        create_private_directory_or_refuse(this_user(), &existing).unwrap();
 
         assert_eq!(mode_of(&existing), OWNER_ONLY_DIRECTORY_MODE);
         crate::remove_scratch::remove_scratch(&directory).unwrap();
@@ -301,8 +360,9 @@ mod tests {
         fs::set_permissions(&loose, Permissions::from_mode(LOOSE_DIRECTORY_MODE)).unwrap();
         let another_user_id = this_user().wrapping_add(1);
 
-        let loose_failure = create_private_directory(this_user(), &loose).unwrap_err();
-        let foreign_failure = create_private_directory(another_user_id, &loose).unwrap_err();
+        let loose_failure = create_private_directory_or_refuse(this_user(), &loose).unwrap_err();
+        let foreign_failure =
+            create_private_directory_or_refuse(another_user_id, &loose).unwrap_err();
 
         assert_eq!(
             found_in(loose_failure),

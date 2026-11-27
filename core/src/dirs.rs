@@ -7,9 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::handle::Handle;
 pub use estafette_private_entry::ProcessUserUnknown;
-use estafette_private_entry::{
-    DirectoryFinding, EntryFacts, PrivateDirectoryFailure, directory_finding, process_user_id,
-};
+use estafette_private_entry::{EntryFacts, process_user_id, require_private_directory};
 pub(crate) use estafette_trace::ROLLED_OVER_TRACE_SUFFIX;
 use estafette_trace::{
     BaseDirectoryUnresolvable, PRODUCT_NAME, non_empty_variable, xdg_base_directory,
@@ -83,57 +81,20 @@ impl OperatingSystemFilesystem {
         match EntryFacts::at(path) {
             Err(failure) if failure.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(failure) => Err(failure),
-            Ok(facts) => directory_finding(facts, self.user_id)
-                .map_or(Ok(()), |found| Err(existing_directory_refusal(path, found))),
+            Ok(facts) => Ok(require_private_directory(self.user_id, path, facts)?),
         }
     }
 }
 
 impl DirectoryFilesystem for OperatingSystemFilesystem {
     fn create_private_directory(&self, path: &Path) -> io::Result<()> {
-        estafette_private_entry::create_private_directory(self.user_id, path).map_err(|failure| {
-            match failure {
-                PrivateDirectoryFailure::Io(source) => source,
-                PrivateDirectoryFailure::Refused(found) => existing_directory_refusal(path, found),
-            }
-        })
+        estafette_private_entry::create_private_directory(self.user_id, path)
     }
 
     fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
         Ok(fs::metadata(path)?.uid())
     }
 }
-
-/// The error that refuses the existing directory at the path for what was found there.
-fn existing_directory_refusal(path: &Path, found: DirectoryFinding) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::PermissionDenied,
-        ExistingDirectoryRefused {
-            path: path.to_path_buf(),
-            found,
-        },
-    )
-}
-
-/// An existing directory that is refused, with the directory and what was found.
-#[derive(Debug)]
-struct ExistingDirectoryRefused {
-    path: PathBuf,
-    found: DirectoryFinding,
-}
-
-impl fmt::Display for ExistingDirectoryRefused {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{} already exists and is {}; it must be a directory of yours with no access for group or other",
-            self.path.display(),
-            self.found
-        )
-    }
-}
-
-impl std::error::Error for ExistingDirectoryRefused {}
 
 /// A directory could not be resolved or created.
 #[derive(Debug)]
@@ -385,7 +346,7 @@ pub(crate) mod scratch {
 mod tests {
     use super::scratch::{ScratchDirectory, scratch_directory};
     use super::*;
-    use estafette_private_entry::UntrustedEntry;
+    use estafette_private_entry::{DirectoryFinding, ExistingDirectoryRefused, UntrustedEntry};
     use std::cell::RefCell;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
