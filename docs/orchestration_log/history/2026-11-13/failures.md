@@ -159,3 +159,11 @@ What happened: On 2026-11-26 about 02:49 the lead ended a turn with a summary of
 Mechanism: The lead read the end of its own lane as a moment owed a report and took the owner's earlier typed resume as licence for one; work-silently allows no text in silence, answers included, and puts any answer in a file.
 
 Correction: Every turn in silence ends with a message of zero characters; a report the owner may want goes into the records and the open-work file alone.
+
+## An rm ran inside a compound command, and its record was first hand-written
+
+What happened: At 03:49 of 2026-11-27 the lead cleared two files an implementer listed as left behind, /tmp/ph.txt and /tmp/pr.rs, with an rm written as one line of a multi-line Bash command that also read a meta file and wrote journal lines; it then hand-wrote this failure entry, though a memento verb writes the kind, and edited that text back out when the events verb refused the failure line.
+
+Mechanism: The lead batched the clean-up into a command it was already composing to save a step, and wrote the failure from habit rather than from the schema; the rules keep rm a whole command of its own and keep hand-writing to a kind no memento verb writes.
+
+Correction: Every deletion the lead makes is one plain rm call with nothing else in it, and every failure is written by memento failure add, which writes the entry and its events line together.
