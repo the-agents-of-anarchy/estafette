@@ -68,7 +68,6 @@ pub use crate::trace::Clock;
 /// Fills a probe nonce from the random source.
 pub type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
 type Changes<T> = Pin<Box<dyn Stream<Item = T> + Send + Sync>>;
-type OwnAddress = Box<dyn Fn() -> Addr + Send + Sync>;
 
 /// The card this node holds: its key, the handle it requests, and the public mapping it announces as JSON bytes.
 pub struct Identity {
@@ -304,7 +303,7 @@ pub(super) struct NodeState {
     own_card: wire::PublicKey,
     public: Vec<u8>,
     own_handle: OnceLock<LocalHandle>,
-    own_address: OwnAddress,
+    client: Arc<DirectClient>,
     inbox: Arc<InboxSocket>,
     attached: Attached,
     clock: Clock,
@@ -327,7 +326,7 @@ impl NodeState {
             own_card,
             public: identity.public.clone(),
             own_handle: OnceLock::new(),
-            own_address: Box::new(move || wire_addr(&client.endpoint().addr())),
+            client,
             inbox: Arc::clone(&effects.inbox),
             attached: effects.inbox.attached(),
             clock: Arc::clone(&effects.clock),
@@ -370,7 +369,7 @@ impl NodeState {
 
     /// The full current address of this node's endpoint, within the caps of spec 3.6.
     fn own_addr(&self) -> Addr {
-        (self.own_address)()
+        wire_addr(&self.client.endpoint().addr())
     }
 
     /// Hands an event to the presence loop, which is gone only once the node is.
