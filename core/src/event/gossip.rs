@@ -275,6 +275,49 @@ mod tests {
         }
     }
 
+    const NOT_SAVED_REASON: &str = "disk full";
+    const NOT_SAVED_PATH: &str = "/etc/net.toml";
+
+    #[test]
+    fn observability_decision_8_each_gossip_failure_renders_its_own_line_on_standard_error_and_writes_no_field()
+     {
+        let lagged = "the topic dropped this node for reading its events too slowly";
+        let cases: [(Event, String); 4] = [
+            (
+                GossipEvent::BroadcastFailed(GossipError::Lagged).into(),
+                format!("a gossip broadcast failed: {lagged}\n"),
+            ),
+            (
+                GossipEvent::TopicFailed(GossipError::Lagged).into(),
+                format!("the gossip topic failed: {lagged}\n"),
+            ),
+            (
+                GossipEvent::TopicClosed.into(),
+                "the gossip topic closed, so this node announces nothing more\n".to_owned(),
+            ),
+            (
+                GossipEvent::KnownHostsNotSaved(ConfigError::Write {
+                    path: NOT_SAVED_PATH.into(),
+                    source: std::io::Error::other(NOT_SAVED_REASON),
+                })
+                .into(),
+                format!("the known hosts were not saved: {NOT_SAVED_PATH}: {NOT_SAVED_REASON}\n"),
+            ),
+        ];
+
+        for (event, expected_line) in cases {
+            let mut standard_error = Vec::new();
+            write_run_record(&mut standard_error, &event).unwrap();
+            assert_eq!(
+                String::from_utf8(standard_error).unwrap(),
+                expected_line,
+                "{}",
+                event.name()
+            );
+            assert_eq!(event.fields(), Vec::new(), "{}", event.name());
+        }
+    }
+
     const OBSERVABILITY_DECISION_9_RULE_WORDS: [(PayloadDropRule, &str); 27] = [
         (PayloadDropRule::FromOwnCard, "from_own_card"),
         (PayloadDropRule::OlderThanMaxAge, "older_than_max_age"),

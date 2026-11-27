@@ -370,6 +370,66 @@ mod tests {
     const RELAY_HOST_BYTE: u8 = 9;
     const SKIPPED_HOST_INDEX: usize = 7;
 
+    const REBINDING_RUN_RECORD_LINE: &str = "rebinding the endpoint: no gossip payload was heard for the deaf timeout, or the join gained no neighbor\n";
+    const ROUTER_SHUTDOWN_FAILED_PREFIX: &str =
+        "the old endpoint's listeners did not shut down cleanly before the rebind: ";
+    const REBIND_FAILED_PREFIX: &str =
+        "the endpoint was not bound again, so this node announces nothing more: ";
+    const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
+
+    fn run_record_of(event: &crate::event::Event) -> String {
+        let mut standard_error = Vec::new();
+        crate::event::write_run_record(&mut standard_error, event).unwrap();
+        String::from_utf8(standard_error).unwrap()
+    }
+
+    #[test]
+    fn observability_decision_8_a_rebind_renders_one_line_whatever_its_cause_and_writes_its_cause()
+    {
+        for (cause, word) in [
+            (RebindCause::Deaf, "deaf"),
+            (RebindCause::JoinGainedNoNeighbor, "join_gained_no_neighbor"),
+        ] {
+            let event: crate::event::Event = TransportEvent::Rebinding(cause).into();
+
+            assert_eq!(run_record_of(&event), REBINDING_RUN_RECORD_LINE, "{word}");
+            assert_eq!(event.fields(), [(CAUSE_FIELD, Value::from(word))], "{word}");
+        }
+    }
+
+    #[tokio::test]
+    async fn observability_decision_8_a_failed_listener_shutdown_renders_its_line_and_writes_no_field()
+     {
+        let cancelled = tokio::spawn(std::future::pending::<()>());
+        cancelled.abort();
+        let event: crate::event::Event =
+            TransportEvent::RouterShutdownFailed(cancelled.await.unwrap_err()).into();
+
+        let line = run_record_of(&event);
+
+        assert!(line.starts_with(ROUTER_SHUTDOWN_FAILED_PREFIX), "{line}");
+        assert!(line.ends_with("cancelled\n"), "{line}");
+        assert_eq!(event.fields(), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn observability_decision_8_a_failed_rebind_renders_its_line_and_writes_no_field() {
+        let taken_socket = std::net::UdpSocket::bind(LOOPBACK_ANY_PORT).unwrap();
+        let bind_failure = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .bind_addr(taken_socket.local_addr().unwrap())
+            .unwrap()
+            .bind()
+            .await
+            .unwrap_err();
+        let event: crate::event::Event = TransportEvent::RebindFailed(bind_failure).into();
+
+        let line = run_record_of(&event);
+
+        assert!(line.starts_with(REBIND_FAILED_PREFIX), "{line}");
+        assert!(line.len() > REBIND_FAILED_PREFIX.len() + 1, "{line}");
+        assert_eq!(event.fields(), Vec::new());
+    }
+
     #[test]
     fn observability_decision_9_each_protocol_a_connection_carries_is_written_as_a_word_of_its_own()
     {
