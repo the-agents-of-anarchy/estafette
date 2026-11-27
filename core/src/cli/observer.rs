@@ -3007,20 +3007,6 @@ mod tests {
         }
     }
 
-    /// Starts two members, whose start outlasts the observer wait, so the gone process falls silent past the close bound and the sample that judges it; fails by name when it has not.
-    async fn let_the_gone_process_fall_silent_past_the_close_bound(
-        lab: &Lab,
-        gone_since: Instant,
-    ) -> Vec<Member> {
-        let members_outlasting_the_silence = lab.start_members(two_members()).await;
-        let silent_for = gone_since.elapsed();
-        assert!(
-            silent_for >= SPEC_GONE_PROCESS_SILENCE.saturating_add(HEARING_SAMPLE_INTERVAL),
-            "the gone process was silent only {silent_for:?}, under the {SPEC_GONE_PROCESS_SILENCE:?} close bound plus the {HEARING_SAMPLE_INTERVAL:?} sample that judges it"
-        );
-        members_outlasting_the_silence
-    }
-
     /// Waits until the observer has taken a Presence of the neighbor sent at or after `sent_ms`, failing by name when it has not within the payload wait.
     async fn wait_until_the_observer_takes_the_neighbors_presence_sent_at(
         observer: &ObserverHost,
@@ -3044,6 +3030,24 @@ mod tests {
         );
     }
 
+    /// Has the neighbor broadcast a fresh Presence and waits until the observer has taken it.
+    async fn neighbor_announces_itself_and_the_observer_takes_it(
+        neighbor: &SilentNeighbor,
+        observer: &ObserverHost,
+    ) {
+        let presence_sent_ms = wall_clock_ms();
+        neighbor
+            .topic
+            .broadcast(
+                &secret_key(NEIGHBOR_SEED),
+                neighbor_presence_announcing(neighbor_address()),
+            )
+            .await
+            .unwrap();
+        wait_until_the_observer_takes_the_neighbors_presence_sent_at(observer, presence_sent_ms)
+            .await;
+    }
+
     #[tokio::test]
     async fn spec_3_8_an_observer_closes_the_connection_of_a_restarted_members_earlier_process_at_its_next_presence()
      {
@@ -3051,10 +3055,12 @@ mod tests {
         let mut neighbor = start_silent_neighbor().await;
         lab.write_network_config(&[NEIGHBOR_SEED]);
         let (interrupt, interrupted) = tokio::sync::oneshot::channel::<()>();
-        let (effects, _operator_effects) = lab.effects(
+        let (mut effects, _operator_effects) = lab.effects(
             vec![neighbor.address.clone()],
             Box::pin(async move { drop(interrupted.await) }),
         );
+        let observer_clock = StandingClock::standing_an_hour_ahead();
+        effects.monotonic = observer_clock.monotonic();
         let setup = load_network_setup(&lab.directories, &NETWORK_NAME.parse().unwrap()).unwrap();
         let observation = start_observation(&setup, effects).await.unwrap();
         let observer_host = Arc::clone(&observation.host);
@@ -3066,29 +3072,31 @@ mod tests {
                 observers_presence_request(&mut neighbor.topic).await;
                 let observer = secret_key(OBSERVER_SEED).public();
                 let earlier = GoneProcess::introduced_to(observer_address).await;
-                let gone_since = Instant::now();
                 let live_direct = neighbor
                     .endpoint
                     .connect(observer, crate::net::endpoint::DIRECT_ALPN)
                     .await
                     .unwrap();
                 answer_on(&live_direct, probe_from_neighbor()).await;
-                let _members_started_while_the_gone_process_fell_silent =
-                    let_the_gone_process_fall_silent_past_the_close_bound(&lab, gone_since).await;
-                let presence_sent_ms = wall_clock_ms();
-                neighbor
-                    .topic
-                    .broadcast(
-                        &secret_key(NEIGHBOR_SEED),
-                        neighbor_presence_announcing(neighbor_address()),
+                observer_clock.move_forward(HEARING_SAMPLE_INTERVAL);
+                observer_clock
+                    .asked_to_wake(
+                        "the hearing sample after the first",
+                        observer_clock
+                            .monotonic()
+                            .now()
+                            .checked_add(HEARING_SAMPLE_INTERVAL)
+                            .unwrap(),
                     )
-                    .await
-                    .unwrap();
-                wait_until_the_observer_takes_the_neighbors_presence_sent_at(
-                    &observer_host,
-                    presence_sent_ms,
-                )
-                .await;
+                    .await;
+                answer_on(&live_direct, probe_from_neighbor()).await;
+                neighbor_announces_itself_and_the_observer_takes_it(&neighbor, &observer_host)
+                    .await;
+                observer_clock.move_forward(
+                    SPEC_GONE_PROCESS_SILENCE.saturating_add(HEARING_SAMPLE_INTERVAL),
+                );
+                neighbor_announces_itself_and_the_observer_takes_it(&neighbor, &observer_host)
+                    .await;
                 let closed = earlier.connection_end_within(SUPERSEDED_CLOSE_WAIT).await;
                 let live_direct_closed = live_direct.close_reason();
                 let mut neighbor_events = Vec::new();
