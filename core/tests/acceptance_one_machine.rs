@@ -2795,6 +2795,62 @@ mod observability_decision_6_on_one_machine {
         fs::read_to_string(path).unwrap()
     }
 
+    /// The events of a connection, each of which names its connection (decision 9).
+    const CONNECTION_EVENT_NAMES: [&str; 8] = [
+        "transport.connection_opened",
+        "transport.connection_closing",
+        "transport.connection_closed",
+        "transport.path_opened",
+        "transport.path_closed",
+        "transport.path_selected",
+        "transport.path_events_missed",
+        "transport.gate_closed",
+    ];
+    /// The event of a request a node served, which is always served on a connection (decision 9).
+    const SERVED_REQUEST_EVENT: &str = "direct.request_served";
+    /// The events of a connection that a real exchange is shown to write.
+    const CONNECTION_EVENTS_THIS_EXCHANGE_WRITES: [&str; 2] =
+        ["transport.connection_opened", SERVED_REQUEST_EVENT];
+
+    #[test]
+    fn observability_decision_9_every_event_of_a_connection_in_a_real_exchange_names_its_connection()
+     {
+        let network =
+            LocalNetwork::create("events-connection", &KeptFilesPolicy::from_environment());
+        let host = network.stand_in_host();
+        let MetPair {
+            mut amy, mut bob, ..
+        } = network.amy_and_bob_met(&host);
+        assert!(call_succeeded(
+            &amy.server_mut().send(BOB_HANDLE, BODY_MARKER)
+        ));
+        bob.wait_for_inbox_body(BODY_MARKER, DELIVERY_WAIT);
+        amy.server_mut().close_standard_input();
+        bob.server_mut().close_standard_input();
+        amy.server_mut().wait_for_exit();
+        bob.server_mut().wait_for_exit();
+
+        let lines: Vec<Value> = events_files(&network).into_values().flatten().collect();
+
+        let of_a_connection: Vec<&Value> = lines
+            .iter()
+            .filter(|line| {
+                line["event"].as_str().is_some_and(|name| {
+                    CONNECTION_EVENT_NAMES.contains(&name) || name == SERVED_REQUEST_EVENT
+                })
+            })
+            .collect();
+        for event in CONNECTION_EVENTS_THIS_EXCHANGE_WRITES {
+            assert!(
+                of_a_connection.iter().any(|line| line["event"] == event),
+                "no {event} line was written"
+            );
+        }
+        for line in of_a_connection {
+            assert!(line["connection"].is_u64(), "no connection in {line}");
+        }
+    }
+
     #[test]
     fn observability_decision_6_a_missed_path_events_line_among_path_lines_is_passed_over_and_the_other_lines_are_read()
      {
