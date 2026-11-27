@@ -297,7 +297,7 @@ enum Finish {
     Answered(TraceStop),
 }
 
-/// How the writer thread ended: the lines it could not report in a `dropped` line, and whether it cut the file back to its last line.
+/// How the writer's work left this file at a stop or a flush: the lines it could not report in a `dropped` line, none for a flush, and whether it cut the file back to its last line.
 struct WriterEnd {
     unreported: Option<NonZeroU64>,
     cut: io::Result<()>,
@@ -452,7 +452,7 @@ impl FileTrace {
         }
     }
 
-    /// How the writer's end left this file, saying the cut failure and the count of lines it could not report in a `dropped` line, each when there is one.
+    /// How the writer's end at a stop, or the cut a flush answered, left this file, saying the cut failure and the count of lines it could not report in a `dropped` line, each when there is one.
     fn stop_ended(&self, end: Option<WriterEnd>) -> TraceStop {
         match end {
             Some(WriterEnd {
