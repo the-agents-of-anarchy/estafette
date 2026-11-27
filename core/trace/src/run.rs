@@ -44,7 +44,8 @@ impl TraceRun {
         remove_oldest_runs(
             &traces,
             started_ms,
-            &bounds,
+            bounds.directory_bytes,
+            bounds.freshness,
             &effects.list_files,
             &effects.remove_file,
         )?;

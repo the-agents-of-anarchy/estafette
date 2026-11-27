@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
-use super::{ListFiles, RemoveFile, StoredFile, TraceAction, TraceBounds, TraceRefused};
+use super::{ListFiles, RemoveFile, StoredFile, TraceAction, TraceRefused};
 use crate::directory::{TraceFileKind, trace_file_of};
 
 /// The name of the product and of the program that runs its binary, also the directory under the data base directory.
@@ -126,16 +127,17 @@ struct StoredRun {
 pub fn remove_oldest_runs(
     traces: &Path,
     now_ms: u64,
-    bounds: &TraceBounds,
+    directory_bytes: u64,
+    freshness: Duration,
     list_files: &ListFiles,
     remove_file: &RemoveFile,
 ) -> Result<(), TraceRefused> {
     let stored = list_files(traces)
         .map_err(|source| TraceRefused::new(TraceAction::ListDirectory, traces, source))?;
     let (runs, mut held_bytes) = stored_runs(traces, &stored);
-    let freshness_ms = u64::try_from(bounds.freshness.as_millis()).unwrap_or(u64::MAX);
+    let freshness_ms = u64::try_from(freshness.as_millis()).unwrap_or(u64::MAX);
     for run in runs.values() {
-        if held_bytes <= bounds.directory_bytes {
+        if held_bytes <= directory_bytes {
             break;
         }
         let is_fresh = run
