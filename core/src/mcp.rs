@@ -112,8 +112,6 @@ pub struct ServerEffects {
     pub pause_between_lock_tries: Arc<dyn Fn(Duration) + Send + Sync>,
     /// Whether a sidecar's lock is taken, learned by trying it and releasing it at once.
     pub is_card_held: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
-    /// The run record, written to standard error by the command-line layer; it must not block.
-    pub report: RunRecord,
 }
 
 /// Why the card registry of the network could not be read.
@@ -143,12 +141,12 @@ pub async fn serve(
     effects: ServerEffects,
 ) -> Exit {
     let session = Arc::new(Session::new(
-        Arc::clone(&effects.report),
+        Arc::clone(&effects.node.report),
         Arc::clone(&effects.node.monotonic),
     ));
     let (server_input, forwarded_input) = tokio::io::simplex(SERVER_INPUT_BUFFER_BYTES);
     let (input_ended, end_of_input) = oneshot::channel();
-    let reporting = Arc::clone(&effects.report);
+    let reporting = Arc::clone(&effects.node.report);
     let forwarding = tokio::spawn(forward_standard_input(
         standard_input,
         forwarded_input,
@@ -158,9 +156,9 @@ pub async fn serve(
     let recording = tokio::spawn(record_while_unclaimed(
         Arc::clone(&session),
         Arc::clone(&effects.node.monotonic),
-        Arc::clone(&effects.report),
+        Arc::clone(&effects.node.report),
     ));
-    let report = Arc::clone(&effects.report);
+    let report = Arc::clone(&effects.node.report);
     let answering = tokio::spawn(answer_until_closed(
         Server::new(Arc::clone(&session), served, effects),
         report,
@@ -256,7 +254,7 @@ impl Server {
     async fn send(&self, input: SendInput) -> Result<ToolResult, ErrorCode> {
         let node = self.session.node()?;
         let delivery = node.send(&input.to.0, &input.body).await;
-        (self.effects.report)(InboxEvent::send_answered(&input.to.0, &delivery).into());
+        (self.effects.node.report)(InboxEvent::send_answered(&input.to.0, &delivery).into());
         Ok(ToolResult::Sent(SentMessage::of(delivery?)))
     }
 
@@ -266,7 +264,9 @@ impl Server {
         let handles: Vec<String> = input.to.into_iter().map(|recipient| recipient.0).collect();
         let results = node.broadcast(&handles, &input.body).await;
         for result in &results {
-            (self.effects.report)(InboxEvent::send_answered(&result.to, &result.outcome).into());
+            (self.effects.node.report)(
+                InboxEvent::send_answered(&result.to, &result.outcome).into(),
+            );
         }
         Ok(ToolResult::Broadcast {
             results: results.into_iter().map(BroadcastOutcome::of).collect(),
@@ -393,7 +393,7 @@ impl Server {
     /// Writes the failure to the run record and returns the error code the tool answers with.
     fn recorded(&self, failure: impl AnsweredFailure) -> ErrorCode {
         let answered = failure.answered_code();
-        (self.effects.report)(failure.into());
+        (self.effects.node.report)(failure.into());
         answered
     }
 
@@ -481,7 +481,7 @@ impl ServerHandler for Server {
         let outcome = self
             .answer(tool, request.arguments.unwrap_or_default())
             .await;
-        (self.effects.report)(InboxEvent::tool_answered(tool, &outcome).into());
+        (self.effects.node.report)(InboxEvent::tool_answered(tool, &outcome).into());
         let envelope = self
             .envelope_of(outcome)
             .map_err(|error| unserializable(&error))?;
@@ -1187,7 +1187,6 @@ mod tests {
         config: NetworkConfig,
         bind_endpoint: BindEndpoint,
         report: RunRecord,
-        node_report: RunRecord,
         is_card_held: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
         monotonic: MonotonicClock,
         pause_between_lock_tries: Arc<dyn Fn(Duration) + Send + Sync>,
@@ -1200,7 +1199,6 @@ mod tests {
                 config: network_config(Vec::new()),
                 bind_endpoint: bind_alone(),
                 report: Arc::new(|_event: Event| {}),
-                node_report: Arc::new(|_event: Event| {}),
                 is_card_held: Arc::new(|sidecar_path: &Path| {
                     sidecar::is_held(sidecar_path).is_ok_and(|held| held)
                 }),
@@ -1222,7 +1220,6 @@ mod tests {
                 }]),
                 bind_endpoint: bind_meeting(meeting, Arc::new(|_event: Event| {})),
                 report: Arc::new(|_event: Event| {}),
-                node_report: Arc::new(|_event: Event| {}),
                 is_card_held: Arc::new(|sidecar_path: &Path| {
                     sidecar::is_held(sidecar_path).is_ok_and(|held| held)
                 }),
@@ -1365,7 +1362,7 @@ mod tests {
                         *byte = u8::try_from(draws.below(BYTE_VALUES)).unwrap();
                     }
                 }),
-                report: plan.node_report,
+                report: plan.report,
                 inbox,
                 probe_relay: Arc::new(|_relay| Box::pin(async { true })),
             },
@@ -1373,7 +1370,6 @@ mod tests {
             registry: Arc::new(OperatingSystemFilesystem::of_this_process().unwrap()),
             pause_between_lock_tries: plan.pause_between_lock_tries,
             is_card_held: plan.is_card_held,
-            report: plan.report,
         };
         let (server_input, to_server) = tokio::io::simplex(PIPE_BYTES);
         let (from_server, server_output) = tokio::io::simplex(PIPE_BYTES);
@@ -1712,8 +1708,7 @@ mod tests {
         let mut client = start_server(
             &machine,
             ServerPlan {
-                report: Arc::clone(&record),
-                node_report: record,
+                report: record,
                 ..ServerPlan::alone(FIRST_PROCESS_ID)
             },
         );

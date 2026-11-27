@@ -618,7 +618,7 @@ fn server_effects(
             clock: Arc::new(recording_wall_clock(Arc::clone(&record))),
             monotonic: Arc::new(RuntimeClock),
             fill_probe_nonce: Arc::new(|nonce: &mut Nonce| fill_with_secure_random_bytes(nonce)),
-            report: Arc::clone(&record),
+            report: record,
             inbox,
             probe_relay: Arc::new(|relay| Box::pin(relay_answers(relay))),
         },
@@ -638,7 +638,6 @@ fn server_effects(
         is_card_held: Arc::new(|sidecar_path: &Path| {
             sidecar::is_held(sidecar_path).is_ok_and(|held| held)
         }),
-        report: record,
     }
 }
 
