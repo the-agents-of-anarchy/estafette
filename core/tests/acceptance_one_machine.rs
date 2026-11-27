@@ -134,7 +134,8 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     use crate::mcp_server::{PRESENCE_WAIT, SEND_TOOL, gone, online, send_arguments, unreachable};
     use crate::member::{Member, loopback_address, loopback_address_of};
     use crate::member_ended_at_its_peer::{
-        UNREACHABLE_CODE, assert_stopped_member_is_gone_then_unreachable,
+        UNREACHABLE_CODE, assert_send_answered_after_input_ended,
+        assert_stopped_member_is_gone_then_unreachable, wait_for_input_ended,
     };
     use crate::message_body::BODY;
     use crate::new_presence_window::{
@@ -199,13 +200,6 @@ mod spec_3_15_restart_and_departure_on_one_machine {
     const DEPARTURE_CAUSE: &str = "departure";
     /// The status of a departed entry (spec 3.8).
     const GONE_STATUS: &str = "gone";
-    /// The event a member records when its standard input ends (spec/observability.md decision 9).
-    const INPUT_ENDED_EVENT: &str = "process.input_ended";
-    /// The event a member records for each tool call it answers, and the field naming the tool (spec/observability.md decision 9).
-    const TOOL_ANSWERED_EVENT: &str = "tool.answered";
-    const TOOL_FIELD: &str = "tool";
-    /// How long a member that has exited may take to be read for lines it wrote before: chosen, not measured, far above a read of a written file.
-    const EVENTS_OF_AN_ENDED_MEMBER_WITHIN: Duration = Duration::from_secs(10);
     /// How long the recipient that holds a call's connection unserved may take to receive it: chosen, not measured, far above a loopback dial and below the 10 s a send waits for its ack.
     const CONNECTION_HELD_WITHIN: Duration = Duration::from_secs(5);
     /// The card name of the witness, a member started only to take the observer wait of its own claim.
@@ -770,7 +764,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
         held_from_bob.wait_for_one(carol.runtime(), CONNECTION_HELD_WITHIN);
         let input_closed = Instant::now();
         bob.server_mut().close_standard_input();
-        bob.wait_for_event(INPUT_ENDED_EVENT, EVENTS_OF_AN_ENDED_MEMBER_WITHIN);
+        wait_for_input_ended(bob.server().events());
         held_from_bob.release();
 
         assert_stopped_member_is_gone_then_unreachable(
@@ -779,25 +773,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
             BOB_HANDLE,
             input_closed,
         );
-        let (input_ended, answered) = bob.wait_until(
-            &format!("{TOOL_ANSWERED_EVENT} of {SEND_TOOL} and {INPUT_ENDED_EVENT}"),
-            EVENTS_OF_AN_ENDED_MEMBER_WITHIN,
-            |lines| {
-                let input_ended = lines.iter().find(|line| line.event == INPUT_ENDED_EVENT)?.n;
-                let answered = lines
-                    .iter()
-                    .find(|line| {
-                        line.event == TOOL_ANSWERED_EVENT
-                            && line.value(TOOL_FIELD) == Some(&json!(SEND_TOOL))
-                    })?
-                    .n;
-                Some((input_ended, answered))
-            },
-        );
-        assert!(
-            answered > input_ended,
-            "the test's own setup failed, not the member: the call was answered at line {answered}, before the input ended at line {input_ended}, though the recipient held it unanswered"
-        );
+        assert_send_answered_after_input_ended(bob.server().events());
     }
 
     #[test]
