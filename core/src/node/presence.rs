@@ -19,6 +19,7 @@ use super::addresses::{endpoint_id, lookup_replaced_event, replace_lookup_entry,
 use super::announcements::{
     Announcer, HeardPresenceRequests, ReannounceStep, RequestSeqs, rumor_admission,
 };
+use super::init::{Init, InitAction, InitEvent, PendingHandle};
 use super::known_hosts::{
     KnownHosts, RelayOfRecord, known_host_addresses, seed_lookup_with_known_hosts,
 };
@@ -37,13 +38,12 @@ use crate::inbox::buffer::ReceivedMessage;
 use crate::inbox::socket::{Attached, InboxSocket};
 use crate::keys::{parse_network_secret, parse_public_key};
 use crate::net::direct::{
-    ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, GONE_PROCESS_SILENCE,
-    HEARING_SAMPLE_INTERVAL, HeldConnections,
+    ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, HeldConnections,
 };
 use crate::net::endpoint::{
     BoundEndpoint, CounterSnapshot, DIRECT_ALPN, NodeEndpoint, RebindCause, SnapshotMoment,
 };
-use crate::net::gossip::{GossipError, GossipEvent, JOIN_TIMEOUT, NetworkTopic};
+use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};
 use crate::payload::{
     DescribedPayload, OpenedPayload, PayloadDropRule, PayloadFacts, PayloadRefusal, ZERO_MAC,
     ZERO_SIGNATURE,
@@ -58,24 +58,10 @@ use crate::wire::{
     PresenceRequest, Unreachable, Version,
 };
 
-const OBSERVER_WAIT: Duration = Duration::from_millis(3000);
 /// The longest a node goes without a snapshot of its counters, so a live process writes its events file at least this often (`spec/observability.md` decisions 9 and 13).
 const STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
 const SECRET_FIELD: &str = "secret";
 const OWNER_FIELD: &str = "owner";
-
-/// A restarted member sends its first Introduce and Presence only after a wait for its handle, so each wait must outlast the silence by which a peer judges the old process's connections gone.
-const _: () = assert!(
-    outlasts_gone_process_silence(OBSERVER_WAIT) && outlasts_gone_process_silence(JOIN_TIMEOUT)
-);
-
-/// Whether a wait is longer than the silence that marks a connection gone, read one hearing sample late.
-const fn outlasts_gone_process_silence(wait: Duration) -> bool {
-    GONE_PROCESS_SILENCE
-        .saturating_add(HEARING_SAMPLE_INTERVAL)
-        .as_nanos()
-        < wait.as_nanos()
-}
 
 /// Milliseconds since the Unix epoch by this machine's clock.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -964,80 +950,6 @@ async fn run_requests<R: DirectRequester>(
     }
 }
 
-/// Where init stands: awaiting the join, waiting the observer wait after it, or done.
-enum Init {
-    AwaitingJoin(PendingHandle),
-    ObserverWait {
-        until: Instant,
-        pending: PendingHandle,
-    },
-    Done,
-}
-
-/// What init holds until it assigns the handle: where the handle goes, and each card this node would have introduced itself to meanwhile, once, in the order first asked.
-struct PendingHandle {
-    assigned: oneshot::Sender<LocalHandle>,
-    held_introduces: Vec<wire::PublicKey>,
-}
-
-/// What moves init on: a join of the topic at a monotonic instant, a join that gained no neighbor, or the end of the observer wait.
-enum InitEvent {
-    Joined { at: Instant },
-    JoinTimedOut,
-    ObserverWaitOver,
-}
-
-/// What a step of init asks the presence loop to do.
-enum InitAction {
-    Announce,
-    AssignHandle(PendingHandle),
-    AssignHandleThenAnnounce(PendingHandle),
-}
-
-impl Init {
-    /// The state init moves to on the event, with what the loop does for the step: a first join starts the observer wait, a later one announces, and the handle is assigned at a first join that gained no neighbor or at the end of the observer wait.
-    fn after(self, event: InitEvent) -> (Self, Option<InitAction>) {
-        match (self, event) {
-            (Self::AwaitingJoin(pending), InitEvent::Joined { at }) => (
-                Self::ObserverWait {
-                    until: observer_wait_over_at(at),
-                    pending,
-                },
-                None,
-            ),
-            (Self::AwaitingJoin(pending), InitEvent::JoinTimedOut) => {
-                (Self::Done, Some(InitAction::AssignHandle(pending)))
-            }
-            (Self::ObserverWait { pending, .. }, InitEvent::ObserverWaitOver) => (
-                Self::Done,
-                Some(InitAction::AssignHandleThenAnnounce(pending)),
-            ),
-            (Self::Done, InitEvent::Joined { .. }) => (Self::Done, Some(InitAction::Announce)),
-            (unchanged @ Self::AwaitingJoin(_), InitEvent::ObserverWaitOver)
-            | (
-                unchanged @ Self::ObserverWait { .. },
-                InitEvent::Joined { .. } | InitEvent::JoinTimedOut,
-            )
-            | (unchanged @ Self::Done, InitEvent::JoinTimedOut | InitEvent::ObserverWaitOver) => {
-                (unchanged, None)
-            }
-        }
-    }
-
-    /// Holds an Introduce to the card while the handle is unassigned, a card already held not held again, returning the card to introduce this node to now once it is assigned.
-    fn introduce_now_or_hold(&mut self, card: wire::PublicKey) -> Option<wire::PublicKey> {
-        match self {
-            Self::AwaitingJoin(pending) | Self::ObserverWait { pending, .. } => {
-                if !pending.held_introduces.contains(&card) {
-                    pending.held_introduces.push(card);
-                }
-                None
-            }
-            Self::Done => Some(card),
-        }
-    }
-}
-
 /// Whether the presence loop still watches the inbox's attached flag, which it stops doing once the inbox is gone.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum InboxWatch {
@@ -1646,11 +1558,6 @@ pub fn record_counters(
     report(crate::event::StateEvent::Counters(snapshot).into());
 }
 
-/// When the observer wait that starts at `joined` is over.
-pub fn observer_wait_over_at(joined: Instant) -> Instant {
-    later_by(joined, OBSERVER_WAIT)
-}
-
 /// Waits until the clock reads the deadline, or forever when there is none.
 pub async fn deadline_reached(clock: &dyn MonotonicTime, deadline: Option<Instant>) {
     match deadline {
@@ -1823,6 +1730,7 @@ pub(super) mod tests {
         SPEC_STATE_SNAPSHOT_INTERVAL, STATE_COUNTERS, ShiftedClock, StandingClock,
         closed_within_the_documented_latency, recorded_until_introduce_sent_to, was_taken_at,
     };
+    use crate::net::direct::{GONE_PROCESS_SILENCE, HEARING_SAMPLE_INTERVAL};
     use crate::net::endpoint::NodeEndpoint;
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
