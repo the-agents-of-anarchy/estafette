@@ -199,7 +199,7 @@ fn read_state_file_opened_by(
 ///
 /// # Errors
 ///
-/// Fails when the staging path is taken or the file cannot be written, or with a `StateFileRefused` inside the error when the state file is a symbolic link or another user's; the staging file is then left unrenamed and removed.
+/// Fails when the staging path is taken or the file cannot be written, or with a `StateFileRefused` inside the error when the state file is a symbolic link or another user's; the staging file is then removed, except when its owner-only mode could not be set, which leaves it.
 pub fn write_state_file(user_id: u32, path: &Path, staging: &Path, text: &str) -> io::Result<()> {
     let mut staged = create_new_owner_only_file(staging)?;
     let outcome = rename_over_after_writing(&mut staged, user_id, staging, path, text);
