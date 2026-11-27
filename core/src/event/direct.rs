@@ -2,18 +2,14 @@ use iroh::EndpointId;
 use serde_json::Value;
 
 use super::transport::connection_field;
-use super::{AreaEvent, EventFields};
+use super::{AreaEvent, CODE_FIELD, EventFields, KIND_FIELD, OUTCOME_FIELD, message_field};
 use crate::errors::ErrorCode;
 use crate::net::direct::{
     AckRefusal, ConnectionSource, DirectError, RequestSummary, SentOutcome, SentRequest,
-    ServedOutcome, ServedRequest, StreamEnd, message_id_text,
+    ServedOutcome, ServedRequest, StreamEnd,
 };
 
-const KIND_FIELD: &str = "kind";
-const MESSAGE_FIELD: &str = "message";
 const CONNECTION_SOURCE_FIELD: &str = "connection_source";
-const OUTCOME_FIELD: &str = "outcome";
-const CODE_FIELD: &str = "code";
 const ERROR_FIELD: &str = "error";
 const ELAPSED_FIELD: &str = "elapsed_ms";
 
@@ -91,10 +87,9 @@ impl AreaEvent for DirectEvent {
 /// The kind of a request and, for a Message, its id as the inbox writes it.
 fn request_fields(request: RequestSummary) -> EventFields {
     match request {
-        RequestSummary::Message(id) => vec![
-            (KIND_FIELD, Value::from("message")),
-            (MESSAGE_FIELD, Value::from(message_id_text(id))),
-        ],
+        RequestSummary::Message(id) => {
+            vec![(KIND_FIELD, Value::from("message")), message_field(id)]
+        }
         RequestSummary::Probe => vec![(KIND_FIELD, Value::from("probe"))],
         RequestSummary::Introduce => vec![(KIND_FIELD, Value::from("introduce"))],
     }

@@ -3,7 +3,7 @@ use serde_json::Value;
 use tokio::task::JoinError;
 
 use super::short_id::ShortId;
-use super::{AreaEvent, EventFields};
+use super::{AreaEvent, CAUSE_FIELD, CODE_FIELD, EventFields, KIND_FIELD};
 use crate::net::endpoint::{
     Close, CloseReason, ConnectionId, Direction, GateFailure, GateFailureReason, Location,
     LocationKind, PathChange, Protocol, RebindCause, RelayMapEdit,
@@ -13,12 +13,10 @@ use crate::node::{HostUnparsed, SkippedHost};
 const EDIT_FIELD: &str = "edit";
 const INDEX_FIELD: &str = "index";
 const HOST_FIELD: &str = "host";
-const CAUSE_FIELD: &str = "cause";
 const CONNECTION_FIELD: &str = "connection";
 const DIRECTION_FIELD: &str = "direction";
 const PROTOCOL_FIELD: &str = "protocol";
 const SIDE_FIELD: &str = "side";
-const CODE_FIELD: &str = "code";
 const REASON_FIELD: &str = "reason";
 const REASON_BYTES_FIELD: &str = "reason_bytes";
 const PATH_FIELD: &str = "path";
@@ -26,7 +24,6 @@ const ROUND_TRIP_FIELD: &str = "rtt_ms";
 const MISSED_FIELD: &str = "missed";
 const CONNECTED_FIELD: &str = "connected";
 const ANSWERED_FIELD: &str = "answered";
-const KIND_FIELD: &str = "kind";
 const PORT_FIELD: &str = "port";
 const LOCATION_FIELD: &str = "location";
 

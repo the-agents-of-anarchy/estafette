@@ -1,15 +1,13 @@
 use serde_json::Value;
 
 use super::short_id::ShortId;
-use super::{AreaEvent, EventFields};
+use super::{AreaEvent, EventFields, HANDLE_FIELD, KIND_FIELD};
 use crate::config::ConfigError;
 use crate::crypto::SignedPayloadKind;
 use crate::handle::LocalHandle;
 use crate::net::gossip::GossipError;
 use crate::payload::{PayloadDropRule, PayloadFacts, PayloadStamp};
 
-const KIND_FIELD: &str = "kind";
-const HANDLE_FIELD: &str = "handle";
 const SEQ_FIELD: &str = "seq";
 const TS_FIELD: &str = "ts";
 const RULE_FIELD: &str = "rule";

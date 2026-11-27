@@ -1,17 +1,13 @@
 use serde_json::Value;
 
 use super::short_id::ShortId;
-use super::{AreaEvent, EventFields};
+use super::{AreaEvent, CAUSE_FIELD, EventFields, HANDLE_FIELD, STATUS_FIELD, TO_FIELD};
 use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::peers::{ContactSucceeded, FailedContactKind, Status, TableCause, TableChange};
 use crate::wire;
 
-const HANDLE_FIELD: &str = "handle";
 const REQUESTED_FIELD: &str = "requested";
-const STATUS_FIELD: &str = "status";
 const FROM_FIELD: &str = "from";
-const TO_FIELD: &str = "to";
-const CAUSE_FIELD: &str = "cause";
 const DIRECT_ADDRESSES_FIELD: &str = "direct_addresses";
 const RELAY_FIELD: &str = "relay";
 const EXPIRY_CAUSE_WORD: &str = "expiry";

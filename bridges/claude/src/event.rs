@@ -5,17 +5,15 @@ use estafette_bridge_claude::discover::{BinarySocket, Pid};
 use estafette_bridge_claude::inbox_client::{InboxClientError, InboxFrame};
 use estafette_bridge_claude::inject::{InjectError, NoticeOutcome, RefusedSenderName};
 use estafette_bridge_claude::permission_class::PermissionClass;
+use estafette_trace::{FRAME_FIELD, MESSAGE_FIELD, VERSION_FIELD};
 use serde_json::Value;
 
 use crate::{ClassSource, CommandError, LiveClassError, usage};
 
 const BRIDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
-const VERSION_FIELD: &str = "version";
 const BRIDGE_PID_FIELD: &str = "bridge_pid";
 const HARNESS_PID_FIELD: &str = "harness_pid";
 const BINARY_PID_FIELD: &str = "binary_pid";
-const MESSAGE_FIELD: &str = "message";
-const FRAME_FIELD: &str = "frame";
 const REASON_FIELD: &str = "reason";
 const CLASS_FIELD: &str = "class";
 const SOURCE_FIELD: &str = "source";

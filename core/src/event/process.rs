@@ -2,11 +2,15 @@ use std::io;
 use std::panic::Location;
 use std::time::Duration;
 
+use estafette_trace::VERSION_FIELD;
 use iroh::endpoint::BindError;
 use serde_json::Value;
 use tokio::task::JoinError;
 
-use super::{AnsweredFailure, AreaEvent, Event, EventFields, answered};
+use super::{
+    AnsweredFailure, AreaEvent, Event, EventFields, HANDLE_FIELD, OUTCOME_FIELD, STATUS_FIELD,
+    answered,
+};
 use crate::dirs::TraceFileKind;
 use crate::errors::{ErrorCode, ExitStatus};
 use crate::handle::Handle;
@@ -16,16 +20,12 @@ use crate::node::{ClaimedCard, NodeError, ShutdownSignal};
 pub const CLOCK_BEFORE_UNIX_EPOCH: &str =
     "the system clock reads a time before 1970-01-01: set the clock and run the command again";
 
-const VERSION_FIELD: &str = "version";
 const COMMAND_FIELD: &str = "command";
-const STATUS_FIELD: &str = "status";
 const FILE_FIELD: &str = "file";
 const LINE_FIELD: &str = "line";
 const CARD_FIELD: &str = "card";
-const HANDLE_FIELD: &str = "handle";
 const SIGNAL_FIELD: &str = "signal";
 const WAIT_FIELD: &str = "wait_ms";
-const OUTCOME_FIELD: &str = "outcome";
 
 super::event_names! {
     /// The names of the process's events: its command, its clock and its claim.

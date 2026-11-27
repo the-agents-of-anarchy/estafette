@@ -4,8 +4,16 @@ use std::sync::Arc;
 use serde_json::Value;
 
 use crate::errors::ErrorCode;
+use crate::net::direct::message_id_text;
+use crate::wire::MessageId;
 
 const CODE_FIELD: &str = "code";
+const HANDLE_FIELD: &str = "handle";
+const OUTCOME_FIELD: &str = "outcome";
+const KIND_FIELD: &str = "kind";
+const CAUSE_FIELD: &str = "cause";
+const STATUS_FIELD: &str = "status";
+const TO_FIELD: &str = "to";
 
 /// Declares the fixed names of one group of events: a fieldless enum, every value of it in `ALL`, and each value's name text.
 macro_rules! event_names {
@@ -196,6 +204,14 @@ impl From<StateEvent> for Event {
     fn from(event: StateEvent) -> Self {
         Self::State(event)
     }
+}
+
+/// The message id as the events file writes it, under the key every event of a message's send and receipt shares.
+fn message_field(message: MessageId) -> (&'static str, Value) {
+    (
+        estafette_trace::MESSAGE_FIELD,
+        Value::from(message_id_text(message)),
+    )
 }
 
 /// The one field of an event whose tool call or claim answered with an error code.

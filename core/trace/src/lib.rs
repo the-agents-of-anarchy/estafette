@@ -25,6 +25,12 @@ pub use writer::{DROPPED_LINE_NAME, FileTrace};
 
 /// The version of the trace line format, raised when an event name or a field key is renamed or removed or a field changes meaning.
 pub const FORMAT_VERSION: u64 = 2;
+/// The key of a message's id on every event of its send, receipt and acknowledgement, in the events file of the binary and of the bridge.
+pub const MESSAGE_FIELD: &str = "message";
+/// The key of an inbox frame's number on its socket, in the events file of the binary and of the bridge.
+pub const FRAME_FIELD: &str = "frame";
+/// The key of a program's version on its `process.started` event, in the events file of the binary and of the bridge.
+pub const VERSION_FIELD: &str = "version";
 /// The size at which a trace file rolls over into its `.1` file: 64 MiB.
 pub const TRACE_FILE_ROLLOVER_BYTES: u64 = 67_108_864;
 /// The files one run keeps of one trace file: the file and the one `.1` file it rolls over into.

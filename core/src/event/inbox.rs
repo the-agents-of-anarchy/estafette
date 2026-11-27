@@ -4,21 +4,20 @@ use rmcp::service::ServerInitializeError;
 use serde_json::Value;
 use tokio::task::JoinError;
 
-use super::{AnsweredFailure, AreaEvent, Event, EventFields, answered};
+use super::{
+    AnsweredFailure, AreaEvent, Event, EventFields, OUTCOME_FIELD, TO_FIELD, answered,
+    message_field,
+};
 use crate::errors::ErrorCode;
 use crate::handle::LocalHandle;
 use crate::mcp::{RegistryFailure, ToolName};
-use crate::net::direct::message_id_text;
 use crate::node::{Delivery, Undelivered};
 use crate::wire::MessageId;
+use estafette_trace::FRAME_FIELD;
 
-const MESSAGE_FIELD: &str = "message";
-const FRAME_FIELD: &str = "frame";
 const ATTACHED_FIELD: &str = "attached";
 const CLIENTS_FIELD: &str = "clients";
 const TOOL_FIELD: &str = "tool";
-const TO_FIELD: &str = "to";
-const OUTCOME_FIELD: &str = "outcome";
 const OK_OUTCOME: &str = "ok";
 const ERROR_OUTCOME: &str = "error";
 
@@ -143,11 +142,6 @@ fn outcome_fields(code: Option<&ErrorCode>) -> EventFields {
             .concat()
         },
     )
-}
-
-/// The message id as the events file writes it, under the key every event of a message's send and receipt shares.
-fn message_field(message: MessageId) -> (&'static str, Value) {
-    (MESSAGE_FIELD, Value::from(message_id_text(message)))
 }
 
 impl AreaEvent for InboxEvent {
