@@ -2021,6 +2021,8 @@ mod spec_3_16_absences_on_one_machine {
     const SENDS_IN_A_ROW: usize = 30;
     /// Time for a message held for an absent member to reach it once it returns.
     const REDELIVERY_WATCH: Duration = Duration::from_secs(5);
+    /// The leading hexadecimal characters of a key that a fingerprint of it would show.
+    const FINGERPRINT_HEX_CHARS: usize = 8;
 
     /// The files under the base directories whose content holds the text.
     fn base_directory_files_holding(network: &LocalNetwork, text: &str) -> Vec<PathBuf> {
@@ -2158,6 +2160,36 @@ mod spec_3_16_absences_on_one_machine {
 
         assert_eq!(refused["error"]["code"], json!("unreachable"), "{refused}");
         assert_eq!(restarted.inbox_bodies(), Vec::<Value>::new());
+        assert_eq!(
+            base_directory_files_holding(&network, BODY),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    #[test]
+    fn spec_3_16_a_send_addressed_by_a_key_or_a_fingerprint_is_refused_and_delivers_nothing() {
+        let network = LocalNetwork::create("n3k", &KeptFilesPolicy::from_environment());
+        let host = network.stand_in_host();
+        let MetPair {
+            mut amy,
+            mut bob,
+            bob_card,
+            ..
+        } = network.amy_and_bob_met(&host);
+        let key = estafette::keys::render_public_key(&bob_card.id);
+        let fingerprint: String = key.chars().take(FINGERPRINT_HEX_CHARS).collect();
+
+        let addressed_by_key = send(&mut amy, &key);
+        let addressed_by_fingerprint = send(&mut amy, &fingerprint);
+
+        for refused in [&addressed_by_key, &addressed_by_fingerprint] {
+            assert_eq!(
+                refused["error"]["code"],
+                json!("unknown_handle"),
+                "{refused}"
+            );
+        }
+        assert_eq!(bob.inbox_bodies(), Vec::<Value>::new());
     }
 
     #[test]
