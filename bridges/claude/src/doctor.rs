@@ -314,26 +314,34 @@ fn settings_of_harness_command_line(
     settings
 }
 
+/// The words after a settings flag, cut at the next dash word and uncut, each led by the text after an `=`.
+struct FlagWords<'a> {
+    up_to_the_next_dash_word: Vec<&'a str>,
+    every_following_word: Vec<&'a str>,
+}
+
 /// Reads the settings a flag names as inline JSON or as the first run of its words that names a readable file.
 fn settings_from_flag_words(
-    words: &[&str],
+    flag_words: &FlagWords,
     read_text_file: &impl Fn(&Path) -> Option<String>,
 ) -> Result<SettingsFile, String> {
-    let first_word = words.first().copied().unwrap_or_default();
-    let words_up_to_the_next_dash_word = words
-        .iter()
-        .enumerate()
-        .take_while(|(position, word)| *position == 0 || !word.starts_with(OPTION_FLAG_PREFIX))
-        .map(|(_, word)| *word)
-        .collect::<Vec<_>>();
-    if first_word.trim_start().starts_with(JSON_OBJECT_OPENER) {
+    let first_word = flag_words
+        .up_to_the_next_dash_word
+        .first()
+        .copied()
+        .unwrap_or_default();
+    let starts_inline_json = flag_words
+        .every_following_word
+        .first()
+        .is_some_and(|word| word.trim_start().starts_with(JSON_OBJECT_OPENER));
+    if starts_inline_json {
         return Ok(SettingsFile {
             path: PathBuf::from(COMMAND_LINE_SETTINGS_NAME),
-            text: shortest_valid_json_run(words)
-                .unwrap_or_else(|| words_up_to_the_next_dash_word.join(" ")),
+            text: shortest_valid_json_run(&flag_words.every_following_word)
+                .unwrap_or_else(|| flag_words.up_to_the_next_dash_word.join(" ")),
         });
     }
-    word_runs_from_the_first(&words_up_to_the_next_dash_word)
+    word_runs_from_the_first(&flag_words.up_to_the_next_dash_word)
         .find_map(|run| {
             read_text_file(Path::new(&run)).map(|text| SettingsFile {
                 path: PathBuf::from(run),
@@ -357,7 +365,7 @@ fn shortest_valid_json_run(words: &[&str]) -> Option<String> {
 }
 
 /// Lists, for each settings flag, the words that may make up its value, led by the text after an `=`.
-fn settings_flag_words(arguments: &[String]) -> Vec<Vec<&str>> {
+fn settings_flag_words(arguments: &[String]) -> Vec<FlagWords<'_>> {
     let inline_prefix = format!("{SETTINGS_FLAG}=");
     arguments
         .iter()
@@ -368,19 +376,18 @@ fn settings_flag_words(arguments: &[String]) -> Vec<Vec<&str>> {
                 return None;
             }
             let following = arguments.get(position.saturating_add(1)..)?;
-            let value_starts_with_a_flag = inline_head.is_none()
-                && following
-                    .first()
-                    .is_some_and(|word| word.starts_with(OPTION_FLAG_PREFIX));
-            if value_starts_with_a_flag {
-                return Some(Vec::new());
-            }
-            Some(
-                inline_head
+            let following_words = following.iter().map(String::as_str);
+            Some(FlagWords {
+                up_to_the_next_dash_word: inline_head
                     .into_iter()
-                    .chain(following.iter().map(String::as_str))
+                    .chain(
+                        following_words
+                            .clone()
+                            .take_while(|word| !word.starts_with(OPTION_FLAG_PREFIX)),
+                    )
                     .collect(),
-            )
+                every_following_word: inline_head.into_iter().chain(following_words).collect(),
+            })
         })
         .collect()
 }
@@ -1176,11 +1183,17 @@ mod tests {
     #[test]
     fn spec_3_12_inline_settings_that_are_never_valid_json_are_kept_as_the_words_up_to_the_next_dash_word()
      {
-        let file = settings_from_flag_words(
-            &["{\"crossSessionInbound\":", "refuse", "--verbose"],
-            &read_nothing,
-        )
-        .expect("inline JSON is kept as a source whatever it holds");
+        let arguments: Vec<String> = [
+            SETTINGS_FLAG,
+            "{\"crossSessionInbound\":",
+            "refuse",
+            "--verbose",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        let flag_words = settings_flag_words(&arguments);
+        let file = settings_from_flag_words(&flag_words[0], &read_nothing)
+            .expect("inline JSON is kept as a source whatever it holds");
         assert_eq!(file.text, "{\"crossSessionInbound\": refuse");
     }
 
