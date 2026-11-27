@@ -814,7 +814,7 @@ impl<H: DirectHost> ServerState<H> {
         let answered = self
             .answer_stream(sender, arrived_on, &mut send, recv)
             .await;
-        if let Err(end) | Ok((_, Err(end))) = answered
+        if let Err(end) | Ok((_, ServedOutcome::Unanswered(end))) = answered
             && let Some(code) = end.reset_code()
         {
             match send.reset(code) {
@@ -837,7 +837,7 @@ impl<H: DirectHost> ServerState<H> {
                     request,
                     peer,
                     connection,
-                    outcome: outcome.unwrap_or_else(ServedOutcome::Unanswered),
+                    outcome,
                     elapsed_ms,
                 },
             })
@@ -851,7 +851,7 @@ impl<H: DirectHost> ServerState<H> {
         arrived_on: &Connection,
         send: &mut SendStream,
         mut recv: RecvStream,
-    ) -> Result<(RequestSummary, Result<ServedOutcome, StreamEnd>), StreamEnd> {
+    ) -> Result<(RequestSummary, ServedOutcome), StreamEnd> {
         let request = self
             .read_request(&mut recv)
             .await
@@ -870,8 +870,9 @@ impl<H: DirectHost> ServerState<H> {
             send.finish()?;
             Ok::<_, StreamEnd>(outcome)
         }
-        .await;
-        if outcome.is_ok()
+        .await
+        .unwrap_or_else(ServedOutcome::Unanswered);
+        if matches!(outcome, ServedOutcome::Answered | ServedOutcome::Refused(_))
             && let Some(in_flight) = introduce_answer
         {
             tokio::spawn(in_flight.until_acknowledged(send.stopped()));
