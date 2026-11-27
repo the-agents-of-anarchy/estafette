@@ -79,7 +79,7 @@ impl OperatingSystemFilesystem {
     /// # Errors
     ///
     /// Fails with the refusal inside the error when the entry is unsafe, or with the operating system's error when it cannot be inspected.
-    pub fn require_existing_directory_private(&self, path: &Path) -> io::Result<()> {
+    pub(crate) fn require_existing_directory_private(self, path: &Path) -> io::Result<()> {
         match EntryFacts::at(path) {
             Err(failure) if failure.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(failure) => Err(failure),

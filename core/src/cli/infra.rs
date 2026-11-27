@@ -196,7 +196,7 @@ impl InfrastructureFilesystem for OperatingSystemFilesystem {
     }
 
     fn require_existing_directory_private(&self, path: &Path) -> io::Result<()> {
-        Self::require_existing_directory_private(self, path)
+        Self::require_existing_directory_private(*self, path)
     }
 }
 
