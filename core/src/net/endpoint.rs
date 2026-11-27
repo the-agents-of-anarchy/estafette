@@ -1783,6 +1783,26 @@ mod tests {
     const PEER_KEY_BYTE: u8 = 9;
     const MISSED_PATH_EVENTS: u64 = 5;
     const ELAPSED_MS: u64 = 12;
+    const LOCATION_SALT_BYTE: u8 = 0xC3;
+    const OTHER_LOCATION_SALT_BYTE: u8 = 0x3C;
+    const DEFAULT_PORT_RELAY: &str = "https://relay.example/";
+    const EXPLICIT_PORT_RELAY: &str = "https://relay.example:7843/";
+    const EXPLICIT_RELAY_PORT: u16 = 7843;
+
+    fn location_salt_of(byte: u8) -> LocationSalt {
+        LocationSalt::from_random_bytes([byte; crate::trace::LOCATION_SALT_BYTES])
+    }
+
+    /// The first bytes of the blake3 keyed hash of the text under a salt of one repeated byte, built without `LocationHash::of`.
+    fn spec_location_hash(salt_byte: u8, location_text: &str) -> LocationHash {
+        let hashed = blake3::keyed_hash(
+            &[salt_byte; crate::trace::LOCATION_SALT_BYTES],
+            location_text.as_bytes(),
+        );
+        let mut first_bytes = [0; LOCATION_HASH_BYTES];
+        first_bytes.copy_from_slice(&hashed.as_bytes()[..LOCATION_HASH_BYTES]);
+        LocationHash(first_bytes)
+    }
 
     fn tested_gate_failure(reason: GateFailureReason) -> GateFailure {
         GateFailure {
@@ -1800,37 +1820,47 @@ mod tests {
     #[test]
     fn observability_decision_6_each_kind_of_address_is_located_by_its_kind_its_port_and_the_salted_hash_of_its_text()
      {
-        let salt = crate::net::direct::tests::test_salt();
         let custom = TransportAddr::Custom((CUSTOM_TRANSPORT_ID, CUSTOM_TRANSPORT_DATA).into());
         let direct_address_text = format!("{TESTED_DIRECT_HOST}:{TESTED_DIRECT_PORT}");
-        let cases = [
-            (
-                TransportAddr::Ip(direct_address_text.parse().unwrap()),
-                Location {
-                    kind: LocationKind::Direct,
-                    port: Some(TESTED_DIRECT_PORT),
-                    hash: LocationHash::of(&salt, &direct_address_text),
-                },
-            ),
-            (
-                TransportAddr::Relay("https://relay.example/".parse().unwrap()),
-                Location {
-                    kind: LocationKind::Relay,
-                    port: Some(SPEC_RELAY_PORT),
-                    hash: LocationHash::of(&salt, "https://relay.example/"),
-                },
-            ),
-            (
-                custom.clone(),
-                Location {
-                    kind: LocationKind::Other,
-                    port: None,
-                    hash: LocationHash::of(&salt, &format!("{custom:?}")),
-                },
-            ),
-        ];
+        for salt_byte in [LOCATION_SALT_BYTE, OTHER_LOCATION_SALT_BYTE] {
+            let cases = [
+                (
+                    TransportAddr::Ip(direct_address_text.parse().unwrap()),
+                    Location {
+                        kind: LocationKind::Direct,
+                        port: Some(TESTED_DIRECT_PORT),
+                        hash: spec_location_hash(salt_byte, &direct_address_text),
+                    },
+                ),
+                (
+                    TransportAddr::Relay(DEFAULT_PORT_RELAY.parse().unwrap()),
+                    Location {
+                        kind: LocationKind::Relay,
+                        port: Some(SPEC_RELAY_PORT),
+                        hash: spec_location_hash(salt_byte, DEFAULT_PORT_RELAY),
+                    },
+                ),
+                (
+                    TransportAddr::Relay(EXPLICIT_PORT_RELAY.parse().unwrap()),
+                    Location {
+                        kind: LocationKind::Relay,
+                        port: Some(EXPLICIT_RELAY_PORT),
+                        hash: spec_location_hash(salt_byte, EXPLICIT_PORT_RELAY),
+                    },
+                ),
+                (
+                    custom.clone(),
+                    Location {
+                        kind: LocationKind::Other,
+                        port: None,
+                        hash: spec_location_hash(salt_byte, &format!("{custom:?}")),
+                    },
+                ),
+            ];
+            let salt = location_salt_of(salt_byte);
 
-        assert_each_arm(&cases, |address| Location::of(address, &salt), cases.len());
+            assert_each_arm(&cases, |address| Location::of(address, &salt), cases.len());
+        }
     }
 
     /// A custom transport address whose id has a drawn number of its high bits cleared and whose data is drawn.
@@ -1846,7 +1876,7 @@ mod tests {
     #[test]
     fn observability_decision_6_every_address_neither_ip_nor_relay_is_located_as_another_kind_with_no_port_by_the_salted_hash_of_its_text()
      {
-        let salt = crate::net::direct::tests::test_salt();
+        let salt = location_salt_of(LOCATION_SALT_BYTE);
         for case in 0..CATCH_ALL_CASES {
             let address = drawn_custom_address(&mut Draws::seeded(case));
             assert_eq!(
@@ -1854,7 +1884,7 @@ mod tests {
                 Location {
                     kind: LocationKind::Other,
                     port: None,
-                    hash: LocationHash::of(&salt, &format!("{address:?}")),
+                    hash: spec_location_hash(LOCATION_SALT_BYTE, &format!("{address:?}")),
                 },
                 "address {address:?}"
             );
@@ -1864,11 +1894,16 @@ mod tests {
     #[test]
     fn observability_decision_6_two_addresses_of_another_kind_are_located_by_different_hashes_and_one_address_by_the_same_hash_each_time()
      {
-        let salt = crate::net::direct::tests::test_salt();
+        let salt = location_salt_of(LOCATION_SALT_BYTE);
         for case in 0..CATCH_ALL_CASES {
             let mut draws = Draws::seeded(case);
             let first = drawn_custom_address(&mut draws);
             let second = drawn_custom_address(&mut draws);
+            assert_eq!(
+                Location::of(&first, &salt).hash,
+                spec_location_hash(LOCATION_SALT_BYTE, &format!("{first:?}")),
+                "address {first:?}"
+            );
             assert_eq!(
                 Location::of(&first, &salt).hash,
                 Location::of(&first, &salt).hash,
