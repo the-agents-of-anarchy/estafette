@@ -1153,7 +1153,12 @@ mod tests {
 
         shut_down(runtime, Exit::Stopped(RuntimeShutdown::Awaited));
 
-        assert!(shutting_down.elapsed() < AWAITED_SHUTDOWN_ENDS_WITHIN);
+        let waited = shutting_down.elapsed();
+        assert!(
+            waited >= AWAITED_SHUTDOWN_LIMIT,
+            "an awaited shutdown waited only {waited:?} for the blocking read"
+        );
+        assert!(waited < AWAITED_SHUTDOWN_ENDS_WITHIN);
         drop(input_arrives);
     }
 
