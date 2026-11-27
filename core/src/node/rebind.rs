@@ -1041,7 +1041,7 @@ mod tests {
             async || relays.has_answered(KEPT_RELAY).then_some(()),
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         let judged_early: Vec<RecordedEvent> = std::iter::from_fn(|| events.try_recv().ok())
             .filter(|(name, _fields)| *name == RELAY_PROBED)
             .collect();
@@ -1060,7 +1060,7 @@ mod tests {
             REBIND_SLACK,
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
 
         assert_eq!(relays_of(&stripped), vec![KEPT_RELAY.to_owned()]);
         drop(scratch);
@@ -1587,11 +1587,11 @@ mod tests {
         let first = rebinds
             .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         let second = rebinds
             .nth_within(1, SPEC_REBIND_INTERVAL + REBIND_SLACK)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
 
         assert!(first.duration_since(started) >= SPEC_DEAF_TIMEOUT);
         assert!(second.duration_since(first) >= SPEC_REBIND_INTERVAL);
@@ -1620,11 +1620,11 @@ mod tests {
         let rebound = rebinds
             .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         let announced_after = host
             .first_seq_after(rebound, SPEC_JOIN_TIMEOUT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
 
         assert_eq!(host.last_seq_before(rebound), Some(FROZEN_CLOCK_MS));
         assert_eq!(announced_after, FROZEN_CLOCK_MS + 1);
@@ -1763,11 +1763,11 @@ mod tests {
         let rebound = rebinds
             .nth_within(0, SPEC_JOIN_TIMEOUT + REBIND_SLACK)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         let joined_through_the_peer = peer
             .first_neighbor_up_of(FIRST_SEED, IROH_DOCUMENTED_CLOSE_LATENCY + REBIND_SLACK)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
 
         assert!(rebound.duration_since(started) >= SPEC_JOIN_TIMEOUT);
         assert!(joined_through_the_peer > rebound);
@@ -1804,12 +1804,12 @@ mod tests {
             IROH_DOCUMENTED_CLOSE_LATENCY + SPEC_RELAY_PROBE_TIMEOUT + REBIND_SLACK,
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         let dead_host = lookup_entry(&member.node.client.endpoint(), DEAD_HOST_SEED)
             .await
             .unwrap();
 
-        rebound.unwrap_or_else(WaitMissed::fail_the_test);
+        rebound.unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(
             relays_of(&held_before),
             vec![DEAD_RELAY, LIVE_RELAY, PEER_ONLY_RELAY]
@@ -1905,7 +1905,7 @@ mod tests {
         let rebound = rebinds
             .nth_within(0, SPEC_DEAF_TIMEOUT + REBIND_SLACK)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         let met = unreachable_member
             .first_neighbor_up_of(
                 FIRST_SEED,
@@ -1915,7 +1915,7 @@ mod tests {
                     + REBIND_SLACK,
             )
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
 
         assert!(met.duration_since(rebound) >= SPEC_MEMBER_JOIN_WAIT);
         drop(scratch);
@@ -1969,7 +1969,7 @@ mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         clock.move_forward(SPEC_DEAF_TIMEOUT);
         let rebound_at = clock.now();
         recorded_until(&mut events, REBINDING, |_fields| true, PAYLOAD_WAIT).await;
@@ -2070,7 +2070,7 @@ mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         let no_peer_online_since = Instant::now();
         let (while_no_peer_was_online, _snapshot) = recorded_until(
             &mut events,

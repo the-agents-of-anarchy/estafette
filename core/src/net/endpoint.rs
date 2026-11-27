@@ -709,7 +709,7 @@ mod tests {
     use crate::each_arm::assert_each_arm;
     use crate::event::ShortId;
     use crate::seeded_draws::Draws;
-    use crate::test_waits::{WaitMissed, found_within};
+    use crate::test_waits::found_within;
 
     const SPEC_DIRECT_ALPN: &[u8] = b"estafette/direct/1";
     const SPEC_GATE_KEY_CONTEXT: &str = "messaging gate v1";
@@ -1095,7 +1095,7 @@ mod tests {
             .then_some(())
         })
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         vanish.send(()).unwrap();
         let _silenced_peer = tokio::task::spawn_blocking(move || vanishing_peer.join())
             .await

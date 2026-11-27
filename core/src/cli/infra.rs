@@ -1365,7 +1365,7 @@ mod tests {
                 record
             });
         outcome.unwrap();
-        record.unwrap_or_else(WaitMissed::fail_the_test)
+        record.unwrap_or_else(|missed| missed.fail_the_test())
     }
 
     fn spec_certificate_bytes(host_seed: u8) -> SignatureBytes {
@@ -1660,7 +1660,7 @@ mod tests {
             let last_record = peer
                 .next_host_record(SPEC_RECORD_INTERVAL_LATEST)
                 .await
-                .unwrap_or_else(WaitMissed::fail_the_test);
+                .unwrap_or_else(|missed| missed.fail_the_test());
             let last_record_heard = Instant::now();
             peer.topic
                 .broadcast(
@@ -1736,12 +1736,12 @@ mod tests {
                 let first = peer
                     .next_host_record(RECORD_AT_JOIN_WAIT)
                     .await
-                    .unwrap_or_else(WaitMissed::fail_the_test);
+                    .unwrap_or_else(|missed| missed.fail_the_test());
                 let first_heard = Instant::now();
                 let second = peer
                     .next_host_record(SPEC_RECORD_INTERVAL_LATEST)
                     .await
-                    .unwrap_or_else(WaitMissed::fail_the_test);
+                    .unwrap_or_else(|missed| missed.fail_the_test());
                 let spacing = first_heard.elapsed();
                 stop.send(()).unwrap();
                 (first, second, spacing)
@@ -1855,7 +1855,7 @@ mod tests {
 
         assert!(joined_through_the_first_endpoint);
         assert_eq!(
-            record.unwrap_or_else(WaitMissed::fail_the_test).ts,
+            record.unwrap_or_else(|missed| missed.fail_the_test()).ts,
             FROZEN_CLOCK_SECONDS
         );
         outcome.unwrap();
@@ -2052,7 +2052,7 @@ mod tests {
 
         first_outcome.unwrap();
         let (learned, first_holds_own, first_holds_second, looked_up) = observed;
-        let learned = learned.unwrap_or_else(WaitMissed::fail_the_test);
+        let learned = learned.unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(learned.relay, SPEC_SECOND_RELAY_URL);
         assert_eq!(learned.ts, Some(FROZEN_CLOCK_SECONDS));
         assert_eq!(
@@ -2171,7 +2171,7 @@ mod tests {
 
         outcome.unwrap();
         let (learned, looked_up, listed) = observed;
-        learned.unwrap_or_else(WaitMissed::fail_the_test);
+        learned.unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(looked_up, vec![SPEC_RELAY_URL]);
         assert_eq!(listed, 0);
     }
@@ -2228,7 +2228,7 @@ mod tests {
         outcome.unwrap();
         assert_eq!(
             other_learned
-                .unwrap_or_else(WaitMissed::fail_the_test)
+                .unwrap_or_else(|missed| missed.fail_the_test())
                 .relay,
             OTHER_HOST_RELAY_URL
         );

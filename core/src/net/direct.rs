@@ -1278,7 +1278,7 @@ pub(crate) mod tests {
     use crate::each_arm::assert_each_arm;
     use crate::net::endpoint::NodeEndpoint;
     use crate::seeded_draws::Draws;
-    use crate::test_waits::{WaitMissed, answered_within, found_within};
+    use crate::test_waits::{answered_within, found_within};
 
     const NETWORK_SECRET: [u8; KEY_LEN] = [7; KEY_LEN];
     const SERVER_SEED: u8 = 1;
@@ -1900,7 +1900,7 @@ pub(crate) mod tests {
                 async || (self.readings.load(Ordering::SeqCst) > readings_before).then_some(()),
             )
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         }
     }
 
@@ -1926,7 +1926,7 @@ pub(crate) mod tests {
             },
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
 
         rig.link
             .client
@@ -3100,7 +3100,7 @@ pub(crate) mod tests {
                 .filter(|(received, heard)| received > heard)
         })
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
     }
 
     /// Waits until the register last heard from the peer at the clock's reading, failing by the hearing sample's number when no hearing is noted there within the step's wait.
@@ -3115,7 +3115,7 @@ pub(crate) mod tests {
             (last_heard_on_the_one_of(register, peer) == Some(reading)).then_some(())
         })
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
     }
 
     #[tokio::test]
@@ -4713,7 +4713,7 @@ pub(crate) mod tests {
             async || (*seen.borrow() >= ProbeServed::Dialed).then_some(()),
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         clock.move_forward(HANDSHAKE_HELD_FOR);
         found_within(
             ACTED_ON_THE_READING_WITHIN,
@@ -4721,7 +4721,7 @@ pub(crate) mod tests {
             async || (*seen.borrow() >= ProbeServed::ProbeRead).then_some(()),
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         assert!(
             !probing.is_finished(),
             "the probe ended before the clock read the probe timeout past the call"
@@ -4733,7 +4733,7 @@ pub(crate) mod tests {
             async || probing.is_finished().then_some(()),
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         let outcome = probing.await.unwrap();
         let _answering_gone = call_returned.send(());
 
@@ -4943,7 +4943,7 @@ pub(crate) mod tests {
                     async || (server.streams_taken() >= 1).then_some(()),
                 )
                 .await
-                .unwrap_or_else(WaitMissed::fail_the_test);
+                .unwrap_or_else(|missed| missed.fail_the_test());
                 let reset = link
                     .client
                     .send_message(peer, message_to(card_of(SERVER_SEED), BODY))

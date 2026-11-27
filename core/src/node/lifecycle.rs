@@ -396,7 +396,7 @@ mod tests {
         let (first, second) = start_pair(scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         let (sidecar_path, lock) = scratch.locked_card(SECOND_SEED);
         let session = Arc::new(Session::new(record));
         session
@@ -731,7 +731,7 @@ mod tests {
         drop(second.session);
         drop(second.endpoint);
 
-        gone.unwrap_or_else(WaitMissed::fail_the_test);
+        gone.unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(exit, Exit::Stopped(RuntimeShutdown::Awaited));
         assert_eq!(
             second
@@ -776,7 +776,7 @@ mod tests {
 
         second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         drop(scratch);
     }
 
@@ -789,7 +789,7 @@ mod tests {
         stopping.signals.send(ShutdownSignal::Terminate).unwrap();
         let gone = second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN).await;
 
-        gone.unwrap_or_else(WaitMissed::fail_the_test);
+        gone.unwrap_or_else(|missed| missed.fail_the_test());
         stopping.exit.await.unwrap();
         drop(scratch);
     }
@@ -1039,7 +1039,7 @@ mod tests {
             host_saved_within(&member.config_path, HOST_SEED, CONFIG_SAVED_WITHIN).await;
 
         assert_eq!(before_stop.and_then(|host| host.ts), None);
-        let saved = after_stop.unwrap_or_else(WaitMissed::fail_the_test);
+        let saved = after_stop.unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(saved.ts, Some(moved_record_ts));
         assert!(matches!(saved.origin, HostOrigin::Configured));
         drop(witness);
@@ -1485,7 +1485,7 @@ mod tests {
             (!second.inbox_path.exists()).then_some(())
         })
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         drop(scratch);
     }
 

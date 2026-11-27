@@ -744,7 +744,7 @@ mod tests {
 
         received_data_messages_within(&first, EVENTS_PAST_THE_SUBSCRIPTION_CAPACITY, DELIVERY_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
 
         let first_error = timeout(LAG_WAIT, async {
             loop {

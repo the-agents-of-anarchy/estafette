@@ -200,7 +200,8 @@ impl WaitMissed {
         }
     }
 
-    /// Fails the test with the name of what was awaited and the bound.
+    /// Fails the test with the name of what was awaited and the bound, at the line of the call, which a caller must write in a closure of its own so that the panic names the caller's line.
+    #[track_caller]
     pub fn fail_the_test<Found>(self) -> Found {
         panic!("{self}")
     }
@@ -389,7 +390,7 @@ mod tests {
             tokio::time::advance(MISSED_WAIT_BOUND),
         );
 
-        missed.unwrap_or_else(WaitMissed::fail_the_test);
+        missed.unwrap_or_else(|missed| missed.fail_the_test());
     }
 
     #[tokio::test(start_paused = true)]

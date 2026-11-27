@@ -2505,10 +2505,10 @@ pub(super) mod tests {
         assert_eq!(second.node.own_handle().as_str(), SECOND_HANDLE);
         let seen_by_first = listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         let seen_by_second = listed_within(&second, FIRST_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(seen_by_first.effective_handle.as_str(), SECOND_HANDLE);
         assert_eq!(seen_by_first.public.as_deref(), Some(SECOND_PUBLIC));
         assert_eq!(seen_by_first.status, Status::Online);
@@ -2593,7 +2593,7 @@ pub(super) mod tests {
         assert!(ack.accepted);
         let listed = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(listed.effective_handle.as_str(), SECOND_HANDLE);
         assert_eq!(listed.status, Status::Online);
         assert!(listed.attached);
@@ -2614,7 +2614,7 @@ pub(super) mod tests {
         .await;
         let after_introduce = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(after_introduce.status, Status::Online);
         assert_eq!(after_introduce.public.as_deref(), Some(SECOND_PUBLIC));
         drop(scratch);
@@ -2859,7 +2859,7 @@ pub(super) mod tests {
         witness.broadcast_marker(marker_seed).await;
         listed_within(member, marker_seed, PAYLOAD_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
     }
 
     pub(in crate::node) async fn start_third_through_second(
@@ -2885,7 +2885,7 @@ pub(super) mod tests {
         let (first, second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
 
         let _third = start_third_through_second(&scratch, &second, THIRD_HANDLE).await;
         let third_presence_sent = tokio::time::Instant::now();
@@ -2906,7 +2906,7 @@ pub(super) mod tests {
         let (first, second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
 
         let third = start_third_through_second(&scratch, &second, FIRST_HANDLE).await;
 
@@ -2916,10 +2916,10 @@ pub(super) mod tests {
         );
         let at_first = listed_within(&first, THIRD_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         let at_second = listed_within(&second, THIRD_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(
             at_first.effective_handle.as_str(),
             SECOND_EFFECTIVE_FIRST_HANDLE
@@ -2959,7 +2959,7 @@ pub(super) mod tests {
         let (first, _second) = start_pair(&scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         let witness = Witness::joined_through(WITNESS_SEED, None, &first.endpoint).await;
 
         witness
@@ -2976,7 +2976,7 @@ pub(super) mod tests {
         marker_reaches(&first, &witness, MARKER_SEED).await;
         let after_replay = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(after_replay.public.as_deref(), Some(SECOND_PUBLIC));
         assert_eq!(after_replay.status, Status::Online);
 
@@ -2991,7 +2991,7 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         witness
             .broadcast_as(
                 SECOND_SEED,
@@ -3007,7 +3007,7 @@ pub(super) mod tests {
 
         let after_departure = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         assert!(matches!(after_departure.status, Status::Gone { .. }));
         assert_eq!(after_departure.public.as_deref(), Some(SECOND_PUBLIC));
         drop(scratch);
@@ -3169,7 +3169,7 @@ pub(super) mod tests {
             .await;
         let saved = host_saved_within(&member.config_path, HOST_SEED, SPEC_HOST_ADDED_WITHIN)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(saved.relay, HOST_RELAY);
         assert_eq!(saved.ts, Some(record_ts));
         assert!(matches!(saved.origin, HostOrigin::Learned { .. }));
@@ -3201,7 +3201,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, HOST_SEED, PAYLOAD_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         member
             .endpoint
             .remove_relay_past_the_guard(&relay_url(HOST_RELAY))
@@ -3228,7 +3228,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, SECOND_HOST_SEED, PAYLOAD_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         assert!(!relay_map_holds(&member.endpoint, HOST_RELAY).await);
         assert_eq!(
             saved_host(&member.config_path, HOST_SEED).unwrap().ts,
@@ -3249,7 +3249,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, THIRD_HOST_SEED, PAYLOAD_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         assert!(relay_map_holds(&member.endpoint, HOST_RELAY).await);
         assert_eq!(
             saved_host(&member.config_path, HOST_SEED).unwrap().ts,
@@ -3286,7 +3286,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, SECOND_HOST_SEED, PAYLOAD_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
 
         assert!(saved_host(&member.config_path, HOST_SEED).is_none());
         assert!(!relay_map_holds(&member.endpoint, HOST_RELAY).await);
@@ -3848,7 +3848,7 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         settled_direct_answers(&member, WITNESS_SEED, DirectContact::Introduce).await;
         next_recorded_meeting(
             &mut recorded,
@@ -3873,7 +3873,7 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         drop(scratch);
     }
 
@@ -3893,7 +3893,7 @@ pub(super) mod tests {
         let (first, second) = start_pair_reporting_first(&scratch, report).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         let mut witness = Witness::joined_through(WITNESS_SEED, None, &first.endpoint).await;
         neighbors.until_recorded(SECOND_SEED).await;
         let killed = tokio::time::Instant::now();
@@ -3914,7 +3914,7 @@ pub(super) mod tests {
             })
             .await;
 
-        unreachable.unwrap_or_else(WaitMissed::fail_the_test);
+        unreachable.unwrap_or_else(|missed| missed.fail_the_test());
         assert!(killed.elapsed() < SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT + PAYLOAD_WAIT);
         assert_eq!(
             unreachable_report(announced),
@@ -3942,7 +3942,7 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         neighbors.until_recorded(WITNESS_SEED).await;
         settled_direct_answers(&member, WITNESS_SEED, DirectContact::Introduce).await;
         let probe_answers_before =
@@ -3970,7 +3970,7 @@ pub(super) mod tests {
             },
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         direct_answer_after(
             &member,
             WITNESS_SEED,
@@ -3987,7 +3987,7 @@ pub(super) mod tests {
 
         let after = listed_within(&member, WITNESS_SEED, Duration::ZERO)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(after.status, Status::Online);
         assert_eq!(after.effective_handle.as_str(), WITNESS_HANDLE);
         assert_eq!(
@@ -4028,7 +4028,7 @@ pub(super) mod tests {
         );
         let listed = listed_within(&member, MARKER_SEED, Duration::ZERO)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(listed.status, Status::Unreachable);
         drop(scratch);
     }
@@ -4103,7 +4103,7 @@ pub(super) mod tests {
             PAYLOAD_WAIT,
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         settled_direct_answers(&member, WITNESS_SEED, DirectContact::Introduce).await;
         settled_direct_answers(&member, WITNESS_SEED, DirectContact::Probe).await;
         discard_waiting(&mut failures);
@@ -4687,7 +4687,7 @@ pub(super) mod tests {
         );
         let listed = listed_within(&first, SECOND_SEED, Duration::ZERO)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
         assert_eq!(listed.public, Some(at_bound));
         drop(scratch);
     }
@@ -4800,7 +4800,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, HOST_SEED, PAYLOAD_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
 
         witness
             .broadcast_as(
@@ -4816,7 +4816,7 @@ pub(super) mod tests {
             .await;
         host_saved_within(&member.config_path, SECOND_HOST_SEED, PAYLOAD_WAIT)
             .await
-            .unwrap_or_else(WaitMissed::fail_the_test);
+            .unwrap_or_else(|missed| missed.fail_the_test());
 
         let saved = saved_host(&member.config_path, HOST_SEED).unwrap();
         assert_eq!(saved.relay, MOVED_HOST_RELAY);
@@ -4986,7 +4986,7 @@ pub(super) mod tests {
             async || (!relay_map.contains(&relay_address)).then_some(()),
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
 
         assert!(
             member
@@ -5218,7 +5218,7 @@ pub(super) mod tests {
             async || (!relay_map.contains(&relay_address)).then_some(()),
         )
         .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        .unwrap_or_else(|missed| missed.fail_the_test());
         drop(scratch);
     }
 
