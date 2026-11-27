@@ -299,7 +299,13 @@ pub(crate) mod scratch {
     use std::ffi::OsString;
     use std::ops::Deref;
     use std::path::{Path, PathBuf};
+    use std::process::Command;
 
+    const RERUN_DIRECTORY_VARIABLE: &str = "ESTAFETTE_TEST_RERUN_DIRECTORY";
+    const POSIX_SHELL: &str = "/bin/sh";
+    const RERUN_UNDER_UMASK_SCRIPT: &str = "umask \"$2\"; exec \"$0\" --exact \"$1\"";
+    /// A umask that clears the owner's read bit, which a file created with an owner-only mode would lose.
+    pub const OWNER_READ_CLEARING_UMASK: &str = "0400";
     pub struct ScratchDirectory(PathBuf);
 
     impl Deref for ScratchDirectory {
@@ -339,6 +345,29 @@ pub(crate) mod scratch {
             .collect();
         names.sort();
         names
+    }
+
+    /// The directory the parent run handed to this rerun of a test, none in the parent run itself.
+    pub fn directory_handed_by_parent() -> Option<PathBuf> {
+        std::env::var_os(RERUN_DIRECTORY_VARIABLE).map(PathBuf::from)
+    }
+
+    /// Runs the named test again in a child process under the umask, handing it the directory to work in, and fails unless the child exits successfully.
+    pub fn rerun_under_umask(test_path: &str, umask: &str, directory: &Path) {
+        let child = Command::new(POSIX_SHELL)
+            .args(["-c", RERUN_UNDER_UMASK_SCRIPT])
+            .arg(std::env::current_exe().unwrap())
+            .arg(test_path)
+            .arg(umask)
+            .env(RERUN_DIRECTORY_VARIABLE, directory)
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
     }
 }
 

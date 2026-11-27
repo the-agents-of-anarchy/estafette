@@ -774,6 +774,37 @@ mod tests {
         assert_eq!(mode & PERMISSION_BITS_MASK, OWNER_ONLY_FILE_MODE);
     }
 
+    const OWNER_ONLY_UNDER_UMASK_TEST_PATH: &str = "config::tests::rewrite_leaves_the_file_owner_only_under_a_umask_that_clears_the_owners_read_bit";
+
+    /// Spec 3.3: the file is 0600 after a rewrite whatever the umask, also when the umask clears the owner's read bit.
+    #[test]
+    fn rewrite_leaves_the_file_owner_only_under_a_umask_that_clears_the_owners_read_bit() {
+        if let Some(directory) = scratch::directory_handed_by_parent() {
+            network(vec![learned(
+                &host_id(b'a'),
+                "https://a/",
+                Some(1),
+                NOW_MILLIS,
+            )])
+            .rewrite(&directory.join("net.toml"), NOW_SECONDS)
+            .unwrap();
+            return;
+        }
+        let directory = scratch_directory("mode-under-umask");
+
+        scratch::rerun_under_umask(
+            OWNER_ONLY_UNDER_UMASK_TEST_PATH,
+            scratch::OWNER_READ_CLEARING_UMASK,
+            &directory,
+        );
+
+        let mode = fs::metadata(directory.join("net.toml"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & PERMISSION_BITS_MASK, OWNER_ONLY_FILE_MODE);
+    }
+
     /// Spec 3.3: a rewrite renames a temporary file over the old one and leaves nothing beside it.
     #[test]
     fn rewrite_leaves_only_the_configuration_file() {

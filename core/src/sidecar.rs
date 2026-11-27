@@ -314,7 +314,7 @@ fn acquire_exclusive_lock(file: &File, pause: &impl Pause) -> Result<(), Sidecar
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dirs::scratch::{ScratchDirectory, names_in, scratch_directory};
+    use crate::dirs::scratch::{self, ScratchDirectory, names_in, scratch_directory};
     use crate::seeded_draws::Draws;
     use data_encoding::HEXLOWER;
 
@@ -630,6 +630,36 @@ mod tests {
         );
         let held = claim(&sidecar, &public_key, &NoPause).unwrap();
         assert_eq!(held.secret_key().to_bytes(), seed);
+    }
+
+    const SIDECAR_UNDER_UMASK_TEST_PATH: &str = "sidecar::tests::a_created_sidecar_is_0600_under_a_umask_that_clears_the_owners_read_bit_spec_3_5";
+
+    #[test]
+    fn a_created_sidecar_is_0600_under_a_umask_that_clears_the_owners_read_bit_spec_3_5() {
+        if let Some(directory) = scratch::directory_handed_by_parent() {
+            create_card(
+                &directory.join("w.yaml"),
+                &directory.join("w.key"),
+                &scout_handle(),
+                seed_of(15),
+            )
+            .unwrap();
+            return;
+        }
+        let directory = fresh_directory("create_under_umask");
+        let _apart_from_lock_releases = kept_apart_from_child_spawns();
+
+        scratch::rerun_under_umask(
+            SIDECAR_UNDER_UMASK_TEST_PATH,
+            scratch::OWNER_READ_CLEARING_UMASK,
+            &directory,
+        );
+
+        let mode = std::fs::metadata(directory.join("w.key"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & PERMISSION_BITS_MASK, OWNER_ONLY_FILE_MODE);
     }
 
     #[test]
