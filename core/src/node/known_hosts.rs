@@ -171,7 +171,11 @@ impl KnownHosts {
         report: &(dyn Fn(Event) + Send + Sync),
     ) {
         let admitted = self.held().take_record(valid, now_ms);
-        report(admission_record(valid.record().facts(), None, &admitted));
+        report(admission_record(
+            valid.record().facts(),
+            None,
+            admitted.as_ref().err().copied(),
+        ));
         let Ok(verdict) = admitted else {
             return;
         };

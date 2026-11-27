@@ -10,16 +10,14 @@ use crate::payload::{DescribedPayload, PayloadDropRule, PayloadFacts, PayloadRef
 use crate::wire::Payload;
 
 /// The record of a received payload the node took, or dropped by the rule the admission named, naming its signer by the handle the table holds for it, if any.
-pub(super) fn admission_record<Taken>(
+pub(super) fn admission_record(
     facts: PayloadFacts,
     signer_handle: Option<LocalHandle>,
-    admission: &Result<Taken, PayloadDropRule>,
+    dropped_by: Option<PayloadDropRule>,
 ) -> Event {
-    match admission {
-        Ok(_taken) => {
-            crate::event::GossipEvent::PayloadAccepted((facts, signer_handle).into()).into()
-        }
-        Err(rule) => payload_dropped_record(facts, signer_handle, *rule),
+    match dropped_by {
+        None => crate::event::GossipEvent::PayloadAccepted((facts, signer_handle).into()).into(),
+        Some(rule) => payload_dropped_record(facts, signer_handle, rule),
     }
 }
 
@@ -45,13 +43,13 @@ fn held_signer_handle_of_node(
 }
 
 /// The record of a received payload the node took, or dropped by the rule the admission named, naming its signer by the handle its peer table holds for it at that instant in milliseconds when the node keeps one.
-pub(super) fn named_admission_record<Taken>(
+pub(super) fn named_admission_record(
     table_at: Option<(&PeerRows, u64)>,
     facts: PayloadFacts,
-    admission: &Result<Taken, PayloadDropRule>,
+    dropped_by: Option<PayloadDropRule>,
 ) -> Event {
     let signer_handle = held_signer_handle_of_node(table_at, &facts);
-    admission_record(facts, signer_handle, admission)
+    admission_record(facts, signer_handle, dropped_by)
 }
 
 /// The record of bytes the payload layer dropped, naming the signer they named by the handle its peer table holds for it at that instant in milliseconds when the node keeps one.
@@ -72,7 +70,7 @@ pub fn taken_without_a_row_record(
     facts: PayloadFacts,
     table_at: Option<(&PeerRows, u64)>,
 ) -> Event {
-    named_admission_record(table_at, facts, &Ok::<(), PayloadDropRule>(()))
+    named_admission_record(table_at, facts, None)
 }
 
 /// What every node records of a topic event before acting on it: the join and each neighbor up and down, a payload being recorded where it is judged.

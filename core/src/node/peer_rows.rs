@@ -175,7 +175,8 @@ impl PeerRows {
             let admitted = payload.admit_to(table, now_ms);
             let facts = payload.facts();
             let signer_handle = table.handle_of(facts.signer, now_ms);
-            let record = admission_record(facts, signer_handle, &admitted.value);
+            let record =
+                admission_record(facts, signer_handle, admitted.value.as_ref().err().copied());
             (admitted, record)
         });
         (self.report)(record);

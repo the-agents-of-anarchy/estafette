@@ -901,7 +901,7 @@ impl PresenceLoop {
         (self.report)(named_admission_record(
             Some((&self.state.rows, now_ms)),
             facts,
-            &admission,
+            admission.err(),
         ));
     }
 
