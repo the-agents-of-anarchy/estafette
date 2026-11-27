@@ -3023,6 +3023,23 @@ pub(crate) mod tests {
         }
     }
 
+    /// The port and salted location hash a direct path's record carries, or none for a relay path.
+    #[cfg(feature = "relay")]
+    fn port_and_location_of_direct(
+        address: &iroh::TransportAddr,
+    ) -> Option<(serde_json::Value, serde_json::Value)> {
+        match address {
+            iroh::TransportAddr::Ip(address) => Some((
+                serde_json::Value::from(address.port()),
+                serde_json::Value::from(
+                    super::super::endpoint::LocationHash::of(&test_salt(), &address.to_string())
+                        .hex(),
+                ),
+            )),
+            _ => None,
+        }
+    }
+
     #[cfg(feature = "relay")]
     const DIRECT_PATH_OPENED_WITHIN: Duration = Duration::from_secs(20);
 
@@ -3034,6 +3051,13 @@ pub(crate) mod tests {
         let is_direct = |fields: &crate::event::EventFields| {
             field(fields, "kind") == Some(&serde_json::Value::from("direct"))
         };
+        let mut path_events = link.dialed.path_events();
+        let mut direct_paths: Vec<_> = link
+            .dialed
+            .paths()
+            .iter()
+            .filter_map(|path| port_and_location_of_direct(path.remote_addr()))
+            .collect();
 
         let opened = next_recorded_meeting(
             &mut link.this_side,
@@ -3050,32 +3074,25 @@ pub(crate) mod tests {
         )
         .await;
 
-        let held_direct_paths: Vec<(serde_json::Value, serde_json::Value)> = link
-            .dialed
-            .paths()
-            .iter()
-            .filter_map(|path| match path.remote_addr() {
-                iroh::TransportAddr::Ip(address) => Some((
-                    serde_json::Value::from(address.port()),
-                    serde_json::Value::from(
-                        super::super::endpoint::LocationHash::of(
-                            &test_salt(),
-                            &address.to_string(),
-                        )
-                        .hex(),
-                    ),
-                )),
-                _ => None,
-            })
-            .collect();
+        while let Ok(Some(event)) = tokio::time::timeout(Duration::ZERO, path_events.next()).await {
+            match event {
+                PathEvent::Opened { remote_addr, .. } | PathEvent::Selected { remote_addr, .. } => {
+                    direct_paths.extend(port_and_location_of_direct(&remote_addr));
+                }
+                PathEvent::Lagged { missed, .. } => {
+                    panic!("setup: the test's own path events lagged by {missed}")
+                }
+                _ => {}
+            }
+        }
         for recorded in [&opened, &selected] {
             let port_and_location = (
                 field(recorded, "port").cloned().unwrap(),
                 field(recorded, "location").cloned().unwrap(),
             );
             assert!(
-                held_direct_paths.contains(&port_and_location),
-                "{recorded:?} names none of the direct paths the connection holds: {held_direct_paths:?}"
+                direct_paths.contains(&port_and_location),
+                "{recorded:?} names none of the direct paths the connection opened: {direct_paths:?}"
             );
         }
     }
