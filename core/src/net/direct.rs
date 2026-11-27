@@ -3002,7 +3002,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn observability_decision_9_a_connections_lost_path_events_are_recorded_with_the_count_iroh_reports()
+    async fn observability_decision_9_a_connections_lost_path_events_record_renders_its_name_connection_and_count()
      {
         let rig = rig().await;
         let dialed = rig
