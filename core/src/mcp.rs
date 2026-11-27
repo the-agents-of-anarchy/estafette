@@ -118,19 +118,19 @@ pub struct ServerEffects {
 
 /// Why the card registry of the network could not be read.
 #[derive(Debug)]
-pub enum RegistryFailure {
-    Unreadable { path: PathBuf, source: io::Error },
+pub struct RegistryFailure {
+    path: PathBuf,
+    source: io::Error,
 }
 
 impl fmt::Display for RegistryFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Unreadable { path, source } => write!(
-                formatter,
-                "the card registry at {} could not be read: {source}",
-                path.display()
-            ),
-        }
+        write!(
+            formatter,
+            "the card registry at {} could not be read: {}",
+            self.path.display(),
+            self.source
+        )
     }
 }
 
@@ -532,7 +532,7 @@ fn registry_cards(
         Ok(entries) => entries,
         Err(failure) if failure.kind() == io::ErrorKind::NotFound => Vec::new(),
         Err(source) => {
-            return Err(RegistryFailure::Unreadable {
+            return Err(RegistryFailure {
                 path: cards_directory,
                 source,
             });
