@@ -11,7 +11,7 @@ use super::payload_records::admission_record;
 use crate::clock::MILLIS_PER_SECOND;
 use crate::config::{ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
 use crate::event::{ConfigurationRewrite, Event, GossipEvent, ShortId};
-use crate::keys::parse_public_key;
+use crate::keys::{parse_public_key, render_key_bytes};
 use crate::net::endpoint::NodeEndpoint;
 use crate::payload::{DescribedPayload, PayloadDropRule, ValidInfrastructure};
 use crate::wire::{self, Infrastructure};
@@ -222,7 +222,7 @@ impl HeldHosts {
     ) -> Result<RecordVerdict, PayloadDropRule> {
         let record = valid.record();
         refuse_past_future_bound(record.ts, now_ms)?;
-        let id = data_encoding::HEXLOWER.encode(record.host.as_bytes());
+        let id = render_key_bytes(record.host.as_bytes());
         let verdict = match self.config.hosts.iter_mut().find(|host| host.id == id) {
             None => {
                 self.config.hosts.push(learned_host(id, record, now_ms));
@@ -410,6 +410,41 @@ mod tests {
                 format!("known host {NOT_A_NODE_ID} needs a node id of {SPEC_REFUSAL_ACCEPTED}"),
                 format!("known host {live_id} needs a node id of {SPEC_REFUSAL_ACCEPTED}"),
             ]
+        );
+    }
+
+    /// Spec 3.8: a host learned from its record is held under its key rendered as 64 lowercase hexadecimal characters.
+    #[tokio::test]
+    async fn spec_3_8_a_host_learned_from_its_record_is_held_under_its_key_in_lowercase_hexadecimal()
+     {
+        let endpoint = bind(FIRST_SEED).await;
+        let record = valid_record(
+            opened_record(HOST_SEED, HOST_RELAY, FROZEN_CLOCK_MS / MILLIS_PER_SECOND).unwrap(),
+        );
+        let known_hosts = KnownHosts::new(config_with_hosts(Vec::new()), PathBuf::new());
+
+        known_hosts
+            .take_infrastructure(
+                &record,
+                FROZEN_CLOCK_MS,
+                &endpoint,
+                RelayOfRecord::LeaveOutOfRelayMap,
+                &|_event| {},
+            )
+            .await;
+
+        let held: Vec<String> = known_hosts
+            .held()
+            .config
+            .hosts
+            .iter()
+            .map(|host| host.id.clone())
+            .collect();
+        assert_eq!(
+            held,
+            [crate::keys::render_public_key(
+                &secret_key(HOST_SEED).public()
+            )]
         );
     }
 

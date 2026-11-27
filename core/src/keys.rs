@@ -53,7 +53,12 @@ pub fn parse_public_key(text: &str) -> Result<PublicKey, KeyError> {
 /// Writes a public key as 64 lowercase hexadecimal characters.
 #[must_use]
 pub fn render_public_key(key: &PublicKey) -> String {
-    HEXLOWER.encode(key.as_bytes())
+    render_key_bytes(key.as_bytes())
+}
+
+/// Writes the bytes of a key as 64 lowercase hexadecimal characters.
+pub(crate) fn render_key_bytes(bytes: &[u8; KEY_LEN]) -> String {
+    HEXLOWER.encode(bytes)
 }
 
 /// Reads a seed from 64 hexadecimal characters of either case and an optional final newline.
