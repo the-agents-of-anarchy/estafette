@@ -855,14 +855,35 @@ pub enum ToolName {
 }
 
 impl ToolName {
-    const ALL: [Self; TOOL_COUNT] = [
+    const ALL: [Self; TOOL_COUNT] = listing_of_every_declared_tool([
         Self::ListCards,
         Self::Init,
         Self::Peers,
         Self::Send,
         Self::Broadcast,
         Self::Inbox,
-    ];
+    ]);
+
+    /// The tool declared right after this one, none after the last.
+    const fn declared_after(self) -> Option<Self> {
+        match self {
+            Self::ListCards => Some(Self::Init),
+            Self::Init => Some(Self::Peers),
+            Self::Peers => Some(Self::Send),
+            Self::Send => Some(Self::Broadcast),
+            Self::Broadcast => Some(Self::Inbox),
+            Self::Inbox => None,
+        }
+    }
+
+    /// The place of the tool in the declaration of the enum.
+    #[expect(
+        clippy::as_conversions,
+        reason = "a fieldless enum's discriminant is its place in the declaration, and no const conversion gives it"
+    )]
+    const fn declaration_place(self) -> usize {
+        self as usize
+    }
 
     /// The tool a client calls by this name, if any.
     fn named(name: &str) -> Option<Self> {
@@ -951,6 +972,41 @@ impl ToolName {
     fn tool(self) -> Tool {
         Tool::new(self.name(), self.description(), self.input_schema())
     }
+}
+
+/// Evaluates the listing in every build, `cargo check` included, which skips a constant nothing evaluates.
+const _: [ToolName; TOOL_COUNT] = ToolName::ALL;
+
+/// The listing itself, once the build has shown that it lists every declared tool once, in declaration order.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "each read of the listing follows an assertion that its place is within it"
+)]
+const fn listing_of_every_declared_tool(listing: [ToolName; TOOL_COUNT]) -> [ToolName; TOOL_COUNT] {
+    let mut listed = 0;
+    let mut declared = listing[0];
+    loop {
+        assert!(
+            declared.declaration_place() == listing[listed].declaration_place(),
+            "ToolName::ALL lists the tools in another order than the enum declares them"
+        );
+        match declared.declared_after() {
+            Some(next) => {
+                declared = next;
+                listed = listed.saturating_add(1);
+                assert!(
+                    listed < listing.len(),
+                    "a tool is declared that ToolName::ALL does not list"
+                );
+            }
+            None => break,
+        }
+    }
+    assert!(
+        listed.saturating_add(1) == listing.len(),
+        "ToolName::ALL lists a tool that is not declared"
+    );
+    listing
 }
 
 /// The schema of a value of one JSON type, with these further keywords.
