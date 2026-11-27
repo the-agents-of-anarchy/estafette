@@ -125,7 +125,7 @@ fn verify_under_prefix(
         .map_err(|_refusal| CryptoError::SignatureMismatch)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkSecret([u8; KEY_LEN]);
 
 impl NetworkSecret {
