@@ -157,7 +157,7 @@ impl RunId {
 #[must_use]
 #[derive(Debug)]
 pub enum TraceStop {
-    /// The writer took every queued line within the drain bound and the file ends at its last line, each line lost or whose write failed counted in a `dropped` line the file holds.
+    /// The writer took every queued line within the drain bound and the file ends at its last line, each line lost or whose write failed counted in a `dropped` line the file holds, but for a line dropped on a thread whose stamp panicked, which is neither written nor counted.
     Drained,
     /// The writer of the file named did not report within the drain bound that it took every queued line.
     NotDrained { file: TraceFileKind },
