@@ -57,36 +57,17 @@ impl DoctorFilesystem for OperatingSystemFilesystem {
     }
 }
 
-#[derive(Debug)]
-enum Failure {
-    Output(io::Error),
-}
-
-impl fmt::Display for Failure {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Output(source) => write!(formatter, "cannot write the result: {source}"),
-        }
-    }
-}
-
 /// A doctor run that could not report, stated for whoever ran it.
 #[derive(Debug)]
-pub struct DoctorError(Failure);
+pub struct DoctorError(io::Error);
 
 impl fmt::Display for DoctorError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
+        write!(formatter, "cannot write the result: {}", self.0)
     }
 }
 
 impl std::error::Error for DoctorError {}
-
-impl From<Failure> for DoctorError {
-    fn from(failure: Failure) -> Self {
-        Self(failure)
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 enum Check {
@@ -139,7 +120,7 @@ impl<'stream, Stream: Write> Report<'stream, Stream> {
         }
     }
 
-    fn record(&mut self, check: Check, verdict: &Verdict) -> Result<(), Failure> {
+    fn record(&mut self, check: Check, verdict: &Verdict) -> Result<(), DoctorError> {
         let (word, detail) = match verdict {
             Verdict::Passed(detail) => (PASSED_WORD, detail),
             Verdict::Failed(detail) => {
@@ -151,7 +132,7 @@ impl<'stream, Stream: Write> Report<'stream, Stream> {
         self.stdout
             .write_all(line.as_bytes())
             .and_then(|()| self.stdout.flush())
-            .map_err(Failure::Output)
+            .map_err(DoctorError)
     }
 
     const fn exit_status(&self) -> ExitStatus {
