@@ -3,7 +3,6 @@ use std::future::Future;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::str::FromStr;
 use std::sync::{Arc, MutexGuard};
 
 use clap::Subcommand;
@@ -16,7 +15,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinError;
 use tokio::time::Instant;
 
-use crate::card::{Card, CardInvalid, CardUnusable};
+use crate::card::CardUnusable;
+use crate::cli::cards::{CardCommandError, create_card_with_fresh_key, judge_card_text};
 use crate::cli::debug::DebugArgs;
 use crate::cli::lines::tab_separated_line;
 use crate::cli::network::NetworkFilesystem;
@@ -42,7 +42,7 @@ use crate::node::{
 };
 use crate::payload::{DescribedPayload, OpenedPayload, ZERO_MAC};
 use crate::peers::{Effect, Peer, PeerTable};
-use crate::sidecar::{HeldSidecar, Pause, SEED_BYTES, SidecarError, claim, create_card};
+use crate::sidecar::{HeldSidecar, Pause, SEED_BYTES, SidecarError, claim};
 use crate::wire::{self, Introduce, IntroduceAck, Message, Version};
 
 /// The name the command line parses the show-peers command by and its trace writes.
@@ -182,14 +182,7 @@ enum Failure {
         source: io::Error,
     },
     Sidecar(SidecarError),
-    CardInvalid {
-        path: PathBuf,
-        reason: CardInvalid,
-    },
-    CardUnusable {
-        path: PathBuf,
-        reason: CardUnusable,
-    },
+    Card(CardCommandError),
     Session(ErrorCode),
     NotDelivered(ErrorCode),
     TopicClosed,
@@ -211,16 +204,7 @@ impl fmt::Display for Failure {
             Self::Inbox(source) => write!(formatter, "{source}"),
             Self::Io { path, source } => write!(formatter, "{}: {source}", path.display()),
             Self::Sidecar(source) => write!(formatter, "{source}"),
-            Self::CardInvalid { path, reason } => {
-                write!(
-                    formatter,
-                    "{} is not a valid card: {reason}",
-                    path.display()
-                )
-            }
-            Self::CardUnusable { path, reason } => {
-                write!(formatter, "{} is not usable: {reason}", path.display())
-            }
+            Self::Card(source) => write!(formatter, "{source}"),
             Self::Session(code) => write!(formatter, "the session did not take the node: {code}"),
             Self::TopicClosed => formatter.write_str("the gossip topic closed"),
             Self::RouterShutdown(source) => {
@@ -420,27 +404,13 @@ fn claim_operator_card(
         source,
     };
     if !filesystem.path_exists(&card_file).map_err(unreadable)? {
-        create_operator_card(
-            directories,
-            filesystem,
-            network,
-            &name,
-            fill_seed,
-            &card_file,
-            &sidecar_file,
-        )?;
+        create_card_with_fresh_key(directories, filesystem, network, &name, &name, |seed| {
+            fill_seed(seed);
+        })
+        .map_err(Failure::Card)?;
     }
     let text = filesystem.read_to_string(&card_file).map_err(unreadable)?;
-    let card = Card::from_str(&text).map_err(|reason| Failure::CardInvalid {
-        path: card_file.clone(),
-        reason,
-    })?;
-    let usable =
-        card.check_usable_on(network.as_str())
-            .map_err(|reason| Failure::CardUnusable {
-                path: card_file.clone(),
-                reason,
-            })?;
+    let (card, usable) = judge_card_text(&text, &card_file, network).map_err(Failure::Card)?;
     let held =
         claim(&sidecar_file, usable.public_key.as_bytes(), pause).map_err(Failure::Sidecar)?;
     Ok(OperatorCard {
@@ -451,37 +421,14 @@ fn claim_operator_card(
     })
 }
 
-/// Writes the operator card and its sidecar from a fresh seed.
-fn create_operator_card(
-    directories: &Directories,
-    filesystem: &impl NetworkFilesystem,
-    network: &Handle,
-    name: &Handle,
-    fill_seed: &SeedSource,
-    card_file: &Path,
-    sidecar_file: &Path,
-) -> Result<(), Failure> {
-    let cards_directory = directories.cards_directory(network);
-    filesystem
-        .create_private_directory(&cards_directory)
-        .map_err(|source| Failure::Io {
-            path: cards_directory,
-            source,
-        })?;
-    let mut fresh_seed = [0; SEED_BYTES];
-    fill_seed(&mut fresh_seed);
-    create_card(card_file, sidecar_file, name, fresh_seed).map_err(Failure::Sidecar)?;
-    Ok(())
-}
-
 /// Returns the operator card's name as a handle, refusing it for the path when it is no handle.
 fn operator_name(path: &Path) -> Result<Handle, Failure> {
-    OPERATOR_CARD
-        .parse::<Handle>()
-        .map_err(|source| Failure::CardUnusable {
+    OPERATOR_CARD.parse::<Handle>().map_err(|source| {
+        Failure::Card(CardCommandError::CardUnusable {
             path: path.to_path_buf(),
             reason: CardUnusable::Handle(source),
         })
+    })
 }
 
 /// Has the session depart and release the card as when standard input ends.

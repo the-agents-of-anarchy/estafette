@@ -1,5 +1,6 @@
+use std::fs::Permissions;
 use std::io::{self, BufRead, BufReader, Write};
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::ExitStatusExt;
 use std::panic::{self, AssertUnwindSafe};
@@ -41,6 +42,8 @@ const RELAY_BIND_ADDRESS: &str = "127.0.0.1";
 #[cfg(feature = "relay")]
 const RELAY_DOMAIN: &str = "relay.example";
 const BODY: &str = "hello";
+const READ_AND_SEARCH_ONLY_MODE: u32 = 0o500;
+const OWNER_ONLY_DIRECTORY_MODE: u32 = 0o700;
 const INTERRUPTED_COMMAND_ENDS_WITHIN: Duration = Duration::from_millis(1500);
 const SIGINT_NUMBER: i32 = 2;
 const DATA_HOME: &str = "data";
@@ -310,6 +313,98 @@ fn binary_test_send_creates_the_operator_card_and_reports_an_unknown_handle_of_s
             .unwrap()
             .starts_with("operator\t")
     );
+    remove_scratch::remove_scratch(&root).unwrap();
+}
+
+#[test]
+fn binary_test_send_refuses_an_operator_card_of_another_network_as_the_cards_command_does_of_spec_3_13()
+ {
+    let root = short_scratch_root("test_send_card_of_another_network").unwrap();
+    assert_eq!(create_network(&root).unwrap().status.code(), Some(0));
+    let cards_directory = root.join("cards");
+    let cards_directory_argument = cards_directory.display().to_string();
+    let created = run_binary(
+        &root,
+        &[
+            "create-card",
+            NETWORK,
+            "operator",
+            "operator",
+            "--cards-dir",
+            &cards_directory_argument,
+        ],
+    )
+    .unwrap();
+    assert_eq!(created.status.code(), Some(0));
+    let card_file = cards_directory.join(NETWORK).join("operator.yaml");
+    let mut card_text = std::fs::read_to_string(&card_file).unwrap();
+    card_text.push_str("network: another\n");
+    std::fs::write(&card_file, card_text).unwrap();
+
+    let output = run_binary(
+        &root,
+        &[
+            "test-send",
+            NETWORK,
+            HANDLE,
+            BODY,
+            "--cards-dir",
+            &cards_directory_argument,
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let message = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        message.contains(&format!("{} is not usable here: ", card_file.display())),
+        "{message}"
+    );
+    remove_scratch::remove_scratch(&root).unwrap();
+}
+
+#[test]
+fn binary_test_send_names_a_cards_directory_it_cannot_create_as_the_cards_command_does_of_spec_3_13()
+ {
+    let root = short_scratch_root("test_send_cards_directory_blocked").unwrap();
+    assert_eq!(create_network(&root).unwrap().status.code(), Some(0));
+    let unwritable = root.join("unwritable");
+    std::fs::create_dir(&unwritable).unwrap();
+    std::fs::set_permissions(
+        &unwritable,
+        Permissions::from_mode(READ_AND_SEARCH_ONLY_MODE),
+    )
+    .unwrap();
+    let cards_directory = unwritable.join("cards");
+    let cards_directory_argument = cards_directory.display().to_string();
+
+    let output = run_binary(
+        &root,
+        &[
+            "test-send",
+            NETWORK,
+            HANDLE,
+            BODY,
+            "--cards-dir",
+            &cards_directory_argument,
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    let message = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        message.contains(&format!(
+            "cannot create {}: ",
+            cards_directory.join(NETWORK).display()
+        )),
+        "{message}"
+    );
+    std::fs::set_permissions(
+        &unwritable,
+        Permissions::from_mode(OWNER_ONLY_DIRECTORY_MODE),
+    )
+    .unwrap();
     remove_scratch::remove_scratch(&root).unwrap();
 }
 

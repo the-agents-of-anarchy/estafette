@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 use clap::{Args, Subcommand};
 
-use crate::card::{Card, CardInvalid, CardUnusable};
+use crate::card::{Card, CardInvalid, CardUnusable, UsableCard};
 use crate::cli::lines::tab_separated_line;
 use crate::dirs::{
     CARD_EXTENSION, CARDS_DIRECTORY_VARIABLE, CARDS_SUBDIRECTORY, CardsDirectoryOverride,
@@ -74,7 +74,7 @@ pub enum CardCommand {
 
 /// Why a card command failed, printed as its message alone.
 #[derive(Debug)]
-enum CardCommandError {
+pub(crate) enum CardCommandError {
     Directories(DirectoriesError),
     Sidecar(SidecarError),
     CardsDirectoryUncreatable { path: PathBuf, source: io::Error },
@@ -218,7 +218,12 @@ fn establish_directories(
     .map_err(CardCommandError::Directories)
 }
 
-fn create_card_with_fresh_key(
+/// Creates the card and its key file from a fresh seed in the network's cards directory, returning the public key line.
+///
+/// # Errors
+///
+/// Fails when the cards directory cannot be created or the card cannot be written.
+pub(crate) fn create_card_with_fresh_key(
     directories: &Directories,
     filesystem: &impl DirectoryFilesystem,
     network: &Handle,
@@ -288,6 +293,29 @@ pub(crate) fn card_files_in(
         .collect())
 }
 
+/// Parses the card text and judges it usable on the network, naming the card file when it is not.
+///
+/// # Errors
+///
+/// Fails when the text is not a valid card or the card is not usable on the network.
+pub(crate) fn judge_card_text(
+    text: &str,
+    card_file: &Path,
+    network: &Handle,
+) -> Result<(Card, UsableCard), CardCommandError> {
+    let card = Card::from_str(text).map_err(|reason| CardCommandError::CardInvalid {
+        path: card_file.to_owned(),
+        reason,
+    })?;
+    let usable = card.check_usable_on(network.as_str()).map_err(|reason| {
+        CardCommandError::CardUnusable {
+            path: card_file.to_owned(),
+            reason,
+        }
+    })?;
+    Ok((card, usable))
+}
+
 fn describe_card_file(
     filesystem: &impl CardRegistryReader,
     card_file: &Path,
@@ -303,15 +331,7 @@ fn describe_card_file(
             path: card_file.to_owned(),
             source,
         })?;
-    let card = Card::from_str(&text).map_err(|reason| CardCommandError::CardInvalid {
-        path: card_file.to_owned(),
-        reason,
-    })?;
-    card.check_usable_on(network.as_str())
-        .map_err(|reason| CardCommandError::CardUnusable {
-            path: card_file.to_owned(),
-            reason,
-        })?;
+    let (card, _usable) = judge_card_text(&text, card_file, network)?;
     let line = tab_separated_line(&[name.as_str(), card.handle(), card.public_key()]);
     Ok((name.as_str().to_owned(), line))
 }
