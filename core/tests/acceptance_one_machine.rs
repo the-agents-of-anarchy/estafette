@@ -2164,6 +2164,12 @@ mod spec_3_16_absences_on_one_machine {
             base_directory_files_holding(&network, BODY),
             Vec::<PathBuf>::new()
         );
+        amy.server_mut().close_standard_input();
+        assert!(amy.server_mut().wait_for_exit().success());
+        assert_eq!(
+            base_directory_files_holding(&network, BODY),
+            Vec::<PathBuf>::new()
+        );
     }
 
     #[test]
@@ -2795,22 +2801,51 @@ mod observability_decision_6_on_one_machine {
         fs::read_to_string(path).unwrap()
     }
 
-    /// The events of a connection, each of which names its connection (decision 9).
-    const CONNECTION_EVENT_NAMES: [&str; 8] = [
-        "transport.connection_opened",
-        "transport.connection_closing",
-        "transport.connection_closed",
-        "transport.path_opened",
-        "transport.path_closed",
-        "transport.path_selected",
-        "transport.path_events_missed",
-        "transport.gate_closed",
+    /// Whether a clean run of the exchange writes an event of a connection in every run.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum WrittenByTheExchange {
+        EveryRun,
+        NeverInACleanRun,
+    }
+
+    /// The events of a connection, each of which names its connection (decision 9), with whether the exchange writes it: four runs wrote the first seven every time and none wrote the last three, which need a closing with a code, a lagged path stream or a gate refusal.
+    const CONNECTION_EVENTS: [(&str, WrittenByTheExchange); 10] = [
+        (
+            "transport.connection_opened",
+            WrittenByTheExchange::EveryRun,
+        ),
+        (
+            "transport.connection_closed",
+            WrittenByTheExchange::EveryRun,
+        ),
+        ("transport.path_opened", WrittenByTheExchange::EveryRun),
+        ("transport.path_closed", WrittenByTheExchange::EveryRun),
+        ("transport.path_selected", WrittenByTheExchange::EveryRun),
+        ("direct.request_served", WrittenByTheExchange::EveryRun),
+        (
+            "transport.connection_closing",
+            WrittenByTheExchange::NeverInACleanRun,
+        ),
+        (
+            "transport.path_events_missed",
+            WrittenByTheExchange::NeverInACleanRun,
+        ),
+        (
+            "transport.gate_closed",
+            WrittenByTheExchange::NeverInACleanRun,
+        ),
+        (SENT_REQUEST_EVENT, WrittenByTheExchange::EveryRun),
     ];
-    /// The event of a request a node served, which is always served on a connection (decision 9).
-    const SERVED_REQUEST_EVENT: &str = "direct.request_served";
-    /// The events of a connection that a real exchange is shown to write.
-    const CONNECTION_EVENTS_THIS_EXCHANGE_WRITES: [&str; 2] =
-        ["transport.connection_opened", SERVED_REQUEST_EVENT];
+    /// The event of a request a node sent, which names a connection only when one was in hand, and then also says whether it was held or dialed (decision 9).
+    const SENT_REQUEST_EVENT: &str = "direct.request_sent";
+    /// The key of a sent request's line that says the request went over a connection.
+    const CONNECTION_SOURCE_KEY: &str = "connection_source";
+
+    /// Whether the line is of a connection: one of the named events, a sent request only when it went over a connection.
+    fn is_of_a_connection(line: &Value, name: &str) -> bool {
+        line["event"] == name
+            && (name != SENT_REQUEST_EVENT || line.get(CONNECTION_SOURCE_KEY).is_some())
+    }
 
     #[test]
     fn observability_decision_9_every_event_of_a_connection_in_a_real_exchange_names_its_connection()
@@ -2832,22 +2867,18 @@ mod observability_decision_6_on_one_machine {
 
         let lines: Vec<Value> = events_files(&network).into_values().flatten().collect();
 
-        let of_a_connection: Vec<&Value> = lines
-            .iter()
-            .filter(|line| {
-                line["event"].as_str().is_some_and(|name| {
-                    CONNECTION_EVENT_NAMES.contains(&name) || name == SERVED_REQUEST_EVENT
-                })
-            })
-            .collect();
-        for event in CONNECTION_EVENTS_THIS_EXCHANGE_WRITES {
+        for (name, written) in CONNECTION_EVENTS {
+            let of_the_name: Vec<&Value> = lines
+                .iter()
+                .filter(|line| is_of_a_connection(line, name))
+                .collect();
             assert!(
-                of_a_connection.iter().any(|line| line["event"] == event),
-                "no {event} line was written"
+                written == WrittenByTheExchange::NeverInACleanRun || !of_the_name.is_empty(),
+                "no {name} line was written"
             );
-        }
-        for line in of_a_connection {
-            assert!(line["connection"].is_u64(), "no connection in {line}");
+            for line in of_the_name {
+                assert!(line["connection"].is_u64(), "no connection in {line}");
+            }
         }
     }
 
