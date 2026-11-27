@@ -35,6 +35,11 @@ const BINARY: &str = env!("CARGO_BIN_EXE_estafette");
 const NETWORK: &str = "lab";
 const ABSENT_NETWORK: &str = "absent";
 const HANDLE: &str = "bob";
+const NO_DEBUG: &str = "--no-debug";
+#[cfg(feature = "relay")]
+const RELAY_BIND_ADDRESS: &str = "127.0.0.1";
+#[cfg(feature = "relay")]
+const RELAY_DOMAIN: &str = "relay.example";
 const BODY: &str = "hello";
 const INTERRUPTED_COMMAND_ENDS_WITHIN: Duration = Duration::from_millis(1500);
 const SIGINT_NUMBER: i32 = 2;
@@ -98,6 +103,100 @@ fn signal_process(signal: &str, process_id: u32) -> io::Result<()> {
 
 fn create_network(root: &Path) -> io::Result<Output> {
     run_binary(root, &["network", "create", NETWORK])
+}
+
+/// Fails with the claim when it does not hold.
+fn require(holds: bool, claim: &str) -> io::Result<()> {
+    if holds {
+        Ok(())
+    } else {
+        Err(io::Error::other(claim.to_owned()))
+    }
+}
+
+/// Runs the command with the debug flag off and then by default on one fresh network, and requires the flag off to write no trace and the default to differ in standard error by the announcement alone, with the same standard output and status (spec/observability.md decision 3).
+fn no_debug_leaves_the_command_as_it_is_and_the_default_adds_the_announcement(
+    test_name: &str,
+    arguments: &[&str],
+) -> io::Result<()> {
+    let scratch = ScratchRemovedOnDrop {
+        path: short_scratch_root(test_name)?,
+    };
+    let root = scratch.path.as_path();
+    require(
+        create_network(root)?.status.success(),
+        "the network was created",
+    )?;
+
+    let without_trace = run_binary(root, &[arguments, &[NO_DEBUG]].concat())?;
+    require(
+        !trace_files::traces_directory(&root.join(DATA_HOME)).exists(),
+        "the command run with --no-debug wrote a trace directory",
+    )?;
+    let by_default = run_binary(root, arguments)?;
+
+    let announcement = trace_files::announcement_of_one_run(&root.join(DATA_HOME));
+    let stderr_without_trace = String::from_utf8_lossy(&without_trace.stderr);
+    let stderr_by_default = String::from_utf8_lossy(&by_default.stderr);
+    require(
+        stderr_by_default == format!("{announcement}{stderr_without_trace}"),
+        &format!(
+            "standard error by default is {stderr_by_default:?}, not the announcement {announcement:?} then {stderr_without_trace:?}"
+        ),
+    )?;
+    require(
+        by_default.stdout == without_trace.stdout,
+        "the flag changed standard output",
+    )?;
+    require(
+        by_default.status.code() == without_trace.status.code(),
+        "the flag changed the exit status",
+    )
+}
+
+#[test]
+fn binary_show_peers_with_no_debug_writes_no_trace_and_by_default_adds_one_first_line_of_spec_3_13()
+{
+    no_debug_leaves_the_command_as_it_is_and_the_default_adds_the_announcement(
+        "show_peers_no_debug",
+        &["show-peers", NETWORK],
+    )
+    .unwrap();
+}
+
+#[test]
+fn binary_doctor_with_no_debug_writes_no_trace_and_by_default_adds_one_first_line_of_spec_3_13() {
+    no_debug_leaves_the_command_as_it_is_and_the_default_adds_the_announcement(
+        "doctor_no_debug",
+        &["doctor", NETWORK],
+    )
+    .unwrap();
+}
+
+#[test]
+fn binary_tail_refused_with_no_debug_writes_no_trace_and_by_default_adds_one_first_line_of_spec_3_13()
+ {
+    no_debug_leaves_the_command_as_it_is_and_the_default_adds_the_announcement(
+        "tail_no_debug",
+        &["tail", ABSENT_NETWORK],
+    )
+    .unwrap();
+}
+
+#[cfg(feature = "relay")]
+#[test]
+fn binary_run_infrastructure_refused_for_want_of_a_certificate_with_no_debug_writes_no_trace_and_by_default_adds_one_first_line_of_spec_3_13()
+ {
+    no_debug_leaves_the_command_as_it_is_and_the_default_adds_the_announcement(
+        "run_infrastructure_no_debug",
+        &[
+            "run-infrastructure",
+            NETWORK,
+            RELAY_BIND_ADDRESS,
+            RELAY_DOMAIN,
+        ],
+    )
+    .unwrap();
 }
 
 fn assert_refused_naming_the_missing_configuration(root: &Path, output: &Output) {
@@ -227,16 +326,20 @@ fn ended_when_the_wait_fails(
     waited.unwrap_or_else(|failure| panic::resume_unwind(failure))
 }
 
-/// Reads the first line the command writes on standard error, which names its trace files once their directory exists (spec/observability.md decision 3).
-fn read_the_announcement(errors: &mut dyn BufRead) -> io::Result<()> {
+/// Reads the first line the command writes on standard error and requires it to be the announcement naming its trace files, which exist once it is written (spec/observability.md decision 3).
+fn read_the_announcement(root: &Path, errors: &mut dyn BufRead) -> io::Result<()> {
     let mut announcement = String::new();
     errors.read_line(&mut announcement)?;
-    Ok(())
+    let expected = trace_files::announcement_of_one_run(&root.join(DATA_HOME));
+    require(
+        announcement == expected,
+        &format!("the first line {announcement:?} is not the announcement {expected:?}"),
+    )
 }
 
 /// Waits until the command records in its events file the counters snapshot of its node's start, the event that says its node runs (spec/observability.md decision 9).
 fn wait_for_the_node_start_snapshot(root: &Path, errors: &mut dyn BufRead) -> io::Result<()> {
-    read_the_announcement(errors)?;
+    read_the_announcement(root, errors)?;
     MemberEvents::new(
         COMMAND_LABEL,
         &trace_files::traces_directory(&root.join(DATA_HOME)),
@@ -382,7 +485,7 @@ fn binary_mcp_inbox_socket_accepts_a_client_before_any_card_is_claimed_of_spec_3
     let mut events_when_connected = Vec::new();
 
     ended_when_the_wait_fails(&mut server, || {
-        read_the_announcement(&mut errors)?;
+        read_the_announcement(root, &mut errors)?;
         let mut client = connect_once_listening(&socket, INBOX_SOCKET_BOUND_WITHIN)?;
         client.write_all(SPEC_SINCE_EVERY_FRAME.as_bytes())?;
         events_when_connected = MemberEvents::new(
