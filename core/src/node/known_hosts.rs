@@ -9,12 +9,12 @@ use super::addresses::{lookup_replaced_event, replace_lookup_entry};
 use super::node_error::NodeError;
 use super::payload_records::admission_record;
 use crate::clock::MILLIS_PER_SECOND;
-use crate::config::{ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis};
+use crate::config::{ConfigError, Host, HostOrigin, NetworkConfig, UnixMillis, host_relay_url};
 use crate::event::{ConfigurationRewrite, Event, GossipEvent, ShortId};
 use crate::keys::parse_public_key;
 use crate::net::endpoint::NodeEndpoint;
 use crate::payload::{DescribedPayload, PayloadDropRule, ValidInfrastructure};
-use crate::wire;
+use crate::wire::{self, Infrastructure};
 
 /// How far ahead of this node's clock a host record's ts may be and still be held (spec:779, spec:1013).
 const INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS: u64 = 300;
@@ -56,10 +56,7 @@ pub struct SkippedHost {
 fn known_host_address(host: &Host) -> Result<KnownHostAddress, HostUnparsed> {
     Ok(KnownHostAddress {
         id: parse_public_key(&host.id).map_err(|_unparsed| HostUnparsed::Id)?,
-        relay: host
-            .relay
-            .parse()
-            .map_err(|_unparsed| HostUnparsed::Relay)?,
+        relay: host_relay_url(&host.relay).ok_or(HostUnparsed::Relay)?,
     })
 }
 
@@ -83,7 +80,7 @@ pub fn seed_lookup_with_known_hosts(
 
 /// What a valid Infrastructure record the node holds does to the known hosts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecordVerdict {
+enum RecordVerdict {
     FromKnownHost,
     FromNewHost,
 }
@@ -221,34 +218,20 @@ impl HeldHosts {
         now_ms: u64,
     ) -> Result<RecordVerdict, PayloadDropRule> {
         let record = valid.record();
-        let latest_accepted_ts =
-            seconds_of(now_ms).saturating_add(INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS);
-        if record.ts > latest_accepted_ts {
-            return Err(PayloadDropRule::RecordPastFutureBound);
-        }
+        refuse_past_future_bound(record.ts, now_ms)?;
         let id = data_encoding::HEXLOWER.encode(record.host.as_bytes());
-        let Some(host) = self.config.hosts.iter_mut().find(|host| host.id == id) else {
-            self.config.hosts.push(Host {
-                id,
-                relay: record.relay.as_str().to_owned(),
-                ts: Some(record.ts),
-                origin: HostOrigin::Learned {
-                    heard: UnixMillis(now_ms),
-                },
-            });
-            self.newer_than_file = true;
-            return Ok(RecordVerdict::FromNewHost);
+        let verdict = match self.config.hosts.iter_mut().find(|host| host.id == id) {
+            None => {
+                self.config.hosts.push(learned_host(id, record, now_ms));
+                RecordVerdict::FromNewHost
+            }
+            Some(host) => {
+                move_known_host(host, record, now_ms)?;
+                RecordVerdict::FromKnownHost
+            }
         };
-        if host.ts.is_some_and(|held| record.ts <= held) {
-            return Err(PayloadDropRule::RecordNotNewerThanHeld);
-        }
-        host.ts = Some(record.ts);
-        record.relay.as_str().clone_into(&mut host.relay);
-        if let HostOrigin::Learned { heard } = &mut host.origin {
-            *heard = UnixMillis(now_ms);
-        }
         self.newer_than_file = true;
-        Ok(RecordVerdict::FromKnownHost)
+        Ok(verdict)
     }
 
     /// Rewrites the network configuration with the known hosts (spec 3.3).
@@ -257,6 +240,46 @@ impl HeldHosts {
         self.newer_than_file = false;
         Ok(())
     }
+}
+
+/// Refuses a record whose ts is further ahead of the clock than the future bound allows.
+const fn refuse_past_future_bound(record_ts: u64, now_ms: u64) -> Result<(), PayloadDropRule> {
+    let latest_accepted_ts =
+        seconds_of(now_ms).saturating_add(INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS);
+    if record_ts > latest_accepted_ts {
+        Err(PayloadDropRule::RecordPastFutureBound)
+    } else {
+        Ok(())
+    }
+}
+
+/// The host a record from a host never known before adds, heard now.
+fn learned_host(id: String, record: &Infrastructure, now_ms: u64) -> Host {
+    Host {
+        id,
+        relay: record.relay.as_str().to_owned(),
+        ts: Some(record.ts),
+        origin: HostOrigin::Learned {
+            heard: UnixMillis(now_ms),
+        },
+    }
+}
+
+/// Moves a known host to the relay and ts of a record newer than its own, or names the rule that drops the record.
+fn move_known_host(
+    host: &mut Host,
+    record: &Infrastructure,
+    now_ms: u64,
+) -> Result<(), PayloadDropRule> {
+    if host.ts.is_some_and(|held| record.ts <= held) {
+        return Err(PayloadDropRule::RecordNotNewerThanHeld);
+    }
+    host.ts = Some(record.ts);
+    record.relay.as_str().clone_into(&mut host.relay);
+    if let HostOrigin::Learned { heard } = &mut host.origin {
+        *heard = UnixMillis(now_ms);
+    }
+    Ok(())
 }
 
 /// Whole seconds in a span of milliseconds.
@@ -385,6 +408,38 @@ mod tests {
                 format!("known host {live_id} needs a node id of {SPEC_REFUSAL_ACCEPTED}"),
             ]
         );
+    }
+
+    /// Spec 3.5 and 3.8: a configured host whose relay is not an https URL within the wire limit refuses the start, as the configuration's load does.
+    #[test]
+    fn spec_3_8_a_configured_host_with_a_relay_the_configuration_load_refuses_refuses_the_start() {
+        let live_id = crate::keys::render_public_key(&secret_key(HOST_SEED).public());
+        let relay_not_https = "http://relay.estafette.invalid/".to_owned();
+        let relay_past_wire_limit = format!(
+            "https://{}.estafette.invalid/",
+            "r".repeat(crate::wire::MAX_RELAY_URL_BYTES)
+        );
+
+        for relay in [relay_not_https, relay_past_wire_limit] {
+            let host = Host {
+                id: live_id.clone(),
+                relay: relay.clone(),
+                ts: None,
+                origin: HostOrigin::Configured,
+            };
+
+            let refusal = known_host_addresses(&config_with_hosts(vec![host]))
+                .err()
+                .map(|failure| failure.to_string());
+
+            assert_eq!(
+                refusal,
+                Some(format!(
+                    "known host {live_id} needs a node id of {SPEC_REFUSAL_ACCEPTED}"
+                )),
+                "relay {relay}"
+            );
+        }
     }
 
     /// Spec 3.3 and 3.8: a host learned from its record leaves the file at a later save exactly when more than 30 days have passed since it was heard.
