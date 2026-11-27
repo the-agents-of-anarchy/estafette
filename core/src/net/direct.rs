@@ -2545,8 +2545,8 @@ pub(crate) mod tests {
             .connect(peer_node.endpoint().id(), DIRECT_ALPN)
             .await
             .unwrap();
-        let peer_short = data_encoding::HEXLOWER.encode(&card_of(CLIENT_SEED).as_bytes()[..5]);
-        let this_short = data_encoding::HEXLOWER.encode(&card_of(SERVER_SEED).as_bytes()[..5]);
+        let peer_short = ShortId::from(&card_of(CLIENT_SEED)).text();
+        let this_short = ShortId::from(&card_of(SERVER_SEED)).text();
 
         let opened = next_recorded(&mut this_side, "transport.connection_opened").await;
         let accepted = next_recorded(&mut peer_side, "transport.connection_opened").await;
@@ -2938,8 +2938,8 @@ pub(crate) mod tests {
         let refused_served = next_recorded(&mut served, "direct.request_served").await;
 
         let connection = field(&first_sent, "connection").cloned().unwrap();
-        let server_short = data_encoding::HEXLOWER.encode(&card_of(SERVER_SEED).as_bytes()[..5]);
-        let client_short = data_encoding::HEXLOWER.encode(&card_of(CLIENT_SEED).as_bytes()[..5]);
+        let server_short = ShortId::from(&card_of(SERVER_SEED)).text();
+        let client_short = ShortId::from(&card_of(CLIENT_SEED)).text();
         assert_eq!(
             first_sent,
             vec![
@@ -4054,9 +4054,7 @@ pub(crate) mod tests {
                 ),
                 (
                     "peer",
-                    serde_json::Value::from(
-                        data_encoding::HEXLOWER.encode(&card_of(CLIENT_SEED).as_bytes()[..5])
-                    )
+                    serde_json::Value::from(ShortId::from(&card_of(CLIENT_SEED)).text())
                 ),
                 ("code", serde_json::Value::from(SPEC_SUPERSEDED_CLOSE_CODE)),
                 ("reason", serde_json::Value::from("superseded")),
