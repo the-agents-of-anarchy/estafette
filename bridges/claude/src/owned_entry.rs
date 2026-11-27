@@ -4,11 +4,11 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use estafette_private_entry::{
-    EntryFacts, EntryKind, UntrustedEntry, create_new_owner_only_file, require_private_directory,
-    same_entry,
+    EntryFacts, EntryKind, ExistingDirectoryRefused, UntrustedEntry, create_new_owner_only_file,
+    require_private_directory, same_entry,
 };
 
-pub use estafette_private_entry::{ExistingDirectoryRefused, create_private_directory};
+pub use estafette_private_entry::create_private_directory;
 
 /// What stops the runtime directory from being used: it cannot be inspected, or it exists and is refused.
 #[derive(Debug)]
