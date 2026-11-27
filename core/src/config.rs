@@ -8,6 +8,7 @@ use estafette_private_entry::write_atomically;
 use iroh::RelayUrl;
 use serde::{Deserialize, Serialize};
 
+use crate::keys::HEX_CHARS_PER_KEY;
 use crate::wire::{self, MAX_RELAY_URL_BYTES};
 
 const HIDDEN_SECRET_DEBUG_TEXT: &str = "..";
@@ -16,7 +17,6 @@ pub(crate) const MILLIS_PER_SECOND: u64 = 1000;
 const MILLIS_PER_DAY: u64 = 24 * 60 * 60 * MILLIS_PER_SECOND;
 const LEARNED_HOST_EXPIRY_DAYS: u64 = 30;
 const LEARNED_HOST_EXPIRY_MILLIS: u64 = LEARNED_HOST_EXPIRY_DAYS * MILLIS_PER_DAY;
-const HEX_KEY_LENGTH: usize = 64;
 const RELAY_URL_SCHEME: &str = "https";
 const HOST_RELAY_FIELD: &str = "host relay";
 const HOST_ID_FIELD: &str = "host id";
@@ -134,7 +134,7 @@ impl fmt::Display for AcceptedValue {
         match self {
             Self::HexKey => write!(
                 formatter,
-                "{HEX_KEY_LENGTH} lowercase hexadecimal characters"
+                "{HEX_CHARS_PER_KEY} lowercase hexadecimal characters"
             ),
             Self::RelayUrl => write!(
                 formatter,
@@ -487,7 +487,7 @@ fn host_refusal(
 }
 
 fn is_lowercase_hex_key(value: &str) -> bool {
-    value.len() == HEX_KEY_LENGTH
+    value.len() == HEX_CHARS_PER_KEY
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
@@ -551,7 +551,7 @@ mod tests {
     }
 
     fn hex_key(digit: char) -> String {
-        digit.to_string().repeat(HEX_KEY_LENGTH)
+        digit.to_string().repeat(HEX_CHARS_PER_KEY)
     }
 
     fn host_id(seed: u8) -> String {
@@ -1059,7 +1059,7 @@ mod tests {
         let long_relay = format!("https://{}/", "r".repeat(MAX_RELAY_URL_BYTES));
         let refused_cases = [
             (
-                "g".repeat(HEX_KEY_LENGTH),
+                "g".repeat(HEX_CHARS_PER_KEY),
                 VALID_RELAY.to_owned(),
                 "host id",
                 AcceptedValue::HexKey,
@@ -1131,7 +1131,7 @@ mod tests {
         held.secret = hex_key('5');
         let relay_refusal = held.rewrite(&path, NOW_SECONDS).unwrap_err().to_string();
 
-        assert!(secret_refusal.contains(&format!("{HEX_KEY_LENGTH} lowercase hexadecimal")));
+        assert!(secret_refusal.contains(&format!("{HEX_CHARS_PER_KEY} lowercase hexadecimal")));
         assert!(secret_refusal.contains("secret must be"));
         assert!(relay_refusal.contains(&format!("{MAX_RELAY_URL_BYTES} bytes")));
         assert!(relay_refusal.contains(RELAY_URL_SCHEME));

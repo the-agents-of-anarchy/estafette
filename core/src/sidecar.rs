@@ -6,8 +6,11 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::card::{HANDLE_FIELD, PUBLIC_KEY_FIELD};
+use crate::crypto::KEY_LEN;
 use crate::handle::Handle;
-use crate::keys::{parse_secret_key, render_public_key, render_secret_key};
+use crate::keys::{
+    SECRET_KEY_LINE_MAX_BYTES, parse_secret_key, render_public_key, render_secret_key,
+};
 use estafette_private_entry::{
     OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK, create_new_owner_only_file, remove_file_if_present,
     with_cleanup_outcome, write_new_file_atomically,
@@ -15,13 +18,12 @@ use estafette_private_entry::{
 use iroh::{PublicKey, SecretKey};
 
 pub(crate) const CARD_FILE_MODE: u32 = 0o644;
-pub const SEED_BYTES: usize = 32;
-const PUBLIC_KEY_BYTES: usize = 32;
+pub const SEED_BYTES: usize = KEY_LEN;
+const PUBLIC_KEY_BYTES: usize = KEY_LEN;
 const LOCK_RETRY_WINDOW: Duration = Duration::from_millis(200);
 const LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 const LINE_TERMINATOR: &str = "\n";
-const LONGEST_VALID_SIDECAR_BYTES: usize = SEED_BYTES * 2 + LINE_TERMINATOR.len();
-const SIDECAR_READ_LIMIT_BYTES: usize = LONGEST_VALID_SIDECAR_BYTES + 1;
+const SIDECAR_READ_LIMIT_BYTES: usize = SECRET_KEY_LINE_MAX_BYTES + 1;
 
 /// Why a sidecar fails the claim checks of spec 3.5, all reported as `sidecar_invalid`.
 #[derive(Debug, PartialEq, Eq)]
@@ -734,7 +736,7 @@ mod tests {
         )
         .unwrap();
 
-        let sidecar_bytes = u64::try_from(LONGEST_VALID_SIDECAR_BYTES).unwrap();
+        let sidecar_bytes = u64::try_from(SECRET_KEY_LINE_MAX_BYTES).unwrap();
         assert_eq!(*synced.borrow(), [Some(sidecar_bytes), None]);
     }
 

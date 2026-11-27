@@ -5,8 +5,10 @@ use std::fmt;
 use crate::crypto::KEY_LEN;
 pub use crate::crypto::NetworkSecret;
 
-const HEX_CHARS_PER_KEY: usize = KEY_LEN * 2;
+pub(crate) const HEX_CHARS_PER_KEY: usize = KEY_LEN * 2;
 const SECRET_KEY_LINE_END: char = '\n';
+pub(crate) const SECRET_KEY_LINE_MAX_BYTES: usize =
+    HEX_CHARS_PER_KEY + SECRET_KEY_LINE_END.len_utf8();
 
 /// Why a key text was refused, naming the only form accepted.
 #[derive(Debug, PartialEq, Eq)]
