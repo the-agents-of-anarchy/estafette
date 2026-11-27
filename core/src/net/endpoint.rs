@@ -119,7 +119,7 @@ impl NodeEndpoint {
         self.binding.connections.record(event);
     }
 
-    /// The bound endpoint the gossip layer and the direct protocol run on, without the means to edit its relays.
+    /// The bound endpoint the gossip layer and the direct protocol run on, which offers no relay edit of its own.
     #[must_use]
     pub const fn endpoint(&self) -> &BoundEndpoint {
         &self.endpoint
@@ -171,7 +171,7 @@ impl NodeEndpoint {
     }
 }
 
-/// A bound iroh endpoint as every caller outside the relay guard sees it: it dials, accepts, names itself and carries gossip and routers, and no relay of its map is edited through it.
+/// A bound iroh endpoint as every caller outside the relay guard sees it: it dials, accepts, names itself and carries gossip and routers, and offers no relay edit of its own, though the router it starts hands out iroh's own endpoint.
 #[derive(Clone)]
 pub struct BoundEndpoint {
     iroh: Endpoint,
