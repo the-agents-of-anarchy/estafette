@@ -204,6 +204,7 @@ const fn failure_error(failure: &DirectError) -> ErrorCode {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
@@ -219,17 +220,19 @@ mod tests {
     use crate::node::direct_requests::{DirectOutcome, RequestCause};
     use crate::node::presence::tests::{
         DUPLICATE_KEY_PUBLIC, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTEGER_PAST_64_BITS_PUBLIC,
-        INTRODUCE_ROUND_TRIP, Member, MemberPlan, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED,
-        SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_SEED, WITNESS_HANDLE, WITNESS_SEED, bind,
-        card, direct_answer_after, inbox_frames, keys, listed_within, message_to,
-        settled_direct_answers, start_members, start_members_reaching, start_pair,
-        start_third_through_second,
+        INTRODUCE_ROUND_TRIP, Member, MemberPlan, PAYLOAD_WAIT, SECOND_HANDLE, SECOND_PUBLIC,
+        SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, THIRD_HANDLE, THIRD_SEED, WITNESS_HANDLE,
+        WITNESS_SEED, Witness, bind, card, direct_answer_after, inbox_frames, keys, listed_within,
+        message_to, settled_direct_answers, start_members, start_members_reaching, start_pair,
+        start_third_through_second, status_within,
     };
-    use crate::payload::{PayloadError, open_request, seal_response};
+    use crate::payload::{PayloadError, ZERO_SIGNATURE, open_request, seal_response};
     use crate::peers::Status;
-    use crate::test_waits::{PROBE_NONCE, found_within, wall_clock_ms};
+    use crate::stream_items::StreamExt;
+    use crate::test_waits::{PROBE_NONCE, found_within, secret_key, wall_clock_ms};
     use crate::wire::{
-        Addr, Introduce, IntroduceAck, ProbeAck, Request, Response, WIRE_LIMIT_BYTES,
+        Addr, Departure, Introduce, IntroduceAck, Payload, ProbeAck, Request, Response,
+        WIRE_LIMIT_BYTES,
     };
 
     use super::*;
@@ -262,6 +265,13 @@ mod tests {
         phase: PeerPhase,
         introduced_as: Option<&'static str>,
         public: &'static [u8],
+    }
+
+    impl ScriptedHost {
+        /// The host answering an Introduce with the address instead of its own.
+        fn carrying_the_address(self, addr: Addr) -> Self {
+            Self { addr, ..self }
+        }
     }
 
     impl DirectHost for ScriptedHost {
@@ -603,6 +613,46 @@ mod tests {
         drop(scratch);
     }
 
+    /// Spec 3.16: a send is never refused for the recorded status of its peer, so a peer recorded gone by a Departure whose process answers still gets the message and acknowledges it.
+    #[tokio::test]
+    async fn spec_3_16_a_send_to_a_peer_recorded_gone_whose_process_is_alive_is_delivered_and_acknowledged()
+     {
+        let scratch = Scratch::new("send-gone-alive").await;
+        let (first, second) = start_pair(&scratch).await;
+        listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
+            .await
+            .unwrap_or_else(|missed| missed.fail_the_test());
+        let witness = Witness::joined_through(WITNESS_SEED, None, &first.endpoint).await;
+        witness
+            .broadcast_as(
+                SECOND_SEED,
+                Payload::Departure(Departure {
+                    v: Version::CURRENT,
+                    card: card(SECOND_SEED),
+                    seq: wall_clock_ms(),
+                    mac: ZERO_MAC,
+                    sig: ZERO_SIGNATURE,
+                }),
+            )
+            .await;
+        status_within(
+            &first,
+            SECOND_SEED,
+            "second member listed as gone by the first",
+            |status| matches!(status, Status::Gone { .. }),
+            PAYLOAD_WAIT,
+        )
+        .await
+        .unwrap_or_else(|missed| missed.fail_the_test());
+
+        let delivery = first.node.send(SECOND_HANDLE, BODY).await.unwrap();
+
+        let frame = inbox_frames(&second, 1).await.remove(0);
+        assert_eq!(frame["id"], message_id_text(delivery.id));
+        assert_eq!(frame["body"], BODY);
+        drop(scratch);
+    }
+
     #[tokio::test]
     async fn spec_3_10_send_to_a_handle_no_member_holds_is_unknown_handle() {
         let scratch = Scratch::new("send-unknown").await;
@@ -777,6 +827,21 @@ mod tests {
         drop(scratch);
     }
 
+    const ADDRESS_ONLY_THE_REFUSED_ACK_CARRIES: SocketAddr =
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 7)), 9);
+
+    fn only_the_refused_ack_carries() -> Addr {
+        Addr::from_endpoint_report([], [ADDRESS_ONLY_THE_REFUSED_ACK_CARRIES])
+    }
+
+    async fn direct_addresses_the_lookup_holds(member: &Member, seed: u8) -> Vec<SocketAddr> {
+        let lookup = member.endpoint.address_lookup().unwrap();
+        match lookup.resolve(secret_key(seed).public()).next().await {
+            Some(Ok(Ok(item))) => item.into_endpoint_addr().ip_addrs().copied().collect(),
+            _ => Vec::new(),
+        }
+    }
+
     #[tokio::test]
     async fn spec_3_5_an_introduce_ack_whose_public_no_card_sends_changes_nothing_at_the_node() {
         for public in [DUPLICATE_KEY_PUBLIC, INTEGER_PAST_64_BITS_PUBLIC] {
@@ -792,7 +857,8 @@ mod tests {
                             phase: PeerPhase::Serving,
                             introduced_as: Some(WITNESS_HANDLE),
                             public,
-                        },
+                        }
+                        .carrying_the_address(only_the_refused_ack_carries()),
                         endpoint,
                     )
                 },
@@ -805,6 +871,14 @@ mod tests {
                 .unwrap_or_else(|missed| missed.fail_the_test());
 
             assert_eq!(listed.public, None, "{}", String::from_utf8_lossy(public));
+            assert!(listed.attached, "{}", String::from_utf8_lossy(public));
+            assert!(
+                !direct_addresses_the_lookup_holds(&first, WITNESS_SEED)
+                    .await
+                    .contains(&ADDRESS_ONLY_THE_REFUSED_ACK_CARRIES),
+                "{}",
+                String::from_utf8_lossy(public)
+            );
             drop(scratch);
         }
     }
