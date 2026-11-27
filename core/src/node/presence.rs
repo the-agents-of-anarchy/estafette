@@ -15,10 +15,13 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
-use super::addresses::{endpoint_id, lookup_replaced_event, replace_lookup_entry, wire_addr};
+use super::addresses::{lookup_replaced_event, replace_lookup_entry, wire_addr};
 use super::announcements::{
     Announcer, HeardPresenceRequests, ReannounceStep, RequestSeqs, rumor_admission,
 };
+use super::direct_requests::{DirectAnswer, DirectRequest, DirectRequester, send_in_background};
+#[cfg(test)]
+use super::direct_requests::{DirectContact, DirectExchange, RequestCause};
 use super::init::{Init, InitAction, InitEvent, PendingHandle};
 use super::known_hosts::{
     KnownHosts, RelayOfRecord, known_host_addresses, seed_lookup_with_known_hosts,
@@ -30,16 +33,12 @@ use super::relay_loss::{RelayLossWatch, home_relays};
 use crate::clock::{MonotonicClock, MonotonicTime, later_by};
 use crate::config::NetworkConfig;
 use crate::crypto::{NetworkKeys, NetworkSecret};
-use crate::event::{
-    ConfigurationRewrite, DirectEvent, Event, PeerTableEvent, ProcessEvent, RunRecord,
-};
+use crate::event::{ConfigurationRewrite, Event, PeerTableEvent, ProcessEvent, RunRecord};
 use crate::handle::{AnnouncedHandle, LocalHandle};
 use crate::inbox::buffer::ReceivedMessage;
 use crate::inbox::socket::{Attached, InboxSocket};
 use crate::keys::{parse_network_secret, parse_public_key};
-use crate::net::direct::{
-    ClientTimeouts, DirectClient, DirectError, DirectHost, DirectServer, HeldConnections,
-};
+use crate::net::direct::{ClientTimeouts, DirectClient, DirectHost, DirectServer, HeldConnections};
 use crate::net::endpoint::{
     BoundEndpoint, CounterSnapshot, DIRECT_ALPN, NodeEndpoint, RebindCause, SnapshotMoment,
 };
@@ -305,74 +304,6 @@ pub struct PeerRows {
     report: RunRecord,
     #[cfg(test)]
     direct_exchanges: Mutex<Vec<DirectExchange>>,
-}
-
-/// A direct request the loop queued, which a stopping node skips before sending it, or the answer to one that it applied, each with the cause of the request, as a test of the node reads them.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DirectExchange {
-    Made {
-        card: wire::PublicKey,
-        kind: DirectContact,
-        cause: Option<RequestCause>,
-    },
-    Answered {
-        card: wire::PublicKey,
-        kind: DirectContact,
-        outcome: DirectOutcome,
-        cause: Option<RequestCause>,
-    },
-}
-
-/// The kind of a direct request the presence loop makes: an Introduce or a Probe, never a Message.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DirectContact {
-    Introduce,
-    Probe,
-}
-
-/// What the presence loop was taking when it made a direct request.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RequestCause {
-    NeighborUp(wire::PublicKey),
-    NeighborDown {
-        card: wire::PublicKey,
-        earlier_probes: usize,
-    },
-    Presence(wire::PublicKey),
-    Departure(wire::PublicKey),
-    Message {
-        sender: wire::PublicKey,
-        id: wire::MessageId,
-    },
-    Introduce(wire::PublicKey),
-    SendFailed(wire::PublicKey),
-    Answer {
-        card: wire::PublicKey,
-        kind: DirectContact,
-    },
-    HandleAssigned,
-}
-
-/// Whether a direct request was acknowledged or failed.
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DirectOutcome {
-    Acknowledged,
-    Failed,
-}
-
-#[cfg(test)]
-impl DirectOutcome {
-    /// Acknowledged for an answer that holds a valid acknowledgement, failed otherwise.
-    fn of<Acknowledgement>(answer: &Result<Acknowledgement, DirectError>) -> Self {
-        match answer {
-            Ok(_acknowledgement) => Self::Acknowledged,
-            Err(_failure) => Self::Failed,
-        }
-    }
 }
 
 /// A received payload the peer table admits by the operation of its own kind.
@@ -796,158 +727,6 @@ enum LoopEvent {
         #[cfg(test)]
         cause: Option<RequestCause>,
     },
-}
-
-/// A direct request a loop hands to a task, so no dial holds the loop.
-pub enum DirectRequest {
-    DropHeldConnection(wire::PublicKey),
-    SendIntroduce(wire::PublicKey),
-    SendProbe(wire::PublicKey, Nonce),
-}
-
-#[cfg(test)]
-impl DirectRequest {
-    /// The request made for the cause as a test reads it, or none for a request that sends nothing.
-    fn made(&self, cause: Option<RequestCause>) -> Option<DirectExchange> {
-        match self {
-            Self::DropHeldConnection(_) => None,
-            Self::SendIntroduce(card) => Some(DirectExchange::Made {
-                card: *card,
-                kind: DirectContact::Introduce,
-                cause,
-            }),
-            Self::SendProbe(card, _nonce) => Some(DirectExchange::Made {
-                card: *card,
-                kind: DirectContact::Probe,
-                cause,
-            }),
-        }
-    }
-}
-
-/// The answer to a direct request a node sent, for the loop that sent it to apply.
-pub enum DirectAnswer {
-    Introduce {
-        card: wire::PublicKey,
-        answer: Result<IntroduceAck, DirectError>,
-    },
-    Probe {
-        card: wire::PublicKey,
-        answer: Result<(), DirectError>,
-    },
-}
-
-impl DirectAnswer {
-    /// The answer to a request made for the cause as a test reads it once applied: the card, the kind of request and whether it was acknowledged.
-    #[cfg(test)]
-    fn answered(&self, cause: Option<RequestCause>) -> DirectExchange {
-        match self {
-            Self::Introduce { card, answer } => DirectExchange::Answered {
-                card: *card,
-                kind: DirectContact::Introduce,
-                outcome: DirectOutcome::of(answer),
-                cause,
-            },
-            Self::Probe { card, answer } => DirectExchange::Answered {
-                card: *card,
-                kind: DirectContact::Probe,
-                outcome: DirectOutcome::of(answer),
-                cause,
-            },
-        }
-    }
-
-    /// The cause of the requests this answer calls for.
-    #[cfg(test)]
-    const fn as_cause(&self) -> RequestCause {
-        match self {
-            Self::Introduce { card, .. } => RequestCause::Answer {
-                card: *card,
-                kind: DirectContact::Introduce,
-            },
-            Self::Probe { card, .. } => RequestCause::Answer {
-                card: *card,
-                kind: DirectContact::Probe,
-            },
-        }
-    }
-
-    /// The event of a request that got no valid acknowledgement, naming the node it went to and why.
-    fn failure_record(&self) -> Option<Event> {
-        match self {
-            Self::Introduce {
-                card,
-                answer: Err(reason),
-            }
-            | Self::Probe {
-                card,
-                answer: Err(reason),
-            } => endpoint_id(card).map(|peer| {
-                DirectEvent::ContactFailed {
-                    peer,
-                    reason: reason.clone(),
-                }
-                .into()
-            }),
-            Self::Introduce { answer: Ok(_), .. } | Self::Probe { answer: Ok(()), .. } => None,
-        }
-    }
-}
-
-/// What sending direct requests needs from a node of any kind: whether it is stopping, its introduction, and where each answer goes.
-pub trait DirectRequester: Send + Sync + 'static {
-    /// Whether this node is stopping, so it sends no Introduce or Probe.
-    fn is_stopping(&self) -> bool;
-
-    /// The introduction this node sends, and answers an Introduce with.
-    fn introduction(&self) -> Introduce;
-
-    /// Hands the answer of a direct request this node sent to the loop that applies it.
-    fn hand_answer(&self, answer: DirectAnswer);
-}
-
-/// Sends the direct requests in one task in their order, unless there are none, so no dial holds the loop.
-pub fn send_in_background<R: DirectRequester>(
-    requester: R,
-    client: &Arc<DirectClient>,
-    requests: Vec<DirectRequest>,
-) {
-    if !requests.is_empty() {
-        tokio::spawn(run_requests(requester, Arc::clone(client), requests));
-    }
-}
-
-/// Runs the requests in their order, handing each answer back to the loop, and sends no Introduce or Probe once the node is stopping.
-async fn run_requests<R: DirectRequester>(
-    requester: R,
-    client: Arc<DirectClient>,
-    requests: Vec<DirectRequest>,
-) {
-    for request in requests {
-        match request {
-            DirectRequest::DropHeldConnection(card) => {
-                if let Some(id) = endpoint_id(&card) {
-                    client.drop_held_connection(id).await;
-                }
-            }
-            DirectRequest::SendIntroduce(_) | DirectRequest::SendProbe(..)
-                if requester.is_stopping() => {}
-            DirectRequest::SendIntroduce(card) => {
-                let answer = match endpoint_id(&card) {
-                    Some(id) => client.introduce(id, requester.introduction()).await,
-                    None => Err(DirectError::Unreachable),
-                };
-                requester.hand_answer(DirectAnswer::Introduce { card, answer });
-            }
-            DirectRequest::SendProbe(card, nonce) => {
-                let answer = match endpoint_id(&card) {
-                    Some(id) => client.probe(id, nonce).await.map(|_acknowledged| ()),
-                    None => Err(DirectError::Unreachable),
-                };
-                requester.hand_answer(DirectAnswer::Probe { card, answer });
-            }
-        }
-    }
 }
 
 /// Whether the presence loop still watches the inbox's attached flag, which it stops doing once the inbox is gone.
@@ -1721,7 +1500,7 @@ pub(super) mod tests {
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
     use crate::dirs::{CardsDirectoryOverride, Directories, OperatingSystemFilesystem};
-    use crate::event::Event;
+    use crate::event::{DirectEvent, Event};
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
@@ -1730,8 +1509,9 @@ pub(super) mod tests {
         SPEC_STATE_SNAPSHOT_INTERVAL, STATE_COUNTERS, ShiftedClock, StandingClock,
         closed_within_the_documented_latency, recorded_until_introduce_sent_to, was_taken_at,
     };
-    use crate::net::direct::{GONE_PROCESS_SILENCE, HEARING_SAMPLE_INTERVAL};
+    use crate::net::direct::{DirectError, GONE_PROCESS_SILENCE, HEARING_SAMPLE_INTERVAL};
     use crate::net::endpoint::NodeEndpoint;
+    use crate::node::direct_requests::{DirectContact, DirectExchange, DirectOutcome};
     use crate::peers::Status;
     use crate::seeded_draws::Draws;
     use crate::test_waits::{

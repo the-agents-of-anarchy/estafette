@@ -1,5 +1,6 @@
 mod addresses;
 mod announcements;
+mod direct_requests;
 mod init;
 mod known_hosts;
 mod lifecycle;
@@ -11,6 +12,9 @@ mod relay_loss;
 mod send;
 
 pub(crate) use addresses::{replace_lookup_entry, wire_addr};
+pub(crate) use direct_requests::{
+    DirectAnswer, DirectRequest, DirectRequester, send_in_background,
+};
 pub(crate) use init::observer_wait_over_at;
 pub(crate) use known_hosts::{
     HostUnparsed, KnownHostAddress, KnownHosts, RelayOfRecord, SkippedHost, known_host_addresses,
@@ -22,10 +26,9 @@ pub use lifecycle::{
 };
 pub use node_error::NodeError;
 pub(crate) use presence::{
-    Clock, DirectAnswer, DirectRequest, DirectRequester, PeerRows, ProbeNonceSource,
-    broadcast_recorded, broadcast_recording_outcome, deadline_reached, next_recorded_gossip_event,
-    presence_request, record_counters, send_in_background, serve, snapshot_due_after,
-    taken_without_a_row_record,
+    Clock, PeerRows, ProbeNonceSource, broadcast_recorded, broadcast_recording_outcome,
+    deadline_reached, next_recorded_gossip_event, presence_request, record_counters, serve,
+    snapshot_due_after, taken_without_a_row_record,
 };
 pub use presence::{Identity, Network, Node, NodeEffects};
 pub use rebind::{RelayProbe, relay_answers};

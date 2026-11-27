@@ -220,7 +220,8 @@ mod tests {
     use crate::net::direct::{ClientTimeouts, DirectClient, DirectServer, message_id_text};
     use crate::net::endpoint::{BoundEndpoint, DIRECT_ALPN, NodeEndpoint};
     use crate::node::addresses::wire_addr;
-    use crate::node::presence::DirectContact;
+    use crate::node::direct_requests::DirectContact;
+    use crate::node::direct_requests::{DirectOutcome, RequestCause};
     use crate::node::presence::tests::{
         DUPLICATE_KEY_PUBLIC, FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, INTEGER_PAST_64_BITS_PUBLIC,
         INTRODUCE_ROUND_TRIP, Member, MemberPlan, SECOND_HANDLE, SECOND_PUBLIC, SECOND_SEED,
@@ -229,7 +230,6 @@ mod tests {
         settled_direct_answers, start_members, start_members_reaching, start_pair,
         start_third_through_second,
     };
-    use crate::node::presence::{DirectOutcome, RequestCause};
     use crate::payload::{PayloadError, open_request, seal_response};
     use crate::peers::Status;
     use crate::test_waits::{PROBE_NONCE, found_within, wall_clock_ms};

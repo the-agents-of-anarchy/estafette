@@ -8,7 +8,6 @@ use iroh_gossip::ALPN as GOSSIP_ALPN;
 use serde_json::Value;
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use super::DirectContact;
 use super::tests::{
     FIRST_HANDLE, FIRST_PUBLIC, FIRST_SEED, FROZEN_CLOCK_MS, HOST_RELAY, HOST_SEED, MARKER_HANDLE,
     MARKER_PUBLIC, MARKER_SEED, MemberPlan, NOT_AN_ANNOUNCED_HANDLE, OWNER_SEED, REPLAYED_PUBLIC,
@@ -28,6 +27,7 @@ use crate::net::direct::{ClientTimeouts, DirectClient, HeldConnections};
 use crate::net::endpoint::{BoundEndpoint, DIRECT_ALPN, LocationHash, TransportRecord};
 use crate::net::gossip::{GossipEvent, NetworkTopic};
 use crate::node::addresses::wire_addr;
+use crate::node::direct_requests::DirectContact;
 use crate::payload::{
     ZERO_MAC, ZERO_SIGNATURE, open_request, seal_payload, seal_response, sealed_by_any_key,
 };
