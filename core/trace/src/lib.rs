@@ -5,8 +5,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use data_encoding::HEXLOWER;
-
 mod directory;
 mod files;
 mod line;
@@ -151,7 +149,7 @@ impl RunId {
 
     /// The run id as sixteen lowercase hex characters.
     fn hex(self) -> String {
-        HEXLOWER.encode(&self.0)
+        format!("{:016x}", u64::from_be_bytes(self.0))
     }
 }
 

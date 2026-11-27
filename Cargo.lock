@@ -857,7 +857,6 @@ version = "0.1.0"
 name = "estafette-trace"
 version = "0.1.0"
 dependencies = [
- "data-encoding",
  "estafette-private-entry",
  "serde_json",
 ]
