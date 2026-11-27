@@ -2836,10 +2836,20 @@ pub(crate) mod tests {
         }
     }
 
+    /// A node that dialed a peer over a loopback relay alone and holds the connection, with the events the node recorded.
     #[cfg(feature = "relay")]
-    #[tokio::test]
-    async fn observability_decision_9_and_6_a_relay_path_that_iroh_closes_is_recorded_closed_with_its_kind_port_and_salted_hash()
-     {
+    struct RelayDialedLink {
+        relay: iroh_relay::server::Server,
+        relay_address: iroh::RelayUrl,
+        this_side: tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+        dialed: Connection,
+        _this_node: NodeEndpoint,
+        _peer_node: NodeEndpoint,
+        _router: Router,
+    }
+
+    #[cfg(feature = "relay")]
+    async fn dialed_over_a_loopback_relay_alone() -> RelayDialedLink {
         use iroh_relay::server::{RelayConfig, Server, ServerConfig};
 
         let mut relay_config = ServerConfig::default();
@@ -2851,7 +2861,7 @@ pub(crate) mod tests {
         let relay_address: iroh::RelayUrl = format!("http://{}/", relay.http_addr().unwrap())
             .parse()
             .unwrap();
-        let (this_record, mut this_side) = recorded_events();
+        let (this_record, this_side) = recorded_events();
         let this_node = NodeEndpoint::bind(
             SecretKey::from_bytes(&[SERVER_SEED; KEY_LEN]),
             *keys().gate_key(),
@@ -2896,6 +2906,23 @@ pub(crate) mod tests {
             .connect(peer_node.endpoint().id(), DIRECT_ALPN)
             .await
             .unwrap();
+        RelayDialedLink {
+            relay,
+            relay_address,
+            this_side,
+            dialed,
+            _this_node: this_node,
+            _peer_node: peer_node,
+            _router: router,
+        }
+    }
+
+    #[cfg(feature = "relay")]
+    #[tokio::test]
+    async fn observability_decision_9_and_6_a_relay_path_that_iroh_closes_is_recorded_closed_with_its_kind_port_and_salted_hash()
+     {
+        let mut link = dialed_over_a_loopback_relay_alone().await;
+        let relay_address = link.relay_address.clone();
         let relay_location = vec![
             ("kind", serde_json::Value::from("relay")),
             (
@@ -2911,17 +2938,67 @@ pub(crate) mod tests {
             ),
         ];
 
-        relay.shutdown().await.unwrap();
-        let closed = next_recorded(&mut this_side, "transport.path_closed").await;
+        link.relay.shutdown().await.unwrap();
+        let closed = next_recorded(&mut link.this_side, "transport.path_closed").await;
 
         assert_eq!(
             field(&closed, "connection"),
-            Some(&serde_json::Value::from(dialed.stable_id()))
+            Some(&serde_json::Value::from(link.dialed.stable_id()))
         );
         for (name, value) in &relay_location {
             assert_eq!(field(&closed, name), Some(value), "{closed:?}");
         }
-        drop(router);
+    }
+
+    #[cfg(feature = "relay")]
+    const DIRECT_PATH_OPENED_WITHIN: Duration = Duration::from_secs(20);
+
+    #[cfg(feature = "relay")]
+    #[tokio::test]
+    async fn observability_decision_9_and_6_a_direct_path_that_opens_after_the_connection_is_held_is_recorded_opened_then_selected_with_its_kind_port_and_salted_hash()
+     {
+        let mut link = dialed_over_a_loopback_relay_alone().await;
+        let is_direct = |fields: &crate::event::EventFields| {
+            field(fields, "kind") == Some(&serde_json::Value::from("direct"))
+        };
+
+        let opened = next_recorded_meeting(
+            &mut link.this_side,
+            "transport.path_opened",
+            is_direct,
+            DIRECT_PATH_OPENED_WITHIN,
+        )
+        .await;
+        let selected = next_recorded_meeting(
+            &mut link.this_side,
+            "transport.path_selected",
+            is_direct,
+            DIRECT_PATH_OPENED_WITHIN,
+        )
+        .await;
+
+        let selected_address = link
+            .dialed
+            .paths()
+            .iter()
+            .find(iroh::endpoint::Path::is_selected)
+            .and_then(|path| match path.remote_addr() {
+                iroh::TransportAddr::Ip(address) => Some(*address),
+                _ => None,
+            })
+            .expect("a selected direct path");
+        let expected_hash =
+            super::super::endpoint::LocationHash::of(&test_salt(), &selected_address.to_string())
+                .hex();
+        assert_eq!(
+            field(&selected, "port"),
+            Some(&serde_json::Value::from(selected_address.port()))
+        );
+        assert_eq!(
+            field(&selected, "location"),
+            Some(&serde_json::Value::from(expected_hash))
+        );
+        assert!(field(&opened, "location").is_some(), "{opened:?}");
     }
 
     #[tokio::test]
