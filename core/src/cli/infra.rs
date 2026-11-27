@@ -231,12 +231,32 @@ enum Failure {
     },
     RelayNotStarted(RelayFailure),
     RelayNotShutDown(RelayFailure),
+    Serving(ServingFailure),
     ServingFailedAndRelayNotShutDown {
-        serving: Box<Self>,
+        serving: ServingFailure,
         relay: RelayFailure,
     },
     EndpointNotBound(BindError),
+}
+
+/// What ends the serving loop: a record counter that cannot be written, or the gossip topic closing.
+#[derive(Debug)]
+enum ServingFailure {
+    CounterNotWritten { path: PathBuf, source: io::Error },
     TopicClosed,
+}
+
+impl fmt::Display for ServingFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CounterNotWritten { path, source } => {
+                write!(formatter, "{}: {source}", path.display())
+            }
+            Self::TopicClosed => {
+                formatter.write_str("the gossip topic closed, so this host announces nothing more")
+            }
+        }
+    }
 }
 
 impl fmt::Display for Failure {
@@ -287,6 +307,7 @@ impl fmt::Display for Failure {
                 formatter,
                 "the embedded relay did not shut down cleanly: {source}"
             ),
+            Self::Serving(source) => write!(formatter, "{source}"),
             Self::ServingFailedAndRelayNotShutDown { serving, relay } => write!(
                 formatter,
                 "{serving}; the embedded relay also did not shut down cleanly: {relay}"
@@ -295,9 +316,6 @@ impl fmt::Display for Failure {
                 formatter,
                 "the bootstrap node's endpoint was not bound: {source}"
             ),
-            Self::TopicClosed => {
-                formatter.write_str("the gossip topic closed, so this host announces nothing more")
-            }
         }
     }
 }
@@ -394,12 +412,11 @@ async fn serve_host(
     node.stop().await;
     match (outcome, relay().await) {
         (Ok(()), Ok(())) => Ok(()),
-        (Err(serving), Ok(())) => Err(serving),
+        (Err(serving), Ok(())) => Err(Failure::Serving(serving)),
         (Ok(()), Err(relay)) => Err(Failure::RelayNotShutDown(relay)),
-        (Err(serving), Err(relay)) => Err(Failure::ServingFailedAndRelayNotShutDown {
-            serving: Box::new(serving),
-            relay,
-        }),
+        (Err(serving), Err(relay)) => {
+            Err(Failure::ServingFailedAndRelayNotShutDown { serving, relay })
+        }
     }
 }
 
@@ -595,10 +612,13 @@ impl LastRecord {
         &mut self,
         ts: u64,
         filesystem: &impl InfrastructureFilesystem,
-    ) -> Result<(), Failure> {
+    ) -> Result<(), ServingFailure> {
         filesystem
             .replace_owner_only_file(&self.file, &format!("{ts}{LINE_END}"))
-            .map_err(io_failure(&self.file))?;
+            .map_err(|source| ServingFailure::CounterNotWritten {
+                path: self.file.clone(),
+                source,
+            })?;
         self.ts = ts;
         Ok(())
     }
@@ -735,7 +755,7 @@ impl BootstrapNode {
         &mut self,
         mut stopped: StopRequested,
         filesystem: &impl InfrastructureFilesystem,
-    ) -> Result<(), Failure> {
+    ) -> Result<(), ServingFailure> {
         loop {
             match self.next_wake(&mut stopped).await {
                 Wake::Stopped => return Ok(()),
@@ -761,9 +781,9 @@ impl BootstrapNode {
     async fn take_topic_event(
         &mut self,
         event: Option<Result<GossipEvent, GossipError>>,
-    ) -> Result<(), Failure> {
+    ) -> Result<(), ServingFailure> {
         match event {
-            None => return Err(Failure::TopicClosed),
+            None => return Err(ServingFailure::TopicClosed),
             Some(Err(failure)) => {
                 (self.report)(crate::event::GossipEvent::TopicFailed(failure).into());
             }
@@ -820,7 +840,7 @@ impl BootstrapNode {
     async fn broadcast_record(
         &mut self,
         filesystem: &impl InfrastructureFilesystem,
-    ) -> Result<(), Failure> {
+    ) -> Result<(), ServingFailure> {
         self.records_due = Some(later_by(
             self.monotonic.now(),
             INFRASTRUCTURE_RECORD_INTERVAL,
