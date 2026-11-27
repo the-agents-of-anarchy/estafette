@@ -322,3 +322,55 @@ impl AreaEvent for ProcessEvent {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::write_run_record;
+
+    const LOOPBACK_ANY_PORT: &str = "127.0.0.1:0";
+
+    fn run_record_of(event: &Event) -> String {
+        let mut standard_error = Vec::new();
+        write_run_record(&mut standard_error, event).unwrap();
+        String::from_utf8(standard_error).unwrap()
+    }
+
+    #[tokio::test]
+    async fn observability_decision_8_a_failed_lock_task_renders_the_init_line_with_its_code() {
+        let cancelled = tokio::spawn(std::future::pending::<()>());
+        cancelled.abort();
+        let event: Event =
+            ProcessEvent::ClaimFailed(ClaimFailure::LockTaskFailed(cancelled.await.unwrap_err()))
+                .into();
+
+        let line = run_record_of(&event);
+
+        assert!(
+            line.starts_with(
+                "init answered sidecar_invalid: the sidecar lock task did not finish: "
+            ),
+            "{line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn observability_decision_8_an_unbound_endpoint_renders_the_init_line_with_its_code() {
+        let taken_socket = std::net::UdpSocket::bind(LOOPBACK_ANY_PORT).unwrap();
+        let bind_failure = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+            .bind_addr(taken_socket.local_addr().unwrap())
+            .unwrap()
+            .bind()
+            .await
+            .unwrap_err();
+        let event: Event =
+            ProcessEvent::ClaimFailed(ClaimFailure::EndpointUnbound(bind_failure)).into();
+
+        let line = run_record_of(&event);
+
+        assert!(
+            line.starts_with("init answered unreachable: the endpoint was not bound: "),
+            "{line}"
+        );
+    }
+}

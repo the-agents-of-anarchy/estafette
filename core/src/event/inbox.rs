@@ -258,3 +258,50 @@ fn handshake_failure_reason(failure: &ServerInitializeError) -> String {
         other => other.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::write_run_record;
+
+    const FAILURE_TEXT: &str = "disk on fire";
+
+    async fn cancelled_task_failure() -> JoinError {
+        let cancelled = tokio::spawn(std::future::pending::<()>());
+        cancelled.abort();
+        cancelled.await.unwrap_err()
+    }
+
+    fn run_record_of(event: &Event) -> String {
+        let mut standard_error = Vec::new();
+        write_run_record(&mut standard_error, event).unwrap();
+        String::from_utf8(standard_error).unwrap()
+    }
+
+    #[tokio::test]
+    async fn observability_decision_8_each_inbox_and_tool_failure_renders_its_own_line_and_writes_no_field()
+     {
+        let cases: [(Event, &str); 3] = [
+            (
+                InboxEvent::AcceptFailed(io::Error::other(FAILURE_TEXT)).into(),
+                "the inbox socket could not accept a client: disk on fire\n",
+            ),
+            (
+                InboxEvent::StandardInputFailed(io::Error::other(FAILURE_TEXT)).into(),
+                "reading standard input failed and is treated as its end: disk on fire\n",
+            ),
+            (
+                InboxEvent::AnsweringFailed(cancelled_task_failure().await).into(),
+                "the MCP server stopped answering: ",
+            ),
+        ];
+
+        for (event, expected) in cases {
+            let line = run_record_of(&event);
+
+            assert!(line.starts_with(expected), "{}: {line}", event.name());
+            assert!(line.ends_with('\n'), "{}: {line}", event.name());
+            assert_eq!(event.fields(), Vec::new(), "{}", event.name());
+        }
+    }
+}

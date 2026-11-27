@@ -1515,6 +1515,49 @@ mod tests {
     }
 
     #[test]
+    fn observability_decision_8_a_gate_closing_renders_the_line_of_each_reason_but_the_timeout() {
+        const LINE_OPENING: &str = "a gossip connection was closed at the network secret gate: ";
+        let cases = [
+            (
+                GateFailureReason::Transport(Close::PeerReset),
+                "the connection failed while opening or accepting the gate stream: ",
+            ),
+            (
+                GateFailureReason::StreamWrite(WriteError::Stopped(PEER_STOP_CODE)),
+                "the gate stream failed to write: ",
+            ),
+            (
+                GateFailureReason::StreamFinish(iroh::endpoint::ClosedStream::default()),
+                "the gate stream failed to finish: ",
+            ),
+            (
+                GateFailureReason::StreamRead(ReadExactError::FinishedEarly(0)),
+                "the gate stream failed to read: ",
+            ),
+            (
+                GateFailureReason::WrongProof,
+                "the peer's proof is not the gate proof\n",
+            ),
+        ];
+
+        for (reason, reason_text) in cases {
+            let mut record = Vec::new();
+            crate::event::write_run_record(
+                &mut record,
+                &TransportEvent::GateClosed(tested_gate_failure(reason)).into(),
+            )
+            .unwrap();
+
+            let line = String::from_utf8(record).unwrap();
+            assert!(
+                line.starts_with(&format!("{LINE_OPENING}{reason_text}")),
+                "{line}"
+            );
+            assert!(line.ends_with('\n'), "{line}");
+        }
+    }
+
+    #[test]
     fn spec_3_6_a_gate_closing_appends_exactly_one_line_after_whatever_the_record_holds() {
         for case in 0..CATCH_ALL_CASES {
             let held = bytes_beside(&[b"held".as_slice()], &mut Draws::seeded(case));
