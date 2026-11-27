@@ -47,10 +47,11 @@ pub(super) enum ReannounceStep {
     AnnounceAt(Instant),
 }
 
-/// The seq and address of this node's announcements.
+/// The seq and address of this node's announcements, and the instant a put-off announcement falls due.
 #[derive(Default)]
 pub(super) struct Announcer {
     last: Option<Announced>,
+    put_off_until: Option<Instant>,
 }
 
 impl Announcer {
@@ -64,9 +65,27 @@ impl Announcer {
         self.last.as_ref().map(|last| last.seq)
     }
 
-    /// Remembers the Presence just sent as the last one.
+    /// Remembers the Presence just sent as the last one, which ends any put-off announcement.
     pub(super) fn record(&mut self, seq: u64, addr: Addr, at: Instant) {
         self.last = Some(Announced { seq, addr, at });
+        self.put_off_until = None;
+    }
+
+    /// The instant the announcement put off falls due, if one is put off.
+    pub(super) const fn put_off_until(&self) -> Option<Instant> {
+        self.put_off_until
+    }
+
+    /// Puts the announcement off until `due`, and tells whether that moved the instant it was put off to.
+    pub(super) fn put_off(&mut self, due: Instant) -> bool {
+        let moved = self.put_off_until != Some(due);
+        self.put_off_until = Some(due);
+        moved
+    }
+
+    /// Ends the put-off once its instant has come.
+    pub(super) const fn end_put_off(&mut self) {
+        self.put_off_until = None;
     }
 
     /// Whether the current address differs from the last announced one, and when it may be announced.

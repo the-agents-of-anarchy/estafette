@@ -544,7 +544,6 @@ pub(super) struct PresenceLoop {
     requested_handle: AnnouncedHandle,
     init: Init,
     announcer: Announcer,
-    reannounce_due: Option<Instant>,
     heard_requests: HeardPresenceRequests,
     request_seqs: RequestSeqs,
     pub(super) relay_loss: RelayLossWatch,
@@ -603,7 +602,6 @@ impl PresenceLoop {
             requested_handle: identity.requested_handle,
             init: Init::AwaitingJoin(PendingHandle::new(assigned)),
             announcer: Announcer::default(),
-            reannounce_due: None,
             heard_requests: HeardPresenceRequests::default(),
             request_seqs: RequestSeqs::default(),
             relay_loss: RelayLossWatch::default(),
@@ -656,7 +654,7 @@ impl PresenceLoop {
             Some(_) = self.own_addresses.next() => Wake::OwnAddressChanged,
             Some(statuses) = self.relay_statuses.next() => Wake::HomeRelaysChanged(statuses),
             () = deadline_reached(&*self.monotonic, observer_wait_over) => Wake::ObserverWaitOver,
-            () = deadline_reached(&*self.monotonic, self.reannounce_due) => Wake::ReannounceDue,
+            () = deadline_reached(&*self.monotonic, self.announcer.put_off_until()) => Wake::ReannounceDue,
             () = deadline_reached(&*self.monotonic, relay_loss_due) => Wake::RelayLossDue,
             cause = rebind_cause_once_due(&*self.monotonic, next_rebind) => Wake::RebindDue(cause),
             () = deadline_reached(&*self.monotonic, member_join_due) => Wake::MemberJoinDue,
@@ -691,7 +689,7 @@ impl PresenceLoop {
             }
             Wake::ObserverWaitOver => self.advance_init(InitEvent::ObserverWaitOver).await,
             Wake::ReannounceDue => {
-                self.reannounce_due = None;
+                self.announcer.end_put_off();
                 self.reconsider_own_address().await;
             }
             Wake::RelayLossDue => self.remove_lost_relays().await,
@@ -1053,7 +1051,7 @@ impl PresenceLoop {
 
     /// Takes the re-announce wake to `due`, recording the put-off once, when it moves the wake.
     fn put_off_announcement_until(&mut self, due: Instant, now: Instant) {
-        if self.reannounce_due != Some(due) {
+        if self.announcer.put_off(due) {
             (self.report)(
                 crate::event::GossipEvent::PresenceDeferred {
                     deferred_ms: milliseconds_between(now, due),
@@ -1061,7 +1059,6 @@ impl PresenceLoop {
                 .into(),
             );
         }
-        self.reannounce_due = Some(due);
     }
 
     /// Removes every home relay still disconnected the relay-loss wait after it was lost.
@@ -3681,6 +3678,24 @@ pub(super) mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn spec_3_8_a_presence_sent_for_another_reason_ends_the_put_off_announcement() {
+        let origin = Instant::now();
+        let due = origin + SPEC_REANNOUNCE_INTERVAL;
+        let mut announcer = Announcer::default();
+
+        assert!(announcer.put_off(due));
+        assert!(!announcer.put_off(due));
+        assert!(announcer.put_off(due + SPEC_REANNOUNCE_INTERVAL));
+        assert_eq!(
+            announcer.put_off_until(),
+            Some(due + SPEC_REANNOUNCE_INTERVAL)
+        );
+        announcer.record(1, drawn_addr(&mut Draws::seeded(0)), origin);
+
+        assert_eq!(announcer.put_off_until(), None);
     }
 
     #[tokio::test]
