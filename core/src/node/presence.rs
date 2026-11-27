@@ -63,8 +63,7 @@ const STATE_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(60);
 const SECRET_FIELD: &str = "secret";
 const OWNER_FIELD: &str = "owner";
 
-/// Milliseconds since the Unix epoch by this machine's clock.
-pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+pub use crate::trace::Clock;
 
 /// Fills a probe nonce from the random source.
 pub type ProbeNonceSource = Arc<dyn Fn(&mut Nonce) + Send + Sync>;
