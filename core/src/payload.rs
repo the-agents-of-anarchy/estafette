@@ -559,7 +559,7 @@ fn verify_presence_public(public: &[u8]) -> Result<(), OpeningFailure> {
 ///
 /// # Errors
 /// `PayloadRefusal` for bytes that do not decode, a wrong mac, a wrong signature, or a failed infrastructure or presence rule, checked in that order.
-pub fn open_described_payload(
+pub(crate) fn open_described_payload(
     keys: &NetworkKeys,
     owner: &PublicKey,
     bytes: &[u8],
@@ -617,7 +617,10 @@ pub fn open_request(keys: &NetworkKeys, bytes: &[u8]) -> Result<Request, Payload
 ///
 /// # Errors
 /// `PayloadError::Codec` when the response does not encode within the wire limit.
-pub fn seal_response(keys: &NetworkKeys, response: Response) -> Result<Vec<u8>, PayloadError> {
+pub(crate) fn seal_response(
+    keys: &NetworkKeys,
+    response: Response,
+) -> Result<Vec<u8>, PayloadError> {
     match MackedResponse::of(response) {
         Ok(macked) => seal_with_mac(keys, macked),
         Err(message_ack) => Ok(encode(&Response::MessageAck(message_ack))?),

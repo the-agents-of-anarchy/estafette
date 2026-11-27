@@ -54,7 +54,7 @@ impl SignedPayloadKind {
 
 /// Signs a payload encoded with its sig and mac zeroed, under the domain prefix of its kind.
 #[must_use]
-pub fn sign_payload(
+pub(crate) fn sign_payload(
     kind: SignedPayloadKind,
     signer: &SecretKey,
     zeroed_encoding: &[u8],
@@ -66,7 +66,7 @@ pub fn sign_payload(
 ///
 /// # Errors
 /// `CryptoError::SignatureMismatch` when the signature does not verify.
-pub fn verify_payload_signature(
+pub(crate) fn verify_payload_signature(
     kind: SignedPayloadKind,
     signer: &PublicKey,
     zeroed_encoding: &[u8],
@@ -82,11 +82,11 @@ pub fn sign_host_certificate(owner: &SecretKey, host: &PublicKey) -> Signature {
 }
 
 /// The length of a rendered host certificate: two hexadecimal characters per signature byte.
-pub const HOST_CERTIFICATE_HEX_CHARS: usize = Signature::LENGTH * 2;
+pub(crate) const HOST_CERTIFICATE_HEX_CHARS: usize = Signature::LENGTH * 2;
 
 /// Writes a host certificate as lowercase hexadecimal characters.
 #[must_use]
-pub fn render_host_certificate(certificate: &Signature) -> String {
+pub(crate) fn render_host_certificate(certificate: &Signature) -> String {
     HEXLOWER.encode(&certificate.to_bytes())
 }
 
