@@ -4,14 +4,13 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::closing_tag::escape_closing_tags;
+use crate::closing_tag::{ENVELOPE_TAG, escape_closing_tags};
 use crate::dropped_frames::DroppedFrames;
 use crate::inbox_client::{InboxConnector, InboxFrame};
 use crate::permission_class::PermissionClass;
 use crate::ratelimit::{Admission, SenderRateLimit};
 
 const LINE_TERMINATOR: char = '\n';
-pub(crate) const ENVELOPE_TAG: &str = "cross-session-message";
 const HARNESS_MESSAGE_VERSION: u8 = 1;
 const HARNESS_DEFAULT_PRIORITY: &str = "next";
 const LONGEST_ENVELOPE_NAME_CHARACTERS: usize = 64;

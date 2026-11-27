@@ -1,5 +1,4 @@
-use crate::inject::ENVELOPE_TAG;
-
+pub const ENVELOPE_TAG: &str = "cross-session-message";
 const ESCAPED_OPENING_BRACKET: &str = "<\\";
 const HYPHEN_IN_TAG_NAME: char = '-';
 const UNDERSCORE_IN_TAG_NAME: char = '_';
