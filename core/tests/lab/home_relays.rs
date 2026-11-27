@@ -49,7 +49,7 @@ pub fn live_host_record_accepted(member_events: &MemberEvents, live_host_id: End
     );
 }
 
-/// Reads each member's own raw trace once, by the reader handed in, and requires every one to name the relay as its home relay, the refusal naming each member that does not and the home it reports (spec 3.15 tests 23 and 28).
+/// Reads each member's own raw trace once, by the reader handed in, and requires every one to name the relay as its home relay, the refusal naming each member that does not and the home it reports, or whose trace lost lines (spec 3.15 tests 23 and 28).
 pub fn every_member_homed_on<'member>(
     relay: &str,
     members: impl IntoIterator<Item = (&'member str, &'member Path)>,
@@ -58,7 +58,13 @@ pub fn every_member_homed_on<'member>(
     let homed_elsewhere: Vec<String> = members
         .into_iter()
         .filter_map(|(member, traces)| {
-            let home = home_relay_named_by(&own_raw_lines(traces));
+            let lines = own_raw_lines(traces);
+            if lines.iter().any(is_dropped_report) {
+                return Some(format!(
+                    "{member}'s raw trace lost lines, so its home relay is not known"
+                ));
+            }
+            let home = home_relay_named_by(&lines);
             (home.as_deref() != Some(relay)).then(|| {
                 format!(
                     "{member} reports its home relay as {}",
@@ -421,6 +427,29 @@ mod tests {
         assert!(
             refusal.ends_with(&format!(
                 "must name its relay {DOOMED_RELAY} as the home relay: {BOB} reports its home relay as {LIVE_RELAY}; {CID} reports its home relay as none"
+            )),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    fn spec_3_15_test_23_a_member_whose_own_record_reports_lines_lost_is_refused_though_it_names_the_doomed_relay()
+     {
+        let handed = HandedRecords::of(vec![
+            (AMY, vec![raw(&[home_changed(1, DOOMED_RELAY, true)])]),
+            (
+                BOB,
+                vec![raw(&[home_changed(1, DOOMED_RELAY, true), dropped(2)])],
+            ),
+            (CID, vec![raw(&[home_changed(1, DOOMED_RELAY, true)])]),
+        ]);
+
+        let refusal =
+            every_member_homed_on(DOOMED_RELAY, trio(), |traces| handed.read(traces)).unwrap_err();
+
+        assert!(
+            refusal.ends_with(&format!(
+                "{BOB}'s raw trace lost lines, so its home relay is not known"
             )),
             "{refusal}"
         );
