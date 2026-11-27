@@ -2285,6 +2285,10 @@ mod tests {
         const NETWORK: &str = "lab";
         const HANDLE: &str = "bob";
         const BODY: &str = "hello";
+        #[cfg(feature = "relay")]
+        const RELAY_BIND_ADDRESS: &str = "127.0.0.1";
+        #[cfg(feature = "relay")]
+        const RELAY_DOMAIN: &str = "relay.example";
         let command_line = EstafetteArguments::command();
         let traced = [
             MCP_COMMAND,
@@ -2319,11 +2323,20 @@ mod tests {
             })
             .collect();
 
-        let command_lines_that_start_an_endpoint: Vec<Vec<&str>> =
-            [vec![MCP_COMMAND, NETWORK], vec![DOCTOR_COMMAND, NETWORK]]
-                .into_iter()
-                .chain(observer_lines.iter().cloned())
-                .collect();
+        let command_lines_that_start_an_endpoint: Vec<Vec<&str>> = [
+            vec![MCP_COMMAND, NETWORK],
+            vec![DOCTOR_COMMAND, NETWORK],
+            #[cfg(feature = "relay")]
+            vec![
+                infra::RUN_INFRASTRUCTURE_COMMAND,
+                NETWORK,
+                RELAY_BIND_ADDRESS,
+                RELAY_DOMAIN,
+            ],
+        ]
+        .into_iter()
+        .chain(observer_lines.iter().cloned())
+        .collect();
 
         assert_eq!(unparsed, Vec::<&str>::new());
         assert_eq!(observer_names, observer_lines.map(|line| line[0]).to_vec());
