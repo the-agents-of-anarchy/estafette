@@ -87,6 +87,7 @@ mod observability {
     const SPEC_DIRECTORY_MODE: u32 = 0o700;
     const SPEC_FILE_MODE: u32 = 0o600;
     const PERMISSIVE_UMASK: &str = "0000";
+    const OWNER_READ_CLEARING_UMASK: &str = "0477";
     const SPEC_HEADER_FIELDS: [&str; 5] = ["v", "run", "n", "mono_ms", "wall_ms"];
     const SPEC_FORMAT_VERSION: u64 = 2;
     const SPEC_RUN_HEX_CHARS: usize = 16;
@@ -173,14 +174,23 @@ mod observability {
     #[test]
     fn observability_decision_4_the_trace_directory_is_0700_and_its_files_0600_under_a_permissive_umask()
      {
-        let root = machine_with_network("modes");
+        the_trace_directory_is_0700_and_its_files_0600_under_the_umask("modes", PERMISSIVE_UMASK);
+    }
+
+    #[test]
+    fn observability_decision_4_the_trace_directory_is_0700_and_its_files_0600_under_a_umask_that_clears_the_owners_read_bit()
+     {
+        the_trace_directory_is_0700_and_its_files_0600_under_the_umask(
+            "modes-owner-read-cleared",
+            OWNER_READ_CLEARING_UMASK,
+        );
+    }
+
+    fn the_trace_directory_is_0700_and_its_files_0600_under_the_umask(label: &str, umask: &str) {
+        let root = machine_with_network(label);
 
         let output = Command::new("sh")
-            .args([
-                "-c",
-                &format!("umask {PERMISSIVE_UMASK}; exec \"$0\" \"$@\""),
-                BINARY,
-            ])
+            .args(["-c", &format!("umask {umask}; exec \"$0\" \"$@\""), BINARY])
             .args(["mcp", NETWORK])
             .env_clear()
             .env("XDG_CONFIG_HOME", root.join(CONFIG_HOME))
