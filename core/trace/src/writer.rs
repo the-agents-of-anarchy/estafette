@@ -202,7 +202,7 @@ pub struct FileTrace {
     header: Arc<HeaderSource>,
     queue: Mutex<Queue>,
     lost_at_close: Arc<Mutex<u64>>,
-    ended: Mutex<Option<Receiver<io::Result<()>>>>,
+    finished: Mutex<Finish>,
     writer_moved: Arc<WriterMoved>,
 }
 
@@ -301,6 +301,12 @@ impl FlushProgress {
     }
 }
 
+/// Where the stop of this file's writer stands: awaited by the first finish, or answered by it for every later finish to repeat.
+enum Finish {
+    Awaiting(Receiver<io::Result<()>>),
+    Answered(TraceStop),
+}
+
 /// The queue while it is open, and the events lost since the last line queued.
 struct Queue {
     lines: Option<SyncSender<Queued>>,
@@ -358,7 +364,7 @@ impl FileTrace {
                 lost: 0,
             }),
             lost_at_close,
-            ended: Mutex::new(Some(ended)),
+            finished: Mutex::new(Finish::Awaiting(ended)),
             writer_moved,
         })
     }
@@ -419,16 +425,19 @@ impl FileTrace {
         self.stop_answered(progress.answer())
     }
 
-    /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most the drain bound for it to take every line it holds, report that loss and cut the file back to its last line, saying how the stop left this file.
+    /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most the drain bound for it to take every line it holds, report that loss and cut the file back to its last line, saying how the stop left this file; a later call answers what the first answered.
     pub fn finish(&self) -> TraceStop {
         let mut queue = locked(&self.queue);
         *locked(&self.lost_at_close) = queue.lost;
         drop(queue.lines.take());
         drop(queue);
-        let Some(ended) = locked(&self.ended).take() else {
-            return TraceStop::Drained;
+        let mut finished = locked(&self.finished);
+        let stop = match &*finished {
+            Finish::Awaiting(ended) => self.stop_answered(ended.recv_timeout(self.drain).ok()),
+            Finish::Answered(first) => return first.repeated(),
         };
-        self.stop_answered(ended.recv_timeout(self.drain).ok())
+        *finished = Finish::Answered(stop.repeated());
+        stop
     }
 
     /// The queue under its lock once any other holder lets go of it, or none when this thread holds that lock while it stamps a line, as a panic hook does on the thread whose stamp panicked.

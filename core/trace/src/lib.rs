@@ -164,6 +164,20 @@ pub enum TraceStop {
     },
 }
 
+impl TraceStop {
+    /// The same answer again, a cut failure kept as its kind and its text.
+    fn repeated(&self) -> Self {
+        match self {
+            Self::Drained => Self::Drained,
+            Self::NotDrained { file } => Self::NotDrained { file: *file },
+            Self::NotCut { file, source } => Self::NotCut {
+                file: *file,
+                source: io::Error::new(source.kind(), source.to_string()),
+            },
+        }
+    }
+}
+
 /// A trace that could not start, refusing the command before any other side effect.
 #[derive(Debug)]
 pub struct TraceRefused {
