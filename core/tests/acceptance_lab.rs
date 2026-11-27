@@ -810,6 +810,12 @@ mod spec_3_15_two_members_through_the_live_host {
     const NOT_A_RELAY_URL: &str = "not a relay url";
     /// The byte every byte of the key of the card whose presence announces that relay is made of.
     const RELAY_REFUSAL_CARD_SEED: u8 = 8;
+    /// The byte every byte of the key of the card whose presence the payload fixture holds is made of.
+    const PRESENCE_CARD_SEED: u8 = 17;
+    /// The byte every byte of the key of a card the payload fixture's presence is not of is made of.
+    const OTHER_PRESENCE_CARD_SEED: u8 = 18;
+    /// Bytes that decode as no payload.
+    const NOT_A_PAYLOAD: &[u8] = b"not a payload";
 
     /// Spec 3.15 test 17: the encoded size of the largest Presence, its worst case summed field by field.
     const SPEC_LARGEST_PRESENCE_BYTES: usize = 3951;
@@ -1505,6 +1511,12 @@ mod spec_3_15_two_members_through_the_live_host {
             &card,
             &format!("public:\n  {PUBLIC_NOTES_KEY}: {notes}\n"),
         );
+        let witness = Forger::join_through(
+            SecretKey::generate(),
+            *network.keys().gate_key(),
+            network.topic(),
+            network.host_address(),
+        );
         let mut amy = machine.start_server();
         let claim = amy.call(INIT_TOOL, &init_arguments(&card.name));
         let mut bob = lab_member(&network, "t17-bob", &unique_handle("bob"), FIRST_SESSION);
@@ -1512,16 +1524,50 @@ mod spec_3_15_two_members_through_the_live_host {
         let at_bob = bob
             .member
             .peer_within(&longest_handle, PRESENCE_WAIT, online);
+        let arrived = witness.wait_for_received(
+            &format!("{PRESENCE_KIND} of the card of {longest_handle}"),
+            PRESENCE_WAIT,
+            |bytes| is_presence_of_card(bytes, card.id),
+        );
 
         assert_eq!(largest.len(), SPEC_LARGEST_PRESENCE_BYTES);
         assert!(largest.len() <= SPEC_GOSSIP_FRAME_BYTES - SPEC_GOSSIP_LAYER_OVERHEAD_BYTES);
         assert!(call_succeeded(&claim), "{claim}");
-        assert_eq!(longest_handle.len(), SPEC_REQUESTED_HANDLE_MAX_CHARACTERS);
-        assert_eq!(at_bob["public"], json!({ PUBLIC_NOTES_KEY: notes }));
-        assert_eq!(
-            serde_json::to_string(&at_bob["public"]).unwrap().len(),
-            SPEC_PUBLIC_MAX_BYTES
+        assert!(
+            arrived.len() <= SPEC_GOSSIP_FRAME_BYTES - SPEC_GOSSIP_LAYER_OVERHEAD_BYTES,
+            "the member's Presence arrived as {} bytes",
+            arrived.len()
         );
+        let Payload::Presence(presence) = wire::decode(&arrived).unwrap() else {
+            panic!("the awaited payload decodes as a Presence")
+        };
+        assert_eq!(presence.handle.len(), SPEC_REQUESTED_HANDLE_MAX_CHARACTERS);
+        assert_eq!(presence.public.len(), SPEC_PUBLIC_MAX_BYTES);
+        assert_eq!(at_bob["public"], json!({ PUBLIC_NOTES_KEY: notes }));
+    }
+
+    #[test]
+    fn spec_3_15_test_17_a_payload_is_taken_for_the_presence_of_a_card_only_when_it_is_a_presence_of_that_card()
+     {
+        let card = SecretKey::from_bytes(&[PRESENCE_CARD_SEED; 32]).public();
+        let other_card = SecretKey::from_bytes(&[OTHER_PRESENCE_CARD_SEED; 32]).public();
+        let Payload::Presence(mut presence) = largest_presence() else {
+            panic!("the largest presence is a Presence")
+        };
+        presence.card = wire::PublicKey::from(card);
+        let bytes = wire::encode(&Payload::Presence(presence)).unwrap();
+
+        assert!(is_presence_of_card(&bytes, card));
+        assert!(!is_presence_of_card(&bytes, other_card));
+        assert!(!is_presence_of_card(NOT_A_PAYLOAD, card));
+    }
+
+    /// Whether the payload decodes as a Presence of the card.
+    fn is_presence_of_card(bytes: &[u8], card: EndpointId) -> bool {
+        matches!(
+            wire::decode(bytes),
+            Ok(Payload::Presence(presence)) if presence.card == wire::PublicKey::from(card)
+        )
     }
 
     #[test]
