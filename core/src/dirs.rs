@@ -83,15 +83,8 @@ impl OperatingSystemFilesystem {
         match EntryFacts::at(path) {
             Err(failure) if failure.kind() == io::ErrorKind::NotFound => Ok(()),
             Err(failure) => Err(failure),
-            Ok(facts) => directory_finding(facts, self.user_id).map_or(Ok(()), |found| {
-                Err(io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    ExistingDirectoryRefused {
-                        path: path.to_path_buf(),
-                        found,
-                    },
-                ))
-            }),
+            Ok(facts) => directory_finding(facts, self.user_id)
+                .map_or(Ok(()), |found| Err(existing_directory_refusal(path, found))),
         }
     }
 }
@@ -101,13 +94,7 @@ impl DirectoryFilesystem for OperatingSystemFilesystem {
         estafette_private_entry::create_private_directory(self.user_id, path).map_err(|failure| {
             match failure {
                 PrivateDirectoryFailure::Io(source) => source,
-                PrivateDirectoryFailure::Refused(found) => io::Error::new(
-                    io::ErrorKind::PermissionDenied,
-                    ExistingDirectoryRefused {
-                        path: path.to_path_buf(),
-                        found,
-                    },
-                ),
+                PrivateDirectoryFailure::Refused(found) => existing_directory_refusal(path, found),
             }
         })
     }
@@ -115,6 +102,17 @@ impl DirectoryFilesystem for OperatingSystemFilesystem {
     fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
         Ok(fs::metadata(path)?.uid())
     }
+}
+
+/// The error that refuses the existing directory at the path for what was found there.
+fn existing_directory_refusal(path: &Path, found: DirectoryFinding) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        ExistingDirectoryRefused {
+            path: path.to_path_buf(),
+            found,
+        },
+    )
 }
 
 /// An existing directory that is refused, with the directory and what was found.
