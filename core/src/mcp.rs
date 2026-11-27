@@ -414,7 +414,8 @@ impl Server {
         let claimed = self.session.claimed_card().map(|claimed| claimed.card);
         let listing = tokio::task::spawn_blocking(move || {
             listed_cards(
-                &served,
+                &served.directories,
+                &served.network,
                 registry.as_ref(),
                 is_card_held.as_ref(),
                 claimed.as_ref(),
@@ -505,15 +506,16 @@ fn unserializable(error: &serde_json::Error) -> ErrorData {
 
 /// Every card of the registry in name order, held without a try for the card this session claimed and by the probe otherwise.
 fn listed_cards(
-    served: &ServedNetwork,
+    directories: &Directories,
+    network: &Handle,
     registry: &(dyn CardRegistryReader + Send + Sync),
     is_card_held: &(dyn Fn(&Path) -> bool + Send + Sync),
     claimed: Option<&Handle>,
 ) -> Result<Vec<ListedCard>, RegistryFailure> {
-    let mut cards: Vec<ListedCard> = registry_cards(served, registry)?
+    let mut cards: Vec<ListedCard> = registry_cards(directories, network, registry)?
         .into_iter()
         .map(|(name, card)| ListedCard {
-            held: claimed == Some(&name) || is_locked(served, is_card_held, &name),
+            held: claimed == Some(&name) || is_locked(directories, network, is_card_held, &name),
             name: name.as_str().to_owned(),
             handle: card.handle().to_owned(),
         })
@@ -524,10 +526,11 @@ fn listed_cards(
 
 /// The cards of the network's registry whose name and text are valid, none when its directory does not exist, a failure when it cannot be read.
 fn registry_cards(
-    served: &ServedNetwork,
+    directories: &Directories,
+    network: &Handle,
     registry: &(dyn CardRegistryReader + Send + Sync),
 ) -> Result<Vec<(Handle, Card)>, RegistryFailure> {
-    let cards_directory = served.directories.cards_directory(&served.network);
+    let cards_directory = directories.cards_directory(network);
     let entries = match registry.read_directory(&cards_directory) {
         Ok(entries) => entries,
         Err(failure) if failure.kind() == io::ErrorKind::NotFound => Vec::new(),
@@ -540,7 +543,7 @@ fn registry_cards(
     };
     Ok(entries
         .iter()
-        .filter_map(|path| registry_card_at(registry, path, served.network.as_str()))
+        .filter_map(|path| registry_card_at(registry, path, network.as_str()))
         .collect())
 }
 
@@ -561,11 +564,12 @@ fn registry_card_at(
 
 /// Whether the probe finds the card's sidecar lock taken.
 fn is_locked(
-    served: &ServedNetwork,
+    directories: &Directories,
+    network: &Handle,
     is_card_held: &(dyn Fn(&Path) -> bool + Send + Sync),
     card: &Handle,
 ) -> bool {
-    is_card_held(&served.directories.card_sidecar_file(&served.network, card))
+    is_card_held(&directories.card_sidecar_file(network, card))
 }
 
 /// The relays of the configuration's hosts, which the endpoint's relay map starts from (spec 3.8).
