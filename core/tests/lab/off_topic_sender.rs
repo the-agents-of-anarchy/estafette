@@ -43,10 +43,7 @@ impl OffTopicSender {
             connections.clone(),
         );
         let _inside_runtime = runtime.handle().enter();
-        let introduced = IntroducedUnderItsHandle {
-            card,
-            handle: handle.to_owned(),
-        };
+        let introduced = IntroducedUnderItsHandle::of(card, handle);
         let router = endpoint
             .endpoint()
             .router_builder()
@@ -103,9 +100,19 @@ impl Drop for OffTopicSender {
 }
 
 /// The direct side of a card that receives no Message and introduces itself under its handle.
-struct IntroducedUnderItsHandle {
+pub struct IntroducedUnderItsHandle {
     card: wire::PublicKey,
     handle: String,
+}
+
+impl IntroducedUnderItsHandle {
+    /// The direct side of the card, introducing itself under the handle.
+    pub fn of(card: wire::PublicKey, handle: &str) -> Self {
+        Self {
+            card,
+            handle: handle.to_owned(),
+        }
+    }
 }
 
 impl DirectHost for IntroducedUnderItsHandle {

@@ -19,6 +19,8 @@ mod gated_endpoint;
 #[cfg(test)]
 #[path = "lab/handles.rs"]
 mod handles;
+#[path = "support/held_connections_of_a_dialer.rs"]
+mod held_connections_of_a_dialer;
 #[cfg(test)]
 #[path = "lab/home_relays.rs"]
 mod home_relays;
@@ -759,7 +761,9 @@ mod spec_3_15_two_members_through_the_live_host {
     use std::net::{Ipv6Addr, SocketAddr, SocketAddrV6};
     use std::time::{Duration, Instant};
 
+    use estafette::crypto::NetworkKeys;
     use estafette::keys::{parse_secret_key, render_public_key};
+    use estafette::net::direct::DirectServer;
     use estafette::wire::{self, Addr, MessageId, Payload, Presence, SignatureBytes, Version};
     use iroh::{EndpointAddr, EndpointId, RelayUrl, SecretKey, TransportAddr};
     use serde_json::{Value, json};
@@ -771,6 +775,7 @@ mod spec_3_15_two_members_through_the_live_host {
     };
     use crate::forger::Forger;
     use crate::handles::{HANDLE_TAG_LETTERS, unique_handle};
+    use crate::held_connections_of_a_dialer::HeldConnections;
     use crate::inbox_client::{FRAME_WAIT, InboxClient, NO_FURTHER_FRAME_WINDOW};
     use crate::killed_member_at_its_peer::{
         SPEC_NEIGHBOR_DOWN_AND_PROBE_WITHIN, assert_killed_member_is_unreachable_then_unsendable,
@@ -782,11 +787,14 @@ mod spec_3_15_two_members_through_the_live_host {
         INIT_TOOL, McpServer, PRESENCE_WAIT, SEND_TOOL, call_succeeded, gone, init_arguments,
         online, send_arguments,
     };
-    use crate::member_ended_at_its_peer::assert_stopped_member_is_gone_then_unreachable;
+    use crate::member_ended_at_its_peer::{
+        assert_send_answered_after_input_ended, assert_stopped_member_is_gone_then_unreachable,
+        wait_for_input_ended,
+    };
     use crate::member_events::MemberEvents;
     use crate::message_body::BODY;
     use crate::new_presence_window::{assert_acknowledged_promptly_after, new_presence_accepted};
-    use crate::off_topic_sender::OffTopicSender;
+    use crate::off_topic_sender::{IntroducedUnderItsHandle, OffTopicSender};
     use crate::payload_placeholders::{UNSET_MAC, wall_clock_ms};
     use crate::payloads::{presence_signed_by, presence_signed_by_at};
     use crate::scratch_machine::Card;
@@ -833,6 +841,8 @@ mod spec_3_15_two_members_through_the_live_host {
     const PUBLIC_NOTES_KEY: &str = "notes";
     /// The bytes compact JSON spends on a mapping of one string key and one string value beyond the two strings.
     const COMPACT_JSON_MAPPING_FRAME_BYTES: usize = r#"{"":""}"#.len();
+    /// How long the recipient that holds a call's connection unserved may take to receive it: the member's connect timeout of spec 3.14, 5000 ms.
+    const CONNECTION_HELD_WITHIN: Duration = Duration::from_secs(5);
     /// The description a member's first session gives at init.
     const FIRST_SESSION: &str = "first session";
     /// The description a member's second session on the same card gives at init, so its Presence differs from the first's.
@@ -1199,11 +1209,44 @@ mod spec_3_15_two_members_through_the_live_host {
         let mut amy = lab_member(&network, "t4f-amy", &unique_handle("amy"), FIRST_SESSION);
         let mut bob = lab_member(&network, "t4f-bob", &unique_handle("bob"), FIRST_SESSION);
         meet(&mut amy, &mut bob);
+        let recipient_key = SecretKey::generate();
+        let recipient_handle = unique_handle("carol");
+        let (held_from_bob, hold) = HeldConnections::of(bob.card.id);
+        let recipient = Forger::join_through_answering_direct(
+            recipient_key.clone(),
+            *network.keys().gate_key(),
+            network.topic(),
+            network.host_address(),
+            |endpoint| {
+                hold.before_serving(DirectServer::new(
+                    NetworkKeys::clone(network.keys()),
+                    IntroducedUnderItsHandle::of(
+                        wire::PublicKey::from(recipient_key.public()),
+                        &recipient_handle,
+                    ),
+                    endpoint,
+                ))
+            },
+        );
+        recipient.broadcast(presence_signed_by(
+            network.keys(),
+            &recipient_key,
+            &recipient_handle,
+            &EndpointAddr::from_parts(
+                recipient_key.public(),
+                [TransportAddr::Relay(network.host_relay().parse().unwrap())],
+            ),
+        ));
+        bob.member
+            .peer_within(&recipient_handle, PRESENCE_WAIT, online);
 
         bob.member
-            .start_call(SEND_TOOL, &send_arguments(&amy.handle, BODY));
+            .start_call(SEND_TOOL, &send_arguments(&recipient_handle, BODY));
+        held_from_bob.wait_for_one(recipient.runtime(), CONNECTION_HELD_WITHIN);
         let input_closed = Instant::now();
         bob.member.close_standard_input();
+        wait_for_input_ended(bob.member.events());
+        held_from_bob.release();
 
         assert_stopped_member_is_gone_then_unreachable(
             &mut amy.member,
@@ -1211,6 +1254,7 @@ mod spec_3_15_two_members_through_the_live_host {
             &bob.handle,
             input_closed,
         );
+        assert_send_answered_after_input_ended(bob.member.events());
     }
 
     #[test]

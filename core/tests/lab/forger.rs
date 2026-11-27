@@ -1,11 +1,13 @@
 use std::time::Duration;
 
 use estafette::crypto::GateKey;
+use estafette::net::endpoint::{DIRECT_ALPN, NodeEndpoint};
 use estafette::stream_items::StreamExt;
-use iroh::protocol::Router;
+use iroh::protocol::{ProtocolHandler, Router, RouterBuilder};
 use iroh::{EndpointAddr, SecretKey};
 use iroh_gossip::api::{GossipReceiver, GossipSender};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, TopicId};
+use tokio::runtime::Handle;
 
 use crate::driven_runtime::DrivenRuntime;
 use crate::gated_endpoint::{bind_gated_endpoint, unrecorded_connections};
@@ -29,6 +31,33 @@ impl Forger {
         topic: TopicId,
         host: EndpointAddr,
     ) -> Self {
+        Self::join(key, gate_key, topic, host, |_endpoint| |router| router)
+    }
+
+    /// Joins as `join_through` does, also answering the direct protocol with the handler it builds on the node's endpoint.
+    #[track_caller]
+    pub fn join_through_answering_direct<Direct: ProtocolHandler>(
+        key: SecretKey,
+        gate_key: GateKey,
+        topic: TopicId,
+        host: EndpointAddr,
+        direct: impl FnOnce(&NodeEndpoint) -> Direct,
+    ) -> Self {
+        Self::join(key, gate_key, topic, host, |endpoint| {
+            let handler = direct(endpoint);
+            move |router: RouterBuilder| router.accept(DIRECT_ALPN, handler)
+        })
+    }
+
+    /// Binds and joins as `join_through` does, serving beside gossip what the extension, built on the node's endpoint, adds to the router.
+    #[track_caller]
+    fn join<Extension: FnOnce(RouterBuilder) -> RouterBuilder>(
+        key: SecretKey,
+        gate_key: GateKey,
+        topic: TopicId,
+        host: EndpointAddr,
+        extension_on: impl FnOnce(&NodeEndpoint) -> Extension,
+    ) -> Self {
         let driven = DrivenRuntime::start();
         let runtime = driven.handle().clone();
         let endpoint = bind_gated_endpoint(
@@ -43,11 +72,14 @@ impl Forger {
         endpoint.replace_address(host);
         let _inside_runtime = runtime.enter();
         let gossip = endpoint.endpoint().spawn_gossip();
-        let router = endpoint
-            .endpoint()
-            .router_builder()
-            .accept(GOSSIP_ALPN, gossip.clone())
-            .spawn();
+        let extension = extension_on(&endpoint);
+        let router = extension(
+            endpoint
+                .endpoint()
+                .router_builder()
+                .accept(GOSSIP_ALPN, gossip.clone()),
+        )
+        .spawn();
         let Ok(joined) = runtime.block_on(tokio::time::timeout(
             JOIN_WAIT,
             gossip.subscribe_and_join(topic, vec![host_id]),
@@ -62,6 +94,11 @@ impl Forger {
             router,
             topic,
         }
+    }
+
+    /// The runtime the forger's tasks run on, which the test thread may block on.
+    pub const fn runtime(&self) -> &Handle {
+        self.runtime.handle()
     }
 
     /// Broadcasts the bytes on the topic as they are.

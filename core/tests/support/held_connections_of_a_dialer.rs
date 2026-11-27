@@ -58,7 +58,7 @@ impl HeldConnections {
 
 impl ConnectionHold {
     /// The protocol handler that serves a connection of the dialer with `served` only once released, and every other connection at once.
-    pub fn before_serving<Served: ProtocolHandler>(
+    pub const fn before_serving<Served: ProtocolHandler>(
         self,
         served: Served,
     ) -> HoldingConnectionsOf<Served> {
