@@ -4588,18 +4588,43 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_14_probe_without_an_ack_fails_after_the_probe_timeout() {
-        let link = link_to(ScriptedServer::replying(None), ClientTimeouts::SPEC).await;
-
-        let started = Instant::now();
-        let outcome = link
-            .client
-            .probe(link.server_node.endpoint().id(), PROBE_NONCE)
+    async fn spec_3_14_probe_without_an_ack_fails_when_its_clock_reads_the_probe_timeout_and_not_a_millisecond_before()
+     {
+        let clock = StandingClock::standing_now();
+        let called_at = clock.now();
+        let server = ScriptedServer::replying(None);
+        let link = link_to(server.clone(), ClientTimeouts::SPEC).await;
+        let client = Arc::new(DirectClient::new(
+            link.client_node.endpoint().clone(),
+            keys(),
+            ClientTimeouts::SPEC,
+            HeldConnections::new(clock.monotonic(), dropping_transport()),
+        ));
+        let peer = link.server_node.endpoint().id();
+        let probing = tokio::spawn({
+            let client = Arc::clone(&client);
+            async move { client.probe(peer, PROBE_NONCE).await }
+        });
+        clock
+            .asked_to_wake("the probe timeout", called_at + SPEC_PROBE_TIMEOUT)
             .await;
-        let waited = started.elapsed();
+        found_within(
+            WAKE_ASKED_WAIT,
+            "probe request taken by the unanswering server",
+            async || (server.streams_taken() == 1).then_some(()),
+        )
+        .await
+        .unwrap_or_else(|missed| missed.fail_the_test());
+
+        clock.move_forward(SPEC_PROBE_TIMEOUT.saturating_sub(ONE_MILLISECOND_SHORT));
+        tokio::task::yield_now().await;
+        assert!(!probing.is_finished());
+        clock.move_forward(ONE_MILLISECOND_SHORT);
+        let outcome = answered_within(WAKE_ASKED_WAIT, "end of the unanswered probe", probing)
+            .await
+            .unwrap();
 
         assert_eq!(outcome, Err(DirectError::Timeout));
-        assert!(SPEC_PROBE_TIMEOUT <= waited && waited < SPEC_PROBE_TIMEOUT + TIMEOUT_SLACK);
     }
 
     #[tokio::test]
