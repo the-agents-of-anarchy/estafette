@@ -1190,6 +1190,7 @@ mod tests {
         node_report: RunRecord,
         is_card_held: Arc<dyn Fn(&Path) -> bool + Send + Sync>,
         monotonic: MonotonicClock,
+        pause_between_lock_tries: Arc<dyn Fn(Duration) + Send + Sync>,
     }
 
     impl ServerPlan {
@@ -1204,6 +1205,7 @@ mod tests {
                     sidecar::is_held(sidecar_path).is_ok_and(|held| held)
                 }),
                 monotonic: Arc::new(RuntimeClock),
+                pause_between_lock_tries: Arc::new(|_pause: Duration| {}),
             }
         }
 
@@ -1225,6 +1227,7 @@ mod tests {
                     sidecar::is_held(sidecar_path).is_ok_and(|held| held)
                 }),
                 monotonic: Arc::new(RuntimeClock),
+                pause_between_lock_tries: Arc::new(|_pause: Duration| {}),
             }
         }
     }
@@ -1368,7 +1371,7 @@ mod tests {
             },
             bind_endpoint: plan.bind_endpoint,
             registry: Arc::new(OperatingSystemFilesystem::of_this_process().unwrap()),
-            pause_between_lock_tries: Arc::new(|_pause: Duration| {}),
+            pause_between_lock_tries: plan.pause_between_lock_tries,
             is_card_held: plan.is_card_held,
             report: plan.report,
         };
@@ -2590,6 +2593,44 @@ mod tests {
             vec![(
                 "process.claim_endpoint_unbound",
                 vec![("code", Value::from("unreachable"))]
+            )]
+        );
+    }
+
+    #[tokio::test]
+    async fn observability_decision_9_a_claim_whose_lock_task_fails_is_recorded_once_under_its_failure_spec_3_10()
+     {
+        const CLAIM_EVENTS: &str = "process.claim";
+        let machine = Machine::new("lock-task-failed");
+        machine.create_card("amy-card", "amy", AMY_SEED);
+        let _held_by_another_process = machine.hold_card("amy-card", AMY_SEED);
+        let (recorded, mut received) = mpsc::unbounded_channel();
+        let record: RunRecord = Arc::new(move |event: Event| {
+            if event.name().starts_with(CLAIM_EVENTS) {
+                drop(recorded.send((event.name(), event.fields())));
+            }
+        });
+        let mut client = start_server(
+            &machine,
+            ServerPlan {
+                report: record,
+                is_card_held: Arc::new(|_sidecar_path: &Path| false),
+                pause_between_lock_tries: Arc::new(|_pause: Duration| {
+                    panic!("the pause between lock tries is made to fail")
+                }),
+                ..ServerPlan::alone(FIRST_PROCESS_ID)
+            },
+        );
+        client.initialize().await;
+
+        let answer = client.envelope("init", json!({ "card": "amy-card" })).await;
+
+        assert_eq!(answer["error"]["code"], "sidecar_invalid", "{answer}");
+        assert_eq!(
+            recorded_so_far(&mut received),
+            vec![(
+                "process.claim_lock_task_failed",
+                vec![("code", Value::from("sidecar_invalid"))]
             )]
         );
     }
