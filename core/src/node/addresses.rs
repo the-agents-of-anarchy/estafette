@@ -46,7 +46,7 @@ pub fn wire_addr(addr: &EndpointAddr) -> Addr {
 }
 
 /// The endpoint address of the node at a carried wire address, leaving out relay URLs that do not parse.
-pub fn endpoint_addr(id: EndpointId, addr: &Addr) -> EndpointAddr {
+fn endpoint_addr(id: EndpointId, addr: &Addr) -> EndpointAddr {
     let relays = addr
         .relays()
         .iter()
