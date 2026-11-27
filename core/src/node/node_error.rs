@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::config::AcceptedValue;
+use crate::config::{AcceptedValue, OWNER_FIELD, SECRET_FIELD};
 use crate::keys::KeyError;
 use crate::net::gossip::GossipError;
 
@@ -14,8 +14,8 @@ pub enum NetworkKeyField {
 impl fmt::Display for NetworkKeyField {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::Secret => "secret",
-            Self::Owner => "owner",
+            Self::Secret => SECRET_FIELD,
+            Self::Owner => OWNER_FIELD,
         })
     }
 }
