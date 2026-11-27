@@ -1350,7 +1350,7 @@ pub(crate) mod tests {
 
     #[test]
     fn parse_refuses_a_number_json_cannot_hold_in_public_spec_3_5() {
-        for number in [".inf", "-.inf", ".nan"] {
+        for number in [".inf", "-.inf", ".nan", "1e400", "-1e400"] {
             assert_eq!(
                 card_with_public(&format!("  n: {number}\n")),
                 Err(CardInvalid::NumberNotFinite),
