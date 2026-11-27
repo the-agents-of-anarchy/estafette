@@ -388,10 +388,7 @@ impl NodeState {
         announced_sender_handle(message)?;
         let (effects, from) = self.rows.change(|table| {
             let Operated { value, changes } = table.receive_message(sender, message, now_ms);
-            let from = table
-                .peers(now_ms)
-                .find(|peer| peer.card == sender)
-                .map(|peer| peer.effective_handle.clone());
+            let from = table.handle_of(sender, now_ms);
             Operated {
                 value: (value, from),
                 changes,
