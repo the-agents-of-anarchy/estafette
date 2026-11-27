@@ -900,11 +900,21 @@ mod tests {
             );
 
             let failure = outcome.unwrap_err().to_string();
-            assert!(
-                failure.contains("was left behind"),
-                "case {case}: {failure}"
+            let leftover = directory
+                .read_dir()
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .find(|path| *path != card && *path != sidecar)
+                .unwrap();
+            assert_eq!(
+                failure,
+                format!(
+                    "{} was written; {} was left behind: {removal_reason}",
+                    card.display(),
+                    leftover.display()
+                ),
+                "case {case}"
             );
-            assert!(failure.contains(&removal_reason), "case {case}: {failure}");
             assert_eq!(
                 std::fs::read_to_string(&card).unwrap(),
                 format!(
