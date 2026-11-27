@@ -417,7 +417,11 @@ impl FileTrace {
                 progress.is_waiting()
             })
             .unwrap_or_else(PoisonError::into_inner);
-        self.stop_answered(progress.answer())
+        self.stop_ended(
+            progress
+                .answer()
+                .map(|cut| WriterEnd { unreported: 0, cut }),
+        )
     }
 
     /// Closes the queue, handing the thread the events lost since the last line queued, and waits at most the drain bound for it to take every line it holds, report that loss and cut the file back to its last line, saying how the stop left this file; a later call answers what the first answered.
@@ -470,19 +474,6 @@ impl FileTrace {
                 unreported: 0,
                 cut: Ok(()),
             }) => TraceStop::Drained,
-            None => TraceStop::NotDrained { file: self.kind },
-        }
-    }
-
-    /// How the writer's answer left this file: drained when it ended at its last line, not cut when it could not, and not drained when no answer came.
-    fn stop_answered(&self, answer: Option<io::Result<()>>) -> TraceStop {
-        match answer {
-            Some(Ok(())) => TraceStop::Drained,
-            Some(Err(source)) => TraceStop::NotCut {
-                file: self.kind,
-                source,
-                unreported: 0,
-            },
             None => TraceStop::NotDrained { file: self.kind },
         }
     }
