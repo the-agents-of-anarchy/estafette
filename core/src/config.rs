@@ -717,27 +717,40 @@ mod tests {
     /// Spec 3.3: a host configured on one side stays configured when the other side learned it.
     #[test]
     fn rewrite_keeps_a_host_configured_when_either_side_holds_it_configured() {
-        let directory = scratch_directory("configured-wins");
-        let path = directory.join("net.toml");
         let owner_configured = Host {
             id: host_id(b'a'),
             relay: "https://a/".to_owned(),
             ts: Some(1),
             origin: HostOrigin::Configured,
         };
-        network(vec![owner_configured.clone()])
-            .rewrite(&path, NOW_SECONDS)
-            .unwrap();
-        let learned_long_ago = network(vec![learned(
+        let learned_recently = learned(&host_id(b'a'), "https://a/", Some(1), NOW_MILLIS);
+        let learned_long_ago = learned(
             &host_id(b'a'),
             "https://a/",
             Some(1),
             heard_before(LEARNED_HOST_EXPIRY_MILLIS + 5),
-        )]);
+        );
+        let sides = [
+            ("configured-on-disk", &owner_configured, &learned_long_ago),
+            ("configured-held", &learned_recently, &owner_configured),
+        ];
+        for (name, on_disk, held) in sides {
+            let directory = scratch_directory(name);
+            let path = directory.join("net.toml");
+            network(vec![on_disk.clone()])
+                .rewrite(&path, NOW_SECONDS)
+                .unwrap();
 
-        let merged = learned_long_ago.rewrite(&path, NOW_SECONDS).unwrap();
+            let merged = network(vec![held.clone()])
+                .rewrite(&path, NOW_SECONDS)
+                .unwrap();
 
-        assert_eq!(merged.hosts, [owner_configured]);
+            assert_eq!(
+                merged.hosts,
+                std::slice::from_ref(&owner_configured),
+                "{name}"
+            );
+        }
     }
 
     /// Spec 3.3: the file is 0600 after a rewrite, also when it existed with a looser mode.
