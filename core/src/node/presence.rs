@@ -3412,7 +3412,7 @@ pub(super) mod tests {
         let _joining = start_members_reaching(
             &scratch,
             vec![
-                MemberPlan::new(SECOND_SEED, SECOND_HANDLE, SECOND_PUBLIC)
+                MemberPlan::new(SECOND_SEED, FIRST_HANDLE, SECOND_PUBLIC)
                     .with_hosts(&[WITNESS_SEED]),
             ],
             &[(WITNESS_SEED, witness.address())],
@@ -3432,7 +3432,7 @@ pub(super) mod tests {
 
         assert_eq!(
             first_introduce.and_then(|introduce| introduce.handle),
-            Some(SECOND_HANDLE.to_owned())
+            Some(SECOND_EFFECTIVE_FIRST_HANDLE.to_owned())
         );
         drop(scratch);
     }
