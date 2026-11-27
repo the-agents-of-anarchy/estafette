@@ -2720,6 +2720,10 @@ pub(crate) mod tests {
                 field(fields, "port"),
                 Some(&serde_json::Value::from(address.port()))
             );
+            assert_eq!(
+                field(fields, "location"),
+                Some(&serde_json::Value::from(expected_hash.clone()))
+            );
             assert!(
                 field(fields, "rtt_ms").is_some_and(serde_json::Value::is_u64),
                 "{fields:?}"
@@ -2733,10 +2737,6 @@ pub(crate) mod tests {
             .to_string();
             assert!(!rendered.contains(&address.ip().to_string()), "{rendered}");
         }
-        assert_eq!(
-            field(&selected, "location"),
-            Some(&serde_json::Value::from(expected_hash))
-        );
         drop(router);
     }
 
