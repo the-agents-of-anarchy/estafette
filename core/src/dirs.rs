@@ -1,12 +1,13 @@
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::{self, Permissions};
+use std::fs;
 use std::io;
-use std::os::fd::OwnedFd;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::handle::Handle;
+pub use estafette_private_entry::ProcessUserUnknown;
+use estafette_private_entry::{DirectoryFinding, PrivateDirectoryFailure, process_user_id};
 pub(crate) use estafette_trace::ROLLED_OVER_TRACE_SUFFIX;
 use estafette_trace::{
     BaseDirectoryUnresolvable, PRODUCT_NAME, non_empty_variable, xdg_base_directory,
@@ -16,9 +17,6 @@ pub use estafette_trace::{
     rolled_over_trace_file, trace_file_of,
 };
 
-const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
-const PERMISSION_BITS: u32 = 0o777;
-const GROUP_AND_OTHER_PERMISSION_BITS: u32 = 0o077;
 pub(crate) const CONFIG_HOME_VARIABLE: &str = "XDG_CONFIG_HOME";
 #[cfg(test)]
 pub(crate) const DATA_HOME_VARIABLE: &str = "XDG_DATA_HOME";
@@ -56,54 +54,10 @@ pub trait DirectoryFilesystem {
     fn owner_user_id(&self, path: &Path) -> io::Result<u32>;
 }
 
-/// The user this process runs as, learned once from the owner of a pipe the process makes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ProcessUser(u32);
-
-impl ProcessUser {
-    /// Reads the owner that the operating system reports for an anonymous pipe this process makes, which is the user the process creates files as.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the pipe cannot be made or its owner cannot be read.
-    fn of_this_process() -> Result<Self, ProcessUserUnknown> {
-        let (reader, _writer) = io::pipe().map_err(ProcessUserUnknown::PipeNotMade)?;
-        let owner = fs::File::from(OwnedFd::from(reader))
-            .metadata()
-            .map_err(ProcessUserUnknown::PipeOwnerUnreadable)?
-            .uid();
-        Ok(Self(owner))
-    }
-}
-
-/// The user this process runs as could not be learned.
-#[derive(Debug)]
-pub enum ProcessUserUnknown {
-    PipeNotMade(io::Error),
-    PipeOwnerUnreadable(io::Error),
-}
-
-impl fmt::Display for ProcessUserUnknown {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::PipeNotMade(source) => write!(
-                formatter,
-                "cannot learn the user this process runs as: it could not make a pipe: {source}"
-            ),
-            Self::PipeOwnerUnreadable(source) => write!(
-                formatter,
-                "cannot learn the user this process runs as: it could not read the owner of a pipe it made: {source}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ProcessUserUnknown {}
-
 /// The operating system's filesystem, used by one process user.
 #[derive(Clone, Copy, Debug)]
 pub struct OperatingSystemFilesystem {
-    user: ProcessUser,
+    user_id: u32,
 }
 
 impl OperatingSystemFilesystem {
@@ -114,26 +68,25 @@ impl OperatingSystemFilesystem {
     /// Fails when the user of this process cannot be learned.
     pub fn of_this_process() -> Result<Self, ProcessUserUnknown> {
         Ok(Self {
-            user: ProcessUser::of_this_process()?,
+            user_id: process_user_id()?,
         })
     }
 }
 
 impl DirectoryFilesystem for OperatingSystemFilesystem {
     fn create_private_directory(&self, path: &Path) -> io::Result<()> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        match fs::DirBuilder::new()
-            .mode(PRIVATE_DIRECTORY_MODE)
-            .create(path)
-        {
-            Ok(()) => fs::set_permissions(path, Permissions::from_mode(PRIVATE_DIRECTORY_MODE)),
-            Err(failure) if failure.kind() == io::ErrorKind::AlreadyExists => {
-                require_private_directory_of(path, self.user)
+        estafette_private_entry::create_private_directory(self.user_id, path).map_err(|failure| {
+            match failure {
+                PrivateDirectoryFailure::Io(source) => source,
+                PrivateDirectoryFailure::Refused(found) => io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    ExistingDirectoryRefused {
+                        path: path.to_path_buf(),
+                        found,
+                    },
+                ),
             }
-            Err(failure) => Err(failure),
-        }
+        })
     }
 
     fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
@@ -141,75 +94,11 @@ impl DirectoryFilesystem for OperatingSystemFilesystem {
     }
 }
 
-/// What an existing directory entry is, read without following a symbolic link.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum EntryKind {
-    Directory,
-    SymbolicLink,
-    Other,
-}
-
-/// The facts about an existing entry that decide whether it may be used as a private directory.
-#[derive(Clone, Copy, Debug)]
-struct EntryFacts {
-    kind: EntryKind,
-    owner_user_id: u32,
-    permission_bits: u32,
-}
-
-/// What stops an existing entry from being used as a private directory.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ExistingDirectoryFinding {
-    SymbolicLink,
-    NotADirectory,
-    OwnedByAnotherUser { owner: u32, user: u32 },
-    GrantsAccessBeyondOwner { permission_bits: u32 },
-}
-
-impl fmt::Display for ExistingDirectoryFinding {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::SymbolicLink => write!(formatter, "a symbolic link"),
-            Self::NotADirectory => write!(formatter, "not a directory"),
-            Self::OwnedByAnotherUser { owner, user } => {
-                write!(formatter, "owned by user {owner}, not by user {user}")
-            }
-            Self::GrantsAccessBeyondOwner { permission_bits } => write!(
-                formatter,
-                "mode {permission_bits:04o}, which grants access to group or other"
-            ),
-        }
-    }
-}
-
-/// Says what stops the entry from being a directory of the user that grants nothing to group or other, none when nothing does.
-const fn existing_directory_finding(
-    facts: EntryFacts,
-    user_id: u32,
-) -> Option<ExistingDirectoryFinding> {
-    match facts.kind {
-        EntryKind::SymbolicLink => Some(ExistingDirectoryFinding::SymbolicLink),
-        EntryKind::Other => Some(ExistingDirectoryFinding::NotADirectory),
-        EntryKind::Directory if facts.owner_user_id != user_id => {
-            Some(ExistingDirectoryFinding::OwnedByAnotherUser {
-                owner: facts.owner_user_id,
-                user: user_id,
-            })
-        }
-        EntryKind::Directory if facts.permission_bits & GROUP_AND_OTHER_PERMISSION_BITS != 0 => {
-            Some(ExistingDirectoryFinding::GrantsAccessBeyondOwner {
-                permission_bits: facts.permission_bits,
-            })
-        }
-        EntryKind::Directory => None,
-    }
-}
-
 /// An existing directory that is refused, with the directory and what was found.
 #[derive(Debug)]
 struct ExistingDirectoryRefused {
     path: PathBuf,
-    found: ExistingDirectoryFinding,
+    found: DirectoryFinding,
 }
 
 impl fmt::Display for ExistingDirectoryRefused {
@@ -224,33 +113,6 @@ impl fmt::Display for ExistingDirectoryRefused {
 }
 
 impl std::error::Error for ExistingDirectoryRefused {}
-
-/// Refuses an existing entry that is not a directory of the given user granting nothing to group or other, changing nothing.
-fn require_private_directory_of(path: &Path, user: ProcessUser) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    let file_type = metadata.file_type();
-    let kind = if file_type.is_symlink() {
-        EntryKind::SymbolicLink
-    } else if file_type.is_dir() {
-        EntryKind::Directory
-    } else {
-        EntryKind::Other
-    };
-    let facts = EntryFacts {
-        kind,
-        owner_user_id: metadata.uid(),
-        permission_bits: metadata.mode() & PERMISSION_BITS,
-    };
-    existing_directory_finding(facts, user.0).map_or(Ok(()), |found| {
-        Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            ExistingDirectoryRefused {
-                path: path.to_path_buf(),
-                found,
-            },
-        ))
-    })
-}
 
 /// A directory could not be resolved or created.
 #[derive(Debug)]
@@ -502,6 +364,7 @@ pub(crate) mod scratch {
 mod tests {
     use super::scratch::{ScratchDirectory, scratch_directory};
     use super::*;
+    use estafette_private_entry::UntrustedEntry;
     use std::cell::RefCell;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -582,18 +445,6 @@ mod tests {
 
     fn mode_of(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & MODE_BITS
-    }
-
-    #[test]
-    fn the_process_user_is_the_owner_of_a_file_the_process_creates_runtime_directory_is_private_or_refused()
-     {
-        let root = scratch_root("process_user_is_file_owner");
-        let created = root.join("created-by-this-process");
-        fs::write(&created, b"").unwrap();
-
-        let user = ProcessUser::of_this_process().unwrap();
-
-        assert_eq!(user.0, fs::metadata(&created).unwrap().uid());
     }
 
     #[test]
@@ -955,74 +806,9 @@ mod tests {
             .and_then(|inner| inner.downcast_ref::<ExistingDirectoryRefused>())
             .unwrap();
         assert_eq!(refusal.path, linked);
-        assert_eq!(refusal.found, ExistingDirectoryFinding::SymbolicLink);
-    }
-
-    const PERMISSION_BIT_COMBINATIONS: u32 = 0o1000;
-    const THE_USER: u32 = 1000;
-    const OWNERS_AROUND_THE_USER: [u32; 4] = [0, 999, THE_USER, 1001];
-
-    #[test]
-    fn an_existing_entry_is_usable_exactly_when_it_is_the_users_directory_granting_nothing_beyond_its_owner_runtime_directory_is_private_or_refused()
-     {
-        for kind in [
-            EntryKind::Directory,
-            EntryKind::SymbolicLink,
-            EntryKind::Other,
-        ] {
-            for owner_user_id in OWNERS_AROUND_THE_USER {
-                for permission_bits in 0..PERMISSION_BIT_COMBINATIONS {
-                    let facts = EntryFacts {
-                        kind,
-                        owner_user_id,
-                        permission_bits,
-                    };
-                    let finding = existing_directory_finding(facts, THE_USER);
-                    let usable = kind == EntryKind::Directory
-                        && owner_user_id == THE_USER
-                        && permission_bits & GROUP_AND_OTHER_PERMISSION_BITS == 0;
-                    assert_eq!(
-                        finding.is_none(),
-                        usable,
-                        "{kind:?} owner {owner_user_id} mode {permission_bits:o}"
-                    );
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn a_foreign_owner_is_named_with_the_user_and_ranks_below_the_kind_and_above_the_mode_runtime_directory_is_private_or_refused()
-     {
-        let foreign_and_loose = EntryFacts {
-            kind: EntryKind::Directory,
-            owner_user_id: 0,
-            permission_bits: 0o777,
-        };
         assert_eq!(
-            existing_directory_finding(foreign_and_loose, THE_USER),
-            Some(ExistingDirectoryFinding::OwnedByAnotherUser {
-                owner: 0,
-                user: THE_USER
-            })
-        );
-        assert_eq!(
-            existing_directory_finding(
-                EntryFacts {
-                    kind: EntryKind::SymbolicLink,
-                    ..foreign_and_loose
-                },
-                THE_USER
-            ),
-            Some(ExistingDirectoryFinding::SymbolicLink)
-        );
-        assert_eq!(
-            ExistingDirectoryFinding::OwnedByAnotherUser {
-                owner: 0,
-                user: 1000
-            }
-            .to_string(),
-            "owned by user 0, not by user 1000"
+            refusal.found,
+            DirectoryFinding::Untrusted(UntrustedEntry::SymbolicLink)
         );
     }
 

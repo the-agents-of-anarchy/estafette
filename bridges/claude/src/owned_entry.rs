@@ -1,147 +1,13 @@
 use std::fmt;
 use std::fs::{self, File, OpenOptions, Permissions};
 use std::io::{self, Read, Write};
-use std::os::fd::OwnedFd;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
-const PRIVATE_FILE_MODE: u32 = 0o600;
-const PERMISSION_BITS: u32 = 0o777;
-const GROUP_AND_OTHER_PERMISSION_BITS: u32 = 0o077;
-
-/// What a file system entry is, read without following a symbolic link.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum EntryKind {
-    Directory,
-    RegularFile,
-    SymbolicLink,
-    Other,
-}
-
-/// The facts about an entry that decide whether the bridge may trust it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct EntryFacts {
-    pub kind: EntryKind,
-    pub owner_user_id: u32,
-    pub permission_bits: u32,
-}
-
-impl EntryFacts {
-    /// The facts of the entry the metadata describes, which must come from a read that does not follow symbolic links.
-    #[must_use]
-    pub fn of(metadata: &fs::Metadata) -> Self {
-        let file_type = metadata.file_type();
-        let kind = if file_type.is_symlink() {
-            EntryKind::SymbolicLink
-        } else if file_type.is_dir() {
-            EntryKind::Directory
-        } else if file_type.is_file() {
-            EntryKind::RegularFile
-        } else {
-            EntryKind::Other
-        };
-        Self {
-            kind,
-            owner_user_id: metadata.uid(),
-            permission_bits: metadata.mode() & PERMISSION_BITS,
-        }
-    }
-
-    /// The facts of the entry at the path, not following a symbolic link there.
-    ///
-    /// # Errors
-    ///
-    /// Fails when the entry cannot be inspected, as when nothing exists at the path.
-    pub fn at(path: &Path) -> io::Result<Self> {
-        fs::symlink_metadata(path).map(|metadata| Self::of(&metadata))
-    }
-}
-
-/// The user this process runs as could not be learned.
-#[derive(Debug)]
-pub enum ProcessUserUnknown {
-    PipeNotMade(io::Error),
-    PipeOwnerUnreadable(io::Error),
-}
-
-impl fmt::Display for ProcessUserUnknown {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::PipeNotMade(source) => write!(
-                formatter,
-                "cannot learn the user this process runs as: it could not make a pipe: {source}"
-            ),
-            Self::PipeOwnerUnreadable(source) => write!(
-                formatter,
-                "cannot learn the user this process runs as: it could not read the owner of a pipe it made: {source}"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for ProcessUserUnknown {}
-
-/// Reads the numeric id of the user this process runs as from the owner the operating system reports for an anonymous pipe the process makes, which is the user the process creates files as.
-///
-/// # Errors
-///
-/// Fails when the pipe cannot be made or its owner cannot be read.
-pub fn process_user_id() -> Result<u32, ProcessUserUnknown> {
-    let (reader, _writer) = io::pipe().map_err(ProcessUserUnknown::PipeNotMade)?;
-    File::from(OwnedFd::from(reader))
-        .metadata()
-        .map(|metadata| metadata.uid())
-        .map_err(ProcessUserUnknown::PipeOwnerUnreadable)
-}
-
-/// What stops an existing entry from being used as a private directory of the user.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DirectoryFinding {
-    SymbolicLink,
-    NotADirectory,
-    OwnedByAnotherUser { owner: u32, user: u32 },
-    GrantsAccessBeyondOwner { permission_bits: u32 },
-    ReplacedWhileOpened,
-}
-
-impl fmt::Display for DirectoryFinding {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::SymbolicLink => write!(formatter, "a symbolic link"),
-            Self::NotADirectory => write!(formatter, "not a directory"),
-            Self::OwnedByAnotherUser { owner, user } => {
-                write!(formatter, "owned by user {owner}, not by user {user}")
-            }
-            Self::GrantsAccessBeyondOwner { permission_bits } => write!(
-                formatter,
-                "mode {permission_bits:04o}, which grants access to group or other"
-            ),
-            Self::ReplacedWhileOpened => write!(formatter, "replaced while it was opened"),
-        }
-    }
-}
-
-/// Says what stops the entry from being a directory of the user that grants nothing to group or other, none when nothing does.
-#[must_use]
-const fn directory_finding(facts: EntryFacts, user_id: u32) -> Option<DirectoryFinding> {
-    match facts.kind {
-        EntryKind::SymbolicLink => Some(DirectoryFinding::SymbolicLink),
-        EntryKind::RegularFile | EntryKind::Other => Some(DirectoryFinding::NotADirectory),
-        EntryKind::Directory if facts.owner_user_id != user_id => {
-            Some(DirectoryFinding::OwnedByAnotherUser {
-                owner: facts.owner_user_id,
-                user: user_id,
-            })
-        }
-        EntryKind::Directory if facts.permission_bits & GROUP_AND_OTHER_PERMISSION_BITS != 0 => {
-            Some(DirectoryFinding::GrantsAccessBeyondOwner {
-                permission_bits: facts.permission_bits,
-            })
-        }
-        EntryKind::Directory => None,
-    }
-}
+use estafette_private_entry::{
+    DirectoryFinding, EntryFacts, EntryKind, OWNER_ONLY_FILE_MODE, PrivateDirectoryFailure,
+    UntrustedEntry, directory_finding, same_entry,
+};
 
 /// An existing directory the bridge refuses to use, with the directory and what was found.
 #[derive(Debug, Eq, PartialEq)]
@@ -163,12 +29,7 @@ impl fmt::Display for ExistingDirectoryRefused {
 
 impl std::error::Error for ExistingDirectoryRefused {}
 
-/// Refuses the directory at the path unless it is a directory of the user granting nothing to group or other.
-///
-/// # Errors
-///
-/// `ExistingDirectoryRefused` naming the directory and what was found.
-pub fn require_private_directory_of(
+fn require_private_directory_of(
     user_id: u32,
     path: &Path,
     facts: EntryFacts,
@@ -181,62 +42,24 @@ pub fn require_private_directory_of(
     })
 }
 
-fn directory_refusal_of(refusal: ExistingDirectoryRefused) -> io::Error {
-    io::Error::new(io::ErrorKind::PermissionDenied, refusal)
-}
-
 /// Creates the directory with its missing parents, private to the user, or refuses an existing directory the user may not trust.
 ///
 /// # Errors
 ///
 /// Fails when a directory cannot be created or inspected, or with an `ExistingDirectoryRefused` inside the error when the entry already there is not a private directory of the user.
 pub fn create_private_directory(user_id: u32, path: &Path) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    match fs::DirBuilder::new()
-        .mode(PRIVATE_DIRECTORY_MODE)
-        .create(path)
-    {
-        Ok(()) => make_directory_private_opened_by(user_id, path, |path: &Path| File::open(path)),
-        Err(failure) if failure.kind() == io::ErrorKind::AlreadyExists => {
-            require_private_directory_of(user_id, path, EntryFacts::at(path)?)
-                .map_err(directory_refusal_of)
-        }
-        Err(failure) => Err(failure),
-    }
-}
-
-fn make_directory_private_opened_by(
-    user_id: u32,
-    path: &Path,
-    open: impl FnOnce(&Path) -> io::Result<File>,
-) -> io::Result<()> {
-    let directory = match open(path) {
-        Ok(directory) => directory,
-        Err(denied) if denied.kind() == io::ErrorKind::PermissionDenied => {
-            return make_unreadable_directory_private_by_name(user_id, path);
-        }
-        Err(failure) => return Err(failure),
-    };
-    let opened = directory.metadata()?;
-    let named = fs::symlink_metadata(path)?;
-    require_private_directory_of(user_id, path, EntryFacts::of(&named))
-        .map_err(directory_refusal_of)?;
-    if (opened.dev(), opened.ino()) != (named.dev(), named.ino()) {
-        return Err(directory_refusal_of(ExistingDirectoryRefused {
-            path: path.to_path_buf(),
-            found: DirectoryFinding::ReplacedWhileOpened,
-        }));
-    }
-    directory.set_permissions(Permissions::from_mode(PRIVATE_DIRECTORY_MODE))
-}
-
-fn make_unreadable_directory_private_by_name(user_id: u32, path: &Path) -> io::Result<()> {
-    let named = fs::symlink_metadata(path)?;
-    require_private_directory_of(user_id, path, EntryFacts::of(&named))
-        .map_err(directory_refusal_of)?;
-    fs::set_permissions(path, Permissions::from_mode(PRIVATE_DIRECTORY_MODE))
+    estafette_private_entry::create_private_directory(user_id, path).map_err(
+        |failure| match failure {
+            PrivateDirectoryFailure::Io(source) => source,
+            PrivateDirectoryFailure::Refused(found) => io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                ExistingDirectoryRefused {
+                    path: path.to_path_buf(),
+                    found,
+                },
+            ),
+        },
+    )
 }
 
 /// What stops the runtime directory from being used: it cannot be inspected, or it exists and is refused.
@@ -283,21 +106,15 @@ pub fn check_runtime_directory(
 /// What stops an existing entry from being trusted as one of the bridge's state files.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StateFileFinding {
-    SymbolicLink,
+    Untrusted(UntrustedEntry),
     NotARegularFile,
-    OwnedByAnotherUser { owner: u32, user: u32 },
-    ReplacedWhileOpened,
 }
 
 impl fmt::Display for StateFileFinding {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SymbolicLink => write!(formatter, "a symbolic link"),
+            Self::Untrusted(untrusted) => untrusted.fmt(formatter),
             Self::NotARegularFile => write!(formatter, "not a regular file"),
-            Self::OwnedByAnotherUser { owner, user } => {
-                write!(formatter, "owned by user {owner}, not by user {user}")
-            }
-            Self::ReplacedWhileOpened => write!(formatter, "replaced while it was opened"),
         }
     }
 }
@@ -306,14 +123,14 @@ impl fmt::Display for StateFileFinding {
 #[must_use]
 const fn state_file_finding(facts: EntryFacts, user_id: u32) -> Option<StateFileFinding> {
     match facts.kind {
-        EntryKind::SymbolicLink => Some(StateFileFinding::SymbolicLink),
+        EntryKind::SymbolicLink => Some(StateFileFinding::Untrusted(UntrustedEntry::SymbolicLink)),
         EntryKind::Directory | EntryKind::Other => Some(StateFileFinding::NotARegularFile),
-        EntryKind::RegularFile if facts.owner_user_id != user_id => {
-            Some(StateFileFinding::OwnedByAnotherUser {
+        EntryKind::RegularFile if facts.owner_user_id != user_id => Some(
+            StateFileFinding::Untrusted(UntrustedEntry::OwnedByAnotherUser {
                 owner: facts.owner_user_id,
                 user: user_id,
-            })
-        }
+            }),
+        ),
         EntryKind::RegularFile => None,
     }
 }
@@ -367,9 +184,11 @@ fn read_state_file_opened_by(
         return Err(refusal_of(path, found));
     }
     let mut file = open(path)?;
-    let opened = file.metadata()?;
-    if (opened.dev(), opened.ino()) != (metadata.dev(), metadata.ino()) {
-        return Err(refusal_of(path, StateFileFinding::ReplacedWhileOpened));
+    if !same_entry(&file.metadata()?, &metadata) {
+        return Err(refusal_of(
+            path,
+            StateFileFinding::Untrusted(UntrustedEntry::ReplacedWhileOpened),
+        ));
     }
     let mut text = String::new();
     file.read_to_string(&mut text)?;
@@ -385,7 +204,7 @@ pub fn write_state_file(user_id: u32, path: &Path, staging: &Path, text: &str) -
     let mut staged = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .mode(PRIVATE_FILE_MODE)
+        .mode(OWNER_ONLY_FILE_MODE)
         .open(staging)?;
     let outcome = fill_and_rename_over(&mut staged, user_id, staging, path, text);
     if outcome.is_err() {
@@ -401,7 +220,7 @@ fn fill_and_rename_over(
     path: &Path,
     text: &str,
 ) -> io::Result<()> {
-    staged.set_permissions(Permissions::from_mode(PRIVATE_FILE_MODE))?;
+    staged.set_permissions(Permissions::from_mode(OWNER_ONLY_FILE_MODE))?;
     staged.write_all(text.as_bytes())?;
     require_replaceable(path, user_id)?;
     fs::rename(staging, path)
@@ -420,7 +239,8 @@ fn require_replaceable(path: &Path, user_id: u32) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
+    use estafette_private_entry::{PERMISSION_BITS_MASK, process_user_id};
+    use std::os::unix::fs::{MetadataExt, symlink};
 
     const THE_USER: u32 = 1000;
     const OWNERS_AROUND_THE_USER: [u32; 4] = [0, 999, 1000, 1001];
@@ -446,54 +266,6 @@ mod tests {
                 })
             })
         })
-    }
-
-    #[test]
-    fn spec_3_3_an_existing_entry_is_a_usable_directory_exactly_when_it_is_the_users_and_grants_nothing_beyond_its_owner_runtime_directory_is_private_or_refused()
-     {
-        for facts in every_entry_around_the_user() {
-            let usable = facts.kind == EntryKind::Directory
-                && facts.owner_user_id == THE_USER
-                && facts.permission_bits & GROUP_AND_OTHER_PERMISSION_BITS == 0;
-            assert_eq!(
-                directory_finding(facts, THE_USER).is_none(),
-                usable,
-                "{facts:?}"
-            );
-        }
-    }
-
-    const MODES_OPEN_TO_GROUP_ALONE: [u32; 3] = [0o070, 0o750, 0o040];
-    const MODES_OPEN_TO_OTHER_ALONE: [u32; 3] = [0o007, 0o705, 0o004];
-    const MODES_CLOSED_TO_GROUP_AND_OTHER: [u32; 3] = [0o700, 0o500, 0o000];
-
-    #[test]
-    fn spec_3_3_a_directory_open_to_group_alone_or_to_other_alone_is_refused_and_one_closed_to_both_is_usable_runtime_directory_is_private_or_refused()
-     {
-        let directory_with_mode = |permission_bits| EntryFacts {
-            kind: EntryKind::Directory,
-            owner_user_id: THE_USER,
-            permission_bits,
-        };
-        for mode in MODES_OPEN_TO_GROUP_ALONE
-            .into_iter()
-            .chain(MODES_OPEN_TO_OTHER_ALONE)
-        {
-            assert_eq!(
-                directory_finding(directory_with_mode(mode), THE_USER),
-                Some(DirectoryFinding::GrantsAccessBeyondOwner {
-                    permission_bits: mode
-                }),
-                "mode {mode:04o}"
-            );
-        }
-        for mode in MODES_CLOSED_TO_GROUP_AND_OTHER {
-            assert_eq!(
-                directory_finding(directory_with_mode(mode), THE_USER),
-                None,
-                "mode {mode:04o}"
-            );
-        }
     }
 
     #[test]
@@ -540,17 +312,6 @@ mod tests {
         process_user_id().unwrap()
     }
 
-    #[test]
-    fn the_process_user_is_the_owner_of_a_file_the_process_creates_runtime_directory_is_private_or_refused()
-     {
-        let directory = scratch_directory("process-user");
-        let created = directory.join("created-by-this-process");
-        fs::write(&created, b"").unwrap();
-
-        assert_eq!(this_user(), fs::metadata(&created).unwrap().uid());
-        crate::remove_scratch::remove_scratch(&directory).unwrap();
-    }
-
     fn refusal_inside(failure: &io::Error) -> &StateFileRefused {
         failure
             .get_ref()
@@ -571,8 +332,8 @@ mod tests {
 
         assert_eq!(fs::read_to_string(&state).unwrap(), STATE_TEXT);
         assert_eq!(
-            fs::metadata(&state).unwrap().permissions().mode() & PERMISSION_BITS,
-            PRIVATE_FILE_MODE
+            fs::metadata(&state).unwrap().permissions().mode() & PERMISSION_BITS_MASK,
+            OWNER_ONLY_FILE_MODE
         );
         assert!(!staging.exists());
         crate::remove_scratch::remove_scratch(&directory).unwrap();
@@ -682,7 +443,7 @@ mod tests {
 
         assert_eq!(
             refusal_inside(&failure).found,
-            StateFileFinding::SymbolicLink
+            StateFileFinding::Untrusted(UntrustedEntry::SymbolicLink)
         );
         crate::remove_scratch::remove_scratch(&directory).unwrap();
     }
@@ -704,7 +465,7 @@ mod tests {
 
         assert_eq!(
             refusal_inside(&failure).found,
-            StateFileFinding::ReplacedWhileOpened
+            StateFileFinding::Untrusted(UntrustedEntry::ReplacedWhileOpened)
         );
         crate::remove_scratch::remove_scratch(&directory).unwrap();
     }
@@ -723,10 +484,10 @@ mod tests {
 
         assert_eq!(
             refusal_inside(&foreign).found,
-            StateFileFinding::OwnedByAnotherUser {
+            StateFileFinding::Untrusted(UntrustedEntry::OwnedByAnotherUser {
                 owner: user_id,
                 user: another_user_id
-            }
+            })
         );
         assert_eq!(
             refusal_inside(&not_a_file).found,
@@ -743,33 +504,7 @@ mod tests {
     }
 
     fn mode_of(path: &Path) -> u32 {
-        fs::metadata(path).unwrap().permissions().mode() & PERMISSION_BITS
-    }
-
-    #[test]
-    fn bridge_directories_are_private_or_refused_a_directory_made_with_its_missing_parents_is_private_to_the_user()
-     {
-        let directory = scratch_directory("create-private");
-        let created = directory.join("missing").join("created");
-
-        create_private_directory(this_user(), &created).unwrap();
-
-        assert_eq!(mode_of(&created), PRIVATE_DIRECTORY_MODE);
-        crate::remove_scratch::remove_scratch(&directory).unwrap();
-    }
-
-    #[test]
-    fn bridge_directories_are_private_or_refused_an_existing_private_directory_is_used_as_it_stands()
-     {
-        let directory = scratch_directory("create-existing-private");
-        let existing = directory.join("existing");
-        fs::create_dir(&existing).unwrap();
-        fs::set_permissions(&existing, Permissions::from_mode(PRIVATE_DIRECTORY_MODE)).unwrap();
-
-        create_private_directory(this_user(), &existing).unwrap();
-
-        assert_eq!(mode_of(&existing), PRIVATE_DIRECTORY_MODE);
-        crate::remove_scratch::remove_scratch(&directory).unwrap();
+        fs::metadata(path).unwrap().permissions().mode() & PERMISSION_BITS_MASK
     }
 
     #[test]
@@ -792,102 +527,12 @@ mod tests {
         );
         assert_eq!(
             directory_refusal_inside(&foreign_failure).found,
-            DirectoryFinding::OwnedByAnotherUser {
+            DirectoryFinding::Untrusted(UntrustedEntry::OwnedByAnotherUser {
                 owner: this_user(),
                 user: another_user_id
-            }
+            })
         );
         assert_eq!(mode_of(&loose), LOOSE_DIRECTORY_MODE);
-        crate::remove_scratch::remove_scratch(&directory).unwrap();
-    }
-
-    #[test]
-    fn bridge_directories_are_private_or_refused_a_mode_is_never_set_through_a_symbolic_link() {
-        let directory = scratch_directory("mode-through-link");
-        let target = directory.join("target");
-        let named = directory.join("named");
-        fs::create_dir(&target).unwrap();
-        fs::set_permissions(&target, Permissions::from_mode(LOOSE_DIRECTORY_MODE)).unwrap();
-        symlink(&target, &named).unwrap();
-
-        let failure =
-            make_directory_private_opened_by(this_user(), &named, |path: &Path| File::open(path))
-                .unwrap_err();
-
-        assert_eq!(
-            directory_refusal_inside(&failure).found,
-            DirectoryFinding::SymbolicLink
-        );
-        assert_eq!(mode_of(&target), LOOSE_DIRECTORY_MODE);
-        crate::remove_scratch::remove_scratch(&directory).unwrap();
-    }
-
-    #[test]
-    fn bridge_directories_are_private_or_refused_a_mode_is_never_set_on_a_directory_swapped_in_after_the_inspection()
-     {
-        let directory = scratch_directory("mode-on-swapped");
-        let inspected = directory.join("inspected");
-        let swapped_in = directory.join("swapped-in");
-        fs::create_dir(&inspected).unwrap();
-        fs::create_dir(&swapped_in).unwrap();
-        fs::set_permissions(&inspected, Permissions::from_mode(PRIVATE_DIRECTORY_MODE)).unwrap();
-        fs::set_permissions(&swapped_in, Permissions::from_mode(LOOSE_DIRECTORY_MODE)).unwrap();
-
-        let failure =
-            make_directory_private_opened_by(this_user(), &inspected, |_inspected: &Path| {
-                File::open(&swapped_in)
-            })
-            .unwrap_err();
-
-        assert_eq!(
-            directory_refusal_inside(&failure).found,
-            DirectoryFinding::ReplacedWhileOpened
-        );
-        assert_eq!(mode_of(&swapped_in), LOOSE_DIRECTORY_MODE);
-        crate::remove_scratch::remove_scratch(&directory).unwrap();
-    }
-
-    const OWNER_WRITE_AND_SEARCH_ONLY_MODE: u32 = 0o300;
-
-    #[test]
-    fn bridge_directories_are_private_or_refused_a_directory_made_unreadable_by_the_umask_is_still_made_private()
-     {
-        let directory = scratch_directory("unreadable-made-private");
-        let unreadable = directory.join("unreadable");
-        fs::create_dir(&unreadable).unwrap();
-        fs::set_permissions(
-            &unreadable,
-            Permissions::from_mode(OWNER_WRITE_AND_SEARCH_ONLY_MODE),
-        )
-        .unwrap();
-
-        make_directory_private_opened_by(this_user(), &unreadable, |path: &Path| File::open(path))
-            .unwrap();
-
-        assert_eq!(mode_of(&unreadable), PRIVATE_DIRECTORY_MODE);
-        crate::remove_scratch::remove_scratch(&directory).unwrap();
-    }
-
-    #[test]
-    fn bridge_directories_are_private_or_refused_a_mode_is_never_set_through_a_symbolic_link_when_the_open_is_denied()
-     {
-        let directory = scratch_directory("denied-open-link");
-        let target = directory.join("target");
-        let named = directory.join("named");
-        fs::create_dir(&target).unwrap();
-        fs::set_permissions(&target, Permissions::from_mode(LOOSE_DIRECTORY_MODE)).unwrap();
-        symlink(&target, &named).unwrap();
-
-        let failure = make_directory_private_opened_by(this_user(), &named, |_named: &Path| {
-            Err(io::Error::from(io::ErrorKind::PermissionDenied))
-        })
-        .unwrap_err();
-
-        assert_eq!(
-            directory_refusal_inside(&failure).found,
-            DirectoryFinding::SymbolicLink
-        );
-        assert_eq!(mode_of(&target), LOOSE_DIRECTORY_MODE);
         crate::remove_scratch::remove_scratch(&directory).unwrap();
     }
 }

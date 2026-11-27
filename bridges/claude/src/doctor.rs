@@ -11,8 +11,9 @@ use crate::discover::{
     binary_sockets_under, runtime_directory,
 };
 use crate::dropped_frames::DroppedFrames;
-use crate::owned_entry::{EntryFacts, check_runtime_directory};
+use crate::owned_entry::check_runtime_directory;
 use crate::permission_class::PermissionClass;
+use estafette_private_entry::EntryFacts;
 
 const BRIDGE_EXECUTABLE_NAME: &str = "estafette-bridge-claude";
 const DROPPED_FRAMES_SUFFIX: &str = ".dropped-frames";
@@ -507,8 +508,8 @@ fn judge_hook_installed(settings_files: &[SettingsFile]) -> Verdict {
 mod tests {
     use super::*;
     use crate::discover::ProcessEntry;
-    use crate::owned_entry::EntryKind;
     use crate::seeded::next_below;
+    use estafette_private_entry::EntryKind;
 
     const TEST_TEMPORARY_DIR: &str = "/var/tmp";
     const DROPPED_FRAMES_FILE_OF_HARNESS_100: &str =

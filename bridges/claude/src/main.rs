@@ -24,14 +24,15 @@ use estafette_bridge_claude::inbox_client::{
 };
 use estafette_bridge_claude::inject::SessionNotifier;
 use estafette_bridge_claude::owned_entry::{
-    EntryFacts, ProcessUserUnknown, RuntimeDirectoryProblem, check_runtime_directory,
-    create_private_directory, process_user_id, read_state_file, write_state_file,
+    RuntimeDirectoryProblem, check_runtime_directory, create_private_directory, read_state_file,
+    write_state_file,
 };
 use estafette_bridge_claude::permission_class::PermissionClass;
 use estafette_bridge_claude::session_files::{
     latest_permission_mode, session_id_of_registry_entry, transcript_file_name,
 };
 
+use estafette_private_entry::{EntryFacts, ProcessUserUnknown, process_user_id};
 use estafette_trace::{
     BaseDirectoryUnresolvable, Program, ROLLED_OVER_TRACE_SUFFIX, RUN_ID_BYTES,
     TRACE_DIRECTORY_MAX_BYTES, TRACE_FILE_ROLLOVER_BYTES, TRACE_FRESHNESS,
@@ -1102,7 +1103,7 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
     use estafette_bridge_claude::discover::ProcessEntry;
-    use estafette_bridge_claude::owned_entry::EntryKind;
+    use estafette_private_entry::EntryKind;
     use std::cell::{Cell, RefCell};
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
     use std::os::unix::fs::{MetadataExt, PermissionsExt};

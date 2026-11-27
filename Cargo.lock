@@ -816,6 +816,7 @@ dependencies = [
  "blake3",
  "clap",
  "data-encoding",
+ "estafette-private-entry",
  "estafette-trace",
  "estafette-trace-reader",
  "iroh",
@@ -841,11 +842,16 @@ dependencies = [
 name = "estafette-bridge-claude"
 version = "0.1.0"
 dependencies = [
+ "estafette-private-entry",
  "estafette-trace",
  "notify",
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "estafette-private-entry"
+version = "0.1.0"
 
 [[package]]
 name = "estafette-trace"
