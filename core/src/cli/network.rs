@@ -24,7 +24,7 @@ use crate::keys::{
     parse_secret_key, render_network_secret, render_public_key, render_secret_key,
 };
 use crate::wire::{self, HostAddr, Invitation, Version};
-use estafette_private_entry::create_new_owner_only_file;
+use estafette_private_entry::{OWNER_ONLY_FILE_MODE, write_new_file_atomically};
 
 const CREATE_ABOUT: &str = "Create a network on this machine";
 const JOIN_ABOUT: &str = "Join a network from an invitation";
@@ -127,7 +127,9 @@ impl NetworkFilesystem for OperatingSystemFilesystem {
     }
 
     fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
-        create_new_owner_only_file(path)?.write_all(contents.as_bytes())
+        write_new_file_atomically(path, contents, OWNER_ONLY_FILE_MODE, |temporary| {
+            fs::remove_file(temporary)
+        })
     }
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
@@ -305,9 +307,7 @@ fn run_command(
         NetworkCommand::Certify { network, host_line } => {
             certify_host(network, host_line, directories, filesystem, result)
         }
-        NetworkCommand::Join { invitation } => {
-            join_network(invitation, directories, filesystem, now_unix_seconds)
-        }
+        NetworkCommand::Join { invitation } => join_network(invitation, directories, filesystem),
     }
 }
 
@@ -416,7 +416,6 @@ fn join_network(
     invitation: &Invitation,
     directories: &Directories,
     filesystem: &impl NetworkFilesystem,
-    now_unix_seconds: u64,
 ) -> Result<(), Failure> {
     let network = invitation
         .network
@@ -431,13 +430,13 @@ fn join_network(
         .map(configured_host)
         .collect::<Result<_, _>>()?;
     create_parent_directory(filesystem, &config_file)?;
-    NetworkConfig {
+    let text = NetworkConfig {
         secret: render_network_secret(&invitation.secret),
         owner: render_public_key(&owner),
         hosts,
     }
-    .rewrite(&config_file, now_unix_seconds)?;
-    Ok(())
+    .validated_text(&config_file)?;
+    write_new_owner_only_file(filesystem, &network, &config_file, &text)
 }
 
 fn add_host(

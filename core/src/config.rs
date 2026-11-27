@@ -394,9 +394,22 @@ impl NetworkConfig {
         let merged = self
             .merged_with(read_current(path)?)
             .without_expired_hosts(UnixMillis::at_unix_second(now_unix_seconds));
-        let text = toml::to_string(&merged).map_err(ConfigError::Unserializable)?;
+        let text = merged.rendered()?;
         write_atomically(path, &text).map_err(write_error(path))?;
         Ok(merged)
+    }
+
+    /// Refuses this configuration unless every field is valid, and renders it as the text of the file at `path`.
+    ///
+    /// # Errors
+    /// Returns a `ConfigError` when a field is invalid or the configuration cannot be serialized.
+    pub(crate) fn validated_text(&self, path: &Path) -> Result<String, ConfigError> {
+        self.validate(path)?;
+        self.rendered()
+    }
+
+    fn rendered(&self) -> Result<String, ConfigError> {
+        toml::to_string(self).map_err(ConfigError::Unserializable)
     }
 
     fn validate(&self, path: &Path) -> Result<(), ConfigError> {

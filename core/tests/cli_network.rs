@@ -185,9 +185,9 @@ mod network_commands {
         }
     }
 
-    fn create_network_through(machine: &Machine, filesystem: &impl NetworkFilesystem) -> bool {
+    fn directories_of(machine: &Machine) -> Directories {
         let root = machine.root.clone();
-        let directories = Directories::establish(
+        Directories::establish(
             move |name| match name {
                 "XDG_CONFIG_HOME" => Some(root.join("config").into_os_string()),
                 "XDG_DATA_HOME" => Some(root.join("data").into_os_string()),
@@ -197,12 +197,15 @@ mod network_commands {
             &OperatingSystemFilesystem::of_this_process().unwrap(),
             CardsDirectoryOverride::Offered(None),
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    fn create_network_through(machine: &Machine, filesystem: &impl NetworkFilesystem) -> bool {
         run(
             &NetworkCommand::Create {
                 network: NETWORK.parse().unwrap(),
             },
-            &directories,
+            &directories_of(machine),
             filesystem,
             |bytes| bytes.fill(5),
             1_700_000_000,
@@ -210,6 +213,73 @@ mod network_commands {
             &mut Vec::new(),
         )
         .is_ok()
+    }
+
+    struct ExistenceTestMissesTheFile {
+        filesystem: OperatingSystemFilesystem,
+    }
+
+    impl DirectoryFilesystem for ExistenceTestMissesTheFile {
+        fn create_private_directory(&self, path: &Path) -> io::Result<()> {
+            self.filesystem.create_private_directory(path)
+        }
+
+        fn owner_user_id(&self, path: &Path) -> io::Result<u32> {
+            self.filesystem.owner_user_id(path)
+        }
+    }
+
+    impl NetworkFilesystem for ExistenceTestMissesTheFile {
+        fn path_exists(&self, _path: &Path) -> io::Result<bool> {
+            Ok(false)
+        }
+
+        fn read_to_string(&self, path: &Path) -> io::Result<String> {
+            self.filesystem.read_to_string(path)
+        }
+
+        fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
+            self.filesystem.create_new_owner_only_file(path, contents)
+        }
+
+        fn remove_file(&self, path: &Path) -> io::Result<()> {
+            self.filesystem.remove_file(path)
+        }
+    }
+
+    /// Spec 3.13: join refuses a network already configured here, also when the configuration appears between its existence test and its write.
+    #[test]
+    fn spec_3_13_a_join_whose_configuration_appeared_after_the_existence_test_keeps_that_configuration()
+     {
+        let owner_machine = Machine::fresh("join-race-owner");
+        let member_machine = Machine::fresh("join-race-member");
+        owner_machine.run(&["network", "create", NETWORK]);
+        let host = host_address(7, "https://relay-one.example/");
+        owner_machine.run(&["network", "add-host", NETWORK, &host_line(&host)]);
+        let invitation_text =
+            stdout_of(&owner_machine.run(&["network", "show-invitation", NETWORK]));
+        member_machine.run(&["network", "create", NETWORK]);
+        let config_before = fs::read_to_string(member_machine.config_file(NETWORK)).unwrap();
+
+        let joined = run(
+            &NetworkCommand::Join {
+                invitation: parse_invitation(invitation_text.trim_end()).unwrap(),
+            },
+            &directories_of(&member_machine),
+            &ExistenceTestMissesTheFile {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
+            },
+            |bytes| bytes.fill(5),
+            1_700_000_000,
+            &mut Vec::new(),
+            &mut Vec::new(),
+        );
+
+        assert!(joined.is_err());
+        assert_eq!(
+            fs::read_to_string(member_machine.config_file(NETWORK)).unwrap(),
+            config_before
+        );
     }
 
     #[test]
