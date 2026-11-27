@@ -312,6 +312,17 @@ impl PresenceLoop {
 
     /// The relays of the known hosts that do not answer the probe before the node's clock reads the relay probe timeout past the probe, recording each probe's answer.
     async fn relays_found_down(&self) -> BTreeSet<RelayUrl> {
+        self.probe_known_relays()
+            .await
+            .into_iter()
+            .inspect(|(relay, answered)| self.record_probe(relay, *answered))
+            .filter(|(_, answered)| !answered)
+            .map(|(relay, _)| relay)
+            .collect()
+    }
+
+    /// Each relay of the known hosts with whether it answered the probe before the node's clock reads the relay probe timeout past the probe.
+    async fn probe_known_relays(&self) -> Vec<(RelayUrl, bool)> {
         let relays: BTreeSet<RelayUrl> = self
             .known_hosts
             .addresses()
@@ -327,19 +338,20 @@ impl PresenceLoop {
             )
         }))
         .await;
-        let mut down = BTreeSet::new();
-        for (relay, answer) in relays.into_iter().zip(answers) {
-            let answered = matches!(answer, Some(true));
-            self.endpoint
-                .record(|transport| TransportEvent::RelayProbed {
-                    location: transport.locate(&TransportAddr::Relay(relay.clone())),
-                    answered,
-                });
-            if !answered {
-                down.insert(relay);
-            }
-        }
-        down
+        relays
+            .into_iter()
+            .zip(answers)
+            .map(|(relay, answer)| (relay, matches!(answer, Some(true))))
+            .collect()
+    }
+
+    /// Records whether the relay answered the probe.
+    fn record_probe(&self, relay: &RelayUrl, answered: bool) {
+        self.endpoint
+            .record(|transport| TransportEvent::RelayProbed {
+                location: transport.locate(&TransportAddr::Relay(relay.clone())),
+                answered,
+            });
     }
 
     /// Strips the relays found down from the lookup entry of every other member, recording each entry it changes.
