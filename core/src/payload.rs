@@ -547,8 +547,8 @@ fn validated_infrastructure(
     })
 }
 
-fn verify_presence_rules(presence: &Presence) -> Result<(), OpeningFailure> {
-    if is_card_public(&presence.public) {
+fn verify_presence_public(public: &[u8]) -> Result<(), OpeningFailure> {
+    if is_card_public(public) {
         Ok(())
     } else {
         Err(OpeningFailure::PublicNotAdmitted)
@@ -583,7 +583,7 @@ fn opened_or_failure(
     verify_signature(&payload).map_err(refused)?;
     Ok(match payload {
         Payload::Presence(presence) => {
-            verify_presence_rules(&presence).map_err(refused)?;
+            verify_presence_public(&presence.public).map_err(refused)?;
             OpenedPayload::Presence(presence)
         }
         Payload::Departure(departure) => OpenedPayload::Departure(departure),
