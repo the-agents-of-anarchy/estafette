@@ -56,6 +56,15 @@ pub struct ExistingDirectoryRefused {
     pub found: DirectoryFinding,
 }
 
+impl ExistingDirectoryRefused {
+    fn of(path: &Path, found: DirectoryFinding) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            found,
+        }
+    }
+}
+
 impl fmt::Display for ExistingDirectoryRefused {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -86,30 +95,8 @@ pub fn require_private_directory(
     facts: EntryFacts,
 ) -> Result<(), ExistingDirectoryRefused> {
     directory_finding(facts, user_id).map_or(Ok(()), |found| {
-        Err(ExistingDirectoryRefused {
-            path: path.to_path_buf(),
-            found,
-        })
+        Err(ExistingDirectoryRefused::of(path, found))
     })
-}
-
-/// Why a private directory was not made: the file system failed, or an entry already there is refused.
-#[derive(Debug)]
-enum PrivateDirectoryFailure {
-    Io(io::Error),
-    Refused(DirectoryFinding),
-}
-
-impl From<io::Error> for PrivateDirectoryFailure {
-    fn from(failure: io::Error) -> Self {
-        Self::Io(failure)
-    }
-}
-
-/// Refuses the entry the facts describe unless it is a private directory of the user.
-fn refuse_unless_private(user_id: u32, facts: EntryFacts) -> Result<(), PrivateDirectoryFailure> {
-    directory_finding(facts, user_id)
-        .map_or(Ok(()), |found| Err(PrivateDirectoryFailure::Refused(found)))
 }
 
 /// Creates the directory with its missing parents, private to the user, or refuses an existing directory the user may not trust.
@@ -118,21 +105,6 @@ fn refuse_unless_private(user_id: u32, facts: EntryFacts) -> Result<(), PrivateD
 ///
 /// Fails when a directory cannot be created or inspected, or with an `ExistingDirectoryRefused` inside the error when the entry already there is not a private directory of the user.
 pub fn create_private_directory(user_id: u32, path: &Path) -> io::Result<()> {
-    create_private_directory_or_refuse(user_id, path).map_err(|failure| match failure {
-        PrivateDirectoryFailure::Io(source) => source,
-        PrivateDirectoryFailure::Refused(found) => ExistingDirectoryRefused {
-            path: path.to_path_buf(),
-            found,
-        }
-        .into(),
-    })
-}
-
-/// Creates the directory as `create_private_directory` does, reporting a refusal by what was found.
-fn create_private_directory_or_refuse(
-    user_id: u32,
-    path: &Path,
-) -> Result<(), PrivateDirectoryFailure> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -141,10 +113,10 @@ fn create_private_directory_or_refuse(
         .create(path)
     {
         Ok(()) => make_directory_private_opened_by(user_id, path, |path: &Path| File::open(path)),
-        Err(failure) if failure.kind() == io::ErrorKind::AlreadyExists => {
-            refuse_unless_private(user_id, EntryFacts::at(path)?)
-        }
-        Err(failure) => Err(failure.into()),
+        Err(failure) if failure.kind() == io::ErrorKind::AlreadyExists => Ok(
+            require_private_directory(user_id, path, EntryFacts::at(path)?)?,
+        ),
+        Err(failure) => Err(failure),
     }
 }
 
@@ -153,36 +125,32 @@ fn make_directory_private_opened_by(
     user_id: u32,
     path: &Path,
     open: impl FnOnce(&Path) -> io::Result<File>,
-) -> Result<(), PrivateDirectoryFailure> {
+) -> io::Result<()> {
     let directory = match open(path) {
         Ok(directory) => directory,
         Err(denied) if denied.kind() == io::ErrorKind::PermissionDenied => {
             return make_unreadable_directory_private_by_name(user_id, path);
         }
-        Err(failure) => return Err(failure.into()),
+        Err(failure) => return Err(failure),
     };
     let opened = directory.metadata()?;
     let named = fs::symlink_metadata(path)?;
-    refuse_unless_private(user_id, EntryFacts::of(&named))?;
+    require_private_directory(user_id, path, EntryFacts::of(&named))?;
     if !same_entry(&opened, &named) {
-        return Err(PrivateDirectoryFailure::Refused(
+        return Err(ExistingDirectoryRefused::of(
+            path,
             DirectoryFinding::Untrusted(UntrustedEntry::ReplacedWhileOpened),
-        ));
+        )
+        .into());
     }
-    Ok(directory.set_permissions(Permissions::from_mode(OWNER_ONLY_DIRECTORY_MODE))?)
+    directory.set_permissions(Permissions::from_mode(OWNER_ONLY_DIRECTORY_MODE))
 }
 
 /// Sets the directory private by its name when the open was denied, refusing an entry that is not a private directory of the user.
-fn make_unreadable_directory_private_by_name(
-    user_id: u32,
-    path: &Path,
-) -> Result<(), PrivateDirectoryFailure> {
+fn make_unreadable_directory_private_by_name(user_id: u32, path: &Path) -> io::Result<()> {
     let named = fs::symlink_metadata(path)?;
-    refuse_unless_private(user_id, EntryFacts::of(&named))?;
-    Ok(fs::set_permissions(
-        path,
-        Permissions::from_mode(OWNER_ONLY_DIRECTORY_MODE),
-    )?)
+    require_private_directory(user_id, path, EntryFacts::of(&named))?;
+    fs::set_permissions(path, Permissions::from_mode(OWNER_ONLY_DIRECTORY_MODE))
 }
 
 #[cfg(test)]
@@ -236,11 +204,11 @@ mod tests {
         fs::metadata(path).unwrap().permissions().mode() & PERMISSION_BITS_MASK
     }
 
-    fn found_in(failure: PrivateDirectoryFailure) -> DirectoryFinding {
-        match failure {
-            PrivateDirectoryFailure::Refused(found) => found,
-            PrivateDirectoryFailure::Io(source) => panic!("not a refusal: {source}"),
-        }
+    fn refusal_inside(failure: &io::Error) -> &ExistingDirectoryRefused {
+        failure
+            .get_ref()
+            .and_then(|inner| inner.downcast_ref::<ExistingDirectoryRefused>())
+            .unwrap()
     }
 
     #[test]
@@ -331,7 +299,7 @@ mod tests {
         let directory = scratch_directory("create-private");
         let created = directory.join("missing").join("created");
 
-        create_private_directory_or_refuse(this_user(), &created).unwrap();
+        create_private_directory(this_user(), &created).unwrap();
 
         assert_eq!(mode_of(&created), OWNER_ONLY_DIRECTORY_MODE);
         crate::remove_scratch::remove_scratch(&directory).unwrap();
@@ -345,7 +313,7 @@ mod tests {
         fs::create_dir(&existing).unwrap();
         fs::set_permissions(&existing, Permissions::from_mode(OWNER_ONLY_DIRECTORY_MODE)).unwrap();
 
-        create_private_directory_or_refuse(this_user(), &existing).unwrap();
+        create_private_directory(this_user(), &existing).unwrap();
 
         assert_eq!(mode_of(&existing), OWNER_ONLY_DIRECTORY_MODE);
         crate::remove_scratch::remove_scratch(&directory).unwrap();
@@ -360,18 +328,17 @@ mod tests {
         fs::set_permissions(&loose, Permissions::from_mode(LOOSE_DIRECTORY_MODE)).unwrap();
         let another_user_id = this_user().wrapping_add(1);
 
-        let loose_failure = create_private_directory_or_refuse(this_user(), &loose).unwrap_err();
-        let foreign_failure =
-            create_private_directory_or_refuse(another_user_id, &loose).unwrap_err();
+        let loose_failure = create_private_directory(this_user(), &loose).unwrap_err();
+        let foreign_failure = create_private_directory(another_user_id, &loose).unwrap_err();
 
         assert_eq!(
-            found_in(loose_failure),
+            refusal_inside(&loose_failure).found,
             DirectoryFinding::GrantsAccessBeyondOwner {
                 permission_bits: LOOSE_DIRECTORY_MODE
             }
         );
         assert_eq!(
-            found_in(foreign_failure),
+            refusal_inside(&foreign_failure).found,
             DirectoryFinding::Untrusted(UntrustedEntry::OwnedByAnotherUser {
                 owner: this_user(),
                 user: another_user_id
@@ -395,7 +362,7 @@ mod tests {
                 .unwrap_err();
 
         assert_eq!(
-            found_in(failure),
+            refusal_inside(&failure).found,
             DirectoryFinding::Untrusted(UntrustedEntry::SymbolicLink)
         );
         assert_eq!(mode_of(&target), LOOSE_DIRECTORY_MODE);
@@ -424,7 +391,7 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(
-            found_in(failure),
+            refusal_inside(&failure).found,
             DirectoryFinding::Untrusted(UntrustedEntry::ReplacedWhileOpened)
         );
         assert_eq!(mode_of(&swapped_in), LOOSE_DIRECTORY_MODE);
@@ -466,7 +433,7 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(
-            found_in(failure),
+            refusal_inside(&failure).found,
             DirectoryFinding::Untrusted(UntrustedEntry::SymbolicLink)
         );
         assert_eq!(mode_of(&target), LOOSE_DIRECTORY_MODE);
