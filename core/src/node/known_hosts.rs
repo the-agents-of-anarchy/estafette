@@ -14,7 +14,7 @@ use crate::event::{ConfigurationRewrite, Event, GossipEvent, ShortId};
 use crate::keys::{parse_public_key, render_key_bytes};
 use crate::net::endpoint::NodeEndpoint;
 use crate::payload::{DescribedPayload, PayloadDropRule, ValidInfrastructure};
-use crate::wire::{self, Infrastructure};
+use crate::wire;
 
 /// How far ahead of this node's clock a host record's ts may be and still be held (spec:779, spec:1013).
 const INFRASTRUCTURE_RECORD_FUTURE_BOUND_SECONDS: u64 = 300;
@@ -225,11 +225,13 @@ impl HeldHosts {
         let id = render_key_bytes(record.host.as_bytes());
         let verdict = match self.config.hosts.iter_mut().find(|host| host.id == id) {
             None => {
-                self.config.hosts.push(learned_host(id, record, now_ms));
+                self.config
+                    .hosts
+                    .push(learned_host(id, record.relay.as_str(), record.ts, now_ms));
                 RecordVerdict::FromNewHost
             }
             Some(host) => {
-                move_known_host(host, record, now_ms)?;
+                move_known_host(host, record.relay.as_str(), record.ts, now_ms)?;
                 RecordVerdict::FromKnownHost
             }
         };
@@ -257,11 +259,11 @@ const fn refuse_past_future_bound(record_ts: u64, now_ms: u64) -> Result<(), Pay
 }
 
 /// The host a record from a host never known before adds, heard now.
-fn learned_host(id: String, record: &Infrastructure, now_ms: u64) -> Host {
+fn learned_host(id: String, relay: &str, ts: u64, now_ms: u64) -> Host {
     Host {
         id,
-        relay: record.relay.as_str().to_owned(),
-        ts: Some(record.ts),
+        relay: relay.to_owned(),
+        ts: Some(ts),
         origin: HostOrigin::Learned {
             heard: UnixMillis(now_ms),
         },
@@ -271,14 +273,15 @@ fn learned_host(id: String, record: &Infrastructure, now_ms: u64) -> Host {
 /// Moves a known host to the relay and ts of a record newer than its own, or names the rule that drops the record.
 fn move_known_host(
     host: &mut Host,
-    record: &Infrastructure,
+    relay: &str,
+    ts: u64,
     now_ms: u64,
 ) -> Result<(), PayloadDropRule> {
-    if host.ts.is_some_and(|held| record.ts <= held) {
+    if host.ts.is_some_and(|held| ts <= held) {
         return Err(PayloadDropRule::RecordNotNewerThanHeld);
     }
-    host.ts = Some(record.ts);
-    record.relay.as_str().clone_into(&mut host.relay);
+    host.ts = Some(ts);
+    relay.clone_into(&mut host.relay);
     if let HostOrigin::Learned { heard } = &mut host.origin {
         *heard = UnixMillis(now_ms);
     }
