@@ -2785,6 +2785,20 @@ mod tests {
         receive.read_to_end(wire::WIRE_LIMIT_BYTES).await.unwrap()
     }
 
+    /// Whether the connection carries the request and returns an answer, a closed connection answering nothing.
+    async fn probe_answered_on(
+        connection: &iroh::endpoint::Connection,
+        request: wire::Request,
+    ) -> bool {
+        let sealed = crate::payload::seal_request(&network_keys(), request).unwrap();
+        let Ok((mut send, mut receive)) = connection.open_bi().await else {
+            return false;
+        };
+        send.write_all(&sealed).await.is_ok()
+            && send.finish().is_ok()
+            && receive.read_to_end(wire::WIRE_LIMIT_BYTES).await.is_ok()
+    }
+
     fn introduce_from_neighbor() -> wire::Request {
         wire::Request::Introduce(Introduce {
             v: Version::CURRENT,
@@ -3023,7 +3037,7 @@ mod tests {
         let observer_address = observation.endpoint.endpoint().addr();
         let mut tail_output = Vec::new();
 
-        let (tail_result, (earlier_closed, live_direct_closed, neighbor_events)) =
+        let (tail_result, (earlier_closed, live_direct_answered_after_the_close, neighbor_events)) =
             tokio::join!(observation.tail(&mut tail_output), async {
                 observers_presence_request(&mut neighbor.topic).await;
                 let observer = secret_key(OBSERVER_SEED).public();
@@ -3054,7 +3068,10 @@ mod tests {
                 neighbor_announces_itself_and_the_observer_takes_it(&neighbor, &observer_host)
                     .await;
                 let closed = earlier.connection_end_within(SUPERSEDED_CLOSE_WAIT).await;
-                let live_direct_closed = live_direct.close_reason();
+                let live_direct_answered_after_the_close =
+                    probe_answered_on(&live_direct, probe_from_neighbor()).await;
+                neighbor_announces_itself_and_the_observer_takes_it(&neighbor, &observer_host)
+                    .await;
                 let mut neighbor_events = Vec::new();
                 while let Ok(Some(Ok(event))) =
                     tokio::time::timeout(Duration::ZERO, neighbor.topic.next_event()).await
@@ -3062,7 +3079,11 @@ mod tests {
                     neighbor_events.push(event);
                 }
                 interrupt.send(()).unwrap_or_default();
-                (closed, live_direct_closed, neighbor_events)
+                (
+                    closed,
+                    live_direct_answered_after_the_close,
+                    neighbor_events,
+                )
             });
 
         tail_result.unwrap();
@@ -3073,7 +3094,10 @@ mod tests {
             close.error_code,
             iroh::endpoint::VarInt::from_u32(crate::net::direct::SUPERSEDED_CONNECTION_CLOSE_CODE)
         );
-        assert_eq!(live_direct_closed, None);
+        assert!(
+            live_direct_answered_after_the_close,
+            "the observer closed the live direct connection with the earlier one: its probe, sent once the earlier close was seen, got no answer"
+        );
         assert!(
             !neighbor_events
                 .iter()
