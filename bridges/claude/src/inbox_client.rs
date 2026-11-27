@@ -43,7 +43,7 @@ pub enum InboxClientError {
     ConnectFailed(io::Error),
     ResumeRequestFailed(io::Error),
     ReadFailed(io::Error),
-    MalformedFrame(serde_json::Error),
+    MalformedFrame(MalformedFrameFault),
     FrameLineTooLong,
 }
 
@@ -58,18 +58,43 @@ impl fmt::Display for InboxClientError {
                 "cannot send the since line to the inbox socket: {source}"
             ),
             Self::ReadFailed(source) => write!(formatter, "cannot read the inbox socket: {source}"),
-            Self::MalformedFrame(reason) => write!(
+            Self::MalformedFrame(fault) => write!(
                 formatter,
-                "the inbox socket sent a frame it cannot read: {} at line {} column {}",
-                fault_kind(reason.classify()),
-                reason.line(),
-                reason.column()
+                "the inbox socket sent a frame it cannot read: {fault}"
             ),
             Self::FrameLineTooLong => write!(
                 formatter,
                 "the inbox socket sent a frame line over {MAX_FRAME_LINE_BYTES} bytes"
             ),
         }
+    }
+}
+
+/// Where and of what kind a frame line is malformed, holding no text of the frame.
+#[derive(Debug)]
+pub struct MalformedFrameFault {
+    kind: &'static str,
+    line: usize,
+    column: usize,
+}
+
+impl MalformedFrameFault {
+    fn of(error: &serde_json::Error) -> Self {
+        Self {
+            kind: fault_kind(error.classify()),
+            line: error.line(),
+            column: error.column(),
+        }
+    }
+}
+
+impl fmt::Display for MalformedFrameFault {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} at line {} column {}",
+            self.kind, self.line, self.column
+        )
     }
 }
 
@@ -89,8 +114,7 @@ impl std::error::Error for InboxClientError {
             Self::ConnectFailed(source)
             | Self::ResumeRequestFailed(source)
             | Self::ReadFailed(source) => Some(source),
-            Self::MalformedFrame(reason) => Some(reason),
-            Self::FrameLineTooLong => None,
+            Self::MalformedFrame(_) | Self::FrameLineTooLong => None,
         }
     }
 }
@@ -192,7 +216,8 @@ fn read_complete_line(reader: &mut impl BufRead) -> Result<Option<String>, Inbox
 }
 
 fn parse_frame(line: &str) -> Result<InboxFrame, InboxClientError> {
-    serde_json::from_str(line).map_err(InboxClientError::MalformedFrame)
+    serde_json::from_str(line)
+        .map_err(|error| InboxClientError::MalformedFrame(MalformedFrameFault::of(&error)))
 }
 
 #[cfg(test)]
@@ -639,12 +664,11 @@ mod tests {
             InboxClientError::ConnectFailed(cause()),
             InboxClientError::ResumeRequestFailed(cause()),
             InboxClientError::ReadFailed(cause()),
-            InboxClientError::MalformedFrame(
-                serde_json::from_str::<InboxFrame>("x").expect_err("not a frame"),
-            ),
         ] {
             assert!(error.source().is_some(), "{error}");
         }
+        let malformed = parse_frame("x").expect_err("not a frame");
+        assert!(malformed.source().is_none(), "{malformed}");
         assert!(InboxClientError::FrameLineTooLong.source().is_none());
     }
 
