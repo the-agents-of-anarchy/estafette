@@ -2163,6 +2163,7 @@ mod tests {
             &scratch.directories,
             u32::from(MEMBER_SEED),
             &EveryProcessRuns,
+            Arc::new(RuntimeClock),
             |_failure| {},
         )
         .unwrap();

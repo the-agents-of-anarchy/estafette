@@ -1333,6 +1333,7 @@ mod tests {
                 &directories,
                 plan.process_id,
                 &EveryProcessRuns,
+                Arc::new(RuntimeClock),
                 |_failure| {},
             )
             .unwrap(),

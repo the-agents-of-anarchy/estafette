@@ -556,6 +556,7 @@ fn serve_mcp(
             &directories,
             process_id,
             &OperatingSystemProcessTable,
+            Arc::new(RuntimeClock),
             inbox_recorder(Arc::clone(&record)),
         )
         .map_err(CommandLineFailure::InboxSocket)?;
@@ -863,6 +864,7 @@ fn observer_effects(
                 &directories,
                 std::process::id(),
                 &OperatingSystemProcessTable,
+                Arc::new(RuntimeClock),
                 inbox_recorder(accept_record),
             )
             .map(Arc::new)

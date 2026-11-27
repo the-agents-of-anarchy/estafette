@@ -1350,6 +1350,7 @@ pub(super) mod tests {
                     &self.directories,
                     u32::from(seed),
                     &EveryProcessRuns,
+                    Arc::new(RuntimeClock),
                     |_failure| {},
                 )
                 .unwrap(),
@@ -1373,6 +1374,7 @@ pub(super) mod tests {
                         &self.directories,
                         u32::from(seed),
                         &EveryProcessRuns,
+                        Arc::new(RuntimeClock),
                         record,
                     )
                     .unwrap(),

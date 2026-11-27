@@ -1201,6 +1201,7 @@ mod tests {
                             &self.directories,
                             u32::from(plan.seed),
                             &EveryProcessRuns,
+                            Arc::new(RuntimeClock),
                             |_failure| {},
                         )
                         .unwrap(),
@@ -1292,6 +1293,7 @@ mod tests {
                         &directories,
                         u32::from(OBSERVER_SEED),
                         &EveryProcessRuns,
+                        Arc::new(RuntimeClock),
                         |_failure| {},
                     )
                     .map(Arc::new)

@@ -13,6 +13,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 
+use crate::clock::{MonotonicClock, later_by};
 use crate::dirs::Directories;
 use crate::event::InboxEvent;
 use crate::inbox::buffer::{InboxBuffer, InboxFrame, ReceivedMessage};
@@ -214,22 +215,33 @@ impl InboxSocket {
         directories: &Directories,
         process_id: u32,
         processes: &impl ProcessTable,
+        clock: MonotonicClock,
         record: impl Fn(InboxEvent) + Send + Sync + 'static,
     ) -> Result<Self, InboxSocketError> {
         let socket_path = directories.inbox_socket_file(process_id);
         remove_stale_sockets(directories, process_id, processes)?;
         let listener = bind_owner_only(&socket_path)?;
-        Ok(Self::serving(socket_path, listener, Box::new(record)))
+        Ok(Self::serving(
+            socket_path,
+            listener,
+            Box::new(record),
+            clock,
+        ))
     }
 
-    fn serving(socket_path: PathBuf, acceptor: impl ClientAcceptor, record: InboxRecord) -> Self {
+    fn serving(
+        socket_path: PathBuf,
+        acceptor: impl ClientAcceptor,
+        record: InboxRecord,
+        clock: MonotonicClock,
+    ) -> Self {
         let shared = Arc::new(Shared {
             buffer: Mutex::new(InboxBuffer::new()),
             newest_seq: watch::Sender::new(0),
             clients: watch::Sender::new(0),
             record,
         });
-        let accept_task = tokio::spawn(accept_clients(acceptor, Arc::clone(&shared)));
+        let accept_task = tokio::spawn(accept_clients(acceptor, Arc::clone(&shared), clock));
         Self {
             socket_path,
             shared,
@@ -323,7 +335,7 @@ fn bind_owner_only(socket_path: &Path) -> Result<UnixListener, InboxSocketError>
     Ok(listener)
 }
 
-async fn accept_clients(acceptor: impl ClientAcceptor, shared: Arc<Shared>) {
+async fn accept_clients(acceptor: impl ClientAcceptor, shared: Arc<Shared>, clock: MonotonicClock) {
     let mut clients = JoinSet::new();
     loop {
         tokio::select! {
@@ -334,7 +346,7 @@ async fn accept_clients(acceptor: impl ClientAcceptor, shared: Arc<Shared>) {
                 }
                 Err(failure) => {
                     (shared.record)(InboxEvent::AcceptFailed(failure));
-                    tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
+                    clock.reached(later_by(clock.now(), ACCEPT_RETRY_DELAY)).await;
                 }
             },
             Some(_) = clients.join_next() => {}
@@ -390,6 +402,7 @@ async fn wait_for_disconnect(reader: &mut BufReader<impl AsyncRead + Unpin>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::clock::{MonotonicTime, RuntimeClock};
     use crate::dirs::{CardsDirectoryOverride, OperatingSystemFilesystem};
     use crate::event::{Event, EventFields};
     use serde_json::Value;
@@ -466,6 +479,7 @@ mod tests {
             directories,
             OWN_PROCESS_ID,
             &RunningProcesses(vec![OWN_PROCESS_ID]),
+            Arc::new(RuntimeClock),
             |_failure| {},
         )
         .unwrap()
@@ -690,8 +704,14 @@ mod tests {
             fs::write(path, b"").unwrap();
         }
         let processes = RunningProcesses(vec![OWN_PROCESS_ID, LIVE]);
-        let _socket =
-            InboxSocket::start(&directories, OWN_PROCESS_ID, &processes, |_failure| {}).unwrap();
+        let _socket = InboxSocket::start(
+            &directories,
+            OWN_PROCESS_ID,
+            &processes,
+            Arc::new(RuntimeClock),
+            |_failure| {},
+        )
+        .unwrap();
         assert!(!dead.exists());
         assert!(live.exists());
         assert!(unrelated.iter().all(|path| path.exists()));
@@ -719,8 +739,14 @@ mod tests {
         let table = TableWhoseQueryLetsAnotherStartRemoveTheSocket {
             socket_removed_by_the_other_start: dead.clone(),
         };
-        let _socket =
-            InboxSocket::start(&directories, OWN_PROCESS_ID, &table, |_failure| {}).unwrap();
+        let _socket = InboxSocket::start(
+            &directories,
+            OWN_PROCESS_ID,
+            &table,
+            Arc::new(RuntimeClock),
+            |_failure| {},
+        )
+        .unwrap();
         assert!(!dead.exists());
         UnixStream::connect(directories.inbox_socket_file(OWN_PROCESS_ID))
             .await
@@ -738,6 +764,7 @@ mod tests {
             &directories,
             OWN_PROCESS_ID,
             &RunningProcesses(vec![OWN_PROCESS_ID]),
+            Arc::new(RuntimeClock),
             |_failure| {},
         )
         .err()
@@ -779,6 +806,7 @@ mod tests {
                     recorded.send(failure.kind()).unwrap_or_default();
                 }
             }),
+            Arc::new(RuntimeClock),
         );
 
         let kinds = tokio::time::timeout(READ_DEADLINE, async {
@@ -794,6 +822,82 @@ mod tests {
         });
 
         assert_eq!(kinds, [io::ErrorKind::OutOfMemory; FAILURES_SEEN]);
+    }
+
+    struct ClockHeldByTheTest {
+        reading: tokio::time::Instant,
+        deadlines_asked_for: mpsc::UnboundedSender<tokio::time::Instant>,
+        reached: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl MonotonicTime for ClockHeldByTheTest {
+        fn now(&self) -> tokio::time::Instant {
+            self.reading
+        }
+
+        fn reached(
+            &self,
+            deadline: tokio::time::Instant,
+        ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send>> {
+            self.deadlines_asked_for.send(deadline).unwrap_or_default();
+            let reached = Arc::clone(&self.reached);
+            Box::pin(async move {
+                reached
+                    .acquire()
+                    .await
+                    .map(tokio::sync::SemaphorePermit::forget)
+                    .unwrap_or_default();
+            })
+        }
+    }
+
+    async fn next_within_deadline<Item>(
+        received: &mut mpsc::UnboundedReceiver<Item>,
+        what: &str,
+    ) -> Item {
+        tokio::time::timeout(READ_DEADLINE, received.recv())
+            .await
+            .unwrap_or_else(|_elapsed| panic!("{what} not seen within {READ_DEADLINE:?}"))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn spec_3_11_a_failed_accept_is_tried_again_only_once_the_handed_clock_reaches_the_retry_delay_after_the_failure()
+     {
+        let directories = scratch_directories("accept-retry-clock");
+        let reading = tokio::time::Instant::now();
+        let (deadlines_asked_for, mut deadlines) = mpsc::unbounded_channel();
+        let reached = Arc::new(tokio::sync::Semaphore::new(0));
+        let clock = ClockHeldByTheTest {
+            reading,
+            deadlines_asked_for,
+            reached: Arc::clone(&reached),
+        };
+        let (recorded, mut failures) = mpsc::unbounded_channel();
+        let _socket = InboxSocket::serving(
+            directories.inbox_socket_file(OWN_PROCESS_ID),
+            FailingAcceptor(io::ErrorKind::OutOfMemory),
+            Box::new(move |event| {
+                if let InboxEvent::AcceptFailed(failure) = event {
+                    recorded.send(failure.kind()).unwrap_or_default();
+                }
+            }),
+            Arc::new(clock),
+        );
+
+        let deadline = next_within_deadline(&mut deadlines, "the retry deadline").await;
+        assert_eq!(deadline, reading + ACCEPT_RETRY_DELAY);
+        assert_eq!(
+            next_within_deadline(&mut failures, "the first accept failure").await,
+            io::ErrorKind::OutOfMemory
+        );
+        assert_eq!(failures.try_recv(), Err(mpsc::error::TryRecvError::Empty));
+
+        reached.add_permits(1);
+        assert_eq!(
+            next_within_deadline(&mut failures, "the accept failure after the retry").await,
+            io::ErrorKind::OutOfMemory
+        );
     }
 
     type RecordedEvent = (&'static str, EventFields);
@@ -841,6 +945,7 @@ mod tests {
             &directories,
             OWN_PROCESS_ID,
             &RunningProcesses(vec![OWN_PROCESS_ID]),
+            Arc::new(RuntimeClock),
             sink,
         )
         .unwrap();
@@ -889,6 +994,7 @@ mod tests {
             &directories,
             OWN_PROCESS_ID,
             &RunningProcesses(vec![OWN_PROCESS_ID]),
+            Arc::new(RuntimeClock),
             sink,
         )
         .unwrap();
@@ -931,9 +1037,15 @@ mod tests {
             queries_made: std::cell::Cell::new(0),
             failed_process_id: std::cell::Cell::new(None),
         };
-        let refusal = InboxSocket::start(&directories, OWN_PROCESS_ID, &table, |_failure| {})
-            .err()
-            .unwrap();
+        let refusal = InboxSocket::start(
+            &directories,
+            OWN_PROCESS_ID,
+            &table,
+            Arc::new(RuntimeClock),
+            |_failure| {},
+        )
+        .err()
+        .unwrap();
         let InboxSocketError::QueryProcessTable { process_id, .. } = refusal else {
             panic!("expected QueryProcessTable, got {refusal:?}");
         };
