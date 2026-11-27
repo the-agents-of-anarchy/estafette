@@ -366,6 +366,13 @@ fn settings_flag_words(arguments: &[String]) -> Vec<Vec<&str>> {
                 return None;
             }
             let following = arguments.get(position.saturating_add(1)..)?;
+            let value_starts_with_a_flag = inline_head.is_none()
+                && following
+                    .first()
+                    .is_some_and(|word| word.starts_with(OPTION_FLAG_PREFIX));
+            if value_starts_with_a_flag {
+                return Some(Vec::new());
+            }
             Some(
                 inline_head
                     .into_iter()
@@ -1148,6 +1155,19 @@ mod tests {
                 &read_nothing
             ),
             refusing
+        );
+    }
+
+    #[test]
+    fn spec_3_12_doctor_reads_no_file_when_a_dash_word_follows_the_settings_flag_directly() {
+        let read_the_dash_word_as_a_refusing_file =
+            |path: &Path| (path == Path::new("--verbose")).then(|| REFUSE_JSON.to_owned());
+        assert_eq!(
+            refuse_verdict_with_harness_arguments(
+                &["--settings", "--verbose"],
+                &read_the_dash_word_as_a_refusing_file
+            ),
+            Verdict::Unverified(" (the --settings file cannot be read)".to_owned())
         );
     }
 
