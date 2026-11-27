@@ -7,7 +7,8 @@ use clap::Subcommand;
 use iroh::PublicKey;
 
 use crate::config::{
-    AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, OWNER_FIELD, SECRET_FIELD,
+    AcceptedValue, ConfigError, HOST_ID_FIELD, Host, HostOrigin, NetworkConfig, OWNER_FIELD,
+    SECRET_FIELD,
 };
 use crate::crypto::{
     HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, render_host_certificate, sign_host_certificate,
@@ -146,19 +147,19 @@ enum Failure {
     },
     Output(io::Error),
     NetworkAlreadyExists {
-        network: String,
+        network: Handle,
     },
     NetworkNotConfigured {
-        network: String,
+        network: Handle,
     },
     NetworkHasNoHost {
-        network: String,
+        network: Handle,
     },
     InvitationNetworkName(HandleError),
     HostNodeIdNotAKey,
     InvitationOwnerNotAKey,
     NoOwnerKey {
-        network: String,
+        network: Handle,
     },
     OwnerKeyUnreadable {
         path: PathBuf,
@@ -184,15 +185,18 @@ impl fmt::Display for Failure {
             Self::Output(source) => write!(formatter, "cannot write the result: {source}"),
             Self::NetworkAlreadyExists { network } => write!(
                 formatter,
-                "network {network} already has a configuration file or an owner key file here: choose another name, or remove both files if the network is abandoned"
+                "network {} already has a configuration file or an owner key file here: choose another name, or remove both files if the network is abandoned",
+                network.as_str()
             ),
             Self::NetworkNotConfigured { network } => write!(
                 formatter,
-                "network {network} has no configuration file here: create it, or join it with an invitation"
+                "network {} has no configuration file here: create it, or join it with an invitation",
+                network.as_str()
             ),
             Self::NetworkHasNoHost { network } => write!(
                 formatter,
-                "network {network} names no host yet, so it has no invitation: add a host first"
+                "network {} names no host yet, so it has no invitation: add a host first",
+                network.as_str()
             ),
             Self::InvitationNetworkName(source) => {
                 write!(
@@ -209,7 +213,8 @@ impl fmt::Display for Failure {
             ),
             Self::NoOwnerKey { network } => write!(
                 formatter,
-                "network {network} has no owner key file here: only the machine that created the network can certify a host"
+                "network {} has no owner key file here: only the machine that created the network can certify a host",
+                network.as_str()
             ),
             Self::OwnerKeyUnreadable { path, source } => {
                 write!(
@@ -371,7 +376,7 @@ fn refuse_existing_file(
     let exists = filesystem.path_exists(path).map_err(io_failure(path))?;
     if exists {
         Err(Failure::NetworkAlreadyExists {
-            network: network.as_str().to_owned(),
+            network: network.clone(),
         })
     } else {
         Ok(())
@@ -399,7 +404,7 @@ fn write_new_owner_only_file(
         .create_new_owner_only_file(path, contents)
         .map_err(|source| match source.kind() {
             io::ErrorKind::AlreadyExists => Failure::NetworkAlreadyExists {
-                network: network.as_str().to_owned(),
+                network: network.clone(),
             },
             _ => io_failure(path)(source),
         })
@@ -471,7 +476,7 @@ fn load_configured_network(
         Ok(config) => Ok((config_file, config)),
         Err(ConfigError::Read { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
             Err(Failure::NetworkNotConfigured {
-                network: network.as_str().to_owned(),
+                network: network.clone(),
             })
         }
         Err(refusal) => Err(refusal.into()),
@@ -502,7 +507,7 @@ fn invitation_of(
 ) -> Result<Invitation, Failure> {
     if config.hosts.is_empty() {
         return Err(Failure::NetworkHasNoHost {
-            network: network.as_str().to_owned(),
+            network: network.clone(),
         });
     }
     let secret = parse_network_secret(&config.secret).map_err(stored_key(SECRET_FIELD))?;
@@ -527,7 +532,7 @@ fn host_address_of(
     index_in_hosts: usize,
     config_file: &Path,
 ) -> Result<HostAddr, Failure> {
-    let id = parse_public_key(&host.id).map_err(stored_key("host id"))?;
+    let id = parse_public_key(&host.id).map_err(stored_key(HOST_ID_FIELD))?;
     let relay = host.wire_relay(index_in_hosts, config_file)?;
     Ok(HostAddr {
         v: Version::CURRENT,
@@ -553,7 +558,7 @@ fn certify_host(
             .read_to_string(&owner_key_file)
             .map_err(|source| match source.kind() {
                 io::ErrorKind::NotFound => Failure::NoOwnerKey {
-                    network: network.as_str().to_owned(),
+                    network: network.clone(),
                 },
                 _ => io_failure(&owner_key_file)(source),
             })?;
