@@ -71,26 +71,26 @@ fn run_long_about() -> String {
 }
 
 /// A cryptographically secure source of 32 random bytes.
-pub type FillFromSecureSource = Box<dyn FnOnce(&mut [u8; KEY_LEN]) + Send>;
+type FillFromSecureSource = Box<dyn FnOnce(&mut [u8; KEY_LEN]) + Send>;
 
 /// Resolves when the process is to stop.
 pub type StopRequested = Pin<Box<dyn Future<Output = ()> + Send>>;
 
 /// Binds the host's endpoint under its key and the network's gate key, with its own relay alone in the relay map.
-pub type BindHostEndpoint =
+type BindHostEndpoint =
     Box<dyn FnOnce(SecretKey, GateKey, RelayUrl, MonotonicClock) -> EndpointBinding + Send>;
 
 /// What the relay library reported when the embedded relay did not start or did not shut down cleanly.
-pub type RelayFailure = Box<dyn std::error::Error + Send + Sync>;
+type RelayFailure = Box<dyn std::error::Error + Send + Sync>;
 
 /// Shuts the embedded relay down, with the relay library's failure when it did not stop cleanly.
-pub type RelayShutdown = Pin<Box<dyn Future<Output = Result<(), RelayFailure>> + Send>>;
+type RelayShutdown = Pin<Box<dyn Future<Output = Result<(), RelayFailure>> + Send>>;
 
 /// Shuts the serving embedded relay down when called.
-pub type RunningRelay = Box<dyn FnOnce() -> RelayShutdown + Send>;
+type RunningRelay = Box<dyn FnOnce() -> RelayShutdown + Send>;
 
 /// Starts the embedded relay at the site and returns what shuts it down.
-pub type StartRelay = Box<
+type StartRelay = Box<
     dyn FnOnce(
             RelaySite,
         ) -> Pin<Box<dyn Future<Output = Result<RunningRelay, RelayFailure>> + Send>>
@@ -856,7 +856,7 @@ impl BootstrapNode {
 ///
 /// # Errors
 ///
-/// Returns the relay library's error as [`RelayFailure`] when TLS cannot be configured or a listener cannot be bound.
+/// Returns the relay library's error when TLS cannot be configured or a listener cannot be bound.
 #[cfg(feature = "relay")]
 pub async fn start_embedded_relay(site: RelaySite) -> Result<RunningRelay, RelayFailure> {
     let server_config_builder = rustls::ServerConfig::builder_with_provider(Arc::new(
