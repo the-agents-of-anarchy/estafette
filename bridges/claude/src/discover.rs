@@ -88,7 +88,7 @@ impl std::error::Error for ProcessTableError {}
 
 #[derive(Default)]
 struct ProcessImage {
-    executable: Option<String>,
+    executable: String,
     arguments: Option<Vec<String>>,
 }
 
@@ -129,7 +129,7 @@ fn process_images() -> Result<BTreeMap<Pid, ProcessImage>, ProcessTableError> {
                     (
                         pid,
                         ProcessImage {
-                            executable: Some(path.trim().to_owned()),
+                            executable: path.trim().to_owned(),
                             arguments: None,
                         },
                     )
@@ -159,7 +159,7 @@ fn process_images() -> Result<BTreeMap<Pid, ProcessImage>, ProcessTableError> {
                 paths.insert(
                     pid,
                     ProcessImage {
-                        executable: Some(path.to_string_lossy().into_owned()),
+                        executable: path.to_string_lossy().into_owned(),
                         arguments: delimited_arguments_of(&process_directory.path()),
                     },
                 );
@@ -219,7 +219,7 @@ fn entries_from_command_lines(
             .ok()
             .ok_or(ProcessTableError::MalformedListingLine)?;
         let image = images.get(&pid);
-        let executable = image.and_then(|image| image.executable.clone());
+        let executable = image.map(|image| image.executable.clone());
         let arguments = image
             .and_then(|image| image.arguments.clone())
             .unwrap_or_else(|| arguments_after_executable(command_line, executable.as_deref()));
@@ -613,7 +613,7 @@ mod tests {
         BTreeMap::from([(
             Pid(pid),
             ProcessImage {
-                executable: Some(executable.to_owned()),
+                executable: executable.to_owned(),
                 arguments: None,
             },
         )])
@@ -628,7 +628,7 @@ mod tests {
 
     fn image_with_delimited_arguments(executable: &str, arguments: &[&str]) -> ProcessImage {
         ProcessImage {
-            executable: Some(executable.to_owned()),
+            executable: executable.to_owned(),
             arguments: Some(arguments.iter().map(|word| (*word).to_owned()).collect()),
         }
     }
