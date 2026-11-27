@@ -361,7 +361,7 @@ async fn serve_host(
         .map_err(io_failure(&certificate_cache))?;
     let files = read_host_files(
         network,
-        domain,
+        &domain.wire_url,
         directories,
         filesystem,
         effects.fill_from_secure_source,
@@ -370,7 +370,7 @@ async fn serve_host(
     filesystem
         .create_private_directory(&certificate_cache)
         .map_err(io_failure(&certificate_cache))?;
-    let relay = (effects.start_relay)(relay_site(bind_address, domain, certificate_cache))
+    let relay = (effects.start_relay)(relay_site(bind_address, &domain.name, certificate_cache))
         .await
         .map_err(Failure::RelayNotStarted)?;
     let endpoint = (effects.bind_endpoint)(
@@ -384,7 +384,7 @@ async fn serve_host(
     let mut node = BootstrapNode::start(
         files,
         endpoint,
-        domain,
+        domain.wire_url.clone(),
         effects.clock,
         effects.monotonic,
         effects.report,
@@ -437,9 +437,9 @@ impl HostFiles {
 /// Reads the network, the host key and the certificate, printing the host address line once the key is known and before the certificate is read.
 fn read_host_files(
     network: &Handle,
-    domain: &RelayDomain,
+    relay: &wire::RelayUrl,
     directories: &Directories,
-    filesystem: &impl InfrastructureFilesystem,
+    filesystem: &impl NetworkFilesystem,
     fill_from_secure_source: FillFromSecureSource,
     result: &mut impl Write,
 ) -> Result<HostFiles, Failure> {
@@ -449,7 +449,7 @@ fn read_host_files(
     let network_keys = Network::new(config, config_file).map_err(Failure::Node)?;
     let key_file = directories.infrastructure_key_file(network);
     let key = host_key(&key_file, filesystem, fill_from_secure_source)?;
-    print_host_line(&key.public(), domain, result)?;
+    print_host_line(&key.public(), relay, result)?;
     let certificate_file = directories.infrastructure_certificate_file(network);
     let certificate = certifying_certificate(
         &certificate_file,
@@ -487,7 +487,7 @@ fn load_configured_network(network: &Handle, config_file: &Path) -> Result<Netwo
 /// The host key from its file, or a new one written there readable by its owner alone when the file is missing.
 fn host_key(
     path: &Path,
-    filesystem: &impl InfrastructureFilesystem,
+    filesystem: &impl NetworkFilesystem,
     fill_from_secure_source: FillFromSecureSource,
 ) -> Result<SecretKey, Failure> {
     match filesystem.read_to_string(path) {
@@ -505,7 +505,7 @@ fn host_key(
 /// Makes a host key from the secure source and writes it to a new file readable by its owner alone.
 fn create_host_key(
     path: &Path,
-    filesystem: &impl InfrastructureFilesystem,
+    filesystem: &impl NetworkFilesystem,
     fill_from_secure_source: FillFromSecureSource,
 ) -> Result<SecretKey, Failure> {
     if let Some(directory) = path.parent() {
@@ -523,13 +523,13 @@ fn create_host_key(
 /// Writes the host address line of the host's node id and relay.
 fn print_host_line(
     host: &iroh::PublicKey,
-    domain: &RelayDomain,
+    relay: &wire::RelayUrl,
     result: &mut impl Write,
 ) -> Result<(), Failure> {
     let line = render_host_line(&HostAddr {
         v: Version::CURRENT,
         id: wire::PublicKey::from(*host),
-        relay: domain.wire_url.clone(),
+        relay: relay.clone(),
     })
     .map_err(Failure::HostLine)?;
     writeln!(result, "{line}").map_err(Failure::Output)
@@ -538,7 +538,7 @@ fn print_host_line(
 /// The certificate from its file, refusing one that is missing, malformed, or not the owner's signature of this host's node id.
 fn certifying_certificate(
     path: &Path,
-    filesystem: &impl InfrastructureFilesystem,
+    filesystem: &impl NetworkFilesystem,
     owner: &iroh::PublicKey,
     host: &iroh::PublicKey,
 ) -> Result<Signature, Failure> {
@@ -570,7 +570,7 @@ struct LastRecord {
 
 impl LastRecord {
     /// Reads the counter from its file, refusing content that is not a decimal integer and one newline.
-    fn read(file: PathBuf, filesystem: &impl InfrastructureFilesystem) -> Result<Self, Failure> {
+    fn read(file: PathBuf, filesystem: &impl NetworkFilesystem) -> Result<Self, Failure> {
         let ts = match filesystem.read_to_string(&file) {
             Ok(text) => text
                 .strip_suffix(LINE_END)
@@ -605,11 +605,11 @@ impl LastRecord {
 }
 
 /// Where the relay serves on the bind address for the domain, caching its certificate in the directory.
-fn relay_site(bind_address: IpAddr, domain: &RelayDomain, certificate_cache: PathBuf) -> RelaySite {
+fn relay_site(bind_address: IpAddr, domain: &str, certificate_cache: PathBuf) -> RelaySite {
     RelaySite {
         https: SocketAddr::new(bind_address, HTTPS_PORT),
         quic_address_discovery: SocketAddr::new(bind_address, QUIC_ADDRESS_DISCOVERY_PORT),
-        domain: domain.name.clone(),
+        domain: domain.to_owned(),
         certificate_cache,
     }
 }
@@ -695,7 +695,7 @@ impl BootstrapNode {
     async fn start(
         files: HostFiles,
         endpoint: NodeEndpoint,
-        domain: &RelayDomain,
+        relay: wire::RelayUrl,
         clock: Clock,
         monotonic: MonotonicClock,
         report: RunRecord,
@@ -705,7 +705,7 @@ impl BootstrapNode {
         seed_lookup_with_known_hosts(&endpoint, &files.other_hosts);
         let answers = HostAnswers {
             endpoint: endpoint.endpoint().clone(),
-            relay: domain.wire_url.clone(),
+            relay,
         };
         let (router, gossip) = serve(&endpoint, &keys, &answers);
         let bootstrap = files.other_hosts.iter().map(|host| host.id).collect();
