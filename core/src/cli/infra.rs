@@ -202,19 +202,39 @@ impl InfrastructureFilesystem for OperatingSystemFilesystem {
 
 #[derive(Debug)]
 enum Failure {
-    NetworkNotConfigured { network: String },
+    NetworkNotConfigured {
+        network: String,
+    },
     Config(ConfigError),
     Node(NodeError),
-    Io { path: PathBuf, source: io::Error },
+    Io {
+        path: PathBuf,
+        source: io::Error,
+    },
     Output(io::Error),
-    HostKeyUnreadable { path: PathBuf, source: KeyError },
+    HostKeyUnreadable {
+        path: PathBuf,
+        source: KeyError,
+    },
     HostLine(InviteError),
-    CertificateMissing { path: PathBuf },
-    CertificateMalformed { path: PathBuf },
-    CertificateNotForThisHost { path: PathBuf },
-    LastRecordUnreadable { path: PathBuf },
+    CertificateMissing {
+        path: PathBuf,
+    },
+    CertificateMalformed {
+        path: PathBuf,
+    },
+    CertificateNotForThisHost {
+        path: PathBuf,
+    },
+    LastRecordUnreadable {
+        path: PathBuf,
+    },
     RelayNotStarted(RelayFailure),
     RelayNotShutDown(RelayFailure),
+    ServingFailedAndRelayNotShutDown {
+        serving: Box<Self>,
+        relay: RelayFailure,
+    },
     EndpointNotBound(BindError),
     TopicClosed,
 }
@@ -266,6 +286,10 @@ impl fmt::Display for Failure {
             Self::RelayNotShutDown(source) => write!(
                 formatter,
                 "the embedded relay did not shut down cleanly: {source}"
+            ),
+            Self::ServingFailedAndRelayNotShutDown { serving, relay } => write!(
+                formatter,
+                "{serving}; the embedded relay also did not shut down cleanly: {relay}"
             ),
             Self::EndpointNotBound(source) => write!(
                 formatter,
@@ -368,8 +392,15 @@ async fn serve_host(
     .await?;
     let outcome = node.serve_until(effects.stopped, filesystem).await;
     node.stop().await;
-    let relay_stopped = relay().await.map_err(Failure::RelayNotShutDown);
-    outcome.and(relay_stopped)
+    match (outcome, relay().await) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(serving), Ok(())) => Err(serving),
+        (Ok(()), Err(relay)) => Err(Failure::RelayNotShutDown(relay)),
+        (Err(serving), Err(relay)) => Err(Failure::ServingFailedAndRelayNotShutDown {
+            serving: Box::new(serving),
+            relay,
+        }),
+    }
 }
 
 /// Reads a domain name that is the whole host of its relay URL `https://<domain>/`, which fits the wire's relay URL limit.
@@ -1632,9 +1663,19 @@ mod tests {
         (stop, Box::pin(async move { stopped.await.unwrap_or(()) }))
     }
 
-    #[tokio::test]
-    async fn spec_3_14_a_record_whose_counter_cannot_be_written_first_is_never_broadcast() {
-        let scratch = Scratch::new("unwritable-counter");
+    /// A host run that ended because its first record's counter could not be written, with what its record held and the counter file.
+    struct RunWithUnwritableCounter {
+        outcome: Result<(), InfrastructureCommandError>,
+        recorded: Vec<RecordedEvent>,
+        counter_file: PathBuf,
+        counter_after_the_run: String,
+    }
+
+    async fn run_whose_first_record_counter_cannot_be_written(
+        tag: &str,
+        relay_shutdown_failure: Option<&'static str>,
+    ) -> RunWithUnwritableCounter {
+        let scratch = Scratch::new(tag);
         scratch.configure_network();
         scratch.certify(HOST_SEED);
         fs::write(
@@ -1659,6 +1700,7 @@ mod tests {
         let plan = Plan {
             stopped,
             report: record,
+            relay_shutdown_failure,
             ..Plan::new(HOST_SEED)
         };
 
@@ -1674,27 +1716,62 @@ mod tests {
             }
         );
         drop(stop);
-        let recorded_through_the_end = crate::net::direct::tests::recorded_so_far(&mut recorded);
+        let recorded = crate::net::direct::tests::recorded_so_far(&mut recorded);
 
         fs::set_permissions(
             &infrastructure_directory,
             fs::Permissions::from_mode(SPEC_PRIVATE_DIRECTORY_MODE),
         )
         .unwrap();
+        RunWithUnwritableCounter {
+            outcome,
+            recorded,
+            counter_after_the_run: fs::read_to_string(&counter_file).unwrap(),
+            counter_file,
+        }
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_a_record_whose_counter_cannot_be_written_first_is_never_broadcast() {
+        let run = Box::pin(run_whose_first_record_counter_cannot_be_written(
+            "unwritable-counter",
+            None,
+        ))
+        .await;
+
         assert!(
-            !recorded_through_the_end.iter().any(|(name, fields)| {
+            !run.recorded.iter().any(|(name, fields)| {
                 *name == BROADCAST_EVENT
                     && fields.contains(&(KIND_FIELD, serde_json::Value::from(INFRASTRUCTURE_KIND)))
             }),
-            "the host broadcast a record whose counter it could not write first: {recorded_through_the_end:?}"
+            "the host broadcast a record whose counter it could not write first: {:?}",
+            run.recorded
         );
         assert!(
-            outcome
+            run.outcome
                 .unwrap_err()
                 .to_string()
-                .contains(&counter_file.display().to_string())
+                .contains(&run.counter_file.display().to_string())
         );
-        assert_eq!(fs::read_to_string(&counter_file).unwrap(), HELD_COUNTER);
+        assert_eq!(run.counter_after_the_run, HELD_COUNTER);
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_a_relay_that_fails_to_shut_down_after_the_run_failed_is_named_beside_that_failure()
+     {
+        let run = Box::pin(run_whose_first_record_counter_cannot_be_written(
+            "unwritable-counter-and-relay-shutdown",
+            Some(RELAY_SHUTDOWN_FAILURE),
+        ))
+        .await;
+
+        let refusal = run.outcome.unwrap_err().to_string();
+        assert!(
+            refusal.contains(&run.counter_file.display().to_string()),
+            "{refusal}"
+        );
+        assert!(refusal.contains("did not shut down cleanly"), "{refusal}");
+        assert!(refusal.contains(RELAY_SHUTDOWN_FAILURE), "{refusal}");
     }
 
     #[tokio::test]
