@@ -15,6 +15,7 @@ use crate::cli::cards::{CardRegistryReader, RegistryArgs, card_files_in, card_na
 use crate::cli::lines::tab_separated_line;
 use crate::cli::network::NetworkFilesystem;
 use crate::cli::observer::{self, Interruption, ObserverEffects};
+use crate::clock::{MonotonicTime, before_deadline, later_by};
 use crate::config::{ConfigError, NetworkConfig};
 use crate::dirs::{Directories, OperatingSystemFilesystem};
 use crate::errors::ExitStatus;
@@ -23,6 +24,7 @@ use estafette_private_entry::{OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
 
 use crate::node::{NodeError, RelayProbe, known_host_addresses};
 use crate::sidecar::{Pause, SidecarError, claim};
+use crate::stream_items::join_all;
 
 const RELAY_ANSWER_DEADLINE: Duration = Duration::from_secs(5);
 const ITEM_SEPARATOR: &str = "; ";
@@ -191,7 +193,7 @@ pub async fn run(
     )?;
     report.record(
         Check::KnownRelays,
-        &known_relays_verdict(&config_path, &probe_relay).await,
+        &known_relays_verdict(&config_path, &probe_relay, &*effects.monotonic).await,
     )?;
     let visible_peer =
         visible_peer_verdict(&arguments.registry.network, directories, effects).await;
@@ -339,24 +341,28 @@ fn sidecars_verdict(
     )
 }
 
-async fn known_relays_verdict(config_path: &Path, probe_relay: &RelayProbe) -> Verdict {
+async fn known_relays_verdict(
+    config_path: &Path,
+    probe_relay: &RelayProbe,
+    clock: &dyn MonotonicTime,
+) -> Verdict {
     let relays = match known_relays(config_path) {
         Ok(relays) => relays,
         Err(refusal) => return Verdict::Failed(refusal.to_string()),
     };
-    let probes: Vec<_> = relays
+    let deadline = later_by(clock.now(), RELAY_ANSWER_DEADLINE);
+    let answers = join_all(
+        relays
+            .iter()
+            .map(|relay| before_deadline(clock, Some(deadline), probe_relay(relay.clone()))),
+    )
+    .await;
+    let silent: Vec<String> = relays
         .iter()
-        .map(|relay| {
-            let probe = tokio::time::timeout(RELAY_ANSWER_DEADLINE, probe_relay(relay.clone()));
-            (relay, tokio::spawn(probe))
-        })
+        .zip(answers)
+        .filter(|(_relay, answer)| !matches!(answer, Some(true)))
+        .map(|(relay, _answer)| format!("{relay} does not answer"))
         .collect();
-    let mut silent = Vec::new();
-    for (relay, probe) in probes {
-        if !matches!(probe.await, Ok(Ok(true))) {
-            silent.push(format!("{relay} does not answer"));
-        }
-    }
     Verdict::of_failures(format!("relays answering: {}", relays.len()), &silent)
 }
 
@@ -397,16 +403,20 @@ async fn visible_peer_verdict(
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::future::Future;
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
-    use std::sync::Arc;
+    use std::pin::Pin;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use iroh::{EndpointAddr, SecretKey};
+    use tokio::time::Instant;
 
     use super::*;
     use crate::cli::observer::ObserverEffects;
-    use crate::clock::RuntimeClock;
+    use crate::clock::{MonotonicTime, RuntimeClock};
     use crate::config::{Host, HostOrigin, NetworkConfig};
     use crate::crypto::{KEY_LEN, NetworkKeys, NetworkSecret};
     use crate::dirs::CardsDirectoryOverride;
@@ -414,10 +424,11 @@ mod tests {
     use crate::handle::AnnouncedHandle;
     use crate::inbox::socket::{InboxSocket, ProcessTable};
     use crate::keys::render_public_key;
+    use crate::net::direct::tests::ShiftedClock;
     use crate::net::endpoint::NodeEndpoint;
     use crate::node::{Identity, Network, Node, NodeEffects};
     use crate::sidecar::{SEED_BYTES, create_card};
-    use crate::test_waits::{PROBE_NONCE, secret_key, wall_clock_ms};
+    use crate::test_waits::{PROBE_NONCE, answered_within, secret_key, wall_clock_ms};
     use crate::wire::Nonce;
 
     const SPEC_FIELD_SEPARATOR: char = '\t';
@@ -872,11 +883,74 @@ mod tests {
         assert_eq!(detail_of_check(&lines, "sidecars"), "sidecars matching: 3");
     }
 
+    /// The deadline the doctor gives each relay's answer as built, which spec:450 leaves to the implementer.
+    const BUILT_RELAY_ANSWER_DEADLINE: Duration = Duration::from_secs(5);
+    /// The longest a test waits for the doctor to ask its clock to wake it at the relay deadline.
+    const RELAY_DEADLINE_ASKED_WITHIN: Duration = Duration::from_secs(10);
+
+    /// The runtime's clock shifted by however far the test has moved it, noting every reading and every deadline a waiter asked it to wake that waiter at.
+    #[derive(Default)]
+    struct ClockNotingReadingsAndDeadlines {
+        shifted: ShiftedClock,
+        readings: Mutex<Vec<Instant>>,
+        asked_deadlines: tokio::sync::watch::Sender<BTreeSet<Instant>>,
+    }
+
+    impl MonotonicTime for ClockNotingReadingsAndDeadlines {
+        fn now(&self) -> Instant {
+            let reading = self.shifted.now();
+            self.readings.lock().unwrap().push(reading);
+            reading
+        }
+
+        fn reached(&self, deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+            self.asked_deadlines.send_modify(|asked| {
+                asked.insert(deadline);
+            });
+            self.shifted.reached(deadline)
+        }
+    }
+
+    impl ClockNotingReadingsAndDeadlines {
+        /// Waits until a waiter has asked the clock to wake it at a deadline exactly the span past a reading the clock gave, failing by the waiter's name when none has within the wait.
+        async fn asked_to_wake_a_span_past_a_reading(&self, waiter: &str, span: Duration) {
+            let mut asked_deadlines = self.asked_deadlines.subscribe();
+            answered_within(
+                RELAY_DEADLINE_ASKED_WITHIN,
+                &format!("wake asked of the clock for {waiter} a span of {span:?} past a reading"),
+                asked_deadlines.wait_for(|asked| {
+                    let readings = self.readings.lock().unwrap();
+                    asked.iter().any(|deadline| {
+                        readings
+                            .iter()
+                            .any(|reading| reading.checked_add(span) == Some(*deadline))
+                    })
+                }),
+            )
+            .await
+            .expect("the clock holds the sender of its asked deadlines");
+        }
+
+        /// Moves every later reading forward by the span, waking each waiter whose deadline it then reads.
+        fn move_forward(&self, by: Duration) {
+            self.shifted.move_forward(by);
+        }
+    }
+
     #[tokio::test]
     async fn spec_3_13_doctor_fails_the_relays_check_naming_a_relay_that_does_not_answer_and_exits_3()
      {
         let lab = Lab::healthy("silent-relay").await;
-        let (effects, _) = lab.effects();
+        let (mut effects, _) = lab.effects();
+        let clock = Arc::new(ClockNotingReadingsAndDeadlines::default());
+        effects.monotonic = clock.clone();
+        let observer_started = Arc::new(AtomicBool::new(false));
+        let observer_start_noted = Arc::clone(&observer_started);
+        let bind_endpoint = effects.bind_endpoint;
+        effects.bind_endpoint = Box::new(move |key, gate_key, relays, monotonic| {
+            observer_start_noted.store(true, Ordering::SeqCst);
+            bind_endpoint(key, gate_key, relays, monotonic)
+        });
         let silent_probe: RelayProbe = Arc::new(|relay| {
             Box::pin(async move {
                 if relay.to_string() == SECOND_RELAY {
@@ -886,7 +960,19 @@ mod tests {
             })
         });
 
-        let (status, lines) = lab.diagnose_with(effects, silent_probe).await;
+        let ((status, lines), ()) = tokio::join!(lab.diagnose_with(effects, silent_probe), async {
+            clock
+                .asked_to_wake_a_span_past_a_reading(
+                    "the doctor's relay answers",
+                    BUILT_RELAY_ANSWER_DEADLINE,
+                )
+                .await;
+            assert!(
+                !observer_started.load(Ordering::SeqCst),
+                "the doctor ended its relays check before the clock it was handed read the relay deadline"
+            );
+            clock.move_forward(BUILT_RELAY_ANSWER_DEADLINE);
+        });
         drop(lab);
 
         assert_eq!(status, ExitStatus::DoctorFoundFailedCheck);
