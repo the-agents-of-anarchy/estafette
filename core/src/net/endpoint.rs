@@ -868,7 +868,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spec_3_6_a_gossip_spawned_on_the_bound_endpoint_runs_on_the_nodes_own_id() {
+    async fn spec_3_6_a_router_serving_gossip_on_the_bound_endpoint_reports_the_nodes_own_id_and_shuts_down()
+     {
         let member = bind_node(MEMBER_SEED, MEMBER_SECRET).await;
 
         let gossip = member.endpoint().spawn_gossip();
