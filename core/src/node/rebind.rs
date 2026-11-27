@@ -840,11 +840,11 @@ mod tests {
     async fn entry_within(
         member: &Member,
         seed: u8,
+        awaited: &str,
         wanted: impl Fn(&EndpointAddr) -> bool + Send + Sync,
         within: Duration,
     ) -> Result<EndpointAddr, WaitMissed> {
-        let awaited = format!("lookup entry for the card of seed {seed} meeting the condition");
-        found_within(within, &awaited, async || {
+        found_within(within, awaited, async || {
             lookup_entry(&member.node.client.endpoint(), seed)
                 .await
                 .filter(|entry| wanted(entry))
@@ -1055,6 +1055,7 @@ mod tests {
         let stripped = entry_within(
             &member,
             PEER_SEED,
+            "peer's lookup entry without the stripped relay",
             |entry| !relays_of(entry).contains(&STRIPPED_RELAY.to_owned()),
             REBIND_SLACK,
         )
@@ -1798,6 +1799,7 @@ mod tests {
         let stripped = entry_within(
             &member,
             PEER_SEED,
+            "peer's lookup entry without the dead relay",
             |entry| !relays_of(entry).contains(&DEAD_RELAY.to_owned()),
             IROH_DOCUMENTED_CLOSE_LATENCY + SPEC_RELAY_PROBE_TIMEOUT + REBIND_SLACK,
         )
@@ -1962,6 +1964,7 @@ mod tests {
         status_within(
             &member,
             PEER_SEED,
+            "peer listed as unreachable",
             |status| status == Status::Unreachable,
             PAYLOAD_WAIT,
         )
@@ -2044,6 +2047,7 @@ mod tests {
         entry_meeting_within(
             &member,
             PEER_SEED,
+            "peer's entry showing the ack of its own Introduce applied",
             |listed| listed.attached == ATTACHED_ONLY_IN_THE_PEERS_ACK,
             PAYLOAD_WAIT,
         )
@@ -2061,6 +2065,7 @@ mod tests {
         status_within(
             &member,
             PEER_SEED,
+            "peer listed as unreachable",
             |status| status == Status::Unreachable,
             PAYLOAD_WAIT,
         )

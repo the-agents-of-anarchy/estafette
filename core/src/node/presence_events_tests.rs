@@ -848,9 +848,15 @@ async fn observability_decision_9_a_member_records_its_own_handle_requested_and_
     let scratch = Scratch::new("events-own-handle").await;
     let (report, mut recorded) = recorded_events();
     let (first, second) = start_pair(&scratch).await;
-    entry_meeting_within(&first, SECOND_SEED, |_listed| true, SPEC_OBSERVER_WAIT)
-        .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+    entry_meeting_within(
+        &first,
+        SECOND_SEED,
+        "second member listed by the first",
+        |_listed| true,
+        SPEC_OBSERVER_WAIT,
+    )
+    .await
+    .unwrap_or_else(WaitMissed::fail_the_test);
 
     let _third = start_members_reaching(
         &scratch,

@@ -581,6 +581,7 @@ mod tests {
         status_within(
             first,
             SECOND_SEED,
+            "second member listed as gone by the first",
             |status| matches!(status, Status::Gone { .. }),
             within,
         )

@@ -2489,7 +2489,8 @@ pub(super) mod tests {
         seed: u8,
         within: Duration,
     ) -> Result<Peer, WaitMissed> {
-        entry_meeting_within(member, seed, |_listed| true, within).await
+        let awaited = format!("entry for the card of seed {seed} listed");
+        entry_meeting_within(member, seed, &awaited, |_listed| true, within).await
     }
 
     #[tokio::test]
@@ -2933,10 +2934,11 @@ pub(super) mod tests {
     pub(in crate::node) async fn status_within(
         member: &Member,
         seed: u8,
+        awaited: &str,
         wanted: impl Fn(Status) -> bool + Send + Sync,
         within: Duration,
     ) -> Result<Peer, WaitMissed> {
-        entry_meeting_within(member, seed, |peer| wanted(peer.status), within).await
+        entry_meeting_within(member, seed, awaited, |peer| wanted(peer.status), within).await
     }
 
     fn departure_of(seed: u8, seq: u64) -> Payload {
@@ -2984,6 +2986,7 @@ pub(super) mod tests {
         status_within(
             &first,
             SECOND_SEED,
+            "second member listed as gone by the first",
             |status| matches!(status, Status::Gone { .. }),
             PAYLOAD_WAIT,
         )
@@ -3840,6 +3843,7 @@ pub(super) mod tests {
         status_within(
             &member,
             WITNESS_SEED,
+            "witness listed online by the member",
             |status| status == Status::Online,
             PAYLOAD_WAIT,
         )
@@ -3864,6 +3868,7 @@ pub(super) mod tests {
         status_within(
             &member,
             WITNESS_SEED,
+            "witness listed as unreachable by the member",
             |status| status == Status::Unreachable,
             PAYLOAD_WAIT,
         )
@@ -3898,6 +3903,7 @@ pub(super) mod tests {
         let unreachable = status_within(
             &first,
             SECOND_SEED,
+            "second member listed as unreachable by the first",
             |status| status == Status::Unreachable,
             SPEC_NEIGHBOR_DOWN_AND_PROBE_TIMEOUT,
         )
@@ -3931,6 +3937,7 @@ pub(super) mod tests {
         status_within(
             &member,
             WITNESS_SEED,
+            "witness listed online by the member",
             |status| status == Status::Online,
             PAYLOAD_WAIT,
         )
@@ -4091,6 +4098,7 @@ pub(super) mod tests {
         status_within(
             &member,
             WITNESS_SEED,
+            "witness listed online by the member",
             |status| status == Status::Online,
             PAYLOAD_WAIT,
         )
@@ -5757,15 +5765,15 @@ pub(super) mod tests {
         }
     }
 
-    /// The member's entry for the card of the seed once it meets the condition, waited for without a sleep, or the condition and the bound when it does not within the wait.
+    /// The member's entry for the card of the seed once it meets the condition, waited for without a sleep, or the awaited words and the bound when it does not within the wait.
     pub(in crate::node) async fn entry_meeting_within(
         member: &Member,
         seed: u8,
+        awaited: &str,
         condition: impl Fn(&Peer) -> bool + Send + Sync,
         within: Duration,
     ) -> Result<Peer, WaitMissed> {
-        let awaited = format!("entry for the card of seed {seed} meeting the condition");
-        found_within(within, &awaited, async || {
+        found_within(within, awaited, async || {
             member
                 .node
                 .peers()
@@ -6121,6 +6129,7 @@ pub(super) mod tests {
         let listed_first_session = entry_meeting_within(
             &first,
             SECOND_SEED,
+            "second member listed online by the first",
             |peer| peer.status == Status::Online,
             RESTARTED_LISTED_WAIT,
         )
@@ -6142,6 +6151,7 @@ pub(super) mod tests {
         let listed_restarted = entry_meeting_within(
             &first,
             SECOND_SEED,
+            "restarted second member listed online by the first",
             |peer| peer.status == Status::Online && peer.last_seen > vanished_ms,
             RESTARTED_LISTED_WAIT,
         )
@@ -6153,6 +6163,7 @@ pub(super) mod tests {
         let listed_by_the_restarted = entry_meeting_within(
             &restarted,
             FIRST_SEED,
+            "first member listed online by the restarted second",
             |peer| peer.status == Status::Online,
             RESTARTED_LISTED_WAIT,
         )
