@@ -207,3 +207,11 @@ What happened: At 13:22 lead-alpha called ScheduleWakeup with stop true though n
 Mechanism: The wake for the pending cleaner was a one-shot cron, so the check-back rule to end a loop did not apply; the call was made by habit after setting a wake.
 
 Correction: Call ScheduleWakeup only inside a self-paced loop; after setting a cron wake, end the turn with an empty message.
+
+## An rm ran inside a compound command
+
+What happened: At 13:38 lead-alpha ended its push command with rm of two scratch logs and a bare true, inside one compound command.
+
+Mechanism: The scratch logs were cleared in the same call as the push to save a step, against the rule that the lead deletes with one plain rm as a whole command of its own.
+
+Correction: Clear scratch files with one plain rm call of its own, and write scratch logs under a fresh mktemp -d directory cleared the same way.
