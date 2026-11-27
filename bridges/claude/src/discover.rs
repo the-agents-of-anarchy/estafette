@@ -60,6 +60,8 @@ pub struct ProcessEntry {
 #[derive(Debug)]
 pub enum ProcessTableError {
     ListingFailed(std::io::Error),
+    #[cfg(target_os = "linux")]
+    ProcDirectoryUnreadable(std::io::Error),
     ListingExitedUnsuccessfully(ExitStatus),
     MalformedListingLine,
 }
@@ -68,6 +70,10 @@ impl fmt::Display for ProcessTableError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ListingFailed(source) => write!(formatter, "cannot run {PS_PROGRAM}: {source}"),
+            #[cfg(target_os = "linux")]
+            Self::ProcDirectoryUnreadable(source) => {
+                write!(formatter, "cannot read {PROC_DIRECTORY}: {source}")
+            }
             Self::ListingExitedUnsuccessfully(status) => {
                 write!(formatter, "{PS_PROGRAM} failed: {status}")
             }
@@ -137,9 +143,10 @@ fn process_images() -> Result<BTreeMap<Pid, ProcessImage>, ProcessTableError> {
 fn process_images() -> Result<BTreeMap<Pid, ProcessImage>, ProcessTableError> {
     let mut paths = BTreeMap::new();
     for process_directory in
-        std::fs::read_dir(PROC_DIRECTORY).map_err(ProcessTableError::ListingFailed)?
+        std::fs::read_dir(PROC_DIRECTORY).map_err(ProcessTableError::ProcDirectoryUnreadable)?
     {
-        let process_directory = process_directory.map_err(ProcessTableError::ListingFailed)?;
+        let process_directory =
+            process_directory.map_err(ProcessTableError::ProcDirectoryUnreadable)?;
         let Some(pid) = process_directory
             .file_name()
             .to_str()
@@ -162,7 +169,7 @@ fn process_images() -> Result<BTreeMap<Pid, ProcessImage>, ProcessTableError> {
                     error.kind(),
                     ErrorKind::NotFound | ErrorKind::PermissionDenied
                 ) => {}
-            Err(error) => return Err(ProcessTableError::ListingFailed(error)),
+            Err(error) => return Err(ProcessTableError::ProcDirectoryUnreadable(error)),
         }
     }
     Ok(paths)
