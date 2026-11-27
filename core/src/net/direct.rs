@@ -1501,11 +1501,17 @@ pub(crate) mod tests {
 
     /// A server over the host on an endpoint whose register measures silence on the clock, as the node's `serve` has it, and a client linked to it.
     async fn rig_over(host: RecordingHost, monotonic: MonotonicClock) -> Rig {
-        let server_node = bind_node_holding(
-            SERVER_SEED,
-            HeldConnections::new(monotonic, dropping_transport()),
-        )
-        .await;
+        rig_recording_over(host, monotonic, dropping_transport()).await
+    }
+
+    /// A rig whose server register hands the events it records to the transport record.
+    async fn rig_recording_over(
+        host: RecordingHost,
+        monotonic: MonotonicClock,
+        transport: TransportRecord,
+    ) -> Rig {
+        let server_node =
+            bind_node_holding(SERVER_SEED, HeldConnections::new(monotonic, transport)).await;
         let server = DirectServer::new(keys(), host.clone(), &server_node);
         let link = link_on(server_node, server, ClientTimeouts::SPEC).await;
         Rig { host, link }
@@ -1805,9 +1811,11 @@ pub(crate) mod tests {
      {
         let clock = StandingClock::standing_now();
         let stream_opened_at = clock.now();
-        let rig = rig_over(
+        let (server_record, mut served) = recorded_events();
+        let rig = rig_recording_over(
             RecordingHost::with_card(card_of(SERVER_SEED)),
             clock.monotonic(),
+            TransportRecord::new(server_record, test_salt()),
         )
         .await;
         let connection = raw_connection(&rig).await;
@@ -1829,8 +1837,26 @@ pub(crate) mod tests {
         .await;
 
         assert_eq!(
-            reset_code_of(&Err(outcome.unwrap_err())),
+            reset_code_of(&outcome),
             Some(VarInt::from_u32(READ_TIMEOUT_RESET_CODE_ON_THE_WIRE))
+        );
+        let recorded = next_recorded(&mut served, "direct.request_served").await;
+        let served_connection = field(&recorded, "connection").cloned().unwrap();
+        assert_eq!(
+            recorded,
+            vec![
+                (
+                    "peer",
+                    serde_json::Value::from(ShortId::from(&card_of(CLIENT_SEED)).text())
+                ),
+                ("connection", served_connection),
+                ("outcome", serde_json::Value::from("unanswered")),
+                ("error", serde_json::Value::from("read_timeout")),
+                (
+                    "elapsed_ms",
+                    serde_json::Value::from(milliseconds_of(SPEC_SERVER_READ_TIMEOUT))
+                ),
+            ]
         );
         assert_eq!(connection.close_reason(), None);
         let next = raw_exchange(&connection, &sealed_message_to_server(&keys()))
