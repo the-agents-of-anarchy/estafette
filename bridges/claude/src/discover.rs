@@ -25,6 +25,10 @@ const PS_EXECUTABLE_PATH_COLUMNS: &str = "pid=,comm=";
 const PROC_DIRECTORY: &str = "/proc";
 #[cfg(target_os = "linux")]
 const EXECUTABLE_LINK_NAME: &str = "exe";
+#[cfg(target_os = "linux")]
+const COMMAND_LINE_FILE_NAME: &str = "cmdline";
+#[cfg(any(target_os = "linux", test))]
+const ARGUMENT_TERMINATOR: u8 = 0;
 
 /// An operating system process id.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -75,13 +79,19 @@ impl fmt::Display for ProcessTableError {
 
 impl std::error::Error for ProcessTableError {}
 
+#[derive(Default)]
+struct ProcessImage {
+    executable: Option<String>,
+    arguments: Option<Vec<String>>,
+}
+
 pub struct PsProcessTable;
 
 impl ProcessTable for PsProcessTable {
     fn list(&self) -> Result<Vec<ProcessEntry>, ProcessTableError> {
         let command_lines = run_ps(PS_COMMAND_LINE_COLUMNS)?;
-        let executables = executable_paths()?;
-        entries_from_command_lines(&command_lines, &executables)
+        let images = process_images()?;
+        entries_from_command_lines(&command_lines, &images)
     }
 }
 
@@ -99,7 +109,7 @@ fn run_ps(columns: &str) -> Result<String, ProcessTableError> {
 }
 
 #[cfg(target_os = "macos")]
-fn executable_paths() -> Result<BTreeMap<Pid, String>, ProcessTableError> {
+fn process_images() -> Result<BTreeMap<Pid, ProcessImage>, ProcessTableError> {
     run_ps(PS_EXECUTABLE_PATH_COLUMNS)?
         .lines()
         .filter(|line| !line.trim().is_empty())
@@ -108,14 +118,22 @@ fn executable_paths() -> Result<BTreeMap<Pid, String>, ProcessTableError> {
             pid_text
                 .parse()
                 .ok()
-                .map(|pid| (pid, path.trim().to_owned()))
+                .map(|pid| {
+                    (
+                        pid,
+                        ProcessImage {
+                            executable: Some(path.trim().to_owned()),
+                            arguments: None,
+                        },
+                    )
+                })
                 .ok_or(ProcessTableError::MalformedListingLine)
         })
         .collect()
 }
 
 #[cfg(target_os = "linux")]
-fn executable_paths() -> Result<BTreeMap<Pid, String>, ProcessTableError> {
+fn process_images() -> Result<BTreeMap<Pid, ProcessImage>, ProcessTableError> {
     let mut paths = BTreeMap::new();
     for process_directory in
         std::fs::read_dir(PROC_DIRECTORY).map_err(ProcessTableError::ListingFailed)?
@@ -130,7 +148,13 @@ fn executable_paths() -> Result<BTreeMap<Pid, String>, ProcessTableError> {
         };
         match std::fs::read_link(process_directory.path().join(EXECUTABLE_LINK_NAME)) {
             Ok(path) => {
-                paths.insert(pid, path.to_string_lossy().into_owned());
+                paths.insert(
+                    pid,
+                    ProcessImage {
+                        executable: Some(path.to_string_lossy().into_owned()),
+                        arguments: delimited_arguments_of(&process_directory.path()),
+                    },
+                );
             }
             Err(error)
                 if matches!(
@@ -143,6 +167,26 @@ fn executable_paths() -> Result<BTreeMap<Pid, String>, ProcessTableError> {
     Ok(paths)
 }
 
+/// Reads the arguments after the program name from the kernel's command line of a process, each kept whole.
+#[cfg(target_os = "linux")]
+fn delimited_arguments_of(process_directory: &Path) -> Option<Vec<String>> {
+    let command_line = std::fs::read(process_directory.join(COMMAND_LINE_FILE_NAME)).ok()?;
+    arguments_after_program_name(&command_line)
+}
+
+/// Splits a command line the kernel terminated each word of with a zero byte, and drops its program name.
+#[cfg(any(target_os = "linux", test))]
+fn arguments_after_program_name(command_line: &[u8]) -> Option<Vec<String>> {
+    let terminated_words = command_line.strip_suffix(&[ARGUMENT_TERMINATOR])?;
+    Some(
+        terminated_words
+            .split(|byte| *byte == ARGUMENT_TERMINATOR)
+            .skip(1)
+            .map(|word| String::from_utf8_lossy(word).into_owned())
+            .collect(),
+    )
+}
+
 fn split_first_token(text: &str) -> (&str, &str) {
     let trimmed = text.trim_start();
     trimmed
@@ -152,7 +196,7 @@ fn split_first_token(text: &str) -> (&str, &str) {
 
 fn entries_from_command_lines(
     listing: &str,
-    executables: &BTreeMap<Pid, String>,
+    images: &BTreeMap<Pid, ProcessImage>,
 ) -> Result<Vec<ProcessEntry>, ProcessTableError> {
     let mut entries = Vec::new();
     for line in listing.lines().filter(|line| !line.trim().is_empty()) {
@@ -166,12 +210,16 @@ fn entries_from_command_lines(
             .parse()
             .ok()
             .ok_or(ProcessTableError::MalformedListingLine)?;
-        let executable = executables.get(&pid).cloned();
+        let image = images.get(&pid);
+        let executable = image.and_then(|image| image.executable.clone());
+        let arguments = image
+            .and_then(|image| image.arguments.clone())
+            .unwrap_or_else(|| arguments_after_executable(command_line, executable.as_deref()));
         entries.push(ProcessEntry {
             pid,
             parent_pid,
-            arguments: arguments_after_executable(command_line, executable.as_deref()),
             executable,
+            arguments,
         });
     }
     Ok(entries)
@@ -542,8 +590,14 @@ mod tests {
 
     /// The longest the fake process tree is given to show up in the process table before its harness is stopped.
     const TREE_STARTUP_WAIT: Duration = Duration::from_secs(30);
-    fn executable_table(pid: u32, executable: &str) -> BTreeMap<Pid, String> {
-        BTreeMap::from([(Pid(pid), executable.to_owned())])
+    fn executable_table(pid: u32, executable: &str) -> BTreeMap<Pid, ProcessImage> {
+        BTreeMap::from([(
+            Pid(pid),
+            ProcessImage {
+                executable: Some(executable.to_owned()),
+                arguments: None,
+            },
+        )])
     }
 
     fn only_entry(entries: &[ProcessEntry]) -> &ProcessEntry {
@@ -551,6 +605,73 @@ mod tests {
             panic!("exactly one entry expected, got {entries:?}");
         };
         entry
+    }
+
+    fn image_with_delimited_arguments(executable: &str, arguments: &[&str]) -> ProcessImage {
+        ProcessImage {
+            executable: Some(executable.to_owned()),
+            arguments: Some(arguments.iter().map(|word| (*word).to_owned()).collect()),
+        }
+    }
+
+    const MOST_DELIMITED_ARGUMENTS: usize = 5;
+    const DELIMITED_WORD_ALPHABET: [&str; 4] = ["a", " ", "-", ""];
+
+    #[test]
+    fn spec_3_12_step_2_generated_kernel_command_lines_yield_their_arguments_whole() {
+        for seed in 0..PROPERTY_CASES {
+            let mut state = seed;
+            let arguments: Vec<String> = (0..next_below(&mut state, MOST_DELIMITED_ARGUMENTS))
+                .map(|_| {
+                    (0..=next_below(&mut state, 4))
+                        .map(|_| {
+                            DELIMITED_WORD_ALPHABET
+                                [next_below(&mut state, DELIMITED_WORD_ALPHABET.len())]
+                        })
+                        .collect()
+                })
+                .collect();
+            let mut command_line = b"program\0".to_vec();
+            for argument in &arguments {
+                command_line.extend_from_slice(argument.as_bytes());
+                command_line.push(ARGUMENT_TERMINATOR);
+            }
+            assert_eq!(
+                arguments_after_program_name(&command_line),
+                Some(arguments),
+                "seed {seed}"
+            );
+        }
+    }
+
+    #[test]
+    fn spec_3_12_step_2_a_kernel_command_line_without_its_terminator_is_not_trusted() {
+        assert_eq!(arguments_after_program_name(b"program\0mcp"), None);
+        assert_eq!(arguments_after_program_name(b""), None);
+    }
+
+    #[test]
+    fn spec_3_12_step_2_arguments_the_os_delimits_keep_their_spaces_and_empty_entries() {
+        let images = BTreeMap::from([(
+            Pid(81),
+            image_with_delimited_arguments("/usr/bin/estafette", &["mcp", "a b", ""]),
+        )]);
+        let entries =
+            entries_from_command_lines("  81     1 /usr/bin/estafette mcp a b \n", &images)
+                .expect("parsed");
+        assert_eq!(only_entry(&entries).arguments, ["mcp", "a b", ""]);
+    }
+
+    #[test]
+    fn spec_3_12_step_2_binary_started_through_a_link_under_a_path_with_a_space_is_found() {
+        let images = BTreeMap::from([(
+            Pid(82),
+            image_with_delimited_arguments("/home/Jo Doe/bin/estafette", &["mcp"]),
+        )]);
+        let entries =
+            entries_from_command_lines("  82     1 /home/Jo Doe/lnk/estafette mcp\n", &images)
+                .expect("parsed");
+        assert!(runs_binary_in_mcp_mode(only_entry(&entries)));
     }
 
     #[test]
