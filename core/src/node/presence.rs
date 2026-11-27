@@ -33,7 +33,7 @@ use super::payload_records::{
 use super::peer_rows::PeerRows;
 use super::rebind::{Rebinding, RelayProbe};
 use super::relay_loss::{RelayLossWatch, home_relays};
-use crate::clock::{MonotonicClock, MonotonicTime, later_by};
+use crate::clock::{MonotonicClock, MonotonicTime, deadline_reached, later_by};
 use crate::config::NetworkConfig;
 use crate::crypto::{NetworkKeys, NetworkSecret};
 use crate::event::{ConfigurationRewrite, Event, ProcessEvent, RunRecord};
@@ -1115,14 +1115,6 @@ pub fn record_counters(
 ) {
     let snapshot = CounterSnapshot::read(moment, endpoint.socket_metrics(), gossip.metrics());
     report(crate::event::StateEvent::Counters(snapshot).into());
-}
-
-/// Waits until the clock reads the deadline, or forever when there is none.
-pub async fn deadline_reached(clock: &dyn MonotonicTime, deadline: Option<Instant>) {
-    match deadline {
-        Some(deadline) => clock.reached(deadline).await,
-        None => std::future::pending().await,
-    }
 }
 
 /// Waits until the clock reads the instant the rebind is due and answers why, or forever when none is.

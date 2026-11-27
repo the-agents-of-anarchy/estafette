@@ -50,3 +50,11 @@ pub(crate) async fn before_deadline<Ended>(
         () = clock.reached(deadline) => None,
     }
 }
+
+/// Waits until the clock reads the deadline, or forever when there is none.
+pub(crate) async fn deadline_reached(clock: &dyn MonotonicTime, deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => clock.reached(deadline).await,
+        None => std::future::pending().await,
+    }
+}

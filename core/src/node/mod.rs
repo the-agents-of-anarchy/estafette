@@ -32,8 +32,7 @@ pub(crate) use payload_records::{
 };
 pub(crate) use peer_rows::PeerRows;
 pub(crate) use presence::{
-    Clock, ProbeNonceSource, deadline_reached, presence_request, record_counters, serve,
-    snapshot_due_after,
+    Clock, ProbeNonceSource, presence_request, record_counters, serve, snapshot_due_after,
 };
 pub use presence::{Identity, Network, Node, NodeEffects};
 pub use rebind::{RelayProbe, relay_answers};
