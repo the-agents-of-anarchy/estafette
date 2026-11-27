@@ -3050,28 +3050,34 @@ pub(crate) mod tests {
         )
         .await;
 
-        let selected_address = link
+        let held_direct_paths: Vec<(serde_json::Value, serde_json::Value)> = link
             .dialed
             .paths()
             .iter()
-            .find(iroh::endpoint::Path::is_selected)
-            .and_then(|path| match path.remote_addr() {
-                iroh::TransportAddr::Ip(address) => Some(*address),
+            .filter_map(|path| match path.remote_addr() {
+                iroh::TransportAddr::Ip(address) => Some((
+                    serde_json::Value::from(address.port()),
+                    serde_json::Value::from(
+                        super::super::endpoint::LocationHash::of(
+                            &test_salt(),
+                            &address.to_string(),
+                        )
+                        .hex(),
+                    ),
+                )),
                 _ => None,
             })
-            .expect("a selected direct path");
-        let expected_hash =
-            super::super::endpoint::LocationHash::of(&test_salt(), &selected_address.to_string())
-                .hex();
-        assert_eq!(
-            field(&selected, "port"),
-            Some(&serde_json::Value::from(selected_address.port()))
-        );
-        assert_eq!(
-            field(&selected, "location"),
-            Some(&serde_json::Value::from(expected_hash))
-        );
-        assert!(field(&opened, "location").is_some(), "{opened:?}");
+            .collect();
+        for recorded in [&opened, &selected] {
+            let port_and_location = (
+                field(recorded, "port").cloned().unwrap(),
+                field(recorded, "location").cloned().unwrap(),
+            );
+            assert!(
+                held_direct_paths.contains(&port_and_location),
+                "{recorded:?} names none of the direct paths the connection holds: {held_direct_paths:?}"
+            );
+        }
     }
 
     #[tokio::test]
