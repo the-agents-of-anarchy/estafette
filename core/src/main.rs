@@ -430,9 +430,7 @@ fn trace_clocks_started_now() -> TraceClocks {
     let started = std::time::Instant::now();
     let last_wall_reading = AtomicU64::new(0);
     TraceClocks {
-        monotonic_ms: Arc::new(move || {
-            u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
-        }),
+        monotonic_ms: Arc::new(move || saturating_milliseconds(started.elapsed())),
         wall_ms: Arc::new(move || {
             wall_clock_reading(SystemTime::now(), &last_wall_reading, &|_event| {})
         }),
@@ -751,7 +749,7 @@ fn observer_runtime(
     let started_at_milliseconds = unix_milliseconds_of(SystemTime::now())?;
     let started = Instant::now();
     let clock = move || {
-        let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let elapsed = saturating_milliseconds(started.elapsed());
         started_at_milliseconds.saturating_add(elapsed)
     };
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -872,11 +870,16 @@ fn observer_effects(
     (effects, operator_effects)
 }
 
+/// Whole milliseconds of the duration, holding at `u64::MAX` for one longer than a `u64` of milliseconds holds.
+fn saturating_milliseconds(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 /// Milliseconds since the Unix epoch at the instant, refusing an instant before it.
 fn unix_milliseconds_of(instant: SystemTime) -> Result<u64, CommandLineFailure> {
     instant
         .duration_since(UNIX_EPOCH)
-        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .map(saturating_milliseconds)
         .map_err(|_before_epoch| CommandLineFailure::ClockBeforeUnixEpoch)
 }
 
