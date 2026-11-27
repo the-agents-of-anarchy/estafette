@@ -47,17 +47,16 @@ mod short_id;
 mod state;
 mod transport;
 
-pub use direct::{DirectEvent, DirectEventName};
-pub use gossip::{GossipEvent, GossipEventName};
-pub use inbox::{InboxEvent, InboxEventName, ListCardsFailure};
-pub use peer_table::{PeerTableEvent, PeerTableEventName};
+pub use direct::DirectEvent;
+pub use gossip::GossipEvent;
+pub use inbox::{InboxEvent, ListCardsFailure};
+pub use peer_table::PeerTableEvent;
 pub use process::{
     CLOCK_BEFORE_UNIX_EPOCH, ClaimFailure, ConfigurationRewrite, PanicLocation, ProcessEvent,
-    ProcessEventName,
 };
 pub(crate) use short_id::ShortId;
-pub use state::{StateEvent, StateEventName};
-pub use transport::{TransportEvent, TransportEventName};
+pub use state::StateEvent;
+pub use transport::TransportEvent;
 
 event_names! {
     /// The names of the lines a trace writer writes of its own: the count of events a full queue lost, the raw file's warning, and a line iroh wrote.
@@ -233,6 +232,13 @@ pub fn write_run_record(stderr: &mut impl Write, event: &Event) -> io::Result<()
 mod tests {
     use std::collections::BTreeSet;
 
+    use super::direct::DirectEventName;
+    use super::gossip::GossipEventName;
+    use super::inbox::InboxEventName;
+    use super::peer_table::PeerTableEventName;
+    use super::process::ProcessEventName;
+    use super::state::StateEventName;
+    use super::transport::TransportEventName;
     use super::*;
 
     const SPEC_FORMAT_VERSION: u64 = 2;

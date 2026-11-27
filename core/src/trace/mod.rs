@@ -8,10 +8,10 @@ use crate::dirs::{DirectoryFilesystem, TraceDirectory, TraceFiles};
 use crate::event::{Event, EventName, ShortId, TraceLineName};
 
 pub use estafette_trace::{
-    Clock, CreateTraceFile, FORMAT_VERSION, ListFiles, RUN_ID_BYTES, RemoveFile, RenameFile, RunId,
-    SpawnThread, StoredFile, TRACE_DIRECTORY_MAX_BYTES, TRACE_DRAIN_LIMIT,
-    TRACE_FILE_ROLLOVER_BYTES, TRACE_FRESHNESS, TRACE_QUEUE_LINES, TRACE_RUN_FILE_MAX_BYTES,
-    TraceBounds, TraceClocks, TraceEffects, TraceFile, TraceRefused, TraceStop,
+    Clock, CreateTraceFile, FORMAT_VERSION, RUN_ID_BYTES, RunId, SpawnThread,
+    TRACE_DIRECTORY_MAX_BYTES, TRACE_FILE_ROLLOVER_BYTES, TRACE_FRESHNESS,
+    TRACE_RUN_FILE_MAX_BYTES, TraceBounds, TraceClocks, TraceEffects, TraceFile, TraceRefused,
+    TraceStop,
 };
 
 pub mod iroh_lines;
@@ -142,7 +142,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, UNIX_EPOCH};
 
-    use estafette_trace::{TRACE_FILE_SIZED_AHEAD_BYTES, TraceAction};
+    use estafette_trace::{StoredFile, TRACE_FILE_SIZED_AHEAD_BYTES, TraceAction};
     use iroh::SecretKey;
     use serde_json::Value;
 
