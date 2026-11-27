@@ -524,7 +524,7 @@ enum Wake {
 }
 
 /// The one task that owns the topic and performs every effect of the events/actions table of spec 3.8, the rebind included.
-pub(super) struct PresenceLoop {
+struct PresenceLoop {
     state: Arc<NodeState>,
     card_key: SecretKey,
     endpoint: NodeEndpoint,
@@ -881,7 +881,7 @@ impl PresenceLoop {
     }
 
     /// Records what the lookup entry of `card` now holds, naming the card by the handle the table holds for it: how many direct addresses and whether a relay, never where.
-    pub(super) fn record_lookup_of(&self, card: &wire::PublicKey) {
+    fn record_lookup_of(&self, card: &wire::PublicKey) {
         let now_ms = self.state.now_ms();
         let handle = self.state.rows.read(|table| table.handle_of(*card, now_ms));
         if let Some(event) = lookup_replaced_event(&self.endpoint, card, handle) {
@@ -985,7 +985,7 @@ impl PresenceLoop {
     }
 
     /// Records the socket and gossip counters at the moment, and takes the next snapshot the state snapshot interval later.
-    pub(super) fn record_state(&mut self, moment: SnapshotMoment) {
+    fn record_state(&mut self, moment: SnapshotMoment) {
         self.snapshot_due = snapshot_due_after(self.monotonic.now());
         record_counters(
             moment,
@@ -1628,10 +1628,7 @@ pub(super) mod tests {
     }
 
     /// A member's presence loop, built as `Node::start` builds it and not yet running, on the endpoint and effects of the plan and the network file of its seed with no host.
-    pub(in crate::node) async fn idle_presence_loop(
-        scratch: &Scratch,
-        plan: MemberPlan,
-    ) -> PresenceLoop {
+    pub(super) async fn idle_presence_loop(scratch: &Scratch, plan: MemberPlan) -> PresenceLoop {
         let node_endpoint = bind_holding(plan.seed, plan.register.clone()).await;
         let network = Network::new(
             config_with_hosts(Vec::new()),
