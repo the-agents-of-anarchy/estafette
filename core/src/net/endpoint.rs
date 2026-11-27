@@ -1958,24 +1958,29 @@ mod tests {
                 "direct.contact_failed",
             ),
             (
-                crate::event::DirectEvent::RequestSent(crate::net::direct::SentRequest {
-                    request: crate::net::direct::RequestSummary::Probe,
-                    peer: ShortId::from(tested_peer()),
-                    connection: None,
-                    outcome: crate::net::direct::SentOutcome::Acknowledged,
-                    elapsed_ms: ELAPSED_MS,
-                })
+                crate::event::DirectEvent::RequestSent(
+                    crate::net::direct::SentRequest::OverAConnection {
+                        request: crate::net::direct::RequestSummary::Probe,
+                        peer: ShortId::from(tested_peer()),
+                        connection: ConnectionId(TESTED_CONNECTION),
+                        source: crate::net::direct::ConnectionSource::Dialed,
+                        outcome: crate::net::direct::SentOutcome::Acknowledged,
+                        elapsed_ms: ELAPSED_MS,
+                    },
+                )
                 .into(),
                 "direct.request_sent",
             ),
             (
-                crate::event::DirectEvent::RequestServed(crate::net::direct::ServedRequest {
-                    request: None,
-                    peer: ShortId::from(tested_peer()),
-                    connection: ConnectionId(TESTED_CONNECTION),
-                    outcome: crate::net::direct::ServedOutcome::Answered,
-                    elapsed_ms: ELAPSED_MS,
-                })
+                crate::event::DirectEvent::RequestServed(
+                    crate::net::direct::ServedRequest::Opened {
+                        request: crate::net::direct::RequestSummary::Probe,
+                        peer: ShortId::from(tested_peer()),
+                        connection: ConnectionId(TESTED_CONNECTION),
+                        outcome: crate::net::direct::ServedOutcome::Answered,
+                        elapsed_ms: ELAPSED_MS,
+                    },
+                )
                 .into(),
                 "direct.request_served",
             ),

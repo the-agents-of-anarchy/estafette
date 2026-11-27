@@ -58,29 +58,75 @@ impl AreaEvent for DirectEvent {
                 super::ShortId::from(*peer).field(),
                 (ERROR_FIELD, Value::from(failure_text(reason))),
             ],
-            Self::RequestSent(sent) => [
-                request_fields(sent.request),
-                vec![sent.peer.field()],
-                sent.connection
-                    .map(|(connection, source)| {
-                        vec![
-                            connection_field(connection),
-                            (CONNECTION_SOURCE_FIELD, Value::from(source_text(source))),
-                        ]
-                    })
-                    .unwrap_or_default(),
-                sent_outcome_fields(&sent.outcome),
-                vec![(ELAPSED_FIELD, Value::from(sent.elapsed_ms))],
-            ]
-            .concat(),
-            Self::RequestServed(served) => [
-                served.request.map(request_fields).unwrap_or_default(),
-                vec![served.peer.field(), connection_field(served.connection)],
-                served_outcome_fields(served.outcome),
-                vec![(ELAPSED_FIELD, Value::from(served.elapsed_ms))],
-            ]
-            .concat(),
+            Self::RequestSent(sent) => sent_request_fields(sent),
+            Self::RequestServed(served) => served_request_fields(served),
         }
+    }
+}
+
+/// The fields of a request this node sent: its kind, the peer, the connection and whether it was held or dialed when one was in hand, the outcome and the elapsed time.
+fn sent_request_fields(sent: &SentRequest) -> EventFields {
+    match sent {
+        SentRequest::OverAConnection {
+            request,
+            peer,
+            connection,
+            source,
+            outcome,
+            elapsed_ms,
+        } => [
+            request_fields(*request),
+            vec![
+                peer.field(),
+                connection_field(*connection),
+                (CONNECTION_SOURCE_FIELD, Value::from(source_text(*source))),
+            ],
+            sent_outcome_fields(outcome),
+            vec![(ELAPSED_FIELD, Value::from(*elapsed_ms))],
+        ]
+        .concat(),
+        SentRequest::NeverConnected {
+            request,
+            peer,
+            failure,
+            elapsed_ms,
+        } => [
+            request_fields(*request),
+            vec![peer.field()],
+            sent_outcome_fields(&SentOutcome::Failed(failure.clone())),
+            vec![(ELAPSED_FIELD, Value::from(*elapsed_ms))],
+        ]
+        .concat(),
+    }
+}
+
+/// The fields of a request this node served: its kind once it opened, the peer, the connection, the outcome and the elapsed time.
+fn served_request_fields(served: &ServedRequest) -> EventFields {
+    match served {
+        ServedRequest::Opened {
+            request,
+            peer,
+            connection,
+            outcome,
+            elapsed_ms,
+        } => [
+            request_fields(*request),
+            vec![peer.field(), connection_field(*connection)],
+            served_outcome_fields(*outcome),
+            vec![(ELAPSED_FIELD, Value::from(*elapsed_ms))],
+        ]
+        .concat(),
+        ServedRequest::Unopened {
+            peer,
+            connection,
+            end,
+            elapsed_ms,
+        } => [
+            vec![peer.field(), connection_field(*connection)],
+            served_outcome_fields(ServedOutcome::Unanswered(*end)),
+            vec![(ELAPSED_FIELD, Value::from(*elapsed_ms))],
+        ]
+        .concat(),
     }
 }
 

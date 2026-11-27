@@ -574,24 +574,45 @@ impl ServedOutcome {
     }
 }
 
-/// A request this node sent: which, to whom, over which connection, how it ended and how long it took on the register's monotonic clock.
+/// A request this node sent, and how long it took on the register's monotonic clock.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SentRequest {
-    pub request: RequestSummary,
-    pub peer: ShortId,
-    pub connection: Option<(ConnectionId, ConnectionSource)>,
-    pub outcome: SentOutcome,
-    pub elapsed_ms: u64,
+pub enum SentRequest {
+    /// The request went over a connection: which, to whom, over which connection, and how it ended.
+    OverAConnection {
+        request: RequestSummary,
+        peer: ShortId,
+        connection: ConnectionId,
+        source: ConnectionSource,
+        outcome: SentOutcome,
+        elapsed_ms: u64,
+    },
+    /// The request was never sent, since it did not seal or no connection to the peer was in hand.
+    NeverConnected {
+        request: RequestSummary,
+        peer: ShortId,
+        failure: DirectError,
+        elapsed_ms: u64,
+    },
 }
 
-/// A request this node served: which once it opened, from whom, on which connection, how it ended and how long it took on the register's monotonic clock.
+/// A request this node served, from whom, on which connection, and how long it took on the register's monotonic clock.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServedRequest {
-    pub request: Option<RequestSummary>,
-    pub peer: ShortId,
-    pub connection: ConnectionId,
-    pub outcome: ServedOutcome,
-    pub elapsed_ms: u64,
+pub enum ServedRequest {
+    /// The stream ended before its request opened, so no kind is known.
+    Unopened {
+        peer: ShortId,
+        connection: ConnectionId,
+        end: StreamEnd,
+        elapsed_ms: u64,
+    },
+    /// The request opened: which, and how it ended.
+    Opened {
+        request: RequestSummary,
+        peer: ShortId,
+        connection: ConnectionId,
+        outcome: ServedOutcome,
+        elapsed_ms: u64,
+    },
 }
 
 /// The record of the connection's path events lost before they were read, as many as iroh counted.
@@ -790,45 +811,53 @@ impl<H: DirectHost> ServerState<H> {
         recv: RecvStream,
     ) {
         let started = self.held.monotonic.now();
-        let (request, outcome) = self
+        let answered = self
             .answer_stream(sender, arrived_on, &mut send, recv)
             .await;
-        if let Err(end) = outcome
+        if let Err(end) | Ok((_, Err(end))) = answered
             && let Some(code) = end.reset_code()
         {
             match send.reset(code) {
                 Ok(()) | Err(ClosedStream { .. }) => {}
             }
         }
-        let elapsed = self.held.monotonic.now().saturating_duration_since(started);
+        let elapsed_ms =
+            milliseconds_of(self.held.monotonic.now().saturating_duration_since(started));
+        let peer = ShortId::from(arrived_on.remote_id());
+        let connection = ConnectionId::of(arrived_on);
         self.held.record(|_transport| {
-            DirectEvent::RequestServed(ServedRequest {
-                request,
-                peer: ShortId::from(arrived_on.remote_id()),
-                connection: ConnectionId::of(arrived_on),
-                outcome: outcome.unwrap_or_else(ServedOutcome::Unanswered),
-                elapsed_ms: milliseconds_of(elapsed),
+            DirectEvent::RequestServed(match answered {
+                Err(end) => ServedRequest::Unopened {
+                    peer,
+                    connection,
+                    end,
+                    elapsed_ms,
+                },
+                Ok((request, outcome)) => ServedRequest::Opened {
+                    request,
+                    peer,
+                    connection,
+                    outcome: outcome.unwrap_or_else(ServedOutcome::Unanswered),
+                    elapsed_ms,
+                },
             })
         });
     }
 
-    /// Reads and opens the request, writes the response and finishes the send side, keeping an Introduce's answer counted in flight until its peer acknowledges it, and says which request it was once it opened and how the stream ended.
+    /// Reads and opens the request, writes the response and finishes the send side, keeping an Introduce's answer counted in flight until its peer acknowledges it, and says which request it was and how the stream ended once it opened, or how the stream ended before.
     async fn answer_stream(
         &self,
         sender: wire::PublicKey,
         arrived_on: &Connection,
         send: &mut SendStream,
         mut recv: RecvStream,
-    ) -> (Option<RequestSummary>, Result<ServedOutcome, StreamEnd>) {
-        let request = match self
+    ) -> Result<(RequestSummary, Result<ServedOutcome, StreamEnd>), StreamEnd> {
+        let request = self
             .read_request(&mut recv)
             .await
             .and_then(|request_bytes| {
                 open_request(&self.keys, &request_bytes).map_err(|_failure| StreamEnd::Unanswered)
-            }) {
-            Ok(request) => request,
-            Err(end) => return (None, Err(end)),
-        };
+            })?;
         let summary = RequestSummary::of(&request);
         let introduce_answer = (summary == RequestSummary::Introduce)
             .then(|| self.held.introduce_answers_in_flight.count(sender));
@@ -847,7 +876,7 @@ impl<H: DirectHost> ServerState<H> {
         {
             tokio::spawn(in_flight.until_acknowledged(send.stopped()));
         }
-        (Some(summary), outcome)
+        Ok((summary, outcome))
     }
 
     /// Reads the whole request within the wire limit and the read timeout.
@@ -1073,51 +1102,69 @@ impl DirectClient {
         acknowledgement_of: impl FnOnce(Response) -> Result<(SentOutcome, Acknowledgement), DirectError>,
     ) -> Result<Acknowledgement, DirectError> {
         let summary = RequestSummary::of(&request);
+        let peer = ShortId::from(to);
         let started = self.register.monotonic.now();
-        let (connection, response) = self.exchange_over_a_connection(to, request, due).await;
-        let acknowledged = response.and_then(acknowledgement_of);
-        let elapsed = self
-            .register
-            .monotonic
-            .now()
-            .saturating_duration_since(started);
-        self.register.record(|_transport| {
-            DirectEvent::RequestSent(SentRequest {
-                request: summary,
-                peer: ShortId::from(to),
-                connection,
-                outcome: acknowledged.as_ref().map_or_else(
+        let (sent, acknowledged) = match self.exchange_over_a_connection(to, request, due).await {
+            Ok((connection, source, response)) => {
+                let acknowledged = response.and_then(acknowledgement_of);
+                let outcome = acknowledged.as_ref().map_or_else(
                     |failure| SentOutcome::Failed(failure.clone()),
                     |(outcome, _)| outcome.clone(),
-                ),
-                elapsed_ms: milliseconds_of(elapsed),
-            })
-        });
+                );
+                let sent = SentRequest::OverAConnection {
+                    request: summary,
+                    peer,
+                    connection,
+                    source,
+                    outcome,
+                    elapsed_ms: self.elapsed_ms_since(started),
+                };
+                (sent, acknowledged)
+            }
+            Err(failure) => {
+                let sent = SentRequest::NeverConnected {
+                    request: summary,
+                    peer,
+                    failure: failure.clone(),
+                    elapsed_ms: self.elapsed_ms_since(started),
+                };
+                (sent, Err(failure))
+            }
+        };
+        self.register
+            .record(|_transport| DirectEvent::RequestSent(sent));
         acknowledged.map(|(_outcome, acknowledgement)| acknowledgement)
     }
 
-    /// Sends the request over the held or a freshly dialed connection and returns the valid response when it is due, dropping that connection from its slot on any failure, and says which connection carried it.
+    /// The whole milliseconds the register's monotonic clock has read since the instant.
+    fn elapsed_ms_since(&self, started: Instant) -> u64 {
+        milliseconds_of(
+            self.register
+                .monotonic
+                .now()
+                .saturating_duration_since(started),
+        )
+    }
+
+    /// Sends the request over the held or a freshly dialed connection and returns the valid response when it is due, dropping that connection from its slot on any failure, and says which connection carried it, or why none was in hand.
     async fn exchange_over_a_connection(
         &self,
         to: EndpointId,
         request: Request,
         due: AckDue,
-    ) -> (
-        Option<(ConnectionId, ConnectionSource)>,
-        Result<Response, DirectError>,
-    ) {
-        let sealed = match seal_request(&self.keys, request) {
-            Ok(sealed) => sealed,
-            Err(failure) => return (None, Err(DirectError::UnsealableRequest(failure))),
-        };
+    ) -> Result<
+        (
+            ConnectionId,
+            ConnectionSource,
+            Result<Response, DirectError>,
+        ),
+        DirectError,
+    > {
+        let sealed = seal_request(&self.keys, request).map_err(DirectError::UnsealableRequest)?;
         let called = self.register.monotonic.now();
-        let (connection, source) = match self
+        let (connection, source) = self
             .connection_to(to, due.connection_due(called, self.timeouts.connect))
-            .await
-        {
-            Ok(held_or_dialed) => held_or_dialed,
-            Err(failure) => return (None, Err(failure)),
-        };
+            .await?;
         let response = self
             .round_trip(
                 &connection,
@@ -1128,7 +1175,7 @@ impl DirectClient {
         if response.is_err() {
             self.forget_connection(to, &connection).await;
         }
-        (Some((ConnectionId::of(&connection), source)), response)
+        Ok((ConnectionId::of(&connection), source, response))
     }
 
     /// Writes the sealed request on a new stream and reads the response, all before the register's clock reads the ack's due instant.
