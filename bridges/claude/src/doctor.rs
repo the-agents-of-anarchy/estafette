@@ -30,7 +30,7 @@ const NOHUP_PROGRAM: &str = "nohup";
 const REFUSE_VALUE: &str = "refuse";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Check {
+enum Check {
     HookInstalled,
     BridgeRunning,
     SocketPathExists,
@@ -39,7 +39,7 @@ pub enum Check {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum Verdict {
+enum Verdict {
     Passed,
     Failed(String),
     Unverified(String),

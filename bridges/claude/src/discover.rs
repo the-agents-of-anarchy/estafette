@@ -248,7 +248,7 @@ pub fn follow_binary_sockets(
 
 /// Lists the inbox sockets of the binary's MCP-mode processes among the descendants of the harness process.
 #[must_use]
-pub fn binary_sockets_under(
+pub(crate) fn binary_sockets_under(
     harness_pid: Pid,
     runtime_inputs: &RuntimeDirectoryInputs,
     entries: &[ProcessEntry],

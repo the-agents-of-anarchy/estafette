@@ -23,7 +23,7 @@ impl PermissionClass {
 
     /// Reads a class back from the text `Display` wrote.
     #[must_use]
-    pub fn from_class_name(text: &str) -> Option<Self> {
+    pub(crate) fn from_class_name(text: &str) -> Option<Self> {
         match text.trim() {
             BYPASS_CLASS_NAME => Some(Self::Bypass),
             PROMPTING_CLASS_NAME => Some(Self::Prompting),
