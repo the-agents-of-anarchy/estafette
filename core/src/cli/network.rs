@@ -6,9 +6,7 @@ use std::path::{Path, PathBuf};
 use clap::Subcommand;
 use iroh::PublicKey;
 
-use crate::config::{
-    AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig, create_new_owner_only_file,
-};
+use crate::config::{AcceptedValue, ConfigError, Host, HostOrigin, NetworkConfig};
 use crate::crypto::{
     HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, render_host_certificate, sign_host_certificate,
 };
@@ -24,6 +22,7 @@ use crate::keys::{
     parse_secret_key, render_network_secret, render_public_key, render_secret_key,
 };
 use crate::wire::{self, HostAddr, Invitation, Version};
+use estafette_private_entry::create_new_owner_only_file;
 
 const CREATE_ABOUT: &str = "Create a network on this machine";
 const JOIN_ABOUT: &str = "Join a network from an invitation";

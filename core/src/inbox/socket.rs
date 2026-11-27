@@ -13,10 +13,10 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::watch;
 use tokio::task::{JoinHandle, JoinSet};
 
-use crate::config::{remove_file_if_present, with_cleanup_outcome};
 use crate::dirs::Directories;
 use crate::event::InboxEvent;
 use crate::inbox::buffer::{InboxBuffer, InboxFrame, ReceivedMessage};
+use estafette_private_entry::{remove_file_if_present, with_cleanup_outcome};
 
 const SOCKET_MODE: u32 = 0o600;
 const MAX_REQUEST_LINE_BYTES: u64 = 64;

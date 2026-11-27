@@ -25,7 +25,7 @@ use tokio::time::{Instant, Interval, MissedTickBehavior, interval};
 use super::debug::DebugArgs;
 use super::network::NetworkFilesystem;
 use crate::clock::MonotonicClock;
-use crate::config::{ConfigError, MILLIS_PER_SECOND, NetworkConfig, write_atomically};
+use crate::config::{ConfigError, MILLIS_PER_SECOND, NetworkConfig};
 use crate::crypto::{
     GateKey, HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, parse_host_certificate, verify_host_certificate,
 };
@@ -48,6 +48,7 @@ use crate::wire::{
     self, Addr, HostAddr, Infrastructure, IntroduceAck, MAX_RELAY_URL_BYTES, Message, Payload,
     SignatureBytes, Version,
 };
+use estafette_private_entry::write_atomically;
 
 /// The name the command line parses the infrastructure command by and its trace writes.
 pub const RUN_INFRASTRUCTURE_COMMAND: &str = "run-infrastructure";

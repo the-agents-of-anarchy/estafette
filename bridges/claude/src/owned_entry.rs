@@ -1,12 +1,11 @@
 use std::fmt;
-use std::fs::{self, File, OpenOptions, Permissions};
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use estafette_private_entry::{
-    DirectoryFinding, EntryFacts, EntryKind, OWNER_ONLY_FILE_MODE, PrivateDirectoryFailure,
-    UntrustedEntry, directory_finding, same_entry,
+    DirectoryFinding, EntryFacts, EntryKind, PrivateDirectoryFailure, UntrustedEntry,
+    create_new_owner_only_file, directory_finding, same_entry,
 };
 
 /// An existing directory the bridge refuses to use, with the directory and what was found.
@@ -201,11 +200,7 @@ fn read_state_file_opened_by(
 ///
 /// Fails when the staging path is taken or the file cannot be written, or with a `StateFileRefused` inside the error when the state file is a symbolic link or another user's; the staging file is then left unrenamed and removed.
 pub fn write_state_file(user_id: u32, path: &Path, staging: &Path, text: &str) -> io::Result<()> {
-    let mut staged = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(OWNER_ONLY_FILE_MODE)
-        .open(staging)?;
+    let mut staged = create_new_owner_only_file(staging)?;
     let outcome = fill_and_rename_over(&mut staged, user_id, staging, path, text);
     if outcome.is_err() {
         drop(fs::remove_file(staging));
@@ -220,7 +215,6 @@ fn fill_and_rename_over(
     path: &Path,
     text: &str,
 ) -> io::Result<()> {
-    staged.set_permissions(Permissions::from_mode(OWNER_ONLY_FILE_MODE))?;
     staged.write_all(text.as_bytes())?;
     require_replaceable(path, user_id)?;
     fs::rename(staging, path)
@@ -239,8 +233,9 @@ fn require_replaceable(path: &Path, user_id: u32) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use estafette_private_entry::{PERMISSION_BITS_MASK, process_user_id};
-    use std::os::unix::fs::{MetadataExt, symlink};
+    use estafette_private_entry::{OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK, process_user_id};
+    use std::fs::Permissions;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 
     const THE_USER: u32 = 1000;
     const OWNERS_AROUND_THE_USER: [u32; 4] = [0, 999, 1000, 1001];

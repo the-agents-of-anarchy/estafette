@@ -6,12 +6,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use crate::card::{HANDLE_FIELD, PUBLIC_KEY_FIELD};
-use crate::config::{
+use crate::handle::Handle;
+use crate::keys::{parse_secret_key, render_public_key, render_secret_key};
+use estafette_private_entry::{
     OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK, create_new_owner_only_file, remove_file_if_present,
     with_cleanup_outcome, write_new_file_atomically,
 };
-use crate::handle::Handle;
-use crate::keys::{parse_secret_key, render_public_key, render_secret_key};
 use iroh::{PublicKey, SecretKey};
 
 pub(crate) const CARD_FILE_MODE: u32 = 0o644;

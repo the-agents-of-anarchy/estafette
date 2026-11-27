@@ -15,10 +15,11 @@ use crate::cli::cards::{CardRegistryReader, RegistryArgs, card_files_in, card_na
 use crate::cli::lines::tab_separated_line;
 use crate::cli::network::NetworkFilesystem;
 use crate::cli::observer::{self, Interruption, ObserverEffects};
-use crate::config::{ConfigError, NetworkConfig, OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
+use crate::config::{ConfigError, NetworkConfig};
 use crate::dirs::{Directories, OperatingSystemFilesystem};
 use crate::errors::ExitStatus;
 use crate::handle::{Handle, HandleError};
+use estafette_private_entry::{OWNER_ONLY_FILE_MODE, PERMISSION_BITS_MASK};
 
 use crate::node::{NodeError, RelayProbe, known_host_addresses};
 use crate::sidecar::{Pause, SidecarError, claim};
