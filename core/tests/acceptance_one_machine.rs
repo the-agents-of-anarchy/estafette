@@ -8,9 +8,11 @@ mod events_lines;
 #[path = "support/file_growth.rs"]
 mod file_growth;
 #[cfg(test)]
+#[path = "support/held_connections_of_a_dialer.rs"]
+mod held_connections_of_a_dialer;
+#[cfg(test)]
 #[path = "support/inbox_client.rs"]
 mod inbox_client;
-#[cfg(test)]
 #[cfg(test)]
 #[path = "one_machine/local_network.rs"]
 mod local_network;
@@ -765,7 +767,7 @@ mod spec_3_15_restart_and_departure_on_one_machine {
 
         bob.server_mut()
             .start_call(SEND_TOOL, &send_arguments(CAROL_HANDLE, BODY));
-        held_from_bob.wait_for_one(&carol, CONNECTION_HELD_WITHIN);
+        held_from_bob.wait_for_one(carol.runtime(), CONNECTION_HELD_WITHIN);
         let input_closed = Instant::now();
         bob.server_mut().close_standard_input();
         bob.wait_for_event(INPUT_ENDED_EVENT, EVENTS_OF_AN_ENDED_MEMBER_WITHIN);
