@@ -1882,11 +1882,29 @@ mod tests {
         let sent_longest = client
             .envelope("send", json!({ "to": longest, "body": "hi" }))
             .await;
+        let two_byte_characters_within_the_limit =
+            "é".repeat(SPEC_LOCAL_HANDLE_MAX_CHARACTERS / 2 + 1);
+        let two_byte_characters_past_the_limit = "é".repeat(SPEC_LOCAL_HANDLE_MAX_CHARACTERS + 1);
+        let sent_within_by_characters = client
+            .envelope(
+                "send",
+                json!({ "to": two_byte_characters_within_the_limit, "body": "hi" }),
+            )
+            .await;
+        let sent_past_by_characters = client
+            .envelope(
+                "send",
+                json!({ "to": two_byte_characters_past_the_limit, "body": "hi" }),
+            )
+            .await;
 
         assert_eq!(longest.len(), SPEC_LOCAL_HANDLE_MAX_CHARACTERS);
+        assert!(two_byte_characters_within_the_limit.len() > SPEC_LOCAL_HANDLE_MAX_CHARACTERS);
         assert_eq!(sent_too_long["error"]["code"], "bad_request");
         assert_eq!(broadcast_too_long["error"]["code"], "bad_request");
         assert_eq!(sent_longest["error"]["code"], "not_claimed");
+        assert_eq!(sent_within_by_characters["error"]["code"], "not_claimed");
+        assert_eq!(sent_past_by_characters["error"]["code"], "bad_request");
     }
 
     #[tokio::test]
