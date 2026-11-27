@@ -2301,8 +2301,51 @@ mod tests {
             })
             .collect();
 
+        let command_lines_that_start_an_endpoint: Vec<Vec<&str>> =
+            [vec![MCP_COMMAND, NETWORK], vec![DOCTOR_COMMAND, NETWORK]]
+                .into_iter()
+                .chain(observer_lines.iter().cloned())
+                .collect();
+
         assert_eq!(unparsed, Vec::<&str>::new());
         assert_eq!(observer_names, observer_lines.map(|line| line[0]).to_vec());
+        assert_eq!(
+            command_names_process_started_wrote(&command_lines_that_start_an_endpoint),
+            command_lines_that_start_an_endpoint
+                .iter()
+                .map(|line| line[0])
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The `command` of the `process.started` line that running each command line writes, each run on a scratch machine with no network configured.
+    fn command_names_process_started_wrote(command_lines: &[Vec<&str>]) -> Vec<String> {
+        const SCRATCH_PREFIX: &str = "estafette-started-command-name";
+        command_lines
+            .iter()
+            .map(|line| {
+                let (_scratch_removed_when_the_test_ends, environment) =
+                    scratch_environment(SCRATCH_PREFIX);
+                let arguments = std::iter::once("estafette").chain(line.iter().copied());
+                run_command(
+                    EstafetteArguments::try_parse_from(arguments)
+                        .unwrap()
+                        .command,
+                    &environment,
+                    ProcessSetup {
+                        filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
+                        effects: &TraceEffects::of_the_operating_system(trace_clocks_started_now()),
+                        bounds: TraceBounds::SPEC,
+                        install_iroh_lines: IROH_LINES_LEFT_OUT,
+                        record_panics: PANICS_LEFT_UNRECORDED,
+                    },
+                );
+                events_lines_under(&environment)[0]["command"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            })
+            .collect()
     }
 
     static PANIC_HOOK_SET: AtomicBool = AtomicBool::new(false);
