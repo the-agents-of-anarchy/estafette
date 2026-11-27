@@ -513,6 +513,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn spec_3_12_step_2_a_binary_whose_mcp_argument_is_not_the_first_is_not_in_mcp_mode() {
+        let tree = vec![
+            entry(100, 1, "/usr/bin/claude", &[]),
+            entry(101, 100, "/usr/bin/estafette", &["send", "mcp"]),
+            entry(102, 100, "/usr/bin/estafette", &["--verbose", "mcp"]),
+        ];
+        let reports = collect_reports(100, &runtime_inputs(), vec![tree, vec![]]);
+        assert_eq!(reports, vec![Vec::<BinarySocket>::new()]);
+    }
+
     fn single_binary_under_harness() -> Vec<ProcessEntry> {
         vec![
             entry(100, 1, "/usr/bin/claude", &[]),
