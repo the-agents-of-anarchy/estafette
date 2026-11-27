@@ -2977,35 +2977,43 @@ mod tests {
         }
     }
 
-    /// Waits until the observer has taken a Presence of the neighbor sent at or after `sent_ms`, failing by name when it has not within the payload wait.
-    async fn wait_until_the_observer_takes_the_neighbors_presence_sent_at(
-        observer: &ObserverHost,
-        sent_ms: u64,
-    ) {
+    /// The `last_seen` of the neighbor in the observer's table, none while the table lists no neighbor.
+    fn neighbor_last_seen_by(observer: &ObserverHost) -> Option<u64> {
         let neighbor = wire::PublicKey::from(secret_key(NEIGHBOR_SEED).public());
+        observer
+            .rows
+            .table()
+            .peers(wall_clock_ms())
+            .find(|peer| peer.card == neighbor)
+            .map(|peer| peer.last_seen)
+    }
+
+    /// Waits until the observer's table holds a `last_seen` of the neighbor strictly later than `earlier`, failing by name when it does not within the payload wait.
+    async fn wait_until_the_observer_takes_a_neighbors_presence_after(
+        observer: &ObserverHost,
+        earlier: Option<u64>,
+    ) {
         let taken = tokio::time::timeout(PAYLOAD_WAIT, async {
-            while !observer
-                .rows
-                .table()
-                .peers(wall_clock_ms())
-                .any(|peer| peer.card == neighbor && peer.last_seen >= sent_ms)
-            {
+            while neighbor_last_seen_by(observer) <= earlier {
                 tokio::task::yield_now().await;
             }
         })
         .await;
         assert!(
             taken.is_ok(),
-            "the observer took no presence of the neighbor sent at {sent_ms} within {PAYLOAD_WAIT:?}"
+            "the observer took no presence of the neighbor later than {earlier:?} within {PAYLOAD_WAIT:?}"
         );
     }
 
-    /// Has the neighbor broadcast a fresh Presence and waits until the observer has taken it.
+    /// Has the neighbor broadcast a Presence stamped later than any the observer holds and waits until the observer has taken it.
     async fn neighbor_announces_itself_and_the_observer_takes_it(
         neighbor: &SilentNeighbor,
         observer: &ObserverHost,
     ) {
-        let presence_sent_ms = wall_clock_ms();
+        let last_seen_before = neighbor_last_seen_by(observer);
+        while Some(wall_clock_ms()) <= last_seen_before {
+            tokio::task::yield_now().await;
+        }
         neighbor
             .topic
             .broadcast(
@@ -3014,8 +3022,7 @@ mod tests {
             )
             .await
             .unwrap();
-        wait_until_the_observer_takes_the_neighbors_presence_sent_at(observer, presence_sent_ms)
-            .await;
+        wait_until_the_observer_takes_a_neighbors_presence_after(observer, last_seen_before).await;
     }
 
     #[tokio::test]
