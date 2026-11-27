@@ -103,11 +103,11 @@ pub trait NetworkFilesystem: DirectoryFilesystem {
     /// Fails when the file is missing, unreadable or not UTF-8.
     fn read_to_string(&self, path: &Path) -> io::Result<String>;
 
-    /// Creates a file readable by its owner alone and writes the contents, refusing a path that exists.
+    /// Writes the contents whole to a new file readable by its owner alone, through a temporary file beside it linked into place, refusing a path that exists.
     ///
     /// # Errors
     ///
-    /// Fails with `AlreadyExists` when the path exists, and with the operating system's error otherwise.
+    /// Fails with `AlreadyExists` when the path exists, with the operating system's error when the file cannot be written or linked, and with `<path> was written` or `<failure>; <temporary> was left behind: <cleanup failure>` when the temporary file cannot be removed.
     fn create_new_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()>;
 
     /// Removes a file.

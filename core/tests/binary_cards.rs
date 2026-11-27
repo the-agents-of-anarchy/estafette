@@ -500,6 +500,96 @@ fn binary_host_key_is_owner_read_write_under_any_umask_of_spec_3_3() {
     }
 }
 
+#[cfg(feature = "relay")]
+fn infrastructure_directory_of(root: &Path) -> PathBuf {
+    root.join("data/estafette/infra")
+}
+
+#[cfg(feature = "relay")]
+fn run_infrastructure_of(root: &Path) -> io::Result<Output> {
+    run_binary(
+        root,
+        &[
+            "run-infrastructure",
+            NETWORK,
+            HOST_KEY_BIND_ADDRESS,
+            HOST_KEY_RELAY_DOMAIN,
+        ],
+    )
+}
+
+#[cfg(feature = "relay")]
+fn names_in(directory: &Path) -> io::Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        names.push(entry?.file_name().to_string_lossy().into_owned());
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[cfg(feature = "relay")]
+#[test]
+fn binary_first_run_leaves_the_whole_host_key_owner_only_and_no_temporary_name_of_spec_3_3() {
+    let root = common::scratch_root(SCRATCH_PREFIX, "host_key_whole").unwrap();
+    require_success(&run_binary(&root, &["network", "create", NETWORK]).unwrap()).unwrap();
+
+    let started = run_infrastructure_of(&root).unwrap();
+
+    assert_eq!(
+        started.status.code(),
+        Some(MISSING_CERTIFICATE_EXIT_CODE),
+        "{}",
+        stderr_text(&started)
+    );
+    let infrastructure = infrastructure_directory_of(&root);
+    let key_file = infrastructure.join(format!("{NETWORK}.key"));
+    assert_eq!(
+        std::fs::read_to_string(&key_file).unwrap().len(),
+        PUBLIC_KEY_HEX_LINE_LENGTH
+    );
+    assert_eq!(mode_of(&key_file).unwrap(), KEY_FILE_MODE);
+    assert_eq!(
+        names_in(&infrastructure).unwrap(),
+        vec![format!("{NETWORK}.key")]
+    );
+}
+
+#[cfg(feature = "relay")]
+#[test]
+fn binary_host_key_whose_link_is_refused_ends_the_start_with_the_system_error_and_leaves_no_key_of_spec_3_3()
+ {
+    let root = common::scratch_root(SCRATCH_PREFIX, "host_key_link_refused").unwrap();
+    require_success(&run_binary(&root, &["network", "create", NETWORK]).unwrap()).unwrap();
+    let infrastructure = infrastructure_directory_of(&root);
+    std::fs::create_dir_all(&infrastructure).unwrap();
+    std::fs::set_permissions(
+        &infrastructure,
+        Permissions::from_mode(PRIVATE_DIRECTORY_MODE),
+    )
+    .unwrap();
+    let key_file = infrastructure.join(format!("{NETWORK}.key"));
+    let taken_name_pointing_nowhere = root.join("nowhere");
+    std::os::unix::fs::symlink(&taken_name_pointing_nowhere, &key_file).unwrap();
+
+    let started = run_infrastructure_of(&root).unwrap();
+
+    assert_eq!(started.status.code(), Some(1), "{}", stderr_text(&started));
+    let message = stderr_text(&started);
+    assert!(
+        message.contains(&format!(
+            "{}: File exists (os error 17)",
+            key_file.display()
+        )),
+        "{message}"
+    );
+    assert!(!taken_name_pointing_nowhere.exists());
+    assert_eq!(
+        names_in(&infrastructure).unwrap(),
+        vec![format!("{NETWORK}.key")]
+    );
+}
+
 const CARDS_DIRECTORY_VARIABLE: &str = "ESTAFETTE_CARDS_DIR";
 const CARDS_CHECK_LINE: &str = "cards\tpass\tcards valid: 1";
 
