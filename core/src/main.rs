@@ -300,7 +300,14 @@ fn run_traced<StandardError: Write + Send + 'static>(
     command: impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure>,
 ) -> ExitStatus {
     let stderr = Arc::new(Mutex::new(stderr));
-    let trace = match started_trace(tracing, &environment, &setup, &stderr) {
+    let trace = match started_trace(
+        tracing,
+        &environment,
+        setup.filesystem,
+        setup.effects,
+        setup.bounds,
+        &stderr,
+    ) {
         Ok(trace) => trace,
         Err(status) => return status,
     };
@@ -330,21 +337,17 @@ fn run_traced<StandardError: Write + Send + 'static>(
     status
 }
 
-/// Starts the trace the setup calls for, or, when it cannot start, records the refusal on standard error and gives the status the process ends with.
+/// Starts the trace the tracing choice calls for, or, when it cannot start, records the refusal on standard error and gives the status the process ends with.
 fn started_trace<StandardError: Write + Send + 'static>(
     tracing: Tracing,
     environment: &impl Fn(&str) -> Option<OsString>,
-    setup: &ProcessSetup<'_>,
+    filesystem: OperatingSystemFilesystem,
+    effects: &TraceEffects,
+    bounds: TraceBounds,
     stderr: &Arc<Mutex<StandardError>>,
 ) -> Result<Option<Arc<Trace>>, ExitStatus> {
-    start_trace(
-        tracing,
-        environment,
-        setup.filesystem,
-        setup.effects,
-        setup.bounds,
-    )
-    .map_err(|failure| exit_status_after(Err(failure), run_record_on(stderr, None).as_ref()))
+    start_trace(tracing, environment, filesystem, effects, bounds)
+        .map_err(|failure| exit_status_after(Err(failure), run_record_on(stderr, None).as_ref()))
 }
 
 /// The run record of a process writing to the standard error and the trace, with a salt drawn now.
