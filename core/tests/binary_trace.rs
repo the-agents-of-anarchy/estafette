@@ -22,7 +22,7 @@ mod whole_trace_lines;
 mod observability {
     use std::fmt::Write as _;
     use std::fs;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, ErrorKind, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Output, Stdio};
@@ -128,7 +128,7 @@ mod observability {
         command
     }
 
-    /// Runs the binary with `input` on its standard input until it exits.
+    /// Runs the binary with `input` on its standard input until it exits, a binary that exits before reading it all not failing the run.
     fn run_with_input(root: &Path, arguments: &[&str], input: &[u8]) -> Output {
         let mut child = binary(root)
             .args(arguments)
@@ -137,7 +137,13 @@ mod observability {
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        child.stdin.take().unwrap().write_all(input).unwrap();
+        if let Err(failure) = child.stdin.take().unwrap().write_all(input) {
+            assert_eq!(
+                failure.kind(),
+                ErrorKind::BrokenPipe,
+                "writing the input failed other than by the binary exiting unread"
+            );
+        }
         child.wait_with_output().unwrap()
     }
 
