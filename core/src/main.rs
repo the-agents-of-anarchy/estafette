@@ -300,26 +300,14 @@ fn run_traced<StandardError: Write + Send + 'static>(
     command: impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure>,
 ) -> ExitStatus {
     let stderr = Arc::new(Mutex::new(stderr));
-    let trace = match start_trace(
-        tracing,
-        &environment,
-        setup.filesystem,
-        setup.effects,
-        setup.bounds,
-    ) {
+    let trace = match started_trace(tracing, &environment, &setup, &stderr) {
         Ok(trace) => trace,
-        Err(failure) => {
-            return exit_status_after(Err(failure), run_record_on(&stderr, None).as_ref());
-        }
+        Err(status) => return status,
     };
     if let Some(trace) = &trace {
         announce_trace(trace, &stderr, setup.record_panics);
     }
-    let process = ProcessRecord {
-        record: run_record_on(&stderr, trace.clone()),
-        trace,
-        salt: location_salt_drawn_now(),
-    };
+    let process = process_record_of(trace, &stderr);
     (process.record)(
         ProcessEvent::Started {
             command: command_name,
@@ -329,7 +317,8 @@ fn run_traced<StandardError: Write + Send + 'static>(
     let outcome = outcome_of_command(
         environment,
         cards_directory_override,
-        &setup,
+        setup.filesystem,
+        setup.install_iroh_lines,
         &process,
         command,
     );
@@ -339,6 +328,35 @@ fn run_traced<StandardError: Write + Send + 'static>(
         finish_trace(trace, &stderr);
     }
     status
+}
+
+/// Starts the trace the setup calls for, or, when it cannot start, records the refusal on standard error and gives the status the process ends with.
+fn started_trace<StandardError: Write + Send + 'static>(
+    tracing: Tracing,
+    environment: &impl Fn(&str) -> Option<OsString>,
+    setup: &ProcessSetup<'_>,
+    stderr: &Arc<Mutex<StandardError>>,
+) -> Result<Option<Arc<Trace>>, ExitStatus> {
+    start_trace(
+        tracing,
+        environment,
+        setup.filesystem,
+        setup.effects,
+        setup.bounds,
+    )
+    .map_err(|failure| exit_status_after(Err(failure), run_record_on(stderr, None).as_ref()))
+}
+
+/// The run record of a process writing to the standard error and the trace, with a salt drawn now.
+fn process_record_of<StandardError: Write + Send + 'static>(
+    trace: Option<Arc<Trace>>,
+    stderr: &Arc<Mutex<StandardError>>,
+) -> ProcessRecord {
+    ProcessRecord {
+        record: run_record_on(stderr, trace.clone()),
+        trace,
+        salt: location_salt_drawn_now(),
+    }
 }
 
 /// Names the trace's files first on standard error and sets the panic hook that writes each panic's source location into the trace.
@@ -359,16 +377,16 @@ fn announce_trace<StandardError: Write + Send + 'static>(
 fn outcome_of_command(
     environment: impl Fn(&str) -> Option<OsString>,
     cards_directory_override: CardsDirectoryOverride,
-    setup: &ProcessSetup<'_>,
+    filesystem: OperatingSystemFilesystem,
+    install_iroh_lines: InstallIrohLines,
     process: &ProcessRecord,
     command: impl FnOnce(Directories, &ProcessRecord) -> Result<ExitStatus, CommandLineFailure>,
 ) -> Result<ExitStatus, CommandLineFailure> {
-    Directories::establish(environment, &setup.filesystem, cards_directory_override)
+    Directories::establish(environment, &filesystem, cards_directory_override)
         .map_err(CommandLineFailure::Directories)
         .and_then(|directories| {
             if let Some(trace) = &process.trace {
-                (setup.install_iroh_lines)(Arc::clone(trace))
-                    .map_err(CommandLineFailure::IrohLines)?;
+                install_iroh_lines(Arc::clone(trace)).map_err(CommandLineFailure::IrohLines)?;
             }
             command(directories, process)
         })
