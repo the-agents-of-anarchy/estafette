@@ -13,7 +13,6 @@ use iroh::{PublicKey, RelayUrl};
 use crate::card::{Card, CardInvalid, CardUnusable};
 use crate::cli::cards::{CardRegistryReader, RegistryArgs, card_files_in, card_name_of};
 use crate::cli::lines::tab_separated_line;
-use crate::cli::network::NetworkFilesystem;
 use crate::cli::observer::{self, Interruption, ObserverEffects};
 use crate::clock::{MonotonicTime, before_deadline, later_by};
 use crate::config::{ConfigError, NetworkConfig};
@@ -41,8 +40,8 @@ pub struct DoctorArgs {
     pub registry: RegistryArgs,
 }
 
-/// The reads the doctor performs beyond the card registry and the network files, supplied by the composition root.
-pub trait DoctorFilesystem: CardRegistryReader + NetworkFilesystem {
+/// The reads the doctor performs beyond the card registry, supplied by the composition root.
+pub trait DoctorFilesystem: CardRegistryReader {
     /// Returns the permission bits of the file, such as 0o600.
     ///
     /// # Errors
