@@ -159,3 +159,11 @@ What happened: On 2026-11-27 near 00:41 the lead ended a turn with a sentence in
 Mechanism: After the last tool call of the turn the lead wrote a closing line where the ending had to be a message of zero characters. It is the third such breach of this span; the two before it were recorded on 2026-11-26.
 
 Correction: No text was owed and none is written now. Before ending any turn the lead checks that the final message has zero characters, and a turn whose last act is a tool call ends there, with nothing after it.
+
+## A turn in silence ended with a sentence about its own silence
+
+What happened: At 02:52 of 2026-11-27, after the last tool call of a turn, the lead wrote one sentence into the conversation saying that nothing had gone to the conversation; silence stood and the marker was in place.
+
+Mechanism: The repeated notice that the previous response had no visible output was answered, in effect, by explaining the empty ending; an explanation of silence is text.
+
+Correction: After the last tool call of a turn the lead writes nothing, whatever notice precedes the turn; the notice is inert and an empty ending needs no account.
