@@ -18,11 +18,11 @@ use iroh_gossip::Gossip;
 use iroh_relay::server::{
     AcmeConfig, CertConfig, QuicConfig, RelayConfig, Server, ServerConfig, TlsConfig,
 };
-use tokio::time::{Instant, Interval, MissedTickBehavior, interval};
+use tokio::time::Instant;
 
 use super::debug::DebugArgs;
 use super::network::NetworkFilesystem;
-use crate::clock::{MILLIS_PER_SECOND, MonotonicClock};
+use crate::clock::{MILLIS_PER_SECOND, MonotonicClock, deadline_reached, later_by};
 use crate::config::{ConfigError, NetworkConfig};
 use crate::crypto::{
     GateKey, HOST_CERTIFICATE_HEX_CHARS, KEY_LEN, parse_host_certificate, verify_host_certificate,
@@ -683,7 +683,7 @@ struct BootstrapNode {
     topic: NetworkTopic,
     known_hosts: KnownHosts,
     last_record: LastRecord,
-    records_due: Option<Interval>,
+    records_due: Option<Instant>,
     snapshot_due: Instant,
     clock: Clock,
     monotonic: MonotonicClock,
@@ -751,7 +751,7 @@ impl BootstrapNode {
         tokio::select! {
             biased;
             () = stopped => Wake::Stopped,
-            () = next_tick(self.records_due.as_mut()) => Wake::RecordDue,
+            () = deadline_reached(&*self.monotonic, self.records_due) => Wake::RecordDue,
             () = self.monotonic.reached(self.snapshot_due) => Wake::SnapshotDue,
             event = next_recorded_gossip_event(&mut self.topic, None, &*self.report) => Wake::Topic(event),
         }
@@ -767,7 +767,7 @@ impl BootstrapNode {
             Some(Err(failure)) => {
                 (self.report)(crate::event::GossipEvent::TopicFailed(failure).into());
             }
-            Some(Ok(GossipEvent::Joined)) => self.records_due = Some(record_interval()),
+            Some(Ok(GossipEvent::Joined)) => self.records_due = Some(self.monotonic.now()),
             Some(Ok(GossipEvent::Payload(payload))) => self.take_payload(*payload).await,
             Some(Ok(
                 GossipEvent::JoinTimedOut
@@ -816,11 +816,15 @@ impl BootstrapNode {
         );
     }
 
-    /// Writes the next record counter, then broadcasts this host's record carrying it.
+    /// Writes the next record counter, then broadcasts this host's record carrying it, and sets the next record due one interval after this reading of the clock.
     async fn broadcast_record(
         &mut self,
         filesystem: &impl InfrastructureFilesystem,
     ) -> Result<(), Failure> {
+        self.records_due = Some(later_by(
+            self.monotonic.now(),
+            INFRASTRUCTURE_RECORD_INTERVAL,
+        ));
         let ts = self.last_record.next_ts((self.clock)() / MILLIS_PER_SECOND);
         self.last_record.write(ts, filesystem)?;
         let record = Payload::Infrastructure(Infrastructure {
@@ -846,23 +850,6 @@ impl BootstrapNode {
             (self.report)(TransportEvent::RouterShutdownFailed(failure).into());
         }
     }
-}
-
-/// Waits for the next tick of the record interval, or forever before the first join.
-async fn next_tick(records_due: Option<&mut Interval>) {
-    match records_due {
-        Some(records_due) => {
-            records_due.tick().await;
-        }
-        None => std::future::pending().await,
-    }
-}
-
-/// The interval of this host's records, ticking at once for the record due at the join (spec 3.14).
-fn record_interval() -> Interval {
-    let mut records_due = interval(INFRASTRUCTURE_RECORD_INTERVAL);
-    records_due.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    records_due
 }
 
 /// Starts iroh-relay at the site, serving HTTPS alone with a Let's Encrypt certificate for the domain, and QUIC address discovery (spec 3.14, D51).
@@ -928,7 +915,8 @@ mod tests {
     use crate::keys::{render_public_key, render_secret_key};
     use crate::net::direct::tests::{
         INTERVAL_MOMENT, PAYLOAD_ACCEPTED, SPEC_STATE_SNAPSHOT_INTERVAL, STATE_COUNTERS,
-        counters_snapshot_one_interval_on, deadline_of_the_gossip_join_timeout, was_taken_at,
+        StandingClock, counters_snapshot_one_interval_on, deadline_of_the_gossip_join_timeout,
+        was_taken_at,
     };
     use crate::net::direct::{ClientTimeouts, DirectClient};
     use crate::net::endpoint::NodeEndpoint;
@@ -936,7 +924,7 @@ mod tests {
     use crate::stream_items::StreamExt;
     use crate::test_waits::{
         RecordedEvent, WaitMissed, answered_within, found_within, gossip_events_recorded_until,
-        next_recorded_meeting, recorded_events, secret_key, short_id_field,
+        next_recorded_meeting, recorded_events, recorded_until, secret_key, short_id_field,
     };
     use crate::wire::{HostAddr, Version};
 
@@ -972,7 +960,8 @@ mod tests {
     const SECOND_RECORD: usize = 2;
     const PEER_JOIN_WAIT: Duration = Duration::from_secs(8);
     const RECORD_AT_JOIN_WAIT: Duration = Duration::from_millis(4000);
-    const SPEC_RECORD_INTERVAL_EARLIEST: Duration = Duration::from_millis(4500);
+    const SPEC_RECORD_INTERVAL: Duration = Duration::from_secs(5);
+    const CLOCK_MOVED_OFF_THE_JOIN_TIMEOUT: Duration = Duration::from_millis(2500);
     const SPEC_RECORD_INTERVAL_LATEST: Duration = Duration::from_millis(6500);
     const SPEC_JOIN_TIMEOUT_PAST: Duration = Duration::from_millis(6000);
     const MESSAGE_ID: wire::MessageId = [5; 16];
@@ -1774,6 +1763,67 @@ mod tests {
         assert!(refusal.contains(RELAY_SHUTDOWN_FAILURE), "{refusal}");
     }
 
+    /// A peer joined to the host through its endpoint, once the host has asked its clock to wake it at its gossip join timeout and the clock has moved off that instant, so no deadline the host asks later can be taken for it.
+    async fn peer_joined_to_a_host_on_a_clock_standing_off_its_join_timeout(
+        seen: &Seen,
+        clock: &StandingClock,
+    ) -> Peer {
+        let host = bound_endpoint(seen, 0).await;
+        let join_timeout = deadline_of_the_gossip_join_timeout(clock)
+            .first()
+            .copied()
+            .unwrap();
+        clock
+            .asked_to_wake("the host's gossip join timeout", join_timeout)
+            .await;
+        clock.move_forward(CLOCK_MOVED_OFF_THE_JOIN_TIMEOUT);
+        Peer::joined_through(PEER_SEED, &host).await
+    }
+
+    /// Moves the host's clock to the reading one record interval past the one it stands at, once the host has asked to be woken at exactly that reading.
+    async fn clock_moved_to_the_next_record_due(clock: &StandingClock) {
+        let record_due = clock.now().checked_add(SPEC_RECORD_INTERVAL).unwrap();
+        clock
+            .asked_to_wake("the host's next record", record_due)
+            .await;
+        clock.move_forward(SPEC_RECORD_INTERVAL);
+    }
+
+    /// Every event the host recorded until it took the peer's presence request of the sequence number, that event included.
+    async fn presence_request_taken_by_the_host(
+        peer: &Peer,
+        recorded: &mut tokio::sync::mpsc::UnboundedReceiver<RecordedEvent>,
+        seq: u64,
+    ) -> Vec<RecordedEvent> {
+        peer.topic
+            .broadcast(
+                &secret_key(PEER_SEED),
+                Payload::PresenceRequest(wire::PresenceRequest {
+                    v: Version::CURRENT,
+                    requester: wire::PublicKey::from(secret_key(PEER_SEED).public()),
+                    seq,
+                    mac: ZERO_MAC,
+                    sig: ZERO_SIGNATURE,
+                }),
+            )
+            .await
+            .unwrap();
+        let (mut recorded_before_it_was_taken, request) = recorded_until(
+            recorded,
+            PAYLOAD_ACCEPTED,
+            |fields| {
+                crate::net::direct::tests::field(fields, KIND_FIELD)
+                    == Some(&serde_json::Value::from(PRESENCE_REQUEST_KIND))
+                    && crate::net::direct::tests::field(fields, PEER_FIELD)
+                        == Some(&short_id(PEER_SEED))
+            },
+            PEER_JOIN_WAIT,
+        )
+        .await;
+        recorded_before_it_was_taken.push((PAYLOAD_ACCEPTED, request));
+        recorded_before_it_was_taken
+    }
+
     #[tokio::test]
     async fn spec_3_14_a_host_answers_a_presence_request_with_nothing_but_its_records() {
         let scratch = Scratch::new("presence-request");
@@ -1782,46 +1832,68 @@ mod tests {
         let seen = Seen::default();
         let (stop, stopped) = stopped_on_signal();
         let (record, mut recorded) = recorded_events();
+        let clock = StandingClock::standing_an_hour_ahead();
         let plan = Plan {
             stopped,
             report: record,
+            monotonic: clock.monotonic(),
             ..Plan::new(HOST_SEED)
         };
 
         let (
             (_printed, outcome),
-            (last_record, (heard_before_the_next_record, next_record), spacing),
+            (
+                last_record,
+                recorded_through_the_requests,
+                (heard_before_the_next_record, next_record),
+            ),
         ) = tokio::join!(run_planned(&scratch, plan, &seen), async {
-            let host = bound_endpoint(&seen, 0).await;
-            let mut peer = Peer::joined_through(PEER_SEED, &host).await;
+            let mut peer =
+                peer_joined_to_a_host_on_a_clock_standing_off_its_join_timeout(&seen, &clock).await;
             let last_record = peer
-                .next_host_record(SPEC_RECORD_INTERVAL_LATEST)
+                .next_host_record(RECORD_AT_JOIN_WAIT)
                 .await
                 .unwrap_or_else(|missed| missed.fail_the_test());
-            let last_record_heard = Instant::now();
-            peer.topic
-                .broadcast(
-                    &secret_key(PEER_SEED),
-                    Payload::PresenceRequest(wire::PresenceRequest {
-                        v: Version::CURRENT,
-                        requester: wire::PublicKey::from(secret_key(PEER_SEED).public()),
-                        seq: FROZEN_CLOCK_MS,
-                        mac: ZERO_MAC,
-                        sig: ZERO_SIGNATURE,
-                    }),
-                )
-                .await
-                .unwrap();
+            let mut recorded_through_the_requests = Vec::new();
+            for seq in [FROZEN_CLOCK_MS, FROZEN_CLOCK_MS + 1] {
+                recorded_through_the_requests
+                    .extend(presence_request_taken_by_the_host(&peer, &mut recorded, seq).await);
+            }
+            clock_moved_to_the_next_record_due(&clock).await;
             let heard_through_the_next_record = peer
-                .payloads_before_the_next_host_record(SPEC_RECORD_INTERVAL_LATEST)
+                .payloads_before_the_next_host_record(RECORD_AT_JOIN_WAIT)
                 .await;
-            let spacing = last_record_heard.elapsed();
             drop(stop);
-            (last_record, heard_through_the_next_record, spacing)
+            (
+                last_record,
+                recorded_through_the_requests,
+                heard_through_the_next_record,
+            )
         });
 
         outcome.unwrap();
-        let recorded_through_the_end = crate::net::direct::tests::recorded_so_far(&mut recorded);
+        let records_sent_before_the_clock_moved: Vec<&serde_json::Value> =
+            recorded_through_the_requests
+                .iter()
+                .filter(|(name, fields)| {
+                    *name == BROADCAST_EVENT
+                        && fields
+                            .contains(&(KIND_FIELD, serde_json::Value::from(INFRASTRUCTURE_KIND)))
+                })
+                .filter_map(|(_name, fields)| {
+                    crate::net::direct::tests::field(fields, TIMESTAMP_FIELD)
+                })
+                .collect();
+        assert_eq!(
+            records_sent_before_the_clock_moved,
+            [&serde_json::Value::from(last_record.ts)],
+            "the host sent a record in answer to a presence request, before its record interval"
+        );
+        let recorded_through_the_end = [
+            recorded_through_the_requests,
+            crate::net::direct::tests::recorded_so_far(&mut recorded),
+        ]
+        .concat();
         let request_taken_at = recorded_through_the_end.iter().position(|(name, fields)| {
             *name == PAYLOAD_ACCEPTED
                 && crate::net::direct::tests::field(fields, KIND_FIELD)
@@ -1837,10 +1909,6 @@ mod tests {
         assert!(
             request_taken_at.is_some() && request_taken_at < next_record_sent_at,
             "the host had not taken the peer's presence request when it sent its next record: request at {request_taken_at:?}, record at {next_record_sent_at:?} in {recorded_through_the_end:?}"
-        );
-        assert!(
-            SPEC_RECORD_INTERVAL_EARLIEST <= spacing,
-            "the record after the presence request came {spacing:?} after the last, inside the record interval: an answer, not the next record"
         );
         assert_eq!(
             heard_before_the_next_record,
@@ -1861,33 +1929,33 @@ mod tests {
         scratch.certify(HOST_SEED);
         let seen = Seen::default();
         let (stop, stopped) = stopped_on_signal();
+        let clock = StandingClock::standing_an_hour_ahead();
         let plan = Plan {
             stopped,
+            monotonic: clock.monotonic(),
             ..Plan::new(HOST_SEED)
         };
 
-        let ((_printed, outcome), records) =
+        let ((_printed, outcome), (first, second)) =
             tokio::join!(run_planned(&scratch, plan, &seen), async {
-                let host = bound_endpoint(&seen, 0).await;
-                let mut peer = Peer::joined_through(PEER_SEED, &host).await;
+                let mut peer =
+                    peer_joined_to_a_host_on_a_clock_standing_off_its_join_timeout(&seen, &clock)
+                        .await;
                 let first = peer
                     .next_host_record(RECORD_AT_JOIN_WAIT)
                     .await
                     .unwrap_or_else(|missed| missed.fail_the_test());
-                let first_heard = Instant::now();
+                clock_moved_to_the_next_record_due(&clock).await;
                 let second = peer
-                    .next_host_record(SPEC_RECORD_INTERVAL_LATEST)
+                    .next_host_record(RECORD_AT_JOIN_WAIT)
                     .await
                     .unwrap_or_else(|missed| missed.fail_the_test());
-                let spacing = first_heard.elapsed();
                 stop.send(()).unwrap();
-                (first, second, spacing)
+                (first, second)
             });
 
         outcome.unwrap();
-        let (first, second, spacing) = records;
         assert_eq!(Some(second.ts), first.ts.checked_add(1));
-        assert!(SPEC_RECORD_INTERVAL_EARLIEST <= spacing && spacing < SPEC_RECORD_INTERVAL_LATEST);
     }
 
     #[tokio::test]
