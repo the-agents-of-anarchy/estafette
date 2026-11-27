@@ -125,7 +125,7 @@ impl fmt::Display for CardInvalid {
             ),
             Self::NestingTooDeep => write!(
                 formatter,
-                "card nests mappings and sequences more than {CARD_DEEPEST_NESTING} deep"
+                "card `public` nests mappings and sequences more than {CARD_DEEPEST_NESTING} deep"
             ),
             Self::IntegerTooWide => write!(
                 formatter,
@@ -1511,6 +1511,21 @@ pub(crate) mod tests {
             let card = card_with_ignored_key_nested(depth).unwrap();
             assert_eq!(card.public_json(), b"{}");
         }
+    }
+
+    #[test]
+    fn the_refusal_of_a_public_nested_beyond_the_bound_names_public_spec_3_5() {
+        let beyond_bound = "- ".repeat(CARD_DEEPEST_NESTING);
+        let refusal = parse_card(&format!(
+            "handle: ada\npublic_key: abc\npublic:\n  k:\n  {beyond_bound}1\n"
+        ))
+        .unwrap_err();
+        assert_eq!(
+            refusal.to_string(),
+            format!(
+                "card `public` nests mappings and sequences more than {CARD_DEEPEST_NESTING} deep"
+            )
+        );
     }
 
     fn anchored_container_nesting(levels: usize) -> String {
