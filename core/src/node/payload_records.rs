@@ -2,7 +2,7 @@
 
 use iroh::SecretKey;
 
-use super::presence::PeerRows;
+use super::peer_rows::PeerRows;
 use crate::event::Event;
 use crate::handle::LocalHandle;
 use crate::net::gossip::{GossipError, GossipEvent, NetworkTopic};

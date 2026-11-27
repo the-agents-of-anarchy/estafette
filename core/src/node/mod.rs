@@ -6,6 +6,7 @@ mod known_hosts;
 mod lifecycle;
 mod node_error;
 mod payload_records;
+mod peer_rows;
 mod presence;
 mod rebind;
 mod relay_loss;
@@ -29,8 +30,9 @@ pub(crate) use payload_records::{
     broadcast_recorded, broadcast_recording_outcome, next_recorded_gossip_event,
     taken_without_a_row_record,
 };
+pub(crate) use peer_rows::PeerRows;
 pub(crate) use presence::{
-    Clock, PeerRows, ProbeNonceSource, deadline_reached, presence_request, record_counters, serve,
+    Clock, ProbeNonceSource, deadline_reached, presence_request, record_counters, serve,
     snapshot_due_after,
 };
 pub use presence::{Identity, Network, Node, NodeEffects};
