@@ -248,7 +248,7 @@ mod tests {
     use super::*;
     use crate::event::{GossipEvent, ProcessEvent, ShortId};
 
-    const HEX_CHARS_PER_BYTE: usize = 2;
+    const FIVE_BYTES_AS_HEX_CHARACTERS: usize = 10;
 
     #[tokio::test]
     #[should_panic(
@@ -268,10 +268,7 @@ mod tests {
         let field = short_id_field(&card);
 
         let key_hex = data_encoding::HEXLOWER.encode(card.as_bytes());
-        let expected: String = key_hex
-            .chars()
-            .take(SPEC_SHORT_ID_BYTES * HEX_CHARS_PER_BYTE)
-            .collect();
+        let expected: String = key_hex.chars().take(FIVE_BYTES_AS_HEX_CHARACTERS).collect();
         assert_eq!(field, serde_json::Value::from(expected));
     }
 
@@ -401,5 +398,18 @@ mod tests {
         );
 
         assert_eq!(found, None);
+    }
+
+    #[tokio::test]
+    async fn what_is_found_unexpectedly_after_other_tasks_ran_is_returned() {
+        let mut looks_made = 0_u8;
+
+        let found = unexpectedly_found_within(RECORDED_EVENT_WITHIN, async || {
+            looks_made += 1;
+            (looks_made == 3).then_some(looks_made)
+        })
+        .await;
+
+        assert_eq!(found, Some(3));
     }
 }
