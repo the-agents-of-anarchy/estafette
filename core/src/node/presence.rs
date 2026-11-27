@@ -1,4 +1,4 @@
-//! The presence half of the node of spec 3.8: init, the peer table fed by gossip and direct contact, and every announcement.
+//! The member's runtime of spec 3.8: one loop task owns the topic and performs every effect, sharing the node's state with the direct server, which never awaits it.
 
 use std::ops::ControlFlow;
 use std::path::PathBuf;
