@@ -60,13 +60,26 @@ impl fmt::Display for InboxClientError {
             Self::ReadFailed(source) => write!(formatter, "cannot read the inbox socket: {source}"),
             Self::MalformedFrame(reason) => write!(
                 formatter,
-                "the inbox socket sent a frame it cannot read: {reason}"
+                "the inbox socket sent a frame it cannot read: {} at line {} column {}",
+                fault_kind(reason.classify()),
+                reason.line(),
+                reason.column()
             ),
             Self::FrameLineTooLong => write!(
                 formatter,
                 "the inbox socket sent a frame line over {MAX_FRAME_LINE_BYTES} bytes"
             ),
         }
+    }
+}
+
+/// Names the kind of a JSON fault in words that carry no text of the frame.
+const fn fault_kind(category: serde_json::error::Category) -> &'static str {
+    match category {
+        serde_json::error::Category::Io => "a read fault",
+        serde_json::error::Category::Syntax => "a syntax error",
+        serde_json::error::Category::Data => "a wrongly typed or missing field",
+        serde_json::error::Category::Eof => "an unexpected end of the line",
     }
 }
 
@@ -434,6 +447,19 @@ mod tests {
             InboxClientError::MalformedFrame(_)
         ));
         assert!(!followed.ended_with.to_string().contains(BODY_SECRET));
+    }
+
+    #[test]
+    fn spec_3_11_the_error_of_a_frame_with_a_wrongly_typed_field_does_not_print_that_field() {
+        const SEQ_MARKER: &str = "marker-text-in-the-seq-field";
+        let (_, followed) = follow_scripted(&[format!(
+            "{{\"seq\":\"{SEQ_MARKER}\",\"id\":\"id-1\",\"from\":\"ana\",\"body\":\"hi\"}}\n"
+        )]);
+        assert!(matches!(
+            &followed.ended_with,
+            InboxClientError::MalformedFrame(_)
+        ));
+        assert!(!followed.ended_with.to_string().contains(SEQ_MARKER));
     }
 
     #[test]
