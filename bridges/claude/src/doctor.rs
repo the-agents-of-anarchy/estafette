@@ -813,6 +813,24 @@ mod tests {
     }
 
     #[test]
+    fn spec_3_3_doctor_fails_the_binary_process_check_for_a_runtime_directory_granting_access_to_group_alone_or_other_alone_runtime_directory_is_private_or_refused()
+     {
+        for (permission_bits, rendered_mode) in [(0o750, "0750"), (0o705, "0705")] {
+            let (verdict, directory) = binary_process_verdict_when_the_runtime_directory_is(
+                EntryKind::Directory,
+                permission_bits,
+            );
+            assert_eq!(
+                verdict,
+                Verdict::Failed(format!(
+                    "{} already exists and is mode {rendered_mode}, which grants access to group or other; it must be a directory of yours with no access for group or other",
+                    directory.display()
+                ))
+            );
+        }
+    }
+
+    #[test]
     fn spec_3_3_doctor_fails_the_binary_process_check_for_a_symbolic_link_in_place_of_the_runtime_directory_runtime_directory_is_private_or_refused()
      {
         let (verdict, directory) =
