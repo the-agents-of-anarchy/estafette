@@ -51,7 +51,7 @@ fn message_id_as_text<S: Serializer>(id: &MessageId, serializer: S) -> Result<S:
 
 /// The last 1000 received frames of one process, replayable from any `since`.
 #[derive(Debug)]
-pub struct InboxBuffer {
+pub(super) struct InboxBuffer {
     frames: VecDeque<InboxFrame>,
     next_seq: u64,
 }
@@ -59,7 +59,7 @@ pub struct InboxBuffer {
 impl InboxBuffer {
     /// An empty buffer whose first frame will carry seq 1.
     #[must_use]
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             frames: VecDeque::with_capacity(INBOX_BUFFER_CAPACITY),
             next_seq: FIRST_SEQ,
@@ -67,7 +67,7 @@ impl InboxBuffer {
     }
 
     /// Numbers the message, buffers it, drops the oldest frame past capacity, and returns the frame.
-    pub fn push(&mut self, message: ReceivedMessage) -> InboxFrame {
+    pub(super) fn push(&mut self, message: ReceivedMessage) -> InboxFrame {
         let frame = InboxFrame {
             seq: self.next_seq,
             id: message.id,
@@ -86,15 +86,9 @@ impl InboxBuffer {
 
     /// Every buffered frame with seq greater than `since`, oldest first, leaving the buffer untouched.
     #[must_use]
-    pub fn frames_since(&self, since: u64) -> Vec<InboxFrame> {
+    pub(super) fn frames_since(&self, since: u64) -> Vec<InboxFrame> {
         let first_newer = self.frames.partition_point(|frame| frame.seq <= since);
         self.frames.range(first_newer..).cloned().collect()
-    }
-}
-
-impl Default for InboxBuffer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
