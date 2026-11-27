@@ -319,19 +319,20 @@ fn settings_from_flag_words(
     read_text_file: &impl Fn(&Path) -> Option<String>,
 ) -> Result<SettingsFile, String> {
     let first_word = words.first().copied().unwrap_or_default();
-    if first_word.trim_start().starts_with(JSON_OBJECT_OPENER) {
-        return Ok(SettingsFile {
-            path: PathBuf::from(COMMAND_LINE_SETTINGS_NAME),
-            text: shortest_valid_json_run(words).unwrap_or_else(|| first_word.to_owned()),
-        });
-    }
-    let path_words = words
+    let words_up_to_the_next_dash_word = words
         .iter()
         .enumerate()
         .take_while(|(position, word)| *position == 0 || !word.starts_with(OPTION_FLAG_PREFIX))
         .map(|(_, word)| *word)
         .collect::<Vec<_>>();
-    word_runs_from_the_first(&path_words)
+    if first_word.trim_start().starts_with(JSON_OBJECT_OPENER) {
+        return Ok(SettingsFile {
+            path: PathBuf::from(COMMAND_LINE_SETTINGS_NAME),
+            text: shortest_valid_json_run(words)
+                .unwrap_or_else(|| words_up_to_the_next_dash_word.join(" ")),
+        });
+    }
+    word_runs_from_the_first(&words_up_to_the_next_dash_word)
         .find_map(|run| {
             read_text_file(Path::new(&run)).map(|text| SettingsFile {
                 path: PathBuf::from(run),
@@ -1169,6 +1170,17 @@ mod tests {
             ),
             Verdict::Unverified(" (the --settings file cannot be read)".to_owned())
         );
+    }
+
+    #[test]
+    fn spec_3_12_inline_settings_that_are_never_valid_json_are_kept_as_the_words_up_to_the_next_dash_word()
+     {
+        let file = settings_from_flag_words(
+            &["{\"crossSessionInbound\":", "refuse", "--verbose"],
+            &read_nothing,
+        )
+        .expect("inline JSON is kept as a source whatever it holds");
+        assert_eq!(file.text, "{\"crossSessionInbound\": refuse");
     }
 
     #[test]
