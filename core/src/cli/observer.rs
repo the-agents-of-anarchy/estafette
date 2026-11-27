@@ -394,7 +394,7 @@ async fn send_as_operator(
         setup.network,
         NodeEffects {
             clock,
-            monotonic,
+            monotonic: Arc::clone(&monotonic),
             fill_probe_nonce,
             report: Arc::clone(&report),
             inbox,
@@ -403,7 +403,7 @@ async fn send_as_operator(
     )
     .await
     .map_err(Failure::Node)?;
-    let session = Session::new(Arc::clone(&report));
+    let session = Session::new(Arc::clone(&report), monotonic);
     let node = session
         .claim(operator.name, node, operator.held)
         .map_err(Failure::Session)?;

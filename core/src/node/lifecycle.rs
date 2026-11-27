@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::sleep;
 
+use crate::clock::{MonotonicClock, later_by};
 use crate::errors::ErrorCode;
 use crate::event::{ProcessEvent, RunRecord};
 use crate::handle::{Handle, LocalHandle};
@@ -64,15 +64,17 @@ enum Phase {
 pub struct Session {
     phase: Mutex<Phase>,
     record: RunRecord,
+    monotonic: MonotonicClock,
 }
 
 impl Session {
-    /// A session in which no card is claimed, recording its claim and its stop to the run record.
+    /// A session in which no card is claimed, recording its claim and its stop to the run record and timing its departure wait on the monotonic clock.
     #[must_use]
-    pub const fn new(record: RunRecord) -> Self {
+    pub const fn new(record: RunRecord, monotonic: MonotonicClock) -> Self {
         Self {
             phase: Mutex::new(Phase::Unclaimed),
             record,
+            monotonic,
         }
     }
 
@@ -202,7 +204,9 @@ impl Session {
         claimed.node.rewrite_configuration_if_newer();
         claimed.node.drop_held_connections().await;
         self.record(ProcessEvent::HeldConnectionsDropped);
-        sleep(departure_wait).await;
+        self.monotonic
+            .reached(later_by(self.monotonic.now(), departure_wait))
+            .await;
         self.record(ProcessEvent::DepartureWaitOver {
             waited: departure_wait,
         });
@@ -295,7 +299,7 @@ mod tests {
     use tokio::task::JoinHandle;
 
     use super::*;
-    use crate::clock::MILLIS_PER_SECOND;
+    use crate::clock::{MILLIS_PER_SECOND, MonotonicClock, MonotonicTime, RuntimeClock};
     use crate::config::{Host, HostOrigin};
     use crate::event::{Event, RunRecord};
     use crate::net::direct::tests::StandingClock;
@@ -304,10 +308,10 @@ mod tests {
     use crate::node::addresses::wire_addr;
     use crate::node::presence::tests::{
         FIRST_SEED, HOST_RELAY, HOST_SEED, MARKER_SEED, MOVED_HOST_RELAY, Member, MemberPlan,
-        PAYLOAD_WAIT, SECOND_HANDLE, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch, WITNESS_HANDLE,
-        WITNESS_SEED, Witness, bind, card, entry_held_now, host_saved_within, infrastructure_of,
-        joined_and_asked_for_presence, keys, listed_within, saved_host, short_peer_id, start_pair,
-        start_witnessed, status_within,
+        PAYLOAD_WAIT, SECOND_HANDLE, SECOND_MARKER_SEED, SECOND_SEED, SPEC_OBSERVER_WAIT, Scratch,
+        WITNESS_HANDLE, WITNESS_SEED, Witness, bind, card, entry_held_now, host_saved_within,
+        infrastructure_of, joined_and_asked_for_presence, keys, listed_within, saved_host,
+        short_peer_id, start_pair, start_witnessed, status_within,
     };
     use crate::node::rebind::RelayProbe;
     use crate::peers::{Peer, Status};
@@ -387,19 +391,33 @@ mod tests {
         sidecar_path: PathBuf,
     }
 
-    /// The pair started and the second member's card claimed in a session that records nothing, once the first lists the second.
-    async fn claimed_second(scratch: &Scratch) -> ClaimedSecond {
+    /// The pair started and the second member's card claimed in a session that records nothing and times its departure wait on a clock standing until the test moves it, once the first lists the second.
+    async fn claimed_second(scratch: &Scratch) -> (ClaimedSecond, StandingClock) {
         claimed_second_recording_to(scratch, record_dropping_every_event()).await
     }
 
-    /// The pair started and the second member's card claimed in a session recording to the run record, once the first lists the second.
-    async fn claimed_second_recording_to(scratch: &Scratch, record: RunRecord) -> ClaimedSecond {
+    /// The pair started and the second member's card claimed in a session recording to the run record and timing its departure wait on a clock standing until the test moves it, once the first lists the second.
+    async fn claimed_second_recording_to(
+        scratch: &Scratch,
+        record: RunRecord,
+    ) -> (ClaimedSecond, StandingClock) {
+        let clock = StandingClock::standing_now();
+        let second = claimed_second_timing_its_wait_on(scratch, record, clock.monotonic()).await;
+        (second, clock)
+    }
+
+    /// The pair started and the second member's card claimed in a session recording to the run record and timing its departure wait on the monotonic clock, once the first lists the second.
+    async fn claimed_second_timing_its_wait_on(
+        scratch: &Scratch,
+        record: RunRecord,
+        monotonic: MonotonicClock,
+    ) -> ClaimedSecond {
         let (first, second) = start_pair(scratch).await;
         listed_within(&first, SECOND_SEED, SPEC_OBSERVER_WAIT)
             .await
             .unwrap_or_else(|missed| missed.fail_the_test());
         let (sidecar_path, lock) = scratch.locked_card(SECOND_SEED);
-        let session = Arc::new(Session::new(record));
+        let session = Arc::new(Session::new(record, monotonic));
         session
             .claim(card_named(SECOND_CARD), second.node, lock)
             .unwrap();
@@ -417,6 +435,19 @@ mod tests {
         Arc::new(|_event: Event| {})
     }
 
+    /// A session timing its departure wait on a clock that stands where it is.
+    fn session_on_a_standing_clock(record: RunRecord) -> Session {
+        Session::new(record, StandingClock::standing_now().monotonic())
+    }
+
+    /// Moves the clock through the departure wait once the stopping session asks to be woken at its end.
+    async fn pass_the_departure_wait(clock: &StandingClock, departure_wait: Duration) {
+        clock
+            .asked_to_wake("the departure wait", later_by(clock.now(), departure_wait))
+            .await;
+        clock.move_forward(departure_wait);
+    }
+
     /// Every event recorded so far that the receiver has not handed out yet.
     fn recorded_so_far(
         received: &mut mpsc::UnboundedReceiver<RecordedEvent>,
@@ -429,11 +460,12 @@ mod tests {
      {
         let scratch = Scratch::new("stop-steps").await;
         let (record, mut recorded) = recorded_events();
-        let second = claimed_second_recording_to(&scratch, record).await;
+        let (second, clock) = claimed_second_recording_to(&scratch, record).await;
         recorded_so_far(&mut recorded);
         let stopping = run(&second.session, SHORT_DEPARTURE_WAIT);
 
         stopping.input_ended.send(()).unwrap();
+        pass_the_departure_wait(&clock, SHORT_DEPARTURE_WAIT).await;
         stopping.exit.await.unwrap();
 
         assert_eq!(
@@ -475,7 +507,7 @@ mod tests {
         ];
         for (signal, name, fields) in causes {
             let (record, mut recorded) = recorded_events();
-            let session = Arc::new(Session::new(record));
+            let session = Arc::new(session_on_a_standing_clock(record));
             let stopping = run(&session, LONG_DEPARTURE_WAIT);
 
             match signal {
@@ -500,7 +532,7 @@ mod tests {
      {
         let scratch = Scratch::new("second-signal-event").await;
         let (record, mut recorded) = recorded_events();
-        let second = claimed_second_recording_to(&scratch, record).await;
+        let (second, _clock) = claimed_second_recording_to(&scratch, record).await;
         recorded_so_far(&mut recorded);
         let stopping = run(&second.session, LONG_DEPARTURE_WAIT);
 
@@ -552,7 +584,7 @@ mod tests {
         let (_, first_lock) = scratch.locked_card(FIRST_SEED);
         let (_, second_lock) = scratch.locked_card(SECOND_SEED);
         let (record, mut recorded) = recorded_events();
-        let session = Session::new(record);
+        let session = session_on_a_standing_clock(record);
         let claimed_handle = first.node.own_handle().as_str().to_owned();
 
         session
@@ -593,19 +625,20 @@ mod tests {
     async fn spec_3_10_the_session_names_the_card_and_handle_it_claimed_before_and_after_it_stops()
     {
         let scratch = Scratch::new("claimed-card").await;
-        let claimed = claimed_second(&scratch).await;
+        let (claimed, clock) = claimed_second(&scratch).await;
         let expected = ClaimedCard {
             card: card_named(SECOND_CARD),
             handle: claimed.session.node().unwrap().own_handle().clone(),
         };
         assert_eq!(claimed.session.claimed_card(), Some(expected.clone()));
         assert_eq!(
-            Session::new(record_dropping_every_event()).claimed_card(),
+            session_on_a_standing_clock(record_dropping_every_event()).claimed_card(),
             None
         );
 
         let run = run(&claimed.session, TEST_DEPARTURE_WAIT);
         run.input_ended.send(()).unwrap();
+        pass_the_departure_wait(&clock, TEST_DEPARTURE_WAIT).await;
         run.exit.await.unwrap();
 
         assert_eq!(claimed.session.claimed_card(), Some(expected));
@@ -614,7 +647,7 @@ mod tests {
 
     #[test]
     fn spec_3_9_before_init_the_session_is_unclaimed_and_every_tool_gets_not_claimed() {
-        let session = Session::new(record_dropping_every_event());
+        let session = session_on_a_standing_clock(record_dropping_every_event());
 
         assert_eq!(session.node().err(), Some(ErrorCode::NotClaimed));
     }
@@ -625,7 +658,7 @@ mod tests {
         let (first, second) = start_pair(&scratch).await;
         let (_, first_lock) = scratch.locked_card(FIRST_SEED);
         let (_, second_lock) = scratch.locked_card(SECOND_SEED);
-        let session = Session::new(record_dropping_every_event());
+        let session = session_on_a_standing_clock(record_dropping_every_event());
 
         let claimed = session
             .claim(card_named(FIRST_CARD), first.node, first_lock)
@@ -723,11 +756,12 @@ mod tests {
     async fn test_4_a_member_stopped_at_the_end_of_input_is_seen_gone_within_1000_ms_and_a_send_to_it_is_unreachable()
      {
         let scratch = Scratch::new("t4-clean-stop").await;
-        let second = claimed_second(&scratch).await;
+        let (second, clock) = claimed_second(&scratch).await;
         let stopping = run(&second.session, TEST_DEPARTURE_WAIT);
 
         stopping.input_ended.send(()).unwrap();
         let gone = second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN).await;
+        pass_the_departure_wait(&clock, TEST_DEPARTURE_WAIT).await;
         let exit = stopping.exit.await.unwrap();
         drop(second.session);
         drop(second.endpoint);
@@ -751,7 +785,7 @@ mod tests {
     async fn test_4_with_a_tool_call_in_flight_when_standard_input_closes_the_departure_still_goes_out_within_1000_ms()
      {
         let scratch = Scratch::new("t4-in-flight").await;
-        let second = claimed_second(&scratch).await;
+        let (second, _clock) = claimed_second(&scratch).await;
         let (mut standard_input, input) = tokio::io::duplex(TYPED_BEFORE_THE_END.len());
         let (server_input, _server_busy_in_a_tool_call) =
             tokio::io::duplex(STALLED_SERVER_CAPACITY_BYTES);
@@ -784,13 +818,14 @@ mod tests {
     #[tokio::test]
     async fn spec_3_9_sigterm_starts_stopping_and_hands_the_departure_over() {
         let scratch = Scratch::new("sigterm").await;
-        let second = claimed_second(&scratch).await;
+        let (second, clock) = claimed_second(&scratch).await;
         let stopping = run(&second.session, SHORT_DEPARTURE_WAIT);
 
         stopping.signals.send(ShutdownSignal::Terminate).unwrap();
         let gone = second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN).await;
 
         gone.unwrap_or_else(|missed| missed.fail_the_test());
+        pass_the_departure_wait(&clock, SHORT_DEPARTURE_WAIT).await;
         stopping.exit.await.unwrap();
         drop(scratch);
     }
@@ -799,7 +834,7 @@ mod tests {
     async fn spec_3_9_each_of_sigterm_sigint_and_sighup_starts_stopping_and_only_sigterm_shuts_down_in_the_background()
      {
         for (signal, runtime) in ALL_STOP_CAUSES {
-            let session = Arc::new(Session::new(record_dropping_every_event()));
+            let session = Arc::new(session_on_a_standing_clock(record_dropping_every_event()));
             let stopping = run(&session, LONG_DEPARTURE_WAIT);
 
             stopping.signals.send(signal).unwrap();
@@ -817,7 +852,7 @@ mod tests {
     async fn spec_3_9_a_second_signal_exits_at_once_whatever_the_departure_wait() {
         let scratch = Scratch::new("second-signal").await;
         let (record, mut recorded) = recorded_events();
-        let second = claimed_second_recording_to(&scratch, record).await;
+        let (second, _clock) = claimed_second_recording_to(&scratch, record).await;
         let stopping = run(&second.session, LONG_DEPARTURE_WAIT);
 
         stopping.signals.send(ShutdownSignal::Interrupt).unwrap();
@@ -848,7 +883,7 @@ mod tests {
         let (record, mut recorded) = recorded_events();
         let mut held = member_on_a_standing_clock(&scratch, &record, &mut recorded).await;
         let (_, lock) = scratch.locked_card(FIRST_SEED);
-        let session = Arc::new(Session::new(record));
+        let session = Arc::new(session_on_a_standing_clock(record));
         session
             .claim(card_named(FIRST_CARD), held.member.node, lock)
             .unwrap();
@@ -882,20 +917,24 @@ mod tests {
     #[tokio::test]
     async fn spec_3_8_the_process_exits_no_sooner_than_the_departure_wait_after_stopping_began() {
         let scratch = Scratch::new("wait-before-exit").await;
-        let second = claimed_second(&scratch).await;
+        let (second, clock) = claimed_second(&scratch).await;
         let stopping = run(&second.session, SHORT_DEPARTURE_WAIT);
+        let began = clock.now();
 
-        let began = Instant::now();
         stopping.input_ended.send(()).unwrap();
-        stopping.exit.await.unwrap();
+        clock
+            .asked_to_wake("the departure wait", later_by(began, SHORT_DEPARTURE_WAIT))
+            .await;
 
-        assert!(began.elapsed() >= SHORT_DEPARTURE_WAIT);
+        assert!(!stopping.exit.is_finished());
+        clock.move_forward(SHORT_DEPARTURE_WAIT);
+        stopping.exit.await.unwrap();
         drop(scratch);
     }
 
     #[tokio::test]
     async fn spec_3_8_a_session_that_claimed_no_card_has_nothing_to_wait_for() {
-        let session = Arc::new(Session::new(record_dropping_every_event()));
+        let session = Arc::new(session_on_a_standing_clock(record_dropping_every_event()));
         let stopping = run(&session, LONG_DEPARTURE_WAIT);
 
         stopping.input_ended.send(()).unwrap();
@@ -912,7 +951,7 @@ mod tests {
      {
         let scratch = Scratch::new("stopping-answers").await;
         let (record, mut recorded) = recorded_events();
-        let second = claimed_second_recording_to(&scratch, record).await;
+        let (second, _clock) = claimed_second_recording_to(&scratch, record).await;
         let caller = bind(WITNESS_SEED).await;
         caller.replace_address(second.endpoint.addr());
         let client = DirectClient::new(
@@ -969,7 +1008,7 @@ mod tests {
     async fn spec_3_8_the_sidecar_lock_is_released_while_the_departure_wait_runs() {
         let scratch = Scratch::new("lock-released").await;
         let (record, mut recorded) = recorded_events();
-        let second = claimed_second_recording_to(&scratch, record).await;
+        let (second, _clock) = claimed_second_recording_to(&scratch, record).await;
         assert!(sidecar::is_held(&second.sidecar_path).unwrap());
         let stopping = run(&second.session, TEST_DEPARTURE_WAIT);
 
@@ -1008,7 +1047,7 @@ mod tests {
         .await;
         let record_ts = wall_clock_ms() / 1000;
         let (_, lock) = scratch.locked_card(FIRST_SEED);
-        let session = Arc::new(Session::new(record_dropping_every_event()));
+        let session = Arc::new(session_on_a_standing_clock(record_dropping_every_event()));
         session
             .claim(card_named(FIRST_CARD), member.node, lock)
             .unwrap();
@@ -1074,7 +1113,11 @@ mod tests {
         )
         .await;
         let (_, lock) = scratch.locked_card(FIRST_SEED);
-        let session = Arc::new(Session::new(record_dropping_every_event()));
+        let session_clock = StandingClock::standing_now();
+        let session = Arc::new(Session::new(
+            record_dropping_every_event(),
+            session_clock.monotonic(),
+        ));
         session
             .claim(card_named(FIRST_CARD), member.node, lock)
             .unwrap();
@@ -1106,6 +1149,7 @@ mod tests {
         )
         .await;
         let first_rewrite = (CONFIGURATION_REWRITE_DECIDED, first_rewrite_outcome);
+        pass_the_departure_wait(&session_clock, TEST_DEPARTURE_WAIT).await;
         stopping.exit.await.unwrap();
         set_mode(&config_directory, WRITABLE_DIRECTORY_MODE);
         drop(witness);
@@ -1264,11 +1308,15 @@ mod tests {
         let (record, mut recorded) = recorded_events();
         let mut held = member_on_a_standing_clock(&scratch, &record, &mut recorded).await;
         let read_at_drop = Arc::new(Mutex::new(None));
-        let session = Arc::new(Session::new(record_reading_the_file_at_the_drop(
-            Arc::clone(&record),
-            held.member.config_path.clone(),
-            Arc::clone(&read_at_drop),
-        )));
+        let session_clock = StandingClock::standing_now();
+        let session = Arc::new(Session::new(
+            record_reading_the_file_at_the_drop(
+                Arc::clone(&record),
+                held.member.config_path.clone(),
+                Arc::clone(&read_at_drop),
+            ),
+            session_clock.monotonic(),
+        ));
         let (_, lock) = scratch.locked_card(FIRST_SEED);
         session
             .claim(card_named(FIRST_CARD), held.member.node, lock)
@@ -1301,6 +1349,7 @@ mod tests {
         )
         .await;
         held.release_probe.notify_one();
+        pass_the_departure_wait(&session_clock, TEST_DEPARTURE_WAIT).await;
         stopping.exit.await.unwrap();
         drop(held.witness);
         drop(scratch);
@@ -1352,7 +1401,7 @@ mod tests {
         )
         .await;
         let (_, lock) = scratch.locked_card(SECOND_SEED);
-        let session = Arc::new(Session::new(record_dropping_every_event()));
+        let session = Arc::new(session_on_a_standing_clock(record_dropping_every_event()));
         session
             .claim(card_named(FIRST_CARD), member.node, lock)
             .unwrap();
@@ -1392,8 +1441,11 @@ mod tests {
         stopping_closes_the_connection_held_to_a_witness("held-outside-table", None).await;
     }
 
+    const A_SECOND_BEFORE_THE_WAIT_ENDS: Duration = Duration::from_secs(1);
+
     #[tokio::test]
-    async fn spec_3_8_the_gossip_broadcast_stays_alive_while_stopping() {
+    async fn spec_3_8_the_gossip_broadcast_stays_alive_through_the_departure_wait_to_a_second_before_its_end()
+     {
         let scratch = Scratch::new("gossip-alive").await;
         let (record, mut recorded) = recorded_events();
         let (member, mut witness) = start_witnessed(
@@ -1404,7 +1456,8 @@ mod tests {
         )
         .await;
         let (_, lock) = scratch.locked_card(SECOND_SEED);
-        let session = Arc::new(Session::new(record));
+        let clock = StandingClock::standing_now();
+        let session = Arc::new(Session::new(record, clock.monotonic()));
         session
             .claim(card_named(SECOND_CARD), member.node, lock)
             .unwrap();
@@ -1425,6 +1478,22 @@ mod tests {
             PAYLOAD_WAIT,
         )
         .await;
+        clock
+            .asked_to_wake(
+                "the departure wait",
+                later_by(clock.now(), TEST_DEPARTURE_WAIT),
+            )
+            .await;
+        clock.move_forward(TEST_DEPARTURE_WAIT.saturating_sub(A_SECOND_BEFORE_THE_WAIT_ENDS));
+
+        witness.broadcast_marker(SECOND_MARKER_SEED).await;
+        next_recorded_meeting(
+            &mut recorded,
+            PAYLOAD_ACCEPTED,
+            |fields| fields.contains(&(PEER_FIELD, short_peer_id(SECOND_MARKER_SEED))),
+            PAYLOAD_WAIT,
+        )
+        .await;
 
         assert!(!stopping.exit.is_finished());
         drop(scratch);
@@ -1434,7 +1503,8 @@ mod tests {
     async fn spec_3_8_a_stopping_node_introduces_itself_to_no_one() {
         let scratch = Scratch::new("no-introduce").await;
         let (record, mut recorded) = recorded_events();
-        let second = claimed_second_recording_to(&scratch, record).await;
+        let second =
+            claimed_second_timing_its_wait_on(&scratch, record, Arc::new(RuntimeClock)).await;
         let stopping = run(&second.session, WITNESSED_DEPARTURE_WAIT);
         stopping.input_ended.send(()).unwrap();
         next_recorded_meeting(
@@ -1471,11 +1541,12 @@ mod tests {
     #[tokio::test]
     async fn spec_3_3_the_inbox_socket_file_is_gone_once_the_process_has_exited() {
         let scratch = Scratch::new("socket-removed").await;
-        let second = claimed_second(&scratch).await;
+        let (second, clock) = claimed_second(&scratch).await;
         assert!(second.inbox_path.exists());
         let stopping = run(&second.session, SHORT_DEPARTURE_WAIT);
 
         stopping.input_ended.send(()).unwrap();
+        pass_the_departure_wait(&clock, SHORT_DEPARTURE_WAIT).await;
         stopping.exit.await.unwrap();
 
         let awaited = format!(
@@ -1494,7 +1565,8 @@ mod tests {
     async fn spec_3_8_a_stopping_node_announces_no_presence_after_its_departure() {
         let scratch = Scratch::new("no-presence-after").await;
         let (record, mut recorded) = recorded_events();
-        let second = claimed_second_recording_to(&scratch, record).await;
+        let second =
+            claimed_second_timing_its_wait_on(&scratch, record, Arc::new(RuntimeClock)).await;
         let stopping = run(&second.session, WITNESSED_DEPARTURE_WAIT);
         stopping.input_ended.send(()).unwrap();
         second_gone_at_first_within(&second.first, SPEC_GONE_WITHIN)
