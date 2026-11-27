@@ -328,6 +328,50 @@ mod network_commands {
         assert_eq!(hosts[0].origin, HostOrigin::Configured);
     }
 
+    /// Spec 3.13: joining an invitation that names one host id twice writes one entry for it, the later relay, with the hosts sorted by id.
+    #[test]
+    fn spec_3_13_joining_an_invitation_that_names_a_host_twice_writes_one_entry_for_it_sorted_by_id()
+     {
+        let machine = Machine::fresh("join-duplicate-host");
+        let owner = wire::PublicKey::from(SecretKey::from_bytes(&[3; 32]).public());
+        let later_in_order = host_address(9, "https://relay-three.example/");
+        let first_relay_of_twice = host_address(7, "https://relay-one.example/");
+        let second_relay_of_twice = host_address(7, "https://relay-two.example/");
+        let text = invitation_text(
+            owner,
+            vec![
+                later_in_order.clone(),
+                first_relay_of_twice,
+                second_relay_of_twice.clone(),
+            ],
+        );
+
+        let output = machine.run(&["network", "join", &text]);
+
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        let hosts = NetworkConfig::load(&machine.config_file(NETWORK))
+            .unwrap()
+            .hosts;
+        let written: Vec<(String, String)> = hosts
+            .into_iter()
+            .map(|host| (host.id, host.relay))
+            .collect();
+        let mut expected = vec![
+            (
+                render_public_key(&PublicKey::from_bytes(later_in_order.id.as_bytes()).unwrap()),
+                "https://relay-three.example/".to_owned(),
+            ),
+            (
+                render_public_key(
+                    &PublicKey::from_bytes(second_relay_of_twice.id.as_bytes()).unwrap(),
+                ),
+                "https://relay-two.example/".to_owned(),
+            ),
+        ];
+        expected.sort();
+        assert_eq!(written, expected);
+    }
+
     #[test]
     fn spec_3_13_a_create_network_whose_configuration_cannot_be_written_leaves_no_owner_key() {
         let machine = Machine::fresh("create-config-unwritable");

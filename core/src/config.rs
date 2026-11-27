@@ -399,13 +399,13 @@ impl NetworkConfig {
         Ok(merged)
     }
 
-    /// Refuses this configuration unless every field is valid, and renders it as the text of the file at `path`.
+    /// Refuses this configuration unless every field is valid, and renders it as the text of the file at `path` with one host entry for each id, sorted by id.
     ///
     /// # Errors
     /// Returns a `ConfigError` when a field is invalid or the configuration cannot be serialized.
     pub(crate) fn validated_text(&self, path: &Path) -> Result<String, ConfigError> {
         self.validate(path)?;
-        self.rendered()
+        self.merged_with(None).rendered()
     }
 
     fn rendered(&self) -> Result<String, ConfigError> {
