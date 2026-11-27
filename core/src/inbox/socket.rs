@@ -16,9 +16,8 @@ use tokio::task::{JoinHandle, JoinSet};
 use crate::dirs::Directories;
 use crate::event::InboxEvent;
 use crate::inbox::buffer::{InboxBuffer, InboxFrame, ReceivedMessage};
-use estafette_private_entry::{remove_file_if_present, with_cleanup_outcome};
+use estafette_private_entry::{OWNER_ONLY_FILE_MODE, remove_file_if_present, with_cleanup_outcome};
 
-const SOCKET_MODE: u32 = 0o600;
 const MAX_REQUEST_LINE_BYTES: u64 = 64;
 const DISCARDED_INPUT_CHUNK_BYTES: usize = 64;
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(100);
@@ -317,12 +316,14 @@ fn bind_owner_only(socket_path: &Path) -> Result<UnixListener, InboxSocketError>
         path: socket_path.to_path_buf(),
         source,
     })?;
-    fs::set_permissions(socket_path, fs::Permissions::from_mode(SOCKET_MODE)).map_err(
-        |source| InboxSocketError::RestrictPermissions {
-            path: socket_path.to_path_buf(),
-            source: with_cleanup_outcome(source, socket_path, remove_file_if_present(socket_path)),
-        },
-    )?;
+    fs::set_permissions(
+        socket_path,
+        fs::Permissions::from_mode(OWNER_ONLY_FILE_MODE),
+    )
+    .map_err(|source| InboxSocketError::RestrictPermissions {
+        path: socket_path.to_path_buf(),
+        source: with_cleanup_outcome(source, socket_path, remove_file_if_present(socket_path)),
+    })?;
     Ok(listener)
 }
 

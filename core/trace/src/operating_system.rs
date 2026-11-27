@@ -6,9 +6,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::UNIX_EPOCH;
 
-use super::{StoredFile, TraceClocks, TraceEffects, TraceFile};
+use estafette_private_entry::OWNER_ONLY_FILE_MODE;
 
-const PRIVATE_FILE_MODE: u32 = 0o600;
+use super::{StoredFile, TraceClocks, TraceEffects, TraceFile};
 
 impl TraceEffects {
     /// The effects on this machine's filesystem and threads, every line reading `clocks`.
@@ -36,9 +36,9 @@ fn create_private_file(path: &Path) -> io::Result<Box<dyn TraceFile>> {
     let file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .mode(PRIVATE_FILE_MODE)
+        .mode(OWNER_ONLY_FILE_MODE)
         .open(path)?;
-    fs::set_permissions(path, Permissions::from_mode(PRIVATE_FILE_MODE))?;
+    fs::set_permissions(path, Permissions::from_mode(OWNER_ONLY_FILE_MODE))?;
     Ok(Box::new(file))
 }
 

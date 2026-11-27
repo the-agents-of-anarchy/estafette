@@ -7,5 +7,6 @@ edition = "2024"
 workspace = true
 
 [dependencies]
+estafette-private-entry = { path = "../private-entry" }
 serde_json = "1"
 data-encoding = "2"
