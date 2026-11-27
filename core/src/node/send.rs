@@ -1,5 +1,3 @@
-use iroh::EndpointId;
-
 use crate::errors::ErrorCode;
 use crate::keys::render_public_key;
 use crate::net::direct::{DirectError, DirectHost};
@@ -118,35 +116,32 @@ impl Node {
     ) -> Result<Delivery, ErrorCode> {
         let target = endpoint_id(&recipient).ok_or(ErrorCode::Unreachable)?;
         let id = message.id;
-        match self.client.send_message(target, message).await {
+        let outcome = match self.client.send_message(target, message).await {
             Ok(ack) => {
                 self.state.contact_succeeded(recipient);
-                self.delivery_of(ack, id, target).await
+                delivery_of(&ack, id)
             }
             Err(failure) => {
                 self.state.contact_failed(recipient);
-                self.client.drop_held_connection(target).await;
                 Err(failure_error(&failure))
             }
-        }
-    }
-
-    /// The delivery an accepting ack reports, or the refusal of any other ack after dropping the held connection.
-    async fn delivery_of(
-        &self,
-        ack: MessageAck,
-        id: MessageId,
-        target: EndpointId,
-    ) -> Result<Delivery, ErrorCode> {
-        if ack.accepted {
-            Ok(Delivery {
-                id,
-                attached: ack.attached,
-            })
-        } else {
+        };
+        if outcome.is_err() {
             self.client.drop_held_connection(target).await;
-            Err(refusal_error(ack.reason.as_deref()))
         }
+        outcome
+    }
+}
+
+/// The delivery an accepting ack reports, or the refusal of any other ack.
+fn delivery_of(ack: &MessageAck, id: MessageId) -> Result<Delivery, ErrorCode> {
+    if ack.accepted {
+        Ok(Delivery {
+            id,
+            attached: ack.attached,
+        })
+    } else {
+        Err(refusal_error(ack.reason.as_deref()))
     }
 }
 
