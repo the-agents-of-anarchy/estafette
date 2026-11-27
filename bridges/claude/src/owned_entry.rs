@@ -463,6 +463,39 @@ mod tests {
         }
     }
 
+    const MODES_OPEN_TO_GROUP_ALONE: [u32; 3] = [0o070, 0o750, 0o040];
+    const MODES_OPEN_TO_OTHER_ALONE: [u32; 3] = [0o007, 0o705, 0o004];
+    const MODES_CLOSED_TO_GROUP_AND_OTHER: [u32; 3] = [0o700, 0o500, 0o000];
+
+    #[test]
+    fn spec_3_3_a_directory_open_to_group_alone_or_to_other_alone_is_refused_and_one_closed_to_both_is_usable_runtime_directory_is_private_or_refused()
+     {
+        let directory_with_mode = |permission_bits| EntryFacts {
+            kind: EntryKind::Directory,
+            owner_user_id: THE_USER,
+            permission_bits,
+        };
+        for mode in MODES_OPEN_TO_GROUP_ALONE
+            .into_iter()
+            .chain(MODES_OPEN_TO_OTHER_ALONE)
+        {
+            assert_eq!(
+                directory_finding(directory_with_mode(mode), THE_USER),
+                Some(DirectoryFinding::GrantsAccessBeyondOwner {
+                    permission_bits: mode
+                }),
+                "mode {mode:04o}"
+            );
+        }
+        for mode in MODES_CLOSED_TO_GROUP_AND_OTHER {
+            assert_eq!(
+                directory_finding(directory_with_mode(mode), THE_USER),
+                None,
+                "mode {mode:04o}"
+            );
+        }
+    }
+
     #[test]
     fn spec_3_12_an_existing_entry_is_a_trusted_state_file_exactly_when_it_is_a_regular_file_of_the_user_runtime_directory_is_private_or_refused()
      {
