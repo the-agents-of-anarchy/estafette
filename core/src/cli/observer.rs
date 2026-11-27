@@ -3107,7 +3107,7 @@ mod tests {
         );
         assert!(
             live_direct_answered_after_the_close,
-            "the observer closed the live direct connection with the earlier one: its probe, sent once the earlier close was seen, got no answer"
+            "the live direct connection got no answer to its probe, sent once the earlier connection's close was seen"
         );
         assert!(
             !neighbor_events
