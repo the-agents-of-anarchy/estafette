@@ -2206,16 +2206,31 @@ mod tests {
         for case in 0..PROPERTY_CASES {
             let mut draws = Draws::seeded(case);
             let started = Instant::now();
-            let mut schedule = RebindSchedule::new(started);
-            assert_eq!(schedule.next_rebind().1, RebindCause::Deaf, "case {case}");
-            let timed_out = started + Duration::from_millis(draws.below(LONGEST_DRAWN_MS));
-            schedule.join_timed_out(timed_out);
-            let expected = if timed_out < started + SPEC_DEAF_TIMEOUT {
-                RebindCause::JoinGainedNoNeighbor
-            } else {
-                RebindCause::Deaf
-            };
-            assert_eq!(schedule.next_rebind().1, expected, "case {case}");
+            let deaf_timeout_ran_out = started + SPEC_DEAF_TIMEOUT;
+            let at_a_random_instant =
+                started + Duration::from_millis(draws.below(LONGEST_DRAWN_MS));
+            let a_millisecond_before = deaf_timeout_ran_out.checked_sub(ONE_MILLISECOND).unwrap();
+            let a_millisecond_after = deaf_timeout_ran_out + ONE_MILLISECOND;
+            for timed_out in [
+                at_a_random_instant,
+                a_millisecond_before,
+                deaf_timeout_ran_out,
+                a_millisecond_after,
+            ] {
+                let mut schedule = RebindSchedule::new(started);
+                assert_eq!(schedule.next_rebind().1, RebindCause::Deaf, "case {case}");
+                schedule.join_timed_out(timed_out);
+                let expected = if timed_out < deaf_timeout_ran_out {
+                    RebindCause::JoinGainedNoNeighbor
+                } else {
+                    RebindCause::Deaf
+                };
+                assert_eq!(
+                    schedule.next_rebind().1,
+                    expected,
+                    "case {case}, join timed out {timed_out:?}"
+                );
+            }
         }
     }
 
