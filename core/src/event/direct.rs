@@ -359,10 +359,24 @@ mod tests {
                 vec![("outcome", Value::from("answered"))],
             ),
             (
+                ServedOutcome::Refused(AckRefusal::TooLarge),
+                vec![
+                    ("outcome", Value::from("refused")),
+                    ("code", Value::from("too_large")),
+                ],
+            ),
+            (
                 ServedOutcome::Refused(AckRefusal::Refused),
                 vec![
                     ("outcome", Value::from("refused")),
                     ("code", Value::from("refused")),
+                ],
+            ),
+            (
+                ServedOutcome::Refused(AckRefusal::Unlisted),
+                vec![
+                    ("outcome", Value::from("refused")),
+                    ("code", Value::from("unlisted")),
                 ],
             ),
             (
