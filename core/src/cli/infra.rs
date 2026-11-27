@@ -181,11 +181,22 @@ pub trait InfrastructureFilesystem: NetworkFilesystem + Sync {
     ///
     /// Fails with the operating system's error when the file cannot be written or renamed.
     fn replace_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()>;
+
+    /// Refuses an existing entry at the path that is not a private directory of the user, creating nothing.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the refusal when the entry is unsafe, or with the operating system's error when it cannot be inspected.
+    fn require_existing_directory_private(&self, path: &Path) -> io::Result<()>;
 }
 
 impl InfrastructureFilesystem for OperatingSystemFilesystem {
     fn replace_owner_only_file(&self, path: &Path, contents: &str) -> io::Result<()> {
         write_atomically(path, contents)
+    }
+
+    fn require_existing_directory_private(&self, path: &Path) -> io::Result<()> {
+        Self::require_existing_directory_private(self, path)
     }
 }
 
@@ -320,6 +331,10 @@ async fn serve_host(
     effects: InfrastructureEffects,
     result: &mut (impl Write + Send),
 ) -> Result<(), Failure> {
+    let certificate_cache = directories.infrastructure_certificate_cache_directory(network);
+    filesystem
+        .require_existing_directory_private(&certificate_cache)
+        .map_err(io_failure(&certificate_cache))?;
     let files = read_host_files(
         network,
         domain,
@@ -328,7 +343,6 @@ async fn serve_host(
         effects.fill_from_secure_source,
         result,
     )?;
-    let certificate_cache = directories.infrastructure_certificate_cache_directory(network);
     filesystem
         .create_private_directory(&certificate_cache)
         .map_err(io_failure(&certificate_cache))?;
@@ -1531,6 +1545,32 @@ mod tests {
         assert_eq!(mode_of(&cache), LOOSE_DIRECTORY_MODE);
         assert!(seen.relay_sites.lock().unwrap().is_empty());
         assert!(seen.bound.borrow().is_empty());
+    }
+
+    #[tokio::test]
+    async fn spec_3_3_a_certificate_cache_granting_access_to_group_or_other_refuses_a_first_start_before_the_host_line_is_printed_or_a_host_key_made()
+     {
+        let scratch = Scratch::new("loose-cache-first-start");
+        scratch.configure_network();
+        let cache = scratch.certificate_cache();
+        make_private_directory(cache.parent().unwrap());
+        fs::create_dir(&cache).unwrap();
+        fs::set_permissions(&cache, fs::Permissions::from_mode(LOOSE_DIRECTORY_MODE)).unwrap();
+        let seen = Seen::default();
+
+        let (printed, outcome) = run_once(&scratch, HOST_SEED, &seen).await;
+
+        let refusal = outcome.unwrap_err().to_string();
+        assert_eq!(
+            refusal,
+            format!(
+                "{cache}: {cache} already exists and is mode 0755, which grants access to group or other; it must be a directory of yours with no access for group or other",
+                cache = cache.display()
+            )
+        );
+        assert_eq!(printed, "");
+        assert!(!scratch.key_file().exists());
+        assert_eq!(mode_of(&cache), LOOSE_DIRECTORY_MODE);
     }
 
     #[tokio::test]

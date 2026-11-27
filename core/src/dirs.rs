@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 
 use crate::handle::Handle;
 pub use estafette_private_entry::ProcessUserUnknown;
-use estafette_private_entry::{DirectoryFinding, PrivateDirectoryFailure, process_user_id};
+use estafette_private_entry::{
+    DirectoryFinding, EntryFacts, PrivateDirectoryFailure, directory_finding, process_user_id,
+};
 pub(crate) use estafette_trace::ROLLED_OVER_TRACE_SUFFIX;
 use estafette_trace::{
     BaseDirectoryUnresolvable, PRODUCT_NAME, non_empty_variable, xdg_base_directory,
@@ -70,6 +72,27 @@ impl OperatingSystemFilesystem {
         Ok(Self {
             user_id: process_user_id()?,
         })
+    }
+
+    /// Refuses an existing entry at the path that is not a private directory of this user, creating and changing nothing, and passes a path where nothing exists.
+    ///
+    /// # Errors
+    ///
+    /// Fails with the refusal inside the error when the entry is unsafe, or with the operating system's error when it cannot be inspected.
+    pub fn require_existing_directory_private(&self, path: &Path) -> io::Result<()> {
+        match EntryFacts::at(path) {
+            Err(failure) if failure.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(failure) => Err(failure),
+            Ok(facts) => directory_finding(facts, self.user_id).map_or(Ok(()), |found| {
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    ExistingDirectoryRefused {
+                        path: path.to_path_buf(),
+                        found,
+                    },
+                ))
+            }),
+        }
     }
 }
 
