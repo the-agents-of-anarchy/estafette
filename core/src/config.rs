@@ -342,7 +342,7 @@ impl Host {
         Ok(())
     }
 
-    /// Combines two records of one host: the newer's relay, the larger `ts`, the later `heard`, configured if either is.
+    /// Combines two records of one host: the relay of the record with the larger `ts` (the newer's on a tie), the larger `ts`, the later `heard`, configured if either is.
     fn merged_with(&self, newer: &Self) -> Self {
         let origin = match (self.origin, newer.origin) {
             (HostOrigin::Learned { heard: earlier }, HostOrigin::Learned { heard: later }) => {
@@ -353,9 +353,14 @@ impl Host {
             (HostOrigin::Configured | HostOrigin::Learned { .. }, HostOrigin::Configured)
             | (HostOrigin::Configured, HostOrigin::Learned { .. }) => HostOrigin::Configured,
         };
+        let relay_of_larger_ts = if newer.ts >= self.ts {
+            &newer.relay
+        } else {
+            &self.relay
+        };
         Self {
             id: newer.id.clone(),
-            relay: newer.relay.clone(),
+            relay: relay_of_larger_ts.clone(),
             ts: self.ts.max(newer.ts),
             origin,
         }
@@ -611,6 +616,38 @@ mod tests {
             owner: hex_key('6'),
             hosts,
         }
+    }
+
+    /// Spec 3.3: a rewrite keeps the relay of the record with the larger `ts`, whichever side holds it.
+    #[test]
+    fn rewrite_keeps_the_relay_of_the_record_with_the_larger_ts() {
+        let directory = scratch_directory("relay-of-larger-ts");
+        let path = directory.join("net.toml");
+        network(vec![
+            learned(&host_id(b'a'), "https://file-a/", Some(200), NOW_MILLIS),
+            learned(&host_id(b'b'), "https://file-b/", Some(100), NOW_MILLIS),
+        ])
+        .rewrite(&path, NOW_SECONDS)
+        .unwrap();
+        let held = network(vec![
+            learned(&host_id(b'a'), "https://held-a/", Some(100), NOW_MILLIS),
+            learned(&host_id(b'b'), "https://held-b/", Some(200), NOW_MILLIS),
+        ]);
+
+        let merged = held.rewrite(&path, NOW_SECONDS).unwrap();
+
+        let relay_and_ts_of = |id: String| {
+            let host = merged.hosts.iter().find(|host| host.id == id).unwrap();
+            (host.relay.as_str(), host.ts)
+        };
+        assert_eq!(
+            relay_and_ts_of(host_id(b'a')),
+            ("https://file-a/", Some(200))
+        );
+        assert_eq!(
+            relay_and_ts_of(host_id(b'b')),
+            ("https://held-b/", Some(200))
+        );
     }
 
     /// Spec 3.3: a rewrite merges a concurrent writer's extra host, the larger ts and the later heard.
