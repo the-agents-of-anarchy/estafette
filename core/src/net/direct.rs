@@ -14,7 +14,7 @@ use iroh::endpoint::{
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::sync::watch;
-use tokio::time::{Instant, timeout};
+use tokio::time::Instant;
 
 use super::endpoint::{
     BoundEndpoint, Close, CloseReason, ConnectionId, DIRECT_ALPN, Direction, NodeEndpoint,
@@ -852,11 +852,18 @@ impl<H: DirectHost> ServerState<H> {
 
     /// Reads the whole request within the wire limit and the read timeout.
     async fn read_request(&self, recv: &mut RecvStream) -> Result<Vec<u8>, StreamEnd> {
-        match timeout(SERVER_READ_TIMEOUT, recv.read_to_end(WIRE_LIMIT_BYTES)).await {
-            Err(_elapsed) => Err(StreamEnd::ReadTimeout),
-            Ok(Err(ReadToEndError::TooLong)) => Err(StreamEnd::OverWireLimit),
-            Ok(Err(ReadToEndError::Read(failure))) => Err(failure.into()),
-            Ok(Ok(bytes)) => Ok(bytes),
+        let read_due = self.held.monotonic.now().checked_add(SERVER_READ_TIMEOUT);
+        match before_deadline(
+            &*self.held.monotonic,
+            read_due,
+            recv.read_to_end(WIRE_LIMIT_BYTES),
+        )
+        .await
+        {
+            None => Err(StreamEnd::ReadTimeout),
+            Some(Err(ReadToEndError::TooLong)) => Err(StreamEnd::OverWireLimit),
+            Some(Err(ReadToEndError::Read(failure))) => Err(failure.into()),
+            Some(Ok(bytes)) => Ok(bytes),
         }
     }
 
@@ -1258,6 +1265,7 @@ pub(crate) mod tests {
     use iroh::endpoint::ReadToEndError;
     use iroh::protocol::Router;
     use iroh_gossip::ALPN as GOSSIP_ALPN;
+    use tokio::time::timeout;
 
     use super::*;
     use crate::card::tests::{SPEC_PUBLIC_CAP_BYTES, public_mapping_of_bytes};
@@ -1613,7 +1621,7 @@ pub(crate) mod tests {
     const SPEC_RESET_CODE_OVER_WIRE_LIMIT: u32 = 1;
     const READ_TIMEOUT_RESET_CODE_ON_THE_WIRE: u32 = 2;
     const UNANSWERED_RESET_CODE_ON_THE_WIRE: u32 = 3;
-    const SPEC_SERVER_READ_TIMEOUT_EARLIEST: Duration = Duration::from_secs(10);
+    const SPEC_SERVER_READ_TIMEOUT: Duration = Duration::from_secs(10);
     const SPEC_SERVER_READ_TIMEOUT_LATEST: Duration = Duration::from_secs(11);
 
     async fn raw_connection(rig: &Rig) -> Connection {
@@ -1742,23 +1750,40 @@ pub(crate) mod tests {
         assert_eq!(rig.host.received().len(), 0);
     }
 
+    /// How far short of a deadline a test leaves its handed clock to show a waiter still waiting.
+    const ONE_MILLISECOND_SHORT: Duration = Duration::from_millis(1);
+
     #[tokio::test]
-    async fn spec_3_14_server_read_timeout_resets_that_stream_and_keeps_the_connection() {
-        let rig = rig().await;
+    async fn spec_3_14_server_read_timeout_resets_that_stream_when_its_clock_reads_the_timeout_and_keeps_the_connection()
+     {
+        let clock = StandingClock::standing_now();
+        let stream_opened_at = clock.now();
+        let rig = rig_over(
+            RecordingHost::with_card(card_of(SERVER_SEED)),
+            clock.monotonic(),
+        )
+        .await;
         let connection = raw_connection(&rig).await;
         let (mut silent_send, mut silent_recv) = connection.open_bi().await.unwrap();
         silent_send.write_all(&[0]).await.unwrap();
+        clock
+            .asked_to_wake(
+                "the server read timeout",
+                stream_opened_at + SPEC_SERVER_READ_TIMEOUT,
+            )
+            .await;
 
-        let started = Instant::now();
-        let outcome = silent_recv.read_to_end(WIRE_LIMIT_BYTES).await;
-        let waited = started.elapsed();
+        clock.move_forward(SPEC_SERVER_READ_TIMEOUT);
+        let outcome = answered_within(
+            WAKE_ASKED_WAIT,
+            "reset of the stream the server read timeout ended",
+            silent_recv.read_to_end(WIRE_LIMIT_BYTES),
+        )
+        .await;
 
         assert_eq!(
             reset_code_of(&Err(outcome.unwrap_err())),
             Some(VarInt::from_u32(READ_TIMEOUT_RESET_CODE_ON_THE_WIRE))
-        );
-        assert!(
-            SPEC_SERVER_READ_TIMEOUT_EARLIEST <= waited && waited < SPEC_SERVER_READ_TIMEOUT_LATEST
         );
         assert_eq!(connection.close_reason(), None);
         let next = raw_exchange(&connection, &sealed_message_to_server(&keys()))
@@ -1766,6 +1791,44 @@ pub(crate) mod tests {
             .unwrap();
         assert!(matches!(
             open_response(&keys(), &next).unwrap(),
+            Response::MessageAck(MessageAck { accepted: true, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn spec_3_14_server_read_timeout_leaves_a_stream_that_completes_a_millisecond_before_its_clock_reads_the_timeout()
+     {
+        let clock = StandingClock::standing_now();
+        let stream_opened_at = clock.now();
+        let rig = rig_over(
+            RecordingHost::with_card(card_of(SERVER_SEED)),
+            clock.monotonic(),
+        )
+        .await;
+        let connection = raw_connection(&rig).await;
+        let request = sealed_message_to_server(&keys());
+        let (mut slow_send, mut slow_recv) = connection.open_bi().await.unwrap();
+        slow_send.write_all(&request[..1]).await.unwrap();
+        clock
+            .asked_to_wake(
+                "the server read timeout",
+                stream_opened_at + SPEC_SERVER_READ_TIMEOUT,
+            )
+            .await;
+
+        clock.move_forward(SPEC_SERVER_READ_TIMEOUT.saturating_sub(ONE_MILLISECOND_SHORT));
+        slow_send.write_all(&request[1..]).await.unwrap();
+        slow_send.finish().unwrap();
+        let response = answered_within(
+            WAKE_ASKED_WAIT,
+            "response to the request completed before the server read timeout",
+            slow_recv.read_to_end(WIRE_LIMIT_BYTES),
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            open_response(&keys(), &response).unwrap(),
             Response::MessageAck(MessageAck { accepted: true, .. })
         ));
     }
