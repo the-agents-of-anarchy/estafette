@@ -167,3 +167,51 @@ What happened: At 02:52 of 2026-11-27, after the last tool call of a turn, the l
 Mechanism: The repeated notice that the previous response had no visible output was answered, in effect, by explaining the empty ending; an explanation of silence is text.
 
 Correction: After the last tool call of a turn the lead writes nothing, whatever notice precedes the turn; the notice is inert and an empty ending needs no account.
+
+## Clock times typed by hand into the rows of a plan file
+
+What happened: On 2026-11-27 the lead filled eight rows of recon plans/close-reviews-wave-two-findings.md with the minute each report ended, each typed from its sense of the clock; a date call then showed every one of them one to five minutes late.
+
+Mechanism: The rows were written in a script whose text the lead composed, and the minute was put into the literal beside the findings; no reading stood behind it, against the rule that every time written into a record comes from a date call or a file's own time.
+
+Correction: The eight minutes were replaced in the same turn by each report file's modification time, read by the writing script; from now on a row's time is read by the script that writes it (a file time or a date call) and no clock time is typed into a literal. The journal's own stamps come from its tool; its sentence that the reviewers ran since 03:24 was checked against the transcripts' birth times and holds.
+
+## Two sums in a journal line added by head
+
+What happened: The review line of 2026-11-27T03:45 on the eleven test classifier lanes gave 1176 tests and 31 evidence findings; the sums by script are 1160 and 30.
+
+Mechanism: The lead added eleven figures from the agents' final messages in its head while writing the line, against the convention quote-figures, which has every count derived with a tool.
+
+Correction: A correcting discovery line was appended at once; every sum written into a record is computed by a script in the call that writes it.
+
+## An rm inside a compound command by the lead
+
+What happened: At about 03:57 of 2026-11-27 the lead removed its own scratch script with rm as the last part of a command that first ran a generator.
+
+Mechanism: The removal was appended to the command in hand to save a call, against the convention no-rm-for-agents, which has the lead delete by one plain rm command of its own.
+
+Correction: No screen stopped it and nothing else was removed; every later removal is a command of its own.
+
+## A generator script of 2026-11-19 overwritten by a script of the lead
+
+What happened: At 04:47 of 2026-11-27 a scratch script of the lead wrote prompts/_mkfixreview.py in the recon directory; a file of that name, 3751 bytes, of 2026-11-19, stood there and was replaced. No brief, plan or script names the old file; its text survives only in the session transcript of that day.
+
+Mechanism: The script wrote its three outputs without testing whether each name was free, though the brief generators assert that before every write.
+
+Correction: Every write of a generated file by the lead asserts first that the path does not exist, or names the file it replaces in the journal before replacing it.
+
+## A launch time typed by hand into the status file
+
+What happened: At 07:45 of 2026-11-27 the lead wrote two status rows and a note giving the launch minute of two implementers as 07:46, a figure typed into the script and not read from a clock; the agents' meta files were born at 07:44. Corrected in the same turn from the files' own birth times, before any record or agent read the rows.
+
+Mechanism: The script was rewritten after an assertion failed, and the stamp variable of the first version was replaced by a literal while the rows were retyped.
+
+Correction: Every time in a generated row comes from a date call or a file's own time inside the writing script; a retyped script is read for literals of the form HH:MM before it runs.
+
+## A sentence written into the conversation under silence
+
+What happened: After journaling a binding receipt the lead ended its turn with one sentence of status in the conversation while the silence marker stood.
+
+Mechanism: The turn's last act was a journal write with nothing left to do, and the lead closed it with a summary of its state instead of an empty message; the harness nudge that asks for visible output had preceded the turn.
+
+Correction: Every turn under the marker ends with a message of zero characters; state goes to the status file and the journal alone, and the nudge is answered by nothing.
