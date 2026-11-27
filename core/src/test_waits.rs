@@ -351,16 +351,21 @@ mod tests {
         .await;
     }
 
-    #[tokio::test]
+    const MISSED_WAIT_BOUND: Duration = Duration::from_millis(50);
+
+    #[tokio::test(start_paused = true)]
     async fn a_condition_that_never_holds_fails_naming_it_and_its_bound() {
         const AWAITED: &str = "card listed";
-        const BOUND: Duration = Duration::from_millis(50);
 
-        let missed = found_within(BOUND, AWAITED, async || None::<()>)
-            .await
-            .unwrap_err();
+        let (missed, ()) = tokio::join!(
+            found_within(MISSED_WAIT_BOUND, AWAITED, async || None::<()>),
+            tokio::time::advance(MISSED_WAIT_BOUND),
+        );
 
-        assert_eq!(missed.to_string(), "no card listed within 50ms");
+        assert_eq!(
+            missed.unwrap_err().to_string(),
+            "no card listed within 50ms"
+        );
     }
 
     #[tokio::test]
@@ -376,21 +381,23 @@ mod tests {
         assert_eq!(found, Ok(3));
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     #[should_panic(expected = "no card listed within 50ms")]
     async fn a_missed_wait_fails_the_test_with_its_text() {
-        found_within(
-            Duration::from_millis(50),
-            "card listed",
-            async || None::<()>,
-        )
-        .await
-        .unwrap_or_else(WaitMissed::fail_the_test);
+        let (missed, ()) = tokio::join!(
+            found_within(MISSED_WAIT_BOUND, "card listed", async || None::<()>),
+            tokio::time::advance(MISSED_WAIT_BOUND),
+        );
+
+        missed.unwrap_or_else(WaitMissed::fail_the_test);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn nothing_is_found_unexpectedly_when_the_condition_never_holds() {
-        let found = unexpectedly_found_within(Duration::from_millis(50), async || None::<()>).await;
+        let (found, ()) = tokio::join!(
+            unexpectedly_found_within(MISSED_WAIT_BOUND, async || None::<()>),
+            tokio::time::advance(MISSED_WAIT_BOUND),
+        );
 
         assert_eq!(found, None);
     }
