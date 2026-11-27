@@ -21,18 +21,6 @@ const DROPPED_COUNT_FIELD: &str = "count";
 const LINE_END: u8 = b'\n';
 const WRITER_THREAD_NAME_SUFFIX: &str = "trace-writer";
 
-/// Where a trace writer's thread puts each line.
-pub trait TraceOutput {
-    /// Which of its run's trace files this output is.
-    fn kind(&self) -> TraceFileKind;
-
-    /// Writes the line, newline included, whole in one write.
-    fn write_line(&mut self, line: &[u8]) -> io::Result<()>;
-
-    /// Ends the output at the last byte written, nothing sized past it.
-    fn close(&mut self) -> io::Result<()>;
-}
-
 /// A trace file, sized ahead of its lines, that rolls over into its `.1` file, replacing any earlier one, before a line would take it past its size bound.
 pub struct RollingFile {
     path: PathBuf,
@@ -135,13 +123,13 @@ impl RollingFile {
             (TraceFileKind::Raw | TraceFileKind::Events, _) => &[],
         }
     }
-}
 
-impl TraceOutput for RollingFile {
-    fn kind(&self) -> TraceFileKind {
+    /// Which of its run's trace files this is.
+    const fn kind(&self) -> TraceFileKind {
         self.kind
     }
 
+    /// Writes the line, newline included, whole in one write.
     fn write_line(&mut self, line: &[u8]) -> io::Result<()> {
         if self.is_due_to_roll_over(line) {
             self.cut_to_written()?;
@@ -167,6 +155,7 @@ impl TraceOutput for RollingFile {
         Ok(())
     }
 
+    /// Ends the file at the last byte written, nothing sized past it.
     fn close(&mut self) -> io::Result<()> {
         self.cut_to_written()
     }
@@ -334,7 +323,7 @@ struct QueuedLine {
 impl FileTrace {
     /// Starts the writer thread of the output's file, through `spawn_thread`, on the output behind a queue of at most `queue_lines` lines, to be stopped within `drain`.
     pub(super) fn start(
-        output: impl TraceOutput + Send + 'static,
+        output: RollingFile,
         drain: Duration,
         header: Arc<HeaderSource>,
         queue_lines: usize,
@@ -489,7 +478,7 @@ impl FileTrace {
 
 /// Writes each queued line under the next number, cutting the file back to its last line for each caller waiting on a flush and telling every waiting flush after each, until the queue closes, then reports the events lost at its close and ends the output at its last line, saying how many lines it could not report and whether it could cut.
 fn write_every_line(
-    mut output: impl TraceOutput,
+    mut output: RollingFile,
     header: &HeaderSource,
     lines: &Receiver<Queued>,
     lost_at_close: &Mutex<u64>,
@@ -529,7 +518,7 @@ impl Numbering {
     }
 
     /// Writes the line under the next number once every earlier loss is reported, counting it unwritten when either write fails.
-    fn write(&mut self, output: &mut impl TraceOutput, header: &HeaderSource, line: &StampedLine) {
+    fn write(&mut self, output: &mut RollingFile, header: &HeaderSource, line: &StampedLine) {
         let is_written = self.report_unwritten(output, header)
             && output
                 .write_line(line.numbered(self.next_n).as_bytes())
@@ -542,7 +531,7 @@ impl Numbering {
     }
 
     /// Writes a `dropped` line carrying the count of unwritten lines when there are any, saying whether none is left unreported.
-    fn report_unwritten(&mut self, output: &mut impl TraceOutput, header: &HeaderSource) -> bool {
+    fn report_unwritten(&mut self, output: &mut RollingFile, header: &HeaderSource) -> bool {
         if self.unwritten == 0 {
             return true;
         }
