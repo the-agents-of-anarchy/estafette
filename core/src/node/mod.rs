@@ -25,10 +25,13 @@ pub use lifecycle::{
     forward_standard_input,
 };
 pub use node_error::NodeError;
+pub(crate) use payload_records::{
+    broadcast_recorded, broadcast_recording_outcome, next_recorded_gossip_event,
+    taken_without_a_row_record,
+};
 pub(crate) use presence::{
-    Clock, PeerRows, ProbeNonceSource, broadcast_recorded, broadcast_recording_outcome,
-    deadline_reached, next_recorded_gossip_event, presence_request, record_counters, serve,
-    snapshot_due_after, taken_without_a_row_record,
+    Clock, PeerRows, ProbeNonceSource, deadline_reached, presence_request, record_counters, serve,
+    snapshot_due_after,
 };
 pub use presence::{Identity, Network, Node, NodeEffects};
 pub use rebind::{RelayProbe, relay_answers};
