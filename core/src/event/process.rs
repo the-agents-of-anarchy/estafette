@@ -39,6 +39,7 @@ super::event_names! {
         ClaimNodeNotStarted => "process.claim_node_not_started",
         TraceNotDrained => "process.trace_not_drained",
         TraceNotCut => "process.trace_not_cut",
+        TraceLossUnreported => "process.trace_loss_unreported",
         Started => "process.started",
         Exited => "process.exited",
         Panicked => "process.panicked",
@@ -73,6 +74,11 @@ pub enum ProcessEvent {
     TraceNotCut {
         file: TraceFileKind,
         source: io::Error,
+    },
+    /// The debug trace's file named could not write at the stop the `dropped` line carrying the count of lines it lost or could not write.
+    TraceLossUnreported {
+        file: TraceFileKind,
+        unreported: u64,
     },
     /// The process started the command of that name, which starts an endpoint.
     Started { command: &'static str },
@@ -207,6 +213,7 @@ impl AreaEvent for ProcessEvent {
             }
             Self::TraceNotDrained { .. } => ProcessEventName::TraceNotDrained,
             Self::TraceNotCut { .. } => ProcessEventName::TraceNotCut,
+            Self::TraceLossUnreported { .. } => ProcessEventName::TraceLossUnreported,
             Self::Started { .. } => ProcessEventName::Started,
             Self::Exited { .. } => ProcessEventName::Exited,
             Self::Panicked(_) => ProcessEventName::Panicked,
@@ -267,6 +274,10 @@ impl AreaEvent for ProcessEvent {
                 "the debug trace could not cut its {} file back to its last line at the stop, so the file ends in zero bytes: {source}",
                 trace_file_word(*file)
             )),
+            Self::TraceLossUnreported { file, unreported } => Some(format!(
+                "the debug trace could not write at the stop the count of {unreported} lines it lost or could not write in its {} file: the file does not say they are missing",
+                trace_file_word(*file)
+            )),
         }
     }
 
@@ -277,6 +288,7 @@ impl AreaEvent for ProcessEvent {
             | Self::ClockBeforeUnixEpoch
             | Self::TraceNotDrained { .. }
             | Self::TraceNotCut { .. }
+            | Self::TraceLossUnreported { .. }
             | Self::InputEnded
             | Self::DepartureHandedOver
             | Self::LockReleased

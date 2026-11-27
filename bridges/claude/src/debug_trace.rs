@@ -86,6 +86,10 @@ impl DebugTrace {
                 Some(BridgeEvent::TraceNotDrained { drain: self.drain })
             }
             TraceStop::NotCut { file: _, source } => Some(BridgeEvent::TraceNotCut(source)),
+            TraceStop::NotReported {
+                file: _,
+                unreported,
+            } => Some(BridgeEvent::TraceLossUnreported { unreported }),
         }
     }
 }

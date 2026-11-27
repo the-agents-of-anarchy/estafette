@@ -55,6 +55,7 @@ bridge_event_names! {
     CommandFailed => "process.command_failed",
     TraceNotDrained => "process.trace_not_drained",
     TraceNotCut => "process.trace_not_cut",
+    TraceLossUnreported => "process.trace_loss_unreported",
     InboxConnected => "inbox.connected",
     InboxClosed => "inbox.closed",
     InboxLost => "inbox.lost",
@@ -113,6 +114,8 @@ pub enum BridgeEvent {
     TraceNotDrained { drain: Duration },
     /// The events file could not be cut back to its last line at the stop.
     TraceNotCut(io::Error),
+    /// The events file could not take at the stop the `dropped` line carrying the count of lines it lost or could not write.
+    TraceLossUnreported { unreported: u64 },
     /// The inbox socket took the bridge's connection.
     InboxConnected { binary_pid: Pid },
     /// The inbox socket closed the bridge's connection, which the bridge opens again.
@@ -176,6 +179,7 @@ impl BridgeEvent {
             Self::CommandFailed(_) => BridgeEventName::CommandFailed,
             Self::TraceNotDrained { .. } => BridgeEventName::TraceNotDrained,
             Self::TraceNotCut(_) => BridgeEventName::TraceNotCut,
+            Self::TraceLossUnreported { .. } => BridgeEventName::TraceLossUnreported,
             Self::InboxConnected { .. } => BridgeEventName::InboxConnected,
             Self::InboxClosed { .. } => BridgeEventName::InboxClosed,
             Self::InboxLost { .. } => BridgeEventName::InboxLost,
@@ -250,6 +254,7 @@ impl BridgeEvent {
             | Self::CommandFailed(_)
             | Self::TraceNotDrained { .. }
             | Self::TraceNotCut(_)
+            | Self::TraceLossUnreported { .. }
             | Self::PermissionClassNotWritten(_)
             | Self::DroppedFramesNotWritten(_) => Vec::new(),
         }
@@ -280,6 +285,9 @@ impl BridgeEvent {
             )),
             Self::TraceNotCut(error) => Some(format!(
                 "the debug trace could not cut its events file back to its last line at the stop, so the file ends in zero bytes: {error}"
+            )),
+            Self::TraceLossUnreported { unreported } => Some(format!(
+                "the debug trace could not write at the stop the count of {unreported} lines it lost or could not write in its events file: the file does not say they are missing"
             )),
             Self::InboxLost { socket, error } => {
                 Some(format!("{}: {error}", socket.path().display()))
@@ -347,7 +355,7 @@ mod tests {
 
     const SPEC_FORMAT_VERSION: u64 = 2;
     const SPEC_DROPPED_LINE_NAME: &str = "dropped";
-    const PINNED_EVENT_NAMES: [&str; 21] = [
+    const PINNED_EVENT_NAMES: [&str; 22] = [
         "process.started",
         "process.alive",
         "process.usage_refused",
@@ -355,6 +363,7 @@ mod tests {
         "process.command_failed",
         "process.trace_not_drained",
         "process.trace_not_cut",
+        "process.trace_loss_unreported",
         "inbox.connected",
         "inbox.closed",
         "inbox.lost",

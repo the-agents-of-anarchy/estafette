@@ -359,6 +359,9 @@ fn report_unfinished_trace_stops(
             TraceStop::Drained => None,
             TraceStop::NotDrained { file } => Some(ProcessEvent::TraceNotDrained { file, drain }),
             TraceStop::NotCut { file, source } => Some(ProcessEvent::TraceNotCut { file, source }),
+            TraceStop::NotReported { file, unreported } => {
+                Some(ProcessEvent::TraceLossUnreported { file, unreported })
+            }
         };
         if let Some(unfinished) = unfinished {
             standard_error(unfinished.into());
@@ -1587,6 +1590,8 @@ mod tests {
     }
 
     const STAND_IN_SHRINK_REFUSAL: &str = "the file refuses to shrink";
+    const STAND_IN_WRITE_REFUSAL: &str = "the file refuses every write";
+    const LINES_OF_A_COMMAND_THAT_RECORDS_NOTHING_BESIDES_ITS_START_AND_EXIT: u64 = 2;
     const SPEC_EVENTS_FILE_WORD: &str = "events";
     const SPEC_RAW_FILE_WORD: &str = "raw";
     const STOP_REPORTED_WITHIN: Duration = Duration::from_secs(10);
@@ -1603,6 +1608,13 @@ mod tests {
     fn spec_not_cut_line(file_word: &str) -> String {
         format!(
             "the debug trace could not cut its {file_word} file back to its last line at the stop, so the file ends in zero bytes: {STAND_IN_SHRINK_REFUSAL}"
+        )
+    }
+
+    /// The line standard error gives, by the lead's ruling on decision 12, for a trace file whose last `dropped` line the stand-in refused, naming the lines it could not count.
+    fn spec_loss_unreported_line(file_word: &str, unreported: u64) -> String {
+        format!(
+            "the debug trace could not write at the stop the count of {unreported} lines it lost or could not write in its {file_word} file: the file does not say they are missing"
         )
     }
 
@@ -1658,6 +1670,32 @@ mod tests {
             }
             spawn_thread(name, work)
         })
+    }
+
+    /// Creates trace files that refuse every write.
+    fn write_refusing_trace_files() -> CreateTraceFile {
+        Arc::new(|_path: &Path| -> io::Result<Box<dyn TraceFile>> {
+            Ok(Box::new(WriteRefusingTraceFile))
+        })
+    }
+
+    /// A trace file that refuses every write and takes every length.
+    struct WriteRefusingTraceFile;
+
+    impl TraceFile for WriteRefusingTraceFile {
+        fn set_length(&mut self, _length: u64) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Write for WriteRefusingTraceFile {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other(STAND_IN_WRITE_REFUSAL))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     /// A trace file that refuses every length but one past the size it was last given, discarding what is written to it.
@@ -1724,6 +1762,47 @@ mod tests {
                 spec_not_cut_line(SPEC_EVENTS_FILE_WORD),
                 spec_not_cut_line(SPEC_RAW_FILE_WORD)
             ]
+        );
+    }
+
+    #[test]
+    fn observability_decision_12_an_events_file_that_refuses_the_dropped_line_at_the_stop_says_how_many_lines_it_could_not_count_and_the_status_stands()
+     {
+        const SCRATCH_PREFIX: &str = "estafette-trace-loss-unreported";
+        let (_scratch_removed_when_the_test_ends, environment) =
+            scratch_environment(SCRATCH_PREFIX);
+        let trace_effects = trace_effects_creating(
+            write_refusing_trace_files(),
+            TraceEffects::of_the_operating_system(trace_clocks_started_now()).create_file,
+        );
+        let standard_error = SharedRecord::default();
+
+        let status = run_traced(
+            TRACED_COMMAND,
+            Tracing::Debug,
+            environment,
+            CardsDirectoryOverride::Offered(None),
+            standard_error.clone(),
+            ProcessSetup {
+                filesystem: OperatingSystemFilesystem::of_this_process().unwrap(),
+                effects: &trace_effects,
+                bounds: TraceBounds {
+                    drain: STOP_REPORTED_WITHIN,
+                    ..TraceBounds::SPEC
+                },
+                install_iroh_lines: IROH_LINES_LEFT_OUT,
+                record_panics: PANICS_LEFT_UNRECORDED,
+            },
+            |_directories, _process| Ok(ExitStatus::Success),
+        );
+
+        assert_eq!(status, ExitStatus::Success);
+        assert_eq!(
+            lines_after_the_announcement(&standard_error),
+            [spec_loss_unreported_line(
+                SPEC_EVENTS_FILE_WORD,
+                LINES_OF_A_COMMAND_THAT_RECORDS_NOTHING_BESIDES_ITS_START_AND_EXIT
+            )]
         );
     }
 

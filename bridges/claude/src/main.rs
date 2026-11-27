@@ -3145,6 +3145,53 @@ mod tests {
         );
     }
 
+    const LINES_OF_A_RUN_THAT_RECORDS_NOTHING_BESIDES_ITS_START_AND_EXIT: u64 = 2;
+
+    struct WriteRefusingFile;
+
+    impl Write for WriteRefusingFile {
+        fn write(&mut self, _bytes: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other(STAND_IN_FAILURE))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl estafette_trace::TraceFile for WriteRefusingFile {
+        fn set_length(&mut self, _length: u64) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn observability_decision_12_a_stop_whose_events_file_refuses_the_dropped_line_says_how_many_lines_it_could_not_count_on_standard_error()
+     {
+        let probe = TraceProbe::new("loss-unreported");
+        let effects = TraceEffects {
+            create_file: Arc::new(|_path: &Path| {
+                let refusing: Box<dyn estafette_trace::TraceFile> = Box::new(WriteRefusingFile);
+                Ok(refusing)
+            }),
+            ..TraceEffects::of_the_operating_system(frozen_trace_clocks())
+        };
+
+        let (status, written) = probe.run(Tracing::Debug, effects, TraceBounds::SPEC);
+
+        assert_eq!(status, ExitCode::SUCCESS);
+        assert_eq!(
+            written.lines().last(),
+            Some(
+                format!(
+                    "the debug trace could not write at the stop the count of {LINES_OF_A_RUN_THAT_RECORDS_NOTHING_BESIDES_ITS_START_AND_EXIT} lines it lost or could not write in its events file: the file does not say they are missing"
+                )
+                .as_str()
+            ),
+            "{written}"
+        );
+    }
+
     const HARNESS_EXITS_AT: Duration = Duration::from_secs(125);
     const SPEC_LIVE_PROCESS_WRITES_AT_LEAST_EVERY_MS: u64 = 60_000;
     const SPEC_ALIVE_EVENT: &str = "process.alive";

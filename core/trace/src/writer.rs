@@ -303,8 +303,14 @@ impl FlushProgress {
 
 /// Where the stop of this file's writer stands: awaited by the first finish, or answered by it for every later finish to repeat.
 enum Finish {
-    Awaiting(Receiver<io::Result<()>>),
+    Awaiting(Receiver<WriterEnd>),
     Answered(TraceStop),
+}
+
+/// How the writer thread ended: the lines it could not report in a `dropped` line, and whether it cut the file back to its last line.
+struct WriterEnd {
+    unreported: u64,
+    cut: io::Result<()>,
 }
 
 /// The queue while it is open, and the events lost since the last line queued.
@@ -336,7 +342,7 @@ impl FileTrace {
     ) -> io::Result<Self> {
         let kind = output.kind();
         let (queue, lines) = mpsc::sync_channel(queue_lines);
-        let (ended_sender, ended) = mpsc::channel::<io::Result<()>>();
+        let (ended_sender, ended) = mpsc::channel::<WriterEnd>();
         let lost_at_close = Arc::new(Mutex::new(0));
         let writer_header = Arc::clone(&header);
         let writer_lost_at_close = Arc::clone(&lost_at_close);
@@ -433,7 +439,7 @@ impl FileTrace {
         drop(queue);
         let mut finished = locked(&self.finished);
         let stop = match &*finished {
-            Finish::Awaiting(ended) => self.stop_answered(ended.recv_timeout(self.drain).ok()),
+            Finish::Awaiting(ended) => self.stop_ended(ended.recv_timeout(self.drain).ok()),
             Finish::Answered(first) => return first.repeated(),
         };
         *finished = Finish::Answered(stop.repeated());
@@ -453,6 +459,21 @@ impl FileTrace {
         }
     }
 
+    /// How the writer's end left this file: not reported when the lines it lost could not be counted in a `dropped` line, otherwise as its answer to a flush.
+    fn stop_ended(&self, end: Option<WriterEnd>) -> TraceStop {
+        match end {
+            Some(WriterEnd {
+                unreported: unreported @ 1..,
+                cut: Ok(()),
+            }) => TraceStop::NotReported {
+                file: self.kind,
+                unreported,
+            },
+            Some(WriterEnd { unreported: _, cut }) => self.stop_answered(Some(cut)),
+            None => self.stop_answered(None),
+        }
+    }
+
     /// How the writer's answer left this file: drained when it ended at its last line, not cut when it could not, and not drained when no answer came.
     fn stop_answered(&self, answer: Option<io::Result<()>>) -> TraceStop {
         match answer {
@@ -466,14 +487,14 @@ impl FileTrace {
     }
 }
 
-/// Writes each queued line under the next number, cutting the file back to its last line for each caller waiting on a flush and telling every waiting flush after each, until the queue closes, then reports the events lost at its close and ends the output at its last line, saying whether it could.
+/// Writes each queued line under the next number, cutting the file back to its last line for each caller waiting on a flush and telling every waiting flush after each, until the queue closes, then reports the events lost at its close and ends the output at its last line, saying how many lines it could not report and whether it could cut.
 fn write_every_line(
     mut output: impl TraceOutput,
     header: &HeaderSource,
     lines: &Receiver<Queued>,
     lost_at_close: &Mutex<u64>,
     moved: &WriterMoved,
-) -> io::Result<()> {
+) -> WriterEnd {
     let mut numbering = Numbering::default();
     for queued in lines {
         match queued {
@@ -487,7 +508,10 @@ fn write_every_line(
     }
     numbering.count_unwritten(*locked(lost_at_close));
     numbering.report_unwritten(&mut output, header);
-    output.close()
+    WriterEnd {
+        unreported: numbering.unwritten,
+        cut: output.close(),
+    }
 }
 
 /// The number of the next line, and how many numbered lines never reached the output since the last `dropped` line.

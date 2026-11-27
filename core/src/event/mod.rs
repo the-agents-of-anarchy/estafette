@@ -238,7 +238,7 @@ mod tests {
 
     const RELAY_PORT: u16 = 443;
     const DEFERRED_MS: u64 = 2000;
-    const PINNED_EVENT_NAMES: [&str; 70] = [
+    const PINNED_EVENT_NAMES: [&str; 71] = [
         "process.command_failed",
         "process.network_created",
         "process.clock_before_unix_epoch",
@@ -248,6 +248,7 @@ mod tests {
         "process.claim_node_not_started",
         "process.trace_not_drained",
         "process.trace_not_cut",
+        "process.trace_loss_unreported",
         "process.claimed",
         "process.claim_refused",
         "process.input_ended",
