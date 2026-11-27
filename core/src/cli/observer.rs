@@ -374,15 +374,7 @@ async fn send_as_operator(
         start_inbox,
     } = operator_effects;
     let card_key = operator.held.secret_key().clone();
-    let endpoint = bind_endpoint(
-        card_key.clone(),
-        *setup.network.keys().gate_key(),
-        setup.hosts.iter().map(|host| host.relay.clone()).collect(),
-        Arc::clone(&monotonic),
-    )
-    .await
-    .map_err(Failure::Bind)?;
-    seed_lookup_with_known_hosts(&endpoint, &setup.hosts);
+    let endpoint = bind_for_network(bind_endpoint, &setup, card_key.clone(), &monotonic).await?;
     let inbox = start_inbox().map_err(Failure::Inbox)?;
     let node = Node::start(
         endpoint,
@@ -535,6 +527,25 @@ fn load_network_setup(
     Ok(NetworkSetup { network, hosts })
 }
 
+/// Binds an endpoint under the key for the network's gate and the relays of its hosts, then seeds its lookup with those hosts.
+async fn bind_for_network(
+    bind_endpoint: BindEndpoint,
+    setup: &NetworkSetup,
+    key: SecretKey,
+    monotonic: &MonotonicClock,
+) -> Result<NodeEndpoint, Failure> {
+    let endpoint = bind_endpoint(
+        key,
+        *setup.network.keys().gate_key(),
+        setup.hosts.iter().map(|host| host.relay.clone()).collect(),
+        Arc::clone(monotonic),
+    )
+    .await
+    .map_err(Failure::Bind)?;
+    seed_lookup_with_known_hosts(&endpoint, &setup.hosts);
+    Ok(endpoint)
+}
+
 /// Joins the network as an observer without a card on a fresh key, ready to be driven by `collect_peers` or `tail`.
 async fn start_observation(
     setup: &NetworkSetup,
@@ -544,15 +555,13 @@ async fn start_observation(
     (effects.fill_seed)(&mut seed);
     let secret_key = SecretKey::from_bytes(&seed);
     let keys = setup.network.keys();
-    let endpoint = (effects.bind_endpoint)(
+    let endpoint = bind_for_network(
+        effects.bind_endpoint,
+        setup,
         secret_key.clone(),
-        *keys.gate_key(),
-        setup.hosts.iter().map(|host| host.relay.clone()).collect(),
-        Arc::clone(&effects.monotonic),
+        &effects.monotonic,
     )
-    .await
-    .map_err(Failure::Bind)?;
-    seed_lookup_with_known_hosts(&endpoint, &setup.hosts);
+    .await?;
     let own_card = wire::PublicKey::from(secret_key.public());
     let (to_loop, from_loop) = mpsc::unbounded_channel();
     let host = Arc::new(ObserverHost {
