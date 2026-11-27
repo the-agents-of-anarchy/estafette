@@ -3564,11 +3564,15 @@ pub(crate) mod tests {
     const UNFINISHED_STREAM_ENDS_WITHIN: Duration =
         WAKE_ASKED_WAIT.saturating_add(DIRECT_ANSWER_WAIT);
 
+    /// How far a test moves its clock before it opens a stream, so that the deadline the server asks for the stream's read differs from every deadline it asked for an earlier request.
+    const READ_DEADLINE_KEPT_APART: Duration = Duration::from_millis(1);
+
     /// How a stream left unfinished on the connection after one byte ends: reset at the server's read timeout, which the clock is moved to once the server has asked it for that wake, while the connection stays open, or lost at its close; none when the closed connection took no stream.
     async fn unfinished_stream_end(
         connection: &Connection,
         clock: &StandingClock,
     ) -> Option<Result<Vec<u8>, ReadToEndError>> {
+        clock.move_forward(READ_DEADLINE_KEPT_APART);
         let opened_at = clock.now();
         let (mut send, mut recv) = connection.open_bi().await.ok()?;
         send.write_all(&[0]).await.ok()?;
