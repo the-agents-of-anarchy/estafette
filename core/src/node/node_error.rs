@@ -5,7 +5,7 @@ use crate::keys::KeyError;
 use crate::net::gossip::GossipError;
 
 /// The key of the network configuration that did not parse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum NetworkKeyField {
     Secret,
     Owner,
