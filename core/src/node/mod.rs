@@ -1,4 +1,5 @@
 mod addresses;
+mod announcements;
 mod known_hosts;
 mod lifecycle;
 mod node_error;
