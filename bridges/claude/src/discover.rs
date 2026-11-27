@@ -48,6 +48,7 @@ impl FromStr for Pid {
     }
 }
 
+/// One process, its arguments whole where the system delimits them and split on whitespace where it does not.
 #[derive(Clone, Debug)]
 pub struct ProcessEntry {
     pub pid: Pid,
