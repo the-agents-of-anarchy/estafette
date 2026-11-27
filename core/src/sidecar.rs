@@ -955,17 +955,79 @@ mod tests {
                 seed_of(u8::try_from(case).unwrap()),
             );
 
-            let failure = outcome.unwrap_err().to_string();
-            assert!(failure.contains(&removal_reason), "case {case}: {failure}");
-            assert!(
-                failure.contains(&File::create(&card).unwrap_err().to_string()),
-                "case {case}: {failure}"
+            let failure = outcome.unwrap_err();
+            let missing_directory_failure = File::create(&card).unwrap_err();
+            assert_eq!(
+                failure.to_string(),
+                format!(
+                    "{missing_directory_failure}; {} was left behind: {removal_reason}",
+                    sidecar.display()
+                ),
+                "case {case}"
             );
             assert!(
-                failure.contains("was left behind"),
-                "case {case}: {failure}"
+                matches!(&failure, SidecarError::Io(error) if error.kind() == missing_directory_failure.kind()),
+                "case {case}: {failure:?}"
             );
             assert!(sidecar.exists(), "case {case}");
         }
+    }
+
+    #[test]
+    fn a_card_that_cannot_be_written_leaves_no_sidecar_and_reports_the_write_failure_alone_spec_3_5()
+     {
+        let directory = fresh_directory("create_card_removes_sidecar");
+        let card = directory.join("no-such-directory").join("u.yaml");
+        let sidecar = directory.join("u.key");
+
+        let outcome = create_card(&card, &sidecar, &scout_handle(), seed_of(13));
+
+        let missing_directory_failure = File::create(&card).unwrap_err();
+        let failure = outcome.unwrap_err();
+        assert_eq!(failure.to_string(), missing_directory_failure.to_string());
+        assert!(
+            matches!(&failure, SidecarError::Io(error) if error.kind() == missing_directory_failure.kind()),
+            "{failure:?}"
+        );
+        assert!(!sidecar.exists());
+    }
+
+    #[test]
+    fn a_card_that_appears_while_it_is_created_stays_untouched_beside_the_sidecar_spec_3_5() {
+        let directory = fresh_directory("create_card_card_appears");
+        let card = directory.join("v.yaml");
+        let sidecar = directory.join("v.key");
+        let card_written_by_another_process = "handle: other\n";
+        let writes_the_card_once_the_sidecar_is_durable = |synced: &File| {
+            if !card.exists() {
+                std::fs::write(&card, card_written_by_another_process)?;
+            }
+            sync_to_disk(synced)
+        };
+
+        let outcome = create_card_removing_files_with(
+            remove_file_if_present,
+            |path: &Path| remove_file(path),
+            writes_the_card_once_the_sidecar_is_durable,
+            &card,
+            &sidecar,
+            "scout",
+            seed_of(14),
+        );
+
+        let failure = outcome.unwrap_err();
+        assert!(
+            matches!(failure, SidecarError::AlreadyExists),
+            "{failure:?}"
+        );
+        assert_eq!(
+            failure.to_string(),
+            "the card or its sidecar already exists; create never overwrites"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&card).unwrap(),
+            card_written_by_another_process
+        );
+        assert!(sidecar.exists());
     }
 }
