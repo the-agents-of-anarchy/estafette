@@ -1,12 +1,11 @@
-use std::fs::{self, File, OpenOptions, Permissions};
+use std::fs::{self, File};
 use std::io;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::sync::Arc;
 use std::thread;
 use std::time::UNIX_EPOCH;
 
-use estafette_private_entry::OWNER_ONLY_FILE_MODE;
+use estafette_private_entry::create_new_owner_only_file;
 
 use super::{StoredFile, TraceClocks, TraceEffects, TraceFile};
 
@@ -33,13 +32,7 @@ impl TraceFile for File {
 
 /// Creates the file new, readable and writable by its owner alone whatever the umask, written from its start.
 fn create_private_file(path: &Path) -> io::Result<Box<dyn TraceFile>> {
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(OWNER_ONLY_FILE_MODE)
-        .open(path)?;
-    fs::set_permissions(path, Permissions::from_mode(OWNER_ONLY_FILE_MODE))?;
-    Ok(Box::new(file))
+    Ok(Box::new(create_new_owner_only_file(path)?))
 }
 
 /// Every entry of the directory with its size and when it was last written, a time before the Unix epoch read as the epoch, and an entry removed while the directory is read left out.
