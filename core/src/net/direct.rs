@@ -500,8 +500,7 @@ pub enum RequestSummary {
 
 impl RequestSummary {
     /// The kind and message id of the request.
-    #[must_use]
-    pub const fn of(request: &Request) -> Self {
+    const fn of(request: &Request) -> Self {
         match request {
             Request::Message(message) => Self::Message(message.id),
             Request::Probe(_) => Self::Probe,
@@ -532,8 +531,7 @@ pub enum AckRefusal {
 
 impl AckRefusal {
     /// The refusal named by the reason of a Message acknowledgement.
-    #[must_use]
-    pub fn of(reason: Option<&str>) -> Self {
+    fn of(reason: Option<&str>) -> Self {
         match reason {
             Some(code) if code == ErrorCode::TooLarge.code() => Self::TooLarge,
             Some(code) if code == ErrorCode::Refused.code() => Self::Refused,
@@ -552,8 +550,7 @@ pub enum SentOutcome {
 
 impl SentOutcome {
     /// The outcome a Message acknowledgement reports.
-    #[must_use]
-    pub fn of_message_ack(ack: &MessageAck) -> Self {
+    fn of_message_ack(ack: &MessageAck) -> Self {
         if ack.accepted {
             Self::Acknowledged
         } else {
@@ -572,8 +569,7 @@ pub enum ServedOutcome {
 
 impl ServedOutcome {
     /// The outcome of answering with the response.
-    #[must_use]
-    pub fn of(response: &Response) -> Self {
+    fn of(response: &Response) -> Self {
         match response {
             Response::MessageAck(ack) if !ack.accepted => {
                 Self::Refused(AckRefusal::of(ack.reason.as_deref()))
@@ -1191,12 +1187,12 @@ impl DirectClient {
     }
 
     /// Empties the peer's slot, so the next request to the peer dials afresh.
-    pub async fn drop_held_connection(&self, to: EndpointId) {
+    pub(crate) async fn drop_held_connection(&self, to: EndpointId) {
         *self.slot_of(to).lock().await = None;
     }
 
     /// Empties every peer's slot, so the next request to any peer dials afresh.
-    pub async fn drop_all_held_connections(&self) {
+    pub(crate) async fn drop_all_held_connections(&self) {
         let slots: Vec<PeerSlot> = self
             .slots
             .lock()
