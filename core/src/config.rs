@@ -1166,8 +1166,15 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(fs::read_to_string(&path).unwrap(), "handle: a\n");
-        assert!(failure.to_string().contains("was left behind"), "{failure}");
-        assert_eq!(names_in(&directory).len(), 2);
+        let names = names_in(&directory);
+        assert_eq!(names.len(), 2);
+        let leftover = directory.join(names.iter().find(|name| *name != "card.yaml").unwrap());
+        assert!(
+            failure
+                .to_string()
+                .contains(&format!("{} was left behind", leftover.display())),
+            "{failure}"
+        );
     }
 
     /// Spec 3.5: a path that exists is never replaced and no temporary file stays beside it.
